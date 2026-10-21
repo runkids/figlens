@@ -174,12 +174,12 @@ The server runs locally over stdio and exposes `tree`, `nodes`, `variables`, `bu
 
 | Command | Output |
 |---|---|
-| `tree <file> [node] [--depth N]` | Node ids, types and names |
+| `tree <file> [node] [--depth N] [--json]` | Node ids, types and names; indented text (smaller for an agent's context) or, with `--json`, nested JSON |
 | `nodes <file> <node>` | REST-shaped JSON: expanded instances and overrides, auto-layout, text styles, fills, effects, bound variables, component properties and render bounds |
 | `variables <file> [node]` | A frame's bound variables; without a node, every local variable |
-| `bundle <file> <node> <out.zip>` | A design bundle for one frame |
-| `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | Many bundles from one decode, in parallel; one JSON line per frame |
-| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | PNG, JPG, WebP or AVIF; `--max-kb` lowers quality until it fits (no effect on lossless PNG) |
+| `bundle <file> <node> <out.zip>` | A design bundle for one frame; prints `{nodeId, path, warnings}` |
+| `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | Many bundles from one decode, in parallel; one JSON line per frame, as above or `{nodeId, error}` |
+| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | PNG, JPG, WebP or AVIF; `--max-kb` lowers quality until it fits (no effect on lossless PNG); prints `{path, width, height, bytes, quality}` |
 | `compare <file> <nodes.json> <node>` | Diff against a REST export of the same frame |
 | `node <file> <node>` | One raw `.fig` node |
 | `mcp` | Local MCP server over stdio |

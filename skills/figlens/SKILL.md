@@ -50,11 +50,11 @@ For a question about a design rather than a build (a color, a spacing, which com
 
 ## Images and slices
 
-`figlens export <file.fig> <node> <out.png|jpg|webp|avif> [--scale 2] [--quality 80] [--max-kb 150]` renders one node like Figma's Export panel, shadows included; instance sublayer ids work. The extension picks the format. `--max-kb` lowers the quality until the file fits, so it has no effect on lossless PNG; JPG has no transparency and composites on white.
+`figlens export <file.fig> <node> <out.png|jpg|webp|avif> [--scale 2] [--quality 80] [--max-kb 150]` renders one node like Figma's Export panel, shadows included; instance sublayer ids work. The extension picks the format. `--max-kb` lowers the quality until the file fits, so it has no effect on lossless PNG; JPG has no transparency and composites on white. It prints `{path, width, height, bytes, quality}`; `quality` is the one actually used.
 
 ## Many frames
 
-`figlens bundle <file.fig> --frames <list> --out-dir <dir>` decodes once and writes one bundle per id in `<list>` (one id per line), in parallel, printing a JSON line per frame (`{nodeId, path}` or `{nodeId, error}`). Use it instead of one `bundle` call per frame.
+`figlens bundle <file.fig> --frames <list> --out-dir <dir>` decodes once and writes one bundle per id in `<list>` (one id per line), in parallel, printing a JSON line per frame (`{nodeId, path, warnings}` or `{nodeId, error}`). A single `bundle` prints the same object; non-empty `warnings` name assets the bundle could not include. Use it instead of one `bundle` call per frame.
 
 ## Known gaps
 

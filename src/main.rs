@@ -12,21 +12,25 @@ use figlens::{Document, Tree, normalize_id, to_json};
 const USAGE: &str = "figlens — read Figma .fig files (File > Save local copy) without Figma
 
 usage:
-  figlens tree <file.fig> [node] [--depth N]   list ids, types and names (default root: the document)
+  figlens tree <file.fig> [node] [--depth N] [--json]
+                                             list ids, types and names (default root: the document);
+                                             --json prints them as nested {id,type,name,children}
   figlens nodes <file.fig> <node>              print a frame as Figma REST-shaped nodes.json
                                              (instances expanded, fills/text/auto-layout included)
   figlens variables <file.fig> [node]          print the variables a frame binds (design/variables.json);
                                              without a node, every local variable
   figlens bundle <file.fig> <node> <out.zip>   write a design bundle for a frame: nodes, variables,
-                                             image/SVG assets, reference render and context.md, in one zip
+                                             image/SVG assets, reference render and context.md, in one zip;
+                                             prints {nodeId,path,warnings}
   figlens bundle ... --file-key KEY --name N   set the manifest's file key and frame name
   figlens bundle <file.fig> --frames <list> --out-dir <dir> [--file-key KEY] [--jobs N]
                                             one decode, many bundles: <list> has one node id per line;
                                              writes <dir>/<nodeId>.zip (`:` as `-`), prints one JSON line
-                                             per frame ({nodeId,path} or {nodeId,error})
+                                             per frame ({nodeId,path,warnings} or {nodeId,error})
   figlens export <file.fig> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]
                                             render a node to out.png|jpg|webp|avif (default 1x,
-                                             quality 80); --max-kb lowers the quality until it fits
+                                             quality 80); --max-kb lowers the quality until it fits;
+                                             prints {path,width,height,bytes,quality}
   figlens node <file.fig> <node>               print one raw .fig node as JSON
   figlens compare <file.fig> <nodes.json> <node>   diff a frame against a REST nodes.json export
   figlens compare <file.fig> --frames <list.txt>   same for every `node|nodes.json[|variables.json]` line
@@ -98,10 +102,13 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
         "tree" => {
             let mut root = "0:0".to_owned();
             let mut depth = usize::MAX;
+            let mut json = false;
             let mut rest = args[2..].iter();
             while let Some(arg) = rest.next() {
                 if arg == "--depth" {
                     depth = rest.next().ok_or("--depth needs a number")?.parse()?;
+                } else if arg == "--json" {
+                    json = true;
                 } else {
                     root = normalize_id(arg);
                 }
@@ -112,7 +119,11 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                 )
                 .into());
             }
-            print_tree(out, &tree, &root, 0, depth)?;
+            if json {
+                writeln!(out, "{}", tree_json(&tree, &root, 0, depth))?;
+            } else {
+                print_tree(out, &tree, &root, 0, depth)?;
+            }
         }
         "node" => {
             let id = normalize_id(args.get(2).ok_or(USAGE)?);
@@ -178,16 +189,16 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                     .or_else(|| args[2].split_once("/file/"))
                     .and_then(|(_, rest)| rest.split('/').next())
             });
-            for w in figlens::bundle::write(
+            let warnings = figlens::bundle::write(
                 &tree,
                 &path,
                 key,
                 name.as_deref(),
                 &id,
                 Path::new(out_path),
-            )? {
-                eprintln!("figlens: {w}");
-            }
+            )?;
+            let line = serde_json::json!({ "nodeId": id, "path": out_path, "warnings": warnings });
+            writeln!(out, "{line}")?;
         }
         "export" => {
             let id = normalize_id(args.get(2).ok_or(USAGE)?);
@@ -224,15 +235,14 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                 max_kb.map(|kb| kb * 1024),
             )?;
             std::fs::write(out_path, &image.bytes)?;
-            writeln!(
-                out,
-                "{}: {}x{}, {} KB, quality {}",
-                out_path.display(),
-                image.width,
-                image.height,
-                image.bytes.len().div_ceil(1024),
-                image.quality
-            )?;
+            let line = serde_json::json!({
+                "path": out_path,
+                "width": image.width,
+                "height": image.height,
+                "bytes": image.bytes.len(),
+                "quality": image.quality,
+            });
+            writeln!(out, "{line}")?;
         }
         "compare" => {
             // A `--frames` line may name the capture's variables.json as a third field.
@@ -352,23 +362,20 @@ fn batch(tree: &Tree, fig: &Path, args: &[String]) -> Result<(), Box<dyn Error>>
     pool.install(|| {
         frames.par_iter().for_each(|id| {
             let path = Path::new(&dir).join(format!("{}.zip", id.replace(':', "-")));
-            let one = || -> Result<(), String> {
+            let one = || -> Result<Vec<String>, String> {
                 if !tree.nodes.contains_key(id) {
                     return Err(format!("node {id} not found"));
                 }
                 let key = file_key.as_deref();
-                for w in figlens::bundle::write(tree, fig, key, None, id, &path)
-                    .map_err(|e| e.to_string())?
-                {
-                    eprintln!("figlens: {id}: {w}");
-                }
-                Ok(())
+                figlens::bundle::write(tree, fig, key, None, id, &path).map_err(|e| e.to_string())
             };
             // A panic in one frame must not take the others down.
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(one))
                 .unwrap_or_else(|_| Err("figlens crashed on this frame".to_owned()));
             let line = match result {
-                Ok(()) => serde_json::json!({ "nodeId": id, "path": path }),
+                Ok(warnings) => {
+                    serde_json::json!({ "nodeId": id, "path": path, "warnings": warnings })
+                }
                 Err(e) => serde_json::json!({ "nodeId": id, "error": e }),
             };
             let mut out = stdout.lock().unwrap_or_else(|e| e.into_inner());
@@ -416,6 +423,13 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
                 "integer",
                 false,
                 "levels to list below the root",
+            ),
+            (
+                "json",
+                "--json",
+                "boolean",
+                false,
+                "nested {id,type,name,children} JSON instead of indented text (about 1.6x larger)",
             ),
         ],
     ),
@@ -534,17 +548,23 @@ fn mcp_reply(line: &str) -> Option<serde_json::Value> {
             "serverInfo": { "name": "figlens", "version": env!("CARGO_PKG_VERSION") }
         }),
         "ping" => json!({}),
-        "tools/list" => json!({ "tools": TOOLS.iter().map(|(name, about, params)| json!({
-            "name": name,
-            "description": about,
-            "inputSchema": {
-                "type": "object",
-                "properties": params.iter().map(|(key, _, kind, _, about)|
-                    (key.to_string(), json!({ "type": kind, "description": about }))
-                ).collect::<serde_json::Map<_, _>>(),
-                "required": params.iter().filter(|p| p.3).map(|p| p.0).collect::<Vec<_>>(),
+        "tools/list" => json!({ "tools": TOOLS.iter().map(|(name, about, params)| {
+            let mut tool = json!({
+                "name": name,
+                "description": about,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": params.iter().map(|(key, _, kind, _, about)|
+                        (key.to_string(), json!({ "type": kind, "description": about }))
+                    ).collect::<serde_json::Map<_, _>>(),
+                    "required": params.iter().filter(|p| p.3).map(|p| p.0).collect::<Vec<_>>(),
+                }
+            });
+            if let Some(schema) = output_schema(name) {
+                tool["outputSchema"] = schema;
             }
-        })).collect::<Vec<_>>() }),
+            tool
+        }).collect::<Vec<_>>() }),
         "tools/call" => call_tool(&req["params"]),
         method => {
             return Some(json!({
@@ -567,6 +587,11 @@ fn call_tool(params: &serde_json::Value) -> serde_json::Value {
                 let value = match &params["arguments"][key] {
                     serde_json::Value::String(s) => s.clone(),
                     serde_json::Value::Number(n) => n.to_string(),
+                    // A boolean is a bare flag.
+                    serde_json::Value::Bool(true) => {
+                        args.push(flag.to_string());
+                        continue;
+                    }
                     _ => continue,
                 };
                 if !flag.is_empty() {
@@ -578,8 +603,6 @@ fn call_tool(params: &serde_json::Value) -> serde_json::Value {
             let mut out = String::new();
             // A panic on one file must not stop the server.
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(args, &mut out))) {
-                // `bundle` prints nothing on success; an empty reply reads as a failure to an agent.
-                Ok(Ok(())) if out.is_empty() => Ok("done".to_owned()),
                 Ok(Ok(())) => Ok(out),
                 Ok(Err(e)) => Err(e.to_string()),
                 Err(_) => Err("figlens crashed on this file".to_owned()),
@@ -590,7 +613,46 @@ fn call_tool(params: &serde_json::Value) -> serde_json::Value {
         Ok(text) => (text, false),
         Err(text) => (text, true),
     };
-    serde_json::json!({ "content": [{ "type": "text", "text": text }], "isError": is_error })
+    let mut reply =
+        serde_json::json!({ "content": [{ "type": "text", "text": text }], "isError": is_error });
+    // Tools with an outputSchema print one JSON object; clients that read it get it parsed.
+    if !is_error
+        && output_schema(name).is_some()
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
+    {
+        reply["structuredContent"] = value;
+    }
+    reply
+}
+
+/// The MCP outputSchema of the tools whose CLI command prints one JSON object.
+fn output_schema(tool: &str) -> Option<serde_json::Value> {
+    let (properties, required) = match tool {
+        "export" => (
+            serde_json::json!({
+                "path": { "type": "string" },
+                "width": { "type": "integer" },
+                "height": { "type": "integer" },
+                "bytes": { "type": "integer" },
+                "quality": { "type": "integer", "description": "the quality used; --max-kb may lower it" },
+            }),
+            ["path", "width", "height", "bytes", "quality"].as_slice(),
+        ),
+        "bundle" => (
+            serde_json::json!({
+                "nodeId": { "type": "string" },
+                "path": { "type": "string" },
+                "warnings": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "assets the bundle could not include; missing-assets.json has details",
+                },
+            }),
+            ["nodeId", "path", "warnings"].as_slice(),
+        ),
+        _ => return None,
+    };
+    Some(serde_json::json!({ "type": "object", "properties": properties, "required": required }))
 }
 
 /// Reruns the release installer (scripts/install.sh, or install.ps1 on Windows) into this
@@ -662,26 +724,37 @@ fn print_tree(
     level: usize,
     depth: usize,
 ) -> std::fmt::Result {
-    let node = tree.nodes[id];
-    let kind = node.get("type").map(|t| match t {
-        kiwi_schema::Value::Enum(_, name) => *name,
-        _ => "?",
-    });
-    let name = node.get("name").map(|n| n.as_string()).unwrap_or("");
-    writeln!(
-        out,
-        "{}{} {} \"{}\"",
-        "  ".repeat(level),
-        id,
-        kind.unwrap_or("?"),
-        name
-    )?;
+    let (kind, name) = label(tree, id);
+    writeln!(out, "{}{} {} \"{}\"", "  ".repeat(level), id, kind, name)?;
     if level < depth {
         for child in tree.children.get(id).into_iter().flatten() {
             print_tree(out, tree, child, level + 1, depth)?;
         }
     }
     Ok(())
+}
+
+/// `tree --json`: the same nodes as `print_tree`, nested; `children` only where `depth` reaches.
+fn tree_json(tree: &Tree, id: &str, level: usize, depth: usize) -> serde_json::Value {
+    let (kind, name) = label(tree, id);
+    let mut node = serde_json::json!({ "id": id, "type": kind, "name": name });
+    if let Some(children) = tree.children.get(id).filter(|_| level < depth) {
+        node["children"] = children
+            .iter()
+            .map(|child| tree_json(tree, child, level + 1, depth))
+            .collect();
+    }
+    node
+}
+
+/// A node's type and name, as `tree` prints them.
+fn label<'a>(tree: &Tree<'a>, id: &str) -> (&'a str, &'a str) {
+    let node = tree.nodes[id];
+    let kind = match node.get("type") {
+        Some(kiwi_schema::Value::Enum(_, name)) => *name,
+        _ => "?",
+    };
+    (kind, node.get("name").map(|n| n.as_string()).unwrap_or(""))
 }
 
 #[cfg(test)]
@@ -698,6 +771,61 @@ mod tests {
             .map(|t| t["name"].as_str().unwrap())
             .collect();
         assert_eq!(names, ["tree", "nodes", "variables", "bundle", "export"]);
+    }
+
+    #[test]
+    fn mcp_declares_output_schemas_for_json_results() {
+        let reply = mcp_reply(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).unwrap();
+        let with_schema: Vec<_> = reply["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| t["outputSchema"].is_object())
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(with_schema, ["bundle", "export"]);
+    }
+
+    #[test]
+    fn tree_json_nests_children_down_to_the_depth() {
+        use kiwi_schema::Value;
+        use std::collections::HashMap;
+        let g = |l| {
+            Value::Object(
+                "GUID",
+                HashMap::from([("sessionID", Value::UInt(0)), ("localID", Value::UInt(l))]),
+            )
+        };
+        let node = |l: u32, parent: Option<u32>| {
+            let mut fields = HashMap::from([
+                ("guid", g(l)),
+                ("type", Value::Enum("NodeType", "FRAME")),
+                ("name", Value::String(format!("n{l}"))),
+            ]);
+            if let Some(p) = parent {
+                fields.insert(
+                    "parentIndex",
+                    Value::Object(
+                        "ParentIndex",
+                        HashMap::from([("guid", g(p)), ("position", Value::String("a".into()))]),
+                    ),
+                );
+            }
+            Value::Object("NodeChange", fields)
+        };
+        let message = Value::Object(
+            "Message",
+            HashMap::from([(
+                "nodeChanges",
+                Value::Array(vec![node(0, None), node(1, Some(0)), node(2, Some(1))]),
+            )]),
+        );
+        let tree = Tree::new(&message);
+        assert_eq!(
+            tree_json(&tree, "0:0", 0, 1),
+            serde_json::json!({ "id": "0:0", "type": "FRAME", "name": "n0",
+                "children": [{ "id": "0:1", "type": "FRAME", "name": "n1" }] })
+        );
     }
 
     #[test]
