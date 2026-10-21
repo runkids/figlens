@@ -43,4 +43,4 @@ Expect five archives (macOS arm64/x86_64, Linux musl arm64/x86_64, Windows zip) 
 
 ## 4. Publish
 
-Only on the user's explicit go-ahead: `gh workflow run publish-release.yml -f tag=v<version>`. It publishes the draft, then Homebrew, crates.io and npm. Watch it to the end and report each job; a failed channel is reported, never retried blindly.
+Only on the user's explicit go-ahead: `gh workflow run publish-release.yml -f tag=v<version>`. It publishes the draft, then Homebrew and npm. Watch it to the end and report each job; a failed channel is reported, never retried blindly.

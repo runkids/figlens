@@ -14,7 +14,7 @@
       "sources": [{ "path": "wiki/accuracy.md" }]
     },
     "release": {
-      "description": "Packaging, GitHub releases, Homebrew, crates.io, npm, install scripts and figlens update.",
+      "description": "Packaging, GitHub releases, Homebrew, npm, install scripts and figlens update.",
       "sources": [{ "path": "wiki/release.md" }]
     },
     "direction": {

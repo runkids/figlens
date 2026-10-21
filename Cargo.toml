@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 description = "Read Figma .fig files offline: REST-shaped nodes, variables, assets, renders and design bundles for AI agents"
 license = "MIT"
+# Shipped as release binaries, Homebrew and npm; not on crates.io.
+publish = false
 repository = "https://github.com/runkids/figlens"
 homepage = "https://github.com/runkids/figlens"
 readme = "README.md"

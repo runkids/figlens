@@ -14,7 +14,6 @@ It is built for AI design-to-code: `figlens bundle` writes one zip with everythi
 | Windows (PowerShell) | `irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 \| iex` |
 | Homebrew | `brew install runkids/tap/figlens` |
 | npm (no install) | `npx figlens --help` |
-| Cargo | `cargo install figlens` |
 
 Release binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, static musl) and Windows (x86_64; ARM64 runs it under emulation). `figlens update` replaces the binary with the latest release.
 
