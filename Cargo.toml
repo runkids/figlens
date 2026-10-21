@@ -1,6 +1,6 @@
 [package]
 name = "figlens"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "Read Figma .fig files offline: REST-shaped nodes, variables, assets, renders and design bundles for AI agents"
 license = "MIT"
