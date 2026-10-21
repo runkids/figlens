@@ -41,6 +41,7 @@ A node can be an id (`12:345`), its URL form (`12-345`) or a Figma URL with `?no
 | `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | PNG, JPG, WebP or AVIF of any node, like Figma's Export panel; `--max-kb` lowers the quality until it fits |
 | `compare <file> <nodes.json> <node>` | diff against a REST export of the same frame |
 | `node <file> <node>` | one raw `.fig` node |
+| `mcp` | an MCP server on stdio serving `tree`, `nodes`, `variables`, `bundle` and `export` as tools |
 
 `<file>` can also be `gs://bucket/object` (read with your `gcloud` login and cached).
 
@@ -74,6 +75,14 @@ skillshare sync
 ```
 
 `skillshare update --all` keeps it current. Without skillshare, copy `skills/figlens/` into your agent's skills directory (for Claude Code, `~/.claude/skills/`); release archives include it too.
+
+Or connect figlens as an MCP server, so the agent calls `tree`, `nodes`, `variables`, `bundle` and `export` as tools. In Claude Code: `claude mcp add figlens -- figlens mcp`. Other clients take the same command in their MCP config:
+
+```json
+{ "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
+```
+
+Give tools absolute paths: relative ones resolve against the directory the client started figlens in.
 
 ## Development
 

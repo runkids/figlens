@@ -30,6 +30,8 @@ usage:
   figlens node <file.fig> <node>               print one raw .fig node as JSON
   figlens compare <file.fig> <nodes.json> <node>   diff a frame against a REST nodes.json export
   figlens compare <file.fig> --frames <list.txt>   same for every `node|nodes.json[|variables.json]` line
+  figlens mcp                                  serve tree, nodes, variables, bundle and export as
+                                             MCP tools over stdio (for AI agents)
   figlens update                               install the latest GitHub release over this binary
   figlens --help | --version
 
@@ -81,6 +83,7 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             return Ok(());
         }
         Some("update") => return update(),
+        Some("mcp") => return mcp(),
         _ => {}
     }
     let (command, file) = match (args.first(), args.get(1)) {
@@ -376,6 +379,220 @@ fn batch(tree: &Tree, fig: &Path, args: &[String]) -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
+/// An MCP tool parameter: (key, CLI flag or "" for a positional, JSON type, required,
+/// description). Positionals keep the CLI's order.
+type Param = (&'static str, &'static str, &'static str, bool, &'static str);
+const FILE: Param = (
+    "file",
+    "",
+    "string",
+    true,
+    "the .fig file (File > Save local copy): an absolute path, or gs://bucket/object",
+);
+const NODE: Param = (
+    "node",
+    "",
+    "string",
+    true,
+    "a node id (12:345 or 12-345) or a Figma URL with ?node-id=",
+);
+/// Each tool runs the CLI command of the same name, so tools and commands cannot drift apart.
+const TOOLS: &[(&str, &str, &[Param])] = &[
+    (
+        "tree",
+        "List node ids, types and names. Start here with depth 2 to find pages and frames.",
+        &[
+            FILE,
+            (
+                "node",
+                "",
+                "string",
+                false,
+                "the root; default the whole document",
+            ),
+            (
+                "depth",
+                "--depth",
+                "integer",
+                false,
+                "levels to list below the root",
+            ),
+        ],
+    ),
+    (
+        "nodes",
+        "A frame as Figma REST nodes.json: instances expanded, fills, text, auto-layout. Can be large.",
+        &[FILE, NODE],
+    ),
+    (
+        "variables",
+        "The variables a frame binds (collections, modes, aliases); without a node, every local variable.",
+        &[
+            FILE,
+            (
+                "node",
+                "",
+                "string",
+                false,
+                "the frame; omit for every local variable",
+            ),
+        ],
+    ),
+    (
+        "bundle",
+        "Write a design bundle zip for a frame: nodes, variables, assets, reference render, context.md.",
+        &[
+            FILE,
+            NODE,
+            (
+                "out",
+                "",
+                "string",
+                true,
+                "absolute path of the .zip to write",
+            ),
+            (
+                "fileKey",
+                "--file-key",
+                "string",
+                false,
+                "Figma file key for the manifest",
+            ),
+            (
+                "name",
+                "--name",
+                "string",
+                false,
+                "frame name for the manifest",
+            ),
+        ],
+    ),
+    (
+        "export",
+        "Render a node to PNG, JPG, WebP or AVIF, like Figma's Export panel.",
+        &[
+            FILE,
+            NODE,
+            (
+                "out",
+                "",
+                "string",
+                true,
+                "absolute path ending in .png, .jpg, .webp or .avif",
+            ),
+            ("scale", "--scale", "number", false, "default 1"),
+            (
+                "quality",
+                "--quality",
+                "integer",
+                false,
+                "1-100, default 80",
+            ),
+            (
+                "maxKb",
+                "--max-kb",
+                "integer",
+                false,
+                "lower the quality until the file fits",
+            ),
+        ],
+    ),
+];
+
+/// `figlens mcp`: a Model Context Protocol server, newline-delimited JSON-RPC on stdio.
+fn mcp() -> Result<(), Box<dyn Error>> {
+    for line in std::io::stdin().lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Some(reply) = mcp_reply(&line) {
+            let mut stdout = std::io::stdout().lock();
+            writeln!(stdout, "{reply}")?;
+            stdout.flush()?;
+        }
+    }
+    Ok(())
+}
+
+/// The reply to one JSON-RPC message; None for a notification.
+fn mcp_reply(line: &str) -> Option<serde_json::Value> {
+    use serde_json::json;
+    let Ok(req) = serde_json::from_str::<serde_json::Value>(line) else {
+        return Some(json!({
+            "jsonrpc": "2.0", "id": null,
+            "error": { "code": -32700, "message": "parse error" }
+        }));
+    };
+    let id = req.get("id")?.clone();
+    let result = match req["method"].as_str().unwrap_or("") {
+        // Only tools are served, which every protocol version handles alike, so the client's
+        // version is accepted as is.
+        "initialize" => json!({
+            "protocolVersion": req["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
+            "capabilities": { "tools": {} },
+            "serverInfo": { "name": "figlens", "version": env!("CARGO_PKG_VERSION") }
+        }),
+        "ping" => json!({}),
+        "tools/list" => json!({ "tools": TOOLS.iter().map(|(name, about, params)| json!({
+            "name": name,
+            "description": about,
+            "inputSchema": {
+                "type": "object",
+                "properties": params.iter().map(|(key, _, kind, _, about)|
+                    (key.to_string(), json!({ "type": kind, "description": about }))
+                ).collect::<serde_json::Map<_, _>>(),
+                "required": params.iter().filter(|p| p.3).map(|p| p.0).collect::<Vec<_>>(),
+            }
+        })).collect::<Vec<_>>() }),
+        "tools/call" => call_tool(&req["params"]),
+        method => {
+            return Some(json!({
+                "jsonrpc": "2.0", "id": id,
+                "error": { "code": -32601, "message": format!("unknown method {method}") }
+            }));
+        }
+    };
+    Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+}
+
+/// Runs a tool as its CLI command; a failure is a tool result with isError, not a protocol error.
+fn call_tool(params: &serde_json::Value) -> serde_json::Value {
+    let name = params["name"].as_str().unwrap_or("");
+    let result = match TOOLS.iter().find(|t| t.0 == name) {
+        None => Err(format!("unknown tool {name}")),
+        Some((_, _, tool_params)) => {
+            let mut args = vec![name.to_owned()];
+            for (key, flag, ..) in *tool_params {
+                let value = match &params["arguments"][key] {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    _ => continue,
+                };
+                if !flag.is_empty() {
+                    args.push(flag.to_string());
+                }
+                args.push(value);
+            }
+            // shortcut: every call decodes the file again; cache the Tree if agents call in bursts.
+            let mut out = String::new();
+            // A panic on one file must not stop the server.
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(args, &mut out))) {
+                // `bundle` prints nothing on success; an empty reply reads as a failure to an agent.
+                Ok(Ok(())) if out.is_empty() => Ok("done".to_owned()),
+                Ok(Ok(())) => Ok(out),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(_) => Err("figlens crashed on this file".to_owned()),
+            }
+        }
+    };
+    let (text, is_error) = match result {
+        Ok(text) => (text, false),
+        Err(text) => (text, true),
+    };
+    serde_json::json!({ "content": [{ "type": "text", "text": text }], "isError": is_error })
+}
+
 /// Reruns the release installer (scripts/install.sh, or install.ps1 on Windows) into this
 /// binary's directory.
 fn update() -> Result<(), Box<dyn Error>> {
@@ -465,4 +682,36 @@ fn print_tree(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_lists_every_tool() {
+        let reply = mcp_reply(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).unwrap();
+        let names: Vec<_> = reply["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["tree", "nodes", "variables", "bundle", "export"]);
+    }
+
+    #[test]
+    fn mcp_ignores_notifications() {
+        assert!(mcp_reply(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
+    }
+
+    #[test]
+    fn mcp_reports_a_failed_call_as_a_tool_error() {
+        let reply = mcp_reply(
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call",
+                "params":{"name":"tree","arguments":{"file":"/missing.fig"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(reply["result"]["isError"], true);
+    }
 }
