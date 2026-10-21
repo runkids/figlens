@@ -1,0 +1,53 @@
+name: Update Homebrew
+
+# Writes Formula/figlens.rb in runkids/homebrew-tap from a published release's SHA256SUMS.
+on:
+  # A release published by hand. "Publish Release" publishes with GITHUB_TOKEN, whose events
+  # start no workflows, so it calls this one directly.
+  release:
+    types: [published]
+  workflow_call:
+    inputs:
+      tag_name:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  update-homebrew:
+    runs-on: ubuntu-latest
+    if: startsWith(inputs.tag_name || github.event.release.tag_name, 'v')
+    env:
+      TAG: ${{ inputs.tag_name || github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
+
+      - name: Formula from the release's checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "$TAG" --pattern SHA256SUMS --dir "$RUNNER_TEMP"
+          scripts/formula.sh "${TAG#v}" "$RUNNER_TEMP/SHA256SUMS" > "$RUNNER_TEMP/figlens.rb"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: runkids/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Commit and push
+        run: |
+          mkdir -p homebrew-tap/Formula
+          cp "$RUNNER_TEMP/figlens.rb" homebrew-tap/Formula/figlens.rb
+          cd homebrew-tap
+          git add Formula/figlens.rb
+          if ! git diff --cached --quiet; then
+            git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m "chore: release figlens ${TAG#v}"
+            git push origin HEAD
+          fi

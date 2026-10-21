@@ -1,0 +1,23 @@
+# Rust toolchain runs only in Docker: docker compose run --rm dev cargo test
+services:
+  dev:
+    build: .
+    working_dir: /work
+    volumes:
+      - .:/work
+      - cargo-registry:/usr/local/cargo/registry
+      - target:/work/target
+  dist:
+    build:
+      context: .
+      dockerfile: Dockerfile.dist
+    profiles: [dist]
+    working_dir: /work
+    volumes:
+      - .:/work
+      - cargo-registry:/usr/local/cargo/registry
+      - target-dist:/work/target
+volumes:
+  cargo-registry:
+  target:
+  target-dist:

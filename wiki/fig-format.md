@@ -1,0 +1,69 @@
+# .fig format and pipeline
+
+How figlens turns a `.fig` into REST-shaped JSON, a bundle and renders. Load this before changing decoding, expansion, emitted fields, variables or rendering.
+
+## Modules
+
+- Done: decode (`src/lib.rs`), instance expansion + constraint resize (`src/expand.rs`), plugin-shaped `nodes.json` with fills/strokes/text/auto-layout, variable-mode paint resolution, effects, rotation, blendMode, layoutWrap, isMask, boundVariables, componentProperties, styles, absoluteRenderBounds and top-level components/componentSets/styles (`src/rest.rs`), `design/variables.json` (`src/variables.rs`), SVG/PNG rendering from the `.fig`'s own path and glyph outlines, no font files (`src/render.rs`, resvg), design bundle zip (`src/bundle.rs`: `design/nodes.json`, `design/variables.json`, `assets/` + `assets.json`, `references/screen.png`, `context.md`), raster export of one node like Figma's Export panel (PNG/JPG/WebP/AVIF, quality, size budget; instance sublayer ids resolve through their instance) (`src/export.rs`), `compare` against REST exports incl. those fields and `variables.json` (`src/compare.rs`).
+
+## Terms
+
+"The plugin" below means Figma's own REST export from the plugin API (`node.exportAsync({ format: "JSON_REST_V1" })`), the shape figlens matches; a "capture" is that export plus the plugin's image, SVG and PNG exports of the same frame. "The sweep" is the 826-frame comparison of figlens against captures of one large production file (see the `accuracy` topic).
+
+## Running the CLI
+
+```bash
+docker compose run --rm dev cargo run --release -- tree samples/design.fig --depth 2
+docker compose run --rm dev cargo run --release -- node samples/design.fig 12:345
+docker compose run --rm dev cargo run --release -- nodes samples/design.fig 12:345   # REST-shaped nodes.json
+docker compose run --rm dev cargo run --release -- variables samples/design.fig 12:345
+docker compose run --rm dev cargo run --release -- bundle samples/design.fig 12:345 samples/12-345.zip
+docker compose run --rm dev cargo run --release -- export samples/design.fig 12:345 samples/12-345.webp --scale 2 --quality 80 --max-kb 150
+```
+
+## Verified format rules (checked against the plugin)
+
+Each rule below is backed by the sweep.
+
+- `canvas.fig`: `fig-kiwi` magic, u32 LE version (106), then u32-LE-length chunks: 0 = binary schema, 1 = `Message`. zstd or raw deflate.
+- Node id = `guid` `sessionID:localID` = Figma URL `node-id` with `-` → `:`. `4294967295:4294967295` (u32::MAX twice) means no guid, e.g. an unset `overrideKey`; `guid_key` returns none for it, since using it as a path element gives unrelated instance sublayers one id and the tree then contains itself (Real Estate App UI Kit, 7 frames overflowed the stack).
+- GROUP is a FRAME with `resizeToFit`. `size` is pre-rotation; apply the `transform` chain before comparing with REST `absoluteBoundingBox`.
+- Instances store only themselves; expand from `symbolData.symbolID`. Child ids are `I<instance>;<nested instance ids…>;<node>`: only instance boundaries enter the path, plain frames do not. Path elements use `overrideKey ?? guid` (library component copies keep library ids in `overrideKey`).
+- COMPONENT_SET is a FRAME with `isStateGroup`.
+- Untrusted input: expansion skips an id it already produced and a component that contains itself, `subtree` visits each id once, renders allow only known blend modes and resolve no `<image>` href outside `data:` URLs. A crafted `.fig` (its schema, and so its enum names, ship inside it) must not recurse forever or reach the disk.
+- `symbolData.symbolOverrides` and `derivedSymbolData` use the same guidPath keys; nested instances carry their own, relative to themselves. Merge **field by field** (outer wins per field): one list can hold several entries for the same path (e.g. a swap, then a size), and an outer derived entry may hold only geometry while the nested one holds the size. Whole-entry merging was the cause of what looked like footer design edits and an auto-layout gap (button 216→336); Figma does store those sizes.
+- Swaps come from `overriddenSymbolID` or a `componentPropAssignments` SYMBOL_ID value bound through the node's `componentPropRefs`; BOOLEAN assignments drive visibility the same way. A swapped instance takes the new main's name (a variant takes its component set's name) unless explicitly renamed, and the new main's visibility.
+- `derivedSymbolData` stores sizes only sometimes: SCALE/STRETCH constraint resizes must be computed (groups and boolean ops pass the outer resize through to their children), except for children in auto-layout flow (only ABSOLUTE-positioned ones follow constraints).
+- Variable-bound paints of instance sublayers must be resolved in the nearest explicit `variableModeBySetMap` mode (else the set's first mode); direct nodes' cached colors are already right. Library variable values are present in the `.fig`.
+
+## Verified rules for the bundle fields (2026-10-22, 826-frame sweep)
+
+- REST variable ids: local `VariableID:<s:l>`, library `VariableID:<key>/<assetRef.version>`; collections likewise (`VariableCollectionId:`). `boundVariables` lists library variables by key string first, then local ones by numeric guid.
+- Field bindings come from `parameterConsumptionMap`, which supersedes `variableConsumptionMap`; a `FONT_STYLE` binding wraps its alias in `value.fontStyleValue.asFloat` and is REST `fontWeight`. A text style's own FONT_SIZE/FONT_STYLE bindings also appear on the nodes using the style.
+- Kiwi variable scopes `STROKE` → `STROKE_COLOR`, `FONT_STYLE` → `FONT_WEIGHT`; no scopes means `["ALL_SCOPES"]`. Collection modes sort by `sortPosition`; the first is `defaultModeId`.
+- componentProperties: VARIANT values from the main's `variantPropSpecs`; others keyed `name#<set def id>` via `parentPropDefId`; BOOL is REST BOOLEAN.
+- styles: `styleIdForText/Fill/StrokeFill/Effect/Grid` → text/fill/stroke/effect/grid; an `assetRef` resolves to the local copy with the same key. Frame-like nodes repeat the fill style under `fills`. Local style, component and variable keys are server-assigned and not in the `.fig`.
+- `layoutPositioning: "ABSOLUTE"` for an auto-layout parent's child with kiwi `stackPositioning: ABSOLUTE`; the plugin omits the default `AUTO` (sets match the plugin in all 13 frames checked).
+- Effects: `FOREGROUND_BLUR` is REST `LAYER_BLUR`; `spread` only when nonzero; `showShadowBehindNode` only on DROP_SHADOW. SECTION and CANVAS have no blendMode/effects.
+- Path blobs (`commandsBlob`): u8 command (0 Z, 1 M, 2 L, 3 Q, 4 C) then f32 LE points. Vectors are in local px; glyphs in em units, y up (`translate(pos) scale(fs,-fs)`), and may start with Z.
+- Resized instance children: use derived `fillGeometry`/`strokeGeometry`/`derivedTextData` when present, else scale the source geometry by size / source size (fill and stroke separately).
+- absoluteRenderBounds: leaves are tight transformed geometry (INSIDE strokes intersected with the fill shape, effects expand it); containers union their own box with their children; clipped by `clipsContent` ancestors; null when fully clipped, hidden, opacity 0, a boolean operand, or a mask (siblings after a mask clip to it). Text truncation keeps `glyphs[..truncationStartIndex]`.
+- Assets as the plugin selects them: image fills → `assets/<sha256>` keyed by imageRef (last node in DFS order); rendered vector types not inside a boolean op → `node:<id>` SVG; blend/effect/mask nodes with an image in the subtree → `render:<id>` 2x PNG. Export size is `ceil(len*scale - 1e-3)`.
+
+## Verified rules for text styles and rendering (2026-10-22)
+
+- A text node's font fields come from its text style (`styleIdForText`, local or `assetRef`), since a node's own copies can be stale; a hidden instance sublayer keeps its overridden values instead. `textAutoResize` is always the node's own.
+- REST line height: kiwi `PERCENT` → `INTRINSIC_%`, px = fontSize × `derivedTextData.fontMetaData[0].fontLineHeight` × value/100, no `lineHeightPercentFontSize`; `PIXELS`/`RAW` → `PIXELS`. Percents are `f32(f32(ratio) × 100)`, Figma's rounding. `fontVariantNumericFigure`/`Spacing` → `opentypeFlags` LNUM/ONUM/TNUM/PNUM.
+- `styleOverrideTable` entries list the REST fields their kiwi entry sets (`fontName` → the four font fields, `fontSize` → size and the line-height fields, …); an entry with `styleIdForText` adds that style's fields and `inheritTextStyleId`. Only ids used in `characterStyleIDs` appear. `lineTypes` maps `PLAIN`/`ORDERED_LIST` to `NONE`/`ORDERED`.
+- Image paints are drawn as `<pattern>` fills: an `<image>` clipped to the shape keeps the image's full bounds, and resvg then cuts it off under an effect filter.
+- SVGs use `viewBox="0 0 w h"` and move the origin in a transform: under a fractional viewBox origin resvg draws filters wrong.
+- An effect's filter region is the node's content uncut by its ancestors' clips (`_r.fb`: its own paint plus its children's, before its own effects; a clipping node cuts its children to its box) plus each effect's reach (1.5 × radius = 3σ, spread, offset). Not the render bounds: an ancestor may have cut those (a blurred glow at a frame edge loses the light it pulls in), and they already hold the effect's reach. Filter time grows with this area; counting the reach twice made frames with large shadows several times slower.
+- Shadows follow Figma's SVG export: start from the hard alpha (`SourceAlpha × 127`); drop shadow = offset, blur, cut out under the node unless `showShadowBehindNode`, then a color matrix; inner shadow = hard alpha − blurred offset hard alpha.
+- Export area (`render::export_area`): render bounds, else the box. A SECTION gets 40 px of margin and is drawn over the fills of the sections it is nested in, margin included; a page (CANVAS) is the union of its children over its background color.
+- Rasterized output (`Svg::for_raster`: render assets, reference, `export`) averages large image downscales first: a PNG fill is halved (2x2 means) while it stays at least twice the pixels it covers, since resvg samples a big downscale without averaging and it aliases. SVG assets keep the full image, as the plugin's do, since they may be drawn at any size.
+- Image adjustments (kiwi `paintFilter`, REST `filters`), fitted to plugin renders: exposure e scales linear light by 2^(5e); saturation (kiwi `vibrance`) is SVG `saturate` (Rec. 709 weights) in linear RGB, e.g. −0.58 fits to a mean error of 1.5/255. The filter sits on the painted path: inside a pattern resvg filters at the tile's own size. Contrast, temperature, tint, highlights and shadows are not drawn yet.
+
+## Bundle and batch mode (2026-10-22)
+
+- `figlens bundle <file.fig> <node> <out.zip> [--file-key K] [--name N]` writes `manifest.json` (`format: "figlens-bundle"`, `version: 1`: producer, source file key and Figma URL, root paths, every file with role, media type, size and sha256), `design/nodes.json`, `design/variables.json`, `assets/` with `assets.json` and `missing-assets.json`, `references/screen.png` and `context.md` (how to build from the files). `--name` sets `root.name` (default the node's name); `--file-key` sets `source.fileKey` (default: taken from a Figma URL node argument).
+- `figlens bundle <file.fig> --frames <list> --out-dir <dir> [--file-key K] [--jobs N]`: decodes once and writes the bundle of each listed node id to `<dir>/<nodeId with : as ->.zip`, in parallel (rayon, default all cores), printing one JSON line per frame as it finishes: `{nodeId, path}` or `{nodeId, error}`. A frame's failure or panic is only its line; the exit status is nonzero only when the `.fig` or the list cannot be read. Bundles equal the single-frame command's except `capturedAt` (72 of 72 zips checked). 24 frames: 28.6 s as separate processes, 8.1 s with `--jobs 1`, 2.9 s with 4; 96 frames: 32.3 s / 12.2 s / 8.5 s with 1 / 4 / 12 jobs, peak memory 1.6 / 1.9 / 2.6 GiB (the decoded `.fig` is about 1.2 GiB of it). Within one bundle, the render assets and the reference rasterize in parallel on the same pool (they dominate: filters at 2x) and are added in plan order, so the zip is unchanged; `--jobs 1` keeps everything on one thread. Nucleus UI (172 frames, 12 cores): 35 s → 8.5 s with this and the filter-region fix; its largest frame 16391:2800 33.5 s → 5.9 s.

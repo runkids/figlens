@@ -1,0 +1,31 @@
+[package]
+name = "figlens"
+version = "0.1.0"
+edition = "2024"
+description = "Read Figma .fig files offline: REST-shaped nodes, variables, assets, renders and design bundles for AI agents"
+license = "MIT"
+repository = "https://github.com/runkids/figlens"
+homepage = "https://github.com/runkids/figlens"
+readme = "README.md"
+keywords = ["figma", "fig", "design", "design-to-code", "cli"]
+categories = ["command-line-utilities", "parser-implementations", "multimedia::images"]
+include = ["src/**/*", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
+
+[dependencies]
+flate2 = "1.1.10"
+jpeg-encoder = "0.7.1"
+kiwi-schema = "0.2.1"
+rayon = "1.12.0"
+# No `asm`: it needs nasm in every cross-build.
+ravif = { version = "0.13.0", default-features = false, features = ["threading"] }
+resvg = { version = "0.48.1", default-features = false, features = ["raster-images"] }
+ruzstd = "0.9.1"
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+webp = { version = "0.3.1", default-features = false }
+zip = "9.0.5"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

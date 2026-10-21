@@ -1,0 +1,55 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact commit to verify for a release
+        type: string
+        default: ""
+
+concurrency:
+  # A newer push to a pull request supersedes its running tests; other runs keep their own group.
+  group: test-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Check AI context routes
+        run: python3 scripts/ai-context.py check
+
+      # The same toolchain as local development (compose.yaml `dev`).
+      - name: Format, lint and test
+        run: docker compose run --rm dev sh -c 'cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --locked'
+
+      - name: npm wrapper
+        working-directory: npm
+        run: node --test
+
+  # Releases ship a Windows build, and the Linux job above cannot catch a Windows-only failure
+  # (paths, %LOCALAPPDATA%, gcloud.cmd). Native MSVC here; the release cross-builds windows-gnu.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - name: Test
+        shell: bash
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          cargo +1.97.1 test --locked

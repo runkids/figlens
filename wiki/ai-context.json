@@ -1,0 +1,30 @@
+{
+  "rootInstructions": "AGENTS.md",
+  "budgets": {
+    "rootInstructionsMaxBytes": 8192,
+    "defaultTopicMaxBytes": 16384
+  },
+  "topics": {
+    "fig-format": {
+      "description": "Changing decoding, instance expansion, emitted REST fields, variables, rendering or the bundle.",
+      "sources": [{ "path": "wiki/fig-format.md" }]
+    },
+    "accuracy": {
+      "description": "Measuring output against Figma's own exports, running compare, finding test files.",
+      "sources": [{ "path": "wiki/accuracy.md" }]
+    },
+    "release": {
+      "description": "Packaging, GitHub releases, Homebrew, crates.io, npm, install scripts and figlens update.",
+      "sources": [{ "path": "wiki/release.md" }]
+    },
+    "direction": {
+      "description": "Deciding what to build next, or revisiting a past decision.",
+      "sources": [{ "path": "wiki/direction.md" }]
+    },
+    "ai-context": {
+      "description": "Maintain the doc router: add, move or split topics and pages, and fix check failures.",
+      "sources": [{ "path": "wiki/ai-context.md" }]
+    }
+  },
+  "unrouted": {}
+}

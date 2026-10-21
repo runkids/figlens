@@ -1,0 +1,21 @@
+{
+  "name": "figlens",
+  "version": "0.1.0",
+  "description": "Read Figma .fig files offline: REST nodes, variables, assets, renders and design bundles for AI agents",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/runkids/figlens.git"
+  },
+  "homepage": "https://github.com/runkids/figlens",
+  "keywords": ["figma", "fig", "design-to-code", "cli", "ai"],
+  "bin": {
+    "figlens": "bin/figlens.js"
+  },
+  "files": ["bin/", "target.js"],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": ["darwin", "linux", "win32"],
+  "cpu": ["arm64", "x64"]
+}
