@@ -8,14 +8,30 @@
     "url": "git+https://github.com/runkids/figlens.git"
   },
   "homepage": "https://github.com/runkids/figlens",
-  "keywords": ["figma", "fig", "design-to-code", "cli", "ai"],
+  "keywords": [
+    "figma",
+    "fig",
+    "design-to-code",
+    "cli",
+    "ai"
+  ],
   "bin": {
     "figlens": "bin/figlens.js"
   },
-  "files": ["bin/", "target.js"],
+  "files": [
+    "bin/",
+    "target.js"
+  ],
   "engines": {
     "node": ">=18"
   },
-  "os": ["darwin", "linux", "win32"],
-  "cpu": ["arm64", "x64"]
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "arm64",
+    "x64"
+  ]
 }
