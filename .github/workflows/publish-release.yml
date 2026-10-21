@@ -1,7 +1,8 @@
 name: Publish Release
 
 # Makes a checked draft public, then ships it to Homebrew and npm.
-# Secrets: HOMEBREW_TAP_SSH_KEY (write deploy key on runkids/homebrew-tap), NPM_TOKEN.
+# Secrets: HOMEBREW_TAP_SSH_KEY (write deploy key on runkids/homebrew-tap). npm needs none: it trusts
+# this workflow through OIDC (Trusted Publisher on npmjs.com: runkids/figlens, publish-release.yml).
 on:
   workflow_dispatch:
     inputs:
@@ -62,16 +63,19 @@ jobs:
   npm:
     needs: publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ inputs.tag }}
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
           registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1 or later; provenance is attached automatically.
+      - run: npm install -g npm@^11.5.1
       - name: npm publish
         working-directory: npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public

@@ -9,7 +9,7 @@ Load this for packaging, publishing a version, the install paths and `figlens up
 - **Repository setting:** Settings > Actions > General must allow GitHub Actions to create pull requests, or no Release PR appears.
 - **Skill:** `figlens-release` walks an agent through these steps.
 - **Publish:** check the draft, then run "Publish Release" (`publish-release.yml`, workflow_dispatch with the tag): it verifies the assets against `SHA256SUMS`, publishes, then runs `update-homebrew.yml` (formula from `scripts/formula.sh` pushed to `runkids/homebrew-tap`) and `npm publish` of `npm/`. figlens is not on crates.io (`publish = false`): one token fewer to keep.
-- **Secrets:** `HOMEBREW_TAP_SSH_KEY` (private half of a write deploy key on runkids/homebrew-tap; replace both halves together), `NPM_TOKEN` (npm, automation token).
+- **Secrets:** `HOMEBREW_TAP_SSH_KEY` (private half of a write deploy key on runkids/homebrew-tap; replace both halves together). npm has no secret: a Trusted Publisher on npmjs.com (`runkids/figlens`, `publish-release.yml`, npm publish allowed) lets the `npm` job publish through OIDC, with provenance.
 - **Pinned toolchain:** shipped binaries build from `Dockerfile.dist`'s digest-pinned base. To move Rust, change the tag and digest together (`docker buildx imagetools inspect rust:<version>`), and the toolchain in the Windows test job.
 
 ## Install paths
