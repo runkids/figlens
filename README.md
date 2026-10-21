@@ -123,7 +123,13 @@ Use the CLI through an agent skill, or connect the same binary as an MCP server.
 
 The [figlens skill](skills/figlens/SKILL.md) teaches your agent to find frames, read the bundle in small pieces and build from its values.
 
-Install across Claude Code, Codex, Cursor, Gemini CLI and more with [skillshare](https://github.com/runkids/skillshare):
+Install with the [Skills CLI](https://github.com/vercel-labs/skills):
+
+```sh
+npx skills add runkids/figlens --skill figlens
+```
+
+To manage and update skills across Claude Code, Codex, Cursor, Gemini CLI and more, use [skillshare](https://github.com/runkids/skillshare):
 
 ```sh
 skillshare install github.com/runkids/figlens/skills/figlens
@@ -134,7 +140,17 @@ skillshare sync
 
 ### MCP server
 
-In Claude Code:
+Manage MCP servers alongside your agent skills with [skillshare](https://github.com/runkids/skillshare). Define figlens once and sync its connection settings to Claude Code, Codex and Cursor:
+
+```sh
+skillshare mcp add figlens --global \
+  --target claude --target codex --target cursor --no-tui -- figlens mcp
+skillshare sync mcp --global
+```
+
+See the [Skillshare MCP guide](https://skillshare.runkids.cc/docs/reference/commands/mcp/) for other clients and importing existing settings.
+
+For a direct Claude Code setup:
 
 ```sh
 claude mcp add figlens -- figlens mcp
