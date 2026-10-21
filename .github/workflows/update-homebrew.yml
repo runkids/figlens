@@ -22,7 +22,7 @@ jobs:
     env:
       TAG: ${{ inputs.tag_name || github.event.release.tag_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ env.TAG }}
 
@@ -33,7 +33,7 @@ jobs:
           gh release download "$TAG" --pattern SHA256SUMS --dir "$RUNNER_TEMP"
           scripts/formula.sh "${TAG#v}" "$RUNNER_TEMP/SHA256SUMS" > "$RUNNER_TEMP/figlens.rb"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: runkids/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}

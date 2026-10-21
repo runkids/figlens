@@ -171,25 +171,62 @@ impl<'a> Tree<'a> {
             _ => Vec::new(),
         };
         let mut nodes = HashMap::new();
-        let mut children: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        // One parent per id, from the same record `nodes` keeps (the last one with that guid):
+        // `children` and the loop check below must agree on it.
+        let mut parents: HashMap<String, (String, String)> = HashMap::new();
         if let Some(Value::Array(changes)) = message.get("nodeChanges") {
             for node in changes {
                 let Some(id) = node.get("guid").and_then(guid_key) else {
                     continue;
                 };
-                if let Some(parent) = node.get("parentIndex") {
+                let parent = node.get("parentIndex").and_then(|parent| {
                     let position = parent
                         .get("position")
                         .map(|p| p.as_string().to_owned())
                         .unwrap_or_default();
-                    if let Some(parent_id) = parent.get("guid").and_then(guid_key) {
-                        children
-                            .entry(parent_id)
-                            .or_default()
-                            .push((position, id.clone()));
-                    }
-                }
+                    Some((parent.get("guid").and_then(guid_key)?, position))
+                });
+                match parent {
+                    Some(parent) => parents.insert(id.clone(), parent),
+                    None => parents.remove(&id),
+                };
                 nodes.insert(id, node);
+            }
+        }
+        // A crafted file can make a node its own ancestor. Drop every node whose parent chain
+        // loops (and what hangs under it), so every walk up or down the tree ends.
+        let dropped: std::collections::HashSet<String> = {
+            // true: the chain ends. A node is false while its own chain is being walked, so
+            // meeting it again on that walk is a loop.
+            let mut ends: HashMap<&str, bool> = HashMap::with_capacity(nodes.len());
+            for start in nodes.keys() {
+                let mut path = Vec::new();
+                let mut cur = Some(start.as_str());
+                let result = loop {
+                    let Some(c) = cur else { break true };
+                    if let Some(&known) = ends.get(c) {
+                        break known;
+                    }
+                    ends.insert(c, false);
+                    path.push(c);
+                    cur = parents.get(c).map(|(p, _)| p.as_str());
+                };
+                if result {
+                    ends.extend(path.into_iter().map(|c| (c, true)));
+                }
+            }
+            ends.into_iter()
+                .filter(|(_, ok)| !ok)
+                .map(|(id, _)| id.to_owned())
+                .collect()
+        };
+        // Real files have no loops: skip the filtering then.
+        let keep = |id: &String| dropped.is_empty() || !dropped.contains(id);
+        nodes.retain(|id, _| keep(id));
+        let mut children: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        for (id, (parent, position)) in parents {
+            if keep(&id) {
+                children.entry(parent).or_default().push((position, id));
             }
         }
         let children = children
@@ -308,6 +345,105 @@ mod tests {
     fn takes_node_id_from_a_figma_url() {
         let url = "https://www.figma.com/design/AbC123xyz/Example?node-id=7-42&t=abc";
         assert_eq!(normalize_id(url), "7:42");
+    }
+
+    #[test]
+    fn a_repeated_guid_keeps_the_last_records_parent_everywhere() {
+        let g = |s, l| {
+            Value::Object(
+                "GUID",
+                std::collections::HashMap::from([
+                    ("sessionID", Value::UInt(s)),
+                    ("localID", Value::UInt(l)),
+                ]),
+            )
+        };
+        let change = |id: (u32, u32), parent: (u32, u32)| {
+            Value::Object(
+                "NodeChange",
+                std::collections::HashMap::from([
+                    ("guid", g(id.0, id.1)),
+                    (
+                        "parentIndex",
+                        Value::Object(
+                            "ParentIndex",
+                            std::collections::HashMap::from([
+                                ("guid", g(parent.0, parent.1)),
+                                ("position", Value::String("a".into())),
+                            ]),
+                        ),
+                    ),
+                ]),
+            )
+        };
+        // 2:2 first sits under the document, then (last record) under 3:3, whose parent is 2:2.
+        let message = Value::Object(
+            "Message",
+            std::collections::HashMap::from([(
+                "nodeChanges",
+                Value::Array(vec![
+                    Value::Object(
+                        "NodeChange",
+                        std::collections::HashMap::from([("guid", g(0, 0))]),
+                    ),
+                    change((2, 2), (0, 0)),
+                    change((3, 3), (2, 2)),
+                    change((2, 2), (3, 3)),
+                ]),
+            )]),
+        );
+        let tree = Tree::new(&message);
+        assert_eq!((tree.nodes.len(), tree.children.get("0:0")), (1, None));
+    }
+
+    #[test]
+    fn nodes_in_a_parent_cycle_are_dropped() {
+        let g = |s, l| {
+            Value::Object(
+                "GUID",
+                std::collections::HashMap::from([
+                    ("sessionID", Value::UInt(s)),
+                    ("localID", Value::UInt(l)),
+                ]),
+            )
+        };
+        let change = |id: (u32, u32), parent: Option<(u32, u32)>| {
+            let mut fields = std::collections::HashMap::from([("guid", g(id.0, id.1))]);
+            if let Some((s, l)) = parent {
+                fields.insert(
+                    "parentIndex",
+                    Value::Object(
+                        "ParentIndex",
+                        std::collections::HashMap::from([
+                            ("guid", g(s, l)),
+                            ("position", Value::String("a".into())),
+                        ]),
+                    ),
+                );
+            }
+            Value::Object("NodeChange", fields)
+        };
+        // 2:2 and 3:3 are each other's parent; 4:4 hangs under the loop.
+        let message = Value::Object(
+            "Message",
+            std::collections::HashMap::from([(
+                "nodeChanges",
+                Value::Array(vec![
+                    change((0, 0), None),
+                    change((1, 1), Some((0, 0))),
+                    change((2, 2), Some((3, 3))),
+                    change((3, 3), Some((2, 2))),
+                    change((4, 4), Some((2, 2))),
+                ]),
+            )]),
+        );
+        let tree = Tree::new(&message);
+        let mut ids: Vec<&str> = tree.nodes.keys().map(String::as_str).collect();
+        ids.sort();
+        assert_eq!(
+            (ids, tree.children.len(), &tree.children["0:0"]),
+            (vec!["0:0", "1:1"], 1, &vec!["1:1".to_owned()])
+        );
     }
 
     #[test]
