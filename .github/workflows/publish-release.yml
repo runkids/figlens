@@ -1,7 +1,7 @@
 name: Publish Release
 
 # Makes a checked draft public, then ships it to Homebrew and npm.
-# Secrets: HOMEBREW_TAP_TOKEN (push to runkids/homebrew-tap), NPM_TOKEN.
+# Secrets: HOMEBREW_TAP_SSH_KEY (write deploy key on runkids/homebrew-tap), NPM_TOKEN.
 on:
   workflow_dispatch:
     inputs:
