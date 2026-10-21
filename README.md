@@ -162,6 +162,12 @@ Other MCP clients:
 { "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
+Or use `npx` with Node.js 18+; the first run downloads and caches the native binary:
+
+```json
+{ "mcpServers": { "figlens": { "command": "npx", "args": ["-y", "figlens", "mcp"] } } }
+```
+
 The server runs locally over stdio and exposes `tree`, `nodes`, `variables`, `bundle` and `export`. Give tools absolute paths: relative ones resolve against the directory the client started figlens in.
 
 ## Commands
