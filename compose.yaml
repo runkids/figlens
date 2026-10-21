@@ -3,6 +3,8 @@ services:
   dev:
     build: .
     working_dir: /work
+    # Stays up for `docker compose up -d dev` and the devcontainer; `run` overrides it.
+    command: sleep infinity
     volumes:
       - .:/work
       - cargo-registry:/usr/local/cargo/registry

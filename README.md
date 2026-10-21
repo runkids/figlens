@@ -86,7 +86,7 @@ Give tools absolute paths: relative ones resolve against the directory the clien
 
 ## Development
 
-Rust runs in Docker only: `docker compose run --rm dev cargo test`. See [`AGENTS.md`](AGENTS.md) for the rules and the `wiki/` topics, and [`wiki/release.md`](wiki/release.md) for releasing.
+Rust runs in Docker only: `docker compose run --rm dev cargo test`. For a shell where `figlens` runs this checkout's source, run `make devc`; `make help` lists the other container targets, and VS Code's Reopen in Container uses the same service. See [`AGENTS.md`](AGENTS.md) for the rules and the `wiki/` topics, and [`wiki/release.md`](wiki/release.md) for releasing.
 
 ## License
 

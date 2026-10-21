@@ -1,0 +1,4 @@
+#!/bin/sh
+# Runs figlens built from this checkout, so the container always tests the current source.
+# Release: debug renders of large files are far slower.
+exec cargo run -q --release --manifest-path /work/Cargo.toml -- "$@"
