@@ -14,7 +14,7 @@ When `figlens` is not on PATH, install it (no Rust or Docker needed):
 ```sh
 curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh | sh   # macOS, Linux
 irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 | iex       # Windows PowerShell
-npx figlens --help                                                                          # or run through npm
+npx @runkids/figlens --help                                                                 # or run through npm
 ```
 
 ## Building a frame

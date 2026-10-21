@@ -16,6 +16,6 @@ Load this for packaging, publishing a version, the install paths and `figlens up
 
 - macOS/Linux: `curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh | sh` (latest release via the `releases/latest` redirect, checked against `SHA256SUMS`, into `~/.local/bin` or `$FIGLENS_BIN_DIR`).
 - Windows: `irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 | iex` (into `%LOCALAPPDATA%\Programs\figlens`, added to the user PATH; ARM64 runs the x64 build).
-- Homebrew: `brew install runkids/tap/figlens`. npm: `npx figlens ...` (`npm/bin/figlens.js` downloads the release archive for its own version on first run, checks it against `SHA256SUMS`, caches it under the user cache dir; no install script).
+- Homebrew: `brew install runkids/tap/figlens`. npm: `npx @runkids/figlens ...` (npm refuses the unscoped `figlens` as too close to `figlet`; the command is still `figlens`) (`npm/bin/figlens.js` downloads the release archive for its own version on first run, checks it against `SHA256SUMS`, caches it under the user cache dir; no install script).
 - `figlens update` reruns the matching install script into the running binary's directory; on Windows the old exe is renamed aside, since a running exe cannot be overwritten.
 - The repo and its releases must be public for every path above; while the repo is private none of them can download.

@@ -47,7 +47,7 @@ Other options:
 |---|---|
 | Homebrew | `brew install runkids/tap/figlens` |
 | Windows (PowerShell) | `irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 \| iex` |
-| npm (no install) | `npx figlens --help` |
+| npm (no install) | `npx @runkids/figlens --help` |
 
 No Rust or Docker needed. Release binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, static musl) and Windows (x86_64; ARM64 runs it under emulation). Update with `figlens update`.
 

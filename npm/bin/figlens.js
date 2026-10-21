@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// `npx figlens ...`: downloads this version's release binary on first use, checks it against
+// `npx @runkids/figlens ...`: downloads this version's release binary on first use, checks it against
 // the release's SHA256SUMS, caches it, then runs it. No install script: npx and pnpm may skip those.
 const { spawnSync } = require("node:child_process");
 const crypto = require("node:crypto");
