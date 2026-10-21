@@ -50,3 +50,5 @@ Leave volatile state out of the docs: progress counts, who is doing what this we
 ## Skills
 
 Skills are workflow adapters. They may call `ai-context.py`, run checks and shorten steps, but no rule may live only in a skill. With no skill installed, this page and the kernel must still be enough.
+
+Project skills (`figlens-release`, `figlens-code-review`) live in `.skillshare/skills/`; `skillshare sync -p` links them into `.claude`, `.agents` and `.pi`. Edit the source, never a linked copy. `skills/figlens/` is different: it ships to users.
