@@ -42,3 +42,9 @@ test('thin layers keep a pointer-sized margin so lines stay pickable', () => {
   assert.deepEqual(hits([tilted],[0,0,40,40],5,5.5,geometry,2).map(n=>n.id),['tilted']);
   assert.deepEqual(hits([tilted],[0,0,40,40],8,2,geometry,2),[]);
 });
+test('vector outlines decide picks inside their box', () => {
+  const icon = {id:'icon',type:'VECTOR',absoluteBoundingBox:{x:0,y:0,width:10,height:10}};
+  const triangle = (x, y) => y >= x; // lower-left half of the box, in page coordinates
+  assert.deepEqual(hits([icon],[0,0,10,10],2,8,{},0,{icon:triangle}).map(n=>n.id),['icon']);
+  assert.deepEqual(hits([icon],[0,0,10,10],8,2,{},0,{icon:triangle}),[]);
+});

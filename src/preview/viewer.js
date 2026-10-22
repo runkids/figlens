@@ -18,10 +18,12 @@ function inShape(g, px, py, slop = 0) {
     return u >= -su && v >= -sv && u <= w + su && v <= h + sv;
 }
 // Groups have no shape of their own: Figma picks them only through their children.
-function hits(nodes, area, x, y, geometry = {}, slop = 0) {
+// `shapes[id](pageX, pageY, slop)` tests a vector outline exactly (see shapeTests in the page).
+function hits(nodes, area, x, y, geometry = {}, slop = 0, shapes = {}) {
     return nodes.filter(n => n.visible !== false && n.absoluteRenderBounds !== null && n.type !== 'GROUP').filter(n => {
         const b = localBox(n, area);
         if (!b || x < b.x - slop || y < b.y - slop || x > b.x + b.width + slop || y > b.y + b.height + slop) return false;
+        if (shapes[n.id]) return shapes[n.id](x + area[0], y + area[1], slop);
         const thin = b.width < slop * 2 || b.height < slop * 2;
         if (!geometry[n.id]) return thin || (x >= b.x && y >= b.y && x <= b.x + b.width && y <= b.y + b.height);
         return inShape(geometry[n.id], x + area[0], y + area[1], slop);
@@ -36,7 +38,22 @@ if (typeof document !== 'undefined') {
         if (text !== undefined) e.textContent = text;
         return e;
     };
-    let payload, nodes = [], selected, rootId, catalog, generation;
+    let payload, nodes = [], selected, rootId, catalog, generation, shapes = {};
+    // Exact vector picking: page-space outlines from the scope data, tested with the canvas API.
+    // Path2D objects are built on first use, so large scopes do not pay for outlines nobody hovers.
+    const hitContext = document.createElement('canvas').getContext('2d');
+    function shapeTests(paths = {}) {
+        const tests = {};
+        for (const [id, list] of Object.entries(paths)) {
+            let outlines;
+            tests[id] = (x, y, slop) => {
+                outlines ??= list.map(([d, odd]) => [new Path2D(d), odd ? 'evenodd' : 'nonzero']);
+                hitContext.lineWidth = slop * 2;
+                return outlines.some(([path, rule]) => hitContext.isPointInPath(path, x, y, rule) || (slop > 0 && hitContext.isPointInStroke(path, x, y)));
+            };
+        }
+        return tests;
+    }
     let zoom = 1, panX = 20, panY = 20, loading = false, loadSequence = 0;
     // Stage coordinates are page coordinates minus `origin`; every frame of the page sits on one canvas.
     let origin = [0, 0], tileObserver, upgradeTimer;
@@ -632,7 +649,7 @@ if (typeof document !== 'undefined') {
     // Figma's selection model: a click picks the layer at the current level (a direct child of the frame
     // when nothing inside it is selected), double-click goes one level deeper, ⌘/Ctrl-click picks the deepest.
     function pickAt(x, y, mode) {
-        const deepest = payload && hits(nodes, origin, x, y, payload.geometry, 3 / zoom)[0];
+        const deepest = payload && hits(nodes, origin, x, y, payload.geometry, 3 / zoom, shapes)[0];
         if (!deepest) return null;
         if (mode === 'deep') return deepest;
         const chain = [];
@@ -748,6 +765,7 @@ if (typeof document !== 'undefined') {
             const p = boot.snapshot || await (await api(`data/${generation}/${id}`)).json();
             if (sequence !== loadSequence) return;
             payload = p;
+            shapes = shapeTests(p.paths);
             rootId = p.nodes.document.id;
             if (boot.snapshot) origin = [p.area[0], p.area[1]];
             tiles.get(rootId)?.el.classList.add('active');
@@ -1173,7 +1191,7 @@ if (typeof document !== 'undefined') {
         if (!payload) return;
         e.preventDefault();
         const w = $('workspace').getBoundingClientRect(), [x, y] = stagePoint(e);
-        const list = hits(nodes, origin, x, y, payload.geometry, 3 / zoom);
+        const list = hits(nodes, origin, x, y, payload.geometry, 3 / zoom, shapes);
         $('picker').replaceChildren(...list.map(n => layerButton(n, () => { select(n, true); $('picker').replaceChildren(); })));
         Object.assign($('picker').style, {
             left: Math.min(e.clientX - w.left, w.width - 230) + 'px', top: Math.min(e.clientY - w.top, w.height * .6) + 'px',
@@ -1348,7 +1366,7 @@ if (typeof document !== 'undefined') {
         link: () => location.href,
         deselect,
         layersAt(x, y) {
-            return hits(nodes, origin, x - origin[0], y - origin[1], payload?.geometry, 3 / zoom).map(summary);
+            return hits(nodes, origin, x - origin[0], y - origin[1], payload?.geometry, 3 / zoom, shapes).map(summary);
         },
         search(query) {
             const q = String(query).toLowerCase(), source = catalog ? flat(catalog) : nodes;

@@ -82,6 +82,27 @@ fn catalog(tree: &Tree, id: &str) -> Value {
 /// Picking data for layers whose bounding box is not their shape: `[a, b, c, d, tx, ty, width,
 /// height, ellipse]`, the layer's absolute matrix and size, for rotated or skewed layers and ellipses.
 /// Axis-aligned boxes need nothing, which keeps the payload small.
+/// Exact outlines for vector-like layers, within a byte budget so huge icons sets stay light;
+/// layers past the budget keep box or matrix picking.
+fn pick_paths(
+    tree: &Tree,
+    n: &Value,
+    out: &mut serde_json::Map<String, Value>,
+    budget: &mut usize,
+) {
+    if let Some(id) = n["id"].as_str() {
+        let paths = render::hit_paths(tree, n);
+        let size: usize = paths.iter().map(|(d, _)| d.len()).sum();
+        if !paths.is_empty() && size <= 20_000 && size <= *budget {
+            *budget -= size;
+            out.insert(id.to_owned(), json!(paths));
+        }
+    }
+    for child in n["children"].as_array().into_iter().flatten() {
+        pick_paths(tree, child, out, budget);
+    }
+}
+
 fn pick_geometry(n: &Value, out: &mut serde_json::Map<String, Value>) {
     let r = &n["_r"];
     let m: Vec<f64> = r["m"]
@@ -115,8 +136,9 @@ fn data(tree: &Tree, file: &Path, id: &str, image: bool) -> Result<Value> {
     }
     let p = Prepared::new(tree, file, crate::export::root_of(id), id)?;
     let area = render::export_area(p.node()).ok_or("node has no export area")?;
-    let mut geometry = serde_json::Map::new();
+    let (mut geometry, mut paths) = (serde_json::Map::new(), serde_json::Map::new());
     pick_geometry(p.node(), &mut geometry);
+    pick_paths(tree, p.node(), &mut paths, &mut (512 << 10));
     let mut doc = p.document.clone();
     doc["document"] = p.node().clone();
     crate::bundle::strip(&mut doc);
@@ -136,7 +158,7 @@ fn data(tree: &Tree, file: &Path, id: &str, image: bool) -> Result<Value> {
         None
     };
     Ok(
-        json!({"nodes":doc,"area":area,"geometry":geometry,"variables":crate::variables::variables(tree,Some(p.node())),"assets":assets,
+        json!({"nodes":doc,"area":area,"geometry":geometry,"paths":paths,"variables":crate::variables::variables(tree,Some(p.node())),"assets":assets,
         "image":png.map(|b|format!("data:image/png;base64,{}",render::base64(&b)))}),
     )
 }

@@ -398,6 +398,29 @@ fn stroke_shapes(tree: &Tree, n: &Json) -> Vec<(Vec<Seg>, bool, Mat)> {
         .collect()
 }
 
+/// Page-space outlines a pointer can hit on a vector-like node (fill and stroke geometry), as SVG
+/// path data with its even-odd flag. Read-only: the same decoding rendering uses, for preview picking.
+pub fn hit_paths(tree: &Tree, n: &Json) -> Vec<(String, bool)> {
+    if !matches!(
+        n["type"].as_str(),
+        Some("VECTOR" | "BOOLEAN_OPERATION" | "STAR" | "REGULAR_POLYGON" | "LINE" | "ELLIPSE")
+    ) {
+        return Vec::new();
+    }
+    let geometry = |list: &Json| !geometry(tree, list).is_empty();
+    let mut shapes = if geometry(&n["_r"]["fillGeometry"]) {
+        fill_shapes(tree, n)
+    } else {
+        Vec::new()
+    };
+    shapes.extend(stroke_shapes(tree, n));
+    shapes
+        .into_iter()
+        .map(|(segs, odd, m)| (path_d(&segs, m), odd))
+        .filter(|(d, _)| !d.is_empty())
+        .collect()
+}
+
 /// Scales outlines drawn at the size under `field` (a resized instance child's source) to the node's size.
 fn geometry_scale(r: &Json, field: &str) -> Mat {
     let (s, g) = (
