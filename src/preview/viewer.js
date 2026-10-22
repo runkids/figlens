@@ -939,16 +939,23 @@ if (typeof document !== 'undefined') {
     }
     // Export panel: render the selected layer through the service's export route (live mode only).
     $('export').hidden = !!boot.snapshot;
-    $('exportFormat').onchange = () => $('exportQualityRow').hidden = choice('exportFormat') === 'png';
+    $('exportFormat').onchange = () => {
+        const format = choice('exportFormat');
+        $('exportQualityRow').hidden = format === 'png' || format === 'svg';
+        // Vectors have no pixel scale.
+        $('exportScale').hidden = format === 'svg';
+    };
     $('exportQuality').oninput = () => $('exportQualityValue').textContent = $('exportQuality').value;
     $('exportButton').onclick = () => {
         if (!selected) return;
         const format = choice('exportFormat'), scale = choice('exportScale'), quality = $('exportQuality').value;
-        const lossy = format === 'png' ? '' : `, quality ${quality}`;
+        const lossy = format === 'png' || format === 'svg' ? '' : `, quality ${quality}`;
         const base = (selected.name || selected.id).replace(/[^\p{L}\p{N}_-]+/gu, '-').slice(0, 60) || 'export';
-        const file = `${base}@${scale}x.${format}`;
+        const file = format === 'svg' ? `${base}.svg` : `${base}@${scale}x.${format}`;
         confirmDownload(`Export ${selected.name || selected.id}?`,
-            `Renders ${label(selected)} at ${scale}x as ${format.toUpperCase()}${lossy}. Uses figlens rendering; known Figma rendering differences remain.`,
+            format === 'svg'
+                ? `Writes ${label(selected)} as SVG vectors (images embedded at full resolution). Uses figlens rendering; known Figma rendering differences remain.`
+                : `Renders ${label(selected)} at ${scale}x as ${format.toUpperCase()}${lossy}. Uses figlens rendering; known Figma rendering differences remain.`,
             file, async () => {
                 const b = $('exportButton'), text = b.textContent;
                 try {

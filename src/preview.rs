@@ -154,14 +154,16 @@ fn valid_id(id: &str) -> bool {
 }
 
 /// `<format>-<scale>-<quality>` of an export route, limited to the Export panel's choices.
-fn export_spec(spec: &str) -> Option<(crate::export::Format, &'static str, f64, u8)> {
+/// `None` as the format means SVG: vector output, where scale and quality do not apply.
+fn export_spec(spec: &str) -> Option<(Option<crate::export::Format>, &'static str, f64, u8)> {
     use crate::export::Format;
     let mut parts = spec.split('-');
     let (format, mime) = match parts.next()? {
-        "png" => (Format::Png, "image/png"),
-        "jpg" => (Format::Jpg, "image/jpeg"),
-        "webp" => (Format::Webp, "image/webp"),
-        "avif" => (Format::Avif, "image/avif"),
+        "png" => (Some(Format::Png), "image/png"),
+        "jpg" => (Some(Format::Jpg), "image/jpeg"),
+        "webp" => (Some(Format::Webp), "image/webp"),
+        "avif" => (Some(Format::Avif), "image/avif"),
+        "svg" => (None, "image/svg+xml"),
         _ => return None,
     };
     let scale = match parts.next()? {
@@ -323,6 +325,7 @@ impl DiskCache {
             b"image/jpeg" => "image/jpeg",
             b"image/webp" => "image/webp",
             b"image/avif" => "image/avif",
+            b"image/svg+xml" => "image/svg+xml",
             _ => return None,
         };
         let area = String::from_utf8(parts.next()?.to_vec())
@@ -643,8 +646,21 @@ impl Revision<'_> {
             }
             "export" => {
                 let (format, mime, scale, quality) = export_spec(key).ok_or("unknown route")?;
-                let image = crate::export::export(tree, file, id, format, scale, quality, None)?;
-                (mime, image.bytes)
+                match format {
+                    Some(format) => {
+                        let image =
+                            crate::export::export(tree, file, id, format, scale, quality, None)?;
+                        (mime, image.bytes)
+                    }
+                    // The bundle's vector asset path: render bounds, full-resolution images.
+                    None => {
+                        let p = Prepared::new(tree, file, crate::export::root_of(id), id)?;
+                        let area = render::render_bounds(p.node()).ok_or("nothing to render")?;
+                        let lookup = |h: &str| p.images.get(h).cloned();
+                        let svg = render::Svg::new(tree, &lookup).document(p.node(), area, 1.0);
+                        (mime, svg.into_bytes())
+                    }
+                }
             }
             "data" => (
                 "application/json",
@@ -808,6 +824,10 @@ mod tests {
         assert_eq!(
             scope_route("export/7/I1:2;3:4/webp-0.5-80", 7).unwrap(),
             ("export", "I1:2;3:4/webp-0.5-80")
+        );
+        assert_eq!(
+            scope_route("export/7/1:2/svg-1-80", 7).unwrap(),
+            ("export", "1:2/svg-1-80")
         );
         assert_eq!(
             scope_route("view/7/1:2/1024", 7).unwrap(),
