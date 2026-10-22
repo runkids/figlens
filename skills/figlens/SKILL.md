@@ -33,6 +33,15 @@ npx @runkids/figlens --help                                                     
 
 For a question about a design rather than a build (a color, a spacing, which component a frame uses), skip the bundle: `figlens nodes <file.fig> <node>` prints the same JSON to stdout, and `figlens variables <file.fig> <node>` prints the variables it binds. Each call decodes the whole file, a few seconds for a large one, so save the output once and query the file.
 
+## Link back to Figma
+
+When referring to a specific frame or node in an answer or design document, link its actual name to its Figma location. Use ids read from the `.fig`, and include the page/frame path when names are ambiguous.
+
+- Take the file key from the user's source URL (`/design/<file-key>/` or `/file/<file-key>/`), or the corresponding bundle's `manifest.json` → `source.fileKey`. Keep each `.fig` paired with its own key when reading multiple files. Pass the known key to `bundle --file-key` so its manifest preserves the source link.
+- Build `https://www.figma.com/design/<file-key>/?node-id=<node-id>&m=dev`. For ordinary ids, change `112:319` to `112-319`. For expanded `I<instance>;…` ids, link the containing instance and show the full expanded id separately. Constructing links needs no Figma API or network access.
+- With no known source URL or file key, ask once for the original Figma URL; meanwhile report the `.fig` name, page/frame path and node id. Never guess a file key from the filename or node id.
+- Variables and modes are not frames: identify them as `collection → mode` (for example, `Color → Warm`), and link a related frame only after verifying that it uses the mode.
+
 ## Reading the output
 
 - **Shape** is Figma REST: `document` is the frame; `children`; `absoluteBoundingBox {x,y,width,height}` in page coordinates (subtract the frame's x/y for positions inside it); `fills`/`strokes`/`effects`; auto-layout in `layoutMode`, `itemSpacing`, `padding*`, `primaryAxisAlignItems`, `counterAxisAlignItems`, `layoutSizingHorizontal`/`Vertical` (`FILL`/`HUG`/`FIXED`).
