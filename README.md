@@ -148,7 +148,7 @@ Select a frame, review the proposed code, then ask Pi to implement it using the 
 
 **[Watch preview + Pi in action](assets/pi-demo.mp4)** · 20-second edited recording of the MCP Apps sample: inspect the design, approve a prepared mapping to existing HTML, and reuse it in another frame after a new session. Model generation is not shown or timed. [Full walkthrough, commands and limitations](pi/README.md) · [Recording and verification notes](wiki/pi.md#demo-and-verification).
 
-Requires Pi 1.3.0+. The npm extension uses its bundled CLI launcher; its first design read downloads and verifies the matching native binary. Homebrew and release archives provide the native CLI and viewer. See [source-checkout setup](pi/README.md#install-once) for development.
+Requires Pi 1.3.0+. The npm extension uses its bundled CLI launcher; the first launch, including automatic MCP startup, downloads and verifies the matching native binary. Homebrew and release archives provide the native CLI and viewer. See [source-checkout setup](pi/README.md#install-once) for development.
 
 ## The design bundle
 

@@ -24,7 +24,7 @@ pi install npm:@runkids/figlens
 
 Restart Pi, or run `/reload` in an existing session. Run Pi from the project whose components you want to reuse. The extension registers the local figlens MCP server automatically. An existing `figlens` server in your Pi MCP settings takes precedence.
 
-The npm package includes the CLI launcher: no separate global installation is required. Its first design read downloads and verifies the matching native release binary; subsequent reads use the local cache. Reading a saved `.fig` makes no Figma API calls. `/figlens map` uses your configured Pi model.
+The npm package includes the CLI launcher: no separate global installation is required. Its first launch, including automatic MCP startup, downloads and verifies the matching native release binary; later launches use the local cache. Reading a saved `.fig` makes no Figma API calls. `/figlens map` uses your configured Pi model.
 
 From a source checkout, use an installed native `figlens` binary, or set `FIGLENS_BIN` to its executable path:
 
