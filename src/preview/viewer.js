@@ -311,7 +311,13 @@ if (typeof document !== 'undefined') {
         if (n.type === 'TEXT') add('color', fills[0]);
         else if (fills.length) add('background', fills.reverse().join(', '));
         const stroke = (n.strokes || []).map((p, i) => paint(p, n.boundVariables?.strokes?.[i])).find(Boolean);
-        if (stroke && n.strokeWeight) add('border', `${px(n.strokeWeight)} solid ${stroke}`);
+        if (stroke && n.strokeWeight) {
+            // A gradient is not a border colour; CSS paints it through border-image.
+            if (stroke.startsWith('linear-gradient')) {
+                add('border', `${px(n.strokeWeight)} solid transparent`);
+                add('border-image', `${stroke} 1`);
+            } else add('border', `${px(n.strokeWeight)} solid ${stroke}`);
+        }
         const shadows = (n.effects || []).filter(e => e.visible !== false && /SHADOW/.test(e.type) && ok(e.color))
             .map(e => `${e.type === 'INNER_SHADOW' ? 'inset ' : ''}${px(e.offset?.x || 0)} ${px(e.offset?.y || 0)} ${px(e.radius || 0)} ${px(e.spread || 0)} ${color(e.color)}`);
         if (shadows.length) add('box-shadow', shadows.join(', '));
@@ -336,6 +342,17 @@ if (typeof document !== 'undefined') {
             if (decoration) add('text-decoration', decoration);
         }
         return lines.join('\n');
+    }
+    // The component set (from the catalog) behind an instance or a variant component.
+    let catalogIndex;
+    function variantSet(n) {
+        if (!catalog || boot.snapshot) return null;
+        catalogIndex ??= new Map(flat(catalog).map(c => [c.id, c]));
+        const component = n.type === 'INSTANCE' ? n.componentId : n.id;
+        const setId = payload?.nodes?.components?.[component]?.componentSetId
+            || [...catalogIndex.values()].find(c => c.type === 'COMPONENT_SET' && c.children?.some(v => v.id === component))?.id;
+        const set = setId && catalogIndex.get(setId);
+        return set?.children?.length > 1 ? set : null;
     }
     function inspect(n) {
         $('properties').replaceChildren();
@@ -447,6 +464,28 @@ if (typeof document !== 'undefined') {
             head.append(el('h3', 'Code · CSS'), copyCss);
             code.className = 'code';
             section.append(head, code);
+            $('properties').append(section);
+        }
+        // Variants of the component set this instance or component belongs to, as Figma lists them.
+        const set = variantSet(n);
+        if (set) {
+            const section = el('section'), head = el('div'), list = el('div');
+            const current = n.type === 'INSTANCE' ? n.componentId : n.id;
+            head.className = 'section-head';
+            head.append(el('h3', `Variants · ${set.children.length}`));
+            list.className = 'variants';
+            for (const v of set.children) {
+                const b = button('', () => selectById(v.id, true).catch(e => status(e.message))), img = el('img');
+                img.alt = '';
+                img.src = BLANK;
+                img.dataset.src = `thumb/${generation}/${v.id}`;
+                b.append(img, Object.assign(el('span', v.name || v.id), {className: 'label'}));
+                b.setAttribute('aria-current', String(v.id === current));
+                b.title = n.type === 'INSTANCE' && v.id !== current ? 'Show this variant' : v.name || v.id;
+                list.append(b);
+                queueImage(img);
+            }
+            section.append(head, list);
             $('properties').append(section);
         }
         // Prototype links: what this layer does when used, with the destination one click away.
@@ -911,6 +950,7 @@ if (typeof document !== 'undefined') {
             const next = await (await api('catalog')).json();
             const oldPage = $('pages').value;
             catalog = next.document;
+            catalogIndex = null;
             generation = next.generation;
             $('pages').replaceChildren();
             for (const p of catalog.children || []) {

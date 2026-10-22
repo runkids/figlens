@@ -213,6 +213,11 @@ pre { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 11p
 .field:focus-visible { outline: 2px solid var(--select); outline-offset: 1px; }
 .field.done { background: var(--ok-bg); }
 .field.link { cursor: pointer; }
+.variants { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-top: 4px; }
+.variants button { display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 6px; min-height: 0; background: var(--field); }
+.variants button[aria-current=true] { box-shadow: inset 0 0 0 2px var(--select); }
+.variants img { height: 48px; width: 100%; object-fit: contain; background: var(--canvas); border-radius: 3px; }
+.variants .label { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .field.link .v { color: var(--accent); }
 .field .k, .field .u { flex: none; color: var(--muted); }
 .field .v { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
