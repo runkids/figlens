@@ -13,6 +13,10 @@
       "description": "Changing the local viewer, offline HTML, handoff or screenshot comparison.",
       "sources": [{ "path": "wiki/preview.md" }]
     },
+    "pi": {
+      "description": "Changing the Pi extension, reviewed component mappings or its npm packaging.",
+      "sources": [{ "path": "wiki/pi.md" }]
+    },
     "accuracy": {
       "description": "Measuring output against Figma's own exports, running compare, finding test files.",
       "sources": [{ "path": "wiki/accuracy.md" }]
@@ -30,5 +34,7 @@
       "sources": [{ "path": "wiki/ai-context.md" }]
     }
   },
-  "unrouted": {}
+  "unrouted": {
+    "wiki/history/pi-workflow.md": "Historical milestone indexed in wiki/README.md; read only when explicitly revisiting this implementation."
+  }
 }

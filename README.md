@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="#from-a-local-fig-to-working-html">Watch the demo</a> · <a href="#quick-start">Quick start</a> · <a href="#how-close-is-it-to-figma">Accuracy</a> · <a href="#for-ai-agents">Connect your agent</a>
+  <a href="#from-a-local-fig-to-working-html">Watch the demo</a> · <a href="#quick-start">Quick start</a> · <a href="#browse-and-hand-off-a-design">Preview</a> · <a href="#pi-extension">Pi extension</a> · <a href="#how-close-is-it-to-figma">Accuracy</a>
 </p>
 
 ## From a local .fig to working HTML
@@ -54,31 +54,31 @@ Offline means the design read path: your AI provider and project dependencies ma
 
 ## Quick start
 
-### 1. Install
-
-macOS / Linux:
+### 1. Try it without installing
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh | sh
+npx @runkids/figlens --help
 ```
 
-Other options:
+Node.js 18+. The first run downloads and verifies the native binary for your platform, then caches it. No Figma, Rust or Docker needed.
+
+Prefer a standalone command? Other options:
 
 | Platform | Command |
 |---|---|
+| macOS / Linux | `curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh \| sh` |
 | Homebrew | `brew install runkids/tap/figlens` |
 | Windows (PowerShell) | `irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 \| iex` |
-| npm (no install) | `npx @runkids/figlens --help` |
 
-No Rust or Docker needed. Release binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, static musl) and Windows (x86_64; ARM64 runs it under emulation). Update with `figlens update`.
+Release binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, static musl) and Windows (x86_64; ARM64 runs it under emulation). Standalone installs update with `figlens update`.
 
 ### 2. Save your design and find a frame
 
 In Figma, choose **File > Save local copy** and save it as `design.fig`. Then list its pages and frames:
 
 ```sh
-figlens tree design.fig --depth 2
-figlens find design.fig "login" --type FRAME
+npx @runkids/figlens tree design.fig --depth 2
+npx @runkids/figlens find design.fig "login" --type FRAME
 ```
 
 The file is a snapshot you can reuse locally or in CI. Save a new copy when the design changes.
@@ -86,8 +86,8 @@ The file is a snapshot you can reuse locally or in CI. Save a new copy when the 
 Search layer names or text, then inspect a frame before requesting its full design data:
 
 ```sh
-figlens find design.fig "Sign in" --type TEXT --limit 5
-figlens inspect design.fig 12:345 --depth 1
+npx @runkids/figlens find design.fig "Sign in" --type TEXT --limit 5
+npx @runkids/figlens inspect design.fig 12:345 --depth 1
 ```
 
 `find` returns ids, ancestor paths, local sizes and text previews. It searches stored layers; use `inspect` to see expanded instance children. `inspect` summarizes bounds, auto-layout and typography, with child counts. Its output is capped at 200 nodes and 200 characters per text; `truncated` signals omitted descendants and `textTruncated` marks shortened text. These limits reduce output size; each call still decodes the file.
@@ -97,7 +97,7 @@ figlens inspect design.fig 12:345 --depth 1
 Replace `12:345` with a frame id from the tree:
 
 ```sh
-figlens bundle design.fig 12:345 frame.zip
+npx @runkids/figlens bundle design.fig 12:345 frame.zip
 ```
 
 Give your coding agent `frame.zip` and this prompt:
@@ -108,21 +108,47 @@ A node can be an id (`12:345`), its URL form (`12-345`) or a Figma URL with `?no
 
 ## Browse and hand off a design
 
+[![Inspect the MCP Apps design locally, with its layer tree, layout and component properties](assets/preview-inspector.png)](assets/pi-demo.mp4)
+
 ```sh
-figlens preview design.fig                      # browse pages, frames and stored names/text
-figlens preview design.fig 12:345               # open a specific scope
-figlens preview design.fig 12:345 --out preview.html
-figlens cache                                   # where cached renders live, and their size
-figlens cache clear                             # remove cached renders
+npx @runkids/figlens preview design.fig                      # browse pages, frames and stored names/text
+npx @runkids/figlens preview design.fig 12:345               # open a specific scope
+npx @runkids/figlens preview design.fig 12:345 --out preview.html
+npx @runkids/figlens cache                                   # where cached renders live, and their size
+npx @runkids/figlens cache clear                             # remove cached renders
 ```
 
-Open the loopback URL printed in the terminal; stop with Ctrl+C. No Node, frontend build or Figma session is needed. Each page opens like a Figma page: its frames and sections on one canvas, rendered on demand at the resolution the zoom needs, with a Layers panel, light and dark themes and Figma's selection model (click, double-click to go deeper, ⌘/Ctrl-click for the deepest layer, right-click for every layer under the pointer, Alt/Option to measure distances). Inspect layout, typography, variables, component properties, Dev Mode style CSS and original images, and export the selection as PNG, JPG, WebP or AVIF. Picking follows the actual outlines of vectors, rotated layers and ellipses, not just their bounding boxes. Renders are cached on disk so reopening a file is fast; `figlens cache clear` or the viewer's ⋯ menu removes them. Browser-automation agents can drive the open viewer through `window.figlens`.
+Open the loopback URL printed in the terminal; stop with Ctrl+C. No frontend build or Figma session is needed. Each page opens like a Figma page: its frames and sections on one canvas, rendered on demand at the resolution the zoom needs, with a Layers panel, light and dark themes and Figma's selection model (click, double-click to go deeper, ⌘/Ctrl-click for the deepest layer, right-click for every layer under the pointer, Alt/Option to measure distances). Inspect layout, typography, variables, component properties, Dev Mode style CSS and original images, and export the selection as PNG, JPG, WebP or AVIF. Picking follows the actual outlines of vectors, rotated layers and ellipses, not just their bounding boxes. Renders are cached on disk so reopening a file is fast; `figlens cache clear` or the viewer's ⋯ menu removes them. Browser-automation agents can drive the open viewer through `window.figlens`.
 
 Copy an exact ID, structured context or an implementation prompt, then download a real bundle for the selected layer. Expanded instance IDs stay intact. Import a local implementation screenshot for side-by-side or opacity-overlay comparison; it stays in your browser. This is visual checking, not an automated accuracy score or a mapping to project components.
 
 The live viewer watches the saved local file through polling. Failed or partial saves visibly mark the view stale; successful saves refresh it and retain selection only if its ID still exists. For `gs://` input, this watches the downloaded cache, not the remote object.
 
 `--out` (or `-o`) requires a node and writes a **snapshot**, usable as a local file with no server or network. It embeds the reference, layer data, original images and a bundle for the snapshot scope. Child inspection, context export and screenshot comparison work offline; the bundle always covers the snapshot scope, as its button states. Share carefully: the HTML contains the design data and assets. See [preview controls, safety and limitations](wiki/preview.md).
+
+## Pi extension
+
+**Build with the components your project already has.** Pi can read a local design, propose actual project imports and usage, and keep the mappings you review for the next screen. CLI, MCP, preview and the extension ship together:
+
+```sh
+pi install npm:@runkids/figlens
+```
+
+![Open a .fig, find project components, review mappings, and reuse them](assets/pi-workflow.svg)
+
+```text
+/figlens open ./design.fig
+/figlens map
+/figlens review
+```
+
+Select a frame, review the proposed code, then ask Pi to implement it using the approved mappings. Decisions stay in `.figlens/component-mappings.md` across sessions. New variants and changed recorded code need review. The workflow supports your project's stack, including plain HTML; it does not require React.
+
+[![Inspect the local design, review an existing HTML component in Pi, and reuse it in the next frame](assets/pi-demo.gif)](assets/pi-demo.mp4)
+
+**[Watch preview + Pi in action](assets/pi-demo.mp4)** · 20-second edited recording of the MCP Apps sample: inspect the design, approve a prepared mapping to existing HTML, and reuse it in another frame after a new session. Model generation is not shown or timed. [Full walkthrough, commands and limitations](pi/README.md) · [Recording and verification notes](wiki/pi.md#demo-and-verification).
+
+Requires Pi 1.3.0+. The npm extension uses its bundled CLI launcher; its first design read downloads and verifies the matching native binary. Homebrew and release archives provide the native CLI and viewer. See [source-checkout setup](pi/README.md#install-once) for development.
 
 ## The design bundle
 
@@ -144,9 +170,9 @@ frame.zip
 Need just one piece? Export JSON or render a node directly:
 
 ```sh
-figlens nodes design.fig 12:345 > frame.json
-figlens variables design.fig 12:345 > variables.json
-figlens export design.fig 12:345 hero.webp --scale 2 --quality 80
+npx @runkids/figlens nodes design.fig 12:345 > frame.json
+npx @runkids/figlens variables design.fig 12:345 > variables.json
+npx @runkids/figlens export design.fig 12:345 hero.webp --scale 2 --quality 80
 ```
 
 ## How close is it to Figma?
@@ -193,7 +219,7 @@ Manage MCP servers alongside your agent skills with [skillshare](https://github.
 
 ```sh
 skillshare mcp add figlens --global \
-  --target claude --target codex --target cursor --no-tui -- figlens mcp
+  --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
 skillshare sync mcp --global
 ```
 
@@ -202,19 +228,19 @@ See the [Skillshare MCP guide](https://skillshare.runkids.cc/docs/reference/comm
 For a direct Claude Code setup:
 
 ```sh
-claude mcp add figlens -- figlens mcp
+claude mcp add figlens -- npx -y @runkids/figlens mcp
 ```
 
 Other MCP clients:
 
 ```json
-{ "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
+{ "mcpServers": { "figlens": { "command": "npx", "args": ["-y", "@runkids/figlens", "mcp"] } } }
 ```
 
-Or use `npx` with Node.js 18+; the first run downloads and caches the native binary:
+With a standalone `figlens` installation, use:
 
 ```json
-{ "mcpServers": { "figlens": { "command": "npx", "args": ["-y", "@runkids/figlens", "mcp"] } } }
+{ "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
 The server runs locally over stdio and exposes `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` and `export`. Give tools absolute paths: relative ones resolve against the directory the client started figlens in.

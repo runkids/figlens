@@ -32,6 +32,7 @@ python3 scripts/ai-context.py check     # validate paths, headings and byte budg
 |---|---|
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields, variables, rendering or the bundle |
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison |
+| `pi` | Changing the Pi extension, reviewed component mappings or its npm packaging |
 | `accuracy` | Measuring output against Figma's own exports, running `compare`, finding test files |
 | `release` | Packaging, GitHub releases, Homebrew, npm, install scripts and `figlens update` |
 | `direction` | Deciding what to build next, or revisiting a past decision |
@@ -55,5 +56,6 @@ Generated test fixtures use `src/test_support.rs` for atomic directory ownership
 docker compose run --rm dev cargo test
 docker compose run --rm dev sh -c 'cargo fmt --check && cargo clippy --all-targets -- -D warnings'
 (cd npm && node --test)
+npm test                             # Pi workflow and npm package contents
 python3 scripts/ai-context.py check    # doc/topic changes; also runs in CI
 ```

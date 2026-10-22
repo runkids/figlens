@@ -9,7 +9,9 @@ description: Read Figma designs offline from a `.fig` file with the `figlens` CL
 
 ## Setup
 
-When `figlens` is not on PATH, install it (no Rust or Docker needed):
+Prefer `npx @runkids/figlens` for one-off use (Node.js 18+, no global install). The examples below use `figlens` as shorthand: replace that prefix with `npx @runkids/figlens` when no standalone binary is installed. The first run downloads and verifies the matching native binary; later reads use its local cache.
+
+Other installation options (no Rust or Docker needed):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh | sh   # macOS, Linux
@@ -70,6 +72,12 @@ Use `figlens preview <file.fig> [node]` when a person needs to browse or select 
 For a portable handoff, run `figlens preview <file.fig> <node> --out preview.html`. The HTML works offline and embeds design data, original images and the snapshot-scope bundle. Selecting a child changes context, not the embedded bundle's scope. Share it only with people allowed to see those assets. Import a local implementation screenshot for side-by-side or opacity comparison; this is visual checking, not measured accuracy.
 
 Live preview polls the saved local file. Treat a stale/error banner as unavailable fresh evidence; a failed save must not be described as a refreshed design. Snapshots never refresh. For `gs://` inputs the live viewer watches its local cached copy, not the remote object. No viewer action replaces checking the bundle's `missing-assets.json` and the known renderer gaps below.
+
+## Pi component mappings
+
+When the figlens Pi extension is available, call `figlens_bindings` before choosing project components. It returns the selected frame, actual instance properties/text, approved rules, pending/stale candidates and pagination. Follow `nextOffset` when more instances are needed. Reuse only entries marked `approved`, using current design text rather than example literals.
+
+To propose a mapping, read the real target implementation and usage first. Call `figlens_propose_bindings` with its instance ID, target path/export/import/example, rationale, supporting file dependencies, checks actually executed and unresolved issues. Plain HTML can name an existing block and explain that no import is needed. The user reviews with `/figlens review`; proposals stay pending in non-interactive modes. Approval is a mapping decision, so run the project's permitted compilation/runtime checks and compare the screen separately. The [walkthrough](https://github.com/runkids/figlens/tree/main/pi) documents installation and commands. Without the extension, continue with the CLI workflow above.
 
 ## Many frames
 

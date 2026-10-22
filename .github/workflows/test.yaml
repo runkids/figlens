@@ -40,6 +40,13 @@ jobs:
         working-directory: npm
         run: node --test
 
+      - name: Pi mappings and preview controls
+        run: |
+          node --test pi/*.test.mjs scripts/preview.test.cjs
+          node scripts/prepare-npm.cjs
+          cd npm
+          npm pack --dry-run --ignore-scripts
+
   # Releases ship a Windows build, and the Linux job above cannot catch a Windows-only failure
   # (paths, %LOCALAPPDATA%, gcloud.cmd). Native MSVC here; the release cross-builds windows-gnu.
   windows:

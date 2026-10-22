@@ -8,9 +8,14 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 |---|---|---|
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields, variables, rendering or the bundle | `fig-format.md` |
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison | `preview.md` |
+| `pi` | Changing the Pi extension, reviewed component mappings or its npm packaging | `pi.md` |
 | `accuracy` | Measuring output against Figma's own exports, running `compare`, finding test files | `accuracy.md` |
 | `release` | Packaging, GitHub releases, Homebrew, npm, install scripts and `figlens update` | `release.md` |
 | `direction` | Deciding what to build next, or revisiting a past decision | `direction.md` |
 | `ai-context` | Maintaining this router: add, move or split docs, fix `check` | `ai-context.md` |
 
 `wiki/ai-context.json` is the only source of truth. This table is the human entry point. After changing topics, run `python3 scripts/ai-context.py check`.
+
+## History
+
+- [Reviewed component mappings in Pi](history/pi-workflow.md): implementation and verification scope for the preview/Pi release.

@@ -76,6 +76,8 @@ jobs:
           registry-url: https://registry.npmjs.org
       # Trusted publishing needs npm 11.5.1 or later; provenance is attached automatically.
       - run: npm install -g npm@^11.5.1
+      - name: Include the Pi extension in the CLI package
+        run: node scripts/prepare-npm.cjs
       - name: npm publish
         working-directory: npm
         run: npm publish --access public

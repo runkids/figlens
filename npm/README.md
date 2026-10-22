@@ -21,9 +21,21 @@ npx @runkids/figlens export design.fig 12:345 frame.png --scale 2
 
 Or install it once: `npm i -g @runkids/figlens`, then run `figlens`.
 
+## Pi extension
+
+The same package includes the Pi extension (Pi 1.3.0+). No separate global CLI installation is required:
+
+```sh
+pi install npm:@runkids/figlens
+```
+
+In Pi, run `/figlens open ./design.fig`, `/figlens map`, then `/figlens review`. The agent proposes existing project components; you review the imports and usage before reuse. Saved decisions survive sessions in `.figlens/component-mappings.md`. New variants and changed recorded code need review. [Walkthrough and demo](https://github.com/runkids/figlens/tree/main/pi).
+
+Browse the saved design separately with `npx @runkids/figlens preview design.fig`, or create a standalone offline HTML snapshot with `preview design.fig 12:345 --out preview.html`.
+
 ## MCP server
 
-Let your agent call `tree`, `nodes`, `variables`, `bundle` and `export` as tools:
+Let your agent call `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` and `export` as tools:
 
 ```json
 { "mcpServers": { "figlens": { "command": "npx", "args": ["-y", "@runkids/figlens", "mcp"] } } }

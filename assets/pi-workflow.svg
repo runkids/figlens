@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="410" viewBox="0 0 1280 410" role="img" aria-labelledby="title desc">
+  <title id="title">Your design. Your components. A handoff Pi can remember.</title>
+  <desc id="desc">Open a local Figma file, let Pi propose existing project components, review the mappings, and reuse approved rules on another frame.</desc>
+  <rect width="1280" height="410" rx="26" fill="#f6f8f4"/>
+  <g font-family="system-ui, -apple-system, sans-serif" fill="#23332d">
+    <text x="48" y="57" font-size="16" font-weight="700" letter-spacing="2" fill="#537b67">FIGLENS × PI</text>
+    <text x="48" y="106" font-size="34" font-weight="700">Your design. Your components.</text>
+    <text x="48" y="140" font-size="21" fill="#57675f">A handoff your coding agent can remember.</text>
+    <g fill="#fff" stroke="#dce5dc" stroke-width="1.5">
+      <rect x="48" y="182" width="272" height="154" rx="18"/>
+      <rect x="352" y="182" width="272" height="154" rx="18"/>
+      <rect x="656" y="182" width="272" height="154" rx="18"/>
+      <rect x="960" y="182" width="272" height="154" rx="18"/>
+    </g>
+    <g fill="#e6f1e7">
+      <circle cx="83" cy="217" r="17"/><circle cx="387" cy="217" r="17"/>
+      <circle cx="691" cy="217" r="17"/><circle cx="995" cy="217" r="17"/>
+    </g>
+    <g font-size="16" font-weight="700" text-anchor="middle" fill="#426b51">
+      <text x="83" y="223">1</text><text x="387" y="223">2</text><text x="691" y="223">3</text><text x="995" y="223">4</text>
+    </g>
+    <g font-size="22" font-weight="650">
+      <text x="70" y="263">Open a .fig</text><text x="374" y="263">Find your code</text>
+      <text x="678" y="263">Review together</text><text x="982" y="263">Reuse next time</text>
+    </g>
+    <g font-size="16" fill="#64736b">
+      <text x="70" y="294">Choose one frame. Read locally.</text>
+      <text x="374" y="294">Actual imports, props and slots.</text>
+      <text x="678" y="294">Accept, edit or leave pending.</text>
+      <text x="982" y="294">Keep decisions in your repo.</text>
+    </g>
+    <g stroke="#8eaa95" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M330 257h12m-5-5 5 5-5 5"/><path d="M634 257h12m-5-5 5 5-5 5"/><path d="M938 257h12m-5-5 5 5-5 5"/>
+    </g>
+    <text x="48" y="378" font-size="16" fill="#64736b">Local design reads · Framework-independent mapping workflow · Human-reviewed reuse</text>
+  </g>
+</svg>
