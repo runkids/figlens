@@ -46,8 +46,13 @@ async function install() {
     const tar = spawnSync("tar", ["-xf", archive, binary], { cwd: tmp, stdio: "inherit" });
     if (tar.status !== 0) throw new Error("tar could not extract the archive");
     fs.rmSync(path.join(tmp, archive));
-    fs.rmSync(dir, { recursive: true, force: true });
-    fs.renameSync(tmp, dir);
+    try {
+      fs.renameSync(tmp, dir);
+    } catch (e) {
+      // Another first-use process may already have installed and started the MCP server.
+      if (!fs.existsSync(bin)) throw e;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   } catch (e) {
     fs.rmSync(tmp, { recursive: true, force: true });
     throw e;

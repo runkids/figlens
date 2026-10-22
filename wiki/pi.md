@@ -19,6 +19,8 @@ Load this for the Pi workflow, mapping persistence, review behavior or npm packa
 
 In the published package the extension invokes its adjacent `bin/figlens.js` through the current Node executable. This keeps the native binary version aligned and needs no PATH/global install. Source checkouts use `figlens` on PATH, or `FIGLENS_BIN`. MCP and slash commands use the same launcher. The existing publish workflow and npm Trusted Publisher release the CLI and extension together; no new npm package or credentials are required.
 
+Concurrent first-use downloads publish the verified temporary directory atomically. If another process wins, use its installed binary and discard the losing temporary directory; never remove a cache that a running MCP process may be using. The npm regression simulates Windows' in-use binary restriction with the real cache filesystem.
+
 ```sh
 npm test
 node --test scripts/preview.test.cjs
