@@ -9,6 +9,10 @@
       "description": "Changing decoding, instance expansion, emitted REST fields, variables, rendering or the bundle.",
       "sources": [{ "path": "wiki/fig-format.md" }]
     },
+    "preview": {
+      "description": "Changing the local viewer, offline HTML, handoff or screenshot comparison.",
+      "sources": [{ "path": "wiki/preview.md" }]
+    },
     "accuracy": {
       "description": "Measuring output against Figma's own exports, running compare, finding test files.",
       "sources": [{ "path": "wiki/accuracy.md" }]

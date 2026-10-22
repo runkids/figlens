@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>figlens preview</title>
+<style>/*STYLE*/</style>
+</head>
+<body>
+<header>
+  <strong>figlens</strong><span class="muted">Preview</span>
+  <output id="fileStatus" role="status"></output><output id="status" role="status">Loading…</output>
+  <button id="theme" type="button" aria-label="Switch theme"></button>
+  <span class="menu-anchor">
+    <button id="menuButton" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Preview menu">⋯</button>
+    <div id="mainMenu" class="menu" role="menu" hidden>
+      <button type="button" role="menuitem" id="clearCache">Clear render cache…</button>
+    </div>
+  </span>
+</header>
+<main>
+  <aside aria-label="Document browser">
+    <div class="filters">
+      <label class="search"><span class="sr-only">Search names / text</span><input id="search" type="search" placeholder="Search layers and text"></label>
+    </div>
+    <h2>Pages</h2><div id="pageList"></div><div id="pageResize" class="split" data-for="pageList" role="separator" aria-orientation="horizontal" aria-label="Resize pages list" tabindex="0"></div><select id="pages" hidden></select>
+    <output id="searchStatus" role="status"></output>
+    <h2>Search results</h2><div id="overview"></div><div id="frameResize" class="split" data-for="overview" role="separator" aria-orientation="horizontal" aria-label="Resize search results" tabindex="0"></div>
+    <h2>Layers</h2><div id="tree"></div>
+  </aside>
+  <section id="workspace" aria-label="Design canvas">
+    <div class="bar">
+      <nav id="crumbs" aria-label="Ancestors"></nav>
+      <div class="toolbar">
+        <span class="zoom"><button id="minus" aria-label="Zoom out">−</button><button id="zoomButton" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Zoom options"><output id="zoom">100%</output></button><button id="plus" aria-label="Zoom in">+</button></span>
+        <div id="zoomMenu" role="menu" hidden>
+          <button type="button" role="menuitem" data-zoom="in">Zoom in <kbd>+</kbd></button>
+          <button type="button" role="menuitem" data-zoom="out">Zoom out <kbd>−</kbd></button>
+          <button type="button" role="menuitem" data-zoom="fit">Zoom to fit <kbd>⇧1</kbd></button>
+          <button type="button" role="menuitem" data-zoom="selection">Zoom to selection <kbd>⇧2</kbd></button>
+          <hr>
+          <button type="button" role="menuitem" data-zoom="0.5">Zoom to 50%</button>
+          <button type="button" role="menuitem" data-zoom="1">Zoom to 100%</button>
+          <button type="button" role="menuitem" data-zoom="2">Zoom to 200%</button>
+        </div>
+        <button id="fit">Fit</button>
+        <label class="compare"><input id="upload" class="sr-only" type="file" accept="image/*">Compare screenshot</label>
+        <span id="compareControls" hidden>
+          <div id="mode" class="segmented" role="radiogroup" aria-label="Comparison mode"><input type="radio" name="mode" id="mode-overlay" value="overlay" checked><label for="mode-overlay">Overlay</label><input type="radio" name="mode" id="mode-side" value="side"><label for="mode-side">Side by side</label></div>
+          <label>Opacity <input id="opacity" type="range" min="0" max="1" step="0.05" value="0.5"></label>
+          <button id="clear">Clear</button>
+        </span>
+        <details class="help"><summary aria-label="Canvas help">?</summary>
+          <p class="hint">Bounds-based picking, not exact paths. Click to choose overlapping layers. Drag or scroll to pan; pinch or ⌘/Ctrl + scroll to zoom; Shift+1 fits the page, Shift+2 the selection; Esc clears the selection; hold Alt/Option over another layer to measure distances. Tree buttons support ↑ ↓, ← parent, → child.</p>
+        </details>
+      </div>
+    </div>
+    <div id="viewport" tabindex="0" aria-label="Canvas; arrow keys pan, plus or minus zoom">
+      <div id="stage">
+        <div id="tiles"></div>
+        <img id="reference" alt="Rendered reference" draggable="false">
+        <img id="comparison" alt="Imported implementation screenshot" hidden draggable="false">
+        <div id="selected" class="outline"></div><div id="hovered" class="outline hover"></div>
+        <span id="size"></span>
+        <div id="measure"></div>
+      </div>
+    </div>
+    <div id="picker" aria-label="Layers at pointer"></div>
+  </section>
+  <aside aria-label="Inspector">
+    <div class="head">
+      <h2 id="name">Select a layer</h2>
+      <div class="actions">
+        <button id="copyPrompt" class="primary">Copy implementation prompt</button>
+        <button id="copyId">Copy ID</button><button id="copyContext">Copy context</button>
+        <button id="bundle" aria-label="Download selected scope bundle">Scope bundle</button><button id="context" aria-label="Download context JSON">Context JSON</button>
+      </div>
+      <p id="offline"></p>
+      <button id="handoffOpen" class="row-link" type="button">Handoff text</button>
+    </div>
+    <div id="properties"></div>
+    <section id="export">
+      <h3>Export</h3>
+      <div class="export-row">
+        <div id="exportScale" class="segmented" role="radiogroup" aria-label="Scale"><input type="radio" name="exportScale" id="exportScale-05" value="0.5"><label for="exportScale-05">0.5x</label><input type="radio" name="exportScale" id="exportScale-1" value="1" checked><label for="exportScale-1">1x</label><input type="radio" name="exportScale" id="exportScale-2" value="2"><label for="exportScale-2">2x</label><input type="radio" name="exportScale" id="exportScale-3" value="3"><label for="exportScale-3">3x</label><input type="radio" name="exportScale" id="exportScale-4" value="4"><label for="exportScale-4">4x</label></div>
+        <div id="exportFormat" class="segmented" role="radiogroup" aria-label="Format"><input type="radio" name="exportFormat" id="exportFormat-png" value="png" checked><label for="exportFormat-png">PNG</label><input type="radio" name="exportFormat" id="exportFormat-jpg" value="jpg"><label for="exportFormat-jpg">JPG</label><input type="radio" name="exportFormat" id="exportFormat-webp" value="webp"><label for="exportFormat-webp">WebP</label><input type="radio" name="exportFormat" id="exportFormat-avif" value="avif"><label for="exportFormat-avif">AVIF</label></div>
+      </div>
+      <label id="exportQualityRow" class="export-quality" hidden>Quality <input id="exportQuality" type="range" min="1" max="100" value="80"><output id="exportQualityValue">80</output></label>
+      <button id="exportButton" type="button">Export</button>
+    </section>
+    <div id="assets"></div>
+    <button id="variables" class="more" type="button">Variables and modes</button>
+    <p class="note">Reference uses figlens rendering; known Figma rendering differences remain. Comparison is visual only, not an automated accuracy score.</p>
+  </aside>
+</main>
+<dialog id="raw" aria-labelledby="rawTitle">
+  <div class="raw-head"><h2 id="rawTitle"></h2><button id="rawCopy" type="button">Copy</button><button id="rawClose" type="button" aria-label="Close">×</button></div>
+  <pre id="rawBody"></pre>
+</dialog>
+<dialog id="handoffBox" aria-labelledby="handoffTitle">
+  <div class="raw-head"><h2 id="handoffTitle">Handoff text</h2><button id="handoffCopy" type="button">Copy</button><button id="handoffClose" type="button" aria-label="Close">×</button></div>
+  <label class="sr-only" for="handoff">Copy fallback / handoff text</label><textarea id="handoff" readonly></textarea>
+</dialog>
+<dialog id="confirm" aria-labelledby="confirmTitle" aria-describedby="confirmBody">
+  <h2 id="confirmTitle"></h2>
+  <p id="confirmBody"></p>
+  <code id="confirmFile"></code>
+  <div class="confirm-actions"><button id="confirmCancel" type="button">Cancel</button><button id="confirmDownload" type="button" class="primary">Download</button></div>
+</dialog>
+<script id="boot" type="application/json">/*DATA*/</script>
+<script>/*SCRIPT*/</script>
+</body>
+</html>

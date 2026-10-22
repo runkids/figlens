@@ -54,7 +54,7 @@ fn cache_path(root: &Path, input: &str, generation: &str) -> PathBuf {
     root.join(hash).join(format!("{generation}.fig"))
 }
 
-fn cache_root() -> Result<PathBuf, Box<dyn Error>> {
+pub(crate) fn cache_root() -> Result<PathBuf, Box<dyn Error>> {
     let base = match (
         std::env::var_os("XDG_CACHE_HOME"),
         std::env::var_os("LOCALAPPDATA"),

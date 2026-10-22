@@ -125,7 +125,7 @@ fn visit(v: &Json, visible: bool, vector_covered: bool, render_covered: bool, p:
 }
 
 /// `v` without the render input `render_nodes` adds.
-fn strip(v: &mut Json) {
+pub(crate) fn strip(v: &mut Json) {
     match v {
         Json::Object(o) => {
             o.remove("_r");
@@ -171,9 +171,10 @@ pub fn write(
     root: &str,
     out: &Path,
 ) -> Result<Vec<String>, Box<dyn Error>> {
-    let prepared = Prepared::new(tree, fig, root, root)?;
+    let prepared = Prepared::new(tree, fig, crate::export::root_of(root), root)?;
     let rendered = prepared.node();
     let mut doc = prepared.document.clone();
+    doc["document"] = rendered.clone();
     strip(&mut doc);
     let document = &doc["document"];
     let name = name.map_or_else(

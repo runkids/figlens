@@ -1,6 +1,6 @@
 ---
 name: figlens
-description: Read Figma designs offline from a `.fig` file with the `figlens` CLI, without the Figma API, MCP or a running Figma. Use when given a `.fig` file; when implementing a Figma frame, URL or node-id and a `.fig` copy exists or can be requested; when exporting images, icons or slices from a design; when reading a design's variables or tokens; or when Figma MCP/REST is rate-limited or unavailable.
+description: Read Figma designs offline from a `.fig` file with the `figlens` CLI, without the Figma API, MCP or a running Figma. Use when given a `.fig` file; when implementing a Figma frame, URL or node-id and a `.fig` copy exists or can be requested; when exporting images, icons or slices from a design; when reading a design's variables or tokens; when browsing a design or preparing a visual agent handoff; or when Figma MCP/REST is rate-limited or unavailable.
 ---
 
 # figlens
@@ -62,6 +62,14 @@ When referring to a specific frame or node in an answer or design document, link
 `figlens export <file.fig> <node> <out.png|jpg|webp|avif> [--scale 2] [--quality 80] [--max-kb 150]` renders one node like Figma's Export panel, shadows included; instance sublayer ids work. The extension picks the format. `--max-kb` lowers the quality until the file fits, so it has no effect on lossless PNG; JPG has no transparency and composites on white. It prints `{path, width, height, bytes, quality}`; `quality` is the one actually used.
 
 Through MCP, call the `export` tool with absolute `file` and `out` paths: it writes the file and returns the same rendered bytes as inline image content, alongside text metadata and `structuredContent`. Prefer PNG for client compatibility and a smaller `scale` for large frames. `find` and `inspect` are also MCP tools with the same options and structured results.
+
+## Visual preview and handoff
+
+Use `figlens preview <file.fig> [node]` when a person needs to browse or select a scope. Open the printed local URL. The viewer provides page/frame browsing, name/text search, a synchronized layer tree, bounds-based overlap picking and property inspection. Download a selected-scope bundle or copy IDs/context without guessing them; expanded `I<instance>;…` IDs remain exact and work with `bundle` and `export`. The implementation prompt is grounded in design data, not an automatic mapping to project components. To drive an open preview from a browser-automation tool, call the page's `window.figlens` API (`state()`, `select(id)`, `context()`, `exportImage(...)`; see the `preview` topic) instead of clicking through the UI.
+
+For a portable handoff, run `figlens preview <file.fig> <node> --out preview.html`. The HTML works offline and embeds design data, original images and the snapshot-scope bundle. Selecting a child changes context, not the embedded bundle's scope. Share it only with people allowed to see those assets. Import a local implementation screenshot for side-by-side or opacity comparison; this is visual checking, not measured accuracy.
+
+Live preview polls the saved local file. Treat a stale/error banner as unavailable fresh evidence; a failed save must not be described as a refreshed design. Snapshots never refresh. For `gs://` inputs the live viewer watches its local cached copy, not the remote object. No viewer action replaces checking the bundle's `missing-assets.json` and the known renderer gaps below.
 
 ## Many frames
 

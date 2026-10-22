@@ -340,7 +340,7 @@ impl Command {
                 name,
             } => {
                 let id = normalize_id(&node);
-                require_node(tree, &id)?;
+                require_node(tree, figlens::export::root_of(&id))?;
                 // A URL supplies the manifest key when --file-key is absent.
                 let key = file_key.as_deref().or_else(|| {
                     node.split_once("/design/")

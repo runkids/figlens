@@ -16,6 +16,7 @@ pub mod bundle;
 pub mod compare;
 pub mod expand;
 pub mod export;
+pub mod preview;
 pub mod remote;
 pub mod render;
 pub mod rest;
@@ -52,7 +53,7 @@ pub struct Document {
 impl Document {
     /// Opens a `.fig` zip and decodes its `canvas.fig`.
     pub fn open(path: &Path) -> Result<Document, Box<dyn Error>> {
-        let mut archive = zip::ZipArchive::new(File::open(path)?)?;
+        let mut archive = zip::ZipArchive::new(std::io::BufReader::new(File::open(path)?))?;
         let mut canvas = Vec::new();
         archive
             .by_name("canvas.fig")

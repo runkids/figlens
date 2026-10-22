@@ -39,11 +39,16 @@ usage:
                                             render a node to out.png|jpg|webp|avif (default 1x,
                                              quality 80); --max-kb lowers the quality until it fits;
                                              prints {path,width,height,bytes,quality}
+  figlens preview <file.fig> [node] [--out preview.html] [--port N] [--bind IP]
+                                             local read-only viewer (loopback, random port by default);
+                                             --out requires a node and writes an offline snapshot
   figlens node <file.fig> <node>               print one raw .fig node as JSON
   figlens compare <file.fig> <nodes.json> <node>   diff a frame against a REST nodes.json export
   figlens compare <file.fig> --frames <list.txt>   same for every `node|nodes.json[|variables.json]` line
   figlens mcp                                  serve tree, find, inspect, nodes, variables, bundle and
                                              export as MCP tools; export also returns an inline image
+  figlens cache [clear]                        show, or clear, the preview render cache
+                                             (prints {path,bytes} or {path,freed})
   figlens update                               install the latest GitHub release over this binary
   figlens --help | --version
 
@@ -95,6 +100,23 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             return Ok(());
         }
         Some("update") => return update(),
+        Some("cache") => {
+            let dir = figlens::preview::cache_dir()?;
+            let report = match args.get(1).map(String::as_str) {
+                None => {
+                    serde_json::json!({"path": dir, "bytes": figlens::preview::cache_bytes(&dir)})
+                }
+                Some("clear") => {
+                    serde_json::json!({"path": dir, "freed": figlens::preview::clear_cache(&dir)?})
+                }
+                Some(other) => return Err(format!(
+                    "unknown cache action {other:?}; use `figlens cache` or `figlens cache clear`"
+                )
+                .into()),
+            };
+            writeln!(out, "{report}")?;
+            return Ok(());
+        }
         Some("mcp") => return mcp(),
         _ => {}
     }
@@ -103,6 +125,38 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
         _ => return Err(USAGE.into()),
     };
     let path = figlens::remote::local(file)?;
+    if command == "preview" {
+        let (mut node, mut output, mut port, mut bind) =
+            (None, None, 0u16, "127.0.0.1".parse::<std::net::IpAddr>()?);
+        let mut rest = args[2..].iter();
+        while let Some(arg) = rest.next() {
+            match arg.as_str() {
+                "--out" | "-o" => output = Some(rest.next().ok_or("--out needs a path")?),
+                "--port" => port = rest.next().ok_or("--port needs a number")?.parse()?,
+                "--bind" => bind = rest.next().ok_or("--bind needs an IP address")?.parse()?,
+                _ if !arg.starts_with('-') && node.is_none() => node = Some(normalize_id(arg)),
+                _ => return Err(USAGE.into()),
+            }
+        }
+        if let Some(output) = output {
+            figlens::preview::snapshot(
+                &path,
+                node.as_deref().ok_or("--out requires a node")?,
+                Path::new(output),
+            )?;
+            writeln!(
+                out,
+                "{}",
+                serde_json::json!({"path":output,"snapshot":true})
+            )?;
+            return Ok(());
+        }
+        return figlens::preview::serve(
+            &path,
+            node.as_deref(),
+            std::net::SocketAddr::new(bind, port),
+        );
+    }
     let doc = Document::open(&path).map_err(|e| format!("{file}: {e}"))?;
     let message = doc.message()?;
     let tree = Tree::new(&message);

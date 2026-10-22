@@ -31,6 +31,7 @@ python3 scripts/ai-context.py check     # validate paths, headings and byte budg
 | Topic | Use when |
 |---|---|
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields, variables, rendering or the bundle |
+| `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison |
 | `accuracy` | Measuring output against Figma's own exports, running `compare`, finding test files |
 | `release` | Packaging, GitHub releases, Homebrew, npm, install scripts and `figlens update` |
 | `direction` | Deciding what to build next, or revisiting a past decision |

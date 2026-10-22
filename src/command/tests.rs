@@ -9,6 +9,10 @@ struct Fixture(TestDir);
 
 impl Fixture {
     fn new() -> Self {
+        Self::named("Frame")
+    }
+
+    fn named(name: &str) -> Self {
         use kiwi_schema::{Def, DefKind, Field, Schema, TYPE_FLOAT, TYPE_STRING, TYPE_UINT, Value};
         use std::collections::HashMap;
         let dir = TestDir::new();
@@ -89,7 +93,7 @@ impl Fixture {
                         HashMap::from([
                             ("guid", guid(1)),
                             ("type", Value::Enum("NodeType", "FRAME")),
-                            ("name", Value::String("Frame".into())),
+                            ("name", Value::String(name.into())),
                             (
                                 "parentIndex",
                                 Value::Object(
@@ -563,6 +567,63 @@ fn cli_and_mcp_preserve_validation_order_and_errors() {
         assert_eq!(reply["content"][0]["text"], expected);
         assert!(reply.get("structuredContent").is_none());
     }
+}
+
+#[test]
+fn preview_snapshot_embeds_design_safely_and_never_overwrites_source() {
+    let fixture = Fixture::named("</ScRiPt><script>globalThis.pwned=1</script>&");
+    let output = fixture.0.join("preview.html");
+    let mut result = String::new();
+    run(
+        vec![
+            "preview".into(),
+            fixture.file(),
+            "0:1".into(),
+            "--out".into(),
+            output.to_string_lossy().into_owned(),
+        ],
+        &mut result,
+    )
+    .unwrap();
+    let page = std::fs::read_to_string(&output).unwrap();
+    assert!(!page.contains("</ScRiPt>"));
+    let boot = page
+        .split("<script id=\"boot\" type=\"application/json\">")
+        .nth(1)
+        .unwrap()
+        .split("</script>")
+        .next()
+        .unwrap();
+    let data: serde_json::Value = serde_json::from_str(boot).unwrap();
+    assert_eq!(
+        data["snapshot"]["nodes"]["document"]["name"],
+        "</ScRiPt><script>globalThis.pwned=1</script>&"
+    );
+    assert!(
+        data["snapshot"]["image"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,")
+    );
+    assert!(
+        data["snapshot"]["bundle"]
+            .as_str()
+            .unwrap()
+            .starts_with("UEs")
+    );
+    let source = fixture.0.join("source.html");
+    std::fs::copy(fixture.file(), &source).unwrap();
+    let before = std::fs::read(&source).unwrap();
+    assert!(figlens::preview::snapshot(&source, "0:1", &source).is_err());
+    assert_eq!(std::fs::read(&source).unwrap(), before);
+    assert!(
+        figlens::preview::snapshot(
+            std::path::Path::new(&fixture.file()),
+            "0:1",
+            &fixture.0.join("input.fig")
+        )
+        .is_err()
+    );
 }
 
 #[test]

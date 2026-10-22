@@ -106,6 +106,24 @@ Give your coding agent `frame.zip` and this prompt:
 
 A node can be an id (`12:345`), its URL form (`12-345`) or a Figma URL with `?node-id=`. The URL selects a node in your saved file; it does not download the design.
 
+## Browse and hand off a design
+
+```sh
+figlens preview design.fig                      # browse pages, frames and stored names/text
+figlens preview design.fig 12:345               # open a specific scope
+figlens preview design.fig 12:345 --out preview.html
+figlens cache                                   # where cached renders live, and their size
+figlens cache clear                             # remove cached renders
+```
+
+Open the loopback URL printed in the terminal; stop with Ctrl+C. No Node, frontend build or Figma session is needed. Each page opens like a Figma page: its frames and sections on one canvas, rendered on demand at the resolution the zoom needs, with a Layers panel, light and dark themes and Figma's selection model (click, double-click to go deeper, ⌘/Ctrl-click for the deepest layer, right-click for every layer under the pointer, Alt/Option to measure distances). Inspect layout, typography, variables, component properties, Dev Mode style CSS and original images, and export the selection as PNG, JPG, WebP or AVIF. Picking uses render bounds, not exact vector paths. Renders are cached on disk so reopening a file is fast; `figlens cache clear` or the viewer's ⋯ menu removes them. Browser-automation agents can drive the open viewer through `window.figlens`.
+
+Copy an exact ID, structured context or an implementation prompt, then download a real bundle for the selected layer. Expanded instance IDs stay intact. Import a local implementation screenshot for side-by-side or opacity-overlay comparison; it stays in your browser. This is visual checking, not an automated accuracy score or a mapping to project components.
+
+The live viewer watches the saved local file through polling. Failed or partial saves visibly mark the view stale; successful saves refresh it and retain selection only if its ID still exists. For `gs://` input, this watches the downloaded cache, not the remote object.
+
+`--out` (or `-o`) requires a node and writes a **snapshot**, usable as a local file with no server or network. It embeds the reference, layer data, original images and a bundle for the snapshot scope. Child inspection, context export and screenshot comparison work offline; the bundle always covers the snapshot scope, as its button states. Share carefully: the HTML contains the design data and assets. See [preview controls, safety and limitations](wiki/preview.md).
+
 ## The design bundle
 
 One frame, one zip. Structure to build from, assets to use, and a picture to check against.
@@ -215,6 +233,7 @@ Start with `find` and `inspect` to select a frame. `export` saves the image and 
 | `bundle <file> <node> <out.zip>` | A design bundle for one frame; prints `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | Many bundles from one decode, in parallel; one JSON line per frame, as above or `{nodeId, error}` |
 | `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | PNG, JPG, WebP or AVIF; `--max-kb` lowers quality until it fits (no effect on lossless PNG); prints `{path, width, height, bytes, quality}` |
+| `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Local read-only viewer; `--out` requires a node and writes a standalone offline snapshot |
 | `compare <file> <nodes.json> <node>` | Diff against a REST export of the same frame |
 | `node <file> <node>` | One raw `.fig` node |
 | `mcp` | Local MCP server over stdio |
