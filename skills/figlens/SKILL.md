@@ -20,7 +20,7 @@ npx @runkids/figlens --help                                                     
 ## Building a frame
 
 1. **Get the `.fig`.** Ask the designer for File > Save local copy when there is none. Done when the file opens: `figlens tree <file.fig> --depth 1` lists its pages.
-2. **Find the node.** A Figma URL (`...?node-id=12-345`), `12-345` and `12:345` all work as-is. Without one, `figlens tree <file.fig> --depth 2` lists each page's top frames; `figlens tree <file.fig> <id> --depth 1` narrows down. Done when you hold the id of the frame to build.
+2. **Find the node.** A Figma URL (`...?node-id=12-345`), `12-345` and `12:345` all work as-is. Without one, use `figlens find <file.fig> "screen name" --type FRAME` or search visible copy with `--type TEXT`. Search is a case-insensitive substring over stored layer names and text; `--node <id>` scopes it and `--limit N` sets 1-200 results (default 20). Read ancestor paths to distinguish duplicate names; `truncated: true` means more matches exist. Instance children appear only after expansion: use `figlens inspect <file.fig> <instance-id>`. Use `tree --depth 2` to browse when there is no search term. Done when you hold the id of the frame to build.
 3. **Bundle it.** `figlens bundle <file.fig> <node> frame.zip`, then unzip into its own directory and read `context.md` first: it says what each file holds. Done when you know the reference image, the structure file and the asset map.
 4. **Outline before reading.** A screen is hundreds of KB of JSON, too large to read whole. Print the tree with sizes and layout, then read the subtrees you are building with `jq`:
 
@@ -31,7 +31,7 @@ npx @runkids/figlens --help                                                     
 5. **Build from the values**, not from the picture: sizes, padding, gaps, radii, colors, shadows and fonts are all in the JSON, and the reference image only confirms them. Use the bundle's assets for every image and icon (see Reading the output).
 6. **Check against the reference.** Render your build at the frame's size and compare it with `references/screen.png` side by side or as a pixel diff. Done when every box, gap and asset lines up and the remaining differences are text antialiasing, line breaks from font metrics, or a known gap below.
 
-For a question about a design rather than a build (a color, a spacing, which component a frame uses), skip the bundle: `figlens nodes <file.fig> <node>` prints the same JSON to stdout, and `figlens variables <file.fig> <node>` prints the variables it binds. Each call decodes the whole file, a few seconds for a large one, so save the output once and query the file.
+For a question about layout, typography or copy, start with `figlens inspect <file.fig> <node> [--depth N]`: expanded bounds, auto-layout and typography, without paints or vector geometry. Depth defaults to 1 (0-10); at most 200 nodes and 200 characters per text are returned. `childCount` includes omitted children; `truncated` marks omitted descendants and `textTruncated` marks shortened text. Use `figlens nodes <file.fig> <node>` for full text, paints and other details, and `figlens variables <file.fig> <node>` for bound variables. Each call still decodes the whole file; summaries bound output, not parsing cost. Save full output once when making repeated queries.
 
 ## Link back to Figma
 
@@ -60,6 +60,8 @@ When referring to a specific frame or node in an answer or design document, link
 ## Images and slices
 
 `figlens export <file.fig> <node> <out.png|jpg|webp|avif> [--scale 2] [--quality 80] [--max-kb 150]` renders one node like Figma's Export panel, shadows included; instance sublayer ids work. The extension picks the format. `--max-kb` lowers the quality until the file fits, so it has no effect on lossless PNG; JPG has no transparency and composites on white. It prints `{path, width, height, bytes, quality}`; `quality` is the one actually used.
+
+Through MCP, call the `export` tool with absolute `file` and `out` paths: it writes the file and returns the same rendered bytes as inline image content, alongside text metadata and `structuredContent`. Prefer PNG for client compatibility and a smaller `scale` for large frames. `find` and `inspect` are also MCP tools with the same options and structured results.
 
 ## Many frames
 

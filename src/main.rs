@@ -17,6 +17,12 @@ usage:
   figlens tree <file.fig> [node] [--depth N] [--json]
                                              list ids, types and names (default root: the document);
                                              --json prints them as nested {id,type,name,children}
+  figlens find <file.fig> <query> [--type TYPE] [--node ID] [--limit N]
+                                             search stored layer names and text, case-insensitive;
+                                             default 20 results (1-200), with paths and truncation flag
+  figlens inspect <file.fig> <node> [--depth N]
+                                             compact layout/text summary, instances expanded;
+                                             depth 1 (0-10), at most 200 nodes, 200 characters per text
   figlens nodes <file.fig> <node>              print a frame as Figma REST-shaped nodes.json
                                              (instances expanded, fills/text/auto-layout included)
   figlens variables <file.fig> [node]          print the variables a frame binds (design/variables.json);
@@ -36,8 +42,8 @@ usage:
   figlens node <file.fig> <node>               print one raw .fig node as JSON
   figlens compare <file.fig> <nodes.json> <node>   diff a frame against a REST nodes.json export
   figlens compare <file.fig> --frames <list.txt>   same for every `node|nodes.json[|variables.json]` line
-  figlens mcp                                  serve tree, nodes, variables, bundle and export as
-                                             MCP tools over stdio (for AI agents)
+  figlens mcp                                  serve tree, find, inspect, nodes, variables, bundle and
+                                             export as MCP tools; export also returns an inline image
   figlens update                               install the latest GitHub release over this binary
   figlens --help | --version
 
@@ -104,7 +110,7 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
         "bundle" if args.get(2).map(String::as_str) == Some("--frames") => {
             batch(&tree, &path, &args[2..])?;
         }
-        "tree" | "node" | "nodes" | "variables" | "bundle" | "export" => {
+        "tree" | "find" | "inspect" | "node" | "nodes" | "variables" | "bundle" | "export" => {
             let command = command::Command::from_cli(command, &args[2..], &tree)?;
             out.push_str(&command.execute(&tree, &path)?.text()?);
         }
@@ -298,6 +304,56 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
         ],
     ),
     (
+        "find",
+        "Search stored layer names and text (case-insensitive). Returns ids, paths, local sizes and text previews. Does not expand instance children; use inspect on the instance.",
+        &[
+            FILE,
+            (
+                "query",
+                "",
+                "string",
+                true,
+                "literal substring in a layer name or text",
+            ),
+            (
+                "node",
+                "--node",
+                "string",
+                false,
+                "search this subtree; default the document",
+            ),
+            (
+                "type",
+                "--type",
+                "string",
+                false,
+                "Figma node type, e.g. FRAME or TEXT",
+            ),
+            (
+                "limit",
+                "--limit",
+                "integer",
+                false,
+                "1-200 results, default 20; truncated signals more matches",
+            ),
+        ],
+    ),
+    (
+        "inspect",
+        "Compact expanded node summary: bounds, layout, typography, text previews and child counts. Use before nodes, which returns full data. Depth and a 200-node budget bound the response, not decoding cost.",
+        &[
+            FILE,
+            NODE,
+            (
+                "depth",
+                "--depth",
+                "integer",
+                false,
+                "0-10 levels below the node, default 1; text previews up to 200 characters",
+            ),
+        ],
+    ),
+    (
         "nodes",
         "A frame as Figma REST nodes.json: instances expanded, fills, text, auto-layout. Can be large.",
         &[FILE, NODE],
@@ -347,7 +403,7 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "export",
-        "Render a node to PNG, JPG, WebP or AVIF, like Figma's Export panel.",
+        "Render a node to PNG, JPG, WebP or AVIF. Writes the file and returns its image inline plus metadata; prefer PNG for client compatibility. Use scale to reduce large images.",
         &[
             FILE,
             NODE,
@@ -488,9 +544,19 @@ fn call_tool(params: &serde_json::Value) -> serde_json::Value {
                         }
                         args.push(value);
                     }
-                    let mut out = String::new();
-                    run(args, &mut out)?;
-                    Ok(command::Output::Text(out))
+                    if name == "export" {
+                        // Keep the rendered bytes for inline images on legacy calls too.
+                        let file = args.get(1).ok_or(USAGE)?;
+                        let path = figlens::remote::local(file)?;
+                        let doc = Document::open(&path).map_err(|e| format!("{file}: {e}"))?;
+                        let message = doc.message()?;
+                        let tree = Tree::new(&message);
+                        command::Command::from_cli(name, &args[2..], &tree)?.execute(&tree, &path)
+                    } else {
+                        let mut out = String::new();
+                        run(args, &mut out)?;
+                        Ok(command::Output::Text(out))
+                    }
                 }
             }))
             .map_err(|_| "figlens crashed on this file".to_owned())
@@ -504,8 +570,14 @@ fn call_tool(params: &serde_json::Value) -> serde_json::Value {
 
 fn tool_reply(name: &str, result: Result<command::Output, String>) -> serde_json::Value {
     let mut structured = None;
+    let mut image = None;
     let result = result.and_then(|output| {
         let text = output.text().map_err(|e| e.to_string())?;
+        if let command::Output::Image { bytes, mime, .. } = &output {
+            image = Some(serde_json::json!({
+                "type": "image", "data": figlens::render::base64(bytes), "mimeType": mime,
+            }));
+        }
         if output_schema(name).is_some() {
             structured = output.json().cloned().or_else(|| {
                 // Only legacy, out-of-schema calls still return untyped CLI text.
@@ -524,12 +596,30 @@ fn tool_reply(name: &str, result: Result<command::Output, String>) -> serde_json
     if let Some(value) = structured {
         reply["structuredContent"] = value;
     }
+    if let Some(image) = image {
+        reply["content"].as_array_mut().unwrap().push(image);
+    }
     reply
 }
 
 /// The MCP outputSchema of the tools whose CLI command prints one JSON object.
 fn output_schema(tool: &str) -> Option<serde_json::Value> {
     let (properties, required) = match tool {
+        "find" => (
+            serde_json::json!({
+                "root": {"type": "string"},
+                "results": {"type": "array", "items": {"type": "object"}},
+                "truncated": {"type": "boolean"},
+            }),
+            ["root", "results", "truncated"].as_slice(),
+        ),
+        "inspect" => (
+            serde_json::json!({
+                "node": {"type": "object"},
+                "truncated": {"type": "boolean"},
+            }),
+            ["node", "truncated"].as_slice(),
+        ),
         "export" => (
             serde_json::json!({
                 "path": { "type": "string" },
@@ -632,7 +722,18 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, ["tree", "nodes", "variables", "bundle", "export"]);
+        assert_eq!(
+            names,
+            [
+                "tree",
+                "find",
+                "inspect",
+                "nodes",
+                "variables",
+                "bundle",
+                "export"
+            ]
+        );
     }
 
     #[test]
@@ -645,7 +746,7 @@ mod tests {
             .filter(|t| t["outputSchema"].is_object())
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(with_schema, ["bundle", "export"]);
+        assert_eq!(with_schema, ["find", "inspect", "bundle", "export"]);
     }
 
     #[test]

@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use crate::USAGE;
 
+mod discover;
 #[cfg(test)]
 mod tests;
 
@@ -22,6 +23,16 @@ pub enum Command {
     },
     Node(String),
     Nodes(String),
+    Find {
+        query: String,
+        root: String,
+        kind: Option<String>,
+        limit: usize,
+    },
+    Inspect {
+        node: String,
+        depth: usize,
+    },
     Variables(Option<String>),
     Bundle {
         node: String,
@@ -40,13 +51,22 @@ pub enum Command {
 
 pub enum Output {
     Text(String),
-    Json { value: Value, pretty: bool },
+    Json {
+        value: Value,
+        pretty: bool,
+    },
+    Image {
+        value: Value,
+        bytes: Vec<u8>,
+        mime: &'static str,
+    },
 }
 
 impl Output {
     pub fn text(&self) -> Result<String, serde_json::Error> {
         match self {
             Self::Text(text) => Ok(text.clone()),
+            Self::Image { value, .. } => Ok(format!("{}\n", serde_json::to_string(value)?)),
             Self::Json { value, pretty } => Ok(format!(
                 "{}\n",
                 if *pretty {
@@ -60,7 +80,7 @@ impl Output {
 
     pub fn json(&self) -> Option<&Value> {
         match self {
-            Self::Json { value, .. } => Some(value),
+            Self::Json { value, .. } | Self::Image { value, .. } => Some(value),
             Self::Text(_) => None,
         }
     }
@@ -97,6 +117,35 @@ impl Command {
             }
             "node" => Self::Node(node()?),
             "nodes" => Self::Nodes(node()?),
+            "find" => {
+                let query = node()?;
+                let (mut root, mut kind, mut limit) = ("0:0".to_owned(), None, 20);
+                let mut rest = args[1..].iter();
+                while let Some(arg) = rest.next() {
+                    let value = rest.next().ok_or(format!("{arg} needs a value"))?;
+                    match arg.as_str() {
+                        "--node" => root = normalize_id(value),
+                        "--type" => kind = Some(value.to_uppercase()),
+                        "--limit" => limit = value.parse()?,
+                        _ => return Err(USAGE.into()),
+                    }
+                }
+                Self::Find {
+                    query,
+                    root,
+                    kind,
+                    limit,
+                }
+            }
+            "inspect" => {
+                let node = node()?;
+                let depth = match &args[1..] {
+                    [] => 1,
+                    [flag, value] if flag == "--depth" => value.parse()?,
+                    _ => return Err(USAGE.into()),
+                };
+                Self::Inspect { node, depth }
+            }
             "variables" => Self::Variables(args.first().cloned()),
             "bundle" => {
                 let node = node()?;
@@ -167,6 +216,24 @@ impl Command {
                 json: args["json"] == true,
             },
             "nodes" => Self::Nodes(node()?),
+            "find" => Self::Find {
+                query: string("query").ok_or(USAGE)?,
+                root: normalize_id(string("node").as_deref().unwrap_or("0:0")),
+                kind: string("type").map(|s| s.to_uppercase()),
+                limit: args
+                    .get("limit")
+                    .map(|n| n.to_string().parse())
+                    .transpose()?
+                    .unwrap_or(20),
+            },
+            "inspect" => Self::Inspect {
+                node: node()?,
+                depth: args
+                    .get("depth")
+                    .map(|n| n.to_string().parse())
+                    .transpose()?
+                    .unwrap_or(1),
+            },
             "variables" => Self::Variables(string("node")),
             "bundle" => {
                 let node = node()?;
@@ -241,6 +308,20 @@ impl Command {
                 require_node(tree, &id)?;
                 pretty(nodes(tree, &id))
             }
+            Self::Find {
+                query,
+                root,
+                kind,
+                limit,
+            } => {
+                require_node(tree, &root)?;
+                compact(discover::find(tree, &query, &root, kind.as_deref(), limit)?)
+            }
+            Self::Inspect { node, depth } => {
+                let id = normalize_id(&node);
+                require_node(tree, &id)?;
+                compact(discover::inspect(tree, &id, depth)?)
+            }
             Self::Variables(node) => {
                 let doc = match node {
                     Some(node) => {
@@ -297,10 +378,17 @@ impl Command {
                     max_kb.map(|kb| kb * 1024),
                 )?;
                 std::fs::write(&out, &image.bytes)?;
-                compact(
-                    json!({ "path": out, "width": image.width, "height": image.height,
-                    "bytes": image.bytes.len(), "quality": image.quality }),
-                )
+                Output::Image {
+                    value: json!({ "path": out, "width": image.width, "height": image.height,
+                        "bytes": image.bytes.len(), "quality": image.quality }),
+                    bytes: image.bytes,
+                    mime: match format {
+                        figlens::export::Format::Png => "image/png",
+                        figlens::export::Format::Jpg => "image/jpeg",
+                        figlens::export::Format::Webp => "image/webp",
+                        figlens::export::Format::Avif => "image/avif",
+                    },
+                }
             }
         })
     }

@@ -78,9 +78,19 @@ In Figma, choose **File > Save local copy** and save it as `design.fig`. Then li
 
 ```sh
 figlens tree design.fig --depth 2
+figlens find design.fig "login" --type FRAME
 ```
 
 The file is a snapshot you can reuse locally or in CI. Save a new copy when the design changes.
+
+Search layer names or text, then inspect a frame before requesting its full design data:
+
+```sh
+figlens find design.fig "Sign in" --type TEXT --limit 5
+figlens inspect design.fig 12:345 --depth 1
+```
+
+`find` returns ids, ancestor paths, local sizes and text previews. It searches stored layers; use `inspect` to see expanded instance children. `inspect` summarizes bounds, auto-layout and typography, with child counts. Its output is capped at 200 nodes and 200 characters per text; `truncated` signals omitted descendants and `textTruncated` marks shortened text. These limits reduce output size; each call still decodes the file.
 
 ### 3. Bundle it for your agent
 
@@ -189,13 +199,17 @@ Or use `npx` with Node.js 18+; the first run downloads and caches the native bin
 { "mcpServers": { "figlens": { "command": "npx", "args": ["-y", "@runkids/figlens", "mcp"] } } }
 ```
 
-The server runs locally over stdio and exposes `tree`, `nodes`, `variables`, `bundle` and `export`. Give tools absolute paths: relative ones resolve against the directory the client started figlens in.
+The server runs locally over stdio and exposes `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` and `export`. Give tools absolute paths: relative ones resolve against the directory the client started figlens in.
+
+Start with `find` and `inspect` to select a frame. `export` saves the image and also returns it directly as MCP image content, so your agent can see the design without opening a local file. PNG has the widest client support; reduce `scale` for large frames. `find`, `inspect`, `bundle` and `export` also return structured JSON results.
 
 ## Commands
 
 | Command | Output |
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | Node ids, types and names; indented text (smaller for an agent's context) or, with `--json`, nested JSON |
+| `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Case-insensitive substring search over stored layer names and text; paths, local sizes and previews. Default 20 results (1-200); `truncated` signals more matches |
+| `inspect <file> <node> [--depth N]` | Compact expanded layout/text summary. Default depth 1 (0-10), at most 200 nodes; use `nodes` for full data |
 | `nodes <file> <node>` | REST-shaped JSON: expanded instances and overrides, auto-layout, text styles, fills, effects, bound variables, component properties and render bounds |
 | `variables <file> [node]` | A frame's bound variables; without a node, every local variable |
 | `bundle <file> <node> <out.zip>` | A design bundle for one frame; prints `{nodeId, path, warnings}` |

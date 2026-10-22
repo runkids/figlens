@@ -183,6 +183,18 @@ fn cli_and_mcp_success_results_match() {
             serde_json::json!({"node": "0-1"}),
             None,
         ),
+        (
+            "find",
+            vec!["frame", "--type", "frame", "--node", "0-0", "--limit", "1"],
+            serde_json::json!({"query": "frame", "type": "frame", "node": "0-0", "limit": 1}),
+            None,
+        ),
+        (
+            "inspect",
+            vec!["0-1", "--depth", "0"],
+            serde_json::json!({"node": "0-1", "depth": 0}),
+            None,
+        ),
         ("variables", vec![], serde_json::json!({}), None),
         (
             "variables",
@@ -235,6 +247,20 @@ fn cli_and_mcp_success_results_match() {
             match name {
                 "nodes" => assert_eq!(value["document"]["id"], "0:1"),
                 "variables" => assert!(value.is_object()),
+                "find" => {
+                    assert_eq!(value["results"][0]["id"], "0:1");
+                    assert_eq!(
+                        value["results"][0]["size"],
+                        serde_json::json!({"width": 16.0, "height": 8.0})
+                    );
+                    assert_eq!(value["truncated"], false);
+                    assert_eq!(reply["structuredContent"], value);
+                }
+                "inspect" => {
+                    assert_eq!(value["node"]["id"], "0:1");
+                    assert_eq!(value["node"]["childCount"], 0);
+                    assert_eq!(reply["structuredContent"], value);
+                }
                 "export" => {
                     assert_eq!(
                         (value["width"].as_u64(), value["height"].as_u64()),
@@ -242,6 +268,14 @@ fn cli_and_mcp_success_results_match() {
                     );
                     assert_eq!(value["quality"], 90);
                     assert_eq!(reply["structuredContent"], value);
+                    assert_eq!(reply["content"][1]["type"], "image");
+                    assert_eq!(reply["content"][1]["mimeType"], "image/png");
+                    assert_eq!(
+                        reply["content"][1]["data"],
+                        figlens::render::base64(
+                            &std::fs::read(arguments["out"].as_str().unwrap()).unwrap()
+                        )
+                    );
                     assert!(
                         std::fs::read(arguments["out"].as_str().unwrap())
                             .unwrap()
@@ -257,9 +291,81 @@ fn cli_and_mcp_success_results_match() {
                 _ => unreachable!(),
             }
         }
-        if !matches!(name, "bundle" | "export") {
+        if !matches!(name, "find" | "inspect" | "bundle" | "export") {
             assert!(reply.get("structuredContent").is_none());
         }
+    }
+}
+
+#[test]
+fn mcp_images_keep_the_exported_format_and_bytes() {
+    let fixture = Fixture::new();
+    for (extension, mime) in [
+        ("jpg", "image/jpeg"),
+        ("webp", "image/webp"),
+        ("avif", "image/avif"),
+    ] {
+        let out = fixture.0.join(&format!("image.{extension}"));
+        let reply = call_tool(&serde_json::json!({"name": "export", "arguments": {
+            "file": fixture.file(), "node": "0:1", "out": out,
+        }}));
+        assert_eq!(reply["isError"], false, "{reply}");
+        let bytes = std::fs::read(out).unwrap();
+        assert_eq!(reply["structuredContent"]["bytes"], bytes.len());
+        assert_eq!(reply["content"][1]["mimeType"], mime);
+        assert_eq!(reply["content"][1]["data"], figlens::render::base64(&bytes));
+    }
+}
+
+#[test]
+fn discovery_rejects_invalid_bounds_in_cli_and_mcp() {
+    let fixture = Fixture::new();
+    for (name, cli, arguments, error) in [
+        (
+            "find",
+            vec!["  "],
+            serde_json::json!({"query": "  "}),
+            "non-empty query",
+        ),
+        (
+            "find",
+            vec!["frame", "--limit", "0"],
+            serde_json::json!({"query": "frame", "limit": 0}),
+            "--limit takes 1-200",
+        ),
+        (
+            "inspect",
+            vec!["0:1", "--depth", "11"],
+            serde_json::json!({"node": "0:1", "depth": 11}),
+            "--depth takes 0-10",
+        ),
+        (
+            "find",
+            vec!["frame", "--node", "9:9"],
+            serde_json::json!({"query": "frame", "node": "9:9"}),
+            "node 9:9 not found",
+        ),
+    ] {
+        let mut argv = vec![name.to_owned(), fixture.file()];
+        argv.extend(cli.into_iter().map(str::to_owned));
+        assert!(
+            run(argv, &mut String::new())
+                .unwrap_err()
+                .to_string()
+                .contains(error)
+        );
+        let mut arguments = arguments;
+        arguments["file"] = fixture.file().into();
+        let reply = call_tool(&serde_json::json!({"name": name, "arguments": arguments}));
+        assert_eq!(reply["isError"], true);
+        assert!(
+            reply["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains(error)
+        );
+        assert_eq!(reply["content"].as_array().unwrap().len(), 1);
+        assert!(reply.get("structuredContent").is_none());
     }
 }
 
@@ -487,4 +593,9 @@ fn mcp_preserves_permissive_argument_coercions() {
     assert_eq!(reply["isError"], false, "{reply}");
     assert_eq!(reply["structuredContent"]["width"], 32);
     assert_eq!(reply["structuredContent"]["height"], 16);
+    assert_eq!(reply["content"][1]["mimeType"], "image/png");
+    assert_eq!(
+        reply["content"][1]["data"],
+        figlens::render::base64(&std::fs::read(fixture.0.join("coerced.png")).unwrap())
+    );
 }
