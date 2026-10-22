@@ -2,10 +2,9 @@
 //! with the REST-shaped structure, its variables, the original image fills, SVG vectors, 2x
 //! renders of composited images and a reference render, listed in `manifest.json`.
 
-use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
 
 use rayon::prelude::*;
@@ -13,8 +12,7 @@ use serde_json::{Value as Json, json};
 use sha2::{Digest, Sha256};
 
 use crate::Tree;
-use crate::render::{self, Svg};
-use crate::rest::render_nodes;
+use crate::render::{self, Prepared, Svg, find};
 use crate::variables::variables;
 
 const VECTORS: [&str; 6] = [
@@ -138,13 +136,6 @@ fn strip(v: &mut Json) {
     }
 }
 
-pub(crate) fn find<'j>(n: &'j Json, id: &str) -> Option<&'j Json> {
-    if n["id"] == id {
-        return Some(n);
-    }
-    n["children"].as_array()?.iter().find_map(|c| find(c, id))
-}
-
 fn sha256(b: &[u8]) -> String {
     Sha256::digest(b)
         .iter()
@@ -170,25 +161,6 @@ struct File_ {
     node: Option<String>,
 }
 
-/// The `images/<sha1>` bytes of every image fill under `document`, by imageRef.
-pub(crate) fn images(
-    fig: &Path,
-    document: &Json,
-) -> Result<HashMap<String, Vec<u8>>, Box<dyn Error>> {
-    let mut zip = zip::ZipArchive::new(File::open(fig)?)?;
-    let mut images = HashMap::new();
-    let mut refs = Vec::new();
-    collect_refs(document, &mut refs);
-    for r in refs {
-        let mut bytes = Vec::new();
-        if let Ok(mut f) = zip.by_name(&format!("images/{r}")) {
-            f.read_to_end(&mut bytes)?;
-            images.insert(r, bytes);
-        }
-    }
-    Ok(images)
-}
-
 /// Writes the design bundle for frame `root` of the `.fig` at `fig` as a zip at `out`, named
 /// `name` (default: the node's name); returns its warnings.
 pub fn write(
@@ -199,8 +171,9 @@ pub fn write(
     root: &str,
     out: &Path,
 ) -> Result<Vec<String>, Box<dyn Error>> {
-    let mut doc = render_nodes(tree, root);
-    let rendered = doc["document"].clone();
+    let prepared = Prepared::new(tree, fig, root, root)?;
+    let rendered = prepared.node();
+    let mut doc = prepared.document.clone();
     strip(&mut doc);
     let document = &doc["document"];
     let name = name.map_or_else(
@@ -211,7 +184,7 @@ pub fn write(
     let plan = plan(document);
 
     // Original image bytes, also needed for rendering.
-    let images = images(fig, document)?;
+    let images = &prepared.images;
     let lookup = |h: &str| images.get(h).cloned();
 
     let mut files: Vec<File_> = Vec::new();
@@ -246,7 +219,7 @@ pub fn write(
     }
     for id in &plan.vectors {
         let key = format!("node:{id}");
-        let n = find(&rendered, id).ok_or("vector vanished")?;
+        let n = find(rendered, id).ok_or("vector vanished")?;
         match render::render_bounds(n) {
             Some(area) => {
                 let svg = Svg::new(tree, &lookup).document(n, area, 1.0);
@@ -264,13 +237,13 @@ pub fn write(
     }
     // Rasterizing dominates a bundle (filters at 2x), and each render is independent: draw them
     // in parallel, then add them in plan order so the bundle stays the same.
-    let area = render::export_area(&rendered).ok_or("frame has no size")?;
+    render::export_area(rendered).ok_or("frame has no size")?;
     let (renders, reference) = rayon::join(
         || {
             plan.composites
                 .par_iter()
                 .map(|id| {
-                    let n = find(&rendered, id).ok_or("composite vanished")?;
+                    let n = find(rendered, id).ok_or("composite vanished")?;
                     Ok::<_, String>(
                         render::render_bounds(n)
                             .ok_or_else(|| "nothing to render".to_owned())
@@ -283,14 +256,7 @@ pub fn write(
                 })
                 .collect::<Result<Vec<_>, _>>()
         },
-        || {
-            render::png(
-                &Svg::new(tree, &lookup)
-                    .for_raster()
-                    .backdrop(&rendered, area)
-                    .document(&rendered, area, 1.0),
-            )
-        },
+        || render::png(&prepared.export_svg(tree, 1.0).expect("export area checked")),
     );
     for (id, png) in plan.composites.iter().zip(renders?) {
         let key = format!("render:{id}");
@@ -413,21 +379,6 @@ fn pack(
     }
     w.finish()?;
     Ok(())
-}
-
-fn collect_refs(v: &Json, out: &mut Vec<String>) {
-    match v {
-        Json::Object(o) => {
-            if let Some(r) = o.get("imageRef").and_then(Json::as_str)
-                && !out.iter().any(|x| x == r)
-            {
-                out.push(r.to_owned());
-            }
-            o.values().for_each(|x| collect_refs(x, out));
-        }
-        Json::Array(a) => a.iter().for_each(|x| collect_refs(x, out)),
-        _ => {}
-    }
 }
 
 /// The bundle's `context.md`: what each file holds and how to build from it.

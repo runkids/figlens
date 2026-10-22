@@ -7,8 +7,7 @@ use std::path::Path;
 use resvg::tiny_skia::Pixmap;
 
 use crate::Tree;
-use crate::render::{self, Svg};
-use crate::rest::render_nodes;
+use crate::render::{self, Prepared};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Format {
@@ -51,17 +50,11 @@ pub fn export(
     quality: u8,
     max_bytes: Option<usize>,
 ) -> Result<Image, Box<dyn Error>> {
-    let doc = render_nodes(tree, root_of(id));
-    let n = crate::bundle::find(&doc["document"], id).ok_or("node not found")?;
-    let images = crate::bundle::images(fig, n)?;
-    let lookup = |h: &str| images.get(h).cloned();
-    let area = render::export_area(n).ok_or("node has nothing to render")?;
-    let pixmap = render::pixmap(
-        &Svg::new(tree, &lookup)
-            .for_raster()
-            .backdrop(n, area)
-            .document(n, area, scale),
-    )?;
+    let prepared = Prepared::new(tree, fig, root_of(id), id)?;
+    let svg = prepared
+        .export_svg(tree, scale)
+        .ok_or("node has nothing to render")?;
+    let pixmap = render::pixmap(&svg)?;
     Ok(encode(&pixmap, format, quality, max_bytes)?)
 }
 

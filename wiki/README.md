@@ -18,4 +18,4 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 
 | File | Contents |
 |---|---|
-| (none yet) | Add `history/<milestone>.md` and a row here when a milestone finishes |
+| [Shared command execution and rendering preparation](history/command-render-preparation.md) | CLI/MCP command results, shared raster preparation and behavior-preservation evidence |

@@ -7,7 +7,9 @@ use std::process::{Command, ExitCode, Stdio};
 use figlens::compare::{FIELDS, compare};
 use figlens::rest::nodes;
 use figlens::variables::variables;
-use figlens::{Document, Tree, normalize_id, to_json};
+use figlens::{Document, Tree, normalize_id};
+
+mod command;
 
 const USAGE: &str = "figlens — read Figma .fig files (File > Save local copy) without Figma
 
@@ -99,150 +101,12 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
     let message = doc.message()?;
     let tree = Tree::new(&message);
     match command {
-        "tree" => {
-            let mut root = "0:0".to_owned();
-            let mut depth = usize::MAX;
-            let mut json = false;
-            let mut rest = args[2..].iter();
-            while let Some(arg) = rest.next() {
-                if arg == "--depth" {
-                    depth = rest.next().ok_or("--depth needs a number")?.parse()?;
-                } else if arg == "--json" {
-                    json = true;
-                } else {
-                    root = normalize_id(arg);
-                }
-            }
-            if !tree.nodes.contains_key(&root) {
-                return Err(format!(
-                    "node {root} not found; list ids with `figlens tree <file.fig> --depth 2`"
-                )
-                .into());
-            }
-            if json {
-                writeln!(out, "{}", tree_json(&tree, &root, 0, depth))?;
-            } else {
-                print_tree(out, &tree, &root, 0, depth)?;
-            }
-        }
-        "node" => {
-            let id = normalize_id(args.get(2).ok_or(USAGE)?);
-            let node = tree.nodes.get(&id).ok_or_else(|| {
-                format!("node {id} not found; list ids with `figlens tree <file.fig> --depth 2`")
-            })?;
-            writeln!(out, "{}", serde_json::to_string_pretty(&to_json(node))?)?;
-        }
-        "nodes" => {
-            let id = normalize_id(args.get(2).ok_or(USAGE)?);
-            if !tree.nodes.contains_key(&id) {
-                return Err(format!(
-                    "node {id} not found; list ids with `figlens tree <file.fig> --depth 2`"
-                )
-                .into());
-            }
-            writeln!(out, "{}", serde_json::to_string_pretty(&nodes(&tree, &id))?)?;
-        }
-        "variables" => {
-            // Without a node: every local variable.
-            let doc = match args.get(2) {
-                Some(node) => {
-                    let id = normalize_id(node);
-                    if !tree.nodes.contains_key(&id) {
-                        return Err(format!(
-                            "node {id} not found; list ids with `figlens tree <file.fig> --depth 2`"
-                        )
-                        .into());
-                    }
-                    Some(nodes(&tree, &id))
-                }
-                None => None,
-            };
-            let vars = variables(&tree, doc.as_ref().map(|d| &d["document"]));
-            writeln!(out, "{}", serde_json::to_string_pretty(&vars)?)?;
-        }
         "bundle" if args.get(2).map(String::as_str) == Some("--frames") => {
             batch(&tree, &path, &args[2..])?;
         }
-        "bundle" => {
-            let id = normalize_id(args.get(2).ok_or(USAGE)?);
-            let out_path = args.get(3).ok_or(USAGE)?;
-            if !tree.nodes.contains_key(&id) {
-                return Err(format!(
-                    "node {id} not found; list ids with `figlens tree <file.fig> --depth 2`"
-                )
-                .into());
-            }
-            let (mut file_key, mut name) = (None, None);
-            let mut rest = args[4..].iter();
-            while let Some(arg) = rest.next() {
-                let mut value = || rest.next().cloned().ok_or(format!("{arg} needs a value"));
-                match arg.as_str() {
-                    "--file-key" => file_key = Some(value()?),
-                    "--name" => name = Some(value()?),
-                    _ => return Err(USAGE.into()),
-                }
-            }
-            // Without --file-key the key comes from a Figma URL; it names the source in the manifest.
-            let key = file_key.as_deref().or_else(|| {
-                args[2]
-                    .split_once("/design/")
-                    .or_else(|| args[2].split_once("/file/"))
-                    .and_then(|(_, rest)| rest.split('/').next())
-            });
-            let warnings = figlens::bundle::write(
-                &tree,
-                &path,
-                key,
-                name.as_deref(),
-                &id,
-                Path::new(out_path),
-            )?;
-            let line = serde_json::json!({ "nodeId": id, "path": out_path, "warnings": warnings });
-            writeln!(out, "{line}")?;
-        }
-        "export" => {
-            let id = normalize_id(args.get(2).ok_or(USAGE)?);
-            let out_path = Path::new(args.get(3).ok_or(USAGE)?);
-            if !tree.nodes.contains_key(figlens::export::root_of(&id)) {
-                return Err(format!(
-                    "node {id} not found; list ids with `figlens tree <file.fig> --depth 2`"
-                )
-                .into());
-            }
-            let format = figlens::export::Format::of(out_path)
-                .ok_or("the output must end in .png, .jpg, .webp or .avif")?;
-            let (mut scale, mut quality, mut max_kb) = (1.0_f64, 80, None);
-            let mut rest = args[4..].iter();
-            while let Some(arg) = rest.next() {
-                let mut value = || rest.next().ok_or(format!("{arg} needs a number"));
-                match arg.as_str() {
-                    "--scale" => scale = value()?.trim_end_matches('x').parse()?,
-                    "--quality" => quality = value()?.parse()?,
-                    "--max-kb" => max_kb = Some(value()?.parse::<usize>()?),
-                    _ => return Err(USAGE.into()),
-                }
-            }
-            if !(1..=100).contains(&quality) || scale.is_nan() || scale <= 0.0 {
-                return Err("--quality takes 1-100 and --scale a positive number".into());
-            }
-            let image = figlens::export::export(
-                &tree,
-                &path,
-                &id,
-                format,
-                scale,
-                quality,
-                max_kb.map(|kb| kb * 1024),
-            )?;
-            std::fs::write(out_path, &image.bytes)?;
-            let line = serde_json::json!({
-                "path": out_path,
-                "width": image.width,
-                "height": image.height,
-                "bytes": image.bytes.len(),
-                "quality": image.quality,
-            });
-            writeln!(out, "{line}")?;
+        "tree" | "node" | "nodes" | "variables" | "bundle" | "export" => {
+            let command = command::Command::from_cli(command, &args[2..], &tree)?;
+            out.push_str(&command.execute(&tree, &path)?.text()?);
         }
         "compare" => {
             // A `--frames` line may name the capture's variables.json as a third field.
@@ -403,7 +267,7 @@ const NODE: Param = (
     true,
     "a node id (12:345 or 12-345) or a Figma URL with ?node-id=",
 );
-/// Each tool runs the CLI command of the same name, so tools and commands cannot drift apart.
+/// CLI and tools share command execution and result formatting.
 const TOOLS: &[(&str, &str, &[Param])] = &[
     (
         "tree",
@@ -576,50 +440,88 @@ fn mcp_reply(line: &str) -> Option<serde_json::Value> {
     Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
 }
 
-/// Runs a tool as its CLI command; a failure is a tool result with isError, not a protocol error.
+/// A failure is a tool result with isError, not a protocol error.
 fn call_tool(params: &serde_json::Value) -> serde_json::Value {
     let name = params["name"].as_str().unwrap_or("");
     let result = match TOOLS.iter().find(|t| t.0 == name) {
         None => Err(format!("unknown tool {name}")),
         Some((_, _, tool_params)) => {
-            let mut args = vec![name.to_owned()];
-            for (key, flag, ..) in *tool_params {
-                let value = match &params["arguments"][key] {
-                    serde_json::Value::String(s) => s.clone(),
-                    serde_json::Value::Number(n) => n.to_string(),
-                    // A boolean is a bare flag.
-                    serde_json::Value::Bool(true) => {
-                        args.push(flag.to_string());
-                        continue;
-                    }
-                    _ => continue,
-                };
-                if !flag.is_empty() {
-                    args.push(flag.to_string());
-                }
-                args.push(value);
-            }
-            // shortcut: every call decodes the file again; cache the Tree if agents call in bursts.
-            let mut out = String::new();
             // A panic on one file must not stop the server.
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(args, &mut out))) {
-                Ok(Ok(())) => Ok(out),
-                Ok(Err(e)) => Err(e.to_string()),
-                Err(_) => Err("figlens crashed on this file".to_owned()),
-            }
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let arguments = &params["arguments"];
+                let direct = tool_params
+                    .iter()
+                    .all(|(key, _, kind, required, _)| match arguments.get(key) {
+                        None => !required,
+                        Some(value) => match *kind {
+                            "string" => value.is_string(),
+                            "boolean" => value.is_boolean(),
+                            _ => value.is_number(),
+                        },
+                    })
+                    && !matches!(
+                        (name, arguments["node"].as_str()),
+                        ("tree", Some("--depth" | "--json")) | ("bundle", Some("--frames"))
+                    );
+                if direct {
+                    let file = arguments["file"].as_str().ok_or(USAGE)?;
+                    let path = figlens::remote::local(file)?;
+                    let doc = Document::open(&path).map_err(|e| format!("{file}: {e}"))?;
+                    let message = doc.message()?;
+                    let tree = Tree::new(&message);
+                    command::Command::from_tool(name, arguments, &tree)?.execute(&tree, &path)
+                } else {
+                    // Preserve the old permissive coercions for arguments outside the tool schema.
+                    let mut args = vec![name.to_owned()];
+                    for (key, flag, ..) in *tool_params {
+                        let value = match &arguments[key] {
+                            serde_json::Value::String(s) => s.clone(),
+                            serde_json::Value::Number(n) => n.to_string(),
+                            serde_json::Value::Bool(true) => {
+                                args.push(flag.to_string());
+                                continue;
+                            }
+                            _ => continue,
+                        };
+                        if !flag.is_empty() {
+                            args.push(flag.to_string());
+                        }
+                        args.push(value);
+                    }
+                    let mut out = String::new();
+                    run(args, &mut out)?;
+                    Ok(command::Output::Text(out))
+                }
+            }))
+            .map_err(|_| "figlens crashed on this file".to_owned())
+            .and_then(|result: Result<command::Output, Box<dyn Error>>| {
+                result.map_err(|e| e.to_string())
+            })
         }
     };
+    tool_reply(name, result)
+}
+
+fn tool_reply(name: &str, result: Result<command::Output, String>) -> serde_json::Value {
+    let mut structured = None;
+    let result = result.and_then(|output| {
+        let text = output.text().map_err(|e| e.to_string())?;
+        if output_schema(name).is_some() {
+            structured = output.json().cloned().or_else(|| {
+                // Only legacy, out-of-schema calls still return untyped CLI text.
+                serde_json::from_str(&text).ok()
+            });
+        }
+        Ok(text)
+    });
     let (text, is_error) = match result {
         Ok(text) => (text, false),
         Err(text) => (text, true),
     };
-    let mut reply =
-        serde_json::json!({ "content": [{ "type": "text", "text": text }], "isError": is_error });
-    // Tools with an outputSchema print one JSON object; clients that read it get it parsed.
-    if !is_error
-        && output_schema(name).is_some()
-        && let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
-    {
+    let mut reply = serde_json::json!({
+        "content": [{ "type": "text", "text": text }], "isError": is_error
+    });
+    if let Some(value) = structured {
         reply["structuredContent"] = value;
     }
     reply
@@ -717,46 +619,6 @@ fn update() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn print_tree(
-    out: &mut String,
-    tree: &Tree,
-    id: &str,
-    level: usize,
-    depth: usize,
-) -> std::fmt::Result {
-    let (kind, name) = label(tree, id);
-    writeln!(out, "{}{} {} \"{}\"", "  ".repeat(level), id, kind, name)?;
-    if level < depth {
-        for child in tree.children.get(id).into_iter().flatten() {
-            print_tree(out, tree, child, level + 1, depth)?;
-        }
-    }
-    Ok(())
-}
-
-/// `tree --json`: the same nodes as `print_tree`, nested; `children` only where `depth` reaches.
-fn tree_json(tree: &Tree, id: &str, level: usize, depth: usize) -> serde_json::Value {
-    let (kind, name) = label(tree, id);
-    let mut node = serde_json::json!({ "id": id, "type": kind, "name": name });
-    if let Some(children) = tree.children.get(id).filter(|_| level < depth) {
-        node["children"] = children
-            .iter()
-            .map(|child| tree_json(tree, child, level + 1, depth))
-            .collect();
-    }
-    node
-}
-
-/// A node's type and name, as `tree` prints them.
-fn label<'a>(tree: &Tree<'a>, id: &str) -> (&'a str, &'a str) {
-    let node = tree.nodes[id];
-    let kind = match node.get("type") {
-        Some(kiwi_schema::Value::Enum(_, name)) => *name,
-        _ => "?",
-    };
-    (kind, node.get("name").map(|n| n.as_string()).unwrap_or(""))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -822,8 +684,17 @@ mod tests {
         );
         let tree = Tree::new(&message);
         assert_eq!(
-            tree_json(&tree, "0:0", 0, 1),
-            serde_json::json!({ "id": "0:0", "type": "FRAME", "name": "n0",
+            command::Command::from_cli(
+                "tree",
+                &["--depth".into(), "1".into(), "--json".into()],
+                &tree
+            )
+            .unwrap()
+            .execute(&tree, Path::new("unused.fig"))
+            .unwrap()
+            .json()
+            .unwrap(),
+            &serde_json::json!({ "id": "0:0", "type": "FRAME", "name": "n0",
                 "children": [{ "id": "0:1", "type": "FRAME", "name": "n1" }] })
         );
     }

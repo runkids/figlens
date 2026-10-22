@@ -4,12 +4,93 @@
 //! carries glyph outlines, all as command blobs, so no font files are needed. Everything is
 //! written in page coordinates; the SVG's viewBox picks the region.
 
+use std::collections::HashMap;
+use std::error::Error;
 use std::fmt::Write as _;
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
 
 use serde_json::Value as Json;
 
 use crate::Tree;
 use crate::expand::{Mat, Vec2};
+
+/// Expanded render input and original image bytes for one selected export node.
+pub(crate) struct Prepared {
+    pub document: Json,
+    pub images: HashMap<String, Vec<u8>>,
+    selected: String,
+}
+
+impl Prepared {
+    /// `root` is expanded first; an instance sublayer can then be selected by `id`.
+    pub fn new(tree: &Tree, fig: &Path, root: &str, id: &str) -> Result<Self, Box<dyn Error>> {
+        let document = crate::rest::render_nodes(tree, root);
+        let node = find(&document["document"], id).ok_or("node not found")?;
+        let images = images(fig, node)?;
+        Ok(Self {
+            document,
+            images,
+            selected: id.to_owned(),
+        })
+    }
+
+    pub fn node(&self) -> &Json {
+        find(&self.document["document"], &self.selected).expect("selected during preparation")
+    }
+
+    /// A raster export includes page/section backdrops and uses export bounds, not asset bounds.
+    pub fn export_svg(&self, tree: &Tree, scale: f64) -> Option<String> {
+        let n = self.node();
+        let area = export_area(n)?;
+        let lookup = |h: &str| self.images.get(h).cloned();
+        Some(
+            Svg::new(tree, &lookup)
+                .for_raster()
+                .backdrop(n, area)
+                .document(n, area, scale),
+        )
+    }
+}
+
+pub(crate) fn find<'j>(n: &'j Json, id: &str) -> Option<&'j Json> {
+    if n["id"] == id {
+        return Some(n);
+    }
+    n["children"].as_array()?.iter().find_map(|c| find(c, id))
+}
+
+/// The `images/<sha1>` bytes of every image fill under `document`, by imageRef.
+fn images(fig: &Path, document: &Json) -> Result<HashMap<String, Vec<u8>>, Box<dyn Error>> {
+    let mut zip = zip::ZipArchive::new(File::open(fig)?)?;
+    let mut images = HashMap::new();
+    let mut refs = Vec::new();
+    collect_refs(document, &mut refs);
+    for r in refs {
+        let mut bytes = Vec::new();
+        if let Ok(mut f) = zip.by_name(&format!("images/{r}")) {
+            f.read_to_end(&mut bytes)?;
+            images.insert(r, bytes);
+        }
+    }
+    Ok(images)
+}
+
+fn collect_refs(v: &Json, out: &mut Vec<String>) {
+    match v {
+        Json::Object(o) => {
+            if let Some(r) = o.get("imageRef").and_then(Json::as_str)
+                && !out.iter().any(|x| x == r)
+            {
+                out.push(r.to_owned());
+            }
+            o.values().for_each(|x| collect_refs(x, out));
+        }
+        Json::Array(a) => a.iter().for_each(|x| collect_refs(x, out)),
+        _ => {}
+    }
+}
 
 /// `[x0, y0, x1, y1]` in page coordinates.
 pub type Rect = [f64; 4];
@@ -1277,6 +1358,137 @@ pub fn render_bounds(n: &Json) -> Option<Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preparation_selects_an_expanded_sublayer_and_only_loads_its_images() {
+        use kiwi_schema::Value;
+        use std::io::Write;
+
+        let obj = |fields: Vec<(&'static str, Value<'static>)>| {
+            Value::Object("Test", fields.into_iter().collect())
+        };
+        let paint = |hash: &'static str| {
+            obj(vec![
+                ("type", Value::Enum("PaintType", "IMAGE")),
+                ("image", obj(vec![("hash", Value::String(hash.into()))])),
+            ])
+        };
+        let main = obj(vec![("type", Value::Enum("NodeType", "FRAME"))]);
+        let instance = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            (
+                "symbolData",
+                obj(vec![(
+                    "symbolID",
+                    obj(vec![
+                        ("sessionID", Value::UInt(2)),
+                        ("localID", Value::UInt(1)),
+                    ]),
+                )]),
+            ),
+        ]);
+        let child = obj(vec![
+            ("type", Value::Enum("NodeType", "RECTANGLE")),
+            (
+                "size",
+                obj(vec![("x", Value::Float(10.0)), ("y", Value::Float(20.0))]),
+            ),
+            (
+                "fillPaints",
+                Value::Array(vec![paint("present"), paint("missing"), paint("present")]),
+            ),
+        ]);
+        let sibling = obj(vec![
+            ("type", Value::Enum("NodeType", "RECTANGLE")),
+            ("fillPaints", Value::Array(vec![paint("unused")])),
+        ]);
+        let tree = Tree {
+            nodes: HashMap::from([
+                ("1:1".into(), &instance),
+                ("2:1".into(), &main),
+                ("2:2".into(), &child),
+                ("2:3".into(), &sibling),
+            ]),
+            children: HashMap::from([("2:1".into(), vec!["2:2".into(), "2:3".into()])]),
+            blobs: Vec::new(),
+        };
+        std::fs::create_dir_all("samples").unwrap();
+        let path = std::path::PathBuf::from(format!(
+            "samples/render-prep-test-{}.fig",
+            std::process::id()
+        ));
+        let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+        for hash in ["present", "unused"] {
+            zip.start_file(
+                format!("images/{hash}"),
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zip.write_all(hash.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        let prepared = Prepared::new(&tree, &path, "1:1", "I1:1;2:2").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(prepared.node()["id"], "I1:1;2:2");
+        assert!(prepared.node()["_r"].is_object());
+        assert_eq!(
+            prepared.images,
+            HashMap::from([("present".into(), b"present".to_vec())])
+        );
+        let pixels = pixmap(&prepared.export_svg(&tree, 2.0).unwrap()).unwrap();
+        assert_eq!((pixels.width(), pixels.height()), (20, 40));
+        assert_eq!(
+            Prepared::new(&tree, &path, "1:1", "absent")
+                .err()
+                .unwrap()
+                .to_string(),
+            "node not found"
+        );
+    }
+
+    #[test]
+    fn prepared_page_export_draws_backdrop_across_the_child_union() {
+        use kiwi_schema::Value;
+        let page = Value::Object(
+            "Test",
+            vec![
+                ("backgroundEnabled", Value::Bool(true)),
+                (
+                    "backgroundColor",
+                    Value::Object(
+                        "Color",
+                        vec![
+                            ("r", Value::Float(1.0)),
+                            ("g", Value::Float(0.0)),
+                            ("b", Value::Float(0.0)),
+                            ("a", Value::Float(1.0)),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    ),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let tree = Tree {
+            nodes: HashMap::from([("page".into(), &page)]),
+            children: Default::default(),
+            blobs: Vec::new(),
+        };
+        let prepared = Prepared {
+            document: serde_json::json!({ "document": {
+                "id": "page", "type": "CANVAS", "children": [{
+                    "absoluteRenderBounds": { "x": 5, "y": 7, "width": 10, "height": 20 }
+                }]
+            }}),
+            images: Default::default(),
+            selected: "page".into(),
+        };
+        let pixels = pixmap(&prepared.export_svg(&tree, 1.0).unwrap()).unwrap();
+        assert_eq!((pixels.width(), pixels.height()), (10, 20));
+        assert!(pixels.data().chunks_exact(4).all(|p| p == [255, 0, 0, 255]));
+    }
 
     #[test]
     fn filter_covers_the_unclipped_content_plus_three_sigma() {
