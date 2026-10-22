@@ -212,6 +212,8 @@ pre { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 11p
 .field:hover { box-shadow: inset 0 0 0 1px var(--border); }
 .field:focus-visible { outline: 2px solid var(--select); outline-offset: 1px; }
 .field.done { background: var(--ok-bg); }
+.field.link { cursor: pointer; }
+.field.link .v { color: var(--accent); }
 .field .k, .field .u { flex: none; color: var(--muted); }
 .field .v { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .swatch { flex: none; width: 14px; height: 14px; border-radius: 3px; box-shadow: inset 0 0 0 1px rgba(128,128,128,.4); }

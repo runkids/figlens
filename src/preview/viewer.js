@@ -449,6 +449,26 @@ if (typeof document !== 'undefined') {
             section.append(head, code);
             $('properties').append(section);
         }
+        // Prototype links: what this layer does when used, with the destination one click away.
+        const flows = payload?.interactions?.[n.id];
+        if (flows?.length) {
+            const section = el('section'), head = el('div'), list = el('div');
+            head.className = 'section-head';
+            head.append(el('h3', 'Prototype'));
+            list.className = 'fields';
+            for (const f of flows) {
+                const text = `${words(f.trigger || 'ON_CLICK').replace(/^On /, 'On ')} → ${words(f.action || 'NAVIGATE')}`;
+                const row = field('', f.targetName || 'No destination set', text, '', true);
+                if (f.target) {
+                    row.title = `Go to ${f.targetName}`;
+                    row.onclick = () => selectById(f.target, true).catch(e => status(e.message));
+                    row.classList.add('link');
+                }
+                list.append(row);
+            }
+            section.append(head, list);
+            $('properties').append(section);
+        }
         group('All node fields', [], clean(n));
     }
     // Multi-selection (Shift+click): `selection` holds every selected layer, `selected` the latest one,

@@ -79,6 +79,48 @@ fn catalog(tree: &Tree, id: &str) -> Value {
     out
 }
 
+/// Prototype interactions of every layer in a scope, from the raw `.fig` node (an expanded instance
+/// child reads its source layer): trigger, action and, when it exists, the destination and its name.
+fn interactions(tree: &Tree, n: &Value, out: &mut serde_json::Map<String, Value>) {
+    if let Some(id) = n["id"].as_str() {
+        let source = id.rsplit(';').next().unwrap_or(id).trim_start_matches('I');
+        let raw = tree
+            .nodes
+            .get(source)
+            .map(|v| crate::to_json(v))
+            .unwrap_or_default();
+        let list: Vec<Value> = raw["prototypeInteractions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|i| i["isDeleted"] != true)
+            .flat_map(|i| {
+                let trigger = i["event"]["interactionType"].clone();
+                i["actions"].as_array().into_iter().flatten().map(move |a| {
+                    let t = &a["transitionNodeID"];
+                    let target = format!("{}:{}", t["sessionID"], t["localID"]);
+                    let name = tree
+                        .nodes
+                        .get(&target)
+                        .map(|v| crate::to_json(v)["name"].clone());
+                    json!({
+                        "trigger": trigger,
+                        "action": a["navigationType"].as_str().or(a["connectionType"].as_str()),
+                        "target": name.is_some().then_some(target),
+                        "targetName": name,
+                    })
+                })
+            })
+            .collect();
+        if !list.is_empty() {
+            out.insert(id.to_owned(), Value::Array(list));
+        }
+    }
+    for child in n["children"].as_array().into_iter().flatten() {
+        interactions(tree, child, out);
+    }
+}
+
 /// Picking data for layers whose bounding box is not their shape: `[a, b, c, d, tx, ty, width,
 /// height, ellipse]`, the layer's absolute matrix and size, for rotated or skewed layers and ellipses.
 /// Axis-aligned boxes need nothing, which keeps the payload small.
@@ -137,6 +179,8 @@ fn data(tree: &Tree, file: &Path, id: &str, image: bool) -> Result<Value> {
     let p = Prepared::new(tree, file, crate::export::root_of(id), id)?;
     let area = render::export_area(p.node()).ok_or("node has no export area")?;
     let (mut geometry, mut paths) = (serde_json::Map::new(), serde_json::Map::new());
+    let mut prototype = serde_json::Map::new();
+    interactions(tree, p.node(), &mut prototype);
     pick_geometry(p.node(), &mut geometry);
     pick_paths(tree, p.node(), &mut paths, &mut (512 << 10));
     let mut doc = p.document.clone();
@@ -158,7 +202,7 @@ fn data(tree: &Tree, file: &Path, id: &str, image: bool) -> Result<Value> {
         None
     };
     Ok(
-        json!({"nodes":doc,"area":area,"geometry":geometry,"paths":paths,"variables":crate::variables::variables(tree,Some(p.node())),"assets":assets,
+        json!({"nodes":doc,"area":area,"geometry":geometry,"paths":paths,"interactions":prototype,"variables":crate::variables::variables(tree,Some(p.node())),"assets":assets,
         "image":png.map(|b|format!("data:image/png;base64,{}",render::base64(&b)))}),
     )
 }
