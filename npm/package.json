@@ -1,6 +1,6 @@
 {
   "name": "@runkids/figlens",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Read .fig designs offline. Local preview, CLI + MCP, and reviewed project component mappings for Pi.",
   "license": "MIT",
   "repository": {
@@ -25,7 +25,9 @@
     "pi/"
   ],
   "pi": {
-    "extensions": ["./pi/index.ts"],
+    "extensions": [
+      "./pi/index.ts"
+    ],
     "image": "https://raw.githubusercontent.com/runkids/figlens/main/assets/pi-demo-poster.png",
     "video": "https://raw.githubusercontent.com/runkids/figlens/main/assets/pi-demo.mp4"
   },
@@ -35,9 +37,15 @@
     "typebox": "*"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-coding-agent": { "optional": true },
-    "@earendil-works/pi-tui": { "optional": true },
-    "typebox": { "optional": true }
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
   },
   "engines": {
     "node": ">=18"
