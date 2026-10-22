@@ -6,10 +6,25 @@ function localBox(n, area) {
     const b = bounds(n);
     return b && {x: b.x - area[0], y: b.y - area[1], width: b.width, height: b.height};
 }
-function hits(nodes, area, x, y) {
-    return nodes.filter(n => n.visible !== false && n.absoluteRenderBounds !== null).filter(n => {
+// `geometry[id]` = [a, b, c, d, tx, ty, width, height, ellipse] for layers whose box is not their shape
+// (rotated or skewed, or an ellipse); the point is mapped back into the layer's own space.
+// `slop` (page units) widens a side thinner than twice itself, so zero-height lines stay pickable.
+function inShape(g, px, py, slop = 0) {
+    const [a, b, c, d, tx, ty, w, h, ellipse] = g, det = a * d - b * c;
+    if (!det) return true;
+    const dx = px - tx, dy = py - ty, u = (d * dx - c * dy) / det, v = (a * dy - b * dx) / det;
+    const su = w < slop * 2 ? slop : 0, sv = h < slop * 2 ? slop : 0;
+    if (ellipse && !su && !sv) return (u / w - .5) ** 2 + (v / h - .5) ** 2 <= .25;
+    return u >= -su && v >= -sv && u <= w + su && v <= h + sv;
+}
+// Groups have no shape of their own: Figma picks them only through their children.
+function hits(nodes, area, x, y, geometry = {}, slop = 0) {
+    return nodes.filter(n => n.visible !== false && n.absoluteRenderBounds !== null && n.type !== 'GROUP').filter(n => {
         const b = localBox(n, area);
-        return b && x >= b.x && y >= b.y && x <= b.x + b.width && y <= b.y + b.height;
+        if (!b || x < b.x - slop || y < b.y - slop || x > b.x + b.width + slop || y > b.y + b.height + slop) return false;
+        const thin = b.width < slop * 2 || b.height < slop * 2;
+        if (!geometry[n.id]) return thin || (x >= b.x && y >= b.y && x <= b.x + b.width && y <= b.y + b.height);
+        return inShape(geometry[n.id], x + area[0], y + area[1], slop);
     }).reverse();
 }
 if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits};
@@ -617,7 +632,7 @@ if (typeof document !== 'undefined') {
     // Figma's selection model: a click picks the layer at the current level (a direct child of the frame
     // when nothing inside it is selected), double-click goes one level deeper, ⌘/Ctrl-click picks the deepest.
     function pickAt(x, y, mode) {
-        const deepest = payload && hits(nodes, origin, x, y)[0];
+        const deepest = payload && hits(nodes, origin, x, y, payload.geometry, 3 / zoom)[0];
         if (!deepest) return null;
         if (mode === 'deep') return deepest;
         const chain = [];
@@ -1158,7 +1173,7 @@ if (typeof document !== 'undefined') {
         if (!payload) return;
         e.preventDefault();
         const w = $('workspace').getBoundingClientRect(), [x, y] = stagePoint(e);
-        const list = hits(nodes, origin, x, y);
+        const list = hits(nodes, origin, x, y, payload.geometry, 3 / zoom);
         $('picker').replaceChildren(...list.map(n => layerButton(n, () => { select(n, true); $('picker').replaceChildren(); })));
         Object.assign($('picker').style, {
             left: Math.min(e.clientX - w.left, w.width - 230) + 'px', top: Math.min(e.clientY - w.top, w.height * .6) + 'px',
@@ -1333,7 +1348,7 @@ if (typeof document !== 'undefined') {
         link: () => location.href,
         deselect,
         layersAt(x, y) {
-            return hits(nodes, origin, x - origin[0], y - origin[1]).map(summary);
+            return hits(nodes, origin, x - origin[0], y - origin[1], payload?.geometry, 3 / zoom).map(summary);
         },
         search(query) {
             const q = String(query).toLowerCase(), source = catalog ? flat(catalog) : nodes;
