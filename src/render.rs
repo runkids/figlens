@@ -1412,11 +1412,8 @@ mod tests {
             children: HashMap::from([("2:1".into(), vec!["2:2".into(), "2:3".into()])]),
             blobs: Vec::new(),
         };
-        std::fs::create_dir_all("samples").unwrap();
-        let path = std::path::PathBuf::from(format!(
-            "samples/render-prep-test-{}.fig",
-            std::process::id()
-        ));
+        let dir = crate::test_support::TestDir::new();
+        let path = dir.join("input.fig");
         let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
         for hash in ["present", "unused"] {
             zip.start_file(
@@ -1428,7 +1425,6 @@ mod tests {
         }
         zip.finish().unwrap();
         let prepared = Prepared::new(&tree, &path, "1:1", "I1:1;2:2").unwrap();
-        std::fs::remove_file(&path).unwrap();
         assert_eq!(prepared.node()["id"], "I1:1;2:2");
         assert!(prepared.node()["_r"].is_object());
         assert_eq!(

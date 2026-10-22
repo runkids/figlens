@@ -1,20 +1,17 @@
 use crate::{call_tool, run};
 use std::io::Write as _;
 
-struct Fixture(std::path::PathBuf);
+#[path = "../test_support.rs"]
+mod test_support;
+use test_support::TestDir;
+
+struct Fixture(TestDir);
 
 impl Fixture {
     fn new() -> Self {
         use kiwi_schema::{Def, DefKind, Field, Schema, TYPE_FLOAT, TYPE_STRING, TYPE_UINT, Value};
         use std::collections::HashMap;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let dir = std::path::PathBuf::from(format!(
-            "samples/command-tests-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new();
         let field = |name: &str, type_id, value, is_array| Field {
             name: name.into(),
             type_id,
@@ -141,10 +138,27 @@ impl Fixture {
     }
 }
 
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+fn assert_bundle(path: &str) {
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_reader(zip.by_name("manifest.json").unwrap()).unwrap();
+    assert_eq!(manifest["root"]["name"], "Renamed");
+    assert_eq!(manifest["source"]["fileKey"], "Key");
+    assert_eq!(manifest["source"]["nodeId"], "0:1");
+    for entry in [
+        "design/nodes.json",
+        "design/variables.json",
+        "references/screen.png",
+        "assets.json",
+        "missing-assets.json",
+        "context.md",
+    ] {
+        assert!(zip.by_name(entry).is_ok(), "missing {entry}");
     }
+    let nodes: serde_json::Value =
+        serde_json::from_reader(zip.by_name("design/nodes.json").unwrap()).unwrap();
+    assert_eq!(nodes["document"]["id"], "0:1");
+    assert!(!nodes.to_string().contains("\"_r\""));
 }
 
 #[test]
@@ -206,6 +220,11 @@ fn cli_and_mcp_success_results_match() {
         argv.extend(cli);
         let mut text = String::new();
         run(argv, &mut text).unwrap();
+        if name == "bundle" {
+            let path = arguments["out"].as_str().unwrap();
+            assert_bundle(path);
+            std::fs::remove_file(path).unwrap();
+        }
         let reply = call_tool(&serde_json::json!({"name": name, "arguments": arguments}));
         assert_eq!(reply["isError"], false, "{name}: {reply}");
         assert_eq!(reply["content"][0]["text"], text, "{name}");
@@ -233,13 +252,148 @@ fn cli_and_mcp_success_results_match() {
                     assert_eq!(value["nodeId"], "0:1");
                     assert!(value["warnings"].is_array());
                     assert_eq!(reply["structuredContent"], value);
-                    assert!(std::fs::File::open(arguments["out"].as_str().unwrap()).is_ok());
+                    assert_bundle(arguments["out"].as_str().unwrap());
                 }
                 _ => unreachable!(),
             }
         }
         if !matches!(name, "bundle" | "export") {
             assert!(reply.get("structuredContent").is_none());
+        }
+    }
+}
+
+#[test]
+fn variables_commands_distinguish_local_variables_from_frame_bindings() {
+    use super::Command;
+    use figlens::Tree;
+    use kiwi_schema::Value;
+    use std::collections::HashMap;
+    use std::path::Path;
+
+    let obj = |fields: Vec<(&'static str, Value<'static>)>| {
+        Value::Object("Test", fields.into_iter().collect())
+    };
+    let guid = |id| {
+        obj(vec![
+            ("sessionID", Value::UInt(0)),
+            ("localID", Value::UInt(id)),
+        ])
+    };
+    let reference = |id| obj(vec![("guid", guid(id))]);
+    let frame = obj(vec![
+        ("guid", guid(1)),
+        ("type", Value::Enum("NodeType", "FRAME")),
+        ("parentIndex", reference(2)),
+        (
+            "parameterConsumptionMap",
+            obj(vec![(
+                "entries",
+                Value::Array(vec![obj(vec![
+                    (
+                        "variableField",
+                        Value::Enum("VariableField", "STACK_SPACING"),
+                    ),
+                    (
+                        "variableData",
+                        obj(vec![
+                            ("dataType", Value::Enum("VariableDataType", "ALIAS")),
+                            ("value", obj(vec![("alias", reference(4))])),
+                        ]),
+                    ),
+                ])]),
+            )]),
+        ),
+    ]);
+    let canvas = obj(vec![("type", Value::Enum("NodeType", "CANVAS"))]);
+    let set = obj(vec![
+        ("guid", guid(3)),
+        ("type", Value::Enum("NodeType", "VARIABLE_SET")),
+        ("name", Value::String("Spacing".into())),
+        (
+            "variableSetModes",
+            Value::Array(vec![obj(vec![
+                ("id", guid(6)),
+                ("name", Value::String("Default".into())),
+            ])]),
+        ),
+    ]);
+    let variable = |id, name: &str, position: &str, number| {
+        obj(vec![
+            ("guid", guid(id)),
+            ("type", Value::Enum("NodeType", "VARIABLE")),
+            ("name", Value::String(name.into())),
+            ("sortPosition", Value::String(position.into())),
+            (
+                "variableResolvedType",
+                Value::Enum("VariableResolvedType", "FLOAT"),
+            ),
+            ("variableSetID", reference(3)),
+            (
+                "variableDataValues",
+                obj(vec![(
+                    "entries",
+                    Value::Array(vec![obj(vec![
+                        ("modeID", guid(6)),
+                        (
+                            "variableData",
+                            obj(vec![
+                                ("dataType", Value::Enum("VariableDataType", "FLOAT")),
+                                ("value", obj(vec![("floatValue", Value::Float(number))])),
+                            ]),
+                        ),
+                    ])]),
+                )]),
+            ),
+        ])
+    };
+    let used = variable(4, "Used", "a", 8.0);
+    let unused = variable(5, "Unused", "b", 16.0);
+    let tree = Tree {
+        nodes: HashMap::from([
+            ("0:1".into(), &frame),
+            ("0:2".into(), &canvas),
+            ("0:3".into(), &set),
+            ("0:4".into(), &used),
+            ("0:5".into(), &unused),
+        ]),
+        children: HashMap::from([
+            ("0:0".into(), vec!["0:2".into()]),
+            (
+                "0:2".into(),
+                vec!["0:1".into(), "0:3".into(), "0:4".into(), "0:5".into()],
+            ),
+        ]),
+        blobs: Vec::new(),
+    };
+    for (cli, arguments, expected) in [
+        (
+            vec![],
+            serde_json::json!({}),
+            vec!["VariableID:0:4", "VariableID:0:5"],
+        ),
+        (
+            vec!["0-1".into()],
+            serde_json::json!({"node": "0-1"}),
+            vec!["VariableID:0:4"],
+        ),
+    ] {
+        for command in [
+            Command::from_cli("variables", &cli, &tree).unwrap(),
+            Command::from_tool("variables", &arguments, &tree).unwrap(),
+        ] {
+            let output = command.execute(&tree, Path::new("unused.fig")).unwrap();
+            let value = output.json().unwrap();
+            let ids: Vec<_> = value["variables"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v["id"].as_str().unwrap())
+                .collect();
+            assert_eq!(ids, expected);
+            assert_eq!(value["variables"][0]["valuesByMode"]["0:6"], 8.0);
+            assert_eq!(value["collections"][0]["id"], "VariableCollectionId:0:3");
+            assert_eq!(value["missingVariables"], serde_json::json!([]));
         }
     }
 }

@@ -21,6 +21,9 @@ pub mod render;
 pub mod rest;
 pub mod variables;
 
+#[cfg(test)]
+mod test_support;
+
 const MAGIC: &[u8; 8] = b"fig-kiwi";
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
 

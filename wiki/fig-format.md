@@ -12,6 +12,10 @@ How figlens turns a `.fig` into REST-shaped JSON, a bundle and renders. Load thi
 
 "The plugin" below means Figma's own REST export from the plugin API (`node.exportAsync({ format: "JSON_REST_V1" })`), the shape figlens matches; a "capture" is that export plus the plugin's image, SVG and PNG exports of the same frame. "The sweep" is the 826-frame comparison of figlens against captures of one large production file (see the `accuracy` topic).
 
+## Test fixtures
+
+Create a `TestDir` from `src/test_support.rs` before writing generated fixtures under `samples/`, and keep the guard alive through the assertions. It atomically claims a directory, retries occupied names and removes only its own directory on drop. Docker containers share this mount but can reuse PIDs, so a PID and process-local counter alone do not establish ownership. Library tests use the test-only module; binary command tests include the same source with `#[path]`.
+
 ## Running the CLI
 
 ```bash
