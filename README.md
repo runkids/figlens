@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="figlens" width="360">
+  <img src="assets/logo.png" alt="figlens" width="220">
 </p>
 
 <h1 align="center">Build UI anywhere. Just bring a .fig.</h1>
@@ -16,8 +16,29 @@
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick start</a> · <a href="#the-design-bundle">Inside the bundle</a> · <a href="#how-close-is-it-to-figma">Accuracy</a> · <a href="#for-ai-agents">Connect your agent</a>
+  <a href="#from-a-local-fig-to-working-html">Watch the demo</a> · <a href="#quick-start">Quick start</a> · <a href="#how-close-is-it-to-figma">Accuracy</a> · <a href="#for-ai-agents">Connect your agent</a>
 </p>
+
+## From a local .fig to working HTML
+
+[![Pi builds a working interface from a local Figma file, with a live preview beside the terminal](assets/demo-8x.gif)](assets/demo-8x.mp4)
+
+**[Watch the video](assets/demo-8x.mp4)** · 45-second time-lapse, **8× speed**. A real Pi session in Orca: read the local design, build HTML/CSS, then try the Share dialog and composer in the live preview. The interface uses 19 SVG icons from the bundle; it is HTML, not a flattened screenshot.
+
+| This example | Measured result |
+|---|---|
+| Local `.fig` file | 57.5 MiB |
+| Selected frame | 153 nodes, 25 SVG assets, no missing assets |
+| Extract the design bundle | **0.47 s median** over five warm runs |
+
+The timing measures `figlens bundle`, **not the AI's implementation time**. Measured with figlens 0.1.2 in an ARM64 Docker container; see the [commands, individual runs and recording notes](wiki/accuracy.md#local-design-to-html-demo). Pi writes the code; figlens supplies the design data. The AI provider still uses a network connection.
+
+<details>
+<summary>Design credit and demo limitations</summary>
+
+The “List views” frame comes from [MCP Apps for Claude (Community)](https://www.figma.com/community/file/1597641111449594397/mcp-apps-for-claude). The demo uses system sans and Georgia because the original Anthropic fonts are not bundled. Share opens a local dialog; replies stay in the page and reset on reload. The recording uses snapshots of the real Orca window, so motion is less smooth than a native video capture.
+
+</details>
 
 ## One .fig file is the design handoff
 
