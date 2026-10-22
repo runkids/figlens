@@ -14,11 +14,3 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 | `ai-context` | Maintaining this router: add, move or split docs, fix `check` | `ai-context.md` |
 
 `wiki/ai-context.json` is the only source of truth. This table is the human entry point. After changing topics, run `python3 scripts/ai-context.py check`.
-
-## History (milestone logs; read on demand)
-
-| File | Contents |
-|---|---|
-| [Shared command execution and rendering preparation](history/command-render-preparation.md) | CLI/MCP command results, shared raster preparation and behavior-preservation evidence |
-| [Agent discovery and inline images](history/agent-discovery.md) | Search, bounded layout summaries and MCP image content; verification on two local designs |
-| [Read-only preview and agent handoff](history/preview-viewer.md) | Local browsing, selectable offline HTML, real bundles, visual comparison and save-refresh verification |

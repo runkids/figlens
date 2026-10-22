@@ -6,8 +6,7 @@ usage: ai-context.py list | <topic> [<topic>...] | check
 Topics live in wiki/ai-context.json. A source is a whole file or one exact
 heading (the section runs to the next heading of the same or higher level).
 check also fails on orphans, so docs cannot silently drift out of the router:
-wiki pages no topic loads, history files missing from the router index, and
-nested AGENTS.md files no topic loads. List deliberate exceptions under
+wiki pages no topic loads and nested AGENTS.md files no topic loads. List deliberate exceptions under
 "unrouted" in the config, each with a reason.
 Copy this file to <repo>/scripts/ai-context.py; the repo root is its parent's parent.
 No dependencies beyond the Python 3.8+ standard library.
@@ -71,12 +70,10 @@ def render(cfg, name):
 def orphans(cfg):
     """Docs that exist on disk but that no agent can reach through the router."""
     wiki = cfg.get('wikiDir', 'wiki')
-    history = cfg.get('historyDir', f'{wiki}/history')
     router = cfg.get('routerFile', f'{wiki}/README.md')
     root_file = cfg.get('rootInstructions', 'AGENTS.md')
     routed = {s['path'].replace('\\', '/') for t in cfg['topics'].values() for s in t['sources']}
     allowed = {p.replace('\\', '/') for p in cfg.get('unrouted', {})}
-    router_text = open(os.path.join(ROOT, router), encoding='utf-8').read() if os.path.exists(os.path.join(ROOT, router)) else ''
     bad = []
     skip = {'.git', 'node_modules', 'dist', 'build', 'vendor', '.venv', 'target'}
     for d, dirs, files in os.walk(ROOT):
@@ -85,10 +82,7 @@ def orphans(cfg):
             rel = os.path.relpath(os.path.join(d, f), ROOT).replace(os.sep, '/')
             if rel in allowed or not f.endswith('.md'):
                 continue
-            if rel.startswith(history + '/'):
-                if os.path.relpath(rel, wiki).replace(os.sep, '/') not in router_text and rel not in router_text:
-                    bad.append(f'{rel}: history file not indexed in {router}')
-            elif rel.startswith(wiki + '/'):
+            if rel.startswith(wiki + '/'):
                 if rel != router and rel not in routed:
                     bad.append(f'{rel}: wiki page no topic loads (map it, or list it under "unrouted" with a reason)')
             elif f == 'AGENTS.md' and rel != root_file and rel not in routed:
