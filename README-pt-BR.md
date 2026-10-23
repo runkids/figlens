@@ -315,7 +315,7 @@ Os binários cobrem macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl est
 | `mcp` | Servidor MCP local por stdio |
 | `update` | Substitui o binário pela release mais recente |
 
-`find` busca camadas salvas e retorna IDs, caminhos dos ancestrais, tamanhos locais e prévias de texto. `inspect` expande instâncias e limita a saída a 200 nós e 200 caracteres por texto; `truncated` e `textTruncated` indicam omissões. Cada chamada ainda decodifica o arquivo inteiro.
+`find` busca camadas salvas e retorna IDs, caminhos dos ancestrais, tamanhos locais e prévias de texto. `inspect` expande instâncias e limita a saída a 200 nós e 200 caracteres por texto; `truncated` e `textTruncated` indicam omissões. Cada chamada da CLI decodifica o arquivo; o servidor MCP mantém o arquivo analisado entre chamadas até ele mudar no disco.
 
 `<file>` também aceita `gs://bucket/object`, baixado com seu login do `gcloud` e armazenado em cache. Execute `figlens --help` para ver o uso.
 

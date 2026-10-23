@@ -311,7 +311,7 @@ Release 可执行文件支援 macOS（Apple silicon、Intel）、Linux（arm64�
 | `mcp` | 通过 stdio 执行的本地 MCP server |
 | `update` | 以最新 release 取代可执行文件 |
 
-`find` 搜索保存的图层，返回 ID、祖先路径、本地尺寸与文字预览。`inspect` 展开 instance，输出上限为 200 个节点与每段文字 200 个字符；`truncated` 和 `textTruncated` 标示省略内容。每次调用仍会解码整份文件。
+`find` 搜索保存的图层，返回 ID、祖先路径、本地尺寸与文字预览。`inspect` 展开 instance，输出上限为 200 个节点与每段文字 200 个字符；`truncated` 和 `textTruncated` 标示省略内容。CLI 每次调用都会解码文件；MCP server 会在调用之间保留已解析的文件，直到磁盘上的文件改变。
 
 `<file>` 也可使用 `gs://bucket/object`，通过你的 `gcloud` 登录下载并缓存。用法请执行 `figlens --help`。
 

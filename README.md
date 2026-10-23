@@ -285,7 +285,7 @@ Release binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, stati
 | `mcp` | Local MCP server over stdio |
 | `update` | Replace the binary with the latest release |
 
-`find` searches stored layers and returns ids, ancestor paths, local sizes and text previews. `inspect` expands instances and caps output at 200 nodes and 200 characters per text; `truncated` and `textTruncated` identify omissions. Each call still decodes the file.
+`find` searches stored layers and returns ids, ancestor paths, local sizes and text previews. `inspect` expands instances and caps output at 200 nodes and 200 characters per text; `truncated` and `textTruncated` identify omissions. Each CLI call decodes the file; the MCP server keeps the parsed file across calls until it changes on disk.
 
 `<file>` can also be `gs://bucket/object`, downloaded with your `gcloud` login and cached. Run `figlens --help` for usage.
 

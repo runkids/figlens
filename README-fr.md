@@ -313,7 +313,7 @@ Les binaires couvrent macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl s
 | `mcp` | Serveur MCP local via stdio |
 | `update` | Remplace le binaire par la dernière release |
 
-`find` cherche les calques enregistrés et retourne identifiants, chemins des ancêtres, dimensions locales et aperçus du texte. `inspect` développe les instances et limite la sortie à 200 nœuds et 200 caractères par texte ; `truncated` et `textTruncated` signalent les omissions. Chaque appel décode tout le fichier.
+`find` cherche les calques enregistrés et retourne identifiants, chemins des ancêtres, dimensions locales et aperçus du texte. `inspect` développe les instances et limite la sortie à 200 nœuds et 200 caractères par texte ; `truncated` et `textTruncated` signalent les omissions. Chaque appel de la CLI décode le fichier ; le serveur MCP conserve le fichier analysé entre les appels jusqu'à ce qu'il change sur le disque.
 
 `<file>` accepte aussi `gs://bucket/object`, téléchargé avec votre connexion `gcloud` et mis en cache. Lancez `figlens --help` pour l'aide.
 

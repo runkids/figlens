@@ -311,7 +311,7 @@ Release 執行檔支援 macOS（Apple silicon、Intel）、Linux（arm64、x86_6
 | `mcp` | 透過 stdio 執行的本機 MCP server |
 | `update` | 以最新 release 取代執行檔 |
 
-`find` 搜尋儲存的圖層，回傳 ID、祖先路徑、本機尺寸與文字預覽。`inspect` 展開 instance，輸出上限為 200 個節點與每段文字 200 個字元；`truncated` 和 `textTruncated` 標示省略內容。每次呼叫仍會解碼整份檔案。
+`find` 搜尋儲存的圖層，回傳 ID、祖先路徑、本機尺寸與文字預覽。`inspect` 展開 instance，輸出上限為 200 個節點與每段文字 200 個字元；`truncated` 和 `textTruncated` 標示省略內容。CLI 每次呼叫都會解碼檔案；MCP server 會在呼叫之間保留已解析的檔案，直到磁碟上的檔案改變。
 
 `<file>` 也可使用 `gs://bucket/object`，透過你的 `gcloud` 登入下載並快取。用法請執行 `figlens --help`。
 
