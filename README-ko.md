@@ -199,7 +199,7 @@ npx @runkids/figlens export design.fig 12:345 icon.svg
 npx @runkids/figlens export design.fig 12:345 hero.webp --scale 2 --quality 80
 ```
 
-SVG 내보내기는 프레임, 그룹, 아이콘, 정확한 인스턴스 하위 레이어를 지원합니다. 선택한 하위 트리는 원본 이미지 채우기와 글리프 윤곽선 텍스트를 포함한 독립 SVG가 됩니다. 번들 압축 해제는 필요 없습니다. SVG는 원래 크기를 유지하며 `--scale`과 `--quality`는 래스터 형식에만 적용됩니다.
+SVG 내보내기는 프레임, 그룹, 아이콘, 정확한 인스턴스 하위 레이어를 지원합니다. 선택한 하위 트리는 원본 이미지 채우기와 글리프 윤곽선 텍스트를 포함한 독립 SVG가 됩니다. 번들 압축 해제는 필요 없습니다. SVG는 원래 크기를 유지하며 `--scale`과 `--quality`는 래스터 형식에만 적용됩니다. MCP를 통한 래스터 내보내기는 `maxSize`(기본 긴 변 1600px, 0이면 해제)에 맞게 축소되어 인라인 이미지가 작게 유지됩니다.
 
 <a id="how-close-is-it-to-figma"></a>
 
@@ -277,6 +277,8 @@ claude mcp add figlens -- npx -y @runkids/figlens mcp
 { "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
+서버를 특정 폴더로 제한하려면 `--root`를 추가합니다: `"args": ["mcp", "--root", "/path/to/designs"]`. 도구 호출이 지정하는 모든 `file`과 출력 경로는 루트 중 하나 아래에 있어야 하며, 폴더를 더 추가하려면 `--root`를 반복합니다. 인수가 도구 스키마를 벗어나는 호출도 거부되는데, 레거시 인수 변환이 그중 어느 것이든 경로로 바꿀 수 있기 때문입니다.
+
 서버는 로컬에서 stdio로 실행되며 `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle`, `export`를 제공합니다. 도구에는 절대 경로를 전달하세요. 상대 경로는 클라이언트가 figlens를 시작한 디렉터리를 기준으로 해석합니다.
 
 먼저 `find`와 `inspect`로 프레임을 선택하세요. `export`는 파일을 저장하고 메타데이터를 반환합니다. 래스터 형식은 MCP 이미지 콘텐츠도 반환하므로 에이전트가 로컬 파일을 열지 않고 디자인을 볼 수 있습니다. SVG는 메타데이터만 반환합니다. PNG는 클라이언트 지원이 가장 넓으며 큰 프레임에는 `scale`을 줄이세요. `find`, `inspect`, `bundle`, `export`는 구조화된 JSON도 반환합니다.
@@ -308,7 +310,7 @@ Node.js 18+에서 `npx @runkids/figlens`를 사용하거나 독립 CLI를 설치
 | `variables <file> [node]` | 프레임에 연결된 변수. 노드 없이 실행하면 모든 로컬 변수 |
 | `bundle <file> <node> <out.zip>` | 한 프레임의 디자인 번들. `{nodeId, path, warnings}` 반환 |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | 한 번 디코딩해 여러 번들을 병렬 생성. 프레임당 위 형식 또는 `{nodeId, error}`의 JSON 한 줄 |
-| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | SVG, PNG, JPG, WebP, AVIF. `--max-kb`는 손실 품질을 낮춰 크기를 맞춤. PNG/SVG는 한도 초과 시 실패. `{path, width, height, bytes, quality}` 반환 |
+| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP, AVIF. `--max-kb`는 손실 품질을 낮춰 크기를 맞춤. PNG/SVG는 한도 초과 시 실패. `{path, width, height, bytes, quality}` 반환 |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 로컬 읽기 전용 뷰어. `--out`은 노드가 필요하며 독립 오프라인 스냅샷 생성 |
 | `compare <file> <nodes.json> <node>` | 같은 프레임의 REST 내보내기와 차이 비교 |
 | `node <file> <node>` | 원시 `.fig` 노드 하나 |

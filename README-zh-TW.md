@@ -199,7 +199,7 @@ npx @runkids/figlens export design.fig 12:345 icon.svg
 npx @runkids/figlens export design.fig 12:345 hero.webp --scale 2 --quality 80
 ```
 
-SVG 匯出支援 frame、群組、圖示與精確的 instance 子圖層：選取的子樹會產生單一獨立 SVG，嵌入原始填色圖片，文字以字形輪廓表示。不需解壓 bundle。SVG 維持原始尺寸；`--scale` 與 `--quality` 僅適用點陣格式。
+SVG 匯出支援 frame、群組、圖示與精確的 instance 子圖層：選取的子樹會產生單一獨立 SVG，嵌入原始填色圖片，文字以字形輪廓表示。不需解壓 bundle。SVG 維持原始尺寸；`--scale` 與 `--quality` 僅適用點陣格式。透過 MCP 匯出的點陣圖會縮小到 `maxSize` 以內（預設最長邊 1600 px，0 表示不限制），讓內嵌圖片保持小巧。
 
 <a id="how-close-is-it-to-figma"></a>
 
@@ -273,6 +273,8 @@ claude mcp add figlens -- npx -y @runkids/figlens mcp
 { "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
+要把 server 限制在指定資料夾內，加上 `--root`：`"args": ["mcp", "--root", "/path/to/designs"]`。之後工具呼叫指定的每個 `file` 與輸出路徑都必須位於某個 root 之下；多個資料夾可重複 `--root`。參數不符合工具 schema 的呼叫也會被拒絕，因為舊的參數轉換可能把任一參數當成路徑。
+
 Server 在本機透過 stdio 執行，提供 `tree`、`find`、`inspect`、`nodes`、`variables`、`bundle` 與 `export`。工具請使用絕對路徑：相對路徑以 client 啟動 figlens 的目錄為準。
 
 先用 `find` 與 `inspect` 選擇 frame。`export` 儲存檔案並回傳 metadata。點陣格式也會回傳 MCP 圖片內容，因此 agent 不需開啟本機檔案就能看見設計；SVG 僅回傳 metadata。PNG 的 client 支援最廣，大型 frame 可降低 `scale`。`find`、`inspect`、`bundle` 與 `export` 也會回傳結構化 JSON。
@@ -304,7 +306,7 @@ Release 執行檔支援 macOS（Apple silicon、Intel）、Linux（arm64、x86_6
 | `variables <file> [node]` | frame 綁定的變數；未指定節點時輸出所有本機變數 |
 | `bundle <file> <node> <out.zip>` | 單一 frame 的設計 bundle；回傳 `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | 解碼一次，平行產生多個 bundle；每個 frame 輸出一行 JSON，格式同上或 `{nodeId, error}` |
-| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | SVG、PNG、JPG、WebP 或 AVIF；`--max-kb` 降低有損品質至符合大小；PNG/SVG 超限會失敗；回傳 `{path, width, height, bytes, quality}` |
+| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG、PNG、JPG、WebP 或 AVIF；`--max-kb` 降低有損品質至符合大小；PNG/SVG 超限會失敗；回傳 `{path, width, height, bytes, quality}` |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 本機唯讀 viewer；`--out` 需指定節點，產生獨立離線快照 |
 | `compare <file> <nodes.json> <node>` | 與同一 frame 的 REST 匯出比較差異 |
 | `node <file> <node>` | 單一原始 `.fig` 節點 |

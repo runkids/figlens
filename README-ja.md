@@ -199,7 +199,7 @@ npx @runkids/figlens export design.fig 12:345 icon.svg
 npx @runkids/figlens export design.fig 12:345 hero.webp --scale 2 --quality 80
 ```
 
-SVG 書き出しはフレーム、グループ、アイコン、正確なインスタンスのサブレイヤーに対応します。選択したサブツリーが単独の SVG になり、元の画像フィルを埋め込み、テキストはグリフの輪郭になります。bundle の展開は不要です。SVG の寸法は元のままで、`--scale` と `--quality` はラスター形式にのみ適用されます。
+SVG 書き出しはフレーム、グループ、アイコン、正確なインスタンスのサブレイヤーに対応します。選択したサブツリーが単独の SVG になり、元の画像フィルを埋め込み、テキストはグリフの輪郭になります。bundle の展開は不要です。SVG の寸法は元のままで、`--scale` と `--quality` はラスター形式にのみ適用されます。MCP 経由のラスター書き出しは `maxSize`（既定で長辺 1600 px、0 で無効）に収まるよう縮小され、インライン画像が大きくなりません。
 
 <a id="how-close-is-it-to-figma"></a>
 
@@ -277,6 +277,8 @@ claude mcp add figlens -- npx -y @runkids/figlens mcp
 { "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
+サーバーを特定のフォルダーに限定するには `--root` を付けます: `"args": ["mcp", "--root", "/path/to/designs"]`。ツール呼び出しが指定する `file` と出力パスはすべていずれかのルート配下である必要があります。フォルダーを増やすには `--root` を繰り返します。引数がツールのスキーマから外れる呼び出しも拒否されます。旧来の引数変換ではどの引数もパスになり得るためです。
+
 サーバーはローカルの stdio で動作し、`tree`、`find`、`inspect`、`nodes`、`variables`、`bundle`、`export` を公開します。ツールには絶対パスを渡してください。相対パスはクライアントが figlens を起動したディレクトリを基準に解決されます。
 
 まず `find` と `inspect` でフレームを選択します。`export` はファイルを保存してメタデータを返します。ラスター形式は MCP 画像コンテンツも返すため、エージェントはローカルファイルを開かずにデザインを見られます。SVG はメタデータのみです。PNG はクライアントの対応が最も広く、大きなフレームでは `scale` を下げてください。`find`、`inspect`、`bundle`、`export` は構造化 JSON も返します。
@@ -308,7 +310,7 @@ Node.js 18+ で `npx @runkids/figlens` を使うか、単体の CLI をインス
 | `variables <file> [node]` | フレームのバインド変数。ノード指定なしなら全ローカル変数 |
 | `bundle <file> <node> <out.zip>` | 単一フレームの bundle。`{nodeId, path, warnings}` を返す |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | 一度のデコードで複数 bundle を並列作成。フレームごとに上記または `{nodeId, error}` の JSON を 1 行出力 |
-| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | SVG、PNG、JPG、WebP、AVIF。`--max-kb` は非可逆品質を下げてサイズに合わせる。PNG/SVG は超過時に失敗。`{path, width, height, bytes, quality}` を返す |
+| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG、PNG、JPG、WebP、AVIF。`--max-kb` は非可逆品質を下げてサイズに合わせる。PNG/SVG は超過時に失敗。`{path, width, height, bytes, quality}` を返す |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | ローカルの読み取り専用ビューアー。`--out` はノード指定が必要で、単独のオフラインスナップショットを作成 |
 | `compare <file> <nodes.json> <node>` | 同じフレームの REST 書き出しとの差分 |
 | `node <file> <node>` | 未加工の `.fig` ノード一つ |

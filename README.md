@@ -181,7 +181,7 @@ npx @runkids/figlens export design.fig 12:345 icon.svg
 npx @runkids/figlens export design.fig 12:345 hero.webp --scale 2 --quality 80
 ```
 
-SVG exports work for frames, groups, icons and exact instance sublayers: one selected subtree becomes one standalone SVG, with original image fills embedded and text as glyph outlines. No bundle extraction needed. SVG keeps its original dimensions; `--scale` and `--quality` apply to raster formats only.
+SVG exports work for frames, groups, icons and exact instance sublayers: one selected subtree becomes one standalone SVG, with original image fills embedded and text as glyph outlines. No bundle extraction needed. SVG keeps its original dimensions; `--scale` and `--quality` apply to raster formats only. Through MCP, raster exports are scaled down to fit `maxSize` (default 1600 px on the longest side; 0 disables it), so inline images stay small.
 
 ## How close is it to Figma?
 
@@ -251,6 +251,8 @@ With a standalone `figlens` installation, use:
 { "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
+To keep the server inside chosen folders, add `--root`: `"args": ["mcp", "--root", "/path/to/designs"]`. Every `file` and output path a tool call names must then lie under one of the roots; repeat `--root` for more folders. Calls whose arguments leave the tool schema are refused too, since the legacy argument coercions could turn any of them into a path.
+
 The server runs locally over stdio and exposes `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` and `export`. Give tools absolute paths: relative ones resolve against the directory the client started figlens in.
 
 Start with `find` and `inspect` to select a frame. `export` saves the file and returns metadata. Raster formats also return MCP image content, so your agent can see the design without opening a local file; SVG returns metadata only. PNG has the widest client support; reduce `scale` for large frames. `find`, `inspect`, `bundle` and `export` also return structured JSON results.
@@ -278,7 +280,7 @@ Release binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, stati
 | `variables <file> [node]` | A frame's bound variables; without a node, every local variable |
 | `bundle <file> <node> <out.zip>` | A design bundle for one frame; prints `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | Many bundles from one decode, in parallel; one JSON line per frame, as above or `{nodeId, error}` |
-| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | SVG, PNG, JPG, WebP or AVIF; `--max-kb` lowers lossy quality until it fits; PNG/SVG fail if over budget; prints `{path, width, height, bytes, quality}` |
+| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP or AVIF; `--max-kb` lowers lossy quality until it fits; PNG/SVG fail if over budget; prints `{path, width, height, bytes, quality}` |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Local read-only viewer; `--out` requires a node and writes a standalone offline snapshot |
 | `compare <file> <nodes.json> <node>` | Diff against a REST export of the same frame |
 | `node <file> <node>` | One raw `.fig` node |

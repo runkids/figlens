@@ -1,9 +1,7 @@
-use crate::{call_tool, run};
+use crate::{call_tool, run, serve};
 use std::io::Write as _;
 
-#[path = "../test_support.rs"]
-mod test_support;
-use test_support::TestDir;
+use crate::test_support::TestDir;
 
 struct Fixture(TestDir);
 
@@ -325,6 +323,84 @@ fn mcp_images_keep_the_exported_format_and_bytes() {
         assert_eq!(reply["content"][1]["mimeType"], mime);
         assert_eq!(reply["content"][1]["data"], figlens::render::base64(&bytes));
     }
+}
+
+#[test]
+fn mcp_exports_fit_max_size_unless_disabled() {
+    let fixture = Fixture::new();
+    // The fixture frame is 16x8; scale 200 would be 3200 wide.
+    for (max_size, width) in [(None, 1600), (Some(0), 3200), (Some(400), 400)] {
+        let out = fixture.0.join("sized.png");
+        let mut arguments = serde_json::json!({
+            "file": fixture.file(), "node": "0:1", "out": out, "scale": 200,
+        });
+        if let Some(max_size) = max_size {
+            arguments["maxSize"] = max_size.into();
+        }
+        let reply = call_tool(
+            &serde_json::json!({"name": "export", "arguments": arguments}),
+            None,
+        );
+        assert_eq!(reply["isError"], false, "{reply}");
+        assert_eq!(
+            reply["structuredContent"]["width"], width,
+            "maxSize {max_size:?}"
+        );
+    }
+    // A string scale takes the legacy CLI-argument path, which caps the same way.
+    let out = fixture.0.join("legacy.png");
+    let reply = call_tool(
+        &serde_json::json!({"name": "export", "arguments": {
+            "file": fixture.file(), "node": "0:1", "out": out, "scale": "200x",
+        }}),
+        None,
+    );
+    assert_eq!(reply["isError"], false, "{reply}");
+    assert_eq!(reply["structuredContent"]["width"], 1600);
+    let mut text = String::new();
+    let out = fixture.0.join("cli.png");
+    run(
+        vec![
+            "export".into(),
+            fixture.file(),
+            "0:1".into(),
+            out.to_string_lossy().into_owned(),
+            "--scale".into(),
+            "200".into(),
+        ],
+        &mut text,
+    )
+    .unwrap();
+    let metadata: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(metadata["width"], 3200);
+}
+
+#[test]
+fn serve_does_not_hand_a_remote_call_the_local_tree() {
+    let fixture = Fixture::new();
+    let call = |file: &str, id: u32| {
+        format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"tree","arguments":{{"file":{}}}}}}}"#,
+            serde_json::json!(file)
+        )
+    };
+    let input = format!(
+        "{}\n{}\n{}\n",
+        call(&fixture.file(), 1),
+        call("gs://bucket/other.fig", 2),
+        call(&fixture.file(), 3)
+    );
+    let mut out = Vec::new();
+    serve(input.as_bytes(), &mut out, &[]).unwrap();
+    let replies: Vec<serde_json::Value> = String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(replies[0]["result"]["isError"], false, "{}", replies[0]);
+    // The remote file resolves through gcloud, which is absent here: an error, not our tree.
+    assert_eq!(replies[1]["result"]["isError"], true, "{}", replies[1]);
+    assert_eq!(replies[2]["result"], replies[0]["result"]);
 }
 
 #[test]

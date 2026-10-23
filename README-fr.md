@@ -199,7 +199,7 @@ npx @runkids/figlens export design.fig 12:345 icon.svg
 npx @runkids/figlens export design.fig 12:345 hero.webp --scale 2 --quality 80
 ```
 
-L'export SVG accepte frames, groupes, icônes et sous-calques précis d'instances : chaque sous-arbre sélectionné devient un SVG autonome, avec les images originales intégrées et le texte en contours de glyphes. Pas besoin d'extraire un bundle. Le SVG garde ses dimensions ; `--scale` et `--quality` ne concernent que les formats matriciels.
+L'export SVG accepte frames, groupes, icônes et sous-calques précis d'instances : chaque sous-arbre sélectionné devient un SVG autonome, avec les images originales intégrées et le texte en contours de glyphes. Pas besoin d'extraire un bundle. Le SVG garde ses dimensions ; `--scale` et `--quality` ne concernent que les formats matriciels. Via MCP, les exports matriciels sont réduits pour tenir dans `maxSize` (1600 px sur le plus grand côté par défaut ; 0 le désactive), afin que les images inline restent petites.
 
 <a id="how-close-is-it-to-figma"></a>
 
@@ -277,6 +277,8 @@ Avec une installation autonome de `figlens`, utilisez :
 { "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
+Pour limiter le serveur à certains dossiers, ajoutez `--root` : `"args": ["mcp", "--root", "/chemin/vers/designs"]`. Chaque `file` et chemin de sortie nommé par un appel doit alors se trouver sous l'une de ces racines ; répétez `--root` pour d'autres dossiers. Les appels dont les arguments sortent du schéma de l'outil sont aussi refusés, car les conversions héritées pourraient transformer n'importe lequel en chemin.
+
 Le serveur s'exécute localement via stdio et expose `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` et `export`. Donnez des chemins absolus aux outils : les chemins relatifs partent du dossier où le client a lancé figlens.
 
 Commencez par `find` et `inspect` pour choisir une frame. `export` enregistre le fichier et retourne ses métadonnées. Les formats matriciels retournent aussi du contenu image MCP : l'agent peut voir le design sans ouvrir de fichier local. SVG ne retourne que les métadonnées. PNG offre la compatibilité client la plus large ; réduisez `scale` pour les grandes frames. `find`, `inspect`, `bundle` et `export` retournent aussi du JSON structuré.
@@ -306,7 +308,7 @@ Les binaires couvrent macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl s
 | `variables <file> [node]` | Variables liées à une frame ; sans nœud, toutes les variables locales |
 | `bundle <file> <node> <out.zip>` | Bundle d'une frame ; retourne `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | Plusieurs bundles en parallèle après un seul décodage ; une ligne JSON par frame, comme ci-dessus ou `{nodeId, error}` |
-| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | SVG, PNG, JPG, WebP ou AVIF ; `--max-kb` réduit la qualité avec perte jusqu'à la limite ; PNG/SVG échouent au-delà ; retourne `{path, width, height, bytes, quality}` |
+| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP ou AVIF ; `--max-kb` réduit la qualité avec perte jusqu'à la limite ; PNG/SVG échouent au-delà ; retourne `{path, width, height, bytes, quality}` |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Aperçu local en lecture seule ; `--out` exige un nœud et écrit un instantané autonome hors ligne |
 | `compare <file> <nodes.json> <node>` | Différences avec l'export REST de la même frame |
 | `node <file> <node>` | Un nœud `.fig` brut |

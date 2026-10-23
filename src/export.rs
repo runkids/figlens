@@ -43,6 +43,7 @@ pub struct Image {
 }
 
 /// Renders node `id` and encodes it. SVG keeps its original dimensions and ignores quality.
+#[allow(clippy::too_many_arguments)]
 pub fn export(
     tree: &Tree,
     fig: &Path,
@@ -51,6 +52,7 @@ pub fn export(
     scale: f64,
     quality: u8,
     max_bytes: Option<usize>,
+    max_px: Option<u32>,
 ) -> Result<Image, Box<dyn Error>> {
     let prepared = Prepared::new(tree, fig, root_of(id), id)?;
     if format == Format::Svg {
@@ -76,6 +78,18 @@ pub fn export(
             quality,
         });
     }
+    // Fit the longest side into `max_px`, so an agent's inline image stays small.
+    let scale = match (max_px, render::export_area(prepared.node())) {
+        (Some(max), Some(area)) => {
+            let longest = (area[2] - area[0]).max(area[3] - area[1]) * scale;
+            if longest > f64::from(max) {
+                scale * f64::from(max) / longest
+            } else {
+                scale
+            }
+        }
+        _ => scale,
+    };
     let svg = prepared
         .export_svg(tree, scale)
         .ok_or("node has nothing to render")?;

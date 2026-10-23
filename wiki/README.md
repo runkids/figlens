@@ -6,7 +6,8 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 
 | Topic | Use when | Main sources |
 |---|---|---|
-| `fig-format` | Changing decoding, instance expansion, emitted REST fields, variables, rendering or the bundle | `fig-format.md` |
+| `fig-format` | Changing decoding, instance expansion, emitted REST fields, variables or the bundle | `fig-format.md` |
+| `render` | Changing SVG or raster output: text and glyphs, image fills, effects, export areas, image adjustments | `render.md` |
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison | `preview.md` |
 | `pi` | Changing the Pi extension, reviewed component mappings or its npm packaging | `pi.md` |
 | `accuracy` | Measuring output against Figma's own exports, running `compare`, finding test files | `accuracy.md` |
