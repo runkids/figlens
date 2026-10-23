@@ -241,7 +241,10 @@ fn cli_and_mcp_success_results_match() {
             assert_bundle(path);
             std::fs::remove_file(path).unwrap();
         }
-        let reply = call_tool(&serde_json::json!({"name": name, "arguments": arguments}));
+        let reply = call_tool(
+            &serde_json::json!({"name": name, "arguments": arguments}),
+            None,
+        );
         assert_eq!(reply["isError"], false, "{name}: {reply}");
         assert_eq!(reply["content"][0]["text"], text, "{name}");
         if let Some(expected) = expected {
@@ -310,9 +313,12 @@ fn mcp_images_keep_the_exported_format_and_bytes() {
         ("avif", "image/avif"),
     ] {
         let out = fixture.0.join(&format!("image.{extension}"));
-        let reply = call_tool(&serde_json::json!({"name": "export", "arguments": {
-            "file": fixture.file(), "node": "0:1", "out": out,
-        }}));
+        let reply = call_tool(
+            &serde_json::json!({"name": "export", "arguments": {
+                "file": fixture.file(), "node": "0:1", "out": out,
+            }}),
+            None,
+        );
         assert_eq!(reply["isError"], false, "{reply}");
         let bytes = std::fs::read(out).unwrap();
         assert_eq!(reply["structuredContent"]["bytes"], bytes.len());
@@ -347,9 +353,12 @@ fn svg_exports_directly_through_cli_and_mcp() {
     let parsed = resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default()).unwrap();
     assert_eq!(parsed.size().width(), 16.0);
     assert_eq!(parsed.size().height(), 8.0);
-    let reply = call_tool(&serde_json::json!({"name": "export", "arguments": {
-        "file": fixture.file(), "node": "0:1", "out": out,
-    }}));
+    let reply = call_tool(
+        &serde_json::json!({"name": "export", "arguments": {
+            "file": fixture.file(), "node": "0:1", "out": out,
+        }}),
+        None,
+    );
     assert_eq!(reply["isError"], false, "{reply}");
     assert_eq!(reply["structuredContent"]["bytes"], svg.len());
     assert_eq!(reply["structuredContent"], metadata);
@@ -411,7 +420,10 @@ fn discovery_rejects_invalid_bounds_in_cli_and_mcp() {
         );
         let mut arguments = arguments;
         arguments["file"] = fixture.file().into();
-        let reply = call_tool(&serde_json::json!({"name": name, "arguments": arguments}));
+        let reply = call_tool(
+            &serde_json::json!({"name": name, "arguments": arguments}),
+            None,
+        );
         assert_eq!(reply["isError"], true);
         assert!(
             reply["content"][0]["text"]
@@ -613,7 +625,10 @@ fn cli_and_mcp_preserve_validation_order_and_errors() {
         let error = run(argv, &mut text).unwrap_err().to_string();
         assert_eq!(error, expected);
         assert!(text.is_empty());
-        let reply = call_tool(&serde_json::json!({"name": name, "arguments": arguments}));
+        let reply = call_tool(
+            &serde_json::json!({"name": name, "arguments": arguments}),
+            None,
+        );
         assert_eq!(reply["isError"], true);
         assert_eq!(reply["content"][0]["text"], expected);
         assert!(reply.get("structuredContent").is_none());
@@ -693,15 +708,21 @@ fn mcp_preserves_permissive_argument_coercions() {
         argv.extend(cli.into_iter().map(str::to_owned));
         let mut text = String::new();
         run(argv, &mut text).unwrap();
-        let reply = call_tool(&serde_json::json!({"name": "tree", "arguments": arguments}));
+        let reply = call_tool(
+            &serde_json::json!({"name": "tree", "arguments": arguments}),
+            None,
+        );
         assert_eq!(reply["isError"], false);
         assert_eq!(reply["content"][0]["text"], text);
         assert!(reply.get("structuredContent").is_none());
     }
-    let reply = call_tool(&serde_json::json!({
-        "name": "export", "arguments": { "file": fixture.file(), "node": "0:1",
-            "out": fixture.0.join("coerced.png"), "scale": "2x" }
-    }));
+    let reply = call_tool(
+        &serde_json::json!({
+            "name": "export", "arguments": { "file": fixture.file(), "node": "0:1",
+                "out": fixture.0.join("coerced.png"), "scale": "2x" }
+        }),
+        None,
+    );
     assert_eq!(reply["isError"], false, "{reply}");
     assert_eq!(reply["structuredContent"]["width"], 32);
     assert_eq!(reply["structuredContent"]["height"], 16);

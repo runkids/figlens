@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fmt::Write as _;
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 use figlens::compare::{FIELDS, compare};
@@ -490,22 +490,117 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
 
 /// `figlens mcp`: a Model Context Protocol server, newline-delimited JSON-RPC on stdio.
 fn mcp() -> Result<(), Box<dyn Error>> {
-    for line in std::io::stdin().lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
+    serve(std::io::stdin().lock(), std::io::stdout().lock())
+}
+
+/// Serves JSON-RPC lines. Decoding a large file takes most of a call, so the parsed tree of
+/// the last file stays on this frame and serves the next calls on it until the file changes
+/// (path, modification time or length) or a call needs a different one.
+fn serve(
+    input: impl std::io::BufRead,
+    mut output: impl std::io::Write,
+) -> Result<(), Box<dyn Error>> {
+    let mut lines = input
+        .lines()
+        .filter(|l| !l.as_ref().is_ok_and(|l| l.trim().is_empty()));
+    let mut reply = |line: &str, loaded: Option<(&Path, &Tree)>| -> Result<(), Box<dyn Error>> {
+        if let Some(reply) = mcp_reply_with(line, loaded) {
+            writeln!(output, "{reply}")?;
+            output.flush()?;
         }
-        if let Some(reply) = mcp_reply(&line) {
-            let mut stdout = std::io::stdout().lock();
-            writeln!(stdout, "{reply}")?;
-            stdout.flush()?;
+        Ok(())
+    };
+    let mut carried = None;
+    loop {
+        let Some(line) = carried
+            .take()
+            .map(Ok)
+            .or_else(|| lines.next())
+            .transpose()?
+        else {
+            return Ok(());
+        };
+        let loaded = direct_file(&line).and_then(|path| Some((stamp(&path)?, path)));
+        let Some((stamp_at_open, path)) = loaded else {
+            reply(&line, None)?;
+            continue;
+        };
+        // An unreadable file is reported by the per-call path.
+        let Ok(doc) = Document::open(&path) else {
+            reply(&line, None)?;
+            continue;
+        };
+        let Ok(message) = doc.message() else {
+            reply(&line, None)?;
+            continue;
+        };
+        let tree = Tree::new(&message);
+        let mut line = line;
+        loop {
+            reply(&line, Some((&path, &tree)))?;
+            let Some(next) = lines.next().transpose()? else {
+                return Ok(());
+            };
+            let same = direct_file(&next).as_deref() == Some(path.as_path())
+                && stamp(&path) == Some(stamp_at_open);
+            if !same {
+                carried = Some(next);
+                break;
+            }
+            line = next;
         }
     }
-    Ok(())
+}
+
+/// The resolved file of a tools/call that the schema path serves, so `serve` can keep its
+/// parsed tree for the next call on the same file.
+fn direct_file(line: &str) -> Option<PathBuf> {
+    let req: serde_json::Value = serde_json::from_str(line).ok()?;
+    if req["method"] != "tools/call" {
+        return None;
+    }
+    let params = &req["params"];
+    let name = params["name"].as_str()?;
+    let tool_params = TOOLS.iter().find(|t| t.0 == name)?.2;
+    if !is_direct(name, tool_params, &params["arguments"]) {
+        return None;
+    }
+    figlens::remote::local(params["arguments"]["file"].as_str()?).ok()
+}
+
+/// Modification time and length, so an overwritten save is parsed again.
+fn stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// Whether the arguments fit the tool's schema, so the call is served directly rather than
+/// through the legacy CLI coercions.
+fn is_direct(name: &str, tool_params: &[Param], arguments: &serde_json::Value) -> bool {
+    tool_params
+        .iter()
+        .all(|(key, _, kind, required, _)| match arguments.get(key) {
+            None => !required,
+            Some(value) => match *kind {
+                "string" => value.is_string(),
+                "boolean" => value.is_boolean(),
+                _ => value.is_number(),
+            },
+        })
+        && !matches!(
+            (name, arguments["node"].as_str()),
+            ("tree", Some("--depth" | "--json")) | ("bundle", Some("--frames"))
+        )
 }
 
 /// The reply to one JSON-RPC message; None for a notification.
+#[cfg(test)]
 fn mcp_reply(line: &str) -> Option<serde_json::Value> {
+    mcp_reply_with(line, None)
+}
+
+/// `mcp_reply` with the already parsed tree of the file the call names, if `serve` has it.
+fn mcp_reply_with(line: &str, loaded: Option<(&Path, &Tree)>) -> Option<serde_json::Value> {
     use serde_json::json;
     let Ok(req) = serde_json::from_str::<serde_json::Value>(line) else {
         return Some(json!({
@@ -540,7 +635,7 @@ fn mcp_reply(line: &str) -> Option<serde_json::Value> {
             }
             tool
         }).collect::<Vec<_>>() }),
-        "tools/call" => call_tool(&req["params"]),
+        "tools/call" => call_tool(&req["params"], loaded),
         method => {
             return Some(json!({
                 "jsonrpc": "2.0", "id": id,
@@ -552,7 +647,7 @@ fn mcp_reply(line: &str) -> Option<serde_json::Value> {
 }
 
 /// A failure is a tool result with isError, not a protocol error.
-fn call_tool(params: &serde_json::Value) -> serde_json::Value {
+fn call_tool(params: &serde_json::Value, loaded: Option<(&Path, &Tree)>) -> serde_json::Value {
     let name = params["name"].as_str().unwrap_or("");
     let result = match TOOLS.iter().find(|t| t.0 == name) {
         None => Err(format!("unknown tool {name}")),
@@ -560,27 +655,19 @@ fn call_tool(params: &serde_json::Value) -> serde_json::Value {
             // A panic on one file must not stop the server.
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let arguments = &params["arguments"];
-                let direct = tool_params
-                    .iter()
-                    .all(|(key, _, kind, required, _)| match arguments.get(key) {
-                        None => !required,
-                        Some(value) => match *kind {
-                            "string" => value.is_string(),
-                            "boolean" => value.is_boolean(),
-                            _ => value.is_number(),
-                        },
-                    })
-                    && !matches!(
-                        (name, arguments["node"].as_str()),
-                        ("tree", Some("--depth" | "--json")) | ("bundle", Some("--frames"))
-                    );
-                if direct {
+                if is_direct(name, tool_params, arguments) {
+                    let run = |tree: &Tree, path: &Path| {
+                        command::Command::from_tool(name, arguments, tree)?.execute(tree, path)
+                    };
+                    if let Some((path, tree)) = loaded {
+                        return run(tree, path);
+                    }
                     let file = arguments["file"].as_str().ok_or(USAGE)?;
                     let path = figlens::remote::local(file)?;
                     let doc = Document::open(&path).map_err(|e| format!("{file}: {e}"))?;
                     let message = doc.message()?;
                     let tree = Tree::new(&message);
-                    command::Command::from_tool(name, arguments, &tree)?.execute(&tree, &path)
+                    run(&tree, &path)
                 } else {
                     // Preserve the old permissive coercions for arguments outside the tool schema.
                     let mut args = vec![name.to_owned()];
@@ -858,6 +945,45 @@ mod tests {
     #[test]
     fn mcp_ignores_notifications() {
         assert!(mcp_reply(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
+    }
+
+    #[test]
+    fn direct_file_names_only_schema_calls() {
+        let call = |args: &str| {
+            format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"tree","arguments":{args}}}}}"#
+            )
+        };
+        assert_eq!(
+            direct_file(&call(r#"{"file":"/a.fig","depth":1}"#)),
+            Some(PathBuf::from("/a.fig"))
+        );
+        assert_eq!(
+            direct_file(&call(r#"{"file":"/a.fig","node":"--depth"}"#)),
+            None
+        );
+        assert_eq!(
+            direct_file(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn serve_answers_every_call_when_the_file_cannot_be_opened() {
+        let call = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tree","arguments":{"file":"/missing.fig"}}}"#;
+        let input =
+            format!("{call}\n{call}\n{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}}\n");
+        let mut out = Vec::new();
+        serve(input.as_bytes(), &mut out).unwrap();
+        let replies: Vec<serde_json::Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(replies.len(), 3);
+        assert_eq!(replies[0]["result"]["isError"], true);
+        assert_eq!(replies[1]["result"]["isError"], true);
+        assert_eq!(replies[2]["result"], serde_json::json!({}));
     }
 
     #[test]

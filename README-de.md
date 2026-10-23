@@ -309,7 +309,7 @@ Release-Binärdateien gibt es für macOS (Apple silicon, Intel), Linux (arm64, x
 | `mcp` | Lokaler MCP-Server über stdio |
 | `update` | Ersetzt das Programm durch die neueste Release |
 
-`find` durchsucht gespeicherte Ebenen und liefert IDs, Vorfahrenpfade, lokale Größen und Textvorschauen. `inspect` expandiert Instanzen und begrenzt die Ausgabe auf 200 Knoten und 200 Zeichen pro Text. `truncated` und `textTruncated` markieren Auslassungen. Jeder Aufruf decodiert weiterhin die gesamte Datei.
+`find` durchsucht gespeicherte Ebenen und liefert IDs, Vorfahrenpfade, lokale Größen und Textvorschauen. `inspect` expandiert Instanzen und begrenzt die Ausgabe auf 200 Knoten und 200 Zeichen pro Text. `truncated` und `textTruncated` markieren Auslassungen. Jeder CLI-Aufruf decodiert die Datei; der MCP-Server behält die geparste Datei über Aufrufe hinweg, bis sie sich auf der Festplatte ändert.
 
 `<file>` kann auch `gs://bucket/object` sein, das mit deiner `gcloud`-Anmeldung heruntergeladen und zwischengespeichert wird. Hilfe: `figlens --help`.
 
