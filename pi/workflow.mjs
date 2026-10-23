@@ -203,20 +203,16 @@ export class Workflow {
     return { absolute, file: relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) ? absolute : relative.split(path.sep).join('/') };
   }
 
-  async frames(file, signal) {
+  async frames(file, signal, query) {
     const source = await this.source(file);
-    const tree = await this.run(['tree', source.absolute, '--depth', '2', '--json'], signal);
-    const frames = [];
-    function walk(node, ancestors = []) {
-      if (['FRAME', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE'].includes(node.type)) frames.push({ id: node.id, name: [...ancestors, node.name].join(' / ') });
-      for (const child of node.children ?? []) walk(child, node.type === 'CANVAS' ? [node.name] : ancestors);
-    }
-    walk(tree);
-    return { file: source.file, frames };
+    const found = await this.run(['find', source.absolute, text(query, 'screen name', 4096), '--type', 'FRAME', '--limit', '200'], signal);
+    return { file: source.file, truncated: found.truncated, frames: found.results.map(frame => ({
+      id: frame.id, name: frame.path.slice(1).map(node => node.name).join(' / '), size: frame.size,
+    })) };
   }
 
   async design(selection, signal) {
-    if (!selection) throw new Error('Open a design with /figlens open <file.fig>, then select a frame; tools can instead supply file and frame.');
+    if (!selection) throw new Error('Supply file and frame for the design in the current request. Use the figlens MCP find/inspect tools to discover its frame. A saved /figlens open selection is optional.');
     const source = await this.source(selection.file);
     const snapshot = await fileHash(source.absolute);
     const frame = text(selection.frame, 'frame', 200);
@@ -350,13 +346,13 @@ export class Workflow {
       if (ids.size !== entries.length) throw new Error('Submit only one proposal per instance in each call.');
       state.mappings = state.mappings.filter(entry => !(entry.status === 'pending' && entry.source.file === design.file && entry.source.frame === design.frame && ids.has(entry.source.instance)));
       state.mappings.push(...entries);
-      return { file: design.file, frame: design.frame, pending: entries.map(entry => ({ id: entry.id, instance: entry.source.instance, issues: entry.issues })), next: 'Select this file and frame, then run /figlens review to accept, edit or skip. No proposal is approved automatically.' };
+      return { file: design.file, frame: design.frame, pending: entries.map(entry => ({ id: entry.id, instance: entry.source.instance, issues: entry.issues })), next: 'Run /figlens review to accept, edit or skip these proposals. No proposal is approved automatically.' };
     });
   }
 
   async pending() {
     const { state } = await this.read();
-    return state.mappings.filter(entry => entry.status === 'pending' && entry.source.file === state.active?.file && entry.source.frame === state.active?.frame);
+    return state.mappings.filter(entry => entry.status === 'pending');
   }
 
   async review(id, action, edit = {}, signal) {

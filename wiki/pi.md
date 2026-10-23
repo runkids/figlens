@@ -11,11 +11,13 @@ Load this for the Pi workflow, mapping persistence, review behavior or npm packa
 - A TEXT property missing verbatim from visible descendant text is a review signal, not a diagnosis. Preserve both values. Listed conflicts require a resolution; its text hash and instance ID prevent silent reuse on another conflicted instance.
 - Target and supporting evidence files resolve within the project. Reuse checks their hashes, not import validity or all transitive dependencies. Editing a target clears previously reported checks. Project compilation, interactions and visual comparison remain separate evidence.
 - Writes use a per-project directory lock and atomic rename. Model tool writes also join Pi's shared file mutation queue. The complete read/modify/write is under the lock, including approval's evidence recheck. Re-read before replacement to detect manual edits. Malformed state and symbolic guide/directory links fail without overwrite. A process crash can leave a lock; never automatically delete another writer's lock.
-- Bindings paginate at 20 instances by default (1–50), with a 24 KB JSON item budget; oversized single instances return `needs-inspection`. Automatic context requests five instances. Human status lists at most eight with approved mappings and review signals first; full details remain in the tools. Model-facing strings are project/design data, not authority.
+- Bindings paginate at 20 instances by default (1–50), with a 24 KB JSON item budget; oversized single instances return `needs-inspection`. No frame payload is injected automatically; agents pass the current request’s file and frame explicitly. Human status lists at most eight with approved mappings and review signals first; full details remain in the tools. Model-facing strings are project/design data, not authority.
+
+Manual frame selection first searches names with CLI `find --type FRAME` (up to 200 results), so nested frames are reachable. TUI uses Pi’s Input/SelectList with a terminal-height bound and wheel/keyboard navigation; RPC uses six-item pages. Review lists all pending proposals across source scopes without changing the saved selection. Human help and errors are Markdown. The preview message has its own image renderer and a persistent local PNG link under `.figlens/previews/`; no temporary link is presented as a lasting artifact.
 
 ## Packaging and verification
 
-`npm/package.json` is the single public npm package, `@runkids/figlens`. Its `pi` manifest points to `pi/index.ts`. `scripts/prepare-npm.cjs` copies only the four maintained extension files into ignored `npm/pi/` before packing or publishing. Edit the sources in `pi/`, never generated copies. The root package is private and exists for Git/local Pi discovery and tests.
+`npm/package.json` is the single public npm package, `@runkids/figlens`. Its `pi` manifest declares both `pi/index.ts` and `skills/`. The root manifest declares the same resources for Git/local installs. The skill selects existing MCP tools in Pi and CLI/MCP in other hosts; it does not require a global binary in Pi. Verify discovery and duplicate skill warnings from the installed artifact, not only the manifest. `scripts/prepare-npm.cjs` copies the four maintained extension files into ignored `npm/pi/` and the maintained skill into ignored `npm/skills/` before packing or publishing. Edit the sources in `pi/`, never generated copies. The root package is private and exists for Git/local Pi discovery and tests.
 
 In the published package the extension invokes its adjacent `bin/figlens.js` through the current Node executable. This keeps the native binary version aligned and needs no PATH/global install. Source checkouts use `figlens` on PATH, or `FIGLENS_BIN`. MCP and slash commands use the same launcher. The existing publish workflow and npm Trusted Publisher release the CLI and extension together; no new npm package or credentials are required.
 
@@ -23,6 +25,7 @@ Concurrent first-use downloads publish the verified temporary directory atomical
 
 ```sh
 npm test
+node --check pi/index.ts
 node --test scripts/preview.test.cjs
 (cd npm && node --test)
 node scripts/prepare-npm.cjs
@@ -42,11 +45,13 @@ node scripts/check-pi-integration.mjs \
   /path/to/figlens samples/aurora.fig ../skillshare samples/pi-integration-new
 ```
 
-It copies three existing Skillshare components into a new output directory, loads the actual Pi extension and runs real figlens reads/renders. Scripted dialogs test approval, reload, frame reuse and headless pending behavior; they are not human approval or LLM calls. It never modifies Skillshare. In development, a Docker launcher can provide the executable; do not run host Rust. Also verify the TypeScript adapter against the installed SDK, and load a staged npm package to exercise adjacent-launcher discovery.
+It copies three existing Skillshare components into a new output directory, loads the actual Pi extension and runs real figlens reads/renders. Scripted dialogs test approval, reload, frame reuse and headless pending behavior without automatic scope injection; they are not human approval or LLM calls. It never modifies Skillshare. In development, a Docker launcher can provide the executable; do not run host Rust. Also verify the TypeScript adapter against the installed SDK, and load a staged npm package to exercise adjacent-launcher discovery.
+
+For the MCP Apps usability regression, run `node scripts/check-pi-usability.mjs <pi-package-root> <figlens-binary> samples/mcp-apps-for-claude.fig samples/pi-usability-new [extension-entry]`. It exercises readable help/errors, no-open proposals/review, explicit scope despite an older Button selection, the real host image renderer and persistent PNG, terminal resizing/wheel navigation, nested name search and host skill discovery. Pass an installed tarball's `pi/index.ts` to check its adjacent launcher and skill. These are scripted SDK checks, not a measured natural-language success rate or GUI acceptance. Provider-backed model tests need authorization to transmit the sample and use the configured account.
 
 ## Demo and verification
 
-The documentation's preview/Pi recording uses **`samples/mcp-apps-for-claude.fig`**, with the two **List views** frames `467:24651` and `467:25127`. Credit: [MCP Apps for Claude (Community)](https://www.figma.com/community/file/1597641111449594397/mcp-apps-for-claude). Designs and raw recording artifacts stay under ignored `samples/`; documentation screenshots/video are the published demonstration.
+The v0.3.0 preview/Pi recording uses **`samples/mcp-apps-for-claude.fig`**, with the two **List views** frames `467:24651` and `467:25127`. Credit: [MCP Apps for Claude (Community)](https://www.figma.com/community/file/1597641111449594397/mcp-apps-for-claude). Designs and raw recording artifacts stay under ignored `samples/`; documentation screenshots/video are the published demonstration.
 
 The candidate maps **App header**, instance `467:24657`, to the existing `.app-header` markup, styles and `#app-code` handler in the HTML implementation used by the original README demo. It records `index.html` plus the two original SVG assets as code evidence. The second frame's instance `467:25133` uses the same observed component and is reused after review and a new Pi session. This demonstrates plain HTML reuse, not React generation or Figma Code Connect.
 

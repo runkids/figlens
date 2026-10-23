@@ -22,12 +22,14 @@
   "files": [
     "bin/",
     "target.js",
-    "pi/"
+    "pi/",
+    "skills/"
   ],
   "pi": {
     "extensions": [
       "./pi/index.ts"
     ],
+    "skills": ["./skills"],
     "image": "https://raw.githubusercontent.com/runkids/figlens/main/assets/pi-demo-poster.png",
     "video": "https://raw.githubusercontent.com/runkids/figlens/main/assets/pi-demo.mp4"
   },

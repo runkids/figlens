@@ -128,25 +128,28 @@ The live viewer watches the saved local file through polling. Failed or partial 
 
 ## Pi extension
 
-**Build with the components your project already has.** Pi can read a local design, propose actual project imports and usage, and keep the mappings you review for the next screen. CLI, MCP, preview and the extension ship together:
+**Give Pi a `.fig` and ask for the screen.** The package includes the CLI, MCP, preview, extension and agent skill:
 
 ```sh
 pi install npm:@runkids/figlens
 ```
 
-![Open a .fig, find project components, review mappings, and reuse them](assets/pi-workflow.svg)
+Restart Pi or run `/reload`, then ask normally:
 
 ```text
-/figlens open ./design.fig
-/figlens map
-/figlens review
+Build the List views screen from ./design.fig using this project's components.
+Show me the result and check it against the design.
 ```
 
-Select a frame, review the proposed code, then ask Pi to implement it using the approved mappings. Decisions stay in `.figlens/component-mappings.md` across sessions. New variants and changed recorded code need review. The workflow supports your project's stack, including plain HTML; it does not require React.
+Pi finds the screen, reads its layout and assets, inspects your project and implements in its existing stack. You do not need to know frame IDs or run `/figlens open`. When names are ambiguous, Pi can show a short set of candidates. MCP starts automatically; no global CLI installation is needed.
+
+![Ask Pi for a screen, let it find the design, build with your stack, and check the result](assets/pi-workflow.svg)
+
+**Optional component reuse:** ask Pi to save reusable matches, then use `/figlens review` to accept or edit pending proposals across the project. Decisions stay in `.figlens/component-mappings.md`; changed variants or recorded code need review. Building a screen does not require mappings.
 
 [![Inspect the local design, review an existing HTML component in Pi, and reuse it in the next frame](assets/pi-demo.gif)](assets/pi-demo.mp4)
 
-**[Watch preview + Pi in action](assets/pi-demo.mp4)** · 20-second edited recording of the MCP Apps sample: inspect the design, approve a prepared mapping to existing HTML, and reuse it in another frame after a new session. Model generation is not shown or timed. [Full walkthrough, commands and limitations](pi/README.md) · [Recording and verification notes](wiki/pi.md#demo-and-verification).
+**[Watch the optional mapping workflow](assets/pi-demo.mp4)** · 20-second edited recording from v0.3.0: inspect the MCP Apps design, approve a prepared mapping to existing HTML, and reuse it after a new session. Model generation is not shown or timed. [Full walkthrough, commands and limitations](pi/README.md) · [Recording and verification notes](wiki/pi.md#demo-and-verification).
 
 Requires Pi 1.3.0+. The npm extension uses its bundled CLI launcher; the first launch, including automatic MCP startup, downloads and verifies the matching native binary. Homebrew and release archives provide the native CLI and viewer. See [source-checkout setup](pi/README.md#install-once) for development.
 

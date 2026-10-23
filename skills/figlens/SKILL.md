@@ -1,6 +1,6 @@
 ---
 name: figlens
-description: Read Figma designs offline from a `.fig` file with the `figlens` CLI, without the Figma API, MCP or a running Figma. Use when given a `.fig` file; when implementing a Figma frame, URL or node-id and a `.fig` copy exists or can be requested; when exporting images, icons or slices from a design; when reading a design's variables or tokens; when browsing a design or preparing a visual agent handoff; or when Figma MCP/REST is rate-limited or unavailable.
+description: Build UI from local Figma .fig files using figlens CLI or MCP. Use when given a .fig file or a screen name to implement, a Figma URL with a local copy, requests to extract design assets or tokens, or when Figma API access is unavailable. In Pi, use its automatically registered figlens MCP tools to find the screen and build it directly.
 ---
 
 # figlens
@@ -8,6 +8,10 @@ description: Read Figma designs offline from a `.fig` file with the `figlens` CL
 `figlens` reads a `.fig` file (Figma: **File > Save local copy**) and prints what the Figma REST API would return for a node: layout, text, styles, variables, instances already expanded. It also renders any node and writes a **bundle**: one zip with everything needed to build a frame. The `.fig` is a **snapshot**: it shows the design as it was when saved, so a newer design needs a newer copy.
 
 ## Setup
+
+**In Pi with the figlens extension:** use its already registered figlens MCP tools (`tree`, `find`, `inspect`, `nodes`, `variables`, `bundle`, `export`). They use the package's own launcher and cached native binary. No global CLI, shell `npx`, `/figlens open`, or saved selection is needed. The CLI examples below describe the equivalent operations: pass each argument through the corresponding tool schema, using absolute `file` and output paths. The tool namespace is supplied by the host.
+
+**Other agents:** use configured figlens MCP tools when available, or the CLI below.
 
 Prefer `npx @runkids/figlens` for one-off use (Node.js 18+, no global install). The examples below use `figlens` as shorthand: replace that prefix with `npx @runkids/figlens` when no standalone binary is installed. The first run downloads and verifies the matching native binary; later reads use its local cache.
 
@@ -22,7 +26,7 @@ npx @runkids/figlens --help                                                     
 ## Building a frame
 
 1. **Get the `.fig`.** Ask the designer for File > Save local copy when there is none. Done when the file opens: `figlens tree <file.fig> --depth 1` lists its pages.
-2. **Find the node.** A Figma URL (`...?node-id=12-345`), `12-345` and `12:345` all work as-is. Without one, use `figlens find <file.fig> "screen name" --type FRAME` or search visible copy with `--type TEXT`. Search is a case-insensitive substring over stored layer names and text; `--node <id>` scopes it and `--limit N` sets 1-200 results (default 20). Read ancestor paths to distinguish duplicate names; `truncated: true` means more matches exist. Instance children appear only after expansion: use `figlens inspect <file.fig> <instance-id>`. Use `tree --depth 2` to browse when there is no search term. Done when you hold the id of the frame to build.
+2. **Find the node yourself.** A Figma URL (`...?node-id=12-345`), `12-345` and `12:345` all work as-is. Without one, use `figlens find <file.fig> "screen name" --type FRAME` or search visible copy with `--type TEXT`. Search is a case-insensitive substring over stored layer names and text; `--node <id>` scopes it and `--limit N` sets 1-200 results (default 20). Inspect candidate paths, dimensions, visible copy and reference renders to resolve the user's intent. If ambiguity remains, ask once with a short list of recognizable page/screen names and their differences or images. Resolve IDs internally. `truncated: true` means refine or scope the search. Instance children appear only after expansion: use `figlens inspect <file.fig> <instance-id>`. `tree --depth 2` is only an initial outline; descend into relevant containers or use `find` for nested screens. Done when you have identified the intended screen, without requiring a manual open or picker.
 3. **Bundle it.** `figlens bundle <file.fig> <node> frame.zip`, then unzip into its own directory and read `context.md` first: it says what each file holds. Done when you know the reference image, the structure file and the asset map.
 4. **Outline before reading.** A screen is hundreds of KB of JSON, too large to read whole. Print the tree with sizes and layout, then read the subtrees you are building with `jq`:
 
@@ -30,7 +34,7 @@ npx @runkids/figlens --help                                                     
    jq -r 'def o(d): "\("  " * d)\(.id) \(.type) \"\(.name)\" \(.absoluteBoundingBox.width // 0 | floor)x\(.absoluteBoundingBox.height // 0 | floor)\(if .layoutMode then " \(.layoutMode) gap=\(.itemSpacing // 0)" else "" end)\(if .layoutPositioning then " ABSOLUTE" else "" end)", (.children[]? | o(d + 1)); .document | o(0)' design/nodes.json
    jq '.. | objects | select(.id == "12:345")' design/nodes.json     # one node in full
    ```
-5. **Build from the values**, not from the picture: sizes, padding, gaps, radii, colors, shadows and fonts are all in the JSON, and the reference image only confirms them. Use the bundle's assets for every image and icon (see Reading the output).
+5. **Build from the values**, not from the picture: sizes, padding, gaps, radii, colors, shadows and fonts are all in the JSON, and the reference image only confirms them. Inspect the project's stack and existing components, then implement using its conventions and the bundle's assets (see Reading the output). Mapping proposals and approval are optional; a scope with zero component instances can still be implemented from its layout, text and assets.
 6. **Check against the reference.** Render your build at the frame's size and compare it with `references/screen.png` side by side or as a pixel diff. Done when every box, gap and asset lines up and the remaining differences are text antialiasing, line breaks from font metrics, or a known gap below.
 
 For a question about layout, typography or copy, start with `figlens inspect <file.fig> <node> [--depth N]`: expanded bounds, auto-layout and typography, without paints or vector geometry. Depth defaults to 1 (0-10); at most 200 nodes and 200 characters per text are returned. `childCount` includes omitted children; `truncated` marks omitted descendants and `textTruncated` marks shortened text. Use `figlens nodes <file.fig> <node>` for full text, paints and other details, and `figlens variables <file.fig> <node>` for bound variables. Each call still decodes the whole file; summaries bound output, not parsing cost. Save full output once when making repeated queries.
@@ -75,9 +79,9 @@ Live preview polls the saved local file. Treat a stale/error banner as unavailab
 
 ## Pi component mappings
 
-When the figlens Pi extension is available, call `figlens_bindings` before choosing project components. It returns the selected frame, actual instance properties/text, approved rules, pending/stale candidates and pagination. Follow `nextOffset` when more instances are needed. Reuse only entries marked `approved`, using current design text rather than example literals.
+When the figlens Pi extension is available, `figlens_bindings` can retrieve saved component matches. Supply the **current request's `file` and `frame` together**; this works without open and leaves any manual selection unchanged. The current request determines the scope even if a different selection was saved earlier. It returns actual instance properties/text, approved rules, pending/stale candidates and pagination. Follow `nextOffset` when more instances are needed. Reuse recorded mappings marked `approved`, using current design text rather than example literals. Empty, unmatched or stale results do not block implementation: inspect source and design directly.
 
-To propose a mapping, read the real target implementation and usage first. Call `figlens_propose_bindings` with its instance ID, target path/export/import/example, rationale, supporting file dependencies, checks actually executed and unresolved issues. Plain HTML can name an existing block and explain that no import is needed. The user reviews with `/figlens review`; proposals stay pending in non-interactive modes. Approval is a mapping decision, so run the project's permitted compilation/runtime checks and compare the screen separately. The [walkthrough](https://github.com/runkids/figlens/tree/main/pi) documents installation and commands. Without the extension, continue with the CLI workflow above.
+When the user wants to save reusable component matches, read the real target implementation and usage first. Call `figlens_propose_bindings` with explicit file/frame, its instance ID, target path/export/import/example, rationale, supporting file dependencies, checks actually executed and unresolved issues. Plain HTML can name an existing block and explain that no import is needed. The user reviews with `/figlens review`, which lists pending proposals across this project without open; proposals stay pending in non-interactive modes. Approval is a mapping decision, so run the project's permitted compilation/runtime checks and compare the screen separately. The [walkthrough](https://github.com/runkids/figlens/tree/main/pi) documents installation and optional commands. Without the extension, continue with the CLI workflow above.
 
 ## Many frames
 

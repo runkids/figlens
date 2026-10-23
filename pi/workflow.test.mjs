@@ -27,7 +27,6 @@ async function fixture(t) {
   let calls = 0;
   const run = async ([command, , frame]) => {
     calls++;
-    if (command === 'tree') return { type: 'DOCUMENT', children: [{ type: 'CANVAS', name: 'Page', children: Object.keys(frames).map(id => ({ type: 'FRAME', id, name: id })) }] };
     if (!frames[frame]) throw new Error('Unknown frame');
     return {
       document: { id: frame, name: `Frame ${frame}`, type: 'FRAME', children: frames[frame] },
@@ -63,6 +62,38 @@ test('proposals stay pending, human review persists and reuses a Vue mapping on 
   assert.deepEqual(data.items[0].texts, ['Different text']);
   assert.equal(data.items[1].status, 'unmatched');
   assert.equal((await reopened.read()).state.active.frame, '22:103');
+});
+
+test('explicit scopes can be proposed and reviewed without opening or changing the saved frame', async t => {
+  const { flow, proposal } = await fixture(t);
+  await flow.close();
+  const submitted = await flow.propose({ file: 'design.fig', frame: '10:200', proposals: [proposal] });
+  assert.equal((await flow.read()).state.active, null);
+  assert.equal((await flow.pending())[0].id, submitted.pending[0].id);
+  await flow.review(submitted.pending[0].id, 'approve');
+  await flow.select('design.fig', '22:103');
+  const next = await flow.propose({ file: 'design.fig', frame: '10:200', proposals: [proposal] });
+  assert.equal((await flow.pending())[0].id, next.pending[0].id);
+  assert.equal((await flow.bindings({ file: 'design.fig', frame: '10:200' })).frame, '10:200');
+  assert.equal((await flow.read()).state.active.frame, '22:103');
+  assert.doesNotMatch(submitted.next, /Select this file|open/);
+});
+
+test('manual frame search reaches nested screens through find and preserves ambiguity information', async t => {
+  const { root } = await fixture(t);
+  const flow = new Workflow(root, async args => {
+    assert.deepEqual(args.slice(2), ['List views', '--type', 'FRAME', '--limit', '200']);
+    assert.equal(args[0], 'find');
+    return { results: [
+      { id: '1:1', name: 'List views', path: [{ name: 'Document' }, { name: 'Desktop' }, { name: 'Nested' }, { name: 'List views' }], size: { width: 1440, height: 1024 } },
+      { id: '1:2', name: 'List views', path: [{ name: 'Document' }, { name: 'Mobile' }, { name: 'List views' }], size: { width: 390, height: 844 } },
+    ], truncated: true };
+  });
+  const result = await flow.frames('design.fig', undefined, 'List views');
+  assert.equal(result.frames.length, 2);
+  assert.match(result.frames[0].name, /Desktop.*Nested.*List views/);
+  assert.deepEqual(result.frames[1].size, { width: 390, height: 844 });
+  assert.equal(result.truncated, true);
 });
 
 test('an unreviewed variant of the same main component is not automatically approved', async t => {

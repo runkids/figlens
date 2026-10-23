@@ -85,9 +85,7 @@ await tool('figlens_propose_bindings', { proposals: [{
 ctx.hasUI = false;
 await command('review');
 assert.equal((await tool('figlens_bindings', {})).structuredContent.items.find(item => item.id === 'I22:233;7:81;7:47').status, 'pending');
-const hook = await extension.handlers.get('before_agent_start')[0]({}, ctx);
-assert.match(hook.message.content, /status=approved/);
-assert.equal(hook.message.display, false);
-await writeFile(path.join(root, 'results.json'), JSON.stringify({ initial, submitted, reviewed, hero, prompt: prompts[0], notifications, checks: ['real Pi extension loader', 'real .fig frame discovery and PNG preview', 'pending tool proposals', 'scripted review dialogs', 'new-session reload', 'cross-frame reuse', 'unknown variant', 'source text conflict', 'headless review stays pending', 'bounded automatic context'] }, null, 2));
+assert.equal(extension.handlers.has('before_agent_start'), false);
+await writeFile(path.join(root, 'results.json'), JSON.stringify({ initial, submitted, reviewed, hero, prompt: prompts[0], notifications, checks: ['real Pi extension loader', 'real .fig frame discovery and PNG preview', 'pending tool proposals', 'scripted review dialogs', 'new-session reload', 'cross-frame reuse', 'unknown variant', 'source text conflict', 'headless review stays pending', 'no automatic old-scope injection'] }, null, 2));
 const version = JSON.parse(await readFile(path.join(piRoot, 'package.json'), 'utf8')).version;
 console.log(JSON.stringify({ pi: version, frame: hero.frame, reused: 'I22:250;7:64', unreviewed: 'I22:233;7:81', textConflict: 'I22:233;7:81;7:47', checks: 10, output: root }, null, 2));

@@ -2,5 +2,6 @@
 /samples
 /dist
 /npm/pi
+/npm/skills
 /.playwright-mcp
 .skillshare-manifest.json
