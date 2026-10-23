@@ -40,7 +40,8 @@ npx @runkids/figlens --help                                                     
    - **Conventions:** framework, styling approach, file layout and naming. The new screen should read as if the team wrote it.
 
    Mapping proposals and approval (Pi) are optional; a scope with zero component instances can still be implemented from its layout, text and assets (see Reading the output).
-6. **Check against the reference.** Render your build at the frame's size and compare it with `references/screen.png` side by side or as a pixel diff. Done when every box, gap and asset lines up and the remaining differences are text antialiasing, line breaks from font metrics, or a known gap below.
+6. **Prepare website images.** Inspect the target project's image components, asset directories, framework/loader/CDN configuration and neighboring pages; follow its established approach and applicable instructions. Use its existing optimization pipeline when present. Otherwise follow Images and slices below. Done when the deployed images have suitable formats and pixel dimensions for their displayed sizes, with loading behavior and byte sizes checked; bundle originals remain source material.
+7. **Check against the reference.** Render your build at the frame's size and compare it with `references/screen.png` side by side or as a pixel diff. Check image requests at desktop and mobile widths as well as visual alignment: report transferred bytes and oversized images, and check layout shifts and the main image's loading behavior. Done when every box, gap and asset lines up, image delivery has been checked, and remaining visual differences are text antialiasing, line breaks from font metrics, or a known gap below. Report checks you could not perform.
 
 For a question about layout, typography or copy, start with `figlens inspect <file.fig> <node> [--depth N]`: expanded bounds, auto-layout and typography, without paints or vector geometry. Depth defaults to 1 (0-10); at most 200 nodes and 200 characters per text are returned. `childCount` includes omitted children; `truncated` marks omitted descendants and `textTruncated` marks shortened text. Use `figlens nodes <file.fig> <node>` for full text, paints and other details, and `figlens variables <file.fig> <node>` for bound variables. Each CLI call decodes the whole file, while the MCP server keeps the parsed file across calls on it; summaries bound output, not parsing cost. Save full output once when making repeated CLI queries.
 
@@ -65,14 +66,28 @@ When referring to a specific frame or node in an answer or design document, link
   ```sh
   jq -r '.variables[] | "\(.id)\t\(.name)\t\(.resolvedType)"' design/variables.json
   ```
-- **Assets**: `assets.json` maps `imageRef` (original image fills, keep each node's crop and scale from its fill), `node:<id>` (an SVG of one vector) and `render:<id>` (a 2x PNG of a node that composites an image through a blend mode, mask or effect) to files under `assets/`. For a complete icon or group, call `export` with that instance/group ID and an `.svg` output path to get one standalone SVG instead of assembling its individual vector assets.
+- **Assets**: `assets.json` maps `imageRef` (original image fills, keep each node's crop and scale from its fill), `node:<id>` (an SVG of one vector) and `render:<id>` (a 2x PNG of a node that composites an image through a blend mode, mask or effect) to files under `assets/`. Export a complete icon or group by its instance/group ID instead of assembling individual vector assets; choose its output format after checking for image fills (see Images and slices).
 - `visible: false` nodes are not drawn; skip them.
 
 ## Images and slices
 
 `figlens export <file.fig> <node> <out.svg|png|jpg|webp|avif> [--scale 2] [--quality 80] [--max-kb 150] [--max-size 1600]` renders one node like Figma's Export panel, shadows included; instance sublayer ids work. The output extension picks the format. SVG keeps vectors, embeds original image fills and uses glyph outlines for text; scale and quality do not apply. `--max-kb` lowers lossy quality until the file fits; PNG/SVG report an error if over budget; `--max-size` scales raster output down to fit its longest side; JPG has no transparency and composites on white. It prints `{path, width, height, bytes, quality}`; `quality` is the raster quality used (the requested value for SVG, where it has no effect).
 
-Through MCP, call the `export` tool with absolute `file` and `out` paths: it writes the file and returns text metadata and `structuredContent`. Raster formats also return the same rendered bytes as inline image content; SVG returns metadata only. Prefer PNG for client compatibility. Raster exports are scaled down to fit `maxSize` (default 1600 px on the longest side; pass 0 for the full scaled size). `find` and `inspect` are also MCP tools with the same options and structured results.
+Through MCP, call the `export` tool with absolute `file` and `out` paths: it writes the file and returns text metadata and `structuredContent`. Raster formats also return the same rendered bytes as inline image content; SVG returns metadata only. PNG is the most compatible choice for an agent's inline reference; choose website formats separately. Raster exports are scaled down to fit `maxSize` (default 1600 px on the longest side; pass 0 for the full scaled size). `find` and `inspect` are also MCP tools with the same options and structured results.
+
+For website assets, start with the target project's working code and image pipeline, then consult its documentation. Reuse its image component, responsive sizing, loader/CDN and asset conventions. Optimize through that pipeline when it already handles delivery. When the project has no established approach:
+
+1. **Choose by content.** Keep pure vector artwork as SVG. Inspect image fills or embedded `<image>` elements before treating an SVG as a vector asset: a tiny icon can embed a megabyte bitmap. For bitmap or mixed artwork, start with WebP and compare transparency, gradients and text against the source; use PNG when lossless output is needed. Evaluate AVIF when its size/quality tradeoff suits the project. Keep bundle originals as sources and generate delivery files separately.
+2. **Size for use.** Determine CSS display dimensions and target DPR, then set `scale` and `maxSize` accordingly, within source detail. A 40px icon at 2x needs about 80px, not the MCP default 1600px cap. `maxSize` only caps the longest side; use `scale` to request a larger render. Set `quality` and a use-appropriate `maxKb`, then inspect returned `width`, `height` and `bytes`. `maxKb` lowers lossy quality, not dimensions; if it cannot fit, revise dimensions or the budget and inspect the result.
+3. **Export and handle errors.** Create output directories before exporting. For a 40px bitmap icon at 2x, an example starting point is:
+
+   ```sh
+   mkdir -p public/assets
+   figlens export design.fig 12:345 public/assets/icon.webp --scale 2 --max-size 80 --quality 80 --max-kb 20
+   ```
+
+   The equivalent MCP arguments are `file`, `node`, absolute `out` ending in `.webp`, `scale: 2`, `maxSize: 80`, `quality: 80`, `maxKb: 20`; substitute the real file/node/project paths. These dimensions and budget are examples, not universal limits. Check `isError` and read `content` on failure before retrying; successful transport alone does not mean an export succeeded. Use figlens's existing raster export before adding conversion tools unless a concrete limitation requires them. Export the selected node when its crop, mask or effects must be baked in.
+4. **Deliver and measure.** Provide responsive variants with `srcset`/`sizes` (or responsive CSS backgrounds) for large images. Reserve space with dimensions or aspect ratio. Prioritize the actual above-the-fold/LCP image and lazy-load offscreen content. Check desktop/mobile requests, transferred bytes, sharpness, transparency and crops; measure LCP/CLS when browser tooling allows, and report unavailable measurements. A successful build or an empty broken-image list does not establish efficient image delivery.
 
 ## Visual preview and handoff
 

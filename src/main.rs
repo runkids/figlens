@@ -464,7 +464,7 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "export",
-        "Export a node to SVG, PNG, JPG, WebP or AVIF. SVG keeps vectors and embedded original images; scale, quality and maxSize apply only to raster formats. Writes the file and returns metadata; raster formats also return an inline image, scaled down to fit maxSize. Prefer PNG for client compatibility.",
+        "Export a node to SVG, PNG, JPG, WebP or AVIF. Create the output directory first. Returns metadata and, for raster formats, an inline image. PNG suits inline references. For website assets, follow the target project's existing image pipeline; otherwise start with WebP for bitmaps, sized for display dimensions and DPR using scale/maxSize and quality/maxKb. SVG embeds original images and can be large; keep it for vector artwork. scale, quality and maxSize affect raster formats only; maxSize defaults to 1600. Check returned dimensions/bytes and isError; read content on failure.",
         &[
             FILE,
             NODE,
