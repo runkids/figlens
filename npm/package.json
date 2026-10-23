@@ -1,6 +1,6 @@
 {
   "name": "@runkids/figlens",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Read .fig designs offline. Local preview, CLI + MCP, and reviewed project component mappings for Pi.",
   "license": "MIT",
   "repository": {
