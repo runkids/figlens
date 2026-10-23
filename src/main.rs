@@ -36,8 +36,9 @@ usage:
                                              writes <dir>/<nodeId>.zip (`:` as `-`), prints one JSON line
                                              per frame ({nodeId,path,warnings} or {nodeId,error})
   figlens export <file.fig> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]
-                                            render a node to out.png|jpg|webp|avif (default 1x,
-                                             quality 80); --max-kb lowers the quality until it fits;
+                                            render a node to out.png|jpg|webp|avif|svg (default 1x,
+                                             quality 80); SVG keeps vectors, scale/quality do not apply;
+                                             --max-kb lowers lossy quality until it fits;
                                              prints {path,width,height,bytes,quality}
   figlens preview <file.fig> [node] [--out preview.html] [--port N] [--bind IP]
                                              local read-only viewer (loopback, random port by default);
@@ -46,7 +47,7 @@ usage:
   figlens compare <file.fig> <nodes.json> <node>   diff a frame against a REST nodes.json export
   figlens compare <file.fig> --frames <list.txt>   same for every `node|nodes.json[|variables.json]` line
   figlens mcp                                  serve tree, find, inspect, nodes, variables, bundle and
-                                             export as MCP tools; export also returns an inline image
+                                             export as MCP tools; raster export also returns an inline image
   figlens cache [clear]                        show, or clear, the preview render cache
                                              (prints {path,bytes} or {path,freed})
   figlens update                               install the latest GitHub release over this binary
@@ -457,7 +458,7 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "export",
-        "Render a node to PNG, JPG, WebP or AVIF. Writes the file and returns its image inline plus metadata; prefer PNG for client compatibility. Use scale to reduce large images.",
+        "Export a node to SVG, PNG, JPG, WebP or AVIF. SVG keeps vectors and embedded original images; scale and quality apply only to raster formats. Writes the file and returns metadata; raster formats also return an inline image. Prefer PNG for client compatibility. Use scale to reduce large images.",
         &[
             FILE,
             NODE,
@@ -466,7 +467,7 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
                 "",
                 "string",
                 true,
-                "absolute path ending in .png, .jpg, .webp or .avif",
+                "absolute path ending in .png, .jpg, .webp, .avif or .svg",
             ),
             ("scale", "--scale", "number", false, "default 1"),
             (
@@ -481,7 +482,7 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
                 "--max-kb",
                 "integer",
                 false,
-                "lower the quality until the file fits",
+                "lower lossy quality until the file fits; PNG/SVG fail if over budget",
             ),
         ],
     ),

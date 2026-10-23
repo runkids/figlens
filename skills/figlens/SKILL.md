@@ -60,14 +60,14 @@ When referring to a specific frame or node in an answer or design document, link
   ```sh
   jq -r '.variables[] | "\(.id)\t\(.name)\t\(.resolvedType)"' design/variables.json
   ```
-- **Assets**: `assets.json` maps `imageRef` (original image fills, keep each node's crop and scale from its fill), `node:<id>` (an SVG of one vector) and `render:<id>` (a 2x PNG of a node that composites an image through a blend mode, mask or effect) to files under `assets/`. An icon instance is usually several vectors, each its own SVG: stack them inside a box of the icon's size, each at its own bounding-box offset from the icon's.
+- **Assets**: `assets.json` maps `imageRef` (original image fills, keep each node's crop and scale from its fill), `node:<id>` (an SVG of one vector) and `render:<id>` (a 2x PNG of a node that composites an image through a blend mode, mask or effect) to files under `assets/`. For a complete icon or group, call `export` with that instance/group ID and an `.svg` output path to get one standalone SVG instead of assembling its individual vector assets.
 - `visible: false` nodes are not drawn; skip them.
 
 ## Images and slices
 
-`figlens export <file.fig> <node> <out.png|jpg|webp|avif> [--scale 2] [--quality 80] [--max-kb 150]` renders one node like Figma's Export panel, shadows included; instance sublayer ids work. The extension picks the format. `--max-kb` lowers the quality until the file fits, so it has no effect on lossless PNG; JPG has no transparency and composites on white. It prints `{path, width, height, bytes, quality}`; `quality` is the one actually used.
+`figlens export <file.fig> <node> <out.svg|png|jpg|webp|avif> [--scale 2] [--quality 80] [--max-kb 150]` renders one node like Figma's Export panel, shadows included; instance sublayer ids work. The output extension picks the format. SVG keeps vectors, embeds original image fills and uses glyph outlines for text; scale and quality do not apply. `--max-kb` lowers lossy quality until the file fits; PNG/SVG report an error if over budget; JPG has no transparency and composites on white. It prints `{path, width, height, bytes, quality}`; `quality` is the raster quality used (the requested value for SVG, where it has no effect).
 
-Through MCP, call the `export` tool with absolute `file` and `out` paths: it writes the file and returns the same rendered bytes as inline image content, alongside text metadata and `structuredContent`. Prefer PNG for client compatibility and a smaller `scale` for large frames. `find` and `inspect` are also MCP tools with the same options and structured results.
+Through MCP, call the `export` tool with absolute `file` and `out` paths: it writes the file and returns text metadata and `structuredContent`. Raster formats also return the same rendered bytes as inline image content; SVG returns metadata only. Prefer PNG for client compatibility and a smaller `scale` for large frames. `find` and `inspect` are also MCP tools with the same options and structured results.
 
 ## Visual preview and handoff
 

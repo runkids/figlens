@@ -16,6 +16,7 @@ This package runs the native `figlens` binary: the first run downloads the relea
 npx @runkids/figlens tree design.fig --depth 2                 # pages and frames, with their ids
 npx @runkids/figlens nodes design.fig 12:345 > frame.json      # a frame as Figma REST JSON
 npx @runkids/figlens bundle design.fig 12:345 frame.zip        # nodes, variables, assets and a reference render
+npx @runkids/figlens export design.fig 12:345 icon.svg         # one standalone SVG; no bundle needed
 npx @runkids/figlens export design.fig 12:345 frame.png --scale 2
 ```
 

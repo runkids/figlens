@@ -322,6 +322,57 @@ fn mcp_images_keep_the_exported_format_and_bytes() {
 }
 
 #[test]
+fn svg_exports_directly_through_cli_and_mcp() {
+    let fixture = Fixture::new();
+    let out = fixture.0.join("frame.svg");
+    let mut text = String::new();
+    run(
+        vec![
+            "export".into(),
+            fixture.file(),
+            "0:1".into(),
+            out.display().to_string(),
+            "--scale".into(),
+            "2".into(),
+        ],
+        &mut text,
+    )
+    .unwrap();
+    let metadata: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(metadata["width"], 16);
+    assert_eq!(metadata["height"], 8);
+    let svg = std::fs::read_to_string(&out).unwrap();
+    assert!(svg.starts_with("<svg "));
+    assert!(svg.contains("viewBox=\"0 0 16 8\""));
+    let parsed = resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default()).unwrap();
+    assert_eq!(parsed.size().width(), 16.0);
+    assert_eq!(parsed.size().height(), 8.0);
+    let reply = call_tool(&serde_json::json!({"name": "export", "arguments": {
+        "file": fixture.file(), "node": "0:1", "out": out,
+    }}));
+    assert_eq!(reply["isError"], false, "{reply}");
+    assert_eq!(reply["structuredContent"]["bytes"], svg.len());
+    assert_eq!(reply["structuredContent"], metadata);
+    assert_eq!(reply["content"].as_array().unwrap().len(), 1);
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), svg);
+    let error = run(
+        vec![
+            "export".into(),
+            fixture.file(),
+            "0:1".into(),
+            out.display().to_string(),
+            "--max-kb".into(),
+            "0".into(),
+        ],
+        &mut String::new(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("SVG comes to"), "{error}");
+    assert_eq!(std::fs::read_to_string(out).unwrap(), svg);
+}
+
+#[test]
 fn discovery_rejects_invalid_bounds_in_cli_and_mcp() {
     let fixture = Fixture::new();
     for (name, cli, arguments, error) in [
@@ -540,7 +591,7 @@ fn cli_and_mcp_preserve_validation_order_and_errors() {
             "export",
             vec!["0-1", "output.txt", "--quality", "0"],
             serde_json::json!({"node": "0-1", "out": "output.txt", "quality": 0}),
-            "the output must end in .png, .jpg, .webp or .avif",
+            "the output must end in .png, .jpg, .webp, .avif or .svg",
         ),
         (
             "export",

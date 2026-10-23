@@ -252,16 +252,15 @@ fn valid_id(id: &str) -> bool {
 }
 
 /// `<format>-<scale>-<quality>` of an export route, limited to the Export panel's choices.
-/// `None` as the format means SVG: vector output, where scale and quality do not apply.
-fn export_spec(spec: &str) -> Option<(Option<crate::export::Format>, &'static str, f64, u8)> {
+fn export_spec(spec: &str) -> Option<(crate::export::Format, &'static str, f64, u8)> {
     use crate::export::Format;
     let mut parts = spec.split('-');
     let (format, mime) = match parts.next()? {
-        "png" => (Some(Format::Png), "image/png"),
-        "jpg" => (Some(Format::Jpg), "image/jpeg"),
-        "webp" => (Some(Format::Webp), "image/webp"),
-        "avif" => (Some(Format::Avif), "image/avif"),
-        "svg" => (None, "image/svg+xml"),
+        "png" => (Format::Png, "image/png"),
+        "jpg" => (Format::Jpg, "image/jpeg"),
+        "webp" => (Format::Webp, "image/webp"),
+        "avif" => (Format::Avif, "image/avif"),
+        "svg" => (Format::Svg, "image/svg+xml"),
         _ => return None,
     };
     let scale = match parts.next()? {
@@ -744,21 +743,8 @@ impl Revision<'_> {
             }
             "export" => {
                 let (format, mime, scale, quality) = export_spec(key).ok_or("unknown route")?;
-                match format {
-                    Some(format) => {
-                        let image =
-                            crate::export::export(tree, file, id, format, scale, quality, None)?;
-                        (mime, image.bytes)
-                    }
-                    // The bundle's vector asset path: render bounds, full-resolution images.
-                    None => {
-                        let p = Prepared::new(tree, file, crate::export::root_of(id), id)?;
-                        let area = render::render_bounds(p.node()).ok_or("nothing to render")?;
-                        let lookup = |h: &str| p.images.get(h).cloned();
-                        let svg = render::Svg::new(tree, &lookup).document(p.node(), area, 1.0);
-                        (mime, svg.into_bytes())
-                    }
-                }
+                let image = crate::export::export(tree, file, id, format, scale, quality, None)?;
+                (mime, image.bytes)
             }
             "data" => (
                 "application/json",

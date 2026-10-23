@@ -378,16 +378,20 @@ impl Command {
                     max_kb.map(|kb| kb * 1024),
                 )?;
                 std::fs::write(&out, &image.bytes)?;
+                let value = json!({ "path": out, "width": image.width, "height": image.height,
+                    "bytes": image.bytes.len(), "quality": image.quality });
+                let mime = match format {
+                    // Model image inputs commonly accept raster formats, not SVG attachments.
+                    figlens::export::Format::Svg => return Ok(compact(value)),
+                    figlens::export::Format::Png => "image/png",
+                    figlens::export::Format::Jpg => "image/jpeg",
+                    figlens::export::Format::Webp => "image/webp",
+                    figlens::export::Format::Avif => "image/avif",
+                };
                 Output::Image {
-                    value: json!({ "path": out, "width": image.width, "height": image.height,
-                        "bytes": image.bytes.len(), "quality": image.quality }),
+                    value,
                     bytes: image.bytes,
-                    mime: match format {
-                        figlens::export::Format::Png => "image/png",
-                        figlens::export::Format::Jpg => "image/jpeg",
-                        figlens::export::Format::Webp => "image/webp",
-                        figlens::export::Format::Avif => "image/avif",
-                    },
+                    mime,
                 }
             }
         })
@@ -396,7 +400,7 @@ impl Command {
 
 fn export_format(out: &str) -> Result<figlens::export::Format, Box<dyn Error>> {
     figlens::export::Format::of(Path::new(out))
-        .ok_or_else(|| "the output must end in .png, .jpg, .webp or .avif".into())
+        .ok_or_else(|| "the output must end in .png, .jpg, .webp, .avif or .svg".into())
 }
 
 fn print_tree(

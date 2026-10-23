@@ -118,7 +118,7 @@ npx @runkids/figlens cache                                   # where cached rend
 npx @runkids/figlens cache clear                             # remove cached renders
 ```
 
-Open the loopback URL printed in the terminal; stop with Ctrl+C. No frontend build or Figma session is needed. Each page opens like a Figma page: its frames and sections on one canvas, rendered on demand at the resolution the zoom needs, with a Layers panel, light and dark themes and Figma's selection model (click, double-click to go deeper, ⌘/Ctrl-click for the deepest layer, right-click for every layer under the pointer, Alt/Option to measure distances). Inspect layout, typography, variables, component properties, Dev Mode style CSS and original images, and export the selection as PNG, JPG, WebP or AVIF. Picking follows the actual outlines of vectors, rotated layers and ellipses, not just their bounding boxes. Renders are cached on disk so reopening a file is fast; `figlens cache clear` or the viewer's ⋯ menu removes them. Browser-automation agents can drive the open viewer through `window.figlens`.
+Open the loopback URL printed in the terminal; stop with Ctrl+C. No frontend build or Figma session is needed. Each page opens like a Figma page: its frames and sections on one canvas, rendered on demand at the resolution the zoom needs, with a Layers panel, light and dark themes and Figma's selection model (click, double-click to go deeper, ⌘/Ctrl-click for the deepest layer, right-click for every layer under the pointer, Alt/Option to measure distances). Inspect layout, typography, variables, component properties, Dev Mode style CSS and original images, and export the selection as SVG, PNG, JPG, WebP or AVIF. Picking follows the actual outlines of vectors, rotated layers and ellipses, not just their bounding boxes. Renders are cached on disk so reopening a file is fast; `figlens cache clear` or the viewer's ⋯ menu removes them. Browser-automation agents can drive the open viewer through `window.figlens`.
 
 Copy an exact ID, structured context or an implementation prompt, then download a real bundle for the selected layer. Expanded instance IDs stay intact. Import a local implementation screenshot for side-by-side or opacity-overlay comparison; it stays in your browser. This is visual checking, not an automated accuracy score or a mapping to project components.
 
@@ -175,8 +175,11 @@ Need just one piece? Export JSON or render a node directly:
 ```sh
 npx @runkids/figlens nodes design.fig 12:345 > frame.json
 npx @runkids/figlens variables design.fig 12:345 > variables.json
+npx @runkids/figlens export design.fig 12:345 icon.svg
 npx @runkids/figlens export design.fig 12:345 hero.webp --scale 2 --quality 80
 ```
+
+SVG exports work for frames, groups, icons and exact instance sublayers: one selected subtree becomes one standalone SVG, with original image fills embedded and text as glyph outlines. No bundle extraction needed. SVG keeps its original dimensions; `--scale` and `--quality` apply to raster formats only.
 
 ## How close is it to Figma?
 
@@ -248,7 +251,7 @@ With a standalone `figlens` installation, use:
 
 The server runs locally over stdio and exposes `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` and `export`. Give tools absolute paths: relative ones resolve against the directory the client started figlens in.
 
-Start with `find` and `inspect` to select a frame. `export` saves the image and also returns it directly as MCP image content, so your agent can see the design without opening a local file. PNG has the widest client support; reduce `scale` for large frames. `find`, `inspect`, `bundle` and `export` also return structured JSON results.
+Start with `find` and `inspect` to select a frame. `export` saves the file and returns metadata. Raster formats also return MCP image content, so your agent can see the design without opening a local file; SVG returns metadata only. PNG has the widest client support; reduce `scale` for large frames. `find`, `inspect`, `bundle` and `export` also return structured JSON results.
 
 ## Commands
 
@@ -261,7 +264,7 @@ Start with `find` and `inspect` to select a frame. `export` saves the image and 
 | `variables <file> [node]` | A frame's bound variables; without a node, every local variable |
 | `bundle <file> <node> <out.zip>` | A design bundle for one frame; prints `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | Many bundles from one decode, in parallel; one JSON line per frame, as above or `{nodeId, error}` |
-| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | PNG, JPG, WebP or AVIF; `--max-kb` lowers quality until it fits (no effect on lossless PNG); prints `{path, width, height, bytes, quality}` |
+| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | SVG, PNG, JPG, WebP or AVIF; `--max-kb` lowers lossy quality until it fits; PNG/SVG fail if over budget; prints `{path, width, height, bytes, quality}` |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Local read-only viewer; `--out` requires a node and writes a standalone offline snapshot |
 | `compare <file> <nodes.json> <node>` | Diff against a REST export of the same frame |
 | `node <file> <node>` | One raw `.fig` node |

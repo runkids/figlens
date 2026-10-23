@@ -1,5 +1,5 @@
-//! Raster export of one node, as Figma's Export panel makes it (render bounds, so shadows are
-//! included), in PNG, JPG, WebP or AVIF, with a quality setting and an optional size budget.
+//! Export one node as SVG or a raster image, with render bounds so shadows are included.
+//! Raster formats support a quality setting and an optional size budget.
 
 use std::error::Error;
 use std::path::Path;
@@ -15,6 +15,7 @@ pub enum Format {
     Jpg,
     Webp,
     Avif,
+    Svg,
 }
 
 impl Format {
@@ -26,6 +27,7 @@ impl Format {
             "jpg" | "jpeg" => Format::Jpg,
             "webp" => Format::Webp,
             "avif" => Format::Avif,
+            "svg" => Format::Svg,
             _ => return None,
         })
     }
@@ -36,11 +38,11 @@ pub struct Image {
     pub bytes: Vec<u8>,
     pub width: u32,
     pub height: u32,
-    /// The quality used; lower than asked when a size budget forced it down.
+    /// Raster quality used (lowered to meet a budget); the requested value for SVG, which ignores it.
     pub quality: u8,
 }
 
-/// Renders node `id` of the `.fig` at `fig` at `scale` and encodes it.
+/// Renders node `id` and encodes it. SVG keeps its original dimensions and ignores quality.
 pub fn export(
     tree: &Tree,
     fig: &Path,
@@ -51,6 +53,29 @@ pub fn export(
     max_bytes: Option<usize>,
 ) -> Result<Image, Box<dyn Error>> {
     let prepared = Prepared::new(tree, fig, root_of(id), id)?;
+    if format == Format::Svg {
+        let n = prepared.node();
+        let area = render::render_bounds(n).ok_or("node has nothing to render")?;
+        let lookup = |h: &str| prepared.images.get(h).cloned();
+        // Keep original image fills embedded; raster export's downsampling would lose detail.
+        let bytes = render::Svg::new(tree, &lookup)
+            .document(n, area, 1.0)
+            .into_bytes();
+        if max_bytes.is_some_and(|max| bytes.len() > max) {
+            return Err(format!(
+                "SVG comes to {} KB; a size budget needs jpg, webp or avif",
+                bytes.len().div_ceil(1024)
+            )
+            .into());
+        }
+        let px = |len: f64| (len - 1e-3).ceil().max(1.0) as u32;
+        return Ok(Image {
+            bytes,
+            width: px(area[2] - area[0]),
+            height: px(area[3] - area[1]),
+            quality,
+        });
+    }
     let svg = prepared
         .export_svg(tree, scale)
         .ok_or("node has nothing to render")?;
@@ -109,6 +134,7 @@ fn encode_at(p: &Pixmap, format: Format, quality: u8) -> Result<Vec<u8>, String>
     // Encoders take straight (not premultiplied) alpha.
     let rgba = || p.pixels().iter().map(|c| c.demultiply());
     match format {
+        Format::Svg => Err("SVG requires vector input; use export instead of encode".into()),
         Format::Png => p.encode_png().map_err(|e| e.to_string()),
         Format::Jpg => {
             // JPG has no alpha: composite over white, as Figma does. Premultiplied makes it c + (255 - a).
