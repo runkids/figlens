@@ -1,6 +1,6 @@
 {
   "name": "@runkids/figlens",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Read .fig designs offline. Local preview, CLI + MCP, and reviewed project component mappings for Pi.",
   "license": "MIT",
   "repository": {
@@ -29,7 +29,9 @@
     "extensions": [
       "./pi/index.ts"
     ],
-    "skills": ["./skills"],
+    "skills": [
+      "./skills"
+    ],
     "image": "https://raw.githubusercontent.com/runkids/figlens/main/assets/pi-demo-poster.png",
     "video": "https://raw.githubusercontent.com/runkids/figlens/main/assets/pi-demo.mp4"
   },
