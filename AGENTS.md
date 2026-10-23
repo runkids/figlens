@@ -30,7 +30,8 @@ python3 scripts/ai-context.py check     # validate paths, headings and byte budg
 
 | Topic | Use when |
 |---|---|
-| `fig-format` | Changing decoding, instance expansion, emitted REST fields, variables, rendering or the bundle |
+| `fig-format` | Changing decoding, instance expansion, emitted REST fields, variables or the bundle |
+| `render` | Changing SVG or raster output: text and glyphs, image fills, effects, export areas, image adjustments |
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison |
 | `pi` | Changing the Pi extension, reviewed component mappings or its npm packaging |
 | `accuracy` | Measuring output against Figma's own exports, running `compare`, finding test files |
@@ -51,7 +52,7 @@ If a topic goes over budget, split it rather than raising the cap. Skills are wo
 ## Verification
 
 Generated test fixtures use `src/test_support.rs` for atomic directory ownership and scoped cleanup; see `fig-format`.
-Image-fill changes must test shifted sprites exported from a clipping frame; see `fig-format`.
+Image-fill changes must test shifted sprites exported from a clipping frame; see `render`.
 
 ```sh
 docker compose run --rm dev cargo test

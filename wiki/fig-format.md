@@ -1,6 +1,6 @@
 # .fig format and pipeline
 
-How figlens turns a `.fig` into REST-shaped JSON, a bundle and renders. Load this before changing decoding, expansion, emitted fields, variables or rendering.
+How figlens turns a `.fig` into REST-shaped JSON and a bundle. Load this before changing decoding, expansion, emitted fields, variables or the bundle; SVG and raster output is the `render` topic.
 
 ## Modules
 
@@ -61,19 +61,6 @@ Each rule below is backed by the sweep.
 - Resized instance children: use derived `fillGeometry`/`strokeGeometry`/`derivedTextData` when present, else scale the source geometry by size / source size (fill and stroke separately).
 - absoluteRenderBounds: leaves are tight transformed geometry (INSIDE strokes intersected with the fill shape, effects expand it); containers union their own box with their children; clipped by `clipsContent` ancestors; null when fully clipped, hidden, opacity 0, a boolean operand, or a mask (siblings after a mask clip to it). Text truncation keeps `glyphs[..truncationStartIndex]`.
 - Assets as the plugin selects them: image fills → `assets/<sha256>` keyed by imageRef (last node in DFS order); rendered vector types not inside a boolean op → `node:<id>` SVG; blend/effect/mask nodes with an image in the subtree → `render:<id>` 2x PNG. Export size is `ceil(len*scale - 1e-3)`.
-
-## Verified rules for text styles and rendering (2026-10-22)
-
-- A text node's font fields come from its text style (`styleIdForText`, local or `assetRef`), since a node's own copies can be stale; a hidden instance sublayer keeps its overridden values instead. `textAutoResize` is always the node's own.
-- REST line height: kiwi `PERCENT` → `INTRINSIC_%`, px = fontSize × `derivedTextData.fontMetaData[0].fontLineHeight` × value/100, no `lineHeightPercentFontSize`; `PIXELS`/`RAW` → `PIXELS`. Percents are `f32(f32(ratio) × 100)`, Figma's rounding. `fontVariantNumericFigure`/`Spacing` → `opentypeFlags` LNUM/ONUM/TNUM/PNUM.
-- `styleOverrideTable` entries list the REST fields their kiwi entry sets (`fontName` → the four font fields, `fontSize` → size and the line-height fields, …); an entry with `styleIdForText` adds that style's fields and `inheritTextStyleId`. Only ids used in `characterStyleIDs` appear. `lineTypes` maps `PLAIN`/`ORDERED_LIST` to `NONE`/`ORDERED`.
-- Image paints use `<pattern>` fills so effects see the painted shape's bounds. FILL uses explicit centered cover dimensions with `preserveAspectRatio="none"`; the pattern tile clips it. An image `slice` creates an extra usvg clip group that resvg truncates to the outer canvas inside a pattern, cutting offset sprites in small exports. Regress with generated PNG/JPEG/WebP sprite slices at 1x/3x, with and without raster downsampling.
-- SVGs use `viewBox="0 0 w h"` and move the origin in a transform: under a fractional viewBox origin resvg draws filters wrong.
-- An effect's filter region is the node's content uncut by its ancestors' clips (`_r.fb`: its own paint plus its children's, before its own effects; a clipping node cuts its children to its box) plus each effect's reach (1.5 × radius = 3σ, spread, offset). Not the render bounds: an ancestor may have cut those (a blurred glow at a frame edge loses the light it pulls in), and they already hold the effect's reach. Filter time grows with this area; counting the reach twice made frames with large shadows several times slower.
-- Shadows follow Figma's SVG export: start from the hard alpha (`SourceAlpha × 127`); drop shadow = offset, blur, cut out under the node unless `showShadowBehindNode`, then a color matrix; inner shadow = hard alpha − blurred offset hard alpha.
-- Export area (`render::export_area`): render bounds, else the box. A SECTION gets 40 px of margin and is drawn over the fills of the sections it is nested in, margin included; a page (CANVAS) is the union of its children over its background color.
-- Rasterized output (`Svg::for_raster`: render assets, reference, `export`) averages large image downscales first: a PNG fill is halved (2x2 means) while it stays at least twice the pixels it covers, since resvg samples a big downscale without averaging and it aliases. SVG assets keep the full image, as the plugin's do, since they may be drawn at any size.
-- Image adjustments (kiwi `paintFilter`, REST `filters`), fitted to plugin renders: exposure e scales linear light by 2^(5e); saturation (kiwi `vibrance`) is SVG `saturate` (Rec. 709 weights) in linear RGB, e.g. −0.58 fits to a mean error of 1.5/255. The filter sits on the painted path: inside a pattern resvg filters at the tile's own size. Contrast, temperature, tint, highlights and shadows are not drawn yet.
 
 ## Bundle and batch mode (2026-10-22)
 

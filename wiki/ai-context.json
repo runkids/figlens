@@ -6,8 +6,12 @@
   },
   "topics": {
     "fig-format": {
-      "description": "Changing decoding, instance expansion, emitted REST fields, variables, rendering or the bundle.",
+      "description": "Changing decoding, instance expansion, emitted REST fields, variables or the bundle.",
       "sources": [{ "path": "wiki/fig-format.md" }]
+    },
+    "render": {
+      "description": "Changing SVG or raster rendering: text and glyphs, image fills, effects, export areas, image adjustments.",
+      "sources": [{ "path": "wiki/render.md" }]
     },
     "preview": {
       "description": "Changing the local viewer, offline HTML, handoff or screenshot comparison.",
