@@ -402,6 +402,7 @@ name = "figlens"
 version = "0.3.2"
 dependencies = [
  "flate2",
+ "imagesize",
  "jpeg-encoder",
  "kiwi-schema",
  "ravif",

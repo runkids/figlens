@@ -51,6 +51,7 @@ If a topic goes over budget, split it rather than raising the cap. Skills are wo
 ## Verification
 
 Generated test fixtures use `src/test_support.rs` for atomic directory ownership and scoped cleanup; see `fig-format`.
+Image-fill changes must test shifted sprites exported from a clipping frame; see `fig-format`.
 
 ```sh
 docker compose run --rm dev cargo test

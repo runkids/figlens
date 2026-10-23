@@ -543,13 +543,10 @@ pub fn box_bounds(n: &Json) -> Option<Rect> {
     path_bounds(&rect_segs(0.0, 0.0, s.x, s.y, [0.0; 4]), mat(&r["m"]))
 }
 
-/// Pixel size from a PNG header.
+/// Pixel size from the encoded image header, without decoding the image.
 fn image_size(b: &[u8]) -> Option<(f64, f64)> {
-    let be32 = |i: usize| Some(u32::from_be_bytes(b.get(i..i + 4)?.try_into().ok()?));
-    if b.starts_with(b"\x89PNG") {
-        return Some((f64::from(be32(16)?), f64::from(be32(20)?)));
-    }
-    None
+    let size = imagesize::blob_size(b).ok()?;
+    (size.width > 0 && size.height > 0).then_some((size.width as f64, size.height as f64))
 }
 
 /// Half the size, each pixel the mean of a 2x2 block (premultiplied, so edges stay right).
@@ -1015,16 +1012,39 @@ impl<'t, 'a> Svg<'t, 'a> {
                         Some(c) => self.mip(&hash, bytes, c),
                         None => bytes,
                     };
+                    // The pattern already clips its tile. Explicit cover geometry avoids usvg's
+                    // extra slice clip, which resvg truncates to the outer canvas inside patterns.
+                    let (iw, ih, x, y, aspect) = if aspect.ends_with("slice") {
+                        match image_size(&bytes) {
+                            Some((iw, ih)) => {
+                                let s = (w / iw).max(h / ih);
+                                (
+                                    iw * s,
+                                    ih * s,
+                                    (w - iw * s) / 2.0,
+                                    (h - ih * s) / 2.0,
+                                    "none",
+                                )
+                            }
+                            None => (w, h, 0.0, 0.0, aspect),
+                        }
+                    } else {
+                        (w, h, 0.0, 0.0, aspect)
+                    };
                     let adjust = self.image_filter(&p["paintFilter"]);
                     let pattern = self.id("p");
                     let _ = write!(
                         self.defs,
-                        "<pattern id=\"{pattern}\" patternUnits=\"userSpaceOnUse\" width=\"{w}\" height=\"{h}\" patternTransform=\"{}\"><image width=\"{w}\" height=\"{h}\" preserveAspectRatio=\"{aspect}\" href=\"data:{};base64,{}\"/></pattern>",
+                        "<pattern id=\"{pattern}\" patternUnits=\"userSpaceOnUse\" width=\"{w}\" height=\"{h}\" patternTransform=\"{}\"><image x=\"{x}\" y=\"{y}\" width=\"{iw}\" height=\"{ih}\" preserveAspectRatio=\"{aspect}\" href=\"data:{};base64,{}\"/></pattern>",
                         matrix(t),
                         media_type(&bytes),
                         base64(&bytes),
                         w = num(w),
                         h = num(h),
+                        x = num(x),
+                        y = num(y),
+                        iw = num(iw),
+                        ih = num(ih),
                     );
                     let _ = write!(
                         out,
@@ -1537,6 +1557,62 @@ mod tests {
             "{}",
             svg.defs
         );
+    }
+
+    #[test]
+    fn clipped_sprite_exports_keep_the_last_image_slice() {
+        let tree = Tree {
+            nodes: Default::default(),
+            children: Default::default(),
+            blobs: Vec::new(),
+        };
+        let mut sprite = resvg::tiny_skia::Pixmap::new(300, 100).unwrap();
+        let colors = [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]];
+        for (i, pixel) in sprite.data_mut().chunks_exact_mut(4).enumerate() {
+            pixel.copy_from_slice(&colors[(i % 300) / 100]);
+        }
+        for format in [
+            crate::export::Format::Png,
+            crate::export::Format::Jpg,
+            crate::export::Format::Webp,
+        ] {
+            let bytes = crate::export::encode(&sprite, format, 95, None)
+                .unwrap()
+                .bytes;
+            let images = |_: &str| Some(bytes.clone());
+            for raster in [false, true] {
+                for scale in [1.0, 3.0] {
+                    for (index, offset) in [4.48, 70.56, 136.64].into_iter().enumerate() {
+                        let frame = serde_json::json!({
+                            "id": "frame", "type": "FRAME", "clipsContent": true,
+                            "_r": { "size": { "x": 56, "y": 56 }, "m": [1,0,0,1,0,0] },
+                            "children": [{ "id": "image", "type": "RECTANGLE", "_r": {
+                                "size": { "x": 196, "y": 64.96 }, "m": [1,0,0,1,-offset,-4.48],
+                                "fillPaints": [{ "type": "IMAGE", "imageScaleMode": "FILL",
+                                    "image": { "hash": "sprite" } }]
+                            }}]
+                        });
+                        let mut svg = Svg::new(&tree, &images);
+                        if raster {
+                            svg = svg.for_raster();
+                        }
+                        let pixels =
+                            pixmap(&svg.document(&frame, [0.0, 0.0, 56.0, 56.0], scale)).unwrap();
+                        let pixel = pixels
+                            .pixel((50.0 * scale) as u32, (28.0 * scale) as u32)
+                            .unwrap();
+                        let expected = colors[index];
+                        assert!(
+                            pixel.alpha() > 250
+                                && pixel.red().abs_diff(expected[0]) < 5
+                                && pixel.green().abs_diff(expected[1]) < 5
+                                && pixel.blue().abs_diff(expected[2]) < 5,
+                            "sprite slice {index}, scale {scale}, raster {raster}, format {format:?}: {pixel:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

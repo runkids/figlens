@@ -15,6 +15,7 @@ include = ["src/**/*", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
 
 [dependencies]
 flate2 = "1.1.10"
+imagesize = "0.15.0"
 jpeg-encoder = "0.7.1"
 kiwi-schema = "0.2.1"
 rayon = "1.12.0"
