@@ -13,6 +13,13 @@ Load this for packaging, publishing a version, the install paths and `figlens up
 - **Secrets:** `HOMEBREW_TAP_SSH_KEY` (private half of a write deploy key on runkids/homebrew-tap; replace both halves together). npm has no secret: a Trusted Publisher on npmjs.com (`runkids/figlens`, `publish-release.yml`, npm publish allowed) lets the `npm` job publish through OIDC, with provenance.
 - **Pinned toolchain:** shipped binaries build from `Dockerfile.dist`'s digest-pinned base. To move Rust, change the tag and digest together (`docker buildx imagetools inspect rust:<version>`), and the toolchain in the Windows test job.
 
+## Release notes
+
+- The GitHub release title is exactly `v<version>`, with no feature name or subtitle.
+- The release body is reviewed English copy for users, separate from the generated CHANGELOG. Explain the concrete problem and resulting behavior; include useful examples or update commands and relevant verification or limitations. Avoid internal implementation details unless users need them.
+- Keep the source copy at ignored `samples/release-v<version>/notes.md` and apply it to the completed draft before Publish Release. That workflow preserves the draft body. The `figlens-release` skill contains the commands and read-back checks.
+- Verify every claim against the release range and executed checks. Keep private designs, exports and local-only report links out of public notes; preserve contributor credits and provide migration guidance when applicable.
+
 ## Install paths
 
 - macOS/Linux: `curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh | sh` (latest release via the `releases/latest` redirect, checked against `SHA256SUMS`, into `~/.local/bin` or `$FIGLENS_BIN_DIR`).
