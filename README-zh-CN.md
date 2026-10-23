@@ -9,9 +9,9 @@
 </p>
 
 <p align="center">
-  从保存的 <code>.fig</code> 取得布局、文字、变量、素材与参考图。<br>
-  无论 agent 在哪里执行，都能带着设计细节开始实现。<br>
-  <strong>运行工作的机器不需要 Figma App、登录或承受 API 速率限制。</strong>
+  把任何画面的布局、文字、变量、素材与参考图交给你的 coding agent。<br>
+  在笔记本、云端或 CI 上，想读几次就读几次。<br>
+  <strong>运行工作的机器不需要 Figma App、登录、seat，也没有 API 速率限制。</strong>
 </p>
 
 <p align="center">
@@ -27,18 +27,25 @@
 
 ## 为什么使用 figlens？
 
-当你说「做出这个画面」，agent 应该同时拿到它的布局、文字与素材。只有截图时，agent 得估算间距与字体样式，你也还得另外导出图标与图片。通过即时 Figma 连接读取设计，则需要在运行工作的机器上配置访问权限，并依赖 API 可用性。
+当你说「做出这个画面」，agent 应该同时拿到它的布局、文字与素材。只有截图时，agent 得估算间距与字体样式，图标还是要你手动导出。Figma MCP server 读的是真实设计，但配额绑在文件所属的团队上，agent 一个 prompt 就可能用光一天的配额，而且机器必须登录 Figma。
 
-figlens 直接读取保存的设计。在 Figma 选择 **File > Save local copy**，再让 agent 通过 CLI 或本地 MCP server 读取 `.fig`。它能寻找画面、查看布局与文字，并提取所需素材。若需要便于携带的交接方式，可以将一个 frame 的设计数据、素材与参考图打包成单一 zip。
+figlens 改从保存的副本读取设计。在 Figma 选择 **File > Save local copy**（只要所有者没有关闭复制，查看权限就够）。把这个 `.fig` 通过 CLI 或本地 MCP server 交给 agent，它就能寻找画面、查看布局与文字，并提取所需素材。也可以把一个 frame 的设计数据、素材与参考图打包成一个 zip，任何 agent 或队友都能使用。
 
 | 如果你遇过这些情况 | figlens 可以帮你 |
 |---|---|
-| API 限制中断设计读取 | 随时读取本地文件，不调用 Figma API，也不需要 token |
+| 付费 seat 也遇到「Rate limit exceeded, try again tomorrow」 | 随时读取保存的文件，不调用 Figma API，不需要 token 或 seat |
 | agent 在云端服务器或 CI 执行 | 使用原生 CLI 读取设计，不需要 Figma App 或浏览器会话 |
 | 不断解释尺寸、导出素材 | 提供结构化布局、字体样式、展开的 instance、绑定变量与原始素材 |
 | 其他 agent 或队友需要相同画面 | 分享包含设计数据、素材、参考图与说明的 frame bundle |
 
 设计师继续使用 Figma，agent 使用项目既有的技术栈。figlens 提供设计上下文，coding agent 负责撰写实现。
+
+<details>
+<summary>.fig 格式没有公开文档。Figma 改了格式怎么办？</summary>
+
+figlens 不靠猜测格式。每个版本都用同一批文件对照 Figma 自己导出的 JSON、PNG 与 SVG 检查（[结果](#how-close-is-it-to-figma)），所以格式变动会以可测量的回归显现，而不是悄悄出错。你已经保存的副本，用读取它的那个 figlens 版本仍可继续使用；只有从改版后的 Figma 新保存的文件才需要更新 figlens，`figlens update` 就能取得。
+
+</details>
 
 <a id="from-a-local-fig-to-working-html"></a>
 

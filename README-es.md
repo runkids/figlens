@@ -9,9 +9,9 @@
 </p>
 
 <p align="center">
-  Extrae de un <code>.fig</code> guardado la estructura, el texto, las variables, los recursos y una imagen de referencia.<br>
-  Tu agente puede trabajar con los detalles del diseño, dondequiera que se ejecute.<br>
-  <strong>Sin la aplicación Figma, inicio de sesión ni límites de la API en la máquina que hace el trabajo.</strong>
+  Dale a tu agente de programación la estructura, el texto, las variables, los recursos y una imagen de referencia de cualquier pantalla.<br>
+  Léelo tantas veces como quieras, en tu portátil, en la nube o en CI.<br>
+  <strong>Sin aplicación Figma, inicio de sesión, seat ni límite de la API en la máquina que hace el trabajo.</strong>
 </p>
 
 <p align="center">
@@ -27,18 +27,25 @@
 
 ## ¿Por qué figlens?
 
-«Construye esta pantalla» debería incluir su estructura, texto y recursos. Con solo capturas, el agente tiene que estimar espacios y tipografía, y tú aún debes exportar iconos e imágenes. Una conexión directa con Figma exige configurar el acceso y depende de la disponibilidad de la API en la máquina que hace el trabajo.
+«Construye esta pantalla» debería incluir su estructura, texto y recursos. Con capturas, el agente tiene que estimar espacios y tipografía, y tú sigues exportando iconos a mano. El servidor MCP de Figma lee el diseño real, pero su cuota pertenece al equipo dueño del archivo, un agente puede gastar la cuota del día en un solo prompt y la máquina necesita una sesión de Figma.
 
-figlens lee directamente el diseño guardado. En Figma, elige **File > Save local copy** y deja que tu agente lea el `.fig` mediante la CLI o el servidor MCP local. Puede buscar una pantalla, inspeccionar su estructura y texto y extraer los recursos necesarios. Para una entrega portátil, reúne los datos, los recursos y el render de referencia de un frame en un único zip.
+figlens lee el diseño desde una copia guardada. En Figma, elige **File > Save local copy** (basta con acceso de lectura, salvo que el propietario haya desactivado la copia). Dale ese `.fig` a tu agente mediante la CLI o el servidor MCP local, y podrá buscar una pantalla, inspeccionar su estructura y texto y extraer los recursos necesarios. O reúne los datos, los recursos y el render de referencia de un frame en un zip que cualquier agente o compañero pueda usar.
 
 | Si te has encontrado con esto | Con figlens puedes |
 |---|---|
-| Los límites de la API interrumpen las lecturas | Leer el archivo local las veces necesarias, sin llamadas a la API de Figma ni tokens |
+| «Rate limit exceeded, try again tomorrow», incluso con un seat de pago | Leer el archivo guardado las veces que necesites, sin llamadas a la API de Figma, tokens ni seats |
 | Tu agente se ejecuta en la nube o en CI | Leer el diseño con una CLI nativa, sin la aplicación Figma ni sesión de navegador |
 | No paras de explicar medidas y exportar recursos | Proporcionar estructura, tipografía, instancias expandidas, variables vinculadas y recursos originales |
 | Otro agente o compañero necesita la misma pantalla | Compartir un bundle con datos, recursos, render de referencia e instrucciones |
 
 Los diseñadores siguen trabajando en Figma. Tu agente utiliza el stack del proyecto. figlens proporciona el contexto del diseño; el agente de programación escribe la implementación.
+
+<details>
+<summary>El formato .fig no está documentado. ¿Qué pasa cuando Figma lo cambie?</summary>
+
+figlens no adivina el formato. Cada versión se comprueba contra las exportaciones JSON, PNG y SVG del propio Figma de los mismos archivos ([resultados](#how-close-is-it-to-figma)), así que un cambio de formato aparece como una regresión medida, no silenciosa. La copia que ya tienes guardada sigue funcionando con la versión de figlens que la leyó; solo los guardados nuevos desde un Figma cambiado necesitan una actualización de figlens, que `figlens update` descarga.
+
+</details>
 
 <a id="from-a-local-fig-to-working-html"></a>
 

@@ -9,9 +9,9 @@
 </p>
 
 <p align="center">
-  Extrahiere Layout, Text, Variablen, Assets und ein Referenzbild aus einer gespeicherten <code>.fig</code>.<br>
-  Dein Agent kann mit den Designdetails arbeiten, wo immer er läuft.<br>
-  <strong>Ohne Figma-App, Anmeldung oder API-Limits auf dem ausführenden Rechner.</strong>
+  Gib deinem Coding-Agenten Layout, Text, Variablen, Assets und ein Referenzbild jedes Bildschirms.<br>
+  Lies es so oft du willst, auf dem Laptop, in der Cloud oder in CI.<br>
+  <strong>Ohne Figma-App, Anmeldung, Seat oder API-Limit auf dem ausführenden Rechner.</strong>
 </p>
 
 <p align="center">
@@ -27,18 +27,25 @@
 
 ## Warum figlens?
 
-Zu „Baue diesen Bildschirm“ gehören Layout, Text und Assets. Mit Screenshots allein muss der Agent Abstände und Typografie schätzen, während du weiterhin Icons und Bilder exportierst. Eine direkte Figma-Verbindung erfordert eingerichteten Zugriff und eine verfügbare API auf dem ausführenden Rechner.
+Zu „Baue diesen Bildschirm“ gehören Layout, Text und Assets. Mit Screenshots muss der Agent Abstände und Typografie schätzen, und Icons exportierst du weiterhin von Hand. Der Figma-MCP-Server liest das echte Design, aber sein Kontingent gehört dem Team, dem die Datei gehört, ein Agent kann das Tageskontingent mit einem einzigen Prompt aufbrauchen, und der Rechner braucht eine Figma-Anmeldung.
 
-figlens liest das gespeicherte Design direkt. Wähle in Figma **File > Save local copy** und lass deinen Agenten die `.fig` über die CLI oder den lokalen MCP-Server lesen. Er kann Bildschirme finden, Layout und Text untersuchen und benötigte Assets extrahieren. Für eine portable Übergabe bündelst du Designdaten, Assets und Referenzrender eines Frames in einer ZIP-Datei.
+figlens liest das Design stattdessen aus einer gespeicherten Kopie. Wähle in Figma **File > Save local copy** (Lesezugriff genügt, sofern der Besitzer das Kopieren nicht deaktiviert hat). Gib die `.fig` deinem Agenten über die CLI oder den lokalen MCP-Server; er kann Bildschirme finden, Layout und Text untersuchen und benötigte Assets extrahieren. Oder bündle Designdaten, Assets und Referenzrender eines Frames in einer ZIP-Datei, die jeder Agent und jeder Kollege nutzen kann.
 
 | Wenn du dieses Problem kennst | Mit figlens kannst du |
 |---|---|
-| API-Limits unterbrechen das Lesen des Designs | Die lokale Datei beliebig oft lesen, ohne Figma-API-Aufrufe oder Tokens |
+| „Rate limit exceeded, try again tomorrow“, selbst mit bezahltem Seat | Die gespeicherte Datei so oft lesen wie nötig, ohne Figma-API-Aufrufe, Tokens oder Seats |
 | Dein Agent läuft auf einem Cloud-Server oder in CI | Das Design mit einer nativen CLI lesen, ohne Figma-App oder Browsersitzung |
 | Du erklärst ständig Maße und exportierst Assets | Strukturiertes Layout, Typografie, expandierte Instanzen, gebundene Variablen und Original-Assets bereitstellen |
 | Ein anderer Agent oder Teamkollege braucht denselben Bildschirm | Ein Frame-Bundle mit Designdaten, Assets, Referenzrender und Anweisungen teilen |
 
 Designer arbeiten weiter in Figma. Dein Agent nutzt den Stack deines Projekts. figlens liefert den Designkontext; der Coding-Agent schreibt die Implementierung.
+
+<details>
+<summary>Das .fig-Format ist nicht dokumentiert. Was passiert, wenn Figma es ändert?</summary>
+
+figlens rät nicht beim Format. Jede Version wird gegen Figmas eigene JSON-, PNG- und SVG-Exporte derselben Dateien geprüft ([Ergebnisse](#how-close-is-it-to-figma)), sodass eine Formatänderung als gemessene Regression auffällt, nicht still. Eine bereits gespeicherte Kopie funktioniert weiter mit der figlens-Version, die sie gelesen hat; nur neue Speicherungen aus einem geänderten Figma brauchen ein figlens-Update, das `figlens update` holt.
+
+</details>
 
 <a id="from-a-local-fig-to-working-html"></a>
 

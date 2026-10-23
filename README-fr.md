@@ -9,9 +9,9 @@
 </p>
 
 <p align="center">
-  Extrayez d'un <code>.fig</code> enregistré la mise en page, le texte, les variables, les ressources et une image de référence.<br>
-  Votre agent dispose des détails du design, où qu'il s'exécute.<br>
-  <strong>Aucune application Figma, connexion à un compte ou limite d'API sur la machine qui travaille.</strong>
+  Donnez à votre agent de développement la mise en page, le texte, les variables, les ressources et une image de référence de n'importe quel écran.<br>
+  Lisez-le aussi souvent que vous voulez, sur votre portable, dans le cloud ou en CI.<br>
+  <strong>Aucune application Figma, connexion, seat ou limite d'API sur la machine qui travaille.</strong>
 </p>
 
 <p align="center">
@@ -27,18 +27,25 @@
 
 ## Pourquoi figlens ?
 
-« Construis cet écran » devrait s'accompagner de sa mise en page, de son texte et de ses ressources. Avec des captures seules, l'agent doit estimer les espacements et la typographie, et il vous reste à exporter les icônes et les images. Une connexion directe à Figma exige de configurer l'accès et dépend de la disponibilité de l'API sur la machine qui travaille.
+« Construis cet écran » devrait s'accompagner de sa mise en page, de son texte et de ses ressources. Avec des captures, l'agent doit estimer les espacements et la typographie, et vous exportez toujours les icônes à la main. Le serveur MCP de Figma lit le vrai design, mais son quota appartient à l'équipe propriétaire du fichier, un agent peut épuiser le quota du jour en un seul prompt, et la machine doit être connectée à Figma.
 
-figlens lit directement le design enregistré. Dans Figma, choisissez **File > Save local copy**, puis laissez votre agent lire le `.fig` avec la CLI ou le serveur MCP local. Il peut trouver un écran, inspecter sa mise en page et son texte, et extraire ses ressources. Pour une transmission portable, regroupez les données, les ressources et le rendu de référence d'une frame dans un seul zip.
+figlens lit le design depuis une copie enregistrée. Dans Figma, choisissez **File > Save local copy** (un accès en lecture suffit, sauf si le propriétaire a désactivé la copie). Donnez ce `.fig` à votre agent avec la CLI ou le serveur MCP local : il peut trouver un écran, inspecter sa mise en page et son texte, et extraire ses ressources. Ou regroupez les données, les ressources et le rendu de référence d'une frame dans un zip utilisable par n'importe quel agent ou collègue.
 
 | Si vous rencontrez ce problème | Avec figlens, vous pouvez |
 |---|---|
-| Les limites d'API interrompent la lecture du design | Lire le fichier local autant que nécessaire, sans appel à l'API Figma ni jeton |
+| « Rate limit exceeded, try again tomorrow », même avec un seat payant | Lire le fichier enregistré autant que nécessaire, sans appel à l'API Figma, jeton ni seat |
 | Votre agent s'exécute sur un serveur cloud ou en CI | Lire le design avec une CLI native, sans application Figma ni session de navigateur |
 | Vous expliquez sans cesse les mesures et exportez les ressources | Fournir la structure, la typographie, les instances développées, les variables liées et les ressources originales |
 | Un autre agent ou collègue a besoin du même écran | Partager un bundle de frame contenant données, ressources, rendu de référence et instructions |
 
 Les designers continuent dans Figma. Votre agent utilise la stack de votre projet. figlens fournit le contexte du design ; l'agent de développement écrit l'implémentation.
+
+<details>
+<summary>Le format .fig n'est pas documenté. Que se passe-t-il si Figma le change ?</summary>
+
+figlens ne devine pas le format. Chaque version est vérifiée contre les exports JSON, PNG et SVG de Figma lui-même sur les mêmes fichiers ([résultats](#how-close-is-it-to-figma)) : un changement de format apparaît comme une régression mesurée, pas silencieuse. La copie que vous avez déjà enregistrée continue de fonctionner avec la version de figlens qui l'a lue ; seuls les nouveaux enregistrements depuis un Figma modifié demandent une mise à jour de figlens, que `figlens update` récupère.
+
+</details>
 
 <a id="from-a-local-fig-to-working-html"></a>
 
