@@ -649,7 +649,8 @@ fn direct_file(line: &str, roots: &[PathBuf]) -> Option<PathBuf> {
         return None;
     }
     let req: serde_json::Value = serde_json::from_str(line).ok()?;
-    if req["method"] != "tools/call" {
+    // A notification (no id) gets no reply, so its file is never opened.
+    if req["method"] != "tools/call" || req.get("id").is_none() {
         return None;
     }
     let params = &req["params"];
@@ -1136,6 +1137,8 @@ mod tests {
             direct_file(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#, &[]),
             None
         );
+        let notification = call(r#"{"file":"/a.fig"}"#).replace(r#""id":1,"#, "");
+        assert_eq!(direct_file(&notification, &[]), None);
     }
 
     #[test]
