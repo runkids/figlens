@@ -18,7 +18,7 @@ asset() {
 
 cat <<EOF
 class Figlens < Formula
-  desc "Read Figma .fig files offline: REST nodes, variables, assets, renders and design bundles"
+  desc "Figma screens for coding agents, with no Figma app, login or API limit"
   homepage "https://github.com/runkids/figlens"
   version "$version"
   license "MIT"

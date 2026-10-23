@@ -4,7 +4,7 @@
 
 # @runkids/figlens
 
-Build UI anywhere. Just bring a `.fig`.
+Your Figma design, ready for your coding agent. Anywhere it runs, with no Figma app, login or API rate limit.
 
 Give your AI coding agent a saved Figma file (**File > Save local copy**). figlens reads the design offline, on your laptop, a CI runner or a cloud AI server. No Figma installation, login or API key needed.
 

@@ -2,7 +2,7 @@
 name = "figlens"
 version = "0.3.3"
 edition = "2024"
-description = "Read Figma .fig files offline: REST-shaped nodes, variables, assets, renders and design bundles for AI agents"
+description = "Figma screens for coding agents, read from a saved .fig: REST-shaped nodes, variables, assets, renders and bundles, with no Figma app, login or API limit"
 license = "MIT"
 # Shipped as release binaries, Homebrew and npm; not on crates.io.
 publish = false
