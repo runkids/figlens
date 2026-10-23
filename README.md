@@ -251,7 +251,7 @@ With a standalone `figlens` installation, use:
 { "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
-To keep the server inside chosen folders, add `--root`: `"args": ["mcp", "--root", "/path/to/designs"]`. Every `file` and output path a tool call names must then lie under one of the roots; repeat `--root` for more folders.
+To keep the server inside chosen folders, add `--root`: `"args": ["mcp", "--root", "/path/to/designs"]`. Every `file` and output path a tool call names must then lie under one of the roots; repeat `--root` for more folders. Calls whose arguments leave the tool schema are refused too, since the legacy argument coercions could turn any of them into a path.
 
 The server runs locally over stdio and exposes `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` and `export`. Give tools absolute paths: relative ones resolve against the directory the client started figlens in.
 

@@ -273,7 +273,7 @@ claude mcp add figlens -- npx -y @runkids/figlens mcp
 { "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
-要把 server 限制在指定文件夹内，加上 `--root`：`"args": ["mcp", "--root", "/path/to/designs"]`。之后工具调用指定的每个 `file` 与输出路径都必须位于某个 root 之下；多个文件夹可重复 `--root`。
+要把 server 限制在指定文件夹内，加上 `--root`：`"args": ["mcp", "--root", "/path/to/designs"]`。之后工具调用指定的每个 `file` 与输出路径都必须位于某个 root 之下；多个文件夹可重复 `--root`。参数不符合工具 schema 的调用也会被拒绝，因为旧的参数转换可能把任一参数当成路径。
 
 Server 在本地通过 stdio 执行，提供 `tree`、`find`、`inspect`、`nodes`、`variables`、`bundle` 与 `export`。工具请使用绝对路径：相对路径以 client 启动 figlens 的目录为准。
 

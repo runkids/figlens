@@ -277,7 +277,7 @@ claude mcp add figlens -- npx -y @runkids/figlens mcp
 { "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
-서버를 특정 폴더로 제한하려면 `--root`를 추가합니다: `"args": ["mcp", "--root", "/path/to/designs"]`. 도구 호출이 지정하는 모든 `file`과 출력 경로는 루트 중 하나 아래에 있어야 하며, 폴더를 더 추가하려면 `--root`를 반복합니다.
+서버를 특정 폴더로 제한하려면 `--root`를 추가합니다: `"args": ["mcp", "--root", "/path/to/designs"]`. 도구 호출이 지정하는 모든 `file`과 출력 경로는 루트 중 하나 아래에 있어야 하며, 폴더를 더 추가하려면 `--root`를 반복합니다. 인수가 도구 스키마를 벗어나는 호출도 거부되는데, 레거시 인수 변환이 그중 어느 것이든 경로로 바꿀 수 있기 때문입니다.
 
 서버는 로컬에서 stdio로 실행되며 `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle`, `export`를 제공합니다. 도구에는 절대 경로를 전달하세요. 상대 경로는 클라이언트가 figlens를 시작한 디렉터리를 기준으로 해석합니다.
 

@@ -273,7 +273,7 @@ claude mcp add figlens -- npx -y @runkids/figlens mcp
 { "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
-要把 server 限制在指定資料夾內，加上 `--root`：`"args": ["mcp", "--root", "/path/to/designs"]`。之後工具呼叫指定的每個 `file` 與輸出路徑都必須位於某個 root 之下；多個資料夾可重複 `--root`。
+要把 server 限制在指定資料夾內，加上 `--root`：`"args": ["mcp", "--root", "/path/to/designs"]`。之後工具呼叫指定的每個 `file` 與輸出路徑都必須位於某個 root 之下；多個資料夾可重複 `--root`。參數不符合工具 schema 的呼叫也會被拒絕，因為舊的參數轉換可能把任一參數當成路徑。
 
 Server 在本機透過 stdio 執行，提供 `tree`、`find`、`inspect`、`nodes`、`variables`、`bundle` 與 `export`。工具請使用絕對路徑：相對路徑以 client 啟動 figlens 的目錄為準。
 

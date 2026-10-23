@@ -277,7 +277,7 @@ claude mcp add figlens -- npx -y @runkids/figlens mcp
 { "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
-サーバーを特定のフォルダーに限定するには `--root` を付けます: `"args": ["mcp", "--root", "/path/to/designs"]`。ツール呼び出しが指定する `file` と出力パスはすべていずれかのルート配下である必要があります。フォルダーを増やすには `--root` を繰り返します。
+サーバーを特定のフォルダーに限定するには `--root` を付けます: `"args": ["mcp", "--root", "/path/to/designs"]`。ツール呼び出しが指定する `file` と出力パスはすべていずれかのルート配下である必要があります。フォルダーを増やすには `--root` を繰り返します。引数がツールのスキーマから外れる呼び出しも拒否されます。旧来の引数変換ではどの引数もパスになり得るためです。
 
 サーバーはローカルの stdio で動作し、`tree`、`find`、`inspect`、`nodes`、`variables`、`bundle`、`export` を公開します。ツールには絶対パスを渡してください。相対パスはクライアントが figlens を起動したディレクトリを基準に解決されます。
 

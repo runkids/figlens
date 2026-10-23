@@ -277,7 +277,7 @@ Com uma instalação independente de `figlens`, use:
 { "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
-Para manter o servidor dentro de pastas escolhidas, adicione `--root`: `"args": ["mcp", "--root", "/caminho/para/designs"]`. Todo `file` e caminho de saída que uma chamada nomear deve ficar sob uma das raízes; repita `--root` para mais pastas.
+Para manter o servidor dentro de pastas escolhidas, adicione `--root`: `"args": ["mcp", "--root", "/caminho/para/designs"]`. Todo `file` e caminho de saída que uma chamada nomear deve ficar sob uma das raízes; repita `--root` para mais pastas. Chamadas cujos argumentos saem do esquema da ferramenta também são recusadas, pois as conversões legadas poderiam transformar qualquer um deles em caminho.
 
 O servidor roda localmente por stdio e expõe `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` e `export`. Use caminhos absolutos: caminhos relativos partem do diretório onde o cliente iniciou figlens.
 

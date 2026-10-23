@@ -277,7 +277,7 @@ Con una instalación independiente de `figlens`, usa:
 { "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
-Para limitar el servidor a ciertas carpetas, añade `--root`: `"args": ["mcp", "--root", "/ruta/a/disenos"]`. Cada `file` y ruta de salida que nombre una llamada debe estar bajo una de esas raíces; repite `--root` para más carpetas.
+Para limitar el servidor a ciertas carpetas, añade `--root`: `"args": ["mcp", "--root", "/ruta/a/disenos"]`. Cada `file` y ruta de salida que nombre una llamada debe estar bajo una de esas raíces; repite `--root` para más carpetas. Las llamadas cuyos argumentos se salen del esquema de la herramienta también se rechazan, ya que las conversiones heredadas podrían convertir cualquiera de ellos en una ruta.
 
 El servidor se ejecuta localmente por stdio y expone `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` y `export`. Usa rutas absolutas: las relativas se resuelven desde el directorio donde el cliente inició figlens.
 
