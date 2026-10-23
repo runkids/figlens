@@ -228,6 +228,8 @@ figlens 以 Figma 自身导出的 JSON、PNG 和 SVG 验证。以下是 **826 �
 
 [figlens skill](skills/figlens/SKILL.md) 教 agent 寻找 frame、分段阅读 bundle，并依照其中的数值实现。
 
+需要仔细还原设计时，[规划流程](skills/figlens/references/planning.md)会把本次范围对应到既有代码、图片交付与验收条件。Pi 也提供 `/figlens plan <request>`，先规划再实现；小范围保持为小任务。使用 `/figlens open [description]` 描述你知道的内容，Pi 会补问缺少的信息，不需要你知道节点 ID。
+
 通过 [Skills CLI](https://github.com/vercel-labs/skills) 安装：
 
 ```sh

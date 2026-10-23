@@ -230,6 +230,8 @@ figlens は Figma 自身の JSON、PNG、SVG 書き出しと比較していま�
 
 [figlens skill](skills/figlens/SKILL.md) はフレームの検索、bundle の分割読み取り、数値に基づく実装をエージェントに教えます。
 
+デザインを丁寧に再現する場合は、[計画ワークフロー](skills/figlens/references/planning.md)で、依頼された範囲を既存コード、画像配信、検証条件に結び付けます。Pi の `/figlens plan <request>` では実装前に計画を作成できます。小さな領域の依頼を全体の作業に広げません。`/figlens open [description]` に分かることを伝えると、Pi が不足情報を質問してデザインを探します。ノード ID を知る必要はありません。
+
 [Skills CLI](https://github.com/vercel-labs/skills) でインストールします。
 
 ```sh

@@ -230,6 +230,8 @@ Use a CLI por meio de um skill para agentes ou conecte o mesmo binário como ser
 
 O [skill do figlens](skills/figlens/SKILL.md) ensina o agente a encontrar frames, ler o bundle em partes e construir a partir dos valores fornecidos.
 
+Para reproduzir um design com cuidado, o [fluxo de planejamento](skills/figlens/references/planning.md) relaciona o escopo solicitado ao código existente, à entrega de imagens e aos critérios de aceitação. No Pi, `/figlens plan <request>` prepara um plano antes da implementação; uma região pequena continua sendo uma tarefa pequena. Use `/figlens open [description]` para encontrar o design com base no que você sabe; o Pi pergunta pelos detalhes que faltam sem exigir IDs de nós.
+
 Instale com a [Skills CLI](https://github.com/vercel-labs/skills):
 
 ```sh

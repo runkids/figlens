@@ -6,5 +6,8 @@ mkdirSync(path.join(root, 'npm/pi'), { recursive: true });
 for (const file of ['index.ts', 'workflow.mjs', 'package.json', 'README.md']) {
   copyFileSync(path.join(root, 'pi', file), path.join(root, 'npm/pi', file));
 }
-mkdirSync(path.join(root, 'npm/skills/figlens'), { recursive: true });
-copyFileSync(path.join(root, 'skills/figlens/SKILL.md'), path.join(root, 'npm/skills/figlens/SKILL.md'));
+for (const file of ['SKILL.md', 'references/planning.md']) {
+  const destination = path.join(root, 'npm/skills/figlens', file);
+  mkdirSync(path.dirname(destination), { recursive: true });
+  copyFileSync(path.join(root, 'skills/figlens', file), destination);
+}

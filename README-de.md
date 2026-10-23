@@ -228,6 +228,8 @@ Verwende die CLI über einen Agent-Skill oder verbinde dasselbe Programm als MCP
 
 Der [figlens-Skill](skills/figlens/SKILL.md) zeigt deinem Agenten, wie er Frames findet, das Bundle in kleinen Teilen liest und anhand seiner Werte implementiert.
 
+Für eine genaue Umsetzung verbindet der [Planungsablauf](skills/figlens/references/planning.md) den gewünschten Umfang mit vorhandenem Code, Bildauslieferung und Abnahmekriterien. In Pi erstellt `/figlens plan <request>` vor der Umsetzung einen Plan; ein kleiner Bereich bleibt eine kleine Aufgabe. Mit `/figlens open [description]` findest du ein Design anhand dessen, was du bereits weißt. Pi fragt nach fehlenden Angaben, ohne Node-IDs vorauszusetzen.
+
 Mit der [Skills CLI](https://github.com/vercel-labs/skills) installieren:
 
 ```sh

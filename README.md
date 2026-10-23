@@ -204,7 +204,7 @@ Use the CLI through an agent skill, or connect the same binary as an MCP server.
 
 ### Agent skill
 
-The [figlens skill](skills/figlens/SKILL.md) teaches your agent to find frames, read the bundle in small pieces and build from its values.
+The [figlens skill](skills/figlens/SKILL.md) teaches your agent to find frames, read the bundle in small pieces and build from its values. For careful reconstruction, its [planning workflow](skills/figlens/references/planning.md) connects the requested scope to existing code, image delivery and acceptance checks. Pi also offers `/figlens plan <request>` to make a plan before implementing; a small region stays a small task. Use `/figlens open [description]` to find a design from what you know; Pi asks for missing details without requiring node IDs.
 
 Install with the [Skills CLI](https://github.com/vercel-labs/skills):
 

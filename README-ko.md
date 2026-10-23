@@ -230,6 +230,8 @@ figlens는 Figma 자체의 JSON, PNG, SVG 내보내기와 비교해 검증합니
 
 [figlens skill](skills/figlens/SKILL.md)은 프레임을 찾고 번들을 나누어 읽으며 그 값을 바탕으로 구현하는 방법을 에이전트에게 알려줍니다.
 
+디자인을 충실하게 재현할 때는 [계획 워크플로](skills/figlens/references/planning.md)로 요청 범위를 기존 코드, 이미지 제공 방식, 검증 조건과 연결합니다. Pi의 `/figlens plan <request>`는 구현 전에 계획을 작성하며, 작은 영역은 작은 작업으로 유지합니다. `/figlens open [description]`에 알고 있는 내용을 설명하면 Pi가 부족한 정보를 질문하며 디자인을 찾습니다. 노드 ID를 알 필요는 없습니다.
+
 [Skills CLI](https://github.com/vercel-labs/skills)로 설치하세요.
 
 ```sh

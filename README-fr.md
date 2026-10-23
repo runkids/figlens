@@ -230,6 +230,8 @@ Utilisez la CLI avec un skill pour agent, ou connectez le même binaire comme se
 
 Le [skill figlens](skills/figlens/SKILL.md) apprend à votre agent à trouver les frames, à lire le bundle par petites parties et à utiliser ses valeurs.
 
+Pour reproduire fidèlement un design, le [processus de planification](skills/figlens/references/planning.md) relie le périmètre demandé au code existant, à la diffusion des images et aux critères de validation. Dans Pi, `/figlens plan <request>` prépare un plan avant la réalisation ; une petite zone reste une petite tâche. Avec `/figlens open [description]`, décrivez ce que vous savez du design : Pi demande les précisions manquantes sans exiger d’identifiants de nœuds.
+
 Installez-le avec la [Skills CLI](https://github.com/vercel-labs/skills) :
 
 ```sh

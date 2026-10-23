@@ -47,7 +47,7 @@ jobs:
       - name: Pi mappings and preview controls
         run: |
           node --check pi/index.ts
-          node --test pi/*.test.mjs scripts/preview.test.cjs
+          node --test pi/*.test.mjs scripts/preview.test.cjs scripts/dist-package.test.cjs
           node scripts/prepare-npm.cjs
           cd npm
           npm pack --dry-run --ignore-scripts
