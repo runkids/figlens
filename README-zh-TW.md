@@ -306,7 +306,7 @@ Release 執行檔支援 macOS（Apple silicon、Intel）、Linux（arm64、x86_6
 | `variables <file> [node]` | frame 綁定的變數；未指定節點時輸出所有本機變數 |
 | `bundle <file> <node> <out.zip>` | 單一 frame 的設計 bundle；回傳 `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | 解碼一次，平行產生多個 bundle；每個 frame 輸出一行 JSON，格式同上或 `{nodeId, error}` |
-| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | SVG、PNG、JPG、WebP 或 AVIF；`--max-kb` 降低有損品質至符合大小；PNG/SVG 超限會失敗；回傳 `{path, width, height, bytes, quality}` |
+| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG、PNG、JPG、WebP 或 AVIF；`--max-kb` 降低有損品質至符合大小；PNG/SVG 超限會失敗；回傳 `{path, width, height, bytes, quality}` |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 本機唯讀 viewer；`--out` 需指定節點，產生獨立離線快照 |
 | `compare <file> <nodes.json> <node>` | 與同一 frame 的 REST 匯出比較差異 |
 | `node <file> <node>` | 單一原始 `.fig` 節點 |

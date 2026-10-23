@@ -306,7 +306,7 @@ Release 可执行文件支援 macOS（Apple silicon、Intel）、Linux（arm64�
 | `variables <file> [node]` | frame 绑定的变量；未指定节点时输出所有本地变量 |
 | `bundle <file> <node> <out.zip>` | 单一 frame 的设计 bundle；返回 `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | 解码一次，平行产生多个 bundle；每个 frame 输出一行 JSON，格式同上或 `{nodeId, error}` |
-| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | SVG、PNG、JPG、WebP 或 AVIF；`--max-kb` 降低有损品质至符合大小；PNG/SVG 超限会失败；返回 `{path, width, height, bytes, quality}` |
+| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG、PNG、JPG、WebP 或 AVIF；`--max-kb` 降低有损品质至符合大小；PNG/SVG 超限会失败；返回 `{path, width, height, bytes, quality}` |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 本地只读 viewer；`--out` 需指定节点，产生独立离线快照 |
 | `compare <file> <nodes.json> <node>` | 与同一 frame 的 REST 导出比较差异 |
 | `node <file> <node>` | 单一原始 `.fig` 节点 |

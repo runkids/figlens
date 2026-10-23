@@ -308,7 +308,7 @@ Les binaires couvrent macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl s
 | `variables <file> [node]` | Variables liées à une frame ; sans nœud, toutes les variables locales |
 | `bundle <file> <node> <out.zip>` | Bundle d'une frame ; retourne `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | Plusieurs bundles en parallèle après un seul décodage ; une ligne JSON par frame, comme ci-dessus ou `{nodeId, error}` |
-| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | SVG, PNG, JPG, WebP ou AVIF ; `--max-kb` réduit la qualité avec perte jusqu'à la limite ; PNG/SVG échouent au-delà ; retourne `{path, width, height, bytes, quality}` |
+| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP ou AVIF ; `--max-kb` réduit la qualité avec perte jusqu'à la limite ; PNG/SVG échouent au-delà ; retourne `{path, width, height, bytes, quality}` |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Aperçu local en lecture seule ; `--out` exige un nœud et écrit un instantané autonome hors ligne |
 | `compare <file> <nodes.json> <node>` | Différences avec l'export REST de la même frame |
 | `node <file> <node>` | Un nœud `.fig` brut |

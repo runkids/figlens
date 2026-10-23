@@ -310,7 +310,7 @@ Node.js 18+에서 `npx @runkids/figlens`를 사용하거나 독립 CLI를 설치
 | `variables <file> [node]` | 프레임에 연결된 변수. 노드 없이 실행하면 모든 로컬 변수 |
 | `bundle <file> <node> <out.zip>` | 한 프레임의 디자인 번들. `{nodeId, path, warnings}` 반환 |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | 한 번 디코딩해 여러 번들을 병렬 생성. 프레임당 위 형식 또는 `{nodeId, error}`의 JSON 한 줄 |
-| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | SVG, PNG, JPG, WebP, AVIF. `--max-kb`는 손실 품질을 낮춰 크기를 맞춤. PNG/SVG는 한도 초과 시 실패. `{path, width, height, bytes, quality}` 반환 |
+| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP, AVIF. `--max-kb`는 손실 품질을 낮춰 크기를 맞춤. PNG/SVG는 한도 초과 시 실패. `{path, width, height, bytes, quality}` 반환 |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 로컬 읽기 전용 뷰어. `--out`은 노드가 필요하며 독립 오프라인 스냅샷 생성 |
 | `compare <file> <nodes.json> <node>` | 같은 프레임의 REST 내보내기와 차이 비교 |
 | `node <file> <node>` | 원시 `.fig` 노드 하나 |

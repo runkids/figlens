@@ -39,10 +39,11 @@ usage:
                                             one decode, many bundles: <list> has one node id per line;
                                              writes <dir>/<nodeId>.zip (`:` as `-`), prints one JSON line
                                              per frame ({nodeId,path,warnings} or {nodeId,error})
-  figlens export <file.fig> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]
+  figlens export <file.fig> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]
                                             render a node to out.png|jpg|webp|avif|svg (default 1x,
                                              quality 80); SVG keeps vectors, scale/quality do not apply;
                                              --max-kb lowers lossy quality until it fits;
+                                             --max-size scales raster output to fit its longest side;
                                              prints {path,width,height,bytes,quality}
   figlens preview <file.fig> [node] [--out preview.html] [--port N] [--bind IP]
                                              local read-only viewer (loopback, random port by default);
@@ -524,7 +525,11 @@ fn allowed(path: &Path, roots: &[PathBuf]) -> bool {
     let resolved = match std::fs::canonicalize(path) {
         Ok(resolved) => resolved,
         Err(_) => match (path.parent(), path.file_name()) {
-            (Some(dir), Some(name)) => match std::fs::canonicalize(dir) {
+            (Some(dir), Some(name)) => match std::fs::canonicalize(if dir.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                dir
+            }) {
                 Ok(dir) => dir.join(name),
                 Err(_) => return false,
             },
@@ -592,24 +597,28 @@ fn serve(
             reply(&line, None)?;
             continue;
         };
-        // An unreadable file is reported by the per-call path.
-        let Ok(doc) = Document::open(&path) else {
+        // An unreadable file, or one that panics the decoder, is reported by the per-call path.
+        let Ok(Ok(doc)) = std::panic::catch_unwind(|| Document::open(&path)) else {
             reply(&line, None)?;
             continue;
         };
-        let Ok(message) = doc.message() else {
+        let Ok(Ok(message)) = std::panic::catch_unwind(|| doc.message()) else {
             reply(&line, None)?;
             continue;
         };
-        let tree = Tree::new(&message);
+        let Ok(tree) = std::panic::catch_unwind(|| Tree::new(&message)) else {
+            reply(&line, None)?;
+            continue;
+        };
         let mut line = line;
         loop {
             reply(&line, Some((&path, &tree)))?;
             let Some(next) = lines.next().transpose()? else {
                 return Ok(());
             };
-            let same = direct_file(&next, roots).as_deref() == Some(path.as_path())
-                && stamp(&path) == Some(stamp_at_open);
+            // Pings, listings and legacy calls need no other file, so the tree stays.
+            let same = direct_file(&next, roots)
+                .is_none_or(|next| next == path && stamp(&path) == Some(stamp_at_open));
             if !same {
                 carried = Some(next);
                 break;
@@ -635,7 +644,9 @@ fn direct_file(line: &str, roots: &[PathBuf]) -> Option<PathBuf> {
     if !is_direct(name, tool_params, &params["arguments"]) {
         return None;
     }
-    figlens::remote::local(params["arguments"]["file"].as_str()?).ok()
+    let file = params["arguments"]["file"].as_str()?;
+    // Remote files resolve through gcloud; the per-call path handles them.
+    (!file.starts_with("gs://")).then(|| PathBuf::from(file))
 }
 
 /// Modification time and length, so an overwritten save is parsed again.
@@ -771,6 +782,9 @@ fn call_tool(params: &serde_json::Value, loaded: Option<(&Path, &Tree)>) -> serd
                         args.push(value);
                     }
                     if name == "export" {
+                        if arguments.get("maxSize").is_none() {
+                            args.extend(["--max-size".to_owned(), "1600".to_owned()]);
+                        }
                         // Keep the rendered bytes for inline images on legacy calls too.
                         let file = args.get(1).ok_or(USAGE)?;
                         let path = figlens::remote::local(file)?;

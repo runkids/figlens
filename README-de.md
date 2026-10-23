@@ -304,7 +304,7 @@ Release-Binärdateien gibt es für macOS (Apple silicon, Intel), Linux (arm64, x
 | `variables <file> [node]` | Gebundene Variablen eines Frames; ohne Knoten alle lokalen Variablen |
 | `bundle <file> <node> <out.zip>` | Design-Bundle für einen Frame; liefert `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | Mehrere Bundles parallel aus einer Decodierung; eine JSON-Zeile pro Frame wie oben oder `{nodeId, error}` |
-| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | SVG, PNG, JPG, WebP oder AVIF; `--max-kb` senkt verlustbehaftete Qualität bis zur Grenze; PNG/SVG scheitern bei Überschreitung; liefert `{path, width, height, bytes, quality}` |
+| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP oder AVIF; `--max-kb` senkt verlustbehaftete Qualität bis zur Grenze; PNG/SVG scheitern bei Überschreitung; liefert `{path, width, height, bytes, quality}` |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Lokale schreibgeschützte Vorschau; `--out` benötigt einen Knoten und erstellt eine eigenständige Offline-Momentaufnahme |
 | `compare <file> <nodes.json> <node>` | Differenzen zum REST-Export desselben Frames |
 | `node <file> <node>` | Ein unbearbeiteter `.fig`-Knoten |

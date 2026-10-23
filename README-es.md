@@ -310,7 +310,7 @@ Hay binarios para macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl está
 | `variables <file> [node]` | Variables vinculadas a un frame; sin nodo, todas las variables locales |
 | `bundle <file> <node> <out.zip>` | Bundle de diseño de un frame; devuelve `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | Múltiples bundles en paralelo con una sola decodificación; una línea JSON por frame, como arriba o `{nodeId, error}` |
-| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | SVG, PNG, JPG, WebP o AVIF; `--max-kb` reduce la calidad con pérdida hasta ajustarse; PNG/SVG fallan si exceden el límite; devuelve `{path, width, height, bytes, quality}` |
+| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP o AVIF; `--max-kb` reduce la calidad con pérdida hasta ajustarse; PNG/SVG fallan si exceden el límite; devuelve `{path, width, height, bytes, quality}` |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Visor local de solo lectura; `--out` exige un nodo y crea una instantánea independiente sin conexión |
 | `compare <file> <nodes.json> <node>` | Diferencias con una exportación REST del mismo frame |
 | `node <file> <node>` | Un nodo `.fig` sin procesar |

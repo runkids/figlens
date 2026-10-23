@@ -310,7 +310,7 @@ Node.js 18+ で `npx @runkids/figlens` を使うか、単体の CLI をインス
 | `variables <file> [node]` | フレームのバインド変数。ノード指定なしなら全ローカル変数 |
 | `bundle <file> <node> <out.zip>` | 単一フレームの bundle。`{nodeId, path, warnings}` を返す |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | 一度のデコードで複数 bundle を並列作成。フレームごとに上記または `{nodeId, error}` の JSON を 1 行出力 |
-| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | SVG、PNG、JPG、WebP、AVIF。`--max-kb` は非可逆品質を下げてサイズに合わせる。PNG/SVG は超過時に失敗。`{path, width, height, bytes, quality}` を返す |
+| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG、PNG、JPG、WebP、AVIF。`--max-kb` は非可逆品質を下げてサイズに合わせる。PNG/SVG は超過時に失敗。`{path, width, height, bytes, quality}` を返す |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | ローカルの読み取り専用ビューアー。`--out` はノード指定が必要で、単独のオフラインスナップショットを作成 |
 | `compare <file> <nodes.json> <node>` | 同じフレームの REST 書き出しとの差分 |
 | `node <file> <node>` | 未加工の `.fig` ノード一つ |

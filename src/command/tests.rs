@@ -347,6 +347,16 @@ fn mcp_exports_fit_max_size_unless_disabled() {
             "maxSize {max_size:?}"
         );
     }
+    // A string scale takes the legacy CLI-argument path, which caps the same way.
+    let out = fixture.0.join("legacy.png");
+    let reply = call_tool(
+        &serde_json::json!({"name": "export", "arguments": {
+            "file": fixture.file(), "node": "0:1", "out": out, "scale": "200x",
+        }}),
+        None,
+    );
+    assert_eq!(reply["isError"], false, "{reply}");
+    assert_eq!(reply["structuredContent"]["width"], 1600);
     let mut text = String::new();
     let out = fixture.0.join("cli.png");
     run(

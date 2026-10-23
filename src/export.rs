@@ -79,10 +79,15 @@ pub fn export(
         });
     }
     // Fit the longest side into `max_px`, so an agent's inline image stays small.
-    let area = render::render_bounds(prepared.node()).ok_or("node has nothing to render")?;
-    let longest = (area[2] - area[0]).max(area[3] - area[1]) * scale;
-    let scale = match max_px {
-        Some(max) if longest > f64::from(max) => scale * f64::from(max) / longest,
+    let scale = match (max_px, render::export_area(prepared.node())) {
+        (Some(max), Some(area)) => {
+            let longest = (area[2] - area[0]).max(area[3] - area[1]) * scale;
+            if longest > f64::from(max) {
+                scale * f64::from(max) / longest
+            } else {
+                scale
+            }
+        }
         _ => scale,
     };
     let svg = prepared

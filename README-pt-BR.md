@@ -310,7 +310,7 @@ Os binários cobrem macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl est
 | `variables <file> [node]` | Variáveis vinculadas a um frame; sem nó, todas as variáveis locais |
 | `bundle <file> <node> <out.zip>` | Bundle de design de um frame; retorna `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | Vários bundles em paralelo com uma decodificação; uma linha JSON por frame, como acima ou `{nodeId, error}` |
-| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N]` | SVG, PNG, JPG, WebP ou AVIF; `--max-kb` reduz a qualidade com perda até caber; PNG/SVG falham acima do limite; retorna `{path, width, height, bytes, quality}` |
+| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP ou AVIF; `--max-kb` reduz a qualidade com perda até caber; PNG/SVG falham acima do limite; retorna `{path, width, height, bytes, quality}` |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Visualizador local somente leitura; `--out` exige um nó e cria um snapshot offline independente |
 | `compare <file> <nodes.json> <node>` | Diferenças em relação à exportação REST do mesmo frame |
 | `node <file> <node>` | Um nó `.fig` bruto |
