@@ -524,6 +524,9 @@ fn allowed(path: &Path, roots: &[PathBuf]) -> bool {
     }
     let resolved = match std::fs::canonicalize(path) {
         Ok(resolved) => resolved,
+        // Only a path that does not exist at all is judged by its folder: a dangling symlink
+        // exists, and writing through it would land wherever it points.
+        Err(_) if std::fs::symlink_metadata(path).is_ok() => return false,
         Err(_) => match (path.parent(), path.file_name()) {
             (Some(dir), Some(name)) => match std::fs::canonicalize(if dir.as_os_str().is_empty() {
                 Path::new(".")
@@ -539,8 +542,9 @@ fn allowed(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| resolved.starts_with(root))
 }
 
-/// The error reply for a tools/call whose `file` or `out` lies outside the roots. The text is
-/// the same whatever exists there, so a refusal reveals nothing about other folders.
+/// The error reply for a tools/call whose `file` or `out` lies outside the roots, or whose
+/// arguments leave the tool schema (the legacy coercions could turn any of them into a path).
+/// The text is the same whatever exists there, so a refusal reveals nothing about other folders.
 fn refused(line: &str, roots: &[PathBuf]) -> Option<serde_json::Value> {
     if roots.is_empty() {
         return None;
@@ -551,16 +555,24 @@ fn refused(line: &str, roots: &[PathBuf]) -> Option<serde_json::Value> {
     }
     let id = req.get("id")?.clone();
     let params = &req["params"];
-    let outside = ["file", "out"]
-        .iter()
-        .filter_map(|key| params["arguments"][key].as_str())
-        .find(|path| !allowed(Path::new(path), roots))?;
-    let folders: Vec<_> = roots.iter().map(|r| r.display().to_string()).collect();
-    let text = format!(
-        "{outside}: outside the folders this server may use ({})",
-        folders.join(", ")
-    );
     let name = params["name"].as_str().unwrap_or("");
+    let folders: Vec<_> = roots.iter().map(|r| r.display().to_string()).collect();
+    let direct = TOOLS
+        .iter()
+        .find(|t| t.0 == name)
+        .is_some_and(|t| is_direct(name, t.2, &params["arguments"]));
+    let text = if !direct {
+        "with --root, arguments must match the tool schema".to_owned()
+    } else {
+        let outside = ["file", "out"]
+            .iter()
+            .filter_map(|key| params["arguments"][key].as_str())
+            .find(|path| !allowed(Path::new(path), roots))?;
+        format!(
+            "{outside}: outside the folders this server may use ({})",
+            folders.join(", ")
+        )
+    };
     Some(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": tool_reply(name, Err(text)) }))
 }
 
@@ -610,20 +622,22 @@ fn serve(
             reply(&line, None)?;
             continue;
         };
-        let mut line = line;
+        reply(&line, Some((&path, &tree)))?;
         loop {
-            reply(&line, Some((&path, &tree)))?;
             let Some(next) = lines.next().transpose()? else {
                 return Ok(());
             };
-            // Pings, listings and legacy calls need no other file, so the tree stays.
-            let same = direct_file(&next, roots)
-                .is_none_or(|next| next == path && stamp(&path) == Some(stamp_at_open));
-            if !same {
-                carried = Some(next);
-                break;
+            match direct_file(&next, roots) {
+                // Pings, listings, legacy and remote calls serve themselves; the tree stays.
+                None => reply(&next, None)?,
+                Some(next_path) if next_path == path && stamp(&path) == Some(stamp_at_open) => {
+                    reply(&next, Some((&path, &tree)))?
+                }
+                Some(_) => {
+                    carried = Some(next);
+                    break;
+                }
             }
-            line = next;
         }
     }
 }
@@ -1055,6 +1069,22 @@ mod tests {
         assert!(!allowed(&inside.join("../escape.fig"), &roots));
         assert!(!allowed(Path::new("gs://bucket/a.fig"), &roots));
         assert!(allowed(&outside.join("a.fig"), &[]));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.join("new.png"), inside.join("link.png")).unwrap();
+            assert!(!allowed(&inside.join("link.png"), &roots));
+        }
+        // Out-of-schema arguments would reach the legacy coercions, which can make any of
+        // them the file path.
+        let legacy = format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"tree","arguments":{{"node":{}}}}}}}"#,
+            serde_json::json!(outside.join("a.fig"))
+        );
+        let text = refused(&legacy, &roots).unwrap()["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(text.contains("match the tool schema"), "{text}");
 
         let call = |file: &Path| {
             format!(

@@ -1,4 +1,4 @@
-use crate::{call_tool, run};
+use crate::{call_tool, run, serve};
 use std::io::Write as _;
 
 use crate::test_support::TestDir;
@@ -373,6 +373,34 @@ fn mcp_exports_fit_max_size_unless_disabled() {
     .unwrap();
     let metadata: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(metadata["width"], 3200);
+}
+
+#[test]
+fn serve_does_not_hand_a_remote_call_the_local_tree() {
+    let fixture = Fixture::new();
+    let call = |file: &str, id: u32| {
+        format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"tree","arguments":{{"file":{}}}}}}}"#,
+            serde_json::json!(file)
+        )
+    };
+    let input = format!(
+        "{}\n{}\n{}\n",
+        call(&fixture.file(), 1),
+        call("gs://bucket/other.fig", 2),
+        call(&fixture.file(), 3)
+    );
+    let mut out = Vec::new();
+    serve(input.as_bytes(), &mut out, &[]).unwrap();
+    let replies: Vec<serde_json::Value> = String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(replies[0]["result"]["isError"], false, "{}", replies[0]);
+    // The remote file resolves through gcloud, which is absent here: an error, not our tree.
+    assert_eq!(replies[1]["result"]["isError"], true, "{}", replies[1]);
+    assert_eq!(replies[2]["result"], replies[0]["result"]);
 }
 
 #[test]
