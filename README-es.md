@@ -199,7 +199,7 @@ npx @runkids/figlens export design.fig 12:345 icon.svg
 npx @runkids/figlens export design.fig 12:345 hero.webp --scale 2 --quality 80
 ```
 
-La exportación SVG admite frames, grupos, iconos y subcapas exactas de instancias: cada subárbol seleccionado genera un SVG independiente con imágenes originales incrustadas y texto como contornos de glifos. No necesitas extraer un bundle. SVG conserva las dimensiones originales; `--scale` y `--quality` solo se aplican a formatos ráster.
+La exportación SVG admite frames, grupos, iconos y subcapas exactas de instancias: cada subárbol seleccionado genera un SVG independiente con imágenes originales incrustadas y texto como contornos de glifos. No necesitas extraer un bundle. SVG conserva las dimensiones originales; `--scale` y `--quality` solo se aplican a formatos ráster. A través de MCP, las exportaciones ráster se reducen para caber en `maxSize` (1600 px en el lado más largo por defecto; 0 lo desactiva), así las imágenes inline se mantienen pequeñas.
 
 <a id="how-close-is-it-to-figma"></a>
 

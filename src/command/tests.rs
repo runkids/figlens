@@ -328,6 +328,46 @@ fn mcp_images_keep_the_exported_format_and_bytes() {
 }
 
 #[test]
+fn mcp_exports_fit_max_size_unless_disabled() {
+    let fixture = Fixture::new();
+    // The fixture frame is 16x8; scale 200 would be 3200 wide.
+    for (max_size, width) in [(None, 1600), (Some(0), 3200), (Some(400), 400)] {
+        let out = fixture.0.join("sized.png");
+        let mut arguments = serde_json::json!({
+            "file": fixture.file(), "node": "0:1", "out": out, "scale": 200,
+        });
+        if let Some(max_size) = max_size {
+            arguments["maxSize"] = max_size.into();
+        }
+        let reply = call_tool(
+            &serde_json::json!({"name": "export", "arguments": arguments}),
+            None,
+        );
+        assert_eq!(reply["isError"], false, "{reply}");
+        assert_eq!(
+            reply["structuredContent"]["width"], width,
+            "maxSize {max_size:?}"
+        );
+    }
+    let mut text = String::new();
+    let out = fixture.0.join("cli.png");
+    run(
+        vec![
+            "export".into(),
+            fixture.file(),
+            "0:1".into(),
+            out.to_string_lossy().into_owned(),
+            "--scale".into(),
+            "200".into(),
+        ],
+        &mut text,
+    )
+    .unwrap();
+    let metadata: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(metadata["width"], 3200);
+}
+
+#[test]
 fn svg_exports_directly_through_cli_and_mcp() {
     let fixture = Fixture::new();
     let out = fixture.0.join("frame.svg");

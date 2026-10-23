@@ -199,7 +199,7 @@ npx @runkids/figlens export design.fig 12:345 icon.svg
 npx @runkids/figlens export design.fig 12:345 hero.webp --scale 2 --quality 80
 ```
 
-SVG 匯出支援 frame、群組、圖示與精確的 instance 子圖層：選取的子樹會產生單一獨立 SVG，嵌入原始填色圖片，文字以字形輪廓表示。不需解壓 bundle。SVG 維持原始尺寸；`--scale` 與 `--quality` 僅適用點陣格式。
+SVG 匯出支援 frame、群組、圖示與精確的 instance 子圖層：選取的子樹會產生單一獨立 SVG，嵌入原始填色圖片，文字以字形輪廓表示。不需解壓 bundle。SVG 維持原始尺寸；`--scale` 與 `--quality` 僅適用點陣格式。透過 MCP 匯出的點陣圖會縮小到 `maxSize` 以內（預設最長邊 1600 px，0 表示不限制），讓內嵌圖片保持小巧。
 
 <a id="how-close-is-it-to-figma"></a>
 

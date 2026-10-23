@@ -199,7 +199,7 @@ npx @runkids/figlens export design.fig 12:345 icon.svg
 npx @runkids/figlens export design.fig 12:345 hero.webp --scale 2 --quality 80
 ```
 
-SVG 書き出しはフレーム、グループ、アイコン、正確なインスタンスのサブレイヤーに対応します。選択したサブツリーが単独の SVG になり、元の画像フィルを埋め込み、テキストはグリフの輪郭になります。bundle の展開は不要です。SVG の寸法は元のままで、`--scale` と `--quality` はラスター形式にのみ適用されます。
+SVG 書き出しはフレーム、グループ、アイコン、正確なインスタンスのサブレイヤーに対応します。選択したサブツリーが単独の SVG になり、元の画像フィルを埋め込み、テキストはグリフの輪郭になります。bundle の展開は不要です。SVG の寸法は元のままで、`--scale` と `--quality` はラスター形式にのみ適用されます。MCP 経由のラスター書き出しは `maxSize`（既定で長辺 1600 px、0 で無効）に収まるよう縮小され、インライン画像が大きくなりません。
 
 <a id="how-close-is-it-to-figma"></a>
 

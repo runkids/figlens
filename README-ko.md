@@ -199,7 +199,7 @@ npx @runkids/figlens export design.fig 12:345 icon.svg
 npx @runkids/figlens export design.fig 12:345 hero.webp --scale 2 --quality 80
 ```
 
-SVG 내보내기는 프레임, 그룹, 아이콘, 정확한 인스턴스 하위 레이어를 지원합니다. 선택한 하위 트리는 원본 이미지 채우기와 글리프 윤곽선 텍스트를 포함한 독립 SVG가 됩니다. 번들 압축 해제는 필요 없습니다. SVG는 원래 크기를 유지하며 `--scale`과 `--quality`는 래스터 형식에만 적용됩니다.
+SVG 내보내기는 프레임, 그룹, 아이콘, 정확한 인스턴스 하위 레이어를 지원합니다. 선택한 하위 트리는 원본 이미지 채우기와 글리프 윤곽선 텍스트를 포함한 독립 SVG가 됩니다. 번들 압축 해제는 필요 없습니다. SVG는 원래 크기를 유지하며 `--scale`과 `--quality`는 래스터 형식에만 적용됩니다. MCP를 통한 래스터 내보내기는 `maxSize`(기본 긴 변 1600px, 0이면 해제)에 맞게 축소되어 인라인 이미지가 작게 유지됩니다.
 
 <a id="how-close-is-it-to-figma"></a>
 

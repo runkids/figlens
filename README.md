@@ -181,7 +181,7 @@ npx @runkids/figlens export design.fig 12:345 icon.svg
 npx @runkids/figlens export design.fig 12:345 hero.webp --scale 2 --quality 80
 ```
 
-SVG exports work for frames, groups, icons and exact instance sublayers: one selected subtree becomes one standalone SVG, with original image fills embedded and text as glyph outlines. No bundle extraction needed. SVG keeps its original dimensions; `--scale` and `--quality` apply to raster formats only.
+SVG exports work for frames, groups, icons and exact instance sublayers: one selected subtree becomes one standalone SVG, with original image fills embedded and text as glyph outlines. No bundle extraction needed. SVG keeps its original dimensions; `--scale` and `--quality` apply to raster formats only. Through MCP, raster exports are scaled down to fit `maxSize` (default 1600 px on the longest side; 0 disables it), so inline images stay small.
 
 ## How close is it to Figma?
 

@@ -199,7 +199,7 @@ npx @runkids/figlens export design.fig 12:345 icon.svg
 npx @runkids/figlens export design.fig 12:345 hero.webp --scale 2 --quality 80
 ```
 
-SVG 导出支援 frame、群组、图标与精确的 instance 子图层：选取的子树会产生单一独立 SVG，嵌入原始填色图片，文字以字形轮廓表示。不需解压 bundle。SVG 维持原始尺寸；`--scale` 与 `--quality` 仅适用光栅格式。
+SVG 导出支援 frame、群组、图标与精确的 instance 子图层：选取的子树会产生单一独立 SVG，嵌入原始填色图片，文字以字形轮廓表示。不需解压 bundle。SVG 维持原始尺寸；`--scale` 与 `--quality` 仅适用光栅格式。通过 MCP 导出的光栅图会缩小到 `maxSize` 以内（默认最长边 1600 px，0 表示不限制），让内联图片保持小巧。
 
 <a id="how-close-is-it-to-figma"></a>
 

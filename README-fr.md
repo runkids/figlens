@@ -199,7 +199,7 @@ npx @runkids/figlens export design.fig 12:345 icon.svg
 npx @runkids/figlens export design.fig 12:345 hero.webp --scale 2 --quality 80
 ```
 
-L'export SVG accepte frames, groupes, icônes et sous-calques précis d'instances : chaque sous-arbre sélectionné devient un SVG autonome, avec les images originales intégrées et le texte en contours de glyphes. Pas besoin d'extraire un bundle. Le SVG garde ses dimensions ; `--scale` et `--quality` ne concernent que les formats matriciels.
+L'export SVG accepte frames, groupes, icônes et sous-calques précis d'instances : chaque sous-arbre sélectionné devient un SVG autonome, avec les images originales intégrées et le texte en contours de glyphes. Pas besoin d'extraire un bundle. Le SVG garde ses dimensions ; `--scale` et `--quality` ne concernent que les formats matriciels. Via MCP, les exports matriciels sont réduits pour tenir dans `maxSize` (1600 px sur le plus grand côté par défaut ; 0 le désactive), afin que les images inline restent petites.
 
 <a id="how-close-is-it-to-figma"></a>
 

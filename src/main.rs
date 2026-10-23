@@ -458,7 +458,7 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "export",
-        "Export a node to SVG, PNG, JPG, WebP or AVIF. SVG keeps vectors and embedded original images; scale and quality apply only to raster formats. Writes the file and returns metadata; raster formats also return an inline image. Prefer PNG for client compatibility. Use scale to reduce large images.",
+        "Export a node to SVG, PNG, JPG, WebP or AVIF. SVG keeps vectors and embedded original images; scale, quality and maxSize apply only to raster formats. Writes the file and returns metadata; raster formats also return an inline image, scaled down to fit maxSize. Prefer PNG for client compatibility.",
         &[
             FILE,
             NODE,
@@ -483,6 +483,13 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
                 "integer",
                 false,
                 "lower lossy quality until the file fits; PNG/SVG fail if over budget",
+            ),
+            (
+                "maxSize",
+                "--max-size",
+                "integer",
+                false,
+                "longest side in pixels, default 1600; 0 keeps the scaled size",
             ),
         ],
     ),

@@ -199,7 +199,7 @@ npx @runkids/figlens export design.fig 12:345 icon.svg
 npx @runkids/figlens export design.fig 12:345 hero.webp --scale 2 --quality 80
 ```
 
-SVG-Exporte unterstützen Frames, Gruppen, Icons und exakte Instanz-Unterebenen. Ein ausgewählter Teilbaum wird zu einem eigenständigen SVG mit eingebetteten Originalbildern und Text als Glyphenumrissen. Kein Entpacken eines Bundles nötig. SVG behält seine Abmessungen; `--scale` und `--quality` gelten nur für Rasterformate.
+SVG-Exporte unterstützen Frames, Gruppen, Icons und exakte Instanz-Unterebenen. Ein ausgewählter Teilbaum wird zu einem eigenständigen SVG mit eingebetteten Originalbildern und Text als Glyphenumrissen. Kein Entpacken eines Bundles nötig. SVG behält seine Abmessungen; `--scale` und `--quality` gelten nur für Rasterformate. Über MCP werden Rasterexporte auf `maxSize` verkleinert (standardmäßig 1600 px an der längsten Seite; 0 schaltet es ab), damit Inline-Bilder klein bleiben.
 
 <a id="how-close-is-it-to-figma"></a>
 

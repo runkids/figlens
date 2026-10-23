@@ -46,6 +46,8 @@ pub enum Command {
         scale: f64,
         quality: u8,
         max_kb: Option<usize>,
+        /// Longest side in pixels; raster formats are scaled down to fit.
+        max_size: Option<u32>,
     },
 }
 
@@ -178,7 +180,7 @@ impl Command {
                     )
                 })?;
                 export_format(&out)?;
-                let (mut scale, mut quality, mut max_kb) = (1.0_f64, 80, None);
+                let (mut scale, mut quality, mut max_kb, mut max_size) = (1.0_f64, 80, None, None);
                 let mut rest = args[2..].iter();
                 while let Some(arg) = rest.next() {
                     let mut value = || rest.next().ok_or(format!("{arg} needs a number"));
@@ -186,6 +188,7 @@ impl Command {
                         "--scale" => scale = value()?.trim_end_matches('x').parse()?,
                         "--quality" => quality = value()?.parse()?,
                         "--max-kb" => max_kb = Some(value()?.parse::<usize>()?),
+                        "--max-size" => max_size = Some(value()?.parse::<u32>()?),
                         _ => return Err(USAGE.into()),
                     }
                 }
@@ -195,6 +198,7 @@ impl Command {
                     scale,
                     quality,
                     max_kb,
+                    max_size,
                 }
             }
             _ => return Err(USAGE.into()),
@@ -272,6 +276,12 @@ impl Command {
                         .get("maxKb")
                         .map(|n| n.to_string().parse())
                         .transpose()?,
+                    // Tool calls return the image inline, so cap it unless the agent says otherwise.
+                    max_size: args
+                        .get("maxSize")
+                        .map(|n| n.to_string().parse::<u32>())
+                        .transpose()?
+                        .or(Some(1600)),
                 }
             }
             _ => return Err(USAGE.into()),
@@ -357,6 +367,7 @@ impl Command {
                 scale,
                 quality,
                 max_kb,
+                max_size,
             } => {
                 let id = normalize_id(&node);
                 require_node(tree, figlens::export::root_of(&id)).map_err(|_| {
@@ -376,6 +387,7 @@ impl Command {
                     scale,
                     quality,
                     max_kb.map(|kb| kb * 1024),
+                    max_size.filter(|&px| px > 0),
                 )?;
                 std::fs::write(&out, &image.bytes)?;
                 let value = json!({ "path": out, "width": image.width, "height": image.height,
