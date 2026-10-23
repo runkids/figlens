@@ -2,12 +2,16 @@
   <img src="assets/logo.png" alt="figlens" width="220">
 </p>
 
-<h1 align="center">Build UI anywhere. Just bring a .fig.</h1>
+<h1 align="center">Your Figma design, ready for your coding agent.</h1>
 
 <p align="center">
-  Give your AI coding agent a saved Figma file. figlens reads the design offline,<br>
-  on your laptop, a CI runner or a cloud AI server.<br>
-  <strong>No Figma installation, login or API key needed to read it.</strong>
+  <a href="README.md">English</a> · <a href="README-de.md">Deutsch</a> · <a href="README-es.md">Español</a> · <a href="README-fr.md">Français</a> · <a href="README-ja.md">日本語</a> · <a href="README-ko.md">한국어</a> · <a href="README-pt-BR.md">Português</a> · <a href="README-zh-CN.md">简体中文</a> · <a href="README-zh-TW.md">繁體中文</a>
+</p>
+
+<p align="center">
+  Turn a saved <code>.fig</code> into layout, text, variables, assets and a reference image.<br>
+  Let your agent build with the design details, wherever it runs.<br>
+  <strong>No Figma app, login or API rate limits on the machine doing the work.</strong>
 </p>
 
 <p align="center">
@@ -16,8 +20,23 @@
 </p>
 
 <p align="center">
-  <a href="#from-a-local-fig-to-working-html">Watch the demo</a> · <a href="#quick-start">Quick start</a> · <a href="#browse-and-hand-off-a-design">Preview</a> · <a href="#pi-extension">Pi extension</a> · <a href="#how-close-is-it-to-figma">Accuracy</a>
+  <a href="#from-a-local-fig-to-working-html">Watch the demo</a> · <a href="#quick-start">Try your design</a> · <a href="#for-ai-agents">Connect your agent</a> · <a href="#pi-extension">Use with Pi</a> · <a href="#how-close-is-it-to-figma">Accuracy</a>
 </p>
+
+## Why figlens?
+
+“Build this screen” should come with the screen's layout, text and assets. With screenshots alone, the agent has to estimate spacing and typography, and you still have icons and images to export. With a live Figma connection, design reads depend on access setup and API availability on the machine doing the work.
+
+figlens reads the saved design directly. Choose **File > Save local copy** in Figma, then give the `.fig` to your agent through the CLI or local MCP server. It can find a screen, inspect its layout and text, and extract the assets it needs. For a portable handoff, bundle a frame's design data, assets and reference render into one zip.
+
+| If you've run into this | Use figlens to |
+|---|---|
+| API limits interrupt design reads | Read the local file as often as needed, with no Figma API calls or tokens |
+| Your agent runs on a cloud server or in CI | Read the design with a native CLI, without a Figma app or browser session |
+| You keep explaining measurements and exporting assets | Supply structured layout, typography, expanded instances, bound variables and original assets |
+| Another agent or teammate needs the same screen | Share a frame bundle with design data, assets, a reference render and instructions |
+
+Designers keep working in Figma. Your agent works in your project's stack. figlens supplies the design context; the coding agent writes the implementation.
 
 ## From a local .fig to working HTML
 
@@ -40,91 +59,67 @@ The “List views” frame comes from [MCP Apps for Claude (Community)](https://
 
 </details>
 
-## One .fig file is the design handoff
-
-Your designer saves a local copy in Figma. Your AI gets the `.fig` file. figlens extracts layout, text, variables, assets and a reference image into one zip, ready to build UI from. The machine doing the work never needs Figma installed, including a headless cloud AI server.
-
-Screenshots show what a screen looks like. The bundle gives your agent the spacing, typography, component structure and original assets behind it.
-
-- **Keep building offline.** Reading a local file makes no Figma API calls, so there are no API rate limits or tokens to set up.
-- **Run wherever your AI runs.** A laptop, CI runner or cloud server can read the same file with the CLI or local MCP server. No Figma desktop app or browser session required.
-- **Give your agent more than a picture.** Get REST-shaped JSON with expanded instances, auto-layout, text styles and bound variables, plus image and SVG assets.
-
-Offline means the design read path: your AI provider and project dependencies may still need a network connection. A live Figma URL alone is not enough; you need the saved `.fig` file.
-
 ## Quick start
 
-### 1. Try it without installing
+### 1. Open your design locally
+
+In Figma, choose **File > Save local copy** and save it as `design.fig`. Then run:
 
 ```sh
-npx @runkids/figlens --help
+npx @runkids/figlens preview design.fig
 ```
 
-Node.js 18+. The first run downloads and verifies the native binary for your platform, then caches it. No Figma, Rust or Docker needed.
+Open the local URL printed in the terminal. Browse pages and select the screen you want to build. You can inspect its spacing, typography, variables and assets right there.
 
-Prefer a standalone command? Other options:
+Requires Node.js 18+. The first run downloads and verifies a native binary, then caches it. [Standalone installs](#installation) need no Node.js, Rust or Docker. Stop the viewer with Ctrl+C.
 
-| Platform | Command |
-|---|---|
-| macOS / Linux | `curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh \| sh` |
-| Homebrew | `brew install runkids/tap/figlens` |
-| Windows (PowerShell) | `irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 \| iex` |
+### 2. Give the screen to your agent
 
-Release binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, static musl) and Windows (x86_64; ARM64 runs it under emulation). Standalone installs update with `figlens update`.
+Download the selected frame's bundle from the viewer. Give your coding agent the zip and this prompt:
 
-### 2. Save your design and find a frame
+> Extract this bundle into its own directory and read context.md. Build this screen using this project's stack and conventions. Use the supplied layout values and assets, then check your result against references/screen.png. Report missing assets or unavailable fonts.
 
-In Figma, choose **File > Save local copy** and save it as `design.fig`. Then list its pages and frames:
+The bundle includes the structure, assets and reference image together, so the agent can read it with ordinary file tools. To let it find and inspect screens directly, [connect the CLI or MCP server](#for-ai-agents). [Pi users can ask for a screen by name](#pi-extension).
+
+### 3. Check the implementation
+
+Import a screenshot of your implementation into the viewer. Compare it side by side with the design or use the opacity overlay to spot differences. The screenshot stays in your browser. This is a visual check; figlens does not assign an accuracy score to your implementation.
+
+**The `.fig` is a snapshot.** Save a new local copy when the design changes. A Figma URL can select a node within that copy; it cannot download the design. Reading the saved file works offline after installation; your AI provider and project dependencies may still need a network connection.
+
+<details>
+<summary>Prefer the terminal? Find a frame and bundle it directly.</summary>
 
 ```sh
 npx @runkids/figlens tree design.fig --depth 2
 npx @runkids/figlens find design.fig "login" --type FRAME
-```
-
-The file is a snapshot you can reuse locally or in CI. Save a new copy when the design changes.
-
-Search layer names or text, then inspect a frame before requesting its full design data:
-
-```sh
-npx @runkids/figlens find design.fig "Sign in" --type TEXT --limit 5
 npx @runkids/figlens inspect design.fig 12:345 --depth 1
-```
-
-`find` returns ids, ancestor paths, local sizes and text previews. It searches stored layers; use `inspect` to see expanded instance children. `inspect` summarizes bounds, auto-layout and typography, with child counts. Its output is capped at 200 nodes and 200 characters per text; `truncated` signals omitted descendants and `textTruncated` marks shortened text. These limits reduce output size; each call still decodes the file.
-
-### 3. Bundle it for your agent
-
-Replace `12:345` with a frame id from the tree:
-
-```sh
 npx @runkids/figlens bundle design.fig 12:345 frame.zip
 ```
 
-Give your coding agent `frame.zip` and this prompt:
+Replace `12:345` with an id from the tree or search results. A node can be an id (`12:345`), its URL form (`12-345`) or a Figma URL with `?node-id=`. Search layer names or text with `find`; use `inspect` for expanded instance children and a compact layout/text summary. See [Commands](#commands) for output details.
 
-> Extract frame.zip into its own directory and read context.md. Build this screen using this project's stack and conventions. Use the supplied layout values and assets, then check your result against references/screen.png.
-
-A node can be an id (`12:345`), its URL form (`12-345`) or a Figma URL with `?node-id=`. The URL selects a node in your saved file; it does not download the design.
+</details>
 
 ## Browse and hand off a design
 
 [![Inspect the MCP Apps design locally, with its layer tree, layout and component properties](assets/preview-inspector.png)](assets/pi-demo.mp4)
 
+The local viewer lets you explore a saved design without a Figma session:
+
+- Browse pages and layers, search names and text, measure distances, and inspect layout, typography, variables, component properties and CSS.
+- Export a selected layer as SVG, PNG, JPG, WebP or AVIF, or download its original image fills.
+- Copy a layer's ID, structured context or an implementation prompt; download a bundle for the exact selection, including instance sublayers.
+
+Need to send someone a design they can browse? Export a standalone HTML snapshot:
+
 ```sh
-npx @runkids/figlens preview design.fig                      # browse pages, frames and stored names/text
-npx @runkids/figlens preview design.fig 12:345               # open a specific scope
 npx @runkids/figlens preview design.fig 12:345 --out preview.html
-npx @runkids/figlens cache                                   # where cached renders live, and their size
-npx @runkids/figlens cache clear                             # remove cached renders
 ```
 
-Open the loopback URL printed in the terminal; stop with Ctrl+C. No frontend build or Figma session is needed. Each page opens like a Figma page: its frames and sections on one canvas, rendered on demand at the resolution the zoom needs, with a Layers panel, light and dark themes and Figma's selection model (click, double-click to go deeper, ⌘/Ctrl-click for the deepest layer, right-click for every layer under the pointer, Alt/Option to measure distances). Inspect layout, typography, variables, component properties, Dev Mode style CSS and original images, and export the selection as SVG, PNG, JPG, WebP or AVIF. Picking follows the actual outlines of vectors, rotated layers and ellipses, not just their bounding boxes. Renders are cached on disk so reopening a file is fast; `figlens cache clear` or the viewer's ⋯ menu removes them. Browser-automation agents can drive the open viewer through `window.figlens`.
+It opens without a server or network and includes the design data, images and a bundle for the snapshot scope. Share it only with people allowed to see those assets. Selecting a child changes the inspected context; the embedded bundle still covers the snapshot scope.
 
-Copy an exact ID, structured context or an implementation prompt, then download a real bundle for the selected layer. Expanded instance IDs stay intact. Import a local implementation screenshot for side-by-side or opacity-overlay comparison; it stays in your browser. This is visual checking, not an automated accuracy score or a mapping to project components.
-
-The live viewer watches the saved local file through polling. Failed or partial saves visibly mark the view stale; successful saves refresh it and retain selection only if its ID still exists. For `gs://` input, this watches the downloaded cache, not the remote object.
-
-`--out` (or `-o`) requires a node and writes a **snapshot**, usable as a local file with no server or network. It embeds the reference, layer data, original images and a bundle for the snapshot scope. Child inspection, context export and screenshot comparison work offline; the bundle always covers the snapshot scope, as its button states. Share carefully: the HTML contains the design data and assets. See [preview controls, safety and limitations](wiki/preview.md).
+The live viewer watches the saved local file and refreshes after successful saves; partial or failed saves mark the view stale. HTML snapshots stay fixed. For controls, cache management, browser-agent automation and limitations, see the [preview guide](wiki/preview.md).
 
 ## Pi extension
 
@@ -253,6 +248,18 @@ The server runs locally over stdio and exposes `tree`, `find`, `inspect`, `nodes
 
 Start with `find` and `inspect` to select a frame. `export` saves the file and returns metadata. Raster formats also return MCP image content, so your agent can see the design without opening a local file; SVG returns metadata only. PNG has the widest client support; reduce `scale` for large frames. `find`, `inspect`, `bundle` and `export` also return structured JSON results.
 
+## Installation
+
+Use `npx @runkids/figlens` with Node.js 18+, or install the standalone CLI:
+
+| Platform | Command |
+|---|---|
+| macOS / Linux | `curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh \| sh` |
+| Homebrew | `brew install runkids/tap/figlens` |
+| Windows (PowerShell) | `irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 \| iex` |
+
+Release binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, static musl) and Windows (x86_64; ARM64 runs it under emulation). Standalone installs update with `figlens update`.
+
 ## Commands
 
 | Command | Output |
@@ -270,6 +277,8 @@ Start with `find` and `inspect` to select a frame. `export` saves the file and r
 | `node <file> <node>` | One raw `.fig` node |
 | `mcp` | Local MCP server over stdio |
 | `update` | Replace the binary with the latest release |
+
+`find` searches stored layers and returns ids, ancestor paths, local sizes and text previews. `inspect` expands instances and caps output at 200 nodes and 200 characters per text; `truncated` and `textTruncated` identify omissions. Each call still decodes the file.
 
 `<file>` can also be `gs://bucket/object`, downloaded with your `gcloud` login and cached. Run `figlens --help` for usage.
 
