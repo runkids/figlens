@@ -9,6 +9,10 @@ use figlens::rest::nodes;
 use figlens::variables::variables;
 use figlens::{Document, Tree, normalize_id};
 
+#[cfg(test)]
+#[path = "test_support.rs"]
+mod test_support;
+
 mod command;
 
 const USAGE: &str = "figlens — read Figma .fig files (File > Save local copy) without Figma
@@ -46,8 +50,9 @@ usage:
   figlens node <file.fig> <node>               print one raw .fig node as JSON
   figlens compare <file.fig> <nodes.json> <node>   diff a frame against a REST nodes.json export
   figlens compare <file.fig> --frames <list.txt>   same for every `node|nodes.json[|variables.json]` line
-  figlens mcp                                  serve tree, find, inspect, nodes, variables, bundle and
-                                             export as MCP tools; raster export also returns an inline image
+  figlens mcp [--root DIR]...                  serve tree, find, inspect, nodes, variables, bundle and
+                                             export as MCP tools; raster export also returns an inline image;
+                                             with --root, files and outputs must be under one of the folders
   figlens cache [clear]                        show, or clear, the preview render cache
                                              (prints {path,bytes} or {path,freed})
   figlens update                               install the latest GitHub release over this binary
@@ -118,7 +123,7 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             writeln!(out, "{report}")?;
             return Ok(());
         }
-        Some("mcp") => return mcp(),
+        Some("mcp") => return mcp(&args[1..]),
         _ => {}
     }
     let (command, file) = match (args.first(), args.get(1)) {
@@ -495,9 +500,63 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
 ];
 
-/// `figlens mcp`: a Model Context Protocol server, newline-delimited JSON-RPC on stdio.
-fn mcp() -> Result<(), Box<dyn Error>> {
-    serve(std::io::stdin().lock(), std::io::stdout().lock())
+/// `figlens mcp [--root DIR]...`: a Model Context Protocol server, newline-delimited JSON-RPC
+/// on stdio. Roots are resolved here, so a missing folder fails before the client connects.
+fn mcp(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let mut roots = Vec::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let dir = match (arg.as_str(), args.next()) {
+            ("--root", Some(dir)) => dir,
+            _ => return Err(USAGE.into()),
+        };
+        roots.push(std::fs::canonicalize(dir).map_err(|e| format!("--root {dir}: {e}"))?);
+    }
+    serve(std::io::stdin().lock(), std::io::stdout().lock(), &roots)
+}
+
+/// Whether `path` lies under one of `roots`; an output that does not exist yet is judged by
+/// its folder. Without roots everything is allowed.
+fn allowed(path: &Path, roots: &[PathBuf]) -> bool {
+    if roots.is_empty() {
+        return true;
+    }
+    let resolved = match std::fs::canonicalize(path) {
+        Ok(resolved) => resolved,
+        Err(_) => match (path.parent(), path.file_name()) {
+            (Some(dir), Some(name)) => match std::fs::canonicalize(dir) {
+                Ok(dir) => dir.join(name),
+                Err(_) => return false,
+            },
+            _ => return false,
+        },
+    };
+    roots.iter().any(|root| resolved.starts_with(root))
+}
+
+/// The error reply for a tools/call whose `file` or `out` lies outside the roots. The text is
+/// the same whatever exists there, so a refusal reveals nothing about other folders.
+fn refused(line: &str, roots: &[PathBuf]) -> Option<serde_json::Value> {
+    if roots.is_empty() {
+        return None;
+    }
+    let req: serde_json::Value = serde_json::from_str(line).ok()?;
+    if req["method"] != "tools/call" {
+        return None;
+    }
+    let id = req.get("id")?.clone();
+    let params = &req["params"];
+    let outside = ["file", "out"]
+        .iter()
+        .filter_map(|key| params["arguments"][key].as_str())
+        .find(|path| !allowed(Path::new(path), roots))?;
+    let folders: Vec<_> = roots.iter().map(|r| r.display().to_string()).collect();
+    let text = format!(
+        "{outside}: outside the folders this server may use ({})",
+        folders.join(", ")
+    );
+    let name = params["name"].as_str().unwrap_or("");
+    Some(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": tool_reply(name, Err(text)) }))
 }
 
 /// Serves JSON-RPC lines. Decoding a large file takes most of a call, so the parsed tree of
@@ -506,12 +565,13 @@ fn mcp() -> Result<(), Box<dyn Error>> {
 fn serve(
     input: impl std::io::BufRead,
     mut output: impl std::io::Write,
+    roots: &[PathBuf],
 ) -> Result<(), Box<dyn Error>> {
     let mut lines = input
         .lines()
         .filter(|l| !l.as_ref().is_ok_and(|l| l.trim().is_empty()));
     let mut reply = |line: &str, loaded: Option<(&Path, &Tree)>| -> Result<(), Box<dyn Error>> {
-        if let Some(reply) = mcp_reply_with(line, loaded) {
+        if let Some(reply) = refused(line, roots).or_else(|| mcp_reply_with(line, loaded, roots)) {
             writeln!(output, "{reply}")?;
             output.flush()?;
         }
@@ -527,7 +587,7 @@ fn serve(
         else {
             return Ok(());
         };
-        let loaded = direct_file(&line).and_then(|path| Some((stamp(&path)?, path)));
+        let loaded = direct_file(&line, roots).and_then(|path| Some((stamp(&path)?, path)));
         let Some((stamp_at_open, path)) = loaded else {
             reply(&line, None)?;
             continue;
@@ -548,7 +608,7 @@ fn serve(
             let Some(next) = lines.next().transpose()? else {
                 return Ok(());
             };
-            let same = direct_file(&next).as_deref() == Some(path.as_path())
+            let same = direct_file(&next, roots).as_deref() == Some(path.as_path())
                 && stamp(&path) == Some(stamp_at_open);
             if !same {
                 carried = Some(next);
@@ -561,7 +621,10 @@ fn serve(
 
 /// The resolved file of a tools/call that the schema path serves, so `serve` can keep its
 /// parsed tree for the next call on the same file.
-fn direct_file(line: &str) -> Option<PathBuf> {
+fn direct_file(line: &str, roots: &[PathBuf]) -> Option<PathBuf> {
+    if refused(line, roots).is_some() {
+        return None;
+    }
     let req: serde_json::Value = serde_json::from_str(line).ok()?;
     if req["method"] != "tools/call" {
         return None;
@@ -603,11 +666,15 @@ fn is_direct(name: &str, tool_params: &[Param], arguments: &serde_json::Value) -
 /// The reply to one JSON-RPC message; None for a notification.
 #[cfg(test)]
 fn mcp_reply(line: &str) -> Option<serde_json::Value> {
-    mcp_reply_with(line, None)
+    mcp_reply_with(line, None, &[])
 }
 
 /// `mcp_reply` with the already parsed tree of the file the call names, if `serve` has it.
-fn mcp_reply_with(line: &str, loaded: Option<(&Path, &Tree)>) -> Option<serde_json::Value> {
+fn mcp_reply_with(
+    line: &str,
+    loaded: Option<(&Path, &Tree)>,
+    roots: &[PathBuf],
+) -> Option<serde_json::Value> {
     use serde_json::json;
     let Ok(req) = serde_json::from_str::<serde_json::Value>(line) else {
         return Some(json!({
@@ -619,11 +686,21 @@ fn mcp_reply_with(line: &str, loaded: Option<(&Path, &Tree)>) -> Option<serde_js
     let result = match req["method"].as_str().unwrap_or("") {
         // Only tools are served, which every protocol version handles alike, so the client's
         // version is accepted as is.
-        "initialize" => json!({
-            "protocolVersion": req["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
-            "capabilities": { "tools": {} },
-            "serverInfo": { "name": "figlens", "version": env!("CARGO_PKG_VERSION") }
-        }),
+        "initialize" => {
+            let mut instructions =
+                "Use inspect or nodes for numbers and export for pixels.".to_owned();
+            if !roots.is_empty() {
+                let folders: Vec<_> = roots.iter().map(|r| r.display().to_string()).collect();
+                instructions +=
+                    &format!(" Files and outputs must be under: {}.", folders.join(", "));
+            }
+            json!({
+                "protocolVersion": req["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "figlens", "version": env!("CARGO_PKG_VERSION") },
+                "instructions": instructions,
+            })
+        }
         "ping" => json!({}),
         "tools/list" => json!({ "tools": TOOLS.iter().map(|(name, about, params)| {
             let mut tool = json!({
@@ -955,6 +1032,48 @@ mod tests {
     }
 
     #[test]
+    fn roots_confine_files_and_outputs() {
+        let inside = test_support::TestDir::new();
+        let outside = test_support::TestDir::new();
+        let roots = [std::fs::canonicalize(inside.join("")).unwrap()];
+        assert!(allowed(&inside.join("a.fig"), &roots));
+        assert!(!allowed(&outside.join("a.fig"), &roots));
+        assert!(!allowed(&inside.join("../escape.fig"), &roots));
+        assert!(!allowed(Path::new("gs://bucket/a.fig"), &roots));
+        assert!(allowed(&outside.join("a.fig"), &[]));
+
+        let call = |file: &Path| {
+            format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"tree","arguments":{{"file":{}}}}}}}"#,
+                serde_json::json!(file)
+            )
+        };
+        let input = format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{{}}}}\n{}\n{}\n",
+            call(&outside.join("a.fig")),
+            call(&inside.join("a.fig"))
+        );
+        let mut out = Vec::new();
+        serve(input.as_bytes(), &mut out, &roots).unwrap();
+        let replies: Vec<serde_json::Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let instructions = replies[0]["result"]["instructions"].as_str().unwrap();
+        assert!(
+            instructions.contains(&roots[0].display().to_string()),
+            "{instructions}"
+        );
+        let text = replies[1]["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(replies[1]["result"]["isError"], true);
+        assert!(text.contains("outside the folders"), "{text}");
+        // Inside the root the call runs and fails on the missing file instead.
+        let text = replies[2]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(!text.contains("outside the folders"), "{text}");
+    }
+
+    #[test]
     fn direct_file_names_only_schema_calls() {
         let call = |args: &str| {
             format!(
@@ -962,15 +1081,15 @@ mod tests {
             )
         };
         assert_eq!(
-            direct_file(&call(r#"{"file":"/a.fig","depth":1}"#)),
+            direct_file(&call(r#"{"file":"/a.fig","depth":1}"#), &[]),
             Some(PathBuf::from("/a.fig"))
         );
         assert_eq!(
-            direct_file(&call(r#"{"file":"/a.fig","node":"--depth"}"#)),
+            direct_file(&call(r#"{"file":"/a.fig","node":"--depth"}"#), &[]),
             None
         );
         assert_eq!(
-            direct_file(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#),
+            direct_file(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#, &[]),
             None
         );
     }
@@ -981,7 +1100,7 @@ mod tests {
         let input =
             format!("{call}\n{call}\n{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}}\n");
         let mut out = Vec::new();
-        serve(input.as_bytes(), &mut out).unwrap();
+        serve(input.as_bytes(), &mut out, &[]).unwrap();
         let replies: Vec<serde_json::Value> = String::from_utf8(out)
             .unwrap()
             .lines()

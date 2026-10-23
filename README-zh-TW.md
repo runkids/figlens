@@ -273,6 +273,8 @@ claude mcp add figlens -- npx -y @runkids/figlens mcp
 { "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
+要把 server 限制在指定資料夾內，加上 `--root`：`"args": ["mcp", "--root", "/path/to/designs"]`。之後工具呼叫指定的每個 `file` 與輸出路徑都必須位於某個 root 之下；多個資料夾可重複 `--root`。
+
 Server 在本機透過 stdio 執行，提供 `tree`、`find`、`inspect`、`nodes`、`variables`、`bundle` 與 `export`。工具請使用絕對路徑：相對路徑以 client 啟動 figlens 的目錄為準。
 
 先用 `find` 與 `inspect` 選擇 frame。`export` 儲存檔案並回傳 metadata。點陣格式也會回傳 MCP 圖片內容，因此 agent 不需開啟本機檔案就能看見設計；SVG 僅回傳 metadata。PNG 的 client 支援最廣，大型 frame 可降低 `scale`。`find`、`inspect`、`bundle` 與 `export` 也會回傳結構化 JSON。

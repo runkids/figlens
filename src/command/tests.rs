@@ -1,9 +1,7 @@
 use crate::{call_tool, run};
 use std::io::Write as _;
 
-#[path = "../test_support.rs"]
-mod test_support;
-use test_support::TestDir;
+use crate::test_support::TestDir;
 
 struct Fixture(TestDir);
 

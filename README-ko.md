@@ -277,6 +277,8 @@ claude mcp add figlens -- npx -y @runkids/figlens mcp
 { "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
+서버를 특정 폴더로 제한하려면 `--root`를 추가합니다: `"args": ["mcp", "--root", "/path/to/designs"]`. 도구 호출이 지정하는 모든 `file`과 출력 경로는 루트 중 하나 아래에 있어야 하며, 폴더를 더 추가하려면 `--root`를 반복합니다.
+
 서버는 로컬에서 stdio로 실행되며 `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle`, `export`를 제공합니다. 도구에는 절대 경로를 전달하세요. 상대 경로는 클라이언트가 figlens를 시작한 디렉터리를 기준으로 해석합니다.
 
 먼저 `find`와 `inspect`로 프레임을 선택하세요. `export`는 파일을 저장하고 메타데이터를 반환합니다. 래스터 형식은 MCP 이미지 콘텐츠도 반환하므로 에이전트가 로컬 파일을 열지 않고 디자인을 볼 수 있습니다. SVG는 메타데이터만 반환합니다. PNG는 클라이언트 지원이 가장 넓으며 큰 프레임에는 `scale`을 줄이세요. `find`, `inspect`, `bundle`, `export`는 구조화된 JSON도 반환합니다.

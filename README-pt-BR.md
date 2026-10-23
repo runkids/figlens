@@ -277,6 +277,8 @@ Com uma instalação independente de `figlens`, use:
 { "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
+Para manter o servidor dentro de pastas escolhidas, adicione `--root`: `"args": ["mcp", "--root", "/caminho/para/designs"]`. Todo `file` e caminho de saída que uma chamada nomear deve ficar sob uma das raízes; repita `--root` para mais pastas.
+
 O servidor roda localmente por stdio e expõe `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` e `export`. Use caminhos absolutos: caminhos relativos partem do diretório onde o cliente iniciou figlens.
 
 Comece com `find` e `inspect` para selecionar um frame. `export` salva o arquivo e retorna metadados. Formatos raster também retornam conteúdo de imagem MCP, para o agente ver o design sem abrir um arquivo local; SVG retorna apenas metadados. PNG tem o suporte mais amplo entre clientes; reduza `scale` em frames grandes. `find`, `inspect`, `bundle` e `export` também retornam JSON estruturado.

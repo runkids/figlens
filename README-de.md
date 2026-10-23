@@ -273,6 +273,8 @@ Mit einer eigenständigen `figlens`-Installation:
 { "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
+Um den Server auf bestimmte Ordner zu beschränken, fügen Sie `--root` hinzu: `"args": ["mcp", "--root", "/pfad/zu/designs"]`. Jede `file`- und Ausgabedatei eines Tool-Aufrufs muss dann unter einem der Wurzelordner liegen; wiederholen Sie `--root` für weitere Ordner.
+
 Der Server läuft lokal über stdio und stellt `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` und `export` bereit. Verwende absolute Pfade: relative Pfade beziehen sich auf das Verzeichnis, aus dem der Client figlens gestartet hat.
 
 Wähle mit `find` und `inspect` einen Frame. `export` speichert die Datei und liefert Metadaten. Rasterformate liefern zusätzlich MCP-Bildinhalte, damit der Agent das Design ohne Öffnen einer lokalen Datei sehen kann. SVG liefert nur Metadaten. PNG hat die breiteste Client-Unterstützung; reduziere `scale` bei großen Frames. `find`, `inspect`, `bundle` und `export` liefern auch strukturiertes JSON.

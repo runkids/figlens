@@ -277,6 +277,8 @@ claude mcp add figlens -- npx -y @runkids/figlens mcp
 { "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
 ```
 
+サーバーを特定のフォルダーに限定するには `--root` を付けます: `"args": ["mcp", "--root", "/path/to/designs"]`。ツール呼び出しが指定する `file` と出力パスはすべていずれかのルート配下である必要があります。フォルダーを増やすには `--root` を繰り返します。
+
 サーバーはローカルの stdio で動作し、`tree`、`find`、`inspect`、`nodes`、`variables`、`bundle`、`export` を公開します。ツールには絶対パスを渡してください。相対パスはクライアントが figlens を起動したディレクトリを基準に解決されます。
 
 まず `find` と `inspect` でフレームを選択します。`export` はファイルを保存してメタデータを返します。ラスター形式は MCP 画像コンテンツも返すため、エージェントはローカルファイルを開かずにデザインを見られます。SVG はメタデータのみです。PNG はクライアントの対応が最も広く、大きなフレームでは `scale` を下げてください。`find`、`inspect`、`bundle`、`export` は構造化 JSON も返します。
