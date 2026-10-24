@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/runkids/figlens/compare/v0.4.2...v0.5.0) (2026-10-24)
+
+
+### New Features
+
+* add scoped design planning, image evidence and Pi preview ([#16](https://github.com/runkids/figlens/issues/16)) ([36ecf0b](https://github.com/runkids/figlens/commit/36ecf0b44e3b703550597e6cd6f67076fa8964df))
+
 ## [0.4.2](https://github.com/runkids/figlens/compare/v0.4.1...v0.4.2) (2026-10-23)
 
 
