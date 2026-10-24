@@ -24,7 +24,9 @@ and check it against the design.
 
 Pi searches nested screens and resolves node IDs itself. If several frames match, it asks with recognizable names and sizes. React, Vue, Svelte and plain HTML use the same flow. The packaged [figlens skill](https://github.com/runkids/figlens/blob/main/skills/figlens/SKILL.md) has Pi compare the running UI with the design, verify fonts and images, run project checks and fix confirmed differences, then report what it could not check.
 
-[![Pi plans a local design and builds React beside the live browser](https://raw.githubusercontent.com/runkids/figlens/main/assets/taskflow-demo-poster.jpg)](https://github.com/runkids/figlens/blob/main/assets/taskflow-demo.mp4)
+[![Pi plans a local design and builds React beside the live browser](https://raw.githubusercontent.com/runkids/figlens/main/assets/taskflow-demo.gif)](https://github.com/runkids/figlens/blob/main/assets/taskflow-demo.mp4)
+
+Looping GIF at 3× the edited video’s playback speed. Click it for the full 78-second video.
 
 **[78-second demo](https://github.com/runkids/figlens/blob/main/assets/taskflow-demo.mp4):** `/figlens plan` on one dashboard frame, built with React and Tailwind CSS, checked against the live browser. Edited time-lapse, not a benchmark. [Design credit and notes](https://github.com/runkids/figlens/blob/main/wiki/accuracy.md#taskflow-react-and-tailwind-demo).
 
@@ -85,9 +87,6 @@ Then `/figlens review` lists every pending proposal in the project with its sour
 
 ## Advanced
 
-<details>
-<summary>Source checkout, manual selection, agent tools, troubleshooting</summary>
-
 **Source checkout.** Install a native `figlens` binary or set `FIGLENS_BIN`, then:
 
 ```sh
@@ -117,7 +116,5 @@ Both binding tools take `file` + `frame` and do not change the manual selection.
 - *Guide modified or malformed:* the extension refuses to overwrite invalid state. Restore `.figlens/component-mappings.md` from Git.
 - *Another writer:* remove `.figlens/.mapping-lock` only after the other Pi session has stopped.
 - *Duplicate skill name:* if another installed skill is also called `figlens`, remove it so the package's instructions load.
-
-</details>
 
 Maintainers: [wiki/pi.md](https://github.com/runkids/figlens/blob/main/wiki/pi.md).

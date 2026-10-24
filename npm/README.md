@@ -39,7 +39,9 @@ The packaged skill guides the agent to follow existing project conventions, chec
 
 ## See Pi build the screen
 
-[![Pi plans a local design and builds React beside the live browser](https://raw.githubusercontent.com/runkids/figlens/main/assets/taskflow-demo-poster.jpg)](https://github.com/runkids/figlens/blob/main/assets/taskflow-demo.mp4)
+[![Pi plans a local design and builds React beside the live browser](https://raw.githubusercontent.com/runkids/figlens/main/assets/taskflow-demo.gif)](https://github.com/runkids/figlens/blob/main/assets/taskflow-demo.mp4)
+
+Looping GIF at 3× the edited video’s playback speed. Click it for the full 78-second video.
 
 [Watch the 78-second demo](https://github.com/runkids/figlens/blob/main/assets/taskflow-demo.mp4). Pi uses `/figlens plan` to read one Cloth dashboard frame from a local `.fig`, builds it with React and Tailwind CSS, then checks and corrects the running UI. The video shows Pi and the live browser together, followed by the actual component structure. Edited time-lapse; video length is not a performance benchmark or a promise of pixel-perfect output. [Design credit, source and recording notes](https://github.com/runkids/figlens/blob/main/wiki/accuracy.md#taskflow-react-and-tailwind-demo).
 

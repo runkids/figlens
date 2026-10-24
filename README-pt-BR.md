@@ -72,7 +72,9 @@ O agent encontra o frame, monta um bundle com dados do design, assets e uma imag
 
 ## Demo: o Pi cria uma tela React a partir de um .fig
 
-[![O Pi planeja a partir de um .fig local, cria uma tela React e a confere ao lado de um navegador ao vivo](assets/taskflow-demo-poster.jpg)](assets/taskflow-demo.mp4)
+[![O Pi planeja a partir de um .fig local, cria uma tela React e a confere ao lado de um navegador ao vivo](assets/taskflow-demo.gif)](assets/taskflow-demo.mp4)
+
+O GIF em loop reproduz o vídeo editado a três vezes a velocidade. Clique para ver o vídeo completo de 78 segundos.
 
 **[Vídeo de 78 segundos](assets/taskflow-demo.mp4).** O Pi executa `/figlens plan`, lê um frame de dashboard de um `.fig` local, o constrói com React e Tailwind CSS e depois confere e corrige a UI em execução. Time-lapse editado, não é um benchmark nem uma promessa de pixel-perfect. Design: [Task Flow por Eymen Eid](https://www.figma.com/community/file/1224268866120711793) · [notas da gravação](wiki/accuracy.md#taskflow-react-and-tailwind-demo).
 
@@ -174,9 +176,6 @@ Navegue por páginas e camadas, busque, meça, inspecione layout, tipografia, va
 
 ## Servidor MCP e skill para agents
 
-<details>
-<summary>Ferramentas MCP, restrições de caminho, instalação do skill, skillshare</summary>
-
 **MCP.** O servidor roda localmente por stdio e expõe `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` e `export`. Use caminhos absolutos. Adicione `--root /path/to/designs` (repetível) para confinar todo arquivo e caminho de saída às pastas escolhidas. Exportações raster são reduzidas a `maxSize` (padrão 1600 px) para manter as imagens inline pequenas; SVG retorna apenas metadados.
 
 Windows nativo com Claude Code: siga as [notas de configuração stdio](https://code.claude.com/docs/en/mcp#option-3-add-a-local-stdio-server) e o wrapper `cmd /c` para `npx`.
@@ -198,14 +197,9 @@ skillshare sync && skillshare sync mcp --global
 
 **Notas de instalação.** O launcher npm baixa o binário nativo correspondente no primeiro uso, verifica-o contra os checksums SHA-256 da release e o armazena em cache. Instalações independentes são atualizadas com `figlens update`. Os binários cobrem macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl estático) e Windows (x86_64).
 
-</details>
-
 <a id="commands"></a>
 
 ## Referência da CLI
-
-<details>
-<summary>Todos os comandos</summary>
 
 | Comando | Saída |
 |---|---|
@@ -224,8 +218,6 @@ skillshare sync && skillshare sync mcp --global
 | `update` | Substitui o binário pela release mais recente |
 
 Um argumento de nó aceita `12:345`, `12-345` ou uma URL do Figma com `?node-id=`. `<file>` também pode ser `gs://bucket/object`, baixado com seu login do `gcloud` e armazenado em cache. Cada chamada da CLI decodifica o arquivo; o servidor MCP mantém o arquivo analisado entre chamadas até ele mudar no disco. Execute `figlens --help` para ver o uso.
-
-</details>
 
 <a id="limitations"></a>
 

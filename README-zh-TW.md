@@ -72,7 +72,9 @@ Agent 會找到 frame，建立包含設計資料、素材與參考圖的 bundle�
 
 ## 示範：Pi 從 .fig 做出 React 畫面
 
-[![Pi 從本機 .fig 規劃、做出 React 畫面，並與即時瀏覽器並排檢查](assets/taskflow-demo-poster.jpg)](assets/taskflow-demo.mp4)
+[![Pi 從本機 .fig 規劃、做出 React 畫面，並與即時瀏覽器並排檢查](assets/taskflow-demo.gif)](assets/taskflow-demo.mp4)
+
+GIF 以剪輯版影片的 3 倍速度循環播放；點擊可觀看完整 78 秒影片。
 
 **[78 秒影片](assets/taskflow-demo.mp4)。** Pi 執行 `/figlens plan`，從本機 `.fig` 讀取儀表板 frame，用 React 與 Tailwind CSS 實作，再檢查並修正執行中的 UI。這是剪輯過的縮時影片，不是基準測試，也不保證像素級一致。設計稿：[Eymen Eid 的 Task Flow](https://www.figma.com/community/file/1224268866120711793) · [錄製筆記](wiki/accuracy.md#taskflow-react-and-tailwind-demo)。
 
@@ -174,9 +176,6 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可寄�
 
 ## MCP 伺服器與 agent skill
 
-<details>
-<summary>MCP 工具、路徑限制、skill 安裝、skillshare</summary>
-
 **MCP。** 伺服器透過 stdio 在本機執行，提供 `tree`、`find`、`inspect`、`nodes`、`variables`、`bundle` 與 `export`。請傳入絕對路徑。加上 `--root /path/to/designs`（可重複）可將所有檔案與輸出路徑限制在指定的資料夾。點陣圖匯出會縮小到 `maxSize`（預設 1600 px），讓內嵌圖片維持小巧；SVG 只回傳 metadata。
 
 在 Windows 原生環境使用 Claude Code：請依照其 [stdio 設定說明](https://code.claude.com/docs/en/mcp#option-3-add-a-local-stdio-server)，並為 `npx` 加上 `cmd /c` 包裝。
@@ -198,14 +197,9 @@ skillshare sync && skillshare sync mcp --global
 
 **安裝說明。** npm launcher 在首次使用時下載對應的原生執行檔，以發行版的 SHA-256 checksum 驗證後快取。獨立安裝的版本用 `figlens update` 更新。執行檔涵蓋 macOS（Apple silicon、Intel）、Linux（arm64、x86_64、靜態 musl）與 Windows（x86_64）。
 
-</details>
-
 <a id="commands"></a>
 
 ## CLI 參考
-
-<details>
-<summary>所有指令</summary>
 
 | 指令 | 輸出 |
 |---|---|
@@ -224,8 +218,6 @@ skillshare sync && skillshare sync mcp --global
 | `update` | 將執行檔換成最新發行版 |
 
 node 引數可接受 `12:345`、`12-345`，或帶有 `?node-id=` 的 Figma URL。`<file>` 也可以是 `gs://bucket/object`，會用你的 `gcloud` 登入下載並快取。每次 CLI 呼叫都會解碼檔案；MCP 伺服器會在多次呼叫間保留解析後的檔案，直到檔案在磁碟上變更。執行 `figlens --help` 查看用法。
-
-</details>
 
 <a id="limitations"></a>
 
