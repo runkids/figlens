@@ -19,6 +19,7 @@ const HELP = [
   "- `/figlens open [description]` — tell Pi what you know: a file, screen name, purpose or visible text. Pi finds it or asks a recognizable follow-up.",
   "- `/figlens preview [description]` — start the local interactive viewer for a design; Pi resolves names and returns its link.",
   "- `/figlens plan [request]` — plan only the requested region or pages before implementing.",
+  "- `/figlens yolo [request]` — plan, implement and verify the requested scope, then remove only this run's temporary plan after success.",
   "",
   "Advanced: saved selections and reusable component matches (not required to build):",
   "- `/figlens open \"./design files/mobile.fig\" --frame 12:345` — use a known node.",
@@ -255,13 +256,17 @@ export default function figlens(pi: ExtensionAPI) {
   pi.on('session_shutdown', async () => { await viewer.close(); });
 
   pi.registerCommand('figlens', {
-    description: 'Plan a design implementation, select a scope or review component mappings; ask Pi directly to build a .fig screen',
+    description: 'Plan or implement a design, select a scope or review component mappings',
+    getArgumentCompletions: prefix => ['open', 'preview', 'plan', 'yolo', 'frame', 'map', 'review', 'status', 'close', 'help']
+      .filter(value => value.startsWith(prefix)).map(value => ({ value, label: value,
+        ...(value === 'yolo' ? { description: 'Plan, implement, verify and clean up the temporary plan' } : {}),
+      })),
     handler: async (args, ctx) => {
-      const match = args.trim().match(/^(\S+)(?:\s+([\s\S]*))?$/);
+      const match = args.trimStart().match(/^(\S+)(?:\s([\s\S]*))?$/);
       const command = match?.[1];
       try {
         if (!command || command === 'help' || command === '--help') { show(HELP, ctx); return; }
-        if (!['plan', 'open', 'preview', 'frame', 'map', 'review', 'status', 'close'].includes(command)) {
+        if (!['plan', 'yolo', 'open', 'preview', 'frame', 'map', 'review', 'status', 'close'].includes(command)) {
           show(`Unknown figlens command: **${command}**.\n\n${HELP}`, ctx); return;
         }
         let rest = match?.[2]?.trim() || '';
@@ -284,6 +289,15 @@ export default function figlens(pi: ExtensionAPI) {
           const planningPath = fileURLToPath(new URL('../skills/figlens/references/planning.md', import.meta.url));
           const planning = await readFile(planningPath, 'utf8');
           pi.sendUserMessage(`Create a design implementation plan only; this command does not authorize application edits or implementation. Read the figlens skill at ${JSON.stringify(skill)} for the available tools and image workflow, and follow the planning workflow below. Use the current request and conversation to identify the source and scope; if missing or materially ambiguous, ask. A saved manual selection is not the requested scope. Respect any output language/location and filesystem restrictions in the conversation.\n\nWorkflow source: ${JSON.stringify(planningPath)} (resolve its reference links relative to this file).\n\n${planning}\n\nPlanning request:\n${rest || 'Plan the design task discussed in this conversation; ask for the source and scope if they are not established.'}`);
+          return;
+        }
+        if (command === 'yolo') {
+          await ctx.waitForIdle();
+          const skill = fileURLToPath(new URL('../skills/figlens/SKILL.md', import.meta.url));
+          const workflowPath = fileURLToPath(new URL('../skills/figlens/references/yolo.md', import.meta.url));
+          const workflow = await readFile(workflowPath, 'utf8');
+          const request = match?.[2] || '';
+          pi.sendUserMessage(`Plan, implement and verify the requested design scope in this same agent context; this command authorizes application edits within that scope and cleanup of only the temporary plan created for this run after successful verification. Read the figlens skill at ${JSON.stringify(skill)} for the available tools and image workflow, and follow the workflow below. Use the current request and conversation to establish the source, scope and actual project conventions. A saved manual selection is not the requested scope. If an indispensable source or scope cannot be established, report the missing prerequisite rather than guessing another file or widening the task. Continue from planning into implementation without an intermediate plan-approval question. Respect the conversation's output language/location, existing plans and notes, and host filesystem and permission restrictions.\n\nWorkflow source: ${JSON.stringify(workflowPath)} (resolve its reference links relative to this file).\n\n${workflow}\n\nImplementation request:\n${request.trim() ? request : 'Implement the design task discussed in this conversation; report the missing prerequisite if its source or scope cannot be established.'}`);
           return;
         }
         const frameOption = command === 'open' ? rest.match(/^([\s\S]+)\s+--frame\s+(\S+)$/) : undefined;

@@ -9,6 +9,7 @@ targets=${FIGLENS_TARGETS:-"aarch64-apple-darwin x86_64-apple-darwin x86_64-unkn
 test -f skills/figlens/SKILL.md
 test -f skills/figlens/references/planning.md
 test -f skills/figlens/references/planning-details.md
+test -f skills/figlens/references/yolo.md
 mkdir -p dist
 set --
 for target in $targets; do

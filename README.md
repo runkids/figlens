@@ -2,32 +2,54 @@
   <img src="assets/logo.png" alt="figlens" width="220">
 </p>
 
-<h1 align="center">Your Figma design, ready for your coding agent.</h1>
+<h1 align="center">Your coding agent reads Figma files.<br>No Figma app. No login. No API quota.</h1>
 
 <p align="center">
   <a href="README.md">English</a> · <a href="README-de.md">Deutsch</a> · <a href="README-es.md">Español</a> · <a href="README-fr.md">Français</a> · <a href="README-ja.md">日本語</a> · <a href="README-ko.md">한국어</a> · <a href="README-pt-BR.md">Português</a> · <a href="README-zh-CN.md">简体中文</a> · <a href="README-zh-TW.md">繁體中文</a>
 </p>
 
 <p align="center">
-  Give your coding agent the layout, text, variables, assets and a reference image of any screen.<br>
-  Read it as often as you like, on your laptop, a cloud box or CI.<br>
-  <strong>No Figma app, login, seat or API rate limit on the machine doing the work.</strong>
-</p>
-
-<p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b78c8" alt="MIT license"></a>
   <a href="https://github.com/runkids/figlens/releases"><img src="https://img.shields.io/github/downloads/runkids/figlens/total?label=GitHub%20downloads&amp;color=79b9a5" alt="Total GitHub release asset downloads"></a>
   <a href="https://www.npmjs.com/package/@runkids/figlens"><img src="https://img.shields.io/npm/dm/@runkids/figlens?label=npm%20downloads&amp;color=8b78c8" alt="npm downloads per month"></a>
-  <a href="#for-ai-agents"><img src="https://img.shields.io/badge/agents-CLI_%2B_MCP-79b9a5" alt="CLI and MCP for AI agents"></a>
+  <a href="#mcp-and-skill"><img src="https://img.shields.io/badge/agents-CLI_%2B_MCP-79b9a5" alt="CLI and MCP for AI agents"></a>
 </p>
 
 <p align="center">
-  <a href="#installation">Install</a> · <a href="#from-a-local-fig-to-working-html">Watch the demo</a> · <a href="#quick-start">Try your design</a> · <a href="#for-ai-agents">Connect your agent</a> · <a href="#pi-extension">Use with Pi</a> · <a href="#how-close-is-it-to-figma">Accuracy</a>
+  <a href="#start">Start</a> · <a href="#demo">Demo</a> · <a href="#why">Why</a> · <a href="#bundle">What the agent gets</a> · <a href="#pi">Pi</a> · <a href="#limitations">Limitations</a>
 </p>
 
-## Installation
+**The problem.** Your agent needs layout values, text and assets to build a screen. On a remote host or in CI, that design context needs to be available alongside the code, without relying on a running desktop app.
 
-Use `npx @runkids/figlens` with Node.js 18+, or install the standalone CLI:
+**The fix.** In Figma, **File > Save local copy**. Drop `design.fig` next to your code. figlens parses it locally and gives your agent layout, text, styles, variables, icons, images and a reference render of any frame. One native binary, zero network calls to Figma.
+
+<a id="start"></a>
+
+## Get started
+
+Put `design.fig` in your project, then pick your agent.
+
+**Claude Code** (Node.js 18+, macOS/Linux):
+
+```sh
+claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
+```
+
+Start a new session and check `/mcp`. For the guided planning workflow, [add the skill](#mcp-and-skill).
+
+**Pi** (1.3.0+): one package ships the CLI, MCP, viewer and skill.
+
+```sh
+pi install npm:@runkids/figlens
+```
+
+**Any MCP client** (Cursor, Codex, Gemini CLI, ...):
+
+```json
+{ "mcpServers": { "figlens": { "command": "npx", "args": ["-y", "@runkids/figlens", "mcp"] } } }
+```
+
+**No Node.js?** Install the standalone binary and use `"command": "figlens"` instead:
 
 | Platform | Command |
 |---|---|
@@ -35,143 +57,48 @@ Use `npx @runkids/figlens` with Node.js 18+, or install the standalone CLI:
 | Homebrew | `brew install runkids/tap/figlens` |
 | Windows (PowerShell) | `irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 \| iex` |
 
-Release binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, static musl) and Windows (x86_64; ARM64 runs it under emulation). Standalone installs update with `figlens update`.
-
-## Quick start
-
-### 1. Open your design locally
-
-In Figma, choose **File > Save local copy** and save it as `design.fig`. Then run:
-
-```sh
-npx @runkids/figlens preview design.fig
-```
-
-Open the local URL printed in the terminal. Browse pages and select the screen you want to build. You can inspect its spacing, typography, variables and assets right there.
-
-Requires Node.js 18+. The first run downloads and verifies a native binary, then caches it. [Standalone installs](#installation) need no Node.js, Rust or Docker. Stop the viewer with Ctrl+C.
-
-### 2. Give the screen to your agent
-
-Download the selected frame's bundle from the viewer. Give your coding agent the zip and this prompt:
-
-> Extract this bundle into its own directory and read context.md. Build this screen using this project's stack and conventions. Use the supplied layout values and assets, then check your result against references/screen.png. Report missing assets or unavailable fonts.
-
-The bundle includes the structure, assets and reference image together, so the agent can read it with ordinary file tools. To let it find and inspect screens directly, [connect the CLI or MCP server](#for-ai-agents). [Pi users can ask for a screen by name](#pi-extension).
-
-### 3. Check the implementation
-
-Import a screenshot of your implementation into the viewer. Compare it side by side with the design or use the opacity overlay to spot differences. The screenshot stays in your browser. This is a visual check; figlens does not assign an accuracy score to your implementation.
-
-**The `.fig` is a snapshot.** Save a new local copy when the design changes. A Figma URL can select a node within that copy; it cannot download the design. Reading the saved file works offline after installation; your AI provider and project dependencies may still need a network connection.
-
-<details>
-<summary>Prefer the terminal? Find a frame and bundle it directly.</summary>
-
-```sh
-npx @runkids/figlens tree design.fig --depth 2
-npx @runkids/figlens find design.fig "login" --type FRAME
-npx @runkids/figlens inspect design.fig 12:345 --depth 1
-npx @runkids/figlens bundle design.fig 12:345 frame.zip
-```
-
-Replace `12:345` with an id from the tree or search results. A node can be an id (`12:345`), its URL form (`12-345`) or a Figma URL with `?node-id=`. Search layer names or text with `find`; use `inspect` for expanded instance children and a compact layout/text summary. See [Commands](#commands) for output details.
-
-</details>
-
-## Why figlens?
-
-“Build this screen” should come with the screen's layout, text and assets. Screenshots make the agent guess spacing and typography, and you still export icons by hand. The Figma MCP server reads the real design, but its quota belongs to the team that owns the file, an agent can spend a day's quota on one prompt, and the machine needs a Figma login.
-
-figlens reads the design from a saved copy instead. In Figma, choose **File > Save local copy** (view access is enough unless the owner has disabled copying). Give that `.fig` to your agent through the CLI or local MCP server, and it can find a screen, inspect its layout and text, and extract the assets it needs. Or bundle one frame's design data, assets and reference render into a zip that any agent or teammate can use.
-
-| If you've run into this | Use figlens to |
-|---|---|
-| “Rate limit exceeded, try again tomorrow”, even on a paid seat | Read the saved file as often as you need; no Figma API calls, tokens or seats |
-| Your agent runs on a cloud server or in CI | Read the design with a native CLI, without a Figma app or browser session |
-| You keep explaining measurements and exporting assets | Supply structured layout, typography, expanded instances, bound variables and original assets |
-| Another agent or teammate needs the same screen | Share one frame bundle with design data, assets, a reference render and instructions |
-
-Designers keep working in Figma. Your agent works in your project's stack. figlens supplies the design context; the coding agent writes the implementation.
-
-<details>
-<summary>The .fig format is undocumented. What happens when Figma changes it?</summary>
-
-figlens does not guess at the format. Every release is checked against Figma's own JSON, PNG and SVG exports of the same files ([results](#how-close-is-it-to-figma)), so a format change shows up as a measured regression, not a silent one. The saved copy you already have keeps working with the figlens version that read it; only new saves from a changed Figma need a figlens update, and `figlens update` fetches it.
-
-</details>
-
-## From a local .fig to working HTML
-
-[![Pi builds a working interface from a local Figma file, with a live preview beside the terminal](assets/demo-8x.gif)](assets/demo-8x.mp4)
-
-**[Watch the video](assets/demo-8x.mp4)** · 45-second time-lapse, **8× speed**. A real Pi session in Orca: read the local design, build HTML/CSS, then try the Share dialog and composer in the live preview. The interface uses 19 SVG icons from the bundle; it is HTML, not a flattened screenshot.
-
-| This example | Measured result |
-|---|---|
-| Local `.fig` file | 57.5 MiB |
-| Selected frame | 153 nodes, 25 SVG assets, no missing assets |
-| Extract the design bundle | **0.47 s median** over five warm runs |
-
-The timing measures `figlens bundle`, **not the AI's implementation time**. Measured with figlens 0.1.2 in an ARM64 Docker container; see the [commands, individual runs and recording notes](wiki/accuracy.md#local-design-to-html-demo). Pi writes the code; figlens supplies the design data. The AI provider still uses a network connection.
-
-<details>
-<summary>Design credit and demo limitations</summary>
-
-The “List views” frame comes from [MCP Apps for Claude (Community)](https://www.figma.com/community/file/1597641111449594397/mcp-apps-for-claude). The demo uses system sans and Georgia because the original Anthropic fonts are not bundled. Share opens a local dialog; replies stay in the page and reset on reload. The recording uses snapshots of the real Orca window, so motion is less smooth than a native video capture.
-
-</details>
-
-## Browse and hand off a design
-
-[![Inspect the MCP Apps design locally, with its layer tree, layout and component properties](assets/preview-inspector.png)](assets/pi-demo.mp4)
-
-The local viewer lets you explore a saved design without a Figma session:
-
-- Browse pages and layers, search names and text, measure distances, and inspect layout, typography, variables, component properties and CSS.
-- Export a selected layer as SVG, PNG, JPG, WebP or AVIF, or download its original image fills.
-- Copy a layer's ID, structured context or an implementation prompt; download a bundle for the exact selection, including instance sublayers.
-
-Need to send someone a design they can browse? Export a standalone HTML snapshot:
-
-```sh
-npx @runkids/figlens preview design.fig 12:345 --out preview.html
-```
-
-It opens without a server or network and includes the design data, images and a bundle for the snapshot scope. Share it only with people allowed to see those assets. Selecting a child changes the inspected context; the embedded bundle still covers the snapshot scope.
-
-The live viewer watches the saved local file and refreshes after successful saves; partial or failed saves mark the view stale. HTML snapshots stay fixed. For controls, cache management, browser-agent automation and limitations, see the [preview guide](wiki/preview.md).
-
-## Pi extension
-
-**Give Pi a `.fig` and ask for the screen.** The [package](https://pi.dev/packages/@runkids/figlens) includes the CLI, MCP, preview, extension and agent skill:
-
-```sh
-pi install npm:@runkids/figlens
-```
-
-Restart Pi or run `/reload`, then ask normally:
+Then ask for a screen:
 
 ```text
-Build the List views screen from ./design.fig using this project's components.
-Show me the result and check it against the design.
+Build the task board from ./design.fig in this project.
+Find the matching frame, use this project's components and image workflow,
+then compare the running UI with the design and fix confirmed differences.
+Report missing assets and any checks you could not run.
 ```
 
-Pi finds the screen, reads its layout and assets, inspects your project and implements in its existing stack. You do not need to know frame IDs or run `/figlens open`. When names are ambiguous, Pi can show a short set of candidates. MCP starts automatically; no global CLI installation is needed.
+The agent finds the frame, builds a bundle with design data, assets and a reference image, and implements the screen with your stack. Ask it to show the changed files and the comparison; a bundle alone does not prove the UI is right.
 
-![Ask Pi for a screen, let it find the design, build with your stack, and check the result](assets/pi-workflow.svg)
+<a id="demo"></a>
 
-**Optional component reuse:** ask Pi to save reusable matches, then use `/figlens review` to accept or edit pending proposals across the project. Decisions stay in `.figlens/component-mappings.md`; changed variants or recorded code need review. Building a screen does not require mappings.
+## Demo: Pi builds a React screen from a .fig
 
-[![Inspect the local design, review an existing HTML component in Pi, and reuse it in the next frame](assets/pi-demo.gif)](assets/pi-demo.mp4)
+[![Pi plans from a local .fig, builds a React screen and checks it beside a live browser](assets/taskflow-demo-poster.jpg)](assets/taskflow-demo.mp4)
 
-**[Watch the optional mapping workflow](assets/pi-demo.mp4)** · 20-second edited recording from v0.3.0: inspect the MCP Apps design, approve a prepared mapping to existing HTML, and reuse it after a new session. Model generation is not shown or timed. [Full walkthrough, commands and limitations](pi/README.md) · [Recording and verification notes](wiki/pi.md#demo-and-verification).
+**[78-second video](assets/taskflow-demo.mp4).** Pi runs `/figlens plan`, reads a dashboard frame from a local `.fig`, builds it with React and Tailwind CSS, then checks and corrects the running UI. Edited time-lapse, not a benchmark or a pixel-perfect promise. Design: [Task Flow by Eymen Eid](https://www.figma.com/community/file/1224268866120711793) · [recording notes](wiki/accuracy.md#taskflow-react-and-tailwind-demo).
 
-Requires Pi 1.3.0+. The npm extension uses its bundled CLI launcher; the first launch, including automatic MCP startup, downloads and verifies the matching native binary. Homebrew and release archives provide the native CLI and viewer. See [source-checkout setup](pi/README.md#install-once) for development.
+<a id="why"></a>
 
-## The design bundle
+## Why figlens instead of the official Figma MCP?
 
-One frame, one zip. Structure to build from, assets to use, and a picture to check against.
+Use **figlens** when the design should travel as a file: remote agents, CI, offline work, handoff between agents, unlimited repeated reads. Use the **official Figma MCP** when the agent must see the live design without an export step.
+
+| | figlens | Official Figma MCP |
+|---|---|---|
+| Source | Exported `.fig` snapshot | Live Figma files |
+| Needs | The file | Figma sign-in; desktop server needs the app |
+| Rate limits | None, local parsing | Figma service limits |
+| Remote agent / CI | Copy the file, run the binary | Remote server with sign-in |
+| Design changes | Export a new `.fig` | Automatic |
+| Handoff | Share the `.fig` or a frame bundle | Share Figma access |
+| Fidelity | Independent parser with [known gaps](#limitations) | Maintained by Figma |
+
+Reading a `.fig` is offline. Installing and updating figlens, `gs://` inputs, your model provider and your project's dependencies still need a network.
+
+<a id="bundle"></a>
+
+## What the agent gets
+
+One frame, one zip. Structure to build from, assets to use, a picture to check against.
 
 ```text
 frame.zip
@@ -186,119 +113,136 @@ frame.zip
 └── manifest.json             File roles, media types, sizes and SHA-256 hashes
 ```
 
-Need just one piece? Export JSON or render a node directly:
+Need one piece? The CLI does it directly:
 
 ```sh
-npx @runkids/figlens nodes design.fig 12:345 > frame.json
-npx @runkids/figlens variables design.fig 12:345 > variables.json
-npx @runkids/figlens export design.fig 12:345 icon.svg
-npx @runkids/figlens export design.fig 12:345 hero.webp --scale 2 --quality 80
+npx -y @runkids/figlens find design.fig "login" --type FRAME     # frame ids by name or text
+npx -y @runkids/figlens inspect design.fig 12:345                 # compact layout and text summary
+npx -y @runkids/figlens nodes design.fig 12:345 > frame.json      # REST-shaped JSON
+npx -y @runkids/figlens export design.fig 12:345 icon.svg         # SVG, PNG, JPG, WebP or AVIF
+npx -y @runkids/figlens bundle design.fig 12:345 frame.zip        # the zip above
 ```
 
-SVG exports work for frames, groups, icons and exact instance sublayers: one selected subtree becomes one standalone SVG, with original image fills embedded and text as glyph outlines. No bundle extraction needed. SVG keeps its original dimensions; `--scale` and `--quality` apply to raster formats only. Through MCP, raster exports are scaled down to fit `maxSize` (default 1600 px on the longest side; 0 disables it), so inline images stay small.
+SVG exports embed original image fills and outline text as glyphs, so no fonts are needed. Through MCP, raster exports also come back as inline images, so the agent sees the design without opening a file.
 
-## How close is it to Figma?
+### How close is it to Figma?
 
-figlens is checked against Figma's own JSON, PNG and SVG exports. The recorded results on **826 production frames** and **five Community files** include:
+Measured against Figma's own JSON, PNG and SVG exports on **826 production frames** and five Community files (2026-10-22):
 
 | Check | Result |
 |---|---|
-| Node structure, names, visibility, bounds and text | Identical in 771 / 826 production frames |
+| Node structure, names, visibility, bounds and text | Identical in 771 / 826 frames |
 | Original image fills | 2,608 / 2,608 byte-identical |
 | SVG assets | 5,014 / 5,197 within the pixel-difference threshold |
 | Community frame bundles | 306 / 306 with no missing assets |
 
-These are measured results on those files, not a guarantee for every design. See the [accuracy report](wiki/accuracy.md) for dates, thresholds, render results and method.
+Results on those files, not a guarantee for every design. Method and thresholds: [accuracy report](wiki/accuracy.md).
 
-**Known gaps:** constraints, layoutAlign/layoutGrow, layout grids and component property definitions are not emitted yet. Renders skip background blur and some image adjustments (contrast, temperature, tint, highlights, shadows), and draw angular and diamond gradients as radial. Text uses stored glyph outlines, so rendering needs no fonts, but overridden text can retain Figma's last layout. Font files are not included for your implementation.
+<a id="pi"></a>
 
-## For AI agents
-
-Use the CLI through an agent skill, or connect the same binary as an MCP server.
-
-### Agent skill
-
-The [figlens skill](skills/figlens/SKILL.md) teaches your agent to find frames, read the bundle in small pieces and build from its values. For careful reconstruction, its [planning workflow](skills/figlens/references/planning.md) connects the requested scope to existing code, image delivery and acceptance checks. Pi also offers `/figlens plan <request>` to make a plan before implementing; a small region stays a small task. Use `/figlens open [description]` to find a design from what you know; Pi asks for missing details without requiring node IDs. Use `/figlens preview [description]` to start the local interactive viewer and get its link; Pi resolves the file and screen without requiring node IDs.
-
-Install with the [Skills CLI](https://github.com/vercel-labs/skills):
+## Pi extension
 
 ```sh
+pi install npm:@runkids/figlens
+```
+
+Restart Pi or `/reload`, then ask for a screen in plain words. Pi finds the frame, reads it over the auto-registered MCP server and builds with your stack. No node IDs, no global CLI.
+
+- `/figlens plan <request>` writes a plan only; it does not edit the application.
+- `/figlens yolo <request>` plans, builds, checks and cleans up its own temporary plan.
+- `/figlens preview [description]` opens the local viewer.
+- `/figlens review` approves reusable component mappings the agent proposed.
+
+![Ask Pi for a screen, let it find the design, build with your stack, and check the result](assets/pi-workflow.svg)
+
+Full walkthrough, commands and limits: [pi/README.md](pi/README.md).
+
+<a id="viewer"></a>
+
+## Browse a design without Figma
+
+[![Inspect the MCP Apps design locally, with its layer tree, layout and component properties](assets/preview-inspector.png)](assets/pi-demo.mp4)
+
+```sh
+npx -y @runkids/figlens preview design.fig                        # local viewer, Ctrl+C to stop
+npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # offline HTML snapshot to send to anyone
+```
+
+Browse pages and layers, search, measure, inspect layout, typography, variables and CSS, export any layer, copy an implementation prompt or download a bundle for the selection. Drop in a screenshot of your build to overlay it on the design. Details: [preview guide](wiki/preview.md).
+
+<a id="mcp-and-skill"></a>
+
+## MCP server and agent skill
+
+<details>
+<summary>MCP tools, path restrictions, skill install, skillshare</summary>
+
+**MCP.** The server runs locally over stdio and exposes `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` and `export`. Pass absolute paths. Add `--root /path/to/designs` (repeatable) to confine every file and output path to chosen folders. Raster exports are scaled down to `maxSize` (default 1600 px) so inline images stay small; SVG returns metadata only.
+
+Native Windows with Claude Code: follow its [stdio setup notes](https://code.claude.com/docs/en/mcp#option-3-add-a-local-stdio-server) and the `cmd /c` wrapper for `npx`.
+
+**Skill.** The [figlens skill](skills/figlens/SKILL.md) teaches an agent to find frames, read the bundle in small pieces, plan scoped work and verify the running UI against the design. It installs instructions only; the CLI or MCP server must be available. Install with the [Skills CLI](https://github.com/vercel-labs/skills) or copy `skills/figlens/` into your agent's skills directory (Claude Code: `~/.claude/skills/`):
+
+```sh
+npm install -g @runkids/figlens
 npx skills add runkids/figlens --skill figlens
 ```
 
-To manage and update skills across Claude Code, Codex, Cursor, Gemini CLI and more, use [skillshare](https://github.com/runkids/skillshare):
+**skillshare.** Manage the skill and the MCP connection across Claude Code, Codex and Cursor from one place with [skillshare](https://github.com/runkids/skillshare):
 
 ```sh
 skillshare install github.com/runkids/figlens/skills/figlens
-skillshare sync
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
+skillshare sync && skillshare sync mcp --global
 ```
 
-`skillshare update --all` keeps it current. You can also copy `skills/figlens/` into your agent's skills directory (for Claude Code, `~/.claude/skills/`). Release archives include it too.
+**Install notes.** The npm launcher downloads the matching native binary on first use, verifies it against the release's SHA-256 checksums and caches it. Standalone installs update with `figlens update`. Binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, static musl) and Windows (x86_64).
 
-### MCP server
+</details>
 
-Manage MCP servers alongside your agent skills with [skillshare](https://github.com/runkids/skillshare). Define figlens once and sync its connection settings to Claude Code, Codex and Cursor:
+<a id="commands"></a>
 
-```sh
-skillshare mcp add figlens --global \
-  --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
-skillshare sync mcp --global
-```
+## CLI reference
 
-See the [Skillshare MCP guide](https://skillshare.runkids.cc/docs/reference/commands/mcp/) for other clients and importing existing settings.
-
-For a direct Claude Code setup:
-
-```sh
-claude mcp add figlens -- npx -y @runkids/figlens mcp
-```
-
-Other MCP clients:
-
-```json
-{ "mcpServers": { "figlens": { "command": "npx", "args": ["-y", "@runkids/figlens", "mcp"] } } }
-```
-
-With a standalone `figlens` installation, use:
-
-```json
-{ "mcpServers": { "figlens": { "command": "figlens", "args": ["mcp"] } } }
-```
-
-To keep the server inside chosen folders, add `--root`: `"args": ["mcp", "--root", "/path/to/designs"]`. Every `file` and output path a tool call names must then lie under one of the roots; repeat `--root` for more folders. Calls whose arguments leave the tool schema are refused too, since the legacy argument coercions could turn any of them into a path.
-
-The server runs locally over stdio and exposes `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` and `export`. Give tools absolute paths: relative ones resolve against the directory the client started figlens in.
-
-Start with `find` and `inspect` to select a frame. `export` saves the file and returns metadata. Raster formats also return MCP image content, so your agent can see the design without opening a local file; SVG returns metadata only. PNG has the widest client support; reduce `scale` for large frames. `find`, `inspect`, `bundle` and `export` also return structured JSON results.
-
-## Commands
+<details>
+<summary>All commands</summary>
 
 | Command | Output |
 |---|---|
-| `tree <file> [node] [--depth N] [--json]` | Node ids, types and names; indented text (smaller for an agent's context) or, with `--json`, nested JSON |
-| `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Case-insensitive substring search over stored layer names and text; paths, local sizes and previews. Default 20 results (1-200); `truncated` signals more matches |
-| `inspect <file> <node> [--depth N] [--images]` | Compact expanded layout/text summary. Default depth 1 (0-10), at most 200 nodes; use `nodes` for full data. Add `--images` for source bitmap dimensions/bytes and per-use crop footprints; pixel counts do not diagnose blur. |
-| `nodes <file> <node>` | REST-shaped JSON: expanded instances and overrides, auto-layout, text styles, fills, effects, bound variables, component properties and render bounds |
+| `tree <file> [node] [--depth N] [--json]` | Node ids, types and names; indented text or nested JSON |
+| `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Case-insensitive search over layer names and text; paths, sizes and previews. Default 20 results (1-200) |
+| `inspect <file> <node> [--depth N] [--images]` | Compact expanded layout/text summary, at most 200 nodes. `--images` adds bitmap dimensions and crop footprints |
+| `nodes <file> <node>` | REST-shaped JSON: expanded instances and overrides, auto-layout, text styles, fills, effects, bound variables, component properties, render bounds |
 | `variables <file> [node]` | A frame's bound variables; without a node, every local variable |
 | `bundle <file> <node> <out.zip>` | A design bundle for one frame; prints `{nodeId, path, warnings}` |
-| `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | Many bundles from one decode, in parallel; one JSON line per frame, as above or `{nodeId, error}` |
-| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP or AVIF; `--max-kb` lowers lossy quality until it fits; PNG/SVG fail if over budget; prints `{path, width, height, bytes, quality}` |
-| `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Local read-only viewer; `--out` requires a node and writes a standalone offline snapshot |
+| `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | Many bundles from one decode, in parallel |
+| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP or AVIF; `--max-kb` lowers lossy quality until it fits |
+| `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Local read-only viewer; `--out` writes a standalone offline snapshot |
 | `compare <file> <nodes.json> <node>` | Diff against a REST export of the same frame |
 | `node <file> <node>` | One raw `.fig` node |
 | `mcp` | Local MCP server over stdio |
 | `update` | Replace the binary with the latest release |
 
-`find` searches stored layers and returns ids, ancestor paths, local sizes and text previews. `inspect` expands instances and caps output at 200 nodes and 200 characters per text; `truncated` and `textTruncated` identify omissions. Each CLI call decodes the file; the MCP server keeps the parsed file across calls until it changes on disk.
+A node argument accepts `12:345`, `12-345` or a Figma URL with `?node-id=`. `<file>` can also be `gs://bucket/object`, downloaded with your `gcloud` login and cached. Each CLI call decodes the file; the MCP server keeps the parsed file across calls until it changes on disk. Run `figlens --help` for usage.
 
-`<file>` can also be `gs://bucket/object`, downloaded with your `gcloud` login and cached. Run `figlens --help` for usage.
+</details>
+
+<a id="limitations"></a>
+
+## Limitations
+
+- **Snapshots, not live sync.** Export a new `.fig` when the design changes. figlens cannot download a design from a Figma URL.
+- **Undocumented format.** figlens decodes the file's embedded schema; new Figma exports may need a figlens update.
+- **Not emitted yet:** Dev Mode annotations, constraints, layoutAlign/layoutGrow, layout grids, component property definitions.
+- **Render gaps:** background blur and some image adjustments are skipped; angular and diamond gradients draw as radial. Overridden text can keep Figma's last layout. Font files are not included.
+- **Check the output.** Read bundle `warnings`, `missing-assets.json` and unresolved variables in `context.md`, then compare the implementation with the design.
 
 ## Help figlens grow
 
-If figlens helps your next design become code, [give it a star](https://github.com/runkids/figlens) so others can find it too. Found a design it struggles with? [Open an issue](https://github.com/runkids/figlens/issues) with the command you ran and what you expected.
+If figlens turned a design into code for you, [star the repo](https://github.com/runkids/figlens) so others find it. Hit a file it cannot read? [Open an issue](https://github.com/runkids/figlens/issues) with the command and what you expected.
 
-For development, Rust runs in Docker only: `docker compose run --rm dev cargo test`. `make devc` opens a shell where `figlens` runs this checkout's source; `make help` lists the container targets. VS Code's Reopen in Container uses the same service. See [AGENTS.md](AGENTS.md) for project rules and [the wiki](wiki/README.md) for technical topics.
+Development runs Rust in Docker only: `docker compose run --rm dev cargo test`. See [AGENTS.md](AGENTS.md) and the [wiki](wiki/README.md).
 
 ## License
 
-[MIT](LICENSE). figlens is an independent project, not affiliated with, endorsed by or sponsored by Figma. The `.fig` format is undocumented and may change; figlens reads files you saved from your own Figma account.
+[MIT](LICENSE). figlens is an independent project, not affiliated with, endorsed by or sponsored by Figma. The `.fig` format is undocumented and may change; use only files and assets you have permission to access and share.

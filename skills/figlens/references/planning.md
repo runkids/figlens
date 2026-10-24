@@ -15,6 +15,8 @@ For a region, component or one state, deliver these four fields directly:
 
 Deliver when these fields make the next change actionable. Choose another read only for a specific missing decision that could change this slice. Keep a small plan in chat unless saving was requested or continuation needs it.
 
+When saving a plan, use [Save and resume proportionately](planning-details.md#save-and-resume-proportionately) for source/scope namespaces and related evidence paths.
+
 ## Load detail when needed
 
 For a page or several pages, read [the detailed workflow](planning-details.md) to inventory only the authorized screens/states and detail the next slice. For a small scope, reach that reference only for a concrete unresolved dependency: design styles/masks/notes, component reuse, responsive behavior or saved-plan continuity. Read the relevant section, not the whole design or unrelated plans.

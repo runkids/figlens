@@ -25,6 +25,8 @@ npx @runkids/figlens --help                                                     
 
 ## Choose the workflow
 
+For an explicit request to plan, implement, self-check and clean up the temporary plan autonomously, read [the YOLO workflow](references/yolo.md). Pi offers `/figlens yolo <request>`; other agents follow the same skill workflow from the user's request. Keep this opt-in intent distinct from plan-only requests and ordinary design questions.
+
 For an explicit implementation plan or a request to carefully reproduce a design, read [the planning workflow](references/planning.md). Scale it to the requested region, component, state, page or pages. Plan-only requests end with the plan; an already authorized build continues into implementation. Pi also offers `/figlens plan <request>` as a plan-only shortcut, without open or a saved selection. Keep ordinary design questions and asset exports on the direct path below.
 
 ## Building a frame

@@ -19,11 +19,11 @@ test('the existing CLI npm package includes the maintained Pi entry and its adja
   assert.ok(manifest.keywords.includes('pi-package'));
   assert.deepEqual(manifest.pi.extensions, ['./pi/index.ts']);
   assert.deepEqual(manifest.pi.skills, ['./skills']);
-  assert.ok(manifest.pi.image.endsWith('/assets/pi-demo-poster.png'));
-  assert.ok(manifest.pi.video.endsWith('/assets/pi-demo.mp4'));
+  assert.ok(manifest.pi.image.endsWith('/assets/taskflow-demo-poster.jpg'));
+  assert.ok(manifest.pi.video.endsWith('/assets/taskflow-demo.mp4'));
   const files = packed.files.map(file => file.path);
   assert.ok(files.includes('bin/figlens.js'));
-  for (const file of ['SKILL.md', 'references/planning.md', 'references/planning-details.md']) {
+  for (const file of ['SKILL.md', 'references/planning.md', 'references/planning-details.md', 'references/yolo.md']) {
     assert.ok(files.includes(`skills/figlens/${file}`));
     assert.equal(readFileSync(path.join(root, 'npm/skills/figlens', file), 'utf8'), readFileSync(path.join(root, 'skills/figlens', file), 'utf8'));
   }

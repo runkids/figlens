@@ -5,7 +5,7 @@ const { tmpdir } = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-test('native tar and Windows zip include the skill and planning reference', { skip: process.platform === 'win32' }, t => {
+test('native tar and Windows zip include the skill and workflow references', { skip: process.platform === 'win32' }, t => {
   const root = path.resolve(__dirname, '..');
   const fixture = mkdtempSync(path.join(tmpdir(), 'figlens-dist-pack-'));
   t.after(() => rmSync(fixture, { recursive: true, force: true }));
@@ -36,9 +36,10 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     for member in sys.argv[2:]:
         assert z.read(member) == open(member, "rb").read()
 `;
-  for (const file of ['skills/figlens/SKILL.md', 'skills/figlens/references/planning.md', 'skills/figlens/references/planning-details.md']) {
+  const resources = ['skills/figlens/SKILL.md', 'skills/figlens/references/planning.md', 'skills/figlens/references/planning-details.md', 'skills/figlens/references/yolo.md'];
+  for (const file of resources) {
     assert.equal(execFileSync('tar', ['-xOf', tar, file], { encoding: 'utf8' }), readFileSync(path.join(root, file), 'utf8'));
   }
-  execFileSync('python3', ['-c', verifyZip, zip, 'skills/figlens/SKILL.md', 'skills/figlens/references/planning.md', 'skills/figlens/references/planning-details.md'], { cwd: root });
+  execFileSync('python3', ['-c', verifyZip, zip, ...resources], { cwd: root });
   assert.equal(execFileSync('tar', ['-xOf', tar, 'figlens'], { encoding: 'utf8' }), 'fixture');
 });

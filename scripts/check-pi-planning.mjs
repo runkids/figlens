@@ -16,16 +16,19 @@ const prompts = [];
 const messages = [];
 runtime.sendUserMessage = prompt => prompts.push(prompt);
 runtime.sendMessage = message => messages.push(message);
-runtime.exec = async () => { throw new Error('Planning command must not invoke the CLI.'); };
+runtime.exec = async () => { throw new Error('Dispatch commands must not invoke the CLI.'); };
 const extensionPath = path.resolve(entry);
 const loaded = await loadExtensions([extensionPath], root, undefined, runtime);
 assert.deepEqual(loaded.errors, []);
 const extension = loaded.extensions[0];
 assert.equal(extension.commands.has('plan'), false, 'leave the global /plan command to the host');
+assert.equal(extension.commands.has('yolo'), false, 'no global /yolo command');
 assert.equal(extension.handlers.has('before_agent_start'), false, 'no automatic scope injection');
 const skillPath = fileURLToPath(new URL('../skills/figlens/SKILL.md', pathToFileURL(extensionPath)));
 const planningPath = path.join(path.dirname(skillPath), 'references/planning.md');
 const planning = await readFile(planningPath, 'utf8');
+const yoloPath = path.join(path.dirname(skillPath), 'references/yolo.md');
+const yolo = await readFile(yoloPath, 'utf8');
 const skills = loadSkills({ cwd: root, agentDir: path.join(root, 'agent'), skillPaths: [path.dirname(skillPath)], includeDefaults: false });
 assert.deepEqual(skills.diagnostics, []);
 assert.equal(skills.skills.length, 1);
@@ -35,8 +38,15 @@ const ctx = {
   ui: new Proxy({}, { get: () => { throw new Error('Planning must not require a dialog.'); } }),
 };
 const command = args => extension.commands.get('figlens').handler(args, ctx);
+const completions = extension.commands.get('figlens').getArgumentCompletions;
+assert.deepEqual((await completions('yo')).map(item => item.value), ['yolo']);
+assert.match((await completions('yo'))[0].description, /implement.*verify/i);
+assert.deepEqual(await completions('yolo a request'), []);
+await command('help');
+assert.match(messages.pop().content, /`\/figlens yolo \[request\]`.*temporary plan/);
 
 const request = 'Plan only the "hero image" in ./design files/shop.fig, node 12:8.\nWrite the plan in French; plan only, with all other pages out of scope.';
+const yoloRequest = '  Implement only the "hero image" in ./design files/shop.fig, node 12:8.\nUse this project\'s components; report in French.  \n';
 for (const mode of ['tui', 'rpc', 'print']) {
   ctx.mode = mode;
   const before = prompts.length;
@@ -47,6 +57,17 @@ for (const mode of ['tui', 'rpc', 'print']) {
   assert.ok(prompts.at(-1).includes(JSON.stringify(planningPath)), 'preserve the source path for on-demand reference links');
   assert.ok(prompts.at(-1).includes(JSON.stringify(skillPath)), 'resolve the skill from the installed entry');
   assert.match(prompts.at(-1), /does not authorize application edits or implementation/);
+  assert.equal(prompts.at(-1).includes(yolo), false, 'plan-only never loads implementation authorization');
+  await command(`yolo ${yoloRequest}`);
+  assert.equal(prompts.length, before + 2);
+  assert.ok(prompts.at(-1).endsWith(yoloRequest), 'preserve the exact implementation request, including whitespace');
+  assert.ok(prompts.at(-1).includes(yolo), 'load the actual adjacent yolo reference');
+  assert.ok(prompts.at(-1).includes(JSON.stringify(yoloPath)), 'resolve yolo links from the packaged reference');
+  assert.ok(prompts.at(-1).includes(JSON.stringify(skillPath)));
+  assert.match(prompts.at(-1), /same agent context/);
+  assert.match(prompts.at(-1), /authorizes application edits within that scope/);
+  assert.match(prompts.at(-1), /without an intermediate plan-approval question/);
+  assert.match(prompts.at(-1), /report the missing prerequisite rather than guessing another file or widening/);
 }
 assert.deepEqual(await readdir(root), [], 'command creates no project or mapping files');
 
@@ -77,6 +98,12 @@ await writeFile(path.join(root, '.figlens/component-mappings.md'), mapping);
 await command('plan');
 assert.match(prompts.at(-1), /ask for the source and scope/);
 assert.equal(prompts.at(-1).includes('unrelated.fig'), false);
+for (const args of ['yolo', 'yolo   \n']) {
+  await command(args);
+  assert.match(prompts.at(-1), /Implement the design task discussed in this conversation/);
+  assert.match(prompts.at(-1), /report the missing prerequisite if its source or scope cannot be established/);
+  assert.equal(prompts.at(-1).includes('unrelated.fig'), false);
+}
 await command('open VIP panel');
 assert.equal(prompts.at(-1).includes('unrelated.fig'), false);
 await command('map');
@@ -86,15 +113,18 @@ await command('preview');
 assert.equal(prompts.at(-1).includes('unrelated.fig'), false);
 assert.equal(await readFile(path.join(root, '.figlens/component-mappings.md'), 'utf8'), mapping);
 
-let resume;
-ctx.waitForIdle = () => new Promise(resolve => { resume = resolve; });
-const before = prompts.length;
-const pending = command('plan Only the card empty state');
-assert.equal(prompts.length, before, 'wait for idle before dispatching');
-resume();
-await pending;
-assert.equal(prompts.length, before + 1);
+for (const name of ['plan', 'yolo']) {
+  let resume;
+  ctx.waitForIdle = () => new Promise(resolve => { resume = resolve; });
+  const before = prompts.length;
+  const pending = command(`${name} Only the card empty state`);
+  assert.equal(prompts.length, before, 'wait for idle before dispatching');
+  resume();
+  await pending;
+  assert.equal(prompts.length, before + 1);
+}
 assert.deepEqual(messages, [], 'no hidden command error was swallowed');
 const version = JSON.parse(await readFile(path.join(sdk, 'package.json'), 'utf8')).version;
-await writeFile(path.join(root, 'results.json'), JSON.stringify({ sdk: version, entry: extensionPath, checks: ['actual Pi loader and skill discovery', 'adjacent planning reference', 'TUI/RPC/print plan-only dispatch', 'verbatim local scope', 'no filesystem writes or manual selection', 'idle ordering', 'conversational open without IDs or saved state'], modelCalled: false, prompt: prompts[0] }, null, 2));
-console.log(JSON.stringify({ sdk: version, entry: extensionPath, checks: 7, modelCalled: false, output: root }, null, 2));
+const checks = ['actual Pi loader and skill discovery', 'adjacent planning and yolo references', 'TUI/RPC/print plan-only and implementation dispatch', 'verbatim local scope', 'no filesystem writes or manual selection', 'idle ordering', 'conversational open without IDs or saved state', 'yolo help and autocomplete', 'empty yolo request resolves conversation'];
+await writeFile(path.join(root, 'results.json'), JSON.stringify({ sdk: version, entry: extensionPath, checks, modelCalled: false, prompt: prompts[0] }, null, 2));
+console.log(JSON.stringify({ sdk: version, entry: extensionPath, checks: checks.length, modelCalled: false, output: root }, null, 2));
