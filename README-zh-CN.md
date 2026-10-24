@@ -228,6 +228,8 @@ figlens 以 Figma 自身导出的 JSON、PNG 和 SVG 验证。以下是 **826 �
 
 [figlens skill](skills/figlens/SKILL.md) 教 agent 寻找 frame、分段阅读 bundle，并依照其中的数值实现。
 
+需要仔细还原设计时，[规划流程](skills/figlens/references/planning.md)会把本次范围对应到既有代码、图片交付与验收条件。Pi 也提供 `/figlens plan <request>`，先规划再实现；小范围保持为小任务。使用 `/figlens open [description]` 描述你知道的内容，Pi 会补问缺少的信息，不需要你知道节点 ID。 使用 `/figlens preview [description]` 启动本地交互式查看器并获取链接；Pi 会识别文件与画面，无需提供节点 ID。
+
 通过 [Skills CLI](https://github.com/vercel-labs/skills) 安装：
 
 ```sh
@@ -301,7 +303,7 @@ Release 可执行文件支援 macOS（Apple silicon、Intel）、Linux（arm64�
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | 节点 ID、类型与名称；缩进文字（减少 agent 上下文用量），加 `--json` 则输出巢状 JSON |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 不分大小写搜索图层名称与文字子字串；包含路径、尺寸与预览。默认 20 笔（1–200）；`truncated` 表示还有结果 |
-| `inspect <file> <node> [--depth N]` | 展开后的精简布局／文字摘要。默认深度 1（0–10），最多 200 个节点；完整数据用 `nodes` |
+| `inspect <file> <node> [--depth N] [--images]` | 展开后的精简布局／文字摘要。默认深度 1（0–10），最多 200 个节点；完整数据用 `nodes`。加上 `--images` 可读取原图像素／bytes 与每次使用的裁切像素范围；像素数不能诊断模糊原因。 |
 | `nodes <file> <node>` | REST 格式 JSON：展开的 instance 与覆写、自动布局、文字样式、填色、效果、绑定变量、组件属性与渲染边界 |
 | `variables <file> [node]` | frame 绑定的变量；未指定节点时输出所有本地变量 |
 | `bundle <file> <node> <out.zip>` | 单一 frame 的设计 bundle；返回 `{nodeId, path, warnings}` |

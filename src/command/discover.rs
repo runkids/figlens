@@ -1,6 +1,7 @@
 //! Bounded discovery output; full design data stays in `nodes` and `bundle`.
 
 use std::error::Error;
+use std::path::Path;
 
 use figlens::expand::{plugin_type, subtree};
 use figlens::{Tree, guid_key};
@@ -92,10 +93,29 @@ pub fn inspect(tree: &Tree, id: &str, depth: usize) -> Result<Value, Box<dyn Err
         return Err("--depth takes 0-10 for inspect".into());
     }
     let doc = figlens::rest::nodes(tree, id);
+    Ok(inspect_document(&doc["document"], depth))
+}
+
+pub fn inspect_images(
+    tree: &Tree,
+    id: &str,
+    depth: usize,
+    fig: &Path,
+) -> Result<Value, Box<dyn Error>> {
+    if depth > 10 {
+        return Err("--depth takes 0-10 for inspect".into());
+    }
+    let doc = figlens::rest::render_nodes(tree, id);
+    let mut result = inspect_document(&doc["document"], depth);
+    result["images"] = figlens::images::inspect(fig, &doc["document"])?;
+    Ok(result)
+}
+
+fn inspect_document(document: &Value, depth: usize) -> Value {
     let mut remaining = MAX_NODES;
     let mut truncated = false;
-    let node = summarize(&doc["document"], depth, &mut remaining, &mut truncated);
-    Ok(json!({"node": node, "truncated": truncated}))
+    let node = summarize(document, depth, &mut remaining, &mut truncated);
+    json!({"node": node, "truncated": truncated})
 }
 
 fn summarize(node: &Value, depth: usize, remaining: &mut usize, truncated: &mut bool) -> Value {

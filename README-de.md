@@ -228,6 +228,8 @@ Verwende die CLI über einen Agent-Skill oder verbinde dasselbe Programm als MCP
 
 Der [figlens-Skill](skills/figlens/SKILL.md) zeigt deinem Agenten, wie er Frames findet, das Bundle in kleinen Teilen liest und anhand seiner Werte implementiert.
 
+Für eine genaue Umsetzung verbindet der [Planungsablauf](skills/figlens/references/planning.md) den gewünschten Umfang mit vorhandenem Code, Bildauslieferung und Abnahmekriterien. In Pi erstellt `/figlens plan <request>` vor der Umsetzung einen Plan; ein kleiner Bereich bleibt eine kleine Aufgabe. Mit `/figlens open [description]` findest du ein Design anhand dessen, was du bereits weißt. Pi fragt nach fehlenden Angaben, ohne Node-IDs vorauszusetzen. Mit `/figlens preview [description]` startest du den lokalen interaktiven Viewer und erhältst seinen Link. Pi findet Datei und Bildschirm, ohne Node-IDs vorauszusetzen.
+
 Mit der [Skills CLI](https://github.com/vercel-labs/skills) installieren:
 
 ```sh
@@ -299,7 +301,7 @@ Release-Binärdateien gibt es für macOS (Apple silicon, Intel), Linux (arm64, x
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | Knoten-IDs, Typen und Namen; eingerückter Text (weniger Agent-Kontext) oder mit `--json` verschachteltes JSON |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Teilstringsuche in Ebenennamen und Text ohne Beachtung der Groß-/Kleinschreibung; Pfade, Größen, Vorschauen. Standard 20 Ergebnisse (1–200); `truncated` zeigt weitere an |
-| `inspect <file> <node> [--depth N]` | Kompakte expandierte Layout-/Textübersicht. Standardtiefe 1 (0–10), höchstens 200 Knoten; vollständige Daten mit `nodes` |
+| `inspect <file> <node> [--depth N] [--images]` | Kompakte expandierte Layout-/Textübersicht. Standardtiefe 1 (0–10), höchstens 200 Knoten; vollständige Daten mit `nodes`. `--images` ergänzt Quellpixel, Bytes und Zuschnittbereiche je Verwendung; Pixelzahlen erklären keine Unschärfeursache. |
 | `nodes <file> <node>` | REST-förmiges JSON: expandierte Instanzen und Überschreibungen, Auto-Layout, Textstile, Füllungen, Effekte, gebundene Variablen, Komponenteneigenschaften und Rendergrenzen |
 | `variables <file> [node]` | Gebundene Variablen eines Frames; ohne Knoten alle lokalen Variablen |
 | `bundle <file> <node> <out.zip>` | Design-Bundle für einen Frame; liefert `{nodeId, path, warnings}` |

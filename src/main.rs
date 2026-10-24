@@ -24,9 +24,10 @@ usage:
   figlens find <file.fig> <query> [--type TYPE] [--node ID] [--limit N]
                                              search stored layer names and text, case-insensitive;
                                              default 20 results (1-200), with paths and truncation flag
-  figlens inspect <file.fig> <node> [--depth N]
+  figlens inspect <file.fig> <node> [--depth N] [--images]
                                              compact layout/text summary, instances expanded;
-                                             depth 1 (0-10), at most 200 nodes, 200 characters per text
+                                             depth 1 (0-10), at most 200 nodes, 200 characters per text;
+                                             --images adds source pixels/bytes and source-pixel crop rectangles
   figlens nodes <file.fig> <node>              print a frame as Figma REST-shaped nodes.json
                                              (instances expanded, fills/text/auto-layout included)
   figlens variables <file.fig> [node]          print the variables a frame binds (design/variables.json);
@@ -401,7 +402,7 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "inspect",
-        "Compact expanded node summary: bounds, layout, typography, text previews and child counts. Use before nodes, which returns full data. Depth and a 200-node budget bound the response, not decoding cost.",
+        "Compact expanded node summary: bounds, layout, typography, text previews and child counts. For image decisions, images=true adds original dimensions/bytes and source-pixel rectangles before masks, not blur diagnoses. Depth and a 200-node budget bound the summary; image paints have their own 200-item limit. nodes returns full design data.",
         &[
             FILE,
             NODE,
@@ -411,6 +412,13 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
                 "integer",
                 false,
                 "0-10 levels below the node, default 1; text previews up to 200 characters",
+            ),
+            (
+                "images",
+                "--images",
+                "boolean",
+                false,
+                "include source bitmap dimensions/bytes and per-paint source-pixel crop rectangles; no files written",
             ),
         ],
     ),
@@ -872,6 +880,7 @@ fn output_schema(tool: &str) -> Option<serde_json::Value> {
             serde_json::json!({
                 "node": {"type": "object"},
                 "truncated": {"type": "boolean"},
+                "images": {"type": "object", "description": "optional source image evidence when images=true"},
             }),
             ["node", "truncated"].as_slice(),
         ),

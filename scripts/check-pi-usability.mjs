@@ -1,7 +1,8 @@
 // Real SDK and sample checks. Scripted input is not a live model or GUI acceptance run.
 import assert from 'node:assert/strict';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -9,6 +10,7 @@ const [sdk, binary, fig, output, entry = 'pi/index.ts'] = process.argv.slice(2);
 if (!output) throw new Error('Usage: node scripts/check-pi-usability.mjs <pi-package-root> <binary> <mcp-apps.fig> <new-output-directory> [extension-entry]');
 const root = path.resolve(output);
 await mkdir(root); // Refuse to overwrite another run.
+process.env.PI_CODING_AGENT_DIR = path.join(root, 'agent');
 const extensionPath = path.resolve(entry);
 const packaged = existsSync(path.resolve(path.dirname(extensionPath), '../bin/figlens.js'));
 if (packaged) delete process.env.FIGLENS_BIN;
@@ -17,11 +19,13 @@ const { loadExtensions, createExtensionRuntime } = await import(pathToFileURL(pa
 const { loadSkills } = await import(pathToFileURL(path.join(sdk, 'dist/core/skills.js')));
 const { initTheme } = await import(pathToFileURL(path.join(sdk, 'dist/modes/interactive/theme/theme.js')));
 initTheme('dark');
-const tui = await import(pathToFileURL(path.join(sdk, '../pi-tui/dist/index.js')));
+const requireSdk = createRequire(path.join(await realpath(sdk), 'package.json'));
+const tui = await import(pathToFileURL(requireSdk.resolve('@earendil-works/pi-tui')));
 const runtime = createExtensionRuntime();
 const messages = [];
+const prompts = [];
 runtime.sendMessage = message => messages.push(message);
-runtime.sendUserMessage = () => { throw new Error('This check must not call a model.'); };
+runtime.sendUserMessage = prompt => prompts.push(prompt);
 const loaded = await loadExtensions([extensionPath], root, undefined, runtime);
 assert.deepEqual(loaded.errors, []);
 const extension = loaded.extensions[0];
@@ -38,12 +42,13 @@ assert.match(messages.at(-1).content, /Ask Pi directly/);
 assert.doesNotMatch(messages.at(-1).content, /^\{/);
 await command('not-a-command');
 assert.match(messages.at(-1).content, /Unknown figlens command/);
-await command('open missing.fig');
+await command('open missing.fig --frame 1:1');
 assert.match(messages.at(-1).content, /Check that the file exists/);
 await command('status');
 assert.match(messages.at(-1).content, /No manually saved selection/);
 await command('map');
-assert.match(messages.at(-1).content, /Ask Pi to propose component matches/);
+assert.match(prompts.at(-1), /Propose reusable component mappings/);
+assert.match(prompts.at(-1), /not node IDs/);
 
 // No open: current file/frame works, and proposals can be reviewed while active is null.
 const file = path.resolve(fig);
@@ -93,7 +98,7 @@ ctx.ui.select = async (title, choices) => {
   pages.push(title);
   return pages.length === 1 ? 'Next page' : pages.length === 2 ? 'Previous page' : undefined;
 };
-await command(`open "${file}"`);
+await command('frame');
 assert.equal(pages.length, 3);
 assert.match(pages[1], /7–12/);
 assert.equal(pages[0], pages[2]);
@@ -122,14 +127,22 @@ ctx.ui.custom = async factory => {
   assert.equal(selected, undefined);
   return selected;
 };
-await command(`open "${file}"`);
+await command('frame');
 
 // Nested name search reaches the demo screen, and a persistent image is emitted.
 ctx.mode = 'rpc';
 ctx.ui.input = async () => 'List views';
-await command(`open "${file}"`);
+await command('frame');
 assert.match(messages.findLast(message => typeof message.content === 'string' && message.content.startsWith('Saved selection')).content, /467:24651/);
 assert.equal(notify.some(([, level]) => level === 'error'), false);
+
+// Unmatched descriptions and headless legacy navigation return to conversational discovery.
+ctx.ui.input = async () => 'An unmatched description of the account panel';
+await command('frame');
+assert.match(prompts.at(-1), /An unmatched description of the account panel/);
+ctx.hasUI = false;
+await command('frame');
+assert.match(prompts.at(-1), /not node IDs/);
 
 const skillRoot = packaged ? path.resolve(path.dirname(extensionPath), '../skills') : path.resolve('skills');
 const skills = loadSkills({ cwd: root, agentDir: path.join(root, 'agent'), skillPaths: [skillRoot], includeDefaults: false });

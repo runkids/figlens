@@ -50,6 +50,22 @@ The agent uses the current request’s file and frame. An older manual selection
 
 Design reading also works in print/RPC modes; no picker is required. Use MCP image export or a saved offline viewer for visual inspection. If the client cannot display images or use a browser, verify the artifact elsewhere before claiming a visual match.
 
+## Plan before implementing
+
+For a careful reconstruction, ask Pi to inspect the design and relevant existing code, then plan the work. A small region needs only a small plan; several pages get a screen/state outline with the next slice detailed. Ordinary design questions and image exports keep their direct workflow.
+
+```text
+/figlens plan Plan only the homepage hero from ./design.fig in this project. Use this project's existing image workflow. Include existing component reuse, image delivery and acceptance checks.
+```
+
+No `/figlens open` is required. With no arguments, `/figlens plan` uses the task discussed in the conversation and asks for missing source/scope. It does not assume an older manual selection. The command loads the packaged planning workflow into the current agent; it requests a plan, not application edits or execution. Ask Pi to implement when you are ready. A normal request that already authorizes planning and implementation can proceed through both without this command.
+
+The agent follows the project's actual architecture and image pipeline, records design/code evidence and separates assumptions from verified facts. When saving is useful, it uses the project's location conventions or `.figlens/plans/<scope>.md`; small plans can stay in chat. On continuation, it rechecks relevant design/code and updates the plan. There is no separate planner agent, automatic task runner or new progress database. Host permissions and any other plan-mode extension still apply; this shortcut does not disable tools or enforce filesystem isolation.
+
+The same [planning workflow](../skills/figlens/references/planning.md) is available through the skill in other agents. Model quality, visual fidelity and efficient image delivery still require actual project and browser verification.
+
+The shortcut dispatches a model request; dispatch is not a completed plan. RPC clients should wait for the model's final result. For a one-shot print client, send a normal planning prompt through the skill rather than relying on a slash-command callback to keep the process alive.
+
 ## Optional: remember component matches
 
 When you want to keep reusable decisions, ask Pi:
@@ -69,15 +85,33 @@ Review lists **all pending proposals in this project**, including proposals made
 
 For example, Aurora’s Quiet Button has a `Label` property of **Not today**, while its visible descendant text is **Hold to confirm**. A resolution belongs to that observed instance and text. Approval records a mapping decision; compilation, behavior and visual checks still belong to the project’s verification.
 
-## Optional: manual selection
+## Find a design by describing it
 
 ```text
-/figlens open ./design.fig
+/figlens open
+/figlens open VIP panel
+/figlens open The login section on the homepage in ./design.fig
 ```
 
-Enter a screen name, then select from the matching frames. Search reaches nested frames. The TUI list filters by name/path/ID, limits its height to the terminal and supports arrow keys and the mouse wheel. RPC clients receive six-item pages. Search results include page/container paths and dimensions; a truncated search asks for a more specific name.
+Tell Pi what you know: a local file, a screen name, its purpose or visible text. It uses the current conversation, asks only for missing information and offers recognizable choices when candidates remain ambiguous. You do not need to know node IDs or exact layer names. This shortcut identifies the scope in the conversation; it does not edit the application, propose mappings or save a manual selection. Ask Pi to plan or build once the scope is clear.
 
-To use a known node directly:
+`open` is the main discovery shortcut. The legacy `frame` command is an advanced control for a manually saved file, not a second required discovery step.
+
+## Preview a design
+
+```text
+/figlens preview
+/figlens preview "./design files/mobile.fig"
+/figlens preview The homepage quick-entry card in ./design.fig
+```
+
+An existing `.fig` path starts the viewer immediately, without calling a model. For a description or no arguments, Pi resolves the file and optional screen from the current conversation, asks for recognizable details when needed, then calls `figlens_preview`. It returns the actual clickable loopback URL; it does not launch a browser automatically. A whole-file request opens the catalog without requiring a node ID. `open` identifies a design scope; `preview` starts a viewer. Neither requires a saved selection.
+
+The viewer uses the package's launcher, so no global binary is required. It may write render cache but does not edit the application or mappings. A successful new preview replaces this session's previous viewer; failed startup preserves the previous one. `/figlens close` and Pi session shutdown stop its owned viewer process tree. Keep Pi running while using the link; a one-shot print process cannot keep the viewer alive after shutdown. Host permissions still apply.
+
+## Advanced: saved selection and reference image
+
+When you already have a node ID, you can save it explicitly:
 
 ```text
 /figlens open "./design files/mobile.fig" --frame 12:345
@@ -85,7 +119,9 @@ To use a known node directly:
 
 Pi saves this manual selection and attaches a reference image. A renderer displays it on image-capable terminals, with an **Open reference image** link on every terminal. PNGs remain in `.figlens/previews/`; treat these as local output, exclude them from Git and delete them when no longer needed.
 
-`/figlens map` remains a shortcut for mapping proposals on the saved selection; it does not authorize application edits. `/figlens frame` searches within the saved file. `/figlens status` shows the saved scope; `/figlens close` clears it. These controls are optional.
+The legacy `/figlens frame` searches names in that saved file. The TUI picker filters by name/path/ID, limits its height to the terminal and supports arrow keys and the mouse wheel. RPC clients receive six-item pages. If a description does not match a name, the agent can use visible text and surrounding context instead. A known ID can still be supplied to `/figlens frame` for compatibility.
+
+`/figlens map` resolves the design from the current conversation and requests reusable component matches. It uses a saved selection only when explicitly requested. It does not authorize application edits or automatic approval. `/figlens status` reports the manual selection; `/figlens close` clears it and stops the viewer. None of these controls is required to implement a design.
 
 For a browser canvas, run `npx @runkids/figlens preview design.fig` in another terminal. The viewer and extension read the same design but do not synchronize selections. Agents installed through this Pi package use the registered MCP tools directly; they do not need a global binary or another `npx` download.
 
@@ -93,7 +129,7 @@ For a browser canvas, run `npx @runkids/figlens preview design.fig` in another t
 
 The selection, candidates and reviewed mappings live in **`.figlens/component-mappings.md`** inside the project. Commit it when your team wants to share those decisions. Keep personal notes outside the managed markers; the extension preserves them. The JSON block is internal state, not a public mapping schema or Code Connect format.
 
-The manual selection is restored for manual commands in the next session. It is not sent as automatic design context. Pi requests mappings with the current file and frame; `/figlens close` clears only the manual selection and keeps saved mappings.
+The manual selection is restored for manual commands in the next session. It is not sent as automatic design context. Pi requests mappings with the current file and frame; `/figlens close` clears the manual selection and stops the viewer, keeping saved mappings.
 
 | Situation | What happens |
 |---|---|
@@ -110,19 +146,23 @@ Identity is scoped to the canonical file path and observed component IDs, proper
 
 | Command | Purpose |
 |---|---|
-| `/figlens open <file.fig> [--frame ID]` | Optional manual name search/selection; without UI, provide a known ID or ask Pi |
-| `/figlens frame [ID]` | Select another scope in the open file |
-| `/figlens map` | Ask Pi to propose mappings for the current frame |
+| `/figlens plan [request]` | Plan only the requested scope using the current conversation; no manual selection required |
+| `/figlens open [description]` | Find a design conversationally from a file, screen name, purpose or visible text |
+| `/figlens preview [description]` | Start the local interactive viewer for the requested design and return its link |
+| `/figlens map` | Propose reusable component matches for the design in this conversation |
 | `/figlens review` | Accept, edit or skip pending candidates across the project |
 | `/figlens status` | Show the current selection and mapping states |
-| `/figlens close` | Clear the manual selection; preserve mappings |
+| `/figlens close` | Stop the viewer and clear the manual selection; preserve mappings |
+
+Advanced compatibility controls: `/figlens open <file.fig> --frame ID` saves a known node; `/figlens frame [ID]` searches or changes the selection within that saved file. The main discovery entry remains `open`.
 
 | Tool | Purpose |
 |---|---|
+| `figlens_preview` | Start a session-owned loopback viewer for `file` and optional `node`; return its URL without changing selection or mappings |
 | `figlens_bindings` | Read current instances, approved/pending/stale mappings and conflicts. Defaults to 20 instances; `nextOffset` gives the next page; `limit` accepts 1–50 |
 | `figlens_propose_bindings` | Save 1–20 pending candidates. Supply instance ID, target file/export/import/example, rationale, optional supporting `dependencies`, reported `checks` and `issues` |
 
-Both tools accept a `file` + `frame` pair to inspect or propose for another selection without changing the saved selection. Review its proposals directly with `/figlens review`. Large instance details are replaced with a request to inspect the full node through MCP. Full geometry, variables, assets and bundles remain in the existing MCP tools; the extension does not duplicate them.
+`figlens_bindings` and `figlens_propose_bindings` accept a `file` + `frame` pair to inspect or propose for another selection without changing the saved selection. Review its proposals directly with `/figlens review`. Large instance details are replaced with a request to inspect the full node through MCP. Full geometry, variables, assets and bundles remain in the existing MCP tools; the extension does not duplicate them.
 
 TUI provides the picker and multiline target editor. RPC clients can use supported select/input/confirm dialogs; editing uses individual text fields. Print/JSON modes do not auto-approve or wait for dialogs. The extension is a workflow aid running with Pi's filesystem permissions, not an approval security boundary against an agent that edits files through other tools.
 

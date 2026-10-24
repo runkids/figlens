@@ -47,7 +47,8 @@ jobs:
       - name: Pi mappings and preview controls
         run: |
           node --check pi/index.ts
-          node --test pi/*.test.mjs scripts/preview.test.cjs
+          node --test pi/*.test.mjs scripts/preview.test.cjs scripts/dist-package.test.cjs
+          python3 -B -m unittest discover -s scripts -p '*_test.py'
           node scripts/prepare-npm.cjs
           cd npm
           npm pack --dry-run --ignore-scripts
@@ -60,6 +61,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Pi viewer process lifecycle
+        run: node --test pi/viewer.test.mjs
       - name: Test
         shell: bash
         run: |

@@ -197,6 +197,12 @@ fn cli_and_mcp_success_results_match() {
             serde_json::json!({"node": "0-1", "depth": 0}),
             None,
         ),
+        (
+            "inspect",
+            vec!["0-1", "--images", "--depth", "0"],
+            serde_json::json!({"node": "0-1", "depth": 0, "images": true}),
+            None,
+        ),
         ("variables", vec![], serde_json::json!({}), None),
         (
             "variables",
@@ -265,6 +271,12 @@ fn cli_and_mcp_success_results_match() {
                     assert_eq!(value["node"]["id"], "0:1");
                     assert_eq!(value["node"]["childCount"], 0);
                     assert_eq!(reply["structuredContent"], value);
+                    if arguments["images"] == true {
+                        assert_eq!(value["images"]["items"], serde_json::json!([]));
+                        assert_eq!(value["images"]["truncated"], false);
+                    } else {
+                        assert!(value.get("images").is_none());
+                    }
                 }
                 "export" => {
                     assert_eq!(

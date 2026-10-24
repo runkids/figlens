@@ -7,6 +7,7 @@ import { Type } from 'typebox';
 import { getMarkdownTheme, withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Container, Image, Input, Markdown, SelectList, fuzzyFilter, truncateToWidth } from '@earendil-works/pi-tui';
 import { Workflow } from './workflow.mjs';
+import { Viewer } from './viewer.mjs';
 
 const HELP = [
   "## figlens",
@@ -14,14 +15,18 @@ const HELP = [
   "Ask Pi directly: **\"Build the List views screen from ./design.fig using this project's components.\"**",
   "Pi can find and read the design through MCP. No open command or node ID is needed.",
   "",
-  "Optional manual controls:",
-  "- `/figlens open ./design.fig` — search for a screen by name and save a selection.",
+  "Optional shortcuts:",
+  "- `/figlens open [description]` — tell Pi what you know: a file, screen name, purpose or visible text. Pi finds it or asks a recognizable follow-up.",
+  "- `/figlens preview [description]` — start the local interactive viewer for a design; Pi resolves names and returns its link.",
+  "- `/figlens plan [request]` — plan only the requested region or pages before implementing.",
+  "",
+  "Advanced: saved selections and reusable component matches (not required to build):",
   "- `/figlens open \"./design files/mobile.fig\" --frame 12:345` — use a known node.",
   "- `/figlens frame` — search within the saved file; add an ID to select it directly.",
   "- `/figlens status` — inspect the saved selection.",
-  "- `/figlens map` — request mapping proposals for the saved selection, without application edits.",
+  "- `/figlens map` — propose reusable component matches for the design in this conversation.",
   "- `/figlens review` — review pending proposals across this project; no open required.",
-  "- `/figlens close` — clear the saved selection, keeping reviewed mappings.",
+  "- `/figlens close` — stop the viewer and clear the saved selection, keeping reviewed mappings.",
   "",
   "Mappings are optional. Pi can implement the screen immediately.",
 ].join('\n');
@@ -64,6 +69,7 @@ export default function figlens(pi: ExtensionAPI) {
   const bundled = !process.env.FIGLENS_BIN && existsSync(wrapper);
   const binary = process.env.FIGLENS_BIN || (bundled ? process.execPath : 'figlens');
   const prefix = bundled ? [wrapper] : [];
+  const viewer = new Viewer(binary, prefix);
   pi.registerMessageRenderer('figlens', message => new Markdown(
     typeof message.content === 'string' ? message.content : JSON.stringify(message.content), 1, 1, getMarkdownTheme(),
   ));
@@ -93,6 +99,11 @@ export default function figlens(pi: ExtensionAPI) {
 
   function show(data: unknown, ctx: ExtensionContext) {
     pi.sendMessage({ customType: 'figlens', content: typeof data === 'string' ? data : JSON.stringify(data, null, 2), display: true });
+  }
+
+  function requestScope(request: string) {
+    const skill = fileURLToPath(new URL('../skills/figlens/SKILL.md', import.meta.url));
+    pi.sendUserMessage(`Help identify a design scope only; this request does not authorize application edits or implementation. Read the figlens skill at ${JSON.stringify(skill)} and use its MCP tools to discover the design. Start with the current conversation and what the user knows: a local .fig file, screen name, purpose or visible text. Ask only for missing information in the user's language; ask for recognizable names or descriptions, not node IDs. Use actual paths, dimensions, copy and reference images when needed to distinguish candidates. Show a short recognizable choice when ambiguity remains. Keep discovery within the requested scope. Record the resolved file and node in the conversation; this shortcut does not save a manual selection or authorize mapping proposals. Respect filesystem restrictions.\n\nWhat the user knows:\n${request || 'Use the design task discussed in this conversation; if it is not established, ask what design file or screen the user wants to work on.'}`);
   }
 
   async function preview(design: Awaited<ReturnType<Workflow['design']>>, ctx: ExtensionContext) {
@@ -169,12 +180,12 @@ export default function figlens(pi: ExtensionAPI) {
   async function chooseFrame(file: string, node: string | undefined, ctx: ExtensionContext) {
     const flow = project(ctx);
     if (!node) {
-      if (!ctx.hasUI) { show('Ask Pi to find the screen by name using the figlens MCP tools, or provide a known node with /figlens open <file.fig> --frame <node-id>.', ctx); return; }
+      if (!ctx.hasUI) { requestScope(file); return; }
       const query = await ctx.ui.input('Find a screen by name', 'For example: List views. Or ask Pi to find the screen for you.');
       if (query === undefined) return;
-      if (!query.trim()) { show('Enter a screen name to search, or ask Pi to discover the design from your request.', ctx); return; }
+      if (!query.trim()) { requestScope(file); return; }
       const { frames, truncated } = await flow.frames(file, ctx.signal, query.trim());
-      if (!frames.length) { show(`No frames match **${query}**. Try another name, or ask Pi to search visible text and inspect the surrounding frame.`, ctx); return; }
+      if (!frames.length) { requestScope(`${file}\nThe user described the screen as: ${query}`); return; }
       if (truncated) ctx.ui.notify('Showing the first 200 matches. Search a more specific name to reach other screens.', 'warning');
       node = await pickFrame(frames, ctx);
       if (!node) return;
@@ -241,22 +252,45 @@ export default function figlens(pi: ExtensionAPI) {
     const active = (await project(ctx).read()).state.active;
     if (active && ctx.mode === 'tui') ctx.ui.setStatus('figlens', `figlens · ${active.frame}`);
   });
+  pi.on('session_shutdown', async () => { await viewer.close(); });
 
   pi.registerCommand('figlens', {
-    description: 'Help and optional manual design selection or component mapping review; ask Pi directly to build a .fig screen',
+    description: 'Plan a design implementation, select a scope or review component mappings; ask Pi directly to build a .fig screen',
     handler: async (args, ctx) => {
       const match = args.trim().match(/^(\S+)(?:\s+([\s\S]*))?$/);
       const command = match?.[1];
       try {
         if (!command || command === 'help' || command === '--help') { show(HELP, ctx); return; }
-        if (!['open', 'frame', 'map', 'review', 'status', 'close'].includes(command)) {
+        if (!['plan', 'open', 'preview', 'frame', 'map', 'review', 'status', 'close'].includes(command)) {
           show(`Unknown figlens command: **${command}**.\n\n${HELP}`, ctx); return;
         }
         let rest = match?.[2]?.trim() || '';
+        if (command === 'preview') {
+          await ctx.waitForIdle();
+          const file = ((rest.startsWith('"') && rest.endsWith('"')) || (rest.startsWith("'") && rest.endsWith("'"))) ? rest.slice(1, -1) : rest;
+          const absolute = path.resolve(ctx.cwd, file);
+          if (file && path.extname(file).toLowerCase() === '.fig' && existsSync(absolute)) {
+            const started = await viewer.start(absolute, undefined, { cwd: ctx.cwd, signal: ctx.signal });
+            show(`[Open design viewer](${started.url})`, ctx);
+            return;
+          }
+          const skill = fileURLToPath(new URL('../skills/figlens/SKILL.md', import.meta.url));
+          pi.sendUserMessage(`Start the local interactive figlens viewer only; this request does not authorize application edits, implementation or mapping proposals. Read the figlens skill at ${JSON.stringify(skill)}. Resolve the local .fig file and optional scope from this request and conversation using the figlens MCP tools. Ask for missing recognizable file/screen names or visible text, not node IDs; show a short choice if ambiguous. Use a saved selection only when the user explicitly refers to it. For a whole-file request, omit node. Call figlens_preview with the resolved absolute file and exact node if requested, then return its actual clickable URL in the user's language. If startup fails, report the error without claiming a viewer is running. This starts a loopback service and may write render cache; respect host restrictions.\n\nPreview request:\n${rest || 'Preview the design discussed in this conversation; ask for the file if it is not established.'}`);
+          return;
+        }
+        if (command === 'plan') {
+          await ctx.waitForIdle();
+          const skill = fileURLToPath(new URL('../skills/figlens/SKILL.md', import.meta.url));
+          const planningPath = fileURLToPath(new URL('../skills/figlens/references/planning.md', import.meta.url));
+          const planning = await readFile(planningPath, 'utf8');
+          pi.sendUserMessage(`Create a design implementation plan only; this command does not authorize application edits or implementation. Read the figlens skill at ${JSON.stringify(skill)} for the available tools and image workflow, and follow the planning workflow below. Use the current request and conversation to identify the source and scope; if missing or materially ambiguous, ask. A saved manual selection is not the requested scope. Respect any output language/location and filesystem restrictions in the conversation.\n\nWorkflow source: ${JSON.stringify(planningPath)} (resolve its reference links relative to this file).\n\n${planning}\n\nPlanning request:\n${rest || 'Plan the design task discussed in this conversation; ask for the source and scope if they are not established.'}`);
+          return;
+        }
         const frameOption = command === 'open' ? rest.match(/^([\s\S]+)\s+--frame\s+(\S+)$/) : undefined;
         if (frameOption) rest = frameOption[1].trim();
         if ((rest.startsWith('"') && rest.endsWith('"')) || (rest.startsWith("'") && rest.endsWith("'"))) rest = rest.slice(1, -1);
         await ctx.waitForIdle();
+        if (command === 'open' && !frameOption) { requestScope(rest); return; }
         const flow = project(ctx);
         if (rest && !['open', 'frame'].includes(command)) throw new Error(`/figlens ${command} takes no arguments. To implement a design, send your request as a normal message to Pi.`);
         if (command === 'open') {
@@ -265,24 +299,21 @@ export default function figlens(pi: ExtensionAPI) {
           await chooseFrame(file, frameOption?.[2], ctx);
         } else if (command === 'frame') {
           const active = (await flow.read()).state.active;
-          if (!active) throw new Error('No manually saved file. Ask Pi to find the screen from your .fig, or use /figlens open ./design.fig to save a selection.');
+          if (!active) throw new Error('No manually saved file. Use /figlens open and describe the screen, or ask Pi directly. Known IDs are optional advanced controls in /figlens help.');
           await chooseFrame(active.file, rest || undefined, ctx);
         } else if (command === 'map') {
-          if (!(await flow.read()).state.active) {
-            show('No manually saved screen. Ask Pi to propose component matches for a named screen in your .fig, or use /figlens open ./design.fig as a manual shortcut.', ctx);
-            return;
-          }
-          const context = await flow.bindings({}, ctx.signal);
-          pi.sendUserMessage(`Propose reusable component mappings for this selected design.\n${JSON.stringify(context)}\nUse figlens_bindings pagination to examine the current frame, then the figlens MCP tools for design details. Read actual project source, imports, props, slots and usage examples. Submit candidates with figlens_propose_bindings; report conflicts explicitly. Include implementation and supporting files in dependencies. Report checks exactly as executed; run only checks allowed by the project's instructions. Keep proposals pending for /figlens review. Work only on this frame; this request does not authorize application edits.`);
+          const skill = fileURLToPath(new URL('../skills/figlens/SKILL.md', import.meta.url));
+          pi.sendUserMessage(`Propose reusable component mappings for the design discussed in this conversation. Read the figlens skill at ${JSON.stringify(skill)}. Resolve the source file and requested screen with the figlens MCP tools; ask for recognizable names or descriptions if missing, not node IDs. Use a saved selection only when the user explicitly refers to it. Read actual implementation files, imports, props/slots and usages, then use figlens_bindings pagination and figlens_propose_bindings with the resolved file and frame. Include supporting files as dependencies, checks actually executed and unresolved conflicts. Keep proposals pending for /figlens review. This request does not authorize application edits or automatic approval.`);
         } else if (command === 'review') await review(ctx);
         else if (command === 'status') {
           if ((await flow.read()).state.active) show(describe(await flow.bindings({}, ctx.signal)), ctx);
           else show('No manually saved selection. Pi can read a .fig directly from your request. Use /figlens review for pending mappings.', ctx);
         }
         else if (command === 'close') {
+          await viewer.close();
           await flow.close();
           if (ctx.mode === 'tui') ctx.ui.setStatus('figlens', undefined);
-          show('Saved selection cleared. Component mappings are kept.', ctx);
+          show('Local viewer stopped and saved selection cleared. Component mappings are kept.', ctx);
         }
       } catch (error) {
         const detail = (error as Error).message;
@@ -295,9 +326,26 @@ export default function figlens(pi: ExtensionAPI) {
   });
 
   pi.registerTool({
+    name: 'figlens_preview', label: 'Open design viewer',
+    description: 'Start the local interactive viewer for a local .fig file, optionally focused on an exact node. Returns its loopback URL; does not launch a browser or modify the application, manual selection or mappings. May write render cache. Replaces this session’s previous viewer after successful startup; viewers stop when the Pi session shuts down.',
+    parameters: Type.Object({
+      file: Type.String({ minLength: 1, description: 'Local .fig path resolved from the current request.' }),
+      node: Type.Optional(Type.String({ minLength: 1, description: 'Exact node ID to focus; omit to browse the whole file.' })),
+    }),
+    outputSchema: Type.Object({}, { additionalProperties: true }),
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    executionMode: 'sequential',
+    execute: async (_id, params, signal, _update, ctx) => result(await viewer.start(path.resolve(ctx.cwd, params.file), params.node, { cwd: ctx.cwd, signal })),
+  });
+
+  pi.registerTool({
     name: 'figlens_bindings', label: 'Design component mappings',
-    description: 'Optional project component reuse: pass file+frame from the current user request to read instances and approved/pending/stale mappings without open or saving a selection. Discover frames with figlens MCP find/inspect. Mapping is not required to build UI; zero instances is not a design-read failure. Omitted file+frame use the manual selection only. Results paginate with nextOffset; current text supersedes example literals. Hashes cover recorded files, not correctness.',
-    parameters: Type.Object({ ...selection, offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })) }),
+    description: 'Read a frame’s component instances and this project’s recorded mappings (approved, pending, stale or unmatched). Supply file and frame together to read that scope without changing the manual selection; omit both to use the saved selection. Returns current variant properties/text, mapped targets with import/usage examples, and nextOffset when more instances remain. Zero instances returns an empty list, not a read failure. Read-only; never approves a mapping. Recorded hashes cover listed evidence files, not correctness.',
+    parameters: Type.Object({
+      ...selection,
+      offset: Type.Optional(Type.Integer({ minimum: 0, description: 'First instance index, default 0; pass nextOffset from the previous result.' })),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50, description: 'Instances per page, 1-50, default 20.' })),
+    }),
     outputSchema: Type.Object({}, { additionalProperties: true }),
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     executionMode: 'sequential',
@@ -306,15 +354,15 @@ export default function figlens(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: 'figlens_propose_bindings', label: 'Propose component mappings',
-    description: 'Save 1-20 pending component mappings for human review. Read actual implementation files first. The extension captures design identity, variant/structure and code hashes itself. checks are agent-reported, not proof. This tool cannot approve mappings. /figlens review is required. Optional file+frame override is for this call only.',
+    description: 'Record 1-20 candidate mappings from design instances to existing project implementations as pending for human review with /figlens review. Stores design identity, variant/structure and file hashes; checks are agent-reported results, not independent proof. This call cannot approve mappings. Supply file and frame together to override the saved scope for this call only.',
     parameters: Type.Object({
       ...selection,
       proposals: Type.Array(Type.Object({
-        instance: Type.String({ minLength: 1, maxLength: 200 }), target: Target,
-        dependencies: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 2000 }), { maxItems: 20 })),
-        rationale: Type.String({ minLength: 1, maxLength: 2000 }),
-        checks: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 2000 }), { maxItems: 20 })),
-        issues: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 2000 }), { maxItems: 10 })),
+        instance: Type.String({ minLength: 1, maxLength: 200, description: 'Instance ID in this frame, as returned by figlens_bindings.' }), target: Target,
+        dependencies: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 2000 }), { maxItems: 20, description: 'Supporting project files, relative to the project root; their hashes are recorded with the target file.' })),
+        rationale: Type.String({ minLength: 1, maxLength: 2000, description: 'Why the actual implementation and its usage match this instance.' }),
+        checks: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 2000 }), { maxItems: 20, description: 'Checks actually executed for this mapping, each with its result; omit checks not run.' })),
+        issues: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 2000 }), { maxItems: 10, description: 'Unresolved conflicts for review, such as design text the implementation does not expose.' })),
       }), { minItems: 1, maxItems: 20 }),
     }),
     outputSchema: Type.Object({}, { additionalProperties: true }),

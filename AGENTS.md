@@ -13,6 +13,7 @@ Reads Figma `.fig` files (File > Save local copy) so AI design-to-code pipelines
 - **Keep the docs true.** When a doc disagrees with the code, trust the code: verify, then fix the stale doc in the same task. When your change alters behaviour that a topic describes, update that topic page in the same change. Put a new lesson in the kernel as a one-line rule and in its topic as the procedure. Run `python3 scripts/ai-context.py check` after any doc change. The procedure is in the `ai-context` topic.
 - **Search before you edit, and change as little as possible.** Match the existing style.
 - **Helper files go in the repo.** Helper scripts go in `scripts/`; design files, Figma exports and run outputs go in the gitignored `samples/`.
+- **Own PR follow-up.** Check AI reviews and CI, fix verified findings, then request and check `@codex review` on the updated head; see `review`.
 
 ## Hard Limits
 
@@ -36,6 +37,7 @@ python3 scripts/ai-context.py check     # validate paths, headings and byte budg
 | `pi` | Changing the Pi extension, reviewed component mappings or its npm packaging |
 | `accuracy` | Measuring output against Figma's own exports, running `compare`, finding test files |
 | `release` | Packaging, GitHub releases, Homebrew, npm, install scripts and `figlens update` |
+| `review` | Reviewing changes, creating a PR and following up on AI review |
 | `direction` | Deciding what to build next, or revisiting a past decision |
 | `ai-context` | Adding, moving or splitting docs and topics; `check` failures |
 
@@ -51,6 +53,7 @@ If a topic goes over budget, split it rather than raising the cap. Skills are wo
 
 ## Verification
 
+Pi viewer startup must wait for a successful catalog response, not just a printed URL; see `pi`.
 Generated test fixtures use `src/test_support.rs` for atomic directory ownership and scoped cleanup; see `fig-format`.
 Image-fill changes must test shifted sprites exported from a clipping frame; see `render`.
 

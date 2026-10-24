@@ -230,6 +230,8 @@ Utilisez la CLI avec un skill pour agent, ou connectez le même binaire comme se
 
 Le [skill figlens](skills/figlens/SKILL.md) apprend à votre agent à trouver les frames, à lire le bundle par petites parties et à utiliser ses valeurs.
 
+Pour reproduire fidèlement un design, le [processus de planification](skills/figlens/references/planning.md) relie le périmètre demandé au code existant, à la diffusion des images et aux critères de validation. Dans Pi, `/figlens plan <request>` prépare un plan avant la réalisation ; une petite zone reste une petite tâche. Avec `/figlens open [description]`, décrivez ce que vous savez du design : Pi demande les précisions manquantes sans exiger d’identifiants de nœuds. Utilisez `/figlens preview [description]` pour démarrer le visualiseur interactif local et obtenir son lien ; Pi identifie le fichier et l’écran sans demander d’identifiants de nœuds.
+
 Installez-le avec la [Skills CLI](https://github.com/vercel-labs/skills) :
 
 ```sh
@@ -303,7 +305,7 @@ Les binaires couvrent macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl s
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | Identifiants, types et noms ; texte indenté (moins de contexte pour l'agent), ou JSON imbriqué avec `--json` |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Recherche de sous-chaînes sans distinction de casse dans les noms et le texte ; chemins, dimensions et aperçus. 20 résultats par défaut (1–200) ; `truncated` signale la suite |
-| `inspect <file> <node> [--depth N]` | Résumé compact de mise en page/texte, instances développées. Profondeur 1 par défaut (0–10), 200 nœuds maximum ; `nodes` pour tout |
+| `inspect <file> <node> [--depth N] [--images]` | Résumé compact de mise en page/texte, instances développées. Profondeur 1 par défaut (0–10), 200 nœuds maximum ; `nodes` pour tout. `--images` ajoute les dimensions et les octets de l’image source, ainsi que le recadrage par usage ; le nombre de pixels ne permet pas de diagnostiquer un flou. |
 | `nodes <file> <node>` | JSON de forme REST : instances et remplacements développés, auto-layout, styles de texte, remplissages, effets, variables liées, propriétés et limites de rendu |
 | `variables <file> [node]` | Variables liées à une frame ; sans nœud, toutes les variables locales |
 | `bundle <file> <node> <out.zip>` | Bundle d'une frame ; retourne `{nodeId, path, warnings}` |

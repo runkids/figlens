@@ -230,6 +230,8 @@ figlens は Figma 自身の JSON、PNG、SVG 書き出しと比較していま�
 
 [figlens skill](skills/figlens/SKILL.md) はフレームの検索、bundle の分割読み取り、数値に基づく実装をエージェントに教えます。
 
+デザインを丁寧に再現する場合は、[計画ワークフロー](skills/figlens/references/planning.md)で、依頼された範囲を既存コード、画像配信、検証条件に結び付けます。Pi の `/figlens plan <request>` では実装前に計画を作成できます。小さな領域の依頼を全体の作業に広げません。`/figlens open [description]` に分かることを伝えると、Pi が不足情報を質問してデザインを探します。ノード ID を知る必要はありません。 `/figlens preview [description]` でローカルの対話型ビューアーを起動し、リンクを取得できます。Pi がファイルと画面を特定するため、ノード ID は不要です。
+
 [Skills CLI](https://github.com/vercel-labs/skills) でインストールします。
 
 ```sh
@@ -305,7 +307,7 @@ Node.js 18+ で `npx @runkids/figlens` を使うか、単体の CLI をインス
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | ノード ID・種類・名前。字下げテキスト（エージェントのコンテキストを節約）、`--json` なら入れ子の JSON |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 大文字小文字を区別せず名前とテキストの部分一致検索。パス、サイズ、プレビュー。既定 20 件（1–200）、`truncated` は追加結果あり |
-| `inspect <file> <node> [--depth N]` | インスタンス展開済みのレイアウト／テキスト要約。既定の深さ 1（0–10）、最大 200 ノード。全データは `nodes` |
+| `inspect <file> <node> [--depth N] [--images]` | インスタンス展開済みのレイアウト／テキスト要約。既定の深さ 1（0–10）、最大 200 ノード。全データは `nodes`。`--images` で元画像のピクセル数・bytes と各使用箇所の切り抜き範囲を取得できます。ピクセル数だけではぼけの原因を診断できません。 |
 | `nodes <file> <node>` | REST 形式 JSON：展開済みインスタンスと上書き、自動レイアウト、テキストスタイル、塗り、効果、バインド変数、コンポーネントのプロパティ、描画境界 |
 | `variables <file> [node]` | フレームのバインド変数。ノード指定なしなら全ローカル変数 |
 | `bundle <file> <node> <out.zip>` | 単一フレームの bundle。`{nodeId, path, warnings}` を返す |

@@ -230,6 +230,8 @@ Use a CLI por meio de um skill para agentes ou conecte o mesmo binário como ser
 
 O [skill do figlens](skills/figlens/SKILL.md) ensina o agente a encontrar frames, ler o bundle em partes e construir a partir dos valores fornecidos.
 
+Para reproduzir um design com cuidado, o [fluxo de planejamento](skills/figlens/references/planning.md) relaciona o escopo solicitado ao código existente, à entrega de imagens e aos critérios de aceitação. No Pi, `/figlens plan <request>` prepara um plano antes da implementação; uma região pequena continua sendo uma tarefa pequena. Use `/figlens open [description]` para encontrar o design com base no que você sabe; o Pi pergunta pelos detalhes que faltam sem exigir IDs de nós. Use `/figlens preview [description]` para iniciar o visualizador interativo local e obter seu link; o Pi identifica o arquivo e a tela sem exigir IDs de nós.
+
 Instale com a [Skills CLI](https://github.com/vercel-labs/skills):
 
 ```sh
@@ -305,7 +307,7 @@ Os binários cobrem macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl est
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | IDs, tipos e nomes dos nós; texto indentado (menos contexto para o agente) ou JSON aninhado com `--json` |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Busca de substrings em nomes e textos sem diferenciar maiúsculas; caminhos, tamanhos e prévias. Padrão de 20 resultados (1–200); `truncated` indica mais |
-| `inspect <file> <node> [--depth N]` | Resumo compacto de layout/texto com instâncias expandidas. Profundidade padrão 1 (0–10), até 200 nós; use `nodes` para todos os dados |
+| `inspect <file> <node> [--depth N] [--images]` | Resumo compacto de layout/texto com instâncias expandidas. Profundidade padrão 1 (0–10), até 200 nós; use `nodes` para todos os dados. `--images` inclui pixels e bytes da origem e o recorte por uso; a contagem de pixels não diagnostica desfoque. |
 | `nodes <file> <node>` | JSON no formato REST: instâncias e sobrescritas expandidas, auto-layout, estilos de texto, preenchimentos, efeitos, variáveis vinculadas, propriedades e limites de renderização |
 | `variables <file> [node]` | Variáveis vinculadas a um frame; sem nó, todas as variáveis locais |
 | `bundle <file> <node> <out.zip>` | Bundle de design de um frame; retorna `{nodeId, path, warnings}` |
