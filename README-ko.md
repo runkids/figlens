@@ -230,7 +230,7 @@ figlens는 Figma 자체의 JSON, PNG, SVG 내보내기와 비교해 검증합니
 
 [figlens skill](skills/figlens/SKILL.md)은 프레임을 찾고 번들을 나누어 읽으며 그 값을 바탕으로 구현하는 방법을 에이전트에게 알려줍니다.
 
-디자인을 충실하게 재현할 때는 [계획 워크플로](skills/figlens/references/planning.md)로 요청 범위를 기존 코드, 이미지 제공 방식, 검증 조건과 연결합니다. Pi의 `/figlens plan <request>`는 구현 전에 계획을 작성하며, 작은 영역은 작은 작업으로 유지합니다. `/figlens open [description]`에 알고 있는 내용을 설명하면 Pi가 부족한 정보를 질문하며 디자인을 찾습니다. 노드 ID를 알 필요는 없습니다.
+디자인을 충실하게 재현할 때는 [계획 워크플로](skills/figlens/references/planning.md)로 요청 범위를 기존 코드, 이미지 제공 방식, 검증 조건과 연결합니다. Pi의 `/figlens plan <request>`는 구현 전에 계획을 작성하며, 작은 영역은 작은 작업으로 유지합니다. `/figlens open [description]`에 알고 있는 내용을 설명하면 Pi가 부족한 정보를 질문하며 디자인을 찾습니다. 노드 ID를 알 필요는 없습니다. `/figlens preview [description]`로 로컬 대화형 뷰어를 시작하고 링크를 받을 수 있습니다. Pi가 파일과 화면을 찾으므로 노드 ID를 알 필요가 없습니다.
 
 [Skills CLI](https://github.com/vercel-labs/skills)로 설치하세요.
 
@@ -307,7 +307,7 @@ Node.js 18+에서 `npx @runkids/figlens`를 사용하거나 독립 CLI를 설치
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | 노드 ID, 유형, 이름. 들여쓰기 텍스트(에이전트 컨텍스트 절약), `--json`이면 중첩 JSON |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 대소문자 구분 없이 레이어 이름과 텍스트의 부분 문자열 검색. 경로, 크기, 미리보기. 기본 20개(1–200), `truncated`는 추가 결과 표시 |
-| `inspect <file> <node> [--depth N]` | 인스턴스를 펼친 간결한 레이아웃/텍스트 요약. 기본 깊이 1(0–10), 최대 200노드. 전체 데이터는 `nodes` |
+| `inspect <file> <node> [--depth N] [--images]` | 인스턴스를 펼친 간결한 레이아웃/텍스트 요약. 기본 깊이 1(0–10), 최대 200노드. 전체 데이터는 `nodes`. `--images`를 추가하면 원본 픽셀 크기·bytes와 사용 위치별 크롭 범위를 확인합니다. 픽셀 수만으로 흐림 원인을 진단할 수는 없습니다. |
 | `nodes <file> <node>` | REST 형태 JSON: 펼쳐진 인스턴스와 재정의, 자동 레이아웃, 텍스트 스타일, 채우기, 효과, 연결 변수, 컴포넌트 속성, 렌더링 경계 |
 | `variables <file> [node]` | 프레임에 연결된 변수. 노드 없이 실행하면 모든 로컬 변수 |
 | `bundle <file> <node> <out.zip>` | 한 프레임의 디자인 번들. `{nodeId, path, warnings}` 반환 |

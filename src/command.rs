@@ -32,6 +32,7 @@ pub enum Command {
     Inspect {
         node: String,
         depth: usize,
+        images: bool,
     },
     Variables(Option<String>),
     Bundle {
@@ -141,12 +142,22 @@ impl Command {
             }
             "inspect" => {
                 let node = node()?;
-                let depth = match &args[1..] {
-                    [] => 1,
-                    [flag, value] if flag == "--depth" => value.parse()?,
-                    _ => return Err(USAGE.into()),
-                };
-                Self::Inspect { node, depth }
+                let (mut depth, mut images) = (1, false);
+                let mut rest = args[1..].iter();
+                while let Some(flag) = rest.next() {
+                    match flag.as_str() {
+                        "--depth" => {
+                            depth = rest.next().ok_or("--depth needs a number")?.parse()?
+                        }
+                        "--images" => images = true,
+                        _ => return Err(USAGE.into()),
+                    }
+                }
+                Self::Inspect {
+                    node,
+                    depth,
+                    images,
+                }
             }
             "variables" => Self::Variables(args.first().cloned()),
             "bundle" => {
@@ -237,6 +248,7 @@ impl Command {
                     .map(|n| n.to_string().parse())
                     .transpose()?
                     .unwrap_or(1),
+                images: args["images"] == true,
             },
             "variables" => Self::Variables(string("node")),
             "bundle" => {
@@ -327,10 +339,18 @@ impl Command {
                 require_node(tree, &root)?;
                 compact(discover::find(tree, &query, &root, kind.as_deref(), limit)?)
             }
-            Self::Inspect { node, depth } => {
+            Self::Inspect {
+                node,
+                depth,
+                images,
+            } => {
                 let id = normalize_id(&node);
                 require_node(tree, &id)?;
-                compact(discover::inspect(tree, &id, depth)?)
+                compact(if images {
+                    discover::inspect_images(tree, &id, depth, fig)?
+                } else {
+                    discover::inspect(tree, &id, depth)?
+                })
             }
             Self::Variables(node) => {
                 let doc = match node {

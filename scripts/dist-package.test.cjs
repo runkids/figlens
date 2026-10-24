@@ -36,9 +36,9 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     for member in sys.argv[2:]:
         assert z.read(member) == open(member, "rb").read()
 `;
-  for (const file of ['skills/figlens/SKILL.md', 'skills/figlens/references/planning.md']) {
+  for (const file of ['skills/figlens/SKILL.md', 'skills/figlens/references/planning.md', 'skills/figlens/references/planning-details.md']) {
     assert.equal(execFileSync('tar', ['-xOf', tar, file], { encoding: 'utf8' }), readFileSync(path.join(root, file), 'utf8'));
   }
-  execFileSync('python3', ['-c', verifyZip, zip, 'skills/figlens/SKILL.md', 'skills/figlens/references/planning.md'], { cwd: root });
+  execFileSync('python3', ['-c', verifyZip, zip, 'skills/figlens/SKILL.md', 'skills/figlens/references/planning.md', 'skills/figlens/references/planning-details.md'], { cwd: root });
   assert.equal(execFileSync('tar', ['-xOf', tar, 'figlens'], { encoding: 'utf8' }), 'fixture');
 });

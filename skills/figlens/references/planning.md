@@ -1,76 +1,22 @@
-# Plan a faithful implementation
+# Plan the next implementation slice
 
-Produce the smallest evidence-backed plan that makes the next implementation slice actionable. Keep planning and implementation in the same agent context. Use the figlens skill's tools, image guidance and renderer limitations alongside this workflow.
+Use the figlens skill's tool contracts and image workflow. Keep planning and implementation in the same agent context.
 
-## Scope first
+## Start with the requested scope
 
-Start from the user's requested source, region, component, state or pages. With a known node, inspect it and only the ancestors needed to understand its layout. Otherwise discover candidates within the relevant containers using names, visible copy and reference renders. Resolve material ambiguity with a short recognizable choice. Reuse evidence already retrieved. Once the requested node, target code, delivery decision and acceptance are actionable, write the plan; each further query should resolve a named missing decision for this scope. Record an unrelated layout difference without investigating or fixing it.
+Identify the requested file/node or recognizable region and the existing code it changes. Read that design scope and relevant project code first. A supplied, unambiguous node needs no complete ancestor inventory. Ask only about missing information that could materially change the requested work.
 
-| Request | Planning depth |
-| --- | --- |
-| Region, component or one state | Target node, relevant existing code/usage, intended change, asset decision and acceptance. A few lines can suffice. |
-| One page | Add relevant sections, requested states and viewports; detail the next slice. |
-| Several pages | First make a thin inventory of the authorized screens/states, then detail the next slice and dependencies. |
+For a region, component or one state, deliver these four fields directly:
 
-The request bounds discovery, including when it covers the whole design. FRAMEs can be layout containers, states or components; CANVAS does not establish a route. Group screens using actual parent relationships, purpose, copy, references and verified code entries. Preserve state/viewport differences. A fixed path offset, matching name or repeated route does not establish ownership or duplication. Treat annotations as leads to verify, including claims that a frame is a draft or excluded.
+1. **Target:** actual source file/node and existing code block.
+2. **Change:** the intended change using the project's actual components, markup and styling; preserve unrelated behavior.
+3. **Images, if involved:** `node/source + crop/mask → CSS size × DPR → pipeline/format + output size/quality/budget → loading/priority → browser URL/decoded size/transfer bytes + visual check`. Use `inspect` with `images: true`: `sourceRect` is in original source-image pixels, before masks/effects/ancestor clipping. Unequal normalized transform coefficients alone do not establish distortion. Pixel counts are not a visual assessment or blur diagnosis. Keep unavailable evidence unknown and planned budgets separate from measured bytes. Use the existing image pipeline; pure vector artwork can stay SVG.
+4. **Acceptance:** observable results and project-permitted checks; separate checks already run, future verification and material unknowns.
 
-For multiple screens, record name/purpose, actual frame IDs and paths, state/size, code entry (verified/candidate/unknown), inclusion and important differences. Mark uninspected details. `find` searches stored nodes, requires a non-empty query, returns at most 200 matches and has no offset: refine or scope a truncated search. Instance contents need expansion. `inspect` can truncate by depth or its shared 200-node budget; inspect relevant child roots or extract local subtrees from saved full `nodes` output as needed. `truncated: false` covers that query, not the entire design. Bundle/render only the scopes needed next.
+Deliver when these fields make the next change actionable. Choose another read only for a specific missing decision that could change this slice. Keep a small plan in chat unless saving was requested or continuation needs it.
 
-## Read design evidence beyond the reference image
+## Load detail when needed
 
-Use the render to check appearance. When a decision depends on style names, masks or crop, read full `nodes`: the top-level `styles` map resolves node style IDs; node fills, `isMask`/`maskType`, clipping and image transforms describe structure absent from the image or compact `inspect` summary. When expanded instance data leaves a relevant decision unresolved, follow its component ID to the actual definition, including on canvases such as "Internal Only Canvas". Excluding a canvas from delivery does not exclude its components as evidence; retrieve only the dependencies relevant to this slice.
+For a page or several pages, read [the detailed workflow](planning-details.md) to inventory only the authorized screens/states and detail the next slice. For a small scope, reach that reference only for a concrete unresolved dependency: design styles/masks/notes, component reuse, responsive behavior or saved-plan continuity. Read the relevant section, not the whole design or unrelated plans.
 
-Read relevant hidden TEXT notes and component descriptions as design context, preserving their associated node and provenance; keep them out of visual output. Native Dev Mode annotations are not emitted by figlens. When such a note matters, request its exact wording/export and node association, then record it as supplied evidence. Hidden text does not prove annotation completeness. Continue independent work; leave a decision blocked only if the missing information would materially change that slice.
-
-## Ground decisions in the project
-
-Read the target implementation and a real usage or neighboring example. Trace only dependencies that affect this change: layout, component contract, styling/tokens, state/data, image delivery and allowed checks. Applicable instructions supplement the project's actual architecture and established practice. Identify absent or unavailable evidence instead of inferring a framework from design annotations.
-
-Record shared facts once, with actual file paths and usage: components/props or native markup, token matches, relevant fonts, image component/loader/asset conventions and checks. Each section records its differences. Preserve existing behavior for a visual-only change. Existing mappings are candidates to recheck, not proof of imports, behavior or visual correctness. A design with zero component instances remains implementable.
-
-Reuse existing foundations. Build only the wiring needed for a representative slice before proposing new shared abstractions. For multiple pages, examine differences that could invalidate the first slice's decisions; choose a slice exposing major layout or asset risks. Extract shared code when actual usages have compatible semantics/contracts. Design variables, variants and annotations alone do not authorize new theming, i18n, routing or data architecture. State unverified assumptions and material decisions for the user.
-
-## What each slice must specify
-
-Specify decisions that would otherwise force the implementer to guess. Omit inapplicable fields; point to design subtrees for exact values rather than transcribing JSON.
-
-- **Identity and target:** actual source file and frame/node IDs, ancestor context when it affects layout or crop, reference location if available, current state/size, existing or candidate code targets, and the intended change. Distinguish observed, inferred and unknown facts. Keep full expanded instance IDs; use the skill's Figma link rules when a file key is known.
-- **Layout and reuse:** meaningful sections such as header, filters/results or card grid; their root nodes, existing components/usages, relevant tokens, flow and positioning decisions. Repeated items share a specification plus content/state differences.
-- **Images, when involved:** usage node and asset source, crop/mask/effects, CSS display size or range, DPR, delivery format, loading and checks. The same imageRef can have different crops in different nodes. Follow the project's working image pipeline; specify its needed props rather than bypassing it. Without a pipeline, use the skill's export guidance to choose raster dimensions/quality/budget or pure-vector SVG. Keep originals as sources. Planned byte budgets are not measured bytes.
-- **Behavior, when involved:** trigger → expected result → existing handler or requirement → acceptance. A static active tab or error screen does not establish navigation, validation or backend contracts; verify behavior in code or requirements. Treat unavailable prototype behavior as unknown.
-- **Responsive behavior, when involved:** requested viewports, observed design differences and relevant existing breakpoints. A desktop frame alone does not establish mobile behavior. Label any inferred adaptation and its verification.
-- **Acceptance:** observable layout/text/state results, relevant interactions/keyboard operations and project-permitted checks. For image changes, check actual requested dimensions/bytes, crop, sharpness, loading and reserved space at relevant widths. Choose tests for the change, not a mandatory full-site matrix. Record unavailable checks and known renderer differences.
-
-For example, a region-only slice can be:
-
-```text
-R1: product-card image delivery (illustrative IDs and dimensions)
-Source: node 12:8 under root 12:1; preserve its selected crop/mask.
-Code: existing ProductCard image block and its actual usage; reuse the image loader.
-Change: display 320×180; choose sizes/DPR through that loader; keep the click handler.
-Acceptance: compare crop at the target viewport; inspect requested pixels/bytes and click behavior.
-```
-
-## Save and resume proportionately
-
-If the user wants a saved plan or continuation needs one, follow the project's location conventions; otherwise default to `.figlens/plans/<scope>.md`. Keep a small plan in one document. Linked page sub-specs are useful only when actual length or handoff warrants them. Tiny tasks can stay in chat. Match the user's requested language.
-
-Use this outline only for applicable content:
-
-```text
-Goal and authorized scope
-Source snapshot and relevant project evidence (shared once)
-Screen/state inventory (multi-screen requests only)
-Next slice: design/code targets, decisions, dependencies and acceptance
-Remaining slices: differences, risks and order; deepen when needed
-Material questions and assumptions
-Execution record: changes, checks actually run, remaining differences
-```
-
-Read an existing plan before updating it and preserve human notes. Use stable slice labels. Record a measured source snapshot hash when available; bundle-entry hashes are not the `.fig` hash. On resume recheck relevant source and code: changed hashes require revalidation, not silent acceptance of old decisions. A local snapshot cannot prove the online design is current. Task completion and executed verification are separate facts.
-
-## Stop at an actionable next step
-
-Stop discovery when the next slice's target, relevant evidence, necessary dependencies, image decisions and acceptance are clear, with no unresolved decision that would materially change it. Unknowns elsewhere do not block it. Ask about genuine blockers such as indistinguishable target screens or required behavior conflicting with an existing contract. Avoid unsupported effort estimates and whole-project preparation for a small change.
-
-A plan-only request ends with the plan. When implementation is already authorized, carry out and verify the next slice, revise from observed results and continue through the authorized scope. Respect host plan/permission restrictions. Writing a plan or exporting a reference writes files; under a strict no-filesystem-writes request, keep the plan in chat and use only permitted reads. This workflow is guidance, not a tool sandbox.
+A plan-only request ends with the plan. An already authorized implementation continues through the requested scope and verification, updating the plan from observed results. Respect host permissions and filesystem restrictions: exporting references and saving plans write files; under a strict no-writes request, keep the plan in chat and use permitted reads. This workflow is guidance, not a tool sandbox.

@@ -51,6 +51,7 @@ If a topic goes over budget, split it rather than raising the cap. Skills are wo
 
 ## Verification
 
+Pi viewer startup must wait for a successful catalog response, not just a printed URL; see `pi`.
 Generated test fixtures use `src/test_support.rs` for atomic directory ownership and scoped cleanup; see `fig-format`.
 Image-fill changes must test shifted sprites exported from a clipping frame; see `render`.
 

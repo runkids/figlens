@@ -230,7 +230,7 @@ Usa la CLI mediante un skill para agentes o conecta el mismo binario como servid
 
 El [skill de figlens](skills/figlens/SKILL.md) enseña al agente a encontrar frames, leer el bundle por partes y construir usando sus valores.
 
-Para reproducir un diseño con cuidado, el [flujo de planificación](skills/figlens/references/planning.md) relaciona el alcance solicitado con el código existente, la entrega de imágenes y los criterios de aceptación. En Pi, `/figlens plan <request>` prepara un plan antes de implementar; una región pequeña sigue siendo una tarea pequeña. Usa `/figlens open [description]` para encontrar el diseño a partir de lo que sabes; Pi pregunta por los datos que faltan sin exigir IDs de nodos.
+Para reproducir un diseño con cuidado, el [flujo de planificación](skills/figlens/references/planning.md) relaciona el alcance solicitado con el código existente, la entrega de imágenes y los criterios de aceptación. En Pi, `/figlens plan <request>` prepara un plan antes de implementar; una región pequeña sigue siendo una tarea pequeña. Usa `/figlens open [description]` para encontrar el diseño a partir de lo que sabes; Pi pregunta por los datos que faltan sin exigir IDs de nodos. Usa `/figlens preview [description]` para iniciar el visor interactivo local y obtener su enlace; Pi identifica el archivo y la pantalla sin exigir IDs de nodos.
 
 Instálalo con la [Skills CLI](https://github.com/vercel-labs/skills):
 
@@ -307,7 +307,7 @@ Hay binarios para macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl está
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | IDs, tipos y nombres de nodos; texto indentado (menos contexto para el agente) o JSON anidado con `--json` |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Búsqueda de subcadenas en nombres y texto sin distinguir mayúsculas; rutas, tamaños y vistas previas. 20 resultados por defecto (1–200); `truncated` indica más |
-| `inspect <file> <node> [--depth N]` | Resumen compacto de estructura/texto con instancias expandidas. Profundidad 1 por defecto (0–10), hasta 200 nodos; usa `nodes` para datos completos |
+| `inspect <file> <node> [--depth N] [--images]` | Resumen compacto de estructura/texto con instancias expandidas. Profundidad 1 por defecto (0–10), hasta 200 nodos; usa `nodes` para datos completos. `--images` añade píxeles y bytes originales y el recorte de cada uso; el número de píxeles no diagnostica el desenfoque. |
 | `nodes <file> <node>` | JSON con estructura REST: instancias y sobrescrituras expandidas, auto-layout, estilos de texto, rellenos, efectos, variables vinculadas, propiedades y límites de renderizado |
 | `variables <file> [node]` | Variables vinculadas a un frame; sin nodo, todas las variables locales |
 | `bundle <file> <node> <out.zip>` | Bundle de diseño de un frame; devuelve `{nodeId, path, warnings}` |

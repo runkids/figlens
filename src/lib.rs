@@ -16,6 +16,7 @@ pub mod bundle;
 pub mod compare;
 pub mod expand;
 pub mod export;
+pub mod images;
 pub mod preview;
 pub mod remote;
 pub mod render;

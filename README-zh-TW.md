@@ -228,7 +228,7 @@ figlens 以 Figma 自身匯出的 JSON、PNG 和 SVG 驗證。以下是 **826 �
 
 [figlens skill](skills/figlens/SKILL.md) 教 agent 尋找 frame、分段閱讀 bundle，並依照其中的數值實作。
 
-需要仔細還原設計時，[規劃流程](skills/figlens/references/planning.md)會把本次範圍對應到既有程式、圖片交付與驗收條件。Pi 也提供 `/figlens plan <request>`，先規劃再實作；小範圍維持小任務。使用 `/figlens open [description]` 描述你知道的內容，Pi 會補問缺少的資訊，不需要你知道節點 ID。
+需要仔細還原設計時，[規劃流程](skills/figlens/references/planning.md)會把本次範圍對應到既有程式、圖片交付與驗收條件。Pi 也提供 `/figlens plan <request>`，先規劃再實作；小範圍維持小任務。使用 `/figlens open [description]` 描述你知道的內容，Pi 會補問缺少的資訊，不需要你知道節點 ID。 使用 `/figlens preview [description]` 啟動本機互動 viewer 並取得連結；Pi 會辨識檔案與畫面，不需你提供節點 ID。
 
 透過 [Skills CLI](https://github.com/vercel-labs/skills) 安裝：
 
@@ -303,7 +303,7 @@ Release 執行檔支援 macOS（Apple silicon、Intel）、Linux（arm64、x86_6
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | 節點 ID、類型與名稱；縮排文字（減少 agent 上下文用量），加 `--json` 則輸出巢狀 JSON |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 不分大小寫搜尋圖層名稱與文字子字串；包含路徑、尺寸與預覽。預設 20 筆（1–200）；`truncated` 表示還有結果 |
-| `inspect <file> <node> [--depth N]` | 展開後的精簡版面／文字摘要。預設深度 1（0–10），最多 200 個節點；完整資料用 `nodes` |
+| `inspect <file> <node> [--depth N] [--images]` | 展開後的精簡版面／文字摘要。預設深度 1（0–10），最多 200 個節點；完整資料用 `nodes`。加上 `--images` 可讀取原圖像素／bytes 與各次使用的裁切像素範圍；像素數不能診斷模糊原因。 |
 | `nodes <file> <node>` | REST 格式 JSON：展開的 instance 與覆寫、自動版面、文字樣式、填色、效果、綁定變數、元件屬性與渲染邊界 |
 | `variables <file> [node]` | frame 綁定的變數；未指定節點時輸出所有本機變數 |
 | `bundle <file> <node> <out.zip>` | 單一 frame 的設計 bundle；回傳 `{nodeId, path, warnings}` |

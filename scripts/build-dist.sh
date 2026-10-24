@@ -8,6 +8,7 @@ version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
 targets=${FIGLENS_TARGETS:-"aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-pc-windows-gnu"}
 test -f skills/figlens/SKILL.md
 test -f skills/figlens/references/planning.md
+test -f skills/figlens/references/planning-details.md
 mkdir -p dist
 set --
 for target in $targets; do

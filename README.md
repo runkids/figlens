@@ -204,7 +204,7 @@ Use the CLI through an agent skill, or connect the same binary as an MCP server.
 
 ### Agent skill
 
-The [figlens skill](skills/figlens/SKILL.md) teaches your agent to find frames, read the bundle in small pieces and build from its values. For careful reconstruction, its [planning workflow](skills/figlens/references/planning.md) connects the requested scope to existing code, image delivery and acceptance checks. Pi also offers `/figlens plan <request>` to make a plan before implementing; a small region stays a small task. Use `/figlens open [description]` to find a design from what you know; Pi asks for missing details without requiring node IDs.
+The [figlens skill](skills/figlens/SKILL.md) teaches your agent to find frames, read the bundle in small pieces and build from its values. For careful reconstruction, its [planning workflow](skills/figlens/references/planning.md) connects the requested scope to existing code, image delivery and acceptance checks. Pi also offers `/figlens plan <request>` to make a plan before implementing; a small region stays a small task. Use `/figlens open [description]` to find a design from what you know; Pi asks for missing details without requiring node IDs. Use `/figlens preview [description]` to start the local interactive viewer and get its link; Pi resolves the file and screen without requiring node IDs.
 
 Install with the [Skills CLI](https://github.com/vercel-labs/skills):
 
@@ -275,7 +275,7 @@ Release binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, stati
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | Node ids, types and names; indented text (smaller for an agent's context) or, with `--json`, nested JSON |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Case-insensitive substring search over stored layer names and text; paths, local sizes and previews. Default 20 results (1-200); `truncated` signals more matches |
-| `inspect <file> <node> [--depth N]` | Compact expanded layout/text summary. Default depth 1 (0-10), at most 200 nodes; use `nodes` for full data |
+| `inspect <file> <node> [--depth N] [--images]` | Compact expanded layout/text summary. Default depth 1 (0-10), at most 200 nodes; use `nodes` for full data. Add `--images` for source bitmap dimensions/bytes and per-use crop footprints; pixel counts do not diagnose blur. |
 | `nodes <file> <node>` | REST-shaped JSON: expanded instances and overrides, auto-layout, text styles, fills, effects, bound variables, component properties and render bounds |
 | `variables <file> [node]` | A frame's bound variables; without a node, every local variable |
 | `bundle <file> <node> <out.zip>` | A design bundle for one frame; prints `{nodeId, path, warnings}` |

@@ -7,6 +7,7 @@ import { Type } from 'typebox';
 import { getMarkdownTheme, withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Container, Image, Input, Markdown, SelectList, fuzzyFilter, truncateToWidth } from '@earendil-works/pi-tui';
 import { Workflow } from './workflow.mjs';
+import { Viewer } from './viewer.mjs';
 
 const HELP = [
   "## figlens",
@@ -16,6 +17,7 @@ const HELP = [
   "",
   "Optional shortcuts:",
   "- `/figlens open [description]` — tell Pi what you know: a file, screen name, purpose or visible text. Pi finds it or asks a recognizable follow-up.",
+  "- `/figlens preview [description]` — start the local interactive viewer for a design; Pi resolves names and returns its link.",
   "- `/figlens plan [request]` — plan only the requested region or pages before implementing.",
   "",
   "Advanced: saved selections and reusable component matches (not required to build):",
@@ -24,7 +26,7 @@ const HELP = [
   "- `/figlens status` — inspect the saved selection.",
   "- `/figlens map` — propose reusable component matches for the design in this conversation.",
   "- `/figlens review` — review pending proposals across this project; no open required.",
-  "- `/figlens close` — clear the saved selection, keeping reviewed mappings.",
+  "- `/figlens close` — stop the viewer and clear the saved selection, keeping reviewed mappings.",
   "",
   "Mappings are optional. Pi can implement the screen immediately.",
 ].join('\n');
@@ -67,6 +69,7 @@ export default function figlens(pi: ExtensionAPI) {
   const bundled = !process.env.FIGLENS_BIN && existsSync(wrapper);
   const binary = process.env.FIGLENS_BIN || (bundled ? process.execPath : 'figlens');
   const prefix = bundled ? [wrapper] : [];
+  const viewer = new Viewer(binary, prefix);
   pi.registerMessageRenderer('figlens', message => new Markdown(
     typeof message.content === 'string' ? message.content : JSON.stringify(message.content), 1, 1, getMarkdownTheme(),
   ));
@@ -249,6 +252,7 @@ export default function figlens(pi: ExtensionAPI) {
     const active = (await project(ctx).read()).state.active;
     if (active && ctx.mode === 'tui') ctx.ui.setStatus('figlens', `figlens · ${active.frame}`);
   });
+  pi.on('session_shutdown', async () => { await viewer.close(); });
 
   pi.registerCommand('figlens', {
     description: 'Plan a design implementation, select a scope or review component mappings; ask Pi directly to build a .fig screen',
@@ -257,15 +261,29 @@ export default function figlens(pi: ExtensionAPI) {
       const command = match?.[1];
       try {
         if (!command || command === 'help' || command === '--help') { show(HELP, ctx); return; }
-        if (!['plan', 'open', 'frame', 'map', 'review', 'status', 'close'].includes(command)) {
+        if (!['plan', 'open', 'preview', 'frame', 'map', 'review', 'status', 'close'].includes(command)) {
           show(`Unknown figlens command: **${command}**.\n\n${HELP}`, ctx); return;
         }
         let rest = match?.[2]?.trim() || '';
+        if (command === 'preview') {
+          await ctx.waitForIdle();
+          const file = ((rest.startsWith('"') && rest.endsWith('"')) || (rest.startsWith("'") && rest.endsWith("'"))) ? rest.slice(1, -1) : rest;
+          const absolute = path.resolve(ctx.cwd, file);
+          if (file && path.extname(file).toLowerCase() === '.fig' && existsSync(absolute)) {
+            const started = await viewer.start(absolute, undefined, { cwd: ctx.cwd, signal: ctx.signal });
+            show(`[Open design viewer](${started.url})`, ctx);
+            return;
+          }
+          const skill = fileURLToPath(new URL('../skills/figlens/SKILL.md', import.meta.url));
+          pi.sendUserMessage(`Start the local interactive figlens viewer only; this request does not authorize application edits, implementation or mapping proposals. Read the figlens skill at ${JSON.stringify(skill)}. Resolve the local .fig file and optional scope from this request and conversation using the figlens MCP tools. Ask for missing recognizable file/screen names or visible text, not node IDs; show a short choice if ambiguous. Use a saved selection only when the user explicitly refers to it. For a whole-file request, omit node. Call figlens_preview with the resolved absolute file and exact node if requested, then return its actual clickable URL in the user's language. If startup fails, report the error without claiming a viewer is running. This starts a loopback service and may write render cache; respect host restrictions.\n\nPreview request:\n${rest || 'Preview the design discussed in this conversation; ask for the file if it is not established.'}`);
+          return;
+        }
         if (command === 'plan') {
           await ctx.waitForIdle();
           const skill = fileURLToPath(new URL('../skills/figlens/SKILL.md', import.meta.url));
-          const planning = await readFile(new URL('../skills/figlens/references/planning.md', import.meta.url), 'utf8');
-          pi.sendUserMessage(`Create a design implementation plan only; this command does not authorize application edits or implementation. Read the figlens skill at ${JSON.stringify(skill)} for the available tools and image workflow, and follow the planning workflow below. Use the current request and conversation to identify the source and scope; if missing or materially ambiguous, ask. A saved manual selection is not the requested scope. Respect any output language/location and filesystem restrictions in the conversation.\n\n${planning}\n\nPlanning request:\n${rest || 'Plan the design task discussed in this conversation; ask for the source and scope if they are not established.'}`);
+          const planningPath = fileURLToPath(new URL('../skills/figlens/references/planning.md', import.meta.url));
+          const planning = await readFile(planningPath, 'utf8');
+          pi.sendUserMessage(`Create a design implementation plan only; this command does not authorize application edits or implementation. Read the figlens skill at ${JSON.stringify(skill)} for the available tools and image workflow, and follow the planning workflow below. Use the current request and conversation to identify the source and scope; if missing or materially ambiguous, ask. A saved manual selection is not the requested scope. Respect any output language/location and filesystem restrictions in the conversation.\n\nWorkflow source: ${JSON.stringify(planningPath)} (resolve its reference links relative to this file).\n\n${planning}\n\nPlanning request:\n${rest || 'Plan the design task discussed in this conversation; ask for the source and scope if they are not established.'}`);
           return;
         }
         const frameOption = command === 'open' ? rest.match(/^([\s\S]+)\s+--frame\s+(\S+)$/) : undefined;
@@ -292,9 +310,10 @@ export default function figlens(pi: ExtensionAPI) {
           else show('No manually saved selection. Pi can read a .fig directly from your request. Use /figlens review for pending mappings.', ctx);
         }
         else if (command === 'close') {
+          await viewer.close();
           await flow.close();
           if (ctx.mode === 'tui') ctx.ui.setStatus('figlens', undefined);
-          show('Saved selection cleared. Component mappings are kept.', ctx);
+          show('Local viewer stopped and saved selection cleared. Component mappings are kept.', ctx);
         }
       } catch (error) {
         const detail = (error as Error).message;
@@ -304,6 +323,19 @@ export default function figlens(pi: ExtensionAPI) {
         show(`**Could not complete /figlens ${command}.**\n\n${detail}\n\n${hint}`, ctx);
       }
     },
+  });
+
+  pi.registerTool({
+    name: 'figlens_preview', label: 'Open design viewer',
+    description: 'Start the local interactive viewer for a local .fig file, optionally focused on an exact node. Returns its loopback URL; does not launch a browser or modify the application, manual selection or mappings. May write render cache. Replaces this session’s previous viewer after successful startup; viewers stop when the Pi session shuts down.',
+    parameters: Type.Object({
+      file: Type.String({ minLength: 1, description: 'Local .fig path resolved from the current request.' }),
+      node: Type.Optional(Type.String({ minLength: 1, description: 'Exact node ID to focus; omit to browse the whole file.' })),
+    }),
+    outputSchema: Type.Object({}, { additionalProperties: true }),
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    executionMode: 'sequential',
+    execute: async (_id, params, signal, _update, ctx) => result(await viewer.start(path.resolve(ctx.cwd, params.file), params.node, { cwd: ctx.cwd, signal })),
   });
 
   pi.registerTool({

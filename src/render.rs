@@ -62,7 +62,10 @@ pub(crate) fn find<'j>(n: &'j Json, id: &str) -> Option<&'j Json> {
 }
 
 /// The `images/<sha1>` bytes of every image fill under `document`, by imageRef.
-fn images(fig: &Path, document: &Json) -> Result<HashMap<String, Vec<u8>>, Box<dyn Error>> {
+pub(crate) fn images(
+    fig: &Path,
+    document: &Json,
+) -> Result<HashMap<String, Vec<u8>>, Box<dyn Error>> {
     let mut images = HashMap::new();
     let mut refs = Vec::new();
     collect_refs(document, &mut refs);

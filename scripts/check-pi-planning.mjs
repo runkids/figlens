@@ -44,6 +44,7 @@ for (const mode of ['tui', 'rpc', 'print']) {
   assert.equal(prompts.length, before + 1);
   assert.ok(prompts.at(-1).endsWith(request), 'preserve quoted paths, language and scope verbatim');
   assert.ok(prompts.at(-1).includes(planning), 'load the actual adjacent planning reference');
+  assert.ok(prompts.at(-1).includes(JSON.stringify(planningPath)), 'preserve the source path for on-demand reference links');
   assert.ok(prompts.at(-1).includes(JSON.stringify(skillPath)), 'resolve the skill from the installed entry');
   assert.match(prompts.at(-1), /does not authorize application edits or implementation/);
 }
@@ -56,6 +57,16 @@ for (const description of ['', 'VIP panel', '"./design files/shop.fig"', 'Homepa
   assert.match(prompts.at(-1), /not node IDs/);
   assert.match(prompts.at(-1), /does not authorize application edits or implementation/);
   if (description && !description.startsWith('"')) assert.ok(prompts.at(-1).endsWith(description));
+}
+for (const description of ['', 'Homepage hero in ./design files/shop.fig']) {
+  const before = prompts.length;
+  await command(`preview ${description}`);
+  assert.equal(prompts.length, before + 1);
+  assert.match(prompts.at(-1), /Call figlens_preview/);
+  assert.match(prompts.at(-1), /not node IDs/);
+  assert.match(prompts.at(-1), /does not authorize application edits/);
+  assert.match(prompts.at(-1), /actual clickable URL/);
+  if (description) assert.ok(prompts.at(-1).endsWith(description));
 }
 assert.deepEqual(await readdir(root), [], 'discovery shortcut does not save a manual selection');
 
@@ -70,6 +81,8 @@ await command('open VIP panel');
 assert.equal(prompts.at(-1).includes('unrelated.fig'), false);
 await command('map');
 assert.match(prompts.at(-1), /not node IDs/);
+assert.equal(prompts.at(-1).includes('unrelated.fig'), false);
+await command('preview');
 assert.equal(prompts.at(-1).includes('unrelated.fig'), false);
 assert.equal(await readFile(path.join(root, '.figlens/component-mappings.md'), 'utf8'), mapping);
 
