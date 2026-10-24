@@ -146,7 +146,7 @@ El visor en vivo vigila el archivo local y se actualiza después de guardados co
 
 ## Extensión de Pi
 
-**Dale un `.fig` a Pi y pídele la pantalla.** El paquete incluye CLI, MCP, vista previa, extensión y skill para agentes:
+**Dale un `.fig` a Pi y pídele la pantalla.** El [paquete](https://pi.dev/packages/@runkids/figlens) incluye CLI, MCP, vista previa, extensión y skill para agentes:
 
 ```sh
 pi install npm:@runkids/figlens

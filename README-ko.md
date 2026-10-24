@@ -146,7 +146,7 @@ npx @runkids/figlens preview design.fig 12:345 --out preview.html
 
 ## Pi 확장
 
-**Pi에게 `.fig`를 주고 원하는 화면을 요청하세요.** 패키지에는 CLI, MCP, 미리보기, 확장, 에이전트 skill이 포함됩니다.
+**Pi에게 `.fig`를 주고 원하는 화면을 요청하세요.** [패키지](https://pi.dev/packages/@runkids/figlens)에는 CLI, MCP, 미리보기, 확장, 에이전트 skill이 포함됩니다.
 
 ```sh
 pi install npm:@runkids/figlens

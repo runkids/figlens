@@ -130,7 +130,7 @@ The live viewer watches the saved local file and refreshes after successful save
 
 ## Pi extension
 
-**Give Pi a `.fig` and ask for the screen.** The package includes the CLI, MCP, preview, extension and agent skill:
+**Give Pi a `.fig` and ask for the screen.** The [package](https://pi.dev/packages/@runkids/figlens) includes the CLI, MCP, preview, extension and agent skill:
 
 ```sh
 pi install npm:@runkids/figlens

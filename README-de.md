@@ -146,7 +146,7 @@ Die Live-Vorschau überwacht die lokale Datei und aktualisiert sich nach erfolgr
 
 ## Pi-Erweiterung
 
-**Gib Pi eine `.fig` und frage nach dem Bildschirm.** Das Paket enthält CLI, MCP, Vorschau, Erweiterung und Agent-Skill:
+**Gib Pi eine `.fig` und frage nach dem Bildschirm.** Das [Paket](https://pi.dev/packages/@runkids/figlens) enthält CLI, MCP, Vorschau, Erweiterung und Agent-Skill:
 
 ```sh
 pi install npm:@runkids/figlens

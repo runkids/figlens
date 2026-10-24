@@ -146,7 +146,7 @@ npx @runkids/figlens preview design.fig 12:345 --out preview.html
 
 ## Pi 拡張機能
 
-**Pi に `.fig` を渡し、作りたい画面を伝えます。** パッケージには CLI、MCP、プレビュー、拡張機能、エージェント用 skill が含まれます。
+**Pi に `.fig` を渡し、作りたい画面を伝えます。** [パッケージ](https://pi.dev/packages/@runkids/figlens)には CLI、MCP、プレビュー、拡張機能、エージェント用 skill が含まれます。
 
 ```sh
 pi install npm:@runkids/figlens

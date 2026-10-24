@@ -146,7 +146,7 @@ npx @runkids/figlens preview design.fig 12:345 --out preview.html
 
 ## Pi 扩展包
 
-**给 Pi 一个 `.fig`，告诉它要哪个画面。** 包包含 CLI、MCP、preview、扩展与 agent skill：
+**给 Pi 一个 `.fig`，告诉它要哪个画面。** [包](https://pi.dev/packages/@runkids/figlens)包含 CLI、MCP、preview、扩展与 agent skill：
 
 ```sh
 pi install npm:@runkids/figlens

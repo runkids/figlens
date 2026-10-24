@@ -146,7 +146,7 @@ O visualizador ao vivo monitora o arquivo local e atualiza após salvamentos bem
 
 ## Extensão do Pi
 
-**Dê um `.fig` ao Pi e peça a tela.** O pacote inclui CLI, MCP, prévia, extensão e skill para agentes:
+**Dê um `.fig` ao Pi e peça a tela.** O [pacote](https://pi.dev/packages/@runkids/figlens) inclui CLI, MCP, prévia, extensão e skill para agentes:
 
 ```sh
 pi install npm:@runkids/figlens

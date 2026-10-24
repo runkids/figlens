@@ -146,7 +146,7 @@ npx @runkids/figlens preview design.fig 12:345 --out preview.html
 
 ## Pi 擴充套件
 
-**給 Pi 一個 `.fig`，告訴它要哪個畫面。** 套件包含 CLI、MCP、preview、擴充功能與 agent skill：
+**給 Pi 一個 `.fig`，告訴它要哪個畫面。** [套件](https://pi.dev/packages/@runkids/figlens)包含 CLI、MCP、preview、擴充功能與 agent skill：
 
 ```sh
 pi install npm:@runkids/figlens

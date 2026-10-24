@@ -146,7 +146,7 @@ L'aperçu surveille le fichier local et se rafraîchit après un enregistrement 
 
 ## Extension Pi
 
-**Donnez un `.fig` à Pi et demandez l'écran.** Le paquet comprend CLI, MCP, aperçu, extension et skill pour agent :
+**Donnez un `.fig` à Pi et demandez l'écran.** Le [paquet](https://pi.dev/packages/@runkids/figlens) comprend CLI, MCP, aperçu, extension et skill pour agent :
 
 ```sh
 pi install npm:@runkids/figlens
