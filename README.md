@@ -17,12 +17,67 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b78c8" alt="MIT license"></a>
   <a href="https://github.com/runkids/figlens/releases"><img src="https://img.shields.io/github/downloads/runkids/figlens/total?label=GitHub%20downloads&amp;color=79b9a5" alt="Total GitHub release asset downloads"></a>
+  <a href="https://www.npmjs.com/package/@runkids/figlens"><img src="https://img.shields.io/npm/dm/@runkids/figlens?label=npm%20downloads&amp;color=8b78c8" alt="npm downloads per month"></a>
   <a href="#for-ai-agents"><img src="https://img.shields.io/badge/agents-CLI_%2B_MCP-79b9a5" alt="CLI and MCP for AI agents"></a>
 </p>
 
 <p align="center">
-  <a href="#from-a-local-fig-to-working-html">Watch the demo</a> · <a href="#quick-start">Try your design</a> · <a href="#for-ai-agents">Connect your agent</a> · <a href="#pi-extension">Use with Pi</a> · <a href="#how-close-is-it-to-figma">Accuracy</a>
+  <a href="#installation">Install</a> · <a href="#from-a-local-fig-to-working-html">Watch the demo</a> · <a href="#quick-start">Try your design</a> · <a href="#for-ai-agents">Connect your agent</a> · <a href="#pi-extension">Use with Pi</a> · <a href="#how-close-is-it-to-figma">Accuracy</a>
 </p>
+
+## Installation
+
+Use `npx @runkids/figlens` with Node.js 18+, or install the standalone CLI:
+
+| Platform | Command |
+|---|---|
+| macOS / Linux | `curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh \| sh` |
+| Homebrew | `brew install runkids/tap/figlens` |
+| Windows (PowerShell) | `irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 \| iex` |
+
+Release binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, static musl) and Windows (x86_64; ARM64 runs it under emulation). Standalone installs update with `figlens update`.
+
+## Quick start
+
+### 1. Open your design locally
+
+In Figma, choose **File > Save local copy** and save it as `design.fig`. Then run:
+
+```sh
+npx @runkids/figlens preview design.fig
+```
+
+Open the local URL printed in the terminal. Browse pages and select the screen you want to build. You can inspect its spacing, typography, variables and assets right there.
+
+Requires Node.js 18+. The first run downloads and verifies a native binary, then caches it. [Standalone installs](#installation) need no Node.js, Rust or Docker. Stop the viewer with Ctrl+C.
+
+### 2. Give the screen to your agent
+
+Download the selected frame's bundle from the viewer. Give your coding agent the zip and this prompt:
+
+> Extract this bundle into its own directory and read context.md. Build this screen using this project's stack and conventions. Use the supplied layout values and assets, then check your result against references/screen.png. Report missing assets or unavailable fonts.
+
+The bundle includes the structure, assets and reference image together, so the agent can read it with ordinary file tools. To let it find and inspect screens directly, [connect the CLI or MCP server](#for-ai-agents). [Pi users can ask for a screen by name](#pi-extension).
+
+### 3. Check the implementation
+
+Import a screenshot of your implementation into the viewer. Compare it side by side with the design or use the opacity overlay to spot differences. The screenshot stays in your browser. This is a visual check; figlens does not assign an accuracy score to your implementation.
+
+**The `.fig` is a snapshot.** Save a new local copy when the design changes. A Figma URL can select a node within that copy; it cannot download the design. Reading the saved file works offline after installation; your AI provider and project dependencies may still need a network connection.
+
+<details>
+<summary>Prefer the terminal? Find a frame and bundle it directly.</summary>
+
+```sh
+npx @runkids/figlens tree design.fig --depth 2
+npx @runkids/figlens find design.fig "login" --type FRAME
+npx @runkids/figlens inspect design.fig 12:345 --depth 1
+npx @runkids/figlens bundle design.fig 12:345 frame.zip
+```
+
+Replace `12:345` with an id from the tree or search results. A node can be an id (`12:345`), its URL form (`12-345`) or a Figma URL with `?node-id=`. Search layer names or text with `find`; use `inspect` for expanded instance children and a compact layout/text summary. See [Commands](#commands) for output details.
+
+</details>
 
 ## Why figlens?
 
@@ -67,48 +122,6 @@ The “List views” frame comes from [MCP Apps for Claude (Community)](https://
 
 </details>
 
-## Quick start
-
-### 1. Open your design locally
-
-In Figma, choose **File > Save local copy** and save it as `design.fig`. Then run:
-
-```sh
-npx @runkids/figlens preview design.fig
-```
-
-Open the local URL printed in the terminal. Browse pages and select the screen you want to build. You can inspect its spacing, typography, variables and assets right there.
-
-Requires Node.js 18+. The first run downloads and verifies a native binary, then caches it. [Standalone installs](#installation) need no Node.js, Rust or Docker. Stop the viewer with Ctrl+C.
-
-### 2. Give the screen to your agent
-
-Download the selected frame's bundle from the viewer. Give your coding agent the zip and this prompt:
-
-> Extract this bundle into its own directory and read context.md. Build this screen using this project's stack and conventions. Use the supplied layout values and assets, then check your result against references/screen.png. Report missing assets or unavailable fonts.
-
-The bundle includes the structure, assets and reference image together, so the agent can read it with ordinary file tools. To let it find and inspect screens directly, [connect the CLI or MCP server](#for-ai-agents). [Pi users can ask for a screen by name](#pi-extension).
-
-### 3. Check the implementation
-
-Import a screenshot of your implementation into the viewer. Compare it side by side with the design or use the opacity overlay to spot differences. The screenshot stays in your browser. This is a visual check; figlens does not assign an accuracy score to your implementation.
-
-**The `.fig` is a snapshot.** Save a new local copy when the design changes. A Figma URL can select a node within that copy; it cannot download the design. Reading the saved file works offline after installation; your AI provider and project dependencies may still need a network connection.
-
-<details>
-<summary>Prefer the terminal? Find a frame and bundle it directly.</summary>
-
-```sh
-npx @runkids/figlens tree design.fig --depth 2
-npx @runkids/figlens find design.fig "login" --type FRAME
-npx @runkids/figlens inspect design.fig 12:345 --depth 1
-npx @runkids/figlens bundle design.fig 12:345 frame.zip
-```
-
-Replace `12:345` with an id from the tree or search results. A node can be an id (`12:345`), its URL form (`12-345`) or a Figma URL with `?node-id=`. Search layer names or text with `find`; use `inspect` for expanded instance children and a compact layout/text summary. See [Commands](#commands) for output details.
-
-</details>
-
 ## Browse and hand off a design
 
 [![Inspect the MCP Apps design locally, with its layer tree, layout and component properties](assets/preview-inspector.png)](assets/pi-demo.mp4)
@@ -132,8 +145,6 @@ The live viewer watches the saved local file and refreshes after successful save
 ## Pi extension
 
 **Give Pi a `.fig` and ask for the screen.** The [package](https://pi.dev/packages/@runkids/figlens) includes the CLI, MCP, preview, extension and agent skill:
-
-[![npm downloads per month](https://img.shields.io/npm/dm/@runkids/figlens?label=npm%20downloads&color=8b78c8)](https://www.npmjs.com/package/@runkids/figlens)
 
 ```sh
 pi install npm:@runkids/figlens
@@ -259,18 +270,6 @@ To keep the server inside chosen folders, add `--root`: `"args": ["mcp", "--root
 The server runs locally over stdio and exposes `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` and `export`. Give tools absolute paths: relative ones resolve against the directory the client started figlens in.
 
 Start with `find` and `inspect` to select a frame. `export` saves the file and returns metadata. Raster formats also return MCP image content, so your agent can see the design without opening a local file; SVG returns metadata only. PNG has the widest client support; reduce `scale` for large frames. `find`, `inspect`, `bundle` and `export` also return structured JSON results.
-
-## Installation
-
-Use `npx @runkids/figlens` with Node.js 18+, or install the standalone CLI:
-
-| Platform | Command |
-|---|---|
-| macOS / Linux | `curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh \| sh` |
-| Homebrew | `brew install runkids/tap/figlens` |
-| Windows (PowerShell) | `irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 \| iex` |
-
-Release binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, static musl) and Windows (x86_64; ARM64 runs it under emulation). Standalone installs update with `figlens update`.
 
 ## Commands
 

@@ -17,59 +17,27 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b78c8" alt="MIT license"></a>
   <a href="https://github.com/runkids/figlens/releases"><img src="https://img.shields.io/github/downloads/runkids/figlens/total?label=GitHub%20downloads&amp;color=79b9a5" alt="Total GitHub release asset downloads"></a>
+  <a href="https://www.npmjs.com/package/@runkids/figlens"><img src="https://img.shields.io/npm/dm/@runkids/figlens?label=npm%20downloads&amp;color=8b78c8" alt="npm downloads per month"></a>
   <a href="#for-ai-agents"><img src="https://img.shields.io/badge/agents-CLI_%2B_MCP-79b9a5" alt="CLI and MCP for AI agents"></a>
 </p>
 
 <p align="center">
-  <a href="#from-a-local-fig-to-working-html">Ver la demo</a> · <a href="#quick-start">Probar tu diseño</a> · <a href="#for-ai-agents">Conectar tu agente</a> · <a href="#pi-extension">Usar con Pi</a> · <a href="#how-close-is-it-to-figma">Precisión</a>
+  <a href="#installation">Instalar</a> · <a href="#from-a-local-fig-to-working-html">Ver la demo</a> · <a href="#quick-start">Probar tu diseño</a> · <a href="#for-ai-agents">Conectar tu agente</a> · <a href="#pi-extension">Usar con Pi</a> · <a href="#how-close-is-it-to-figma">Precisión</a>
 </p>
 
-<a id="why-figlens"></a>
+<a id="installation"></a>
 
-## ¿Por qué figlens?
+## Instalación
 
-«Construye esta pantalla» debería incluir su estructura, texto y recursos. Con capturas, el agente tiene que estimar espacios y tipografía, y tú sigues exportando iconos a mano. El servidor MCP de Figma lee el diseño real, pero su cuota pertenece al equipo dueño del archivo, un agente puede gastar la cuota del día en un solo prompt y la máquina necesita una sesión de Figma.
+Usa `npx @runkids/figlens` con Node.js 18+ o instala la CLI independiente:
 
-figlens lee el diseño desde una copia guardada. En Figma, elige **File > Save local copy** (basta con acceso de lectura, salvo que el propietario haya desactivado la copia). Dale ese `.fig` a tu agente mediante la CLI o el servidor MCP local, y podrá buscar una pantalla, inspeccionar su estructura y texto y extraer los recursos necesarios. O reúne los datos, los recursos y el render de referencia de un frame en un zip que cualquier agente o compañero pueda usar.
-
-| Si te has encontrado con esto | Con figlens puedes |
+| Plataforma | Comando |
 |---|---|
-| «Rate limit exceeded, try again tomorrow», incluso con un seat de pago | Leer el archivo guardado las veces que necesites, sin llamadas a la API de Figma, tokens ni seats |
-| Tu agente se ejecuta en la nube o en CI | Leer el diseño con una CLI nativa, sin la aplicación Figma ni sesión de navegador |
-| No paras de explicar medidas y exportar recursos | Proporcionar estructura, tipografía, instancias expandidas, variables vinculadas y recursos originales |
-| Otro agente o compañero necesita la misma pantalla | Compartir un bundle con datos, recursos, render de referencia e instrucciones |
+| macOS / Linux | `curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh \| sh` |
+| Homebrew | `brew install runkids/tap/figlens` |
+| Windows (PowerShell) | `irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 \| iex` |
 
-Los diseñadores siguen trabajando en Figma. Tu agente utiliza el stack del proyecto. figlens proporciona el contexto del diseño; el agente de programación escribe la implementación.
-
-<details>
-<summary>El formato .fig no está documentado. ¿Qué pasa cuando Figma lo cambie?</summary>
-
-figlens no adivina el formato. Cada versión se comprueba contra las exportaciones JSON, PNG y SVG del propio Figma de los mismos archivos ([resultados](#how-close-is-it-to-figma)), así que un cambio de formato aparece como una regresión medida, no silenciosa. La copia que ya tienes guardada sigue funcionando con la versión de figlens que la leyó; solo los guardados nuevos desde un Figma cambiado necesitan una actualización de figlens, que `figlens update` descarga.
-
-</details>
-
-<a id="from-a-local-fig-to-working-html"></a>
-
-## De un .fig local a una interfaz HTML funcional
-
-[![Pi construye una interfaz funcional desde un archivo Figma local, con vista previa junto al terminal](assets/demo-8x.gif)](assets/demo-8x.mp4)
-
-**[Ver el vídeo](assets/demo-8x.mp4)** · 45 segundos de cámara rápida, a **8×**. Una sesión real de Pi en Orca: leer el diseño local, crear HTML/CSS y probar el diálogo para compartir y el área de entrada en la vista previa. La interfaz HTML utiliza 19 iconos SVG del bundle.
-
-| Este ejemplo | Resultado medido |
-|---|---|
-| Archivo `.fig` local | 57.5 MiB |
-| Frame seleccionado | 153 nodos, 25 recursos SVG, ninguno ausente |
-| Extracción del bundle | **0.47 s de mediana** en cinco ejecuciones con caché caliente |
-
-El tiempo corresponde a `figlens bundle`, **no al tiempo de implementación de la IA**. Medido con figlens 0.1.2 en un contenedor Docker ARM64; consulta los [comandos, resultados individuales y notas de grabación](wiki/accuracy.md#local-design-to-html-demo). Pi escribe el código; figlens aporta los datos. El proveedor de IA sigue usando una conexión de red.
-
-<details>
-<summary>Crédito del diseño y limitaciones de la demo</summary>
-
-El frame «List views» procede de [MCP Apps for Claude (Community)](https://www.figma.com/community/file/1597641111449594397/mcp-apps-for-claude). La demo utiliza la fuente sans del sistema y Georgia porque las fuentes Anthropic originales no están incluidas. Share abre un diálogo local; las respuestas quedan en la página y se borran al recargar. La grabación usa capturas de la ventana real de Orca, por lo que el movimiento es menos fluido que en una captura de vídeo nativa.
-
-</details>
+Hay binarios para macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl estático) y Windows (x86_64; ARM64 mediante emulación). Las instalaciones independientes se actualizan con `figlens update`.
 
 <a id="quick-start"></a>
 
@@ -121,6 +89,53 @@ Sustituye `12:345` por un ID del árbol o de los resultados de búsqueda. Un nod
 
 </details>
 
+<a id="why-figlens"></a>
+
+## ¿Por qué figlens?
+
+«Construye esta pantalla» debería incluir su estructura, texto y recursos. Con capturas, el agente tiene que estimar espacios y tipografía, y tú sigues exportando iconos a mano. El servidor MCP de Figma lee el diseño real, pero su cuota pertenece al equipo dueño del archivo, un agente puede gastar la cuota del día en un solo prompt y la máquina necesita una sesión de Figma.
+
+figlens lee el diseño desde una copia guardada. En Figma, elige **File > Save local copy** (basta con acceso de lectura, salvo que el propietario haya desactivado la copia). Dale ese `.fig` a tu agente mediante la CLI o el servidor MCP local, y podrá buscar una pantalla, inspeccionar su estructura y texto y extraer los recursos necesarios. O reúne los datos, los recursos y el render de referencia de un frame en un zip que cualquier agente o compañero pueda usar.
+
+| Si te has encontrado con esto | Con figlens puedes |
+|---|---|
+| «Rate limit exceeded, try again tomorrow», incluso con un seat de pago | Leer el archivo guardado las veces que necesites, sin llamadas a la API de Figma, tokens ni seats |
+| Tu agente se ejecuta en la nube o en CI | Leer el diseño con una CLI nativa, sin la aplicación Figma ni sesión de navegador |
+| No paras de explicar medidas y exportar recursos | Proporcionar estructura, tipografía, instancias expandidas, variables vinculadas y recursos originales |
+| Otro agente o compañero necesita la misma pantalla | Compartir un bundle con datos, recursos, render de referencia e instrucciones |
+
+Los diseñadores siguen trabajando en Figma. Tu agente utiliza el stack del proyecto. figlens proporciona el contexto del diseño; el agente de programación escribe la implementación.
+
+<details>
+<summary>El formato .fig no está documentado. ¿Qué pasa cuando Figma lo cambie?</summary>
+
+figlens no adivina el formato. Cada versión se comprueba contra las exportaciones JSON, PNG y SVG del propio Figma de los mismos archivos ([resultados](#how-close-is-it-to-figma)), así que un cambio de formato aparece como una regresión medida, no silenciosa. La copia que ya tienes guardada sigue funcionando con la versión de figlens que la leyó; solo los guardados nuevos desde un Figma cambiado necesitan una actualización de figlens, que `figlens update` descarga.
+
+</details>
+
+<a id="from-a-local-fig-to-working-html"></a>
+
+## De un .fig local a una interfaz HTML funcional
+
+[![Pi construye una interfaz funcional desde un archivo Figma local, con vista previa junto al terminal](assets/demo-8x.gif)](assets/demo-8x.mp4)
+
+**[Ver el vídeo](assets/demo-8x.mp4)** · 45 segundos de cámara rápida, a **8×**. Una sesión real de Pi en Orca: leer el diseño local, crear HTML/CSS y probar el diálogo para compartir y el área de entrada en la vista previa. La interfaz HTML utiliza 19 iconos SVG del bundle.
+
+| Este ejemplo | Resultado medido |
+|---|---|
+| Archivo `.fig` local | 57.5 MiB |
+| Frame seleccionado | 153 nodos, 25 recursos SVG, ninguno ausente |
+| Extracción del bundle | **0.47 s de mediana** en cinco ejecuciones con caché caliente |
+
+El tiempo corresponde a `figlens bundle`, **no al tiempo de implementación de la IA**. Medido con figlens 0.1.2 en un contenedor Docker ARM64; consulta los [comandos, resultados individuales y notas de grabación](wiki/accuracy.md#local-design-to-html-demo). Pi escribe el código; figlens aporta los datos. El proveedor de IA sigue usando una conexión de red.
+
+<details>
+<summary>Crédito del diseño y limitaciones de la demo</summary>
+
+El frame «List views» procede de [MCP Apps for Claude (Community)](https://www.figma.com/community/file/1597641111449594397/mcp-apps-for-claude). La demo utiliza la fuente sans del sistema y Georgia porque las fuentes Anthropic originales no están incluidas. Share abre un diálogo local; las respuestas quedan en la página y se borran al recargar. La grabación usa capturas de la ventana real de Orca, por lo que el movimiento es menos fluido que en una captura de vídeo nativa.
+
+</details>
+
 <a id="browse-and-hand-off-a-design"></a>
 
 ## Explorar y entregar un diseño
@@ -148,8 +163,6 @@ El visor en vivo vigila el archivo local y se actualiza después de guardados co
 ## Extensión de Pi
 
 **Dale un `.fig` a Pi y pídele la pantalla.** El [paquete](https://pi.dev/packages/@runkids/figlens) incluye CLI, MCP, vista previa, extensión y skill para agentes:
-
-[![npm downloads per month](https://img.shields.io/npm/dm/@runkids/figlens?label=npm%20downloads&color=8b78c8)](https://www.npmjs.com/package/@runkids/figlens)
 
 ```sh
 pi install npm:@runkids/figlens
@@ -287,20 +300,6 @@ Para limitar el servidor a ciertas carpetas, añade `--root`: `"args": ["mcp", "
 El servidor se ejecuta localmente por stdio y expone `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` y `export`. Usa rutas absolutas: las relativas se resuelven desde el directorio donde el cliente inició figlens.
 
 Empieza con `find` e `inspect` para seleccionar un frame. `export` guarda el archivo y devuelve metadatos. Los formatos ráster también devuelven contenido de imagen MCP, por lo que el agente puede ver el diseño sin abrir un archivo local; SVG solo devuelve metadatos. PNG tiene la compatibilidad más amplia; reduce `scale` para frames grandes. `find`, `inspect`, `bundle` y `export` también devuelven JSON estructurado.
-
-<a id="installation"></a>
-
-## Instalación
-
-Usa `npx @runkids/figlens` con Node.js 18+ o instala la CLI independiente:
-
-| Plataforma | Comando |
-|---|---|
-| macOS / Linux | `curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh \| sh` |
-| Homebrew | `brew install runkids/tap/figlens` |
-| Windows (PowerShell) | `irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 \| iex` |
-
-Hay binarios para macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl estático) y Windows (x86_64; ARM64 mediante emulación). Las instalaciones independientes se actualizan con `figlens update`.
 
 <a id="commands"></a>
 

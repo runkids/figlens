@@ -17,59 +17,27 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b78c8" alt="MIT license"></a>
   <a href="https://github.com/runkids/figlens/releases"><img src="https://img.shields.io/github/downloads/runkids/figlens/total?label=GitHub%20downloads&amp;color=79b9a5" alt="Total GitHub release asset downloads"></a>
+  <a href="https://www.npmjs.com/package/@runkids/figlens"><img src="https://img.shields.io/npm/dm/@runkids/figlens?label=npm%20downloads&amp;color=8b78c8" alt="npm downloads per month"></a>
   <a href="#for-ai-agents"><img src="https://img.shields.io/badge/agents-CLI_%2B_MCP-79b9a5" alt="CLI and MCP for AI agents"></a>
 </p>
 
 <p align="center">
-  <a href="#from-a-local-fig-to-working-html">데모 보기</a> · <a href="#quick-start">내 디자인으로 시작</a> · <a href="#for-ai-agents">에이전트 연결</a> · <a href="#pi-extension">Pi와 함께 사용</a> · <a href="#how-close-is-it-to-figma">정확도</a>
+  <a href="#installation">설치</a> · <a href="#from-a-local-fig-to-working-html">데모 보기</a> · <a href="#quick-start">내 디자인으로 시작</a> · <a href="#for-ai-agents">에이전트 연결</a> · <a href="#pi-extension">Pi와 함께 사용</a> · <a href="#how-close-is-it-to-figma">정확도</a>
 </p>
 
-<a id="why-figlens"></a>
+<a id="installation"></a>
 
-## 왜 figlens인가요?
+## 설치
 
-“이 화면을 만들어 줘”라는 요청에는 화면의 레이아웃, 텍스트, 에셋도 함께 전달되어야 합니다. 스크린샷으로는 에이전트가 간격과 타이포그래피를 추정해야 하고, 아이콘은 여전히 손으로 내보내야 합니다. Figma MCP 서버는 실제 디자인을 읽지만, 할당량은 파일을 소유한 팀에 묶여 있고, 에이전트가 프롬프트 하나로 하루치 할당량을 다 쓸 수 있으며, 컴퓨터에 Figma 로그인이 필요합니다.
+Node.js 18+에서 `npx @runkids/figlens`를 사용하거나 독립 CLI를 설치하세요.
 
-figlens는 대신 저장된 사본에서 디자인을 읽습니다. Figma에서 **File > Save local copy**를 선택하세요(소유자가 복사를 막지 않았다면 보기 권한으로 충분합니다). 그 `.fig`를 CLI나 로컬 MCP 서버를 통해 에이전트에게 주면 화면을 찾고 레이아웃과 텍스트를 확인하며 필요한 에셋을 추출할 수 있습니다. 또는 프레임 하나의 디자인 데이터, 에셋, 참조 렌더링을 어떤 에이전트나 팀원도 쓸 수 있는 zip으로 묶을 수 있습니다.
-
-| 이런 문제를 겪었다면 | figlens로 할 수 있는 일 |
+| 플랫폼 | 명령어 |
 |---|---|
-| 유료 시트인데도 “Rate limit exceeded, try again tomorrow”가 뜸 | Figma API 호출, 토큰, 시트 없이 저장된 파일을 필요한 만큼 읽기 |
-| 에이전트가 클라우드 서버나 CI에서 실행됨 | Figma 앱이나 브라우저 세션 없이 네이티브 CLI로 디자인 읽기 |
-| 치수를 설명하고 에셋을 내보내는 일을 반복함 | 구조화된 레이아웃, 타이포그래피, 펼쳐진 인스턴스, 연결된 변수, 원본 에셋 제공 |
-| 다른 에이전트나 팀원도 같은 화면이 필요함 | 디자인 데이터, 에셋, 참조 렌더링, 지침이 담긴 프레임 번들 공유 |
+| macOS / Linux | `curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh \| sh` |
+| Homebrew | `brew install runkids/tap/figlens` |
+| Windows (PowerShell) | `irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 \| iex` |
 
-디자이너는 계속 Figma에서 작업하고, 에이전트는 프로젝트의 기존 기술 스택을 사용합니다. figlens는 디자인 컨텍스트를 제공하고, 코딩 에이전트가 구현 코드를 작성합니다.
-
-<details>
-<summary>.fig 형식은 문서화되어 있지 않습니다. Figma가 형식을 바꾸면 어떻게 되나요?</summary>
-
-figlens는 형식을 추측하지 않습니다. 모든 릴리스는 같은 파일을 Figma가 직접 내보낸 JSON, PNG, SVG와 대조하므로([결과](#how-close-is-it-to-figma)) 형식 변경은 조용히 묻히지 않고 측정된 회귀로 드러납니다. 이미 저장해 둔 사본은 그것을 읽은 figlens 버전에서 계속 동작합니다. 바뀐 Figma에서 새로 저장한 파일만 figlens 업데이트가 필요하며, `figlens update`로 받을 수 있습니다.
-
-</details>
-
-<a id="from-a-local-fig-to-working-html"></a>
-
-## 로컬 .fig에서 작동하는 HTML까지
-
-[![Pi가 로컬 Figma 파일로 작동하는 인터페이스를 만들고 터미널 옆에서 미리보기를 표시하는 모습](assets/demo-8x.gif)](assets/demo-8x.mp4)
-
-**[영상 보기](assets/demo-8x.mp4)** · **8배속**으로 재생하는 45초 타임랩스입니다. Orca에서 진행한 실제 Pi 세션으로, 로컬 디자인을 읽고 HTML/CSS를 만든 뒤 실시간 미리보기에서 공유 대화상자와 입력 영역을 사용합니다. HTML 인터페이스에는 번들의 SVG 아이콘 19개를 사용했습니다.
-
-| 이 예제 | 측정 결과 |
-|---|---|
-| 로컬 `.fig` 파일 | 57.5 MiB |
-| 선택한 프레임 | 노드 153개, SVG 에셋 25개, 누락 에셋 없음 |
-| 디자인 번들 추출 | 웜 캐시로 5회 실행한 중앙값 **0.47초** |
-
-측정 대상은 `figlens bundle`이며, **AI의 구현 시간은 포함하지 않습니다**. ARM64 Docker 컨테이너에서 figlens 0.1.2로 측정했습니다. [명령어, 개별 결과, 녹화 설명](wiki/accuracy.md#local-design-to-html-demo)을 참고하세요. Pi가 코드를 작성하고 figlens가 디자인 데이터를 제공합니다. AI 제공업체에는 여전히 네트워크로 연결합니다.
-
-<details>
-<summary>디자인 출처와 데모의 제약</summary>
-
-“List views” 프레임의 출처는 [MCP Apps for Claude (Community)](https://www.figma.com/community/file/1597641111449594397/mcp-apps-for-claude)입니다. 원본 Anthropic 글꼴은 포함되지 않아 시스템 sans와 Georgia를 사용했습니다. Share는 로컬 대화상자를 열고, 답글은 페이지에 남지만 새로고침하면 사라집니다. 실제 Orca 창의 연속 스크린샷으로 녹화해 일반적인 동영상 캡처보다 움직임이 덜 부드럽습니다.
-
-</details>
+릴리스 바이너리는 macOS(Apple silicon, Intel), Linux(arm64, x86_64, 정적 musl), Windows(x86_64, ARM64는 에뮬레이션)를 지원합니다. 독립 설치는 `figlens update`로 업데이트합니다.
 
 <a id="quick-start"></a>
 
@@ -121,6 +89,53 @@ npx @runkids/figlens bundle design.fig 12:345 frame.zip
 
 </details>
 
+<a id="why-figlens"></a>
+
+## 왜 figlens인가요?
+
+“이 화면을 만들어 줘”라는 요청에는 화면의 레이아웃, 텍스트, 에셋도 함께 전달되어야 합니다. 스크린샷으로는 에이전트가 간격과 타이포그래피를 추정해야 하고, 아이콘은 여전히 손으로 내보내야 합니다. Figma MCP 서버는 실제 디자인을 읽지만, 할당량은 파일을 소유한 팀에 묶여 있고, 에이전트가 프롬프트 하나로 하루치 할당량을 다 쓸 수 있으며, 컴퓨터에 Figma 로그인이 필요합니다.
+
+figlens는 대신 저장된 사본에서 디자인을 읽습니다. Figma에서 **File > Save local copy**를 선택하세요(소유자가 복사를 막지 않았다면 보기 권한으로 충분합니다). 그 `.fig`를 CLI나 로컬 MCP 서버를 통해 에이전트에게 주면 화면을 찾고 레이아웃과 텍스트를 확인하며 필요한 에셋을 추출할 수 있습니다. 또는 프레임 하나의 디자인 데이터, 에셋, 참조 렌더링을 어떤 에이전트나 팀원도 쓸 수 있는 zip으로 묶을 수 있습니다.
+
+| 이런 문제를 겪었다면 | figlens로 할 수 있는 일 |
+|---|---|
+| 유료 시트인데도 “Rate limit exceeded, try again tomorrow”가 뜸 | Figma API 호출, 토큰, 시트 없이 저장된 파일을 필요한 만큼 읽기 |
+| 에이전트가 클라우드 서버나 CI에서 실행됨 | Figma 앱이나 브라우저 세션 없이 네이티브 CLI로 디자인 읽기 |
+| 치수를 설명하고 에셋을 내보내는 일을 반복함 | 구조화된 레이아웃, 타이포그래피, 펼쳐진 인스턴스, 연결된 변수, 원본 에셋 제공 |
+| 다른 에이전트나 팀원도 같은 화면이 필요함 | 디자인 데이터, 에셋, 참조 렌더링, 지침이 담긴 프레임 번들 공유 |
+
+디자이너는 계속 Figma에서 작업하고, 에이전트는 프로젝트의 기존 기술 스택을 사용합니다. figlens는 디자인 컨텍스트를 제공하고, 코딩 에이전트가 구현 코드를 작성합니다.
+
+<details>
+<summary>.fig 형식은 문서화되어 있지 않습니다. Figma가 형식을 바꾸면 어떻게 되나요?</summary>
+
+figlens는 형식을 추측하지 않습니다. 모든 릴리스는 같은 파일을 Figma가 직접 내보낸 JSON, PNG, SVG와 대조하므로([결과](#how-close-is-it-to-figma)) 형식 변경은 조용히 묻히지 않고 측정된 회귀로 드러납니다. 이미 저장해 둔 사본은 그것을 읽은 figlens 버전에서 계속 동작합니다. 바뀐 Figma에서 새로 저장한 파일만 figlens 업데이트가 필요하며, `figlens update`로 받을 수 있습니다.
+
+</details>
+
+<a id="from-a-local-fig-to-working-html"></a>
+
+## 로컬 .fig에서 작동하는 HTML까지
+
+[![Pi가 로컬 Figma 파일로 작동하는 인터페이스를 만들고 터미널 옆에서 미리보기를 표시하는 모습](assets/demo-8x.gif)](assets/demo-8x.mp4)
+
+**[영상 보기](assets/demo-8x.mp4)** · **8배속**으로 재생하는 45초 타임랩스입니다. Orca에서 진행한 실제 Pi 세션으로, 로컬 디자인을 읽고 HTML/CSS를 만든 뒤 실시간 미리보기에서 공유 대화상자와 입력 영역을 사용합니다. HTML 인터페이스에는 번들의 SVG 아이콘 19개를 사용했습니다.
+
+| 이 예제 | 측정 결과 |
+|---|---|
+| 로컬 `.fig` 파일 | 57.5 MiB |
+| 선택한 프레임 | 노드 153개, SVG 에셋 25개, 누락 에셋 없음 |
+| 디자인 번들 추출 | 웜 캐시로 5회 실행한 중앙값 **0.47초** |
+
+측정 대상은 `figlens bundle`이며, **AI의 구현 시간은 포함하지 않습니다**. ARM64 Docker 컨테이너에서 figlens 0.1.2로 측정했습니다. [명령어, 개별 결과, 녹화 설명](wiki/accuracy.md#local-design-to-html-demo)을 참고하세요. Pi가 코드를 작성하고 figlens가 디자인 데이터를 제공합니다. AI 제공업체에는 여전히 네트워크로 연결합니다.
+
+<details>
+<summary>디자인 출처와 데모의 제약</summary>
+
+“List views” 프레임의 출처는 [MCP Apps for Claude (Community)](https://www.figma.com/community/file/1597641111449594397/mcp-apps-for-claude)입니다. 원본 Anthropic 글꼴은 포함되지 않아 시스템 sans와 Georgia를 사용했습니다. Share는 로컬 대화상자를 열고, 답글은 페이지에 남지만 새로고침하면 사라집니다. 실제 Orca 창의 연속 스크린샷으로 녹화해 일반적인 동영상 캡처보다 움직임이 덜 부드럽습니다.
+
+</details>
+
 <a id="browse-and-hand-off-a-design"></a>
 
 ## 디자인 둘러보기와 전달하기
@@ -148,8 +163,6 @@ npx @runkids/figlens preview design.fig 12:345 --out preview.html
 ## Pi 확장
 
 **Pi에게 `.fig`를 주고 원하는 화면을 요청하세요.** [패키지](https://pi.dev/packages/@runkids/figlens)에는 CLI, MCP, 미리보기, 확장, 에이전트 skill이 포함됩니다.
-
-[![npm downloads per month](https://img.shields.io/npm/dm/@runkids/figlens?label=npm%20downloads&color=8b78c8)](https://www.npmjs.com/package/@runkids/figlens)
 
 ```sh
 pi install npm:@runkids/figlens
@@ -287,20 +300,6 @@ claude mcp add figlens -- npx -y @runkids/figlens mcp
 서버는 로컬에서 stdio로 실행되며 `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle`, `export`를 제공합니다. 도구에는 절대 경로를 전달하세요. 상대 경로는 클라이언트가 figlens를 시작한 디렉터리를 기준으로 해석합니다.
 
 먼저 `find`와 `inspect`로 프레임을 선택하세요. `export`는 파일을 저장하고 메타데이터를 반환합니다. 래스터 형식은 MCP 이미지 콘텐츠도 반환하므로 에이전트가 로컬 파일을 열지 않고 디자인을 볼 수 있습니다. SVG는 메타데이터만 반환합니다. PNG는 클라이언트 지원이 가장 넓으며 큰 프레임에는 `scale`을 줄이세요. `find`, `inspect`, `bundle`, `export`는 구조화된 JSON도 반환합니다.
-
-<a id="installation"></a>
-
-## 설치
-
-Node.js 18+에서 `npx @runkids/figlens`를 사용하거나 독립 CLI를 설치하세요.
-
-| 플랫폼 | 명령어 |
-|---|---|
-| macOS / Linux | `curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh \| sh` |
-| Homebrew | `brew install runkids/tap/figlens` |
-| Windows (PowerShell) | `irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 \| iex` |
-
-릴리스 바이너리는 macOS(Apple silicon, Intel), Linux(arm64, x86_64, 정적 musl), Windows(x86_64, ARM64는 에뮬레이션)를 지원합니다. 독립 설치는 `figlens update`로 업데이트합니다.
 
 <a id="commands"></a>
 

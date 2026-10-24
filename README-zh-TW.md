@@ -17,59 +17,27 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b78c8" alt="MIT license"></a>
   <a href="https://github.com/runkids/figlens/releases"><img src="https://img.shields.io/github/downloads/runkids/figlens/total?label=GitHub%20downloads&amp;color=79b9a5" alt="Total GitHub release asset downloads"></a>
+  <a href="https://www.npmjs.com/package/@runkids/figlens"><img src="https://img.shields.io/npm/dm/@runkids/figlens?label=npm%20downloads&amp;color=8b78c8" alt="npm downloads per month"></a>
   <a href="#for-ai-agents"><img src="https://img.shields.io/badge/agents-CLI_%2B_MCP-79b9a5" alt="CLI and MCP for AI agents"></a>
 </p>
 
 <p align="center">
-  <a href="#from-a-local-fig-to-working-html">觀看示範</a> · <a href="#quick-start">試試你的設計</a> · <a href="#for-ai-agents">連接 agent</a> · <a href="#pi-extension">搭配 Pi 使用</a> · <a href="#how-close-is-it-to-figma">準確度</a>
+  <a href="#installation">安裝</a> · <a href="#from-a-local-fig-to-working-html">觀看示範</a> · <a href="#quick-start">試試你的設計</a> · <a href="#for-ai-agents">連接 agent</a> · <a href="#pi-extension">搭配 Pi 使用</a> · <a href="#how-close-is-it-to-figma">準確度</a>
 </p>
 
-<a id="why-figlens"></a>
+<a id="installation"></a>
 
-## 為什麼使用 figlens？
+## 安裝
 
-當你說「做出這個畫面」，agent 應該同時拿到它的版面、文字與素材。只有截圖時，agent 得估算間距與字體樣式，圖示還是要你手動匯出。Figma MCP server 讀的是真實設計，但配額綁在檔案所屬的團隊上，agent 一個 prompt 就可能用光一天的配額，而且機器必須登入 Figma。
+搭配 Node.js 18+ 使用 `npx @runkids/figlens`，或安裝獨立 CLI：
 
-figlens 改從儲存的副本讀取設計。在 Figma 選擇 **File > Save local copy**（只要擁有者沒有關閉複製，檢視權限就夠）。把這個 `.fig` 透過 CLI 或本機 MCP server 交給 agent，它就能尋找畫面、檢視版面與文字，並擷取所需素材。也可以把一個 frame 的設計資料、素材與參考圖打包成一個 zip，任何 agent 或隊友都能使用。
-
-| 如果你遇過這些情況 | figlens 可以幫你 |
+| 平台 | 指令 |
 |---|---|
-| 付費 seat 也遇到「Rate limit exceeded, try again tomorrow」 | 隨時讀取儲存的檔案，不呼叫 Figma API，不需要 token 或 seat |
-| agent 在雲端伺服器或 CI 執行 | 使用原生 CLI 讀取設計，不需要 Figma App 或瀏覽器工作階段 |
-| 不斷解釋尺寸、匯出素材 | 提供結構化版面、字體樣式、展開的 instance、綁定變數與原始素材 |
-| 其他 agent 或隊友需要相同畫面 | 分享包含設計資料、素材、參考圖與說明的 frame bundle |
+| macOS / Linux | `curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh \| sh` |
+| Homebrew | `brew install runkids/tap/figlens` |
+| Windows (PowerShell) | `irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 \| iex` |
 
-設計師繼續使用 Figma，agent 使用專案既有的技術堆疊。figlens 提供設計上下文，coding agent 負責撰寫實作。
-
-<details>
-<summary>.fig 格式沒有公開文件。Figma 改了格式怎麼辦？</summary>
-
-figlens 不靠猜測格式。每個版本都用同一批檔案對照 Figma 自己匯出的 JSON、PNG 與 SVG 檢查（[結果](#how-close-is-it-to-figma)），所以格式變動會以可量測的回歸顯現，而不是悄悄出錯。你已經儲存的副本，用讀取它的那個 figlens 版本仍可繼續使用；只有從改版後的 Figma 新儲存的檔案才需要更新 figlens，`figlens update` 就能取得。
-
-</details>
-
-<a id="from-a-local-fig-to-working-html"></a>
-
-## 從本機 .fig 到可操作的 HTML
-
-[![Pi 從本機 Figma 檔案建立可操作的介面，終端旁同步顯示預覽](assets/demo-8x.gif)](assets/demo-8x.mp4)
-
-**[觀看影片](assets/demo-8x.mp4)** · 45 秒縮時影片，**8 倍速**。這是在 Orca 中進行的真實 Pi 工作階段：讀取本機設計、建立 HTML/CSS，再於即時預覽中操作分享對話框與輸入區。介面使用 bundle 內的 19 個 SVG 圖示，是 HTML 實作。
-
-| 此範例 | 實測結果 |
-|---|---|
-| 本機 `.fig` 檔案 | 57.5 MiB |
-| 選取的 frame | 153 個節點、25 個 SVG 素材，無缺失素材 |
-| 擷取設計 bundle | 五次暖快取執行的中位數為 **0.47 秒** |
-
-計時測量的是 `figlens bundle`，**不包含 AI 實作時間**。使用 figlens 0.1.2，在 ARM64 Docker 容器中測量；詳見[指令、各次結果與錄影說明](wiki/accuracy.md#local-design-to-html-demo)。Pi 撰寫程式碼，figlens 提供設計資料；AI 服務仍需網路連線。
-
-<details>
-<summary>設計出處與示範限制</summary>
-
-「List views」frame 來自 [MCP Apps for Claude (Community)](https://www.figma.com/community/file/1597641111449594397/mcp-apps-for-claude)。原始 Anthropic 字型未包含在 bundle 中，因此示範使用系統 sans 與 Georgia。分享按鈕開啟本機對話框；回覆保留於頁面，重新載入即清除。錄影由真實 Orca 視窗的連續截圖組成，動態效果較一般錄影不流暢。
-
-</details>
+Release 執行檔支援 macOS（Apple silicon、Intel）、Linux（arm64、x86_64、靜態 musl）與 Windows（x86_64；ARM64 透過模擬執行）。獨立安裝可用 `figlens update` 更新。
 
 <a id="quick-start"></a>
 
@@ -121,6 +89,53 @@ npx @runkids/figlens bundle design.fig 12:345 frame.zip
 
 </details>
 
+<a id="why-figlens"></a>
+
+## 為什麼使用 figlens？
+
+當你說「做出這個畫面」，agent 應該同時拿到它的版面、文字與素材。只有截圖時，agent 得估算間距與字體樣式，圖示還是要你手動匯出。Figma MCP server 讀的是真實設計，但配額綁在檔案所屬的團隊上，agent 一個 prompt 就可能用光一天的配額，而且機器必須登入 Figma。
+
+figlens 改從儲存的副本讀取設計。在 Figma 選擇 **File > Save local copy**（只要擁有者沒有關閉複製，檢視權限就夠）。把這個 `.fig` 透過 CLI 或本機 MCP server 交給 agent，它就能尋找畫面、檢視版面與文字，並擷取所需素材。也可以把一個 frame 的設計資料、素材與參考圖打包成一個 zip，任何 agent 或隊友都能使用。
+
+| 如果你遇過這些情況 | figlens 可以幫你 |
+|---|---|
+| 付費 seat 也遇到「Rate limit exceeded, try again tomorrow」 | 隨時讀取儲存的檔案，不呼叫 Figma API，不需要 token 或 seat |
+| agent 在雲端伺服器或 CI 執行 | 使用原生 CLI 讀取設計，不需要 Figma App 或瀏覽器工作階段 |
+| 不斷解釋尺寸、匯出素材 | 提供結構化版面、字體樣式、展開的 instance、綁定變數與原始素材 |
+| 其他 agent 或隊友需要相同畫面 | 分享包含設計資料、素材、參考圖與說明的 frame bundle |
+
+設計師繼續使用 Figma，agent 使用專案既有的技術堆疊。figlens 提供設計上下文，coding agent 負責撰寫實作。
+
+<details>
+<summary>.fig 格式沒有公開文件。Figma 改了格式怎麼辦？</summary>
+
+figlens 不靠猜測格式。每個版本都用同一批檔案對照 Figma 自己匯出的 JSON、PNG 與 SVG 檢查（[結果](#how-close-is-it-to-figma)），所以格式變動會以可量測的回歸顯現，而不是悄悄出錯。你已經儲存的副本，用讀取它的那個 figlens 版本仍可繼續使用；只有從改版後的 Figma 新儲存的檔案才需要更新 figlens，`figlens update` 就能取得。
+
+</details>
+
+<a id="from-a-local-fig-to-working-html"></a>
+
+## 從本機 .fig 到可操作的 HTML
+
+[![Pi 從本機 Figma 檔案建立可操作的介面，終端旁同步顯示預覽](assets/demo-8x.gif)](assets/demo-8x.mp4)
+
+**[觀看影片](assets/demo-8x.mp4)** · 45 秒縮時影片，**8 倍速**。這是在 Orca 中進行的真實 Pi 工作階段：讀取本機設計、建立 HTML/CSS，再於即時預覽中操作分享對話框與輸入區。介面使用 bundle 內的 19 個 SVG 圖示，是 HTML 實作。
+
+| 此範例 | 實測結果 |
+|---|---|
+| 本機 `.fig` 檔案 | 57.5 MiB |
+| 選取的 frame | 153 個節點、25 個 SVG 素材，無缺失素材 |
+| 擷取設計 bundle | 五次暖快取執行的中位數為 **0.47 秒** |
+
+計時測量的是 `figlens bundle`，**不包含 AI 實作時間**。使用 figlens 0.1.2，在 ARM64 Docker 容器中測量；詳見[指令、各次結果與錄影說明](wiki/accuracy.md#local-design-to-html-demo)。Pi 撰寫程式碼，figlens 提供設計資料；AI 服務仍需網路連線。
+
+<details>
+<summary>設計出處與示範限制</summary>
+
+「List views」frame 來自 [MCP Apps for Claude (Community)](https://www.figma.com/community/file/1597641111449594397/mcp-apps-for-claude)。原始 Anthropic 字型未包含在 bundle 中，因此示範使用系統 sans 與 Georgia。分享按鈕開啟本機對話框；回覆保留於頁面，重新載入即清除。錄影由真實 Orca 視窗的連續截圖組成，動態效果較一般錄影不流暢。
+
+</details>
+
 <a id="browse-and-hand-off-a-design"></a>
 
 ## 瀏覽與交接設計
@@ -148,8 +163,6 @@ npx @runkids/figlens preview design.fig 12:345 --out preview.html
 ## Pi 擴充套件
 
 **給 Pi 一個 `.fig`，告訴它要哪個畫面。** [套件](https://pi.dev/packages/@runkids/figlens)包含 CLI、MCP、preview、擴充功能與 agent skill：
-
-[![npm downloads per month](https://img.shields.io/npm/dm/@runkids/figlens?label=npm%20downloads&color=8b78c8)](https://www.npmjs.com/package/@runkids/figlens)
 
 ```sh
 pi install npm:@runkids/figlens
@@ -283,20 +296,6 @@ claude mcp add figlens -- npx -y @runkids/figlens mcp
 Server 在本機透過 stdio 執行，提供 `tree`、`find`、`inspect`、`nodes`、`variables`、`bundle` 與 `export`。工具請使用絕對路徑：相對路徑以 client 啟動 figlens 的目錄為準。
 
 先用 `find` 與 `inspect` 選擇 frame。`export` 儲存檔案並回傳 metadata。點陣格式也會回傳 MCP 圖片內容，因此 agent 不需開啟本機檔案就能看見設計；SVG 僅回傳 metadata。PNG 的 client 支援最廣，大型 frame 可降低 `scale`。`find`、`inspect`、`bundle` 與 `export` 也會回傳結構化 JSON。
-
-<a id="installation"></a>
-
-## 安裝
-
-搭配 Node.js 18+ 使用 `npx @runkids/figlens`，或安裝獨立 CLI：
-
-| 平台 | 指令 |
-|---|---|
-| macOS / Linux | `curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh \| sh` |
-| Homebrew | `brew install runkids/tap/figlens` |
-| Windows (PowerShell) | `irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 \| iex` |
-
-Release 執行檔支援 macOS（Apple silicon、Intel）、Linux（arm64、x86_64、靜態 musl）與 Windows（x86_64；ARM64 透過模擬執行）。獨立安裝可用 `figlens update` 更新。
 
 <a id="commands"></a>
 
