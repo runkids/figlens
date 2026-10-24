@@ -16,6 +16,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b78c8" alt="MIT license"></a>
+  <a href="https://github.com/runkids/figlens/releases"><img src="https://img.shields.io/github/downloads/runkids/figlens/total?label=GitHub%20downloads&amp;color=79b9a5" alt="Total GitHub release asset downloads"></a>
   <a href="#for-ai-agents"><img src="https://img.shields.io/badge/agents-CLI_%2B_MCP-79b9a5" alt="CLI and MCP for AI agents"></a>
 </p>
 
@@ -147,6 +148,8 @@ npx @runkids/figlens preview design.fig 12:345 --out preview.html
 ## Pi 扩展包
 
 **给 Pi 一个 `.fig`，告诉它要哪个画面。** [包](https://pi.dev/packages/@runkids/figlens)包含 CLI、MCP、preview、扩展与 agent skill：
+
+[![npm downloads per month](https://img.shields.io/npm/dm/@runkids/figlens?label=npm%20downloads&color=8b78c8)](https://www.npmjs.com/package/@runkids/figlens)
 
 ```sh
 pi install npm:@runkids/figlens

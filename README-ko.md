@@ -16,6 +16,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b78c8" alt="MIT license"></a>
+  <a href="https://github.com/runkids/figlens/releases"><img src="https://img.shields.io/github/downloads/runkids/figlens/total?label=GitHub%20downloads&amp;color=79b9a5" alt="Total GitHub release asset downloads"></a>
   <a href="#for-ai-agents"><img src="https://img.shields.io/badge/agents-CLI_%2B_MCP-79b9a5" alt="CLI and MCP for AI agents"></a>
 </p>
 
@@ -147,6 +148,8 @@ npx @runkids/figlens preview design.fig 12:345 --out preview.html
 ## Pi 확장
 
 **Pi에게 `.fig`를 주고 원하는 화면을 요청하세요.** [패키지](https://pi.dev/packages/@runkids/figlens)에는 CLI, MCP, 미리보기, 확장, 에이전트 skill이 포함됩니다.
+
+[![npm downloads per month](https://img.shields.io/npm/dm/@runkids/figlens?label=npm%20downloads&color=8b78c8)](https://www.npmjs.com/package/@runkids/figlens)
 
 ```sh
 pi install npm:@runkids/figlens

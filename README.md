@@ -16,6 +16,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b78c8" alt="MIT license"></a>
+  <a href="https://github.com/runkids/figlens/releases"><img src="https://img.shields.io/github/downloads/runkids/figlens/total?label=GitHub%20downloads&amp;color=79b9a5" alt="Total GitHub release asset downloads"></a>
   <a href="#for-ai-agents"><img src="https://img.shields.io/badge/agents-CLI_%2B_MCP-79b9a5" alt="CLI and MCP for AI agents"></a>
 </p>
 
@@ -131,6 +132,8 @@ The live viewer watches the saved local file and refreshes after successful save
 ## Pi extension
 
 **Give Pi a `.fig` and ask for the screen.** The [package](https://pi.dev/packages/@runkids/figlens) includes the CLI, MCP, preview, extension and agent skill:
+
+[![npm downloads per month](https://img.shields.io/npm/dm/@runkids/figlens?label=npm%20downloads&color=8b78c8)](https://www.npmjs.com/package/@runkids/figlens)
 
 ```sh
 pi install npm:@runkids/figlens
