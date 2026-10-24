@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/runkids/figlens/compare/v0.5.0...v0.6.0) (2026-10-24)
+
+
+### New Features
+
+* add autonomous design implementation workflow ([19d6d08](https://github.com/runkids/figlens/commit/19d6d08d396d14c9a1daa93328f66ca8fb5bf2f0))
+
 ## [0.5.0](https://github.com/runkids/figlens/compare/v0.4.2...v0.5.0) (2026-10-24)
 
 
