@@ -72,7 +72,9 @@ Report missing assets and any checks you could not run.
 
 ## デモ：Pi が .fig から React の画面を作る
 
-[![Pi plans from a local .fig, builds a React screen and checks it beside a live browser](assets/taskflow-demo-poster.jpg)](assets/taskflow-demo.mp4)
+[![Pi plans from a local .fig, builds a React screen and checks it beside a live browser](assets/taskflow-demo.gif)](assets/taskflow-demo.mp4)
+
+GIF は編集済み動画をさらに 3 倍速でループ再生します。クリックすると 78 秒の動画全編を見られます。
 
 **[78 秒の動画](assets/taskflow-demo.mp4)。** Pi が `/figlens plan` を実行し、ローカルの `.fig` からダッシュボードの frame を読み、React と Tailwind CSS で作り、動作中の UI を確認して修正します。編集済みのタイムラプスであり、ベンチマークでもピクセル単位の一致の保証でもありません。デザイン：[Task Flow by Eymen Eid](https://www.figma.com/community/file/1224268866120711793) · [収録メモ](wiki/accuracy.md#taskflow-react-and-tailwind-demo)。
 
@@ -174,9 +176,6 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 誰に�
 
 ## MCP サーバーとエージェント skill
 
-<details>
-<summary>MCP ツール、パス制限、skill のインストール、skillshare</summary>
-
 **MCP。** サーバーは stdio 経由でローカル実行され、`tree`、`find`、`inspect`、`nodes`、`variables`、`bundle`、`export` を公開します。パスは絶対パスで渡します。`--root /path/to/designs`（複数指定可）を追加すると、すべてのファイルパスと出力パスを指定フォルダーに制限できます。ラスターエクスポートは `maxSize`（デフォルト 1600 px）に縮小され、インライン画像は小さく保たれます。SVG はメタデータのみを返します。
 
 Claude Code でネイティブ Windows を使う場合：その [stdio セットアップ手順](https://code.claude.com/docs/en/mcp#option-3-add-a-local-stdio-server)と、`npx` 用の `cmd /c` ラッパーに従ってください。
@@ -198,14 +197,9 @@ skillshare sync && skillshare sync mcp --global
 
 **インストールの注意。** npm ランチャーは初回使用時に対応するネイティブバイナリをダウンロードし、リリースの SHA-256 チェックサムで検証してキャッシュします。単体インストールは `figlens update` で更新します。バイナリは macOS（Apple silicon、Intel）、Linux（arm64、x86_64、静的 musl）、Windows（x86_64）に対応しています。
 
-</details>
-
 <a id="commands"></a>
 
 ## CLI リファレンス
-
-<details>
-<summary>すべてのコマンド</summary>
 
 | コマンド | 出力 |
 |---|---|
@@ -224,8 +218,6 @@ skillshare sync && skillshare sync mcp --global
 | `update` | バイナリを最新リリースに置き換え |
 
 node 引数には `12:345`、`12-345`、または `?node-id=` 付きの Figma URL を指定できます。`<file>` には `gs://bucket/object` も指定でき、`gcloud` ログインでダウンロードしてキャッシュします。CLI は呼び出しごとにファイルをデコードします。MCP サーバーは、ディスク上で変更されるまで解析済みファイルを呼び出し間で保持します。使い方は `figlens --help` で確認できます。
-
-</details>
 
 <a id="limitations"></a>
 
