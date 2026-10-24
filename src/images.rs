@@ -39,41 +39,42 @@ pub fn inspect(fig: &Path, document: &Value) -> Result<Value, Box<dyn Error>> {
 }
 
 fn collect(node: &Value, items: &mut Vec<Value>, truncated: &mut bool) {
-    for paint in ["fills", "strokes"] {
-        for (index, fill) in node[paint].as_array().into_iter().flatten().enumerate() {
-            let Some(image_ref) = fill["imageRef"].as_str() else {
-                continue;
-            };
-            if items.len() == LIMIT {
-                *truncated = true;
-                return;
-            }
-            let mut item = json!({
-                "nodeId": node["id"], "paint": paint, "index": index,
-                "imageRef": image_ref, "scaleMode": fill["scaleMode"],
-                "nodeSize": {"width": node["_r"]["size"]["x"], "height": node["_r"]["size"]["y"]},
-            });
-            let raw_paints = if paint == "fills" {
-                "fillPaints"
-            } else {
-                "strokePaints"
-            };
-            if let Some(rotation) = node["_r"][raw_paints][index]["rotation"]
-                .as_f64()
-                .filter(|r| *r != 0.0)
-            {
-                item["imageRotation"] = rotation.into();
-            }
-            for (key, value) in [
-                ("nodeVisible", &node["visible"]),
-                ("paintVisible", &fill["visible"]),
-                ("imageTransform", &fill["imageTransform"]),
-            ] {
-                if !value.is_null() {
-                    item[key] = value.clone();
-                }
-            }
-            items.push(item);
+    for (paint, raw) in [("fills", "fillPaints"), ("strokes", "strokePaints")] {
+        collect_paints(
+            node,
+            paint,
+            &node[paint],
+            &node["_r"][raw],
+            None,
+            items,
+            truncated,
+        );
+        if *truncated {
+            return;
+        }
+    }
+    for (style_id, style) in node["styleOverrideTable"].as_object().into_iter().flatten() {
+        let raw = node["_r"]["styleOverrideTable"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|entry| {
+                entry["styleID"]
+                    .as_u64()
+                    .is_some_and(|id| id.to_string() == style_id.as_str())
+            })
+            .unwrap_or(&Value::Null);
+        collect_paints(
+            node,
+            "fills",
+            &style["fills"],
+            &raw["fillPaints"],
+            Some(style_id),
+            items,
+            truncated,
+        );
+        if *truncated {
+            return;
         }
     }
     for child in node["children"].as_array().into_iter().flatten() {
@@ -81,6 +82,47 @@ fn collect(node: &Value, items: &mut Vec<Value>, truncated: &mut bool) {
         if *truncated {
             return;
         }
+    }
+}
+
+fn collect_paints(
+    node: &Value,
+    paint: &str,
+    paints: &Value,
+    raw_paints: &Value,
+    text_style: Option<&str>,
+    items: &mut Vec<Value>,
+    truncated: &mut bool,
+) {
+    for (index, fill) in paints.as_array().into_iter().flatten().enumerate() {
+        let Some(image_ref) = fill["imageRef"].as_str() else {
+            continue;
+        };
+        if items.len() == LIMIT {
+            *truncated = true;
+            return;
+        }
+        let mut item = json!({
+            "nodeId": node["id"], "paint": paint, "index": index,
+            "imageRef": image_ref, "scaleMode": fill["scaleMode"],
+            "nodeSize": {"width": node["_r"]["size"]["x"], "height": node["_r"]["size"]["y"]},
+        });
+        if let Some(style) = text_style {
+            item["textStyleId"] = style.into();
+        }
+        if let Some(rotation) = raw_paints[index]["rotation"].as_f64().filter(|r| *r != 0.0) {
+            item["imageRotation"] = rotation.into();
+        }
+        for (key, value) in [
+            ("nodeVisible", &node["visible"]),
+            ("paintVisible", &fill["visible"]),
+            ("imageTransform", &fill["imageTransform"]),
+        ] {
+            if !value.is_null() {
+                item[key] = value.clone();
+            }
+        }
+        items.push(item);
     }
 }
 
@@ -194,6 +236,65 @@ mod tests {
         assert_eq!(items[4]["imageRotation"].as_f64(), Some(90.0));
         assert!(items[4]["sourceRect"].is_null());
         assert_eq!(items[4]["sourceRectUnknownReason"], "rotated image paint");
+    }
+
+    #[test]
+    fn text_override_images_keep_style_identity_crop_and_raw_rotation() {
+        let dir = crate::test_support::TestDir::new();
+        let file = dir.join("text-images.fig");
+        let png = crate::render::png(r#"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><rect width="400" height="200" fill="red"/></svg>"#).unwrap();
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&file).unwrap());
+        zip.start_file("images/shared", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&png).unwrap();
+        zip.finish().unwrap();
+        let document = json!({
+            "id":"text", "type":"TEXT", "characters":"ABC", "characterStyleOverrides":[1,2,1],
+            "fills":[{"type":"SOLID"}],
+            "strokes":[{"type":"IMAGE","imageRef":"shared","scaleMode":"FIT"}],
+            "styleOverrideTable":{
+                "1":{"fills":[{"type":"IMAGE","imageRef":"shared","scaleMode":"FILL"}]},
+                "2":{"fills":[{"type":"IMAGE","imageRef":"shared","scaleMode":"STRETCH","imageTransform":[[0.25,0,0.25],[0,0.5,0]]}]}
+            },
+            "_r":{"size":{"x":100,"y":100},"styleOverrideTable":[
+                {"styleID":2,"fillPaints":[{"rotation":0}]},
+                {"styleID":1,"fillPaints":[{"rotation":90}]}
+            ]}
+        });
+        let mut text_only = document.clone();
+        text_only["strokes"] = json!([]);
+        let evidence = inspect(&file, &text_only).unwrap();
+        assert_eq!(evidence["items"].as_array().unwrap().len(), 2);
+        assert_eq!(evidence["truncated"], false);
+        let result = inspect(&file, &document).unwrap();
+        let items = result["items"].as_array().unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["paint"], "strokes");
+        assert!(items[0].get("textStyleId").is_none());
+        let rotated = items.iter().find(|i| i["textStyleId"] == "1").unwrap();
+        assert_eq!(rotated["nodeId"], "text");
+        assert_eq!(rotated["paint"], "fills");
+        assert_eq!(rotated["index"], 0);
+        assert_eq!(rotated["source"]["bytes"], png.len());
+        assert_eq!(rotated["imageRotation"].as_f64(), Some(90.0));
+        assert_eq!(rotated["sourceRectUnknownReason"], "rotated image paint");
+        let cropped = items.iter().find(|i| i["textStyleId"] == "2").unwrap();
+        assert_eq!(
+            cropped["sourceRect"],
+            json!({"coordinateSpace":"source-image-pixels","x":100.0,"y":0.0,"width":100.0,"height":100.0})
+        );
+        assert_eq!(result["truncated"], false);
+
+        let fills: Vec<_> = (0..=LIMIT).map(|_| json!({"imageRef":"shared"})).collect();
+        let mut items = Vec::new();
+        let mut truncated = false;
+        collect(
+            &json!({"styleOverrideTable":{"9":{"fills":fills}}}),
+            &mut items,
+            &mut truncated,
+        );
+        assert_eq!(items.len(), LIMIT);
+        assert!(truncated);
     }
 
     #[test]

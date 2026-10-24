@@ -12,6 +12,7 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 | `pi` | Changing the Pi extension, reviewed component mappings or its npm packaging | `pi.md` |
 | `accuracy` | Measuring output against Figma's own exports, running `compare`, finding test files | `accuracy.md` |
 | `release` | Packaging, GitHub releases, Homebrew, npm, install scripts and `figlens update` | `release.md` |
+| `review` | Reviewing changes, creating a PR and following up on AI review | `review.md` |
 | `direction` | Deciding what to build next, or revisiting a past decision | `direction.md` |
 | `ai-context` | Maintaining this router: add, move or split docs, fix `check` | `ai-context.md` |
 

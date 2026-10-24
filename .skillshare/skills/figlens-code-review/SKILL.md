@@ -15,6 +15,8 @@ metadata:
 
 Review one change in five independent passes, verify every finding, and report them by pass. $ARGUMENTS names the target (a base ref, a PR number, or a path) and may end with `fix`.
 
+Load `python3 scripts/ai-context.py review` for the pre-PR and AI-review follow-up procedure. After an authorized PR fix, push verified changes, request `@codex review` and inspect the completed review of that head; the topic owns this workflow.
+
 **Scope**: read-only by default. With `fix`, apply only verified findings that do not change intended behavior, then run the checks in `AGENTS.md` Verification. Never commit, push, or comment on GitHub unless the user asks.
 
 ## Step 1: Pin the diff

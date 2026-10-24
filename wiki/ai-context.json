@@ -29,6 +29,10 @@
       "description": "Packaging, GitHub releases, Homebrew, npm, install scripts and figlens update.",
       "sources": [{ "path": "wiki/release.md" }]
     },
+    "review": {
+      "description": "Review changes, create a PR and follow up on AI review and CI.",
+      "sources": [{ "path": "wiki/review.md" }]
+    },
     "direction": {
       "description": "Deciding what to build next, or revisiting a past decision.",
       "sources": [{ "path": "wiki/direction.md" }]
