@@ -992,7 +992,7 @@ fn font_weight(style: &str) -> u32 {
     .map_or(400, |(_, w)| w)
 }
 
-fn paints(list: Option<&Json>) -> Json {
+pub(crate) fn paints(list: Option<&Json>) -> Json {
     list.and_then(Json::as_array)
         .into_iter()
         .flatten()

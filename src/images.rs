@@ -1,5 +1,6 @@
 //! Original bitmap evidence for image paints; no export or quality diagnosis.
 
+use std::collections::HashSet;
 use std::error::Error;
 use std::path::Path;
 
@@ -69,12 +70,45 @@ fn collect(node: &Value, items: &mut Vec<Value>, truncated: &mut bool) {
             "fills",
             &style["fills"],
             &raw["fillPaints"],
-            Some(style_id),
+            Some(("textStyleId", style_id)),
             items,
             truncated,
         );
         if *truncated {
             return;
+        }
+    }
+    if let Some(styles) = node["_r"]["vectorStyles"]
+        .as_array()
+        .filter(|s| !s.is_empty())
+    {
+        let mut used: HashSet<_> = node["_r"]["fillGeometry"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|g| g["styleID"].as_u64().unwrap_or(0))
+            .collect();
+        for style in styles {
+            let Some(id) = style["styleID"].as_u64() else {
+                continue;
+            };
+            if !style["fillPaints"].is_array() || !used.remove(&id) {
+                continue;
+            }
+            let id = id.to_string();
+            let paints = crate::rest::paints(style.get("fillPaints"));
+            collect_paints(
+                node,
+                "fills",
+                &paints,
+                &style["fillPaints"],
+                Some(("vectorStyleId", &id)),
+                items,
+                truncated,
+            );
+            if *truncated {
+                return;
+            }
         }
     }
     for child in node["children"].as_array().into_iter().flatten() {
@@ -90,7 +124,7 @@ fn collect_paints(
     paint: &str,
     paints: &Value,
     raw_paints: &Value,
-    text_style: Option<&str>,
+    style: Option<(&str, &str)>,
     items: &mut Vec<Value>,
     truncated: &mut bool,
 ) {
@@ -107,8 +141,8 @@ fn collect_paints(
             "imageRef": image_ref, "scaleMode": fill["scaleMode"],
             "nodeSize": {"width": node["_r"]["size"]["x"], "height": node["_r"]["size"]["y"]},
         });
-        if let Some(style) = text_style {
-            item["textStyleId"] = style.into();
+        if let Some((field, id)) = style {
+            item[field] = id.into();
         }
         if let Some(rotation) = raw_paints[index]["rotation"].as_f64().filter(|r| *r != 0.0) {
             item["imageRotation"] = rotation.into();
@@ -290,6 +324,65 @@ mod tests {
         let mut truncated = false;
         collect(
             &json!({"styleOverrideTable":{"9":{"fills":fills}}}),
+            &mut items,
+            &mut truncated,
+        );
+        assert_eq!(items.len(), LIMIT);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn used_vector_region_images_keep_style_identity_and_crop() {
+        let dir = crate::test_support::TestDir::new();
+        let file = dir.join("vector-images.fig");
+        let png = crate::render::png(r#"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><rect width="400" height="200" fill="red"/></svg>"#).unwrap();
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&file).unwrap());
+        zip.start_file("images/shared", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&png).unwrap();
+        zip.finish().unwrap();
+        let crop = json!({"type":"IMAGE","image":{"hash":"shared"},"imageScaleMode":"STRETCH","transform":{"m00":0.25,"m01":0,"m02":0.25,"m10":0,"m11":0.5,"m12":0}});
+        let vector = json!({
+            "id":"vector","type":"VECTOR","fills":[{"type":"SOLID"}],
+            "_r":{"size":{"x":100,"y":100},
+                "fillGeometry":[{"styleID":7},{"styleID":7},{}],
+                "vectorStyles":[
+                    {"styleID":7,"fillPaints":[{"type":"SOLID"},crop]},
+                    {"styleID":7,"fillPaints":[{"type":"IMAGE","image":{"hash":"unused-duplicate"}}]},
+                    {"styleID":8,"fillPaints":[{"type":"IMAGE","image":{"hash":"unused-style"}}]},
+                    {"styleID":0,"fillPaints":[{"type":"IMAGE","image":{"hash":"shared"},"imageScaleMode":"FILL","rotation":90}]}
+                ]
+            }
+        });
+        let document = json!({"children":[
+            {"id":"ordinary","_r":{"size":{"x":100,"y":100}},"fills":[{"type":"IMAGE","imageRef":"shared","scaleMode":"FIT"}]},
+            vector
+        ]});
+        let result = inspect(&file, &document).unwrap();
+        let items = result["items"].as_array().unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["nodeId"], "ordinary");
+        assert!(items[0].get("vectorStyleId").is_none());
+        let cropped = items.iter().find(|i| i["vectorStyleId"] == "7").unwrap();
+        assert_eq!(cropped["nodeId"], "vector");
+        assert_eq!(cropped["index"], 1);
+        assert_eq!(cropped["source"]["bytes"], png.len());
+        assert_eq!(
+            cropped["sourceRect"],
+            json!({"coordinateSpace":"source-image-pixels","x":100.0,"y":0.0,"width":100.0,"height":100.0})
+        );
+        let rotated = items.iter().find(|i| i["vectorStyleId"] == "0").unwrap();
+        assert_eq!(rotated["imageRotation"].as_f64(), Some(90.0));
+        assert_eq!(rotated["sourceRectUnknownReason"], "rotated image paint");
+        assert_eq!(result["truncated"], false);
+
+        let fills: Vec<_> = (0..=LIMIT)
+            .map(|_| json!({"type":"IMAGE","image":{"hash":"shared"}}))
+            .collect();
+        let mut items = Vec::new();
+        let mut truncated = false;
+        collect(
+            &json!({"_r":{"fillGeometry":[{"styleID":5}],"vectorStyles":[{"styleID":5,"fillPaints":fills}]}}),
             &mut items,
             &mut truncated,
         );
