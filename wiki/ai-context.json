@@ -21,7 +21,12 @@
         },
         {
           "path": "wiki/gcs.md"
-        },
+        }
+      ]
+    },
+    "performance": {
+      "description": "Measuring load time and memory, reading the perf baseline, changing cache or decode cost.",
+      "sources": [
         {
           "path": "wiki/performance.md"
         }

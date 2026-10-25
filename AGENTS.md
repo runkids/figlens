@@ -33,6 +33,7 @@ python3 scripts/ai-context.py check     # validate paths, headings and byte budg
 |---|---|
 | `mcp` | Changing MCP instructions, tool discovery or built-in workflow guidance |
 | `parsing` | Changing untrusted container/schema/value decoding or parsing budgets |
+| `performance` | Measuring load time and memory, reading the perf baseline, changing cache or decode cost |
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields, variables or the bundle |
 | `render` | Changing SVG or raster output: text and glyphs, image fills, effects, export areas, image adjustments |
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison |
