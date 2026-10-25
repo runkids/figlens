@@ -15,6 +15,7 @@ The test-only `scripts/candidate-fetch.cjs` intercepts the installed wrapper's t
 Build into a new output directory, using targets matching the machines that will consume the artifacts. For local macOS arm64, for example:
 
 ```sh
+mkdir -p dist/candidate-local-new
 docker compose run --rm \
   -e FIGLENS_TARGETS=aarch64-apple-darwin \
   -e FIGLENS_DIST_DIR=dist/candidate-local-new \
@@ -24,7 +25,7 @@ python3 -B scripts/check-installation.py \
   --artifacts dist/candidate-local-new --commit "$(git rev-parse HEAD)" --pi-version 1.4.0
 ```
 
-The output directory must be run-owned; the packer refuses an existing candidate manifest. Default release scripts still write `dist/`. `prepare-npm.cjs [new-stage-directory]` can populate an isolated stage; omitting the argument keeps the existing `npm/` staging behavior. No global tools are installed.
+Create the output directory on the host before Docker so the host-side npm packer can write beside the container-built archives on Linux. The directory must be run-owned; the packer refuses an existing candidate manifest. Default release scripts still write `dist/`. `prepare-npm.cjs [new-stage-directory]` can populate an isolated stage; omitting the argument keeps the existing `npm/` staging behavior. No global tools are installed.
 
 The consumer check requires Python 3.9+ and the selected Node distribution with its adjacent npm CLI. It installs the real tarball offline into a fresh consumer with separate HOME, npm configuration/cache, native cache, Pi agent directory and temporary outputs. No repo node_modules, user credentials, global figlens or existing binary cache is used. An optional pinned Pi SDK is installed from npm into that consumer, with lifecycle scripts disabled; the loader/resource checks do not require those scripts or a paid model.
 

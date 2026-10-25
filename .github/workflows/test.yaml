@@ -88,6 +88,8 @@ jobs:
         env:
           FIGLENS_TARGETS: x86_64-unknown-linux-musl aarch64-apple-darwin x86_64-pc-windows-gnu
         run: |
+          # The host npm packer needs to write beside the container-built archives.
+          mkdir -p dist/candidate
           docker compose run --build --rm \
             -e FIGLENS_TARGETS -e FIGLENS_DIST_DIR=dist/candidate \
             dist scripts/build-dist.sh
