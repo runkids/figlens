@@ -26,6 +26,35 @@ pub fn render_nodes(tree: &Tree, root: &str) -> Json {
     build(tree, root, true)
 }
 
+/// Select an exact stored or expanded ID, retaining its instance overrides and geometry.
+pub fn resolve_nodes(tree: &Tree, id: &str) -> Result<Json, Box<dyn std::error::Error>> {
+    resolve_target(tree, id, false)
+}
+
+/// `resolve_nodes` with renderer input, for selected-node image inspection and export.
+pub fn resolve_render_nodes(tree: &Tree, id: &str) -> Result<Json, Box<dyn std::error::Error>> {
+    resolve_target(tree, id, true)
+}
+
+fn resolve_target(tree: &Tree, id: &str, render: bool) -> Result<Json, Box<dyn std::error::Error>> {
+    let root = crate::export::root_of(id);
+    if !tree.nodes.contains_key(root) {
+        return crate::err(format!(
+            "node {id} not found; list ids with `figlens tree <file.fig> --depth 2`"
+        ));
+    }
+    let mut doc = build(tree, root, render);
+    if root != id {
+        // Expand the outer instance first; selecting the component's raw child loses context.
+        doc["document"] = render::find(&doc["document"], id).cloned().ok_or_else(|| {
+            crate::FigError(format!(
+                "node {id} not found in expanded instance {root}; inspect {root} for available sublayer IDs"
+            ))
+        })?;
+    }
+    Ok(doc)
+}
+
 fn build(tree: &Tree, root: &str, render: bool) -> Json {
     let mut styles: HashMap<String, Vec<String>> = HashMap::new();
     for (id, node) in &tree.nodes {

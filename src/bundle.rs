@@ -171,7 +171,7 @@ pub fn write(
     root: &str,
     out: &Path,
 ) -> Result<Vec<String>, Box<dyn Error>> {
-    let prepared = Prepared::new(tree, fig, crate::export::root_of(root), root)?;
+    let prepared = Prepared::new(tree, fig, root)?;
     let rendered = prepared.node();
     let mut doc = prepared.document.clone();
     doc["document"] = rendered.clone();
@@ -238,7 +238,9 @@ pub fn write(
     }
     // Rasterizing dominates a bundle (filters at 2x), and each render is independent: draw them
     // in parallel, then add them in plan order so the bundle stays the same.
-    render::export_area(rendered).ok_or("frame has no size")?;
+    render::export_area(rendered).ok_or_else(|| format!(
+        "node {root} is unsupported for bundle: no drawable bounds; inspect the node and select a sized drawable layer"
+    ))?;
     let (renders, reference) = rayon::join(
         || {
             plan.composites

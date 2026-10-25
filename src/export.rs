@@ -54,10 +54,15 @@ pub fn export(
     max_bytes: Option<usize>,
     max_px: Option<u32>,
 ) -> Result<Image, Box<dyn Error>> {
-    let prepared = Prepared::new(tree, fig, root_of(id), id)?;
+    let prepared = Prepared::new(tree, fig, id)?;
+    let unsupported = || {
+        format!(
+            "node {id} is unsupported for export: no drawable bounds; inspect the node and select a sized drawable layer"
+        )
+    };
     if format == Format::Svg {
         let n = prepared.node();
-        let area = render::render_bounds(n).ok_or("node has nothing to render")?;
+        let area = render::render_bounds(n).ok_or_else(unsupported)?;
         let lookup = |h: &str| prepared.images.get(h).cloned();
         // Keep original image fills embedded; raster export's downsampling would lose detail.
         let bytes = render::Svg::new(tree, &lookup)
@@ -90,9 +95,7 @@ pub fn export(
         }
         _ => scale,
     };
-    let svg = prepared
-        .export_svg(tree, scale)
-        .ok_or("node has nothing to render")?;
+    let svg = prepared.export_svg(tree, scale).ok_or_else(unsupported)?;
     let pixmap = render::pixmap(&svg)?;
     Ok(encode(&pixmap, format, quality, max_bytes)?)
 }

@@ -64,6 +64,7 @@ usage:
 <file.fig>: a local path, or gs://bucket/object (downloaded with your gcloud login, cached in
   ~/.cache/figlens until the object changes).
 <node>: a Figma URL with ?node-id=..., 12-345 (URL form) or 12:345.
+        nodes/inspect/export/bundle also accept full instance sublayer IDs from inspect/nodes.
 JSON goes to stdout, errors to stderr; exit status 1 on any error.
 
 examples:
@@ -296,9 +297,6 @@ fn batch(tree: &Tree, fig: &Path, args: &[String]) -> Result<(), Box<dyn Error>>
         frames.par_iter().for_each(|id| {
             let path = Path::new(&dir).join(format!("{}.zip", id.replace(':', "-")));
             let one = || -> Result<Vec<String>, String> {
-                if !tree.nodes.contains_key(id) {
-                    return Err(format!("node {id} not found"));
-                }
                 let key = file_key.as_deref();
                 figlens::bundle::write(tree, fig, key, None, id, &path).map_err(|e| e.to_string())
             };
@@ -334,7 +332,7 @@ const NODE: Param = (
     "",
     "string",
     true,
-    "a node id (12:345 or 12-345) or a Figma URL with ?node-id=",
+    "a stored node id (12:345 or 12-345), full instance sublayer id (I12:345;67:89) from inspect/nodes, or a Figma URL with ?node-id=",
 );
 /// CLI and tools share command execution and result formatting.
 const TOOLS: &[(&str, &str, &[Param])] = &[
@@ -359,7 +357,7 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
                 "",
                 "string",
                 false,
-                "the root; default the whole document",
+                "a stored root id; default the whole document; use inspect for instance sublayers",
             ),
             (
                 "depth",
@@ -394,7 +392,7 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
                 "--node",
                 "string",
                 false,
-                "search this subtree; default the document",
+                "search this stored subtree; default the document; use inspect for instance sublayers",
             ),
             (
                 "type",
@@ -436,7 +434,7 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "nodes",
-        "A frame as Figma REST nodes.json: instances expanded, fills, text, auto-layout. Can be large.",
+        "A node or exact instance sublayer as Figma REST nodes.json: instances expanded, fills, text, auto-layout. Can be large.",
         &[FILE, NODE],
     ),
     (
@@ -449,13 +447,13 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
                 "",
                 "string",
                 false,
-                "the frame; omit for every local variable",
+                "the node, including full instance sublayer IDs; omit for every local variable",
             ),
         ],
     ),
     (
         "bundle",
-        "Write a design bundle zip for a frame: nodes, variables, assets, reference render, context.md.",
+        "Write a design bundle zip for one node or exact instance sublayer: nodes, variables, assets, reference render, context.md.",
         &[
             FILE,
             NODE,
