@@ -131,13 +131,23 @@ impl Document {
         })
     }
 
-    /// Decodes the root `Message` with the file's own schema.
+    /// Decodes the root `Message` with the file's own schema, retaining bytes for another decode.
     pub fn message(&self) -> Result<Value<'_>, Box<dyn Error>> {
-        let Some(def) = self.schema.def("Message") else {
+        Self::decode_message(&self.schema, &self.message)
+    }
+
+    /// Decodes the root `Message` and releases its bytes; the returned value borrows only the schema.
+    pub fn take_message(&mut self) -> Result<Value<'_>, Box<dyn Error>> {
+        let message = std::mem::take(&mut self.message);
+        Self::decode_message(&self.schema, &message)
+    }
+
+    fn decode_message<'a>(schema: &'a Schema, message: &[u8]) -> Result<Value<'a>, Box<dyn Error>> {
+        let Some(def) = schema.def("Message") else {
             return err("schema has no Message definition");
         };
-        parse::message(&self.schema, def.index, &self.message, parse::VALUES)?;
-        Value::decode(&self.schema, def.index, &self.message).map_err(|_| {
+        parse::message(schema, def.index, message, parse::VALUES)?;
+        Value::decode(schema, def.index, message).map_err(|_| {
             FigError::new(ErrorKind::InvalidData, "message does not match its schema").into()
         })
     }
@@ -411,6 +421,17 @@ mod tests {
             to_json(&recovered.message().unwrap()),
             to_json(&normal.message().unwrap())
         );
+    }
+
+    #[test]
+    fn taking_message_releases_bytes_and_preserves_decoded_values() {
+        let mut doc = Document::open(Path::new("examples/first-success/design.fig")).unwrap();
+        let expected = to_json(&doc.message().unwrap());
+        let message = doc.take_message().unwrap();
+        assert_eq!(to_json(&message), expected);
+        assert!(!Tree::new(&message).nodes.is_empty());
+        drop(message);
+        assert_eq!(doc.message.capacity(), 0);
     }
 
     fn frame(version: u32, chunks: &[&[u8]]) -> Vec<u8> {

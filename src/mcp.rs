@@ -206,8 +206,8 @@ impl AdmittedCall {
                 };
                 #[cfg(test)]
                 LOADS.with(|n| n.set(n.get() + 1));
-                let doc = Document::open(&path).map_err(|e| contract::source("", e))?;
-                let message = doc.message()?;
+                let mut doc = Document::open(&path).map_err(|e| contract::source("", e))?;
+                let message = doc.take_message()?;
                 let tree = Tree::new(&message);
                 run(&tree, &path)
             })();
@@ -290,11 +290,15 @@ pub fn serve(
         }
         #[cfg(test)]
         LOADS.with(|n| n.set(n.get() + 1));
-        let Ok(Ok(doc)) = std::panic::catch_unwind(|| Document::open(path)) else {
+        let Ok(Ok(mut doc)) = std::panic::catch_unwind(|| Document::open(path)) else {
             reply(call.execute(None, roots))?;
             continue;
         };
-        let Ok(Ok(message)) = std::panic::catch_unwind(|| doc.message()) else {
+        let document = &mut doc;
+        let Ok(Ok(message)) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let document = document;
+            document.take_message()
+        })) else {
             reply(call.execute(None, roots))?;
             continue;
         };

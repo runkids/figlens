@@ -42,7 +42,8 @@ usage:
   figlens bundle <file.fig> --frames <list> --out-dir <dir> [--file-key KEY] [--jobs N]
                                             one decode, many bundles: <list> has one node id per line;
                                              writes <dir>/<nodeId>.zip (`:` as `-`), prints one JSON line
-                                             per frame ({nodeId,path,warnings} or {nodeId,error})
+                                             per frame ({nodeId,path,warnings} or {nodeId,error});
+                                             --jobs limits concurrent frames (0/default: all cores), not rendering
   figlens export <file.fig> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]
                                             render a node to out.png|jpg|webp|avif|svg (default 1x,
                                              quality 80); SVG keeps vectors, scale/quality do not apply;
@@ -169,8 +170,8 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             std::net::SocketAddr::new(bind, port),
         );
     }
-    let doc = Document::open(&path).map_err(|e| contract::source(file, e))?;
-    let message = doc.message()?;
+    let mut doc = Document::open(&path).map_err(|e| contract::source(file, e))?;
+    let message = doc.take_message()?;
     let tree = Tree::new(&message);
     match command {
         "bundle" if args.get(2).map(String::as_str) == Some("--frames") => {
@@ -271,7 +272,6 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
 /// `bundle --frames <list> --out-dir <dir> [--file-key K] [--jobs N]`: one decode, the frames
 /// written in parallel, one JSON line per frame as each finishes. A frame's failure is its own line.
 fn batch(tree: &Tree, fig: &Path, args: &[String]) -> Result<(), Box<dyn Error>> {
-    use rayon::prelude::*;
     let (mut list, mut dir, mut file_key, mut jobs) = (None, None, None, None);
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
@@ -290,32 +290,47 @@ fn batch(tree: &Tree, fig: &Path, args: &[String]) -> Result<(), Box<dyn Error>>
         .lines()
         .filter_map(|l| l.split_whitespace().next().map(normalize_id))
         .collect();
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(jobs.unwrap_or(0))
-        .stack_size(STACK)
-        .build()?;
+    let jobs = jobs
+        .filter(|&n| n > 0)
+        .unwrap_or_else(rayon::current_num_threads);
     let stdout = std::sync::Mutex::new(std::io::stdout());
-    pool.install(|| {
-        frames.par_iter().for_each(|id| {
-            let path = Path::new(&dir).join(format!("{}.zip", id.replace(':', "-")));
-            let one = || -> Result<Vec<String>, String> {
-                let key = file_key.as_deref();
-                figlens::bundle::write(tree, fig, key, None, id, &path).map_err(|e| e.to_string())
-            };
-            // A panic in one frame must not take the others down.
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(one))
-                .unwrap_or_else(|_| Err("figlens crashed on this frame".to_owned()));
-            let line = match result {
-                Ok(warnings) => {
-                    serde_json::json!({ "nodeId": id, "path": path, "warnings": warnings })
-                }
-                Err(e) => serde_json::json!({ "nodeId": id, "error": e }),
-            };
-            let mut out = stdout.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = writeln!(out, "{line}");
-            let _ = out.flush();
-        });
-    });
+    let write_frame = |id: &String| {
+        let path = Path::new(&dir).join(format!("{}.zip", id.replace(':', "-")));
+        let one = || -> Result<Vec<String>, String> {
+            let key = file_key.as_deref();
+            figlens::bundle::write(tree, fig, key, None, id, &path).map_err(|e| e.to_string())
+        };
+        // A panic in one frame must not take the others down.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(one))
+            .unwrap_or_else(|_| Err("figlens crashed on this frame".to_owned()));
+        let line = match result {
+            Ok(warnings) => {
+                serde_json::json!({ "nodeId": id, "path": path, "warnings": warnings })
+            }
+            Err(e) => serde_json::json!({ "nodeId": id, "error": e }),
+        };
+        let mut out = stdout.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = writeln!(out, "{line}");
+        let _ = out.flush();
+    };
+    let workers = jobs.min(frames.len());
+    let frames = std::sync::Mutex::new(frames.iter());
+    // OS workers bound frames without confining inner rendering to a frame-sized rayon pool.
+    std::thread::scope(|scope| -> std::io::Result<()> {
+        for _ in 0..workers {
+            std::thread::Builder::new()
+                .stack_size(STACK)
+                .spawn_scoped(scope, || {
+                    loop {
+                        let Some(id) = frames.lock().unwrap().next() else {
+                            break;
+                        };
+                        write_frame(id);
+                    }
+                })?;
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 

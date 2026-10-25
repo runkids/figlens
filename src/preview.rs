@@ -230,8 +230,8 @@ pub fn snapshot(file: &Path, id: &str, out: &Path) -> Result<()> {
     if out.exists() && fs::canonicalize(file)? == fs::canonicalize(out)? {
         return Err("snapshot output must not overwrite the source design".into());
     }
-    let doc = Document::open(file)?;
-    let message = doc.message()?;
+    let mut doc = Document::open(file)?;
+    let message = doc.take_message()?;
     let tree = Tree::new(&message);
     let workspace = Workspace::new()?;
     let zip = workspace.0.join("scope.zip");
@@ -563,7 +563,7 @@ pub fn serve(file: &Path, initial: Option<&str>, address: SocketAddr) -> Result<
     loop {
         // Decode once per revision; the revision's workers share the tree and finish before a reload.
         let (fresh, stamp) = {
-            let message = document.message()?;
+            let message = document.take_message()?;
             let tree = Tree::new(&message);
             let ctx = Revision {
                 tree: &tree,
