@@ -2,21 +2,51 @@ import csv
 import json
 import os
 from pathlib import Path
-import runpy
 import signal
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
-from installation import environment, run, toolchain
+from unittest.mock import Mock, patch
+from installation import environment, run, stop_process, toolchain
+from mcp_smoke import check_mcp, session
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 class InstallationHarnessTest(unittest.TestCase):
     def test_cli_timeout_stops_the_wrapper_child(self):
+        self.check_stops_wrapper_child(
+            lambda command, cwd, env: run(command, cwd, env, timeout=1),
+            subprocess.TimeoutExpired)
+
+    def test_mcp_timeout_stops_the_wrapper_child(self):
+        def check(command, cwd, env):
+            with session(command, cwd, env, timeout=1) as request:
+                request('ping', {})
+        self.check_stops_wrapper_child(check, TimeoutError)
+
+    def test_mcp_shutdown_timeout_stops_the_wrapper_child(self):
+        def check(command, cwd, env):
+            with session(command, cwd, env, timeout=1):
+                self.wait_for_child(cwd)
+        self.check_stops_wrapper_child(check, AssertionError)
+
+    def test_mcp_body_failure_stops_the_wrapper_child(self):
+        def check(command, cwd, env):
+            with session(command, cwd, env):
+                self.wait_for_child(cwd)
+                raise ValueError('test-only body failure')
+        self.check_stops_wrapper_child(check, ValueError)
+
+    def wait_for_child(self, cwd):
+        deadline = time.monotonic() + 2
+        while not (cwd/'child.pid').exists() and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertTrue((cwd/'child.pid').is_file(), 'Child did not start before cleanup')
+
+    def check_stops_wrapper_child(self, action, expected_error):
         with tempfile.TemporaryDirectory() as work:
             root = Path(work)
             heartbeat, pidfile = root/'heartbeat', root/'child.pid'
@@ -36,9 +66,9 @@ subprocess.run([sys.executable, '-c', sys.argv[1], *sys.argv[2:]], check=True)
             started = time.monotonic()
             cleanup_needed = True
             try:
-                with self.assertRaises(subprocess.TimeoutExpired):
-                    run([sys.executable, '-c', wrapper, child, heartbeat, pidfile],
-                        root, os.environ.copy(), timeout=1)
+                with self.assertRaises(expected_error):
+                    action([sys.executable, '-c', wrapper, child, heartbeat, pidfile],
+                           root, os.environ.copy())
                 self.assertTrue(pidfile.is_file(), 'Child did not start before timeout')
                 self.assertLess(time.monotonic() - started, 4, 'Timeout waited for the orphan to exit')
                 stopped = heartbeat.read_text()
@@ -97,13 +127,56 @@ subprocess.run([sys.executable, '-c', sys.argv[1], *sys.argv[2:]], check=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('another commit', result.stderr)
 
+    def test_windows_cleanup_reaps_child(self):
+        for exited_during_taskkill in [False, True]:
+            with self.subTest(exited_during_taskkill=exited_during_taskkill):
+                process = Mock(pid=123)
+                process.poll.side_effect = [None, 0, 0]
+                failure = subprocess.CalledProcessError(1, 'taskkill') if exited_during_taskkill else None
+                with patch('installation.os.name', 'nt'), patch('installation.subprocess.run', side_effect=failure) as taskkill:
+                    stop_process(process)
+                taskkill.assert_called_once_with(
+                    ['taskkill', '/PID', '123', '/T', '/F'], stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, check=True, timeout=10)
+                process.kill.assert_not_called()
+                process.wait.assert_called_once_with(timeout=10)
+
+    def test_windows_cleanup_failure_still_reaps_child(self):
+        process = Mock(pid=123)
+        process.poll.return_value = None
+        with patch('installation.os.name', 'nt'), patch('installation.subprocess.run', side_effect=subprocess.CalledProcessError(1, 'taskkill')):
+            with self.assertRaises(subprocess.CalledProcessError):
+                stop_process(process)
+        process.kill.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=10)
+
+    def test_mcp_clean_shutdown(self):
+        child = """import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' in request:
+        print(json.dumps({'jsonrpc': '2.0', 'id': request['id'],
+                          'result': request['params']}), flush=True)
+"""
+        with tempfile.TemporaryDirectory() as work:
+            with session([sys.executable, '-c', child], work, os.environ.copy(), timeout=1) as request:
+                self.assertEqual(request('ping', {}), {})
+                self.assertIsNone(request('notifications/initialized', {}))
+                self.assertEqual(request('echo', {'ok': True}), {'ok': True})
+
+    def test_mcp_rejects_extra_stdout_at_shutdown(self):
+        child = "import sys; sys.stdin.read(); print('unexpected stdout', flush=True)"
+        with tempfile.TemporaryDirectory() as work:
+            with self.assertRaisesRegex(AssertionError, 'Unexpected extra stdout'):
+                with session([sys.executable, '-c', child], work, os.environ.copy(), timeout=1):
+                    pass
+
     def test_mcp_rejects_log_lines_on_stdout(self):
-        check = runpy.run_path(str(ROOT/'scripts/mcp-smoke.py'))['check_mcp']
         with tempfile.TemporaryDirectory() as work:
             root = Path(work)
             env = environment(root, sys.executable)
             with self.assertRaises(ValueError):
-                check([sys.executable, '-c', 'import sys; sys.stdin.readline(); print("installer progress", flush=True)'], root, env, root/'unused.fig', '0.0.0')
+                check_mcp([sys.executable, '-c', 'import sys; sys.stdin.readline(); print("installer progress", flush=True)'], root, env, root/'unused.fig', '0.0.0')
 
     def test_candidate_transport_cannot_fall_back_to_another_release(self):
         node, _npm = toolchain()

@@ -2,8 +2,8 @@ use super::*;
 use crate::{TOOLS, contract, mcp_reply};
 use serde_json::{Value, json};
 
-fn check(tool: &str, args: Value) -> Result<(Value, bool), contract::Failure> {
-    contract::arguments(tool, TOOLS.iter().find(|t| t.0 == tool).unwrap().2, &args)
+fn check(tool: &str, args: Value) -> Result<contract::PreparedCall, contract::Failure> {
+    contract::prepare(tool, &args)
 }
 
 #[test]
@@ -42,7 +42,7 @@ fn schema_and_numeric_preflight_share_boundaries() {
     assert_eq!(
         check("tree", json!({"file":"a.fig","depth":2.0}))
             .unwrap_or_else(|_| panic!())
-            .0["depth"],
+            .argument("depth"),
         2
     );
     for args in [
@@ -61,40 +61,74 @@ fn schema_and_numeric_preflight_share_boundaries() {
 }
 
 #[test]
-fn required_types_null_unknowns_and_legacy_are_explicit() {
+fn strict_types_unknowns_and_flag_like_nodes_are_explicit() {
     for args in [
         json!({}),
         json!({"file":null}),
         json!({"file":42}),
         json!({"file":""}),
         json!({"file":"a.fig","json":"false"}),
+        json!({"file":"a.fig","depth":"0"}),
+        json!({"file":"a.fig","node":false}),
+        json!({"file":"a.fig","depth":null}),
     ] {
         assert!(check("tree", args).is_err());
     }
     for args in [
-        json!({"file":"a.fig","depth":"0"}),
-        json!({"file":"a.fig","node":false,"depth":null,"json":false}),
+        json!({"file":"a.fig","json":false}),
         json!({"file":"a.fig","node":"--json"}),
+        json!({"file":"a.fig","futureOption":42}),
     ] {
-        assert!(check("tree", args).unwrap_or_else(|_| panic!()).1);
+        assert!(check("tree", args).is_ok());
     }
-    assert!(
-        check(
-            "export",
-            json!({"file":"a.fig","node":"0:1","out":"a.png","scale":"2x"})
-        )
-        .unwrap_or_else(|_| panic!())
-        .1
-    );
-    assert!(
-        !check("tree", json!({"file":"a.fig","futureOption":42}))
-            .unwrap_or_else(|_| panic!())
-            .1
-    );
+    for (key, value) in [
+        ("scale", json!("2x")),
+        ("maxSize", Value::Null),
+        ("maxSize", json!(false)),
+    ] {
+        let mut args = json!({"file":"a.fig","node":"0:1","out":"a.png"});
+        args[key] = value;
+        assert!(check("export", args).is_err());
+    }
     assert!(check("workflow", json!({"topic":"build","extra":true})).is_err());
     assert!(check("workflow", json!({"topic":null})).is_err());
     assert!(check("workflow", json!({"topic":"missing"})).is_err());
     assert!(check("nodes", json!({"file":"a.fig","node":null})).is_err());
+}
+
+#[test]
+fn discovery_and_preparation_share_defaults() {
+    for (name, _, params) in TOOLS {
+        let args = if *name == "workflow" {
+            json!({"topic":"build"})
+        } else {
+            json!({"file":"a.fig","node":"0:1","query":"Frame","out":"a.png"})
+        };
+        let call = check(name, args.clone()).unwrap();
+        for param in *params {
+            let property = contract::property(name, param);
+            if let Some(default) = property.get("default") {
+                let mut omitted = args.clone();
+                omitted.as_object_mut().unwrap().remove(param.0);
+                assert_eq!(
+                    check(name, omitted).unwrap().argument(param.0),
+                    default,
+                    "{name}.{}",
+                    param.0
+                );
+            }
+        }
+        assert_eq!(call.name(), *name);
+    }
+    let call = check("tree", json!({"file":"a.fig"})).unwrap();
+    assert_eq!(call.argument("depth"), usize::MAX);
+    assert!(call.string("out").is_none());
+    let call = check(
+        "export",
+        json!({"file":"a.fig","node":"0:1","out":"a.png","maxSize":0}),
+    )
+    .unwrap();
+    assert_eq!(call.argument("maxSize"), 0);
 }
 
 #[test]
@@ -172,7 +206,7 @@ fn every_tool_rejects_missing_required_fields_and_wrong_types_before_io() {
             json!({"file":"absent.fig","node":"0:1","query":"Frame","out":"out.png"})
         };
         assert!(check(name, valid.clone()).is_ok());
-        for (key, _, _, required, _) in *params {
+        for (key, _, required, _) in *params {
             let mut args = valid.clone();
             args[*key] = json!([]);
             let reply = call_tool(&json!({"name":name,"arguments":args}), None);

@@ -1,0 +1,371 @@
+use super::*;
+use crate::test_support::TestDir;
+use std::collections::VecDeque;
+use std::io::{BufRead, Read};
+
+fn call(id: Value, tool: &str, arguments: Value) -> String {
+    json!({"id":id,"method":"tools/call","params":{"name":tool,"arguments":arguments}}).to_string()
+}
+
+fn replies(input: impl BufRead, roots: &[PathBuf]) -> Vec<Value> {
+    let mut output = Vec::new();
+    serve(input, &mut output, roots).unwrap();
+    String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+fn rooted_reply(line: &str, roots: &[PathBuf]) -> Value {
+    match admit(line, roots) {
+        Admission::Reply(reply) => reply,
+        Admission::Call(call) => call.execute(None, roots),
+        Admission::Ignore => panic!("expected reply"),
+    }
+}
+
+fn fixture(dir: &TestDir, name: &str) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::copy("examples/first-success/design.fig", &path).unwrap();
+    path
+}
+
+#[test]
+fn notification_and_explicit_null_matrix_has_no_hidden_work() {
+    let dir = TestDir::new();
+    let file = fixture(&dir, "design.fig");
+    let out = dir.join("never.png");
+    for roots in [vec![], vec![dir.join("").canonicalize().unwrap()]] {
+        PREPARATIONS.with(|n| n.set(0));
+        PATH_CHECKS.with(|n| n.set(0));
+        LOADS.with(|n| n.set(0));
+        let mut notifications = vec![
+            json!({"method":"unknown"}),
+            json!({"method":"tools/call","params":{}}),
+            json!({"method":"tools/call","params":{"name":42}}),
+            json!({"method":"tools/call","params":{"name":"unknown"}}),
+            json!({"method":"tools/call","params":{"name":"tree","arguments":{"depth":"2"}}}),
+            json!({"method":"tools/call","params":{"name":"export","arguments":{"file":file,"node":"0:1","out":out}}}),
+            json!({"method":"tools/call","params":{"name":"nodes","arguments":{"file":"gs://must-not-contact/design.fig","node":"0:1"}}}),
+        ];
+        let omitted = notifications.clone();
+        for request in &mut notifications {
+            request["jsonrpc"] = "2.0".into();
+        }
+        notifications.extend(omitted);
+        let input = notifications
+            .iter()
+            .map(ToString::to_string)
+            .chain([json!({"id":9,"method":"ping"}).to_string()])
+            .collect::<Vec<_>>()
+            .join("\n");
+        let results = replies(input.as_bytes(), &roots);
+        assert_eq!(results, vec![response(&json!(9), json!({}))]);
+        PREPARATIONS.with(|n| assert_eq!(n.get(), 0));
+        PATH_CHECKS.with(|n| assert_eq!(n.get(), 0));
+        LOADS.with(|n| assert_eq!(n.get(), 0));
+        assert!(!out.exists());
+
+        let messages = [
+            "{".to_owned(),
+            json!({}).to_string(),
+            json!({"method":false}).to_string(),
+            json!({"jsonrpc":"1.0","method":"ping"}).to_string(),
+            json!({"id":true,"method":"ping"}).to_string(),
+            json!({"id":null,"method":"unknown"}).to_string(),
+            json!({"id":null,"method":"tools/call","params":{}}).to_string(),
+            json!({"id":null,"method":"tools/call","params":{"name":42}}).to_string(),
+            call(Value::Null, "unknown", json!({})),
+            call(Value::Null, "tree", json!({})),
+            call(Value::Null, "nodes", json!({"file":file,"node":"0:1"})),
+            json!({"id":null,"method":"ping"}).to_string(),
+        ]
+        .join("\n");
+        let results = replies(messages.as_bytes(), &roots);
+        for (result, code) in results.iter().zip([
+            -32700, -32600, -32600, -32600, -32600, -32601, -32602, -32602,
+        ]) {
+            assert_eq!(result["error"]["code"], code);
+            assert!(result["id"].is_null());
+        }
+        for result in &results[8..10] {
+            assert_eq!(
+                result["result"]["_meta"]["figlens"]["code"],
+                "invalid_arguments"
+            );
+        }
+        assert_eq!(results[10]["result"]["isError"], false);
+        assert_eq!(results[11]["result"], json!({}));
+        assert!(results.iter().all(|result| result["id"].is_null()));
+    }
+}
+
+// Run mutations between lines without globals, sleeps or permission-bit assumptions.
+type Step = (String, Option<Box<dyn FnOnce()>>);
+struct Steps(VecDeque<Step>);
+impl Read for Steps {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        unreachable!()
+    }
+}
+impl BufRead for Steps {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        unreachable!()
+    }
+    fn consume(&mut self, _: usize) {
+        unreachable!()
+    }
+    fn read_line(&mut self, buf: &mut String) -> std::io::Result<usize> {
+        let Some((line, action)) = self.0.pop_front() else {
+            return Ok(0);
+        };
+        if let Some(action) = action {
+            action();
+        }
+        buf.push_str(&line);
+        buf.push('\n');
+        Ok(line.len() + 1)
+    }
+}
+
+#[test]
+fn cache_carries_prepared_calls_once_and_recovers_from_source_changes() {
+    let dir = TestDir::new();
+    let file = fixture(&dir, "first.fig");
+    let second = fixture(&dir, "second.fig");
+    PREPARATIONS.with(|n| n.set(0));
+    LOADS.with(|n| n.set(0));
+    let request = |id, path: &Path| call(json!(id), "nodes", json!({"file":path,"node":"0:1"}));
+    let changed = file.clone();
+    let removed = file.clone();
+    let restored = file.clone();
+    let steps = Steps(VecDeque::from([
+        (request(1, &file), None),
+        (json!({"id":2,"method":"ping"}).to_string(), None),
+        (call(json!(3), "workflow", json!({"topic":"build"})), None),
+        (
+            call(json!(4), "tree", json!({"file":file,"depth":"0"})),
+            None,
+        ),
+        (
+            request(5, &file),
+            Some(Box::new(|| LOADS.with(|n| assert_eq!(n.get(), 1))) as Box<dyn FnOnce()>),
+        ),
+        (
+            request(6, &file),
+            Some(Box::new(move || {
+                // A readable, changed but invalid design must not reuse the old Tree.
+                std::fs::write(changed, b"not a design").unwrap();
+            })),
+        ),
+        (
+            request(7, &file),
+            Some(Box::new(move || {
+                std::fs::remove_file(removed).unwrap();
+            })),
+        ),
+        (
+            request(8, &file),
+            Some(Box::new(move || {
+                std::fs::copy("examples/first-success/design.fig", restored).unwrap();
+            })),
+        ),
+        (request(9, &second), None),
+        (request(10, &second), None),
+        (json!({"id":11,"method":"ping"}).to_string(), None),
+    ]));
+    let results = replies(steps, &[]);
+    assert_eq!(results.len(), 11);
+    for id in [1, 3, 5, 8, 9, 10] {
+        assert_eq!(
+            results[id - 1]["result"]["isError"],
+            false,
+            "id {id}: {}",
+            results[id - 1]
+        );
+    }
+    for id in [6, 7] {
+        assert_eq!(
+            results[id - 1]["result"]["_meta"]["figlens"]["code"],
+            "source_unreadable"
+        );
+    }
+    PREPARATIONS.with(|n| assert_eq!(n.get(), 9));
+    LOADS.with(|n| assert_eq!(n.get(), 6));
+}
+
+#[test]
+fn unrooted_paths_preserve_relative_labels_missing_parents_and_symlinks() {
+    let dir = TestDir::new();
+    let file = fixture(&dir, "design.fig");
+    let output = dir.join("relative.png");
+    let request = call(
+        json!(1),
+        "export",
+        json!({"file":file,"node":"0:1","out":output}),
+    );
+    let result = rooted_reply(&request, &[]);
+    assert_eq!(result["result"]["isError"], false, "{result}");
+    assert_eq!(
+        result["result"]["structuredContent"]["path"],
+        output.to_string_lossy().as_ref()
+    );
+    assert!(output.exists());
+    for tool in ["export", "bundle"] {
+        let out = dir.join(if tool == "export" {
+            "missing/new.png"
+        } else {
+            "missing/new.zip"
+        });
+        let result = rooted_reply(
+            &call(json!(2), tool, json!({"file":file,"node":"0:1","out":out})),
+            &[],
+        );
+        assert_eq!(
+            result["result"]["_meta"]["figlens"]["code"],
+            "output_write_failed"
+        );
+        assert!(!dir.join("missing").exists());
+    }
+    // Unknown design-tool fields remain ignored, including fields named like another tool's paths.
+    let result = rooted_reply(
+        &call(
+            json!(3),
+            "find",
+            json!({"file":file,"query":"First","out":"/not-authorized/ignored.png"}),
+        ),
+        &[dir.join("").canonicalize().unwrap()],
+    );
+    assert_eq!(result["result"]["isError"], false);
+    assert!(result["result"]["structuredContent"].get("path").is_none());
+    #[cfg(unix)]
+    {
+        let target = dir.join("target.png");
+        let link = dir.join("link.png");
+        std::os::unix::fs::symlink("target.png", &link).unwrap();
+        let result = rooted_reply(
+            &call(
+                json!(4),
+                "export",
+                json!({"file":file,"node":"0:1","out":link}),
+            ),
+            &[],
+        );
+        assert_eq!(result["result"]["isError"], false, "{result}");
+        assert!(target.exists());
+        // Existing output aliases must not change the requested encoder or reply label.
+        let target = dir.join("target.jpg");
+        std::fs::write(&target, b"old output").unwrap();
+        let link = dir.join("encoding.png");
+        std::os::unix::fs::symlink("target.jpg", &link).unwrap();
+        for roots in [vec![], vec![dir.join("").canonicalize().unwrap()]] {
+            let result = rooted_reply(
+                &call(
+                    json!(6),
+                    "export",
+                    json!({"file":file,"node":"0:1","out":link}),
+                ),
+                &roots,
+            );
+            assert_eq!(result["result"]["isError"], false, "{result}");
+            assert_eq!(
+                result["result"]["structuredContent"]["path"],
+                link.to_string_lossy().as_ref()
+            );
+            assert!(
+                std::fs::read(&target)
+                    .unwrap()
+                    .starts_with(b"\x89PNG\r\n\x1a\n")
+            );
+        }
+        let input = dir.join("input-link.fig");
+        std::os::unix::fs::symlink("design.fig", &input).unwrap();
+        let result = rooted_reply(
+            &call(json!(5), "nodes", json!({"file":input,"node":"0:1"})),
+            &[],
+        );
+        assert_eq!(result["result"]["isError"], false);
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn admitted_paths_survive_alias_changes_and_recheck_output_parents() {
+    let dir = TestDir::new();
+    let outside = TestDir::new();
+    let source = fixture(&dir, "design.fig");
+    let alias = dir.join("alias.fig");
+    std::os::unix::fs::symlink("design.fig", &alias).unwrap();
+    let roots = [dir.join("").canonicalize().unwrap()];
+    let request = call(json!(1), "nodes", json!({"file":alias,"node":"0:1"}));
+    let Admission::Call(admitted) = admit(&request, &roots) else {
+        panic!()
+    };
+    std::fs::remove_file(&alias).unwrap();
+    std::os::unix::fs::symlink(outside.join("outside.fig"), &alias).unwrap();
+    assert_eq!(admitted.execute(None, &roots)["result"]["isError"], false);
+    // Execution used the stored source, not the now-retargeted argument.
+    assert_eq!(
+        admitted.local(),
+        Some(source.canonicalize().unwrap().as_path())
+    );
+    assert_eq!(
+        rooted_reply(&request, &roots)["result"]["_meta"]["figlens"]["code"],
+        "permission_denied"
+    );
+
+    std::fs::create_dir(dir.join("outputs")).unwrap();
+    let out = dir.join("outputs/new.png");
+    let Admission::Call(admitted) = admit(
+        &call(
+            json!(2),
+            "export",
+            json!({"file":source,"node":"0:1","out":out}),
+        ),
+        &roots,
+    ) else {
+        panic!()
+    };
+    std::fs::remove_dir(dir.join("outputs")).unwrap();
+    std::os::unix::fs::symlink(
+        outside.join("").canonicalize().unwrap(),
+        dir.join("outputs"),
+    )
+    .unwrap();
+    assert_eq!(
+        admitted.execute(None, &roots)["result"]["_meta"]["figlens"]["code"],
+        "permission_denied"
+    );
+    assert!(!outside.join("new.png").exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn non_utf8_output_targets_are_not_reinterpreted_as_lossy_paths() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let dir = TestDir::new();
+    let file = fixture(&dir, "design.fig");
+    let doc = Document::open(&file).unwrap();
+    let message = doc.message().unwrap();
+    let tree = Tree::new(&message);
+    for (tool, extension) in [("export", "png"), ("bundle", "zip")] {
+        let mut name = b"target-\xff.".to_vec();
+        name.extend_from_slice(extension.as_bytes());
+        let target = dir.join("").join(std::ffi::OsString::from_vec(name));
+        let prepared = contract::prepare(
+            tool,
+            &json!({"file":file,"node":"0:1","out":format!("alias.{extension}")}),
+        )
+        .unwrap();
+        // Assert the handoff without requiring the host filesystem to store non-UTF-8 names.
+        let command = command::Command::from_tool(&prepared, &tree, Some(&target)).unwrap();
+        let out = match command {
+            command::Command::Bundle { out, .. } | command::Command::Export { out, .. } => out,
+            _ => panic!("expected output command"),
+        };
+        assert_eq!(out, target);
+        assert_ne!(out, PathBuf::from(target.to_string_lossy().as_ref()));
+    }
+}

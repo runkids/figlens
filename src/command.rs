@@ -2,7 +2,7 @@
 
 use std::error::Error;
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use figlens::rest::resolve_nodes;
 use figlens::variables::variables;
@@ -39,13 +39,14 @@ pub enum Command {
     Variables(Option<String>),
     Bundle {
         node: String,
-        out: String,
+        out: PathBuf,
         file_key: Option<String>,
         name: Option<String>,
     },
     Export {
         node: String,
-        out: String,
+        out: PathBuf,
+        format: figlens::export::Format,
         scale: f64,
         quality: u8,
         max_kb: Option<usize>,
@@ -197,7 +198,7 @@ impl Command {
                 }
                 Self::Bundle {
                     node,
-                    out,
+                    out: out.into(),
                     file_key,
                     name,
                 }
@@ -207,7 +208,7 @@ impl Command {
                 let out = args.get(1).cloned().ok_or(USAGE)?;
                 let id = normalize_id(&node);
                 require_target_root(tree, &id)?;
-                export_format(&out)?;
+                let format = export_format(&out)?;
                 let (mut scale, mut quality, mut max_kb, mut max_size) = (1.0_f64, 80, None, None);
                 let mut rest = args[2..].iter();
                 while let Some(arg) = rest.next() {
@@ -222,7 +223,8 @@ impl Command {
                 }
                 Self::Export {
                     node,
-                    out,
+                    out: out.into(),
+                    format,
                     scale,
                     quality,
                     max_kb,
@@ -234,38 +236,30 @@ impl Command {
     }
 
     /// Schema-shaped MCP arguments enter directly, without inventing CLI positionals or flags.
-    pub fn from_tool(name: &str, args: &Value, tree: &Tree) -> Result<Self, Box<dyn Error>> {
-        let string = |key: &str| args[key].as_str().map(str::to_owned);
+    pub fn from_tool(
+        call: &crate::contract::PreparedCall,
+        tree: &Tree,
+        output: Option<&Path>,
+    ) -> Result<Self, Box<dyn Error>> {
+        let string = |key: &str| call.string(key).map(str::to_owned);
         let node = || string("node").ok_or(USAGE);
-        Ok(match name {
+        Ok(match call.name() {
             "tree" => Self::Tree {
-                root: normalize_id(string("node").as_deref().unwrap_or("0:0")),
-                depth: args
-                    .get("depth")
-                    .map(|n| n.to_string().parse())
-                    .transpose()?
-                    .unwrap_or(usize::MAX),
-                json: args["json"] == true,
+                root: normalize_id(call.string("node").unwrap()),
+                depth: call.argument("depth").as_u64().unwrap() as usize,
+                json: call.argument("json") == true,
             },
             "nodes" => Self::Nodes(node()?),
             "find" => Self::Find {
                 query: string("query").ok_or(USAGE)?,
-                root: normalize_id(string("node").as_deref().unwrap_or("0:0")),
+                root: normalize_id(call.string("node").unwrap()),
                 kind: string("type").map(|s| s.to_uppercase()),
-                limit: args
-                    .get("limit")
-                    .map(|n| n.to_string().parse())
-                    .transpose()?
-                    .unwrap_or(20),
+                limit: call.argument("limit").as_u64().unwrap() as usize,
             },
             "inspect" => Self::Inspect {
                 node: node()?,
-                depth: args
-                    .get("depth")
-                    .map(|n| n.to_string().parse())
-                    .transpose()?
-                    .unwrap_or(1),
-                images: args["images"] == true,
+                depth: call.argument("depth").as_u64().unwrap() as usize,
+                images: call.argument("images") == true,
             },
             "variables" => Self::Variables(string("node")),
             "bundle" => {
@@ -273,40 +267,26 @@ impl Command {
                 require_target_root(tree, &normalize_id(&node))?;
                 Self::Bundle {
                     node,
-                    out: string("out").ok_or(USAGE)?,
+                    out: output.ok_or(USAGE)?.to_owned(),
                     file_key: string("fileKey"),
                     name: string("name"),
                 }
             }
             "export" => {
                 let node = node()?;
-                let out = string("out").ok_or(USAGE)?;
+                let out = output.ok_or(USAGE)?.to_owned();
                 let id = normalize_id(&node);
                 require_target_root(tree, &id)?;
-                export_format(&out)?;
                 Self::Export {
                     node,
                     out,
-                    scale: args
-                        .get("scale")
-                        .map(|n| n.to_string().parse())
-                        .transpose()?
-                        .unwrap_or(1.0),
-                    quality: args
-                        .get("quality")
-                        .map(|n| n.to_string().parse())
-                        .transpose()?
-                        .unwrap_or(80),
-                    max_kb: args
-                        .get("maxKb")
-                        .map(|n| n.to_string().parse())
-                        .transpose()?,
+                    // Encoding follows the requested extension, not a symlink target's name.
+                    format: export_format(call.string("out").unwrap())?,
+                    scale: call.argument("scale").as_f64().unwrap(),
+                    quality: call.argument("quality").as_u64().unwrap() as u8,
+                    max_kb: call.argument("maxKb").as_u64().map(|n| n as usize),
                     // Tool calls return the image inline, so cap it unless the agent says otherwise.
-                    max_size: args
-                        .get("maxSize")
-                        .map(|n| n.to_string().parse::<u32>())
-                        .transpose()?
-                        .or(Some(1600)),
+                    max_size: Some(call.argument("maxSize").as_u64().unwrap() as u32),
                 }
             }
             _ => return Err(USAGE.into()),
@@ -387,13 +367,15 @@ impl Command {
                         .or_else(|| node.split_once("/file/"))
                         .and_then(|(_, rest)| rest.split('/').next())
                 });
-                let warnings =
-                    figlens::bundle::write(tree, fig, key, name.as_deref(), &id, Path::new(&out))?;
-                compact(json!({ "nodeId": id, "path": out, "warnings": warnings }))
+                let warnings = figlens::bundle::write(tree, fig, key, name.as_deref(), &id, &out)?;
+                compact(
+                    json!({ "nodeId": id, "path": out.to_string_lossy(), "warnings": warnings }),
+                )
             }
             Self::Export {
                 node,
                 out,
+                format,
                 scale,
                 quality,
                 max_kb,
@@ -401,7 +383,6 @@ impl Command {
             } => {
                 let id = normalize_id(&node);
                 require_target_root(tree, &id)?;
-                let format = export_format(&out)?;
                 if !(1..=100).contains(&quality) || !scale.is_finite() || scale <= 0.0 {
                     return Err("--quality takes 1-100 and --scale a positive number".into());
                 }
@@ -421,7 +402,7 @@ impl Command {
                 std::fs::write(&out, &image.bytes).map_err(|e| {
                     figlens::FigError::new(figlens::ErrorKind::OutputWrite, e.to_string())
                 })?;
-                let value = json!({ "path": out, "width": image.width, "height": image.height,
+                let value = json!({ "path": out.to_string_lossy(), "width": image.width, "height": image.height,
                     "bytes": image.bytes.len(), "quality": image.quality });
                 let mime = match format {
                     // Model image inputs commonly accept raster formats, not SVG attachments.

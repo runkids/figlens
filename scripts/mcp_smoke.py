@@ -4,13 +4,13 @@ from contextlib import contextmanager
 import json
 import os
 import queue
-import signal
 import subprocess
 import threading
+from installation import stop_process
 
 
 @contextmanager
-def session(command, cwd, env):
+def session(command, cwd, env, timeout=30):
     process = subprocess.Popen(list(map(str, command)), cwd=cwd, env=env, text=True,
                                encoding='utf-8', stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, start_new_session=os.name != 'nt')
@@ -35,9 +35,9 @@ def session(command, cwd, env):
         process.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': next_id, 'method': method, 'params': params}) + '\n')
         process.stdin.flush()
         try:
-            line = lines.get(timeout=30)
+            line = lines.get(timeout=timeout)
         except queue.Empty as error:
-            raise TimeoutError(f'MCP {method} did not respond within 30 seconds') from error
+            raise TimeoutError(f'MCP {method} did not respond within {timeout:g} seconds') from error
         assert line is not None, 'MCP exited before replying: ' + ''.join(errors)
         reply = json.loads(line)  # An installer/log line on stdout is a failure.
         assert reply.get('jsonrpc') == '2.0' and reply.get('id') == next_id, reply
@@ -45,23 +45,24 @@ def session(command, cwd, env):
         return reply['result']
     try:
         yield request
+    except BaseException:
+        stop_process(process)
+        raise
     finally:
         try:
-            process.stdin.close()
-        except BrokenPipeError:
-            pass
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            if os.name == 'nt':
-                subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], capture_output=True, timeout=10)
-            else:
-                os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=10)
-        for reader in readers:
-            reader.join(timeout=5)
-        process.stdout.close()
-        process.stderr.close()
+            try:
+                process.stdin.close()
+            except BrokenPipeError:
+                pass
+            try:
+                process.wait(timeout=min(timeout, 10))
+            except subprocess.TimeoutExpired:
+                stop_process(process)
+        finally:
+            for reader in readers:
+                reader.join(timeout=5)
+            process.stdout.close()
+            process.stderr.close()
     assert process.returncode == 0, ''.join(errors)
     assert lines.get(timeout=5) is None, 'Unexpected extra stdout after final MCP response'
 
@@ -84,11 +85,12 @@ def check_mcp(command, cwd, env, fixture, version):
         invalid = request('tools/call', {'name':'inspect', 'arguments':{'file':str(fixture),'node':'0:1','depth':1.5}})
         assert invalid['isError'] and invalid['_meta']['figlens']['code'] == 'invalid_arguments', invalid
         legacy = request('tools/call', {'name':'tree','arguments':{'file':str(fixture),'depth':'0'}})
-        assert not legacy['isError'] and legacy['_meta']['figlens']['argumentMode'] == 'legacy', legacy
+        assert legacy['isError'] and legacy['_meta']['figlens']['code'] == 'invalid_arguments', legacy
+        assert 'argumentMode' not in legacy['_meta']['figlens'], legacy
         assert request('ping', {}) == {}
         normal = request('tools/call', {'name': 'inspect', 'arguments': {'file': str(fixture), 'node': '0:1'}})
         assert normal['isError'] is False and normal['structuredContent']['node']['name'] == 'First success', normal
         assert normal['structuredContent']['node']['absoluteBoundingBox']['width'] == 320
         guide = request('tools/call', {'name': 'workflow', 'arguments': {'topic': 'build'}})
         assert guide['isError'] is False and 'Building a frame' in guide['content'][0]['text']
-    return {"recoveredAfterMissingNode": True, "numericPreflight": True, "legacyCompatibility": True, "stdout": "JSON-RPC only"}
+    return {"recoveredAfterMissingNode": True, "numericPreflight": True, "strictRejectionAndRecovery": True, "stdout": "JSON-RPC only"}

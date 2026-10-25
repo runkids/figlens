@@ -33,13 +33,13 @@ With MCP `--root`, remote sources are unsupported. Keep the restriction: have an
 
 ## Cache and refresh semantics
 
-Source of truth: `src/remote.rs`, `src/main.rs::serve/direct_file/run` and the local preview watcher.
+Source of truth: `src/remote.rs`, `src/mcp.rs::serve/AdmittedCall` and `src/main.rs::run` and the local preview watcher.
 
 | Layer | Current behavior |
 |---|---|
 | Metadata | Every remote call runs `gcloud storage objects describe URI --format=value(generation)` before consulting the downloaded file. A missing CLI, denied access, network error or invalid/empty generation fails the call, even with a cached download. Remote reads are not offline reads. |
 | Download | Stored under the platform cache's `figlens/<URI hash>/<generation>.fig`. Same generation reuses bytes, with no copy. A cache miss removes older files for that object, copies to `.part`, then renames to `.fig`. A failed refresh can leave the older cache unavailable. There is no generation-qualified copy or concurrent refresh coordination. |
-| Parse | CLI parses on each call. MCP reuses its last unchanged **local** file by path, modification time and length. Remote/legacy calls do not enter that parsed-tree cache, even at the same generation. |
+| Parse | CLI parses on each call. MCP reuses its last unchanged **local** file by path, modification time and length. Remote calls do not enter that parsed-tree cache, even at the same generation. |
 | Preview | Resolves GCS once at startup, then watches that local cached path. It does not poll GCS or switch to a new generation. Start a new preview to resolve the object again; another call's cache eviction can remove the old preview's source. Treat stale/error state as unavailable fresh evidence. |
 
 Generation lookup and `cp URI` are separate operations. An overwrite between them can download different bytes from the generation just observed. Successful outputs currently contain no GCS generation provenance. Do not claim a bundle proves an exact remote revision; generation-pinned download and operation-level provenance are follow-up suggestions, not implemented guarantees.
