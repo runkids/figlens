@@ -36,3 +36,21 @@ The raw local report is retained in the ignored run directory `samples/batch5-re
 Source inspection confirms local MCP parsed-tree reuse; GCS calls reuse same-generation **downloads** but bypass that parsed-tree cache. The [GCS mock](gcs.md#evidence-and-limitations) confirms six metadata checks and two downloads across repeated/new/failed/recovered calls; these are counts, not cloud latency measurements.
 
 There is no representative licensed large design here, and no real metadata/download timing, image-heavy render profile, cross-platform benchmark or external-client measurement. Keep the current cache architecture for this batch. Gather those measurements before deciding whether remote parsed-tree caching is worth its invalidation/ownership costs. Generation-pinned download/provenance is a separate correctness follow-up, not a measured performance fix.
+
+
+## Compact Kiwi byte arrays (2026-10-26)
+
+Compared main `a1610d69ea964a164ac4c8a2e32c43edcfa184e3` with compact byte arrays, using the same release-profile stage probe, Docker Linux aarch64/glibc and Rust 1.97.1. Build: `docker compose run --rm dev cargo build --release --locked --bin figlens --example stages`. Five fresh processes per binary, no frame arguments, OS page cache not flushed. The ignored probe was copied temporarily into `examples/stages.rs` and removed after measurement.
+
+The community-design sample has 17,995,555 decompressed message bytes, 26,880 nodes and 5,009 blobs. Medians:
+
+| Boundary | Before | After |
+|---|---:|---:|
+| `treeNew` VmHWM (KiB) | 1,022,772 | 574,304 |
+| VmHWM / decompressed message bytes | 58.20x | 32.68x |
+| `kiwiDecodeOnly` (ms) | 211.55 | 165.95 |
+| `documentMessageTotal`, including preflight (ms) | 245.45 | 197.29 |
+
+Byte arrays now use `Vec<u8>` rather than one 72-byte `Value` per byte. Decoded high-water RSS fell 43.8%; raw decode time fell 21.6%. This is a local observation, not a cross-platform guarantee. The unchanged probe's later `countValues` walk does not recognize `Bytes`; only its earlier decode/tree stages are used here.
+
+Compatibility was measured on the public first-success fixture and two different held-out community designs (2,250 and 4,719 nodes), not the performance sample. `nodes` JSON was byte-identical. Bundle entry names and contents were identical (9, 39 and 8 entries), except `manifest.json`'s `createdAt`. No exports or design files are distributed. These checks establish output preservation, not improved accuracy against new Figma exports.
