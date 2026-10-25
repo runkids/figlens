@@ -6,16 +6,15 @@ import json
 import math
 from pathlib import Path
 import platform
-import runpy
 import statistics
 import subprocess
 import sys
 import tempfile
 import time
 from installation import environment, run
+from mcp_smoke import session
 
 ROOT = Path(__file__).resolve().parent.parent
-session = runpy.run_path(str(ROOT/'scripts/mcp-smoke.py'))['session']
 
 
 def summarize(samples):

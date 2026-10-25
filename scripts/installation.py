@@ -32,6 +32,29 @@ def environment(work, node):
     return env
 
 
+def stop_process(process):
+    # The Node wrapper owns a native child; stopping the wrapper alone leaves it running.
+    try:
+        if os.name == 'nt':
+            if process.poll() is None:
+                try:
+                    subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   check=True, timeout=10)
+                except subprocess.CalledProcessError:
+                    if process.poll() is None:
+                        raise
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=10)
+
+
 def run(command, cwd, env, timeout=60):
     with subprocess.Popen(list(map(str, command)), cwd=cwd, env=env, text=True,
                           encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -39,20 +62,9 @@ def run(command, cwd, env, timeout=60):
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except BaseException:
-            # The Node wrapper owns a native child; stopping the wrapper alone leaves it running.
             try:
-                if os.name == 'nt':
-                    subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                   check=True, timeout=10)
-                else:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+                stop_process(process)
             finally:
-                if process.poll() is None:
-                    process.kill()
                 process.communicate(timeout=10)
             raise
     if process.returncode:

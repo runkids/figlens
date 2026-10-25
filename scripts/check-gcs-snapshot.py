@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import runpy
 import shutil
 import subprocess
 import sys
@@ -13,9 +12,9 @@ import tempfile
 import zipfile
 import zlib
 from installation import environment, run
+from mcp_smoke import session
 
 ROOT = Path(__file__).resolve().parent.parent
-session = runpy.run_path(str(ROOT/'scripts/mcp-smoke.py'))['session']
 
 
 def check_gcs(binary, fixture):

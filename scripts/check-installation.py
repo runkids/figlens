@@ -16,9 +16,9 @@ import sys
 import tarfile
 import tempfile
 from installation import environment, run, toolchain
+from mcp_smoke import check_mcp
 
 ROOT = Path(__file__).resolve().parent.parent
-check_mcp = runpy.run_path(str(ROOT/'scripts/mcp-smoke.py'))['check_mcp']
 
 
 def sha(path):
