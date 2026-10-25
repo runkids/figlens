@@ -734,7 +734,7 @@ impl Revision<'_> {
         let response = match action {
             "asset" => {
                 // Read just this image; preparing the whole scope per image is far slower.
-                let mut zip = zip::ZipArchive::new(std::io::BufReader::new(fs::File::open(file)?))?;
+                let mut zip = crate::open_zip(file)?;
                 let mut bytes = Vec::new();
                 zip.by_name(&format!("images/{key}"))
                     .map_err(|_| "original image missing")?

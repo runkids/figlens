@@ -15,6 +15,10 @@ docker compose run --rm dev python3 -B scripts/measure-baseline.py --binary /wor
 
 The report records HEAD and dirty state, platform, explicit binary path/version/hash, fixture size/hash, parameters, all samples, median and nearest-rank p95. Record the build command too: a supplied binary's version alone cannot prove its source. Repetitions are bounded to 3–30. These are sequential observations, not a load test.
 
+## ZIP opening
+
+All three ZIP-open paths (document, render images and preview assets) now share a buffered opener that first uses `ArchiveOffset::Known(0)`, avoiding zip 9.0.5's full-file forward scan. The 2026-10-26 Docker Linux aarch64 measurements on 41/60/100 MB designs were 26/37/58–62 ms per open with `Detect`, versus 0.1–0.3 ms with `Known(0)`; these isolate ZIP opening, not total parsing or rendering. If the fixed-offset attempt fails, the helper reopens with `Detect` so archives with prepended bytes still work.
+
 ## Observed local run
 
 2026-10-26, HEAD `3811c4034447a5518cb8dae0c13de8ba5c167402` **plus batch-5 uncommitted changes**, Docker Linux aarch64/glibc 2.41 on OrbStack, Python 3.13.5; Rust 1.97.1 release profile, `--locked --bin figlens`, no architecture/cache changes. Binary SHA-256: `267547a42aef07600ff289c01170fabb0e0ff09b9324e3d1f9e409a8d0a4c778`. Fixture hash is recorded in its [provenance](../examples/first-success/README.md). Ten repetitions, OS cache not flushed:

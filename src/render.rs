@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Write as _;
-use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
@@ -66,8 +65,7 @@ pub(crate) fn images(
     if refs.is_empty() {
         return Ok(images);
     }
-    // Buffered: reading the central directory unbuffered costs one syscall per small read.
-    let mut zip = zip::ZipArchive::new(std::io::BufReader::new(File::open(fig)?))?;
+    let mut zip = crate::open_zip(fig)?;
     for r in refs {
         let mut bytes = Vec::new();
         if let Ok(mut f) = zip.by_name(&format!("images/{r}")) {
@@ -1402,6 +1400,7 @@ pub fn render_bounds(n: &Json) -> Option<Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
 
     #[test]
     fn preparation_selects_an_expanded_sublayer_and_only_loads_its_images() {

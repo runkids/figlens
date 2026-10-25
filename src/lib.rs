@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::fs::File;
-use std::io::Read;
+use std::io::{BufReader, Read};
 use std::path::Path;
 
 use kiwi_schema::{Schema, Value};
@@ -77,6 +77,17 @@ fn err<T>(message: impl Into<String>) -> Result<T, Box<dyn Error>> {
     )))
 }
 
+pub(crate) fn open_zip(path: &Path) -> Result<zip::ZipArchive<BufReader<File>>, Box<dyn Error>> {
+    // Avoid Detect's full-file scan; retain it for archives with prepended bytes.
+    let config = zip::read::Config {
+        archive_offset: zip::read::ArchiveOffset::Known(0),
+    };
+    match zip::ZipArchive::with_config(config, BufReader::new(File::open(path)?)) {
+        Ok(archive) => Ok(archive),
+        Err(_) => Ok(zip::ZipArchive::new(BufReader::new(File::open(path)?))?),
+    }
+}
+
 /// A decoded `canvas.fig`: the embedded schema plus the raw message bytes.
 pub struct Document {
     pub version: u32,
@@ -87,7 +98,7 @@ pub struct Document {
 impl Document {
     /// Opens a `.fig` zip and decodes its `canvas.fig`.
     pub fn open(path: &Path) -> Result<Document, Box<dyn Error>> {
-        let mut archive = zip::ZipArchive::new(std::io::BufReader::new(File::open(path)?))?;
+        let mut archive = open_zip(path)?;
         let canvas_file = archive.by_name("canvas.fig").map_err(|e| {
             FigError::new(
                 ErrorKind::InvalidData,
@@ -365,6 +376,35 @@ pub fn to_json(value: &Value) -> serde_json::Value {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn opens_normal_and_prefixed_fig_archives() {
+        let fixture = Path::new("examples/first-success/design.fig");
+        let normal = Document::open(fixture).unwrap();
+        let mut canvas = Vec::new();
+        open_zip(fixture)
+            .unwrap()
+            .by_name("canvas.fig")
+            .unwrap()
+            .read_to_end(&mut canvas)
+            .unwrap();
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file("canvas.fig", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&canvas).unwrap();
+        let mut prefixed = b"junk".to_vec();
+        prefixed.extend(zip.finish().unwrap().into_inner());
+        let dir = crate::test_support::TestDir::new();
+        let path = dir.join("prefixed.fig");
+        std::fs::write(&path, prefixed).unwrap();
+        assert_eq!(open_zip(&path).unwrap().offset(), 4);
+        let recovered = Document::open(&path).unwrap();
+        assert_eq!(recovered.version, normal.version);
+        assert_eq!(
+            to_json(&recovered.message().unwrap()),
+            to_json(&normal.message().unwrap())
+        );
+    }
 
     fn frame(version: u32, chunks: &[&[u8]]) -> Vec<u8> {
         let mut out = MAGIC.to_vec();
