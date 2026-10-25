@@ -36,8 +36,9 @@ try {
   await command('help');
   assert.match(messages.at(-1).content, /Ask Pi directly/);
   await command('plan Plan only the First success card');
-  assert.match(prompts.at(-1), /planning\.md/);
-  assert.ok(prompts.at(-1).includes(path.join(packaged, 'skills/figlens')));
+  for (const name of ['SKILL.md', 'references/planning.md']) {
+    assert.ok(prompts.at(-1).includes(JSON.stringify(path.join(packaged, 'skills/figlens', name))), name);
+  }
   const read = await extension.tools.get('figlens_bindings').definition.execute('installed-smoke',
     { file: path.resolve(fixture), frame: '0:1' }, new AbortController().signal, undefined, ctx);
   assert.equal(read.structuredContent.frame, '0:1');
