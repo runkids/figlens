@@ -10,6 +10,10 @@ Load this to decide what to work on next or to revisit an architecture decision.
 4. Batch mode: a stack overflow aborts the whole process, which `catch_unwind` cannot stop; run frames on threads with a guarded stack or in child processes before trusting unknown files in one batch.
 5. Regression CI on community files, so a Figma format change is caught and fixed quickly.
 
+## Architecture decisions
+
+- [MCP contract and request admission](../docs/design/mcp-contract-admission.md): deepen parameter interpretation and pre-load admission; includes accepted MCP incompatibilities, interfaces, implementation order and verification. Implemented; candidate runtime acceptance limits are recorded in the design.
+
 ## Background decisions
 
 - Goal: AI design-to-code unconstrained by Figma (no API rate limits, no login, no running Figma), not replacing Figma for designers (2026-10-21).

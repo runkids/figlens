@@ -84,11 +84,12 @@ def check_mcp(command, cwd, env, fixture, version):
         invalid = request('tools/call', {'name':'inspect', 'arguments':{'file':str(fixture),'node':'0:1','depth':1.5}})
         assert invalid['isError'] and invalid['_meta']['figlens']['code'] == 'invalid_arguments', invalid
         legacy = request('tools/call', {'name':'tree','arguments':{'file':str(fixture),'depth':'0'}})
-        assert not legacy['isError'] and legacy['_meta']['figlens']['argumentMode'] == 'legacy', legacy
+        assert legacy['isError'] and legacy['_meta']['figlens']['code'] == 'invalid_arguments', legacy
+        assert 'argumentMode' not in legacy['_meta']['figlens'], legacy
         assert request('ping', {}) == {}
         normal = request('tools/call', {'name': 'inspect', 'arguments': {'file': str(fixture), 'node': '0:1'}})
         assert normal['isError'] is False and normal['structuredContent']['node']['name'] == 'First success', normal
         assert normal['structuredContent']['node']['absoluteBoundingBox']['width'] == 320
         guide = request('tools/call', {'name': 'workflow', 'arguments': {'topic': 'build'}})
         assert guide['isError'] is False and 'Building a frame' in guide['content'][0]['text']
-    return {"recoveredAfterMissingNode": True, "numericPreflight": True, "legacyCompatibility": True, "stdout": "JSON-RPC only"}
+    return {"recoveredAfterMissingNode": True, "numericPreflight": True, "strictRejectionAndRecovery": True, "stdout": "JSON-RPC only"}

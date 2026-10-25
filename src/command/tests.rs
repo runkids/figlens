@@ -463,16 +463,17 @@ fn mcp_exports_fit_max_size_unless_disabled() {
             "maxSize {max_size:?}"
         );
     }
-    // A string scale takes the legacy CLI-argument path, which caps the same way.
+    // Legacy scale strings are rejected before writing; CLI scaling stays uncapped.
     let out = fixture.0.join("legacy.png");
     let reply = call_tool(
         &serde_json::json!({"name": "export", "arguments": {
-            "file": fixture.file(), "node": "0:1", "out": out, "scale": "200x",
+            "file": fixture.file(), "node": "0:1", "out": &out, "scale": "200x",
         }}),
         None,
     );
-    assert_eq!(reply["isError"], false, "{reply}");
-    assert_eq!(reply["structuredContent"]["width"], 1600);
+    assert_eq!(reply["isError"], true, "{reply}");
+    assert_eq!(reply["_meta"]["figlens"]["code"], "invalid_arguments");
+    assert!(!out.exists());
     let mut text = String::new();
     let out = fixture.0.join("cli.png");
     run(
@@ -747,7 +748,17 @@ fn variables_commands_distinguish_local_variables_from_frame_bindings() {
     ] {
         for command in [
             Command::from_cli("variables", &cli, &tree).unwrap(),
-            Command::from_tool("variables", &arguments, &tree).unwrap(),
+            Command::from_tool(
+                &crate::contract::prepare("variables", &{
+                    let mut args = arguments.clone();
+                    args["file"] = "unused.fig".into();
+                    args
+                })
+                .unwrap(),
+                &tree,
+                None,
+            )
+            .unwrap(),
         ] {
             let output = command.execute(&tree, Path::new("unused.fig")).unwrap();
             let value = output.json().unwrap();
@@ -891,44 +902,45 @@ fn preview_snapshot_embeds_design_safely_and_never_overwrites_source() {
 }
 
 #[test]
-fn mcp_preserves_permissive_argument_coercions() {
+fn mcp_rejects_legacy_coercions_without_changing_cli() {
     let fixture = Fixture::new();
-    for (cli, mut arguments) in [
-        (vec!["--json"], serde_json::json!({"node": "--json"})),
-        (vec!["--depth", "0"], serde_json::json!({"depth": "0"})),
+    for (cli, mut arguments, code) in [
+        (
+            vec!["--json"],
+            serde_json::json!({"node":"--json"}),
+            "node_not_found",
+        ),
+        (
+            vec!["--depth", "0"],
+            serde_json::json!({"depth":"0"}),
+            "invalid_arguments",
+        ),
         (
             vec![],
-            serde_json::json!({"node": false, "depth": null, "json": false}),
+            serde_json::json!({"node":false,"depth":null,"json":false}),
+            "invalid_arguments",
         ),
     ] {
         arguments["file"] = fixture.file().into();
         let mut argv = vec!["tree".into(), fixture.file()];
         argv.extend(cli.into_iter().map(str::to_owned));
-        let mut text = String::new();
-        run(argv, &mut text).unwrap();
+        run(argv, &mut String::new()).unwrap();
         let reply = call_tool(
-            &serde_json::json!({"name": "tree", "arguments": arguments}),
+            &serde_json::json!({"name":"tree","arguments":arguments}),
             None,
         );
-        assert_eq!(reply["isError"], false);
-        assert_eq!(reply["content"][0]["text"], text);
-        assert!(reply.get("structuredContent").is_none());
+        assert_eq!(reply["_meta"]["figlens"]["code"], code, "{reply}");
+        assert!(reply["_meta"]["figlens"].get("argumentMode").is_none());
     }
+    let out = fixture.0.join("coerced.png");
     let reply = call_tool(
-        &serde_json::json!({
-            "name": "export", "arguments": { "file": fixture.file(), "node": "0:1",
-                "out": fixture.0.join("coerced.png"), "scale": "2x" }
-        }),
+        &serde_json::json!({"name":"export","arguments":{
+            "file":fixture.file(),"node":"0:1","out":&out,"scale":"2x"
+        }}),
         None,
     );
-    assert_eq!(reply["isError"], false, "{reply}");
-    assert_eq!(reply["structuredContent"]["width"], 32);
-    assert_eq!(reply["structuredContent"]["height"], 16);
-    assert_eq!(reply["content"][1]["mimeType"], "image/png");
-    assert_eq!(
-        reply["content"][1]["data"],
-        figlens::render::base64(&std::fs::read(fixture.0.join("coerced.png")).unwrap())
-    );
+    assert_eq!(reply["_meta"]["figlens"]["code"], "invalid_arguments");
+    assert!(!out.exists());
 }
 
 mod contract;

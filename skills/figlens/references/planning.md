@@ -9,7 +9,7 @@ Identify the requested file/node or recognizable region and the existing code it
 For a region, component or one state, deliver these four fields directly:
 
 1. **Target:** actual source file/node and existing code block.
-2. **Change:** the intended change using the project's actual components, markup and styling; preserve unrelated behavior.
+2. **Change:** the intended change using the project's actual components, markup and styling; preserve unrelated behavior. For a component, list its slots with their HUG/FILL/FIXED sizing (`layoutSizingHorizontal`/`layoutSizingVertical`) and the tokens behind their spacing and radii.
 3. **Images, if involved:** `node/source + crop/mask → CSS size × DPR → pipeline/format + output size/quality/budget → loading/priority → browser URL/decoded size/transfer bytes + visual check`. Use `inspect` with `images: true`: `sourceRect` is in original source-image pixels, before masks/effects/ancestor clipping. Unequal normalized transform coefficients alone do not establish distortion. Pixel counts are not a visual assessment or blur diagnosis. Keep unavailable evidence unknown and planned budgets separate from measured bytes. Use the existing image pipeline; pure vector artwork can stay SVG.
 4. **Acceptance:** observable results and project-permitted checks; separate checks already run, future verification and material unknowns.
 

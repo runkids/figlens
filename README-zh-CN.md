@@ -221,7 +221,7 @@ skillshare sync && skillshare sync mcp --global
 | `mcp` | 通过 stdio 运行的本地 MCP server |
 | `update` | 用最新 release 替换可执行文件 |
 
-node 参数接受 `12:345`、`12-345`，或带 `?node-id=` 的 Figma URL。`<file>` 也可以是 `gs://bucket/object`，通过你的 `gcloud` 登录下载并缓存。固定 object 交接、所需访问权限与更新限制，请参阅 [GCS 快照操作说明](wiki/gcs.md)。每次 CLI 调用都会解码文件；MCP 只复用最后读取且未变更的本地文件，远程输入与 legacy 调用仍会重新解析。运行 `figlens --help` 查看用法。
+node 参数接受 `12:345`、`12-345`，或带 `?node-id=` 的 Figma URL。`<file>` 也可以是 `gs://bucket/object`，通过你的 `gcloud` 登录下载并缓存。固定 object 交接、所需访问权限与更新限制，请参阅 [GCS 快照操作说明](wiki/gcs.md)。每次 CLI 调用都会解码文件；MCP 只复用最后读取且未变更的本地文件，远程输入仍会重新解析。运行 `figlens --help` 查看用法。
 
 <a id="limitations"></a>
 
