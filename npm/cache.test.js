@@ -29,7 +29,7 @@ test('concurrent first use keeps the verified binary while an MCP process is usi
       },
     };
     const spawnSync = (command, _args, options) => {
-      if (command === 'tar') fs.writeFileSync(path.join(options.cwd, 'figlens.exe'), 'verified binary');
+      if (command === 'tar' || command.endsWith('\\tar.exe')) fs.writeFileSync(path.join(options.cwd, 'figlens.exe'), 'verified binary');
       else {
         assert.equal(command, binary);
         assert.equal(fs.readFileSync(binary, 'utf8'), 'verified binary');
@@ -68,7 +68,7 @@ test('concurrent first use keeps the verified binary while an MCP process is usi
 });
 
 // Layer A: injected transport/extraction exercises installer branches, not a release download.
-function installer(root, failure) {
+function installer(root, failure, env = {}) {
   const version = '0.3.1';
   const dir = path.join(root, 'figlens', 'npm', version);
   const binary = path.join(dir, 'figlens.exe');
@@ -81,7 +81,8 @@ function installer(root, failure) {
       if (name === '../package.json') return { version };
       if (name === '../target.js') return { asset: () => ({ archive: 'test.zip', binary: 'figlens.exe' }) };
       if (name === 'node:child_process') return { spawnSync(command, _args, options) {
-        if (command === 'tar') {
+        if (command === 'tar' || command.endsWith('\\tar.exe')) {
+          state.extractor = command;
           if (failure === 'missing-tar') return { status: null, error: Object.assign(new Error('tar missing'), { code: 'ENOENT' }) };
           // An extractor can fail after writing part of a binary.
           fs.writeFileSync(path.join(options.cwd, 'figlens.exe'), failure === 'extract' ? 'partial' : 'verified binary');
@@ -94,7 +95,7 @@ function installer(root, failure) {
       } };
       return require(name);
     },
-    process: { env: { XDG_CACHE_HOME: root }, platform: 'win32', arch: 'x64', argv: ['node', 'figlens'], exit: code => state.exits.push(code) },
+    process: { env: { XDG_CACHE_HOME: root, ...env }, platform: 'win32', arch: 'x64', argv: ['node', 'figlens'], exit: code => state.exits.push(code) },
     console: { error: message => state.errors.push(message) },
     fetch: async url => {
       state.downloads++;
@@ -104,6 +105,17 @@ function installer(root, failure) {
   });
   return state;
 }
+
+test('Windows ZIP extraction uses system bsdtar instead of a tar from PATH', { timeout: 5000 }, async t => {
+  for (const env of [{}, { SystemRoot: 'D:\\Test Windows' }, { SYSTEMROOT: 'D:\\Test Windows' }]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'figlens-system-tar-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const state = installer(root, undefined, { PATH: 'C:\\Program Files\\Git\\usr\\bin', ...env });
+    await state.done;
+    assert.deepEqual(state.exits, [0]);
+    assert.equal(state.extractor, Object.keys(env).length ? 'D:\\Test Windows\\System32\\tar.exe' : 'C:\\Windows\\System32\\tar.exe');
+  }
+});
 
 test('cold install then warm start reuses the valid binary without downloads', { timeout: 5000 }, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'figlens-installer-'));
