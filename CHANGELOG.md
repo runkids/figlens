@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.1](https://github.com/runkids/figlens/compare/v0.7.0...v0.7.1) (2026-10-25)
+
+
+### Performance
+
+* avoid full-file scans when opening fig archives ([26cc0a9](https://github.com/runkids/figlens/commit/26cc0a949246b84951e5d63fec28195dc5d775a8))
+* avoid full-file scans when opening fig archives ([e93212d](https://github.com/runkids/figlens/commit/e93212db3bcb7cb276eef341f7615de37d023414))
+* bound frames only with --jobs and release message bytes after decode ([0e10d14](https://github.com/runkids/figlens/commit/0e10d142726fad08ec82ca395f1116b19542915f))
+* decouple frame jobs and release decoded message bytes ([eec2968](https://github.com/runkids/figlens/commit/eec29685aee79b4a218634d67699ee26d298fbb8))
+* store decoded Kiwi byte arrays compactly ([4ec0f36](https://github.com/runkids/figlens/commit/4ec0f368825a19a6d2191744b4897cf11df0b3df))
+* store decoded Kiwi byte arrays compactly ([2ab7ad5](https://github.com/runkids/figlens/commit/2ab7ad5250a89a23c061253e00248c8bac2ec4fa))
+
 ## [0.7.0](https://github.com/runkids/figlens/compare/v0.6.0...v0.7.0) (2026-10-25)
 
 
