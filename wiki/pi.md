@@ -65,15 +65,9 @@ For provider-backed YOLO acceptance, use an approved source/model and isolated f
 
 The npm metadata includes `pi-package` plus `pi.image` and `pi.video` preview URLs. This makes a published version eligible for discovery in the [Pi package catalog](https://pi.dev/packages), as described by [Pi's package documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md#create-a-package). Check the catalog after publishing; eligibility does not guarantee immediate indexing or placement.
 
-For the real Aurora/Skillshare integration, run with an installed Pi package and a figlens executable built in Docker or taken from a release:
+For public installed-package acceptance, run `python3 -B scripts/check-installation.py --artifacts <candidate-directory> --commit <checkout-sha> --pi-version 1.3.0` (or 1.4.0). [Installation acceptance](installation.md) covers tarball creation, cache/MCP checks and the separate installer/candidate/published evidence layers. It uses a fresh consumer and the real SDK loader, with no private designs, external project, user profile, viewer socket or model key.
 
-```sh
-node scripts/check-pi-integration.mjs \
-  /path/to/node_modules/@earendil-works/pi-coding-agent \
-  /path/to/figlens samples/aurora.fig ../skillshare samples/pi-integration-new
-```
-
-It copies three existing Skillshare components into a new output directory, loads the actual Pi extension and runs real figlens reads/renders. Scripted dialogs test approval, reload, frame reuse and headless pending behavior without automatic scope injection; they are not human approval or LLM calls. It never modifies Skillshare. In development, a Docker launcher can provide the executable; do not run host Rust. Also verify the TypeScript adapter against the installed SDK, and load a staged npm package to exercise adjacent-launcher discovery.
+`scripts/check-pi-integration.mjs <installed-pi-root> <installed-figlens-root> <public.fig> <isolated-consumer>` is that harness's loader sub-check: runtime MCP registration, commands, public-frame reads through the adjacent wrapper and skill discovery. Scripted message sinks capture help/plan text; this is not a full interactive session. The older Aurora/Skillshare case below records historical acceptance.
 
 For the MCP Apps usability regression, run `node scripts/check-pi-usability.mjs <pi-package-root> <figlens-binary> samples/mcp-apps-for-claude.fig samples/pi-usability-new [extension-entry]`. It exercises readable help/errors, no-open proposals/review, explicit scope despite an older Button selection, the real host image renderer and persistent PNG, terminal resizing/wheel navigation, nested name search and host skill discovery. Pass an installed tarball's `pi/index.ts` to check its adjacent launcher and skill. These are scripted SDK checks, not a measured natural-language success rate or GUI acceptance. Provider-backed model tests need authorization to transmit the sample and use the configured account.
 

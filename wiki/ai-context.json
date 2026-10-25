@@ -35,7 +35,7 @@
     },
     "release": {
       "description": "Packaging, GitHub releases, Homebrew, npm, install scripts and figlens update.",
-      "sources": [{ "path": "wiki/release.md" }]
+      "sources": [{ "path": "wiki/release.md" }, { "path": "wiki/installation.md" }]
     },
     "review": {
       "description": "Review changes, create a PR and follow up on AI review and CI.",

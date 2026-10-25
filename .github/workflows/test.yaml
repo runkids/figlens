@@ -71,3 +71,77 @@ jobs:
         run: |
           rustup toolchain install 1.97.1 --profile minimal
           cargo +1.97.1 test --locked
+
+  # Build each release-format target once; all installation jobs reuse these exact artifacts.
+  candidate:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Build candidate binaries in the pinned release toolchain
+        env:
+          FIGLENS_TARGETS: x86_64-unknown-linux-musl aarch64-apple-darwin x86_64-pc-windows-gnu
+        run: |
+          docker compose run --build --rm \
+            -e FIGLENS_TARGETS -e FIGLENS_DIST_DIR=dist/candidate \
+            dist scripts/build-dist.sh
+      - name: Pack real npm tarball and bind artifacts to this checkout
+        run: |
+          python3 -B scripts/pack-candidate.py dist/candidate
+          python3 -c 'import json; assert not json.load(open("dist/candidate/candidate.json"))["dirty"], "Candidate source differs from checkout"'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installation-candidate
+          path: dist/candidate/
+          if-no-files-found: error
+          retention-days: 3
+
+  installation:
+    needs: candidate
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Exact CLI floor, separate from Pi's >=22.19.0 runtime requirement.
+          - os: ubuntu-latest
+            node: "18.0.0"
+            pi: ""
+          - os: ubuntu-latest
+            node: "22.19.0"
+            pi: "1.3.0"
+          - os: macos-15
+            node: "24"
+            pi: "1.4.0"
+          - os: windows-latest
+            node: "24"
+            pi: "1.4.0"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: installation-candidate
+          path: dist/candidate/
+      - name: Installed CLI, cold cache, stdio MCP and optional real Pi loader
+        shell: bash
+        env:
+          PI_VERSION: ${{ matrix.pi }}
+        run: |
+          args=(--artifacts dist/candidate --commit "$(git rev-parse HEAD)")
+          if [ -n "$PI_VERSION" ]; then args+=(--pi-version "$PI_VERSION"); fi
+          python -B scripts/check-installation.py "${args[@]}"

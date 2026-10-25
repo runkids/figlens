@@ -27,6 +27,8 @@
 
 ## Get started
 
+**No design file yet?** [Check your setup with the tiny public example](examples/first-success/README.md): verify your chosen binary, find one frame and validate its bundle. No model required.
+
 Put `design.fig` in your project, then pick your agent.
 
 **Claude Code** (Node.js 18+, macOS/Linux):

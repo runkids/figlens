@@ -1,0 +1,39 @@
+"""Shared subprocess setup for candidate packaging and isolated installation checks."""
+import os
+from pathlib import Path
+import subprocess
+
+
+def toolchain():
+    node = Path(subprocess.check_output(['node', '-p', 'process.execPath'], text=True).strip())
+    choices = [node.parent/'node_modules/npm/bin/npm-cli.js',
+               node.parent.parent/'lib/node_modules/npm/bin/npm-cli.js']
+    npm = next((p for p in choices if p.is_file()), None)
+    if npm is None:
+        raise RuntimeError(f'Cannot locate npm next to selected Node: {node}')
+    return str(node), [str(node), str(npm)]
+
+
+def environment(work, node):
+    keep = {'path', 'systemroot', 'windir', 'comspec', 'pathext', 'lang', 'lc_all'}
+    env = {k.upper(): v for k, v in os.environ.items() if k.lower() in keep}
+    for name in ['home', 'tmp', 'cache', 'agent', 'npm-cache']:
+        (work/name).mkdir(exist_ok=True)
+    for name in ['user.npmrc', 'global.npmrc']:
+        (work/name).touch()
+    env.update(HOME=str(work/'home'), USERPROFILE=str(work/'home'),
+               APPDATA=str(work/'home'), LOCALAPPDATA=str(work/'cache'),
+               TMPDIR=str(work/'tmp'), TEMP=str(work/'tmp'), TMP=str(work/'tmp'),
+               XDG_CACHE_HOME=str(work/'cache'), PI_CODING_AGENT_DIR=str(work/'agent'),
+               npm_config_cache=str(work/'npm-cache'), npm_config_userconfig=str(work/'user.npmrc'),
+               npm_config_globalconfig=str(work/'global.npmrc'), CI='1', NO_COLOR='1',
+               PATH=str(Path(node).parent) + os.pathsep + env.get('PATH', ''))
+    return env
+
+
+def run(command, cwd, env, timeout=60):
+    result = subprocess.run(list(map(str, command)), cwd=cwd, env=env, text=True,
+                            encoding='utf-8', capture_output=True, timeout=timeout)
+    if result.returncode:
+        raise RuntimeError(f'{command[0]} exited {result.returncode}\n{result.stdout[-4000:]}\n{result.stderr[-4000:]}')
+    return result.stdout
