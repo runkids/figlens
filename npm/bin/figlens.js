@@ -42,8 +42,11 @@ async function install() {
   const tmp = fs.mkdtempSync(path.join(path.dirname(dir), ".tmp-"));
   try {
     fs.writeFileSync(path.join(tmp, archive), bytes);
-    // bsdtar ships with Windows 10+ and extracts zips as well.
-    const tar = spawnSync("tar", ["-xf", archive, binary], { cwd: tmp, stdio: "inherit" });
+    // Git Bash can put GNU tar ahead of Windows' ZIP-capable bsdtar on PATH.
+    const extractor = process.platform === "win32"
+      ? path.win32.join(process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows", "System32", "tar.exe")
+      : "tar";
+    const tar = spawnSync(extractor, ["-xf", archive, binary], { cwd: tmp, stdio: "inherit" });
     if (tar.status !== 0) throw new Error("tar could not extract the archive");
     fs.rmSync(path.join(tmp, archive));
     try {

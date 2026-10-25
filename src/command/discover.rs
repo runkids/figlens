@@ -92,7 +92,7 @@ pub fn inspect(tree: &Tree, id: &str, depth: usize) -> Result<Value, Box<dyn Err
     if depth > 10 {
         return Err("--depth takes 0-10 for inspect".into());
     }
-    let doc = figlens::rest::nodes(tree, id);
+    let doc = figlens::rest::resolve_nodes(tree, id)?;
     Ok(inspect_document(&doc["document"], depth))
 }
 
@@ -105,7 +105,7 @@ pub fn inspect_images(
     if depth > 10 {
         return Err("--depth takes 0-10 for inspect".into());
     }
-    let doc = figlens::rest::render_nodes(tree, id);
+    let doc = figlens::rest::resolve_render_nodes(tree, id)?;
     let mut result = inspect_document(&doc["document"], depth);
     result["images"] = figlens::images::inspect(fig, &doc["document"])?;
     Ok(result)

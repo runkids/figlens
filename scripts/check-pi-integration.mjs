@@ -1,91 +1,63 @@
-// Runs the extension through an installed Pi loader with Aurora and copied Skillshare components.
-// Scripted dialogs exercise review behavior; no model calls, app edits or human approvals are claimed.
+// Real installed Pi loader/runtime, public fixture only; no viewer socket or model call.
 import assert from 'node:assert/strict';
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const [piRoot, binary, fig, project, output] = process.argv.slice(2);
-if (!output) throw new Error('Usage: node scripts/check-pi-integration.mjs <pi-package-root> <figlens-binary> <aurora.fig> <skillshare-checkout> <new-output-directory>');
-const root = path.resolve(output);
-await mkdir(root); // Refuse to overwrite an earlier run.
-await mkdir(path.join(root, 'ui/src/components'), { recursive: true });
-for (const name of ['Card.tsx', 'Button.tsx', 'SegmentedControl.tsx']) {
-  await copyFile(path.join(project, 'ui/src/components', name), path.join(root, 'ui/src/components', name));
-}
-process.env.FIGLENS_BIN = path.resolve(binary);
-const { loadExtensions, createExtensionRuntime } = await import(pathToFileURL(path.join(piRoot, 'dist/core/extensions/loader.js')).href);
+const [sdkInput, packageInput, fixture, cwdInput] = process.argv.slice(2);
+if (!cwdInput) throw new Error('Usage: node scripts/check-pi-integration.mjs <installed-pi-root> <installed-figlens-root> <public.fig> <isolated-consumer>');
+const [sdk, packaged, cwd] = [sdkInput, packageInput, cwdInput].map(p => path.resolve(p));
+assert.ok(sdk.startsWith(cwd + path.sep) && packaged.startsWith(cwd + path.sep), 'Dependencies must belong to the isolated consumer');
+assert.equal(process.env.FIGLENS_BIN, undefined, 'The packaged extension must select its adjacent wrapper');
+const { loadExtensions, createExtensionRuntime } = await import(pathToFileURL(path.join(sdk, 'dist/core/extensions/loader.js')));
+const { loadSkills } = await import(pathToFileURL(path.join(sdk, 'dist/core/skills.js')));
+const runtime = createExtensionRuntime();
 const messages = [];
 const prompts = [];
-const runtime = createExtensionRuntime();
 runtime.sendMessage = message => messages.push(message);
 runtime.sendUserMessage = prompt => prompts.push(prompt);
-const extensionPath = path.resolve('pi/index.ts');
-async function load() {
-  const loaded = await loadExtensions([extensionPath], root, undefined, runtime);
-  assert.deepEqual(loaded.errors, []);
-  return loaded.extensions[0];
+const loaded = await loadExtensions([path.join(packaged, 'pi/index.ts')], cwd, undefined, runtime);
+assert.deepEqual(loaded.errors, []);
+assert.equal(loaded.extensions.length, 1);
+const extension = loaded.extensions[0];
+assert.ok(extension.commands.has('figlens'));
+for (const name of ['figlens_bindings', 'figlens_propose_bindings', 'figlens_preview']) assert.ok(extension.tools.has(name), name);
+const ctx = { cwd, mode: 'rpc', hasUI: false, waitForIdle: async () => {} };
+try {
+  for (const handler of extension.handlers.get('session_start') || []) await handler({}, ctx);
+  const registrations = runtime.mcpServers.list();
+  assert.equal(registrations.length, 1);
+  const server = registrations[0];
+  assert.equal(server.name, 'figlens');
+  assert.equal(server.config.command, process.execPath);
+  assert.deepEqual(server.config.args, [path.join(packaged, 'bin/figlens.js'), 'mcp']);
+  assert.equal(server.config.exposure, 'direct');
+  const command = args => extension.commands.get('figlens').handler(args, ctx);
+  await command('help');
+  assert.match(messages.at(-1).content, /Ask Pi directly/);
+  await command('plan Plan only the First success card');
+  for (const name of ['SKILL.md', 'references/planning.md']) {
+    assert.ok(prompts.at(-1).includes(JSON.stringify(path.join(packaged, 'skills/figlens', name))), name);
+  }
+  const read = await extension.tools.get('figlens_bindings').definition.execute('installed-smoke',
+    { file: path.resolve(fixture), frame: '0:1' }, new AbortController().signal, undefined, ctx);
+  assert.equal(read.structuredContent.frame, '0:1');
+  assert.equal(read.structuredContent.name, 'First success');
+  assert.equal(read.structuredContent.total, 0);
+  const skills = loadSkills({ cwd, agentDir: process.env.PI_CODING_AGENT_DIR,
+    skillPaths: [path.join(packaged, 'skills')], includeDefaults: false });
+  assert.deepEqual(skills.diagnostics, []);
+  assert.equal(skills.skills.length, 1);
+  assert.equal(skills.skills[0].name, 'figlens');
+  for (const name of ['SKILL.md', 'references/planning.md', 'references/planning-details.md', 'references/yolo.md']) {
+    assert.ok((await readFile(path.join(packaged, 'skills/figlens', name), 'utf8')).length > 100);
+  }
+  const pi = JSON.parse(await readFile(path.join(sdk, 'package.json'), 'utf8'));
+  const pkg = JSON.parse(await readFile(path.join(packaged, 'package.json'), 'utf8'));
+  console.log(JSON.stringify({ pi: pi.version, nodeMinimum: pi.engines.node, packageVersion: pkg.version,
+    modelCalled: false, mcp: server.config,
+    checks: ['real installed loader', 'runtime MCP registration', 'commands and tools',
+      'public frame through packaged wrapper', 'skill and workflow resources'] }));
+} finally {
+  for (const handler of extension.handlers.get('session_shutdown') || []) await handler({}, ctx);
 }
-let extension = await load();
-const notifications = [];
-const ctx = {
-  cwd: root, mode: 'rpc', hasUI: true, signal: undefined,
-  waitForIdle: async () => {},
-  ui: {
-    select: async (_title, options) => options.includes('Accept') ? 'Accept' : options[0],
-    confirm: async () => true,
-    input: async () => 'Use the visible descendant text; inspect the actual frame before implementation.',
-    notify: (message, level) => notifications.push({ message, level }),
-  },
-};
-const command = args => extension.commands.get('figlens').handler(args, ctx);
-const tool = (name, params) => extension.tools.get(name).definition.execute('integration', params, undefined, undefined, ctx);
-await command(`open "${path.resolve(fig)}" --frame 10:200`);
-assert.deepEqual(notifications, []);
-assert.ok(messages.some(message => message.customType === 'figlens-preview' && message.content.some(part => part.type === 'image')));
-const initial = (await tool('figlens_bindings', {})).structuredContent;
-assert.ok(initial.items.some(item => item.id === '10:201'));
-const proposals = [
-  {
-    instance: '10:201',
-    target: { path: 'ui/src/components/SegmentedControl.tsx', export: 'default', import: 'import SegmentedControl from "./components/SegmentedControl";', example: '<SegmentedControl value={selected} onChange={setSelected} options={optionsFromCurrentFrame} />' },
-    rationale: 'Controlled value/onChange/options API; labels come from the current design.',
-    checks: ['Copied implementation source inspected. No compilation or browser checks executed by this integration run.'],
-  },
-  {
-    instance: 'I10:227;7:64',
-    target: { path: 'ui/src/components/Card.tsx', export: 'default', import: 'import Card from "./components/Card";', example: '<Card padding="none">{contentFromCurrentFrame}</Card>' },
-    rationale: 'Closed suggestion uses Card as a container with explicit child composition; no expansion behavior assumed.',
-    checks: ['Copied implementation source inspected. No compilation or browser checks executed by this integration run.'],
-  },
-];
-const submitted = (await tool('figlens_propose_bindings', { proposals })).structuredContent;
-assert.equal(submitted.pending.length, 2);
-assert.equal((await tool('figlens_bindings', {})).structuredContent.items.filter(item => item.status === 'approved').length, 0);
-await command('map');
-assert.equal(prompts.length, 1);
-assert.match(prompts[0], /does not authorize application edits/);
-await command('review');
-assert.deepEqual(notifications, []);
-const reviewed = (await tool('figlens_bindings', {})).structuredContent;
-assert.ok(reviewed.items.filter(item => item.status === 'approved').length >= 2);
-extension = await load();
-await command(`open "${path.resolve(fig)}" --frame 22:103`);
-const hero = (await tool('figlens_bindings', {})).structuredContent;
-assert.equal(hero.items.find(item => item.id === 'I22:250;7:64').status, 'approved');
-assert.equal(hero.items.find(item => item.id === 'I22:233;7:81').status, 'unmatched');
-assert.ok(hero.items.find(item => item.id === 'I22:233;7:81').needsReview.length);
-assert.ok(hero.items.find(item => item.id === 'I22:233;7:81;7:47').issues.some(issue => issue.includes('Not today')));
-await tool('figlens_propose_bindings', { proposals: [{
-  instance: 'I22:233;7:81;7:47',
-  target: { path: 'ui/src/components/Button.tsx', export: 'default', import: 'import Button from "./components/Button";', example: '<Button variant="ghost" size="md">{reviewedLabel}</Button>' },
-  rationale: 'Candidate ghost/md API; source text conflict requires explicit review.',
-  checks: ['Source inspected only.'],
-}] });
-ctx.hasUI = false;
-await command('review');
-assert.equal((await tool('figlens_bindings', {})).structuredContent.items.find(item => item.id === 'I22:233;7:81;7:47').status, 'pending');
-assert.equal(extension.handlers.has('before_agent_start'), false);
-await writeFile(path.join(root, 'results.json'), JSON.stringify({ initial, submitted, reviewed, hero, prompt: prompts[0], notifications, checks: ['real Pi extension loader', 'real .fig frame discovery and PNG preview', 'pending tool proposals', 'scripted review dialogs', 'new-session reload', 'cross-frame reuse', 'unknown variant', 'source text conflict', 'headless review stays pending', 'no automatic old-scope injection'] }, null, 2));
-const version = JSON.parse(await readFile(path.join(piRoot, 'package.json'), 'utf8')).version;
-console.log(JSON.stringify({ pi: version, frame: hero.frame, reused: 'I22:250;7:64', unreviewed: 'I22:233;7:81', textConflict: 'I22:233;7:81;7:47', checks: 10, output: root }, null, 2));

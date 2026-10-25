@@ -12,12 +12,12 @@ Reads Figma `.fig` files (File > Save local copy) so AI design-to-code pipelines
 - **Format changes need evidence.** Before changing how nodes are decoded, expanded or emitted, load `fig-format`; claim accuracy only after measuring with the `accuracy` topic, on a file the change was not written against.
 - **Keep the docs true.** When a doc disagrees with the code, trust the code: verify, then fix the stale doc in the same task. When your change alters behaviour that a topic describes, update that topic page in the same change. Put a new lesson in the kernel as a one-line rule and in its topic as the procedure. Run `python3 scripts/ai-context.py check` after any doc change. The procedure is in the `ai-context` topic.
 - **Search before you edit, and change as little as possible.** Match the existing style.
-- **Helper files go in the repo.** Helper scripts go in `scripts/`; design files, Figma exports and run outputs go in the gitignored `samples/`.
+- **Helper files go in the repo.** Helper scripts go in `scripts/`; private designs, Figma exports and run outputs go in the gitignored `samples/`. The original public fixture below is the exception.
 - **Own PR follow-up.** Check AI reviews and CI, fix verified findings, then request and check `@codex review` on the updated head; see `review`.
 
 ## Hard Limits
 
-- Never commit design files or Figma exports; `samples/` stays gitignored.
+- Never commit private design files or Figma exports; `samples/` stays gitignored. Only the original synthetic `examples/first-success/design.fig` is distributable, with its [provenance and update procedure](examples/first-success/README.md).
 - Shipped binaries build only from `Dockerfile.dist`'s digest-pinned base image; never point the release at a mutable tag.
 - The release tag, `Cargo.toml` and `npm/package.json` carry one version.
 
@@ -32,6 +32,7 @@ python3 scripts/ai-context.py check     # validate paths, headings and byte budg
 | Topic | Use when |
 |---|---|
 | `mcp` | Changing MCP instructions, tool discovery or built-in workflow guidance |
+| `parsing` | Changing untrusted container/schema/value decoding or parsing budgets |
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields, variables or the bundle |
 | `render` | Changing SVG or raster output: text and glyphs, image fills, effects, export areas, image adjustments |
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison |
@@ -55,6 +56,7 @@ If a topic goes over budget, split it rather than raising the cap. Skills are wo
 ## Verification
 
 Pi viewer startup must wait for a successful catalog response, not just a printed URL; see `pi`.
+Check parsing budgets before Kiwi recursion or declared-length expansion; see `parsing`.
 Generated test fixtures use `src/test_support.rs` for atomic directory ownership and scoped cleanup; see `fig-format`.
 Image-fill changes must test shifted sprites exported from a clipping frame; see `render`.
 

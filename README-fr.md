@@ -27,6 +27,8 @@
 
 ## Bien démarrer
 
+**Pas encore de fichier de design ?** [Vérifiez votre installation avec le petit exemple public](examples/first-success/README.md) : vérifiez le binaire choisi, trouvez un frame et validez son bundle. Aucun modèle nécessaire.
+
 Placez `design.fig` dans votre projet, puis choisissez votre agent.
 
 **Claude Code** (Node.js 18+, macOS/Linux) :
@@ -219,7 +221,7 @@ skillshare sync && skillshare sync mcp --global
 | `mcp` | Serveur MCP local via stdio |
 | `update` | Remplace le binaire par la dernière release |
 
-Un argument node accepte `12:345`, `12-345` ou une URL Figma avec `?node-id=`. `<file>` peut aussi être `gs://bucket/object`, téléchargé avec votre connexion `gcloud` et mis en cache. Chaque appel de la CLI décode le fichier ; le serveur MCP conserve le fichier analysé entre les appels jusqu’à ce qu’il change sur le disque. Lancez `figlens --help` pour l’aide.
+Un argument node accepte `12:345`, `12-345` ou une URL Figma avec `?node-id=`. `<file>` peut aussi être `gs://bucket/object`, téléchargé avec votre connexion `gcloud` et mis en cache. Consultez le [guide des snapshots GCS](wiki/gcs.md) pour la transmission via un objet fixe, les droits requis et les limites d’actualisation. Chaque appel de la CLI décode le fichier ; MCP ne réutilise que le dernier fichier local inchangé. Les appels distants ou legacy relancent l’analyse. Lancez `figlens --help` pour l’aide.
 
 <a id="limitations"></a>
 

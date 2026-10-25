@@ -27,9 +27,9 @@ case "$target" in
 esac
 `, { mode: 0o755 });
   const version = readFileSync(path.join(root, 'Cargo.toml'), 'utf8').match(/^version = "([^"]+)"/m)[1];
-  execFileSync('sh', ['scripts/build-dist.sh'], { cwd: fixture, env: { ...process.env, PATH: `${path.join(fixture, 'bin')}${path.delimiter}${process.env.PATH}`, FIGLENS_TARGETS: 'x86_64-unknown-linux-musl x86_64-pc-windows-gnu' } });
-  const tar = path.join(fixture, `dist/figlens-${version}-x86_64-unknown-linux-musl.tar.gz`);
-  const zip = path.join(fixture, `dist/figlens-${version}-x86_64-pc-windows-gnu.zip`);
+  execFileSync('sh', ['scripts/build-dist.sh'], { cwd: fixture, env: { ...process.env, PATH: `${path.join(fixture, 'bin')}${path.delimiter}${process.env.PATH}`, FIGLENS_TARGETS: 'x86_64-unknown-linux-musl x86_64-pc-windows-gnu', FIGLENS_DIST_DIR: 'candidate' } });
+  const tar = path.join(fixture, `candidate/figlens-${version}-x86_64-unknown-linux-musl.tar.gz`);
+  const zip = path.join(fixture, `candidate/figlens-${version}-x86_64-pc-windows-gnu.zip`);
   const verifyZip = `import sys, zipfile
 with zipfile.ZipFile(sys.argv[1]) as z:
     assert z.read("figlens.exe") == b"fixture"

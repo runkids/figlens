@@ -20,24 +20,18 @@ use crate::expand::{Mat, Vec2};
 pub(crate) struct Prepared {
     pub document: Json,
     pub images: HashMap<String, Vec<u8>>,
-    selected: String,
 }
 
 impl Prepared {
-    /// `root` is expanded first; an instance sublayer can then be selected by `id`.
-    pub fn new(tree: &Tree, fig: &Path, root: &str, id: &str) -> Result<Self, Box<dyn Error>> {
-        let document = crate::rest::render_nodes(tree, root);
-        let node = find(&document["document"], id).ok_or("node not found")?;
-        let images = images(fig, node)?;
-        Ok(Self {
-            document,
-            images,
-            selected: id.to_owned(),
-        })
+    /// Expand the containing instance before selecting the exact target and its images.
+    pub fn new(tree: &Tree, fig: &Path, id: &str) -> Result<Self, Box<dyn Error>> {
+        let document = crate::rest::resolve_render_nodes(tree, id)?;
+        let images = images(fig, &document["document"])?;
+        Ok(Self { document, images })
     }
 
     pub fn node(&self) -> &Json {
-        find(&self.document["document"], &self.selected).expect("selected during preparation")
+        &self.document["document"]
     }
 
     /// A raster export includes page/section backdrops and uses export bounds, not asset bounds.
@@ -1474,7 +1468,7 @@ mod tests {
             zip.write_all(hash.as_bytes()).unwrap();
         }
         zip.finish().unwrap();
-        let prepared = Prepared::new(&tree, &path, "1:1", "I1:1;2:2").unwrap();
+        let prepared = Prepared::new(&tree, &path, "I1:1;2:2").unwrap();
         assert_eq!(prepared.node()["id"], "I1:1;2:2");
         assert!(prepared.node()["_r"].is_object());
         assert_eq!(
@@ -1484,11 +1478,11 @@ mod tests {
         let pixels = pixmap(&prepared.export_svg(&tree, 2.0).unwrap()).unwrap();
         assert_eq!((pixels.width(), pixels.height()), (20, 40));
         assert_eq!(
-            Prepared::new(&tree, &path, "1:1", "absent")
+            Prepared::new(&tree, &path, "I1:1;absent")
                 .err()
                 .unwrap()
                 .to_string(),
-            "node not found"
+            "node I1:1;absent not found in expanded instance 1:1; inspect 1:1 for available sublayer IDs"
         );
     }
 
@@ -1529,7 +1523,6 @@ mod tests {
                 }]
             }}),
             images: Default::default(),
-            selected: "page".into(),
         };
         let pixels = pixmap(&prepared.export_svg(&tree, 1.0).unwrap()).unwrap();
         assert_eq!((pixels.width(), pixels.height()), (10, 20));

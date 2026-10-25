@@ -176,7 +176,7 @@ fn data(tree: &Tree, file: &Path, id: &str, image: bool) -> Result<Value> {
     if !tree.nodes.contains_key(crate::export::root_of(id)) {
         return Err("node not found".into());
     }
-    let p = Prepared::new(tree, file, crate::export::root_of(id), id)?;
+    let p = Prepared::new(tree, file, id)?;
     let area = render::export_area(p.node()).ok_or("node has no export area")?;
     let (mut geometry, mut paths) = (serde_json::Map::new(), serde_json::Map::new());
     let mut prototype = serde_json::Map::new();
@@ -761,7 +761,7 @@ impl Revision<'_> {
                 ("application/zip", bytes)
             }
             _ => {
-                let p = Prepared::new(tree, file, crate::export::root_of(id), id)?;
+                let p = Prepared::new(tree, file, id)?;
                 let a = render::export_area(p.node()).ok_or("no export area")?;
                 area = Some(format!("{},{},{},{}", a[0], a[1], a[2], a[3]));
                 let side = (a[2] - a[0]).max(a[3] - a[1]);
