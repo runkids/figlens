@@ -32,6 +32,7 @@ python3 scripts/ai-context.py check     # validate paths, headings and byte budg
 | Topic | Use when |
 |---|---|
 | `mcp` | Changing MCP instructions, tool discovery or built-in workflow guidance |
+| `parsing` | Changing untrusted container/schema/value decoding or parsing budgets |
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields, variables or the bundle |
 | `render` | Changing SVG or raster output: text and glyphs, image fills, effects, export areas, image adjustments |
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison |
@@ -55,6 +56,7 @@ If a topic goes over budget, split it rather than raising the cap. Skills are wo
 ## Verification
 
 Pi viewer startup must wait for a successful catalog response, not just a printed URL; see `pi`.
+Check parsing budgets before Kiwi recursion or declared-length expansion; see `parsing`.
 Generated test fixtures use `src/test_support.rs` for atomic directory ownership and scoped cleanup; see `fig-format`.
 Image-fill changes must test shifted sprites exported from a clipping frame; see `render`.
 

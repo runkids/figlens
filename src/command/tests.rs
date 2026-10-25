@@ -164,6 +164,106 @@ fn assert_bundle(path: &str) {
 }
 
 #[test]
+fn parse_budget_failure_is_a_tool_error_and_mcp_keeps_serving() {
+    use kiwi_schema::{Def, DefKind, Field, Schema};
+
+    let dir = TestDir::new();
+    let file = dir.join("finite-depth.fig");
+    // A tiny acyclic chain of 65 messages crosses the default depth of 64.
+    // This is finite ordinary data, not a cyclic schema or a crash payload.
+    let levels = 65;
+    let schema = Schema::new(
+        (0..levels)
+            .map(|level| {
+                Def::new(
+                    if level == 0 {
+                        "Message".into()
+                    } else {
+                        format!("Level{level}")
+                    },
+                    DefKind::Message,
+                    if level + 1 == levels {
+                        vec![]
+                    } else {
+                        vec![Field {
+                            name: "child".into(),
+                            type_id: level + 1,
+                            is_array: false,
+                            value: 1,
+                        }]
+                    },
+                )
+            })
+            .collect(),
+    );
+    let mut bytes = vec![1; (levels - 1) as usize];
+    bytes.extend(vec![0; levels as usize]);
+    let mut canvas = b"fig-kiwi".to_vec();
+    canvas.extend(106u32.to_le_bytes());
+    for raw in [schema.encode(), bytes] {
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&raw).unwrap();
+        let compressed = encoder.finish().unwrap();
+        canvas.extend((compressed.len() as u32).to_le_bytes());
+        canvas.extend(compressed);
+    }
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&file).unwrap());
+    zip.start_file("canvas.fig", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(&canvas).unwrap();
+    zip.finish().unwrap();
+    let normal = Fixture::new();
+    let request = |id, file: &str| {
+        serde_json::json!({
+            "jsonrpc":"2.0", "id":id, "method":"tools/call",
+            "params":{"name":"tree","arguments":{"file":file,"depth":1}}
+        })
+        .to_string()
+    };
+    let input = format!(
+        "{}\n{}\n{}\n",
+        request(1, file.to_str().unwrap()),
+        serde_json::json!({"jsonrpc":"2.0","id":2,"method":"ping"}),
+        request(3, &normal.file())
+    );
+    let mut output = Vec::new();
+    serve(input.as_bytes(), &mut output, &[]).unwrap();
+    let replies: Vec<serde_json::Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(replies.len(), 3);
+    assert_eq!(replies[0]["result"]["isError"], true);
+    assert!(
+        replies[0]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("parse budget exceeded: value depth (limit 64)")
+    );
+    assert_eq!(replies[1]["result"], serde_json::json!({}));
+    assert_eq!(replies[2]["result"]["isError"], false);
+    assert!(
+        replies[2]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Frame")
+    );
+    let error = run(
+        vec!["tree".into(), file.to_string_lossy().into_owned()],
+        &mut String::new(),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("parse budget exceeded: value depth")
+    );
+    run(vec!["tree".into(), normal.file()], &mut String::new()).unwrap();
+}
+
+#[test]
 fn cli_and_mcp_success_results_match() {
     let fixture = Fixture::new();
     for (name, cli, arguments, expected) in [

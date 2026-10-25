@@ -17,6 +17,7 @@ pub mod compare;
 pub mod expand;
 pub mod export;
 pub mod images;
+mod parse;
 pub mod preview;
 pub mod remote;
 pub mod render;
@@ -55,11 +56,13 @@ impl Document {
     /// Opens a `.fig` zip and decodes its `canvas.fig`.
     pub fn open(path: &Path) -> Result<Document, Box<dyn Error>> {
         let mut archive = zip::ZipArchive::new(std::io::BufReader::new(File::open(path)?))?;
-        let mut canvas = Vec::new();
-        archive
+        let canvas_file = archive
             .by_name("canvas.fig")
-            .map_err(|e| FigError(format!("{}: no canvas.fig ({e})", path.display())))?
-            .read_to_end(&mut canvas)?;
+            .map_err(|e| FigError(format!("{}: no canvas.fig ({e})", path.display())))?;
+        if canvas_file.size() > parse::CANVAS_BYTES {
+            return Err(parse::exceeded("canvas bytes", parse::CANVAS_BYTES).into());
+        }
+        let canvas = read_limited(canvas_file, parse::CANVAS_BYTES, "canvas bytes")?;
         Document::from_canvas(&canvas)
     }
 
@@ -71,12 +74,14 @@ impl Document {
                 chunks.len()
             ));
         }
-        let schema = Schema::decode(&unpack(chunks[0])?)
-            .map_err(|_| FigError("invalid kiwi schema".into()))?;
+        let schema_bytes = unpack_limited(chunks[0], parse::SCHEMA_BYTES, "schema bytes")?;
+        parse::schema(&schema_bytes)?;
+        let schema =
+            Schema::decode(&schema_bytes).map_err(|_| FigError("invalid kiwi schema".into()))?;
         Ok(Document {
             version,
             schema,
-            message: unpack(chunks[1])?,
+            message: unpack_limited(chunks[1], parse::MESSAGE_BYTES, "message bytes")?,
         })
     }
 
@@ -85,6 +90,7 @@ impl Document {
         let Some(def) = self.schema.def("Message") else {
             return err("schema has no Message definition");
         };
+        parse::message(&self.schema, def.index, &self.message, parse::VALUES)?;
         Value::decode(&self.schema, def.index, &self.message)
             .map_err(|_| FigError("message does not match its schema".into()).into())
     }
@@ -95,35 +101,58 @@ pub type Chunks<'a> = (u32, Vec<&'a [u8]>);
 
 /// Splits `fig-kiwi` framing: magic, u32 version, then u32-length-prefixed chunks (all little-endian).
 pub fn split_chunks(data: &[u8]) -> Result<Chunks<'_>, Box<dyn Error>> {
+    if data.len() as u64 > parse::CANVAS_BYTES {
+        return Err(parse::exceeded("canvas bytes", parse::CANVAS_BYTES).into());
+    }
     if data.len() < 12 || &data[..8] != MAGIC {
         return err("not a fig-kiwi canvas");
     }
     let version = u32::from_le_bytes(data[8..12].try_into()?);
     let mut chunks = Vec::new();
-    let mut offset = 12;
+    let mut offset: usize = 12;
     while offset < data.len() {
-        let Some(header) = data.get(offset..offset + 4) else {
+        if chunks.len() >= parse::CHUNKS {
+            return Err(parse::exceeded("chunk count", parse::CHUNKS).into());
+        }
+        let header_end = offset
+            .checked_add(4)
+            .ok_or_else(|| FigError("chunk offset overflow".into()))?;
+        let Some(header) = data.get(offset..header_end) else {
             return err(format!("truncated chunk header at byte {offset}"));
         };
         let len = u32::from_le_bytes(header.try_into()?) as usize;
-        let Some(chunk) = data.get(offset + 4..offset + 4 + len) else {
+        let end = header_end
+            .checked_add(len)
+            .ok_or_else(|| FigError("chunk length overflow".into()))?;
+        let Some(chunk) = data.get(header_end..end) else {
             return err(format!(
                 "chunk at byte {offset} claims {len} bytes past the end"
             ));
         };
         chunks.push(chunk);
-        offset += 4 + len;
+        offset = end;
     }
     Ok((version, chunks))
 }
 
 /// Chunks are zstd (newer files) or raw deflate (older files).
 pub fn unpack(chunk: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
-    let mut out = Vec::new();
+    unpack_limited(chunk, parse::MESSAGE_BYTES, "decompressed bytes")
+}
+
+fn unpack_limited(chunk: &[u8], limit: u64, kind: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     if chunk.starts_with(&ZSTD_MAGIC) {
-        ruzstd::decoding::StreamingDecoder::new(chunk)?.read_to_end(&mut out)?;
+        read_limited(ruzstd::decoding::StreamingDecoder::new(chunk)?, limit, kind)
     } else {
-        flate2::read::DeflateDecoder::new(chunk).read_to_end(&mut out)?;
+        read_limited(flate2::read::DeflateDecoder::new(chunk), limit, kind)
+    }
+}
+
+fn read_limited(reader: impl Read, limit: u64, kind: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut out = Vec::new();
+    reader.take(limit.saturating_add(1)).read_to_end(&mut out)?;
+    if out.len() as u64 > limit {
+        return Err(parse::exceeded(kind, limit).into());
     }
     Ok(out)
 }
@@ -339,6 +368,55 @@ mod tests {
             flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(b"kiwi").unwrap();
         assert_eq!(unpack(&encoder.finish().unwrap()).unwrap(), b"kiwi");
+    }
+
+    #[test]
+    fn decompression_and_reads_obey_small_byte_budgets() {
+        let bytes = b"small data";
+        let mut deflate =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        deflate.write_all(bytes).unwrap();
+        let deflate = deflate.finish().unwrap();
+        let zstd = ruzstd::encoding::compress_to_vec(
+            bytes.as_slice(),
+            ruzstd::encoding::CompressionLevel::Uncompressed,
+        );
+        for compressed in [&deflate, &zstd] {
+            for limit in [11, 10] {
+                assert_eq!(
+                    unpack_limited(compressed, limit, "test bytes").unwrap(),
+                    bytes
+                );
+            }
+            let error = unpack_limited(compressed, 9, "test bytes").unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("parse budget exceeded: test bytes (limit 9)")
+            );
+            assert_eq!(unpack_limited(compressed, 10, "test bytes").unwrap(), bytes);
+        }
+        assert!(read_limited(bytes.as_slice(), 9, "canvas bytes").is_err());
+        assert_eq!(
+            read_limited(bytes.as_slice(), 10, "canvas bytes").unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn chunk_count_has_a_finite_boundary() {
+        let chunks = vec![b"".as_slice(); parse::CHUNKS];
+        assert_eq!(
+            split_chunks(&frame(106, &chunks)).unwrap().1.len(),
+            parse::CHUNKS
+        );
+        let chunks = vec![b"".as_slice(); parse::CHUNKS + 1];
+        assert!(
+            split_chunks(&frame(106, &chunks))
+                .unwrap_err()
+                .to_string()
+                .contains("chunk count")
+        );
     }
 
     #[test]

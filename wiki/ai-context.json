@@ -5,6 +5,10 @@
     "defaultTopicMaxBytes": 16384
   },
   "topics": {
+    "parsing": {
+      "description": "Changing untrusted container/schema/value decoding or parsing budgets.",
+      "sources": [{ "path": "wiki/parsing.md" }]
+    },
     "mcp": {
       "description": "Changing MCP instructions, tool discovery or built-in workflow guidance.",
       "sources": [{ "path": "wiki/mcp.md" }]
