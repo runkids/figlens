@@ -54,3 +54,19 @@ The community-design sample has 17,995,555 decompressed message bytes, 26,880 no
 Byte arrays now use `Vec<u8>` rather than one 72-byte `Value` per byte. Decoded high-water RSS fell 43.8%; raw decode time fell 21.6%. This is a local observation, not a cross-platform guarantee. The unchanged probe's later `countValues` walk does not recognize `Bytes`; only its earlier decode/tree stages are used here.
 
 Compatibility was measured on the public first-success fixture and two different held-out community designs (2,250 and 4,719 nodes), not the performance sample. `nodes` JSON was byte-identical. Bundle entry names and contents were identical (9, 39 and 8 entries), except `manifest.json`'s `createdAt`. No exports or design files are distributed. These checks establish output preservation, not improved accuracy against new Figma exports.
+
+## Baseline after #23/#24, 2026-10-26
+
+Re-ran the ignored `samples/perf-2026-10-26/perf.py` harness on clean main `4ec0f368825a19a6d2191744b4897cf11df0b3df` (only the temporary stage example was untracked), against the supplied `results.json` baseline (metadata records `a1610d6`, not the requested `7847b9d`). Same five local designs and frame IDs, Docker Linux aarch64/OrbStack, release build, 18 CPUs, OS page cache not flushed. Five fresh-process loads, ten calls per warm MCP method; ZIP/RSS probes and three-frame bundle routes each ran once. Build: `docker compose run --rm dev cargo build --release --locked --bin figlens --example stages`. The probe mirrors the current ZIP opener and counts compact `Bytes`. Old → new:
+
+| File | CLI first median ms | MCP first median ms | ZIP open ms | `treeNew` VmHWM KiB | Three-frame batch wall ms |
+|---|---:|---:|---:|---:|---:|
+| small | 40.89 → 35.56 | 34.11 → 29.00 | 0.414 → 0.153 | 98,516 → 75,196 | 882 → 937 |
+| medium | 8.63 → 2.59 | 7.33 → 1.39 | 6.047 → 0.105 | 6,400 → 5,488 | 838 → 867 |
+| large | 154.61 → 93.15 | 134.62 → 76.64 | 25.860 → 0.328 | 445,432 → 200,832 | 479 → 393 |
+| xl | 397.35 → 306.00 | 344.70 → 250.69 | 35.058 → 0.154 | 1,022,744 → 574,256 | 543 → 439 |
+| xxl | 185.57 → 104.70 | 165.59 → 85.88 | 58.254 → 0.282 | 360,868 → 193,664 | 319 → 234 |
+
+First load is `tree --depth 1`; batch uses default jobs. VmHWM is the probe's process high water through `treeNew`, including an earlier separate decode, not Tree allocation alone. Warm medians (tree/inspect/find/nodes, ms): small 0.062/7.428/1.127/8.585; medium 0.035/0.271/0.056/0.320; large 0.049/1.779/1.172/1.854; xl 0.085/7.145/4.617/8.156; xxl 0.109/8.021/1.840/8.972. Flagged >1.3×: xxl warm tree 0.069 → 0.109 ms (1.59×). Single-probe stage timings also include regressions, notably xxl's third-frame SVG 17.02 → 39.87 ms and PNG 36.33 → 62.55 ms; n=1 cannot establish a causal regression.
+
+All six scenarios completed. Overwrite and mtime-only changes reloaded; unreadable/deleted copies returned `source_unreadable`, stayed responsive and recovered. All 15 frame bundles matched across sequential CLI, both batch modes and MCP after timestamp normalization. Raw results, full old/new tables, all >1.3× stage observations, binary hash and reproduction command are retained locally in `samples/perf-2026-10-26/results-4ec0f36.json` and `remeasure-4ec0f36.md`. No new Figma accuracy or cross-platform claim follows.
