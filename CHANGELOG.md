@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.7.0](https://github.com/runkids/figlens/compare/v0.6.0...v0.7.0) (2026-10-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **mcp:** MCP no longer accepts legacy CLI argument coercions, numeric strings or optional null/false sentinels. Use JSON numbers and maxSize: 0 for uncapped exports.
+
+* **mcp:** centralize tool contracts and request admission ([1309faa](https://github.com/runkids/figlens/commit/1309faa1b13eefcc239ebfbd1e1fecaa25e6c520))
+
+
+### New Features
+
+* expose built-in MCP workflow guidance ([8de61d8](https://github.com/runkids/figlens/commit/8de61d89e60b53e83a081d38c03675124e6fed3e))
+
+
+### Bug Fixes
+
+* align MCP contracts and clean up smoke processes ([7dcbe8b](https://github.com/runkids/figlens/commit/7dcbe8b48507a9526ffa40716cf5cc05f974369e))
+* bound document parsing before Kiwi decoding ([b6e959f](https://github.com/runkids/figlens/commit/b6e959f44148f62f74fdc4175b46a5dc27089a58))
+* create candidate output before container builds ([bb45fed](https://github.com/runkids/figlens/commit/bb45fed6af1e5d446b04ccab13520565fbfc28e5))
+* harden design parsing and verify installed workflows ([3c482e8](https://github.com/runkids/figlens/commit/3c482e85918d5cdf661bb0e6b2fd32a0769bbb1d))
+* resolve instance sublayer IDs consistently ([b9654ae](https://github.com/runkids/figlens/commit/b9654aea4ec618324337d05f64dc70dd748ac2af))
+* use Windows system tar for ZIP extraction ([dd33bd2](https://github.com/runkids/figlens/commit/dd33bd258d8eb90f58ae9456b6138b2d205ba137))
+
+
+### Reverts
+
+* **skill:** drop sizing-intent guidance from the MCP refactor ([b1c1f9d](https://github.com/runkids/figlens/commit/b1c1f9d3092360a22b32d6db5ef408dcc58bfa4c))
+
 ## [0.6.0](https://github.com/runkids/figlens/compare/v0.5.0...v0.6.0) (2026-10-24)
 
 
