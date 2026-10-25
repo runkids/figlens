@@ -613,7 +613,8 @@ impl<'t, 'a> Svg<'t, 'a> {
     }
 
     /// For output that is rasterized at the document's scale: large images are downscaled
-    /// first. An SVG kept as a file keeps full images, since it may be drawn at any size.
+    /// first, and pure blurs skip unused shadow intermediates. An SVG kept as a file keeps
+    /// full images and the original filter graph, since it may be drawn at any size.
     pub fn for_raster(mut self) -> Self {
         self.mips = Some(std::collections::HashMap::new());
         self
@@ -1245,16 +1246,23 @@ impl<'t, 'a> Svg<'t, 'a> {
                 _ => blur = Some(sd),
             }
         }
-        let merge: String = under
-            .iter()
-            .map(String::as_str)
-            .chain(["SourceGraphic"])
-            .chain(over.iter().map(String::as_str))
-            .map(|r| format!("<feMergeNode in=\"{r}\"/>"))
-            .collect();
-        let _ = write!(f, "<feMerge result=\"all\">{merge}</feMerge>");
+        let input = if self.mips.is_some() && under.is_empty() && over.is_empty() {
+            // Skip pure-blur intermediates for rasterization, keeping SVG asset bytes stable.
+            f.clear();
+            "SourceGraphic"
+        } else {
+            let merge: String = under
+                .iter()
+                .map(String::as_str)
+                .chain(["SourceGraphic"])
+                .chain(over.iter().map(String::as_str))
+                .map(|r| format!("<feMergeNode in=\"{r}\"/>"))
+                .collect();
+            let _ = write!(f, "<feMerge result=\"all\">{merge}</feMerge>");
+            "all"
+        };
         if let Some(sd) = blur {
-            let _ = write!(f, "<feGaussianBlur in=\"all\" stdDeviation=\"{sd}\"/>");
+            let _ = write!(f, "<feGaussianBlur in=\"{input}\" stdDeviation=\"{sd}\"/>");
         }
         // The filter canvas is what the node draws, uncut by its ancestors' clips, plus each
         // effect's reach: 3 sigma (sigma = radius / 2) of blur, spread and offset. Filter cost
@@ -1552,6 +1560,61 @@ mod tests {
             "{}",
             svg.defs
         );
+    }
+
+    #[test]
+    fn pure_blur_skips_shadow_intermediates_without_changing_pixels() {
+        let tree = Tree {
+            nodes: Default::default(),
+            children: Default::default(),
+            blobs: Vec::new(),
+        };
+        let images = |_: &str| None;
+        for kind in ["LAYER_BLUR", "FOREGROUND_BLUR"] {
+            for radius in [0.0, 1.0, 19.5] {
+                let mut svg = Svg::new(&tree, &images).for_raster();
+                let mut n = serde_json::json!({ "_r": {
+                    "fb": { "x": 10.25, "y": 10.75, "width": 30, "height": 20 },
+                    "effects": [{ "type": kind, "radius": radius, "visible": true }]
+                }});
+                let id = svg.effects(&n).unwrap();
+                assert!(!svg.defs.contains("feColorMatrix"));
+                assert!(!svg.defs.contains("feMerge"));
+                assert!(svg.defs.contains("in=\"SourceGraphic\""));
+                let mut vector = Svg::new(&tree, &images);
+                vector.effects(&n);
+                assert!(vector.defs.contains("result=\"hard\""));
+                assert!(vector.defs.contains("<feMerge result=\"all\">"));
+                assert!(vector.defs.contains("<feGaussianBlur in=\"all\""));
+                for scale in [1, 2] {
+                    let document = |defs: &str| {
+                        format!(
+                            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\" viewBox=\"0 0 60 50\"><defs>{defs}</defs><g filter=\"url(#{id})\"><rect x=\"10.25\" y=\"10.75\" width=\"30\" height=\"20\" fill=\"#a54cfe\" opacity=\"0.53\"/></g></svg>",
+                            60 * scale,
+                            50 * scale
+                        )
+                    };
+                    let pixels = pixmap(&document(&svg.defs)).unwrap();
+                    assert!(pixels.data().iter().any(|b| *b != 0));
+                    assert_eq!(
+                        pixels.data(),
+                        pixmap(&document(&vector.defs)).unwrap().data()
+                    );
+                }
+                for shadow in ["DROP_SHADOW", "INNER_SHADOW"] {
+                    n["_r"]["effects"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(serde_json::json!({ "type": shadow, "radius": 4, "visible": true }));
+                    let mut mixed = Svg::new(&tree, &images).for_raster();
+                    mixed.effects(&n);
+                    assert!(mixed.defs.contains("result=\"hard\""));
+                    assert!(mixed.defs.contains("<feMerge result=\"all\">"));
+                    assert!(mixed.defs.contains("<feGaussianBlur in=\"all\""));
+                    n["_r"]["effects"].as_array_mut().unwrap().pop();
+                }
+            }
+        }
     }
 
     #[test]

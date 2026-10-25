@@ -35,7 +35,7 @@ The raw local report is retained in the ignored run directory `samples/batch5-re
 
 Source inspection confirms local MCP parsed-tree reuse; GCS calls reuse same-generation **downloads** but bypass that parsed-tree cache. The [GCS mock](gcs.md#evidence-and-limitations) confirms six metadata checks and two downloads across repeated/new/failed/recovered calls; these are counts, not cloud latency measurements.
 
-There is no representative licensed large design here, and no real metadata/download timing, image-heavy render profile, cross-platform benchmark or external-client measurement. Keep the current cache architecture for this batch. Gather those measurements before deciding whether remote parsed-tree caching is worth its invalidation/ownership costs. Generation-pinned download/provenance is a separate correctness follow-up, not a measured performance fix.
+That batch had no representative licensed large design, real metadata/download timing, image-heavy render profile, cross-platform benchmark or external-client measurement. Keep the current cache architecture for this batch. Gather those measurements before deciding whether remote parsed-tree caching is worth its invalidation/ownership costs. Generation-pinned download/provenance is a separate correctness follow-up, not a measured performance fix.
 
 
 ## Compact Kiwi byte arrays (2026-10-26)
@@ -70,3 +70,16 @@ Re-ran the ignored `samples/perf-2026-10-26/perf.py` harness on clean main `4ec0
 First load is `tree --depth 1`; batch uses default jobs. VmHWM is the probe's process high water through `treeNew`, including an earlier separate decode, not Tree allocation alone. Warm medians (tree/inspect/find/nodes, ms): small 0.062/7.428/1.127/8.585; medium 0.035/0.271/0.056/0.320; large 0.049/1.779/1.172/1.854; xl 0.085/7.145/4.617/8.156; xxl 0.109/8.021/1.840/8.972. Flagged >1.3×: xxl warm tree 0.069 → 0.109 ms (1.59×). Single-probe stage timings also include regressions, notably xxl's third-frame SVG 17.02 → 39.87 ms and PNG 36.33 → 62.55 ms; n=1 cannot establish a causal regression.
 
 All six scenarios completed. Overwrite and mtime-only changes reloaded; unreadable/deleted copies returned `source_unreadable`, stayed responsive and recovered. All 15 frame bundles matched across sequential CLI, both batch modes and MCP after timestamp normalization. Raw results, full old/new tables, all >1.3× stage observations, binary hash and reproduction command are retained locally in `samples/perf-2026-10-26/results-4ec0f36.json` and `remeasure-4ec0f36.md`. No new Figma accuracy or cross-platform claim follows.
+
+## Pure-blur filter intermediates (2026-10-26)
+
+Compared main `d7275d6` (including #27) with raster-only removal of unused hard-alpha and single-input merge primitives. Docker Linux aarch64, Rust 1.97.1 release, resvg 0.48.1; actual CLI batch commands, five private files / fifteen frames, three fresh processes per configuration, alternating before/after, OS cache not flushed. One frame per command; walls include startup/decode. `--jobs 1` limits frames, not internal rendering; `RAYON_NUM_THREADS` is unset in both modes.
+
+| Frame | `--jobs 1` before → after (ms) | Default before → after (ms) | Default VmHWM median before → after (MiB) |
+|---|---:|---:|---:|
+| small `20:2` | 906.1 → 823.9 (−9.1%) | 894.1 → 821.7 | 187.9 → 154.4 |
+| medium `7:346` | 830.4 → 823.9 | 820.4 → 825.6 | 510.9 → 510.1 |
+
+Earlier primitive profiling on `4ec0f36` attributes medium's cost mainly to GaussianBlur (586.16 ms across reference and two 2x composites), ColorMatrix (102.43) and Merge (93.18); its shadow graphs have no removable intermediates. Small's corresponding costs were 488.05 / 61.06 / 60.99 ms; removing unused intermediates saved 74.35 ms in the isolated SVG experiment. Tightening shadow regions changed pixels and was rejected. Small's 535 ms target was not reached; medium already meets 1450 ms on current main because #27 retains rendering parallelism, not because of this change. Medium default after VmHWM was 510.1 / 511.3 / 510.1 MiB; do not attribute its noisy memory to this optimization. Larger decoded-tree samples still exceed 510 MiB.
+
+No other frame regressed over 10%. All 90 before/after archive pairs had identical entry names and bytes except the manifest, including SVG assets and PNG references/composites. This establishes preservation, not improved Figma accuracy. The earlier single-thread stage baseline is retained separately: `RAYON_NUM_THREADS=1` must not be described as current `--jobs 1`. Raw profiles and paired CLI observations remain in gitignored `samples/perf-2026-10-26/filter-work/`; no private fixtures are distributed.
