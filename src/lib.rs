@@ -235,6 +235,7 @@ impl<'a> Tree<'a> {
     /// Bytes of blob `index`, as kiwi `commandsBlob` fields name them.
     pub fn blob(&self, index: u64) -> Option<Vec<u8>> {
         match self.blobs.get(index as usize)?.get("bytes")? {
+            Value::Bytes(bytes) => Some(bytes.clone()),
             Value::Array(bytes) => bytes
                 .iter()
                 .map(|b| match b {
@@ -338,6 +339,8 @@ pub fn to_json(value: &Value) -> serde_json::Value {
         Value::Int64(v) => J::from(*v),
         Value::UInt64(v) => J::from(*v),
         Value::Enum(_, name) => J::from(*name),
+        Value::Bytes(bytes) if bytes.is_empty() => J::Array(Vec::new()),
+        Value::Bytes(bytes) => J::from(format!("<{} bytes>", bytes.len())),
         Value::Array(items)
             if !items.is_empty() && items.iter().all(|i| matches!(i, Value::Byte(_))) =>
         {
@@ -352,6 +355,10 @@ pub fn to_json(value: &Value) -> serde_json::Value {
                     .into_iter()
                     .map(|(name, v)| match v {
                         // Image hashes are what REST calls imageRef.
+                        Value::Bytes(bytes) if *name == "hash" => (
+                            name.to_string(),
+                            J::from(bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+                        ),
                         Value::Array(bytes) if *name == "hash" => (
                             name.to_string(),
                             J::from(
@@ -414,6 +421,32 @@ mod tests {
             out.extend(*chunk);
         }
         out
+    }
+
+    #[test]
+    fn compact_bytes_preserve_json_hashes_and_blob_contents() {
+        for bytes in [vec![], vec![0, 127, 255]] {
+            let compact = Value::Bytes(bytes.clone());
+            let legacy = Value::Array(bytes.iter().copied().map(Value::Byte).collect());
+            assert_eq!(to_json(&compact), to_json(&legacy));
+            let object = |value| Value::Object("Blob", HashMap::from([("bytes", value)]));
+            let blob = object(compact.clone());
+            let tree = Tree {
+                nodes: HashMap::new(),
+                children: HashMap::new(),
+                blobs: vec![&blob],
+            };
+            assert_eq!(tree.blob(0), Some(bytes));
+            assert_eq!(tree.blob(1), None);
+            let hash = |value| Value::Object("Image", HashMap::from([("hash", value)]));
+            assert_eq!(to_json(&hash(compact)), to_json(&hash(legacy)));
+        }
+        assert_eq!(to_json(&Value::Bytes(vec![0, 255])), "<2 bytes>");
+        let image = Value::Object(
+            "Image",
+            HashMap::from([("hash", Value::Bytes(vec![0, 255]))]),
+        );
+        assert_eq!(to_json(&image)["hash"], "00ff");
     }
 
     #[test]

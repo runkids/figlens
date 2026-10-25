@@ -208,6 +208,13 @@ fn field_value(
     if field.is_array {
         enter(depth, limits, budget)?;
         let len = bb.read_var_uint().map_err(invalid_message)? as usize;
+        if field.type_id == TYPE_BYTE {
+            if len as u64 > MESSAGE_BYTES {
+                return Err(exceeded("byte array bytes", MESSAGE_BYTES));
+            }
+            bb.read_bytes(len).map_err(invalid_message)?;
+            return Ok(());
+        }
         budget.check(len)?;
         for _ in 0..len {
             value(
@@ -294,6 +301,35 @@ mod tests {
         );
         message(&schema, 0, &bytes, Limits { depth: 3, items: 5 }).unwrap();
         assert!(message(&schema, 0, &[1, 1, 4, 0], limits).is_ok());
+    }
+
+    #[test]
+    fn byte_arrays_count_as_one_item_and_check_bytes_before_reading() {
+        let schema = Schema::new(vec![Def::new(
+            "Message".into(),
+            DefKind::Message,
+            vec![field("bytes", TYPE_BYTE, true)],
+        )]);
+        let limits = Limits { depth: 2, items: 2 };
+        let bytes = [1, 3, 0, 127, 255, 0];
+        message(&schema, 0, &bytes, limits).unwrap();
+        let decoded = Value::decode(&schema, 0, &bytes).unwrap();
+        assert_eq!(decoded.get("bytes"), Some(&Value::Bytes(vec![0, 127, 255])));
+        assert_eq!(decoded.encode(&schema), bytes);
+        message(&schema, 0, &[1, 0, 0], limits).unwrap();
+        assert!(message(&schema, 0, &bytes, Limits { depth: 2, items: 1 }).is_err());
+        assert!(message(&schema, 0, &bytes, Limits { depth: 1, items: 2 }).is_err());
+        assert!(message(&schema, 0, &[1, 3, 0], limits).is_err());
+        let mut declared = kiwi_schema::ByteBufferMut::new();
+        declared.write_var_uint(1);
+        declared.write_var_uint(MESSAGE_BYTES as u32 + 1);
+        assert!(
+            message(&schema, 0, &declared.data(), limits)
+                .unwrap_err()
+                .to_string()
+                .contains("byte array bytes (limit 268435456)")
+        );
+        message(&schema, 0, &bytes, limits).unwrap();
     }
 
     #[test]

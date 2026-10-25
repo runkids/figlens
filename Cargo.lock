@@ -624,8 +624,6 @@ dependencies = [
 [[package]]
 name = "kiwi-schema"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d45b31ebc19e6e8a277970c1ebbe9c3c5224cdc12b3b996b144ddfa1dc506b94"
 
 [[package]]
 name = "kurbo"
