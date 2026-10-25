@@ -1,0 +1,34 @@
+# Bounded local baseline
+
+Use `scripts/measure-baseline.py` to collect a small reproducible baseline before proposing cache changes. It accepts an explicit binary and uses only the original MIT public fixture (`examples/first-success/design.fig`, 1,615 bytes). It creates and removes its own temporary HOME/cache/output directories. It does not flush the OS file cache or contact GCS.
+
+```sh
+python3 -B scripts/measure-baseline.py --binary /absolute/path/to/figlens --repetitions 10
+```
+
+Rust builds/runs for development stay in Docker. For a release-profile Linux test binary:
+
+```sh
+docker compose run --rm dev cargo build --release --locked --bin figlens
+docker compose run --rm dev python3 -B scripts/measure-baseline.py --binary /work/target/release/figlens --repetitions 10
+```
+
+The report records HEAD and dirty state, platform, explicit binary path/version/hash, fixture size/hash, parameters, all samples, median and nearest-rank p95. Record the build command too: a supplied binary's version alone cannot prove its source. Repetitions are bounded to 3–30. These are sequential observations, not a load test.
+
+## Observed local run
+
+2026-10-26, HEAD `3811c4034447a5518cb8dae0c13de8ba5c167402` **plus batch-5 uncommitted changes**, Docker Linux aarch64/glibc 2.41 on OrbStack, Python 3.13.5; Rust 1.97.1 release profile, `--locked --bin figlens`, no architecture/cache changes. Binary SHA-256: `267547a42aef07600ff289c01170fabb0e0ff09b9324e3d1f9e409a8d0a4c778`. Fixture hash is recorded in its [provenance](../examples/first-success/README.md). Ten repetitions, OS cache not flushed:
+
+| Observed boundary | Median ms | p95 ms |
+|---|---:|---:|
+| Fresh `--version` process (includes spawn/version handling) | 0.906 | 3.662 |
+| Fresh `nodes design.fig 0:1` (spawn + parse + tool/output) | 1.187 | 3.088 |
+| MCP spawn + initialize | 0.826 | 0.975 |
+| First MCP `nodes`, fresh server parsed state | 0.355 | 0.465 |
+| Next MCP `nodes`, same local file/server | 0.157 | 0.192 |
+
+The raw local report is retained in the ignored run directory `samples/batch5-review-l8khg07w/baseline-linux-arm64-final.json`; a fresh checkout can rerun the script. These boundaries do **not** isolate pure parser time, tool time or IPC by subtraction. Scheduling, process setup and OS cache state affect them. No speed claim follows from this tiny example.
+
+Source inspection confirms local MCP parsed-tree reuse; GCS calls reuse same-generation **downloads** but bypass that parsed-tree cache. The [GCS mock](gcs.md#evidence-and-limitations) confirms six metadata checks and two downloads across repeated/new/failed/recovered calls; these are counts, not cloud latency measurements.
+
+There is no representative licensed large design here, and no real metadata/download timing, image-heavy render profile, cross-platform benchmark or external-client measurement. Keep the current cache architecture for this batch. Gather those measurements before deciding whether remote parsed-tree caching is worth its invalidation/ownership costs. Generation-pinned download/provenance is a separate correctness follow-up, not a measured performance fix.

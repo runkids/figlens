@@ -238,9 +238,9 @@ pub fn write(
     }
     // Rasterizing dominates a bundle (filters at 2x), and each render is independent: draw them
     // in parallel, then add them in plan order so the bundle stays the same.
-    render::export_area(rendered).ok_or_else(|| format!(
+    render::export_area(rendered).ok_or_else(|| crate::FigError::new(crate::ErrorKind::UnsupportedNode, format!(
         "node {root} is unsupported for bundle: no drawable bounds; inspect the node and select a sized drawable layer"
-    ))?;
+    )))?;
     let (renders, reference) = rayon::join(
         || {
             plan.composites
@@ -308,7 +308,8 @@ pub fn write(
         .filter_map(Json::as_str)
         .collect();
     files.push(prompt(context(&name, root, &warnings, &unresolved)));
-    pack(files, file_key, root, &name, &warnings, out)?;
+    pack(files, file_key, root, &name, &warnings, out)
+        .map_err(|e| crate::FigError::new(crate::ErrorKind::OutputWrite, e.to_string()))?;
     Ok(warnings)
 }
 

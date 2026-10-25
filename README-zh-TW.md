@@ -27,6 +27,8 @@
 
 ## 開始使用
 
+**還沒有設計檔？** [用小型公開範例檢查環境](examples/first-success/README.md)：驗證所選執行檔、找到一個 frame，再核對 bundle 內容。不需要模型。
+
 把 `design.fig` 放進你的專案，再選你的 agent。
 
 **Claude Code**（Node.js 18+、macOS/Linux）：
@@ -219,7 +221,7 @@ skillshare sync && skillshare sync mcp --global
 | `mcp` | 透過 stdio 的本機 MCP 伺服器 |
 | `update` | 將執行檔換成最新發行版 |
 
-node 引數可接受 `12:345`、`12-345`，或帶有 `?node-id=` 的 Figma URL。`<file>` 也可以是 `gs://bucket/object`，會用你的 `gcloud` 登入下載並快取。每次 CLI 呼叫都會解碼檔案；MCP 伺服器會在多次呼叫間保留解析後的檔案，直到檔案在磁碟上變更。執行 `figlens --help` 查看用法。
+node 引數可接受 `12:345`、`12-345`，或帶有 `?node-id=` 的 Figma URL。`<file>` 也可以是 `gs://bucket/object`，會用你的 `gcloud` 登入下載並快取。固定 object 交接、所需存取權限與更新限制，請參閱 [GCS 快照操作說明](wiki/gcs.md)。每次 CLI 呼叫都會解碼檔案；MCP 只重用最後讀取且未變更的本機檔案，遠端輸入與 legacy 呼叫仍會重新解析。執行 `figlens --help` 查看用法。
 
 <a id="limitations"></a>
 

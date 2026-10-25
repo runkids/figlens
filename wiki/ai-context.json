@@ -7,47 +7,100 @@
   "topics": {
     "parsing": {
       "description": "Changing untrusted container/schema/value decoding or parsing budgets.",
-      "sources": [{ "path": "wiki/parsing.md" }]
+      "sources": [
+        {
+          "path": "wiki/parsing.md"
+        }
+      ]
     },
     "mcp": {
       "description": "Changing MCP instructions, tool discovery or built-in workflow guidance.",
-      "sources": [{ "path": "wiki/mcp.md" }]
+      "sources": [
+        {
+          "path": "wiki/mcp.md"
+        },
+        {
+          "path": "wiki/gcs.md"
+        },
+        {
+          "path": "wiki/performance.md"
+        }
+      ]
     },
     "fig-format": {
       "description": "Changing decoding, instance expansion, emitted REST fields, variables or the bundle.",
-      "sources": [{ "path": "wiki/fig-format.md" }]
+      "sources": [
+        {
+          "path": "wiki/fig-format.md"
+        }
+      ]
     },
     "render": {
       "description": "Changing SVG or raster rendering: text and glyphs, image fills, effects, export areas, image adjustments.",
-      "sources": [{ "path": "wiki/render.md" }]
+      "sources": [
+        {
+          "path": "wiki/render.md"
+        }
+      ]
     },
     "preview": {
       "description": "Changing the local viewer, offline HTML, handoff or screenshot comparison.",
-      "sources": [{ "path": "wiki/preview.md" }]
+      "sources": [
+        {
+          "path": "wiki/preview.md"
+        }
+      ]
     },
     "pi": {
       "description": "Changing the Pi extension, reviewed component mappings or its npm packaging.",
-      "sources": [{ "path": "wiki/pi.md" }]
+      "sources": [
+        {
+          "path": "wiki/pi.md"
+        }
+      ]
     },
     "accuracy": {
       "description": "Measuring output against Figma's own exports, running compare, finding test files.",
-      "sources": [{ "path": "wiki/accuracy.md" }]
+      "sources": [
+        {
+          "path": "wiki/accuracy.md"
+        }
+      ]
     },
     "release": {
       "description": "Packaging, GitHub releases, Homebrew, npm, install scripts and figlens update.",
-      "sources": [{ "path": "wiki/release.md" }, { "path": "wiki/installation.md" }]
+      "sources": [
+        {
+          "path": "wiki/release.md"
+        },
+        {
+          "path": "wiki/installation.md"
+        }
+      ]
     },
     "review": {
       "description": "Review changes, create a PR and follow up on AI review and CI.",
-      "sources": [{ "path": "wiki/review.md" }]
+      "sources": [
+        {
+          "path": "wiki/review.md"
+        }
+      ]
     },
     "direction": {
       "description": "Deciding what to build next, or revisiting a past decision.",
-      "sources": [{ "path": "wiki/direction.md" }]
+      "sources": [
+        {
+          "path": "wiki/direction.md"
+        }
+      ]
     },
     "ai-context": {
       "description": "Maintain the doc router: add, move or split topics and pages, and fix check failures.",
-      "sources": [{ "path": "wiki/ai-context.md" }]
+      "sources": [
+        {
+          "path": "wiki/ai-context.md"
+        }
+      ]
     }
   },
   "unrouted": {

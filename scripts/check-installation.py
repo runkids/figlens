@@ -94,6 +94,7 @@ def main():
         shutil.copy2(ROOT/'examples/first-success/design.fig', fixture)
         print(run([sys.executable, ROOT/'scripts/first-success-smoke.py', '--binary', cache, '--example', fixture], consumer, env), end='')
         native_mcp = check_mcp([cache, 'mcp'], consumer, env, fixture, metadata['version'])
+        gcs = runpy.run_path(str(ROOT/'scripts/check-gcs-snapshot.py'))['check_gcs'](cache, fixture)
         # Cold MCP startup must keep extraction/installation output off its protocol stdout.
         mcp_cache = work/'mcp-cache'
         mcp_env = dict(wrapped_env, XDG_CACHE_HOME=str(mcp_cache), LOCALAPPDATA=str(mcp_cache))
@@ -113,7 +114,7 @@ def main():
                           'node': run([node, '--version'], consumer, env).strip(),
                           'npm': run(npm + ['--version'], consumer, env).strip(),
                           'coldInstall': True, 'warmCacheNoDownload': True, 'parallelFirstUse': True,
-                          'nativeMcp': native_mcp, 'wrapperMcp': wrapped_mcp, 'pi': pi}, indent=2))
+                          'nativeMcp': native_mcp, 'wrapperMcp': wrapped_mcp, 'gcsMock': gcs, 'pi': pi}, indent=2))
 
 
 if __name__ == '__main__':

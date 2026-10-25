@@ -1,6 +1,7 @@
 """Shared subprocess setup for candidate packaging and isolated installation checks."""
 import os
 from pathlib import Path
+import signal
 import subprocess
 
 
@@ -32,8 +33,28 @@ def environment(work, node):
 
 
 def run(command, cwd, env, timeout=60):
-    result = subprocess.run(list(map(str, command)), cwd=cwd, env=env, text=True,
-                            encoding='utf-8', capture_output=True, timeout=timeout)
-    if result.returncode:
-        raise RuntimeError(f'{command[0]} exited {result.returncode}\n{result.stdout[-4000:]}\n{result.stderr[-4000:]}')
-    return result.stdout
+    with subprocess.Popen(list(map(str, command)), cwd=cwd, env=env, text=True,
+                          encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          start_new_session=os.name != 'nt') as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except BaseException:
+            # The Node wrapper owns a native child; stopping the wrapper alone leaves it running.
+            try:
+                if os.name == 'nt':
+                    subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   check=True, timeout=10)
+                else:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=10)
+            raise
+    if process.returncode:
+        raise RuntimeError(f'{command[0]} exited {process.returncode}\n{stdout[-4000:]}\n{stderr[-4000:]}')
+    return stdout

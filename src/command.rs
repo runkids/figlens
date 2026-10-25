@@ -95,12 +95,13 @@ fn require_node(tree: &Tree, id: &str) -> Result<(), Box<dyn Error>> {
     if !tree.nodes.contains_key(id) {
         if id.starts_with('I') {
             resolve_nodes(tree, id)?;
-            return Err(format!(
+            return Err(figlens::FigError::new(figlens::ErrorKind::UnsupportedNode, format!(
                 "node {id} is an instance sublayer; this operation supports stored nodes only; use inspect, nodes, export or bundle with the full ID"
-            ).into());
+            )).into());
         }
-        return Err(format!(
-            "node {id} not found; list ids with `figlens tree <file.fig> --depth 2`"
+        return Err(figlens::FigError::new(
+            figlens::ErrorKind::NodeNotFound,
+            format!("node {id} not found; list ids with `figlens tree <file.fig> --depth 2`"),
         )
         .into());
     }
@@ -110,8 +111,9 @@ fn require_node(tree: &Tree, id: &str) -> Result<(), Box<dyn Error>> {
 // Only a cheap root check during argument parsing; the shared resolver verifies the full ID.
 fn require_target_root(tree: &Tree, id: &str) -> Result<(), Box<dyn Error>> {
     if !tree.nodes.contains_key(figlens::export::root_of(id)) {
-        return Err(format!(
-            "node {id} not found; list ids with `figlens tree <file.fig> --depth 2`"
+        return Err(figlens::FigError::new(
+            figlens::ErrorKind::NodeNotFound,
+            format!("node {id} not found; list ids with `figlens tree <file.fig> --depth 2`"),
         )
         .into());
     }
@@ -400,9 +402,12 @@ impl Command {
                 let id = normalize_id(&node);
                 require_target_root(tree, &id)?;
                 let format = export_format(&out)?;
-                if !(1..=100).contains(&quality) || scale.is_nan() || scale <= 0.0 {
+                if !(1..=100).contains(&quality) || !scale.is_finite() || scale <= 0.0 {
                     return Err("--quality takes 1-100 and --scale a positive number".into());
                 }
+                let max_bytes = max_kb
+                    .map(|kb| kb.checked_mul(1024).ok_or("--max-kb is too large"))
+                    .transpose()?;
                 let image = figlens::export::export(
                     tree,
                     fig,
@@ -410,10 +415,12 @@ impl Command {
                     format,
                     scale,
                     quality,
-                    max_kb.map(|kb| kb * 1024),
+                    max_bytes,
                     max_size.filter(|&px| px > 0),
                 )?;
-                std::fs::write(&out, &image.bytes)?;
+                std::fs::write(&out, &image.bytes).map_err(|e| {
+                    figlens::FigError::new(figlens::ErrorKind::OutputWrite, e.to_string())
+                })?;
                 let value = json!({ "path": out, "width": image.width, "height": image.height,
                     "bytes": image.bytes.len(), "quality": image.quality });
                 let mime = match format {

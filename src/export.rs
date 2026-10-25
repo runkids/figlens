@@ -56,8 +56,11 @@ pub fn export(
 ) -> Result<Image, Box<dyn Error>> {
     let prepared = Prepared::new(tree, fig, id)?;
     let unsupported = || {
-        format!(
-            "node {id} is unsupported for export: no drawable bounds; inspect the node and select a sized drawable layer"
+        crate::FigError::new(
+            crate::ErrorKind::UnsupportedNode,
+            format!(
+                "node {id} is unsupported for export: no drawable bounds; inspect the node and select a sized drawable layer"
+            ),
         )
     };
     if format == Format::Svg {

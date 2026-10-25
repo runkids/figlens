@@ -14,6 +14,7 @@ use figlens::{Document, Tree, normalize_id};
 mod test_support;
 
 mod command;
+mod contract;
 mod workflow;
 
 const USAGE: &str = "figlens — read Figma .fig files (File > Save local copy) without Figma
@@ -134,7 +135,7 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
         (Some(c), Some(f)) => (c.as_str(), f),
         _ => return Err(USAGE.into()),
     };
-    let path = figlens::remote::local(file)?;
+    let path = figlens::remote::local(file).map_err(|e| contract::source(file, e))?;
     if command == "preview" {
         let (mut node, mut output, mut port, mut bind) =
             (None, None, 0u16, "127.0.0.1".parse::<std::net::IpAddr>()?);
@@ -167,7 +168,7 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             std::net::SocketAddr::new(bind, port),
         );
     }
-    let doc = Document::open(&path).map_err(|e| format!("{file}: {e}"))?;
+    let doc = Document::open(&path).map_err(|e| contract::source(file, e))?;
     let message = doc.message()?;
     let tree = Tree::new(&message);
     match command {
@@ -325,7 +326,7 @@ const FILE: Param = (
     "",
     "string",
     true,
-    "the .fig file (File > Save local copy): an absolute path, or gs://bucket/object",
+    "the saved .fig: a local path (absolute recommended), or gs://bucket/object using gcloud; remote sources are unavailable with --root",
 );
 const NODE: Param = (
     "node",
@@ -462,7 +463,7 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
                 "",
                 "string",
                 true,
-                "absolute path of the .zip to write",
+                "output path for the bundle ZIP; create the parent directory first",
             ),
             (
                 "fileKey",
@@ -491,7 +492,7 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
                 "",
                 "string",
                 true,
-                "absolute path ending in .png, .jpg, .webp, .avif or .svg",
+                "output path ending in .png, .jpg, .jpeg, .webp, .avif or .svg; create the parent directory first",
             ),
             ("scale", "--scale", "number", false, "default 1"),
             (
@@ -506,7 +507,7 @@ const TOOLS: &[(&str, &str, &[Param])] = &[
                 "--max-kb",
                 "integer",
                 false,
-                "lower lossy quality until the file fits; PNG/SVG fail if over budget",
+                "KiB (1024 bytes) budget; lower lossy quality until it fits; PNG/SVG fail if over budget",
             ),
             (
                 "maxSize",
@@ -560,6 +561,15 @@ fn allowed(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| resolved.starts_with(root))
 }
 
+fn valid_request(req: &serde_json::Value) -> bool {
+    req.is_object()
+        && req["method"].is_string()
+        && req.get("jsonrpc").is_none_or(|v| v == "2.0")
+        && req
+            .get("id")
+            .is_none_or(|v| v.is_null() || v.is_string() || v.is_number())
+}
+
 /// The error reply for a tools/call whose `file` or `out` lies outside the roots, or whose
 /// arguments leave the tool schema (the legacy coercions could turn any of them into a path).
 /// The text is the same whatever exists there, so a refusal reveals nothing about other folders.
@@ -568,30 +578,40 @@ fn refused(line: &str, roots: &[PathBuf]) -> Option<serde_json::Value> {
         return None;
     }
     let req: serde_json::Value = serde_json::from_str(line).ok()?;
-    if req["method"] != "tools/call" {
+    if !valid_request(&req) || req["method"] != "tools/call" {
         return None;
     }
     let id = req.get("id")?.clone();
     let params = &req["params"];
     let name = params["name"].as_str().unwrap_or("");
+    // Malformed arguments use the ordinary preflight error, without reading a source.
+    let tool = TOOLS.iter().find(|t| t.0 == name)?;
+    contract::arguments(name, tool.2, &params["arguments"]).ok()?;
     let folders: Vec<_> = roots.iter().map(|r| r.display().to_string()).collect();
     let direct = TOOLS
         .iter()
         .find(|t| t.0 == name)
         .is_some_and(|t| is_direct(name, t.2, &params["arguments"]));
-    let text = if !direct {
+    let text = if params["arguments"]["file"]
+        .as_str()
+        .is_some_and(|file| file.starts_with("gs://"))
+    {
+        "GCS sources are not supported with --root; use an authorized local copy inside the configured roots".to_owned()
+    } else if !direct {
         "with --root, arguments must match the tool schema".to_owned()
     } else {
-        let outside = ["file", "out"]
+        let _outside = ["file", "out"]
             .iter()
             .filter_map(|key| params["arguments"][key].as_str())
             .find(|path| !allowed(Path::new(path), roots))?;
         format!(
-            "{outside}: outside the folders this server may use ({})",
+            "source or output is outside the folders this server may use ({})",
             folders.join(", ")
         )
     };
-    Some(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": tool_reply(name, Err(text)) }))
+    Some(
+        serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": tool_reply(name, Err(contract::Failure::new(figlens::ErrorKind::PermissionDenied, text))) }),
+    )
 }
 
 /// Serves JSON-RPC lines. Decoding a large file takes most of a call, so the parsed tree of
@@ -668,7 +688,7 @@ fn direct_file(line: &str, roots: &[PathBuf]) -> Option<PathBuf> {
     }
     let req: serde_json::Value = serde_json::from_str(line).ok()?;
     // A notification (no id) gets no reply, so its file is never opened.
-    if req["method"] != "tools/call" || req.get("id").is_none() {
+    if !valid_request(&req) || req["method"] != "tools/call" || req.get("id").is_none() {
         return None;
     }
     let params = &req["params"];
@@ -691,23 +711,7 @@ fn stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
 /// Whether the arguments fit the tool's schema, so the call is served directly rather than
 /// through the legacy CLI coercions.
 fn is_direct(name: &str, tool_params: &[Param], arguments: &serde_json::Value) -> bool {
-    if name == "workflow" && !arguments.as_object().is_some_and(|args| args.len() == 1) {
-        return false;
-    }
-    tool_params
-        .iter()
-        .all(|(key, _, kind, required, _)| match arguments.get(key) {
-            None => !required,
-            Some(value) => match *kind {
-                "string" => value.is_string(),
-                "boolean" => value.is_boolean(),
-                _ => value.is_number(),
-            },
-        })
-        && !matches!(
-            (name, arguments["node"].as_str()),
-            ("tree", Some("--depth" | "--json")) | ("bundle", Some("--frames"))
-        )
+    contract::arguments(name, tool_params, arguments).is_ok_and(|(_, legacy)| !legacy)
 }
 
 /// The reply to one JSON-RPC message; None for a notification.
@@ -729,6 +733,10 @@ fn mcp_reply_with(
             "error": { "code": -32700, "message": "parse error" }
         }));
     };
+    if !valid_request(&req) {
+        return Some(json!({"jsonrpc":"2.0", "id":null,
+            "error":{"code":-32600,"message":"invalid request"}}));
+    }
     let id = req.get("id")?.clone();
     let result = match req["method"].as_str().unwrap_or("") {
         // Only tools are served, which every protocol version handles alike, so the client's
@@ -754,23 +762,29 @@ fn mcp_reply_with(
                 "description": about,
                 "inputSchema": {
                     "type": "object",
-                    "properties": params.iter().map(|(key, _, kind, _, about)|
-                        (key.to_string(), json!({ "type": kind, "description": about }))
+                    "properties": params.iter().map(|param|
+                        (param.0.to_owned(), contract::property(name, param))
                     ).collect::<serde_json::Map<_, _>>(),
                     "required": params.iter().filter(|p| p.3).map(|p| p.0).collect::<Vec<_>>(),
+                    "additionalProperties": true,
                 }
             });
             if let Some(schema) = output_schema(name) {
                 tool["outputSchema"] = schema;
             }
             if *name == "workflow" {
-                tool["inputSchema"]["properties"]["topic"]["enum"] = json!(workflow::TOPICS);
                 tool["inputSchema"]["additionalProperties"] = json!(false);
                 tool["annotations"] = json!({ "readOnlyHint": true, "openWorldHint": false });
             }
             tool
         }).collect::<Vec<_>>() }),
-        "tools/call" => call_tool(&req["params"], loaded),
+        "tools/call" => {
+            if req["params"]["name"].as_str().is_none() {
+                return Some(json!({"jsonrpc":"2.0", "id":id,
+                    "error":{"code":-32602,"message":"tools/call requires a tool name"}}));
+            }
+            call_tool(&req["params"], loaded)
+        }
         method => {
             return Some(json!({
                 "jsonrpc": "2.0", "id": id,
@@ -784,81 +798,96 @@ fn mcp_reply_with(
 /// A failure is a tool result with isError, not a protocol error.
 fn call_tool(params: &serde_json::Value, loaded: Option<(&Path, &Tree)>) -> serde_json::Value {
     let name = params["name"].as_str().unwrap_or("");
+    let Some((_, _, tool_params)) = TOOLS.iter().find(|t| t.0 == name) else {
+        return tool_reply(name, Err(contract::Failure::argument("unknown tool")));
+    };
+    let (arguments, legacy) = match contract::arguments(name, tool_params, &params["arguments"]) {
+        Ok(checked) => checked,
+        Err(error) => return tool_reply(name, Err(error)),
+    };
     if name == "workflow" {
         return tool_reply(
             name,
-            workflow::read(&params["arguments"]).map(command::Output::Text),
+            workflow::read(&arguments)
+                .map(command::Output::Text)
+                .map_err(contract::Failure::argument),
         );
     }
-    let result = match TOOLS.iter().find(|t| t.0 == name) {
-        None => Err(format!("unknown tool {name}")),
-        Some((_, _, tool_params)) => {
-            // A panic on one file must not stop the server.
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let arguments = &params["arguments"];
-                if is_direct(name, tool_params, arguments) {
-                    let run = |tree: &Tree, path: &Path| {
-                        command::Command::from_tool(name, arguments, tree)?.execute(tree, path)
-                    };
-                    if let Some((path, tree)) = loaded {
-                        return run(tree, path);
+    // Keep the existing panic boundary; finite parsing budgets remain the primary defense.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let arguments = &arguments;
+        if !legacy {
+            let run = |tree: &Tree, path: &Path| {
+                command::Command::from_tool(name, arguments, tree)?.execute(tree, path)
+            };
+            if let Some((path, tree)) = loaded {
+                return run(tree, path);
+            }
+            let file = arguments["file"].as_str().ok_or(USAGE)?;
+            let path = figlens::remote::local(file).map_err(|e| contract::source(file, e))?;
+            let doc = Document::open(&path).map_err(|e| contract::source(file, e))?;
+            let message = doc.message()?;
+            let tree = Tree::new(&message);
+            run(&tree, &path)
+        } else {
+            // Preserve the old permissive coercions for arguments outside the tool schema.
+            let mut args = vec![name.to_owned()];
+            for (key, flag, ..) in *tool_params {
+                let value = match &arguments[key] {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Bool(true) => {
+                        args.push(flag.to_string());
+                        continue;
                     }
-                    let file = arguments["file"].as_str().ok_or(USAGE)?;
-                    let path = figlens::remote::local(file)?;
-                    let doc = Document::open(&path).map_err(|e| format!("{file}: {e}"))?;
-                    let message = doc.message()?;
-                    let tree = Tree::new(&message);
-                    run(&tree, &path)
-                } else {
-                    // Preserve the old permissive coercions for arguments outside the tool schema.
-                    let mut args = vec![name.to_owned()];
-                    for (key, flag, ..) in *tool_params {
-                        let value = match &arguments[key] {
-                            serde_json::Value::String(s) => s.clone(),
-                            serde_json::Value::Number(n) => n.to_string(),
-                            serde_json::Value::Bool(true) => {
-                                args.push(flag.to_string());
-                                continue;
-                            }
-                            _ => continue,
-                        };
-                        if !flag.is_empty() {
-                            args.push(flag.to_string());
-                        }
-                        args.push(value);
-                    }
-                    if name == "export" {
-                        if arguments.get("maxSize").is_none() {
-                            args.extend(["--max-size".to_owned(), "1600".to_owned()]);
-                        }
-                        // Keep the rendered bytes for inline images on legacy calls too.
-                        let file = args.get(1).ok_or(USAGE)?;
-                        let path = figlens::remote::local(file)?;
-                        let doc = Document::open(&path).map_err(|e| format!("{file}: {e}"))?;
-                        let message = doc.message()?;
-                        let tree = Tree::new(&message);
-                        command::Command::from_cli(name, &args[2..], &tree)?.execute(&tree, &path)
-                    } else {
-                        let mut out = String::new();
-                        run(args, &mut out)?;
-                        Ok(command::Output::Text(out))
-                    }
+                    _ => continue,
+                };
+                if !flag.is_empty() {
+                    args.push(flag.to_string());
                 }
-            }))
-            .map_err(|_| "figlens crashed on this file".to_owned())
-            .and_then(|result: Result<command::Output, Box<dyn Error>>| {
-                result.map_err(|e| e.to_string())
-            })
+                args.push(value);
+            }
+            if name == "export" {
+                if arguments.get("maxSize").is_none() {
+                    args.extend(["--max-size".to_owned(), "1600".to_owned()]);
+                }
+                // Keep the rendered bytes for inline images on legacy calls too.
+                let file = args.get(1).ok_or(USAGE)?;
+                let path = figlens::remote::local(file).map_err(|e| contract::source(file, e))?;
+                let doc = Document::open(&path).map_err(|e| contract::source(file, e))?;
+                let message = doc.message()?;
+                let tree = Tree::new(&message);
+                command::Command::from_cli(name, &args[2..], &tree)?.execute(&tree, &path)
+            } else {
+                let mut out = String::new();
+                run(args, &mut out)?;
+                Ok(command::Output::Text(out))
+            }
         }
-    };
-    tool_reply(name, result)
+    }))
+    .map_err(|_| {
+        contract::Failure::new(
+            figlens::ErrorKind::OperationFailed,
+            "figlens crashed on this file",
+        )
+    })
+    .and_then(|result: Result<command::Output, Box<dyn Error>>| {
+        result.map_err(contract::Failure::from_error)
+    });
+    let mut reply = tool_reply(name, result);
+    if legacy {
+        reply["_meta"]["figlens"]["argumentMode"] = serde_json::json!("legacy");
+    }
+    reply
 }
 
-fn tool_reply(name: &str, result: Result<command::Output, String>) -> serde_json::Value {
+fn tool_reply(name: &str, result: Result<command::Output, contract::Failure>) -> serde_json::Value {
     let mut structured = None;
     let mut image = None;
     let result = result.and_then(|output| {
-        let text = output.text().map_err(|e| e.to_string())?;
+        let text = output
+            .text()
+            .map_err(|e| contract::Failure::from_error(Box::new(e)))?;
         if let command::Output::Image { bytes, mime, .. } = &output {
             image = Some(serde_json::json!({
                 "type": "image", "data": figlens::render::base64(bytes), "mimeType": mime,
@@ -872,13 +901,17 @@ fn tool_reply(name: &str, result: Result<command::Output, String>) -> serde_json
         }
         Ok(text)
     });
-    let (text, is_error) = match result {
-        Ok(text) => (text, false),
-        Err(text) => (text, true),
+    let (text, diagnostic) = match result {
+        Ok(text) => (text, None),
+        Err(error) => (error.text.clone(), Some(error.metadata())),
     };
+    let is_error = diagnostic.is_some();
     let mut reply = serde_json::json!({
         "content": [{ "type": "text", "text": text }], "isError": is_error
     });
+    if let Some(diagnostic) = diagnostic {
+        reply["_meta"] = serde_json::json!({"figlens": diagnostic});
+    }
     if let Some(value) = structured {
         reply["structuredContent"] = value;
     }
@@ -1183,17 +1216,20 @@ mod tests {
             std::os::unix::fs::symlink(outside.join("new.png"), inside.join("link.png")).unwrap();
             assert!(!allowed(&inside.join("link.png"), &roots));
         }
-        // Out-of-schema arguments would reach the legacy coercions, which can make any of
-        // them the file path.
-        let legacy = format!(
-            r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"tree","arguments":{{"node":{}}}}}}}"#,
-            serde_json::json!(outside.join("a.fig"))
+        // A missing file is a preflight failure; a valid legacy call is still refused.
+        let malformed = r#"{"id":3,"method":"tools/call","params":{"name":"tree","arguments":{"node":"outside.fig"}}}"#;
+        assert!(refused(malformed, &roots).is_none());
+        assert_eq!(
+            mcp_reply(malformed).unwrap()["result"]["_meta"]["figlens"]["code"],
+            "invalid_arguments"
         );
-        let text = refused(&legacy, &roots).unwrap()["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        assert!(text.contains("match the tool schema"), "{text}");
+        let legacy = serde_json::json!({"id":3,"method":"tools/call","params":{"name":"tree",
+            "arguments":{"file":inside.join("a.fig"),"depth":"0"}}})
+        .to_string();
+        assert_eq!(
+            refused(&legacy, &roots).unwrap()["result"]["_meta"]["figlens"]["code"],
+            "permission_denied"
+        );
 
         let call = |file: &Path| {
             format!(

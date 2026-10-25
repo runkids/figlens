@@ -25,9 +25,12 @@ pub(crate) const VALUES: Limits = Limits {
 };
 
 pub(crate) fn exceeded(kind: &str, limit: impl std::fmt::Display) -> FigError {
-    FigError(format!(
-        "parse budget exceeded: {kind} (limit {limit}); use a smaller local copy or report this limit for review"
-    ))
+    FigError::new(
+        crate::ErrorKind::ParseBudget,
+        format!(
+            "parse budget exceeded: {kind} (limit {limit}); use a smaller local copy or report this limit for review"
+        ),
+    )
 }
 
 struct Budget {
@@ -60,11 +63,14 @@ impl Budget {
 }
 
 fn invalid_schema(_: ()) -> FigError {
-    FigError("invalid kiwi schema".into())
+    FigError::new(crate::ErrorKind::InvalidData, "invalid kiwi schema")
 }
 
 fn invalid_message(_: ()) -> FigError {
-    FigError("message does not match its schema".into())
+    FigError::new(
+        crate::ErrorKind::InvalidData,
+        "message does not match its schema",
+    )
 }
 
 pub(crate) fn schema(bytes: &[u8]) -> Result<(), FigError> {

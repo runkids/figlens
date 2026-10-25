@@ -1,18 +1,80 @@
+import csv
 import json
 import os
 from pathlib import Path
 import runpy
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
-from installation import environment, toolchain
+from installation import environment, run, toolchain
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 class InstallationHarnessTest(unittest.TestCase):
+    def test_cli_timeout_stops_the_wrapper_child(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            heartbeat, pidfile = root/'heartbeat', root/'child.pid'
+            child = '''import os, sys, time
+from pathlib import Path
+heartbeat, pidfile = map(Path, sys.argv[1:])
+heartbeat.write_text('ready')
+pidfile.write_text(str(os.getpid()))
+end = time.monotonic() + 8
+while time.monotonic() < end:
+    heartbeat.write_text(str(time.monotonic_ns()))
+    time.sleep(.02)
+'''
+            wrapper = '''import subprocess, sys
+subprocess.run([sys.executable, '-c', sys.argv[1], *sys.argv[2:]], check=True)
+'''
+            started = time.monotonic()
+            cleanup_needed = True
+            try:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    run([sys.executable, '-c', wrapper, child, heartbeat, pidfile],
+                        root, os.environ.copy(), timeout=1)
+                self.assertTrue(pidfile.is_file(), 'Child did not start before timeout')
+                self.assertLess(time.monotonic() - started, 4, 'Timeout waited for the orphan to exit')
+                stopped = heartbeat.read_text()
+                for _ in range(5):
+                    time.sleep(.05)
+                    self.assertEqual(heartbeat.read_text(), stopped, 'Child survived the wrapper timeout')
+                cleanup_needed = False
+                pid = pidfile.read_text()
+                if os.name == 'nt':
+                    tasks = subprocess.run(['tasklist', '/FI', f'PID eq {pid}', '/FO', 'CSV', '/NH'],
+                                           capture_output=True, text=True, encoding='utf-8',
+                                           errors='replace', check=True, timeout=5)
+                    running = any(len(row) > 1 and row[1] == pid for row in csv.reader(tasks.stdout.splitlines()))
+                else:
+                    state = subprocess.run(['ps', '-p', pid, '-o', 'stat='],
+                                           capture_output=True, text=True, timeout=5)
+                    self.assertIn(state.returncode, [0, 1], state.stderr)
+                    running = state.returncode == 0 and not state.stdout.lstrip().startswith('Z')
+                self.assertFalse(running, 'Child is still running after timeout cleanup')
+            except BaseException:
+                # Only this test's finite child; the fixed helper already cleans successful runs.
+                if cleanup_needed and pidfile.is_file() and time.monotonic() - started < 8:
+                    try:
+                        os.kill(int(pidfile.read_text()), signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                raise
+
+    def test_cli_output_and_nonzero_exit_are_preserved(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            self.assertEqual(run([sys.executable, '-c', 'print("ready")'], root, os.environ.copy()), 'ready\n')
+            with self.assertRaisesRegex(RuntimeError, 'exited 7\noutput\n\nproblem'):
+                run([sys.executable, '-c', 'import sys; print("output"); print("problem", file=sys.stderr); sys.exit(7)'],
+                    root, os.environ.copy())
+
     def test_consumer_environment_drops_user_configuration_and_credentials(self):
         with tempfile.TemporaryDirectory() as work:
             root = Path(work)

@@ -39,15 +39,17 @@ pub fn resolve_render_nodes(tree: &Tree, id: &str) -> Result<Json, Box<dyn std::
 fn resolve_target(tree: &Tree, id: &str, render: bool) -> Result<Json, Box<dyn std::error::Error>> {
     let root = crate::export::root_of(id);
     if !tree.nodes.contains_key(root) {
-        return crate::err(format!(
-            "node {id} not found; list ids with `figlens tree <file.fig> --depth 2`"
-        ));
+        return Err(crate::FigError::new(
+            crate::ErrorKind::NodeNotFound,
+            format!("node {id} not found; list ids with `figlens tree <file.fig> --depth 2`"),
+        )
+        .into());
     }
     let mut doc = build(tree, root, render);
     if root != id {
         // Expand the outer instance first; selecting the component's raw child loses context.
         doc["document"] = render::find(&doc["document"], id).cloned().ok_or_else(|| {
-            crate::FigError(format!(
+            crate::FigError::new(crate::ErrorKind::NodeNotFound, format!(
                 "node {id} not found in expanded instance {root}; inspect {root} for available sublayer IDs"
             ))
         })?;

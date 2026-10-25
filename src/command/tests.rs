@@ -236,6 +236,10 @@ fn parse_budget_failure_is_a_tool_error_and_mcp_keeps_serving() {
         .collect();
     assert_eq!(replies.len(), 3);
     assert_eq!(replies[0]["result"]["isError"], true);
+    assert_eq!(
+        replies[0]["result"]["_meta"]["figlens"]["code"],
+        "parse_budget_exceeded"
+    );
     assert!(
         replies[0]["result"]["content"][0]["text"]
             .as_str()
@@ -613,11 +617,13 @@ fn discovery_rejects_invalid_bounds_in_cli_and_mcp() {
             None,
         );
         assert_eq!(reply["isError"], true);
-        assert!(
-            reply["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains(error)
+        assert_eq!(
+            reply["_meta"]["figlens"]["code"],
+            if arguments.get("node").is_some_and(|n| n == "9:9") {
+                "node_not_found"
+            } else {
+                "invalid_arguments"
+            }
         );
         assert_eq!(reply["content"].as_array().unwrap().len(), 1);
         assert!(reply.get("structuredContent").is_none());
@@ -760,7 +766,7 @@ fn variables_commands_distinguish_local_variables_from_frame_bindings() {
 }
 
 #[test]
-fn cli_and_mcp_preserve_validation_order_and_errors() {
+fn cli_validation_order_and_mcp_preflight_errors() {
     let fixture = Fixture::new();
     for (name, cli, mut arguments, expected) in [
         (
@@ -818,7 +824,11 @@ fn cli_and_mcp_preserve_validation_order_and_errors() {
             None,
         );
         assert_eq!(reply["isError"], true);
-        assert_eq!(reply["content"][0]["text"], expected);
+        if arguments.get("quality").is_some() || arguments.get("depth").is_some() {
+            assert_eq!(reply["_meta"]["figlens"]["code"], "invalid_arguments");
+        } else {
+            assert_eq!(reply["content"][0]["text"], expected);
+        }
         assert!(reply.get("structuredContent").is_none());
     }
 }
@@ -920,3 +930,5 @@ fn mcp_preserves_permissive_argument_coercions() {
         figlens::render::base64(&std::fs::read(fixture.0.join("coerced.png")).unwrap())
     );
 }
+
+mod contract;

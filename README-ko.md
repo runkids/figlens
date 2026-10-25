@@ -27,6 +27,8 @@
 
 ## 시작하기
 
+**디자인 파일이 아직 없나요?** [작은 공개 예제로 설정을 확인하세요](examples/first-success/README.md): 사용할 바이너리, frame 검색, bundle 내용을 검증합니다. 모델은 필요하지 않습니다.
+
 프로젝트에 `design.fig`를 놓고 사용하는 에이전트를 선택하세요.
 
 **Claude Code** (Node.js 18+, macOS/Linux):
@@ -219,7 +221,7 @@ skillshare sync && skillshare sync mcp --global
 | `mcp` | stdio를 사용하는 로컬 MCP 서버 |
 | `update` | 최신 릴리스로 바이너리 교체 |
 
-노드 인수는 `12:345`, `12-345`, `?node-id=`가 있는 Figma URL을 받을 수 있습니다. `<file>`에 `gs://bucket/object`도 지정할 수 있으며 `gcloud` 로그인으로 다운로드하고 캐시합니다. CLI 호출은 매번 파일을 디코딩하고, MCP 서버는 디스크의 파일이 바뀔 때까지 파싱한 파일을 호출 간에 유지합니다. 사용법은 `figlens --help`를 실행하세요.
+노드 인수는 `12:345`, `12-345`, `?node-id=`가 있는 Figma URL을 받을 수 있습니다. `<file>`에 `gs://bucket/object`도 지정할 수 있으며 `gcloud` 로그인으로 다운로드하고 캐시합니다. 고정 객체를 통한 전달, 필요한 접근 권한과 갱신 제한은 [GCS 스냅샷 가이드](wiki/gcs.md)를 참고하세요. CLI 호출은 매번 파일을 디코딩합니다. MCP는 마지막으로 읽은 변경 없는 로컬 파일만 재사용합니다. 원격 입력과 legacy 호출은 다시 파싱합니다. 사용법은 `figlens --help`를 실행하세요.
 
 <a id="limitations"></a>
 

@@ -692,6 +692,7 @@ fn missing_and_unsupported_ids_fail_without_fallback_or_output() {
             let reply = f.tool(name, tool_args);
             assert_eq!(reply["isError"], true, "{reply}");
             assert_eq!(reply["content"][0]["text"], error);
+            assert_eq!(reply["_meta"]["figlens"]["code"], "node_not_found");
             errors.push(error);
         }
         assert!(
@@ -714,6 +715,7 @@ fn missing_and_unsupported_ids_fail_without_fallback_or_output() {
         assert!(!error.contains("not found"));
         let reply = f.tool(name, arguments);
         assert_eq!(reply["isError"], true);
+        assert_eq!(reply["_meta"]["figlens"]["code"], "unsupported_node");
         assert_eq!(reply["content"][0]["text"], error);
     }
     assert!(

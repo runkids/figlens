@@ -27,6 +27,8 @@
 
 ## Erste Schritte
 
+**Noch keine Designdatei?** [Prüfe dein Setup mit dem kleinen öffentlichen Beispiel](examples/first-success/README.md): Verifiziere das gewählte Binary, finde einen Frame und prüfe sein Bundle. Kein Modell erforderlich.
+
 Lege `design.fig` in dein Projekt und wähle dann deinen Agent.
 
 **Claude Code** (Node.js 18+, macOS/Linux):
@@ -219,7 +221,7 @@ skillshare sync && skillshare sync mcp --global
 | `mcp` | Lokaler MCP-Server über stdio |
 | `update` | Ersetzt das Binary durch das neueste Release |
 
-Ein Node-Argument akzeptiert `12:345`, `12-345` oder eine Figma-URL mit `?node-id=`. `<file>` kann auch `gs://bucket/object` sein, heruntergeladen mit deinem `gcloud`-Login und im Cache abgelegt. Jeder CLI-Aufruf decodiert die Datei; der MCP-Server behält die geparste Datei über Aufrufe hinweg, bis sie sich auf dem Datenträger ändert. Führe `figlens --help` für die Nutzung aus.
+Ein Node-Argument akzeptiert `12:345`, `12-345` oder eine Figma-URL mit `?node-id=`. `<file>` kann auch `gs://bucket/object` sein, heruntergeladen mit deinem `gcloud`-Login und im Cache abgelegt. Der [GCS-Snapshot-Leitfaden](wiki/gcs.md) beschreibt die Übergabe über ein festes Objekt, nötige Zugriffsrechte und Grenzen der Aktualisierung. Jeder CLI-Aufruf decodiert die Datei; MCP verwendet nur die zuletzt gelesene, unveränderte lokale Datei erneut. Remote- und Legacy-Aufrufe parsen erneut. Führe `figlens --help` für die Nutzung aus.
 
 <a id="limitations"></a>
 

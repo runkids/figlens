@@ -30,19 +30,51 @@ mod test_support;
 const MAGIC: &[u8; 8] = b"fig-kiwi";
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ErrorKind {
+    InvalidData,
+    InvalidArguments,
+    SourceUnreadable,
+    NodeNotFound,
+    UnsupportedNode,
+    ParseBudget,
+    OutputWrite,
+    PermissionDenied,
+    OperationFailed,
+}
+
 #[derive(Debug)]
-pub struct FigError(String);
+pub struct FigError {
+    message: String,
+    kind: ErrorKind,
+}
+
+impl FigError {
+    pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub fn kind(&self) -> ErrorKind {
+        self.kind
+    }
+}
 
 impl fmt::Display for FigError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.message)
     }
 }
 
 impl Error for FigError {}
 
 fn err<T>(message: impl Into<String>) -> Result<T, Box<dyn Error>> {
-    Err(Box::new(FigError(message.into())))
+    Err(Box::new(FigError::new(
+        ErrorKind::InvalidData,
+        message.into(),
+    )))
 }
 
 /// A decoded `canvas.fig`: the embedded schema plus the raw message bytes.
@@ -56,9 +88,12 @@ impl Document {
     /// Opens a `.fig` zip and decodes its `canvas.fig`.
     pub fn open(path: &Path) -> Result<Document, Box<dyn Error>> {
         let mut archive = zip::ZipArchive::new(std::io::BufReader::new(File::open(path)?))?;
-        let canvas_file = archive
-            .by_name("canvas.fig")
-            .map_err(|e| FigError(format!("{}: no canvas.fig ({e})", path.display())))?;
+        let canvas_file = archive.by_name("canvas.fig").map_err(|e| {
+            FigError::new(
+                ErrorKind::InvalidData,
+                format!("{}: no canvas.fig ({e})", path.display()),
+            )
+        })?;
         if canvas_file.size() > parse::CANVAS_BYTES {
             return Err(parse::exceeded("canvas bytes", parse::CANVAS_BYTES).into());
         }
@@ -76,8 +111,8 @@ impl Document {
         }
         let schema_bytes = unpack_limited(chunks[0], parse::SCHEMA_BYTES, "schema bytes")?;
         parse::schema(&schema_bytes)?;
-        let schema =
-            Schema::decode(&schema_bytes).map_err(|_| FigError("invalid kiwi schema".into()))?;
+        let schema = Schema::decode(&schema_bytes)
+            .map_err(|_| FigError::new(ErrorKind::InvalidData, "invalid kiwi schema"))?;
         Ok(Document {
             version,
             schema,
@@ -91,8 +126,9 @@ impl Document {
             return err("schema has no Message definition");
         };
         parse::message(&self.schema, def.index, &self.message, parse::VALUES)?;
-        Value::decode(&self.schema, def.index, &self.message)
-            .map_err(|_| FigError("message does not match its schema".into()).into())
+        Value::decode(&self.schema, def.index, &self.message).map_err(|_| {
+            FigError::new(ErrorKind::InvalidData, "message does not match its schema").into()
+        })
     }
 }
 
@@ -116,14 +152,14 @@ pub fn split_chunks(data: &[u8]) -> Result<Chunks<'_>, Box<dyn Error>> {
         }
         let header_end = offset
             .checked_add(4)
-            .ok_or_else(|| FigError("chunk offset overflow".into()))?;
+            .ok_or_else(|| FigError::new(ErrorKind::InvalidData, "chunk offset overflow"))?;
         let Some(header) = data.get(offset..header_end) else {
             return err(format!("truncated chunk header at byte {offset}"));
         };
         let len = u32::from_le_bytes(header.try_into()?) as usize;
         let end = header_end
             .checked_add(len)
-            .ok_or_else(|| FigError("chunk length overflow".into()))?;
+            .ok_or_else(|| FigError::new(ErrorKind::InvalidData, "chunk length overflow"))?;
         let Some(chunk) = data.get(header_end..end) else {
             return err(format!(
                 "chunk at byte {offset} claims {len} bytes past the end"

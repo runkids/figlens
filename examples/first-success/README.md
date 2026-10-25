@@ -64,7 +64,7 @@ The bitmap, triangle and eight block-letter shapes were created specifically for
 
 **License and attribution:** this fixture, its embedded artwork, lettering and generator are provided under the repository's [MIT license](../../LICENSE), Copyright (c) 2026 runkids. Redistribution is allowed with that copyright and license notice. This statement applies to this original fixture only; it does not clear other files in ignored `samples/` or third-party demo assets.
 
-The file and these steps belong to the source checkout; `samples/` is not a public download. No `.fig` is added to npm or native release archives. This path will become available to fresh clones when the change is committed and distributed; it has not been uploaded by this task.
+The file and these steps belong to the source checkout; `samples/` is not a public download. No `.fig` is added to npm or native release archives.
 
 ## Recreate or update the example
 
@@ -78,7 +78,7 @@ docker compose run --rm dev python3 scripts/first-success-smoke.py --binary /wor
 
 The ignored `samples/` directory must exist and the new filename must be unused. After an intentional generator change, verify the new file, review its content, replace only this public fixture, and update the byte count, SHA-256 and known expectations here and in the smoke check. Do not copy a private design over it. A different encoder/compressor can change bytes without changing meaning; semantic smoke validation is the acceptance gate, not byte-for-byte reproduction.
 
-Only the current source build (which reports `figlens 0.6.0`) has been exercised here. Published release binaries, macOS and Windows have not been validated against this fixture. These are existing CLI commands, not a new product interface.
+Local candidate acceptance passed checkpoints A/B/C on macOS 27.0.1 arm64 with Node 24.13.0 and npm 11.6.2. It installed the real npm tarball and exercised its Docker-built `aarch64-apple-darwin` candidate from `3811c40` plus batch-5 uncommitted changes (`figlens 0.6.0`; native SHA-256 `103bb22e4af49a32d58a294e2b4c045a0d57a12e1291f19dddf2dcb92aa84172`). This is local candidate evidence, not a published-release or hosted-CI result. Published release binaries, macOS Intel and Windows remain unverified against this fixture. These are existing CLI commands, not a new product interface.
 
 ## After the deterministic check: ask your agent
 
