@@ -35,7 +35,7 @@ Lege `design.fig` in dein Projekt und wähle dann deinen Agent.
 claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
 
-Starte eine neue Sitzung und prüfe `/mcp`. Für den geführten Planungs-Workflow [füge den Skill hinzu](#mcp-and-skill).
+Starte eine neue Sitzung und prüfe `/mcp`. Beschreibe den gewünschten Bildschirm in eigenen Worten: MCP enthält abrufbare Anleitungen für Planung, Umsetzung und Bildaufbereitung; eine separate Skill-Installation ist nicht erforderlich.
 
 **Pi** (1.3.0+): ein Paket liefert CLI, MCP, Viewer und Skill.
 
@@ -176,7 +176,9 @@ Durchsuche Seiten und Layer, suche, miss, inspiziere Layout, Typografie, Variabl
 
 ## MCP-Server und Agent-Skill
 
-**MCP.** Der Server läuft lokal über stdio und stellt `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` und `export` bereit. Übergib absolute Pfade. Mit `--root /path/to/designs` (wiederholbar) beschränkst du jeden Datei- und Ausgabepfad auf ausgewählte Ordner. Raster-Exporte werden auf `maxSize` (Standard 1600 px) verkleinert, damit Inline-Bilder klein bleiben; SVG liefert nur Metadaten.
+**MCP.** Der Server läuft lokal über stdio und stellt `workflow`, `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` und `export` bereit. Übergib absolute Pfade. Mit `--root /path/to/designs` (wiederholbar) beschränkst du jeden Datei- und Ausgabepfad auf ausgewählte Ordner. Raster-Exporte werden auf `maxSize` (Standard 1600 px) verkleinert, damit Inline-Bilder klein bleiben; SVG liefert nur Metadaten.
+
+Über `workflow` kann der Agent die integrierten Anleitungen `build`, `images`, `plan`, `planning-details` oder das ausdrücklich angeforderte `yolo` lesen. Sie stammen aus denselben Quellen wie der portable Skill; dessen separate Installation ist für MCP optional. Die Umsetzung erfolgt mit den Projekt- und Browser-Werkzeugen des Agents und den Berechtigungen des Hosts. Das Lesen einer Anleitung führt den Workflow nicht aus; Client-Unterstützung und Modellverhalten bestimmen, wie sie genutzt wird.
 
 Natives Windows mit Claude Code: folge dessen [stdio-Setup-Hinweisen](https://code.claude.com/docs/en/mcp#option-3-add-a-local-stdio-server) und dem `cmd /c`-Wrapper für `npx`.
 

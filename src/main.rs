@@ -14,6 +14,7 @@ use figlens::{Document, Tree, normalize_id};
 mod test_support;
 
 mod command;
+mod workflow;
 
 const USAGE: &str = "figlens — read Figma .fig files (File > Save local copy) without Figma
 
@@ -52,8 +53,8 @@ usage:
   figlens node <file.fig> <node>               print one raw .fig node as JSON
   figlens compare <file.fig> <nodes.json> <node>   diff a frame against a REST nodes.json export
   figlens compare <file.fig> --frames <list.txt>   same for every `node|nodes.json[|variables.json]` line
-  figlens mcp [--root DIR]...                  serve tree, find, inspect, nodes, variables, bundle and
-                                             export as MCP tools; raster export also returns an inline image;
+  figlens mcp [--root DIR]...                  serve workflow guidance, tree, find, inspect, nodes, variables,
+                                             bundle and export as MCP tools; raster export returns an inline image;
                                              with --root, files and outputs must be under one of the folders
   figlens cache [clear]                        show, or clear, the preview render cache
                                              (prints {path,bytes} or {path,freed})
@@ -338,8 +339,19 @@ const NODE: Param = (
 /// CLI and tools share command execution and result formatting.
 const TOOLS: &[(&str, &str, &[Param])] = &[
     (
+        "workflow",
+        "Read built-in figlens skill guidance for this agent: build for design-to-code and project reuse, images for website asset preparation, plan for scoped implementation planning, planning-details for page/multi-page work or unresolved design dependencies, yolo for explicitly requested autonomous implementation and temporary-plan cleanup. Returns the requested guide only; no design file, project read/write, implementation, verification or cleanup is performed. Ordinary design questions and exports can use the design tools directly.",
+        &[(
+            "topic",
+            "",
+            "string",
+            true,
+            "Guide to read: build, images, plan, planning-details or yolo.",
+        )],
+    ),
+    (
         "tree",
-        "List node ids, types and names. Start here with depth 2 to find pages and frames.",
+        "List node ids, types and names under a chosen root. A shallow outline locates pages and frames when their names are unknown; find searches known names or visible text directly.",
         &[
             FILE,
             (
@@ -681,6 +693,9 @@ fn stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
 /// Whether the arguments fit the tool's schema, so the call is served directly rather than
 /// through the legacy CLI coercions.
 fn is_direct(name: &str, tool_params: &[Param], arguments: &serde_json::Value) -> bool {
+    if name == "workflow" && !arguments.as_object().is_some_and(|args| args.len() == 1) {
+        return false;
+    }
     tool_params
         .iter()
         .all(|(key, _, kind, required, _)| match arguments.get(key) {
@@ -721,8 +736,7 @@ fn mcp_reply_with(
         // Only tools are served, which every protocol version handles alike, so the client's
         // version is accepted as is.
         "initialize" => {
-            let mut instructions =
-                "Use inspect or nodes for numbers and export for pixels.".to_owned();
+            let mut instructions = workflow::INSTRUCTIONS.to_owned();
             if !roots.is_empty() {
                 let folders: Vec<_> = roots.iter().map(|r| r.display().to_string()).collect();
                 instructions +=
@@ -751,6 +765,11 @@ fn mcp_reply_with(
             if let Some(schema) = output_schema(name) {
                 tool["outputSchema"] = schema;
             }
+            if *name == "workflow" {
+                tool["inputSchema"]["properties"]["topic"]["enum"] = json!(workflow::TOPICS);
+                tool["inputSchema"]["additionalProperties"] = json!(false);
+                tool["annotations"] = json!({ "readOnlyHint": true, "openWorldHint": false });
+            }
             tool
         }).collect::<Vec<_>>() }),
         "tools/call" => call_tool(&req["params"], loaded),
@@ -767,6 +786,12 @@ fn mcp_reply_with(
 /// A failure is a tool result with isError, not a protocol error.
 fn call_tool(params: &serde_json::Value, loaded: Option<(&Path, &Tree)>) -> serde_json::Value {
     let name = params["name"].as_str().unwrap_or("");
+    if name == "workflow" {
+        return tool_reply(
+            name,
+            workflow::read(&params["arguments"]).map(command::Output::Text),
+        );
+    }
     let result = match TOOLS.iter().find(|t| t.0 == name) {
         None => Err(format!("unknown tool {name}")),
         Some((_, _, tool_params)) => {
@@ -989,6 +1014,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "workflow",
                 "tree",
                 "find",
                 "inspect",
@@ -1011,6 +1037,81 @@ mod tests {
             .map(|t| t["name"].as_str().unwrap())
             .collect();
         assert_eq!(with_schema, ["find", "inspect", "bundle", "export"]);
+    }
+
+    #[test]
+    fn mcp_workflows_work_without_design_files_under_restricted_roots() {
+        let dir = test_support::TestDir::new();
+        let roots = [dir.join("").canonicalize().unwrap()];
+        let mut requests = vec![
+            serde_json::json!({"id": 1, "method": "initialize", "params": {}}),
+            serde_json::json!({"id": 2, "method": "tools/list"}),
+        ];
+        for topic in workflow::TOPICS {
+            requests.push(
+                serde_json::json!({"id": topic, "method": "tools/call", "params": {
+                    "name": "workflow", "arguments": {"topic": topic}
+                }}),
+            );
+        }
+        let input = requests
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut out = Vec::new();
+        serve(std::io::Cursor::new(input), &mut out, &roots).unwrap();
+        let replies: Vec<serde_json::Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let instructions = replies[0]["result"]["instructions"].as_str().unwrap();
+        assert!(instructions.contains("workflow(topic=build)"));
+        assert!(instructions.contains("Simple questions and exports"));
+        let tools = replies[1]["result"]["tools"].as_array().unwrap();
+        let tool = tools.iter().find(|t| t["name"] == "workflow").unwrap();
+        assert_eq!(
+            tool["inputSchema"]["required"],
+            serde_json::json!(["topic"])
+        );
+        assert_eq!(
+            tool["inputSchema"]["properties"]["topic"]["enum"],
+            serde_json::json!(workflow::TOPICS)
+        );
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+        assert_eq!(tool["annotations"]["readOnlyHint"], true);
+        for reply in &replies[2..] {
+            assert_eq!(reply["result"]["isError"], false, "{reply}");
+            let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("host's own tools"));
+            assert!(!text.contains("](references/") && !text.contains("](planning"));
+        }
+        assert_eq!(std::fs::read_dir(dir.join("")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn mcp_workflow_rejects_invalid_arguments_without_cli_fallback() {
+        for arguments in [
+            serde_json::Value::Null,
+            serde_json::json!({}),
+            serde_json::json!({"topic": 1}),
+            serde_json::json!({"topic": "../SKILL.md"}),
+            serde_json::json!({"topic": "build", "file": "/private/design.fig"}),
+        ] {
+            let request = serde_json::json!({"id": 1, "method": "tools/call", "params": {
+                "name": "workflow", "arguments": arguments
+            }});
+            assert_eq!(direct_file(&request.to_string(), &[]), None);
+            let result = call_tool(&request["params"], None);
+            assert_eq!(result["isError"], true, "{result}");
+            assert!(
+                !result["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("usage:")
+            );
+        }
     }
 
     #[test]

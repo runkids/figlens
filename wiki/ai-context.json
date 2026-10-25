@@ -5,6 +5,10 @@
     "defaultTopicMaxBytes": 16384
   },
   "topics": {
+    "mcp": {
+      "description": "Changing MCP instructions, tool discovery or built-in workflow guidance.",
+      "sources": [{ "path": "wiki/mcp.md" }]
+    },
     "fig-format": {
       "description": "Changing decoding, instance expansion, emitted REST fields, variables or the bundle.",
       "sources": [{ "path": "wiki/fig-format.md" }]

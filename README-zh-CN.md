@@ -35,7 +35,7 @@
 claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
 
-开启新会话并检查 `/mcp`。要使用有引导的规划流程，请[添加 skill](#mcp-and-skill)。
+开启新会话并检查 `/mcp`。用自己的话描述想做的画面即可：MCP 内建按需读取的规划、实现及图片处理指引，不必另外安装 skill。
 
 **Pi**（1.3.0+）：一个包就包含 CLI、MCP、viewer 和 skill。
 
@@ -176,7 +176,9 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可发�
 
 ## MCP server 与 agent skill
 
-**MCP。** server 在本地通过 stdio 运行，提供 `tree`、`find`、`inspect`、`nodes`、`variables`、`bundle` 和 `export`。请传入绝对路径。加上 `--root /path/to/designs`（可重复）可把所有文件和输出路径限制在指定文件夹内。光栅导出会缩小到 `maxSize`（默认 1600 px），让内联图片保持小巧；SVG 只返回 metadata。
+**MCP。** server 在本地通过 stdio 运行，提供 `workflow`、`tree`、`find`、`inspect`、`nodes`、`variables`、`bundle` 和 `export`。请传入绝对路径。加上 `--root /path/to/designs`（可重复）可把所有文件和输出路径限制在指定文件夹内。光栅导出会缩小到 `maxSize`（默认 1600 px），让内联图片保持小巧；SVG 只返回 metadata。
+
+agent 可通过 `workflow` 读取内建的 `build`、`images`、`plan`、`planning-details`，或明确请求时的 `yolo` 指引。它们与 portable skill 共用来源；MCP 用户可自行选择是否另装 skill。实际工作仍由 agent 使用项目及浏览器工具，并遵守 host 权限。读取指引不会执行工作流程；使用方式取决于客户端支持与模型行为。
 
 在原生 Windows 上使用 Claude Code：请参照其 [stdio 设置说明](https://code.claude.com/docs/en/mcp#option-3-add-a-local-stdio-server)，并为 `npx` 加上 `cmd /c` 包装。
 

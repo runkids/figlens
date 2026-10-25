@@ -13,6 +13,8 @@ description: Plan and build UI from local Figma .fig files using figlens CLI or 
 
 **Other agents:** use configured figlens MCP tools when available, or the CLI below.
 
+**MCP without a local skill installation:** the server's `workflow` tool returns built-in guidance from this same skill. Choose `build` for design reading and project reuse, `images` for website asset preparation, `plan` for scoped planning, `planning-details` for page/multi-page work or unresolved dependencies, and `yolo` only for explicitly requested autonomous implementation and temporary-plan cleanup. These are read-only guides, not commands that implement or verify a project. Follow `workflow:` links by requesting their topic from the same tool. Project edits, browser checks and filesystem permissions belong to the host agent.
+
 Prefer `npx @runkids/figlens` for one-off use (Node.js 18+, no global install). The examples below use `figlens` as shorthand: replace that prefix with `npx @runkids/figlens` when no standalone binary is installed. The first run downloads and verifies the matching native binary; later reads use its local cache.
 
 Other installation options (no Rust or Docker needed):

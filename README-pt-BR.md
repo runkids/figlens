@@ -35,7 +35,7 @@ Coloque `design.fig` no seu projeto e escolha seu agent.
 claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
 
-Inicie uma nova sessão e confira `/mcp`. Para o fluxo de planejamento guiado, [adicione o skill](#mcp-and-skill).
+Inicie uma nova sessão e confira `/mcp`. Descreva a tela com suas próprias palavras: o MCP inclui orientações sob demanda para planejamento, implementação e preparação de imagens; não é necessário instalar o skill separadamente.
 
 **Pi** (1.3.0+): um único pacote inclui CLI, MCP, viewer e skill.
 
@@ -176,7 +176,9 @@ Navegue por páginas e camadas, busque, meça, inspecione layout, tipografia, va
 
 ## Servidor MCP e skill para agents
 
-**MCP.** O servidor roda localmente por stdio e expõe `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` e `export`. Use caminhos absolutos. Adicione `--root /path/to/designs` (repetível) para confinar todo arquivo e caminho de saída às pastas escolhidas. Exportações raster são reduzidas a `maxSize` (padrão 1600 px) para manter as imagens inline pequenas; SVG retorna apenas metadados.
+**MCP.** O servidor roda localmente por stdio e expõe `workflow`, `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` e `export`. Use caminhos absolutos. Adicione `--root /path/to/designs` (repetível) para confinar todo arquivo e caminho de saída às pastas escolhidas. Exportações raster são reduzidas a `maxSize` (padrão 1600 px) para manter as imagens inline pequenas; SVG retorna apenas metadados.
+
+Com `workflow`, o agent pode ler os guias integrados `build`, `images`, `plan`, `planning-details` ou `yolo` quando solicitado explicitamente. Eles compartilham as fontes do skill portátil; sua instalação separada é opcional para MCP. O agent executa o trabalho com suas ferramentas de projeto e navegador e as permissões do host. Ler um guia não executa o fluxo; seu uso depende do cliente e do comportamento do modelo.
 
 Windows nativo com Claude Code: siga as [notas de configuração stdio](https://code.claude.com/docs/en/mcp#option-3-add-a-local-stdio-server) e o wrapper `cmd /c` para `npx`.
 

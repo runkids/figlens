@@ -31,6 +31,7 @@ python3 scripts/ai-context.py check     # validate paths, headings and byte budg
 
 | Topic | Use when |
 |---|---|
+| `mcp` | Changing MCP instructions, tool discovery or built-in workflow guidance |
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields, variables or the bundle |
 | `render` | Changing SVG or raster output: text and glyphs, image fills, effects, export areas, image adjustments |
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison |
