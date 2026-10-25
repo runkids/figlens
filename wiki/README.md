@@ -6,6 +6,7 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 
 | Topic | Use when | Main sources |
 |---|---|---|
+| `mcp` | Changing MCP instructions, tool discovery or built-in workflow guidance | `mcp.md` |
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields, variables or the bundle | `fig-format.md` |
 | `render` | Changing SVG or raster output: text and glyphs, image fills, effects, export areas, image adjustments | `render.md` |
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison | `preview.md` |

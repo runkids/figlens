@@ -35,7 +35,7 @@ Put `design.fig` in your project, then pick your agent.
 claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
 
-Start a new session and check `/mcp`. For the guided planning workflow, [add the skill](#mcp-and-skill).
+Start a new session and check `/mcp`. Ask for a screen in your own words: MCP includes on-demand guidance for planning, implementation and image preparation; no separate skill install is required.
 
 **Pi** (1.3.0+): one package ships the CLI, MCP, viewer and skill.
 
@@ -176,7 +176,7 @@ Browse pages and layers, search, measure, inspect layout, typography, variables 
 
 ## MCP server and agent skill
 
-**MCP.** The server runs locally over stdio and exposes `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` and `export`. Pass absolute paths. Add `--root /path/to/designs` (repeatable) to confine every file and output path to chosen folders. Raster exports are scaled down to `maxSize` (default 1600 px) so inline images stay small; SVG returns metadata only.
+**MCP.** The server runs locally over stdio and exposes `workflow`, `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` and `export`. The agent can read built-in `build`, `images`, `plan`, `planning-details` or opt-in `yolo` guidance through `workflow`, then use its own project and browser tools to carry out the authorized task. These guides share the portable skill's source; installing that skill separately is optional for MCP users. Client support and model behavior determine how the guidance is used. Pass absolute paths. Add `--root /path/to/designs` (repeatable) to confine every file and output path to chosen folders. Raster exports are scaled down to `maxSize` (default 1600 px) so inline images stay small; SVG returns metadata only.
 
 Native Windows with Claude Code: follow its [stdio setup notes](https://code.claude.com/docs/en/mcp#option-3-add-a-local-stdio-server) and the `cmd /c` wrapper for `npx`.
 

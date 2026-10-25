@@ -11,7 +11,7 @@ homepage = "https://github.com/runkids/figlens"
 readme = "README.md"
 keywords = ["figma", "fig", "design", "design-to-code", "cli"]
 categories = ["command-line-utilities", "parser-implementations", "multimedia::images"]
-include = ["src/**/*", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
+include = ["src/**/*", "skills/figlens/**/*", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
 
 [dependencies]
 flate2 = "1.1.10"

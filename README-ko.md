@@ -35,7 +35,7 @@
 claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
 
-새 세션을 시작하고 `/mcp`를 확인하세요. 안내형 계획 워크플로가 필요하면 [skill을 추가](#mcp-and-skill)하세요.
+새 세션을 시작하고 `/mcp`를 확인하세요. 원하는 화면을 평소 쓰는 말로 요청하면 됩니다. MCP에는 계획, 구현, 이미지 준비 가이드가 내장되어 있어 skill을 별도로 설치할 필요가 없습니다.
 
 **Pi** (1.3.0+): 패키지 하나에 CLI, MCP, viewer, skill이 모두 들어 있습니다.
 
@@ -176,7 +176,9 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 누구�
 
 ## MCP 서버와 에이전트 skill
 
-**MCP.** 서버는 로컬에서 stdio로 실행되며 `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle`, `export`를 제공합니다. 절대 경로를 전달하세요. `--root /path/to/designs`(반복 가능)를 추가하면 모든 파일과 출력 경로를 선택한 폴더로 제한합니다. 래스터 내보내기는 `maxSize`(기본 1600px)에 맞게 축소되어 인라인 이미지가 작게 유지되며, SVG는 메타데이터만 반환합니다.
+**MCP.** 서버는 로컬에서 stdio로 실행되며 `workflow`, `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle`, `export`를 제공합니다. 절대 경로를 전달하세요. `--root /path/to/designs`(반복 가능)를 추가하면 모든 파일과 출력 경로를 선택한 폴더로 제한합니다. 래스터 내보내기는 `maxSize`(기본 1600px)에 맞게 축소되어 인라인 이미지가 작게 유지되며, SVG는 메타데이터만 반환합니다.
+
+agent는 `workflow`로 `build`, `images`, `plan`, `planning-details` 또는 명시적으로 요청된 경우 `yolo` 가이드를 읽을 수 있습니다. portable skill과 같은 소스를 사용하므로 MCP 사용 시 별도 skill 설치는 선택 사항입니다. 실제 작업은 agent의 프로젝트·브라우저 도구와 호스트 권한으로 수행합니다. 가이드를 읽는 것만으로 작업이 실행되지는 않으며, 활용 방식은 클라이언트 지원과 모델 동작에 따라 달라집니다.
 
 Claude Code를 네이티브 Windows에서 사용한다면 [stdio 설정 안내](https://code.claude.com/docs/en/mcp#option-3-add-a-local-stdio-server)와 `npx`용 `cmd /c` 래퍼를 따르세요.
 
