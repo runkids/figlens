@@ -246,7 +246,7 @@ fn malformed_parent_guids_do_not_establish_membership_or_list_candidates() {
                 vec![("isStateGroup", Kiwi::Bool(true))],
             ),
         ]);
-        let tree = Tree::new(&message);
+        let mut tree = Tree::new(&message);
         let result = inspect_root(&tree, "0:2");
         assert!(result["sets"].as_array().unwrap().is_empty());
         assert_eq!(result["instances"][0]["state"], "unsupported_component");
@@ -255,6 +255,11 @@ fn malformed_parent_guids_do_not_establish_membership_or_list_candidates() {
         let selected = inspect_root(&tree, "0:10");
         assert!(selected["sets"].as_array().unwrap().is_empty());
         let set_id = format!("0:{collision}");
+        // Candidate validation also protects caller-constructed or stale child indexes.
+        let candidates = tree.children.entry(set_id.clone()).or_default();
+        if !candidates.iter().any(|id| id == "0:10") {
+            candidates.push("0:10".into());
+        }
         let selected = inspect_root(&tree, &set_id);
         let set = &selected["sets"][0];
         let variants = set["variants"].as_array().unwrap();

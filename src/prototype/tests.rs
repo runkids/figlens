@@ -178,6 +178,55 @@ fn component_definition_events_do_not_prove_instance_inheritance() {
 }
 
 #[test]
+fn malformed_main_guids_never_copy_an_unrelated_components_prototype() {
+    for (invalid, collision) in [
+        (
+            obj(vec![
+                ("sessionID", K::String("bad".into())),
+                ("localID", K::UInt(10)),
+            ]),
+            10,
+        ),
+        (
+            obj(vec![
+                ("sessionID", K::UInt(0)),
+                ("localID", K::String("bad".into())),
+            ]),
+            0,
+        ),
+    ] {
+        for swapped in [false, true] {
+            let reference = if swapped {
+                ("overriddenSymbolID", invalid.clone())
+            } else {
+                ("symbolData", obj(vec![("symbolID", invalid.clone())]))
+            };
+            let message = message(vec![
+                layer(1, None, "INSTANCE", vec![reference]),
+                layer(
+                    collision,
+                    None,
+                    "SYMBOL",
+                    vec![(
+                        "prototypeInteractions",
+                        K::Array(vec![event("ON_CLICK", vec![])]),
+                    )],
+                ),
+            ]);
+            let tree = Tree::new(&message);
+            let evidence = node(&tree, "0:1", None, "INSTANCE").unwrap();
+            assert_eq!(evidence["state"], "unsupported");
+            assert_eq!(evidence["reason"], "component_source_unavailable");
+            assert_eq!(evidence["sourceNodeId"], "0:1");
+            assert_eq!(evidence["componentId"], Value::Null);
+            assert!(evidence["interactions"].as_array().unwrap().is_empty());
+            let document = crate::rest::nodes(&tree, "0:1");
+            assert_eq!(document["document"]["_figlens"]["prototype"], evidence);
+        }
+    }
+}
+
+#[test]
 fn nested_overrides_keep_the_winning_source_even_with_library_keys_and_later_geometry() {
     let local = vec![patch(
         &[121],

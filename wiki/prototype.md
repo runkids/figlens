@@ -25,6 +25,8 @@ Every envelope has `sourceNodeId`, `sourceField`, `basis`, `interpretation: stor
 - `instance-local`: explicit fields on the instance record itself. A swap retains this source rather than replacing it with the new main's list. When both instance-local data and a swapped definition are involved, `swappedDefinitionId` and `precedenceState: unsupported` leave runtime precedence unverified.
 - `component-definition`: a main's own list when the instance has no local list, including nested instances swapped to that main. `inheritanceState: unsupported` and its reason prohibit treating those records as proven instance behavior. A missing main produces unsupported evidence, not absent triggers.
 
+Both `symbolData.symbolID` and `overriddenSymbolID` use the shared strict GUID reader before component-definition lookup; malformed references produce `component_source_unavailable` rather than unrelated recorded interactions.
+
 These are source observations and the expander's field selection, not a claim that Figma's prototype inheritance, ID-based list merging or playback is fully reproduced. The selected instance structure, text/image/visibility overrides and render preparation remain in use. A different source's same node ID must not be merged with these records.
 
 ## Inventory and bounds
