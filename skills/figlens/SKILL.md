@@ -113,13 +113,13 @@ When the user wants to save reusable component matches, read the real target imp
 
 ## Many frames
 
-`figlens bundle <file.fig> --frames <list> --out-dir <dir>` decodes once and writes one bundle per id in `<list>` (one id per line), in parallel, printing a JSON line per frame (`{nodeId, path, warnings}` or `{nodeId, error}`). A single `bundle` prints the same object; non-empty `warnings` name assets the bundle could not include. Use it instead of one `bundle` call per frame.
+`figlens bundle <file.fig> --frames <list> --out-dir <dir>` decodes once and writes one bundle per id in `<list>` (one id per line), in parallel, printing a JSON line per frame (`{nodeId, path, warnings}` or `{nodeId, error}`). A single `bundle` prints the same object; non-empty `warnings` report missing assets and known skipped/approximate rendering. `missing-assets.json` contains only asset failures; `_figlens.renderDiagnostics` in nodes locates render limitations. Use it instead of one `bundle` call per frame.
 
 ## Known gaps
 
 - Native Dev Mode annotations are not emitted. Hidden TEXT notes and component descriptions are different sources; their presence does not establish annotation coverage. If a missing annotation affects implementation, request its wording/export and associated node from the user, record that provenance and leave the affected decision unresolved rather than guessing.
 
-- Not emitted yet: constraints, layoutAlign/layoutGrow, layout grids, componentPropertyDefinitions.
+- Layout grids are not emitted. Recorded constraints, layoutAlign/layoutGrow and componentPropertyDefinitions are partial: read `_figlens.semantics` for source and recorded/absent/unsupported status. No absent defaults, complete variant options or SLOT semantics are inferred; these mappings have not been compared with same-version Figma exports. See [coverage](https://github.com/runkids/figlens/blob/main/wiki/semantics.md).
 - Hidden overridden text can carry a stale size.
-- Renders skip background blur and image contrast/temperature/tint/highlights/shadows adjustments, and draw angular/diamond gradients as radial; check those areas with the designer rather than matching the reference there.
+- Read `_figlens.renderDiagnostics` in nodes/bundles before matching reference pixels; `inspect` includes at most 20 per shown node and marks truncation. Absence of diagnostics does not establish fidelity. Renders skip background blur and image contrast/temperature/tint/highlights/shadows adjustments, and draw angular/diamond gradients as radial; check those areas with the designer rather than matching the reference there.
 - Font files are not in the `.fig`: name the fonts the design uses, and report the ones the project lacks instead of substituting silently.

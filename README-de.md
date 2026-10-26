@@ -229,9 +229,11 @@ Ein Node-Argument akzeptiert `12:345`, `12-345` oder eine Figma-URL mit `?node-i
 
 - **Snapshots, keine Live-Synchronisierung.** Exportiere eine neue `.fig`, wenn sich das Design ändert. figlens kann kein Design über eine Figma-URL herunterladen.
 - **Undokumentiertes Format.** figlens decodiert das in der Datei eingebettete Schema; neue Figma-Exporte können ein figlens-Update erfordern.
-- **Noch nicht ausgegeben:** Dev-Mode-Annotationen, Constraints, layoutAlign/layoutGrow, Layout-Raster, Definitionen von Komponenten-Eigenschaften.
+- **Noch nicht ausgegeben:** Dev-Mode-Annotationen, Layout-Raster.
+- **Teilweise Semantik:** Aufgezeichnete constraints, layoutAlign/layoutGrow und Komponenten-Eigenschaftsdefinitionen werden mit Herkunft unter `_figlens.semantics` ausgegeben. Fehlende Werte werden nicht ergänzt; Variant-Optionen und SLOT bleiben ununterstützt. Ein Vergleich mit Figma-Exporten derselben Version steht aus. Siehe [Abdeckung](wiki/semantics.md).
 - **Render-Lücken:** Hintergrundunschärfe und einige Bildanpassungen werden übersprungen; Angular- und Diamant-Verläufe werden als radial gezeichnet. Überschriebener Text kann Figmas letztes Layout behalten. Schriftdateien sind nicht enthalten.
 - **Prüfe die Ausgabe.** Lies die Bundle-`warnings`, `missing-assets.json` und ungelöste Variablen in `context.md` und vergleiche dann die Implementierung mit dem Design.
+- Bekannte sichtbare Render-Grenzen stehen in `_figlens.renderDiagnostics` der Knoten, begrenzten `inspect`-Zusammenfassungen und Bundle-`warnings`; `missing-assets.json` enthält nur Asset-Fehler. Auch ohne Warnungen ist Pixeltreue nicht garantiert.
 
 ## Hilf figlens zu wachsen
 

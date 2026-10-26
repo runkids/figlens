@@ -110,7 +110,7 @@ pub struct Expanded {
     pub kind: String,
     pub size: Option<Vec2>,
     pub matrix: Mat,
-    /// Overridden kiwi fields (fills, text, ...), applied over `source`'s own.
+    /// Effective placement and overridden kiwi fields, applied over `source`'s own.
     pub props: Map<String, Json>,
 }
 
@@ -535,21 +535,23 @@ impl Expander<'_, '_> {
                         .map_or(Mat::IDENTITY, Mat::from_value)
                 }));
             // A swapped instance looks like its new main; only how it sits in its parent stays its own.
-            let (source, mut props) = match o.swap.as_ref().filter(|s| tree.nodes.contains_key(*s))
-            {
-                Some(swap) => (
-                    swap.clone(),
-                    [
-                        "stackChildPrimaryGrow",
-                        "stackChildAlignSelf",
-                        "stackPositioning",
-                    ]
-                    .into_iter()
-                    .filter_map(|f| Some((f.to_owned(), to_json(child.get(f)?))))
-                    .collect(),
-                ),
-                None => (child_id.clone(), Map::new()),
-            };
+            let source = o
+                .swap
+                .as_ref()
+                .filter(|s| tree.nodes.contains_key(*s))
+                .unwrap_or(child_id)
+                .clone();
+            // Keep placement complete for semantic readers, including fields absent on the child.
+            let mut props: Map<String, Json> = [
+                "stackChildPrimaryGrow",
+                "stackChildAlignSelf",
+                "stackPositioning",
+                "horizontalConstraint",
+                "verticalConstraint",
+            ]
+            .into_iter()
+            .filter_map(|f| Some((f.to_owned(), to_json(child.get(f)?))))
+            .collect();
             props.extend(o.props.clone());
             // Figma re-derives the outlines of resized and re-texted nodes; without them the
             // source's outlines are scaled from the size they were drawn at.

@@ -132,6 +132,9 @@ fn summarize(node: &Value, depth: usize, remaining: &mut usize, truncated: &mut 
         "layoutMode",
         "layoutWrap",
         "layoutPositioning",
+        "constraints",
+        "layoutGrow",
+        "layoutAlign",
         "layoutSizingHorizontal",
         "layoutSizingVertical",
         "itemSpacing",
@@ -146,6 +149,43 @@ fn summarize(node: &Value, depth: usize, remaining: &mut usize, truncated: &mut 
         if let Some(value) = node.get(key) {
             summary[key] = value.clone();
         }
+    }
+    if let Some(semantics) = node["_figlens"]["semantics"].as_object() {
+        let mut evidence = serde_json::Map::new();
+        for (key, value) in semantics {
+            if key != "componentPropertyDefinitions" {
+                evidence.insert(key.clone(), value.clone());
+            }
+        }
+        if let Some(definitions) = semantics.get("componentPropertyDefinitions") {
+            let mut compact = json!({"source":definitions["source"], "state":definitions["state"]});
+            if let Some(entries) = definitions["entries"].as_array() {
+                compact["entries"] = entries.iter().take(20).cloned().collect();
+                compact["count"] = json!(entries.len());
+                compact["truncated"] = json!(entries.len() > 20);
+                *truncated |= entries.len() > 20;
+            }
+            evidence.insert("componentPropertyDefinitions".into(), compact);
+        }
+        summary["_figlens"] = json!({"semantics":evidence});
+    }
+    if let Some(definitions) = node["componentPropertyDefinitions"].as_object() {
+        let compact: serde_json::Map<String, Value> = definitions
+            .iter()
+            .take(20)
+            .map(|(name, definition)| (name.clone(), json!({"type":definition["type"]})))
+            .collect();
+        summary["componentPropertyDefinitions"] = compact.into();
+        summary["componentPropertyDefinitionCount"] = json!(definitions.len());
+        *truncated |= definitions.len() > 20;
+    }
+    if let Some(items) = node["_figlens"]["renderDiagnostics"].as_array() {
+        if summary.get("_figlens").is_none() {
+            summary["_figlens"] = json!({});
+        }
+        summary["_figlens"]["renderDiagnostics"] = json!(items.iter().take(20).collect::<Vec<_>>());
+        summary["_figlens"]["renderDiagnosticsTruncated"] = json!(items.len() > 20);
+        *truncated |= items.len() > 20;
     }
     if let Some(text) = node["characters"].as_str() {
         text_preview(&mut summary, text);
@@ -195,6 +235,60 @@ fn summarize(node: &Value, depth: usize, remaining: &mut usize, truncated: &mut 
 mod tests {
     use super::*;
     use kiwi_schema::Value as Kiwi;
+
+    #[test]
+    fn inspect_bounds_definition_summaries_and_keeps_diagnostics() {
+        let definitions: serde_json::Map<String, Value> = (0..21)
+            .map(|i| {
+                (
+                    format!("Label#{i}"),
+                    json!({"type":"TEXT","defaultValue":"full default"}),
+                )
+            })
+            .collect();
+        let node = json!({"id":"1:1","componentPropertyDefinitions":definitions,"_figlens":{"semantics":{"verification":"not-compared-with-figma","componentPropertyDefinitions":{"source":"componentPropDefs","state":"recorded","entries":vec![json!({"state":"recorded"});21]}},"renderDiagnostics":[{"state":"skipped"}]}});
+        let result = inspect_document(&node, 0);
+        let summary = &result["node"];
+        assert_eq!(result["truncated"], true);
+        assert_eq!(summary["componentPropertyDefinitionCount"], 21);
+        assert_eq!(
+            summary["componentPropertyDefinitions"]
+                .as_object()
+                .unwrap()
+                .len(),
+            20
+        );
+        assert!(
+            summary["componentPropertyDefinitions"]
+                .as_object()
+                .unwrap()
+                .values()
+                .all(|v| v.get("defaultValue").is_none())
+        );
+        let evidence = &summary["_figlens"]["semantics"]["componentPropertyDefinitions"];
+        assert_eq!(evidence["count"], 21);
+        assert_eq!(evidence["entries"].as_array().unwrap().len(), 20);
+        assert_eq!(
+            summary["_figlens"]["renderDiagnostics"][0]["state"],
+            "skipped"
+        );
+    }
+
+    #[test]
+    fn inspect_bounds_render_diagnostics_and_marks_truncation() {
+        let node = json!({"id":"1:1", "_figlens":{"renderDiagnostics":vec![json!({"state":"skipped"});21]}});
+        let mut truncated = false;
+        let summary = summarize(&node, 1, &mut 200, &mut truncated);
+        assert_eq!(
+            summary["_figlens"]["renderDiagnostics"]
+                .as_array()
+                .unwrap()
+                .len(),
+            20
+        );
+        assert_eq!(summary["_figlens"]["renderDiagnosticsTruncated"], true);
+        assert!(truncated);
+    }
 
     fn obj(fields: Vec<(&'static str, Kiwi<'static>)>) -> Kiwi<'static> {
         Kiwi::Object("Test", fields.into_iter().collect())

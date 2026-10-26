@@ -31,6 +31,12 @@ test('the existing CLI npm package includes the maintained Pi entry and its adja
     assert.ok(files.includes(`pi/${file}`));
     assert.equal(readFileSync(path.join(root, 'npm/pi', file), 'utf8'), readFileSync(path.join(root, 'pi', file), 'utf8'));
   }
+  const skill = readFileSync(path.join(root, 'npm/skills/figlens/SKILL.md'), 'utf8');
+  for (const [, target] of skill.matchAll(/\]\(([^)]+)\)/g)) {
+    if (/^(https?:|#)/.test(target)) continue;
+    const local = path.posix.normalize(path.posix.join('skills/figlens', target.split('#')[0]));
+    assert.ok(files.includes(local), `Packaged skill link is missing: ${target}`);
+  }
   assert.ok(files.every(file => !file.endsWith('.fig') && !file.includes('samples/') && !file.endsWith('.test.mjs')));
   assert.ok(Object.values(manifest.peerDependenciesMeta).every(peer => peer.optional));
 });

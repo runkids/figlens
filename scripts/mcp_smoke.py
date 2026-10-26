@@ -43,6 +43,7 @@ def session(command, cwd, env, timeout=30):
         assert reply.get('jsonrpc') == '2.0' and reply.get('id') == next_id, reply
         assert 'error' not in reply and 'result' in reply, reply
         return reply['result']
+    request.pid = process.pid  # Optional Linux /proc observations for bounded benchmarks.
     try:
         yield request
     except BaseException:

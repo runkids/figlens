@@ -20,7 +20,7 @@ pub struct Report {
 }
 
 /// Style and binding fields compared as normalized JSON; like fills, they are counted apart from structure.
-pub const FIELDS: [&str; 15] = [
+pub const FIELDS: [&str; 19] = [
     "blendMode",
     "effects",
     "rotation",
@@ -34,6 +34,10 @@ pub const FIELDS: [&str; 15] = [
     "styleOverrideTable",
     "lineTypes",
     "lineIndentations",
+    "constraints",
+    "layoutGrow",
+    "layoutAlign",
+    "componentPropertyDefinitions",
     "meta",
     "renderBounds",
 ];
@@ -352,6 +356,32 @@ pub fn compare(tree: &Tree, oracle: &Json, root: &str) -> Report {
             }
         }
     }
+    // Definitions are a separate category, including metadata-only frame references.
+    for map in ["components", "componentSets"] {
+        let ids: HashSet<&String> = rest[map]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(id, _)| id)
+            .chain(
+                oracle[map]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(id, _)| id),
+            )
+            .collect();
+        for id in ids {
+            let (a, b) = (
+                normalized(&rest[map][id]["componentPropertyDefinitions"]),
+                normalized(&oracle[map][id]["componentPropertyDefinitions"]),
+            );
+            if a != b {
+                fields_diff(&mut props, "componentPropertyDefinitions")
+                    .push(format!("{map} {id} ours={a} plugin={b}"));
+            }
+        }
+    }
     // Top-level metadata of the components, component sets and styles both reference.
     for map in ["components", "componentSets", "styles"] {
         for (id, theirs) in oracle[map].as_object().into_iter().flatten() {
@@ -387,6 +417,43 @@ pub fn compare(tree: &Tree, oracle: &Json, root: &str) -> Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn additive_semantics_have_separate_diff_categories() {
+        use kiwi_schema::Value as K;
+        use serde_json::json;
+        let node = K::Object(
+            "Test",
+            HashMap::from([("type", K::Enum("NodeType", "FRAME"))]),
+        );
+        let tree = Tree {
+            nodes: HashMap::from([("1:1".into(), &node)]),
+            children: HashMap::new(),
+            blobs: Vec::new(),
+        };
+        let original = nodes(&tree, "1:1");
+        for field in [
+            "constraints",
+            "layoutGrow",
+            "layoutAlign",
+            "componentPropertyDefinitions",
+        ] {
+            let mut changed = original.clone();
+            changed["document"][field] = json!("changed");
+            let report = compare(&tree, &changed, "1:1");
+            assert_eq!(report.diffs.len(), 1);
+            assert_eq!(report.diffs[0].0, field);
+        }
+        for map in ["components", "componentSets"] {
+            let mut changed = original.clone();
+            changed[map]["2:1"] = json!({"componentPropertyDefinitions":{"Label":{"type":"TEXT"}}});
+            let report = compare(&tree, &changed, "1:1");
+            assert!(!report.clean("componentPropertyDefinitions"));
+        }
+        let mut metadata = original.clone();
+        metadata["document"]["_figlens"] = json!({"semantics":{"verification":"different"}});
+        assert!(compare(&tree, &metadata, "1:1").diffs.is_empty());
+    }
 
     #[test]
     fn missing_oracle_document_reports_an_error_without_canvas_diffs() {

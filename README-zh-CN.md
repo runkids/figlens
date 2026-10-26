@@ -229,9 +229,11 @@ node 参数接受 `12:345`、`12-345`，或带 `?node-id=` 的 Figma URL。`<fil
 
 - **快照，不是实时同步。** 设计变更后请导出新的 `.fig`。figlens 无法通过 Figma URL 下载设计。
 - **格式未公开。** figlens 解码文件内嵌的 schema；新的 Figma 导出可能需要更新 figlens。
-- **尚未输出：** Dev Mode 注释、constraints、layoutAlign/layoutGrow、layout grids、组件属性定义。
+- **尚未输出：** Dev Mode 注释、layout grids。
+- **部分语义支持：** 输出文件已记录的 constraints、layoutAlign/layoutGrow 和组件属性定义，并以 `_figlens.semantics` 标示来源。不填补缺失值；variant 选项和 SLOT 尚不支持。这些映射尚未与同版本 Figma 导出比对。见[支持范围](wiki/semantics.md)。
 - **渲染差距：** 背景模糊和部分图片调整会被跳过；角度渐变和菱形渐变会按放射渐变绘制。被覆写的文字可能保留 Figma 上一次的布局。不包含字体文件。
 - **检查输出。** 阅读 bundle 的 `warnings`、`missing-assets.json` 和 `context.md` 中未解析的变量，然后将实现与设计对比。
+- 已知可见渲染限制会列在节点 `_figlens.renderDiagnostics`、有数量上限的 `inspect` 摘要及 bundle `warnings`；`missing-assets.json` 只列素材失败。没有警告不代表像素一致。
 
 ## 帮助 figlens 成长
 

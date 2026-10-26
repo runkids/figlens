@@ -9,6 +9,8 @@ use crate::expand::{Expansion, Mat, Vec2, abs_matrix, expand_instances, plugin_t
 use crate::render::{self, Rect};
 use crate::{Tree, to_json};
 
+mod semantics;
+
 type Obj = Map<String, Json>;
 /// Variables and variable sets by guid and by library key; a key can name several imported copies.
 pub(crate) type Vars = HashMap<String, Vec<Json>>;
@@ -85,10 +87,13 @@ fn build(tree: &Tree, root: &str, render: bool) -> Json {
         stack.extend(n["children"].as_array().into_iter().flatten());
         if let Some(main) = n["componentId"]
             .as_str()
-            .filter(|m| tree.nodes.contains_key(*m))
+            .filter(|m| tree.nodes.contains_key(*m) && !components.contains_key(*m))
         {
             let meta = component_meta(tree, main);
-            if let Some(set) = meta["componentSetId"].as_str() {
+            if let Some(set) = meta["componentSetId"]
+                .as_str()
+                .filter(|set| !sets.contains_key(*set))
+            {
                 let mut s = component_meta(tree, set);
                 s.as_object_mut().map(|s| s.remove("documentationLinks"));
                 sets.insert(set.to_owned(), s);
@@ -143,6 +148,15 @@ fn component_meta(tree: &Tree, id: &str) -> Json {
     {
         meta["componentSetId"] = json!(set);
     }
+    let mut evidence = json!({"verification":"not-compared-with-figma"});
+    semantics::definitions(
+        tree,
+        id,
+        n.as_object().unwrap(),
+        meta.as_object_mut().unwrap(),
+        &mut evidence,
+    );
+    meta["_figlens"] = json!({"semantics":evidence});
     meta
 }
 
@@ -435,12 +449,7 @@ impl Builder<'_, '_> {
             .filter_map(|a| Some((guid(&a["defID"])?, a)))
             .collect();
         for own in m["componentPropDefs"].as_array().into_iter().flatten() {
-            let parent = guid(&own["parentPropDefId"]);
-            let def = parent
-                .as_ref()
-                .and_then(|p| set_defs.get(p))
-                .copied()
-                .unwrap_or(own);
+            let def = semantics::resolve_definition(own, &set_defs);
             let (Some(def_id), Some(own_id)) = (guid(&def["id"]), guid(&own["id"])) else {
                 continue;
             };
@@ -521,6 +530,24 @@ impl Builder<'_, '_> {
             }
         }
         let mut out = fields(&kiwi, &kind, parent);
+        if !matches!(kind.as_str(), "DOCUMENT" | "CANVAS" | "SECTION") {
+            // A selected stored root still has a parent; don't alter the legacy sizing path.
+            let root_parent = parent
+                .is_none()
+                .then(|| parent_id(self.tree, id))
+                .flatten()
+                .map(|p| object(to_json(self.tree.nodes[&p])));
+            let placement = self.ex.nodes.get(id).map_or(&kiwi, |e| &e.props);
+            let mut evidence =
+                semantics::layout(placement, parent.or(root_parent.as_ref()), &mut out);
+            if let Some(expanded) = self.ex.nodes.get(id) {
+                evidence["instanceContext"] = json!({"instanceId": crate::export::root_of(id), "sourceNodeId": expanded.source, "state":"effective"});
+            }
+            if matches!(kind.as_str(), "COMPONENT" | "COMPONENT_SET") {
+                semantics::definitions(self.tree, id, &kiwi, &mut out, &mut evidence);
+            }
+            out.insert("_figlens".into(), json!({"semantics":evidence}));
+        }
         for list in out
             .get_mut("boundVariables")
             .and_then(Json::as_object_mut)
@@ -653,6 +680,15 @@ impl Builder<'_, '_> {
             node["absoluteRenderBounds"] = Json::Null;
         } else {
             node["absoluteRenderBounds"] = render::rect_json(bounds);
+        }
+        if shown && bounds.is_some() {
+            let diagnostics = render::diagnostics(self.tree, &node);
+            if !diagnostics.is_empty() {
+                if node.get("_figlens").is_none() {
+                    node["_figlens"] = json!({});
+                }
+                node["_figlens"]["renderDiagnostics"] = json!(diagnostics);
+            }
         }
         if !self.render {
             node.as_object_mut().map(|o| o.remove("_r"));
@@ -1083,27 +1119,41 @@ fn paint_aliases(list: Option<&Json>) -> Vec<Json> {
 
 /// The value of a property assignment or definition: its typed `varValue`, else `value` / `initialValue`.
 fn prop_value(a: &Json) -> Option<Json> {
+    prop_value_source(a).map(|(value, _)| value)
+}
+
+fn prop_value_source(a: &Json) -> Option<(Json, &'static str)> {
     let typed = &a["varValue"]["value"];
     let plain = if a["value"].is_object() {
         &a["value"]
     } else {
         &a["initialValue"]
     };
-    for v in [typed, plain] {
+    for (v, source) in [
+        (typed, "varValue.value"),
+        (
+            plain,
+            if a["value"].is_object() {
+                "value"
+            } else {
+                "initialValue"
+            },
+        ),
+    ] {
         if let Some(b) = v["boolValue"].as_bool() {
-            return Some(json!(b));
+            return Some((json!(b), source));
         }
         if let Some(s) = v["textDataValue"]["characters"].as_str() {
-            return Some(json!(s));
+            return Some((json!(s), source));
         }
         if let Some(s) = v["textValue"]["characters"]
             .as_str()
             .or(v["textValue"].as_str())
         {
-            return Some(json!(s));
+            return Some((json!(s), source));
         }
         if let Some(id) = guid(&v["symbolIdValue"]["guid"]).or_else(|| guid(&v["guidValue"])) {
-            return Some(json!(id));
+            return Some((json!(id), source));
         }
     }
     None
@@ -1282,6 +1332,54 @@ mod tests {
 
     fn obj(v: Json) -> Obj {
         object(v)
+    }
+
+    #[test]
+    fn diagnostics_follow_effective_node_visibility() {
+        use kiwi_schema::Value as K;
+        let object = |fields: Vec<(&'static str, K<'static>)>| {
+            K::Object("Test", fields.into_iter().collect())
+        };
+        let size = || object(vec![("x", K::Float(20.0)), ("y", K::Float(20.0))]);
+        let paint = || {
+            K::Array(vec![object(vec![
+                ("type", K::Enum("PaintType", "IMAGE")),
+                ("imageScaleMode", K::Enum("ScaleMode", "TILE")),
+            ])])
+        };
+        for (visible, opacity, kind, expected) in [
+            (true, 1.0, "FRAME", true),
+            (false, 1.0, "FRAME", false),
+            (true, 0.0, "FRAME", false),
+            (true, 1.0, "BOOLEAN_OPERATION", false),
+        ] {
+            let parent = object(vec![
+                ("type", K::Enum("NodeType", kind)),
+                ("visible", K::Bool(visible)),
+                ("opacity", K::Float(opacity)),
+                ("size", size()),
+            ]);
+            let child = object(vec![
+                ("type", K::Enum("NodeType", "RECTANGLE")),
+                ("size", size()),
+                ("fillPaints", paint()),
+            ]);
+            let tree = Tree {
+                nodes: HashMap::from([("1:1".into(), &parent), ("1:2".into(), &child)]),
+                children: HashMap::from([("1:1".into(), vec!["1:2".into()])]),
+                blobs: Vec::new(),
+            };
+            let doc = nodes(&tree, "1:1");
+            let diagnostics = &doc["document"]["children"][0]["_figlens"]["renderDiagnostics"];
+            assert_eq!(
+                diagnostics.is_array(),
+                expected,
+                "{visible} {opacity} {kind}: {doc}"
+            );
+            if expected {
+                assert_eq!(diagnostics[0]["nodeId"], "1:2");
+            }
+        }
     }
 
     #[test]

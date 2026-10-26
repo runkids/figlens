@@ -21,6 +21,10 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 
 `wiki/ai-context.json` is the only source of truth. This table is the human entry point. After changing topics, run `python3 scripts/ai-context.py check`.
 
+## Field reference
+
+- [Partial semantic fields](semantics.md): emitted mappings, unknowns, provenance and validation limits; read when working on these fields.
+
 ## History
 
 - [Reviewed component mappings in Pi](history/pi-workflow.md): implementation and verification scope for the preview/Pi release.

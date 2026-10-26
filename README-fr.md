@@ -229,9 +229,11 @@ Un argument node accepte `12:345`, `12-345` ou une URL Figma avec `?node-id=`. `
 
 - **Des snapshots, pas une synchronisation en direct.** Exportez un nouveau `.fig` quand le design change. figlens ne peut pas télécharger un design depuis une URL Figma.
 - **Format non documenté.** figlens décode le schéma embarqué dans le fichier ; les nouveaux exports Figma peuvent nécessiter une mise à jour de figlens.
-- **Pas encore émis :** annotations du Dev Mode, constraints, layoutAlign/layoutGrow, layout grids, définitions de propriétés de composants.
+- **Pas encore émis :** annotations du Dev Mode, layout grids.
+- **Sémantique partielle :** les constraints, layoutAlign/layoutGrow et définitions de propriétés enregistrés sont émis avec leur provenance dans `_figlens.semantics`. Les valeurs absentes ne sont pas complétées ; les options variant et SLOT ne sont pas pris en charge. Ces correspondances n’ont pas été comparées aux exports Figma de la même version. Voir la [couverture](wiki/semantics.md).
 - **Lacunes de rendu :** le background blur et certains réglages d’image sont ignorés ; les dégradés angulaires et en losange sont dessinés comme radiaux. Un texte avec override peut conserver la dernière mise en page de Figma. Les fichiers de polices ne sont pas inclus.
 - **Vérifiez la sortie.** Lisez les `warnings` du bundle, `missing-assets.json` et les variables non résolues dans `context.md`, puis comparez l’implémentation au design.
+- Les limites de rendu visibles connues figurent dans `_figlens.renderDiagnostics` des nœuds, les résumés bornés de `inspect` et les `warnings` du bundle ; `missing-assets.json` ne contient que les échecs de ressources. L’absence d’avertissements ne garantit pas la fidélité des pixels.
 
 ## Aidez figlens à grandir
 

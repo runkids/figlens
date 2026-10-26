@@ -227,9 +227,11 @@ A node argument accepts `12:345`, `12-345` or a Figma URL with `?node-id=`. `<fi
 
 - **Snapshots, not live sync.** Export a new `.fig` when the design changes. figlens cannot download a design from a Figma URL.
 - **Undocumented format.** figlens decodes the file's embedded schema; new Figma exports may need a figlens update.
-- **Not emitted yet:** Dev Mode annotations, constraints, layoutAlign/layoutGrow, layout grids, component property definitions.
+- **Not emitted yet:** Dev Mode annotations, layout grids.
+- **Partial semantics:** recorded constraints, layoutAlign/layoutGrow and component property definitions are emitted with `_figlens.semantics` provenance. Missing values are not defaulted; variant options and SLOT remain unsupported. These mappings have not been compared with same-version Figma exports. See [coverage](wiki/semantics.md).
 - **Render gaps:** background blur and some image adjustments are skipped; angular and diamond gradients draw as radial. Overridden text can keep Figma's last layout. Font files are not included.
 - **Check the output.** Read bundle `warnings`, `missing-assets.json` and unresolved variables in `context.md`, then compare the implementation with the design.
+- Known visible rendering limitations appear in node `_figlens.renderDiagnostics`, bounded `inspect` summaries and bundle `warnings`; `missing-assets.json` lists only asset failures. No warnings does not establish pixel fidelity.
 
 ## Help figlens grow
 

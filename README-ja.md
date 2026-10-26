@@ -229,9 +229,11 @@ node 引数には `12:345`、`12-345`、または `?node-id=` 付きの Figma UR
 
 - **スナップショットであり、ライブ同期ではありません。** デザインが変わったら新しい `.fig` をエクスポートしてください。figlens は Figma の URL からデザインをダウンロードできません。
 - **非公開のフォーマット。** figlens はファイルに埋め込まれたスキーマをデコードします。新しい Figma のエクスポートには figlens の更新が必要な場合があります。
-- **まだ出力されないもの：** Dev Mode アノテーション、constraints、layoutAlign/layoutGrow、レイアウトグリッド、コンポーネントプロパティの定義。
+- **まだ出力されないもの：** Dev Mode アノテーション、レイアウトグリッド。
+- **一部のセマンティクス：** 記録された constraints、layoutAlign/layoutGrow、コンポーネントプロパティ定義を `_figlens.semantics` の出典とともに出力します。欠損値は補完せず、variant オプションと SLOT は未対応です。同じバージョンの Figma エクスポートとの照合は未実施です。[対応範囲](wiki/semantics.md)。
 - **レンダリングのギャップ：** 背景ブラーと一部の画像調整はスキップされます。angular と diamond グラデーションは radial として描画されます。オーバーライドされたテキストは Figma の最後のレイアウトを保持することがあります。フォントファイルは含まれません。
 - **出力を確認してください。** bundle の `warnings`、`missing-assets.json`、`context.md` 内の未解決の variables を読み、実装をデザインと比較してください。
+- 既知の可視レンダリング制限はノードの `_figlens.renderDiagnostics`、件数制限のある `inspect` 要約、bundle の `warnings` に表示されます。`missing-assets.json` は素材の失敗のみを記録します。警告がなくてもピクセル一致は保証されません。
 
 ## figlens を育てる
 
