@@ -229,9 +229,11 @@ skillshare sync && skillshare sync mcp --global
 
 - **스냅샷이며 실시간 동기화가 아닙니다.** 디자인이 바뀌면 새 `.fig`를 내보내세요. figlens는 Figma URL에서 디자인을 다운로드할 수 없습니다.
 - **문서화되지 않은 형식.** figlens는 파일에 내장된 스키마를 디코딩하므로 새 Figma 내보내기에는 figlens 업데이트가 필요할 수 있습니다.
-- **아직 출력하지 않음:** Dev Mode 주석, constraints, layoutAlign/layoutGrow, 레이아웃 그리드, 컴포넌트 속성 정의.
+- **아직 출력하지 않음:** Dev Mode 주석, 레이아웃 그리드.
+- **부분 의미 지원:** 기록된 constraints, layoutAlign/layoutGrow, 컴포넌트 속성 정의를 `_figlens.semantics` 출처와 함께 출력합니다. 누락값을 기본값으로 채우지 않으며 variant 옵션과 SLOT은 지원하지 않습니다. 동일 버전 Figma 내보내기와의 비교는 아직 수행하지 않았습니다. [지원 범위](wiki/semantics.md).
 - **렌더링 차이:** 배경 흐림과 일부 이미지 조정은 생략되고, 각도 및 다이아몬드 그라디언트는 방사형으로 그려집니다. 재정의된 텍스트에 Figma의 마지막 레이아웃이 남을 수 있습니다. 글꼴 파일은 포함되지 않습니다.
 - **출력을 확인하세요.** bundle의 `warnings`, `missing-assets.json`, `context.md`의 해결되지 않은 변수를 읽고, 구현 결과를 디자인과 비교하세요.
+- 알려진 가시적 렌더링 제한은 노드의 `_figlens.renderDiagnostics`, 개수가 제한된 `inspect` 요약, bundle `warnings`에 표시됩니다. `missing-assets.json`은 에셋 실패만 기록합니다. 경고가 없어도 픽셀 일치를 보장하지 않습니다.
 
 ## figlens 응원하기
 

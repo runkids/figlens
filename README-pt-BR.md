@@ -229,9 +229,11 @@ Um argumento de nó aceita `12:345`, `12-345` ou uma URL do Figma com `?node-id=
 
 - **Snapshots, não sincronização ao vivo.** Exporte um novo `.fig` quando o design mudar. O figlens não consegue baixar um design a partir de uma URL do Figma.
 - **Formato não documentado.** O figlens decodifica o schema embutido no arquivo; novas exportações do Figma podem exigir uma atualização do figlens.
-- **Ainda não emitidos:** anotações do Dev Mode, constraints, layoutAlign/layoutGrow, grades de layout, definições de propriedades de componentes.
+- **Ainda não emitidos:** anotações do Dev Mode, grades de layout.
+- **Semântica parcial:** constraints, layoutAlign/layoutGrow e definições de propriedades registradas são emitidas com origem em `_figlens.semantics`. Valores ausentes não são preenchidos; opções variant e SLOT seguem sem suporte. Esses mapeamentos ainda não foram comparados com exportações Figma da mesma versão. Veja a [cobertura](wiki/semantics.md).
 - **Lacunas de renderização:** desfoque de fundo e alguns ajustes de imagem são ignorados; gradientes angulares e de diamante são desenhados como radiais. Texto com override pode manter o último layout do Figma. Os arquivos de fontes não estão incluídos.
 - **Confira a saída.** Leia os `warnings` do bundle, `missing-assets.json` e as variáveis não resolvidas em `context.md`, depois compare a implementação com o design.
+- As limitações visíveis conhecidas aparecem em `_figlens.renderDiagnostics` dos nós, nos resumos limitados de `inspect` e nos `warnings` do bundle; `missing-assets.json` contém apenas falhas de assets. A ausência de avisos não garante fidelidade de pixels.
 
 ## Ajude o figlens a crescer
 

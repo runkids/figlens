@@ -1,6 +1,6 @@
 # Bounded local baseline
 
-Use `scripts/measure-baseline.py` to collect a small reproducible baseline before proposing cache changes. It accepts an explicit binary and uses only the original MIT public fixture (`examples/first-success/design.fig`, 1,615 bytes). It creates and removes its own temporary HOME/cache/output directories. It does not flush the OS file cache or contact GCS.
+Use `scripts/measure-baseline.py` to collect a small reproducible baseline before proposing cache changes. It accepts an explicit binary and defaults to the original MIT public fixture (`examples/first-success/design.fig`, 1,615 bytes). Explicit `--fixture`/`--node`, `--alternate`/`--alternate-node` and `--frames ID ID ID` select approved local inputs only; acquire permission and execution limits before using private samples. It creates and removes its own temporary HOME/cache/output directories. It does not flush the OS file cache or contact GCS.
 
 ```sh
 python3 -B scripts/measure-baseline.py --binary /absolute/path/to/figlens --repetitions 10
@@ -14,6 +14,14 @@ docker compose run --rm dev python3 -B scripts/measure-baseline.py --binary /wor
 ```
 
 The report records HEAD and dirty state, platform, explicit binary path/version/hash, fixture size/hash, parameters, all samples, median and nearest-rank p95. Record the build command too: a supplied binary's version alone cannot prove its source. Repetitions are bounded to 3–30. These are sequential observations, not a load test.
+
+## Workload and memory boundaries
+
+The script runs fresh CLI nodes and MCP initialization/first call for each repetition (default 5), then 10 warm tree/inspect/nodes calls per server. With an alternate input, A/B/A calls assert A returns the original JSON. With three frame IDs, sequential CLI, batch jobs 1/2/default and MCP bundles run three times each; entry bytes and manifest hashes must match by node ID, ignoring only `createdAt`. Every child command/request has a 60-second limit. Output includes raw timings, median/p95, serialized response sizes, per-child peak RSS via Unix `wait4`, and Linux MCP live RSS/lifetime high-water observations. The container section records cgroup current/lifetime peak and CPU/memory limits when available; it includes the Python harness, page cache and all children, not just the product. CLI timings include up to 1 ms wait polling. MCP peaks belong to the server lifetime, not a particular request; missing `/proc` observations are null. These measurements do not establish retained-object lifetimes or absence of a long-term leak.
+
+For stage evidence, the opt-in test `bundle::probe::stages` reads `FIGLENS_PROBE_FILE`/`FIGLENS_PROBE_NODE` (public fixture by default) and writes JSON to required `FIGLENS_PROBE_OUTPUT`. Run that exact ignored test under an external timeout, using a release-profile test binary. It measures open/inflate/schema, decode/preflight, Tree, REST expansion, image reads, SVG, raster/PNG, complete bundle (inclusive), and repacking its existing entry bytes. Stages retain predecessors, and high-water is cumulative. Repacking uses probe metadata; it isolates zip/hash/manifest cost, not another complete bundle. Never subtract inclusive timings to claim pure parser time. Repeat fresh processes and summarize raw stage samples before drawing conclusions.
+
+Record Docker image ID, CPU/memory limits, source commit/diff and binary hash alongside reports. Compare the same approved workload before and after a change. Investigate timing increases over both 5% and 1 ms, or RSS increases over both 5% and 16 MiB; these are review thresholds, not noise guarantees.
 
 ## ZIP opening
 
@@ -83,3 +91,17 @@ Compared main `d7275d6` (including #27) with raster-only removal of unused hard-
 Earlier primitive profiling on `4ec0f36` attributes medium's cost mainly to GaussianBlur (586.16 ms across reference and two 2x composites), ColorMatrix (102.43) and Merge (93.18); its shadow graphs have no removable intermediates. Small's corresponding costs were 488.05 / 61.06 / 60.99 ms; removing unused intermediates saved 74.35 ms in the isolated SVG experiment. Tightening shadow regions changed pixels and was rejected. Small's 535 ms target was not reached; medium already meets 1450 ms on current main because #27 retains rendering parallelism, not because of this change. Medium default after VmHWM was 510.1 / 511.3 / 510.1 MiB; do not attribute its noisy memory to this optimization. Larger decoded-tree samples still exceed 510 MiB.
 
 No other frame regressed over 10%. All 90 before/after archive pairs had identical entry names and bytes except the manifest, including SVG assets and PNG references/composites. This establishes preservation, not improved Figma accuracy. The earlier single-thread stage baseline is retained separately: `RAYON_NUM_THREADS=1` must not be described as current `--jobs 1`. Raw profiles and paired CLI observations remain in gitignored `samples/perf-2026-10-26/filter-work/`; no private fixtures are distributed.
+
+## Historical batch timings
+
+Historical runs: 24 frames: 28.6 s as separate processes, 8.1 s with `--jobs 1`, 2.9 s with 4; 96 frames: 32.3 s / 12.2 s / 8.5 s with 1 / 4 / 12 jobs, peak memory 1.6 / 1.9 / 2.6 GiB (the decoded `.fig` is about 1.2 GiB of it).
+
+## Partial semantic metadata (2026-10-26)
+
+Compared clean `eb01fe3` with additive effective layout/property semantics and render diagnostics using fixed release binaries. Authorized Aurora plus held-out DashArt and the public fixture; Docker aarch64, 4 CPU/4 GiB, five first calls, ten warm calls per tool/server, three runs per three-frame bundle mode, 60-second child/request limit, no OS cache eviction. A reversed-order repeat checked initial threshold flags. Warm Aurora nodes consistently grew: 7.44→8.96 ms initially, 7.46→8.77 ms on repeat (+17.7%, +1.32 ms); the MCP envelope grew 183,370→286,574 bytes (+56.3%) with the new fields and provenance. This records an additive cost, not an isolated serialization attribution or speedup. Initial bundle/first-call flags did not persist; no peak rose by both 5% and 16 MiB. Public and held-out medians stayed below the >5% AND >1 ms review threshold.
+
+Nine selected frame/page/instance/component/set cases preserved existing fields and asset/reference bytes. CLI sequential, batch jobs 1/2/default and MCP bundles matched within each binary. Same-version Figma calibration is still absent. Fixed binary hashes, raw first/repeat observations, source-field evidence and limits are retained in ignored `samples/semantic-work/BATCH12.md`.
+
+### Post-review verification (2026-10-26)
+
+The reviewed candidate preserves swapped-child placement absence, includes drawn stroke/mask diagnostics, and excludes provenance from asset planning. Nine-case existing-field and asset/reference comparisons still pass. Two bounded Aurora runs (final→baseline, then baseline→final) observed CLI nodes medians +6.9–11.2%, first MCP nodes +10.5–16.7%, and warm nodes +0.75–2.40 ms; the nodes envelope remains +56.3%. Bundle timings were inconsistent: first-run medians ranged from −8.6% to +4.6%, while the repeat ranged from +3.2% to +27.9%. These observations do not isolate the cost of the fixes or establish a stable bundle regression; they do rule out claiming a general speedup. No peak crossed both the 5% and 16 MiB thresholds. Final binary `a70c93993d52fb8acadac042e70c3d55674c90a7dab0383360b83dd9c83ed8ef`, raw runs and comparisons are retained under ignored `samples/semantic-review/`; unrelated concurrent changes are excluded.

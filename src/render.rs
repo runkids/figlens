@@ -299,6 +299,134 @@ fn visible(p: &Json) -> bool {
     p["visible"] != Json::Bool(false) && p["opacity"].as_f64().unwrap_or(1.0) > 0.0
 }
 
+/// Known renderer fallbacks in the effective paints of one visible node.
+/// This is deliberately not a completeness or pixel-fidelity claim.
+pub(crate) fn diagnostics(tree: &Tree, n: &Json) -> Vec<Json> {
+    let mut out = Vec::new();
+    let mut report = |feature: &str, field: String, state: &str, reason: &str| {
+        out.push(serde_json::json!({
+            "nodeId": n["id"], "feature": feature, "field": field,
+            "state": state, "reason": reason,
+        }));
+    };
+    let r = &n["_r"];
+    let mut lists = Vec::new();
+    // Match the renderer's per-region / per-character paint selection; unused styles
+    // must not turn into warnings on the node that happens to store them.
+    let text = n["type"] == "TEXT" && r["styleOverrideTable"].is_array();
+    let (table, ids, table_name) = if text {
+        let keep = r["truncationStartIndex"]
+            .as_i64()
+            .filter(|i| *i >= 0)
+            .map_or(usize::MAX, |i| i as usize);
+        let ids = r["glyphs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(keep)
+            .map(|g| {
+                r["characterStyleIDs"][g["firstCharacter"].as_u64().unwrap_or(0) as usize]
+                    .as_u64()
+                    .unwrap_or(0)
+            })
+            .collect::<Vec<_>>();
+        (&r["styleOverrideTable"], ids, "textData.styleOverrideTable")
+    } else {
+        let ids = r["fillGeometry"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|g| g["styleID"].as_u64().unwrap_or(0))
+            .collect::<Vec<_>>();
+        (&r["vectorStyles"], ids, "vectorData.styleOverrideTable")
+    };
+    let mut base = !text && ids.is_empty();
+    for id in ids {
+        let selected = table
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .find(|(_, s)| s["styleID"].as_u64() == Some(id) && s["fillPaints"].is_array());
+        if let Some((index, style)) = selected {
+            let field = format!("{table_name}[{index}].fillPaints");
+            if !lists.iter().any(|(_, path)| path == &field) {
+                lists.push((&style["fillPaints"], field));
+            }
+        } else {
+            base = true;
+        }
+    }
+    if base {
+        lists.push((&r["fillPaints"], "fillPaints".into()));
+    }
+    if r["strokeWeight"].as_f64().unwrap_or(0.0) > 0.0
+        && has_paint(&r["strokePaints"])
+        && !stroke_shapes(tree, n).is_empty()
+    {
+        lists.push((&r["strokePaints"], "strokePaints".into()));
+    }
+    for (list, path) in lists {
+        for (i, paint) in list
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter(|(_, p)| visible(p))
+        {
+            let field = format!("{path}[{i}]");
+            match paint["type"].as_str() {
+                Some("IMAGE") => {
+                    if paint["imageScaleMode"] == "TILE" {
+                        report(
+                            "imageTile",
+                            format!("{field}.imageScaleMode"),
+                            "approximate",
+                            "TILE is rendered as FILL",
+                        );
+                    }
+                    for adjustment in ["contrast", "temperature", "tint", "highlights", "shadows"] {
+                        if paint["paintFilter"][adjustment]
+                            .as_f64()
+                            .is_some_and(|v| v != 0.0)
+                        {
+                            report(
+                                "imageAdjustment",
+                                format!("{field}.paintFilter.{adjustment}"),
+                                "skipped",
+                                "This image adjustment is not rendered",
+                            );
+                        }
+                    }
+                }
+                Some("GRADIENT_ANGULAR" | "GRADIENT_DIAMOND") => {
+                    report(
+                        "gradient",
+                        format!("{field}.type"),
+                        "approximate",
+                        "Angular and diamond gradients are rendered as radial gradients",
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    for (i, effect) in r["effects"].as_array().into_iter().flatten().enumerate() {
+        if visible(effect)
+            && effect["type"] == "BACKGROUND_BLUR"
+            && effect["radius"].as_f64().is_some_and(|v| v > 0.0)
+        {
+            report(
+                "backgroundBlur",
+                format!("effects[{i}]"),
+                "skipped",
+                "Background blur is not rendered",
+            );
+        }
+    }
+    out
+}
+
 fn size_of(r: &Json) -> Vec2 {
     Vec2 {
         x: r["size"]["x"].as_f64().unwrap_or(0.0),
@@ -1409,6 +1537,55 @@ pub fn render_bounds(n: &Json) -> Option<Rect> {
 mod tests {
     use super::*;
     use std::fs::File;
+
+    #[test]
+    fn diagnostics_report_only_active_paint_fallbacks() {
+        let tree = Tree {
+            nodes: Default::default(),
+            children: Default::default(),
+            blobs: Vec::new(),
+        };
+        let mut node = serde_json::json!({"id":"1:1", "type":"RECTANGLE", "_r": {
+            "fillPaints": [
+                {"type":"IMAGE", "imageScaleMode":"TILE", "paintFilter":{"contrast":0.2,"exposure":0.2,"vibrance":0.2,"tint":0}},
+                {"type":"GRADIENT_ANGULAR"},
+                {"type":"GRADIENT_DIAMOND", "visible":false},
+                {"type":"IMAGE", "opacity":0, "paintFilter":{"temperature":0.3}}
+            ], "effects":[{"type":"BACKGROUND_BLUR","radius":4}, {"type":"BACKGROUND_BLUR","radius":0}]
+        }});
+        let found = diagnostics(&tree, &node);
+        assert_eq!(found.len(), 4);
+        assert_eq!(found[0]["state"], "approximate");
+        assert_eq!(found[1]["field"], "fillPaints[0].paintFilter.contrast");
+        assert_eq!(found[3]["feature"], "backgroundBlur");
+        node["_r"]["fillGeometry"] = serde_json::json!([{"styleID":1}]);
+        node["_r"]["vectorStyles"] = serde_json::json!([
+            {"styleID":1,"fillPaints":[{"type":"SOLID"}]},
+            {"styleID":2,"fillPaints":[{"type":"GRADIENT_DIAMOND"}]}
+        ]);
+        node["_r"]["effects"] = serde_json::json!([]);
+        assert!(
+            diagnostics(&tree, &node).is_empty(),
+            "overridden and unused fills are not rendered"
+        );
+        node["type"] = serde_json::json!("TEXT");
+        node["_r"]["characterStyleIDs"] = serde_json::json!([1, 1]);
+        node["_r"]["glyphs"] = serde_json::json!([{"firstCharacter":0}, {"firstCharacter":1}]);
+        node["_r"]["styleOverrideTable"] = node["_r"]["vectorStyles"].clone();
+        assert!(diagnostics(&tree, &node).is_empty());
+        node["_r"]["styleOverrideTable"][0]["fillPaints"][0]["type"] =
+            serde_json::json!("GRADIENT_DIAMOND");
+        assert_eq!(
+            diagnostics(&tree, &node).len(),
+            1,
+            "one report per effective paint, not per glyph"
+        );
+        node["_r"]["truncationStartIndex"] = serde_json::json!(0);
+        assert!(
+            diagnostics(&tree, &node).is_empty(),
+            "truncated glyph styles are unused"
+        );
+    }
 
     #[test]
     fn preparation_selects_an_expanded_sublayer_and_only_loads_its_images() {

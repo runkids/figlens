@@ -109,6 +109,7 @@
     }
   },
   "unrouted": {
+    "wiki/semantics.md": "Field reference linked from fig-format.md and README.md; read when changing partial semantics or provenance.",
     "wiki/history/pi-workflow.md": "Historical milestone indexed in wiki/README.md; read only when explicitly revisiting this implementation."
   }
 }

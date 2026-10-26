@@ -112,6 +112,8 @@ test('unrelated snapshot edits preserve mappings but relevant structure and code
   const { flow, root, proposal, frames } = fixtureData;
   const { pending } = await flow.propose({ proposals: [proposal] });
   await flow.review(pending[0].id, 'approve');
+  frames['10:200'][0]._figlens = { semantics: { verification: 'not-compared-with-figma' } };
+  frames['10:200'][0].componentPropertyDefinitions = { Label: { type: 'TEXT', defaultValue: 'Hello' } };
   await writeFile(path.join(root, 'design.fig'), 'an unrelated frame changed');
   assert.equal((await flow.bindings()).items[0].status, 'approved');
   await writeFile(path.join(root, 'src/theme.css'), 'article { border-radius: 8px }');

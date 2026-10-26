@@ -1055,7 +1055,7 @@ if (typeof document !== 'undefined') {
     $('bundle').onclick = () => selected && confirmDownload(boot.snapshot ? 'Download snapshot bundle?' : 'Download scope bundle?',
         boot.snapshot
             ? `The bundle embedded for snapshot scope ${rootId}. Selecting a child changes the context, not this bundle.`
-            : `Exact scope ${label(selected)}: design JSON, reference PNG and original assets. Check missing-assets.json for warnings.`,
+            : `Exact scope ${label(selected)}: design JSON, reference PNG and original assets. Review context.md for bundle warnings and missing-assets.json for asset failures.`,
         'design-bundle.zip', downloadBundle);
     async function downloadBundle() {
         if (!selected) return;

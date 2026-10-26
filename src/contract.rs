@@ -183,7 +183,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
         ),
         "inspect" => (
             serde_json::json!({
-                "node": {"type": "object"},
+                "node": {"type": "object", "description": "Compact node with partial layout semantics and type-only property definitions; _figlens.semantics records source/verification. Definitions, definition evidence and _figlens.renderDiagnostics each have at most 20 entries per node; truncated includes omitted nodes or entries"},
                 "truncated": {"type": "boolean"},
                 "images": {"type": "object", "description": "optional source image evidence when images=true"},
             }),
@@ -206,7 +206,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "warnings": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "assets the bundle could not include; missing-assets.json has details",
+                    "description": "missing assets and known rendering limits; missing-assets.json contains only asset failures; design/nodes.json has per-node _figlens.renderDiagnostics",
                 },
             }),
             ["nodeId", "path", "warnings"].as_slice(),
