@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.7.2](https://github.com/runkids/figlens/compare/v0.7.1...v0.7.2) (2026-10-26)
+
+
+### New Features
+
+* compare stored component variants and apply text properties ([61614f8](https://github.com/runkids/figlens/commit/61614f8b8c9b79e4a0f3103430f8400fc7bd932d))
+* expose component state evidence and variant comparisons ([f875c0d](https://github.com/runkids/figlens/commit/f875c0df29089e1011c30c6e63e660c95a4608e5))
+* expose component variants and prototype evidence ([7ed5310](https://github.com/runkids/figlens/commit/7ed5310f1f5fbfa557a780ab1d7516a8e0c77671))
+* expose partial layout semantics and render diagnostics ([eed74be](https://github.com/runkids/figlens/commit/eed74bed7b23b76b41098a5f74c0a96a621a1200))
+* expose partial layout semantics and render diagnostics ([6702292](https://github.com/runkids/figlens/commit/67022926b8a8c6acefc8a6f3e17cb887721442ef))
+
+
+### Bug Fixes
+
+* compare stored left and top padding fields ([9fe6dc1](https://github.com/runkids/figlens/commit/9fe6dc118098721fbe113980a25952035aa504b6))
+* preserve text metadata and empty prototype status rows ([b1bf5b0](https://github.com/runkids/figlens/commit/b1bf5b0e6778cb160e902b1811f2ae3db72e29b8))
+* reject malformed component parent memberships ([a072da8](https://github.com/runkids/figlens/commit/a072da8b07d764b7c0d77be078acdd86810e1dfd))
+* reject malformed GUIDs in shared reference lookups ([e6ea189](https://github.com/runkids/figlens/commit/e6ea1898ba79bdd41a2ecbc29dfe0c357e78e5a4))
+
+
+### Performance
+
+* **render:** defer stroke geometry checks for diagnostics ([b87cafe](https://github.com/runkids/figlens/commit/b87cafec9f25fe1cf60c39852b433524aa7b1e5f))
+* **render:** skip unused pure-blur intermediates ([eb01fe3](https://github.com/runkids/figlens/commit/eb01fe35deb84a829b27a1197e2b123dd05d3121))
+* **render:** skip unused pure-blur intermediates ([798fe20](https://github.com/runkids/figlens/commit/798fe20343a790a44b53ceb8090b0e4e924af808))
+* skip unused parent definition preparation ([e96b907](https://github.com/runkids/figlens/commit/e96b9073b995450740add80061e89fb17b9d73c1))
+
 ## [0.7.1](https://github.com/runkids/figlens/compare/v0.7.0...v0.7.1) (2026-10-25)
 
 
