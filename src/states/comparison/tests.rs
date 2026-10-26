@@ -107,6 +107,64 @@ fn variant_comparison_keeps_root_changes_and_unpaired_descendant_multisets() {
 }
 
 #[test]
+fn left_and_top_padding_use_stored_fields_on_roots_and_descendants() {
+    for field in ["stackHorizontalPadding", "stackVerticalPadding"] {
+        for descendants in [false, true] {
+            let mut nodes = vec![
+                node(
+                    10,
+                    40,
+                    "SYMBOL",
+                    if descendants {
+                        vec![]
+                    } else {
+                        vec![(field, K::Float(8.0))]
+                    },
+                ),
+                node(
+                    11,
+                    40,
+                    "SYMBOL",
+                    if descendants {
+                        vec![]
+                    } else {
+                        vec![(field, K::Float(16.0))]
+                    },
+                ),
+            ];
+            if descendants {
+                nodes.push(node(70, 10, "FRAME", vec![(field, K::Float(8.0))]));
+                nodes.push(node(71, 11, "FRAME", vec![(field, K::Float(16.0))]));
+            }
+            let message = message(nodes);
+            let tree = Tree::new(&message);
+            let result = compare_variants(&tree, "0:10", "0:11", Path::new("test.fig")).unwrap();
+            assert_eq!(result["state"], "differences-recorded");
+            let changes = result[if descendants {
+                "collectionChanges"
+            } else {
+                "rootChanges"
+            }]
+            .as_array()
+            .unwrap();
+            let change = changes.iter().find(|c| c["field"] == field).unwrap();
+            if descendants {
+                assert_eq!(change["before"][0]["value"], 8.0);
+                assert_eq!(change["after"][0]["value"], 16.0);
+                assert_eq!(change["before"][0]["sources"][0]["sourceField"], field);
+                assert_eq!(change["after"][0]["sources"][0]["sourceField"], field);
+            } else {
+                assert_eq!(change["before"]["value"], 8.0);
+                assert_eq!(change["after"]["value"], 16.0);
+                assert_eq!(change["before"]["sourceField"], field);
+                assert_eq!(change["after"]["sourceField"], field);
+            }
+            assert_eq!(result["truncated"], false);
+        }
+    }
+}
+
+#[test]
 fn variant_comparison_refuses_instances_unrelated_frames_and_different_sets() {
     let message = message(vec![
         node(80, 0, "FRAME", vec![("isStateGroup", K::Bool(true))]),
