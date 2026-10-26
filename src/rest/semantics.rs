@@ -89,14 +89,16 @@ pub(super) fn resolve_definition<'a>(
 }
 
 pub(super) fn definitions(tree: &Tree, id: &str, k: &Obj, out: &mut Obj, evidence: &mut Json) {
-    let parent_id = parent_id(tree, id);
+    let list = at(k, "componentPropDefs").as_array();
+    let parent_id = list
+        .filter(|definitions| !definitions.is_empty())
+        .and_then(|_| parent_id(tree, id));
     let parent = parent_id.as_ref().map(|id| to_json(tree.nodes[id]));
     let parents = parent
         .iter()
         .flat_map(|p| p["componentPropDefs"].as_array().into_iter().flatten())
         .filter_map(|d| Some((guid(&d["id"])?, d)))
         .collect::<HashMap<_, _>>();
-    let list = at(k, "componentPropDefs").as_array();
     let mut declarations = Obj::new();
     let mut entries = Vec::new();
     for (index, own) in list.into_iter().flatten().enumerate() {
@@ -300,6 +302,47 @@ mod tests {
                 &mut out,
             );
             assert_eq!(out.contains_key("layoutAlign"), align != "NEW");
+        }
+    }
+
+    #[test]
+    fn definitions_preserve_missing_empty_and_malformed_metadata() {
+        let raw = json!([
+            {"type":"FRAME","isStateGroup":true,"componentPropDefs":[{"id":{"sessionID":4,"localID":0},"name":"Label","type":"TEXT","value":{"textValue":"parent"}}]},
+            {"type":"SYMBOL","parentIndex":{"guid":{"sessionID":1,"localID":0}}}
+        ]);
+        let values: Vec<_> = raw
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| kiwi(v, ""))
+            .collect();
+        let tree = Tree {
+            nodes: values
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (format!("1:{i}"), v))
+                .collect(),
+            children: HashMap::new(),
+            blobs: Vec::new(),
+        };
+        for (input, state) in [
+            (json!({}), "absent"),
+            (json!({"componentPropDefs":[]}), "recorded"),
+            (json!({"componentPropDefs":null}), "unsupported"),
+            (json!({"componentPropDefs":{}}), "unsupported"),
+        ] {
+            let mut out = object(json!({"name":"Child"}));
+            let mut evidence = json!({"verification":"not-compared-with-figma"});
+            definitions(&tree, "1:1", &object(input), &mut out, &mut evidence);
+            assert_eq!(out, object(json!({"name":"Child"})));
+            assert_eq!(
+                evidence,
+                json!({
+                    "verification":"not-compared-with-figma",
+                    "componentPropertyDefinitions":{"source":"componentPropDefs","state":state}
+                })
+            );
         }
     }
 
