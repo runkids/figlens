@@ -37,7 +37,7 @@ docker compose run --rm dev cargo run --release -- export samples/design.fig 12:
 
 ## Verified format rules (checked against the plugin)
 
-Each rule below is backed by the sweep.
+Rules marked pending have local evidence; others are sweep-backed.
 
 - `canvas.fig`: `fig-kiwi` magic, u32 LE version (106), then u32-LE-length chunks: 0 = binary schema, 1 = `Message`. zstd or raw deflate.
 - Node id = `guid` `sessionID:localID` = Figma URL `node-id` with `-` → `:`. `4294967295:4294967295` (u32::MAX twice) means no guid, e.g. an unset `overrideKey`; `guid_key` returns none for it, since using it as a path element gives unrelated instance sublayers one id and the tree then contains itself (Real Estate App UI Kit, 7 frames overflowed the stack).
@@ -46,7 +46,7 @@ Each rule below is backed by the sweep.
 - COMPONENT_SET is a FRAME with `isStateGroup`.
 - Untrusted input: `Tree::new` drops every node whose parent chain loops (and what hangs under it; about 5% of opening a large file), expansion skips an id it already produced and a component that contains itself, `subtree` visits each id once, `context.md` quotes design-file strings as one-line code spans, renders allow only known blend modes and resolve no `<image>` href outside `data:` URLs. A crafted `.fig` (its schema, and so its enum names, ship inside it) must not recurse forever or reach the disk.
 - `symbolData.symbolOverrides` and `derivedSymbolData` use the same guidPath keys; nested instances carry their own, relative to themselves. Merge **field by field** (outer wins per field): one list can hold several entries for the same path (e.g. a swap, then a size), and an outer derived entry may hold only geometry while the nested one holds the size. Whole-entry merging was the cause of what looked like footer design edits and an auto-layout gap (button 216→336); Figma does store those sizes.
-- Swaps come from `overriddenSymbolID` or a `componentPropAssignments` SYMBOL_ID value bound through the node's `componentPropRefs`; BOOLEAN assignments drive visibility the same way. A swapped instance takes the new main's name (a variant takes its component set's name) unless explicitly renamed, and the new main's visibility.
+- `componentPropRefs` binds assignments: SYMBOL_ID swaps instances, BOOLEAN sets visibility, TEXT_DATA fills `textData` unless directly overridden (calibration pending). `overriddenSymbolID` also swaps. Swaps take the new main's visibility and name (a variant's set name), unless explicitly renamed.
 - `derivedSymbolData` stores sizes only sometimes: SCALE/STRETCH constraint resizes must be computed (groups and boolean ops pass the outer resize through to their children), except for children in auto-layout flow (only ABSOLUTE-positioned ones follow constraints).
 - Variable-bound paints of instance sublayers must be resolved in the nearest explicit `variableModeBySetMap` mode (else the set's first mode); direct nodes' cached colors are already right. Library variable values are present in the `.fig`.
 

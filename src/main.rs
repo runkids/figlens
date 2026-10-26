@@ -27,11 +27,12 @@ usage:
   figlens find <file.fig> <query> [--type TYPE] [--node ID] [--limit N]
                                              search stored layer names and text, case-insensitive;
                                              default 20 results (1-200), with paths and truncation flag
-  figlens inspect <file.fig> <node> [--depth N] [--images] [--states]
+  figlens inspect <file.fig> <node> [--depth N] [--images] [--states] [--compare-variant ID]
                                              compact layout/text summary, instances expanded;
                                              depth 1 (0-10), at most 200 nodes, 200 characters per text;
                                              --images adds source pixels/bytes and source-pixel crop rectangles;
-                                             --states lists related component variants and evidence gaps
+                                             --states lists related component variants and evidence gaps;
+                                             --compare-variant compares two stored variants in the same set
   figlens nodes <file.fig> <node>              print a frame as Figma REST-shaped nodes.json
                                              (instances expanded, fills/text/auto-layout included)
   figlens variables <file.fig> [node]          print the variables a frame binds (design/variables.json);

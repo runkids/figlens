@@ -1,17 +1,17 @@
 use super::*;
 
-fn obj(fields: Vec<(&'static str, Kiwi<'static>)>) -> Kiwi<'static> {
+pub(super) fn obj(fields: Vec<(&'static str, Kiwi<'static>)>) -> Kiwi<'static> {
     Kiwi::Object("Test", fields.into_iter().collect())
 }
 
-fn guid(id: u32) -> Kiwi<'static> {
+pub(super) fn guid(id: u32) -> Kiwi<'static> {
     obj(vec![
         ("sessionID", Kiwi::UInt(0)),
         ("localID", Kiwi::UInt(id)),
     ])
 }
 
-fn node(
+pub(super) fn node(
     id: u32,
     parent: u32,
     kind: &'static str,
@@ -37,7 +37,7 @@ fn node(
     obj(fields)
 }
 
-fn instance(id: u32, parent: u32, main: u32) -> Kiwi<'static> {
+pub(super) fn instance(id: u32, parent: u32, main: u32) -> Kiwi<'static> {
     node(
         id,
         parent,
@@ -53,7 +53,7 @@ fn spec(id: u32, value: &str) -> Kiwi<'static> {
     ])
 }
 
-fn message(mut extra: Vec<Kiwi<'static>>) -> Kiwi<'static> {
+pub(super) fn message(mut extra: Vec<Kiwi<'static>>) -> Kiwi<'static> {
     let mut nodes = vec![
         node(1, 0, "FRAME", vec![]),
         instance(2, 1, 10),

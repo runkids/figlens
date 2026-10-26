@@ -245,7 +245,7 @@ fn nest(outer: &Patches, prefix: &str, inner: Patches) -> Patches {
     merged
 }
 
-/// Resolves visibility and instance-swap component properties within one instance.
+/// Resolves visibility, text and instance-swap component properties within one instance.
 fn bind_properties(
     tree: &Tree,
     symbol: &str,
@@ -299,6 +299,20 @@ fn bind_properties(
                     .and_then(|v| v.get("value"))
                     .or_else(|| assignment.get("value"));
                 let patch = overrides.entry(key.clone()).or_default();
+                if enum_name(reference, "componentPropNodeField") == Some("TEXT_DATA")
+                    && !patch.props.contains_key("textData")
+                    && let Some(text) = [&assignment["varValue"]["value"], &assignment["value"]]
+                        .into_iter()
+                        .flat_map(|v| [&v["textDataValue"], &v["textValue"]])
+                        .find(|v| v["characters"].is_string() || v.is_string())
+                {
+                    let text = if text.is_string() {
+                        serde_json::json!({ "characters": text })
+                    } else {
+                        text.clone()
+                    };
+                    patch.props.insert("textData".into(), text);
+                }
                 if enum_name(reference, "componentPropNodeField") == Some("VISIBLE")
                     && patch.visible.is_none()
                     && let Some(visible) = value.and_then(|v| v["boolValue"].as_bool())
@@ -947,6 +961,123 @@ mod tests {
             Some(&Json::Bool(false))
         );
         assert!(!ex.nodes.contains_key("Iinst;leaf"));
+    }
+
+    #[test]
+    fn text_component_properties_reach_expanded_children_without_replacing_overrides() {
+        for (form, text, explicit) in [
+            (0, "查看全部", false),
+            (1, "Plain label", false),
+            (2, "String label", false),
+            (3, "Fallback label", false),
+            (0, "", false),
+            (0, "Property label", true),
+        ] {
+            let text_data =
+                |characters: &str| obj(vec![("characters", Value::String(characters.into()))]);
+            let assignment = |characters: &str| {
+                let value = obj(vec![(
+                    if form == 0 {
+                        "textDataValue"
+                    } else {
+                        "textValue"
+                    },
+                    if form == 2 {
+                        Value::String(characters.into())
+                    } else {
+                        text_data(characters)
+                    },
+                )]);
+                let mut fields = vec![
+                    ("defID", guid(2, 1)),
+                    if form == 0 {
+                        ("varValue", obj(vec![("value", value)]))
+                    } else {
+                        ("value", value)
+                    },
+                ];
+                if form == 3 {
+                    fields.push(("varValue", obj(vec![("value", obj(vec![]))])));
+                }
+                Value::Array(vec![obj(fields)])
+            };
+            let inst = obj(vec![
+                ("type", Value::Enum("NodeType", "INSTANCE")),
+                (
+                    "symbolData",
+                    obj(vec![
+                        ("symbolID", guid(1, 1)),
+                        (
+                            "symbolOverrides",
+                            Value::Array(vec![obj(vec![
+                                (
+                                    "guidPath",
+                                    obj(vec![("guids", Value::Array(vec![guid(1, 3)]))]),
+                                ),
+                                ("componentPropAssignments", assignment(text)),
+                            ])]),
+                        ),
+                    ]),
+                ),
+                ("componentPropAssignments", assignment(text)),
+            ]);
+            let main = obj(vec![]);
+            let nested = obj(vec![
+                ("type", Value::Enum("NodeType", "INSTANCE")),
+                (
+                    "symbolData",
+                    obj(vec![
+                        ("symbolID", guid(1, 2)),
+                        (
+                            "symbolOverrides",
+                            Value::Array(if explicit {
+                                vec![obj(vec![
+                                    (
+                                        "guidPath",
+                                        obj(vec![("guids", Value::Array(vec![guid(1, 4)]))]),
+                                    ),
+                                    ("textData", text_data("Explicit label")),
+                                ])]
+                            } else {
+                                vec![]
+                            }),
+                        ),
+                    ]),
+                ),
+                ("componentPropAssignments", assignment("Nested default")),
+            ]);
+            let child = obj(vec![
+                ("type", Value::Enum("NodeType", "TEXT")),
+                ("textData", text_data("按钮文字")),
+                (
+                    "componentPropRefs",
+                    Value::Array(vec![obj(vec![
+                        ("defID", guid(2, 1)),
+                        ("componentPropNodeField", Value::Enum("Field", "TEXT_DATA")),
+                    ])]),
+                ),
+            ]);
+            let tree = Tree {
+                nodes: HashMap::from([
+                    ("inst".into(), &inst),
+                    ("1:1".into(), &main),
+                    ("1:2".into(), &main),
+                    ("1:3".into(), &nested),
+                    ("1:4".into(), &child),
+                ]),
+                children: HashMap::from([
+                    ("1:1".into(), vec!["1:4".into(), "1:3".into()]),
+                    ("1:2".into(), vec!["1:4".into()]),
+                ]),
+                blobs: Vec::new(),
+            };
+            let ex = expand_instances(&tree, "inst");
+            assert_eq!(ex.nodes["Iinst;1:4"].props["textData"]["characters"], text);
+            assert_eq!(
+                ex.nodes["Iinst;1:3;1:4"].props["textData"]["characters"],
+                if explicit { "Explicit label" } else { text }
+            );
+        }
     }
 
     #[test]

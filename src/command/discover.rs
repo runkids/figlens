@@ -95,10 +95,14 @@ pub fn inspect(
     fig: &Path,
     images: bool,
     states: bool,
+    compare_variant: Option<&str>,
 ) -> Result<Value, Box<dyn Error>> {
     if depth > 10 {
         return Err("--depth takes 0-10 for inspect".into());
     }
+    let comparison = compare_variant
+        .map(|other| figlens::states::compare_variants(tree, id, other, fig))
+        .transpose()?;
     let doc = if images {
         figlens::rest::resolve_render_nodes(tree, id)?
     } else {
@@ -110,6 +114,9 @@ pub fn inspect(
     }
     if states {
         result["states"] = figlens::states::inspect(tree, &doc["document"], fig);
+    }
+    if let Some(comparison) = comparison {
+        result["variantComparison"] = comparison;
     }
     Ok(result)
 }
@@ -419,11 +426,11 @@ mod tests {
         let message = message();
         let tree = Tree::new(&message);
         let full = figlens::rest::nodes(&tree, "0:2");
-        let shallow = inspect(&tree, "0:2", 0, Path::new("test.fig"), false, false).unwrap();
+        let shallow = inspect(&tree, "0:2", 0, Path::new("test.fig"), false, false, None).unwrap();
         assert_eq!(shallow["node"]["childCount"], 2);
         assert!(shallow["node"].get("children").is_none());
         assert_eq!(shallow["truncated"], true);
-        let summary = inspect(&tree, "0:2", 2, Path::new("test.fig"), false, false).unwrap();
+        let summary = inspect(&tree, "0:2", 2, Path::new("test.fig"), false, false, None).unwrap();
         assert_eq!(summary["truncated"], false);
         assert_eq!(
             summary["node"]["absoluteBoundingBox"],

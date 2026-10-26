@@ -1,12 +1,27 @@
 # Pull requests and AI review
 
-Use this for reviewing a change, opening a PR or handling review feedback. An authorized PR workflow includes its in-scope fixes, commits, pushes and review requests. Merge and release still need their own authorization.
+Use this when delivering a feature or optimization, reviewing a change, opening a PR or handling review feedback. An authorized PR workflow includes its in-scope fixes, commits, pushes and review requests. Merge and release still need their own authorization.
+
+## CLI, MCP and Pi coverage
+
+For every feature or optimization, check all three interfaces before calling the work complete. Trace the actual path and decide whether each needs a change, is already covered by shared code, or is not applicable. Keep this assessment scoped to the requested behavior.
+
+| Interface | Check |
+|---|---|
+| CLI | `src/main.rs` usage and orchestration, `src/command.rs` parsing/execution, defaults, errors and output |
+| MCP | `src/contract.rs` discovery, input/output schemas and preflight; `src/mcp.rs` routing, permissions and warm-process behavior |
+| Pi | `pi/index.ts` MCP registration and tools/commands, `pi/workflow.mjs` and `pi/viewer.mjs` consumers, shared skill guidance, and the actual launcher/package used |
+
+1. Complete affected behavior, callers, contracts, help, wiki/README locales, shared skill and relevant tests in the same change. Optimizations need the same sweep: they can change output, limits, caching or long-running behavior even when no option is added.
+2. Reuse shared paths. A new inspect argument can require CLI parsing/help, MCP schemas and skill guidance while Pi's adapter already discovers it from the server. Verify that path and record why no adapter edit is needed; avoid adding a duplicate Pi command or configuration just to touch every interface.
+3. Run checks proportional to the affected paths. Where CLI/MCP share results, verify equivalent inputs preserve the same values, provenance, unknowns and truncation. Check Pi-specific consumers or packaging when affected; edit maintained sources, with generated copies produced by `scripts/prepare-npm.cjs`. A source/schema check does not establish installed Pi runtime acceptance. Report missing runtime or optimization measurements explicitly.
+4. In the handoff or PR, give a short outcome for CLI, MCP and Pi: what changed, or the evidence that no change was needed, plus the checks actually run. Do not infer that an installed client uses new behavior without checking its binary/server version and reload path.
 
 ## Before opening a PR
 
 1. Refresh the base and pin the diff. Preserve unrelated edits and exclude private designs and exports.
 2. Simplify the change, then review correctness, repository rules, the requested behavior, consumers and cleanup. The `figlens-code-review` skill adapts these passes to the available tools. Verify each finding against actual code or execution before fixing it.
-3. Sweep every consumer of a changed concept: CLI/MCP contracts, implementation, packaging, tests, docs and translations. Fix related findings together, run the relevant checks and stage only task-owned files.
+3. Apply the CLI/MCP/Pi coverage check above to every changed concept. Fix related findings together, run the relevant checks and stage only task-owned files.
 4. Describe the final behavior, executed checks and remaining limitations in English. Use a draft for unfinished code or an explicit request; documented model-quality limitations alone do not require a draft.
 
 ## Follow the PR through review

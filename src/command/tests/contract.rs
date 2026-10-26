@@ -177,6 +177,34 @@ fn inspect_states_is_an_optional_strict_boolean() {
 }
 
 #[test]
+fn compare_variant_is_an_optional_nonempty_string() {
+    let base = json!({"file":"absent.fig","node":"0:10"});
+    assert!(
+        check("inspect", base.clone())
+            .unwrap()
+            .string("compareVariant")
+            .is_none()
+    );
+    for value in [
+        json!("0:11"),
+        json!(""),
+        json!(true),
+        json!(42),
+        json!([]),
+        Value::Null,
+    ] {
+        let mut args = base.clone();
+        args["compareVariant"] = value.clone();
+        assert_eq!(
+            check("inspect", args).is_ok(),
+            value.as_str().is_some_and(|s| !s.is_empty())
+        );
+    }
+    let schema = contract::output_schema("inspect").unwrap();
+    assert_eq!(schema["properties"]["variantComparison"]["type"], "object");
+}
+
+#[test]
 fn bundle_states_is_an_optional_strict_boolean() {
     let base = json!({"file":"absent.fig", "node":"0:1", "out":"out.zip"});
     assert_eq!(

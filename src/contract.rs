@@ -105,6 +105,12 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 false,
                 "include bounded variants and prototype field evidence with exact sources/unknowns; retains instance overrides, infers no business conditions and renders no other variants",
             ),
+            (
+                "compareVariant",
+                "string",
+                false,
+                "compare node with this other stored variant in the same component set; adds bounded raw-field and descendant-multiset differences, exact sources and unknown pairing; no alternate rendering or business inference",
+            ),
         ],
     ),
     (
@@ -199,6 +205,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "truncated": {"type": "boolean"},
                 "images": {"type": "object", "description": "optional source image evidence when images=true"},
                 "states": {"type": "object", "description": "optional variants and prototype field evidence when states=true; independent truncation, source file, node/override provenance and unknown markers; no inferred business logic"},
+                "variantComparison": {"type":"object", "description":"optional same-set definition comparison when compareVariant is supplied; raw fields, descendant value multisets, unpaired nodes, unknowns and independent truncation; not a pixel comparison"},
             }),
             ["node", "truncated"].as_slice(),
         ),
@@ -265,7 +272,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
     if let Some(value) = default(tool, key).filter(|_| (tool, key) != ("tree", "depth")) {
         p["default"] = value;
     }
-    if key == "file" || key == "out" || key == "query" {
+    if matches!(key, "file" | "out" | "query" | "compareVariant") {
         p["minLength"] = json!(1);
     }
     if key == "query" {

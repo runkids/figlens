@@ -209,7 +209,7 @@ skillshare sync && skillshare sync mcp --global
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | Node-IDs, Typen und Namen; eingerückter Text oder verschachteltes JSON |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Suche über Layer-Namen und Text ohne Beachtung der Groß-/Kleinschreibung; Pfade, Größen und Vorschauen. Standardmäßig 20 Ergebnisse (1-200) |
-| `inspect <file> <node> [--depth N] [--images] [--states]` | Kompakte Zusammenfassung des expandierten Layouts/Texts, höchstens 200 Nodes. `--images` ergänzt Bitmap-Abmessungen und Crop-Footprints |
+| `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | Kompakte Zusammenfassung des expandierten Layouts/Texts, höchstens 200 Nodes. `--images` ergänzt Bitmap-Abmessungen und Crop-Footprints |
 | `nodes <file> <node>` | JSON im REST-Format: expandierte Instanzen und Overrides, Auto-Layout, Textstile, Füllungen, Effekte, gebundene Variablen, Komponenten-Eigenschaften, Render-Bounds |
 | `variables <file> [node]` | Die gebundenen Variablen eines Frames; ohne Node alle lokalen Variablen |
 | `bundle <file> <node> <out.zip> [--states]` | Ein Design-Bundle für einen Frame; gibt `{nodeId, path, warnings}` aus |
@@ -222,6 +222,8 @@ skillshare sync && skillshare sync mcp --global
 | `update` | Ersetzt das Binary durch das neueste Release |
 
 Für zugehörige Komponentenvarianten `inspect --states` oder `bundle --states` verwenden (MCP: `states: true`, standardmäßig false; keine Konfigurationsänderung). Die Nachweise behalten Quellen-, Unbekannt- und Kürzungsmarkierungen. Bundles ergänzen `design/states.json` und eine Zusammenfassung in `context.md`. Umfang und Grenzen stehen unter [Zustandsnachweise](wiki/states.md).
+
+Zwei Varianten desselben Component-Sets mit `inspect <file> <variantA> --compare-variant <variantB>` vergleichen (MCP `compareVariant`). `variantComparison` meldet Unterschiede gespeicherter Felder und Wertemengen samt Quell-IDs und unbekannten Werten, ohne Kindknoten einander zuzuordnen. Siehe [Vergleichsgrenzen](wiki/states.md#compare-two-variants).
 
 Ein Node-Argument akzeptiert `12:345`, `12-345` oder eine Figma-URL mit `?node-id=`. `<file>` kann auch `gs://bucket/object` sein, heruntergeladen mit deinem `gcloud`-Login und im Cache abgelegt. Der [GCS-Snapshot-Leitfaden](wiki/gcs.md) beschreibt die Übergabe über ein festes Objekt, nötige Zugriffsrechte und Grenzen der Aktualisierung. Jeder CLI-Aufruf decodiert die Datei; MCP verwendet nur die zuletzt gelesene, unveränderte lokale Datei erneut. Remote-Aufrufe parsen erneut. Führe `figlens --help` für die Nutzung aus.
 

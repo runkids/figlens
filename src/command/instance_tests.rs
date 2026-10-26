@@ -1093,6 +1093,54 @@ fn truncated_prototype_actions_match_cli_mcp_bundle_and_snapshot() {
 }
 
 #[test]
+fn variant_comparison_cli_and_mcp_match_without_changing_existing_outputs() {
+    let f = Fixture::build(true, true);
+    let normal: Value =
+        serde_json::from_str(&f.cli("inspect", &["0:10", "--states", "--images"]).unwrap())
+            .unwrap();
+    assert!(normal.get("variantComparison").is_none());
+    let cli: Value = serde_json::from_str(
+        &f.cli(
+            "inspect",
+            &["0:10", "--states", "--images", "--compare-variant", "0-41"],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mcp=f.tool("inspect",json!({"node":"0:10","states":true,"images":true,"compareVariant":"https://www.figma.com/design/Key/Test?node-id=0-41"}));
+    assert_eq!(mcp["isError"], false, "{mcp}");
+    assert_eq!(mcp["structuredContent"], cli);
+    assert_eq!(cli["variantComparison"]["leftNodeId"], "0:10");
+    assert_eq!(cli["variantComparison"]["rightNodeId"], "0:41");
+    assert_eq!(cli["variantComparison"]["componentSetId"], "0:40");
+    let mut original = cli.clone();
+    original
+        .as_object_mut()
+        .unwrap()
+        .remove("variantComparison");
+    assert_eq!(original, normal);
+    let shallow: Value = serde_json::from_str(
+        &f.cli(
+            "inspect",
+            &["0:10", "--depth", "0", "--compare-variant", "0:41"],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(shallow["variantComparison"], cli["variantComparison"]);
+    for id in ["0:2", "0:42", "0:20", "0:10", "9:9", "I0:2;0:14"] {
+        assert!(
+            f.cli("inspect", &["0:10", "--compare-variant", id])
+                .is_err(),
+            "{id}"
+        );
+        let reply = f.tool("inspect", json!({"node":"0:10","compareVariant":id}));
+        assert_eq!(reply["isError"], true, "{id}: {reply}");
+    }
+    assert!(f.cli("inspect", &["0:10", "--compare-variant"]).is_err());
+}
+
+#[test]
 fn emitted_instance_ids_select_the_same_structure_assets_and_pixels() {
     let f = Fixture::new();
     let found = f.tool("find", json!({"query": "Screen"}));

@@ -84,7 +84,7 @@
       ]
     },
     "review": {
-      "description": "Review changes, create a PR and follow up on AI review and CI.",
+      "description": "Deliver features/optimizations across CLI, MCP and Pi; review changes and follow up on PR reviews and CI.",
       "sources": [
         {
           "path": "wiki/review.md"

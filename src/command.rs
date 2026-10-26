@@ -36,6 +36,7 @@ pub enum Command {
         depth: usize,
         images: bool,
         states: bool,
+        compare_variant: Option<String>,
     },
     Variables(Option<String>),
     Bundle {
@@ -167,6 +168,7 @@ impl Command {
             "inspect" => {
                 let node = node()?;
                 let (mut depth, mut images, mut states) = (1, false, false);
+                let mut compare_variant = None;
                 let mut rest = args[1..].iter();
                 while let Some(flag) = rest.next() {
                     match flag.as_str() {
@@ -175,6 +177,13 @@ impl Command {
                         }
                         "--images" => images = true,
                         "--states" => states = true,
+                        "--compare-variant" => {
+                            compare_variant = Some(
+                                rest.next()
+                                    .ok_or("--compare-variant needs a node ID")?
+                                    .clone(),
+                            )
+                        }
                         _ => return Err(USAGE.into()),
                     }
                 }
@@ -183,6 +192,7 @@ impl Command {
                     depth,
                     images,
                     states,
+                    compare_variant,
                 }
             }
             "variables" => Self::Variables(args.first().cloned()),
@@ -267,6 +277,7 @@ impl Command {
                 depth: call.argument("depth").as_u64().unwrap() as usize,
                 images: call.argument("images") == true,
                 states: call.argument("states") == true,
+                compare_variant: string("compareVariant"),
             },
             "variables" => Self::Variables(string("node")),
             "bundle" => {
@@ -344,9 +355,19 @@ impl Command {
                 depth,
                 images,
                 states,
+                compare_variant,
             } => {
                 let id = normalize_id(&node);
-                compact(discover::inspect(tree, &id, depth, fig, images, states)?)
+                let compare_variant = compare_variant.as_deref().map(normalize_id);
+                compact(discover::inspect(
+                    tree,
+                    &id,
+                    depth,
+                    fig,
+                    images,
+                    states,
+                    compare_variant.as_deref(),
+                )?)
             }
             Self::Variables(node) => {
                 let doc = match node {

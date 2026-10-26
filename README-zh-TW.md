@@ -209,7 +209,7 @@ skillshare sync && skillshare sync mcp --global
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | 節點 id、類型與名稱；縮排文字或巢狀 JSON |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 不分大小寫搜尋圖層名稱與文字；路徑、尺寸與預覽。預設 20 筆結果（1-200） |
-| `inspect <file> <node> [--depth N] [--images] [--states]` | 精簡的展開後排版/文字摘要，最多 200 個節點。`--images` 會加上點陣圖尺寸與裁切範圍 |
+| `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | 精簡的展開後排版/文字摘要，最多 200 個節點。`--images` 會加上點陣圖尺寸與裁切範圍 |
 | `nodes <file> <node>` | REST 格式的 JSON：展開後的 instance 與 override、auto-layout、文字樣式、填色、效果、綁定的 variables、元件屬性、渲染邊界 |
 | `variables <file> [node]` | frame 綁定的 variables；未指定節點時，列出所有本機 variables |
 | `bundle <file> <node> <out.zip> [--states]` | 單一 frame 的設計 bundle；輸出 `{nodeId, path, warnings}` |
@@ -222,6 +222,8 @@ skillshare sync && skillshare sync mcp --global
 | `update` | 將執行檔換成最新發行版 |
 
 需要相關元件 variants 時，使用 `inspect --states` 或 `bundle --states`（MCP 傳入 `states: true`，預設 false；不需修改設定）。證據保留來源、未知與截斷標記。Bundle 會新增 `design/states.json` 與 `context.md` 摘要。範圍及限制請見[狀態證據](wiki/states.md)。
+
+比較同一 component set 的兩個 variants：`inspect <file> <variantA> --compare-variant <variantB>`（MCP `compareVariant`）。`variantComparison` 列出原始欄位及值集合差異，保留來源與未知標記；子節點不猜配對。詳見[比較限制](wiki/states.md#compare-two-variants)。
 
 node 引數可接受 `12:345`、`12-345`，或帶有 `?node-id=` 的 Figma URL。`<file>` 也可以是 `gs://bucket/object`，會用你的 `gcloud` 登入下載並快取。固定 object 交接、所需存取權限與更新限制，請參閱 [GCS 快照操作說明](wiki/gcs.md)。每次 CLI 呼叫都會解碼檔案；MCP 只重用最後讀取且未變更的本機檔案，遠端輸入仍會重新解析。執行 `figlens --help` 查看用法。
 

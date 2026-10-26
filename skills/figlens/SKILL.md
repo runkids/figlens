@@ -55,6 +55,8 @@ For a question about layout, typography or copy, start with `figlens inspect <fi
 
 When the user asks for related component states, add `--states` to `inspect` or `bundle` (including batch bundles); over MCP pass `states: true` on those tools. It defaults to false and needs no MCP configuration change. Keep `source.file` with every returned ID. Check each relationship, property support state, prototype inheritance/precedence, hidden coverage and truncation before describing behavior. `actionsTruncated: true` means omitted actions, even if the projected list is empty. Bundles include `design/states.json` and a bounded `context.md` summary; other variants' structures/assets require a separate inspect on the same source file. Names and prototype links do not establish business conditions. See [state evidence](https://github.com/runkids/figlens/blob/main/wiki/states.md) for scope and limits.
 
+When the user asks how two variants differ, inspect the first definition with `--compare-variant <other-id>` (MCP `compareVariant`). Both must belong to the same component set. Read `variantComparison.rootChanges`, descendant `collectionChanges`, `unpairedNodes`, `unknownFields` and its independent truncation before describing differences. These are stored fields/value multisets, not paired descendant changes, alternate instance renderings or pixel fidelity; use returned source IDs for further inspection.
+
 ## Link back to Figma
 
 When referring to a specific frame or node in an answer or design document, link its actual name to its Figma location. Use ids read from the `.fig`, and include the page/frame path when names are ambiguous.
