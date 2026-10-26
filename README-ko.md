@@ -209,17 +209,21 @@ skillshare sync && skillshare sync mcp --global
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | 노드 ID, 유형, 이름. 들여쓰기 텍스트 또는 중첩 JSON |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 대소문자 구분 없이 레이어 이름과 텍스트 검색. 경로, 크기, 미리보기. 기본 20개(1-200) |
-| `inspect <file> <node> [--depth N] [--images]` | 펼쳐진 간결한 레이아웃/텍스트 요약, 최대 200노드. `--images`는 비트맵 크기와 크롭 범위를 추가 |
+| `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | 펼쳐진 간결한 레이아웃/텍스트 요약, 최대 200노드. `--images`는 비트맵 크기와 크롭 범위를 추가 |
 | `nodes <file> <node>` | REST 형태 JSON: 펼쳐진 인스턴스와 재정의, 자동 레이아웃, 텍스트 스타일, 채우기, 효과, 연결 변수, 컴포넌트 속성, 렌더링 경계 |
 | `variables <file> [node]` | frame에 연결된 변수. 노드 없이 실행하면 모든 로컬 변수 |
-| `bundle <file> <node> <out.zip>` | 한 frame의 디자인 bundle. `{nodeId, path, warnings}` 출력 |
-| `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | 한 번 디코딩해 여러 bundle을 병렬 생성 |
+| `bundle <file> <node> <out.zip> [--states]` | 한 frame의 디자인 bundle. `{nodeId, path, warnings}` 출력 |
+| `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | 한 번 디코딩해 여러 bundle을 병렬 생성 |
 | `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP, AVIF. `--max-kb`는 크기에 맞을 때까지 손실 품질을 낮춤 |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 로컬 읽기 전용 viewer. `--out`은 독립 오프라인 스냅샷 생성 |
 | `compare <file> <nodes.json> <node>` | 같은 frame의 REST 내보내기와 차이 비교 |
 | `node <file> <node>` | 원시 `.fig` 노드 하나 |
 | `mcp` | stdio를 사용하는 로컬 MCP 서버 |
 | `update` | 최신 릴리스로 바이너리 교체 |
+
+관련 컴포넌트 variants는 `inspect --states` 또는 `bundle --states`로 확인합니다(MCP는 `states: true`, 기본값 false, 설정 변경 불필요). 근거에는 출처, 알 수 없는 값, 생략 표시가 유지됩니다. Bundle에는 `design/states.json`과 `context.md` 요약이 추가됩니다. 범위와 제한은 [상태 근거](wiki/states.md)를 참조하세요.
+
+같은 component set의 두 variants는 `inspect <file> <variantA> --compare-variant <variantB>`(MCP `compareVariant`)로 비교합니다. `variantComparison`은 저장된 필드와 값 집합의 차이, 출처 ID, 알 수 없는 항목을 반환하며 자식 노드의 대응 관계는 추측하지 않습니다. [비교 제한](wiki/states.md#compare-two-variants)을 참조하세요.
 
 노드 인수는 `12:345`, `12-345`, `?node-id=`가 있는 Figma URL을 받을 수 있습니다. `<file>`에 `gs://bucket/object`도 지정할 수 있으며 `gcloud` 로그인으로 다운로드하고 캐시합니다. 고정 객체를 통한 전달, 필요한 접근 권한과 갱신 제한은 [GCS 스냅샷 가이드](wiki/gcs.md)를 참고하세요. CLI 호출은 매번 파일을 디코딩합니다. MCP는 마지막으로 읽은 변경 없는 로컬 파일만 재사용합니다. 원격 입력은 다시 파싱합니다. 사용법은 `figlens --help`를 실행하세요.
 

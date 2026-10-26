@@ -6,6 +6,10 @@ Use this topic for MCP instructions, tool discovery and built-in workflow guidan
 
 `src/mcp.rs` serves stdio JSON-RPC; `src/main.rs` configures roots and starts it. Initialization returns a short intent router: resolve recognizable screens through `find`/`tree`, read compact values with `inspect`, full style/mask/component data with `nodes`, tokens with `variables`, and pixels/assets with `export`. `bundle` writes a scoped design handoff. Ordinary questions and exports use those tools directly.
 
+`inspect` and `bundle` accept optional `states: true` (CLI `--states`) for a bounded, source-scoped list of explicitly related component variants. The agent supplies this per-call argument when related states are requested; no MCP configuration change is needed. Inspect adds `states`; bundle adds `design/states.json`, a manifest pointer and a bounded context summary. Independent inventory truncation/coverage must be checked; supported prototype fields retain exact sources and unknown markers, without business inference. Both reuse their selected effective subtree and do not render alternate variants. See [related variants](states.md) for evidence, batch usage and limits.
+
+For two selected variants, `inspect` accepts `compareVariant: "other-node-id"` (CLI `--compare-variant ID`) and adds `variantComparison`. Both IDs must be stored component definitions in the same set. It compares bounded raw root fields and descendant value multisets, retains exact sources/unknowns and leaves descendants unpaired. It performs no alternate expansion/rendering and changes no bundle or preview controls. See [variant comparison](states.md#compare-two-variants).
+
 The `workflow` tool lets a model retrieve detailed guidance without a separate skill installation:
 
 | `topic` | Use when |

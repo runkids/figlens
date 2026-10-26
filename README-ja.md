@@ -209,17 +209,21 @@ skillshare sync && skillshare sync mcp --global
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | ノード ID、タイプ、名前。インデント付きテキストまたはネストした JSON |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | レイヤー名とテキストの大文字小文字を区別しない検索。パス、サイズ、プレビュー。デフォルト 20 件（1-200） |
-| `inspect <file> <node> [--depth N] [--images]` | 展開済みレイアウト/テキストのコンパクトな要約（最大 200 ノード）。`--images` でビットマップの寸法とクロップ範囲を追加 |
+| `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | 展開済みレイアウト/テキストのコンパクトな要約（最大 200 ノード）。`--images` でビットマップの寸法とクロップ範囲を追加 |
 | `nodes <file> <node>` | REST 形式の JSON：展開済みインスタンスとオーバーライド、auto-layout、テキストスタイル、フィル、エフェクト、バインドされた variables、コンポーネントプロパティ、レンダリング bounds |
 | `variables <file> [node]` | frame にバインドされた variables。node を省略すると、すべてのローカル variables |
-| `bundle <file> <node> <out.zip>` | 1 つの frame の design bundle。`{nodeId, path, warnings}` を出力 |
-| `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | 1 回のデコードから複数の bundle を並列生成 |
+| `bundle <file> <node> <out.zip> [--states]` | 1 つの frame の design bundle。`{nodeId, path, warnings}` を出力 |
+| `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | 1 回のデコードから複数の bundle を並列生成 |
 | `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG、PNG、JPG、WebP、AVIF。`--max-kb` は収まるまで非可逆の品質を下げる |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | ローカルの読み取り専用 viewer。`--out` でスタンドアロンのオフラインスナップショットを書き出し |
 | `compare <file> <nodes.json> <node>` | 同じ frame の REST エクスポートとの差分 |
 | `node <file> <node>` | `.fig` の生ノード 1 つ |
 | `mcp` | stdio 経由のローカル MCP サーバー |
 | `update` | バイナリを最新リリースに置き換え |
+
+関連するコンポーネント variants には `inspect --states` または `bundle --states` を使用します（MCP は `states: true`、既定は false、設定変更は不要）。証拠にはソース、不明点、省略のマーカーが残ります。Bundle には `design/states.json` と `context.md` の要約が追加されます。範囲と制限は[状態の証拠](wiki/states.md)を参照してください。
+
+同じ component set の 2 つの variants は `inspect <file> <variantA> --compare-variant <variantB>`（MCP `compareVariant`）で比較できます。`variantComparison` は保存フィールドと値集合の差、ソース ID、不明点を返します。子ノードの対応関係は推測しません。[比較の制限](wiki/states.md#compare-two-variants)を参照してください。
 
 node 引数には `12:345`、`12-345`、または `?node-id=` 付きの Figma URL を指定できます。`<file>` には `gs://bucket/object` も指定でき、`gcloud` ログインでダウンロードしてキャッシュします。固定オブジェクトでの受け渡し、必要なアクセス権、更新の制限は [GCS スナップショットガイド](wiki/gcs.md)を参照してください。CLI は呼び出しごとにファイルをデコードします。MCP が再利用するのは最後に読み取った変更のないローカルファイルだけです。リモート入力は毎回解析し直します。使い方は `figlens --help` で確認できます。
 

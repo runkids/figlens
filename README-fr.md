@@ -209,17 +209,21 @@ skillshare sync && skillshare sync mcp --global
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | Ids, types et noms des nodes ; texte indenté ou JSON imbriqué |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Recherche insensible à la casse dans les noms de calques et le texte ; chemins, tailles et aperçus. 20 résultats par défaut (1-200) |
-| `inspect <file> <node> [--depth N] [--images]` | Résumé compact de la mise en page/du texte étendus, 200 nodes au plus. `--images` ajoute les dimensions des bitmaps et les emprises de recadrage |
+| `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | Résumé compact de la mise en page/du texte étendus, 200 nodes au plus. `--images` ajoute les dimensions des bitmaps et les emprises de recadrage |
 | `nodes <file> <node>` | JSON au format REST : instances étendues et overrides, auto-layout, styles de texte, fills, effets, variables liées, propriétés de composants, render bounds |
 | `variables <file> [node]` | Les variables liées d’une frame ; sans node, toutes les variables locales |
-| `bundle <file> <node> <out.zip>` | Un bundle de design pour une frame ; affiche `{nodeId, path, warnings}` |
-| `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | Plusieurs bundles depuis un seul décodage, en parallèle |
+| `bundle <file> <node> <out.zip> [--states]` | Un bundle de design pour une frame ; affiche `{nodeId, path, warnings}` |
+| `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | Plusieurs bundles depuis un seul décodage, en parallèle |
 | `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP ou AVIF ; `--max-kb` abaisse la qualité avec perte jusqu’à tenir dans la limite |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Viewer local en lecture seule ; `--out` écrit un snapshot hors ligne autonome |
 | `compare <file> <nodes.json> <node>` | Diff par rapport à un export REST de la même frame |
 | `node <file> <node>` | Un node `.fig` brut |
 | `mcp` | Serveur MCP local via stdio |
 | `update` | Remplace le binaire par la dernière release |
+
+Pour les variantes de composants liées, utilisez `inspect --states` ou `bundle --states` (MCP : `states: true`, false par défaut ; aucun changement de configuration). Les preuves conservent les sources et les marqueurs de données inconnues ou tronquées. Les bundles ajoutent `design/states.json` et un résumé dans `context.md`. Voir la [preuve des états](wiki/states.md) pour le périmètre et les limites.
+
+Comparez deux variantes du même component set avec `inspect <file> <variantA> --compare-variant <variantB>` (MCP `compareVariant`). `variantComparison` décrit les différences de champs et ensembles de valeurs stockés avec sources et inconnues, sans apparier les nœuds enfants. Voir les [limites](wiki/states.md#compare-two-variants).
 
 Un argument node accepte `12:345`, `12-345` ou une URL Figma avec `?node-id=`. `<file>` peut aussi être `gs://bucket/object`, téléchargé avec votre connexion `gcloud` et mis en cache. Consultez le [guide des snapshots GCS](wiki/gcs.md) pour la transmission via un objet fixe, les droits requis et les limites d’actualisation. Chaque appel de la CLI décode le fichier ; MCP ne réutilise que le dernier fichier local inchangé. Les appels distants relancent l’analyse. Lancez `figlens --help` pour l’aide.
 

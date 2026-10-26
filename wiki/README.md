@@ -15,7 +15,7 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 | `pi` | Changing the Pi extension, reviewed component mappings or its npm packaging | `pi.md` |
 | `accuracy` | Measuring output against Figma's own exports, running `compare`, finding test files | `accuracy.md` |
 | `release` | Packaging, installation acceptance, GitHub releases, Homebrew and npm | `release.md`, `installation.md` |
-| `review` | Reviewing changes, creating a PR and following up on AI review | `review.md` |
+| `review` | Delivering features/optimizations across CLI, MCP and Pi; reviews and PR follow-up | `review.md` |
 | `direction` | Deciding what to build next, or revisiting a past decision | `direction.md` |
 | `ai-context` | Maintaining this router: add, move or split docs, fix `check` | `ai-context.md` |
 
@@ -24,6 +24,8 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 ## Field reference
 
 - [Partial semantic fields](semantics.md): emitted mappings, unknowns, provenance and validation limits; read when working on these fields.
+- [Related component variants](states.md): opt-in inspect inventory, source IDs, evidence gaps and bounds.
+- [Prototype field evidence](prototype.md): exact event/action/destination sources, instance limits and unknowns.
 
 ## History
 

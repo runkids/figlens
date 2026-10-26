@@ -8,7 +8,7 @@ CLI, MCP and preview use `Document::open` → `from_canvas` → `message` → `T
 
 The schema's list of definitions is flat; its types can reference other types recursively. Preflight checks actual value nesting rather than rejecting every recursive type graph, so a finite recursive message can remain valid. It checks depth before descending, and declared schema/array counts against remaining work before entering their loops. Counters are local to one preflight; repeated message calls and subsequent files start fresh. No partial decoded result is returned on failure.
 
-`Tree::new` separately drops parent cycles with an iterative walk. That layer-graph protection occurs after decoding and does not protect Kiwi recursion. The accepted value-item budget also bounds the node-change list used to construct a tree; tree semantics are unchanged.
+`Tree::new` separately drops parent cycles with an iterative walk. That layer-graph protection occurs after decoding and does not protect Kiwi recursion. The accepted value-item budget also bounds the node-change list used to construct a tree. Valid tree semantics are unchanged. The shared `guid_key` requires both `sessionID` and `localID` to be unsigned integers and rejects unset GUIDs; malformed fields never alias node zero in tree indexes, expansion or evidence lookups.
 
 ## Initial fixed ceilings
 

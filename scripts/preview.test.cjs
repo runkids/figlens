@@ -1,6 +1,70 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {flat, clean, localBox, hits} = require('../src/preview/viewer.js');
+const {flat, clean, localBox, hits, prototypeRows} = require('../src/preview/viewer.js');
+
+test('prototype missing fields remain unspecified without click or navigation defaults', () => {
+  const rows = prototypeRows({state:'recorded', sourceNodeId:'0:1', interactions:[
+    {sourceField:'prototypeInteractions[0]', trigger:{state:'absent'}, actionsState:'absent', actions:[]},
+  ]});
+  assert.equal(rows[0].label, 'Trigger not specified → Action not specified');
+  assert.equal(rows[0].destination, 'Node destination not specified');
+  assert.equal(rows[0].target, null);
+  assert.equal(rows.some(r => /on click|navigate/i.test(r.label)), false);
+});
+
+test('prototype rows retain both action fields and do not link unresolved destinations', () => {
+  const rows = prototypeRows({state:'recorded',sourceNodeId:'0:1',truncated:true, interactions:[
+    {trigger:{state:'recorded',value:'ON_HOVER'},actionsState:'recorded',actions:[
+      {sourceField:'prototypeInteractions[0].actions[0]',navigationType:{state:'recorded',value:'NAVIGATE'},connectionType:{state:'recorded',value:'OPEN_OVERLAY'},destination:{state:'unresolved',nodeId:'0:999'}},
+      {sourceField:'prototypeInteractions[0].actions[1]',navigationType:{state:'absent'},connectionType:{state:'recorded',value:'BACK'},destination:{state:'resolved',nodeId:'0:2',name:'</script>'}},
+    ]},
+  ]});
+  assert.match(rows[0].label, /On hover.*Navigation: Navigate.*Connection: Open overlay/);
+  assert.equal(rows[0].destination,'0:999 (unresolved)');
+  assert.equal(rows[0].target,null);
+  assert.equal(rows[1].target,'0:2');
+  assert.equal(rows[1].destination,'</script>');
+  assert.match(rows[1].source,/0:1.*prototypeInteractions\[0\].actions\[1\]/);
+  assert.equal(rows.at(-1).label,'Prototype evidence truncated');
+});
+
+test('prototype unsupported values and explicit empty actions keep their own meanings', () => {
+  const rows = prototypeRows({state:'recorded',sourceNodeId:'0:1',interactions:[
+    {trigger:{state:'unsupported',value:'ON_CLICK'},actionsState:'unsupported',actions:[]},
+    {trigger:{state:'absent'},actionsState:'recorded',actions:[]},
+  ]});
+  assert.equal(rows[0].label,'Trigger unsupported → Action unsupported');
+  assert.equal(rows[1].label,'Trigger not specified → No actions recorded');
+});
+
+test('empty and unsupported prototype evidence has a renderable status row', () => {
+  for (const evidence of [
+    {state:'recorded', interactions:[]},
+    {state:'recorded', interactions:[], deletedInteractionCount:1},
+    {state:'unsupported', reason:'malformed_interaction_list'},
+  ]) {
+    const rows = prototypeRows(evidence);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].destination, 'No destination to display');
+    assert.equal(rows[0].target, null);
+  }
+});
+
+test('prototype omitted action lists stay unknown, including older truncated envelopes', () => {
+  for (const actionsTruncated of [true, undefined]) {
+    const rows = prototypeRows({state:'recorded', sourceNodeId:'0:1', truncated:true, interactions:[
+      {trigger:{state:'recorded',value:'ON_HOVER'},actionsState:'recorded',actions:[],actionsTruncated},
+      {trigger:{state:'absent'},actionsState:'recorded',actions:[],actionsTruncated:false},
+      {trigger:{state:'absent'},actionsState:'unsupported',actions:[]},
+    ]});
+    assert.equal(rows[0].label, 'On hover → Actions omitted by evidence limits');
+    assert.equal(rows[0].destination, 'Node destination not extracted');
+    assert.equal(rows[0].target, null);
+    assert.equal(rows[1].label, 'Trigger not specified → No actions recorded');
+    assert.equal(rows[1].destination, 'Node destination not specified');
+    assert.equal(rows[2].label, 'Trigger not specified → Action unsupported');
+  }
+});
 
 test('export-area origin includes section margins, negative coordinates and shadows', () => {
   const n = {id:'I1:2;3:4',absoluteBoundingBox:{x:-60,y:20,width:10,height:20},absoluteRenderBounds:{x:-65,y:15,width:20,height:30}};

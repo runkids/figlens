@@ -35,6 +35,8 @@ pub enum Command {
         node: String,
         depth: usize,
         images: bool,
+        states: bool,
+        compare_variant: Option<String>,
     },
     Variables(Option<String>),
     Bundle {
@@ -42,6 +44,7 @@ pub enum Command {
         out: PathBuf,
         file_key: Option<String>,
         name: Option<String>,
+        states: bool,
     },
     Export {
         node: String,
@@ -164,7 +167,8 @@ impl Command {
             }
             "inspect" => {
                 let node = node()?;
-                let (mut depth, mut images) = (1, false);
+                let (mut depth, mut images, mut states) = (1, false, false);
+                let mut compare_variant = None;
                 let mut rest = args[1..].iter();
                 while let Some(flag) = rest.next() {
                     match flag.as_str() {
@@ -172,6 +176,14 @@ impl Command {
                             depth = rest.next().ok_or("--depth needs a number")?.parse()?
                         }
                         "--images" => images = true,
+                        "--states" => states = true,
+                        "--compare-variant" => {
+                            compare_variant = Some(
+                                rest.next()
+                                    .ok_or("--compare-variant needs a node ID")?
+                                    .clone(),
+                            )
+                        }
                         _ => return Err(USAGE.into()),
                     }
                 }
@@ -179,6 +191,8 @@ impl Command {
                     node,
                     depth,
                     images,
+                    states,
+                    compare_variant,
                 }
             }
             "variables" => Self::Variables(args.first().cloned()),
@@ -186,13 +200,14 @@ impl Command {
                 let node = node()?;
                 let out = args.get(1).cloned().ok_or(USAGE)?;
                 require_target_root(tree, &normalize_id(&node))?;
-                let (mut file_key, mut name) = (None, None);
+                let (mut file_key, mut name, mut states) = (None, None, false);
                 let mut rest = args[2..].iter();
                 while let Some(arg) = rest.next() {
                     let mut value = || rest.next().cloned().ok_or(format!("{arg} needs a value"));
                     match arg.as_str() {
                         "--file-key" => file_key = Some(value()?),
                         "--name" => name = Some(value()?),
+                        "--states" => states = true,
                         _ => return Err(USAGE.into()),
                     }
                 }
@@ -201,6 +216,7 @@ impl Command {
                     out: out.into(),
                     file_key,
                     name,
+                    states,
                 }
             }
             "export" => {
@@ -260,6 +276,8 @@ impl Command {
                 node: node()?,
                 depth: call.argument("depth").as_u64().unwrap() as usize,
                 images: call.argument("images") == true,
+                states: call.argument("states") == true,
+                compare_variant: string("compareVariant"),
             },
             "variables" => Self::Variables(string("node")),
             "bundle" => {
@@ -270,6 +288,7 @@ impl Command {
                     out: output.ok_or(USAGE)?.to_owned(),
                     file_key: string("fileKey"),
                     name: string("name"),
+                    states: call.argument("states") == true,
                 }
             }
             "export" => {
@@ -335,13 +354,20 @@ impl Command {
                 node,
                 depth,
                 images,
+                states,
+                compare_variant,
             } => {
                 let id = normalize_id(&node);
-                compact(if images {
-                    discover::inspect_images(tree, &id, depth, fig)?
-                } else {
-                    discover::inspect(tree, &id, depth)?
-                })
+                let compare_variant = compare_variant.as_deref().map(normalize_id);
+                compact(discover::inspect(
+                    tree,
+                    &id,
+                    depth,
+                    fig,
+                    images,
+                    states,
+                    compare_variant.as_deref(),
+                )?)
             }
             Self::Variables(node) => {
                 let doc = match node {
@@ -358,6 +384,7 @@ impl Command {
                 out,
                 file_key,
                 name,
+                states,
             } => {
                 let id = normalize_id(&node);
                 require_target_root(tree, &id)?;
@@ -367,7 +394,15 @@ impl Command {
                         .or_else(|| node.split_once("/file/"))
                         .and_then(|(_, rest)| rest.split('/').next())
                 });
-                let warnings = figlens::bundle::write(tree, fig, key, name.as_deref(), &id, &out)?;
+                let warnings = figlens::bundle::write_with_states(
+                    tree,
+                    fig,
+                    key,
+                    name.as_deref(),
+                    &id,
+                    &out,
+                    states,
+                )?;
                 compact(
                     json!({ "nodeId": id, "path": out.to_string_lossy(), "warnings": warnings }),
                 )

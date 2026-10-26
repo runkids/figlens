@@ -19,9 +19,11 @@ pub mod export;
 pub mod images;
 mod parse;
 pub mod preview;
+mod prototype;
 pub mod remote;
 pub mod render;
 pub mod rest;
+pub mod states;
 pub mod variables;
 
 #[cfg(test)]
@@ -222,15 +224,14 @@ pub fn normalize_id(id: &str) -> String {
     id.replace("%3A", ":").replace('-', ":")
 }
 
-/// `sessionID:localID` of a GUID object, the same id Figma shows in URLs.
+/// `sessionID:localID` of an unsigned GUID object, the same id Figma shows in URLs.
 pub fn guid_key(guid: &Value) -> Option<String> {
-    let (s, l) = (
-        guid.get("sessionID")?.as_uint(),
-        guid.get("localID")?.as_uint(),
-    );
+    let (Value::UInt(s), Value::UInt(l)) = (guid.get("sessionID")?, guid.get("localID")?) else {
+        return None;
+    };
     // Figma writes u32::MAX:u32::MAX for "no guid" (e.g. an unset overrideKey); taking it
     // as a key gives unrelated nodes one id, and the tree then contains itself.
-    (s != u32::MAX || l != u32::MAX).then(|| format!("{s}:{l}"))
+    (*s != u32::MAX || *l != u32::MAX).then(|| format!("{s}:{l}"))
 }
 
 /// Node changes indexed by id, with children ordered as Figma orders them.
@@ -660,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn unset_guid_is_no_key() {
+    fn guid_keys_require_unsigned_fields_and_reject_unset_ids() {
         let guid = |s, l| {
             Value::Object(
                 "GUID",
@@ -674,5 +675,18 @@ mod tests {
             (guid_key(&guid(u32::MAX, u32::MAX)), guid_key(&guid(1, 2))),
             (None, Some("1:2".to_owned()))
         );
+        for invalid in [
+            Value::String("bad".into()),
+            Value::Int(0),
+            Value::Bool(false),
+        ] {
+            for field in ["sessionID", "localID"] {
+                let mut value = guid(0, 0);
+                if let Value::Object(_, fields) = &mut value {
+                    fields.insert(field, invalid.clone());
+                }
+                assert!(guid_key(&value).is_none());
+            }
+        }
     }
 }

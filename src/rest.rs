@@ -548,6 +548,11 @@ impl Builder<'_, '_> {
             }
             out.insert("_figlens".into(), json!({"semantics":evidence}));
         }
+        if let Some(prototype) = crate::prototype::node(self.tree, id, self.ex.nodes.get(id), &kind)
+        {
+            out.entry("_figlens".to_owned())
+                .or_insert_with(|| json!({}))["prototype"] = prototype;
+        }
         for list in out
             .get_mut("boundVariables")
             .and_then(Json::as_object_mut)

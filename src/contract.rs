@@ -99,6 +99,18 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 false,
                 "include source bitmap dimensions/bytes and per-paint source-pixel crop rectangles; no files written",
             ),
+            (
+                "states",
+                "boolean",
+                false,
+                "include bounded variants and prototype field evidence with exact sources/unknowns; retains instance overrides, infers no business conditions and renders no other variants",
+            ),
+            (
+                "compareVariant",
+                "string",
+                false,
+                "compare node with this other stored variant in the same component set; adds bounded raw-field and descendant-multiset differences, exact sources and unknown pairing; no alternate rendering or business inference",
+            ),
         ],
     ),
     (
@@ -121,7 +133,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "bundle",
-        "Write a design bundle zip for one node or exact instance sublayer: nodes, variables, assets, reference render, context.md.",
+        "Write a design bundle zip for one node or exact instance sublayer: nodes, variables, assets, reference render, context.md. When the user requests related component states, pass states=true to include their explicit variants and evidence gaps; no MCP configuration change is needed.",
         &[
             FILE,
             NODE,
@@ -138,6 +150,12 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "Figma file key for the manifest",
             ),
             ("name", "string", false, "frame name for the manifest"),
+            (
+                "states",
+                "boolean",
+                false,
+                "include design/states.json and a bounded context.md summary; retains inspect's source, unknown and truncation markers; default false",
+            ),
         ],
     ),
     (
@@ -186,6 +204,8 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "node": {"type": "object", "description": "Compact node with partial layout semantics and type-only property definitions; _figlens.semantics records source/verification. Definitions, definition evidence and _figlens.renderDiagnostics each have at most 20 entries per node; truncated includes omitted nodes or entries"},
                 "truncated": {"type": "boolean"},
                 "images": {"type": "object", "description": "optional source image evidence when images=true"},
+                "states": {"type": "object", "description": "optional variants and prototype field evidence when states=true; independent truncation, source file, node/override provenance and unknown markers; no inferred business logic"},
+                "variantComparison": {"type":"object", "description":"optional same-set definition comparison when compareVariant is supplied; raw fields, descendant value multisets, unpaired nodes, unknowns and independent truncation; not a pixel comparison"},
             }),
             ["node", "truncated"].as_slice(),
         ),
@@ -206,7 +226,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "warnings": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "missing assets and known rendering limits; missing-assets.json contains only asset failures; design/nodes.json has per-node _figlens.renderDiagnostics",
+                    "description": "missing assets, known rendering limits and truncated optional state inventory; missing-assets.json contains only asset failures; design/nodes.json has per-node _figlens.renderDiagnostics; design/states.json has inventory coverage when requested",
                 },
             }),
             ["nodeId", "path", "warnings"].as_slice(),
@@ -220,7 +240,9 @@ fn default(tool: &str, key: &str) -> Option<Value> {
     match (tool, key) {
         ("tree", "depth") => Some(json!(usize::MAX)),
         ("tree" | "find", "node") => Some(json!("0:0")),
-        ("tree", "json") | ("inspect", "images") => Some(json!(false)),
+        ("tree", "json") | ("inspect", "images" | "states") | ("bundle", "states") => {
+            Some(json!(false))
+        }
         ("inspect", "depth") | ("export", "scale") => Some(json!(1)),
         ("find", "limit") => Some(json!(20)),
         ("export", "quality") => Some(json!(80)),
@@ -250,7 +272,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
     if let Some(value) = default(tool, key).filter(|_| (tool, key) != ("tree", "depth")) {
         p["default"] = value;
     }
-    if key == "file" || key == "out" || key == "query" {
+    if matches!(key, "file" | "out" | "query" | "compareVariant") {
         p["minLength"] = json!(1);
     }
     if key == "query" {

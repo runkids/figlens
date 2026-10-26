@@ -29,7 +29,38 @@ function hits(nodes, area, x, y, geometry = {}, slop = 0, shapes = {}) {
         return inShape(geometry[n.id], x + area[0], y + area[1], slop);
     }).reverse();
 }
-if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits};
+function prototypeRows(evidence) {
+    const words = value => value.charAt(0) + value.slice(1).toLowerCase().replaceAll('_', ' ');
+    const choice = (field, label) => field?.state === 'recorded' && typeof field.value === 'string'
+        ? words(field.value) : `${label} ${field?.state === 'unsupported' ? 'unsupported' : 'not specified'}`;
+    const rows = [];
+    for (const interaction of evidence.interactions || []) {
+        const actionsTruncated = interaction.actionsTruncated === true || (interaction.actionsTruncated == null && evidence.truncated === true && interaction.actionsState === 'recorded');
+        const actions = interaction.actions?.length ? interaction.actions : [null];
+        for (const action of actions) {
+            const kinds = [];
+            for (const [key, label] of [['navigationType', 'Navigation'], ['connectionType', 'Connection']]) {
+                if (action?.[key]?.state === 'recorded' || action?.[key]?.state === 'unsupported') {
+                    kinds.push(`${label}: ${choice(action[key], label)}`);
+                }
+            }
+            const label = kinds.join(' / ') || (!action && actionsTruncated ? 'Actions omitted by evidence limits' : !action && interaction.actionsState === 'recorded' ? 'No actions recorded' : `Action ${action?.state === 'unsupported' || interaction.actionsState === 'unsupported' ? 'unsupported' : 'not specified'}`);
+            const destination = action?.destination;
+            const target = destination?.state === 'resolved' && typeof destination.nodeId === 'string' ? destination.nodeId : null;
+            let name = !action && actionsTruncated ? 'Node destination not extracted' : 'Node destination not specified';
+            if (target) name = (destination.name || target) + (destination.nameTruncated ? ' [name shortened]' : '');
+            else if (destination?.state === 'unresolved') name = `${destination.nodeId} (unresolved)`;
+            else if (destination?.state === 'unsupported') name = 'Node destination unsupported';
+            rows.push({label: `${choice(interaction.trigger, 'Trigger')} → ${label}`, destination: name, target,
+                source: `${evidence.sourceNodeId} · ${action?.sourceField || interaction.sourceField}`});
+        }
+        if (interaction.actions?.length && actionsTruncated) rows.push({label: 'Action list truncated', destination: 'Inspect source fields for omitted actions', target: null});
+    }
+    if (!rows.length) rows.push({label: evidence.state === 'unsupported' ? 'Prototype source unsupported' : 'No undeleted records in the checked prototype list', destination: 'No destination to display', target: null});
+    if (evidence.truncated) rows.push({label: 'Prototype evidence truncated', destination: 'Inspect source fields for omitted records', target: null});
+    return rows;
+}
+if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits, prototypeRows};
 if (typeof document !== 'undefined') {
     const boot = JSON.parse(document.getElementById('boot').textContent);
     const $ = id => document.getElementById(id);
@@ -488,18 +519,21 @@ if (typeof document !== 'undefined') {
             section.append(head, list);
             $('properties').append(section);
         }
-        // Prototype links: what this layer does when used, with the destination one click away.
-        const flows = payload?.interactions?.[n.id];
-        if (flows?.length) {
+        // Recorded prototype fields are evidence, not a complete behavior specification.
+        const prototype = payload?.interactions?.[n.id] || n._figlens?.prototype;
+        if (prototype) {
             const section = el('section'), head = el('div'), list = el('div');
             head.className = 'section-head';
             head.append(el('h3', 'Prototype'));
             list.className = 'fields';
-            for (const f of flows) {
-                const text = `${words(f.trigger || 'ON_CLICK').replace(/^On /, 'On ')} → ${words(f.action || 'NAVIGATE')}`;
-                const row = field('', f.targetName || 'No destination set', text, '', true);
+            list.append(field('', prototype.basis === 'component-definition' ? 'Component definition; instance inheritance unverified' : 'Recorded snapshot fields; business conditions unspecified', '', '', true));
+            if (prototype.precedenceState === 'unsupported') list.append(field('', 'Instance-local records retained; precedence with the swapped definition is unverified', '', '', true));
+            list.append(field('', `${prototype.sourceNodeId} · ${prototype.sourceField}`, 'Source', '', true));
+            for (const f of prototypeRows(prototype)) {
+                const row = field('', f.destination, f.label, '', true);
+                row.title = f.source || prototype.reason || '';
                 if (f.target) {
-                    row.title = `Go to ${f.targetName}`;
+                    row.title = `Go to ${f.destination} · ${f.source}`;
                     row.onclick = () => selectById(f.target, true).catch(e => status(e.message));
                     row.classList.add('link');
                 }

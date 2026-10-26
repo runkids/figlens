@@ -27,19 +27,23 @@ usage:
   figlens find <file.fig> <query> [--type TYPE] [--node ID] [--limit N]
                                              search stored layer names and text, case-insensitive;
                                              default 20 results (1-200), with paths and truncation flag
-  figlens inspect <file.fig> <node> [--depth N] [--images]
+  figlens inspect <file.fig> <node> [--depth N] [--images] [--states] [--compare-variant ID]
                                              compact layout/text summary, instances expanded;
                                              depth 1 (0-10), at most 200 nodes, 200 characters per text;
-                                             --images adds source pixels/bytes and source-pixel crop rectangles
+                                             --images adds source pixels/bytes and source-pixel crop rectangles;
+                                             --states lists related component variants and evidence gaps;
+                                             --compare-variant compares two stored variants in the same set
   figlens nodes <file.fig> <node>              print a frame as Figma REST-shaped nodes.json
                                              (instances expanded, fills/text/auto-layout included)
   figlens variables <file.fig> [node]          print the variables a frame binds (design/variables.json);
                                              without a node, every local variable
-  figlens bundle <file.fig> <node> <out.zip>   write a design bundle for a frame: nodes, variables,
+  figlens bundle <file.fig> <node> <out.zip> [--states]
+                                             write a design bundle for a frame: nodes, variables,
                                              image/SVG assets, reference render and context.md, in one zip;
                                              prints {nodeId,path,warnings}
-  figlens bundle ... --file-key KEY --name N   set the manifest's file key and frame name
-  figlens bundle <file.fig> --frames <list> --out-dir <dir> [--file-key KEY] [--jobs N]
+  figlens bundle ... --file-key KEY --name N   set the manifest's file key and frame name;
+                                             --states adds related variants and evidence gaps to the bundle
+  figlens bundle <file.fig> --frames <list> --out-dir <dir> [--file-key KEY] [--jobs N] [--states]
                                             one decode, many bundles: <list> has one node id per line;
                                              writes <dir>/<nodeId>.zip (`:` as `-`), prints one JSON line
                                              per frame ({nodeId,path,warnings} or {nodeId,error});
@@ -272,7 +276,7 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
 /// `bundle --frames <list> --out-dir <dir> [--file-key K] [--jobs N]`: one decode, the frames
 /// written in parallel, one JSON line per frame as each finishes. A frame's failure is its own line.
 fn batch(tree: &Tree, fig: &Path, args: &[String]) -> Result<(), Box<dyn Error>> {
-    let (mut list, mut dir, mut file_key, mut jobs) = (None, None, None, None);
+    let (mut list, mut dir, mut file_key, mut jobs, mut states) = (None, None, None, None, false);
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let mut value = || rest.next().cloned().ok_or(format!("{arg} needs a value"));
@@ -281,6 +285,7 @@ fn batch(tree: &Tree, fig: &Path, args: &[String]) -> Result<(), Box<dyn Error>>
             "--out-dir" => dir = Some(value()?),
             "--file-key" => file_key = Some(value()?),
             "--jobs" => jobs = Some(value()?.parse::<usize>()?),
+            "--states" => states = true,
             _ => return Err(USAGE.into()),
         }
     }
@@ -298,7 +303,8 @@ fn batch(tree: &Tree, fig: &Path, args: &[String]) -> Result<(), Box<dyn Error>>
         let path = Path::new(&dir).join(format!("{}.zip", id.replace(':', "-")));
         let one = || -> Result<Vec<String>, String> {
             let key = file_key.as_deref();
-            figlens::bundle::write(tree, fig, key, None, id, &path).map_err(|e| e.to_string())
+            figlens::bundle::write_with_states(tree, fig, key, None, id, &path, states)
+                .map_err(|e| e.to_string())
         };
         // A panic in one frame must not take the others down.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(one))

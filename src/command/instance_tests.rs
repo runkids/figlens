@@ -1,7 +1,9 @@
 //! Normal, generated local-copy fixture: two copies of a component with a nested instance.
 use super::*;
 use crate::{call_tool, run, serve, test_support::TestDir};
-use kiwi_schema::{Def, DefKind, Field, Schema, TYPE_FLOAT, TYPE_STRING, TYPE_UINT, Value as K};
+use kiwi_schema::{
+    Def, DefKind, Field, Schema, TYPE_BOOL, TYPE_FLOAT, TYPE_STRING, TYPE_UINT, Value as K,
+};
 use std::io::{Read, Write};
 
 fn obj(name: &'static str, fields: Vec<(&'static str, K<'static>)>) -> K<'static> {
@@ -57,6 +59,14 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_variants(false)
+    }
+
+    fn with_variants(variants: bool) -> Self {
+        Self::build(variants, false)
+    }
+
+    fn build(variants: bool, prototype: bool) -> Self {
         let field = |name: &str, type_id, value, is_array| Field {
             name: name.into(),
             type_id,
@@ -144,6 +154,7 @@ impl Fixture {
                     field("size", 2, 3, false),
                     field("fillPaints", 8, 4, true),
                     field("textData", 9, 5, false),
+                    field("prototypeInteractions", 21, 6, true),
                 ],
             ),
             def(
@@ -168,12 +179,77 @@ impl Fixture {
                     field("fillPaints", 8, 8, true),
                     field("textData", 9, 9, false),
                     field("overrideKey", 0, 10, false),
+                    field("isStateGroup", TYPE_BOOL, 11, false),
+                    field("componentPropDefs", 15, 12, true),
+                    field("variantPropSpecs", 16, 13, true),
+                    field("prototypeInteractions", 21, 14, true),
                 ],
             ),
             def(
                 "Message",
                 DefKind::Message,
                 vec![field("nodeChanges", 12, 1, true)],
+            ),
+            def(
+                "PropertyType",
+                DefKind::Enum,
+                vec![field("VARIANT", 0, 0, false)],
+            ),
+            def(
+                "PropertyDefinition",
+                DefKind::Message,
+                vec![
+                    field("id", 0, 1, false),
+                    field("name", TYPE_STRING, 2, false),
+                    field("type", 14, 3, false),
+                ],
+            ),
+            def(
+                "VariantSpec",
+                DefKind::Message,
+                vec![
+                    field("propDefId", 0, 1, false),
+                    field("value", TYPE_STRING, 2, false),
+                ],
+            ),
+            def(
+                "EventType",
+                DefKind::Enum,
+                vec![
+                    field("ON_CLICK", 0, 0, false),
+                    field("ON_HOVER", 0, 1, false),
+                    field("ON_PRESS", 0, 2, false),
+                ],
+            ),
+            def(
+                "ActionType",
+                DefKind::Enum,
+                vec![field("NAVIGATE", 0, 0, false), field("BACK", 0, 1, false)],
+            ),
+            def(
+                "PrototypeEvent",
+                DefKind::Message,
+                vec![field("interactionType", 17, 1, false)],
+            ),
+            def(
+                "PrototypeAction",
+                DefKind::Message,
+                vec![
+                    field("navigationType", 18, 1, false),
+                    field("connectionType", 18, 2, false),
+                    field("transitionNodeID", 0, 3, false),
+                    field("url", TYPE_STRING, 4, false),
+                ],
+            ),
+            def(
+                "PrototypeInteraction",
+                DefKind::Message,
+                vec![
+                    field("event", 19, 1, false),
+                    field("actions", 20, 2, true),
+                    field("isDeleted", TYPE_BOOL, 3, false),
+                    field("condition", TYPE_STRING, 4, false),
+                ],
             ),
         ]);
         let node = |id, parent, kind, name: &str, extra: Vec<_>| {
@@ -265,10 +341,26 @@ impl Fixture {
                     instance(3, 50.0, 60.0, "Second", "green", 6.0, 4.0),
                     node(
                         10,
-                        Some(0),
+                        Some(if variants { 40 } else { 0 }),
                         "SYMBOL",
                         "Card",
-                        vec![("size", size(40.0, 30.0))],
+                        if variants {
+                            vec![
+                                ("size", size(40.0, 30.0)),
+                                (
+                                    "variantPropSpecs",
+                                    K::Array(vec![obj(
+                                        "VariantSpec",
+                                        vec![
+                                            ("propDefId", guid(50)),
+                                            ("value", K::String("Default".into())),
+                                        ],
+                                    )]),
+                                ),
+                            ]
+                        } else {
+                            vec![("size", size(40.0, 30.0))]
+                        },
                     ),
                     node(
                         11,
@@ -327,6 +419,179 @@ impl Fixture {
                 ]),
             )],
         );
+        let mut message = message;
+        if variants {
+            let K::Object(_, fields) = &mut message else {
+                unreachable!()
+            };
+            let Some(K::Array(nodes)) = fields.get_mut("nodeChanges") else {
+                unreachable!()
+            };
+            nodes.extend([
+                node(
+                    40,
+                    Some(0),
+                    "FRAME",
+                    "Card variants",
+                    vec![
+                        ("isStateGroup", K::Bool(true)),
+                        (
+                            "componentPropDefs",
+                            K::Array(vec![obj(
+                                "PropertyDefinition",
+                                vec![
+                                    ("id", guid(50)),
+                                    ("name", K::String("State".into())),
+                                    ("type", K::Enum("PropertyType", "VARIANT")),
+                                ],
+                            )]),
+                        ),
+                    ],
+                ),
+                node(
+                    41,
+                    Some(40),
+                    "SYMBOL",
+                    "Loading",
+                    vec![(
+                        "variantPropSpecs",
+                        K::Array(vec![obj(
+                            "VariantSpec",
+                            vec![
+                                ("propDefId", guid(50)),
+                                ("value", K::String("Loading".into())),
+                            ],
+                        )]),
+                    )],
+                ),
+                node(42, Some(0), "FRAME", "Loading", vec![]),
+            ]);
+        }
+        if prototype {
+            let event = |kind, actions| {
+                obj(
+                    "PrototypeInteraction",
+                    vec![
+                        (
+                            "event",
+                            obj(
+                                "PrototypeEvent",
+                                vec![("interactionType", K::Enum("EventType", kind))],
+                            ),
+                        ),
+                        ("actions", K::Array(actions)),
+                    ],
+                )
+            };
+            let navigate = |target| {
+                obj(
+                    "PrototypeAction",
+                    vec![
+                        ("navigationType", K::Enum("ActionType", "NAVIGATE")),
+                        ("transitionNodeID", guid(target)),
+                    ],
+                )
+            };
+            let K::Object(_, fields) = &mut message else {
+                unreachable!()
+            };
+            let Some(K::Array(nodes)) = fields.get_mut("nodeChanges") else {
+                unreachable!()
+            };
+            for node in nodes.iter_mut() {
+                let K::Object(_, fields) = node else {
+                    unreachable!()
+                };
+                let id = fields["guid"].get("localID").unwrap().as_uint();
+                match id {
+                    1 => {
+                        fields.insert(
+                            "prototypeInteractions",
+                            K::Array(vec![
+                                obj("PrototypeInteraction", vec![("isDeleted", K::Bool(true))]),
+                                event(
+                                    "ON_HOVER",
+                                    vec![
+                                        navigate(42),
+                                        obj(
+                                            "PrototypeAction",
+                                            vec![
+                                                ("connectionType", K::Enum("ActionType", "BACK")),
+                                                (
+                                                    "url",
+                                                    K::String(
+                                                        "https://example.invalid/do-not-open"
+                                                            .into(),
+                                                    ),
+                                                ),
+                                            ],
+                                        ),
+                                    ],
+                                ),
+                                obj(
+                                    "PrototypeInteraction",
+                                    vec![
+                                        ("actions", K::Array(vec![navigate(999)])),
+                                        (
+                                            "condition",
+                                            K::String("API failure must not be inferred".into()),
+                                        ),
+                                    ],
+                                ),
+                            ]),
+                        );
+                    }
+                    2 => {
+                        let Some(K::Object(_, symbol)) = fields.get_mut("symbolData") else {
+                            unreachable!()
+                        };
+                        let Some(K::Array(overrides)) = symbol.get_mut("symbolOverrides") else {
+                            unreachable!()
+                        };
+                        overrides.push(patch(
+                            &[112],
+                            vec![(
+                                "prototypeInteractions",
+                                K::Array(vec![event("ON_PRESS", vec![navigate(41)])]),
+                            )],
+                        ));
+                        overrides.push(patch(&[14], vec![("overriddenSymbolID", guid(20))]));
+                    }
+                    10 | 12 | 20 => {
+                        fields.insert(
+                            "prototypeInteractions",
+                            K::Array(vec![event("ON_CLICK", vec![navigate(41)])]),
+                        );
+                    }
+                    41 => {
+                        fields.insert(
+                            "prototypeInteractions",
+                            K::Array(vec![event("ON_HOVER", vec![])]),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            nodes.push(node(
+                43,
+                Some(0),
+                "FRAME",
+                "Bounded prototype",
+                vec![
+                    ("size", size(20.0, 20.0)),
+                    (
+                        "prototypeInteractions",
+                        K::Array(
+                            (0..32)
+                                .map(|_| {
+                                    event("ON_HOVER", (0..16).map(|_| navigate(999)).collect())
+                                })
+                                .collect(),
+                        ),
+                    ),
+                ],
+            ));
+        }
         let dir = TestDir::new();
         let file = dir.join("instances.fig");
         let mut canvas = b"fig-kiwi".to_vec();
@@ -384,6 +649,21 @@ fn zip_bytes(zip: &mut zip::ZipArchive<std::fs::File>, path: &str) -> Vec<u8> {
     bytes
 }
 
+fn bundle_files(path: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+    let names: Vec<String> = zip
+        .file_names()
+        .map(|name| name.unwrap().into_owned())
+        .collect();
+    names
+        .into_iter()
+        .map(|name| {
+            let bytes = zip_bytes(&mut zip, &name);
+            (name, bytes)
+        })
+        .collect()
+}
+
 fn descendant<'a>(node: &'a Value, id: &str) -> &'a Value {
     if node["id"] == id {
         return node;
@@ -397,6 +677,467 @@ fn descendant<'a>(node: &'a Value, id: &str) -> &'a Value {
             (!found.is_null()).then_some(found)
         })
         .unwrap_or(&Value::Null)
+}
+
+#[test]
+fn inspect_states_cli_and_mcp_preserve_effective_overrides_and_optional_outputs() {
+    let f = Fixture::with_variants(true);
+    let read = |args: &[&str]| -> Value {
+        serde_json::from_str(&f.cli("inspect", args).unwrap()).unwrap()
+    };
+    let ordinary = read(&["0:1", "--depth", "4"]);
+    let mut with_states = read(&["0:1", "--depth", "4", "--states"]);
+    let reply = f.tool("inspect", json!({"node":"0:1","depth":4,"states":true}));
+    assert_eq!(reply["isError"], false, "{reply}");
+    assert_eq!(reply["structuredContent"]["states"], with_states["states"]);
+    assert_eq!(reply["structuredContent"]["node"], with_states["node"]);
+    assert_eq!(
+        reply["structuredContent"]["truncated"],
+        with_states["truncated"]
+    );
+    let states = with_states
+        .as_object_mut()
+        .unwrap()
+        .remove("states")
+        .unwrap();
+    assert_eq!(with_states, ordinary);
+    assert_eq!(
+        states["source"]["file"],
+        std::fs::canonicalize(&f.file)
+            .unwrap()
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert_eq!(states["sets"].as_array().unwrap().len(), 1);
+    assert_eq!(states["sets"][0]["variants"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        states["sets"][0]["variants"][1]["properties"]["entries"][0]["value"],
+        "Loading"
+    );
+    assert_eq!(
+        states["instances"][0]["currentProperties"][0]["value"],
+        "Default"
+    );
+    assert_eq!(states["instances"][1]["nodeId"], "I0:2;0:14");
+    for variant in states["sets"][0]["variants"].as_array().unwrap() {
+        let id = variant["nodeId"].as_str().unwrap();
+        let resolved: Value = serde_json::from_str(&f.cli("nodes", &[id]).unwrap()).unwrap();
+        assert_eq!(resolved["document"]["id"], id);
+    }
+    let mut combined = read(&["0:1", "--images", "--states"]);
+    let reply = f.tool("inspect", json!({"node":"0:1","images":true,"states":true}));
+    assert_eq!(reply["isError"], false, "{reply}");
+    assert_eq!(reply["structuredContent"], combined);
+    combined.as_object_mut().unwrap().remove("states");
+    assert_eq!(combined, read(&["0:1", "--images"]));
+    let other = Fixture::new();
+    let absent = other.tool("inspect", json!({"node":"0:2","states":true}));
+    assert_eq!(absent["structuredContent"]["states"]["sets"], json!([]));
+    assert_eq!(
+        absent["structuredContent"]["states"]["instances"][0]["state"],
+        "no_component_set"
+    );
+    assert_ne!(
+        absent["structuredContent"]["states"]["source"],
+        states["source"]
+    );
+}
+
+#[test]
+fn bundle_states_preserve_existing_files_and_match_inspection_through_cli_and_mcp() {
+    use sha2::{Digest, Sha256};
+    let f = Fixture::with_variants(true);
+    for id in ["0:1", "0:2", "I0:2;0:14"] {
+        let plain = f.dir.join("plain.zip");
+        let included = f.dir.join("states.zip");
+        f.cli(
+            "bundle",
+            &[id, plain.to_str().unwrap(), "--file-key", "Key"],
+        )
+        .unwrap();
+        f.cli(
+            "bundle",
+            &[
+                id,
+                included.to_str().unwrap(),
+                "--states",
+                "--file-key",
+                "Key",
+            ],
+        )
+        .unwrap();
+        let plain = bundle_files(&plain);
+        let files = bundle_files(&included);
+        assert!(!plain.contains_key("design/states.json"));
+        let legacy: Value = serde_json::from_slice(&plain["manifest.json"]).unwrap();
+        assert!(legacy["root"].get("states").is_none());
+        assert_eq!(files.len(), plain.len() + 1);
+        for (path, bytes) in &plain {
+            if path != "manifest.json" && path != "context.md" {
+                assert_eq!(&files[path], bytes, "changed existing bundle entry {path}");
+            }
+        }
+        let inspected = f.tool("inspect", json!({"node":id,"states":true}));
+        let states: Value = serde_json::from_slice(&files["design/states.json"]).unwrap();
+        assert_eq!(states, inspected["structuredContent"]["states"]);
+        let manifest: Value = serde_json::from_slice(&files["manifest.json"]).unwrap();
+        assert_eq!(manifest["version"], 1);
+        assert_eq!(manifest["source"], legacy["source"]);
+        assert_eq!(manifest["root"]["id"], id);
+        assert_eq!(manifest["root"]["states"], "design/states.json");
+        for entry in manifest["files"].as_array().unwrap() {
+            let bytes = &files[entry["path"].as_str().unwrap()];
+            assert_eq!(entry["size"], bytes.len());
+            let hash: String = Sha256::digest(bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            assert_eq!(entry["sha256"], hash);
+        }
+        let context = String::from_utf8(files["context.md"].clone()).unwrap();
+        assert!(context.starts_with(std::str::from_utf8(&plain["context.md"]).unwrap()));
+        assert!(context.len() - plain["context.md"].len() <= 8 * 1024);
+        assert!(context.contains("supported snapshot fields"));
+        assert!(context.contains("effective instance overrides remain"));
+        if id == "I0:2;0:14" {
+            assert_eq!(states["sets"], json!([]));
+            assert!(context.contains("no_component_set"));
+            assert!(context.contains("No related component sets were listed"));
+        } else {
+            assert!(context.contains("Variant `Loading` (`0:41`)"));
+        }
+        let mcp = f.dir.join("mcp-states.zip");
+        let reply = f.tool(
+            "bundle",
+            json!({"node":id,"out":mcp,"states":true,"fileKey":"Key"}),
+        );
+        assert_eq!(reply["isError"], false, "{reply}");
+        let mcp = bundle_files(&mcp);
+        for (path, bytes) in files.iter().filter(|(path, _)| *path != "manifest.json") {
+            assert_eq!(&mcp[path], bytes, "MCP entry {path}");
+        }
+    }
+    let other = Fixture::new();
+    let path = other.dir.join("no-variants.zip");
+    other
+        .cli("bundle", &["0:1", path.to_str().unwrap(), "--states"])
+        .unwrap();
+    let other = bundle_files(&path);
+    let states: Value = serde_json::from_slice(&other["design/states.json"]).unwrap();
+    assert_eq!(states["sets"], json!([]));
+    assert_eq!(states["instances"][0]["state"], "no_component_set");
+    assert_eq!(states["triggerEvidence"]["state"], "absent");
+}
+
+#[test]
+fn batch_bundle_states_match_single_bundles_in_both_job_modes() {
+    let f = Fixture::with_variants(true);
+    let ids = ["0:1", "0:2", "I0:2;0:14"];
+    let list = f.dir.join("frames-states.txt");
+    std::fs::write(&list, ids.join("\n")).unwrap();
+    for jobs in ["1", "2"] {
+        let out = f.dir.join(&format!("states-jobs-{jobs}"));
+        f.cli(
+            "bundle",
+            &[
+                "--frames",
+                list.to_str().unwrap(),
+                "--states",
+                "--out-dir",
+                out.to_str().unwrap(),
+                "--jobs",
+                jobs,
+            ],
+        )
+        .unwrap();
+        for id in ids {
+            let single = f.dir.join("single-states.zip");
+            f.cli("bundle", &[id, single.to_str().unwrap(), "--states"])
+                .unwrap();
+            let batch = bundle_files(&out.join(format!("{}.zip", id.replace(':', "-"))));
+            let single = bundle_files(&single);
+            for (path, bytes) in &single {
+                if path == "manifest.json" {
+                    let mut a: Value = serde_json::from_slice(bytes).unwrap();
+                    let mut b: Value = serde_json::from_slice(&batch[path]).unwrap();
+                    a.as_object_mut().unwrap().remove("createdAt");
+                    b.as_object_mut().unwrap().remove("createdAt");
+                    assert_eq!(a, b);
+                } else {
+                    assert_eq!(bytes, &batch[path], "batch entry {path}");
+                }
+            }
+            assert_eq!(single.len(), batch.len());
+        }
+    }
+}
+
+#[test]
+fn prototype_evidence_reaches_cli_mcp_bundle_and_snapshot_with_exact_sources() {
+    let f = Fixture::build(true, true);
+    let inspected = f.tool("inspect", json!({"node":"0:1","states":true}));
+    assert_eq!(inspected["isError"], false, "{inspected}");
+    let states = &inspected["structuredContent"]["states"];
+    assert_eq!(states["triggerEvidence"]["state"], "recorded");
+    assert_eq!(
+        states["triggerEvidence"]["businessConditions"],
+        "not-inferred"
+    );
+    let evidence = states["triggerEvidence"]["nodes"].as_array().unwrap();
+    let source = |id| evidence.iter().find(|n| n["nodeId"] == id).unwrap();
+    assert_eq!(source("I0:2;0:112")["sourceNodeId"], "0:2");
+    assert_eq!(
+        source("I0:2;0:112")["sourceField"],
+        "symbolData.symbolOverrides[4].prototypeInteractions"
+    );
+    assert_eq!(
+        source("I0:2;0:112")["interactions"][0]["trigger"]["value"],
+        "ON_PRESS"
+    );
+    assert_eq!(source("I0:3;0:112")["sourceNodeId"], "0:12");
+    assert_eq!(
+        source("I0:3;0:112")["interactions"][0]["trigger"]["value"],
+        "ON_CLICK"
+    );
+    assert_eq!(source("0:2")["basis"], "component-definition");
+    assert_eq!(source("0:2")["inheritanceState"], "unsupported");
+    for id in ["I0:2;0:14", "I0:3;0:14"] {
+        assert_eq!(source(id)["basis"], "component-definition");
+        assert_eq!(source(id)["sourceNodeId"], "0:20");
+        assert_eq!(source(id)["inheritanceState"], "unsupported");
+    }
+    assert_eq!(source("0:1")["interactions"][0]["index"], 1);
+    assert_eq!(
+        source("0:1")["interactions"][0]["actions"][0]["destination"]["nodeId"],
+        "0:42"
+    );
+    assert_eq!(
+        source("0:1")["interactions"][1]["trigger"]["state"],
+        "absent"
+    );
+    assert!(
+        source("0:1")["interactions"][1]["trigger"]
+            .get("value")
+            .is_none()
+    );
+    assert_eq!(
+        source("0:1")["interactions"][1]["actions"][0]["destination"]["nodeId"],
+        "0:999"
+    );
+    assert_eq!(
+        source("0:1")["interactions"][1]["actions"][0]["destination"]["state"],
+        "unresolved"
+    );
+    assert!(
+        !states
+            .to_string()
+            .contains("API failure must not be inferred")
+    );
+    assert!(
+        !states
+            .to_string()
+            .contains("https://example.invalid/do-not-open")
+    );
+    assert!(
+        !states["sets"][0]["variants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["nodeId"] == "0:42")
+    );
+    let raw: Value = serde_json::from_str(&f.cli("node", &["0:2"]).unwrap()).unwrap();
+    assert_eq!(
+        raw["symbolData"]["symbolOverrides"][4]["prototypeInteractions"][0]["event"]["interactionType"],
+        source("I0:2;0:112")["interactions"][0]["trigger"]["value"]
+    );
+    let cli: Value =
+        serde_json::from_str(&f.cli("inspect", &["0:1", "--states"]).unwrap()).unwrap();
+    assert_eq!(&cli["states"], states);
+    let bundle = f.dir.join("prototype.zip");
+    let reply = f.tool("bundle", json!({"node":"0:1","states":true,"out":bundle}));
+    assert_eq!(reply["isError"], false, "{reply}");
+    let files = bundle_files(&bundle);
+    let bundled: Value = serde_json::from_slice(&files["design/states.json"]).unwrap();
+    assert_eq!(&bundled, states);
+    let nodes: Value = serde_json::from_slice(&files["design/nodes.json"]).unwrap();
+    assert_eq!(
+        descendant(&nodes["document"], "I0:2;0:112")["_figlens"]["prototype"]["sourceNodeId"],
+        "0:2"
+    );
+    let context = std::str::from_utf8(&files["context.md"]).unwrap();
+    assert!(context.contains("`ON_PRESS`"));
+    assert!(context.contains("`0:999` (`unresolved`)"));
+    assert!(context.contains("`symbolData.symbolOverrides[4].prototypeInteractions`"));
+    assert!(!context.contains("API failure must not be inferred"));
+    let html = f.dir.join("prototype.html");
+    f.cli("preview", &["0:1", "--out", html.to_str().unwrap()])
+        .unwrap();
+    let html = std::fs::read_to_string(html).unwrap();
+    let boot = html
+        .split("<script id=\"boot\" type=\"application/json\">")
+        .nth(1)
+        .unwrap()
+        .split("</script>")
+        .next()
+        .unwrap();
+    let boot: Value = serde_json::from_str(boot).unwrap();
+    assert_eq!(
+        boot["snapshot"]["interactions"]["I0:2;0:112"],
+        descendant(&nodes["document"], "I0:2;0:112")["_figlens"]["prototype"]
+    );
+    for id in ["I0:2;0:14", "I0:3;0:14"] {
+        assert_eq!(
+            boot["snapshot"]["interactions"][id]["inheritanceState"],
+            "unsupported"
+        );
+        assert_eq!(
+            boot["snapshot"]["interactions"][id],
+            descendant(&nodes["document"], id)["_figlens"]["prototype"]
+        );
+    }
+    assert_eq!(
+        boot["snapshot"]["interactions"]["0:1"]["interactions"][1]["trigger"]["state"],
+        "absent"
+    );
+    let plain = Fixture::with_variants(true);
+    let path = plain.dir.join("without-prototype.zip");
+    plain
+        .cli("bundle", &["0:1", path.to_str().unwrap()])
+        .unwrap();
+    let plain = bundle_files(&path);
+    for (path, bytes) in plain.iter().filter(|(path, _)| {
+        path.starts_with("assets/")
+            || path.starts_with("references/")
+            || *path == "assets.json"
+            || *path == "missing-assets.json"
+    }) {
+        assert_eq!(
+            &files[path], bytes,
+            "prototype changed asset/reference {path}"
+        );
+    }
+}
+
+#[test]
+fn truncated_prototype_actions_match_cli_mcp_bundle_and_snapshot() {
+    let f = Fixture::build(true, true);
+    let cli: Value =
+        serde_json::from_str(&f.cli("inspect", &["0:43", "--states"]).unwrap()).unwrap();
+    let mcp = f.tool("inspect", json!({"node":"0:43", "states":true}));
+    assert_eq!(mcp["isError"], false, "{mcp}");
+    assert_eq!(mcp["structuredContent"], cli);
+    let evidence = &cli["states"]["triggerEvidence"]["nodes"][0];
+    assert_eq!(evidence["truncated"], true);
+    assert!(
+        evidence["interactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["actionsTruncated"] == true && i["actions"].as_array().unwrap().is_empty())
+    );
+    let raw: Value = serde_json::from_str(&f.cli("node", &["0:43"]).unwrap()).unwrap();
+    for interaction in evidence["interactions"].as_array().unwrap() {
+        let index = interaction["index"].as_u64().unwrap() as usize;
+        assert_eq!(
+            raw["prototypeInteractions"][index]["actions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            16
+        );
+    }
+    let cli_nodes: Value = serde_json::from_str(&f.cli("nodes", &["0:43"]).unwrap()).unwrap();
+    let mcp_nodes = f.tool("nodes", json!({"node":"0:43"}));
+    assert_eq!(mcp_nodes["isError"], false, "{mcp_nodes}");
+    assert_eq!(
+        serde_json::from_str::<Value>(mcp_nodes["content"][0]["text"].as_str().unwrap()).unwrap(),
+        cli_nodes
+    );
+    let mut projected = evidence.clone();
+    projected.as_object_mut().unwrap().remove("nodeId");
+    assert_eq!(cli_nodes["document"]["_figlens"]["prototype"], projected);
+    for mcp in [false, true] {
+        let bundle = f.dir.join("truncated-prototype.zip");
+        if mcp {
+            let reply = f.tool("bundle", json!({"node":"0:43","states":true,"out":bundle}));
+            assert_eq!(reply["isError"], false, "{reply}");
+        } else {
+            f.cli("bundle", &["0:43", bundle.to_str().unwrap(), "--states"])
+                .unwrap();
+        }
+        let files = bundle_files(&bundle);
+        let states: Value = serde_json::from_slice(&files["design/states.json"]).unwrap();
+        let nodes: Value = serde_json::from_slice(&files["design/nodes.json"]).unwrap();
+        assert_eq!(states, cli["states"]);
+        assert_eq!(nodes, cli_nodes);
+        assert!(
+            std::str::from_utf8(&files["context.md"])
+                .unwrap()
+                .contains("truncated: true")
+        );
+    }
+    let html = f.dir.join("truncated-prototype.html");
+    f.cli("preview", &["0:43", "--out", html.to_str().unwrap()])
+        .unwrap();
+    let html = std::fs::read_to_string(html).unwrap();
+    let boot: Value = serde_json::from_str(
+        html.split("<script id=\"boot\" type=\"application/json\">")
+            .nth(1)
+            .unwrap()
+            .split("</script>")
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(boot["snapshot"]["interactions"]["0:43"], projected);
+}
+
+#[test]
+fn variant_comparison_cli_and_mcp_match_without_changing_existing_outputs() {
+    let f = Fixture::build(true, true);
+    let normal: Value =
+        serde_json::from_str(&f.cli("inspect", &["0:10", "--states", "--images"]).unwrap())
+            .unwrap();
+    assert!(normal.get("variantComparison").is_none());
+    let cli: Value = serde_json::from_str(
+        &f.cli(
+            "inspect",
+            &["0:10", "--states", "--images", "--compare-variant", "0-41"],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mcp=f.tool("inspect",json!({"node":"0:10","states":true,"images":true,"compareVariant":"https://www.figma.com/design/Key/Test?node-id=0-41"}));
+    assert_eq!(mcp["isError"], false, "{mcp}");
+    assert_eq!(mcp["structuredContent"], cli);
+    assert_eq!(cli["variantComparison"]["leftNodeId"], "0:10");
+    assert_eq!(cli["variantComparison"]["rightNodeId"], "0:41");
+    assert_eq!(cli["variantComparison"]["componentSetId"], "0:40");
+    let mut original = cli.clone();
+    original
+        .as_object_mut()
+        .unwrap()
+        .remove("variantComparison");
+    assert_eq!(original, normal);
+    let shallow: Value = serde_json::from_str(
+        &f.cli(
+            "inspect",
+            &["0:10", "--depth", "0", "--compare-variant", "0:41"],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(shallow["variantComparison"], cli["variantComparison"]);
+    for id in ["0:2", "0:42", "0:20", "0:10", "9:9", "I0:2;0:14"] {
+        assert!(
+            f.cli("inspect", &["0:10", "--compare-variant", id])
+                .is_err(),
+            "{id}"
+        );
+        let reply = f.tool("inspect", json!({"node":"0:10","compareVariant":id}));
+        assert_eq!(reply["isError"], true, "{id}: {reply}");
+    }
+    assert!(f.cli("inspect", &["0:10", "--compare-variant"]).is_err());
 }
 
 #[test]
