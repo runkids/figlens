@@ -303,7 +303,14 @@ fn visible(p: &Json) -> bool {
 /// This is deliberately not a completeness or pixel-fidelity claim.
 pub(crate) fn diagnostics(tree: &Tree, n: &Json) -> Vec<Json> {
     let mut out = Vec::new();
+    let mut drawn_strokes = None;
     let mut report = |feature: &str, field: String, state: &str, reason: &str| {
+        // Decode stroke outlines only when a paint would otherwise produce a warning.
+        if field.starts_with("strokePaints[")
+            && !*drawn_strokes.get_or_insert_with(|| !stroke_shapes(tree, n).is_empty())
+        {
+            return;
+        }
         out.push(serde_json::json!({
             "nodeId": n["id"], "feature": feature, "field": field,
             "state": state, "reason": reason,
@@ -360,10 +367,7 @@ pub(crate) fn diagnostics(tree: &Tree, n: &Json) -> Vec<Json> {
     if base {
         lists.push((&r["fillPaints"], "fillPaints".into()));
     }
-    if r["strokeWeight"].as_f64().unwrap_or(0.0) > 0.0
-        && has_paint(&r["strokePaints"])
-        && !stroke_shapes(tree, n).is_empty()
-    {
+    if r["strokeWeight"].as_f64().unwrap_or(0.0) > 0.0 && has_paint(&r["strokePaints"]) {
         lists.push((&r["strokePaints"], "strokePaints".into()));
     }
     for (list, path) in lists {
@@ -1537,6 +1541,60 @@ pub fn render_bounds(n: &Json) -> Option<Rect> {
 mod tests {
     use super::*;
     use std::fs::File;
+
+    #[test]
+    fn diagnostics_preserve_drawn_stroke_warnings_and_other_sources() {
+        use kiwi_schema::Value;
+        let mut bytes = Vec::new();
+        for (command, x, y) in [(1u8, 0f32, 0f32), (2, 16., 0.), (2, 16., 4.), (2, 0., 4.)] {
+            bytes.push(command);
+            bytes.extend(x.to_le_bytes());
+            bytes.extend(y.to_le_bytes());
+        }
+        bytes.push(0);
+        let blob = Value::Object(
+            "Blob",
+            std::collections::HashMap::from([("bytes", Value::Bytes(bytes))]),
+        );
+        let tree = Tree {
+            nodes: Default::default(),
+            children: Default::default(),
+            blobs: vec![&blob],
+        };
+        for geometry in [false, true] {
+            for weight in [0, 2] {
+                let mut node = serde_json::json!({"id":"1:1","type":"RECTANGLE","_r":{
+                    "fillPaints":[{"type":"GRADIENT_ANGULAR"}],
+                    "strokeWeight":weight,
+                    "strokePaints":[
+                        {"type":"SOLID"},
+                        {"type":"IMAGE","imageScaleMode":"FILL","paintFilter":{"exposure":0.2}},
+                        {"type":"GRADIENT_LINEAR"},
+                        {"type":"GRADIENT_ANGULAR","visible":false},
+                        {"type":"GRADIENT_DIAMOND","opacity":0},
+                        {"type":"GRADIENT_ANGULAR"},
+                        {"type":"IMAGE","imageScaleMode":"TILE","paintFilter":{"contrast":0.2}}
+                    ],
+                    "effects":[{"type":"BACKGROUND_BLUR","radius":4}]
+                }});
+                if geometry {
+                    node["_r"]["strokeGeometry"] = serde_json::json!([{"commandsBlob":0}]);
+                }
+                let found = diagnostics(&tree, &node);
+                let fields: Vec<_> = found.iter().map(|d| d["field"].as_str().unwrap()).collect();
+                let mut expected = vec!["fillPaints[0].type"];
+                if geometry && weight > 0 {
+                    expected.extend([
+                        "strokePaints[5].type",
+                        "strokePaints[6].imageScaleMode",
+                        "strokePaints[6].paintFilter.contrast",
+                    ]);
+                }
+                expected.push("effects[0]");
+                assert_eq!(fields, expected);
+            }
+        }
+    }
 
     #[test]
     fn diagnostics_report_only_active_paint_fallbacks() {
