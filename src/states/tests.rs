@@ -214,6 +214,59 @@ fn malformed_property_reference_and_definition_guids_remain_unsupported() {
 }
 
 #[test]
+fn malformed_parent_guids_do_not_establish_membership_or_list_candidates() {
+    for (invalid, collision) in [
+        (
+            obj(vec![
+                ("sessionID", Kiwi::String("bad".into())),
+                ("localID", Kiwi::UInt(40)),
+            ]),
+            40,
+        ),
+        (
+            obj(vec![
+                ("sessionID", Kiwi::UInt(0)),
+                ("localID", Kiwi::String("bad".into())),
+            ]),
+            0,
+        ),
+    ] {
+        let message = message(vec![
+            node(
+                10,
+                collision,
+                "SYMBOL",
+                vec![("parentIndex", obj(vec![("guid", invalid)]))],
+            ),
+            node(11, collision, "SYMBOL", vec![]),
+            node(
+                collision,
+                99,
+                "FRAME",
+                vec![("isStateGroup", Kiwi::Bool(true))],
+            ),
+        ]);
+        let tree = Tree::new(&message);
+        let result = inspect_root(&tree, "0:2");
+        assert!(result["sets"].as_array().unwrap().is_empty());
+        assert_eq!(result["instances"][0]["state"], "unsupported_component");
+        assert_eq!(result["instances"][0]["reason"], "invalid_component_parent");
+        assert_eq!(result["instances"][0]["componentSetId"], Value::Null);
+        let selected = inspect_root(&tree, "0:10");
+        assert!(selected["sets"].as_array().unwrap().is_empty());
+        let set_id = format!("0:{collision}");
+        let selected = inspect_root(&tree, &set_id);
+        let set = &selected["sets"][0];
+        let variants = set["variants"].as_array().unwrap();
+        assert!(variants.iter().all(|v| v["nodeId"] != "0:10"));
+        assert!(variants.iter().any(|v| v["nodeId"] == "0:11"));
+        assert_eq!(set["membershipComplete"], false);
+        assert_eq!(set["membershipState"], "unsupported");
+        assert_eq!(set["membershipReason"], "invalid_component_parent");
+    }
+}
+
+#[test]
 fn membership_properties_and_source_ids_are_explicit_and_deduplicated() {
     let message = message(vec![]);
     let tree = Tree::new(&message);

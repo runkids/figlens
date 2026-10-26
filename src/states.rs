@@ -226,6 +226,18 @@ fn component_set(
         let Some(node) = tree.nodes.get(id).filter(|n| plugin_type(n) == "COMPONENT") else {
             continue;
         };
+        if node
+            .get("parentIndex")
+            .and_then(|p| p.get("guid"))
+            .and_then(definition_id)
+            .as_deref()
+            != Some(set)
+        {
+            complete = false;
+            result["membershipState"] = "unsupported".into();
+            result["membershipReason"] = "invalid_component_parent".into();
+            continue;
+        }
         if variants.len() == MAX_SET_VARIANTS || *variant_count == MAX_VARIANTS {
             budget.stop("variant_limit");
             complete = false;
@@ -309,6 +321,9 @@ pub fn inspect(tree: &Tree, document: &Value, file: &Path) -> Value {
                 .or_else(|| node["componentId"].as_str())
                 .or_else(|| (kind == "COMPONENT").then_some(id));
             let raw = main.and_then(|m| tree.nodes.get(m));
+            let unsupported_parent = raw
+                .and_then(|n| n.get("parentIndex"))
+                .is_some_and(|p| p.get("guid").and_then(definition_id).is_none());
             let set = if kind == "COMPONENT_SET" {
                 source
                     .or(Some(id))
@@ -322,7 +337,7 @@ pub fn inspect(tree: &Tree, document: &Value, file: &Path) -> Value {
                 raw.filter(|n| plugin_type(n) == "COMPONENT")
                     .and_then(|n| n.get("parentIndex"))
                     .and_then(|p| p.get("guid"))
-                    .and_then(guid_key)
+                    .and_then(definition_id)
                     .filter(|s| {
                         tree.nodes
                             .get(s)
@@ -355,8 +370,11 @@ pub fn inspect(tree: &Tree, document: &Value, file: &Path) -> Value {
                     budget.stop("instance_limit");
                 } else {
                     let mut item = json!({"nodeId": id, "componentId": main, "componentSetId": set,
-                        "state": if raw.is_none() { "missing_component" } else if raw.is_some_and(|n| plugin_type(n) != "COMPONENT") { "unsupported_component" } else if set.is_none() { "no_component_set" } else { "recorded" },
+                        "state": if raw.is_none() { "missing_component" } else if raw.is_some_and(|n| plugin_type(n) != "COMPONENT") || unsupported_parent { "unsupported_component" } else if set.is_none() { "no_component_set" } else { "recorded" },
                         "visible": node["visible"] != false});
+                    if unsupported_parent {
+                        item["reason"] = "invalid_component_parent".into();
+                    }
                     if main == node["componentId"].as_str()
                         && node["componentProperties"].is_object()
                     {
