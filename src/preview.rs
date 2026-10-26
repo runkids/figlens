@@ -79,45 +79,15 @@ fn catalog(tree: &Tree, id: &str) -> Value {
     out
 }
 
-/// Prototype interactions of every layer in a scope, from the raw `.fig` node (an expanded instance
-/// child reads its source layer): trigger, action and, when it exists, the destination and its name.
-fn interactions(tree: &Tree, n: &Value, out: &mut serde_json::Map<String, Value>) {
-    if let Some(id) = n["id"].as_str() {
-        let source = id.rsplit(';').next().unwrap_or(id).trim_start_matches('I');
-        let raw = tree
-            .nodes
-            .get(source)
-            .map(|v| crate::to_json(v))
-            .unwrap_or_default();
-        let list: Vec<Value> = raw["prototypeInteractions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|i| i["isDeleted"] != true)
-            .flat_map(|i| {
-                let trigger = i["event"]["interactionType"].clone();
-                i["actions"].as_array().into_iter().flatten().map(move |a| {
-                    let t = &a["transitionNodeID"];
-                    let target = format!("{}:{}", t["sessionID"], t["localID"]);
-                    let name = tree
-                        .nodes
-                        .get(&target)
-                        .map(|v| crate::to_json(v)["name"].clone());
-                    json!({
-                        "trigger": trigger,
-                        "action": a["navigationType"].as_str().or(a["connectionType"].as_str()),
-                        "target": name.is_some().then_some(target),
-                        "targetName": name,
-                    })
-                })
-            })
-            .collect();
-        if !list.is_empty() {
-            out.insert(id.to_owned(), Value::Array(list));
-        }
+/// Share the exact source/override evidence emitted by the effective subtree resolver.
+fn interactions(n: &Value, out: &mut serde_json::Map<String, Value>) {
+    if let Some(id) = n["id"].as_str()
+        && n["_figlens"]["prototype"].is_object()
+    {
+        out.insert(id.to_owned(), n["_figlens"]["prototype"].clone());
     }
     for child in n["children"].as_array().into_iter().flatten() {
-        interactions(tree, child, out);
+        interactions(child, out);
     }
 }
 
@@ -180,7 +150,7 @@ fn data(tree: &Tree, file: &Path, id: &str, image: bool) -> Result<Value> {
     let area = render::export_area(p.node()).ok_or("node has no export area")?;
     let (mut geometry, mut paths) = (serde_json::Map::new(), serde_json::Map::new());
     let mut prototype = serde_json::Map::new();
-    interactions(tree, p.node(), &mut prototype);
+    interactions(p.node(), &mut prototype);
     pick_geometry(p.node(), &mut geometry);
     pick_paths(tree, p.node(), &mut paths, &mut (512 << 10));
     let mut doc = p.document.clone();

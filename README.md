@@ -207,17 +207,19 @@ skillshare sync && skillshare sync mcp --global
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | Node ids, types and names; indented text or nested JSON |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Case-insensitive search over layer names and text; paths, sizes and previews. Default 20 results (1-200) |
-| `inspect <file> <node> [--depth N] [--images]` | Compact expanded layout/text summary, at most 200 nodes. `--images` adds bitmap dimensions and crop footprints |
+| `inspect <file> <node> [--depth N] [--images] [--states]` | Compact expanded layout/text summary, at most 200 nodes. `--images` adds bitmap dimensions and crop footprints |
 | `nodes <file> <node>` | REST-shaped JSON: expanded instances and overrides, auto-layout, text styles, fills, effects, bound variables, component properties, render bounds |
 | `variables <file> [node]` | A frame's bound variables; without a node, every local variable |
-| `bundle <file> <node> <out.zip>` | A design bundle for one frame; prints `{nodeId, path, warnings}` |
-| `bundle <file> --frames <list> --out-dir <dir> [--jobs N]` | Many bundles from one decode, in parallel |
+| `bundle <file> <node> <out.zip> [--states]` | A design bundle for one frame; prints `{nodeId, path, warnings}` |
+| `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | Many bundles from one decode, in parallel |
 | `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP or AVIF; `--max-kb` lowers lossy quality until it fits |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Local read-only viewer; `--out` writes a standalone offline snapshot |
 | `compare <file> <nodes.json> <node>` | Diff against a REST export of the same frame |
 | `node <file> <node>` | One raw `.fig` node |
 | `mcp` | Local MCP server over stdio |
 | `update` | Replace the binary with the latest release |
+
+For related component variants, use `inspect --states` or `bundle --states` (MCP `states: true`, default false; no configuration change). Evidence retains source, unknown and truncation markers. Bundles add `design/states.json` and a `context.md` summary. See [state evidence](wiki/states.md) for scope and limits.
 
 A node argument accepts `12:345`, `12-345` or a Figma URL with `?node-id=`. `<file>` can also be `gs://bucket/object`, downloaded with your `gcloud` login and cached. See the [GCS snapshot cookbook](wiki/gcs.md) for a fixed-object handoff, access requirements and refresh limits. Each CLI call decodes the file; MCP reuses the last unchanged local file, while remote calls parse again. Run `figlens --help` for usage.
 

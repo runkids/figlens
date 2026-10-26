@@ -112,6 +112,7 @@ pub struct Expanded {
     pub matrix: Mat,
     /// Effective placement and overridden kiwi fields, applied over `source`'s own.
     pub props: Map<String, Json>,
+    pub(crate) prototype_source: Option<crate::prototype::Source>,
 }
 
 /// Expanded nodes plus their child order (keys: instance or expanded ids).
@@ -129,6 +130,7 @@ struct Patch {
     transform: Option<Mat>,
     swap: Option<String>,
     props: Map<String, Json>,
+    prototype_source: Option<crate::prototype::Source>,
 }
 
 impl Patch {
@@ -146,6 +148,7 @@ impl Patch {
                 }
                 _ => Map::new(),
             },
+            prototype_source: None,
         }
     }
 
@@ -158,6 +161,7 @@ impl Patch {
             transform: self.transform.or(inner.transform),
             swap: self.swap.or(inner.swap),
             props: inner.props.into_iter().chain(self.props).collect(),
+            prototype_source: self.prototype_source.or(inner.prototype_source),
         }
     }
 }
@@ -210,13 +214,20 @@ fn path_key(entry: &Value) -> String {
 }
 
 /// One patch per guidPath; a path can have several entries (e.g. a swap, then a size), merged with the later one winning per field.
-fn entries(list: Option<&Value>) -> Patches {
+fn entries(list: Option<&Value>, source: Option<&str>) -> Patches {
     let mut patches = Patches::new();
     if let Some(Value::Array(items)) = list {
-        for entry in items {
+        for (index, entry) in items.iter().enumerate() {
             let key = path_key(entry);
             let previous = patches.remove(&key).unwrap_or_default();
-            patches.insert(key, Patch::from_value(entry).over(previous));
+            let mut patch = Patch::from_value(entry);
+            if entry.get("prototypeInteractions").is_some() {
+                patch.prototype_source = source.map(|node_id| crate::prototype::Source {
+                    node_id: node_id.into(),
+                    override_index: Some(index),
+                });
+            }
+            patches.insert(key, patch.over(previous));
         }
     }
     patches
@@ -425,11 +436,11 @@ pub fn expand_instances(tree: &Tree, root: &str) -> Expansion {
             tree,
             &main,
             "",
-            entries(sd.and_then(|s| s.get("symbolOverrides"))),
+            entries(sd.and_then(|s| s.get("symbolOverrides")), Some(&id)),
             inst,
             &Patch::default(),
         );
-        let dv = entries(inst.get("derivedSymbolData"));
+        let dv = entries(inst.get("derivedSymbolData"), None);
         let resize = resized(
             tree.nodes[&main].get("size").map(vec2),
             inst.get("size").map(vec2),
@@ -581,6 +592,15 @@ impl Expander<'_, '_> {
                 .entry(parent.to_owned())
                 .or_default()
                 .push(id.clone());
+            let prototype_source = o.prototype_source.clone().or_else(|| {
+                (source != *child_id
+                    && kind == Some("INSTANCE")
+                    && child.get("prototypeInteractions").is_some())
+                .then(|| crate::prototype::Source {
+                    node_id: child_id.clone(),
+                    override_index: None,
+                })
+            });
             self.out.nodes.insert(
                 id.clone(),
                 Expanded {
@@ -590,6 +610,7 @@ impl Expander<'_, '_> {
                     size,
                     matrix,
                     props,
+                    prototype_source,
                 },
             );
             // Inside an expanded instance, hidden nodes keep the node but omit its children.
@@ -613,11 +634,15 @@ impl Expander<'_, '_> {
                     tree,
                     &nested,
                     &pk,
-                    nest(ov, &pk, entries(sd.and_then(|s| s.get("symbolOverrides")))),
+                    nest(
+                        ov,
+                        &pk,
+                        entries(sd.and_then(|s| s.get("symbolOverrides")), Some(child_id)),
+                    ),
                     child,
                     &o,
                 );
-                let merged_derived = nest(dv, &pk, entries(child.get("derivedSymbolData")));
+                let merged_derived = nest(dv, &pk, entries(child.get("derivedSymbolData"), None));
                 let main_size = tree
                     .nodes
                     .get(&nested)
@@ -1192,7 +1217,7 @@ mod tests {
                 HashMap::from([("guidPath", path()), ("size", size)]),
             ),
         ]);
-        let patch = &entries(Some(&list))["7:42"];
+        let patch = &entries(Some(&list), None)["7:42"];
         assert_eq!(
             (patch.swap.as_deref(), patch.size),
             (Some("18:1"), Some(v2(10.0, 20.0)))

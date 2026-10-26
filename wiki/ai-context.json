@@ -109,6 +109,8 @@
     }
   },
   "unrouted": {
+    "wiki/prototype.md": "Field reference linked from fig-format.md, states.md and preview.md; read when changing prototype projection, provenance or unknown markers.",
+    "wiki/states.md": "Field reference linked from fig-format.md and wiki/README.md; read when changing related-variant inventory or its limits.",
     "wiki/semantics.md": "Field reference linked from fig-format.md and README.md; read when changing partial semantics or provenance.",
     "wiki/history/pi-workflow.md": "Historical milestone indexed in wiki/README.md; read only when explicitly revisiting this implementation."
   }

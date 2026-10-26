@@ -88,26 +88,29 @@ pub fn find(
     Ok(json!({"root": root, "results": results, "truncated": truncated}))
 }
 
-pub fn inspect(tree: &Tree, id: &str, depth: usize) -> Result<Value, Box<dyn Error>> {
-    if depth > 10 {
-        return Err("--depth takes 0-10 for inspect".into());
-    }
-    let doc = figlens::rest::resolve_nodes(tree, id)?;
-    Ok(inspect_document(&doc["document"], depth))
-}
-
-pub fn inspect_images(
+pub fn inspect(
     tree: &Tree,
     id: &str,
     depth: usize,
     fig: &Path,
+    images: bool,
+    states: bool,
 ) -> Result<Value, Box<dyn Error>> {
     if depth > 10 {
         return Err("--depth takes 0-10 for inspect".into());
     }
-    let doc = figlens::rest::resolve_render_nodes(tree, id)?;
+    let doc = if images {
+        figlens::rest::resolve_render_nodes(tree, id)?
+    } else {
+        figlens::rest::resolve_nodes(tree, id)?
+    };
     let mut result = inspect_document(&doc["document"], depth);
-    result["images"] = figlens::images::inspect(fig, &doc["document"])?;
+    if images {
+        result["images"] = figlens::images::inspect(fig, &doc["document"])?;
+    }
+    if states {
+        result["states"] = figlens::states::inspect(tree, &doc["document"], fig);
+    }
     Ok(result)
 }
 
@@ -416,11 +419,11 @@ mod tests {
         let message = message();
         let tree = Tree::new(&message);
         let full = figlens::rest::nodes(&tree, "0:2");
-        let shallow = inspect(&tree, "0:2", 0).unwrap();
+        let shallow = inspect(&tree, "0:2", 0, Path::new("test.fig"), false, false).unwrap();
         assert_eq!(shallow["node"]["childCount"], 2);
         assert!(shallow["node"].get("children").is_none());
         assert_eq!(shallow["truncated"], true);
-        let summary = inspect(&tree, "0:2", 2).unwrap();
+        let summary = inspect(&tree, "0:2", 2, Path::new("test.fig"), false, false).unwrap();
         assert_eq!(summary["truncated"], false);
         assert_eq!(
             summary["node"]["absoluteBoundingBox"],

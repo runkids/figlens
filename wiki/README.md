@@ -24,6 +24,8 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 ## Field reference
 
 - [Partial semantic fields](semantics.md): emitted mappings, unknowns, provenance and validation limits; read when working on these fields.
+- [Related component variants](states.md): opt-in inspect inventory, source IDs, evidence gaps and bounds.
+- [Prototype field evidence](prototype.md): exact event/action/destination sources, instance limits and unknowns.
 
 ## History
 

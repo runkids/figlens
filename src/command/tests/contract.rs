@@ -132,6 +132,71 @@ fn discovery_and_preparation_share_defaults() {
 }
 
 #[test]
+fn inspect_states_is_an_optional_strict_boolean() {
+    let args = json!({"file":"absent.fig", "node":"0:1"});
+    assert_eq!(
+        check("inspect", args.clone()).unwrap().argument("states"),
+        false
+    );
+    for value in [
+        json!(true),
+        json!(false),
+        json!("true"),
+        json!(1),
+        Value::Null,
+    ] {
+        let mut args = args.clone();
+        args["states"] = value.clone();
+        assert_eq!(check("inspect", args).is_ok(), value.is_boolean());
+    }
+    let list = mcp_reply(r#"{"id":1,"method":"tools/list"}"#).unwrap();
+    let tool = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "inspect")
+        .unwrap();
+    assert_eq!(
+        tool["inputSchema"]["properties"]["states"]["default"],
+        false
+    );
+    assert_eq!(
+        tool["inputSchema"]["properties"]["states"]["type"],
+        "boolean"
+    );
+    assert_eq!(
+        tool["outputSchema"]["properties"]["states"]["type"],
+        "object"
+    );
+    assert!(
+        !tool["outputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("states"))
+    );
+}
+
+#[test]
+fn bundle_states_is_an_optional_strict_boolean() {
+    let base = json!({"file":"absent.fig", "node":"0:1", "out":"out.zip"});
+    assert_eq!(
+        check("bundle", base.clone()).unwrap().argument("states"),
+        false
+    );
+    for value in [
+        json!(true),
+        json!(false),
+        json!("true"),
+        json!(1),
+        Value::Null,
+    ] {
+        let mut args = base.clone();
+        args["states"] = value.clone();
+        assert_eq!(check("bundle", args).is_ok(), value.is_boolean());
+    }
+}
+
+#[test]
 fn stable_error_codes_preserve_tool_recovery_and_redact_sources() {
     let sensitive = contract::source(
         "gs://example/object?signature=hidden",
