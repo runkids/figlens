@@ -56,7 +56,7 @@ function prototypeRows(evidence) {
         }
         if (interaction.actions?.length && actionsTruncated) rows.push({label: 'Action list truncated', destination: 'Inspect source fields for omitted actions', target: null});
     }
-    if (!rows.length) rows.push({label: evidence.state === 'unsupported' ? 'Prototype source unsupported' : 'No undeleted records in the checked prototype list', destination: '', target: null});
+    if (!rows.length) rows.push({label: evidence.state === 'unsupported' ? 'Prototype source unsupported' : 'No undeleted records in the checked prototype list', destination: 'No destination to display', target: null});
     if (evidence.truncated) rows.push({label: 'Prototype evidence truncated', destination: 'Inspect source fields for omitted records', target: null});
     return rows;
 }

@@ -306,12 +306,16 @@ fn bind_properties(
                         .flat_map(|v| [&v["textDataValue"], &v["textValue"]])
                         .find(|v| v["characters"].is_string() || v.is_string())
                 {
-                    let text = if text.is_string() {
-                        serde_json::json!({ "characters": text })
-                    } else {
-                        text.clone()
+                    let mut data = match child.get("textData").map(to_json) {
+                        Some(Json::Object(data)) => data,
+                        _ => Map::new(),
                     };
-                    patch.props.insert("textData".into(), text);
+                    if let Some(fields) = text.as_object() {
+                        data.extend(fields.clone());
+                    } else {
+                        data.insert("characters".into(), text.clone());
+                    }
+                    patch.props.insert("textData".into(), Json::Object(data));
                 }
                 if enum_name(reference, "componentPropNodeField") == Some("VISIBLE")
                     && patch.visible.is_none()
@@ -969,6 +973,7 @@ mod tests {
             (0, "查看全部", false),
             (1, "Plain label", false),
             (2, "String label", false),
+            (2, "按钮文字", false),
             (3, "Fallback label", false),
             (0, "", false),
             (0, "Property label", true),
@@ -1048,7 +1053,27 @@ mod tests {
             ]);
             let child = obj(vec![
                 ("type", Value::Enum("NodeType", "TEXT")),
-                ("textData", text_data("按钮文字")),
+                (
+                    "textData",
+                    obj(vec![
+                        ("characters", Value::String("按钮文字".into())),
+                        ("characterStyleIDs", Value::Array(vec![Value::UInt(1); 4])),
+                        (
+                            "styleOverrideTable",
+                            Value::Array(vec![obj(vec![
+                                ("styleID", Value::UInt(1)),
+                                ("fontSize", Value::Float(22.0)),
+                            ])]),
+                        ),
+                        (
+                            "lines",
+                            Value::Array(vec![obj(vec![
+                                ("lineType", Value::Enum("LineType", "UNORDERED_LIST")),
+                                ("indentationLevel", Value::UInt(2)),
+                            ])]),
+                        ),
+                    ]),
+                ),
                 (
                     "componentPropRefs",
                     Value::Array(vec![obj(vec![
@@ -1073,6 +1098,16 @@ mod tests {
             };
             let ex = expand_instances(&tree, "inst");
             assert_eq!(ex.nodes["Iinst;1:4"].props["textData"]["characters"], text);
+            let doc = crate::rest::nodes(&tree, "inst");
+            let direct = &doc["document"]["children"][0];
+            assert_eq!(direct["characters"], text);
+            assert_eq!(
+                direct["characterStyleOverrides"],
+                serde_json::json!([1, 1, 1, 1])
+            );
+            assert_eq!(direct["styleOverrideTable"]["1"]["fontSize"], 22.0);
+            assert_eq!(direct["lineTypes"], serde_json::json!(["UNORDERED"]));
+            assert_eq!(direct["lineIndentations"], serde_json::json!([2]));
             assert_eq!(
                 ex.nodes["Iinst;1:3;1:4"].props["textData"]["characters"],
                 if explicit { "Explicit label" } else { text }

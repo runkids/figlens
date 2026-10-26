@@ -37,6 +37,19 @@ test('prototype unsupported values and explicit empty actions keep their own mea
   assert.equal(rows[1].label,'Trigger not specified → No actions recorded');
 });
 
+test('empty and unsupported prototype evidence has a renderable status row', () => {
+  for (const evidence of [
+    {state:'recorded', interactions:[]},
+    {state:'recorded', interactions:[], deletedInteractionCount:1},
+    {state:'unsupported', reason:'malformed_interaction_list'},
+  ]) {
+    const rows = prototypeRows(evidence);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].destination, 'No destination to display');
+    assert.equal(rows[0].target, null);
+  }
+});
+
 test('prototype omitted action lists stay unknown, including older truncated envelopes', () => {
   for (const actionsTruncated of [true, undefined]) {
     const rows = prototypeRows({state:'recorded', sourceNodeId:'0:1', truncated:true, interactions:[
