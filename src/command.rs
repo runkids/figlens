@@ -434,8 +434,9 @@ impl Command {
                     max_bytes,
                     max_size.filter(|&px| px > 0),
                 )?;
-                std::fs::write(&out, &image.bytes).map_err(|e| {
-                    figlens::FigError::new(figlens::ErrorKind::OutputWrite, e.to_string())
+                figlens::output::write(fig, &out, |file| {
+                    std::io::Write::write_all(file, &image.bytes)?;
+                    Ok(())
                 })?;
                 let value = json!({ "path": out.to_string_lossy(), "width": image.width, "height": image.height,
                     "bytes": image.bytes.len(), "quality": image.quality });

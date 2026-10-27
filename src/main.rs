@@ -30,6 +30,7 @@ usage:
   figlens inspect <file.fig> <node> [--depth N] [--images] [--states] [--compare-variant ID]
                                              compact layout/text summary, instances expanded;
                                              depth 1 (0-10), at most 200 nodes, 200 characters per text;
+                                             recorded text resize/truncation/decoration and known handoff gaps;
                                              --images adds source pixels/bytes and source-pixel crop rectangles;
                                              --states lists related component variants and evidence gaps;
                                              --compare-variant compares two stored variants in the same set
@@ -107,6 +108,29 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
+    if matches!(args.get(1).map(String::as_str), Some("-h" | "--help"))
+        && matches!(
+            args.first().map(String::as_str),
+            Some(
+                "tree"
+                    | "find"
+                    | "inspect"
+                    | "node"
+                    | "nodes"
+                    | "variables"
+                    | "bundle"
+                    | "export"
+                    | "compare"
+                    | "preview"
+                    | "mcp"
+                    | "cache"
+                    | "update"
+            )
+        )
+    {
+        writeln!(out, "{USAGE}")?;
+        return Ok(());
+    }
     match args.first().map(String::as_str) {
         None | Some("-h" | "--help" | "help") => {
             writeln!(out, "{USAGE}")?;

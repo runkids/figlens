@@ -1,12 +1,86 @@
 //! Stdio request admission and borrowed local Tree reuse.
 
 use std::error::Error;
+use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 
 use figlens::{Document, ErrorKind, Tree};
 use serde_json::{Value, json};
 
 use crate::{command, contract, workflow};
+
+const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
+const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
+struct ResponseSize(usize);
+
+impl std::io::Write for ResponseSize {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        if self.0 > MAX_RESPONSE_BYTES {
+            return Err(std::io::Error::other("response budget exceeded"));
+        }
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn bounded_response(value: Value) -> Value {
+    // Count the complete escaped wire message, including its newline, without another large buffer.
+    if serde_json::to_writer(&mut ResponseSize(1), &value).is_ok() {
+        return value;
+    }
+    let message = "response exceeds 8388608 bytes; use inspect, a scoped bundle, or CLI nodes instead of a larger MCP reply";
+    if value["result"].get("isError").is_some() {
+        let mut error = tool_reply(
+            "",
+            Err(contract::Failure::new(ErrorKind::ResponseBudget, message)),
+        );
+        if let Some(path) = value["result"]["structuredContent"].get("path") {
+            error["_meta"]["figlens"]["outputPath"] = path.clone();
+        }
+        response(&value["id"], error)
+    } else {
+        protocol(value["id"].clone(), -32603, message)
+    }
+}
+
+fn next_request(input: &mut impl BufRead, roots: &[PathBuf]) -> std::io::Result<Option<Admission>> {
+    loop {
+        let mut line = Vec::new();
+        if input
+            .by_ref()
+            .take(MAX_REQUEST_BYTES + 1)
+            .read_until(b'\n', &mut line)?
+            == 0
+        {
+            return Ok(None);
+        }
+        if line.len() as u64 > MAX_REQUEST_BYTES {
+            if line.last() != Some(&b'\n') {
+                input.skip_until(b'\n')?;
+            }
+            return Ok(Some(Admission::Reply(protocol(
+                Value::Null,
+                -32600,
+                "request line exceeds 1048576 bytes; send a smaller request",
+            ))));
+        }
+        match std::str::from_utf8(&line) {
+            Ok(line) if line.trim().is_empty() => continue,
+            Ok(line) => return Ok(Some(admit(line, roots))),
+            Err(_) => {
+                return Ok(Some(Admission::Reply(protocol(
+                    Value::Null,
+                    -32700,
+                    "parse error",
+                ))));
+            }
+        }
+    }
+}
 
 // Only admission can construct these values; execution consumes the checked paths.
 struct AdmittedCall {
@@ -242,21 +316,13 @@ fn stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
 
 /// Keep Document/message/Tree lexical ownership; carry admitted calls, never raw lines.
 pub fn serve(
-    input: impl std::io::BufRead,
+    mut input: impl std::io::BufRead,
     mut output: impl std::io::Write,
     roots: &[PathBuf],
 ) -> Result<(), Box<dyn Error>> {
-    let mut lines = input.lines();
-    let mut next = || -> Result<Option<Admission>, std::io::Error> {
-        for line in lines.by_ref() {
-            let line = line?;
-            if !line.trim().is_empty() {
-                return Ok(Some(admit(&line, roots)));
-            }
-        }
-        Ok(None)
-    };
+    let mut next = || next_request(&mut input, roots);
     let mut reply = |value: Value| -> Result<(), Box<dyn Error>> {
+        let value = bounded_response(value);
         writeln!(output, "{value}")?;
         output.flush()?;
         Ok(())

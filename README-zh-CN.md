@@ -225,7 +225,9 @@ skillshare sync && skillshare sync mcp --global
 
 比较同一 component set 的两个 variants：`inspect <file> <variantA> --compare-variant <variantB>`（MCP `compareVariant`）。`variantComparison` 列出原始字段及值集合差异，保留来源和未知标记；不猜测子节点配对。详见[比较限制](wiki/states.md#compare-two-variants)。
 
-node 参数接受 `12:345`、`12-345`，或带 `?node-id=` 的 Figma URL。`<file>` 也可以是 `gs://bucket/object`，通过你的 `gcloud` 登录下载并缓存。固定 object 交接、所需访问权限与更新限制，请参阅 [GCS 快照操作说明](wiki/gcs.md)。每次 CLI 调用都会解码文件；MCP 只复用最后读取且未变更的本地文件，远程输入仍会重新解析。运行 `figlens --help` 查看用法。
+node 参数接受 `12:345`、`12-345`，或带 `?node-id=` 的 Figma URL。`<file>` 也可以是 `gs://bucket/object`，通过你的 `gcloud` 登录下载并缓存。固定 object 交接、所需访问权限与更新限制，请参阅 [GCS 快照操作说明](wiki/gcs.md)。每次 CLI 调用都会解码文件；MCP 只复用最后读取且未变更的本地文件，远程输入仍会重新解析。运行 `figlens --help` 或 `figlens inspect --help`（也可用 `-h`）查看完整 CLI 用法。
+
+`inspect` 包含已记录的文字尺寸调整、截断、最大行数与装饰。`handoffDiagnostics` 会列出已保存但尚未输出的语义、数量、示例及[覆盖限制](wiki/semantics.md#known-handoff-gaps)。输出会保护源文件，完整写入后才替换目标。MCP 请求行上限为 1 MiB，完整响应上限为 8 MiB，超限会明确报错；CLI 仍可输出完整 JSON。
 
 <a id="limitations"></a>
 

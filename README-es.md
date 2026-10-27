@@ -225,7 +225,9 @@ Para variantes de componentes relacionadas, usa `inspect --states` o `bundle --s
 
 Compara dos variantes del mismo component set con `inspect <file> <variantA> --compare-variant <variantB>` (MCP `compareVariant`). `variantComparison` muestra diferencias de campos y conjuntos de valores almacenados, con IDs de origen y datos desconocidos, sin emparejar nodos hijos. Consulta los [límites](wiki/states.md#compare-two-variants).
 
-Un argumento de nodo acepta `12:345`, `12-345` o una URL de Figma con `?node-id=`. `<file>` también puede ser `gs://bucket/object`, descargado con tu login de `gcloud` y guardado en caché. Consulta la [guía de snapshots en GCS](wiki/gcs.md) para la entrega mediante un objeto fijo, los permisos necesarios y los límites de actualización. Cada llamada a la CLI decodifica el archivo; MCP solo reutiliza el último archivo local sin cambios. Las llamadas remotas vuelven a analizarlo. Ejecuta `figlens --help` para ver el uso.
+Un argumento de nodo acepta `12:345`, `12-345` o una URL de Figma con `?node-id=`. `<file>` también puede ser `gs://bucket/object`, descargado con tu login de `gcloud` y guardado en caché. Consulta la [guía de snapshots en GCS](wiki/gcs.md) para la entrega mediante un objeto fijo, los permisos necesarios y los límites de actualización. Cada llamada a la CLI decodifica el archivo; MCP solo reutiliza el último archivo local sin cambios. Las llamadas remotas vuelven a analizarlo. Ejecuta `figlens --help` o `figlens inspect --help` (también `-h`) para ver el uso completo de la CLI.
+
+`inspect` incluye el ajuste de tamaño del texto, el truncamiento, el máximo de líneas y la decoración registrados. `handoffDiagnostics` informa de semántica guardada pero no emitida, con recuentos, ejemplos y [límites de cobertura](wiki/semantics.md#known-handoff-gaps). Las salidas protegen el origen y reemplazan el destino tras completar la escritura. MCP limita las líneas de solicitud a 1 MiB y las respuestas completas a 8 MiB; si se supera el límite, devuelve un error explícito. El JSON completo sigue disponible mediante la CLI.
 
 <a id="limitations"></a>
 

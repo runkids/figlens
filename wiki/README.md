@@ -16,7 +16,7 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 | `accuracy` | Measuring output against Figma's own exports, running `compare`, finding test files | `accuracy.md` |
 | `release` | Packaging, installation acceptance, GitHub releases, Homebrew and npm | `release.md`, `installation.md` |
 | `review` | Delivering features/optimizations across CLI, MCP and Pi; reviews and PR follow-up | `review.md` |
-| `direction` | Deciding what to build next, or revisiting a past decision | `direction.md` |
+| `direction` | Deciding what to build next, or revisiting a past decision | `direction.md`, `handoff-research.md` |
 | `ai-context` | Maintaining this router: add, move or split docs, fix `check` | `ai-context.md` |
 
 `wiki/ai-context.json` is the only source of truth. This table is the human entry point. After changing topics, run `python3 scripts/ai-context.py check`.

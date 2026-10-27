@@ -59,6 +59,9 @@ If a topic goes over budget, split it rather than raising the cap. Skills are wo
 
 Pi viewer startup must wait for a successful catalog response, not just a printed URL; see `pi`.
 Check parsing budgets before Kiwi recursion or declared-length expansion; see `parsing`.
+Bound declared and actual original-image bytes per image and per scope before retaining them; see `parsing`.
+Publish bundle/export/snapshot files through `output::write` to protect sources and existing outputs; see `parsing`.
+Apply MCP budgets before request admission and to complete serialized replies; see `mcp`.
 Generated test fixtures use `src/test_support.rs` for atomic directory ownership and scoped cleanup; see `fig-format`.
 Image-fill changes must test shifted sprites exported from a clipping frame; see `render`.
 

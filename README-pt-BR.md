@@ -225,7 +225,9 @@ Para variantes de componentes relacionadas, use `inspect --states` ou `bundle --
 
 Compare duas variantes do mesmo component set com `inspect <file> <variantA> --compare-variant <variantB>` (MCP `compareVariant`). `variantComparison` mostra diferenças dos campos e conjuntos de valores armazenados, com IDs de origem e valores desconhecidos, sem parear nós filhos. Consulte os [limites](wiki/states.md#compare-two-variants).
 
-Um argumento de nó aceita `12:345`, `12-345` ou uma URL do Figma com `?node-id=`. `<file>` também pode ser `gs://bucket/object`, baixado com seu login do `gcloud` e armazenado em cache. Consulte o [guia de snapshots do GCS](wiki/gcs.md) para a troca por um objeto fixo, as permissões necessárias e os limites de atualização. Cada chamada da CLI decodifica o arquivo; MCP reutiliza apenas o último arquivo local sem alterações. Chamadas remotas analisam o arquivo novamente. Execute `figlens --help` para ver o uso.
+Um argumento de nó aceita `12:345`, `12-345` ou uma URL do Figma com `?node-id=`. `<file>` também pode ser `gs://bucket/object`, baixado com seu login do `gcloud` e armazenado em cache. Consulte o [guia de snapshots do GCS](wiki/gcs.md) para a troca por um objeto fixo, as permissões necessárias e os limites de atualização. Cada chamada da CLI decodifica o arquivo; MCP reutiliza apenas o último arquivo local sem alterações. Chamadas remotas analisam o arquivo novamente. Execute `figlens --help` ou `figlens inspect --help` (também `-h`) para ver o uso completo da CLI.
+
+`inspect` inclui redimensionamento do texto, truncamento, máximo de linhas e decoração registrados. `handoffDiagnostics` informa semântica salva, mas não emitida, com contagens, exemplos e [limites de cobertura](wiki/semantics.md#known-handoff-gaps). As saídas protegem a origem e substituem o destino após a escrita completa. MCP limita as linhas de requisição a 1 MiB e as respostas completas a 8 MiB; exceder o limite gera um erro explícito. O JSON completo continua disponível pela CLI.
 
 <a id="limitations"></a>
 

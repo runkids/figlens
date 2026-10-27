@@ -17,6 +17,7 @@ pub mod compare;
 pub mod expand;
 pub mod export;
 pub mod images;
+pub mod output;
 mod parse;
 pub mod preview;
 mod prototype;
@@ -40,6 +41,7 @@ pub enum ErrorKind {
     NodeNotFound,
     UnsupportedNode,
     ParseBudget,
+    ResponseBudget,
     OutputWrite,
     PermissionDenied,
     OperationFailed,
@@ -214,6 +216,28 @@ fn read_limited(reader: impl Read, limit: u64, kind: &str) -> Result<Vec<u8>, Bo
         return Err(parse::exceeded(kind, limit).into());
     }
     Ok(out)
+}
+
+/// Bound both the advertised and actual image bytes before retaining them in a scope.
+pub(crate) fn read_image(
+    reader: impl Read,
+    size: u64,
+    remaining: &mut u64,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    if size > parse::IMAGE_BYTES {
+        return Err(parse::exceeded("image bytes", parse::IMAGE_BYTES).into());
+    }
+    if size > *remaining {
+        return Err(parse::exceeded("total image bytes", parse::IMAGE_TOTAL_BYTES).into());
+    }
+    let (limit, kind) = if *remaining < parse::IMAGE_BYTES {
+        (*remaining, "remaining image bytes")
+    } else {
+        (parse::IMAGE_BYTES, "image bytes")
+    };
+    let bytes = read_limited(reader, limit, kind)?;
+    *remaining -= bytes.len() as u64;
+    Ok(bytes)
 }
 
 /// `12-345` (URL form), `12:345`, or a Figma URL with `node-id=` → `12:345`.
@@ -532,6 +556,31 @@ mod tests {
             read_limited(bytes.as_slice(), 10, "canvas bytes").unwrap(),
             bytes
         );
+    }
+
+    #[test]
+    fn image_reads_check_declared_actual_and_accumulated_bytes() {
+        let mut remaining = 5;
+        assert_eq!(read_image(&b"abc"[..], 3, &mut remaining).unwrap(), b"abc");
+        assert_eq!(remaining, 2);
+        assert!(read_image(std::io::empty(), 3, &mut remaining).is_err());
+        assert!(read_image(&b"abc"[..], 0, &mut remaining).is_err());
+        assert_eq!(
+            remaining, 2,
+            "failed reads do not spend the next call's budget"
+        );
+        assert_eq!(read_image(&b"ab"[..], 2, &mut remaining).unwrap(), b"ab");
+        assert_eq!(remaining, 0);
+        assert!(read_image(&b"x"[..], 0, &mut remaining).is_err());
+        let mut remaining = parse::IMAGE_TOTAL_BYTES;
+        let error =
+            read_image(std::io::empty(), parse::IMAGE_BYTES + 1, &mut remaining).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<FigError>().unwrap().kind(),
+            ErrorKind::ParseBudget
+        );
+        assert!(error.to_string().contains("image bytes"));
+        assert_eq!(read_image(&b"ok"[..], 2, &mut remaining).unwrap(), b"ok");
     }
 
     #[test]

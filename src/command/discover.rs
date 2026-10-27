@@ -109,6 +109,9 @@ pub fn inspect(
         figlens::rest::resolve_nodes(tree, id)?
     };
     let mut result = inspect_document(&doc["document"], depth);
+    if let Some(diagnostics) = doc["_figlens"].get("handoffDiagnostics") {
+        result["handoffDiagnostics"] = diagnostics.clone();
+    }
     if images {
         result["images"] = figlens::images::inspect(fig, &doc["document"])?;
     }
@@ -209,6 +212,10 @@ fn summarize(node: &Value, depth: usize, remaining: &mut usize, truncated: &mut 
             "letterSpacing",
             "textAlignHorizontal",
             "textAlignVertical",
+            "textAutoResize",
+            "textTruncation",
+            "maxLines",
+            "textDecoration",
         ] {
             if let Some(value) = style.get(key) {
                 if summary.get("style").is_none() {
@@ -245,6 +252,18 @@ fn summarize(node: &Value, depth: usize, remaining: &mut usize, truncated: &mut 
 mod tests {
     use super::*;
     use kiwi_schema::Value as Kiwi;
+
+    #[test]
+    fn compact_typography_preserves_recorded_resize_truncation_and_decoration() {
+        let style = json!({"textAutoResize":"HEIGHT","textTruncation":"ENDING","maxLines":2,"textDecoration":"UNDERLINE"});
+        let result = inspect_document(
+            &json!({"id":"1:1","type":"TEXT","characters":"Title","style":style}),
+            0,
+        );
+        assert_eq!(result["node"]["style"], style);
+        let absent = inspect_document(&json!({"id":"1:2","type":"TEXT","characters":"Title"}), 0);
+        assert!(absent["node"].get("style").is_none());
+    }
 
     #[test]
     fn inspect_bounds_definition_summaries_and_keeps_diagnostics() {

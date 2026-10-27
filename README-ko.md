@@ -225,7 +225,9 @@ skillshare sync && skillshare sync mcp --global
 
 같은 component set의 두 variants는 `inspect <file> <variantA> --compare-variant <variantB>`(MCP `compareVariant`)로 비교합니다. `variantComparison`은 저장된 필드와 값 집합의 차이, 출처 ID, 알 수 없는 항목을 반환하며 자식 노드의 대응 관계는 추측하지 않습니다. [비교 제한](wiki/states.md#compare-two-variants)을 참조하세요.
 
-노드 인수는 `12:345`, `12-345`, `?node-id=`가 있는 Figma URL을 받을 수 있습니다. `<file>`에 `gs://bucket/object`도 지정할 수 있으며 `gcloud` 로그인으로 다운로드하고 캐시합니다. 고정 객체를 통한 전달, 필요한 접근 권한과 갱신 제한은 [GCS 스냅샷 가이드](wiki/gcs.md)를 참고하세요. CLI 호출은 매번 파일을 디코딩합니다. MCP는 마지막으로 읽은 변경 없는 로컬 파일만 재사용합니다. 원격 입력은 다시 파싱합니다. 사용법은 `figlens --help`를 실행하세요.
+노드 인수는 `12:345`, `12-345`, `?node-id=`가 있는 Figma URL을 받을 수 있습니다. `<file>`에 `gs://bucket/object`도 지정할 수 있으며 `gcloud` 로그인으로 다운로드하고 캐시합니다. 고정 객체를 통한 전달, 필요한 접근 권한과 갱신 제한은 [GCS 스냅샷 가이드](wiki/gcs.md)를 참고하세요. CLI 호출은 매번 파일을 디코딩합니다. MCP는 마지막으로 읽은 변경 없는 로컬 파일만 재사용합니다. 원격 입력은 다시 파싱합니다. 전체 CLI 사용법은 `figlens --help` 또는 `figlens inspect --help`(`-h`도 가능)를 실행하세요.
+
+`inspect`에는 기록된 텍스트 크기 조정, 잘림, 최대 줄 수와 장식이 포함됩니다. `handoffDiagnostics`는 저장되었지만 출력되지 않는 의미 정보를 개수, 예시, [범위 제한](wiki/semantics.md#known-handoff-gaps)과 함께 보고합니다. 출력은 원본을 보호하고 쓰기가 완료된 뒤 대상을 교체합니다. MCP 요청 행은 1 MiB, 전체 응답은 8 MiB로 제한되며 초과하면 명시적인 오류를 반환합니다. CLI에서는 전체 JSON을 계속 출력할 수 있습니다.
 
 <a id="limitations"></a>
 

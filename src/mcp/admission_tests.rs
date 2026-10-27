@@ -1,4 +1,63 @@
 use super::*;
+
+#[test]
+fn response_budget_counts_escaped_bytes_and_preserves_output_paths_on_failure() {
+    let small = response(
+        &json!(7),
+        json!({"content":[{"type":"text","text":"small"}],"isError":false}),
+    );
+    assert_eq!(bounded_response(small.clone()), small);
+    // Escaped control characters exceed the wire limit while the source string is much smaller.
+    let huge = response(
+        &json!(8),
+        json!({"content":[{"type":"text","text":"\0".repeat(MAX_RESPONSE_BYTES/6+1)}],"isError":false,"structuredContent":{"path":"out.png"}}),
+    );
+    let error = bounded_response(huge);
+    assert_eq!(error["id"], 8);
+    assert_eq!(error["result"]["isError"], true);
+    assert_eq!(
+        error["result"]["_meta"]["figlens"]["code"],
+        "response_budget_exceeded"
+    );
+    assert_eq!(error["result"]["_meta"]["figlens"]["outputPath"], "out.png");
+    assert!(serde_json::to_vec(&error).unwrap().len() < 1024);
+    let mut exact = ResponseSize(MAX_RESPONSE_BYTES - 1);
+    assert_eq!(std::io::Write::write(&mut exact, b"x").unwrap(), 1);
+    assert!(std::io::Write::write(&mut exact, b"x").is_err());
+}
+
+#[test]
+fn request_line_budget_has_exact_boundaries_and_recovers_at_newlines_and_eof() {
+    let ping = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}";
+    for (extra, ending) in [(0, "\n"), (1, "\n"), (1, "")] {
+        let mut line = ping.to_owned();
+        line.push_str(&" ".repeat(MAX_REQUEST_BYTES as usize - ping.len() - ending.len() + extra));
+        line.push_str(ending);
+        let tail = if ending.is_empty() { "" } else { ping };
+        line.push_str(tail);
+        let mut input = std::io::BufReader::with_capacity(17, line.as_bytes());
+        let Some(Admission::Reply(reply)) = next_request(&mut input, &[]).unwrap() else {
+            panic!("expected reply")
+        };
+        if extra == 0 {
+            assert_eq!(reply["result"], json!({}));
+        } else {
+            assert_eq!(reply["error"]["code"], -32600);
+        }
+        if !tail.is_empty() {
+            let Some(Admission::Reply(reply)) = next_request(&mut input, &[]).unwrap() else {
+                panic!("expected recovery")
+            };
+            assert_eq!(reply["result"], json!({}));
+        }
+        assert!(next_request(&mut input, &[]).unwrap().is_none());
+    }
+    let mut bytes = vec![0xff, b'\n'];
+    bytes.extend_from_slice(ping.as_bytes());
+    let replies = replies(bytes.as_slice(), &[]);
+    assert_eq!(replies[0]["error"]["code"], -32700);
+    assert_eq!(replies[1]["result"], json!({}));
+}
 use crate::test_support::TestDir;
 use std::collections::VecDeque;
 use std::io::{BufRead, Read};
@@ -103,29 +162,38 @@ fn notification_and_explicit_null_matrix_has_no_hidden_work() {
 
 // Run mutations between lines without globals, sleeps or permission-bit assumptions.
 type Step = (String, Option<Box<dyn FnOnce()>>);
-struct Steps(VecDeque<Step>);
+struct Steps {
+    pending: VecDeque<Step>,
+    current: Vec<u8>,
+    offset: usize,
+}
 impl Read for Steps {
-    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
-        unreachable!()
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let bytes = self.fill_buf()?;
+        let count = out.len().min(bytes.len());
+        out[..count].copy_from_slice(&bytes[..count]);
+        self.consume(count);
+        Ok(count)
     }
 }
 impl BufRead for Steps {
     fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
-        unreachable!()
-    }
-    fn consume(&mut self, _: usize) {
-        unreachable!()
-    }
-    fn read_line(&mut self, buf: &mut String) -> std::io::Result<usize> {
-        let Some((line, action)) = self.0.pop_front() else {
-            return Ok(0);
-        };
-        if let Some(action) = action {
-            action();
+        if self.offset == self.current.len() {
+            self.current.clear();
+            self.offset = 0;
+            if let Some((line, action)) = self.pending.pop_front() {
+                if let Some(action) = action {
+                    action();
+                }
+                self.current.extend_from_slice(line.as_bytes());
+                self.current.push(b'\n');
+            }
         }
-        buf.push_str(&line);
-        buf.push('\n');
-        Ok(line.len() + 1)
+        Ok(&self.current[self.offset..])
+    }
+    fn consume(&mut self, count: usize) {
+        self.offset += count;
+        assert!(self.offset <= self.current.len());
     }
 }
 
@@ -140,41 +208,45 @@ fn cache_carries_prepared_calls_once_and_recovers_from_source_changes() {
     let changed = file.clone();
     let removed = file.clone();
     let restored = file.clone();
-    let steps = Steps(VecDeque::from([
-        (request(1, &file), None),
-        (json!({"id":2,"method":"ping"}).to_string(), None),
-        (call(json!(3), "workflow", json!({"topic":"build"})), None),
-        (
-            call(json!(4), "tree", json!({"file":file,"depth":"0"})),
-            None,
-        ),
-        (
-            request(5, &file),
-            Some(Box::new(|| LOADS.with(|n| assert_eq!(n.get(), 1))) as Box<dyn FnOnce()>),
-        ),
-        (
-            request(6, &file),
-            Some(Box::new(move || {
-                // A readable, changed but invalid design must not reuse the old Tree.
-                std::fs::write(changed, b"not a design").unwrap();
-            })),
-        ),
-        (
-            request(7, &file),
-            Some(Box::new(move || {
-                std::fs::remove_file(removed).unwrap();
-            })),
-        ),
-        (
-            request(8, &file),
-            Some(Box::new(move || {
-                std::fs::copy("examples/first-success/design.fig", restored).unwrap();
-            })),
-        ),
-        (request(9, &second), None),
-        (request(10, &second), None),
-        (json!({"id":11,"method":"ping"}).to_string(), None),
-    ]));
+    let steps = Steps {
+        pending: VecDeque::from([
+            (request(1, &file), None),
+            (json!({"id":2,"method":"ping"}).to_string(), None),
+            (call(json!(3), "workflow", json!({"topic":"build"})), None),
+            (
+                call(json!(4), "tree", json!({"file":file,"depth":"0"})),
+                None,
+            ),
+            (
+                request(5, &file),
+                Some(Box::new(|| LOADS.with(|n| assert_eq!(n.get(), 1))) as Box<dyn FnOnce()>),
+            ),
+            (
+                request(6, &file),
+                Some(Box::new(move || {
+                    // A readable, changed but invalid design must not reuse the old Tree.
+                    std::fs::write(changed, b"not a design").unwrap();
+                })),
+            ),
+            (
+                request(7, &file),
+                Some(Box::new(move || {
+                    std::fs::remove_file(removed).unwrap();
+                })),
+            ),
+            (
+                request(8, &file),
+                Some(Box::new(move || {
+                    std::fs::copy("examples/first-success/design.fig", restored).unwrap();
+                })),
+            ),
+            (request(9, &second), None),
+            (request(10, &second), None),
+            (json!({"id":11,"method":"ping"}).to_string(), None),
+        ]),
+        current: Vec::new(),
+        offset: 0,
+    };
     let results = replies(steps, &[]);
     assert_eq!(results.len(), 11);
     for id in [1, 3, 5, 8, 9, 10] {
