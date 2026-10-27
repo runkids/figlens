@@ -64,7 +64,7 @@ The retained local experiment includes an offline `comparison.html`: independent
 
 One simple fixture, `figlens 0.7.3`, `openai-codex/gpt-6.1-sol` with medium thinking, three clean attempts per input group, shuffled order, 600-second limit per attempt, no rerolls or human quality fixes. Every group received identical licensed font bytes, leaf PNG icons, blank starter, viewport and DPR. Common supplied icons replace each tool's vector exports for this comparison, so these numbers are not an asset-export quality benchmark.
 
-All twelve outputs retained all 19 visible text occurrences as DOM text, four icons and the locally loaded font. None used a whole-screen image/SVG/canvas implementation. Independent browser console/error logs were empty.
+All twelve outputs retained all 19 visible text occurrences as DOM text, four icons and the locally loaded font. Text coverage counts whitespace-normalized whole text-bearing elements with multiplicity; split or merged labels need a separate DOM audit. None used a whole-screen image/SVG/canvas implementation. Independent browser console/error logs were empty.
 
 Medians with [minimum, maximum]; lower pixel error is better:
 

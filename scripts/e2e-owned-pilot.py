@@ -200,7 +200,7 @@ def evaluate(root, base):
             canvasCount:document.querySelectorAll('canvas').length,svgCount:document.querySelectorAll('svg').length,
             textElements:Array.from(document.querySelectorAll('body *')).filter(e=>Array.from(e.childNodes).some(n=>n.nodeType===3&&n.textContent.trim())).map(e=>({tag:e.tagName,text:e.innerText,box:JSON.parse(JSON.stringify(e.getBoundingClientRect())),font:getComputedStyle(e).fontFamily,weight:getComputedStyle(e).fontWeight}))};})()''')
         assert state['viewport'] == [962, 642] and state['dpr'] == 1
-        state['missingText'] = base.missing_text(expected, state['text'])
+        state['missingText'] = base.missing_text(expected, [e['text'] for e in state['textElements']])
         state['matchedTextNodes'] = len(expected) - len(state['missingText'])
         state['commonAssetMismatches'] = [str(p.relative_to(root / 'common')) for p in (root / 'common').rglob('*') if p.is_file() and (not (directory / 'project' / p.relative_to(root / 'common')).exists() or sha(p) != sha(directory / 'project' / p.relative_to(root / 'common'))) ]
         base.save_json(directory / 'browser-state.json', state)

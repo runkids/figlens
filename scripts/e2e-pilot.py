@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bounded, private one-frame pilot; not a general benchmark runner."""
 import base64
+from collections import Counter
 import hashlib
 import json
 import os
@@ -27,14 +28,15 @@ def save_json(path, value):
 
 
 def missing_text(expected, observed):
-    remaining = ' '.join(observed.split())
+    # shortcut: compare whole text-bearing elements; split/merged labels need a richer DOM audit.
+    available = Counter(' '.join(text.split()) for text in observed)
     missing = []
-    for text in sorted(expected, key=lambda t: len(' '.join(t.split())), reverse=True):
+    for text in expected:
         normalized = ' '.join(text.split())
-        if normalized not in remaining:
-            missing.append(text)
+        if available[normalized]:
+            available[normalized] -= 1
         else:
-            remaining = remaining.replace(normalized, '\0', 1)
+            missing.append(text)
     return missing
 
 
@@ -193,7 +195,7 @@ def evaluate():
         })()''')
         assert state['viewport'] == [1441, 1025] and state['dpr'] == 1
         state['expectedTextNodes'] = len(expected)
-        state['missingText'] = missing_text(expected, state['text'])
+        state['missingText'] = missing_text(expected, [e['text'] for e in state['textElements']])
         state['matchedTextNodes'] = len(expected) - len(state['missingText'])
         state['commonAssetMismatches'] = [str(p.relative_to(ROOT / 'common')) for p in (ROOT / 'common').rglob('*')
                                          if p.is_file() and p.read_bytes() != (directory / 'project' / p.relative_to(ROOT / 'common')).read_bytes()]
@@ -257,7 +259,7 @@ def evaluate():
 
 
 def semantic():
-    # Preserve v1/v2 results; combine rendered, DOM and pseudo text to handle flex and <br>.
+    # Preserve v1/v2 results; keep pseudo text diagnostic-only, separate from DOM coverage.
     subprocess.run(['agent-browser', '--session', SESSION, 'open', 'http://127.0.0.1:8876/'], check=True, timeout=30)
     observed = browser('''(async () => {
       const out={};
@@ -267,7 +269,8 @@ def semantic():
         iframe.src='/runs/'+arm+'/project/index.html';document.body.append(iframe);await loaded;
         const d=iframe.contentDocument,w=iframe.contentWindow;await d.fonts.ready;
         const pseudo=Array.from(d.querySelectorAll('body *')).flatMap(e=>['::before','::after'].map(p=>w.getComputedStyle(e,p).content)).filter(t=>t && t!=='none' && t!=='normal' && t!=='""');
-        out[arm]={textContent:d.body.textContent,innerText:d.body.innerText,pseudoContent:pseudo};iframe.remove();
+        const elements=Array.from(d.querySelectorAll('body *')).filter(e=>Array.from(e.childNodes).some(n=>n.nodeType===3&&n.textContent.trim())).map(e=>e.innerText);
+        out[arm]={textContent:d.body.textContent,innerText:d.body.innerText,pseudoContent:pseudo,textElements:elements};iframe.remove();
       }
       return out;
     })()''')
@@ -281,11 +284,7 @@ def semantic():
             walk(child)
     walk(json.loads((ROOT / 'figlens/design/nodes.json').read_text())['document'])
     for arm, state in observed.items():
-        pseudo = '\n' + '\n'.join(state['pseudoContent'])
-        state['missingText'] = min(
-            (missing_text(expected, state[key] + pseudo) for key in ['textContent', 'innerText']),
-            key=len,
-        )
+        state['missingText'] = missing_text(expected, state['textElements'])
         state['matchedTextNodes'] = len(expected) - len(state['missingText'])
         state['expectedTextNodes'] = len(expected)
     save_json(ROOT / 'text-check-v3.json', observed)

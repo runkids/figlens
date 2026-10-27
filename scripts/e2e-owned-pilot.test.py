@@ -29,14 +29,16 @@ class PilotTests(unittest.TestCase):
 
     def test_evaluation_counts_each_text_occurrence_once(self):
         cases = [
-            (['Ready', 'Ready'], 'Ready', ['Ready']),
-            (['Ready', 'Ready'], 'Ready\nReady', []),
-            (['Ready', 'Ready later'], 'Ready later', ['Ready']),
-            (['Ready', 'Ready later'], 'Ready later\nReady', []),
-            (['Ready now', 'Ready now'], 'Ready\nnow', ['Ready now']),
+            (['Ready', 'Ready'], ['Ready'], ['Ready']),
+            (['Ready', 'Ready'], ['Ready', 'Ready'], []),
+            (['Ready', 'Ready later'], ['Ready later'], ['Ready']),
+            (['Ready', 'Ready later'], ['Ready later', 'Ready'], []),
+            (['Ready now', 'Ready now'], ['Ready\nnow'], ['Ready now']),
+            (['Ready later', 'later on', 'Ready'], ['Ready', 'later on', 'Ready later'], []),
+            (['title'], ['Subtitle'], ['title']),
         ]
-        for expected, text, missing in cases:
-            with self.subTest(expected=expected, text=text), tempfile.TemporaryDirectory() as temporary:
+        for expected, observed, missing in cases:
+            with self.subTest(expected=expected, observed=observed), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 design = root / 'figlens/design'
                 design.mkdir(parents=True)
@@ -45,7 +47,8 @@ class PilotTests(unittest.TestCase):
                 }}))
                 run = root / 'runs/figlens-1'
                 run.mkdir(parents=True)
-                state = {'viewport': [962, 642], 'dpr': 1, 'text': text}
+                state = {'viewport': [962, 642], 'dpr': 1, 'text': '\n'.join(observed),
+                         'textElements': [{'text': t} for t in observed]}
                 pixels = {'mae255': 0, 'fractionMaxChannelOver48': 0, 'overlay': '', 'difference': ''}
                 with patch.object(pilot, 'make_order', return_value=['figlens-1']), \
                         patch.object(pilot.subprocess, 'run') as command, \
