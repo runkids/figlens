@@ -1016,11 +1016,7 @@ impl<'t, 'a> Svg<'t, 'a> {
         if let Some(f) = self.effects(n) {
             let _ = write!(attrs, " filter=\"url(#{f})\"");
         }
-        format!(
-            "<g id=\"{}\" data-node-id=\"{}\"{attrs}>{inner}</g>\n",
-            self.id("n"),
-            xml(n["id"].as_str().unwrap_or(""))
-        )
+        format!("<g{attrs}>{inner}</g>\n")
     }
 
     /// Vector regions with their own fills (`vectorData.styleOverrideTable`), each path painted
@@ -1473,12 +1469,6 @@ fn hex(c: &Json) -> String {
     format!("#{:02x}{:02x}{:02x}", ch("r"), ch("g"), ch("b"))
 }
 
-fn xml(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-}
-
 /// Image type from its signature, as the bundle names files.
 pub fn media_type(b: &[u8]) -> &'static str {
     match b {
@@ -1590,6 +1580,10 @@ mod tests {
         ] {
             let svg = export(node_id);
             assert_eq!(svg, export(node_id));
+            assert!(!svg.contains("data-node-id"));
+            for group in svg.split("<g ").skip(1) {
+                assert!(!group.split('>').next().unwrap().contains("id=\""));
+            }
             let ids: Vec<_> = svg
                 .split(" id=\"")
                 .skip(1)
@@ -1604,6 +1598,7 @@ mod tests {
                         .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
                 );
                 assert!(seen.insert((*id).to_owned()), "duplicate definition: {id}");
+                assert!(svg.contains(&format!("url(#{id})")));
             }
             for reference in svg.split("url(#").skip(1) {
                 assert!(ids.contains(&reference.split(')').next().unwrap()));
