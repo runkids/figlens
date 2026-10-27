@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.4](https://github.com/runkids/figlens/compare/v0.7.3...v0.7.4) (2026-10-27)
+
+
+### New Features
+
+* **handoff:** document offline UI case and dependency preflight ([#40](https://github.com/runkids/figlens/issues/40)) ([6e5fac2](https://github.com/runkids/figlens/commit/6e5fac282707f69f59f5c46f52d4ffeb723cafb4))
+
+
+### Bug Fixes
+
+* **render:** omit SVG group identifiers and provenance ([afe3067](https://github.com/runkids/figlens/commit/afe30670136029c3733b46655c7143ff68ded2ce))
+* **render:** scope SVG ids to the exported node ([321e8e6](https://github.com/runkids/figlens/commit/321e8e6188e5d3bf2955737ef70175441086e4a2))
+* **render:** scope SVG ids to the exported node ([10609e4](https://github.com/runkids/figlens/commit/10609e43ec6865a6edf28fd4a01c214c7fa0a1ab))
+
 ## [0.7.3](https://github.com/runkids/figlens/compare/v0.7.2...v0.7.3) (2026-10-27)
 
 
