@@ -723,6 +723,7 @@ pub struct Svg<'t, 'a> {
     images: &'t dyn Fn(&str) -> Option<Vec<u8>>,
     defs: String,
     ids: usize,
+    id_prefix: String,
     /// Drawn under the node across the whole export area.
     backdrop: String,
     /// Output pixels per user unit, set by `document`.
@@ -738,6 +739,7 @@ impl<'t, 'a> Svg<'t, 'a> {
             images,
             defs: String::new(),
             ids: 0,
+            id_prefix: String::new(),
             backdrop: String::new(),
             scale: 1.0,
             mips: None,
@@ -882,12 +884,22 @@ impl<'t, 'a> Svg<'t, 'a> {
 
     fn id(&mut self, prefix: &str) -> String {
         self.ids += 1;
-        format!("{prefix}{}", self.ids)
+        format!("{}{prefix}{}", self.id_prefix, self.ids)
     }
 
     /// A standalone SVG document of `n` and its children over the page region `area`.
     pub fn document(mut self, n: &Json, area: Rect, scale: f64) -> String {
         self.scale = scale;
+        self.id_prefix.push('n');
+        // Escape bytes injectively, including underscores, to keep instance paths NCName-safe.
+        for b in n["id"].as_str().unwrap_or("").bytes() {
+            if b.is_ascii_alphanumeric() {
+                self.id_prefix.push(char::from(b));
+            } else {
+                let _ = write!(self.id_prefix, "_{b:02x}");
+            }
+        }
+        self.id_prefix.push('-');
         let body = self.node(n);
         // Exports are sized to the scaled box, rounded up, as Figma sizes them.
         // Float noise (26.0000001) must not round up a whole pixel.
@@ -1004,10 +1016,7 @@ impl<'t, 'a> Svg<'t, 'a> {
         if let Some(f) = self.effects(n) {
             let _ = write!(attrs, " filter=\"url(#{f})\"");
         }
-        format!(
-            "<g id=\"{}\"{attrs}>{inner}</g>\n",
-            xml(n["id"].as_str().unwrap_or(""))
-        )
+        format!("<g{attrs}>{inner}</g>\n")
     }
 
     /// Vector regions with their own fills (`vectorData.styleOverrideTable`), each path painted
@@ -1460,12 +1469,6 @@ fn hex(c: &Json) -> String {
     format!("#{:02x}{:02x}{:02x}", ch("r"), ch("g"), ch("b"))
 }
 
-fn xml(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-}
-
 /// Image type from its signature, as the bundle names files.
 pub fn media_type(b: &[u8]) -> &'static str {
     match b {
@@ -1541,6 +1544,69 @@ pub fn render_bounds(n: &Json) -> Option<Rect> {
 mod tests {
     use super::*;
     use std::fs::File;
+
+    #[test]
+    fn exported_definition_ids_are_disjoint_and_repeatable() {
+        let tree = Tree {
+            nodes: Default::default(),
+            children: Default::default(),
+            blobs: Vec::new(),
+        };
+        let images = |_: &str| None;
+        let export = |id: &str| {
+            let node = serde_json::json!({
+                "id": id, "type": "FRAME", "clipsContent": true,
+                "_r": { "size": { "x": 20, "y": 20 }, "m": [1,0,0,1,0,0],
+                    "fillPaints": [{ "type": "GRADIENT_LINEAR", "stops": [
+                        { "position": 0, "color": { "r": 1, "g": 0, "b": 0, "a": 1 } },
+                        { "position": 1, "color": { "r": 0, "g": 0, "b": 1, "a": 1 } }
+                    ] }]
+                },
+                "children": [{ "id": "1:2", "type": "RECTANGLE", "_r": {
+                    "size": { "x": 10, "y": 10 }, "m": [1,0,0,1,0,0],
+                    "fillPaints": [{ "type": "SOLID", "color": { "r": 1, "a": 1 } }]
+                }}]
+            });
+            Svg::new(&tree, &images).document(&node, [0.0, 0.0, 20.0, 20.0], 1.0)
+        };
+        let mut seen = std::collections::HashSet::new();
+        for node_id in [
+            "217:23093",
+            "217:23094",
+            "I217:23093;1:2",
+            "217-23093",
+            "217_3a23093",
+            "盾牌",
+        ] {
+            let svg = export(node_id);
+            assert_eq!(svg, export(node_id));
+            assert!(!svg.contains("data-node-id"));
+            for group in svg.split("<g ").skip(1) {
+                assert!(!group.split('>').next().unwrap().contains("id=\""));
+            }
+            let ids: Vec<_> = svg
+                .split(" id=\"")
+                .skip(1)
+                .map(|part| part.split('"').next().unwrap())
+                .collect();
+            assert!(svg.contains("<linearGradient "));
+            assert!(svg.contains("<clipPath "));
+            for id in &ids {
+                assert!(id.starts_with('n'));
+                assert!(
+                    id.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+                );
+                assert!(seen.insert((*id).to_owned()), "duplicate definition: {id}");
+                assert!(svg.contains(&format!("url(#{id})")));
+            }
+            for reference in svg.split("url(#").skip(1) {
+                assert!(ids.contains(&reference.split(')').next().unwrap()));
+            }
+            let pixels = pixmap(&svg).unwrap();
+            assert!(pixels.data().chunks_exact(4).any(|p| p[3] != 0));
+        }
+    }
 
     #[test]
     fn diagnostics_preserve_drawn_stroke_warnings_and_other_sources() {
