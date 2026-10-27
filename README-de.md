@@ -51,13 +51,7 @@ pi install npm:@runkids/figlens
 { "mcpServers": { "figlens": { "command": "npx", "args": ["-y", "@runkids/figlens", "mcp"] } } }
 ```
 
-**Kein Node.js?** Installiere das eigenständige Binary und verwende stattdessen `"command": "figlens"`:
-
-| Plattform | Befehl |
-|---|---|
-| macOS / Linux | `curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh \| sh` |
-| Homebrew | `brew install runkids/tap/figlens` |
-| Windows (PowerShell) | `irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 \| iex` |
+[Eigenständige Installation](docs/README-de.md#install)
 
 Bitte dann um einen Bildschirm:
 
@@ -68,7 +62,7 @@ then compare the running UI with the design and fix confirmed differences.
 Report missing assets and any checks you could not run.
 ```
 
-Der Agent findet den Frame, baut ein Bundle mit Designdaten, Assets und einem Referenzbild und setzt den Bildschirm mit deinem Stack um. Lass dir die geänderten Dateien und den Vergleich zeigen; ein Bundle allein beweist nicht, dass die UI stimmt.
+Der Agent findet den Frame, bündelt Designdaten, Assets und Referenzbild und setzt den Bildschirm mit deinem Stack um. Der gemeinsame Workflow leitet die Prüfung von Schriften und Assets an; fehlende Ressourcen werden gemeldet, während die Layout-Implementierung mit dokumentierten Alternativen weitergeht. Lass dir die geänderten Dateien und einen Browservergleich zeigen.
 
 <a id="demo"></a>
 
@@ -80,23 +74,17 @@ Die GIF-Schleife läuft mit der dreifachen Wiedergabegeschwindigkeit des geschni
 
 **[78-Sekunden-Video](assets/taskflow-demo.mp4).** Pi führt `/figlens plan` aus, liest einen Dashboard-Frame aus einer lokalen `.fig`, baut ihn mit React und Tailwind CSS und prüft und korrigiert dann die laufende UI. Geschnittener Zeitraffer, kein Benchmark und kein Pixel-Perfect-Versprechen. Design: [Task Flow von Eymen Eid](https://www.figma.com/community/file/1224268866120711793) · [Aufnahmenotizen](wiki/accuracy.md#taskflow-react-and-tailwind-demo).
 
+**[Von .fig zu editierbarem HTML/CSS](examples/task-list/README.md):** In einer kontrollierten Aufgabenlisten-Studie behielten alle sechs figlens-basierten Versuche alle 19 sichtbaren Textvorkommen als echten DOM-Text und alle vier Icons bei. Auch CLI- und MCP-Extraktion bestanden mit deaktiviertem Docker-Netzwerk. Die Fallstudie enthält Einrichtung, Messwerte und unabhängige Bildvergleiche.
+
 <a id="why"></a>
 
 ## Warum figlens statt des offiziellen Figma MCP?
 
 Nutze **figlens**, wenn das Design als Datei wandern soll: Remote-Agents, CI, Offline-Arbeit, Übergabe zwischen Agents, unbegrenzt wiederholte Lesezugriffe. Nutze den **offiziellen Figma MCP**, wenn der Agent das Live-Design ohne Export-Schritt sehen muss.
 
-| | figlens | Offizieller Figma MCP |
-|---|---|---|
-| Quelle | Exportierter `.fig`-Snapshot | Live-Figma-Dateien |
-| Voraussetzung | Die Datei | Figma-Anmeldung; der Desktop-Server braucht die App |
-| Rate Limits | Keine, lokales Parsen | Limits des Figma-Dienstes |
-| Remote-Agent / CI | Datei kopieren, Binary ausführen | Remote-Server mit Anmeldung |
-| Design-Änderungen | Neue `.fig` exportieren | Automatisch |
-| Übergabe | `.fig` oder Frame-Bundle teilen | Figma-Zugriff teilen |
-| Genauigkeit | Unabhängiger Parser mit [bekannten Lücken](#limitations) | Von Figma gepflegt |
-
 Eine `.fig` zu lesen funktioniert offline. Installieren und Aktualisieren von figlens, `gs://`-Eingaben, dein Modellanbieter und die Abhängigkeiten deines Projekts brauchen weiterhin ein Netzwerk.
+
+[Vollständiger Vergleich](docs/README-de.md#why)
 
 <a id="bundle"></a>
 
@@ -104,130 +92,14 @@ Eine `.fig` zu lesen funktioniert offline. Installieren und Aktualisieren von fi
 
 Ein Frame, eine Zip. Struktur zum Bauen, Assets zum Verwenden, ein Bild zum Abgleichen.
 
-```text
-frame.zip
-├── context.md                Start here: instructions for your agent
-├── design/
-│   ├── nodes.json            Layout, text, styles and expanded instances
-│   └── variables.json        Bound variables, collections, modes and aliases
-├── assets/                   Image fills, SVGs and composited node renders
-├── assets.json               Maps design references to asset files
-├── references/screen.png     A render of the frame to compare against
-├── missing-assets.json       Anything that could not be produced
-└── manifest.json             File roles, media types, sizes and SHA-256 hashes
-```
+[Bundle-Inhalt und Beispiele](docs/README-de.md#bundle) · [Wie nah ist es an Figma?](docs/README-de.md#accuracy)
 
-Brauchst du nur ein Teil? Die CLI erledigt das direkt:
+## Dokumentation
 
-```sh
-npx -y @runkids/figlens find design.fig "login" --type FRAME     # Frame-IDs nach Name oder Text
-npx -y @runkids/figlens inspect design.fig 12:345                 # kompakte Layout- und Textzusammenfassung
-npx -y @runkids/figlens nodes design.fig 12:345 > frame.json      # JSON im REST-Format
-npx -y @runkids/figlens export design.fig 12:345 icon.svg         # SVG, PNG, JPG, WebP oder AVIF
-npx -y @runkids/figlens bundle design.fig 12:345 frame.zip        # die Zip von oben
-```
-
-SVG-Exporte betten originale Bildfüllungen ein und wandeln Text in Glyphen-Umrisse um, daher werden keine Schriften benötigt. Über MCP kommen Raster-Exporte außerdem als Inline-Bilder zurück, sodass der Agent das Design sieht, ohne eine Datei zu öffnen.
-
-### Wie nah ist es an Figma?
-
-Gemessen an Figmas eigenen JSON-, PNG- und SVG-Exporten für **826 Produktions-Frames** und fünf Community-Dateien (2026-10-22):
-
-| Prüfung | Ergebnis |
-|---|---|
-| Knotenstruktur, Namen, Sichtbarkeit, Bounds und Text | Identisch in 771 / 826 Frames |
-| Originale Bildfüllungen | 2.608 / 2.608 byte-identisch |
-| SVG-Assets | 5.014 / 5.197 innerhalb des Pixelabweichungs-Schwellenwerts |
-| Community-Frame-Bundles | 306 / 306 ohne fehlende Assets |
-
-Ergebnisse für diese Dateien, keine Garantie für jedes Design. Methode und Schwellenwerte: [Genauigkeitsbericht](wiki/accuracy.md).
-
-<a id="pi"></a>
-
-## Pi-Extension
-
-```sh
-pi install npm:@runkids/figlens
-```
-
-Starte Pi neu oder führe `/reload` aus und bitte dann in normalen Worten um einen Bildschirm. Pi findet den Frame, liest ihn über den automatisch registrierten MCP-Server und baut mit deinem Stack. Keine Node-IDs, keine globale CLI.
-
-- `/figlens plan <request>` erstellt nur einen Plan und ändert die Anwendung nicht.
-- `/figlens yolo <request>` plant, baut, prüft und räumt den eigenen temporären Plan auf.
-- `/figlens preview [description]` öffnet den lokalen Viewer.
-- `/figlens review` genehmigt wiederverwendbare Komponenten-Zuordnungen, die der Agent vorgeschlagen hat.
-
-![Bitte Pi um einen Bildschirm, lass es das Design finden, mit deinem Stack bauen und das Ergebnis prüfen](assets/pi-workflow.svg)
-
-Vollständige Anleitung, Befehle und Grenzen: [pi/README.md](pi/README.md).
-
-<a id="viewer"></a>
-
-## Ein Design ohne Figma durchsuchen
-
-[![Das MCP-Apps-Design lokal inspizieren, mit Layer-Baum, Layout und Komponenten-Eigenschaften](assets/preview-inspector.png)](assets/pi-demo.mp4)
-
-```sh
-npx -y @runkids/figlens preview design.fig                        # lokaler Viewer, Ctrl+C zum Beenden
-npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # Offline-HTML-Snapshot zum Weitergeben an jeden
-```
-
-Durchsuche Seiten und Layer, suche, miss, inspiziere Layout, Typografie, Variablen und CSS, exportiere jeden Layer, kopiere einen Implementierungs-Prompt oder lade ein Bundle für die Auswahl herunter. Lege einen Screenshot deines Builds über das Design, um beide zu überlagern. Details: [Preview-Anleitung](wiki/preview.md).
-
-<a id="mcp-and-skill"></a>
-
-## MCP-Server und Agent-Skill
-
-**MCP.** Der Server läuft lokal über stdio und stellt `workflow`, `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` und `export` bereit. Übergib absolute Pfade. Mit `--root /path/to/designs` (wiederholbar) beschränkst du jeden Datei- und Ausgabepfad auf ausgewählte Ordner. Raster-Exporte werden auf `maxSize` (Standard 1600 px) verkleinert, damit Inline-Bilder klein bleiben; SVG liefert nur Metadaten.
-
-Über `workflow` kann der Agent die integrierten Anleitungen `build`, `images`, `plan`, `planning-details` oder das ausdrücklich angeforderte `yolo` lesen. Sie stammen aus denselben Quellen wie der portable Skill; dessen separate Installation ist für MCP optional. Die Umsetzung erfolgt mit den Projekt- und Browser-Werkzeugen des Agents und den Berechtigungen des Hosts. Das Lesen einer Anleitung führt den Workflow nicht aus; Client-Unterstützung und Modellverhalten bestimmen, wie sie genutzt wird.
-
-Natives Windows mit Claude Code: folge dessen [stdio-Setup-Hinweisen](https://code.claude.com/docs/en/mcp#option-3-add-a-local-stdio-server) und dem `cmd /c`-Wrapper für `npx`.
-
-**Skill.** Der [figlens-Skill](skills/figlens/SKILL.md) bringt einem Agent bei, Frames zu finden, das Bundle in kleinen Teilen zu lesen, begrenzte Arbeit zu planen und die laufende UI gegen das Design zu prüfen. Er installiert nur Anweisungen; die CLI oder der MCP-Server muss verfügbar sein. Installiere ihn mit der [Skills CLI](https://github.com/vercel-labs/skills) oder kopiere `skills/figlens/` in das Skills-Verzeichnis deines Agents (Claude Code: `~/.claude/skills/`):
-
-```sh
-npm install -g @runkids/figlens
-npx skills add runkids/figlens --skill figlens
-```
-
-**skillshare.** Verwalte den Skill und die MCP-Verbindung für Claude Code, Codex und Cursor zentral mit [skillshare](https://github.com/runkids/skillshare):
-
-```sh
-skillshare install github.com/runkids/figlens/skills/figlens
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
-skillshare sync && skillshare sync mcp --global
-```
-
-**Installationshinweise.** Der npm-Launcher lädt beim ersten Aufruf das passende native Binary herunter, prüft es gegen die SHA-256-Prüfsummen des Releases und legt es im Cache ab. Eigenständige Installationen aktualisieren sich mit `figlens update`. Die Binaries decken macOS (Apple Silicon, Intel), Linux (arm64, x86_64, statisch mit musl) und Windows (x86_64) ab.
-
-<a id="commands"></a>
-
-## CLI-Referenz
-
-| Befehl | Ausgabe |
-|---|---|
-| `tree <file> [node] [--depth N] [--json]` | Node-IDs, Typen und Namen; eingerückter Text oder verschachteltes JSON |
-| `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Suche über Layer-Namen und Text ohne Beachtung der Groß-/Kleinschreibung; Pfade, Größen und Vorschauen. Standardmäßig 20 Ergebnisse (1-200) |
-| `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | Kompakte Zusammenfassung des expandierten Layouts/Texts, höchstens 200 Nodes. `--images` ergänzt Bitmap-Abmessungen und Crop-Footprints |
-| `nodes <file> <node>` | JSON im REST-Format: expandierte Instanzen und Overrides, Auto-Layout, Textstile, Füllungen, Effekte, gebundene Variablen, Komponenten-Eigenschaften, Render-Bounds |
-| `variables <file> [node]` | Die gebundenen Variablen eines Frames; ohne Node alle lokalen Variablen |
-| `bundle <file> <node> <out.zip> [--states]` | Ein Design-Bundle für einen Frame; gibt `{nodeId, path, warnings}` aus |
-| `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | Viele Bundles aus einem Decode, parallel |
-| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP oder AVIF; `--max-kb` senkt die verlustbehaftete Qualität, bis es passt |
-| `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Lokaler schreibgeschützter Viewer; `--out` schreibt einen eigenständigen Offline-Snapshot |
-| `compare <file> <nodes.json> <node>` | Diff gegen einen REST-Export desselben Frames |
-| `node <file> <node>` | Ein roher `.fig`-Node |
-| `mcp` | Lokaler MCP-Server über stdio |
-| `update` | Ersetzt das Binary durch das neueste Release |
-
-Für zugehörige Komponentenvarianten `inspect --states` oder `bundle --states` verwenden (MCP: `states: true`, standardmäßig false; keine Konfigurationsänderung). Die Nachweise behalten Quellen-, Unbekannt- und Kürzungsmarkierungen. Bundles ergänzen `design/states.json` und eine Zusammenfassung in `context.md`. Umfang und Grenzen stehen unter [Zustandsnachweise](wiki/states.md).
-
-Zwei Varianten desselben Component-Sets mit `inspect <file> <variantA> --compare-variant <variantB>` vergleichen (MCP `compareVariant`). `variantComparison` meldet Unterschiede gespeicherter Felder und Wertemengen samt Quell-IDs und unbekannten Werten, ohne Kindknoten einander zuzuordnen. Siehe [Vergleichsgrenzen](wiki/states.md#compare-two-variants).
-
-Ein Node-Argument akzeptiert `12:345`, `12-345` oder eine Figma-URL mit `?node-id=`. `<file>` kann auch `gs://bucket/object` sein, heruntergeladen mit deinem `gcloud`-Login und im Cache abgelegt. Der [GCS-Snapshot-Leitfaden](wiki/gcs.md) beschreibt die Übergabe über ein festes Objekt, nötige Zugriffsrechte und Grenzen der Aktualisierung. Jeder CLI-Aufruf decodiert die Datei; MCP verwendet nur die zuletzt gelesene, unveränderte lokale Datei erneut. Remote-Aufrufe parsen erneut. Führe `figlens --help` oder `figlens inspect --help` (auch `-h`) für die vollständige CLI-Hilfe aus.
-
-`inspect` enthält gespeicherte Textgrößenanpassung, Kürzung, maximale Zeilenzahl und Textdekoration. `handoffDiagnostics` meldet gespeicherte, aber nicht ausgegebene Semantik mit Anzahl, Beispielen und [Abdeckungsgrenzen](wiki/semantics.md#known-handoff-gaps). Ausgaben schützen die Quelle und ersetzen das Ziel erst nach vollständigem Schreiben. MCP begrenzt Anfragezeilen auf 1 MiB und vollständige Antworten auf 8 MiB; Überschreitungen ergeben einen ausdrücklichen Fehler. Vollständiges JSON bleibt über die CLI verfügbar.
+- <a id="pi"></a>[Pi-Extension](docs/README-de.md#pi)
+- <a id="viewer"></a>[Ein Design ohne Figma durchsuchen](docs/README-de.md#viewer)
+- <a id="mcp-and-skill"></a>[MCP-Server und Agent-Skill](docs/README-de.md#mcp-and-skill)
+- <a id="commands"></a>[CLI-Referenz](docs/README-de.md#commands)
 
 <a id="limitations"></a>
 
@@ -235,9 +107,8 @@ Ein Node-Argument akzeptiert `12:345`, `12-345` oder eine Figma-URL mit `?node-i
 
 - **Snapshots, keine Live-Synchronisierung.** Exportiere eine neue `.fig`, wenn sich das Design ändert. figlens kann kein Design über eine Figma-URL herunterladen.
 - **Undokumentiertes Format.** figlens decodiert das in der Datei eingebettete Schema; neue Figma-Exporte können ein figlens-Update erfordern.
-- **Noch nicht ausgegeben:** Dev-Mode-Annotationen, Layout-Raster.
-- **Teilweise Semantik:** Aufgezeichnete constraints, layoutAlign/layoutGrow und Komponenten-Eigenschaftsdefinitionen werden mit Herkunft unter `_figlens.semantics` ausgegeben. Fehlende Werte werden nicht ergänzt; Variant-Optionen und SLOT bleiben ununterstützt. Ein Vergleich mit Figma-Exporten derselben Version steht aus. Siehe [Abdeckung](wiki/semantics.md).
-- **Render-Lücken:** Hintergrundunschärfe und einige Bildanpassungen werden übersprungen; Angular- und Diamant-Verläufe werden als radial gezeichnet. Überschriebener Text kann Figmas letztes Layout behalten. Schriftdateien sind nicht enthalten.
+- **Schriften und Text:** Schriftdateien sind nicht enthalten; überschriebener Text kann Figmas gespeichertes Layout behalten. Verwende lizenzierte Projektschriften und vergleiche das Ergebnis.
+- **Unterstützungsumfang:** [Rendering-Verbesserungen](https://github.com/runkids/figlens/issues/36) und [Handoff-Semantik](https://github.com/runkids/figlens/issues/37) werden im Issue-Tracker verfolgt. Siehe die [aktuelle semantische Abdeckung](wiki/semantics.md).
 - **Prüfe die Ausgabe.** Lies die Bundle-`warnings`, `missing-assets.json` und ungelöste Variablen in `context.md` und vergleiche dann die Implementierung mit dem Design.
 - Bekannte sichtbare Render-Grenzen stehen in `_figlens.renderDiagnostics` der Knoten, begrenzten `inspect`-Zusammenfassungen und Bundle-`warnings`; `missing-assets.json` enthält nur Asset-Fehler. Auch ohne Warnungen ist Pixeltreue nicht garantiert.
 

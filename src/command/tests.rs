@@ -439,6 +439,11 @@ fn assert_bundle(path: &str) {
         serde_json::from_reader(zip.by_name("design/nodes.json").unwrap()).unwrap();
     assert_eq!(nodes["document"]["id"], "0:1");
     assert!(!nodes.to_string().contains("\"_r\""));
+    let context = std::io::read_to_string(zip.by_name("context.md").unwrap()).unwrap();
+    assert!(context.contains("Font availability: UNVERIFIED"));
+    assert!(context.contains("Continue implementation without waiting for missing inputs"));
+    assert!(context.contains("final visual acceptance"));
+    assert!(!context.contains("Block affected work"));
 }
 
 #[test]

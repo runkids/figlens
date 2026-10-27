@@ -9,6 +9,7 @@ pub fn read(topic: &str) -> Result<String, String> {
     let headings: &[&str] = match topic {
         "build" => &[
             "Building a frame",
+            "Font and asset preflight",
             "Link back to Figma",
             "Reading the output",
             "Known gaps",
@@ -65,6 +66,18 @@ pub fn read(topic: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_reports_missing_dependencies_without_blocking_implementation() {
+        let build = read("build").unwrap();
+        assert!(build.contains("## Font and asset preflight"));
+        assert!(build.contains("document.fonts.load"));
+        assert!(build.contains("empty array"));
+        assert!(build.contains("missing-assets.json"));
+        assert!(build.contains("Continue implementation without waiting for missing inputs"));
+        assert!(build.contains("final visual acceptance"));
+        assert!(!build.contains("Block affected work"));
+    }
 
     #[test]
     fn guides_keep_scope_image_evidence_and_cleanup_boundaries() {
