@@ -19,6 +19,38 @@ impl TestDir {
     pub(crate) fn join(&self, name: &str) -> PathBuf {
         self.0.join(name)
     }
+
+    pub(crate) fn oversized_image(&self, image_name: &str) -> PathBuf {
+        let mut source =
+            zip::ZipArchive::new(std::fs::File::open("examples/first-success/design.fig").unwrap())
+                .unwrap();
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let name = format!("images/{image_name}");
+        for i in 0..source.len() {
+            let mut entry = source.by_index(i).unwrap();
+            let original = entry.name().unwrap().into_owned();
+            let target = if original.starts_with("images/") {
+                name.as_str()
+            } else {
+                original.as_str()
+            };
+            zip.start_file(target, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::copy(&mut entry, &mut zip).unwrap();
+        }
+        let mut bytes = zip.finish().unwrap().into_inner();
+        let header = bytes
+            .windows(name.len())
+            .rposition(|s| s == name.as_bytes())
+            .unwrap()
+            - 46;
+        assert_eq!(&bytes[header..header + 4], b"PK\x01\x02");
+        // Keep the payload tiny: the advertised size must be rejected before it is read.
+        bytes[header + 24..header + 28].copy_from_slice(&(64 * 1024 * 1024 + 1u32).to_le_bytes());
+        let file = self.join("oversized-image.fig");
+        std::fs::write(&file, bytes).unwrap();
+        file
+    }
 }
 
 impl Drop for TestDir {

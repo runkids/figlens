@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Write as _;
-use std::io::Read;
 use std::path::Path;
 
 use serde_json::Value as Json;
@@ -66,10 +65,11 @@ pub(crate) fn images(
         return Ok(images);
     }
     let mut zip = crate::open_zip(fig)?;
+    let mut remaining = crate::parse::IMAGE_TOTAL_BYTES;
     for r in refs {
-        let mut bytes = Vec::new();
-        if let Ok(mut f) = zip.by_name(&format!("images/{r}")) {
-            f.read_to_end(&mut bytes)?;
+        if let Ok(f) = zip.by_name(&format!("images/{r}")) {
+            let size = f.size();
+            let bytes = crate::read_image(f, size, &mut remaining)?;
             images.insert(r, bytes);
         }
     }

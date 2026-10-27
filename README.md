@@ -223,7 +223,7 @@ For related component variants, use `inspect --states` or `bundle --states` (MCP
 
 To compare two variants in the same component set, use `inspect <file> <variantA> --compare-variant <variantB>` (MCP `compareVariant`). `variantComparison` reports stored field/value-multiset differences with source IDs and unknowns; descendants remain unpaired. See [comparison limits](wiki/states.md#compare-two-variants).
 
-A node argument accepts `12:345`, `12-345` or a Figma URL with `?node-id=`. `<file>` can also be `gs://bucket/object`, downloaded with your `gcloud` login and cached. See the [GCS snapshot cookbook](wiki/gcs.md) for a fixed-object handoff, access requirements and refresh limits. Each CLI call decodes the file; MCP reuses the last unchanged local file, while remote calls parse again. Run `figlens --help` for usage.
+A node argument accepts `12:345`, `12-345` or a Figma URL with `?node-id=`. `<file>` can also be `gs://bucket/object`, downloaded with your `gcloud` login and cached. See the [GCS snapshot cookbook](wiki/gcs.md) for a fixed-object handoff, access requirements and refresh limits. Each CLI call decodes the file; MCP reuses the last unchanged local file, while remote calls parse again. Run `figlens --help` or `figlens inspect --help` (also `-h`) for full CLI usage.
 
 <a id="limitations"></a>
 

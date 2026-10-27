@@ -107,6 +107,29 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
+    if matches!(args.get(1).map(String::as_str), Some("-h" | "--help"))
+        && matches!(
+            args.first().map(String::as_str),
+            Some(
+                "tree"
+                    | "find"
+                    | "inspect"
+                    | "node"
+                    | "nodes"
+                    | "variables"
+                    | "bundle"
+                    | "export"
+                    | "compare"
+                    | "preview"
+                    | "mcp"
+                    | "cache"
+                    | "update"
+            )
+        )
+    {
+        writeln!(out, "{USAGE}")?;
+        return Ok(());
+    }
     match args.first().map(String::as_str) {
         None | Some("-h" | "--help" | "help") => {
             writeln!(out, "{USAGE}")?;

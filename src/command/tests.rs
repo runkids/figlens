@@ -3,6 +3,92 @@ use std::io::Write as _;
 
 use crate::test_support::TestDir;
 
+#[test]
+fn subcommand_help_does_not_open_a_source_or_run_an_action() {
+    for command in [
+        "tree",
+        "find",
+        "inspect",
+        "node",
+        "nodes",
+        "variables",
+        "bundle",
+        "export",
+        "compare",
+        "preview",
+        "mcp",
+        "cache",
+        "update",
+    ] {
+        for flag in ["--help", "-h"] {
+            let mut out = String::new();
+            run(vec![command.into(), flag.into()], &mut out).unwrap();
+            assert!(
+                out.contains(&format!("figlens {command}")),
+                "{command} {flag}"
+            );
+        }
+    }
+}
+
+#[test]
+fn image_budget_reaches_cli_mcp_and_offline_preview_without_writing_output() {
+    let dir = TestDir::new();
+    let file = dir
+        .oversized_image("first-success-tile")
+        .to_string_lossy()
+        .into_owned();
+    let output = dir.join("output").to_string_lossy().into_owned();
+    for (command, extra) in [
+        ("inspect", vec!["--images".to_owned()]),
+        ("bundle", vec![format!("{output}.zip")]),
+        ("export", vec![format!("{output}.png")]),
+        (
+            "preview",
+            vec!["--out".to_owned(), format!("{output}.html")],
+        ),
+    ] {
+        let args = [vec![command.into(), file.clone(), "0:1".into()], extra].concat();
+        let error = run(args, &mut String::new()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("parse budget exceeded: image bytes"),
+            "{command}: {error}"
+        );
+    }
+    for extension in ["zip", "png", "html"] {
+        assert!(!std::path::Path::new(&format!("{output}.{extension}")).exists());
+    }
+    let request = |id, file: &str| {
+        serde_json::json!({
+            "jsonrpc":"2.0", "id":id, "method":"tools/call",
+            "params":{"name":"inspect","arguments":{"file":file,"node":"0:1","images":true}}
+        })
+    };
+    let input = format!(
+        "{}\n{}\n{}\n",
+        request(1, &file),
+        serde_json::json!({"jsonrpc":"2.0","id":2,"method":"ping"}),
+        request(3, "examples/first-success/design.fig")
+    );
+    let mut output = Vec::new();
+    serve(input.as_bytes(), &mut output, &[]).unwrap();
+    let replies: Vec<serde_json::Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(replies.len(), 3);
+    assert_eq!(replies[0]["result"]["isError"], true);
+    assert_eq!(
+        replies[0]["result"]["_meta"]["figlens"]["code"],
+        "parse_budget_exceeded"
+    );
+    assert_eq!(replies[1]["result"], serde_json::json!({}));
+    assert_eq!(replies[2]["result"]["isError"], false);
+}
+
 struct Fixture(TestDir);
 
 impl Fixture {

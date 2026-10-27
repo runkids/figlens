@@ -705,10 +705,12 @@ impl Revision<'_> {
             "asset" => {
                 // Read just this image; preparing the whole scope per image is far slower.
                 let mut zip = crate::open_zip(file)?;
-                let mut bytes = Vec::new();
-                zip.by_name(&format!("images/{key}"))
-                    .map_err(|_| "original image missing")?
-                    .read_to_end(&mut bytes)?;
+                let image = zip
+                    .by_name(&format!("images/{key}"))
+                    .map_err(|_| "original image missing")?;
+                let size = image.size();
+                let mut remaining = crate::parse::IMAGE_TOTAL_BYTES;
+                let bytes = crate::read_image(image, size, &mut remaining)?;
                 (render::media_type(&bytes), bytes)
             }
             "export" => {
@@ -790,6 +792,40 @@ fn reload(file: &Path, stamp: SystemTime) -> Result<Document> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_original_image_route_obeys_the_image_budget() {
+        let dir = crate::test_support::TestDir::new();
+        let file = dir.oversized_image("a1b2");
+        let doc = Document::open(&file).unwrap();
+        let message = doc.message().unwrap();
+        let tree = Tree::new(&message);
+        let version = fs::metadata(&file).unwrap().modified().unwrap();
+        let revision = Revision {
+            tree: &tree,
+            index: Value::Null,
+            file: &file,
+            initial: None,
+            generation: 1,
+            version,
+            workspace: &dir.join("bundles"),
+            authority: "127.0.0.1:1234",
+            token: "test",
+            memory: Mutex::new(Memory::default()),
+            disk: Mutex::new(DiskCache {
+                dir: Some(dir.join("cache")),
+                used: 0,
+            }),
+            bundles: AtomicUsize::new(0),
+        };
+        let error = revision.respond("asset/1/0:1/a1b2").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("parse budget exceeded: image bytes")
+        );
+        assert!(revision.respond("catalog").is_ok());
+    }
     #[test]
     fn disk_cache_round_trips_renders_and_their_export_area() {
         let dir = crate::test_support::TestDir::new();

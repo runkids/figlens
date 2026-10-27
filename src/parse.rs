@@ -9,6 +9,8 @@ use kiwi_schema::{
 pub(crate) const CANVAS_BYTES: u64 = 512 * 1024 * 1024;
 pub(crate) const SCHEMA_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const MESSAGE_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const IMAGE_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 pub(crate) const CHUNKS: usize = 1024;
 const SCHEMA_ITEMS: usize = 262_144;
 

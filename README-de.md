@@ -225,7 +225,7 @@ Für zugehörige Komponentenvarianten `inspect --states` oder `bundle --states` 
 
 Zwei Varianten desselben Component-Sets mit `inspect <file> <variantA> --compare-variant <variantB>` vergleichen (MCP `compareVariant`). `variantComparison` meldet Unterschiede gespeicherter Felder und Wertemengen samt Quell-IDs und unbekannten Werten, ohne Kindknoten einander zuzuordnen. Siehe [Vergleichsgrenzen](wiki/states.md#compare-two-variants).
 
-Ein Node-Argument akzeptiert `12:345`, `12-345` oder eine Figma-URL mit `?node-id=`. `<file>` kann auch `gs://bucket/object` sein, heruntergeladen mit deinem `gcloud`-Login und im Cache abgelegt. Der [GCS-Snapshot-Leitfaden](wiki/gcs.md) beschreibt die Übergabe über ein festes Objekt, nötige Zugriffsrechte und Grenzen der Aktualisierung. Jeder CLI-Aufruf decodiert die Datei; MCP verwendet nur die zuletzt gelesene, unveränderte lokale Datei erneut. Remote-Aufrufe parsen erneut. Führe `figlens --help` für die Nutzung aus.
+Ein Node-Argument akzeptiert `12:345`, `12-345` oder eine Figma-URL mit `?node-id=`. `<file>` kann auch `gs://bucket/object` sein, heruntergeladen mit deinem `gcloud`-Login und im Cache abgelegt. Der [GCS-Snapshot-Leitfaden](wiki/gcs.md) beschreibt die Übergabe über ein festes Objekt, nötige Zugriffsrechte und Grenzen der Aktualisierung. Jeder CLI-Aufruf decodiert die Datei; MCP verwendet nur die zuletzt gelesene, unveränderte lokale Datei erneut. Remote-Aufrufe parsen erneut. Führe `figlens --help` oder `figlens inspect --help` (auch `-h`) für die vollständige CLI-Hilfe aus.
 
 <a id="limitations"></a>
 
