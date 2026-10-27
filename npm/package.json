@@ -1,6 +1,6 @@
 {
   "name": "@runkids/figlens",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Give your coding agent any Figma screen's layout, text, variables and assets, with no Figma app, login or API rate limit. Local preview, CLI + MCP, and reviewed component mappings for Pi.",
   "license": "MIT",
   "repository": {

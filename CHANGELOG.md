@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.3](https://github.com/runkids/figlens/compare/v0.7.2...v0.7.3) (2026-10-27)
+
+
+### Bug Fixes
+
+* handle subcommand help and bound original image reads ([ee79f78](https://github.com/runkids/figlens/commit/ee79f78c962b7224c3e40eaf3a9050df20c6fd86))
+* protect outputs and bound MCP handoffs ([e12a3d0](https://github.com/runkids/figlens/commit/e12a3d0ed37dc537bb71df8de137d02bd8549075))
+* protect outputs and bound MCP handoffs ([dd315dd](https://github.com/runkids/figlens/commit/dd315dd2f0cae966f905c14bb964808902cbfc7d))
+
 ## [0.7.2](https://github.com/runkids/figlens/compare/v0.7.1...v0.7.2) (2026-10-26)
 
 
