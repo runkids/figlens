@@ -26,6 +26,8 @@ Live mode polls a tiny `revision` route every two seconds while idle and downloa
 
 ## Agent API
 
+Snapshot files use [shared output publication](parsing.md#completed-output-publication).
+
 Original image loads and offline snapshots enforce the shared [image byte budgets](parsing.md#initial-fixed-ceilings). The live single-original route checks each requested image; scope preparation also caps the sum of unique originals. These read limits are separate from the viewer's memory and disk cache caps.
 
 Prototype rows use [shared source evidence](prototype.md), including exact override provenance and unverified inheritance. Missing fields display unspecified/unsupported instead of ON_CLICK/NAVIGATE; unresolved node destinations retain IDs without links. These are snapshot facts, not complete business logic.

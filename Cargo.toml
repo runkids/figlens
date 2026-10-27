@@ -11,7 +11,7 @@ homepage = "https://github.com/runkids/figlens"
 readme = "README.md"
 keywords = ["figma", "fig", "design", "design-to-code", "cli"]
 categories = ["command-line-utilities", "parser-implementations", "multimedia::images"]
-include = ["src/**/*", "vendor/kiwi-schema/**/*", "skills/figlens/**/*", "scripts/make-first-success.rs", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
+include = ["src/**/*", "vendor/kiwi-schema/**/*", "skills/figlens/**/*", "scripts/make-first-success.rs", "scripts/probe-handoff.rs", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
 
 [dependencies]
 flate2 = "1.1.10"
@@ -36,3 +36,7 @@ codegen-units = 1
 [[example]]
 name = "first-success-fixture"
 path = "scripts/make-first-success.rs"
+
+[[example]]
+name = "handoff-probe"
+path = "scripts/probe-handoff.rs"

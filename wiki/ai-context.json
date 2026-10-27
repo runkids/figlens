@@ -96,6 +96,9 @@
       "sources": [
         {
           "path": "wiki/direction.md"
+        },
+        {
+          "path": "wiki/handoff-research.md"
         }
       ]
     },

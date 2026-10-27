@@ -30,6 +30,7 @@ usage:
   figlens inspect <file.fig> <node> [--depth N] [--images] [--states] [--compare-variant ID]
                                              compact layout/text summary, instances expanded;
                                              depth 1 (0-10), at most 200 nodes, 200 characters per text;
+                                             recorded text resize/truncation/decoration and known handoff gaps;
                                              --images adds source pixels/bytes and source-pixel crop rectangles;
                                              --states lists related component variants and evidence gaps;
                                              --compare-variant compares two stored variants in the same set

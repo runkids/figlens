@@ -206,6 +206,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "images": {"type": "object", "description": "optional source image evidence when images=true"},
                 "states": {"type": "object", "description": "optional variants and prototype field evidence when states=true; independent truncation, source file, node/override provenance and unknown markers; no inferred business logic"},
                 "variantComparison": {"type":"object", "description":"optional same-set definition comparison when compareVariant is supplied; raw fields, descendant value multisets, unpaired nodes, unknowns and independent truncation; not a pixel comparison"},
+                "handoffDiagnostics": {"type":"object", "description":"optional known stored semantics not emitted by the projection; counts cover the selected expanded subtree independently of summary depth, with at most five example IDs per feature and explicit coverage limits"},
             }),
             ["node", "truncated"].as_slice(),
         ),
@@ -466,6 +467,10 @@ impl Failure {
             ErrorKind::ParseBudget => (
                 "parse_budget_exceeded",
                 "Use a smaller local copy or report the named limit for review.",
+            ),
+            ErrorKind::ResponseBudget => (
+                "response_budget_exceeded",
+                "Use inspect, bundle one frame, or CLI nodes for full JSON; for inline exports lower maxSize. A completed file is identified by outputPath when present.",
             ),
             ErrorKind::OutputWrite => (
                 "output_write_failed",

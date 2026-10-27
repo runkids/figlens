@@ -39,6 +39,7 @@ def session(command, cwd, env, timeout=30):
         except queue.Empty as error:
             raise TimeoutError(f'MCP {method} did not respond within {timeout:g} seconds') from error
         assert line is not None, 'MCP exited before replying: ' + ''.join(errors)
+        request.last_wire_bytes = len(line.encode('utf-8'))
         reply = json.loads(line)  # An installer/log line on stdout is a failure.
         assert reply.get('jsonrpc') == '2.0' and reply.get('id') == next_id, reply
         assert 'error' not in reply and 'result' in reply, reply

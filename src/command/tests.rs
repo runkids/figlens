@@ -4,6 +4,198 @@ use std::io::Write as _;
 use crate::test_support::TestDir;
 
 #[test]
+fn handoff_gaps_and_text_summary_reach_cli_mcp_and_bundle() {
+    use kiwi_schema::{Def, Field, Schema, TYPE_STRING, TYPE_UINT, Value as K};
+    let dir = TestDir::new();
+    let original = std::path::Path::new("examples/first-success/design.fig");
+    let doc = figlens::Document::open(original).unwrap();
+    let mut message = doc.message().unwrap();
+    let schema = Schema::decode(&doc.schema.encode()).unwrap();
+    let schema = Schema::new(
+        schema
+            .defs
+            .into_iter()
+            .map(|d| {
+                let mut fields = d.fields;
+                if d.name == "NodeChange" {
+                    for (name, type_id, value) in [
+                        ("leadingTrim", TYPE_STRING, 100),
+                        ("textAutoResize", TYPE_STRING, 101),
+                        ("textTruncation", TYPE_STRING, 102),
+                        ("maxLines", TYPE_UINT, 103),
+                        ("textDecoration", TYPE_STRING, 104),
+                    ] {
+                        fields.push(Field {
+                            name: name.into(),
+                            type_id,
+                            value,
+                            is_array: false,
+                        });
+                    }
+                }
+                Def::new(d.name, d.kind, fields)
+            })
+            .collect(),
+    );
+    let K::Object(_, root) = &mut message else {
+        unreachable!()
+    };
+    let K::Array(nodes) = root.get_mut("nodeChanges").unwrap() else {
+        unreachable!()
+    };
+    let node = nodes
+        .iter_mut()
+        .find(|n| n.get("guid").and_then(figlens::guid_key).as_deref() == Some("0:4"))
+        .unwrap();
+    let K::Object(_, fields) = node else {
+        unreachable!()
+    };
+    for (name, value) in [
+        ("leadingTrim", K::String("CAP_HEIGHT".into())),
+        ("textAutoResize", K::String("HEIGHT".into())),
+        ("textTruncation", K::String("ENDING".into())),
+        ("maxLines", K::UInt(2)),
+        ("textDecoration", K::String("UNDERLINE".into())),
+    ] {
+        fields.insert(name, value);
+    }
+    let mut canvas = b"fig-kiwi".to_vec();
+    canvas.extend(106u32.to_le_bytes());
+    for raw in [schema.encode(), message.encode(&schema)] {
+        let mut compressed =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        compressed.write_all(&raw).unwrap();
+        let bytes = compressed.finish().unwrap();
+        canvas.extend((bytes.len() as u32).to_le_bytes());
+        canvas.extend(bytes);
+    }
+    let file = dir.join("handoff.fig");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&file).unwrap());
+    zip.start_file("canvas.fig", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(&canvas).unwrap();
+    let mut original = zip::ZipArchive::new(std::fs::File::open(original).unwrap()).unwrap();
+    let mut image = original.by_name("images/first-success-tile").unwrap();
+    zip.start_file(
+        "images/first-success-tile",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    std::io::copy(&mut image, &mut zip).unwrap();
+    zip.finish().unwrap();
+    let mut text = String::new();
+    run(
+        vec![
+            "inspect".into(),
+            file.to_string_lossy().into_owned(),
+            "0:4".into(),
+        ],
+        &mut text,
+    )
+    .unwrap();
+    let inspect: serde_json::Value = serde_json::from_str(&text).unwrap();
+    for (field, value) in [
+        ("textAutoResize", serde_json::json!("HEIGHT")),
+        ("textTruncation", serde_json::json!("ENDING")),
+        ("maxLines", serde_json::json!(2)),
+        ("textDecoration", serde_json::json!("UNDERLINE")),
+    ] {
+        assert_eq!(inspect["node"]["style"][field], value);
+    }
+    assert_eq!(
+        inspect["handoffDiagnostics"]["items"][0]["feature"],
+        "leadingTrim"
+    );
+    assert_eq!(inspect["handoffDiagnostics"]["items"][0]["nodeCount"], 1);
+    let reply = call_tool(
+        &serde_json::json!({"name":"inspect","arguments":{"file":file,"node":"0:4"}}),
+        None,
+    );
+    assert_eq!(reply["structuredContent"], inspect);
+    let out = dir.join("bundle.zip");
+    let reply = call_tool(
+        &serde_json::json!({"name":"bundle","arguments":{"file":file,"node":"0:1","out":out}}),
+        None,
+    );
+    assert_eq!(reply["isError"], false, "{reply}");
+    assert!(
+        reply["structuredContent"]["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str().unwrap().contains("Handoff leadingTrim"))
+    );
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(out).unwrap()).unwrap();
+    let stored: serde_json::Value =
+        serde_json::from_reader(archive.by_name("design/nodes.json").unwrap()).unwrap();
+    assert_eq!(
+        stored["_figlens"]["handoffDiagnostics"]["items"][0]["nodeCount"],
+        1
+    );
+    let mut context = String::new();
+    std::io::Read::read_to_string(&mut archive.by_name("context.md").unwrap(), &mut context)
+        .unwrap();
+    assert!(context.contains("Handoff leadingTrim"));
+}
+
+#[test]
+fn outputs_do_not_overwrite_the_source_through_cli_or_mcp() {
+    let dir = TestDir::new();
+    for command in ["bundle", "export"] {
+        // Source paths need no particular extension; export selects its encoder from out.
+        let source = dir.join(if command == "export" {
+            "source.png"
+        } else {
+            "source.fig"
+        });
+        let bytes = std::fs::read("examples/first-success/design.fig").unwrap();
+        std::fs::write(&source, &bytes).unwrap();
+        let label = source.to_string_lossy().into_owned();
+        let error = run(
+            vec![command.into(), label.clone(), "0:1".into(), label.clone()],
+            &mut String::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("must not overwrite"));
+        let reply = call_tool(
+            &serde_json::json!({"name":command,"arguments":{"file":label,"node":"0:1","out":label}}),
+            None,
+        );
+        assert_eq!(reply["isError"], true);
+        assert_eq!(reply["_meta"]["figlens"]["code"], "invalid_arguments");
+        assert_eq!(std::fs::read(&source).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn oversized_requests_recover_without_discarding_the_loaded_document() {
+    let fixture = Fixture::new();
+    let call = |id| {
+        serde_json::json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"inspect","arguments":{"file":fixture.file(),"node":"0:1"}}}).to_string()
+    };
+    let input = format!(
+        "{}\n{}\n{}\n{}\n",
+        call(1),
+        "x".repeat(1024 * 1024 + 1),
+        serde_json::json!({"jsonrpc":"2.0","id":3,"method":"ping"}),
+        call(4)
+    );
+    let mut output = Vec::new();
+    serve(input.as_bytes(), &mut output, &[]).unwrap();
+    let replies: Vec<serde_json::Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    assert_eq!(replies.len(), 4);
+    assert_eq!(replies[0]["result"]["isError"], false);
+    assert_eq!(replies[1]["error"]["code"], -32600);
+    assert_eq!(replies[1]["id"], serde_json::Value::Null);
+    assert_eq!(replies[2]["result"], serde_json::json!({}));
+    assert_eq!(replies[3]["result"], replies[0]["result"]);
+}
+
+#[test]
 fn subcommand_help_does_not_open_a_source_or_run_an_action() {
     for command in [
         "tree",

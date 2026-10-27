@@ -3,7 +3,6 @@
 //! renders of composited images and a reference render, listed in `manifest.json`.
 
 use std::error::Error;
-use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
@@ -318,6 +317,18 @@ pub fn write_with_states(
         })
         .collect();
     render_warnings(document, &mut warnings);
+    for item in doc["_figlens"]["handoffDiagnostics"]["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        warnings.push(format!(
+            "Handoff {}: {} node(s) have stored data not emitted. {}",
+            item["feature"].as_str().unwrap_or(""),
+            item["nodeCount"],
+            item["reason"].as_str().unwrap_or("")
+        ));
+    }
     let states = include_states.then(|| crate::states::inspect(tree, document, fig));
     if let Some(states) = &states {
         files.push(json_file("design/states.json", states, "metadata"));
@@ -340,8 +351,7 @@ pub fn write_with_states(
         &unresolved,
         states.as_ref(),
     )));
-    pack(files, file_key, root, &name, &warnings, out)
-        .map_err(|e| crate::FigError::new(crate::ErrorKind::OutputWrite, e.to_string()))?;
+    pack(files, file_key, root, &name, &warnings, fig, out)?;
     Ok(warnings)
 }
 
@@ -391,6 +401,7 @@ fn pack(
     root: &str,
     name: &str,
     warnings: &[String],
+    fig: &Path,
     out: &Path,
 ) -> Result<(), Box<dyn Error>> {
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -426,17 +437,19 @@ fn pack(
         manifest["root"]["states"] = json!("design/states.json");
     }
 
-    let mut w = zip::ZipWriter::new(File::create(out)?);
-    let opts = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    w.start_file("manifest.json", opts)?;
-    w.write_all(&serde_json::to_vec_pretty(&manifest)?)?;
-    for f in &files {
-        w.start_file(f.path.as_str(), opts)?;
-        w.write_all(&f.bytes)?;
-    }
-    w.finish()?;
-    Ok(())
+    crate::output::write(fig, out, |file| {
+        let mut w = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        w.start_file("manifest.json", opts)?;
+        w.write_all(&serde_json::to_vec_pretty(&manifest)?)?;
+        for f in &files {
+            w.start_file(f.path.as_str(), opts)?;
+            w.write_all(&f.bytes)?;
+        }
+        w.finish()?;
+        Ok(())
+    })
 }
 
 /// The bundle's `context.md`: what each file holds and how to build from it.

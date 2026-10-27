@@ -227,6 +227,8 @@ Comparez deux variantes du même component set avec `inspect <file> <variantA> -
 
 Un argument node accepte `12:345`, `12-345` ou une URL Figma avec `?node-id=`. `<file>` peut aussi être `gs://bucket/object`, téléchargé avec votre connexion `gcloud` et mis en cache. Consultez le [guide des snapshots GCS](wiki/gcs.md) pour la transmission via un objet fixe, les droits requis et les limites d’actualisation. Chaque appel de la CLI décode le fichier ; MCP ne réutilise que le dernier fichier local inchangé. Les appels distants relancent l’analyse. Lancez `figlens --help` ou `figlens inspect --help` (`-h` aussi) pour l’aide complète de la CLI.
 
+`inspect` inclut le redimensionnement du texte, la troncature, le nombre maximal de lignes et les décorations enregistrés. `handoffDiagnostics` signale les données sémantiques enregistrées mais non émises, avec des comptes, des exemples et des [limites de couverture](wiki/semantics.md#known-handoff-gaps). Les sorties protègent la source et remplacent la destination après une écriture complète. MCP limite les lignes de requête à 1 MiB et les réponses complètes à 8 MiB ; un dépassement renvoie une erreur explicite. Le JSON complet reste disponible via la CLI.
+
 <a id="limitations"></a>
 
 ## Limites

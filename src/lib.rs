@@ -17,6 +17,7 @@ pub mod compare;
 pub mod expand;
 pub mod export;
 pub mod images;
+pub mod output;
 mod parse;
 pub mod preview;
 mod prototype;
@@ -40,6 +41,7 @@ pub enum ErrorKind {
     NodeNotFound,
     UnsupportedNode,
     ParseBudget,
+    ResponseBudget,
     OutputWrite,
     PermissionDenied,
     OperationFailed,

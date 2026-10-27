@@ -9,6 +9,7 @@ use crate::expand::{Expansion, Mat, Vec2, abs_matrix, expand_instances, plugin_t
 use crate::render::{self, Rect};
 use crate::{Tree, to_json};
 
+mod handoff;
 mod semantics;
 
 type Obj = Map<String, Json>;
@@ -55,6 +56,7 @@ fn resolve_target(tree: &Tree, id: &str, render: bool) -> Result<Json, Box<dyn s
                 "node {id} not found in expanded instance {root}; inspect {root} for available sublayer IDs"
             ))
         })?;
+        handoff::select(&mut doc);
     }
     Ok(doc)
 }
@@ -82,8 +84,10 @@ fn build(tree: &Tree, root: &str, render: bool) -> Json {
     let modes = parent_id(tree, root).map_or_else(Modes::new, |p| context(tree, &b.vars, &p));
     let document = b.node(root, None, &modes, true, None);
     let (mut components, mut sets, mut styles) = (Obj::new(), Obj::new(), Obj::new());
+    let mut handoff = handoff::Inventory::default();
     let mut stack = vec![&document];
     while let Some(n) = stack.pop() {
+        handoff.record(n);
         stack.extend(n["children"].as_array().into_iter().flatten());
         if let Some(main) = n["componentId"]
             .as_str()
@@ -120,13 +124,17 @@ fn build(tree: &Tree, root: &str, render: bool) -> Json {
             styles.insert(id.to_owned(), meta);
         }
     }
-    json!({
+    let mut result = json!({
         "document": document,
         "components": components,
         "componentSets": sets,
         "styles": styles,
         "schemaVersion": 0,
-    })
+    });
+    if let Some(summary) = handoff.finish() {
+        result["_figlens"] = json!({"handoffDiagnostics":summary});
+    }
+    result
 }
 
 /// REST `components` / `componentSets` entry of a main component or component set.
@@ -530,13 +538,13 @@ impl Builder<'_, '_> {
             }
         }
         let mut out = fields(&kiwi, &kind, parent);
+        let root_parent = parent
+            .is_none()
+            .then(|| parent_id(self.tree, id))
+            .flatten()
+            .map(|p| object(to_json(self.tree.nodes[&p])));
         if !matches!(kind.as_str(), "DOCUMENT" | "CANVAS" | "SECTION") {
             // A selected stored root still has a parent; don't alter the legacy sizing path.
-            let root_parent = parent
-                .is_none()
-                .then(|| parent_id(self.tree, id))
-                .flatten()
-                .map(|p| object(to_json(self.tree.nodes[&p])));
             let placement = self.ex.nodes.get(id).map_or(&kiwi, |e| &e.props);
             let mut evidence =
                 semantics::layout(placement, parent.or(root_parent.as_ref()), &mut out);
@@ -548,6 +556,7 @@ impl Builder<'_, '_> {
             }
             out.insert("_figlens".into(), json!({"semantics":evidence}));
         }
+        handoff::fields(&kiwi, &kind, parent.or(root_parent.as_ref()), &mut out);
         if let Some(prototype) = crate::prototype::node(self.tree, id, self.ex.nodes.get(id), &kind)
         {
             out.entry("_figlens".to_owned())

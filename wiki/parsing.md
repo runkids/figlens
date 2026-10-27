@@ -36,6 +36,12 @@ Budget failures use the existing `FigError` channel with the stable prefix `pars
 
 This batch does not bound ZIP central-directory indexing before `canvas.fig` is selected, codec internals beyond their existing checks (including ruzstd's default window limit), every third-party decoder call made directly by library consumers, or later expansion/rendering/bundle work. Caller-constructed `Value` trees bypass document parsing. Layer-parent depth, output JSON size and request transport size are separate concerns. Do not claim that this makes every MCP input crash-proof.
 
+## Completed output publication
+
+Bundle, export and offline snapshot outputs share `src/output.rs`. Existing output symlinks resolve to their target, including unrooted dangling links; the caller retains the requested encoding and reply label. A canonical output equal to the source is refused. An alternate hard link is replaced by a new file, preserving the original source inode. Ordinary MCP root admission/rechecks still apply.
+
+Writers exclusively create a sibling `.figlens-<pid>-<counter>.part`, retry occupied names, close it and rename it over the destination only after success. Cleanup removes only the owned staging file, including on callback failure or unwind. Existing read-only outputs are refused and existing permissions are retained. A failed write or rename preserves the previous output. This is atomic file publication, not a disk-sync/durable-save guarantee or protection against arbitrary concurrent directory replacement. It does not change preview disk-cache or GCS-cache writes.
+
 ## Safe verification
 
 Use small acyclic schemas/values and test-only low limits for below/exact/over depth and work boundaries, decompression byte boundaries and recovery after failure. Generated files use `TestDir`; never use private designs or regenerate the historical crash payload. The MCP integration case uses a tiny finite acyclic message chain one level over the default depth, followed by ping and a normal generated `.fig` request in the same server loop. This is synthetic integration evidence, not large-design compatibility or a guarantee that MCP can never terminate.

@@ -24,6 +24,10 @@ The tool requires only an enumerated `topic`, accepts no file/path argument and 
 
 ## Shared sources and runtime behavior
 
+Stdio request lines are capped at 1 MiB including line endings before JSON parsing or admission. Oversized lines are drained through their newline and return JSON-RPC `-32600` with a null ID; invalid UTF-8 returns `-32700`. The next request can still run, including against a warm document. This is a byte limit, not an elapsed-time limit on a peer that never finishes a line.
+
+Complete serialized replies, including escaping, structured content, inline base64 and newline, are capped at 8 MiB. The server counts serialization without allocating a second full reply buffer. Over-budget tool replies become `isError: true` with `_meta.figlens.code: response_budget_exceeded`; completed bundle/export files remain and their path is retained as `_meta.figlens.outputPath`. Full design JSON is never silently truncated. Use scoped inspect/bundles, CLI nodes, or a smaller export `maxSize`. Non-tool protocol replies return `-32603` on overflow. This transport policy leaves headroom below a reported 10 MiB client limit; it is not a guarantee for every MCP client or a process-memory limit. CLI output remains uncapped. See [measurements](handoff-research.md#mcp-message-sizes).
+
 `src/workflow.rs` embeds `skills/figlens/SKILL.md` and its planning references with `include_str!`. Build and images return relevant level-two sections, including known gaps. Plan, planning-details and YOLO return their maintained reference. Pi and the portable skill use these sources too. Update section selectors if a selected heading changes. Cargo's source inclusion covers the embedded Markdown too.
 
 Local reference links in returned text become `workflow:<topic>#<optional-section>`; the agent follows them with another call to this tool. No runtime Markdown files, network fetch or skill discovery mechanism is required. The binary can serve guidance from an empty working directory, including under `--root`; design/output path restrictions remain in force for design tools.

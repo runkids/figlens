@@ -5,7 +5,7 @@ description: Plan and build UI from local Figma .fig files using figlens CLI or 
 
 # figlens
 
-`figlens` reads a `.fig` file (Figma: **File > Save local copy**) and prints what the Figma REST API would return for a node: layout, text, styles, variables, instances already expanded. It also renders any node and writes a **bundle**: one zip with everything needed to build a frame. The `.fig` is a **snapshot**: it shows the design as it was when saved, so a newer design needs a newer copy.
+`figlens` reads a `.fig` file (Figma: **File > Save local copy**) and prints REST-shaped snapshot data for a node: layout, text, styles, variables, instances already expanded. It also renders any node and writes a **bundle**: one zip with everything needed to build a frame. The `.fig` is a **snapshot**: it shows the design as it was when saved, so a newer design needs a newer copy.
 
 ## Setup
 
@@ -35,7 +35,7 @@ For an explicit implementation plan or a request to carefully reproduce a design
 
 1. **Get the `.fig`.** Ask the designer for File > Save local copy when there is none. For a `gs://` handoff, follow the [GCS snapshot cookbook](https://github.com/runkids/figlens/blob/main/wiki/gcs.md) for authorized access, refresh and preview limits. Done when the file opens: `figlens tree <file.fig> --depth 1` lists its pages.
 2. **Find the node yourself.** A Figma URL (`...?node-id=12-345`), `12-345` and `12:345` all work as-is. Without one, use `figlens find <file.fig> "screen name" --type FRAME` or search visible copy with `--type TEXT`. Search is a case-insensitive substring over stored layer names and text; `--node <id>` scopes it and `--limit N` sets 1-200 results (default 20). Inspect candidate paths, dimensions, visible copy and reference renders to resolve the user's intent. If ambiguity remains, ask once with a short list of recognizable page/screen names and their differences or images. Resolve IDs internally. `truncated: true` means refine or scope the search. Instance children appear only after expansion: use `figlens inspect <file.fig> <instance-id>`. `tree --depth 2` is only an initial outline; descend into relevant containers or use `find` for nested screens. Done when you have identified the intended screen, without requiring a manual open or picker.
-3. **Bundle it.** `figlens bundle <file.fig> <node> frame.zip`, then unzip into its own directory and read `context.md` first: it says what each file holds. Done when you know the reference image, the structure file and the asset map.
+3. **Bundle it.** `figlens bundle <file.fig> <node> frame.zip`, then unzip into its own directory and read `context.md` first: it says what each file holds. Done when you know the reference image, the structure file and the asset map. Check `handoffDiagnostics` in inspect and `_figlens.handoffDiagnostics` in nodes for known stored semantics not emitted; bundle warnings summarize them. Their counts concern the selected expanded subtree, with explicit hidden/SLOT coverage limits, not proof of complete semantics. Inspect includes recorded text resize, truncation, max lines and decoration. Keep outputs distinct from the source. On `response_budget_exceeded`, use inspect, a scoped bundle, CLI nodes or a smaller export `maxSize`; `outputPath` in error metadata identifies a file already written.
 4. **Outline before reading.** A screen is hundreds of KB of JSON, too large to read whole. Print the tree with sizes and layout, then read the subtrees you are building with `jq`:
 
    ```sh
@@ -117,7 +117,7 @@ When the user wants to save reusable component matches, read the real target imp
 
 ## Many frames
 
-`figlens bundle <file.fig> --frames <list> --out-dir <dir>` decodes once and writes one bundle per id in `<list>` (one id per line), in parallel, printing a JSON line per frame (`{nodeId, path, warnings}` or `{nodeId, error}`). A single `bundle` prints the same object; non-empty `warnings` report missing assets and known skipped/approximate rendering. `missing-assets.json` contains only asset failures; `_figlens.renderDiagnostics` in nodes locates render limitations. Use it instead of one `bundle` call per frame.
+`figlens bundle <file.fig> --frames <list> --out-dir <dir>` decodes once and writes one bundle per id in `<list>` (one id per line), in parallel, printing a JSON line per frame (`{nodeId, path, warnings}` or `{nodeId, error}`). A single `bundle` prints the same object; non-empty `warnings` report missing assets, known skipped/approximate rendering and known unrepresented handoff semantics. `missing-assets.json` contains only asset failures; `_figlens.renderDiagnostics` in nodes locates render limitations. Use it instead of one `bundle` call per frame.
 
 ## Known gaps
 

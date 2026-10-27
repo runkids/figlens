@@ -86,7 +86,16 @@ fn stages() {
         });
     }
     stage("packExistingEntries", &mut rows, || {
-        pack(files, None, &node, "probe", &[], &dir.join("repacked.zip")).unwrap()
+        pack(
+            files,
+            None,
+            &node,
+            "probe",
+            &[],
+            file,
+            &dir.join("repacked.zip"),
+        )
+        .unwrap()
     });
     std::fs::write(output, serde_json::to_vec_pretty(&json!({
         "file": file, "node": node, "stages": rows,

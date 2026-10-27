@@ -209,7 +209,10 @@ pub fn snapshot(file: &Path, id: &str, out: &Path) -> Result<()> {
     let mut payload = data(&tree, file, id, true)?;
     payload["bundle"] = json!(render::base64(&fs::read(zip)?));
     payload["warnings"] = json!(warnings);
-    fs::write(out, html(&json!({"snapshot":payload})))?;
+    crate::output::write(file, out, |file| {
+        file.write_all(html(&json!({"snapshot":payload})).as_bytes())?;
+        Ok(())
+    })?;
     Ok(())
 }
 

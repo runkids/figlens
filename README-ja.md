@@ -227,6 +227,8 @@ skillshare sync && skillshare sync mcp --global
 
 node 引数には `12:345`、`12-345`、または `?node-id=` 付きの Figma URL を指定できます。`<file>` には `gs://bucket/object` も指定でき、`gcloud` ログインでダウンロードしてキャッシュします。固定オブジェクトでの受け渡し、必要なアクセス権、更新の制限は [GCS スナップショットガイド](wiki/gcs.md)を参照してください。CLI は呼び出しごとにファイルをデコードします。MCP が再利用するのは最後に読み取った変更のないローカルファイルだけです。リモート入力は毎回解析し直します。CLI の全使用法は `figlens --help` または `figlens inspect --help`（`-h` も可）で確認できます。
 
+`inspect` は記録済みのテキストのリサイズ、切り詰め、最大行数、装飾を含みます。`handoffDiagnostics` は保存済みでも未出力の意味情報を件数、例、[対象範囲の制限](wiki/semantics.md#known-handoff-gaps)とともに示します。出力は元ファイルを保護し、書き込み完了後に保存先を置き換えます。MCP のリクエスト行は 1 MiB、完全な応答は 8 MiB が上限で、超過時は明示的なエラーを返します。CLI では引き続き完全な JSON を出力できます。
+
 <a id="limitations"></a>
 
 ## 制限
