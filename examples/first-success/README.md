@@ -92,6 +92,8 @@ and fix confirmed differences. Report the fixture-only lettering, missing assets
 and checks you could not run.
 ```
 
+For an owned Figma design, editable implementation and independent screenshot comparison, follow the [task-list case study](../task-list/README.md). Its model experiment is separate from this deterministic setup check; private Figma exports are not included.
+
 This second step depends on the model, project and available browser tools. The smoke script does not invoke an agent, build a website, guarantee visual equivalence or promise a completion time. The file is a fixed snapshot; the reference is figlens's own render. Existing [snapshot tradeoffs and renderer limitations](../../README.md#limitations) still apply.
 
 ## When a checkpoint fails

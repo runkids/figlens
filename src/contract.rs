@@ -115,7 +115,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "nodes",
-        "A node or exact instance sublayer as Figma REST nodes.json: instances expanded, fills, text, auto-layout. Can be large.",
+        "A node or exact instance sublayer as Figma REST nodes.json: instances expanded, fills, strokes, effects, full text, auto-layout, masks and component data. Use it when inspect's compact summary lacks paints, masks or full text. A whole screen can be hundreds of KB; replies over the MCP reply budget fail with response_budget_exceeded instead of being truncated, so scope to a smaller node, use inspect, or write a bundle.",
         &[FILE, NODE],
     ),
     (

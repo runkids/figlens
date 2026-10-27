@@ -471,6 +471,7 @@ fn context(
     states: Option<&Json>,
 ) -> String {
     let mut s = format!("# Figma frame: {} ({})\n\n", quoted(name), quoted(id));
+    s += "## Font and asset preflight\n\nFont availability: UNVERIFIED. The .fig and this bundle contain no installable font files; outlined reference text does not prove that the project has the fonts. Identify text families, weights and styles in design/nodes.json, including text overrides, and check available licensed project/system font sources. For web fonts, check actual faces returned by document.fonts.load with the design text; document.fonts.check alone can pass on fallback.\n\nRead missing-assets.json, bundle warnings and assets.json; verify required files against manifest.json before use. Continue implementation without waiting for missing inputs: use available project fonts as documented fallbacks and clearly labelled image placeholders at the intended dimensions. Report the exact dependency, temporary choice and remedy. Leave final visual acceptance pending for unresolved inputs. No bundle warnings does not establish project readiness or pixel fidelity.\n\n";
     if !unresolved.is_empty() {
         s += &format!(
             "## Unresolved variables\n\n{} could not be resolved (deleted or unpublished library variables). The properties bound to them keep their resolved values in design/nodes.json; use those values and report the missing tokens rather than naming new ones.\n\n",
@@ -818,6 +819,21 @@ mod tests {
         assert!(
             t.len() == 24 && t.ends_with(".000Z") && t.as_bytes()[10] == b'T',
             "{t}"
+        );
+    }
+
+    #[test]
+    fn context_requires_preflight_even_without_bundle_warnings() {
+        let text = context("Test", "1:1", &[], &[], None);
+        assert!(text.contains("Font availability: UNVERIFIED"));
+        assert!(text.contains("document.fonts.load"));
+        assert!(text.contains("missing-assets.json"));
+        assert!(text.contains("Continue implementation without waiting for missing inputs"));
+        assert!(text.contains("final visual acceptance"));
+        assert!(!text.contains("Block affected work"));
+        assert!(
+            text.find("## Font and asset preflight").unwrap()
+                < text.find("## Building from it").unwrap()
         );
     }
 
