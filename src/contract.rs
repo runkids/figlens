@@ -159,6 +159,16 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
         ],
     ),
     (
+        "verify",
+        "Check a bundle, zipped or extracted, against its manifest before building from it: verified, missing and changed files, the bundle's missing assets, and the font faces the visible text uses (with node ids). Fonts are always unverified here: confirm each face in the running project with document.fonts.load, and check browser delivery of assets there. Reports without blocking; no design file is read.",
+        &[(
+            "bundle",
+            "string",
+            true,
+            "path to a bundle .zip or the directory it was extracted to",
+        )],
+    ),
+    (
         "export",
         "Export a node to SVG, PNG, JPG, WebP or AVIF. Create the output directory first. Returns metadata and, for raster formats, an inline image. PNG suits inline references. For website assets, follow the target project's existing image pipeline; otherwise start with WebP for bitmaps, sized for display dimensions and DPR using scale/maxSize and quality/maxKb. SVG embeds original images and can be large; keep it for vector artwork. scale, quality and maxSize affect raster formats only; maxSize defaults to 1600. Check returned dimensions/bytes and isError; read content on failure.",
         &[
@@ -232,6 +242,23 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
             }),
             ["nodeId", "path", "warnings"].as_slice(),
         ),
+        "verify" => (
+            serde_json::json!({
+                "path": { "type": "string" },
+                "files": {
+                    "type": "object",
+                    "description": "verified count; missing paths; changed entries with expected and actual size/sha256 (actual null when larger than declared or not a regular file inside the bundle); invalid manifest paths",
+                },
+                "missingAssets": { "type": "array", "description": "missing-assets.json entries" },
+                "fonts": {
+                    "type": "array",
+                    "items": { "type": "object" },
+                    "description": "family, style, weight, postScriptName, nodeIds and status, always unverified",
+                },
+                "unverified": { "type": "array", "items": { "type": "string" } },
+            }),
+            ["path", "files", "missingAssets", "fonts", "unverified"].as_slice(),
+        ),
         _ => return None,
     };
     Some(serde_json::json!({ "type": "object", "properties": properties, "required": required }))
@@ -276,7 +303,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
     if let Some(value) = default(tool, key).filter(|_| (tool, key) != ("tree", "depth")) {
         p["default"] = value;
     }
-    if matches!(key, "file" | "out" | "query" | "compareVariant") {
+    if matches!(key, "file" | "out" | "query" | "compareVariant" | "bundle") {
         p["minLength"] = json!(1);
     }
     if key == "query" {

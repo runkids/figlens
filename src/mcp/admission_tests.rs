@@ -443,3 +443,31 @@ fn non_utf8_output_targets_are_not_reinterpreted_as_lossy_paths() {
         assert_ne!(out, PathBuf::from(target.to_string_lossy().as_ref()));
     }
 }
+
+#[test]
+fn verify_reads_only_bundles_inside_roots_and_keeps_the_caller_label() {
+    let inside = TestDir::new();
+    let outside = TestDir::new();
+    for dir in [&inside, &outside] {
+        std::fs::write(
+            dir.join("manifest.json"),
+            r#"{"format":"figlens-bundle","version":1,"files":[]}"#,
+        )
+        .unwrap();
+    }
+    let roots = [inside.join("").canonicalize().unwrap()];
+    let denied = rooted_reply(
+        &call(json!(1), "verify", json!({"bundle": outside.join("")})),
+        &roots,
+    );
+    assert_eq!(
+        denied["result"]["_meta"]["figlens"]["code"],
+        "permission_denied"
+    );
+    let label = inside.join("");
+    let report = rooted_reply(&call(json!(2), "verify", json!({"bundle": label})), &roots);
+    assert_eq!(
+        report["result"]["structuredContent"]["path"],
+        label.to_string_lossy().as_ref()
+    );
+}

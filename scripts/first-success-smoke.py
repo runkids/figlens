@@ -99,7 +99,7 @@ def check_pixels(pixels):
 def validate_bundle(path):
     with zipfile.ZipFile(path) as bundle:
         require(bundle.testzip() is None, 'bundle ZIP checksum failure')
-        required = {'manifest.json', 'design/nodes.json', 'design/variables.json',
+        required = {'manifest.json', 'design/nodes.json', 'design/variables.json', 'design/fonts.json',
                     'assets.json', 'missing-assets.json', 'references/screen.png', 'context.md'}
         require(required <= set(bundle.namelist()), f'bundle missing {sorted(required - set(bundle.namelist()))}')
         read = lambda name: json.loads(bundle.read(name))
@@ -120,6 +120,8 @@ def validate_bundle(path):
         require(nodes['0:6']['type'] == 'VECTOR', 'triangle is not a vector')
         require(read('missing-assets.json') == [], 'bundle reports missing assets')
         require(isinstance(read('design/variables.json'), dict), 'variables file is not an object')
+        require([(f['family'], f['nodeIds']) for f in read('design/fonts.json')['faces']]
+                == [('Figlens Blocks', ['0:4', '0:5'])], 'font inventory differs')
         require(b'First success' in bundle.read('context.md'), 'context is for a different target')
         mapping = {asset['key']: asset for asset in assets}
         require(set(mapping) == {'first-success-tile', 'node:0:6'}, 'expected image and vector assets missing')
