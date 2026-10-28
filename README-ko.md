@@ -47,6 +47,12 @@
 claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
 
+**Codex CLI** (Node.js 18+, macOS/Linux):
+
+```sh
+codex mcp add figlens -- npx -y @runkids/figlens mcp
+```
+
 **모든 MCP 클라이언트:**
 
 ```json

@@ -47,6 +47,12 @@ Put `design.fig` in your project, then choose **one** setup. Each gives your age
 claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
 
+**Codex CLI** (Node.js 18+, macOS/Linux):
+
+```sh
+codex mcp add figlens -- npx -y @runkids/figlens mcp
+```
+
 **Any MCP client:**
 
 ```json

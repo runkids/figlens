@@ -59,6 +59,12 @@ For Claude Code on macOS/Linux:
 claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
 
+For Codex CLI on macOS/Linux:
+
+```sh
+codex mcp add figlens -- npx -y @runkids/figlens mcp
+```
+
 Start a new session and check `/mcp`. The MCP `workflow` tool includes on-demand guidance for design reading, project reuse, image preparation, scoped planning and explicitly requested autonomous implementation. It shares the [portable skill's](https://github.com/runkids/figlens#mcp-and-skill) sources; no separate skill install is required for MCP use. The agent carries out the task with its own project/browser tools and host permissions; reading a guide does not execute the workflow.
 
 ## Run the CLI

@@ -47,6 +47,12 @@ Coloque `design.fig` no seu projeto e escolha **uma** configuração. Cada uma d
 claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
 
+**Codex CLI** (Node.js 18+, macOS/Linux):
+
+```sh
+codex mcp add figlens -- npx -y @runkids/figlens mcp
+```
+
 **Qualquer cliente MCP:**
 
 ```json
