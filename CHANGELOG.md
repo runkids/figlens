@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.1](https://github.com/runkids/figlens/compare/v0.9.0...v0.9.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **opencode:** run the bundled launcher with node, not the host binary ([#64](https://github.com/runkids/figlens/issues/64)) ([5e6a36a](https://github.com/runkids/figlens/commit/5e6a36aceeb62577e62c0283773cdbfc03215b5b))
+* **pi:** describe every /figlens subcommand, speed up CI, document opencode plugin add ([#63](https://github.com/runkids/figlens/issues/63)) ([18d4552](https://github.com/runkids/figlens/commit/18d45526d1dc6ddc859332acd64049e6c5f3af6b))
+
 ## [0.9.0](https://github.com/runkids/figlens/compare/v0.8.0...v0.9.0) (2026-10-28)
 
 
