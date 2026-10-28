@@ -88,6 +88,8 @@ struct AdmittedCall {
     call: contract::PreparedCall,
     source: Option<Source>,
     output: Option<PathBuf>,
+    /// A bundle to verify: read, never loaded as a design.
+    input: Option<PathBuf>,
 }
 
 enum Source {
@@ -219,7 +221,8 @@ fn admit(line: &str, roots: &[PathBuf]) -> Admission {
                     None => None,
                 };
                 let output = call.string("out").map(|out| checked_path(Path::new(out), roots)).transpose()?;
-                Ok(AdmittedCall { id:id.clone(), call, source, output })
+                let input = call.string("bundle").map(|path| checked_path(Path::new(path), roots)).transpose()?;
+                Ok(AdmittedCall { id:id.clone(), call, source, output, input })
             });
             return match admitted {
                 Ok(call) => Admission::Call(call),
@@ -246,7 +249,12 @@ impl AdmittedCall {
     }
 
     fn recheck(&self, roots: &[PathBuf]) -> Result<(), contract::Failure> {
-        for path in self.local().into_iter().chain(self.output.as_deref()) {
+        for path in self
+            .local()
+            .into_iter()
+            .chain(self.output.as_deref())
+            .chain(self.input.as_deref())
+        {
             // Recheck current filesystem state, not raw arguments or a permanent authorization lease.
             checked_path(path, roots)?;
         }
@@ -261,6 +269,16 @@ impl AdmittedCall {
                 return workflow::read(self.call.string("topic").unwrap())
                     .map(command::Output::Text)
                     .map_err(contract::Failure::argument);
+            }
+            if let Some(bundle) = &self.input {
+                let mut value =
+                    figlens::verify::verify(bundle).map_err(contract::Failure::from_error)?;
+                // Reply with the caller's label, like output paths.
+                value["path"] = self.call.string("bundle").unwrap().into();
+                return Ok(command::Output::Json {
+                    value,
+                    pretty: false,
+                });
             }
             let run = |tree: &Tree, path: &Path| {
                 command::Command::from_tool(&self.call, tree, self.output.as_deref())?
@@ -465,6 +483,7 @@ mod tests {
                 "nodes",
                 "variables",
                 "bundle",
+                "verify",
                 "export"
             ]
         );
@@ -480,7 +499,10 @@ mod tests {
             .filter(|t| t["outputSchema"].is_object())
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(with_schema, ["find", "inspect", "bundle", "export"]);
+        assert_eq!(
+            with_schema,
+            ["find", "inspect", "bundle", "verify", "export"]
+        );
     }
 
     #[test]

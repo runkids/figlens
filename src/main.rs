@@ -55,6 +55,9 @@ usage:
                                              --max-kb lowers lossy quality until it fits;
                                              --max-size scales raster output to fit its longest side;
                                              prints {path,width,height,bytes,quality}
+  figlens verify <bundle.zip|dir>              check a bundle, zipped or extracted, against its manifest:
+                                             verified/missing/changed files, missing assets and the font
+                                             faces to confirm in the project (always unverified here)
   figlens preview <file.fig> [node] [--out preview.html] [--port N] [--bind IP]
                                              local read-only viewer (loopback, random port by default);
                                              --out requires a node and writes an offline snapshot
@@ -126,6 +129,7 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                     | "bundle"
                     | "export"
                     | "compare"
+                    | "verify"
                     | "preview"
                     | "mcp"
                     | "workflow"
@@ -165,6 +169,12 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             return Ok(());
         }
         Some("mcp") => return mcp(&args[1..]),
+        Some("verify") => {
+            let bundle = args.get(1).ok_or(USAGE)?;
+            let report = figlens::verify::verify(std::path::Path::new(bundle))?;
+            writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
+            return Ok(());
+        }
         Some("workflow") => {
             let topic = args.get(1).ok_or_else(|| {
                 format!(

@@ -26,6 +26,7 @@ pub mod render;
 pub mod rest;
 pub mod states;
 pub mod variables;
+pub mod verify;
 
 #[cfg(test)]
 mod test_support;
