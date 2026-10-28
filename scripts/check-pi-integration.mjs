@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const [sdkInput, packageInput, fixture, cwdInput] = process.argv.slice(2);
+const [sdkInput, packageInput, fixture, cwdInput, mappingInput] = process.argv.slice(2);
 if (!cwdInput) throw new Error('Usage: node scripts/check-pi-integration.mjs <installed-pi-root> <installed-figlens-root> <public.fig> <isolated-consumer>');
 const [sdk, packaged, cwd] = [sdkInput, packageInput, cwdInput].map(p => path.resolve(p));
 assert.ok(sdk.startsWith(cwd + path.sep) && packaged.startsWith(cwd + path.sep), 'Dependencies must belong to the isolated consumer');
@@ -54,8 +54,30 @@ try {
   }
   const pi = JSON.parse(await readFile(path.join(sdk, 'package.json'), 'utf8'));
   const pkg = JSON.parse(await readFile(path.join(packaged, 'package.json'), 'utf8'));
+  let mappingRoundTrip;
+  if (mappingInput) {
+    const project = path.resolve(mappingInput);
+    const guide = path.join(project, '.figlens/component-mappings.md');
+    const before = await readFile(guide, 'utf8');
+    const active = JSON.parse(before.split('```json\n')[1].split('\n```')[0]).active;
+    const context = { ...ctx, cwd: project };
+    const call = (name, input) => extension.tools.get(name).definition.execute('host-roundtrip', input, new AbortController().signal, undefined, context);
+    const bindings = (await call('figlens_bindings', { file: 'mapping.fig', frame: '0:1' })).structuredContent;
+    assert.ok(bindings.items.some(item => item.status === 'approved'), 'Pi must read the native host approval');
+    assert.equal(await readFile(guide, 'utf8'), before, 'Pi read must preserve the host guide');
+    await call('figlens_propose_bindings', { file: 'mapping.fig', frame: '0:1', proposals: [{ instance: '0:3',
+      target: { path: 'src/Button.mjs', export: 'Button', import: 'import { Button } from "./src/Button.mjs";', example: 'Button()' },
+      rationale: 'Installed Pi writer after native host review',
+    }] });
+    const after = await readFile(guide, 'utf8');
+    assert.ok(after.endsWith('\nHuman note: preserve this line.\n'));
+    const state = JSON.parse(after.split('```json\n')[1].split('\n```')[0]);
+    assert.deepEqual(state.active, active);
+    assert.ok(state.mappings.some(item => item.status === 'pending'));
+    mappingRoundTrip = { piReadNativeApproval: true, piWriterPending: true, humanNotePreserved: true, selectionUnchanged: true };
+  }
   console.log(JSON.stringify({ pi: pi.version, nodeMinimum: pi.engines.node, packageVersion: pkg.version,
-    modelCalled: false, mcp: server.config,
+    modelCalled: false, mcp: server.config, mappingRoundTrip,
     checks: ['real installed loader', 'runtime MCP registration', 'commands and tools',
       'public frame through packaged wrapper', 'skill and workflow resources'] }));
 } finally {

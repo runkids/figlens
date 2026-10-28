@@ -45,6 +45,12 @@ Looping GIF at 3× the edited video’s playback speed. Click it for the full 78
 
 [Watch the 78-second demo](https://github.com/runkids/figlens/blob/main/assets/taskflow-demo.mp4). Pi uses `/figlens plan` to read one Cloth dashboard frame from a local `.fig`, builds it with React and Tailwind CSS, then checks and corrects the running UI. The video shows Pi and the live browser together, followed by the actual component structure. Edited time-lapse; video length is not a performance benchmark or a promise of pixel-perfect output. [Design credit, source and recording notes](https://github.com/runkids/figlens/blob/main/wiki/accuracy.md#taskflow-react-and-tailwind-demo).
 
+## OpenCode V2 and OMP
+
+The same package includes independent entries for [OpenCode V2 2.2.0](https://github.com/runkids/figlens/tree/main/opencode) and [OMP 18.13.2](https://github.com/runkids/figlens/tree/main/omp). OpenCode V2 configuration: `{"plugins":["@runkids/figlens"]}`. OMP: `omp plugin install @runkids/figlens`.
+
+The integrations share the CLI launcher, skill and component mapping file. Restart the host, then run `/figlens help`.
+
 ## Use with another agent
 
 Connect the local MCP server to your client:

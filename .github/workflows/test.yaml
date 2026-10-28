@@ -47,7 +47,10 @@ jobs:
       - name: Pi mappings and preview controls
         run: |
           node --check pi/index.ts
-          node --test pi/*.test.mjs scripts/preview.test.cjs scripts/dist-package.test.cjs scripts/e2e-fixture-plugin.test.mjs scripts/e2e-pilot-images.test.mjs
+          node --check omp/index.ts
+          node --check opencode/index.mjs
+          node --check opencode/tui.mjs
+          node --test pi/*.test.mjs opencode/*.test.mjs omp/*.test.mjs scripts/preview.test.cjs scripts/dist-package.test.cjs scripts/e2e-fixture-plugin.test.mjs scripts/e2e-pilot-images.test.mjs
           python3 -B -m unittest discover -s scripts -p '*_test.py'
           python3 -B scripts/e2e-owned-pilot.test.py
           node scripts/prepare-npm.cjs
@@ -148,3 +151,42 @@ jobs:
           args=(--artifacts dist/candidate --commit "$(git rev-parse HEAD)")
           if [ -n "$PI_VERSION" ]; then args+=(--pi-version "$PI_VERSION"); fi
           python -B scripts/check-installation.py "${args[@]}"
+
+  host-installation:
+    needs: candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.3"
+      - uses: actions/download-artifact@v4
+        with:
+          name: installation-candidate
+          path: dist/candidate/
+      - name: Generate original local mapping fixture
+        run: |
+          mkdir -p samples/plugin-research/fixtures
+          docker compose run --rm dev cargo run --locked --example mapping-fixture -- samples/plugin-research/fixtures/mapping.fig
+      - name: Install isolated fixed host SDKs and verify OpenCode runtime bytes
+        run: |
+          npm install --prefix samples/plugin-research/hosts/omp --ignore-scripts --no-audit --no-fund @oh-my-pi/pi-coding-agent@18.13.2
+          npm install --prefix samples/plugin-research/hosts/opencode --ignore-scripts --no-audit --no-fund @opencode/plugin@2.2.0
+          curl --fail --location --output samples/plugin-research/hosts/opencode/runtime.tar.gz https://github.com/anomalyco/opencode/releases/download/v2.2.0/opencode-linux-x64.tar.gz
+          echo '6d597970a8cc448f1b9a9f645532584b339dd3ab9583bb5f063f13d83e54768f  samples/plugin-research/hosts/opencode/runtime.tar.gz' | sha256sum --check
+          tar -xzf samples/plugin-research/hosts/opencode/runtime.tar.gz -C samples/plugin-research/hosts/opencode
+      - name: Same candidate, native loaders, MCP, review and cleanup without models
+        run: |
+          python3 -B scripts/check-installation.py \
+            --artifacts dist/candidate --commit "$(git rev-parse HEAD)" \
+            --pi-version 1.4.0 \
+            --opencode-bin samples/plugin-research/hosts/opencode/opencode \
+            --opencode-sdk samples/plugin-research/hosts/opencode/node_modules/@opencode/client \
+            --omp-sdk samples/plugin-research/hosts/omp/node_modules/@oh-my-pi/pi-coding-agent \
+            --bun "$(command -v bun)"

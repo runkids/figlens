@@ -148,15 +148,27 @@ function summarizeInstance(node, doc) {
   };
 }
 
+export class WorkflowAuthorizationError extends Error {
+  constructor(cause) {
+    super(cause?.message ?? String(cause), { cause });
+    this.name = 'WorkflowAuthorizationError';
+  }
+}
+
 export class Workflow {
-  constructor(root, run) {
+  constructor(root, run, authorize) {
     this.root = path.resolve(root);
     this.run = run;
+    this.authorize = authorize && (async (action, resources) => {
+      try { await authorize(action, resources); }
+      catch (cause) { throw new WorkflowAuthorizationError(cause); }
+    });
     this.directory = path.join(this.root, '.figlens');
     this.guide = path.join(this.directory, 'component-mappings.md');
   }
 
   async read() {
+    await this.authorize?.('read', [this.guide]);
     for (const file of [this.directory, this.guide]) {
       try {
         if ((await lstat(file)).isSymbolicLink()) throw new Error(`${file} must not be a symbolic link.`);
@@ -171,14 +183,15 @@ export class Workflow {
   }
 
   async mutate(change) {
-    await mkdir(this.directory, { recursive: true });
     await this.read();
     const lock = path.join(this.directory, '.mapping-lock');
+    const temporary = path.join(this.directory, `.mapping-${randomUUID()}.tmp`);
+    await this.authorize?.('edit', [this.directory, this.guide, lock, temporary]);
+    await mkdir(this.directory, { recursive: true });
     try { await mkdir(lock); } catch (error) {
       if (error.code === 'EEXIST') throw new Error('Another mapping writer holds .figlens/.mapping-lock. Retry after it finishes; remove the lock only if that process has stopped.');
       throw error;
     }
-    const temporary = path.join(this.directory, `.mapping-${randomUUID()}.tmp`);
     try {
       const { content, state } = await this.read();
       const result = await change(state);
@@ -186,8 +199,10 @@ export class Workflow {
       const output = content ? content.slice(0, content.indexOf(START)) + managed + content.slice(content.indexOf(END) + END.length)
         : `# figlens component mappings\n\nReviewed mappings for this project. Keep project notes outside the managed markers.\nThe JSON block is extension-owned state, not a public interchange format.\n\n${managed}\n`;
       if (Buffer.byteLength(output) > MAX_STATE_BYTES) throw new Error('Mapping guide would exceed 4 MiB.');
+      await this.authorize?.('edit', [temporary, this.guide]);
       await writeFile(temporary, output, { flag: 'wx', mode: 0o600 });
       if ((await this.read()).content !== content) throw new Error('Mapping guide changed during the operation; retry.');
+      await this.authorize?.('edit', [this.guide]);
       await rename(temporary, this.guide);
       return result;
     } finally {
@@ -197,7 +212,10 @@ export class Workflow {
   }
 
   async source(file) {
-    const absolute = await realpath(path.resolve(this.root, text(file, 'file', 4096)));
+    const requested = path.resolve(this.root, text(file, 'file', 4096));
+    await this.authorize?.('read', [requested]);
+    const absolute = await realpath(requested);
+    if (absolute !== requested) await this.authorize?.('read', [absolute]);
     if (path.extname(absolute).toLowerCase() !== '.fig' || !(await lstat(absolute)).isFile()) throw new Error('Select a local .fig file.');
     const relative = path.relative(await realpath(this.root), absolute);
     return { absolute, file: relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) ? absolute : relative.split(path.sep).join('/') };
@@ -259,6 +277,7 @@ export class Workflow {
       const absolute = await realpath(path.resolve(root, file));
       const relative = path.relative(root, absolute);
       if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('Code evidence must stay inside the project.');
+      await this.authorize?.('read', [absolute]);
       files[relative.split(path.sep).join('/')] = await fileHash(absolute);
     }
     return files;
@@ -268,7 +287,10 @@ export class Workflow {
     try {
       const files = await this.codeFiles(entry.target, Object.keys(entry.files));
       return digest(files) === digest(entry.files) ? [] : ['Recorded code files changed.'];
-    } catch (error) { return [`Recorded code evidence is unavailable: ${error.message}`]; }
+    } catch (error) {
+      if (error instanceof WorkflowAuthorizationError) throw error;
+      return [`Recorded code evidence is unavailable: ${error.message}`];
+    }
   }
 
   async bindings(options = {}, signal) {

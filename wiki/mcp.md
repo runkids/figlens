@@ -1,6 +1,6 @@
 # MCP workflow discovery
 
-Use this topic for MCP instructions, tool discovery and built-in workflow guidance. Design decoding and result contracts are in `fig-format`; Pi-specific commands and tools are in `pi`.
+Use this topic for MCP instructions, tool discovery and built-in workflow guidance. Design decoding and result contracts are in `fig-format`; Pi-specific commands and tools are in `pi`; OpenCode/OMP MCP registration, override policy and host permissions are in [integrations](integrations.md).
 
 ## Intent and tool selection
 

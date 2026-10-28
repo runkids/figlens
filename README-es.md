@@ -12,6 +12,8 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b78c8" alt="MIT license"></a>
   <a href="https://github.com/runkids/figlens/releases"><img src="https://img.shields.io/github/downloads/runkids/figlens/total?label=GitHub%20downloads&amp;color=79b9a5" alt="Total GitHub release asset downloads"></a>
   <a href="https://pi.dev/packages/@runkids/figlens"><img src="https://img.shields.io/badge/Pi-package-8b78c8" alt="Pi package"></a>
+  <a href="#setup-opencode"><img src="https://img.shields.io/badge/OpenCode-V2-8b78c8" alt="OpenCode V2 plugin"></a>
+  <a href="#setup-omp"><img src="https://img.shields.io/badge/OMP-plugin-79b9a5" alt="OMP plugin"></a>
   <a href="#mcp-and-skill"><img src="https://img.shields.io/badge/agents-CLI_%2B_MCP-79b9a5" alt="CLI and MCP for AI agents"></a>
 </p>
 
@@ -35,6 +37,8 @@ Pon `design.fig` en tu proyecto y elige **una** configuración. Cada una le da a
 |---|---|---|
 | [MCP](#setup-mcp) | Claude Code, Cursor, Codex, Gemini CLI y otros clientes MCP | la herramienta `workflow` del servidor |
 | [Pi](#setup-pi) | Pi 1.3.0+ | el paquete, que incluye el skill |
+| [OpenCode V2](#setup-opencode) | OpenCode V2 2.2.0 | el skill incluido en el paquete |
+| [OMP](#setup-omp) | OMP 18.13.2 | el skill incluido en el paquete |
 | [CLI](#setup-cli) | agents que solo ejecutan comandos de shell, scripts y CI, o tú | `figlens workflow <topic>`, o el [skill](#setup-skill) opcional |
 
 <a id="setup-mcp"></a>
@@ -79,6 +83,30 @@ pi install npm:@runkids/figlens
 ```
 
 [Guía de la extensión de Pi](docs/README-es.md#pi)
+
+<a id="setup-opencode"></a>
+
+### OpenCode V2
+
+Añade esto a la configuración de plugins de OpenCode V2:
+
+```json
+{ "plugins": ["@runkids/figlens"] }
+```
+
+Reinicia el cliente y ejecuta `/figlens help`. [OpenCode V2](opencode/README.md)
+
+<a id="setup-omp"></a>
+
+### OMP
+
+Instala el mismo paquete en OMP:
+
+```sh
+omp plugin install @runkids/figlens
+```
+
+Reinicia el cliente y ejecuta `/figlens help`. [OMP](omp/README.md)
 
 <a id="setup-cli"></a>
 

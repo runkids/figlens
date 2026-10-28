@@ -99,6 +99,8 @@ Figma 자체의 JSON, PNG, SVG 내보내기와 비교해 **실제 서비스 fram
 pi install npm:@runkids/figlens
 ```
 
+설치 안내: [OpenCode V2](../opencode/README.md) · [OMP](../omp/README.md).
+
 Pi를 다시 시작하거나 `/reload`를 실행한 뒤 평소 말로 화면을 요청하세요. Pi는 frame을 찾고, 자동 등록된 MCP 서버로 읽고, 프로젝트의 기술 스택으로 구현합니다. 노드 ID도, 전역 CLI도 필요 없습니다.
 
 - `/figlens plan <request>`는 계획만 작성하며 애플리케이션을 수정하지 않습니다.

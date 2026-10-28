@@ -3,5 +3,8 @@
 /dist
 /npm/pi
 /npm/skills
+/npm/omp
+/npm/opencode
+/npm/.mcp.json
 /.playwright-mcp
 .skillshare-manifest.json

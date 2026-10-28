@@ -12,6 +12,8 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b78c8" alt="MIT license"></a>
   <a href="https://github.com/runkids/figlens/releases"><img src="https://img.shields.io/github/downloads/runkids/figlens/total?label=GitHub%20downloads&amp;color=79b9a5" alt="Total GitHub release asset downloads"></a>
   <a href="https://pi.dev/packages/@runkids/figlens"><img src="https://img.shields.io/badge/Pi-package-8b78c8" alt="Pi package"></a>
+  <a href="#setup-opencode"><img src="https://img.shields.io/badge/OpenCode-V2-8b78c8" alt="OpenCode V2 plugin"></a>
+  <a href="#setup-omp"><img src="https://img.shields.io/badge/OMP-plugin-79b9a5" alt="OMP plugin"></a>
   <a href="#mcp-and-skill"><img src="https://img.shields.io/badge/agents-CLI_%2B_MCP-79b9a5" alt="CLI and MCP for AI agents"></a>
 </p>
 
@@ -35,6 +37,8 @@ Lege `design.fig` in dein Projekt und wähle dann **ein** Setup. Jedes gibt dein
 |---|---|---|
 | [MCP](#setup-mcp) | Claude Code, Cursor, Codex, Gemini CLI und andere MCP-Clients | dem `workflow`-Tool des Servers |
 | [Pi](#setup-pi) | Pi 1.3.0+ | dem Paket, das den Skill enthält |
+| [OpenCode V2](#setup-opencode) | OpenCode V2 2.2.0 | dem mitgelieferten Skill |
+| [OMP](#setup-omp) | OMP 18.13.2 | dem mitgelieferten Skill |
 | [CLI](#setup-cli) | Agents, die nur Shell-Befehle ausführen, Skripte und CI, oder dich | `figlens workflow <topic>` oder dem optionalen [Skill](#setup-skill) |
 
 <a id="setup-mcp"></a>
@@ -79,6 +83,30 @@ pi install npm:@runkids/figlens
 ```
 
 [Anleitung zur Pi-Erweiterung](docs/README-de.md#pi)
+
+<a id="setup-opencode"></a>
+
+### OpenCode V2
+
+Zur Plugin-Konfiguration von OpenCode V2 hinzufügen:
+
+```json
+{ "plugins": ["@runkids/figlens"] }
+```
+
+Den Host neu starten und `/figlens help` ausführen. [OpenCode V2](opencode/README.md)
+
+<a id="setup-omp"></a>
+
+### OMP
+
+Dasselbe Paket in OMP installieren:
+
+```sh
+omp plugin install @runkids/figlens
+```
+
+Den Host neu starten und `/figlens help` ausführen. [OMP](omp/README.md)
 
 <a id="setup-cli"></a>
 

@@ -140,7 +140,8 @@ mod tests {
     fn guides_keep_scope_image_evidence_and_cleanup_boundaries() {
         let build = read("build").unwrap();
         assert!(build.contains("## Building a frame") && build.contains("## Known gaps"));
-        assert!(!build.contains("## Setup") && !build.contains("## Pi component mappings"));
+        assert!(!build.contains("## Setup") && !build.contains("## Component mappings"));
+        assert!(build.contains("figlens_bindings") && build.contains("integrations.md"));
         let images = read("images").unwrap();
         assert!(
             images.contains("crop, mask or effects") && images.contains("browser transfer bytes")

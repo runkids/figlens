@@ -99,6 +99,8 @@ Figma 自身の JSON、PNG、SVG エクスポートと比較して測定しま�
 pi install npm:@runkids/figlens
 ```
 
+インストールガイド: [OpenCode V2](../opencode/README.md) · [OMP](../omp/README.md).
+
 Pi を再起動するか `/reload` を実行し、普通の言葉で画面を依頼します。Pi が frame を見つけ、自動登録された MCP サーバー経由で読み取り、あなたのスタックで実装します。ノード ID もグローバル CLI も不要です。
 
 - `/figlens plan <request>`は計画のみを作成し、アプリケーションを変更しません。

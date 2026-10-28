@@ -99,6 +99,8 @@ SVG 导出会嵌入原始图片填充，并把文字转为字形轮廓，因此�
 pi install npm:@runkids/figlens
 ```
 
+安装说明: [OpenCode V2](../opencode/README.md) · [OMP](../omp/README.md).
+
 重启 Pi 或执行 `/reload`，然后用日常语言要一个画面。Pi 会找到 frame，通过自动注册的 MCP server 读取，并用你的技术栈构建。不需要 node ID，也不需要全局 CLI。
 
 - `/figlens plan <request>` 只生成计划，不修改应用程序。

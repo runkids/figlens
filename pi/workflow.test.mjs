@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { Workflow } from './workflow.mjs';
+import { Workflow, WorkflowAuthorizationError } from './workflow.mjs';
 
 function instance(id, state = 'Closed', label = 'Hello', rendered = label) {
   return {
@@ -46,6 +46,58 @@ async function fixture(t) {
   await flow.select('design.fig', '10:200');
   return { root, flow, frames, run, proposal, get calls() { return calls; } };
 }
+
+test('host authorization denies writes before creating the guide directory', async t => {
+  const { root, run } = await fixture(t);
+  await rm(path.join(root, '.figlens'), { recursive: true });
+  const flow = new Workflow(root, run, async action => {
+    if (action === 'edit') throw new Error('Host denied this write.');
+  });
+  await assert.rejects(flow.select('design.fig', '10:200'), /Host denied/);
+  await assert.rejects(stat(flow.directory), { code: 'ENOENT' });
+});
+
+test('host authorization covers design and code evidence reads', async t => {
+  const { root, run, proposal } = await fixture(t);
+  const canonical = await realpath(root);
+  for (const denied of ['design.fig', 'src/Card.vue', 'src/theme.css']) {
+    const flow = new Workflow(root, run, async (action, resources) => {
+      if (action === 'read' && resources.includes(path.join(canonical, denied))) throw new Error('Host denied this read.');
+    });
+    await assert.rejects(flow.propose({ file: 'design.fig', frame: '10:200', proposals: [proposal] }), /Host denied/);
+    assert.equal((await new Workflow(root, run).pending()).length, 0);
+  }
+});
+
+test('cancellation at publication preserves the guide and removes owned temporary files', async t => {
+  const { root, flow, run, proposal } = await fixture(t);
+  const { pending } = await flow.propose({ proposals: [proposal] });
+  const before = await readFile(flow.guide);
+  let writes = 0;
+  const cancelled = new Workflow(root, run, async action => {
+    if (action === 'edit' && ++writes === 3) throw new Error('Review cancelled.');
+  });
+  await assert.rejects(cancelled.review(pending[0].id, 'skip'), /Review cancelled/);
+  assert.deepEqual(await readFile(flow.guide), before);
+  assert.deepEqual(await readdir(flow.directory), ['component-mappings.md']);
+});
+
+test('freshness preserves authorization failures instead of calling evidence stale', async t => {
+  const { root, flow, run, proposal } = await fixture(t);
+  const { pending } = await flow.propose({ proposals: [proposal] });
+  const before = await readFile(flow.guide);
+  const denied = new Error('Host rejected code evidence access.');
+  const guarded = new Workflow(root, run, async (action, resources) => {
+    if (action === 'read' && resources.some(file => file.endsWith('/src/Card.vue'))) throw denied;
+  });
+  await assert.rejects(guarded.review(pending[0].id, 'approve'), error => {
+    assert.ok(error instanceof WorkflowAuthorizationError);
+    assert.equal(error.cause, denied);
+    return true;
+  });
+  assert.deepEqual(await readFile(flow.guide), before);
+  assert.deepEqual(await readdir(flow.directory), ['component-mappings.md']);
+});
 
 test('proposals stay pending, human review persists and reuses a Vue mapping on another frame', async t => {
   const { root, flow, run, proposal } = await fixture(t);

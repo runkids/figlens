@@ -12,6 +12,8 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b78c8" alt="MIT license"></a>
   <a href="https://github.com/runkids/figlens/releases"><img src="https://img.shields.io/github/downloads/runkids/figlens/total?label=GitHub%20downloads&amp;color=79b9a5" alt="Total GitHub release asset downloads"></a>
   <a href="https://pi.dev/packages/@runkids/figlens"><img src="https://img.shields.io/badge/Pi-package-8b78c8" alt="Pi package"></a>
+  <a href="#setup-opencode"><img src="https://img.shields.io/badge/OpenCode-V2-8b78c8" alt="OpenCode V2 plugin"></a>
+  <a href="#setup-omp"><img src="https://img.shields.io/badge/OMP-plugin-79b9a5" alt="OMP plugin"></a>
   <a href="#mcp-and-skill"><img src="https://img.shields.io/badge/agents-CLI_%2B_MCP-79b9a5" alt="CLI and MCP for AI agents"></a>
 </p>
 
@@ -35,6 +37,8 @@
 |---|---|---|
 | [MCP](#setup-mcp) | Claude Code, Cursor, Codex, Gemini CLI 등 MCP 클라이언트 | 서버의 `workflow` 도구 |
 | [Pi](#setup-pi) | Pi 1.3.0+ | skill이 포함된 패키지 |
+| [OpenCode V2](#setup-opencode) | OpenCode V2 2.2.0 | 패키지에 포함된 skill |
+| [OMP](#setup-omp) | OMP 18.13.2 | 패키지에 포함된 skill |
 | [CLI](#setup-cli) | 셸 명령만 실행하는 에이전트, 스크립트와 CI, 또는 직접 사용 | `figlens workflow <topic>` 또는 선택 사항인 [skill](#setup-skill) |
 
 <a id="setup-mcp"></a>
@@ -79,6 +83,30 @@ pi install npm:@runkids/figlens
 ```
 
 [Pi 확장 가이드](docs/README-ko.md#pi)
+
+<a id="setup-opencode"></a>
+
+### OpenCode V2
+
+OpenCode V2 플러그인 설정에 추가하세요:
+
+```json
+{ "plugins": ["@runkids/figlens"] }
+```
+
+호스트를 다시 시작한 뒤 `/figlens help`를 실행하세요. [OpenCode V2](opencode/README.md)
+
+<a id="setup-omp"></a>
+
+### OMP
+
+OMP에서 같은 패키지를 설치하세요:
+
+```sh
+omp plugin install @runkids/figlens
+```
+
+호스트를 다시 시작한 뒤 `/figlens help`를 실행하세요. [OMP](omp/README.md)
 
 <a id="setup-cli"></a>
 

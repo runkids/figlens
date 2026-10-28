@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "figlens": {
+      "command": "node",
+      "args": ["${OMP_PLUGIN_ROOT}/omp/mcp.cjs", "mcp"],
+      "cwd": ".",
+      "enabled": true
+    }
+  }
+}

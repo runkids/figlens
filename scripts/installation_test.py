@@ -16,6 +16,15 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class InstallationHarnessTest(unittest.TestCase):
+    def test_host_profiles_require_both_runtime_and_sdk_paths(self):
+        for argument in ['--opencode-bin', '--omp-sdk']:
+            with self.subTest(argument=argument):
+                result = subprocess.run([sys.executable, '-B', str(ROOT/'scripts/check-installation.py'),
+                    '--artifacts', 'missing', '--commit', 'unused', argument, 'missing'],
+                    text=True, capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('requires both', result.stderr)
+
     def test_cli_timeout_stops_the_wrapper_child(self):
         self.check_stops_wrapper_child(
             lambda command, cwd, env: run(command, cwd, env, timeout=1),
