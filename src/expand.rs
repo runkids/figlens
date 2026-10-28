@@ -988,6 +988,20 @@ mod tests {
             crate::rest::resolve_nodes_within(&tree, "inst", size).unwrap(),
             full
         );
+        // REST keeps stored children over an expansion, so a bounded run neither counts nor builds it.
+        tree.children.insert("inst".into(), Vec::new());
+        let full = crate::rest::resolve_nodes(&tree, "inst").unwrap();
+        let size = serde_json::to_vec(&full["document"]).unwrap().len();
+        assert!(
+            expand_instances_within(&tree, "inst", 0)
+                .unwrap()
+                .nodes
+                .is_empty()
+        );
+        assert_eq!(
+            crate::rest::resolve_nodes_within(&tree, "inst", size).unwrap(),
+            full
+        );
     }
 
     #[test]
