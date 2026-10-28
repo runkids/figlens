@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { setTimeout } from 'node:timers/promises';
-import { createAdapter } from './adapter.mjs';
+import { createAdapter, launcherRuntime } from './adapter.mjs';
 
 async function context(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'figlens-opencode-'));
@@ -119,4 +119,9 @@ else if (process.argv[2] === 'export') {
     assert.deepEqual(await readdir(path.dirname(output)), [], 'Cancelled native child must not publish a late PNG');
     await rm(path.join(root, 'export-started'));
   }
+});
+
+test('bundled launcher runs with node under a Bun-built host', () => {
+  assert.equal(launcherRuntime({ bun: '1.4.3' }, '/opt/opencode'), 'node');
+  assert.equal(launcherRuntime({ node: '24.0.0' }, '/usr/bin/node'), '/usr/bin/node');
 });
