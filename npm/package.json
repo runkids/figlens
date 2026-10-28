@@ -1,6 +1,6 @@
 {
   "name": "@runkids/figlens",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Read local Figma designs with CLI, MCP, Pi, OpenCode and OMP integrations.",
   "license": "MIT",
   "repository": {
