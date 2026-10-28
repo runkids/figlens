@@ -77,8 +77,8 @@ jobs:
           cargo +1.97.1 test --locked
 
   # Build each release-format target once; all installation jobs reuse these exact artifacts.
+  # Independent of `test` so the installation jobs start as soon as the archives exist.
   candidate:
-    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -110,7 +110,8 @@ jobs:
 
   installation:
     needs: candidate
-    timeout-minutes: 15
+    # The margin is for runner start-up: macOS runners have taken over 15 minutes before the first step.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
