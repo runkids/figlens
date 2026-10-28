@@ -41,6 +41,7 @@ const command = args => extension.commands.get('figlens').handler(args, ctx);
 const completions = extension.commands.get('figlens').getArgumentCompletions;
 assert.deepEqual((await completions('yo')).map(item => item.value), ['yolo']);
 assert.match((await completions('yo'))[0].description, /implement.*verify/i);
+assert.ok((await completions('')).every(item => item.description), 'every subcommand completion has a description');
 assert.deepEqual(await completions('yolo a request'), []);
 await command('help');
 assert.match(messages.pop().content, /`\/figlens yolo \[request\]`.*temporary plan/);
