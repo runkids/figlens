@@ -57,7 +57,7 @@ Measurements before response-budget enforcement, using 0.7.2 source with the han
 
 The resulting policy caps complete replies at 8 MiB, leaving headroom below that reported limit. Oversized tool replies become a bounded `response_budget_exceeded` error; a completed output file's path is retained. JSON is not truncated into an apparently successful partial design. Full CLI JSON remains available. A 1 MiB request-line budget separately bounds admission reads, drains oversized lines and permits recovery. See [MCP behavior](mcp.md#shared-sources-and-runtime-behavior) for exact framing and errors.
 
-These are transport limits. The full node projection and response object can still be constructed before the reply-size check; this does not bound expansion memory or execution time. A pre-expansion node/work budget or streaming local-file JSON export would require separate evidence and a contract that preserves full design access. Current pixel buffers, concurrent preparation and each client's own limits remain separate.
+These are transport limits. MCP `nodes` now stops building once its selection exceeds the reply budget ([measurement](performance.md#early-mcp-nodes-budget-2026-10-29)); other tools' projections and response objects can still be constructed before the reply-size check, and instance expansion is not bounded. A pre-expansion node/work budget or streaming local-file JSON export would require separate evidence and a contract that preserves full design access. Current pixel buffers, concurrent preparation and each client's own limits remain separate.
 
 ## File publication
 

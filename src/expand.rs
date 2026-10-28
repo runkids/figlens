@@ -867,6 +867,43 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_budget_counts_only_the_selected_sublayer() {
+        let inst = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            ("symbolData", obj(vec![("symbolID", guid(1, 1))])),
+        ]);
+        let main = obj(vec![]);
+        let rect = |name: &str| {
+            obj(vec![
+                ("type", Value::Enum("NodeType", "RECTANGLE")),
+                ("name", Value::String(name.to_owned())),
+            ])
+        };
+        let (small, large) = (rect("small"), rect(&"x".repeat(4096)));
+        let tree = Tree {
+            nodes: HashMap::from([
+                ("inst".into(), &inst),
+                ("1:1".into(), &main),
+                ("1:4".into(), &small),
+                ("1:5".into(), &large),
+            ]),
+            children: HashMap::from([("1:1".into(), vec!["1:4".into(), "1:5".into()])]),
+            blobs: Vec::new(),
+        };
+        let within = |id, bytes| crate::rest::resolve_nodes_within(&tree, id, bytes);
+        for id in ["Iinst;1:4", "inst"] {
+            let full = crate::rest::resolve_nodes(&tree, id).unwrap();
+            // The complete selection's own size always fits: the count is a lower bound.
+            let size = serde_json::to_vec(&full["document"]).unwrap().len();
+            assert_eq!(within(id, size).unwrap(), full);
+        }
+        let error = within("inst", 1024).unwrap_err();
+        let error = error.downcast_ref::<crate::FigError>().unwrap();
+        assert_eq!(error.kind(), crate::ErrorKind::ResponseBudget);
+        assert!(within("Iinst;1:4", 1024).is_ok());
+    }
+
+    #[test]
     fn subtree_visits_a_cycle_once() {
         let node = obj(vec![]);
         let tree = Tree {

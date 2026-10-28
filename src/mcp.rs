@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use crate::{command, contract, workflow};
 
 const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
-const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 struct ResponseSize(usize);
 

@@ -1,6 +1,7 @@
 //! Figma REST-shaped `nodes.json` (the plugin's export) built from a `.fig`:
 //! kiwi fields are renamed and reshaped into the REST fields design-to-code reads.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use serde_json::{Map, Value as Json, json};
@@ -21,25 +22,39 @@ type Modes = HashMap<String, String>;
 /// `{"document": ...}` for the frame `root`, with instances expanded, plus the
 /// `components`, `componentSets` and `styles` the document references.
 pub fn nodes(tree: &Tree, root: &str) -> Json {
-    build(tree, root, false)
+    build(tree, root, false, None)
 }
 
 /// `nodes` with each node's render input under `_r`, for `render::Svg`.
 pub fn render_nodes(tree: &Tree, root: &str) -> Json {
-    build(tree, root, true)
+    build(tree, root, true, None)
 }
 
 /// Select an exact stored or expanded ID, retaining its instance overrides and geometry.
 pub fn resolve_nodes(tree: &Tree, id: &str) -> Result<Json, Box<dyn std::error::Error>> {
-    resolve_target(tree, id, false)
+    resolve_target(tree, id, false, None)
+}
+
+/// `resolve_nodes` that stops building, with `ResponseBudget`, once the selection's JSON exceeds `bytes`.
+pub fn resolve_nodes_within(
+    tree: &Tree,
+    id: &str,
+    bytes: usize,
+) -> Result<Json, Box<dyn std::error::Error>> {
+    resolve_target(tree, id, false, Some(bytes))
 }
 
 /// `resolve_nodes` with renderer input, for selected-node image inspection and export.
 pub fn resolve_render_nodes(tree: &Tree, id: &str) -> Result<Json, Box<dyn std::error::Error>> {
-    resolve_target(tree, id, true)
+    resolve_target(tree, id, true, None)
 }
 
-fn resolve_target(tree: &Tree, id: &str, render: bool) -> Result<Json, Box<dyn std::error::Error>> {
+fn resolve_target(
+    tree: &Tree,
+    id: &str,
+    render: bool,
+    bytes: Option<usize>,
+) -> Result<Json, Box<dyn std::error::Error>> {
     let root = crate::export::root_of(id);
     if !tree.nodes.contains_key(root) {
         return Err(crate::FigError::new(
@@ -48,7 +63,19 @@ fn resolve_target(tree: &Tree, id: &str, render: bool) -> Result<Json, Box<dyn s
         )
         .into());
     }
-    let mut doc = build(tree, root, render);
+    let budget = bytes.map(|bytes| Budget {
+        target: id,
+        bytes,
+        used: Cell::new(0),
+        inside: Cell::new(false),
+    });
+    let mut doc = build(tree, root, render, budget.as_ref());
+    if let Some(b) = budget.filter(Budget::exceeded) {
+        return Err(crate::FigError::new(crate::ErrorKind::ResponseBudget, format!(
+            "response exceeds {} bytes; use inspect, a scoped bundle, or CLI nodes instead of a larger MCP reply", b.bytes
+        ))
+        .into());
+    }
     if root != id {
         // Expand the outer instance first; selecting the component's raw child loses context.
         doc["document"] = render::find(&doc["document"], id).cloned().ok_or_else(|| {
@@ -61,7 +88,23 @@ fn resolve_target(tree: &Tree, id: &str, render: bool) -> Result<Json, Box<dyn s
     Ok(doc)
 }
 
-fn build(tree: &Tree, root: &str, render: bool) -> Json {
+/// Counts each selected node's compact fields without children, `_r` or later bounds:
+/// a lower bound of the selection's JSON, so exceeding it never rejects a reply that would fit.
+struct Budget<'a> {
+    target: &'a str,
+    bytes: usize,
+    used: Cell<usize>,
+    /// Inside the selected node, which may be an expanded sublayer of the built root.
+    inside: Cell<bool>,
+}
+
+impl Budget<'_> {
+    fn exceeded(&self) -> bool {
+        self.used.get() > self.bytes
+    }
+}
+
+fn build(tree: &Tree, root: &str, render: bool, budget: Option<&Budget>) -> Json {
     let mut styles: HashMap<String, Vec<String>> = HashMap::new();
     for (id, node) in &tree.nodes {
         if let (Some(_), Some(key)) = (node.get("styleType"), node.get("key")) {
@@ -79,10 +122,14 @@ fn build(tree: &Tree, root: &str, render: bool) -> Json {
         vars: variables(tree),
         styles,
         render,
+        budget,
     };
     // Explicit variable modes are inherited from ancestors above `root` too.
     let modes = parent_id(tree, root).map_or_else(Modes::new, |p| context(tree, &b.vars, &p));
     let document = b.node(root, None, &modes, true, None);
+    if budget.is_some_and(Budget::exceeded) {
+        return Json::Null;
+    }
     let (mut components, mut sets, mut styles) = (Obj::new(), Obj::new(), Obj::new());
     let mut handoff = handoff::Inventory::default();
     let mut stack = vec![&document];
@@ -311,6 +358,7 @@ struct Builder<'t, 'a> {
     styles: HashMap<String, Vec<String>>,
     /// Keep each node's render input (`_r`) in the output.
     render: bool,
+    budget: Option<&'t Budget<'t>>,
 }
 
 impl Builder<'_, '_> {
@@ -504,6 +552,12 @@ impl Builder<'_, '_> {
         rendered: bool,
         clip: Option<Rect>,
     ) -> Json {
+        if self.budget.is_some_and(Budget::exceeded) {
+            return Json::Null;
+        }
+        let entered = self
+            .budget
+            .is_some_and(|b| b.target == id && !b.inside.replace(true));
         let (kiwi, kind, name, matrix) = match self.ex.nodes.get(id) {
             Some(e) => {
                 let mut k = object(to_json(self.tree.nodes[&e.source]));
@@ -621,6 +675,10 @@ impl Builder<'_, '_> {
                 json!({ "x": o.x, "y": o.y, "width": b.x, "height": b.y }),
             );
         }
+        if let Some(b) = self.budget.filter(|b| b.inside.get()) {
+            b.used
+                .set(b.used.get() + serde_json::to_vec(&out).map_or(0, |v| v.len()));
+        }
         out.insert("_r".into(), render_input(&kiwi, matrix));
         let mut node = Json::Object(out);
         let shown = rendered
@@ -671,6 +729,9 @@ impl Builder<'_, '_> {
                 kids_ub = render::union(kids_ub, render::rect_of(&c["_r"]["ub"]));
             }
             node["children"] = Json::Array(list);
+        }
+        if entered {
+            self.budget.unwrap().inside.set(false);
         }
         // Only rendering reads these; `_r` is dropped otherwise.
         if self.render {
