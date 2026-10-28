@@ -1,0 +1,310 @@
+{
+ "componentSets": {},
+ "components": {
+  "0:50": {
+   "_figlens": {
+    "semantics": {
+     "componentPropertyDefinitions": {
+      "source": "componentPropDefs",
+      "state": "absent"
+     },
+     "verification": "not-compared-with-figma"
+    }
+   },
+   "description": "",
+   "documentationLinks": [],
+   "key": null,
+   "name": "Chip",
+   "remote": false
+  }
+ },
+ "document": {
+  "_figlens": {
+   "semantics": {
+    "constraints.horizontal": {
+     "source": "horizontalConstraint",
+     "state": "absent"
+    },
+    "constraints.vertical": {
+     "source": "verticalConstraint",
+     "state": "absent"
+    },
+    "layoutAlign": {
+     "source": "stackChildAlignSelf",
+     "state": "absent"
+    },
+    "layoutGrow": {
+     "source": "stackChildPrimaryGrow",
+     "state": "absent"
+    },
+    "verification": "not-compared-with-figma"
+   }
+  },
+  "absoluteBoundingBox": {
+   "height": 80.0,
+   "width": 240.0,
+   "x": 0.0,
+   "y": 380.0
+  },
+  "absoluteRenderBounds": {
+   "height": 80.0,
+   "width": 240.0,
+   "x": 0.0,
+   "y": 380.0
+  },
+  "blendMode": "PASS_THROUGH",
+  "children": [
+   {
+    "_figlens": {
+     "semantics": {
+      "constraints.horizontal": {
+       "source": "horizontalConstraint",
+       "state": "absent"
+      },
+      "constraints.vertical": {
+       "source": "verticalConstraint",
+       "state": "absent"
+      },
+      "layoutAlign": {
+       "source": "stackChildAlignSelf",
+       "state": "absent"
+      },
+      "layoutGrow": {
+       "source": "stackChildPrimaryGrow",
+       "state": "absent"
+      },
+      "verification": "not-compared-with-figma"
+     }
+    },
+    "absoluteBoundingBox": {
+     "height": 40.0,
+     "width": 96.0,
+     "x": 16.0,
+     "y": 400.0
+    },
+    "absoluteRenderBounds": {
+     "height": 40.0,
+     "width": 96.0,
+     "x": 16.0,
+     "y": 400.0
+    },
+    "blendMode": "PASS_THROUGH",
+    "children": [
+     {
+      "_figlens": {
+       "semantics": {
+        "constraints.horizontal": {
+         "source": "horizontalConstraint",
+         "state": "absent"
+        },
+        "constraints.vertical": {
+         "source": "verticalConstraint",
+         "state": "absent"
+        },
+        "instanceContext": {
+         "instanceId": "0:41",
+         "sourceNodeId": "0:51",
+         "state": "effective"
+        },
+        "layoutAlign": {
+         "source": "stackChildAlignSelf",
+         "state": "absent"
+        },
+        "layoutGrow": {
+         "source": "stackChildPrimaryGrow",
+         "state": "absent"
+        },
+        "verification": "not-compared-with-figma"
+       }
+      },
+      "absoluteBoundingBox": {
+       "height": 16.0,
+       "width": 16.0,
+       "x": 28.0,
+       "y": 412.0
+      },
+      "absoluteRenderBounds": {
+       "height": 16.0,
+       "width": 16.0,
+       "x": 28.0,
+       "y": 412.0
+      },
+      "blendMode": "PASS_THROUGH",
+      "cornerRadius": 8.0,
+      "effects": [],
+      "fills": [
+       {
+        "blendMode": "NORMAL",
+        "color": {
+         "a": 1.0,
+         "b": 0.545098066329956,
+         "g": 0.6000000238418579,
+         "r": 0.10588235408067703
+        },
+        "type": "SOLID"
+       }
+      ],
+      "id": "I0:41;0:51",
+      "name": "Dot",
+      "strokes": [],
+      "type": "RECTANGLE"
+     }
+    ],
+    "componentId": "0:50",
+    "cornerRadius": 20.0,
+    "effects": [],
+    "fills": [
+     {
+      "blendMode": "NORMAL",
+      "color": {
+       "a": 1.0,
+       "b": 0.23529411852359772,
+       "g": 0.15294118225574493,
+       "r": 0.10588235408067703
+      },
+      "type": "SOLID"
+     }
+    ],
+    "id": "0:41",
+    "name": "First chip",
+    "strokes": [],
+    "type": "INSTANCE"
+   },
+   {
+    "_figlens": {
+     "semantics": {
+      "constraints.horizontal": {
+       "source": "horizontalConstraint",
+       "state": "absent"
+      },
+      "constraints.vertical": {
+       "source": "verticalConstraint",
+       "state": "absent"
+      },
+      "layoutAlign": {
+       "source": "stackChildAlignSelf",
+       "state": "absent"
+      },
+      "layoutGrow": {
+       "source": "stackChildPrimaryGrow",
+       "state": "absent"
+      },
+      "verification": "not-compared-with-figma"
+     }
+    },
+    "absoluteBoundingBox": {
+     "height": 40.0,
+     "width": 96.0,
+     "x": 128.0,
+     "y": 400.0
+    },
+    "absoluteRenderBounds": {
+     "height": 40.0,
+     "width": 96.0,
+     "x": 128.0,
+     "y": 400.0
+    },
+    "blendMode": "PASS_THROUGH",
+    "children": [
+     {
+      "_figlens": {
+       "semantics": {
+        "constraints.horizontal": {
+         "source": "horizontalConstraint",
+         "state": "absent"
+        },
+        "constraints.vertical": {
+         "source": "verticalConstraint",
+         "state": "absent"
+        },
+        "instanceContext": {
+         "instanceId": "0:42",
+         "sourceNodeId": "0:51",
+         "state": "effective"
+        },
+        "layoutAlign": {
+         "source": "stackChildAlignSelf",
+         "state": "absent"
+        },
+        "layoutGrow": {
+         "source": "stackChildPrimaryGrow",
+         "state": "absent"
+        },
+        "verification": "not-compared-with-figma"
+       }
+      },
+      "absoluteBoundingBox": {
+       "height": 16.0,
+       "width": 16.0,
+       "x": 140.0,
+       "y": 412.0
+      },
+      "absoluteRenderBounds": {
+       "height": 16.0,
+       "width": 16.0,
+       "x": 140.0,
+       "y": 412.0
+      },
+      "blendMode": "PASS_THROUGH",
+      "cornerRadius": 8.0,
+      "effects": [],
+      "fills": [
+       {
+        "blendMode": "NORMAL",
+        "color": {
+         "a": 1.0,
+         "b": 0.545098066329956,
+         "g": 0.6000000238418579,
+         "r": 0.10588235408067703
+        },
+        "type": "SOLID"
+       }
+      ],
+      "id": "I0:42;0:51",
+      "name": "Dot",
+      "strokes": [],
+      "type": "RECTANGLE"
+     }
+    ],
+    "componentId": "0:50",
+    "cornerRadius": 20.0,
+    "effects": [],
+    "fills": [
+     {
+      "blendMode": "NORMAL",
+      "color": {
+       "a": 1.0,
+       "b": 0.23529411852359772,
+       "g": 0.15294118225574493,
+       "r": 0.10588235408067703
+      },
+      "type": "SOLID"
+     }
+    ],
+    "id": "0:42",
+    "name": "Second chip",
+    "strokes": [],
+    "type": "INSTANCE"
+   }
+  ],
+  "effects": [],
+  "fills": [
+   {
+    "blendMode": "NORMAL",
+    "color": {
+     "a": 1.0,
+     "b": 1.0,
+     "g": 1.0,
+     "r": 1.0
+    },
+    "type": "SOLID"
+   }
+  ],
+  "id": "0:4",
+  "name": "Components",
+  "strokes": [],
+  "type": "FRAME"
+ },
+ "schemaVersion": 0,
+ "styles": {}
+}

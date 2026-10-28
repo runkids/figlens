@@ -35,6 +35,8 @@ CASES = [
 DIFF_LINES = 20
 # A pixel differs when any channel moves by more than PIXEL_DELTA; a render fails above PIXEL_SHARE.
 PIXEL_DELTA, PIXEL_SHARE = 16, 0.005
+# Bundles write their own stripped node document, so it has a baseline beside the standalone one.
+BASELINE_FILES = ['.nodes.json', '.bundle.nodes.json', '.png']
 
 
 class Setup(Exception):
@@ -85,11 +87,12 @@ def bounded(lines):
 
 
 def read_bundle(path):
-    """Missing assets, asset hashes and reference render of one bundle."""
+    """Node document, missing assets, asset hashes and reference render of one bundle."""
     with zipfile.ZipFile(path) as bundle:
+        doc = json.loads(bundle.read('design/nodes.json'))
         missing = json.loads(bundle.read('missing-assets.json'))
         assets = {a['key']: sha256(bundle.read(a['path'])) for a in json.loads(bundle.read('assets.json'))}
-        return missing, assets, bundle.read('references/screen.png')
+        return doc, missing, assets, bundle.read('references/screen.png')
 
 
 def observe(binary, work, name, source, node):
@@ -116,7 +119,7 @@ def check(binary, corpus, update=False):
             raise Setup(f'no baselines at {manifest_path}; record them with --update')
         absent = [n for n in inputs if n not in manifest['inputs']] + [
             name for name, *_ in CASES if name not in manifest['cases']
-            or not (BASELINES / f'{name}.nodes.json').is_file() or not (BASELINES / f'{name}.png').is_file()]
+            or not all((BASELINES / f'{name}{suffix}').is_file() for suffix in BASELINE_FILES)]
         if absent:
             raise Setup(f'no recorded baselines for {absent}; record them with --update')
         changed = [n for n in inputs if manifest['inputs'][n] != identities[n]]
@@ -145,18 +148,20 @@ def check(binary, corpus, update=False):
                 if reply['isError'] or list(read_bundle(out)) != bundle:
                     failures.append(f'MCP {name}: bundle assets or reference differ from the CLI')
         for name, _, _, catches in CASES:
-            _, _, nodes, missing, assets, reference = observed[name]
+            _, _, nodes, doc, missing, assets, reference = observed[name]
             before = len(failures)
-            golden_nodes, golden_png = BASELINES / f'{name}.nodes.json', BASELINES / f'{name}.png'
+            golden_nodes, golden_doc, golden_png = (BASELINES / f'{name}{suffix}' for suffix in BASELINE_FILES)
             if missing:
                 failures.append(f'ASSET {name}: missing assets {missing[:5]}')
             if update:
                 BASELINES.mkdir(exist_ok=True)
                 golden_nodes.write_text(json.dumps(nodes, indent=1, sort_keys=True) + '\n')
+                golden_doc.write_text(json.dumps(doc, indent=1, sort_keys=True) + '\n')
                 golden_png.write_bytes(reference)
                 recorded[name] = assets
                 continue
             failures += [f'NODES {name} {line}' for line in bounded(json_diff(json.loads(golden_nodes.read_text()), nodes))]
+            failures += [f'BUNDLE {name} {line}' for line in bounded(json_diff(json.loads(golden_doc.read_text()), doc))]
             failures += [f'ASSET {name} {line}' for line in bounded(json_diff(manifest['cases'][name], assets))]
             expected_png = golden_png.read_bytes()
             if png_size(expected_png) != png_size(reference):
