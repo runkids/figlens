@@ -40,7 +40,7 @@ Before committing, search these files for both the old and the new command forms
 2. Every PR gets this review, including docs- and wiki-only changes and fixes pushed to an open PR. Simplify the change, then review correctness, repository rules, the requested behavior, consumers and cleanup. The `figlens-code-review` skill adapts these passes to the available tools. Verify each finding against actual code or execution before fixing it.
 3. Apply the CLI/MCP/Pi coverage check above to every changed concept. Fix related findings together, run the relevant checks and stage only task-owned files.
 4. Describe the final behavior, executed checks and remaining limitations in English.
-5. Open every PR as a draft (`gh pr create --draft`). Draft PRs skip the Test workflow, so push fixes for review findings freely. When the findings are fixed, mark it ready (`gh pr ready <n>`) to run CI, then follow it through review below. Release Please PRs are the exception: they are opened by the bot and reviewed as releases.
+5. Open every PR as a draft (`gh pr create --draft`). Draft PRs skip the Test workflow, so push fixes for review findings freely. Right after opening the draft, post `@codex review` on it (command below) so AI review runs while CI is skipped. When the findings are fixed, mark it ready (`gh pr ready <n>`) to run CI, then follow it through review below. Release Please PRs are the exception: they are opened by the bot and reviewed as releases.
 
 ## Follow the PR through review
 
