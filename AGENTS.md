@@ -15,6 +15,7 @@ Reads Figma `.fig` files (File > Save local copy) so AI design-to-code pipelines
 - **Check CLI, MCP, Pi, OpenCode and OMP together.** For every feature or optimization, assess each interface, complete affected behavior/contracts/guidance/tests, and explain why any interface needs no change. A new feature or changed command also updates `--help`, every README locale, a served skill section and its wiki topic; see `review`.
 - **Helper files go in the repo.** Helper scripts go in `scripts/`; private designs, Figma exports and run outputs go in the gitignored `samples/`. The original public fixture below is the exception.
 - **Review before every PR.** Run the `figlens-code-review` passes on the pinned diff and fix verified findings before opening or updating a PR, docs- and wiki-only changes included; see `review`.
+- **Open PRs as drafts.** Drafts skip CI; fix review findings there, then mark the PR ready to run CI; see `review`.
 - **Own PR follow-up.** Check AI reviews and CI, fix verified findings, then request and check `@codex review` on the updated head; see `review`.
 
 ## Hard Limits
