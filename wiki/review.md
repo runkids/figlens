@@ -20,7 +20,7 @@ For every feature or optimization, check all three interfaces before calling the
 ## Before opening a PR
 
 1. Refresh the base and pin the diff. Preserve unrelated edits and exclude private designs and exports.
-2. Simplify the change, then review correctness, repository rules, the requested behavior, consumers and cleanup. The `figlens-code-review` skill adapts these passes to the available tools. Verify each finding against actual code or execution before fixing it.
+2. Every PR gets this review, including docs- and wiki-only changes and fixes pushed to an open PR. Simplify the change, then review correctness, repository rules, the requested behavior, consumers and cleanup. The `figlens-code-review` skill adapts these passes to the available tools. Verify each finding against actual code or execution before fixing it.
 3. Apply the CLI/MCP/Pi coverage check above to every changed concept. Fix related findings together, run the relevant checks and stage only task-owned files.
 4. Describe the final behavior, executed checks and remaining limitations in English. Use a draft for unfinished code or an explicit request; documented model-quality limitations alone do not require a draft.
 
