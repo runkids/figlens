@@ -29,7 +29,17 @@
 
 **디자인 파일이 아직 없나요?** [작은 공개 예제로 설정을 확인하세요](examples/first-success/README.md): 사용할 바이너리, frame 검색, bundle 내용을 검증합니다. 모델은 필요하지 않습니다.
 
-프로젝트에 `design.fig`를 놓고 사용하는 에이전트를 선택하세요.
+프로젝트에 `design.fig`를 놓고 아래 설정 중 **하나**를 고르세요. 어느 것을 골라도 에이전트가 figlens 도구와, 계획·구현·이미지 준비를 위한 같은 내장 가이드를 사용할 수 있습니다.
+
+| 설정 | 대상 | 가이드 출처 |
+|---|---|---|
+| [MCP](#setup-mcp) | Claude Code, Cursor, Codex, Gemini CLI 등 MCP 클라이언트 | 서버의 `workflow` 도구 |
+| [Pi](#setup-pi) | Pi 1.3.0+ | skill이 포함된 패키지 |
+| [CLI](#setup-cli) | 셸 명령만 실행하는 에이전트, 스크립트와 CI, 또는 직접 사용 | `figlens workflow <topic>` 또는 선택 사항인 [skill](#setup-skill) |
+
+<a id="setup-mcp"></a>
+
+### MCP
 
 **Claude Code** (Node.js 18+, macOS/Linux):
 
@@ -37,21 +47,79 @@
 claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
 
-새 세션을 시작하고 `/mcp`를 확인하세요. 원하는 화면을 평소 쓰는 말로 요청하면 됩니다. MCP에는 계획, 구현, 이미지 준비 가이드가 내장되어 있어 skill을 별도로 설치할 필요가 없습니다.
+**모든 MCP 클라이언트:**
 
-**Pi** (1.3.0+): 패키지 하나에 CLI, MCP, viewer, skill이 모두 들어 있습니다.
+```json
+{
+  "mcpServers": {
+    "figlens": {
+      "command": "npx",
+      "args": ["-y", "@runkids/figlens", "mcp"]
+    }
+  }
+}
+```
+
+Node.js가 없다면 독립 바이너리([CLI](#setup-cli))를 설치하고 `"command": "figlens"`를 사용하세요. 새 세션을 열고 figlens 도구가 목록에 나타나는지 확인하세요(Claude Code에서는 `/mcp`). skill을 따로 설치할 필요는 없습니다. `mcp` 뒤에 `--root <dir>`를 붙이면 figlens가 읽고 쓸 수 있는 폴더를 제한할 수 있습니다.
+
+<a id="setup-pi"></a>
+
+### Pi
+
+패키지 하나에 CLI, MCP, viewer, `/figlens` 명령과 skill이 모두 들어 있습니다:
 
 ```sh
 pi install npm:@runkids/figlens
 ```
 
-**모든 MCP 클라이언트** (Cursor, Codex, Gemini CLI, ...):
+[Pi 확장 가이드](docs/README-ko.md#pi)
 
-```json
-{ "mcpServers": { "figlens": { "command": "npx", "args": ["-y", "@runkids/figlens", "mcp"] } } }
+<a id="setup-cli"></a>
+
+### CLI
+
+npm으로 실행하거나 독립 바이너리를 설치하세요:
+
+```sh
+npx @runkids/figlens --help                                                                # Node.js 18+, 설치 불필요
+curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh | sh  # macOS, Linux
+brew install runkids/tap/figlens                                                           # Homebrew
+irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 | iex      # Windows PowerShell
 ```
 
-[독립 바이너리 설치](docs/README-ko.md#install)
+`npx`는 해석한 패키지 버전의 바이너리를 실행합니다. 스크립트로 설치했다면 `figlens update`, Homebrew로 설치했다면 `brew upgrade figlens`로 업데이트하세요. 바이너리는 macOS(Apple silicon, Intel), Linux(arm64, x86_64), Windows(x86_64)를 지원합니다.
+
+CLI를 사용하는 에이전트는 `figlens workflow build`(그 밖에 `images`, `plan`, `planning-details`, 명시적으로 요청할 때만 쓰는 `yolo`)로 가이드를 읽습니다. 내용은 항상 바이너리 버전과 일치합니다. [skill](#setup-skill)에서 읽을 수도 있습니다.
+
+[CLI 레퍼런스](docs/README-ko.md#commands)
+
+<a id="setup-skill"></a>
+
+### 에이전트 skill (선택 사항)
+
+skill은 내장 가이드와 같은 흐름을 에이전트에게 알려 줍니다: frame을 찾고, bundle을 조금씩 읽고, 범위를 정해 계획하고, 실행 중인 UI를 디자인과 비교합니다. 지침만 담고 있으므로 CLI나 MCP와 함께 사용하세요. MCP와 Pi 설정에서는 필요하지 않습니다.
+
+**추천: [skillshare](https://github.com/runkids/skillshare).** skill을 한 번 설치하면 사용하는 모든 에이전트에 동기화할 수 있습니다:
+
+```sh
+skillshare install github.com/runkids/figlens/skills/figlens
+skillshare sync
+```
+
+같은 도구로 해당 에이전트들의 figlens MCP 연결도 설정할 수 있습니다:
+
+```sh
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
+skillshare sync mcp --global
+```
+
+skill을 설치하는 다른 방법:
+
+```sh
+npx skills add runkids/figlens --skill figlens   # Skills CLI
+```
+
+또는 이 저장소나 release 아카이브의 `skills/figlens/`를 에이전트의 skills 디렉터리(Claude Code: `~/.claude/skills/`)에 복사하세요. 설치한 skill은 바이너리와 별도로 업데이트됩니다. `figlens workflow`는 항상 바이너리와 일치합니다.
 
 그런 다음 화면을 요청하세요.
 

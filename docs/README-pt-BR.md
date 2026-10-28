@@ -147,7 +147,7 @@ skillshare mcp add figlens --global --target claude --target codex --target curs
 skillshare sync && skillshare sync mcp --global
 ```
 
-**Notas de instalação.** O launcher npm baixa o binário nativo correspondente no primeiro uso, verifica-o contra os checksums SHA-256 da release e o armazena em cache. Instalações independentes são atualizadas com `figlens update`. Os binários cobrem macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl estático) e Windows (x86_64).
+**Notas de instalação.** O launcher npm baixa o binário nativo correspondente no primeiro uso, verifica-o contra os checksums SHA-256 da release e o armazena em cache. Instalações por script são atualizadas com `figlens update`; as do Homebrew, com `brew upgrade figlens`. Os binários cobrem macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl estático) e Windows (x86_64).
 
 <a id="commands"></a>
 
