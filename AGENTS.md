@@ -67,6 +67,7 @@ Publish bundle/export/snapshot files through `output::write` to protect sources 
 Apply MCP budgets before request admission and to complete serialized replies; see `mcp`.
 Generated test fixtures use `src/test_support.rs` for atomic directory ownership and scoped cleanup; see `fig-format`.
 Image-fill changes must test shifted sprites exported from a clipping frame; see `render`.
+Background blur backdrops reference blur-free copies within the per-export budget, or nested blurs grow exponentially; see `render`.
 
 ```sh
 docker compose run --rm dev cargo test

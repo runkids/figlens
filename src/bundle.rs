@@ -840,10 +840,10 @@ mod tests {
                     .unwrap()
                     .read_to_string(&mut context)
                     .unwrap();
-                assert!(context.contains("Background blur is not rendered"));
+                assert!(context.contains("Background blur sees only what the same export draws"));
                 assert_eq!(
                     document["document"]["_figlens"]["renderDiagnostics"][0]["state"],
-                    "skipped"
+                    "approximate"
                 );
             }
         }
