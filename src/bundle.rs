@@ -387,38 +387,39 @@ pub(crate) fn fonts(document: &Json) -> Json {
                 .as_array()
                 .map_or(&[][..], Vec::as_slice);
             let characters = node["characters"].as_str().map_or(0, |t| t.chars().count());
-            let mut styles = Vec::new();
+            let mut overrides = Vec::new();
             // Characters past the override list, and override id 0, use the node's own style.
             if ids.is_empty() || ids.len() < characters || ids.iter().any(|i| i == 0) {
-                styles.push(base.clone());
+                overrides.push(&Json::Null);
             }
             let mut used: Vec<&Json> = ids.iter().filter(|i| **i != 0).collect();
             used.sort_by_key(|i| i.as_u64());
             used.dedup();
-            for id in used {
-                // verify reads edited bundles: a style that is not an object contributes nothing.
-                let mut style = base.as_object().cloned().unwrap_or_default();
-                for (key, value) in node["styleOverrideTable"][id.to_string()]
-                    .as_object()
-                    .into_iter()
-                    .flatten()
-                {
-                    style.insert(key.clone(), value.clone());
-                }
-                styles.push(Json::Object(style));
+            overrides.extend(
+                used.into_iter()
+                    .map(|id| &node["styleOverrideTable"][id.to_string()]),
+            );
+            // verify reads edited bundles of any shape: look fields up, never copy whole styles.
+            fn field<'a>(over: &'a Json, base: &'a Json, key: &str) -> &'a Json {
+                over.get(key)
+                    .or_else(|| base.get(key))
+                    .unwrap_or(&Json::Null)
             }
-            for style in styles {
-                let (Some(family), Some(face)) =
-                    (style["fontFamily"].as_str(), style["fontStyle"].as_str())
-                else {
+            for over in overrides {
+                let (Some(family), Some(face)) = (
+                    field(over, base, "fontFamily").as_str(),
+                    field(over, base, "fontStyle").as_str(),
+                ) else {
                     continue;
                 };
                 let entry = faces
                     .entry((family.to_owned(), face.to_owned()))
                     .or_insert_with(|| {
                         json!({
-                            "family": family, "style": face, "weight": style["fontWeight"],
-                            "postScriptName": style["fontPostScriptName"], "nodeIds": [],
+                            "family": family, "style": face,
+                            "weight": field(over, base, "fontWeight"),
+                            "postScriptName": field(over, base, "fontPostScriptName"),
+                            "nodeIds": [],
                         })
                     });
                 let ids = entry["nodeIds"].as_array_mut().unwrap();
