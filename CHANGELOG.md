@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.9.0](https://github.com/runkids/figlens/compare/v0.8.0...v0.9.0) (2026-10-28)
+
+
+### New Features
+
+* add evidence-based UI audit workflow ([d9516ec](https://github.com/runkids/figlens/commit/d9516ecb511062db7cc126ac142b394c44f181ca))
+* add evidence-based UI audit workflow ([0442286](https://github.com/runkids/figlens/commit/04422868fef73392f82061bee3eacc04e9b0df82))
+* **bundle:** add font inventory and verify readiness check ([d6e273c](https://github.com/runkids/figlens/commit/d6e273c252bc062e7ed9f0cb703bc6fad37a6579))
+* **bundle:** add font inventory and verify readiness check ([3f2c85b](https://github.com/runkids/figlens/commit/3f2c85ba66bbad12a21f9cec4102af1609803b19))
+* **cli:** print built-in agent guidance with `figlens workflow` ([d911f0e](https://github.com/runkids/figlens/commit/d911f0e701be64e63673e507b91509b825cf61f1))
+* **cli:** print built-in agent guidance with `figlens workflow` ([e20bc05](https://github.com/runkids/figlens/commit/e20bc05652994f6740a014e97bef7f6276e92dc3))
+* **cli:** read many nodes from one decode with nodes --frames ([79fd078](https://github.com/runkids/figlens/commit/79fd078c4a148409ddda788f45903c016ec749db))
+* **cli:** read many nodes from one decode with nodes --frames ([1b11a2a](https://github.com/runkids/figlens/commit/1b11a2aaeb1e5d9c95e0e56f1156163e57182f13)), closes [#52](https://github.com/runkids/figlens/issues/52)
+* **cli:** take nodes batch ids from stdin or arguments ([599bf88](https://github.com/runkids/figlens/commit/599bf88bb94725b4be7debea02caa47f0595f2ff))
+* **integrations:** add OpenCode and OMP plugin entries ([#56](https://github.com/runkids/figlens/issues/56)) ([964aa13](https://github.com/runkids/figlens/commit/964aa130a7e29c73622d4e5b54c23e600010a983))
+
+
+### Bug Fixes
+
+* **bundle:** look font fields up instead of cloning styles ([6c93701](https://github.com/runkids/figlens/commit/6c93701e680ad97bccf38349a6382c6dec148274))
+* **bundle:** tolerate text styles that are not objects ([9a0a703](https://github.com/runkids/figlens/commit/9a0a70399852b0a9d311256d46cf3716751cc6ae))
+* **guidance:** carry the ignore-file step to every output instruction ([5d70db5](https://github.com/runkids/figlens/commit/5d70db5adff48d7940f54d2b1a5f6e31b2fd799d))
+* **guidance:** keep agent reference outputs out of the project tree ([67ed1ca](https://github.com/runkids/figlens/commit/67ed1ca52169f88fe49decfedb89258dafe6319e))
+* **guidance:** keep agent reference outputs out of the project tree ([a96ba49](https://github.com/runkids/figlens/commit/a96ba494dc72c8bb20a4ab6b3aaf4ca3bca57262))
+* **guidance:** send detailed-plan exports to .figlens/exports ([388f260](https://github.com/runkids/figlens/commit/388f2604a2303042f0ecd19894d10f6233db00b3))
+* **guidance:** stop after a whole-scope plan instead of starting slice 1 ([d87af7e](https://github.com/runkids/figlens/commit/d87af7e63741c80ac1e781b258efeb7afaf8d5e4))
+* **guidance:** stop after a whole-scope plan instead of starting slice 1 ([56bcca7](https://github.com/runkids/figlens/commit/56bcca7243ad128713d0460109cdaa145592ccc4))
+* **render:** bound the cuts that let background blurs replace their backdrop ([549cc9d](https://github.com/runkids/figlens/commit/549cc9dd99faee1e26b859da7af85ddde8b1349e))
+* **render:** cut a node's own background blur under a nested one ([ab488dc](https://github.com/runkids/figlens/commit/ab488dcdb0868c32d5e3adf4dcbac1c2e0acd65f))
+* **render:** draw background blur and stop blurring unknown effects ([5c551a3](https://github.com/runkids/figlens/commit/5c551a3fb6a65b3b21625a74f0d824275bdbf4e1))
+* **render:** draw background blur and stop blurring unknown effects ([712d939](https://github.com/runkids/figlens/commit/712d939111b2a1351c6996dcdb6ced032c135331))
+* **render:** draw no background blur inside mask content ([df4daf8](https://github.com/runkids/figlens/commit/df4daf8b2e2afbc5009c437bbaa2969838a0b7ba))
+* **render:** keep background blur backdrops linear and bounded ([63d2558](https://github.com/runkids/figlens/commit/63d255878e7e28d34be807d755c3d08f197df343))
+* **render:** let background blur replace its backdrop ([4e26a28](https://github.com/runkids/figlens/commit/4e26a28431816e0233458d3aa22d37f3558244ea))
+* **render:** tile the mirrored backdrop as far as a background blur reads ([e3e2c38](https://github.com/runkids/figlens/commit/e3e2c3887a09833412f08c428a131fe0442b0835))
+* **verify:** bound total hashing and keep reports for damaged metadata ([4e7bbf4](https://github.com/runkids/figlens/commit/4e7bbf4fc1e502366617cab0a46802a4ba474614))
+* **verify:** report undecodable entries instead of aborting ([5e856cc](https://github.com/runkids/figlens/commit/5e856cc1932b3a7cb0e6fd59f703c46f7c129b60))
+* **verify:** reserve declared sizes from the hashing budget ([6f36bdd](https://github.com/runkids/figlens/commit/6f36bddcd5237ddc78b5ce44a6cc63e7a1d679b5))
+
 ## [0.8.0](https://github.com/runkids/figlens/compare/v0.7.4...v0.8.0) (2026-10-28)
 
 
