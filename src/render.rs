@@ -756,6 +756,9 @@ pub struct Svg<'t, 'a> {
     /// Replacement references that leave background blurs out of a backdrop: empty for a blur,
     /// a blur-free copy for a body that contains one.
     plain: std::collections::HashMap<String, String>,
+    /// Set while drawing mask content, which only lends its alpha or luminance: a blur there is
+    /// not seen, and masks are referenced outside `<use>`, where blur-free copies cannot reach.
+    in_mask: bool,
     /// Expanded markup drawn by background blurs so far in this export.
     blurred: usize,
     /// Output pixels per user unit, set by `document`.
@@ -776,6 +779,7 @@ impl<'t, 'a> Svg<'t, 'a> {
             behind: None,
             expanded: Default::default(),
             plain: Default::default(),
+            in_mask: false,
             blurred: 0,
             scale: 1.0,
             mips: None,
@@ -987,7 +991,9 @@ impl<'t, 'a> Svg<'t, 'a> {
                     }
                     let id = self.id("m");
                     let alpha = c["maskType"] != "LUMINANCE";
+                    let outer = std::mem::replace(&mut self.in_mask, true);
                     let body = self.node(c);
+                    self.in_mask = outer;
                     let _ = write!(
                         self.defs,
                         "<mask id=\"{id}\" maskUnits=\"userSpaceOnUse\" x=\"-1e6\" y=\"-1e6\" width=\"2e6\" height=\"2e6\" style=\"mask-type:{}\">{body}</mask>",
@@ -1434,7 +1440,11 @@ impl<'t, 'a> Svg<'t, 'a> {
     /// first active background blur. Paths are in page space, so the drawn content is reused
     /// as is.
     // shortcut: content outside the export (an ancestor when only `n` is exported) is not seen, and an earlier blur is seen unblurred; render the ancestors when a design needs them.
+    // shortcut: the blurred copy is painted over the unblurred backdrop, so a translucent backdrop is painted twice; mask out what lies under the outline when transparent exports need it.
     fn background_blur(&mut self, n: &Json) -> Option<String> {
+        if self.in_mask {
+            return None;
+        }
         let radius = active_background_blur(n)?;
         let [x0, y0, x1, y1] = rect_of(&n["_r"]["fb"]).or_else(|| box_bounds(n))?;
         let levels = self.behind.as_ref()?;
@@ -1622,9 +1632,6 @@ fn is_filter_effect(e: &Json) -> bool {
 
 /// The radius of `n`'s first visible, nonzero background blur.
 fn active_background_blur(n: &Json) -> Option<f64> {
-    if n["isMask"] == Json::Bool(true) {
-        return None;
-    }
     n["_r"]["effects"]
         .as_array()?
         .iter()
@@ -1636,6 +1643,7 @@ fn active_background_blur(n: &Json) -> Option<f64> {
 fn has_background_blur(n: &Json) -> bool {
     n["visible"] != Json::Bool(false)
         && !n["_r"].is_null()
+        && n["isMask"] != Json::Bool(true)
         && (active_background_blur(n).is_some()
             || n["type"] != "BOOLEAN_OPERATION"
                 && n["children"]
@@ -2124,6 +2132,35 @@ mod tests {
         assert_eq!(states(&node), ["approximate", "skipped"]);
         node["isMask"] = Json::Bool(true);
         assert_eq!(states(&node), ["skipped", "skipped"]);
+    }
+
+    #[test]
+    fn mask_content_draws_no_background_blur() {
+        let tree = Tree {
+            nodes: Default::default(),
+            children: Default::default(),
+            blobs: Vec::new(),
+        };
+        let fill =
+            serde_json::json!([{"type": "SOLID", "color": {"r": 1, "g": 0, "b": 0, "a": 1}}]);
+        let rect = |id: &str, effects: Json| {
+            serde_json::json!({"id": id, "type": "RECTANGLE", "_r": {
+                "m": [1, 0, 0, 1, 0, 0], "size": {"x": 10, "y": 10}, "fillPaints": fill,
+                "effects": effects,
+            }})
+        };
+        let blur = serde_json::json!([{"type": "BACKGROUND_BLUR", "radius": 4}]);
+        let mask = serde_json::json!({"id": "1:2", "type": "FRAME", "isMask": true, "_r": {
+            "m": [1, 0, 0, 1, 0, 0], "size": {"x": 10, "y": 10}, "fillPaints": [],
+        }, "children": [rect("1:3", blur.clone())]});
+        let frame = serde_json::json!({"id": "1:1", "type": "FRAME", "_r": {
+            "m": [1, 0, 0, 1, 0, 0], "size": {"x": 10, "y": 10}, "fillPaints": fill,
+        }, "children": [mask, rect("1:4", blur)]});
+        let images = |_: &str| None;
+        let svg = Svg::new(&tree, &images).document(&frame, [0.0, 0.0, 10.0, 10.0], 1.0);
+        // Only 1:4's: masks are referenced by url(), so a blur inside one escapes blur-free
+        // backdrops.
+        assert_eq!(svg.matches("<feGaussianBlur").count(), 1);
     }
 
     #[test]
