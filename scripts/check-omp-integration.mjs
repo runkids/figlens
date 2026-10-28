@@ -57,6 +57,7 @@ await runner.emit({ type: 'session_start' });
 await check('real OMP loader registers native schema, command and tools', async () => {
   assert.ok(JSON.parse(await readFile(path.join(sdk, 'package.json'))).version);
   assert.equal(loaded.extensions[0].commands.has('figlens'), true);
+  assert.ok((await loaded.extensions[0].commands.get('figlens').getArgumentCompletions('')).every(item => item.description), 'every subcommand completion has a description');
   assert.deepEqual(Object.keys(tools), ['figlens_preview', 'figlens_bindings', 'figlens_propose_bindings']);
   return { tools: Object.keys(tools), approvalTiers: Object.values(tools).map(tool => tool.approval) };
 });

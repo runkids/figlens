@@ -181,18 +181,28 @@ export default function figlens(pi: ExtensionAPI) {
   pi.on('session_switch', closeOwners);
   pi.on('session_shutdown', closeOwners);
 
+  const COMMANDS = {
+    open: 'Find a design from a file, screen name, purpose or visible text',
+    preview: 'Start the local viewer and return its link',
+    plan: 'Inspect the design and relevant code, write a plan; no edits',
+    yolo: 'Plan, implement, verify and clean up the temporary plan',
+    frame: 'Search the saved file, or select a frame id directly',
+    map: 'Propose reusable component matches for the current design',
+    review: 'Accept, edit or skip pending component mappings',
+    status: 'Show the manual selection and mapping states',
+    close: 'Stop the viewer and clear the manual selection',
+    help: 'List these commands',
+  };
   pi.registerCommand('figlens', {
     description: 'Plan or implement a design, select a scope or review component mappings',
-    getArgumentCompletions: prefix => ['open', 'preview', 'plan', 'yolo', 'frame', 'map', 'review', 'status', 'close', 'help']
-      .filter(value => value.startsWith(prefix)).map(value => ({ value, label: value,
-        ...(value === 'yolo' ? { description: 'Plan, implement, verify and clean up the temporary plan' } : {}),
-      })),
+    getArgumentCompletions: prefix => Object.entries(COMMANDS)
+      .filter(([value]) => value.startsWith(prefix)).map(([value, description]) => ({ value, label: value, description })),
     handler: async (args, ctx) => {
       const match = args.trimStart().match(/^(\S+)(?:\s([\s\S]*))?$/);
       const command = match?.[1];
       try {
         if (!command || command === 'help' || command === '--help') { show(HELP, ctx); return; }
-        if (!['plan', 'yolo', 'open', 'preview', 'frame', 'map', 'review', 'status', 'close'].includes(command)) {
+        if (!Object.hasOwn(COMMANDS, command)) {
           show(`Unknown figlens command: **${command}**.\n\n${HELP}`, ctx); return;
         }
         let rest = match?.[2]?.trim() || '';

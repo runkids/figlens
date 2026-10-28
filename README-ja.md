@@ -88,10 +88,10 @@ pi install npm:@runkids/figlens
 
 ### OpenCode V2
 
-OpenCode V2 のプラグイン設定に追加：
+OpenCode V2 にパッケージをインストール：
 
-```json
-{ "plugins": ["@runkids/figlens"] }
+```sh
+opencode plugin add @runkids/figlens
 ```
 
 ホストを再起動して `/figlens help` を実行します。 [OpenCode V2](opencode/README.md)
