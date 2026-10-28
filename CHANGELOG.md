@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.8.0](https://github.com/runkids/figlens/compare/v0.7.4...v0.8.0) (2026-10-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **mcp:** MCP tool calls with fields outside the tool's input schema now fail with `invalid_arguments` instead of being ignored. Use the parameter names from `tools/list`.
+
+### New Features
+
+* **mcp:** reject unknown tool arguments ([2f60ea5](https://github.com/runkids/figlens/commit/2f60ea5737241a8ae73b6985a41e619e8e2aab37))
+
+
+### Bug Fixes
+
+* **mcp:** keep advertised schema integers JSON-safe ([ceee44a](https://github.com/runkids/figlens/commit/ceee44ace3979dda4418dba009d661e88008c364))
+
 ## [0.7.4](https://github.com/runkids/figlens/compare/v0.7.3...v0.7.4) (2026-10-27)
 
 
