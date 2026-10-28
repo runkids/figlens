@@ -3,7 +3,7 @@
 const SKILL: &str = include_str!("../skills/figlens/SKILL.md");
 pub const TOPICS: &[&str] = &["build", "images", "plan", "planning-details", "yolo"];
 
-pub const INSTRUCTIONS: &str = "Read local Figma .fig snapshots with figlens. Resolve the requested screen from names or visible text using find/tree; ask about recognizable choices only when materially ambiguous, and resolve node IDs yourself. Use inspect for compact layout/text, nodes for full styles/masks/component data, variables for tokens, and export for reference pixels or assets. For implementation, call workflow(topic=build); for implementation planning or careful reproduction, also load plan; for website image preparation, load images. Load planning-details only for page/multi-page scope or unresolved dependencies. Load yolo only when the user explicitly requests autonomous implementation and temporary-plan cleanup. A plan-only request ends with a plan; an authorized build continues through implementation, visual checks and corrections using the project's existing architecture. Simple questions and exports use the design tools directly. Workflow reads return guidance, not executed work; host tools and permissions govern project edits, browser checks and cleanup. Check isError and content on failed calls. Native Dev Mode annotations and font files are unavailable; report material gaps rather than guessing.";
+pub const INSTRUCTIONS: &str = "Read local Figma .fig snapshots with figlens. Resolve the requested screen from names or visible text using find/tree; ask about recognizable choices only when materially ambiguous, and resolve node IDs yourself. Use inspect for compact layout/text, nodes for full styles/masks/component data, variables for tokens, and export for reference pixels or assets. For implementation, call workflow(topic=build); for implementation planning or careful reproduction, also load plan; for website image preparation, load images. Load planning-details only for page/multi-page scope or unresolved dependencies. Load yolo only when the user explicitly requests autonomous implementation and temporary-plan cleanup. A plan-only request ends with a plan, and so does a request to plan the whole scope before implementing: detail every slice, then wait for approval; an authorized build continues through implementation, visual checks and corrections using the project's existing architecture. Simple questions and exports use the design tools directly. Workflow reads return guidance, not executed work; host tools and permissions govern project edits, browser checks and cleanup. Check isError and content on failed calls. Native Dev Mode annotations and font files are unavailable; report material gaps rather than guessing.";
 
 pub fn read(topic: &str) -> Result<String, String> {
     let headings: &[&str] = match topic {
@@ -91,6 +91,9 @@ mod tests {
         assert!(!images.contains("## Building a frame"));
         let plan = read("plan").unwrap();
         assert!(plan.contains("A plan-only request ends with the plan"));
+        // A whole-scope plan must not shrink to slice 1 and then start implementing.
+        assert!(plan.contains("give every slice all four fields and stop with the complete plan"));
+        assert!(INSTRUCTIONS.contains("detail every slice, then wait for approval"));
         assert!(plan.contains("(workflow:planning-details#save-and-resume-proportionately)"));
         let details = read("planning-details").unwrap();
         assert!(

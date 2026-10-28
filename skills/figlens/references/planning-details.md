@@ -46,7 +46,7 @@ Goal and authorized scope
 Source snapshot and relevant project evidence (shared once)
 Screen/state inventory (multi-screen requests only)
 Next slice: design/code targets, decisions, dependencies and acceptance
-Remaining slices: differences, risks and order; deepen when needed
+Remaining slices: differences, risks and order; deepen when needed, or detail each like the next slice when the whole plan comes first
 Material questions and assumptions
 Execution record: changes, checks actually run, remaining differences
 ```
@@ -55,6 +55,6 @@ Read an existing plan before updating it and preserve human notes. Use stable sl
 
 ## Stop at an actionable next step
 
-Stop discovery when the next slice's target, relevant evidence, necessary dependencies, image decisions and acceptance are clear, with no unresolved decision that would materially change it. Unknowns elsewhere do not block it. Ask about genuine blockers such as indistinguishable target screens or required behavior conflicting with an existing contract. Avoid unsupported effort estimates and whole-project preparation for a small change.
+Stop discovery when the next slice's target, relevant evidence, necessary dependencies, image decisions and acceptance are clear, with no unresolved decision that would materially change it. Unknowns elsewhere do not block it. When the user asked for the whole plan first, apply this to every slice, then stop for approval. Ask about genuine blockers such as indistinguishable target screens or required behavior conflicting with an existing contract. Avoid unsupported effort estimates and whole-project preparation for a small change.
 
 Use the main planning workflow for plan-only versus implementation authorization and filesystem restrictions.
