@@ -39,7 +39,7 @@ Before committing, search these files for both the old and the new command forms
 1. Refresh the base and pin the diff. Preserve unrelated edits and exclude private designs and exports.
 2. Every PR gets this review, including docs- and wiki-only changes and fixes pushed to an open PR. Simplify the change, then review correctness, repository rules, the requested behavior, consumers and cleanup. The `figlens-code-review` skill adapts these passes to the available tools. Verify each finding against actual code or execution before fixing it.
 3. Apply the CLI/MCP/Pi coverage check above to every changed concept. Fix related findings together, run the relevant checks and stage only task-owned files.
-4. Describe the final behavior, executed checks and remaining limitations in English. Use a draft for unfinished code or an explicit request; documented model-quality limitations alone do not require a draft.
+4. Describe the final behavior, executed checks and remaining limitations in English. Use a draft for unfinished code or an explicit request; documented model-quality limitations alone do not require a draft. Draft PRs skip the Test workflow; mark the PR ready for review to run CI before requesting a merge.
 
 ## Follow the PR through review
 
