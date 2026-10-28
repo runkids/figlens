@@ -18,7 +18,7 @@
 
 ## スタンドアロン版のインストール
 
-**Node.js がない場合は？** 単体バイナリをインストールし、代わりに `"command": "figlens"` を使います。
+**Node.js がない場合は？** 単体バイナリをインストールし、代わりに `"command": "figlens", "args": ["mcp"]` を使います。
 
 | プラットフォーム | コマンド |
 |---|---|
@@ -148,7 +148,7 @@ skillshare mcp add figlens --global --target claude --target codex --target curs
 skillshare sync && skillshare sync mcp --global
 ```
 
-**インストールの注意。** npm ランチャーは初回使用時に対応するネイティブバイナリをダウンロードし、リリースの SHA-256 チェックサムで検証してキャッシュします。単体インストールは `figlens update` で更新します。バイナリは macOS（Apple silicon、Intel）、Linux（arm64、x86_64、静的 musl）、Windows（x86_64）に対応しています。
+**インストールの注意。** npm ランチャーは初回使用時に対応するネイティブバイナリをダウンロードし、リリースの SHA-256 チェックサムで検証してキャッシュします。スクリプトでインストールした場合は `figlens update`、Homebrew の場合は `brew upgrade figlens` で更新します。バイナリは macOS（Apple silicon、Intel）、Linux（arm64、x86_64、静的 musl）、Windows（x86_64）に対応しています。
 
 <a id="commands"></a>
 

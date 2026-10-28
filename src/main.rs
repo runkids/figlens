@@ -67,6 +67,9 @@ usage:
   figlens mcp [--root DIR]...                  serve workflow guidance, tree, find, inspect, nodes, variables,
                                              bundle and export as MCP tools; raster export returns an inline image;
                                              with --root, files and outputs must be under one of the folders
+  figlens workflow <topic>                     print built-in agent guidance, the same text as MCP workflow:
+                                             build, images, plan, planning-details or yolo; a
+                                             workflow:<topic> link means `figlens workflow <topic>`
   figlens cache [clear]                        show, or clear, the preview render cache
                                              (prints {path,bytes} or {path,freed})
   figlens update                               install the latest GitHub release over this binary
@@ -76,6 +79,8 @@ usage:
   ~/.cache/figlens until the object changes).
 <node>: a Figma URL with ?node-id=..., 12-345 (URL form) or 12:345.
         nodes/inspect/export/bundle also accept full instance sublayer IDs from inspect/nodes.
+<out>: always explicit. Shipped assets go where the project keeps its assets; reference and
+       scratch files go in .figlens/exports/ (holding a .gitignore of *), not beside the .fig.
 JSON goes to stdout, errors to stderr; exit status 1 on any error.
 
 examples:
@@ -127,6 +132,7 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                     | "verify"
                     | "preview"
                     | "mcp"
+                    | "workflow"
                     | "cache"
                     | "update"
             )
@@ -167,6 +173,16 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             let bundle = args.get(1).ok_or(USAGE)?;
             let report = figlens::verify::verify(std::path::Path::new(bundle))?;
             writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
+            return Ok(());
+        }
+        Some("workflow") => {
+            let topic = args.get(1).ok_or_else(|| {
+                format!(
+                    "figlens workflow <topic>; choose {}",
+                    workflow::TOPICS.join(", ")
+                )
+            })?;
+            writeln!(out, "{}", workflow::read_cli(topic)?)?;
             return Ok(());
         }
         _ => {}

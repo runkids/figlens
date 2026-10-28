@@ -33,6 +33,7 @@ python3 scripts/ai-context.py check     # validate paths, headings and byte budg
 | Topic | Use when |
 |---|---|
 | `mcp` | Changing MCP instructions, tool discovery or built-in workflow guidance |
+| `gcs` | Changing the `gs://` snapshot handoff, its download cache or refresh |
 | `performance` | Measuring load time and memory, reading the perf baseline, changing cache or decode cost |
 | `parsing` | Changing untrusted container/schema/value decoding or parsing budgets |
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields or variables |

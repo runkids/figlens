@@ -18,7 +18,7 @@
 
 ## Standalone installation
 
-**No Node.js?** Install the standalone binary and use `"command": "figlens"` instead:
+**No Node.js?** Install the standalone binary and use `"command": "figlens", "args": ["mcp"]` instead:
 
 | Platform | Command |
 |---|---|
@@ -131,7 +131,7 @@ Browse pages and layers, search, measure, inspect layout, typography, variables 
 
 Native Windows with Claude Code: follow its [stdio setup notes](https://code.claude.com/docs/en/mcp#option-3-add-a-local-stdio-server) and the `cmd /c` wrapper for `npx`.
 
-**Skill.** The [figlens skill](../skills/figlens/SKILL.md) teaches an agent to find frames, read the bundle in small pieces, plan scoped work and verify the running UI against the design. It installs instructions only; the CLI or MCP server must be available. Install with the [Skills CLI](https://github.com/vercel-labs/skills) or copy `skills/figlens/` into your agent's skills directory (Claude Code: `~/.claude/skills/`):
+**Skill.** The [figlens skill](../skills/figlens/SKILL.md) teaches an agent to find frames, read the bundle in small pieces, plan scoped work and verify the running UI against the design. It installs instructions only; the CLI or MCP server must be available. Without it, `figlens workflow <topic>` prints the same guidance from the binary, matching its version. Install with the [Skills CLI](https://github.com/vercel-labs/skills) or copy `skills/figlens/` into your agent's skills directory (Claude Code: `~/.claude/skills/`):
 
 ```sh
 npm install -g @runkids/figlens
@@ -146,7 +146,7 @@ skillshare mcp add figlens --global --target claude --target codex --target curs
 skillshare sync && skillshare sync mcp --global
 ```
 
-**Install notes.** The npm launcher downloads the matching native binary on first use, verifies it against the release's SHA-256 checksums and caches it. Standalone installs update with `figlens update`. Binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, static musl) and Windows (x86_64).
+**Install notes.** The npm launcher downloads the matching native binary on first use, verifies it against the release's SHA-256 checksums and caches it. Script installs update with `figlens update`; Homebrew installs with `brew upgrade figlens`. Binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, static musl) and Windows (x86_64).
 
 <a id="commands"></a>
 

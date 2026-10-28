@@ -72,6 +72,7 @@ npx @runkids/figlens nodes design.fig 12:345 > frame.json
 npx @runkids/figlens bundle design.fig 12:345 frame.zip
 npx @runkids/figlens export design.fig 12:345 icon.svg
 npx @runkids/figlens export design.fig 12:345 frame.png --scale 2
+npx @runkids/figlens workflow build   # agent guidance, same as the MCP workflow tool
 ```
 
 Replace `12:345` with a node ID from the tree. A bundle contains design JSON, variables, assets, reference render and `context.md` instructions. The viewer also exports a standalone offline HTML snapshot: `preview design.fig 12:345 --out preview.html`.
