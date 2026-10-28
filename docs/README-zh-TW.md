@@ -99,6 +99,8 @@ SVG 匯出會內嵌原始圖片填色，並將文字轉為 glyph 外框，因此
 pi install npm:@runkids/figlens
 ```
 
+安裝說明: [OpenCode V2](../opencode/README.md) · [OMP](../omp/README.md).
+
 重新啟動 Pi 或執行 `/reload`，然後用一般的話請它做一個畫面。Pi 會找到 frame，透過自動註冊的 MCP 伺服器讀取，並用你的技術堆疊實作。不需要 node ID，不需要全域 CLI。
 
 - `/figlens plan <request>` 只產生計劃書，不修改應用程式。

@@ -12,7 +12,7 @@ Reads Figma `.fig` files (File > Save local copy) so AI design-to-code pipelines
 - **Format changes need evidence.** Before changing how nodes are decoded, expanded or emitted, load `fig-format`; claim accuracy only after measuring with the `accuracy` topic, on a file the change was not written against.
 - **Keep the docs true.** When a doc disagrees with the code, trust the code: verify, then fix the stale doc in the same task. When your change alters behaviour that a topic describes, update that topic page in the same change. Put a new lesson in the kernel as a one-line rule and in its topic as the procedure. Run `python3 scripts/ai-context.py check` after any doc change. The procedure is in the `ai-context` topic.
 - **Search before you edit, and change as little as possible.** Match the existing style.
-- **Check CLI, MCP and Pi together.** For every feature or optimization, assess each interface, complete affected behavior/contracts/guidance/tests, and explain why any interface needs no change. A new feature or changed command also updates `--help`, every README locale, a served skill section and its wiki topic; see `review`.
+- **Check CLI, MCP, Pi, OpenCode and OMP together.** For every feature or optimization, assess each interface, complete affected behavior/contracts/guidance/tests, and explain why any interface needs no change. A new feature or changed command also updates `--help`, every README locale, a served skill section and its wiki topic; see `review`.
 - **Helper files go in the repo.** Helper scripts go in `scripts/`; private designs, Figma exports and run outputs go in the gitignored `samples/`. The original public fixture below is the exception.
 - **Review before every PR.** Run the `figlens-code-review` passes on the pinned diff and fix verified findings before opening or updating a PR, docs- and wiki-only changes included; see `review`.
 - **Own PR follow-up.** Check AI reviews and CI, fix verified findings, then request and check `@codex review` on the updated head; see `review`.
@@ -42,6 +42,7 @@ python3 scripts/ai-context.py check     # validate paths, headings and byte budg
 | `render` | Changing SVG or raster output: text and glyphs, image fills, effects, export areas, image adjustments |
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison |
 | `pi` | Changing the Pi extension, reviewed component mappings or its npm packaging |
+| `integrations` | Changing OpenCode V2/OMP, shared package, permissions or installed-host acceptance |
 | `accuracy` | Measuring output against Figma's own exports, running `compare`, finding test files |
 | `release` | Packaging, GitHub releases, Homebrew, npm, install scripts and `figlens update` |
 | `review` | Delivering features/optimizations across CLI, MCP and Pi; reviews and PR follow-up |
@@ -61,6 +62,9 @@ If a topic goes over budget, split it rather than raising the cap. Skills are wo
 ## Verification
 
 Pi viewer startup must wait for a successful catalog response, not just a printed URL; see `pi`.
+Verify each host's independent entry from the same extracted npm candidate; dispatch is not model completion; see `integrations`.
+Validate host reference-output directories before export, including symlinked parents; see `integrations`.
+Cancel owned CLI process trees and await exit before reference cleanup; see `integrations`.
 Check parsing budgets before Kiwi recursion or declared-length expansion; see `parsing`.
 Bound declared and actual original-image bytes per image and per scope before retaining them; see `parsing`.
 Publish bundle/export/snapshot files through `output::write` to protect sources and existing outputs; see `parsing`.

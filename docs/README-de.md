@@ -99,6 +99,8 @@ Ergebnisse für diese Dateien, keine Garantie für jedes Design. Methode und Sch
 pi install npm:@runkids/figlens
 ```
 
+Installationsanleitungen: [OpenCode V2](../opencode/README.md) · [OMP](../omp/README.md).
+
 Starte Pi neu oder führe `/reload` aus und bitte dann in normalen Worten um einen Bildschirm. Pi findet den Frame, liest ihn über den automatisch registrierten MCP-Server und baut mit deinem Stack. Keine Node-IDs, keine globale CLI.
 
 - `/figlens plan <request>` erstellt nur einen Plan und ändert die Anwendung nicht.

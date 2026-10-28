@@ -1,0 +1,189 @@
+import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdir, readFile, realpath, rm } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
+import { Workflow } from '../pi/workflow.mjs';
+import { stopProcess, Viewer } from '../pi/viewer.mjs';
+import { buildRequest } from '../pi/requests.mjs';
+
+const execute = promisify(execFile);
+import { HELP } from './rpc.mjs';
+
+export function createAdapter(ctx, entry = import.meta.url) {
+  const wrapper = fileURLToPath(new URL('../bin/figlens.js', entry));
+  const bundled = !process.env.FIGLENS_BIN && existsSync(wrapper);
+  const command = process.env.FIGLENS_BIN || (bundled ? process.execPath : 'figlens');
+  const prefix = bundled ? [wrapper] : [];
+  const cacheRoot = path.join(process.env.XDG_CACHE_HOME || (process.platform === 'win32' && process.env.LOCALAPPDATA) || path.join(homedir(), '.cache'), 'figlens');
+  const commandLine = args => [command, ...prefix, ...args].map(value => `'${value.replaceAll("'", "'\\''")}'`).join(' ');
+  const owners = new Map();
+  const lifetime = new AbortController();
+  let managedMcp = false;
+  const mcpConfig = { type: 'local', command: [command, ...prefix, 'mcp'], cwd: ctx.location.directory,
+    ...(process.env.FIGLENS_BIN ? { environment: { FIGLENS_BIN: process.env.FIGLENS_BIN } } : {}) };
+
+  async function close(sessionID) {
+    const current = owners.get(sessionID);
+    if (!current) return;
+    current.lifetime.abort();
+    await Promise.all([...current.commands].map(stop => stop()));
+    await current.viewer.close();
+    owners.delete(sessionID);
+  }
+  async function scope(sessionID, signal) {
+    lifetime.signal.throwIfAborted();
+    const session = await ctx.session.get({ sessionID });
+    const root = await realpath(ctx.location.directory);
+    if (!session.location?.directory || await realpath(session.location.directory) !== root) {
+      await close(sessionID);
+      throw new Error('Session belongs to a different project directory.');
+    }
+    let current = owners.get(sessionID);
+    if (!current) {
+      current = { viewer: new Viewer(command, prefix), lifetime: new AbortController(), commands: new Set() };
+      owners.set(sessionID, current);
+    }
+    const combined = AbortSignal.any([lifetime.signal, current.lifetime.signal, ...(signal ? [signal] : [])]);
+    const admitted = new Set();
+    async function authorize(action, resources) {
+      combined.throwIfAborted();
+      const remaining = resources.filter(resource => !admitted.has(JSON.stringify([action, resource])));
+      if (remaining.length) await ctx.permission.assert({ sessionID, action, resources: remaining });
+      combined.throwIfAborted();
+      for (const resource of remaining) admitted.add(JSON.stringify([action, resource]));
+    }
+    async function run(args) {
+      const argv = [...prefix, ...args];
+      if (bundled) await authorize('edit', [cacheRoot]);
+      await authorize('bash', [commandLine(args)]);
+      const signal = AbortSignal.any([combined, AbortSignal.timeout(120000)]);
+      const execution = execute(command, argv, { cwd: root, detached: process.platform !== 'win32', maxBuffer: 64 * 1024 * 1024 });
+      let stopping;
+      const abort = () => {
+        stopping ??= stopProcess(execution.child);
+        stopping.catch(() => {});
+        return stopping;
+      };
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort();
+      const finished = execution.finally(async () => {
+        signal.removeEventListener('abort', abort);
+        await stopping;
+      });
+      current.commands.add(abort);
+      try {
+        const result = await finished;
+        signal.throwIfAborted();
+        return result;
+      } catch (error) { signal.throwIfAborted(); throw error; }
+      finally { current.commands.delete(abort); }
+    }
+    return { root, ...current, signal: combined, authorize, run,
+      flow: new Workflow(root, async args => JSON.parse((await run(args)).stdout), authorize) };
+  }
+  function configureMcp(editor) {
+    managedMcp = !editor.get('figlens');
+    if (managedMcp) editor.set('figlens', mcpConfig);
+  }
+  async function mcpStatus() {
+    const { data } = await ctx.mcp.list();
+    const server = data.find(server => server.name === 'figlens');
+    return { managed: managedMcp, status: server?.status ?? { status: 'pending' },
+      tools: (await ctx.tool.list()).filter(tool => tool.name.startsWith('figlens_')).map(tool => tool.name),
+      reason: managedMcp ? 'Package launcher; local project paths.' : 'Existing configuration preserved; server version and snapshot are unverified. MCP shortcuts are blocked.' };
+  }
+  async function requireMcp(current) {
+    const status = await mcpStatus();
+    if (!status.managed || status.status.status !== 'connected') throw new Error(`figlens MCP is unavailable for shortcuts: ${JSON.stringify(status)}. Check the host MCP configuration; local preview, frame and review remain available.`);
+    const pkg = JSON.parse(await readFile(new URL('../package.json', entry), 'utf8'));
+    const version = (await current.run(['--version'])).stdout.trim();
+    if (version !== `figlens ${pkg.version}`) throw new Error(`Launcher version differs: ${version}; package ${pkg.version}.`);
+  }
+  async function preview(current, file, node) {
+    if (!file) throw new Error('Provide a local .fig file.');
+    const { absolute } = await current.flow.source(file);
+    await current.authorize('read', [cacheRoot]);
+    await current.authorize('edit', [cacheRoot, path.join(tmpdir(), 'figlens-preview-*')]);
+    await current.authorize('bash', [commandLine(['preview', absolute, ...(node ? [node] : [])])]);
+    return current.viewer.start(absolute, node, { cwd: current.root, signal: current.signal });
+  }
+  async function select(current, file, node) {
+    if (!file || !node) throw new Error('Provide a file and frame together.');
+    const directory = await current.flow.referenceDirectory();
+    const design = await current.flow.design({ file, frame: node }, current.signal);
+    const output = path.join(directory, `${randomUUID()}.png`);
+    const args = ['export', design.absolute, design.frame, output, '--scale', '0.5'];
+    await current.authorize('edit', [current.flow.directory, current.flow.guide, directory]);
+    await current.authorize('bash', [commandLine(args)]);
+    try {
+      await mkdir(directory, { recursive: true });
+      await current.run(args);
+      const bytes = await readFile(output);
+      if (bytes.length > 5 * 1024 * 1024) throw new Error('Reference exceeds 5 MiB. Export at a smaller scale.');
+      await current.flow.select(file, node, current.signal);
+      return { design, referenceUrl: pathToFileURL(output).href, reference: { uri: `data:image/png;base64,${bytes.toString('base64')}`, mime: 'image/png', name: `${design.name}.png` } };
+    } catch (error) { await rm(output, { force: true }); throw error; }
+  }
+  async function operation(input, signal) {
+    const current = await scope(input.sessionID, signal);
+    if (input.action === 'status') return { active: (await current.flow.read()).state.active, mcp: await mcpStatus() };
+    if (input.action === 'close') { await current.viewer.close(); await current.flow.close(); return { closed: true }; }
+    if (input.action === 'preview') return preview(current, input.file, input.node);
+    if (input.action === 'select') return select(current, input.file, input.node);
+    if (input.action === 'frames') {
+      const file = input.file || (await current.flow.read()).state.active?.file;
+      if (!file) throw new Error('No saved file. Open a known file/frame, or describe the screen in a normal message.');
+      return { file, ...await current.flow.frames(file, current.signal, input.query || '') };
+    }
+    throw new Error('Unknown figlens operation.');
+  }
+  async function commandHandler({ sessionID, prompt, delivery }) {
+    const match = prompt.text.trimStart().match(/^(\S+)(?:\s([\s\S]*))?$/);
+    const kind = match?.[1] || 'help', rest = match?.[2] || '';
+    if (rest.trim() && ['status', 'close', 'review', 'map'].includes(kind)) throw new Error(`/figlens ${kind} takes no arguments.`);
+    const current = await scope(sessionID);
+    await ctx.session.wait({ sessionID });
+    if (['plan', 'yolo', 'map'].includes(kind) || (kind === 'open' && !/\s--frame\s/.test(rest))) {
+      await requireMcp(current);
+      await ctx.session.prompt({ sessionID, text: await buildRequest(kind, rest, entry), files: prompt.files, agents: prompt.agents, skills: prompt.skills, delivery });
+      return;
+    }
+    let data;
+    if (kind === 'help' || kind === '--help') data = HELP;
+    else if (kind === 'review') data = 'Use /figlens review in the native TUI to review mappings. Noninteractive clients leave proposals pending; authenticated RPC clients are trusted.';
+    else if (kind === 'status' || kind === 'close') data = await operation({ sessionID, action: kind });
+    else if (kind === 'frame') {
+      const active = (await current.flow.read()).state.active;
+      if (!active || !rest.trim()) throw new Error('No saved file or frame ID. Use /figlens frame in the native TUI, or /figlens open "file.fig" --frame ID.');
+      const selected = await select(current, active.file, rest.trim());
+      await ctx.session.prompt({ sessionID, text: `figlens reference: ${selected.design.name}\n[Open reference PNG on the server machine](${selected.referenceUrl})`, files: [selected.reference], resume: false });
+      data = selected.design;
+    }
+    else if (kind === 'open') {
+      const known = rest.trim().match(/^([\s\S]+)\s+--frame\s+(\S+)$/);
+      if (!known) throw new Error('Provide a file and --frame ID.');
+      const file = known[1].trim().replace(/^(["'])([\s\S]*)\1$/, '$2');
+      const selected = await select(current, file, known[2]);
+      await ctx.session.prompt({ sessionID, text: `figlens reference: ${selected.design.name}\n[Open reference PNG on the server machine](${selected.referenceUrl})`, files: [selected.reference], resume: false });
+      data = selected.design;
+    } else if (kind === 'preview') {
+      const file = rest.trim().replace(/^(["'])([\s\S]*)\1$/, '$2');
+      if (file && path.extname(file).toLowerCase() === '.fig' && existsSync(path.resolve(current.root, file))) data = await preview(current, file);
+      else {
+        await requireMcp(current);
+        await ctx.session.prompt({ sessionID, text: await buildRequest(kind, rest, entry), files: prompt.files, agents: prompt.agents, skills: prompt.skills, delivery });
+        return;
+      }
+    } else throw new Error(`Unknown figlens command: ${kind}. ${HELP}`);
+    await ctx.session.synthetic({ sessionID, text: typeof data === 'string' ? data : JSON.stringify(data, null, 2), resume: false });
+  }
+  async function dispose() {
+    lifetime.abort();
+    await Promise.all([...owners.keys()].map(close));
+  }
+  return { command, prefix, scope, preview, operation, commandHandler, configureMcp, mcpStatus, close, dispose, signal: lifetime.signal };
+}

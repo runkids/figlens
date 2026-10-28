@@ -4,8 +4,9 @@ Load this for the Pi workflow, mapping persistence, review behavior or npm packa
 
 ## Implementation
 
+- `pi/requests.mjs` builds the shared open/preview/plan/YOLO/map requests from adjacent skill references.
 - `pi/index.ts` is the Pi 1.3+ adapter: commands, tool schemas, MCP registration, reference images and dialogs. Pi supplies `typebox`, its SDK and TUI; do not bundle copies. Module scope registers callbacks only. The MCP server is registered at session start and managed by Pi, including shutdown.
-- `pi/workflow.mjs` reads the existing CLI's `find` and `nodes` results (reference images are exported by `pi/index.ts`). It derives observed component signatures, compares recorded file hashes and manages `.figlens/component-mappings.md`. This is outside Rust; it changes no `.fig` decoding or emitted fields.
+- `pi/workflow.mjs` reads CLI `find`/`nodes`, tracks signatures/hashes and writes `.figlens/component-mappings.md`. Optional `authorize(action, paths)` guards reads and writes; Pi omits it. Denial/cancellation stays an error, not stale evidence. `pi/index.ts` exports images; Rust decoding is unchanged.
 - `figlens_bindings` is read-only. `file` and `frame` overrides are paired and do not replace the saved selection. `figlens_propose_bindings` only writes pending candidates. Approval is reachable through the user command, not a model tool; this is workflow separation, not filesystem isolation from Pi's other tools.
 - Matching stays in one canonical source path. The signature covers main/set/key identity, expanded node types and typed properties; TEXT values are dynamic. Hidden instances are omitted. A changed whole-file hash reloads the frame. Names, local IDs and paths do not prove export lineage; this is not a public mapping format or Code Connect resolver.
 - A TEXT property missing verbatim from visible descendant text is a review signal, not a diagnosis. Preserve both values. Listed conflicts require a resolution; its text hash and instance ID prevent silent reuse on another conflicted instance.
@@ -37,7 +38,7 @@ The portable skill routes explicit plans and careful reconstruction to that refe
 
 ## Packaging and verification
 
-`npm/package.json` is the single public npm package, `@runkids/figlens`. Its `pi` manifest declares both `pi/index.ts` and `skills/`. The root manifest declares the same resources for Git/local installs. The skill selects existing MCP tools in Pi and CLI/MCP in other hosts; it does not require a global binary in Pi. Verify discovery and duplicate skill warnings from the installed artifact, not only the manifest. `scripts/prepare-npm.cjs` copies the maintained extension files into ignored `npm/pi/` and the skill entry plus workflow references into ignored `npm/skills/` before packing or publishing. Native release archives include the complete skill directory too. Edit maintained sources, never generated copies. The root package is private and exists for Git/local Pi discovery and tests.
+Cross-host package boundaries, shared staging and installed-adapter rules live in [integrations](integrations.md). Pi retains its own SDK, TUI and runtime MCP registration; the private root supports source discovery. Edit maintained sources, never generated `npm/` copies.
 
 In the published package the extension invokes its adjacent `bin/figlens.js` through the current Node executable. This keeps the native binary version aligned and needs no PATH/global install. Source checkouts use `figlens` on PATH, or `FIGLENS_BIN`. MCP and slash commands use the same launcher. The existing publish workflow and npm Trusted Publisher release the CLI and extension together; no new npm package or credentials are required.
 
@@ -65,7 +66,7 @@ For provider-backed YOLO acceptance, use an approved source/model and isolated f
 
 The npm metadata includes `pi-package` plus `pi.image` and `pi.video` preview URLs. This makes a published version eligible for discovery in the [Pi package catalog](https://pi.dev/packages), as described by [Pi's package documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md#create-a-package). Check the catalog after publishing; eligibility does not guarantee immediate indexing or placement.
 
-For public installed-package acceptance, run `python3 -B scripts/check-installation.py --artifacts <candidate-directory> --commit <checkout-sha> --pi-version 1.3.0` (or 1.4.0). [Installation acceptance](installation.md) covers tarball creation, cache/MCP checks and the separate installer/candidate/published evidence layers. It uses a fresh consumer and the real SDK loader, with no private designs, external project, user profile, viewer socket or model key.
+For installed-package acceptance, run `python3 -B scripts/check-installation.py --artifacts <candidate-directory> --commit <checkout-sha> --pi-version 1.3.0` (or 1.4.0). [Installation acceptance](installation.md) covers tarball/cache/MCP checks and evidence layers. It uses a fresh consumer, real SDK loader, request dispatch and native viewer sockets; no private designs, user profile or model key.
 
 `scripts/check-pi-integration.mjs <installed-pi-root> <installed-figlens-root> <public.fig> <isolated-consumer>` is that harness's loader sub-check: runtime MCP registration, commands, public-frame reads through the adjacent wrapper and skill discovery. Scripted message sinks capture help/plan text; this is not a full interactive session. The older Aurora/Skillshare case below records historical acceptance.
 

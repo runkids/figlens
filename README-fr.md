@@ -12,6 +12,8 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b78c8" alt="Licence MIT"></a>
   <a href="https://github.com/runkids/figlens/releases"><img src="https://img.shields.io/github/downloads/runkids/figlens/total?label=GitHub%20downloads&amp;color=79b9a5" alt="Total des téléchargements des assets de release GitHub"></a>
   <a href="https://pi.dev/packages/@runkids/figlens"><img src="https://img.shields.io/badge/Pi-package-8b78c8" alt="Pi package"></a>
+  <a href="#setup-opencode"><img src="https://img.shields.io/badge/OpenCode-V2-8b78c8" alt="OpenCode V2 plugin"></a>
+  <a href="#setup-omp"><img src="https://img.shields.io/badge/OMP-plugin-79b9a5" alt="OMP plugin"></a>
   <a href="#mcp-and-skill"><img src="https://img.shields.io/badge/agents-CLI_%2B_MCP-79b9a5" alt="CLI et MCP pour agents IA"></a>
 </p>
 
@@ -35,6 +37,8 @@ Placez `design.fig` dans votre projet, puis choisissez **une** configuration. Ch
 |---|---|---|
 | [MCP](#setup-mcp) | Claude Code, Cursor, Codex, Gemini CLI et les autres clients MCP | l'outil `workflow` du serveur |
 | [Pi](#setup-pi) | Pi 1.3.0+ | le paquet, qui inclut le skill |
+| [OpenCode V2](#setup-opencode) | OpenCode V2 2.2.0 | le skill fourni dans le paquet |
+| [OMP](#setup-omp) | OMP 18.13.2 | le skill fourni dans le paquet |
 | [CLI](#setup-cli) | les agents qui n'exécutent que des commandes shell, les scripts et la CI, ou vous | `figlens workflow <topic>`, ou le [skill](#setup-skill) facultatif |
 
 <a id="setup-mcp"></a>
@@ -79,6 +83,30 @@ pi install npm:@runkids/figlens
 ```
 
 [Guide de l'extension Pi](docs/README-fr.md#pi)
+
+<a id="setup-opencode"></a>
+
+### OpenCode V2
+
+Ajoutez ceci à la configuration des plugins d’OpenCode V2 :
+
+```json
+{ "plugins": ["@runkids/figlens"] }
+```
+
+Redémarrez le client, puis exécutez `/figlens help`. [OpenCode V2](opencode/README.md)
+
+<a id="setup-omp"></a>
+
+### OMP
+
+Installez le même paquet dans OMP :
+
+```sh
+omp plugin install @runkids/figlens
+```
+
+Redémarrez le client, puis exécutez `/figlens help`. [OMP](omp/README.md)
 
 <a id="setup-cli"></a>
 

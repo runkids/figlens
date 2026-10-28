@@ -8,6 +8,7 @@ import { getMarkdownTheme, withFileMutationQueue, type ExtensionAPI, type Extens
 import { Container, Image, Input, Markdown, SelectList, fuzzyFilter, truncateToWidth } from '@earendil-works/pi-tui';
 import { Workflow } from './workflow.mjs';
 import { Viewer } from './viewer.mjs';
+import { buildRequest } from './requests.mjs';
 
 const HELP = [
   "## figlens",
@@ -102,13 +103,12 @@ export default function figlens(pi: ExtensionAPI) {
     pi.sendMessage({ customType: 'figlens', content: typeof data === 'string' ? data : JSON.stringify(data, null, 2), display: true });
   }
 
-  function requestScope(request: string) {
-    const skill = fileURLToPath(new URL('../skills/figlens/SKILL.md', import.meta.url));
-    pi.sendUserMessage(`Help identify a design scope only; this request does not authorize application edits or implementation. Read the figlens skill at ${JSON.stringify(skill)} and use its MCP tools to discover the design. Start with the current conversation and what the user knows: a local .fig file, screen name, purpose or visible text. Ask only for missing information in the user's language; ask for recognizable names or descriptions, not node IDs. Use actual paths, dimensions, copy and reference images when needed to distinguish candidates. Show a short recognizable choice when ambiguity remains. Keep discovery within the requested scope. Record the resolved file and node in the conversation; this shortcut does not save a manual selection or authorize mapping proposals. Respect filesystem restrictions.\n\nWhat the user knows:\n${request || 'Use the design task discussed in this conversation; if it is not established, ask what design file or screen the user wants to work on.'}`);
+  async function requestScope(request: string) {
+    pi.sendUserMessage(await buildRequest('open', request, import.meta.url));
   }
 
   async function preview(design: Awaited<ReturnType<Workflow['design']>>, ctx: ExtensionContext) {
-    const directory = path.join(project(ctx).directory, 'previews');
+    const directory = await project(ctx).referenceDirectory();
     await mkdir(directory, { recursive: true });
     const output = path.join(directory, `${randomUUID()}.png`);
     const execution = await pi.exec(binary, [...prefix, 'export', design.absolute, design.frame, output, '--scale', '0.5'], { cwd: ctx.cwd, signal: ctx.signal, timeout: 120000 });
@@ -181,12 +181,12 @@ export default function figlens(pi: ExtensionAPI) {
   async function chooseFrame(file: string, node: string | undefined, ctx: ExtensionContext) {
     const flow = project(ctx);
     if (!node) {
-      if (!ctx.hasUI) { requestScope(file); return; }
+      if (!ctx.hasUI) { await requestScope(file); return; }
       const query = await ctx.ui.input('Find a screen by name', 'For example: List views. Or ask Pi to find the screen for you.');
       if (query === undefined) return;
-      if (!query.trim()) { requestScope(file); return; }
+      if (!query.trim()) { await requestScope(file); return; }
       const { frames, truncated } = await flow.frames(file, ctx.signal, query.trim());
-      if (!frames.length) { requestScope(`${file}\nThe user described the screen as: ${query}`); return; }
+      if (!frames.length) { await requestScope(`${file}\nThe user described the screen as: ${query}`); return; }
       if (truncated) ctx.ui.notify('Showing the first 200 matches. Search a more specific name to reach other screens.', 'warning');
       node = await pickFrame(frames, ctx);
       if (!node) return;
@@ -279,32 +279,24 @@ export default function figlens(pi: ExtensionAPI) {
             show(`[Open design viewer](${started.url})`, ctx);
             return;
           }
-          const skill = fileURLToPath(new URL('../skills/figlens/SKILL.md', import.meta.url));
-          pi.sendUserMessage(`Start the local interactive figlens viewer only; this request does not authorize application edits, implementation or mapping proposals. Read the figlens skill at ${JSON.stringify(skill)}. Resolve the local .fig file and optional scope from this request and conversation using the figlens MCP tools. Ask for missing recognizable file/screen names or visible text, not node IDs; show a short choice if ambiguous. Use a saved selection only when the user explicitly refers to it. For a whole-file request, omit node. Call figlens_preview with the resolved absolute file and exact node if requested, then return its actual clickable URL in the user's language. If startup fails, report the error without claiming a viewer is running. This starts a loopback service and may write render cache; respect host restrictions.\n\nPreview request:\n${rest || 'Preview the design discussed in this conversation; ask for the file if it is not established.'}`);
+          pi.sendUserMessage(await buildRequest('preview', rest, import.meta.url));
           return;
         }
         if (command === 'plan') {
           await ctx.waitForIdle();
-          const skill = fileURLToPath(new URL('../skills/figlens/SKILL.md', import.meta.url));
-          const planningPath = fileURLToPath(new URL('../skills/figlens/references/planning.md', import.meta.url));
-          const planning = await readFile(planningPath, 'utf8');
-          pi.sendUserMessage(`Create a design implementation plan only; this command does not authorize application edits or implementation. Read the figlens skill at ${JSON.stringify(skill)} for the available tools and image workflow, and follow the planning workflow below. Use the current request and conversation to identify the source and scope; if missing or materially ambiguous, ask. A saved manual selection is not the requested scope. Respect any output language/location and filesystem restrictions in the conversation.\n\nWorkflow source: ${JSON.stringify(planningPath)} (resolve its reference links relative to this file).\n\n${planning}\n\nPlanning request:\n${rest || 'Plan the design task discussed in this conversation; ask for the source and scope if they are not established.'}`);
+          pi.sendUserMessage(await buildRequest('plan', rest, import.meta.url));
           return;
         }
         if (command === 'yolo') {
           await ctx.waitForIdle();
-          const skill = fileURLToPath(new URL('../skills/figlens/SKILL.md', import.meta.url));
-          const workflowPath = fileURLToPath(new URL('../skills/figlens/references/yolo.md', import.meta.url));
-          const workflow = await readFile(workflowPath, 'utf8');
-          const request = match?.[2] || '';
-          pi.sendUserMessage(`Plan, implement and verify the requested design scope in this same agent context; this command authorizes application edits within that scope and cleanup of only the temporary plan created for this run after successful verification. Read the figlens skill at ${JSON.stringify(skill)} for the available tools and image workflow, and follow the workflow below. Use the current request and conversation to establish the source, scope and actual project conventions. A saved manual selection is not the requested scope. If an indispensable source or scope cannot be established, report the missing prerequisite rather than guessing another file or widening the task. Continue from planning into implementation without an intermediate plan-approval question. Respect the conversation's output language/location, existing plans and notes, and host filesystem and permission restrictions.\n\nWorkflow source: ${JSON.stringify(workflowPath)} (resolve its reference links relative to this file).\n\n${workflow}\n\nImplementation request:\n${request.trim() ? request : 'Implement the design task discussed in this conversation; report the missing prerequisite if its source or scope cannot be established.'}`);
+          pi.sendUserMessage(await buildRequest('yolo', match?.[2] || '', import.meta.url));
           return;
         }
         const frameOption = command === 'open' ? rest.match(/^([\s\S]+)\s+--frame\s+(\S+)$/) : undefined;
         if (frameOption) rest = frameOption[1].trim();
         if ((rest.startsWith('"') && rest.endsWith('"')) || (rest.startsWith("'") && rest.endsWith("'"))) rest = rest.slice(1, -1);
         await ctx.waitForIdle();
-        if (command === 'open' && !frameOption) { requestScope(rest); return; }
+        if (command === 'open' && !frameOption) { await requestScope(rest); return; }
         const flow = project(ctx);
         if (rest && !['open', 'frame'].includes(command)) throw new Error(`/figlens ${command} takes no arguments. To implement a design, send your request as a normal message to Pi.`);
         if (command === 'open') {
@@ -316,8 +308,7 @@ export default function figlens(pi: ExtensionAPI) {
           if (!active) throw new Error('No manually saved file. Use /figlens open and describe the screen, or ask Pi directly. Known IDs are optional advanced controls in /figlens help.');
           await chooseFrame(active.file, rest || undefined, ctx);
         } else if (command === 'map') {
-          const skill = fileURLToPath(new URL('../skills/figlens/SKILL.md', import.meta.url));
-          pi.sendUserMessage(`Propose reusable component mappings for the design discussed in this conversation. Read the figlens skill at ${JSON.stringify(skill)}. Resolve the source file and requested screen with the figlens MCP tools; ask for recognizable names or descriptions if missing, not node IDs. Use a saved selection only when the user explicitly refers to it. Read actual implementation files, imports, props/slots and usages, then use figlens_bindings pagination and figlens_propose_bindings with the resolved file and frame. Include supporting files as dependencies, checks actually executed and unresolved conflicts. Keep proposals pending for /figlens review. This request does not authorize application edits or automatic approval.`);
+          pi.sendUserMessage(await buildRequest('map', '', import.meta.url));
         } else if (command === 'review') await review(ctx);
         else if (command === 'status') {
           if ((await flow.read()).state.active) show(describe(await flow.bindings({}, ctx.signal)), ctx);

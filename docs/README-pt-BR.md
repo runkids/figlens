@@ -99,6 +99,8 @@ Resultados nesses arquivos, não uma garantia para todo design. Método e limiar
 pi install npm:@runkids/figlens
 ```
 
+Guias de instalação: [OpenCode V2](../opencode/README.md) · [OMP](../omp/README.md).
+
 Reinicie o Pi ou execute `/reload` e peça uma tela em linguagem natural. O Pi encontra o frame, lê pelo servidor MCP registrado automaticamente e constrói com a sua stack. Sem IDs de nós, sem CLI global.
 
 - `/figlens plan <request>` cria apenas um plano; não modifica a aplicação.

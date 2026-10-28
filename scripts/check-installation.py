@@ -30,14 +30,23 @@ def main():
     parser.add_argument('--artifacts', required=True, type=Path)
     parser.add_argument('--commit', required=True)
     parser.add_argument('--pi-version', choices=['1.3.0', '1.4.0'])
+    parser.add_argument('--opencode-bin', type=Path)
+    parser.add_argument('--opencode-sdk', type=Path, help='Installed @opencode/client package root')
+    parser.add_argument('--omp-sdk', type=Path)
+    parser.add_argument('--bun', type=Path)
     args = parser.parse_args()
+    if bool(args.opencode_bin) != bool(args.opencode_sdk) or bool(args.omp_sdk) != bool(args.bun):
+        parser.error('OpenCode requires both --opencode-bin/--opencode-sdk; OMP requires both --omp-sdk/--bun')
     artifacts = args.artifacts.resolve()
     metadata = json.loads((artifacts/'candidate.json').read_text())
     assert metadata['commit'] == args.commit, 'Candidate is from another commit'
     package = artifacts/metadata['package']['file']
     assert sha(package) == metadata['package']['sha256'], 'Candidate tarball hash differs'
     required = {'package.json', 'README.md', 'LICENSE', 'bin/figlens.js', 'target.js',
-                'pi/index.ts', 'pi/workflow.mjs', 'pi/viewer.mjs', 'pi/package.json', 'pi/README.md',
+                'pi/index.ts', 'pi/workflow.mjs', 'pi/viewer.mjs', 'pi/requests.mjs', 'pi/package.json', 'pi/README.md',
+                '.mcp.json', 'omp/index.ts', 'omp/review.mjs', 'omp/mcp.cjs', 'omp/package.json', 'omp/README.md',
+                'opencode/index.mjs', 'opencode/tui.mjs', 'opencode/adapter.mjs', 'opencode/rpc.mjs',
+                'opencode/review-rpc.mjs', 'opencode/review-ui.mjs', 'opencode/package.json', 'opencode/README.md',
                 'skills/figlens/SKILL.md', 'skills/figlens/references/audit.md', 'skills/figlens/references/planning.md',
                 'skills/figlens/references/planning-details.md', 'skills/figlens/references/yolo.md'}
     with tarfile.open(package) as archive:
@@ -101,20 +110,38 @@ def main():
         wrapped_mcp = check_mcp(wrapper + ['mcp'], consumer, mcp_env, fixture, metadata['version'])
         assert sha(mcp_cache/'figlens/npm'/metadata['version']/asset['binary']) == expected['binarySha256']
         pi = {'status': 'not requested', 'reason': 'CLI-only job; Pi requires Node >=22.19.0'}
+        hosts = {}
         if args.pi_version:
             run(install + [f'@earendil-works/pi-coding-agent@{args.pi_version}'], consumer, env, timeout=240)
             sdk = consumer/'node_modules/@earendil-works/pi-coding-agent'
             pi = json.loads(run([node, ROOT/'scripts/check-pi-integration.mjs', sdk, installed, fixture, consumer], consumer, wrapped_env))
             assert pi['pi'] == args.pi_version and pi['packageVersion'] == metadata['version'], pi
+            pi['planning'] = json.loads(run([node, ROOT/'scripts/check-pi-planning.mjs', sdk,
+                                            work/'planning', installed/'pi/index.ts'], consumer, env))
+            pi['preview'] = json.loads(run([node, ROOT/'scripts/check-pi-preview.mjs', sdk, cache,
+                                           fixture, work/'preview', installed/'pi/index.ts'], consumer, env))
             config = pi['mcp']
             pi['stdio'] = check_mcp([config['command'], *config['args']], consumer, wrapped_env, fixture, metadata['version'])
+        if args.opencode_bin:
+            hosts['opencode'] = json.loads(run([node, ROOT/'scripts/check-opencode-integration.mjs',
+                args.opencode_bin.resolve(), args.opencode_sdk.resolve(), installed, cache, work/'opencode', '--tui'],
+                consumer, env, timeout=240))
+            if args.pi_version:
+                hosts['opencode']['piRoundTrip'] = json.loads(run([node, ROOT/'scripts/check-pi-integration.mjs',
+                    sdk, installed, fixture, consumer, work/'opencode/project'], consumer, wrapped_env))['mappingRoundTrip']
+        if args.omp_sdk:
+            hosts['omp'] = json.loads(run([args.bun.resolve(), ROOT/'scripts/check-omp-integration.mjs',
+                args.omp_sdk.resolve(), work/'omp', cache, installed, '--tui'], consumer, env, timeout=240))
+            if args.pi_version:
+                hosts['omp']['piRoundTrip'] = json.loads(run([node, ROOT/'scripts/check-pi-integration.mjs',
+                    sdk, installed, fixture, consumer, work/'omp/project 空白'], consumer, wrapped_env))['mappingRoundTrip']
         print(json.dumps({'layer': 'B: candidate artifacts, injected local transport; not a published release',
                           'commit': metadata['commit'], 'dirty': metadata['dirty'], 'sourceDigest': metadata['sourceDigest'],
                           'package': manifest['version'], 'tarballSha256': sha(package), 'binarySha256': sha(cache),
                           'node': run([node, '--version'], consumer, env).strip(),
                           'npm': run(npm + ['--version'], consumer, env).strip(),
                           'coldInstall': True, 'warmCacheNoDownload': True, 'parallelFirstUse': True,
-                          'nativeMcp': native_mcp, 'wrapperMcp': wrapped_mcp, 'gcsMock': gcs, 'pi': pi}, indent=2))
+                          'nativeMcp': native_mcp, 'wrapperMcp': wrapped_mcp, 'gcsMock': gcs, 'pi': pi, 'hosts': hosts}, indent=2))
 
 
 if __name__ == '__main__':

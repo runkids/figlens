@@ -1,0 +1,27 @@
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+
+export async function buildRequest(kind, request = '', entry = import.meta.url) {
+  const skill = fileURLToPath(new URL('../skills/figlens/SKILL.md', entry));
+  const rest = request;
+  if (kind === 'open') {
+    return `Help identify a design scope only; this request does not authorize application edits or implementation. Read the figlens skill at ${JSON.stringify(skill)} and use its MCP tools to discover the design. Start with the current conversation and what the user knows: a local .fig file, screen name, purpose or visible text. Ask only for missing information in the user's language; ask for recognizable names or descriptions, not node IDs. Use actual paths, dimensions, copy and reference images when needed to distinguish candidates. Show a short recognizable choice when ambiguity remains. Keep discovery within the requested scope. Record the resolved file and node in the conversation; this shortcut does not save a manual selection or authorize mapping proposals. Respect filesystem restrictions.\n\nWhat the user knows:\n${request || 'Use the design task discussed in this conversation; if it is not established, ask what design file or screen the user wants to work on.'}`;
+  }
+  if (kind === 'preview') {
+    return `Start the local interactive figlens viewer only; this request does not authorize application edits, implementation or mapping proposals. Read the figlens skill at ${JSON.stringify(skill)}. Resolve the local .fig file and optional scope from this request and conversation using the figlens MCP tools. Ask for missing recognizable file/screen names or visible text, not node IDs; show a short choice if ambiguous. Use a saved selection only when the user explicitly refers to it. For a whole-file request, omit node. Call figlens_preview with the resolved absolute file and exact node if requested, then return its actual clickable URL in the user's language. If startup fails, report the error without claiming a viewer is running. This starts a loopback service and may write render cache; respect host restrictions.\n\nPreview request:\n${rest || 'Preview the design discussed in this conversation; ask for the file if it is not established.'}`;
+  }
+  if (kind === 'plan') {
+    const planningPath = fileURLToPath(new URL('../skills/figlens/references/planning.md', entry));
+    const planning = await readFile(planningPath, 'utf8');
+    return `Create a design implementation plan only; this command does not authorize application edits or implementation. Read the figlens skill at ${JSON.stringify(skill)} for the available tools and image workflow, and follow the planning workflow below. Use the current request and conversation to identify the source and scope; if missing or materially ambiguous, ask. A saved manual selection is not the requested scope. Respect any output language/location and filesystem restrictions in the conversation.\n\nWorkflow source: ${JSON.stringify(planningPath)} (resolve its reference links relative to this file).\n\n${planning}\n\nPlanning request:\n${rest || 'Plan the design task discussed in this conversation; ask for the source and scope if they are not established.'}`;
+  }
+  if (kind === 'yolo') {
+    const workflowPath = fileURLToPath(new URL('../skills/figlens/references/yolo.md', entry));
+    const workflow = await readFile(workflowPath, 'utf8');
+    return `Plan, implement and verify the requested design scope in this same agent context; this command authorizes application edits within that scope and cleanup of only the temporary plan created for this run after successful verification. Read the figlens skill at ${JSON.stringify(skill)} for the available tools and image workflow, and follow the workflow below. Use the current request and conversation to establish the source, scope and actual project conventions. A saved manual selection is not the requested scope. If an indispensable source or scope cannot be established, report the missing prerequisite rather than guessing another file or widening the task. Continue from planning into implementation without an intermediate plan-approval question. Respect the conversation's output language/location, existing plans and notes, and host filesystem and permission restrictions.\n\nWorkflow source: ${JSON.stringify(workflowPath)} (resolve its reference links relative to this file).\n\n${workflow}\n\nImplementation request:\n${request.trim() ? request : 'Implement the design task discussed in this conversation; report the missing prerequisite if its source or scope cannot be established.'}`;
+  }
+  if (kind === 'map') {
+    return `Propose reusable component mappings for the design discussed in this conversation. Read the figlens skill at ${JSON.stringify(skill)}. Resolve the source file and requested screen with the figlens MCP tools; ask for recognizable names or descriptions if missing, not node IDs. Use a saved selection only when the user explicitly refers to it. Read actual implementation files, imports, props/slots and usages, then use figlens_bindings pagination and figlens_propose_bindings with the resolved file and frame. Include supporting files as dependencies, checks actually executed and unresolved conflicts. Keep proposals pending for /figlens review. This request does not authorize application edits or automatic approval.`;
+  }
+  throw new Error(`Unknown figlens request: ${kind}`);
+}

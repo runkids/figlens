@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 
 const run = promisify(execFile);
 
-async function stop(child) {
+export async function stopProcess(child) {
   if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
   const closed = once(child, 'close');
   // The npm launcher has a native child: stop the owned process tree too.
@@ -39,7 +39,7 @@ export class Viewer {
   }
 
   async close() {
-    await Promise.all([...this.children].map(stop));
+    await Promise.all([...this.children].map(stopProcess));
   }
 
   async start(file, node, { cwd, signal } = {}) {
@@ -102,11 +102,11 @@ export class Viewer {
         if (signal?.aborted) abort();
       });
       // Keep the previous viewer available until its replacement has started.
-      await Promise.all([...this.children].filter(other => other !== child).map(stop));
+      await Promise.all([...this.children].filter(other => other !== child).map(stopProcess));
       child.stderr.resume();
       return { url, file, ...(node ? { node } : {}) };
     } catch (error) {
-      if (child.pid) await stop(child);
+      if (child.pid) await stopProcess(child);
       throw error;
     }
   }

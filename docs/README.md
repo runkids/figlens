@@ -99,6 +99,8 @@ Results on those files, not a guarantee for every design. Method and thresholds:
 pi install npm:@runkids/figlens
 ```
 
+Installation guides: [OpenCode V2](../opencode/README.md) · [OMP](../omp/README.md).
+
 Restart Pi or `/reload`, then ask for a screen in plain words. Pi finds the frame, reads it over the auto-registered MCP server and builds with your stack. No node IDs, no global CLI.
 
 - `/figlens plan <request>` writes a plan only; it does not edit the application.

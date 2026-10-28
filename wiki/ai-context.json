@@ -97,7 +97,7 @@
       ]
     },
     "review": {
-      "description": "Deliver features/optimizations across CLI, MCP and Pi; review changes and follow up on PR reviews and CI.",
+      "description": "Deliver features/optimizations across CLI, MCP, Pi, OpenCode and OMP; review changes and follow up on PR reviews and CI.",
       "sources": [
         {
           "path": "wiki/review.md"
@@ -120,6 +120,14 @@
       "sources": [
         {
           "path": "wiki/ai-context.md"
+        }
+      ]
+    },
+    "integrations": {
+      "description": "Changing OpenCode V2/OMP entries, shared host packaging, permissions, ownership or installed-adapter acceptance.",
+      "sources": [
+        {
+          "path": "wiki/integrations.md"
         }
       ]
     }

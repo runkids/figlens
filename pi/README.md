@@ -2,6 +2,8 @@
 
 Save the design from Figma, put it next to your code, describe the screen. Pi finds the frame, reads layout, text and assets, and builds it with your project's components. No Figma app, login or API calls. Works on a remote machine.
 
+The same package has independent [OpenCode V2](../opencode/README.md) and [OMP](../omp/README.md) entries with their own tested limits. Pi keeps its existing commands and runtime registration.
+
 ## Install
 
 Requires **Pi 1.3.0+**. One package ships the CLI, MCP server, viewer and agent skill:
