@@ -880,9 +880,15 @@ if (typeof document !== 'undefined') {
             };
             if (boot.snapshot) image.src = p.image;
             else {
-                const response = await api(`image/${generation}/${id}`);
-                if (sequence !== loadSequence) return;
-                image.src = URL.createObjectURL(await response.blob());
+                // A refused render (a hidden layer) keeps the loaded properties inspectable.
+                try {
+                    const response = await api(`image/${generation}/${id}`);
+                    if (sequence !== loadSequence) return;
+                    image.src = URL.createObjectURL(await response.blob());
+                } catch {
+                    if (sequence !== loadSequence) return;
+                    image.onerror();
+                }
             }
             select(nodes.find(n => n.id === preserve) || nodes[0]);
             status('');
