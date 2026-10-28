@@ -1,4 +1,4 @@
-# Plan the next implementation slice
+# Plan implementation slices
 
 Use the figlens skill's tool contracts and image workflow. Keep planning and implementation in the same agent context.
 
@@ -19,6 +19,6 @@ When saving a plan, use [Save and resume proportionately](planning-details.md#sa
 
 ## Load detail when needed
 
-For a page or several pages, read [the detailed workflow](planning-details.md) to inventory only the authorized screens/states and detail the next slice. For a small scope, reach that reference only for a concrete unresolved dependency: design styles/masks/notes, component reuse, responsive behavior or saved-plan continuity. Read the relevant section, not the whole design or unrelated plans.
+For a page or several pages, read [the detailed workflow](planning-details.md) to inventory only the authorized screens/states and detail the next slice, or every slice when the whole plan comes first. For a small scope, reach that reference only for a concrete unresolved dependency: design styles/masks/notes, component reuse, responsive behavior or saved-plan continuity. Read the relevant section, not the whole design or unrelated plans.
 
-A plan-only request ends with the plan. An already authorized implementation continues through the requested scope and verification, updating the plan from observed results. Respect host permissions and filesystem restrictions: exporting references and saving plans write files; under a strict no-writes request, keep the plan in chat and use permitted reads. This workflow is guidance, not a tool sandbox.
+A plan-only request ends with the plan. When the user asks to plan the whole scope before implementing, including "plan, then implement", give every slice all four fields and stop with the complete plan for approval; a multi-slice plan is not authorization to start on slice 1. An already authorized implementation continues through the requested scope and verification, updating the plan from observed results. Respect host permissions and filesystem restrictions: exporting references and saving plans write files; under a strict no-writes request, keep the plan in chat and use permitted reads. This workflow is guidance, not a tool sandbox.

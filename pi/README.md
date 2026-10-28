@@ -51,7 +51,7 @@ None of these is required to build a screen. A plain request does the whole job.
 /figlens plan Plan only the homepage hero from ./design.fig. Include existing component reuse, image delivery and acceptance checks.
 ```
 
-A small region gets a small plan; several pages get an outline with the next slice detailed. Without arguments it uses the task in the conversation and asks for missing source or scope. Saved plans go to `.figlens/plans/<scope>.md` (or `.figlens/plans/<design>/<scope>.md` when several designs are involved) unless the project has its own convention. The same [planning workflow](../skills/figlens/references/planning.md) works through the skill in other agents.
+A small region gets a small plan; several pages get an outline with the next slice detailed, or every slice detailed when you ask for the whole plan first. Without arguments it uses the task in the conversation and asks for missing source or scope. Saved plans go to `.figlens/plans/<scope>.md` (or `.figlens/plans/<design>/<scope>.md` when several designs are involved) unless the project has its own convention. The same [planning workflow](../skills/figlens/references/planning.md) works through the skill in other agents.
 
 <a id="plan-and-build-autonomously"></a>
 
