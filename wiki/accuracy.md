@@ -25,6 +25,35 @@ docker compose run --rm dev cargo run --release -- compare samples/design.fig --
 
 It reports per frame: ids missing on either side, then name, type, visibility, bounding box, characters, fills and the emitted fields in `compare::FIELDS`, and a summary of identical frames per field.
 
+## Regression corpus
+
+CI's `test` job runs a small owned corpus so a decode, projection or render change cannot silently alter shapes the unit fixtures miss. It is a **regression** lane, not an accuracy measure: the baselines in `scripts/corpus/` are figlens's own output for original synthetic inputs, never Figma exports, so a difference means behaviour changed, not which side is right. Claims about accuracy still need the independent references above.
+
+| Case | Input, node | Catches |
+|---|---|---|
+| `first-success` | public `examples/first-success/design.fig`, `0:1` | glyph text, original image bytes, vector SVG |
+| `auto-layout` | corpus `0:1` | layoutMode, spacing, padding, FILL/FIXED sizing, absolute child |
+| `paints-strokes` | corpus `0:2` | linear gradient, inside stroke, mixed corner radii, paint opacity |
+| `effects-clipping` | corpus `0:3` | drop shadow, rotation, layer opacity, clipped overflow |
+| `components` | corpus `0:4` | instance expansion ids and `componentId` |
+
+The corpus `.fig` is not committed: `scripts/make-corpus.rs` (example `corpus-fixture`) writes it at run time with a fixed ZIP timestamp, so its SHA-256 is reproducible. `scripts/corpus/expected.json` records both input SHA-256s and every bundle asset's SHA-256. For each case `scripts/corpus-check.py` checks, from one temporary directory:
+
+- exact: CLI `nodes` equals `<case>.nodes.json` and the bundle's own (stripped) `design/nodes.json` equals `<case>.bundle.nodes.json`, value types included (the first 20 differing JSON paths are printed), bundle asset hashes match, `missing-assets.json` is empty, and MCP `nodes` and `bundle` give the same documents, asset hashes and reference bytes as the CLI;
+- threshold: the bundle's `references/screen.png` keeps its size and at most 0.5% of its pixels differ from `<case>.png` by more than 16/255 in any channel.
+
+Exit 0 passes, 1 is a product regression (`FAIL NODES|BUNDLE|ASSET|RENDER|MCP <case> ...`, or a failed command), and 2 is setup (`SETUP:` missing binary, input or any case's baselines, or an input whose SHA-256 is not the recorded one). A failing case also prints what it covers. Each CLI command has a 60-second timeout and each MCP reply 30 seconds; the whole lane runs in about a second. Memory is bounded by the inputs: both are fixed, a few KB, with frames up to 240 × 120, so there is no separate memory cap. Only the synthetic cases' inputs and figlens's output are printed. Only `first-success` has bundle assets to hash; the corpus frames' shapes export no assets.
+
+From a clean checkout:
+
+```sh
+docker compose run --rm dev sh -c 'mkdir -p samples/corpus && cargo build --locked --bin figlens && cargo run --locked --example corpus-fixture -- samples/corpus/corpus.fig && python3 -B scripts/corpus-check.py --binary target/debug/figlens --corpus samples/corpus/corpus.fig'
+```
+
+The generator refuses to overwrite, so delete `samples/corpus/corpus.fig` before a rerun. Verified on 2026-10-29: removing the `itemSpacing` emission in `src/rest.rs` fails with `FAIL NODES auto-layout $.document.itemSpacing: missing` and exit 1; restoring it passes.
+
+When a change is meant to alter output, or the generator or public fixture changes, rerun the check with `--update`, review the `scripts/corpus/` diff (and the PNGs) as part of the change, and say why it moved. A new case adds a frame to the generator and a row to `CASES` and to the table above; keep it original and synthetic.
+
 ## Results
 
 - Sweep of a large production file (2026-10-22, 826 frames with plugin captures): structure (id/name/type/visible/bbox/characters) identical in 771 frames; blendMode, effects, rotation, layoutWrap, isMask, componentProperties 826; boundVariables 796; styles 798; renderBounds (1 px) 759; `variables.json` 783; text `style` 792, `styleOverrideTable` 820, `characterStyleOverrides`/`lineTypes`/`lineIndentations` 826. Pixels ("ok" = at most 1.5% of pixels off by more than 48/255): image fills 2608/2608 byte-identical, SVG assets 5014/5197 ok, reference renders 659/825, render assets 88/221. The remaining differences traced mostly to design edits between capture and `.fig` export and to the renderer gaps in the `direction` topic.

@@ -1,0 +1,242 @@
+{
+ "componentSets": {},
+ "components": {},
+ "document": {
+  "_figlens": {
+   "semantics": {
+    "constraints.horizontal": {
+     "source": "horizontalConstraint",
+     "state": "absent"
+    },
+    "constraints.vertical": {
+     "source": "verticalConstraint",
+     "state": "absent"
+    },
+    "layoutAlign": {
+     "source": "stackChildAlignSelf",
+     "state": "absent"
+    },
+    "layoutGrow": {
+     "source": "stackChildPrimaryGrow",
+     "state": "absent"
+    },
+    "verification": "not-compared-with-figma"
+   }
+  },
+  "absoluteBoundingBox": {
+   "height": 120.0,
+   "width": 240.0,
+   "x": 0.0,
+   "y": 240.0
+  },
+  "absoluteRenderBounds": {
+   "height": 120.0,
+   "width": 240.0,
+   "x": 0.0,
+   "y": 240.0
+  },
+  "blendMode": "PASS_THROUGH",
+  "children": [
+   {
+    "_figlens": {
+     "semantics": {
+      "constraints.horizontal": {
+       "source": "horizontalConstraint",
+       "state": "absent"
+      },
+      "constraints.vertical": {
+       "source": "verticalConstraint",
+       "state": "absent"
+      },
+      "layoutAlign": {
+       "source": "stackChildAlignSelf",
+       "state": "absent"
+      },
+      "layoutGrow": {
+       "source": "stackChildPrimaryGrow",
+       "state": "absent"
+      },
+      "verification": "not-compared-with-figma"
+     }
+    },
+    "absoluteBoundingBox": {
+     "height": 64.0,
+     "width": 64.0,
+     "x": 16.0,
+     "y": 256.0
+    },
+    "absoluteRenderBounds": {
+     "height": 80.0,
+     "width": 80.0,
+     "x": 8.0,
+     "y": 254.0
+    },
+    "blendMode": "PASS_THROUGH",
+    "cornerRadius": 8.0,
+    "effects": [
+     {
+      "blendMode": "NORMAL",
+      "color": {
+       "a": 0.3499999940395355,
+       "b": 0.0,
+       "g": 0.0,
+       "r": 0.0
+      },
+      "offset": {
+       "x": 0.0,
+       "y": 6.0
+      },
+      "radius": 8.0,
+      "showShadowBehindNode": false,
+      "type": "DROP_SHADOW",
+      "visible": true
+     }
+    ],
+    "fills": [
+     {
+      "blendMode": "NORMAL",
+      "color": {
+       "a": 1.0,
+       "b": 1.0,
+       "g": 1.0,
+       "r": 1.0
+      },
+      "type": "SOLID"
+     }
+    ],
+    "id": "0:31",
+    "name": "Shadowed",
+    "strokes": [],
+    "type": "RECTANGLE"
+   },
+   {
+    "_figlens": {
+     "semantics": {
+      "constraints.horizontal": {
+       "source": "horizontalConstraint",
+       "state": "absent"
+      },
+      "constraints.vertical": {
+       "source": "verticalConstraint",
+       "state": "absent"
+      },
+      "layoutAlign": {
+       "source": "stackChildAlignSelf",
+       "state": "absent"
+      },
+      "layoutGrow": {
+       "source": "stackChildPrimaryGrow",
+       "state": "absent"
+      },
+      "verification": "not-compared-with-figma"
+     }
+    },
+    "absoluteBoundingBox": {
+     "height": 65.56921863555908,
+     "width": 65.56921863555908,
+     "x": 104.0,
+     "y": 264.0
+    },
+    "absoluteRenderBounds": {
+     "height": 65.56921863555908,
+     "width": 65.56921863555908,
+     "x": 104.0,
+     "y": 264.0
+    },
+    "blendMode": "PASS_THROUGH",
+    "effects": [],
+    "fills": [
+     {
+      "blendMode": "NORMAL",
+      "color": {
+       "a": 1.0,
+       "b": 0.8627451062202454,
+       "g": 0.3921568691730499,
+       "r": 0.3137255012989044
+      },
+      "type": "SOLID"
+     }
+    ],
+    "id": "0:32",
+    "name": "Rotated",
+    "opacity": 0.6000000238418579,
+    "rotation": 0.5235987833701112,
+    "strokes": [],
+    "type": "RECTANGLE"
+   },
+   {
+    "_figlens": {
+     "semantics": {
+      "constraints.horizontal": {
+       "source": "horizontalConstraint",
+       "state": "absent"
+      },
+      "constraints.vertical": {
+       "source": "verticalConstraint",
+       "state": "absent"
+      },
+      "layoutAlign": {
+       "source": "stackChildAlignSelf",
+       "state": "absent"
+      },
+      "layoutGrow": {
+       "source": "stackChildPrimaryGrow",
+       "state": "absent"
+      },
+      "verification": "not-compared-with-figma"
+     }
+    },
+    "absoluteBoundingBox": {
+     "height": 80.0,
+     "width": 80.0,
+     "x": 200.0,
+     "y": 312.0
+    },
+    "absoluteRenderBounds": {
+     "height": 48.0,
+     "width": 40.0,
+     "x": 200.0,
+     "y": 312.0
+    },
+    "blendMode": "PASS_THROUGH",
+    "effects": [],
+    "fills": [
+     {
+      "blendMode": "NORMAL",
+      "color": {
+       "a": 1.0,
+       "b": 0.23529411852359772,
+       "g": 0.23529411852359772,
+       "r": 0.8627451062202454
+      },
+      "type": "SOLID"
+     }
+    ],
+    "id": "0:33",
+    "name": "Overflow",
+    "strokes": [],
+    "type": "RECTANGLE"
+   }
+  ],
+  "clipsContent": true,
+  "effects": [],
+  "fills": [
+   {
+    "blendMode": "NORMAL",
+    "color": {
+     "a": 1.0,
+     "b": 0.9725490212440491,
+     "g": 0.95686274766922,
+     "r": 0.9411764740943909
+    },
+    "type": "SOLID"
+   }
+  ],
+  "id": "0:3",
+  "name": "Effects and clipping",
+  "strokes": [],
+  "type": "FRAME"
+ },
+ "schemaVersion": 0,
+ "styles": {}
+}

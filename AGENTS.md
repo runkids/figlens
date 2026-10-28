@@ -13,9 +13,9 @@ Reads Figma `.fig` files (File > Save local copy) so AI design-to-code pipelines
 - **Keep the docs true.** When a doc disagrees with the code, trust the code: verify, then fix the stale doc in the same task. When your change alters behaviour that a topic describes, update that topic page in the same change. Put a new lesson in the kernel as a one-line rule and in its topic as the procedure. Run `python3 scripts/ai-context.py check` after any doc change. The procedure is in the `ai-context` topic.
 - **Search before you edit, and change as little as possible.** Match the existing style.
 - **Check CLI, MCP, Pi, OpenCode and OMP together.** For every feature or optimization, assess each interface, complete affected behavior/contracts/guidance/tests, and explain why any interface needs no change. A new feature or changed command also updates `--help`, every README locale, a served skill section and its wiki topic; see `review`.
-- **Helper files go in the repo.** Helper scripts go in `scripts/`; private designs, Figma exports and run outputs go in the gitignored `samples/`. The original public fixture below is the exception.
+- **Helper files go in the repo.** Helper scripts go in `scripts/`; private designs, Figma exports and run outputs go in the gitignored `samples/`. The original public fixture below and the reviewed regression baselines in `scripts/corpus/` are the exceptions.
 - **Review before every PR.** Run the `figlens-code-review` passes on the pinned diff and fix verified findings before opening or updating a PR, docs- and wiki-only changes included; see `review`.
-- **Open PRs as drafts.** Drafts skip CI; fix review findings there, then mark the PR ready to run CI; see `review`.
+- **Open PRs as drafts.** Drafts skip CI; request `@codex review` on the new draft, fix review findings there, then mark the PR ready to run CI; see `review`.
 - **Own PR follow-up.** Check AI reviews and CI, fix verified findings, then request and check `@codex review` on the updated head; see `review`.
 
 ## Hard Limits
@@ -44,7 +44,7 @@ python3 scripts/ai-context.py check     # validate paths, headings and byte budg
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison |
 | `pi` | Changing the Pi extension, reviewed component mappings or its npm packaging |
 | `integrations` | Changing OpenCode V2/OMP, shared package, permissions or installed-host acceptance |
-| `accuracy` | Measuring output against Figma's own exports, running `compare`, finding test files |
+| `accuracy` | Measuring output against Figma's own exports, running `compare`, finding test files, the CI regression corpus |
 | `release` | Packaging, GitHub releases, Homebrew, npm, install scripts and `figlens update` |
 | `review` | Delivering features/optimizations across CLI, MCP and Pi; reviews and PR follow-up |
 | `direction` | Deciding what to build next, or revisiting a past decision |
@@ -80,4 +80,5 @@ docker compose run --rm dev sh -c 'cargo fmt --check && cargo clippy --all-targe
 (cd npm && node --test)
 npm test                             # Pi workflow and npm package contents
 python3 scripts/ai-context.py check    # doc/topic changes; also runs in CI
+docker compose run --rm dev python3 -B scripts/corpus-check.py ...  # output changes; setup and --update in `accuracy`
 ```

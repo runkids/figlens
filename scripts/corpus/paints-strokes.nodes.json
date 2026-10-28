@@ -1,0 +1,216 @@
+{
+ "componentSets": {},
+ "components": {},
+ "document": {
+  "_figlens": {
+   "semantics": {
+    "constraints.horizontal": {
+     "source": "horizontalConstraint",
+     "state": "absent"
+    },
+    "constraints.vertical": {
+     "source": "verticalConstraint",
+     "state": "absent"
+    },
+    "layoutAlign": {
+     "source": "stackChildAlignSelf",
+     "state": "absent"
+    },
+    "layoutGrow": {
+     "source": "stackChildPrimaryGrow",
+     "state": "absent"
+    },
+    "verification": "not-compared-with-figma"
+   }
+  },
+  "absoluteBoundingBox": {
+   "height": 120.0,
+   "width": 240.0,
+   "x": 0.0,
+   "y": 100.0
+  },
+  "absoluteRenderBounds": {
+   "height": 120.0,
+   "width": 240.0,
+   "x": 0.0,
+   "y": 100.0
+  },
+  "blendMode": "PASS_THROUGH",
+  "children": [
+   {
+    "_figlens": {
+     "semantics": {
+      "constraints.horizontal": {
+       "source": "horizontalConstraint",
+       "state": "absent"
+      },
+      "constraints.vertical": {
+       "source": "verticalConstraint",
+       "state": "absent"
+      },
+      "layoutAlign": {
+       "source": "stackChildAlignSelf",
+       "state": "absent"
+      },
+      "layoutGrow": {
+       "source": "stackChildPrimaryGrow",
+       "state": "absent"
+      },
+      "verification": "not-compared-with-figma"
+     }
+    },
+    "absoluteBoundingBox": {
+     "height": 88.0,
+     "width": 120.0,
+     "x": 16.0,
+     "y": 116.0
+    },
+    "absoluteRenderBounds": {
+     "height": 88.0,
+     "width": 120.0,
+     "x": 16.0,
+     "y": 116.0
+    },
+    "blendMode": "PASS_THROUGH",
+    "effects": [],
+    "fills": [
+     {
+      "blendMode": "NORMAL",
+      "gradientHandlePositions": [
+       {
+        "x": 0.0,
+        "y": 0.5
+       },
+       {
+        "x": 1.0,
+        "y": 0.5
+       },
+       {
+        "x": 0.0,
+        "y": 1.0
+       }
+      ],
+      "gradientStops": [
+       {
+        "color": {
+         "a": 1.0,
+         "b": 0.0,
+         "g": 0.6666666865348816,
+         "r": 1.0
+        },
+        "position": 0.0
+       },
+       {
+        "color": {
+         "a": 1.0,
+         "b": 0.47058823704719543,
+         "g": 0.0,
+         "r": 0.7843137383460999
+        },
+        "position": 1.0
+       }
+      ],
+      "type": "GRADIENT_LINEAR"
+     }
+    ],
+    "id": "0:21",
+    "name": "Gradient card",
+    "rectangleCornerRadii": [
+     0.0,
+     24.0,
+     0.0,
+     24.0
+    ],
+    "strokeAlign": "INSIDE",
+    "strokeWeight": 4.0,
+    "strokes": [
+     {
+      "blendMode": "NORMAL",
+      "color": {
+       "a": 1.0,
+       "b": 0.23529411852359772,
+       "g": 0.15294118225574493,
+       "r": 0.10588235408067703
+      },
+      "type": "SOLID"
+     }
+    ],
+    "type": "RECTANGLE"
+   },
+   {
+    "_figlens": {
+     "semantics": {
+      "constraints.horizontal": {
+       "source": "horizontalConstraint",
+       "state": "absent"
+      },
+      "constraints.vertical": {
+       "source": "verticalConstraint",
+       "state": "absent"
+      },
+      "layoutAlign": {
+       "source": "stackChildAlignSelf",
+       "state": "absent"
+      },
+      "layoutGrow": {
+       "source": "stackChildPrimaryGrow",
+       "state": "absent"
+      },
+      "verification": "not-compared-with-figma"
+     }
+    },
+    "absoluteBoundingBox": {
+     "height": 88.0,
+     "width": 72.0,
+     "x": 152.0,
+     "y": 116.0
+    },
+    "absoluteRenderBounds": {
+     "height": 88.0,
+     "width": 72.0,
+     "x": 152.0,
+     "y": 116.0
+    },
+    "blendMode": "PASS_THROUGH",
+    "cornerRadius": 8.0,
+    "effects": [],
+    "fills": [
+     {
+      "blendMode": "NORMAL",
+      "color": {
+       "a": 1.0,
+       "b": 0.545098066329956,
+       "g": 0.6000000238418579,
+       "r": 0.10588235408067703
+      },
+      "opacity": 0.5,
+      "type": "SOLID"
+     }
+    ],
+    "id": "0:22",
+    "name": "Translucent",
+    "strokes": [],
+    "type": "RECTANGLE"
+   }
+  ],
+  "effects": [],
+  "fills": [
+   {
+    "blendMode": "NORMAL",
+    "color": {
+     "a": 1.0,
+     "b": 1.0,
+     "g": 1.0,
+     "r": 1.0
+    },
+    "type": "SOLID"
+   }
+  ],
+  "id": "0:2",
+  "name": "Paints and strokes",
+  "strokes": [],
+  "type": "FRAME"
+ },
+ "schemaVersion": 0,
+ "styles": {}
+}
