@@ -1530,25 +1530,34 @@ impl<'t, 'a> Svg<'t, 'a> {
         let [x0, y0, x1, y1] = rect_of(&n["_r"]["fb"]).or_else(|| box_bounds(n))?;
         // The blur reads 3 sigma (sigma = radius / 2) beyond the outline, as layer blurs do.
         let reach = 1.5 * radius;
+        // resvg clears a filter, or crops clipped layers inside it, that reaches past its canvas
+        // limit (`max_filter_bbox`) counted from the filter's own origin, so a large radius in a
+        // small export reads no further than one export size past each side.
+        let e = self.area;
+        let (w, h) = (e[2] - e[0], e[3] - e[1]);
+        let fr = intersect(
+            [x0 - reach, y0 - reach, x1 + reach, y1 + reach],
+            [e[0] - w, e[1] - h, e[2] + w, e[3] + h],
+        )?;
         // Past the content's edge (the outermost clipping frame, else the export) Figma blurs as
-        // if the edge continued: measured on a card near a frame's sides. Mirroring the backdrop
-        // across each edge the blur reaches past gives that; left empty, the blur darkens there.
+        // if the edge continued: measured on a card near a frame's sides. Left empty, the blur
+        // darkens there. Tiles of the backdrop, flipped at every edge, cover what the blur reads.
+        // shortcut: at most MAX_TILES tiles past each side, enough for a clipping frame of half
+        // the export or more; raise it for designs blurring past smaller ones.
         let a = self.edge.unwrap_or(self.area);
-        let mut xs = vec![(1.0, 0.0)];
-        let mut ys = vec![(1.0, 0.0)];
-        if x0 - reach < a[0] {
-            xs.push((-1.0, 2.0 * a[0]));
-        }
-        if x1 + reach > a[2] {
-            xs.push((-1.0, 2.0 * a[2]));
-        }
-        if y0 - reach < a[1] {
-            ys.push((-1.0, 2.0 * a[1]));
-        }
-        if y1 + reach > a[3] {
-            ys.push((-1.0, 2.0 * a[3]));
-        }
-        let copies = xs.len() * ys.len();
+        let tiles = |lo: f64, hi: f64, a0: f64, a1: f64| {
+            let w = a1 - a0;
+            if w <= 0.0 {
+                return 0..=0;
+            }
+            let k = |v: f64| ((v - a0) / w).floor().clamp(-MAX_TILES, MAX_TILES) as i32;
+            k(lo).min(0)..=k(hi).max(0)
+        };
+        let (xs, ys) = (
+            tiles(fr[0], fr[2], a[0], a[2]),
+            tiles(fr[1], fr[3], a[1], a[3]),
+        );
+        let copies = xs.clone().count() * ys.clone().count();
         let levels = self.behind.as_ref()?;
         // Each blur redraws its backdrop, so a crafted file with many blurs over large content
         // must not exhaust the renderer. A blur costs at least 1/MAX_BLURS of the budget: its
@@ -1576,10 +1585,20 @@ impl<'t, 'a> Svg<'t, 'a> {
             num(a[3] - a[1])
         );
         let backdrop = self.define(format!("<g clip-path=\"url(#{inside})\">{behind}</g>"));
+        // Tile k along an axis is the backdrop shifted k widths, mirrored when k is odd.
+        let place = |k: i32, a0: f64, a1: f64| {
+            let k = f64::from(k);
+            if k.rem_euclid(2.0) == 0.0 {
+                (1, k * (a1 - a0))
+            } else {
+                (-1, 2.0 * a0 + (k + 1.0) * (a1 - a0))
+            }
+        };
         let mut behind = String::new();
-        for &(sx, tx) in &xs {
-            for &(sy, ty) in &ys {
-                let flip = if (sx, sy) == (1.0, 1.0) {
+        for kx in xs {
+            for ky in ys.clone() {
+                let ((sx, tx), (sy, ty)) = (place(kx, a[0], a[2]), place(ky, a[1], a[3]));
+                let flip = if (kx, ky) == (0, 0) {
                     String::new()
                 } else {
                     format!(
@@ -1590,7 +1609,8 @@ impl<'t, 'a> Svg<'t, 'a> {
                 };
                 let _ = write!(behind, "<use href=\"#{backdrop}\"{flip}/>");
             }
-        } // One outline, as `fills` paints it, so a hole in the fill is a hole in the blur.
+        }
+        // One outline, as `fills` paints it, so a hole in the fill is a hole in the blur.
         let shapes = fill_shapes(self.tree, n);
         let d: String = shapes.iter().map(|(s, _, m)| path_d(s, *m)).collect();
         let rule = if shapes.iter().any(|(_, odd, _)| *odd) {
@@ -1607,10 +1627,10 @@ impl<'t, 'a> Svg<'t, 'a> {
         let _ = write!(
             self.defs,
             "<filter id=\"{filter}\" filterUnits=\"userSpaceOnUse\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" color-interpolation-filters=\"sRGB\"><feGaussianBlur stdDeviation=\"{}\"/></filter>",
-            num(x0 - reach),
-            num(y0 - reach),
-            num(x1 - x0 + 2.0 * reach),
-            num(y1 - y0 + 2.0 * reach),
+            num(fr[0]),
+            num(fr[1]),
+            num(fr[2] - fr[0]),
+            num(fr[3] - fr[1]),
             num(radius / 2.0)
         );
         let id = self.define(format!(
@@ -1752,6 +1772,8 @@ impl<'t, 'a> Svg<'t, 'a> {
 const BLUR_BUDGET: usize = 32 << 20;
 /// Background blurs one export may draw.
 const MAX_BLURS: usize = 64;
+/// Mirrored backdrop tiles drawn past each side of the content's edge for a background blur.
+const MAX_TILES: f64 = 2.0;
 /// Layers one export may cut background blur outlines from.
 const MAX_CUTS: usize = 4096;
 
@@ -2334,6 +2356,28 @@ mod tests {
         let pixels = pixmap(&svg).unwrap();
         // Blurring past the edge into nothing would leave the frame's corner translucent.
         let alpha = pixels.pixel(11, 11).unwrap().alpha();
+        assert!(alpha >= 250, "{alpha}");
+    }
+
+    #[test]
+    fn background_blur_tiles_the_backdrop_as_far_as_it_reads() {
+        let tree = Tree {
+            nodes: Default::default(),
+            children: Default::default(),
+            blobs: Vec::new(),
+        };
+        let glass = serde_json::json!({"id": "1:2", "type": "RECTANGLE", "_r": {
+            "m": [1, 0, 0, 1, 0, 0], "size": {"x": 10, "y": 10},
+            "effects": [{"type": "BACKGROUND_BLUR", "radius": 16}],
+        }});
+        let frame = serde_json::json!({"id": "1:1", "type": "FRAME", "clipsContent": true, "_r": {
+            "m": [1, 0, 0, 1, 0, 0], "size": {"x": 10, "y": 10},
+            "fillPaints": [{"type": "SOLID", "color": {"r": 1, "g": 0, "b": 0, "a": 1}}],
+        }, "children": [glass]});
+        let images = |_: &str| None;
+        let svg = Svg::new(&tree, &images).document(&frame, [0.0, 0.0, 30.0, 30.0], 1.0);
+        // Sigma 8 reads past one mirror image of a 10-unit frame.
+        let alpha = pixmap(&svg).unwrap().pixel(5, 5).unwrap().alpha();
         assert!(alpha >= 250, "{alpha}");
     }
 
