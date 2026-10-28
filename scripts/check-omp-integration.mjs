@@ -164,7 +164,9 @@ await check('unverified MCP shortcuts do not dispatch and preserve local state',
 await check('real viewer is owned and removed on session switch', async () => {
   const preview = await invoke('figlens_preview', { figlens_preview: 'allow' }, undefined, { file: path.join(project, 'mapping.fig') });
   const url = preview.details.url;
-  assert.equal((await fetch(`${url}catalog`)).status, 200);
+  const catalog = await fetch(`${url}catalog`);
+  assert.equal(catalog.status, 200);
+  await catalog.arrayBuffer();
   await runner.emit({ type: 'session_switch', reason: 'new', previousSessionFile: undefined });
   await assert.rejects(fetch(url));
   return { catalogReady: true, sessionSwitchClosesOwnedViewer: true };

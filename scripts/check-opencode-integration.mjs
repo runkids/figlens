@@ -115,16 +115,23 @@ try {
     const a = await rpc.run({ sessionID: session.id, action: 'preview', file: 'mapping.fig' }, options);
     const b = await rpc.run({ sessionID: other.id, action: 'preview', file: 'mapping.fig' }, options);
     assert.notEqual(a.url, b.url);
-    assert.equal((await fetch(`${a.url}catalog`)).status, 200);
-    assert.equal((await fetch(`${b.url}catalog`)).status, 200);
+    const aCatalog = await fetch(`${a.url}catalog`), bCatalog = await fetch(`${b.url}catalog`);
+    assert.equal(aCatalog.status, 200);
+    assert.equal(bCatalog.status, 200);
+    await aCatalog.arrayBuffer();
+    await bCatalog.arrayBuffer();
     await client.session.remove({ sessionID: other.id });
     let closed = false;
     for (let attempt = 0; attempt < 40; attempt++) {
-      try { await fetch(b.url); } catch { closed = true; break; }
+      let response;
+      try { response = await fetch(b.url); } catch { closed = true; break; }
+      await response.arrayBuffer();
       await new Promise(resolve => setTimeout(resolve, 50));
     }
     assert.ok(closed);
-    assert.equal((await fetch(a.url)).status, 200);
+    const remaining = await fetch(a.url);
+    assert.equal(remaining.status, 200);
+    await remaining.arrayBuffer();
     activeUrl = a.url;
     return { distinctOwners: true, deletedSessionViewerClosed: true, otherViewerReady: true };
   });
