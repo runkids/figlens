@@ -1308,16 +1308,18 @@ impl<'t, 'a> Svg<'t, 'a> {
                     } else {
                         (w, h, 0.0, 0.0, aspect)
                     };
-                    // resvg allocates a whole pattern tile in device pixels: past MAX_TILE_PX a tile is
-                    // cut to the node's box, so a crafted `scale` cannot allocate a huge one.
+                    // resvg allocates a whole pattern tile in device pixels: a tile over MAX_TILE_PX² is
+                    // cut to the node's box, bounded like FILL's, so a crafted `scale` cannot allocate a huge one.
                     // shortcut: that cut shifts the period under strokes outside the box; only tiles
-                    // over MAX_TILE_PX get there.
+                    // over MAX_TILE_PX² get there.
                     let (w, h) = match tile {
-                        Some(_) => (
-                            w.min(size.x.max(MAX_TILE_PX / len(t.a, t.b))),
-                            h.min(size.y.max(MAX_TILE_PX / len(t.c, t.d))),
-                        ),
-                        None => (w, h),
+                        Some(_)
+                            if w * len(t.a, t.b) * h * len(t.c, t.d)
+                                > MAX_TILE_PX * MAX_TILE_PX =>
+                        {
+                            (w.min(size.x), h.min(size.y))
+                        }
+                        _ => (w, h),
                     };
                     let adjust = self.image_filter(&p["paintFilter"]);
                     let pattern = self.id("p");
@@ -1803,7 +1805,7 @@ impl<'t, 'a> Svg<'t, 'a> {
 const BLUR_BUDGET: usize = 32 << 20;
 /// Background blurs one export may draw.
 const MAX_BLURS: usize = 64;
-/// Device pixels per side up to which a TILE image fill keeps its whole tile in the pattern.
+/// A TILE image fill keeps its whole tile in the pattern up to MAX_TILE_PX² device pixels.
 const MAX_TILE_PX: f64 = 2048.0;
 
 /// Mirrored backdrop tiles drawn past each side of the content's edge for a background blur.
@@ -2784,14 +2786,14 @@ mod tests {
                 }
             }
         }
-        // Past MAX_TILE_PX the pattern is cut to the node (or the cap) instead of the whole tile.
+        // Past MAX_TILE_PX² the pattern is cut to the node instead of holding the whole tile.
         let node = serde_json::json!({ "id": "image", "type": "RECTANGLE", "_r": {
             "size": { "x": 80, "y": 10 }, "m": [1,0,0,1,0,0],
             "fillPaints": [{ "type": "IMAGE", "imageScaleMode": "TILE", "scale": 1000,
                 "image": { "hash": "tile" } }] }});
         let svg = Svg::new(&tree, &images).document(&node, [0.0, 0.0, 80.0, 10.0], 1.0);
         assert!(
-            svg.contains("width=\"2048\" height=\"2048\" patternTransform"),
+            svg.contains("width=\"80\" height=\"10\" patternTransform"),
             "{svg}"
         );
     }
