@@ -17,6 +17,21 @@ For every feature or optimization, check all three interfaces before calling the
 3. Run checks proportional to the affected paths. Where CLI/MCP share results, verify equivalent inputs preserve the same values, provenance, unknowns and truncation. Check Pi-specific consumers or packaging when affected; edit maintained sources, with generated copies produced by `scripts/prepare-npm.cjs`. A source/schema check does not establish installed Pi runtime acceptance. Report missing runtime or optimization measurements explicitly.
 4. In the handoff or PR, give a short outcome for CLI, MCP and Pi: what changed, or the evidence that no change was needed, plus the checks actually run. Do not infer that an installed client uses new behavior without checking its binary/server version and reload path.
 
+### Command and feature surfaces
+
+When a change adds a feature or adds, renames or alters a command, flag, argument form or output, update every surface that describes it in the same change:
+
+| Surface | Where |
+|---|---|
+| CLI help | `USAGE` in `src/main.rs`; `--help` prints it |
+| Commands table | `docs/README.md` and every `docs/README-*.md` locale, at the same row; the root `README.md` only links there |
+| Agent guidance | `skills/figlens/SKILL.md`. `figlens workflow <topic>` and MCP `workflow` serve only the sections listed in `src/workflow.rs` (`build` serves `Building a frame`, not `Many frames`), so put at least a pointer in a served section and confirm it with `figlens workflow build` |
+| Wiki | the topic page that describes the behavior, such as `fig-format`, `bundle` or `mcp` |
+| MCP | `TOOLS` in `src/contract.rs` and `wiki/mcp.md`, when the tool surface changes |
+| Tests | beside the changed code |
+
+Before committing, search these files for both the old and the new command forms.
+
 ## Before opening a PR
 
 1. Refresh the base and pin the diff. Preserve unrelated edits and exclude private designs and exports.
