@@ -31,11 +31,22 @@ For an explicit request to plan, implement, self-check and clean up the temporar
 
 For an explicit implementation plan or a request to carefully reproduce a design, read [the planning workflow](references/planning.md). Scale it to the requested region, component, state, page or pages. Plan-only requests end with the plan; an already authorized build continues into implementation. Pi also offers `/figlens plan <request>` as a plan-only shortcut, without open or a saved selection. Keep ordinary design questions and asset exports on the direct path below.
 
+## Where outputs go
+
+`export`, `bundle` and `preview --out` write only where you point them. Choose by purpose:
+
+- A path the user names wins.
+- Assets the site ships go where the project keeps its assets, following its conventions (see Images and slices).
+- Files for your own checking (bundles and their extracted files, reference images, comparison screenshots, scratch SVGs) go in `.figlens/exports/` at the project root, beside the plans and previews figlens keeps in `.figlens/`. When creating it, add `.figlens/exports/.gitignore` containing `*`: the directory stays out of Git without editing the project's ignore rules, while `.figlens/component-mappings.md` is still committed.
+- Do not write beside the `.fig` or elsewhere in the project unless the user asks.
+
+Over MCP, `out` is absolute and must be inside the configured roots; `.figlens/exports/` under the project root is.
+
 ## Building a frame
 
 1. **Get the `.fig`.** Ask the designer for File > Save local copy when there is none. For a `gs://` handoff, follow the [GCS snapshot cookbook](https://github.com/runkids/figlens/blob/main/wiki/gcs.md) for authorized access, refresh and preview limits. Done when the file opens: `figlens tree <file.fig> --depth 1` lists its pages.
 2. **Find the node yourself.** A Figma URL (`...?node-id=12-345`), `12-345` and `12:345` all work as-is. Without one, use `figlens find <file.fig> "screen name" --type FRAME` or search visible copy with `--type TEXT`. Search is a case-insensitive substring over stored layer names and text; `--node <id>` scopes it and `--limit N` sets 1-200 results (default 20). Inspect candidate paths, dimensions, visible copy and reference renders to resolve the user's intent. If ambiguity remains, ask once with a short list of recognizable page/screen names and their differences or images. Resolve IDs internally. `truncated: true` means refine or scope the search. Instance children appear only after expansion: use `figlens inspect <file.fig> <instance-id>`. `tree --depth 2` is only an initial outline; descend into relevant containers or use `find` for nested screens. Done when you have identified the intended screen, without requiring a manual open or picker.
-3. **Bundle it.** `figlens bundle <file.fig> <node> frame.zip`, then unzip into its own directory and read `context.md` first: it says what each file holds. Done when you know the reference image, the structure file and the asset map. Check `handoffDiagnostics` in inspect and `_figlens.handoffDiagnostics` in nodes for known stored semantics not emitted; bundle warnings summarize them. Their counts concern the selected expanded subtree, with explicit hidden/SLOT coverage limits, not proof of complete semantics. Inspect includes recorded text resize, truncation, max lines and decoration. Keep outputs distinct from the source. On `response_budget_exceeded`, use inspect, a scoped bundle, CLI nodes or a smaller export `maxSize`; `outputPath` in error metadata identifies a file already written.
+3. **Bundle it.** `figlens bundle <file.fig> <node> .figlens/exports/frame.zip`, then unzip into its own directory under `.figlens/exports/` and read `context.md` first: it says what each file holds. Done when you know the reference image, the structure file and the asset map. Check `handoffDiagnostics` in inspect and `_figlens.handoffDiagnostics` in nodes for known stored semantics not emitted; bundle warnings summarize them. Their counts concern the selected expanded subtree, with explicit hidden/SLOT coverage limits, not proof of complete semantics. Inspect includes recorded text resize, truncation, max lines and decoration. Keep outputs distinct from the source. On `response_budget_exceeded`, use inspect, a scoped bundle, CLI nodes or a smaller export `maxSize`; `outputPath` in error metadata identifies a file already written.
 4. **Outline before reading.** A screen is hundreds of KB of JSON, too large to read whole. Print the tree with sizes and layout, then read the subtrees you are building with `jq`:
 
    ```sh
