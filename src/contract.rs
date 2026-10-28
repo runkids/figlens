@@ -22,12 +22,12 @@ const NODE: Param = (
 pub const TOOLS: &[(&str, &str, &[Param])] = &[
     (
         "workflow",
-        "Read built-in figlens skill guidance for this agent: build for design-to-code and project reuse, images for website asset preparation, plan for scoped implementation planning, planning-details for page/multi-page work or unresolved design dependencies, yolo for explicitly requested autonomous implementation and temporary-plan cleanup. Returns the requested guide only; no design file, project read/write, implementation, verification or cleanup is performed. Ordinary design questions and exports can use the design tools directly.",
+        "Read built-in figlens skill guidance for this agent: build for design-to-code and project reuse, audit for comparing existing UI with a design and correcting confirmed differences, images for website asset preparation, plan for scoped implementation planning, planning-details for page/multi-page work or unresolved design dependencies, yolo for explicitly requested autonomous implementation and temporary-plan cleanup. Returns the requested guide only; no design file, project read/write, implementation, verification or cleanup is performed. Ordinary design questions and exports can use the design tools directly.",
         &[(
             "topic",
             "string",
             true,
-            "Guide to read: build, images, plan, planning-details or yolo.",
+            "Guide to read: build, audit, images, plan, planning-details or yolo.",
         )],
     ),
     (

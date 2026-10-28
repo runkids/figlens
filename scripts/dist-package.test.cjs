@@ -36,7 +36,7 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     for member in sys.argv[2:]:
         assert z.read(member) == open(member, "rb").read()
 `;
-  const resources = ['skills/figlens/SKILL.md', 'skills/figlens/references/planning.md', 'skills/figlens/references/planning-details.md', 'skills/figlens/references/yolo.md'];
+  const resources = ['skills/figlens/SKILL.md', 'skills/figlens/references/audit.md', 'skills/figlens/references/planning.md', 'skills/figlens/references/planning-details.md', 'skills/figlens/references/yolo.md'];
   for (const file of resources) {
     assert.equal(execFileSync('tar', ['-xOf', tar, file], { encoding: 'utf8' }), readFileSync(path.join(root, file), 'utf8'));
   }

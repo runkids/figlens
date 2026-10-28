@@ -68,7 +68,7 @@ usage:
                                              bundle and export as MCP tools; raster export returns an inline image;
                                              with --root, files and outputs must be under one of the folders
   figlens workflow <topic>                     print built-in agent guidance, the same text as MCP workflow:
-                                             build, images, plan, planning-details or yolo; a
+                                             build, audit, images, plan, planning-details or yolo; a
                                              workflow:<topic> link means `figlens workflow <topic>`
   figlens cache [clear]                        show, or clear, the preview render cache
                                              (prints {path,bytes} or {path,freed})

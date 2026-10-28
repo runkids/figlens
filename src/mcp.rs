@@ -534,6 +534,7 @@ mod tests {
             .collect();
         let instructions = replies[0]["result"]["instructions"].as_str().unwrap();
         assert!(instructions.contains("workflow(topic=build)"));
+        assert!(instructions.contains("workflow(topic=audit)"));
         assert!(instructions.contains("Simple questions and exports"));
         let tools = replies[1]["result"]["tools"].as_array().unwrap();
         let tool = tools.iter().find(|t| t["name"] == "workflow").unwrap();
@@ -547,11 +548,23 @@ mod tests {
         );
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
         assert_eq!(tool["annotations"]["readOnlyHint"], true);
+        assert!(
+            tool["description"]
+                .as_str()
+                .unwrap()
+                .contains("audit for comparing existing UI")
+        );
+        assert!(workflow::TOPICS.contains(&"audit"));
         for reply in &replies[2..] {
             assert_eq!(reply["result"]["isError"], false, "{reply}");
             let text = reply["result"]["content"][0]["text"].as_str().unwrap();
             assert!(text.contains("host's own tools"));
             assert!(!text.contains("](references/") && !text.contains("](planning"));
+            assert!(!text.contains("](../SKILL.md"));
+            if reply["id"] == "audit" {
+                assert!(text.contains("# Audit an existing UI"));
+                assert!(text.contains("Static review is not visual acceptance"));
+            }
         }
         assert_eq!(std::fs::read_dir(dir.join("")).unwrap().count(), 0);
     }

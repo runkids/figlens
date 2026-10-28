@@ -65,7 +65,7 @@ For Codex CLI on macOS/Linux:
 codex mcp add figlens -- npx -y @runkids/figlens mcp
 ```
 
-Start a new session and check `/mcp`. The MCP `workflow` tool includes on-demand guidance for design reading, project reuse, image preparation, scoped planning and explicitly requested autonomous implementation. It shares the [portable skill's](https://github.com/runkids/figlens#mcp-and-skill) sources; no separate skill install is required for MCP use. The agent carries out the task with its own project/browser tools and host permissions; reading a guide does not execute the workflow.
+Start a new session and check `/mcp`. The MCP `workflow` tool includes on-demand guidance for design reading, project reuse, existing-UI audits, image preparation, scoped planning and explicitly requested autonomous implementation. It shares the [portable skill's](https://github.com/runkids/figlens#mcp-and-skill) sources; no separate skill install is required for MCP use. The agent carries out the task with its own project/browser tools and host permissions; reading a guide does not execute the workflow.
 
 ## Run the CLI
 
@@ -79,6 +79,7 @@ npx @runkids/figlens bundle design.fig 12:345 frame.zip
 npx @runkids/figlens export design.fig 12:345 icon.svg
 npx @runkids/figlens export design.fig 12:345 frame.png --scale 2
 npx @runkids/figlens workflow build   # agent guidance, same as the MCP workflow tool
+npx @runkids/figlens workflow audit   # compare existing UI; fixes require a fix request
 ```
 
 Replace `12:345` with a node ID from the tree. A bundle contains design JSON, variables, assets, reference render and `context.md` instructions. The viewer also exports a standalone offline HTML snapshot: `preview design.fig 12:345 --out preview.html`.

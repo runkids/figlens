@@ -95,7 +95,7 @@ irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 |
 
 O `npx` executa o binário da versão do pacote que ele resolve. Instalações por script são atualizadas com `figlens update`; as do Homebrew, com `brew upgrade figlens`. Há binários para macOS (Apple silicon, Intel), Linux (arm64, x86_64) e Windows (x86_64).
 
-Um agent que usa a CLI lê o guia com `figlens workflow build` (também `images`, `plan`, `planning-details` e `yolo`, usado só quando pedido explicitamente), sempre na mesma versão do binário, ou pelo [skill](#setup-skill).
+Um agent que usa a CLI lê o guia com `figlens workflow build` (também `audit`, `images`, `plan`, `planning-details` e `yolo`, usado só quando pedido explicitamente), sempre na mesma versão do binário, ou pelo [skill](#setup-skill).
 
 [Referência da CLI](docs/README-pt-BR.md#commands)
 

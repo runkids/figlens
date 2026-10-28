@@ -97,7 +97,7 @@ pi install /absolute/path/to/figlens
 
 **Manual selection.** `/figlens open "./design files/mobile.fig" --frame 12:345` saves a known node and attaches a reference image (PNGs in `.figlens/previews/`, keep them out of Git). The legacy `/figlens frame [ID]` searches within that saved file. The selection is restored for manual commands next session; it is not injected as design context. `/figlens close` clears it and keeps mappings.
 
-**Agent tools.** The MCP `workflow` tool exposes on-demand build, image, planning and opt-in YOLO guides from the same skill sources used by the commands above. It returns guidance only; the current agent performs the authorized work with its project/browser tools. Besides the design tools (`tree`, `find`, `inspect`, `nodes`, `variables`, `bundle`, `export`), the extension adds:
+**Agent tools.** The MCP `workflow` tool exposes on-demand build, audit, image, planning and opt-in YOLO guides from the same skill sources used by the commands above. For an existing UI, ask Pi to compare it with the design; the shared skill routes to `workflow(topic="audit")`, with no separate audit command. Static review and screenshot comparison are reported separately; fixes require a fix request. It returns guidance only; the current agent performs the authorized work with its project/browser tools. Besides the design tools (`tree`, `find`, `inspect`, `nodes`, `variables`, `bundle`, `export`), the extension adds:
 
 | Tool | Purpose |
 |---|---|

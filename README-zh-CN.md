@@ -95,7 +95,7 @@ irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 |
 
 `npx` 会运行它解析到的包版本对应的可执行文件。用安装脚本装的通过 `figlens update` 更新；Homebrew 装的通过 `brew upgrade figlens` 更新。可执行文件支持 macOS（Apple silicon、Intel）、Linux（arm64、x86_64）和 Windows（x86_64）。
 
-使用 CLI 的 agent 可以运行 `figlens workflow build` 读取指引（另有 `images`、`plan`、`planning-details` 和需明确启用的 `yolo`），内容始终与可执行文件版本一致；也可以改用 [agent skill](#setup-skill)。
+使用 CLI 的 agent 可以运行 `figlens workflow build` 读取指引（另有 `audit`、`images`、`plan`、`planning-details` 和需明确启用的 `yolo`），内容始终与可执行文件版本一致；也可以改用 [agent skill](#setup-skill)。
 
 [CLI 参考](docs/README-zh-CN.md#commands)
 

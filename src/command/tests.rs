@@ -234,7 +234,7 @@ fn cli_workflow_prints_the_mcp_guidance_with_cli_directions() {
     assert!(out.contains("run `figlens workflow <topic>`"));
     let error = run(vec!["workflow".into(), "nope".into()], &mut String::new()).unwrap_err();
     assert!(
-        error.to_string().contains("choose build, images"),
+        error.to_string().contains("choose build, audit, images"),
         "{error}"
     );
 }

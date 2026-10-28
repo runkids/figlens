@@ -38,7 +38,7 @@ def main():
     assert sha(package) == metadata['package']['sha256'], 'Candidate tarball hash differs'
     required = {'package.json', 'README.md', 'LICENSE', 'bin/figlens.js', 'target.js',
                 'pi/index.ts', 'pi/workflow.mjs', 'pi/viewer.mjs', 'pi/package.json', 'pi/README.md',
-                'skills/figlens/SKILL.md', 'skills/figlens/references/planning.md',
+                'skills/figlens/SKILL.md', 'skills/figlens/references/audit.md', 'skills/figlens/references/planning.md',
                 'skills/figlens/references/planning-details.md', 'skills/figlens/references/yolo.md'}
     with tarfile.open(package) as archive:
         files = {p.name.removeprefix('package/') for p in archive.getmembers() if p.isfile()}
