@@ -124,18 +124,15 @@ pub fn verify(path: &Path) -> Result<Json, Box<dyn Error>> {
             continue;
         }
         // Read one byte past the declared size at most: a larger entry has already changed.
-        // Declared sizes are untrusted, so together they may not exceed the budget either.
+        // Declared sizes are untrusted, so each is reserved from the budget before reading.
         let declared = file["size"].as_u64().unwrap_or(0);
         if declared >= budget {
             unhashed += 1;
             continue;
         }
+        budget -= declared;
         let limit = declared + 1;
-        let found = bundle.read(listed, |r| digest(&mut r.take(limit)))?;
-        if let Found::File((size, _)) = &found {
-            budget -= size;
-        }
-        match found {
+        match bundle.read(listed, |r| digest(&mut r.take(limit)))? {
             Found::File((size, sha256))
                 if file["size"] == size && file["sha256"].as_str() == Some(&sha256) =>
             {
@@ -327,15 +324,23 @@ mod tests {
     #[test]
     fn declared_sizes_beyond_the_budget_are_reported_not_hashed() {
         let dir = TestDir::new();
-        let files = json!([{"path": "huge.bin", "size": HASH_BUDGET, "sha256": "0"}]);
+        // Each half fits alone; the second no longer fits once the first is reserved.
+        let half = |path| json!({"path": path, "size": HASH_BUDGET / 2, "sha256": "0"});
+        let files = json!([half("a.bin"), half("b.bin")]);
         let manifest = json!({"format": "figlens-bundle", "version": 1, "files": files});
         std::fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
-        std::fs::write(dir.join("huge.bin"), "small").unwrap();
+        std::fs::write(dir.join("a.bin"), "small").unwrap();
+        std::fs::write(dir.join("b.bin"), "small").unwrap();
         let report = verify(&dir.join("")).unwrap();
         assert_eq!(
-            (&report["files"]["changed"], &report["unverified"][0]),
             (
-                &json!([]),
+                &report["files"]["changed"][0]["path"],
+                &report["files"]["changed"].as_array().unwrap().len(),
+                &report["unverified"][0]
+            ),
+            (
+                &json!("a.bin"),
+                &1,
                 &json!(format!(
                     "1 listed files were not hashed: their declared sizes exceed the {HASH_BUDGET}-byte verification budget."
                 ))
