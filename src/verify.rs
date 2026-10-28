@@ -250,6 +250,8 @@ pub fn verify(path: &Path) -> Result<Json, Box<dyn Error>> {
         "truncated": all.len() < total,
         "counts": counts,
         "unexamined": unexamined,
+        // Once here, not per semantic finding: an untrusted coverage value would be copied per item.
+        "semanticsCoverage": nodes.as_ref().and_then(|n| short(&n["_figlens"]["handoffDiagnostics"]["coverage"])),
         "coverage": "Only checks recorded in this bundle: manifest integrity, missing-assets.json, design/variables.json, design/states.json truncation, node _figlens.renderDiagnostics, handoffDiagnostics and font faces. Few or no findings do not establish complete semantics, font readiness, browser delivery or pixel fidelity.",
     });
     Ok(json!({
@@ -447,16 +449,10 @@ fn findings(i: &Inputs) -> Vec<Json> {
             "Build from the node's fields, exclude the area from pixel matching, and confirm its appearance against Figma's own export or with the designer."));
     }
     if let Some(nodes) = i.nodes {
-        let handoff = &nodes["_figlens"]["handoffDiagnostics"];
-        for item in items(&handoff["items"]) {
-            let mut evidence = item.clone();
-            // Items are untrusted: only an object can take the coverage.
-            if let Some(evidence) = evidence.as_object_mut() {
-                evidence.insert("coverage".into(), handoff["coverage"].clone());
-            }
+        for item in items(&nodes["_figlens"]["handoffDiagnostics"]["items"]) {
             let examples: Vec<_> = items(&item["exampleNodeIds"]).cloned().collect();
             let count = item["nodeCount"].as_u64().unwrap_or(examples.len() as u64) as usize;
-            out.push(finding("semantics", "unsupported", "design/nodes.json", &examples, count, evidence,
+            out.push(finding("semantics", "unsupported", "design/nodes.json", &examples, count, item.clone(),
                 "The .fig stores data for this feature that design/nodes.json does not emit, so these nodes are under-described.",
                 "Confirm the feature's behaviour in Figma or with the designer before implementing it; do not infer it from the emitted fields."));
         }
@@ -881,6 +877,27 @@ mod tests {
                 ("semantics", "unsupported"),
                 ("integrity", "unverified")
             ]
+        );
+    }
+
+    #[test]
+    fn semantic_coverage_is_reported_once_and_only_when_short() {
+        let dir = TestDir::new();
+        let report = |coverage: Json| {
+            let nodes = json!({"_figlens": {"handoffDiagnostics": {"coverage": coverage,
+                "items": [{"feature": "grid", "nodeCount": 1}, {"feature": "slots", "nodeCount": 1}]}},
+                "document": {"id": "1:1"}});
+            verify(&metadata_bundle(&dir, &[("design/nodes.json", nodes)])).unwrap()
+        };
+        let short = report(json!("known stored fields"));
+        let long = report(json!("x".repeat(2048)));
+        assert_eq!(
+            (
+                &short["findingsSummary"]["semanticsCoverage"],
+                found(&short, "semantics", "unsupported")[0]["evidence"].get("coverage"),
+                &long["findingsSummary"]["semanticsCoverage"]
+            ),
+            (&json!("known stored fields"), None, &Json::Null)
         );
     }
 

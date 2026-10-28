@@ -263,7 +263,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 },
                 "findingsSummary": {
                     "type": "object",
-                    "description": "scope (bundle root nodeId and name), total, returned, truncated, counts per category/status and the coverage the findings do not establish",
+                    "description": "scope (bundle root nodeId and name), total, returned, truncated, counts per category/status, unexamined metadata files, semanticsCoverage (the handoff inventory's coverage) and the coverage the findings do not establish",
                 },
                 "truncated": {
                     "type": "object",
