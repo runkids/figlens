@@ -2,6 +2,7 @@
 //! match, which are missing or changed, which assets the bundle could not include, and which
 //! font faces only the project and its browser can confirm. It reports; it never blocks.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufReader, ErrorKind, Read};
@@ -173,26 +174,324 @@ pub fn verify(path: &Path) -> Result<Json, Box<dyn Error>> {
             None
         }
     };
-    let missing_assets =
-        metadata("missing-assets.json", "missingAssets is incomplete").unwrap_or(json!([]));
-    let mut fonts = match metadata("design/nodes.json", "font faces were not listed") {
+    let missing_assets = metadata("missing-assets.json", "missingAssets is incomplete");
+    let nodes = metadata(
+        "design/nodes.json",
+        "font faces were not listed and render, semantic and variable findings are incomplete",
+    );
+    let variables = metadata("design/variables.json", "variable findings are incomplete");
+    // Optional: absent when the bundle was made without states.
+    let states = metadata(
+        "design/states.json",
+        "state inventory coverage was not checked",
+    );
+    let mut fonts = match &nodes {
         Some(nodes) => crate::bundle::fonts(&nodes["document"])["faces"].take(),
         None => json!([]),
     };
     for face in fonts.as_array_mut().into_iter().flatten() {
         face["status"] = json!("unverified");
     }
+    let mut files =
+        json!({"verified": verified, "missing": missing, "changed": changed, "invalid": invalid});
+    let unexamined: Vec<_> = [
+        ("missing-assets.json", missing_assets.is_none()),
+        ("design/nodes.json", nodes.is_none()),
+        ("design/variables.json", variables.is_none()),
+    ]
+    .into_iter()
+    .filter_map(|(path, absent)| absent.then_some(path))
+    .collect();
+    let mut missing_assets = missing_assets.unwrap_or(json!([]));
+    let Findings {
+        list: mut all,
+        counts,
+    } = findings(&Inputs {
+        files: &files,
+        unhashed,
+        missing_assets: &missing_assets,
+        nodes: nodes.as_ref(),
+        variables: variables.as_ref(),
+        states: states.as_ref(),
+        fonts: &fonts,
+    });
     unverified.extend([
         "Font faces: the bundle has no font files and figlens cannot see the project's fonts. Load each face in the running project with document.fonts.load and the design text and check the returned faces; document.fonts.check alone can pass on a fallback.".to_owned(),
         "Browser delivery: check the deployed asset URLs, decoding and rendered dimensions in the running project.".to_owned(),
     ]);
+    let total: u64 = counts.values().sum();
+    fit(&mut all, MAX_FINDINGS, FINDINGS_BYTES);
+    // Every other list also comes from the bundle; each keeps its total when cut.
+    let mut truncated = serde_json::Map::new();
+    let mut cap = |name: &str, list: &mut Json| {
+        if let Some(total) = list
+            .as_array_mut()
+            .and_then(|a| fit(a, usize::MAX, LIST_BYTES))
+        {
+            truncated.insert(name.into(), total.into());
+        }
+    };
+    for key in ["missing", "changed", "invalid"] {
+        cap(&format!("files.{key}"), &mut files[key]);
+    }
+    cap("missingAssets", &mut missing_assets);
+    cap("fonts", &mut fonts);
+    let short = |v: &Json| (v.to_string().len() <= 1024).then(|| v.clone());
+    let summary = json!({
+        "scope": {"nodeId": short(&manifest["root"]["id"]), "name": short(&manifest["root"]["name"])},
+        "total": total,
+        "returned": all.len(),
+        "truncated": (all.len() as u64) < total,
+        "counts": counts,
+        "unexamined": unexamined,
+        // Once here, not per semantic finding: an untrusted coverage value would be copied per item.
+        "semanticsCoverage": nodes.as_ref().and_then(|n| short(&n["_figlens"]["handoffDiagnostics"]["coverage"])),
+        "coverage": "Only checks recorded in this bundle: manifest integrity, missing-assets.json, design/variables.json, design/states.json truncation, node _figlens.renderDiagnostics, handoffDiagnostics and font faces. Few or no findings do not establish complete semantics, font readiness, browser delivery or pixel fidelity.",
+    });
     Ok(json!({
-        "path": path,
-        "files": {"verified": verified, "missing": missing, "changed": changed, "invalid": invalid},
-        "missingAssets": missing_assets,
-        "fonts": fonts,
-        "unverified": unverified,
+            "path": path,
+            "files": files,
+            "missingAssets": missing_assets,
+            "fonts": fonts,
+            "unverified": unverified,
+            "findings": all,
+            "findingsSummary": summary,
+            "truncated": truncated,
     }))
+}
+
+/// Findings returned at most; `findingsSummary` keeps the complete counts.
+const MAX_FINDINGS: usize = 500;
+/// Serialized bytes returned at most for findings and for each other list. MCP sends the report
+/// as structuredContent and again as escaped text, up to three times these bytes, so together
+/// (2.25 MiB) they stay inside the 8 MiB reply.
+const FINDINGS_BYTES: usize = 1 << 20;
+const LIST_BYTES: usize = 256 << 10;
+
+/// Keeps the leading entries of `list` within `max` entries and `budget` serialized bytes;
+/// returns the original length when any were cut.
+fn fit(list: &mut Vec<Json>, max: usize, budget: usize) -> Option<usize> {
+    let (mut kept, mut bytes) = (0, 0usize);
+    for v in list.iter().take(max) {
+        bytes = bytes.saturating_add(serde_json::to_vec(v).map_or(usize::MAX, |v| v.len()));
+        if bytes > budget {
+            break;
+        }
+        kept += 1;
+    }
+    let total = list.len();
+    list.truncate(kept);
+    (kept < total).then_some(total)
+}
+/// Node ids kept per finding; `nodeCount` keeps the total.
+const MAX_NODE_IDS: usize = 20;
+
+struct Inputs<'a> {
+    files: &'a Json,
+    unhashed: usize,
+    missing_assets: &'a Json,
+    nodes: Option<&'a Json>,
+    variables: Option<&'a Json>,
+    states: Option<&'a Json>,
+    fonts: &'a Json,
+}
+
+fn items(v: &Json) -> impl Iterator<Item = &Json> {
+    v.as_array().into_iter().flatten()
+}
+
+/// Bound variable id → (its first binding node ids, how many nodes bind it).
+type Bound<'a> = BTreeMap<String, (Vec<&'a Json>, usize)>;
+
+/// Findings counted per `category/status`, with at most `MAX_FINDINGS` of each built: the
+/// stable status sort and the cut never reach further, and building every one would let an
+/// untrusted bundle multiply its node ids and evidence.
+#[derive(Default)]
+struct Findings {
+    list: Vec<Json>,
+    counts: BTreeMap<String, u64>,
+}
+
+impl Findings {
+    /// Design strings stay in `evidence`; `impact` and `action` are fixed text. Node ids over
+    /// 1 KiB are left out of `nodeIds`, like handoff example ids; `nodeCount` keeps the total.
+    fn add(
+        &mut self,
+        (category, status): (&str, &str),
+        source: &str,
+        (node_ids, node_count): (&[&Json], usize),
+        evidence: impl FnOnce() -> Json,
+        impact: &str,
+        action: &str,
+    ) {
+        let n = self
+            .counts
+            .entry(format!("{category}/{status}"))
+            .or_default();
+        *n += 1;
+        if *n > MAX_FINDINGS as u64 {
+            return;
+        }
+        let ids: Vec<_> = node_ids
+            .iter()
+            .filter(|id| id.as_str().is_some_and(|id| id.len() <= 1024))
+            .take(MAX_NODE_IDS)
+            .collect();
+        self.list.push(json!({
+            "category": category, "status": status, "source": source,
+            "nodeIds": ids, "nodeCount": node_count,
+            "evidence": evidence(), "impact": impact, "action": action,
+        }));
+    }
+}
+
+/// Render diagnostics in document order, and the nodes binding each id already in `bound`.
+fn walk<'a>(node: &'a Json, render: &mut Vec<&'a Json>, bound: &mut Bound<'a>) {
+    render.extend(items(&node["_figlens"]["renderDiagnostics"]));
+    if !bound.is_empty() {
+        let mut ids = BTreeSet::new();
+        for (key, value) in node.as_object().into_iter().flatten() {
+            if key != "children" {
+                bound_ids(value, bound, &mut ids);
+            }
+        }
+        for id in ids {
+            let (nodes, count) = bound.get_mut(id).expect("collected from bound");
+            *count += 1;
+            if nodes.len() < MAX_NODE_IDS {
+                nodes.push(&node["id"]);
+            }
+        }
+    }
+    for child in items(&node["children"]) {
+        walk(child, render, bound);
+    }
+}
+
+/// The ids in `bound` that a `VARIABLE_ALIAS` under `v` names. Map lookups only: alias lists in
+/// an untrusted bundle can be huge.
+fn bound_ids<'a>(v: &'a Json, bound: &Bound, ids: &mut BTreeSet<&'a str>) {
+    match v {
+        Json::Array(a) => a.iter().for_each(|x| bound_ids(x, bound, ids)),
+        Json::Object(o) => {
+            if o.get("type").and_then(Json::as_str) == Some("VARIABLE_ALIAS")
+                && let Some(id) = o.get("id").and_then(Json::as_str)
+                && bound.contains_key(id)
+            {
+                ids.insert(id);
+            }
+            o.values().for_each(|x| bound_ids(x, bound, ids));
+        }
+        _ => {}
+    }
+}
+
+/// Missing inputs first, then known limitations, then checks only the project can make.
+fn findings(i: &Inputs) -> Findings {
+    let mut out = Findings::default();
+    let none = (&[][..], 0);
+    let rebuild = "Recreate the bundle from the source .fig with figlens bundle; do not repair bundle files by hand.";
+    for path in items(&i.files["missing"]) {
+        out.add(
+            ("integrity", "missing"),
+            "manifest.json",
+            none,
+            || json!({"path": path}),
+            "A listed bundle file is absent; anything read from it is unavailable.",
+            rebuild,
+        );
+    }
+    for entry in items(&i.files["changed"]) {
+        out.add(("integrity", "missing"), "manifest.json", none, || entry.clone(),
+            "A listed bundle file no longer matches its recorded size and sha256; its original content is unavailable.", rebuild);
+    }
+    for path in items(&i.files["invalid"]) {
+        out.add(
+            ("integrity", "unverified"),
+            "manifest.json",
+            none,
+            || json!({"path": path}),
+            "A manifest path is not a plain relative path, so its file was not checked.",
+            rebuild,
+        );
+    }
+    if i.unhashed > 0 {
+        out.add(
+            ("integrity", "unverified"),
+            "manifest.json",
+            none,
+            || json!({"unhashedFiles": i.unhashed}),
+            "Some listed files exceed the verification budget and were not hashed.",
+            rebuild,
+        );
+    }
+    for entry in items(i.missing_assets) {
+        out.add(("asset", "missing"), "missing-assets.json", (&[&entry["nodeId"]], 1), || entry.clone(),
+            "The bundle has no file for this node's image, vector or composite render; its visual acceptance stays pending.",
+            "Ask the designer for the original image (for an image not in the .fig, re-save it with File > Save local copy once the image has loaded) and rebuild the bundle. Until then use a clearly labelled placeholder at the node's dimensions and report it; do not substitute another image.");
+    }
+    let missing_ids: Vec<_> = i
+        .variables
+        .into_iter()
+        .flat_map(|v| items(&v["missingVariables"]))
+        .collect();
+    let mut bound: Bound = missing_ids
+        .iter()
+        .filter_map(|id| Some((id.as_str()?.to_owned(), (vec![], 0))))
+        .collect();
+    let mut render = vec![];
+    if let Some(nodes) = i.nodes {
+        walk(&nodes["document"], &mut render, &mut bound);
+    }
+    let resolved = i.variables.map_or(0, |v| items(&v["variables"]).count());
+    for id in missing_ids {
+        let nodes = id
+            .as_str()
+            .and_then(|id| bound.get(id))
+            .map_or((&[][..], 0), |(nodes, count)| (nodes.as_slice(), *count));
+        out.add(("variable", "missing"), "design/variables.json", nodes, || json!({"id": id}),
+            "Bound properties keep their saved resolved values in design/nodes.json, but the token identity is lost (a deleted or unpublished library variable).",
+            "Implement with the resolved values from design/nodes.json and report the missing token; do not invent a token name. Ask the designer to restore or publish the variable for an exact mapping.");
+    }
+    if let Some(states) = i.states.filter(|s| s["truncated"] == true) {
+        out.add(("scope", "unverified"), "design/states.json", none,
+            || json!({"reasons": states["reasons"], "coverage": states["coverage"]}),
+            "The state inventory stopped early; related variants beyond it were not examined.",
+            "Treat unlisted states as unknown, not absent. Inspect specific component ids with figlens inspect or confirm the missing states with the designer.");
+    }
+    for d in render {
+        out.add(("render", "unsupported"), "design/nodes.json", (&[&d["nodeId"]], 1), || d.clone(),
+            "references/screen.png skips or approximates this feature at the node, so pixel comparison there is uncertain.",
+            "Build from the node's fields, exclude the area from pixel matching, and confirm its appearance against Figma's own export or with the designer.");
+    }
+    if let Some(nodes) = i.nodes {
+        for item in items(&nodes["_figlens"]["handoffDiagnostics"]["items"]) {
+            let examples: Vec<_> = items(&item["exampleNodeIds"]).collect();
+            let count = item["nodeCount"].as_u64().unwrap_or(examples.len() as u64) as usize;
+            out.add(("semantics", "unsupported"), "design/nodes.json", (&examples, count), || item.clone(),
+                "The .fig stores data for this feature that design/nodes.json does not emit, so these nodes are under-described.",
+                "Confirm the feature's behaviour in Figma or with the designer before implementing it; do not infer it from the emitted fields.");
+        }
+    }
+    for face in items(i.fonts) {
+        let nodes: Vec<_> = items(&face["nodeIds"]).collect();
+        out.add(("font", "unverified"), "design/nodes.json", (&nodes, nodes.len()),
+            || json!({"family": face["family"], "style": face["style"], "weight": face["weight"], "postScriptName": face["postScriptName"]}),
+            "Text metrics and appearance depend on this face, and the bundle has no font files.",
+            "Locate the licensed face in the project or system. In the running page, call document.fonts.load with the face's weight, style and family and the design text, then check the returned faces; document.fonts.check alone can pass on a fallback. Use a documented fallback until it loads.");
+    }
+    if resolved > 0 {
+        out.add(("variable", "unverified"), "design/variables.json", none, || json!({"variableCount": resolved}),
+            "Resolved design tokens are not yet matched to the project's existing token system.",
+            "Match each variable in design/variables.json to an existing project token by name and value; report unmatched ones instead of adding new tokens.");
+    }
+    // Stable: categories keep their order within each status.
+    out.list.sort_by_key(|f| match f["status"].as_str() {
+        Some("missing") => 0,
+        Some("unsupported") => 1,
+        _ => 2,
+    });
+    out
 }
 
 #[cfg(test)]
@@ -390,6 +689,269 @@ mod tests {
                 &report["files"]["verified"]
             ),
             (&json!("a.txt"), &Json::Null, true, &json!(1))
+        );
+    }
+
+    /// An extracted bundle holding only the given metadata files.
+    fn metadata_bundle(dir: &TestDir, files: &[(&str, Json)]) -> PathBuf {
+        let manifest = json!({"format": "figlens-bundle", "version": 1, "files": [],
+            "root": {"id": "1:1", "name": "Frame"}});
+        std::fs::create_dir_all(dir.join("design")).unwrap();
+        std::fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
+        for (path, value) in files {
+            std::fs::write(dir.join(path), value.to_string()).unwrap();
+        }
+        dir.join("")
+    }
+
+    fn found<'a>(report: &'a Json, category: &str, status: &str) -> Vec<&'a Json> {
+        items(&report["findings"])
+            .filter(|f| f["category"] == category && f["status"] == status)
+            .collect()
+    }
+
+    #[test]
+    fn a_missing_asset_is_a_missing_asset_finding_with_its_node() {
+        let dir = TestDir::new();
+        let entry =
+            json!({"key": "img", "nodeId": "1:2", "error": "images/img is not in the .fig"});
+        let report = verify(&metadata_bundle(
+            &dir,
+            &[("missing-assets.json", json!([entry]))],
+        ))
+        .unwrap();
+        let f = found(&report, "asset", "missing");
+        assert_eq!(
+            (f.len(), &f[0]["nodeIds"], &f[0]["evidence"]),
+            (1, &json!(["1:2"]), &entry)
+        );
+    }
+
+    #[test]
+    fn an_unresolved_variable_keeps_its_id_and_binding_nodes_apart_from_known_tokens() {
+        let dir = TestDir::new();
+        let alias = |id: &str| json!({"type": "VARIABLE_ALIAS", "id": id});
+        let nodes = json!({"document": {"id": "1:1", "children": [
+            {"id": "1:2", "boundVariables": {"fills": [alias("VariableID:9:9"), alias("VariableID:9:9")]}},
+            {"id": "1:3", "boundVariables": {"itemSpacing": alias("VariableID:1:5")}},
+        ]}});
+        let variables = json!({"variables": [{"id": "VariableID:1:5"}], "collections": [],
+            "missingVariables": ["VariableID:9:9"]});
+        let report = verify(&metadata_bundle(
+            &dir,
+            &[
+                ("design/nodes.json", nodes),
+                ("design/variables.json", variables),
+            ],
+        ))
+        .unwrap();
+        let missing = found(&report, "variable", "missing");
+        let unmatched = found(&report, "variable", "unverified");
+        assert_eq!(
+            (
+                missing.len(),
+                &missing[0]["evidence"]["id"],
+                &missing[0]["nodeIds"],
+                &unmatched[0]["evidence"]
+            ),
+            (
+                1,
+                &json!("VariableID:9:9"),
+                &json!(["1:2"]),
+                &json!({"variableCount": 1})
+            )
+        );
+    }
+
+    #[test]
+    fn each_font_face_is_an_unverified_finding_with_its_text_nodes() {
+        let dir = TestDir::new();
+        let report = verify(&fixture_bundle(&dir)).unwrap();
+        let f = found(&report, "font", "unverified");
+        assert_eq!(
+            (
+                f.len(),
+                &f[0]["evidence"]["family"],
+                f[0]["nodeCount"].as_u64().unwrap() > 0
+            ),
+            (1, &json!("Figlens Blocks"), true)
+        );
+    }
+
+    #[test]
+    fn render_and_semantic_limits_stay_apart_from_asset_failures() {
+        let dir = TestDir::new();
+        let diagnostic = json!({"nodeId": "1:2", "feature": "GLASS", "field": "effects", "state": "skipped", "reason": "not drawn"});
+        let nodes = json!({"_figlens": {"handoffDiagnostics": {"items": [
+                {"feature": "grid", "nodeCount": 7, "exampleNodeIds": ["1:3"], "examplesTruncated": true}]}},
+            "document": {"id": "1:1", "children": [{"id": "1:2", "_figlens": {"renderDiagnostics": [diagnostic]}}]}});
+        let report = verify(&metadata_bundle(&dir, &[("design/nodes.json", nodes)])).unwrap();
+        let render = found(&report, "render", "unsupported");
+        let semantics = found(&report, "semantics", "unsupported");
+        assert_eq!(
+            (
+                &render[0]["evidence"],
+                &render[0]["source"],
+                &semantics[0]["nodeCount"],
+                found(&report, "asset", "missing").len()
+            ),
+            (&diagnostic, &json!("design/nodes.json"), &json!(7), 0)
+        );
+    }
+
+    #[test]
+    fn truncated_state_inventory_and_findings_stay_explicit() {
+        let dir = TestDir::new();
+        let diagnostics: Vec<_> = (0..MAX_FINDINGS + 1)
+            .map(|n| json!({"nodeId": format!("1:{n}"), "state": "approximate"}))
+            .collect();
+        let nodes =
+            json!({"document": {"id": "1:1", "_figlens": {"renderDiagnostics": diagnostics}}});
+        let states = json!({"truncated": true, "reasons": ["variant_limit"], "coverage": {}});
+        let report = verify(&metadata_bundle(
+            &dir,
+            &[("design/nodes.json", nodes), ("design/states.json", states)],
+        ))
+        .unwrap();
+        let summary = &report["findingsSummary"];
+        assert_eq!(
+            (
+                // Unverified scope sorts after the unsupported renders, beyond the cut.
+                summary["counts"]["scope/unverified"].clone(),
+                report["findings"].as_array().unwrap().len(),
+                summary["truncated"].clone(),
+                summary["counts"]["render/unsupported"].clone(),
+            ),
+            (json!(1), MAX_FINDINGS, json!(true), json!(MAX_FINDINGS + 1))
+        );
+    }
+
+    #[test]
+    fn oversized_evidence_is_counted_but_not_returned() {
+        let dir = TestDir::new();
+        let huge = json!({"nodeId": "1:2", "reason": "x".repeat(FINDINGS_BYTES)});
+        let nodes = json!({"document": {"id": "1:1", "_figlens": {"renderDiagnostics": [huge]}}});
+        let report = verify(&metadata_bundle(&dir, &[("design/nodes.json", nodes)])).unwrap();
+        let summary = &report["findingsSummary"];
+        assert_eq!(
+            (
+                &report["findings"],
+                &summary["total"],
+                &summary["truncated"]
+            ),
+            (&json!([]), &json!(1), &json!(true))
+        );
+    }
+
+    #[test]
+    fn oversized_bundle_lists_keep_their_totals() {
+        let dir = TestDir::new();
+        let huge = json!({"key": "x".repeat(LIST_BYTES), "nodeId": "1:2"});
+        let path = metadata_bundle(&dir, &[("missing-assets.json", json!([huge]))]);
+        let manifest = json!({"format": "figlens-bundle", "version": 1, "files": [],
+            "root": {"id": "1:1", "name": "x".repeat(2048)}});
+        std::fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
+        let report = verify(&path).unwrap();
+        assert_eq!(
+            (
+                &report["missingAssets"],
+                &report["truncated"],
+                &report["findingsSummary"]["scope"]["name"]
+            ),
+            (&json!([]), &json!({"missingAssets": 1}), &Json::Null)
+        );
+    }
+
+    #[test]
+    fn malformed_handoff_items_and_invalid_paths_do_not_displace_missing_inputs() {
+        let dir = TestDir::new();
+        let nodes = json!({"_figlens": {"handoffDiagnostics": {"items": [false]}}, "document": {"id": "1:1"}});
+        let entry = json!({"key": "img", "nodeId": "1:2", "error": "missing"});
+        let path = metadata_bundle(
+            &dir,
+            &[
+                ("design/nodes.json", nodes),
+                ("missing-assets.json", json!([entry])),
+            ],
+        );
+        let manifest = json!({"format": "figlens-bundle", "version": 1, "files": [{"path": "../x"}],
+            "root": {"id": "1:1", "name": "Frame"}});
+        std::fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
+        let report = verify(&path).unwrap();
+        let order: Vec<_> = items(&report["findings"])
+            .map(|f| {
+                (
+                    f["category"].as_str().unwrap(),
+                    f["status"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("asset", "missing"),
+                ("semantics", "unsupported"),
+                ("integrity", "unverified")
+            ]
+        );
+    }
+
+    #[test]
+    fn semantic_coverage_is_reported_once_and_only_when_short() {
+        let dir = TestDir::new();
+        let report = |coverage: Json| {
+            let nodes = json!({"_figlens": {"handoffDiagnostics": {"coverage": coverage,
+                "items": [{"feature": "grid", "nodeCount": 1}, {"feature": "slots", "nodeCount": 1}]}},
+                "document": {"id": "1:1"}});
+            verify(&metadata_bundle(&dir, &[("design/nodes.json", nodes)])).unwrap()
+        };
+        let short = report(json!("known stored fields"));
+        let long = report(json!("x".repeat(2048)));
+        assert_eq!(
+            (
+                &short["findingsSummary"]["semanticsCoverage"],
+                found(&short, "semantics", "unsupported")[0]["evidence"].get("coverage"),
+                &long["findingsSummary"]["semanticsCoverage"]
+            ),
+            (&json!("known stored fields"), None, &Json::Null)
+        );
+    }
+
+    #[test]
+    fn variable_bindings_count_every_finding_but_keep_bounded_node_ids() {
+        let dir = TestDir::new();
+        let ids: Vec<_> = (0..MAX_FINDINGS + 100)
+            .map(|n| format!("VariableID:9:{n}"))
+            .collect();
+        let aliases: Vec<_> = ids
+            .iter()
+            .map(|id| json!({"type": "VARIABLE_ALIAS", "id": id}))
+            .collect();
+        let nodes = json!({"document": {"id": "1:1", "children": [
+            {"id": "x".repeat(2048), "boundVariables": {"fills": aliases}}]}});
+        let variables = json!({"variables": [], "missingVariables": ids});
+        let report = verify(&metadata_bundle(
+            &dir,
+            &[
+                ("design/nodes.json", nodes),
+                ("design/variables.json", variables),
+            ],
+        ))
+        .unwrap();
+        let first = found(&report, "variable", "missing")[0];
+        assert_eq!(
+            (
+                &report["findingsSummary"]["counts"]["variable/missing"],
+                report["findings"].as_array().unwrap().len(),
+                &first["nodeIds"],
+                &first["nodeCount"]
+            ),
+            (
+                &json!(MAX_FINDINGS + 100),
+                MAX_FINDINGS,
+                &json!([]),
+                &json!(1)
+            )
         );
     }
 

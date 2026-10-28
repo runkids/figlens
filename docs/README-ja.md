@@ -166,7 +166,7 @@ skillshare sync && skillshare sync mcp --global
 | `variables <file> [node]` | frame にバインドされた variables。node を省略すると、すべてのローカル variables |
 | `bundle <file> <node> <out.zip> [--states]` | 1 つの frame の design bundle。`{nodeId, path, warnings}` を出力 |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | 1 回のデコードから複数の bundle を並列生成 |
-| `verify <bundle>` | bundle（`.zip` または展開したディレクトリ）を manifest と照合：検証済み・欠落・変更されたファイル、欠落アセット、プロジェクトで確認すべきフォント |
+| `verify <bundle>` | bundle（`.zip` または展開したディレクトリ）を manifest と照合：検証済み・欠落・変更されたファイル、欠落アセット、プロジェクトで確認すべきフォント、および `findings`：欠落・未対応・未検証の handoff 入力ごとのノード、根拠、次のアクション |
 | `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG、PNG、JPG、WebP、AVIF。`--max-kb` は収まるまで非可逆の品質を下げる |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | ローカルの読み取り専用 viewer。`--out` でスタンドアロンのオフラインスナップショットを書き出し |
 | `compare <file> <nodes.json> <node>` | 同じ frame の REST エクスポートとの差分 |

@@ -166,7 +166,7 @@ skillshare sync && skillshare sync mcp --global
 | `variables <file> [node]` | 某个 frame 的绑定变量；不指定 node 则输出所有本地变量 |
 | `bundle <file> <node> <out.zip> [--states]` | 单个 frame 的设计 bundle；输出 `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | 一次解码，并行生成多个 bundle |
-| `verify <bundle>` | 按 manifest 检查 bundle（`.zip` 或解压后的目录）：已验证、缺失和被改动的文件，缺失的素材，以及需要在项目中确认的字体 |
+| `verify <bundle>` | 按 manifest 检查 bundle（`.zip` 或解压后的目录）：已验证、缺失和被改动的文件，缺失的素材，需要在项目中确认的字体，以及 `findings`：每项缺失、不支持或未验证的 handoff 输入，附节点、证据和下一步 |
 | `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG、PNG、JPG、WebP 或 AVIF；`--max-kb` 会降低有损质量直到符合大小 |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 本地只读 viewer；`--out` 写出独立的离线快照 |
 | `compare <file> <nodes.json> <node>` | 与同一 frame 的 REST 导出做差异比较 |

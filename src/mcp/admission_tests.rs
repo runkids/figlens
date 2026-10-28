@@ -466,8 +466,59 @@ fn verify_reads_only_bundles_inside_roots_and_keeps_the_caller_label() {
     );
     let label = inside.join("");
     let report = rooted_reply(&call(json!(2), "verify", json!({"bundle": label})), &roots);
+    let content = &report["result"]["structuredContent"];
     assert_eq!(
-        report["result"]["structuredContent"]["path"],
-        label.to_string_lossy().as_ref()
+        (
+            content["path"].as_str(),
+            content["findings"].is_array(),
+            &content["findingsSummary"]["unexamined"]
+        ),
+        (
+            Some(label.to_string_lossy().as_ref()),
+            true,
+            &json!([
+                "missing-assets.json",
+                "design/nodes.json",
+                "design/variables.json"
+            ])
+        )
+    );
+}
+
+#[test]
+fn verify_of_quote_heavy_evidence_fits_the_whole_reply_budget() {
+    let dir = TestDir::new();
+    let quotes = "\"".repeat(64 << 10);
+    let assets: Vec<_> = (0..20)
+        .map(|n| json!({"key": quotes, "nodeId": format!("1:{n}")}))
+        .collect();
+    let diagnostics: Vec<_> = (0..20)
+        .map(|n| json!({"nodeId": format!("2:{n}"), "reason": quotes}))
+        .collect();
+    let nodes = json!({"document": {"id": "1:1", "_figlens": {"renderDiagnostics": diagnostics}}});
+    std::fs::create_dir(dir.join("design")).unwrap();
+    for (path, value) in [
+        (
+            "manifest.json",
+            json!({"format": "figlens-bundle", "version": 1, "files": []}),
+        ),
+        ("missing-assets.json", json!(assets)),
+        ("design/nodes.json", nodes),
+    ] {
+        std::fs::write(dir.join(path), value.to_string()).unwrap();
+    }
+    let roots = [dir.join("").canonicalize().unwrap()];
+    let reply = bounded_response(rooted_reply(
+        &call(json!(1), "verify", json!({"bundle": dir.join("")})),
+        &roots,
+    ));
+    let content = &reply["result"]["structuredContent"];
+    assert_eq!(
+        (
+            &reply["result"]["isError"],
+            &content["findingsSummary"]["truncated"],
+            &content["truncated"]["missingAssets"]
+        ),
+        (&json!(false), &json!(true), &json!(20))
     );
 }
