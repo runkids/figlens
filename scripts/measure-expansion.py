@@ -5,24 +5,25 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 
 
 def run(binary, fixture, node):
-    with tempfile.TemporaryFile() as out:
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         start = time.perf_counter()
-        process = subprocess.Popen([binary, 'nodes', fixture, node], stdout=out,
-                                   stderr=subprocess.PIPE)
+        process = subprocess.Popen([binary, 'nodes', fixture, node], stdout=out, stderr=err)
         # wait4 returns this child's own peak, unlike RUSAGE_CHILDREN's historical max.
         _, status, usage = os.wait4(process.pid, 0)
         elapsed = (time.perf_counter() - start) * 1000
-        stderr = process.stderr.read().decode(errors='replace').strip()
+        err.seek(0)
+        stderr = err.read().decode(errors='replace').strip()
         size = out.tell()
         out.seek(0)
         doc = json.load(out) if status == 0 else None
     result = {'node': node, 'exit': os.waitstatus_to_exitcode(status), 'elapsedMs': round(elapsed, 1),
-              'peakRssKiB': usage.ru_maxrss, 'outputBytes': size}
+              'peakRssBytes': usage.ru_maxrss * (1 if sys.platform == 'darwin' else 1024), 'outputBytes': size}
     if doc is None:
         result['stderr'] = stderr[:300]
         return result
