@@ -22,6 +22,8 @@ The MCP transform installs a default only when no `figlens` configuration exists
 
 Manual selection exports a real PNG and TUI sends its bytes through the host file-attachment format with `resume: false`. Viewer tools return actual loopback URLs. File-content transport is distinct from image rendering or model consumption; no model run is implied by dispatch or attachment creation.
 
+Before a reference export, reuse `Workflow.read()` to reject symbolic `.figlens`/guide paths, then reject a symbolic `.figlens/previews` directory before creating or exporting anything. Lexical project-path authorization does not authorize a symlink's external target; the native writer canonicalizes output parents. Keep the external-directory-denial regression for both parent and preview links.
+
 ## OMP
 
 Current production-entry evidence uses OMP 18.13.2 with Bun 1.4.3; earlier 18.12.3 results concern disposable probes. The entry uses OMP's injected zod schemas, own SDK/TUI, native read/write/exec tool approval tiers, same shared writer and native review dialogs. Commands are trusted extension code, as in Pi. OMP does not supply OpenCode's dynamic per-path permission assertion; tool approval tiers are not a filesystem sandbox.

@@ -94,7 +94,7 @@ pi install npm:@runkids/figlens
 { "plugins": ["@runkids/figlens"] }
 ```
 
-重新啟動宿主，再執行 `/figlens help`。 [OpenCode V2](opencode/README.md)
+重新啟動 OpenCode，再執行 `/figlens help`。 [OpenCode V2](opencode/README.md)
 
 <a id="setup-omp"></a>
 
@@ -106,7 +106,7 @@ pi install npm:@runkids/figlens
 omp plugin install @runkids/figlens
 ```
 
-重新啟動宿主，再執行 `/figlens help`。 [OMP](omp/README.md)
+重新啟動 OMP，再執行 `/figlens help`。 [OMP](omp/README.md)
 
 <a id="setup-cli"></a>
 

@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, realpath, rm } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { homedir, tmpdir } from 'node:os';
@@ -92,8 +92,12 @@ export function createAdapter(ctx, entry = import.meta.url) {
   }
   async function select(current, file, node) {
     if (!file || !node) throw new Error('Provide a file and frame together.');
-    const design = await current.flow.design({ file, frame: node }, current.signal);
     const directory = path.join(current.flow.directory, 'previews');
+    await current.flow.read();
+    try {
+      if ((await lstat(directory)).isSymbolicLink()) throw new Error(`${directory} must not be a symbolic link.`);
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    const design = await current.flow.design({ file, frame: node }, current.signal);
     const output = path.join(directory, `${randomUUID()}.png`);
     const args = ['export', design.absolute, design.frame, output, '--scale', '0.5'];
     await current.authorize('edit', [current.flow.directory, current.flow.guide, directory]);
