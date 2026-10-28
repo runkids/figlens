@@ -1398,8 +1398,9 @@ fn nodes_frames_match_single_nodes_calls_and_isolate_missing_ids() {
     let mut doc = figlens::Document::open(Path::new(&f.file)).unwrap();
     let message = doc.take_message().unwrap();
     let tree = Tree::new(&message);
+    let frames = crate::node_list(&["--frames".into(), list.to_string_lossy().into()]).unwrap();
     let mut out = Vec::new();
-    crate::nodes_batch(&tree, list.to_str().unwrap(), &mut out).unwrap();
+    crate::nodes_batch(&tree, &frames, &mut out).unwrap();
     let lines: Vec<Value> = String::from_utf8(out)
         .unwrap()
         .lines()
@@ -1416,9 +1417,22 @@ fn nodes_frames_match_single_nodes_calls_and_isolate_missing_ids() {
             Err(e) => assert_eq!(line, json!({ "error": e.to_string() })),
         }
     }
-    std::fs::write(&list, "0:12\n".repeat(crate::MAX_NODE_FRAMES + 1)).unwrap();
-    let err = crate::nodes_batch(&tree, list.to_str().unwrap(), &mut Vec::new()).unwrap_err();
+    let too_many = vec!["0:12".to_owned(); crate::MAX_NODE_FRAMES + 1];
+    let err = crate::nodes_batch(&tree, &too_many, &mut Vec::new()).unwrap_err();
     assert!(err.to_string().contains("at most"), "{err}");
+}
+
+#[test]
+fn nodes_ids_take_every_following_argument_and_need_one() {
+    let args =
+        |a: &[&str]| crate::node_list(&a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
+    assert_eq!(
+        args(&["--ids", "12-345", "I0:2;0:11"]).unwrap(),
+        ["12:345", "I0:2;0:11"]
+    );
+    for invalid in [&["--ids"][..], &["--frames"], &["--frames", "a", "b"]] {
+        assert!(args(invalid).is_err(), "{invalid:?}");
+    }
 }
 
 #[test]

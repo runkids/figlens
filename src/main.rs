@@ -36,9 +36,11 @@ usage:
                                              --compare-variant compares two stored variants in the same set
   figlens nodes <file.fig> <node>              print a frame as Figma REST-shaped nodes.json
                                              (instances expanded, fills/text/auto-layout included)
-  figlens nodes <file.fig> --frames <list>     one decode, many nodes: <list> has one node id per line
-                                             (at most 10000); prints one JSON line per id, the nodes
-                                             output with its nodeId, or {nodeId,error}
+  figlens nodes <file.fig> --frames <list|-> | --ids <node>...
+                                             one decode, many nodes: <list> has one node id per line
+                                             (- reads stdin), or name ids after --ids (at most 10000);
+                                             prints one JSON line per id, the nodes output with its
+                                             nodeId, or {nodeId,error}
   figlens variables <file.fig> [node]          print the variables a frame binds (design/variables.json);
                                              without a node, every local variable
   figlens bundle <file.fig> <node> <out.zip> [--states]
@@ -234,11 +236,12 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
         "bundle" if args.get(2).map(String::as_str) == Some("--frames") => {
             batch(&tree, &path, &args[2..])?;
         }
-        "nodes" if args.get(2).map(String::as_str) == Some("--frames") => {
-            let [_, list] = &args[2..] else {
-                return Err(USAGE.into());
-            };
-            nodes_batch(&tree, list, &mut std::io::stdout().lock())?;
+        "nodes" if matches!(args.get(2).map(String::as_str), Some("--frames" | "--ids")) => {
+            nodes_batch(
+                &tree,
+                &node_list(&args[2..])?,
+                &mut std::io::stdout().lock(),
+            )?;
         }
         "tree" | "find" | "inspect" | "node" | "nodes" | "variables" | "bundle" | "export" => {
             let command = command::Command::from_cli(command, &args[2..], &tree)?;
@@ -350,7 +353,7 @@ fn batch(tree: &Tree, fig: &Path, args: &[String]) -> Result<(), Box<dyn Error>>
     }
     let (list, dir) = (list.ok_or(USAGE)?, dir.ok_or("--frames needs --out-dir")?);
     std::fs::create_dir_all(&dir)?;
-    let frames = frame_list(&list)?;
+    let frames = frame_ids(&std::fs::read_to_string(&list)?);
     let jobs = jobs
         .filter(|&n| n > 0)
         .unwrap_or_else(rayon::current_num_threads);
@@ -397,31 +400,43 @@ fn batch(tree: &Tree, fig: &Path, args: &[String]) -> Result<(), Box<dyn Error>>
 }
 
 /// The first whitespace-separated field of each non-blank line, as a node id.
-fn frame_list(list: &str) -> std::io::Result<Vec<String>> {
-    Ok(std::fs::read_to_string(list)?
-        .lines()
+fn frame_ids(list: &str) -> Vec<String> {
+    list.lines()
         .filter_map(|l| l.split_whitespace().next().map(normalize_id))
-        .collect())
+        .collect()
+}
+
+/// `--frames <list>` (one id per line; `-` reads stdin) or `--ids <id>...`.
+fn node_list(args: &[String]) -> Result<Vec<String>, Box<dyn Error>> {
+    Ok(match args {
+        [flag, list] if flag == "--frames" && list == "-" => {
+            frame_ids(&std::io::read_to_string(std::io::stdin())?)
+        }
+        [flag, list] if flag == "--frames" => frame_ids(&std::fs::read_to_string(list)?),
+        [flag, ids @ ..] if flag == "--ids" && !ids.is_empty() => {
+            ids.iter().map(|id| normalize_id(id)).collect()
+        }
+        _ => return Err(USAGE.into()),
+    })
 }
 
 const MAX_NODE_FRAMES: usize = 10_000;
 
-/// `nodes --frames <list>`: one decode, one JSON line per id, written as each finishes so the
+/// `nodes --frames|--ids`: one decode, one JSON line per id, written as each finishes so the
 /// whole list's JSON is never held at once. A missing, failing or panicking id is its own line.
 fn nodes_batch(
     tree: &Tree,
-    list: &str,
+    frames: &[String],
     out: &mut impl std::io::Write,
 ) -> Result<(), Box<dyn Error>> {
-    let frames = frame_list(list)?;
     if frames.len() > MAX_NODE_FRAMES {
         return Err(format!(
-            "--frames lists {} ids; at most {MAX_NODE_FRAMES} per call",
+            "{} node ids listed; at most {MAX_NODE_FRAMES} per call",
             frames.len()
         )
         .into());
     }
-    for id in &frames {
+    for id in frames {
         let one = || figlens::rest::resolve_nodes(tree, id).map_err(|e| e.to_string());
         let line = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(one))
             .unwrap_or_else(|_| Err("figlens crashed on this node".to_owned()))
