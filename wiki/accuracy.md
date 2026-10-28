@@ -47,8 +47,7 @@ Exit 0 passes, 1 is a product regression (`FAIL NODES|ASSET|RENDER|MCP <case> ..
 From a clean checkout:
 
 ```sh
-mkdir -p samples/corpus
-docker compose run --rm dev sh -c 'cargo build --locked --bin figlens && cargo run --locked --example corpus-fixture -- samples/corpus/corpus.fig && python3 -B scripts/corpus-check.py --binary target/debug/figlens --corpus samples/corpus/corpus.fig'
+docker compose run --rm dev sh -c 'mkdir -p samples/corpus && cargo build --locked --bin figlens && cargo run --locked --example corpus-fixture -- samples/corpus/corpus.fig && python3 -B scripts/corpus-check.py --binary target/debug/figlens --corpus samples/corpus/corpus.fig'
 ```
 
 The generator refuses to overwrite, so delete `samples/corpus/corpus.fig` before a rerun. Verified on 2026-10-29: removing the `itemSpacing` emission in `src/rest.rs` fails with `FAIL NODES auto-layout $.document.itemSpacing: missing` and exit 1; restoring it passes.
