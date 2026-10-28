@@ -23,8 +23,8 @@ gcloud storage cp ./home.fig gs://example-design-handoff/designs/home.fig
 ```sh
 figlens find gs://example-design-handoff/designs/home.fig "Home" --type FRAME
 figlens inspect gs://example-design-handoff/designs/home.fig 12:345
-mkdir -p ./handoff
-figlens bundle gs://example-design-handoff/designs/home.fig 12:345 ./handoff/home.zip
+mkdir -p .figlens/exports && printf '*\n' > .figlens/exports/.gitignore
+figlens bundle gs://example-design-handoff/designs/home.fig 12:345 .figlens/exports/home.zip
 ```
 
 `12:345` is illustrative, not an ID promised by this recipe. The agent should discover it rather than asking users to learn IDs. After another export/upload to the same object, the **next tool/CLI call** queries generation again and downloads when its cache has no file for that generation. Read `context.md` and `missing-assets.json` from the new bundle; saved bundles remain snapshots.
