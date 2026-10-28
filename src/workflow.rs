@@ -1,9 +1,16 @@
 //! MCP access to the same workflow sources shipped to Pi and skill users.
 
 const SKILL: &str = include_str!("../skills/figlens/SKILL.md");
-pub const TOPICS: &[&str] = &["build", "images", "plan", "planning-details", "yolo"];
+pub const TOPICS: &[&str] = &[
+    "build",
+    "audit",
+    "images",
+    "plan",
+    "planning-details",
+    "yolo",
+];
 
-pub const INSTRUCTIONS: &str = "Read local Figma .fig snapshots with figlens. Resolve the requested screen from names or visible text using find/tree; ask about recognizable choices only when materially ambiguous, and resolve node IDs yourself. Use inspect for compact layout/text, nodes for full styles/masks/component data, variables for tokens, export for reference pixels or assets, and verify to check a bundle against its manifest and list its font faces. For implementation, call workflow(topic=build); for implementation planning or careful reproduction, also load plan; for website image preparation, load images. Load planning-details only for page/multi-page scope or unresolved dependencies. Load yolo only when the user explicitly requests autonomous implementation and temporary-plan cleanup. A plan-only request ends with a plan, and so does a request to plan the whole scope before implementing: detail every slice, then wait for approval; an authorized build continues through implementation, visual checks and corrections using the project's existing architecture. Simple questions and exports use the design tools directly. Workflow reads return guidance, not executed work; host tools and permissions govern project edits, browser checks and cleanup. Check isError and content on failed calls. Native Dev Mode annotations and font files are unavailable; report material gaps rather than guessing.";
+pub const INSTRUCTIONS: &str = "Read local Figma .fig snapshots with figlens. Resolve the requested screen from names or visible text using find/tree; ask about recognizable choices only when materially ambiguous, and resolve node IDs yourself. Use inspect for compact layout/text, nodes for full styles/masks/component data, variables for tokens, export for reference pixels or assets, and verify to check a bundle against its manifest and list its font faces. For implementation, call workflow(topic=build); for comparing existing UI with a design or correcting layout differences, call workflow(topic=audit); for implementation planning or careful reproduction, also load plan; for website image preparation, load images. Load planning-details only for page/multi-page scope or unresolved dependencies. Load yolo only when the user explicitly requests autonomous implementation and temporary-plan cleanup. A plan-only request ends with a plan, and so does a request to plan the whole scope before implementing: detail every slice, then wait for approval; an authorized build continues through implementation, visual checks and corrections using the project's existing architecture. Simple questions and exports use the design tools directly. Workflow reads return guidance, not executed work; host tools and permissions govern project edits, browser checks and cleanup. Check isError and content on failed calls. Native Dev Mode annotations and font files are unavailable; report material gaps rather than guessing.";
 
 const MCP_PREAMBLE: &str = "Use this guidance in the current agent context and within the user's authorized scope. It does not execute work or grant permissions. Use the configured figlens MCP tools with absolute file/output paths; CLI examples describe equivalent tool arguments. Project inspection/edits, directory creation, bundle extraction and browser checks require the host's own tools. Retrieve another topic only for missing guidance needed now: images covers image delivery; build covers design reading and project reuse. Links beginning workflow: name another topic of this tool, with an optional section anchor; no local skill installation is needed.\n\n";
 const CLI_PREAMBLE: &str = "Use this guidance in the current agent context and within the user's authorized scope. It does not execute work or grant permissions. Run the figlens commands shown; MCP argument names map to the same CLI arguments. Project inspection/edits, directory creation, bundle extraction and browser checks require the host's own tools. Retrieve another topic only for missing guidance needed now: images covers image delivery; build covers design reading and project reuse. A link beginning workflow: names another topic: run `figlens workflow <topic>`; no local skill installation is needed.\n\n";
@@ -22,11 +29,13 @@ fn compose(topic: &str, preamble: &str) -> Result<String, String> {
         "build" => &[
             "Where outputs go",
             "Building a frame",
+            "Verification evidence",
             "Font and asset preflight",
             "Link back to Figma",
             "Reading the output",
             "Known gaps",
         ],
+        "audit" => &["Where outputs go", "Verification evidence", "Known gaps"],
         "images" => &["Where outputs go", "Images and slices", "Known gaps"],
         "plan" | "planning-details" | "yolo" => &[],
         _ => {
@@ -38,29 +47,31 @@ fn compose(topic: &str, preamble: &str) -> Result<String, String> {
     };
     let mut text = String::from(preamble);
     match topic {
+        "audit" => text.push_str(include_str!("../skills/figlens/references/audit.md")),
         "plan" => text.push_str(include_str!("../skills/figlens/references/planning.md")),
         "planning-details" => text.push_str(include_str!(
             "../skills/figlens/references/planning-details.md"
         )),
         "yolo" => text.push_str(include_str!("../skills/figlens/references/yolo.md")),
-        _ => {
-            let skill = SKILL.replace("\r\n", "\n");
-            for heading in headings {
-                let marker = format!("## {heading}\n");
-                let start = skill
-                    .find(&marker)
-                    .ok_or_else(|| format!("embedded workflow section missing: {heading}"))?;
-                let section = &skill[start..];
-                text.push_str(
-                    section
-                        .split_once("\n## ")
-                        .map_or(section, |(first, _)| first),
-                );
-                text.push_str("\n\n");
-            }
-        }
+        _ => {}
+    }
+    let skill = SKILL.replace("\r\n", "\n");
+    for heading in headings {
+        let marker = format!("## {heading}\n");
+        let start = skill
+            .find(&marker)
+            .ok_or_else(|| format!("embedded workflow section missing: {heading}"))?;
+        let section = &skill[start..];
+        text.push_str(
+            section
+                .split_once("\n## ")
+                .map_or(section, |(first, _)| first),
+        );
+        text.push_str("\n\n");
     }
     for (file, topic) in [
+        ("../SKILL.md", "build"),
+        ("audit.md", "audit"),
         ("planning.md", "plan"),
         ("planning-details.md", "planning-details"),
         ("yolo.md", "yolo"),
@@ -77,6 +88,41 @@ fn compose(topic: &str, preamble: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_and_build_share_evidence_rules_across_cli_and_mcp() {
+        let marker = "## Verification evidence\n";
+        let skill = SKILL.replace("\r\n", "\n");
+        let evidence = skill
+            .split_once(marker)
+            .unwrap()
+            .1
+            .split("\n## ")
+            .next()
+            .unwrap();
+        for topic in ["audit", "build"] {
+            let mcp = read(topic).unwrap();
+            let cli = read_cli(topic).unwrap();
+            assert_eq!(
+                mcp.strip_prefix(MCP_PREAMBLE),
+                cli.strip_prefix(CLI_PREAMBLE)
+            );
+            assert!(mcp.contains(evidence));
+            assert!(mcp.contains("Static review is not visual acceptance"));
+            assert!(mcp.contains("Relationships") && mcp.contains("Variation"));
+            assert!(!mcp.contains("the reference image only confirms them"));
+        }
+        let audit = read("audit").unwrap();
+        assert!(audit.contains("# Audit an existing UI"));
+        assert!(audit.contains("review-only request authorizes no application edits"));
+        assert!(audit.contains("reuse its existing bundle"));
+        assert!(audit.contains("Stop that item"));
+        assert!(audit.contains("1, 3 and 7"));
+        assert!(audit.contains("workflow:build#building-a-frame"));
+        assert!(!audit.contains("](../SKILL.md"));
+        assert!(read("build").unwrap().contains("workflow:audit"));
+        assert!(INSTRUCTIONS.contains("workflow(topic=audit)"));
+    }
 
     #[test]
     fn build_reports_missing_dependencies_without_blocking_implementation() {

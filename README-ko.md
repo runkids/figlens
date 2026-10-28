@@ -47,6 +47,12 @@
 claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
 
+**Codex CLI** (Node.js 18+, macOS/Linux):
+
+```sh
+codex mcp add figlens -- npx -y @runkids/figlens mcp
+```
+
 **모든 MCP 클라이언트:**
 
 ```json
@@ -89,7 +95,7 @@ irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 |
 
 `npx`는 해석한 패키지 버전의 바이너리를 실행합니다. 스크립트로 설치했다면 `figlens update`, Homebrew로 설치했다면 `brew upgrade figlens`로 업데이트하세요. 바이너리는 macOS(Apple silicon, Intel), Linux(arm64, x86_64), Windows(x86_64)를 지원합니다.
 
-CLI를 사용하는 에이전트는 `figlens workflow build`(그 밖에 `images`, `plan`, `planning-details`, 명시적으로 요청할 때만 쓰는 `yolo`)로 가이드를 읽습니다. 내용은 항상 바이너리 버전과 일치합니다. [skill](#setup-skill)에서 읽을 수도 있습니다.
+CLI를 사용하는 에이전트는 `figlens workflow build`(그 밖에 `audit`, `images`, `plan`, `planning-details`, 명시적으로 요청할 때만 쓰는 `yolo`)로 가이드를 읽습니다. 내용은 항상 바이너리 버전과 일치합니다. [skill](#setup-skill)에서 읽을 수도 있습니다.
 
 [CLI 레퍼런스](docs/README-ko.md#commands)
 

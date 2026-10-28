@@ -47,6 +47,12 @@
 claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
 
+**Codex CLI**（Node.js 18+、macOS/Linux）：
+
+```sh
+codex mcp add figlens -- npx -y @runkids/figlens mcp
+```
+
 **任何 MCP client：**
 
 ```json
@@ -89,7 +95,7 @@ irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 |
 
 `npx` 會執行它解析到的套件版本所對應的執行檔。用安裝腳本裝的以 `figlens update` 更新；Homebrew 裝的以 `brew upgrade figlens` 更新。執行檔支援 macOS（Apple silicon、Intel）、Linux（arm64、x86_64）與 Windows（x86_64）。
 
-使用 CLI 的 agent 可以執行 `figlens workflow build` 讀取指引（另有 `images`、`plan`、`planning-details` 與需明確啟用的 `yolo`），內容永遠與執行檔版本一致；也可以改用 [agent skill](#setup-skill)。
+使用 CLI 的 agent 可以執行 `figlens workflow build` 讀取指引（另有 `audit`、`images`、`plan`、`planning-details` 與需明確啟用的 `yolo`），內容永遠與執行檔版本一致；也可以改用 [agent skill](#setup-skill)。
 
 [CLI 參考](docs/README-zh-TW.md#commands)
 

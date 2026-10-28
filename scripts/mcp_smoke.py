@@ -6,7 +6,7 @@ import os
 import queue
 import subprocess
 import threading
-from installation import stop_process
+from installation import run, stop_process
 
 
 @contextmanager
@@ -95,4 +95,11 @@ def check_mcp(command, cwd, env, fixture, version):
         assert normal['structuredContent']['node']['absoluteBoundingBox']['width'] == 320
         guide = request('tools/call', {'name': 'workflow', 'arguments': {'topic': 'build'}})
         assert guide['isError'] is False and 'Building a frame' in guide['content'][0]['text']
+        workflow = next(t for t in tools if t['name'] == 'workflow')
+        assert 'audit' in workflow['inputSchema']['properties']['topic']['enum']
+        audit = request('tools/call', {'name': 'workflow', 'arguments': {'topic': 'audit'}})
+        assert audit['isError'] is False and 'Static review is not visual acceptance' in audit['content'][0]['text']
+        cli_audit = run([*command[:-1], 'workflow', 'audit'], cwd, env)
+        assert '# Audit an existing UI' in cli_audit
+        assert cli_audit.split('# Audit an existing UI', 1)[1].rstrip() == audit['content'][0]['text'].split('# Audit an existing UI', 1)[1].rstrip()
     return {"recoveredAfterMissingNode": True, "numericPreflight": True, "strictRejectionAndRecovery": True, "stdout": "JSON-RPC only"}

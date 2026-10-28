@@ -47,6 +47,12 @@ Lege `design.fig` in dein Projekt und wähle dann **ein** Setup. Jedes gibt dein
 claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
 
+**Codex CLI** (Node.js 18+, macOS/Linux):
+
+```sh
+codex mcp add figlens -- npx -y @runkids/figlens mcp
+```
+
 **Jeder MCP-Client:**
 
 ```json
@@ -89,7 +95,7 @@ irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 |
 
 `npx` führt das Binary der aufgelösten Paketversion aus. Skript-Installationen aktualisierst du mit `figlens update`, Homebrew-Installationen mit `brew upgrade figlens`. Binaries gibt es für macOS (Apple silicon, Intel), Linux (arm64, x86_64) und Windows (x86_64).
 
-Ein Agent, der die CLI nutzt, liest seine Anleitung mit `figlens workflow build` (außerdem `images`, `plan`, `planning-details` und das nur auf ausdrücklichen Wunsch genutzte `yolo`), die immer zur Version des Binarys passt, oder aus dem [Agent-Skill](#setup-skill).
+Ein Agent, der die CLI nutzt, liest seine Anleitung mit `figlens workflow build` (außerdem `audit`, `images`, `plan`, `planning-details` und das nur auf ausdrücklichen Wunsch genutzte `yolo`), die immer zur Version des Binarys passt, oder aus dem [Agent-Skill](#setup-skill).
 
 [CLI-Referenz](docs/README-de.md#commands)
 

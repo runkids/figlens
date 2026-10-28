@@ -47,6 +47,12 @@ Put `design.fig` in your project, then choose **one** setup. Each gives your age
 claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
 
+**Codex CLI** (Node.js 18+, macOS/Linux):
+
+```sh
+codex mcp add figlens -- npx -y @runkids/figlens mcp
+```
+
 **Any MCP client:**
 
 ```json
@@ -89,7 +95,7 @@ irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 |
 
 `npx` runs the binary of the package version it resolves. Script installs update with `figlens update`; Homebrew installs with `brew upgrade figlens`. Binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64) and Windows (x86_64).
 
-An agent that uses the CLI reads its guidance with `figlens workflow build` (also `images`, `plan`, `planning-details` and the opt-in `yolo`), which always matches the binary's version, or from the [agent skill](#setup-skill).
+An agent that uses the CLI reads its guidance with `figlens workflow build` (also `audit`, `images`, `plan`, `planning-details` and the opt-in `yolo`), which always matches the binary's version, or from the [agent skill](#setup-skill).
 
 [CLI reference](docs/README.md#commands)
 
