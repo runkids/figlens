@@ -171,6 +171,39 @@ for line in sys.stdin:
                 with session([sys.executable, '-c', child], work, os.environ.copy(), timeout=1):
                     pass
 
+    def test_mcp_audit_cli_uses_bounded_runner(self):
+        guide = '# Audit an existing UI\nStatic review is not visual acceptance'
+        tools = [{'name': name} for name in ['find', 'nodes', 'bundle', 'export']]
+        tools.extend([
+            {'name': 'inspect', 'inputSchema': {'properties': {'depth': {'maximum': 10}}}},
+            {'name': 'workflow', 'inputSchema': {'properties': {'topic': {'enum': ['audit']}}}},
+        ])
+        request = Mock(side_effect=[
+            {'protocolVersion': '2025-06-18', 'serverInfo': {'version': '0.0.0'}},
+            None,
+            {'tools': tools},
+            {'isError': False, 'structuredContent': {'results': [{'id': '0:1'}]}},
+            {'isError': True, '_meta': {'figlens': {'code': 'node_not_found'}}},
+            {'isError': True, '_meta': {'figlens': {'code': 'invalid_arguments'}}},
+            {'isError': True, '_meta': {'figlens': {'code': 'invalid_arguments'}}},
+            {},
+            {'isError': False, 'structuredContent': {'node': {
+                'name': 'First success', 'absoluteBoundingBox': {'width': 320}}}},
+            {'isError': False, 'content': [{'text': 'Building a frame'}]},
+            {'isError': False, 'content': [{'text': guide}]},
+        ])
+        command = [sys.executable, 'wrapper.py', 'mcp']
+        with tempfile.TemporaryDirectory() as work:
+            root, env = Path(work), os.environ.copy()
+            with patch('mcp_smoke.session') as smoke, patch('mcp_smoke.run') as runner, \
+                    patch('mcp_smoke.subprocess.check_output', return_value=guide) as unbounded:
+                smoke.return_value.__enter__.return_value = request
+                runner.return_value = guide
+                result = check_mcp(command, root, env, root/'unused.fig', '0.0.0')
+                self.assertTrue(result['recoveredAfterMissingNode'])
+                runner.assert_called_once_with([sys.executable, 'wrapper.py', 'workflow', 'audit'], root, env)
+                unbounded.assert_not_called()
+
     def test_mcp_rejects_log_lines_on_stdout(self):
         with tempfile.TemporaryDirectory() as work:
             root = Path(work)
