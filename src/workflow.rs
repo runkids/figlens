@@ -92,7 +92,8 @@ mod tests {
     #[test]
     fn audit_and_build_share_evidence_rules_across_cli_and_mcp() {
         let marker = "## Verification evidence\n";
-        let evidence = SKILL
+        let skill = SKILL.replace("\r\n", "\n");
+        let evidence = skill
             .split_once(marker)
             .unwrap()
             .1
