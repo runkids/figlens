@@ -29,7 +29,17 @@
 
 **還沒有設計檔？** [用小型公開範例檢查環境](examples/first-success/README.md)：驗證所選執行檔、找到一個 frame，再核對 bundle 內容。不需要模型。
 
-把 `design.fig` 放進你的專案，再選你的 agent。
+把 `design.fig` 放進你的專案，再從下面**擇一**設定。每種方式都會讓 agent 取得 figlens 工具，以及同一套內建的規劃、實作與圖片處理指引。
+
+| 方式 | 適用對象 | 指引來源 |
+|---|---|---|
+| [MCP](#setup-mcp) | Claude Code、Cursor、Codex、Gemini CLI 等 MCP client | server 的 `workflow` tool |
+| [Pi](#setup-pi) | Pi 1.3.0+ | 套件內附的 skill |
+| [CLI](#setup-cli) | 只會執行 shell 指令的 agent、腳本與 CI，或你自己 | `figlens workflow <topic>`，或選用的 [skill](#setup-skill) |
+
+<a id="setup-mcp"></a>
+
+### MCP
 
 **Claude Code**（Node.js 18+、macOS/Linux）：
 
@@ -37,21 +47,79 @@
 claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
 
-開啟新的 session 並檢查 `/mcp`。用自己的話描述想做的畫面即可：MCP 內建按需讀取的規劃、實作及圖片處理指引，不必另外安裝 skill。
+**任何 MCP client：**
 
-**Pi**（1.3.0+）：一個套件包含 CLI、MCP、viewer 與 skill。
+```json
+{
+  "mcpServers": {
+    "figlens": {
+      "command": "npx",
+      "args": ["-y", "@runkids/figlens", "mcp"]
+    }
+  }
+}
+```
+
+沒有 Node.js 時，先安裝獨立執行檔（見 [CLI](#setup-cli)），再改用 `"command": "figlens", "args": ["mcp"]`。開啟新的 session，確認看得到 figlens 工具（Claude Code 用 `/mcp`）。不必另外安裝 skill。在 `mcp` 後面加上 `--root <dir>`，可以限制 figlens 能讀寫的資料夾。
+
+<a id="setup-pi"></a>
+
+### Pi
+
+一個套件包含 CLI、MCP、viewer、`/figlens` 指令與 skill：
 
 ```sh
 pi install npm:@runkids/figlens
 ```
 
-**任何 MCP client**（Cursor、Codex、Gemini CLI 等）：
+[Pi 擴充套件說明](docs/README-zh-TW.md#pi)
 
-```json
-{ "mcpServers": { "figlens": { "command": "npx", "args": ["-y", "@runkids/figlens", "mcp"] } } }
+<a id="setup-cli"></a>
+
+### CLI
+
+透過 npm 執行，或安裝獨立執行檔：
+
+```sh
+npx @runkids/figlens --help                                                                # Node.js 18+，免安裝
+curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh | sh  # macOS、Linux
+brew install runkids/tap/figlens                                                           # Homebrew
+irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 | iex      # Windows PowerShell
 ```
 
-[獨立執行檔安裝](docs/README-zh-TW.md#install)
+`npx` 會執行它解析到的套件版本所對應的執行檔。用安裝腳本裝的以 `figlens update` 更新；Homebrew 裝的以 `brew upgrade figlens` 更新。執行檔支援 macOS（Apple silicon、Intel）、Linux（arm64、x86_64）與 Windows（x86_64）。
+
+使用 CLI 的 agent 可以執行 `figlens workflow build` 讀取指引（另有 `images`、`plan`、`planning-details` 與需明確啟用的 `yolo`），內容永遠與執行檔版本一致；也可以改用 [agent skill](#setup-skill)。
+
+[CLI 參考](docs/README-zh-TW.md#commands)
+
+<a id="setup-skill"></a>
+
+### Agent skill（選用）
+
+skill 教 agent 的流程和內建指引相同：找到 frame、分段讀取 bundle、規劃範圍內的工作，再拿執行中的 UI 和設計比對。skill 只有說明，不含執行檔，要搭配 CLI 或 MCP 使用。用 MCP 或 Pi 則不需要另外安裝。
+
+**推薦：[skillshare](https://github.com/runkids/skillshare)。** 安裝一次 skill，就能同步到你用的每個 agent：
+
+```sh
+skillshare install github.com/runkids/figlens/skills/figlens
+skillshare sync
+```
+
+同一個工具也能幫這些 agent 設定 figlens 的 MCP 連線：
+
+```sh
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
+skillshare sync mcp --global
+```
+
+其他安裝 skill 的方式：
+
+```sh
+npx skills add runkids/figlens --skill figlens   # Skills CLI
+```
+
+也可以從這個 repo 或 release archive 把 `skills/figlens/` 複製到 agent 的 skills 目錄（Claude Code：`~/.claude/skills/`）。另外安裝的 skill 和執行檔分開更新；`figlens workflow` 則一定和執行檔同版。
 
 接著請它做一個畫面：
 

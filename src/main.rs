@@ -64,6 +64,9 @@ usage:
   figlens mcp [--root DIR]...                  serve workflow guidance, tree, find, inspect, nodes, variables,
                                              bundle and export as MCP tools; raster export returns an inline image;
                                              with --root, files and outputs must be under one of the folders
+  figlens workflow <topic>                     print built-in agent guidance, the same text as MCP workflow:
+                                             build, images, plan, planning-details or yolo; a
+                                             workflow:<topic> link means `figlens workflow <topic>`
   figlens cache [clear]                        show, or clear, the preview render cache
                                              (prints {path,bytes} or {path,freed})
   figlens update                               install the latest GitHub release over this binary
@@ -125,6 +128,7 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                     | "compare"
                     | "preview"
                     | "mcp"
+                    | "workflow"
                     | "cache"
                     | "update"
             )
@@ -161,6 +165,16 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             return Ok(());
         }
         Some("mcp") => return mcp(&args[1..]),
+        Some("workflow") => {
+            let topic = args.get(1).ok_or_else(|| {
+                format!(
+                    "figlens workflow <topic>; choose {}",
+                    workflow::TOPICS.join(", ")
+                )
+            })?;
+            writeln!(out, "{}", workflow::read_cli(topic)?)?;
+            return Ok(());
+        }
         _ => {}
     }
     let (command, file) = match (args.first(), args.get(1)) {

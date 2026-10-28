@@ -209,6 +209,7 @@ fn subcommand_help_does_not_open_a_source_or_run_an_action() {
         "compare",
         "preview",
         "mcp",
+        "workflow",
         "cache",
         "update",
     ] {
@@ -221,6 +222,21 @@ fn subcommand_help_does_not_open_a_source_or_run_an_action() {
             );
         }
     }
+}
+
+#[test]
+fn cli_workflow_prints_the_mcp_guidance_with_cli_directions() {
+    let mut out = String::new();
+    run(vec!["workflow".into(), "images".into()], &mut out).unwrap();
+    let mcp = crate::workflow::read("images").unwrap();
+    let body = &mcp[mcp.find("\n\n").unwrap()..];
+    assert!(out.ends_with(&format!("{body}\n")) && !out.contains("figlens MCP tools"));
+    assert!(out.contains("run `figlens workflow <topic>`"));
+    let error = run(vec!["workflow".into(), "nope".into()], &mut String::new()).unwrap_err();
+    assert!(
+        error.to_string().contains("choose build, images"),
+        "{error}"
+    );
 }
 
 #[test]

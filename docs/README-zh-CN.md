@@ -18,7 +18,7 @@
 
 ## 独立可执行文件安装
 
-**没有 Node.js？** 安装独立可执行文件，并改用 `"command": "figlens"`：
+**没有 Node.js？** 安装独立可执行文件，并改用 `"command": "figlens", "args": ["mcp"]`：
 
 | 平台 | 命令 |
 |---|---|
@@ -147,7 +147,7 @@ skillshare mcp add figlens --global --target claude --target codex --target curs
 skillshare sync && skillshare sync mcp --global
 ```
 
-**安装说明。** npm launcher 会在首次使用时下载匹配的原生可执行文件，对照 release 的 SHA-256 校验和进行验证并缓存。独立安装可用 `figlens update` 更新。可执行文件覆盖 macOS（Apple silicon、Intel）、Linux（arm64、x86_64、静态 musl）和 Windows（x86_64）。
+**安装说明。** npm launcher 会在首次使用时下载匹配的原生可执行文件，对照 release 的 SHA-256 校验和进行验证并缓存。用安装脚本装的通过 `figlens update` 更新；Homebrew 装的通过 `brew upgrade figlens` 更新。可执行文件覆盖 macOS（Apple silicon、Intel）、Linux（arm64、x86_64、静态 musl）和 Windows（x86_64）。
 
 <a id="commands"></a>
 
