@@ -429,10 +429,23 @@ struct Expander<'t, 'a> {
     out: Expansion,
     /// The components being expanded, outermost first: one that contains itself stops here.
     symbols: Vec<String>,
+    /// Bytes left for the `id`, `name` and `type` every expanded node emits; `None` is unbounded.
+    budget: Option<usize>,
+    exceeded: bool,
 }
 
 /// Expands every visible instance under `root` into `I<instance>;<path>` nodes.
 pub fn expand_instances(tree: &Tree, root: &str) -> Expansion {
+    expand_all(tree, root, None).unwrap()
+}
+
+/// `expand_instances`, or `None` once the expanded nodes' emitted `id`, `name` and `type`
+/// alone exceed `bytes`: a lower bound of `root`'s REST JSON, so a fitting scope still expands.
+pub fn expand_instances_within(tree: &Tree, root: &str, bytes: usize) -> Option<Expansion> {
+    expand_all(tree, root, Some(bytes))
+}
+
+fn expand_all(tree: &Tree, root: &str, budget: Option<usize>) -> Option<Expansion> {
     let mut ex = Expander {
         tree,
         out: Expansion {
@@ -440,10 +453,16 @@ pub fn expand_instances(tree: &Tree, root: &str) -> Expansion {
             children: HashMap::new(),
         },
         symbols: Vec::new(),
+        budget,
+        exceeded: false,
     };
     for id in subtree(tree, root) {
         let inst = tree.nodes[&id];
         if enum_name(inst, "type") != Some("INSTANCE") || !shown(tree, &id, root) {
+            continue;
+        }
+        // REST output keeps stored children over an expansion, so a bounded run skips it unread.
+        if budget.is_some() && tree.children.contains_key(&id) {
             continue;
         }
         let Some(main) = main_of(tree, inst) else {
@@ -474,8 +493,11 @@ pub fn expand_instances(tree: &Tree, root: &str) -> Expansion {
             abs_matrix(tree, &id, root),
             resize,
         );
+        if ex.exceeded {
+            return None;
+        }
     }
-    ex.out
+    Some(ex.out)
 }
 
 impl Expander<'_, '_> {
@@ -494,6 +516,9 @@ impl Expander<'_, '_> {
     ) {
         let tree = self.tree;
         for child_id in tree.children.get(symbol).into_iter().flatten() {
+            if self.exceeded {
+                return;
+            }
             let child = tree.nodes[child_id];
             // Library component copies keep the library's ids in overrideKey, and paths use those.
             let key = child
@@ -605,6 +630,20 @@ impl Expander<'_, '_> {
             if self.out.nodes.contains_key(&id) {
                 continue;
             }
+            let rest_type = plugin_type(child);
+            if let Some(left) = self.budget {
+                let emitted = serde_json::to_vec(
+                    &serde_json::json!({"id": id, "name": name, "type": rest_type}),
+                )
+                .map_or(0, |v| v.len() - 2);
+                match left.checked_sub(emitted) {
+                    Some(left) => self.budget = Some(left),
+                    None => {
+                        self.exceeded = true;
+                        return;
+                    }
+                }
+            }
             self.out
                 .children
                 .entry(parent.to_owned())
@@ -624,7 +663,7 @@ impl Expander<'_, '_> {
                 Expanded {
                     source,
                     name,
-                    kind: plugin_type(child),
+                    kind: rest_type,
                     size,
                     matrix,
                     props,
@@ -743,6 +782,8 @@ mod tests {
                     children: HashMap::new(),
                 },
                 symbols: Vec::new(),
+                budget: None,
+                exceeded: false,
             };
             let derived = Patches::from([(
                 "group".into(),
@@ -809,6 +850,8 @@ mod tests {
                     children: HashMap::new(),
                 },
                 symbols: Vec::new(),
+                budget: None,
+                exceeded: false,
             };
             let ov = Patches::from([(
                 "child".into(),
@@ -901,6 +944,64 @@ mod tests {
         let error = error.downcast_ref::<crate::FigError>().unwrap();
         assert_eq!(error.kind(), crate::ErrorKind::ResponseBudget);
         assert!(within("Iinst;1:4", 1024).is_ok());
+    }
+
+    #[test]
+    fn a_bounded_expansion_stops_exponential_fan_out_but_keeps_fitting_scopes() {
+        // Component d holds ten instances of component d + 1: 10^6 nested copies in all.
+        let instance = |d: u32| {
+            obj(vec![
+                ("type", Value::Enum("NodeType", "INSTANCE")),
+                ("symbolData", obj(vec![("symbolID", guid(d, 0))])),
+            ])
+        };
+        let mut owned = vec![
+            ("inst".to_owned(), instance(10)),
+            ("16:0".to_owned(), obj(vec![])),
+        ];
+        let mut children = HashMap::new();
+        for d in 10..16 {
+            owned.push((format!("{d}:0"), obj(vec![])));
+            let kids: Vec<String> = (1..=10).map(|i| format!("{d}:{i}")).collect();
+            for kid in &kids {
+                owned.push((kid.clone(), instance(d + 1)));
+            }
+            children.insert(format!("{d}:0"), kids);
+        }
+        let mut tree = Tree {
+            nodes: owned.iter().map(|(id, v)| (id.clone(), v)).collect(),
+            children,
+            blobs: Vec::new(),
+        };
+        assert!(expand_instances_within(&tree, "inst", 1 << 20).is_none());
+        let error = crate::rest::resolve_nodes_within(&tree, "inst", 1 << 20).unwrap_err();
+        let error = error.downcast_ref::<crate::FigError>().unwrap();
+        assert_eq!(error.kind(), crate::ErrorKind::ResponseBudget);
+        // Two levels fit: the bounded run matches the full one.
+        tree.children.insert("12:0".into(), Vec::new());
+        let full = crate::rest::resolve_nodes(&tree, "inst").unwrap();
+        let size = serde_json::to_vec(&full["document"]).unwrap().len();
+        let bounded = expand_instances_within(&tree, "inst", size).unwrap();
+        assert_eq!(bounded.nodes.len(), 110);
+        assert_eq!(bounded.children, expand_instances(&tree, "inst").children);
+        assert_eq!(
+            crate::rest::resolve_nodes_within(&tree, "inst", size).unwrap(),
+            full
+        );
+        // REST keeps stored children over an expansion, so a bounded run neither counts nor builds it.
+        tree.children.insert("inst".into(), Vec::new());
+        let full = crate::rest::resolve_nodes(&tree, "inst").unwrap();
+        let size = serde_json::to_vec(&full["document"]).unwrap().len();
+        assert!(
+            expand_instances_within(&tree, "inst", 0)
+                .unwrap()
+                .nodes
+                .is_empty()
+        );
+        assert_eq!(
+            crate::rest::resolve_nodes_within(&tree, "inst", size).unwrap(),
+            full
+        );
     }
 
     #[test]
@@ -1182,6 +1283,8 @@ mod tests {
                     children: HashMap::new(),
                 },
                 symbols: Vec::new(),
+                budget: None,
+                exceeded: false,
             };
             let ov = Patches::from([(
                 "child".into(),

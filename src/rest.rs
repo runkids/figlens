@@ -6,7 +6,9 @@ use std::collections::HashMap;
 
 use serde_json::{Map, Value as Json, json};
 
-use crate::expand::{Expansion, Mat, Vec2, abs_matrix, expand_instances, plugin_type};
+use crate::expand::{
+    Expansion, Mat, Vec2, abs_matrix, expand_instances, expand_instances_within, plugin_type,
+};
 use crate::render::{self, Rect};
 use crate::{Tree, to_json};
 
@@ -114,9 +116,20 @@ fn build(tree: &Tree, root: &str, render: bool, budget: Option<&Budget>) -> Json
                 .push(id.clone());
         }
     }
+    // Every expansion under a selected stored root is emitted, so expansion can stop early too.
+    let ex = match budget.filter(|b| b.target == root) {
+        Some(b) => match expand_instances_within(tree, root, b.bytes) {
+            Some(ex) => ex,
+            None => {
+                b.used.set(b.bytes.saturating_add(1));
+                return Json::Null;
+            }
+        },
+        None => expand_instances(tree, root),
+    };
     let b = Builder {
         tree,
-        ex: expand_instances(tree, root),
+        ex,
         // Expanded matrices are relative to `root`'s own space.
         base: abs_matrix(tree, root, ""),
         vars: variables(tree),
