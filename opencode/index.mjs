@@ -40,7 +40,7 @@ export default Plugin.define({ id: 'figlens', async setup(ctx) {
   } });
   registrations.push(operations);
   registrations.push(await ctx.command.transform(editor => editor.add({ name: 'figlens',
-    description: 'Open or preview a design, plan, implement, or review mappings', execute: async input => {
+    description: 'Plan or implement a design, select a scope or review component mappings: open, preview, plan, yolo, frame, map, review, status, close, help', execute: async input => {
       const text = input.prompt.text.trim();
       if (text === 'review' || text === 'frame') {
         await adapter.scope(input.sessionID);

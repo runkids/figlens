@@ -13,10 +13,15 @@ import { buildRequest } from '../pi/requests.mjs';
 const execute = promisify(execFile);
 import { HELP } from './rpc.mjs';
 
+// Under Bun-built hosts such as OpenCode, process.execPath is the host binary, which cannot run the Node launcher.
+export function launcherRuntime(versions = process.versions, execPath = process.execPath) {
+  return versions.bun ? 'node' : execPath;
+}
+
 export function createAdapter(ctx, entry = import.meta.url) {
   const wrapper = fileURLToPath(new URL('../bin/figlens.js', entry));
   const bundled = !process.env.FIGLENS_BIN && existsSync(wrapper);
-  const command = process.env.FIGLENS_BIN || (bundled ? process.execPath : 'figlens');
+  const command = process.env.FIGLENS_BIN || (bundled ? launcherRuntime() : 'figlens');
   const prefix = bundled ? [wrapper] : [];
   const cacheRoot = path.join(process.env.XDG_CACHE_HOME || (process.platform === 'win32' && process.env.LOCALAPPDATA) || path.join(homedir(), '.cache'), 'figlens');
   const commandLine = args => [command, ...prefix, ...args].map(value => `'${value.replaceAll("'", "'\\''")}'`).join(' ');
