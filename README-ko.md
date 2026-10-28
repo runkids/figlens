@@ -60,7 +60,7 @@ claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlen
 }
 ```
 
-Node.js가 없다면 독립 바이너리([CLI](#setup-cli))를 설치하고 `"command": "figlens"`를 사용하세요. 새 세션을 열고 figlens 도구가 목록에 나타나는지 확인하세요(Claude Code에서는 `/mcp`). skill을 따로 설치할 필요는 없습니다. `mcp` 뒤에 `--root <dir>`를 붙이면 figlens가 읽고 쓸 수 있는 폴더를 제한할 수 있습니다.
+Node.js가 없다면 독립 바이너리([CLI](#setup-cli))를 설치하고 `"command": "figlens", "args": ["mcp"]`를 사용하세요. 새 세션을 열고 figlens 도구가 목록에 나타나는지 확인하세요(Claude Code에서는 `/mcp`). skill을 따로 설치할 필요는 없습니다. `mcp` 뒤에 `--root <dir>`를 붙이면 figlens가 읽고 쓸 수 있는 폴더를 제한할 수 있습니다.
 
 <a id="setup-pi"></a>
 

@@ -18,7 +18,7 @@
 
 ## Eigenständige Installation
 
-**Kein Node.js?** Installiere das eigenständige Binary und verwende stattdessen `"command": "figlens"`:
+**Kein Node.js?** Installiere das eigenständige Binary und verwende stattdessen `"command": "figlens", "args": ["mcp"]`:
 
 | Plattform | Befehl |
 |---|---|

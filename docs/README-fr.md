@@ -18,7 +18,7 @@
 
 ## Installation autonome
 
-**Pas de Node.js ?** Installez le binaire autonome et utilisez `"command": "figlens"` à la place :
+**Pas de Node.js ?** Installez le binaire autonome et utilisez `"command": "figlens", "args": ["mcp"]` à la place :
 
 | Plateforme | Commande |
 |---|---|

@@ -18,7 +18,7 @@
 
 ## Instalação independente
 
-**Sem Node.js?** Instale o binário independente e use `"command": "figlens"` no lugar:
+**Sem Node.js?** Instale o binário independente e use `"command": "figlens", "args": ["mcp"]` no lugar:
 
 | Plataforma | Comando |
 |---|---|

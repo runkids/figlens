@@ -60,7 +60,7 @@ claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlen
 }
 ```
 
-Node.js がない場合は、スタンドアロン版のバイナリ（[CLI](#setup-cli)）をインストールし、`"command": "figlens"` を使います。新しいセッションを開き、figlens のツールが一覧に表示されることを確認します（Claude Code では `/mcp`）。skill を別途インストールする必要はありません。`mcp` の後に `--root <dir>` を付けると、figlens が読み書きできるフォルダーを制限できます。
+Node.js がない場合は、スタンドアロン版のバイナリ（[CLI](#setup-cli)）をインストールし、`"command": "figlens", "args": ["mcp"]` を使います。新しいセッションを開き、figlens のツールが一覧に表示されることを確認します（Claude Code では `/mcp`）。skill を別途インストールする必要はありません。`mcp` の後に `--root <dir>` を付けると、figlens が読み書きできるフォルダーを制限できます。
 
 <a id="setup-pi"></a>
 

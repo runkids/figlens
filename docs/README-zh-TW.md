@@ -18,7 +18,7 @@
 
 ## 獨立執行檔安裝
 
-**沒有 Node.js？** 安裝獨立執行檔，並改用 `"command": "figlens"`：
+**沒有 Node.js？** 安裝獨立執行檔，並改用 `"command": "figlens", "args": ["mcp"]`：
 
 | 平台 | 指令 |
 |---|---|

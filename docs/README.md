@@ -18,7 +18,7 @@
 
 ## Standalone installation
 
-**No Node.js?** Install the standalone binary and use `"command": "figlens"` instead:
+**No Node.js?** Install the standalone binary and use `"command": "figlens", "args": ["mcp"]` instead:
 
 | Platform | Command |
 |---|---|

@@ -60,7 +60,7 @@ claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlen
 }
 ```
 
-Without Node.js, install the standalone binary ([CLI](#setup-cli)) and use `"command": "figlens"`. Start a new session and check that the figlens tools are listed (`/mcp` in Claude Code). No separate skill install is required. Add `--root <dir>` after `mcp` to limit which folders figlens may read and write.
+Without Node.js, install the standalone binary ([CLI](#setup-cli)) and use `"command": "figlens", "args": ["mcp"]`. Start a new session and check that the figlens tools are listed (`/mcp` in Claude Code). No separate skill install is required. Add `--root <dir>` after `mcp` to limit which folders figlens may read and write.
 
 <a id="setup-pi"></a>
 

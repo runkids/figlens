@@ -60,7 +60,7 @@ claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlen
 }
 ```
 
-沒有 Node.js 時，先安裝獨立執行檔（見 [CLI](#setup-cli)），再改用 `"command": "figlens"`。開啟新的 session，確認看得到 figlens 工具（Claude Code 用 `/mcp`）。不必另外安裝 skill。在 `mcp` 後面加上 `--root <dir>`，可以限制 figlens 能讀寫的資料夾。
+沒有 Node.js 時，先安裝獨立執行檔（見 [CLI](#setup-cli)），再改用 `"command": "figlens", "args": ["mcp"]`。開啟新的 session，確認看得到 figlens 工具（Claude Code 用 `/mcp`）。不必另外安裝 skill。在 `mcp` 後面加上 `--root <dir>`，可以限制 figlens 能讀寫的資料夾。
 
 <a id="setup-pi"></a>
 
