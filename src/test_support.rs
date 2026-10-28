@@ -11,6 +11,10 @@ impl TestDir {
             match std::fs::create_dir(&path) {
                 Ok(()) => return Self(path),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => next += 1,
+                // Windows denies a name whose earlier directory is still being deleted.
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && next < 64 => {
+                    next += 1
+                }
                 Err(e) => panic!("{}: {e}", path.display()),
             }
         }
