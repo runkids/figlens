@@ -415,19 +415,31 @@ pub(crate) fn diagnostics(tree: &Tree, n: &Json) -> Vec<Json> {
             }
         }
     }
+    let mut blur_drawn = n["isMask"] == Json::Bool(true);
     for (i, effect) in r["effects"].as_array().into_iter().flatten().enumerate() {
         if !visible(effect) || is_filter_effect(effect) {
             continue;
         }
         if effect["type"] == "BACKGROUND_BLUR" {
-            if effect["radius"].as_f64().is_some_and(|v| v > 0.0) {
+            if !effect["radius"].as_f64().is_some_and(|v| v > 0.0) {
+                continue;
+            }
+            if blur_drawn {
+                report(
+                    "backgroundBlur",
+                    format!("effects[{i}]"),
+                    "skipped",
+                    "Only a node's first background blur is drawn, and none on a mask",
+                );
+            } else {
                 report(
                     "backgroundBlur",
                     format!("effects[{i}]"),
                     "approximate",
-                    "Background blur sees only what the same export draws behind the node",
+                    "Background blur sees only what the same export draws behind the node; past 64 blurs or 32 MiB of backdrop per export, later ones are skipped",
                 );
             }
+            blur_drawn = true;
         } else {
             report(
                 "effect",
@@ -736,8 +748,16 @@ pub struct Svg<'t, 'a> {
     /// Drawn under the node across the whole export area.
     backdrop: String,
     /// What each open ancestor has drawn so far, outermost first: the content a background
-    /// blur sees. Tracked only when the export has one (`None` otherwise).
-    behind: Option<Vec<String>>,
+    /// blur sees, with its markup size once references are expanded. Tracked only when the
+    /// export has one (`None` otherwise).
+    behind: Option<Vec<(String, usize)>>,
+    /// Markup size of each shared body with its references expanded, as a renderer expands them.
+    expanded: std::collections::HashMap<String, usize>,
+    /// Replacement references that leave background blurs out of a backdrop: empty for a blur,
+    /// a blur-free copy for a body that contains one.
+    plain: std::collections::HashMap<String, String>,
+    /// Expanded markup drawn by background blurs so far in this export.
+    blurred: usize,
     /// Output pixels per user unit, set by `document`.
     scale: f64,
     /// Downscaled images by hash and halving count; `None` keeps full images (SVG output).
@@ -754,6 +774,9 @@ impl<'t, 'a> Svg<'t, 'a> {
             id_prefix: String::new(),
             backdrop: String::new(),
             behind: None,
+            expanded: Default::default(),
+            plain: Default::default(),
+            blurred: 0,
             scale: 1.0,
             mips: None,
         }
@@ -950,8 +973,9 @@ impl<'t, 'a> Svg<'t, 'a> {
         inner += &fills;
         // A boolean operation's children are its operands, already merged into its geometry.
         if n["type"] != "BOOLEAN_OPERATION" {
+            let len = self.expanded_len(&fills);
             if let Some(b) = self.behind.as_mut() {
-                b.push(fills.clone());
+                b.push((fills.clone(), len));
             }
             let mut kids = String::new();
             let mut masked: Option<String> = None;
@@ -975,8 +999,13 @@ impl<'t, 'a> Svg<'t, 'a> {
                 let body = self.node(c);
                 let body = self.shared(body);
                 // shortcut: a backdrop ignores ancestors' masks, clips, opacity and blend modes; add them when a design blurs through one.
-                if let Some(level) = self.behind.as_mut().and_then(|b| b.last_mut()) {
-                    level.push_str(&body);
+                if self.behind.is_some() {
+                    let plain = self.without_blurs(&body);
+                    let len = self.expanded_len(&plain);
+                    if let Some(level) = self.behind.as_mut().and_then(|b| b.last_mut()) {
+                        level.0 += &plain;
+                        level.1 = level.1.saturating_add(len);
+                    }
                 }
                 match masked.as_mut() {
                     Some(m) => m.push_str(&body),
@@ -1352,26 +1381,92 @@ impl<'t, 'a> Svg<'t, 'a> {
         if self.behind.is_none() || body.is_empty() {
             return body;
         }
+        let plain = self.without_blurs(&body);
+        if plain != body {
+            let plain = format!("<use href=\"#{}\"/>", self.define(plain));
+            let id = self.define(body);
+            self.plain.insert(id.clone(), plain);
+            return format!("<use href=\"#{id}\"/>");
+        }
+        format!("<use href=\"#{}\"/>", self.define(body))
+    }
+
+    fn define(&mut self, body: String) -> String {
         let id = self.id("b");
+        self.expanded.insert(id.clone(), self.expanded_len(&body));
         let _ = write!(self.defs, "<g id=\"{id}\">{body}</g>");
-        format!("<use href=\"#{id}\"/>")
+        id
+    }
+
+    /// `body` with references to background blurs dropped and references to bodies containing
+    /// them swapped for blur-free copies. Backdrops are drawn from these, so a blurred sibling is
+    /// not blurred again into the next one: that nesting grows exponentially.
+    fn without_blurs(&self, body: &str) -> String {
+        let mut parts = body.split("<use href=\"#");
+        let mut out = parts.next().unwrap_or_default().to_string();
+        for part in parts {
+            match part
+                .split_once("\"/>")
+                .filter(|(id, _)| self.plain.contains_key(*id))
+            {
+                Some((id, rest)) => {
+                    out += &self.plain[id];
+                    out += rest;
+                }
+                None => {
+                    out += "<use href=\"#";
+                    out += part;
+                }
+            }
+        }
+        out
+    }
+
+    /// `body`'s length with every shared reference in it expanded.
+    fn expanded_len(&self, body: &str) -> usize {
+        body.split("<use href=\"#")
+            .skip(1)
+            .filter_map(|s| self.expanded.get(s.split('"').next()?))
+            .fold(body.len(), |sum, len| sum.saturating_add(*len))
     }
 
     /// What the export has drawn behind `n`, blurred and cut to `n`'s fill outline, for its
     /// first active background blur. Paths are in page space, so the drawn content is reused
-    /// as is. Content outside the export (an ancestor when only `n` is exported) is not seen.
+    /// as is.
+    // shortcut: content outside the export (an ancestor when only `n` is exported) is not seen, and an earlier blur is seen unblurred; render the ancestors when a design needs them.
     fn background_blur(&mut self, n: &Json) -> Option<String> {
         let radius = active_background_blur(n)?;
-        let behind = self.backdrop.clone() + &self.behind.as_ref()?.concat();
-        let clip = self.id("c");
-        let mut paths = String::new();
-        for (segs, odd, m) in fill_shapes(self.tree, n) {
-            let rule = if odd { " clip-rule=\"evenodd\"" } else { "" };
-            let _ = write!(paths, "<path d=\"{}\"{rule}/>", path_d(&segs, m));
-        }
-        let _ = write!(self.defs, "<clipPath id=\"{clip}\">{paths}</clipPath>");
-        // The blur reads 3 sigma (sigma = radius / 2) beyond the outline, as layer blurs do.
         let [x0, y0, x1, y1] = rect_of(&n["_r"]["fb"]).or_else(|| box_bounds(n))?;
+        let levels = self.behind.as_ref()?;
+        // Each blur redraws its backdrop, so a crafted file with many blurs over large content
+        // must not exhaust the renderer. A blur costs at least 1/MAX_BLURS of the budget: its
+        // Gaussian pass and any images it redraws are not counted in markup.
+        let len = levels
+            .iter()
+            .fold(self.backdrop.len(), |sum, (_, len)| {
+                sum.saturating_add(*len)
+            })
+            .max(BLUR_BUDGET / MAX_BLURS);
+        if self.blurred.saturating_add(len) > BLUR_BUDGET {
+            return None;
+        }
+        self.blurred += len;
+        let behind: String = levels.iter().map(|(markup, _)| markup.as_str()).collect();
+        let behind = self.backdrop.clone() + &behind;
+        // One outline, as `fills` paints it, so a hole in the fill is a hole in the blur.
+        let shapes = fill_shapes(self.tree, n);
+        let d: String = shapes.iter().map(|(s, _, m)| path_d(s, *m)).collect();
+        let rule = if shapes.iter().any(|(_, odd, _)| *odd) {
+            " clip-rule=\"evenodd\""
+        } else {
+            ""
+        };
+        let clip = self.id("c");
+        let _ = write!(
+            self.defs,
+            "<clipPath id=\"{clip}\"><path d=\"{d}\"{rule}/></clipPath>"
+        );
+        // The blur reads 3 sigma (sigma = radius / 2) beyond the outline, as layer blurs do.
         let reach = 1.5 * radius;
         let filter = self.id("f");
         let _ = write!(
@@ -1383,9 +1478,11 @@ impl<'t, 'a> Svg<'t, 'a> {
             num(y1 - y0 + 2.0 * reach),
             num(radius / 2.0)
         );
-        Some(format!(
+        let id = self.define(format!(
             "<g clip-path=\"url(#{clip})\"><g filter=\"url(#{filter})\">{behind}</g></g>"
-        ))
+        ));
+        self.plain.insert(id.clone(), String::new());
+        Some(format!("<use href=\"#{id}\"/>"))
     }
 
     /// A filter for the node's visible shadows and blurs; background blur is drawn separately.
@@ -1508,8 +1605,14 @@ impl<'t, 'a> Svg<'t, 'a> {
     }
 }
 
+/// Expanded markup all background blurs in one export may draw before later ones are skipped.
+const BLUR_BUDGET: usize = 32 << 20;
+/// Background blurs one export may draw.
+const MAX_BLURS: usize = 64;
+
 /// Shadows and layer blurs, which the node's own filter draws. Background blur is drawn
 /// separately; other types (such as GLASS) are skipped and reported, not drawn as blurs.
+// shortcut: GLASS is skipped, not modelled; model it once a second file uses it.
 fn is_filter_effect(e: &Json) -> bool {
     matches!(
         e["type"].as_str(),
@@ -1519,6 +1622,9 @@ fn is_filter_effect(e: &Json) -> bool {
 
 /// The radius of `n`'s first visible, nonzero background blur.
 fn active_background_blur(n: &Json) -> Option<f64> {
+    if n["isMask"] == Json::Bool(true) {
+        return None;
+    }
     n["_r"]["effects"]
         .as_array()?
         .iter()
@@ -1526,12 +1632,15 @@ fn active_background_blur(n: &Json) -> Option<f64> {
         .find_map(|e| e["radius"].as_f64().filter(|r| *r > 0.0))
 }
 
+/// Whether `node` would draw a background blur somewhere in `n`.
 fn has_background_blur(n: &Json) -> bool {
     n["visible"] != Json::Bool(false)
+        && !n["_r"].is_null()
         && (active_background_blur(n).is_some()
-            || n["children"]
-                .as_array()
-                .is_some_and(|c| c.iter().any(has_background_blur)))
+            || n["type"] != "BOOLEAN_OPERATION"
+                && n["children"]
+                    .as_array()
+                    .is_some_and(|c| c.iter().any(has_background_blur)))
 }
 
 /// A copy of `n` that is not text, so stroke outlines are painted as plain shapes.
@@ -1954,13 +2063,13 @@ mod tests {
         }, "children": [box_("1:2", 0.0, 40.0, Json::Null), box_("1:3", 10.0, 20.0, blur.clone()), box_("1:4", 20.0, 20.0, blur)]});
         let images = |_: &str| None;
         let svg = Svg::new(&tree, &images).document(&frame, [0.0, 0.0, 40.0, 10.0], 1.0);
-        // 1:3's backdrop is 1:2 (b2), blurred, cut to 1:3's outline (c3), under its fill (b5).
+        // 1:3's backdrop is 1:2 (b2), blurred, cut to 1:3's outline (c3), under its fill (b6).
         assert!(svg.contains("<clipPath id=\"n1_3a1-c3\"><path d=\"M10 0L30 0"));
         assert!(svg.contains("<feGaussianBlur stdDeviation=\"2\"/>"));
         assert!(svg.contains(
-            "<g clip-path=\"url(#n1_3a1-c3)\"><g filter=\"url(#n1_3a1-f4)\"><use href=\"#n1_3a1-b2\"/></g></g><use href=\"#n1_3a1-b5\"/>"
+            "<g id=\"n1_3a1-b5\"><g clip-path=\"url(#n1_3a1-c3)\"><g filter=\"url(#n1_3a1-f4)\"><use href=\"#n1_3a1-b2\"/></g></g></g>"
         ));
-        // 1:4 sees 1:2 and 1:3 by reference, so blurred siblings never copy each other.
+        assert!(svg.contains("<use href=\"#n1_3a1-b5\"/><use href=\"#n1_3a1-b6\"/>"));
         assert_eq!(svg.matches("<feGaussianBlur").count(), 2);
         assert!(png(&svg).is_ok());
         frame["children"][1]["_r"]["effects"] = Json::Null;
@@ -1970,6 +2079,51 @@ mod tests {
             !plain.contains("<use"),
             "exports without background blur are unchanged"
         );
+    }
+
+    #[test]
+    fn backdrops_leave_out_earlier_blurs_and_stop_at_the_blur_cap() {
+        let tree = Tree {
+            nodes: Default::default(),
+            children: Default::default(),
+            blobs: Vec::new(),
+        };
+        let chip = |i: usize| {
+            serde_json::json!({"id": format!("1:{}", i + 2), "type": "RECTANGLE", "_r": {
+                "m": [1, 0, 0, 1, i, 0], "size": {"x": 20, "y": 10},
+                "fillPaints": [{"type": "SOLID", "color": {"r": 1, "g": 0, "b": 0, "a": 0.5}}],
+                "effects": [{"type": "BACKGROUND_BLUR", "radius": 4}],
+            }})
+        };
+        let frame = serde_json::json!({"id": "1:1", "type": "FRAME", "_r": {
+            "m": [1, 0, 0, 1, 0, 0], "size": {"x": 60, "y": 10}, "fillPaints": [],
+        }, "children": (0..70).map(chip).collect::<Vec<_>>()});
+        let images = |_: &str| None;
+        let svg = Svg::new(&tree, &images).document(&frame, [0.0, 0.0, 60.0, 10.0], 1.0);
+        // Blurring each earlier blur again doubles the markup per sibling and exhausts the budget
+        // well before the cap.
+        assert_eq!(svg.matches("<feGaussianBlur").count(), MAX_BLURS);
+    }
+
+    #[test]
+    fn background_blurs_the_renderer_leaves_out_are_reported_as_skipped() {
+        let tree = Tree {
+            nodes: Default::default(),
+            children: Default::default(),
+            blobs: Vec::new(),
+        };
+        let mut node = serde_json::json!({"id": "1:1", "type": "RECTANGLE", "_r": {"effects": [
+            {"type": "BACKGROUND_BLUR", "radius": 4}, {"type": "BACKGROUND_BLUR", "radius": 8},
+        ]}});
+        let states = |node: &Json| -> Vec<Json> {
+            diagnostics(&tree, node)
+                .iter()
+                .map(|d| d["state"].clone())
+                .collect()
+        };
+        assert_eq!(states(&node), ["approximate", "skipped"]);
+        node["isMask"] = Json::Bool(true);
+        assert_eq!(states(&node), ["skipped", "skipped"]);
     }
 
     #[test]
