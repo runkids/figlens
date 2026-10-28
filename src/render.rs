@@ -1063,7 +1063,7 @@ impl<'t, 'a> Svg<'t, 'a> {
                 kids += &m;
                 kids += "</g>";
             }
-            // Later blurs replace what they cover, here and in this node's own fills.
+            // Later blurs replace what they cover, here and in this node's own blur and fills.
             let mut cuts = std::collections::HashMap::new();
             for (body, from, bounds) in drawn {
                 let id = body
@@ -1076,8 +1076,9 @@ impl<'t, 'a> Svg<'t, 'a> {
             if !cuts.is_empty() {
                 kids = swap_refs(&kids, &cuts);
             }
-            if let Some(cut) = self.cut(&fills, own_holes, render_bounds(n)) {
-                inner = inner.replacen(&fills, &cut, 1);
+            // `inner` holds only this node's own blur and fills so far.
+            if let Some(cut) = self.cut(&inner, own_holes, render_bounds(n)) {
+                inner = cut;
             }
             if n["clipsContent"] == Json::Bool(true) && !kids.is_empty() {
                 let id = self.id("c");
@@ -2333,6 +2334,32 @@ mod tests {
         // Half-opaque white over the blurred half-opaque red: 0.75, not 0.875 from red twice.
         let alpha = pixmap(&svg).unwrap().pixel(20, 20).unwrap().alpha();
         assert!((190..=192).contains(&alpha), "{alpha}");
+    }
+
+    #[test]
+    fn a_nested_background_blur_replaces_its_parents_blur_too() {
+        let tree = Tree {
+            nodes: Default::default(),
+            children: Default::default(),
+            blobs: Vec::new(),
+        };
+        let glass = |id: &str, kind: &str, children: Json| {
+            serde_json::json!({"id": id, "type": kind, "_r": {
+                "m": [1, 0, 0, 1, 0, 0], "size": {"x": 10, "y": 10},
+                "effects": [{"type": "BACKGROUND_BLUR", "radius": 4}],
+            }, "children": children})
+        };
+        let inner = glass("1:3", "RECTANGLE", Json::Null);
+        let outer = glass("1:2", "FRAME", serde_json::json!([inner]));
+        let frame = serde_json::json!({"id": "1:1", "type": "FRAME", "_r": {
+            "m": [1, 0, 0, 1, 0, 0], "size": {"x": 10, "y": 10},
+            "fillPaints": [{"type": "SOLID", "color": {"r": 1, "g": 0, "b": 0, "a": 0.5}}],
+        }, "children": [outer]});
+        let images = |_: &str| None;
+        let svg = Svg::new(&tree, &images).document(&frame, [0.0, 0.0, 10.0, 10.0], 1.0);
+        // Painting the inner blur over the outer one would give 0.75 alpha.
+        let alpha = pixmap(&svg).unwrap().pixel(5, 5).unwrap().alpha();
+        assert!((126..=130).contains(&alpha), "{alpha}");
     }
 
     #[test]
