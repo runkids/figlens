@@ -1,0 +1,16 @@
+{
+ "cases": {
+  "auto-layout": {},
+  "components": {},
+  "effects-clipping": {},
+  "first-success": {
+   "first-success-tile": "40ce8621f37b1ec0f1fdf9b1217455064f25e20ffa6fe0ff0b68e0ed19c30b9a",
+   "node:0:6": "d7d1298bbcbbe490a1bbfdba0ab18be9b74370674cea789fed4e6fb9571403a7"
+  },
+  "paints-strokes": {}
+ },
+ "inputs": {
+  "corpus": "0b59c0b96579b30b83809a5afc327e6d3e27ef67620d38685ac79fc6f0aa4990",
+  "public": "bd571867ce39471b45fc257538e785c25751a924e5485234cdb59c62ca2515e0"
+ }
+}

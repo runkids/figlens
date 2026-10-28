@@ -39,6 +39,13 @@ jobs:
       - name: Format, lint and test
         run: docker compose run --rm dev sh -c 'cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --locked'
 
+      # Owned synthetic corpus against recorded baselines; exit 2 means setup, 1 means regression.
+      - name: Design-corpus regression lane
+        timeout-minutes: 10
+        run: |
+          mkdir -p samples/corpus
+          docker compose run --rm dev sh -c 'cargo build --locked --bin figlens && cargo run --locked --example corpus-fixture -- samples/corpus/corpus.fig && python3 -B scripts/corpus-check.py --binary target/debug/figlens --corpus samples/corpus/corpus.fig'
+
       - uses: actions/setup-node@v7
         with:
           node-version: "24"

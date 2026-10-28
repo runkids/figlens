@@ -11,7 +11,7 @@ homepage = "https://github.com/runkids/figlens"
 readme = "README.md"
 keywords = ["figma", "fig", "design", "design-to-code", "cli"]
 categories = ["command-line-utilities", "parser-implementations", "multimedia::images"]
-include = ["src/**/*", "vendor/kiwi-schema/**/*", "skills/figlens/**/*", "scripts/make-first-success.rs", "scripts/probe-handoff.rs", "scripts/make-mapping-fixture.rs", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
+include = ["src/**/*", "vendor/kiwi-schema/**/*", "skills/figlens/**/*", "scripts/make-first-success.rs", "scripts/probe-handoff.rs", "scripts/make-mapping-fixture.rs", "scripts/make-corpus.rs", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
 
 [dependencies]
 flate2 = "1.1.10"
@@ -44,3 +44,7 @@ path = "scripts/probe-handoff.rs"
 [[example]]
 name = "mapping-fixture"
 path = "scripts/make-mapping-fixture.rs"
+
+[[example]]
+name = "corpus-fixture"
+path = "scripts/make-corpus.rs"

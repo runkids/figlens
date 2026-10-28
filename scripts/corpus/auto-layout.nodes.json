@@ -1,0 +1,241 @@
+{
+ "componentSets": {},
+ "components": {},
+ "document": {
+  "_figlens": {
+   "semantics": {
+    "constraints.horizontal": {
+     "source": "horizontalConstraint",
+     "state": "absent"
+    },
+    "constraints.vertical": {
+     "source": "verticalConstraint",
+     "state": "absent"
+    },
+    "layoutAlign": {
+     "source": "stackChildAlignSelf",
+     "state": "absent"
+    },
+    "layoutGrow": {
+     "source": "stackChildPrimaryGrow",
+     "state": "absent"
+    },
+    "verification": "not-compared-with-figma"
+   }
+  },
+  "absoluteBoundingBox": {
+   "height": 80.0,
+   "width": 240.0,
+   "x": 0.0,
+   "y": 0.0
+  },
+  "absoluteRenderBounds": {
+   "height": 80.0,
+   "width": 240.0,
+   "x": 0.0,
+   "y": 0.0
+  },
+  "blendMode": "PASS_THROUGH",
+  "children": [
+   {
+    "_figlens": {
+     "semantics": {
+      "constraints.horizontal": {
+       "source": "horizontalConstraint",
+       "state": "absent"
+      },
+      "constraints.vertical": {
+       "source": "verticalConstraint",
+       "state": "absent"
+      },
+      "layoutAlign": {
+       "source": "stackChildAlignSelf",
+       "state": "absent"
+      },
+      "layoutGrow": {
+       "source": "stackChildPrimaryGrow",
+       "state": "absent"
+      },
+      "verification": "not-compared-with-figma"
+     }
+    },
+    "absoluteBoundingBox": {
+     "height": 40.0,
+     "width": 40.0,
+     "x": 12.0,
+     "y": 20.0
+    },
+    "absoluteRenderBounds": {
+     "height": 40.0,
+     "width": 40.0,
+     "x": 12.0,
+     "y": 20.0
+    },
+    "blendMode": "PASS_THROUGH",
+    "effects": [],
+    "fills": [
+     {
+      "blendMode": "NORMAL",
+      "color": {
+       "a": 1.0,
+       "b": 0.545098066329956,
+       "g": 0.6000000238418579,
+       "r": 0.10588235408067703
+      },
+      "type": "SOLID"
+     }
+    ],
+    "id": "0:11",
+    "layoutSizingHorizontal": "FIXED",
+    "layoutSizingVertical": "FIXED",
+    "name": "Fixed",
+    "strokes": [],
+    "type": "RECTANGLE"
+   },
+   {
+    "_figlens": {
+     "semantics": {
+      "constraints.horizontal": {
+       "source": "horizontalConstraint",
+       "state": "absent"
+      },
+      "constraints.vertical": {
+       "source": "verticalConstraint",
+       "state": "absent"
+      },
+      "layoutAlign": {
+       "source": "stackChildAlignSelf",
+       "state": "recorded"
+      },
+      "layoutGrow": {
+       "source": "stackChildPrimaryGrow",
+       "state": "recorded"
+      },
+      "verification": "not-compared-with-figma"
+     }
+    },
+    "absoluteBoundingBox": {
+     "height": 56.0,
+     "width": 168.0,
+     "x": 60.0,
+     "y": 12.0
+    },
+    "absoluteRenderBounds": {
+     "height": 56.0,
+     "width": 168.0,
+     "x": 60.0,
+     "y": 12.0
+    },
+    "blendMode": "PASS_THROUGH",
+    "effects": [],
+    "fills": [
+     {
+      "blendMode": "NORMAL",
+      "color": {
+       "a": 1.0,
+       "b": 0.8627451062202454,
+       "g": 0.3921568691730499,
+       "r": 0.3137255012989044
+      },
+      "type": "SOLID"
+     }
+    ],
+    "id": "0:12",
+    "layoutAlign": "STRETCH",
+    "layoutGrow": 1.0,
+    "layoutSizingHorizontal": "FILL",
+    "layoutSizingVertical": "FILL",
+    "name": "Grow",
+    "strokes": [],
+    "type": "RECTANGLE"
+   },
+   {
+    "_figlens": {
+     "semantics": {
+      "constraints.horizontal": {
+       "source": "horizontalConstraint",
+       "state": "absent"
+      },
+      "constraints.vertical": {
+       "source": "verticalConstraint",
+       "state": "absent"
+      },
+      "layoutAlign": {
+       "source": "stackChildAlignSelf",
+       "state": "absent"
+      },
+      "layoutGrow": {
+       "source": "stackChildPrimaryGrow",
+       "state": "absent"
+      },
+      "verification": "not-compared-with-figma"
+     }
+    },
+    "absoluteBoundingBox": {
+     "height": 12.0,
+     "width": 12.0,
+     "x": 224.0,
+     "y": 4.0
+    },
+    "absoluteRenderBounds": {
+     "height": 12.0,
+     "width": 12.0,
+     "x": 224.0,
+     "y": 4.0
+    },
+    "blendMode": "PASS_THROUGH",
+    "effects": [],
+    "fills": [
+     {
+      "blendMode": "NORMAL",
+      "color": {
+       "a": 1.0,
+       "b": 0.23529411852359772,
+       "g": 0.23529411852359772,
+       "r": 0.8627451062202454
+      },
+      "type": "SOLID"
+     }
+    ],
+    "id": "0:13",
+    "layoutPositioning": "ABSOLUTE",
+    "layoutSizingHorizontal": "FIXED",
+    "layoutSizingVertical": "FIXED",
+    "name": "Absolute badge",
+    "strokes": [],
+    "type": "RECTANGLE"
+   }
+  ],
+  "counterAxisAlignItems": "CENTER",
+  "counterAxisSizingMode": "FIXED",
+  "effects": [],
+  "fills": [
+   {
+    "blendMode": "NORMAL",
+    "color": {
+     "a": 1.0,
+     "b": 0.9725490212440491,
+     "g": 0.95686274766922,
+     "r": 0.9411764740943909
+    },
+    "type": "SOLID"
+   }
+  ],
+  "id": "0:1",
+  "itemSpacing": 8.0,
+  "layoutMode": "HORIZONTAL",
+  "layoutSizingHorizontal": "FIXED",
+  "layoutSizingVertical": "FIXED",
+  "layoutWrap": "NO_WRAP",
+  "name": "Auto layout",
+  "paddingBottom": 12.0,
+  "paddingLeft": 12.0,
+  "paddingRight": 12.0,
+  "paddingTop": 12.0,
+  "primaryAxisSizingMode": "FIXED",
+  "strokes": [],
+  "type": "FRAME"
+ },
+ "schemaVersion": 0,
+ "styles": {}
+}
