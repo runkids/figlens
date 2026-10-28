@@ -254,15 +254,18 @@ fn default(tool: &str, key: &str) -> Option<Value> {
 
 const SOURCE_HELP: &str = "Cannot read the requested .fig source; check the path and valid local copy, or gcloud availability, connectivity and authorized object read access.";
 
+// Larger bounds break int64 and JavaScript schema parsers; some model backends reject every tool.
+const JSON_SAFE: u64 = (1 << 53) - 1;
+
 pub fn property(tool: &str, param: &Param) -> Value {
     let (key, kind, _, about) = *param;
     let mut p = json!({"type": kind, "description": about});
     let range = match (tool, key) {
         ("inspect", "depth") => Some((0, 10)),
-        ("tree", "depth") => Some((0, usize::MAX as u64)),
+        ("tree", "depth") => Some((0, JSON_SAFE.min(usize::MAX as u64))),
         ("find", "limit") => Some((1, 200)),
         ("export", "quality") => Some((1, 100)),
-        ("export", "maxKb") => Some((0, (usize::MAX / 1024) as u64)),
+        ("export", "maxKb") => Some((0, JSON_SAFE.min((usize::MAX / 1024) as u64))),
         ("export", "maxSize") => Some((0, u64::from(u32::MAX))),
         _ => None,
     };

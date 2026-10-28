@@ -15,6 +15,8 @@ fn schema_and_numeric_preflight_share_boundaries() {
         ("find", "limit", 1, 200),
         ("export", "quality", 1, 100),
         ("export", "maxSize", 0, u64::from(u32::MAX)),
+        ("tree", "depth", 0, (1 << 53) - 1),
+        ("export", "maxKb", 0, (1 << 53) - 1),
     ] {
         let schema = &tools.iter().find(|t| t["name"] == tool).unwrap()["inputSchema"];
         assert_eq!(schema["properties"][key]["minimum"], min);
@@ -94,6 +96,20 @@ fn strict_types_unknowns_and_flag_like_nodes_are_explicit() {
     assert!(check("workflow", json!({"topic":null})).is_err());
     assert!(check("workflow", json!({"topic":"missing"})).is_err());
     assert!(check("nodes", json!({"file":"a.fig","node":null})).is_err());
+}
+
+#[test]
+fn advertised_numbers_fit_json_safe_integers() {
+    // Model backends parse tool schemas as int64 or JavaScript numbers; one larger value rejects every tool.
+    fn walk(value: &Value) {
+        match value {
+            Value::Number(n) => assert!(n.as_u64().is_none_or(|n| n < 1 << 53), "{n}"),
+            Value::Array(items) => items.iter().for_each(walk),
+            Value::Object(map) => map.values().for_each(walk),
+            _ => {}
+        }
+    }
+    walk(&mcp_reply(r#"{"id":1,"method":"tools/list"}"#).unwrap()["result"]["tools"]);
 }
 
 #[test]
