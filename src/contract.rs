@@ -259,7 +259,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "findings": {
                     "type": "array",
                     "items": { "type": "object" },
-                    "description": "handoff preflight, missing inputs first: category (integrity, asset, variable, scope, render, semantics, font), status (missing, unsupported or unverified), source file, nodeIds (at most 20) and nodeCount, evidence, impact and action; at most 500 entries and 4 MiB",
+                    "description": "handoff preflight, missing inputs first: category (integrity, asset, variable, scope, render, semantics, font), status (missing, unsupported or unverified), source file, nodeIds (at most 20) and nodeCount, evidence, impact and action; at most 500 entries and 1 MiB",
                 },
                 "findingsSummary": {
                     "type": "object",

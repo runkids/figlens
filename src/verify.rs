@@ -266,10 +266,11 @@ pub fn verify(path: &Path) -> Result<Json, Box<dyn Error>> {
 
 /// Findings returned at most; `findingsSummary` keeps the complete counts.
 const MAX_FINDINGS: usize = 500;
-/// Serialized bytes returned at most for findings and for each other list: together they stay
-/// well inside the 8 MiB MCP reply.
-const FINDINGS_BYTES: usize = 4 << 20;
-const LIST_BYTES: usize = 512 << 10;
+/// Serialized bytes returned at most for findings and for each other list. MCP sends the report
+/// as structuredContent and again as escaped text, up to three times these bytes, so together
+/// (2.25 MiB) they stay inside the 8 MiB reply.
+const FINDINGS_BYTES: usize = 1 << 20;
+const LIST_BYTES: usize = 256 << 10;
 
 /// Keeps the leading entries of `list` within `max` entries and `budget` serialized bytes;
 /// returns the original length when any were cut.
@@ -449,7 +450,10 @@ fn findings(i: &Inputs) -> Vec<Json> {
         let handoff = &nodes["_figlens"]["handoffDiagnostics"];
         for item in items(&handoff["items"]) {
             let mut evidence = item.clone();
-            evidence["coverage"] = handoff["coverage"].clone();
+            // Items are untrusted: only an object can take the coverage.
+            if let Some(evidence) = evidence.as_object_mut() {
+                evidence.insert("coverage".into(), handoff["coverage"].clone());
+            }
             let examples: Vec<_> = items(&item["exampleNodeIds"]).cloned().collect();
             let count = item["nodeCount"].as_u64().unwrap_or(examples.len() as u64) as usize;
             out.push(finding("semantics", "unsupported", "design/nodes.json", &examples, count, evidence,
@@ -469,6 +473,12 @@ fn findings(i: &Inputs) -> Vec<Json> {
             "Resolved design tokens are not yet matched to the project's existing token system.",
             "Match each variable in design/variables.json to an existing project token by name and value; report unmatched ones instead of adding new tokens."));
     }
+    // Stable: categories keep their order within each status.
+    out.sort_by_key(|f| match f["status"].as_str() {
+        Some("missing") => 0,
+        Some("unsupported") => 1,
+        _ => 2,
+    });
     out
 }
 
@@ -794,17 +804,13 @@ mod tests {
         let summary = &report["findingsSummary"];
         assert_eq!(
             (
-                found(&report, "scope", "unverified")[0]["evidence"]["reasons"].clone(),
+                // Unverified scope sorts after the unsupported renders, beyond the cut.
+                summary["counts"]["scope/unverified"].clone(),
                 report["findings"].as_array().unwrap().len(),
                 summary["truncated"].clone(),
                 summary["counts"]["render/unsupported"].clone(),
             ),
-            (
-                json!(["variant_limit"]),
-                MAX_FINDINGS,
-                json!(true),
-                json!(MAX_FINDINGS + 1)
-            )
+            (json!(1), MAX_FINDINGS, json!(true), json!(MAX_FINDINGS + 1))
         );
     }
 
@@ -841,6 +847,40 @@ mod tests {
                 &report["findingsSummary"]["scope"]["name"]
             ),
             (&json!([]), &json!({"missingAssets": 1}), &Json::Null)
+        );
+    }
+
+    #[test]
+    fn malformed_handoff_items_and_invalid_paths_do_not_displace_missing_inputs() {
+        let dir = TestDir::new();
+        let nodes = json!({"_figlens": {"handoffDiagnostics": {"items": [false]}}, "document": {"id": "1:1"}});
+        let entry = json!({"key": "img", "nodeId": "1:2", "error": "missing"});
+        let path = metadata_bundle(
+            &dir,
+            &[
+                ("design/nodes.json", nodes),
+                ("missing-assets.json", json!([entry])),
+            ],
+        );
+        let manifest = json!({"format": "figlens-bundle", "version": 1, "files": [{"path": "../x"}],
+            "root": {"id": "1:1", "name": "Frame"}});
+        std::fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
+        let report = verify(&path).unwrap();
+        let order: Vec<_> = items(&report["findings"])
+            .map(|f| {
+                (
+                    f["category"].as_str().unwrap(),
+                    f["status"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("asset", "missing"),
+                ("semantics", "unsupported"),
+                ("integrity", "unverified")
+            ]
         );
     }
 
