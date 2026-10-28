@@ -1,7 +1,7 @@
 // Real OMP loader, runner and approval wrapper; scripted dialog answers, no model.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -31,13 +31,13 @@ const loaded = await loadExtensions([path.resolve(packageInput, 'omp/index.ts')]
 assert.deepEqual(loaded.errors, []);
 const session = SessionManager.inMemory(project);
 const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, project, session, {});
-const shown = [], prompts = [], answers = [];
+const shown = [], prompts = [], answers = [], notices = [];
 const ui = {
   select: async (title, options) => { prompts.push({ title, options }); return answers.shift(); },
   input: async title => { prompts.push({ title }); return answers.shift(); },
   confirm: async (title, message) => { prompts.push({ title, message }); return answers.shift(); },
   approve: async prompt => { prompts.push(prompt); return answers.shift(); },
-  notify() {}, setStatus() {},
+  notify: message => notices.push(message), setStatus() {},
 };
 runner.initialize({ sendMessage: message => shown.push(message), sendUserMessage: () => { throw new Error('No model dispatch in this probe'); },
   appendEntry() {}, getActiveTools: () => [], getAllTools: () => [], setActiveTools: async () => {}, getCommands: () => [],
@@ -138,6 +138,21 @@ await check('cancellation reaches the shared writer without changing guide', asy
   await assert.rejects(invoke('figlens_propose_bindings', { figlens_propose_bindings: 'allow' }, controller.signal, { proposals: [proposal] }));
   assert.deepEqual(await readFile(flow.guide), before);
   return { guideUnchanged: true };
+});
+await check('manual reference export rejects a symlinked preview directory', async () => {
+  const external = path.join(output, 'external-previews');
+  await mkdir(external);
+  const directory = path.join(flow.directory, 'previews');
+  await symlink(external, directory, 'junction');
+  try {
+    const before = shown.length;
+    const notice = notices.length;
+    await loaded.extensions[0].commands.get('figlens').handler('open "mapping.fig" --frame 0:1', runner.createCommandContext());
+    assert.deepEqual(await readdir(external), [], 'External destination must remain empty');
+    assert.ok(shown.slice(before).every(message => message.customType !== 'figlens-preview'));
+    assert.ok(notices.slice(notice).some(message => message.includes('symbolic link')));
+  } finally { await rm(directory); }
+  return { externalDirectoryUnchanged: true, imageNotAttached: true };
 });
 await check('manual selection attaches PNG bytes and explicit tool scope leaves selection unchanged', async () => {
   const command = loaded.extensions[0].commands.get('figlens').handler;

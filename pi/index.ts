@@ -108,7 +108,7 @@ export default function figlens(pi: ExtensionAPI) {
   }
 
   async function preview(design: Awaited<ReturnType<Workflow['design']>>, ctx: ExtensionContext) {
-    const directory = path.join(project(ctx).directory, 'previews');
+    const directory = await project(ctx).referenceDirectory();
     await mkdir(directory, { recursive: true });
     const output = path.join(directory, `${randomUUID()}.png`);
     const execution = await pi.exec(binary, [...prefix, 'export', design.absolute, design.frame, output, '--scale', '0.5'], { cwd: ctx.cwd, signal: ctx.signal, timeout: 120000 });

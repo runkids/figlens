@@ -64,6 +64,7 @@ If a topic goes over budget, split it rather than raising the cap. Skills are wo
 Pi viewer startup must wait for a successful catalog response, not just a printed URL; see `pi`.
 Verify each host's independent entry from the same extracted npm candidate; dispatch is not model completion; see `integrations`.
 Validate host reference-output directories before export, including symlinked parents; see `integrations`.
+Cancel owned CLI process trees and await exit before reference cleanup; see `integrations`.
 Check parsing budgets before Kiwi recursion or declared-length expansion; see `parsing`.
 Bound declared and actual original-image bytes per image and per scope before retaining them; see `parsing`.
 Publish bundle/export/snapshot files through `output::write` to protect sources and existing outputs; see `parsing`.

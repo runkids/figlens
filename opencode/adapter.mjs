@@ -1,13 +1,13 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { lstat, mkdir, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdir, readFile, realpath, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { Workflow } from '../pi/workflow.mjs';
-import { Viewer } from '../pi/viewer.mjs';
+import { stopProcess, Viewer } from '../pi/viewer.mjs';
 import { buildRequest } from '../pi/requests.mjs';
 
 const execute = promisify(execFile);
@@ -30,6 +30,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
     const current = owners.get(sessionID);
     if (!current) return;
     current.lifetime.abort();
+    await Promise.all([...current.commands].map(stop => stop()));
     await current.viewer.close();
     owners.delete(sessionID);
   }
@@ -43,7 +44,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
     }
     let current = owners.get(sessionID);
     if (!current) {
-      current = { viewer: new Viewer(command, prefix), lifetime: new AbortController() };
+      current = { viewer: new Viewer(command, prefix), lifetime: new AbortController(), commands: new Set() };
       owners.set(sessionID, current);
     }
     const combined = AbortSignal.any([lifetime.signal, current.lifetime.signal, ...(signal ? [signal] : [])]);
@@ -59,7 +60,27 @@ export function createAdapter(ctx, entry = import.meta.url) {
       const argv = [...prefix, ...args];
       if (bundled) await authorize('edit', [cacheRoot]);
       await authorize('bash', [commandLine(args)]);
-      return execute(command, argv, { cwd: root, signal: combined, timeout: 120000, maxBuffer: 64 * 1024 * 1024 });
+      const signal = AbortSignal.any([combined, AbortSignal.timeout(120000)]);
+      const execution = execute(command, argv, { cwd: root, detached: process.platform !== 'win32', maxBuffer: 64 * 1024 * 1024 });
+      let stopping;
+      const abort = () => {
+        stopping ??= stopProcess(execution.child);
+        stopping.catch(() => {});
+        return stopping;
+      };
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort();
+      const finished = execution.finally(async () => {
+        signal.removeEventListener('abort', abort);
+        await stopping;
+      });
+      current.commands.add(abort);
+      try {
+        const result = await finished;
+        signal.throwIfAborted();
+        return result;
+      } catch (error) { signal.throwIfAborted(); throw error; }
+      finally { current.commands.delete(abort); }
     }
     return { root, ...current, signal: combined, authorize, run,
       flow: new Workflow(root, async args => JSON.parse((await run(args)).stdout), authorize) };
@@ -92,11 +113,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
   }
   async function select(current, file, node) {
     if (!file || !node) throw new Error('Provide a file and frame together.');
-    const directory = path.join(current.flow.directory, 'previews');
-    await current.flow.read();
-    try {
-      if ((await lstat(directory)).isSymbolicLink()) throw new Error(`${directory} must not be a symbolic link.`);
-    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    const directory = await current.flow.referenceDirectory();
     const design = await current.flow.design({ file, frame: node }, current.signal);
     const output = path.join(directory, `${randomUUID()}.png`);
     const args = ['export', design.absolute, design.frame, output, '--scale', '0.5'];

@@ -182,6 +182,15 @@ export class Workflow {
     return { content, state: parseState(content) };
   }
 
+  async referenceDirectory() {
+    await this.read();
+    const directory = path.join(this.directory, 'previews');
+    try {
+      if ((await lstat(directory)).isSymbolicLink()) throw new Error(`${directory} must not be a symbolic link.`);
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    return directory;
+  }
+
   async mutate(change) {
     await this.read();
     const lock = path.join(this.directory, '.mapping-lock');
