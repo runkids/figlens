@@ -55,6 +55,7 @@ frame.zip
 ├── context.md                Start here: instructions for your agent
 ├── design/
 │   ├── nodes.json            Layout, text, styles and expanded instances
+│   ├── fonts.json            Font faces the visible text uses, with node ids
 │   └── variables.json        Bound variables, collections, modes and aliases
 ├── assets/                   Image fills, SVGs and composited node renders
 ├── assets.json               Maps design references to asset files
@@ -126,7 +127,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可发�
 
 ## MCP server 与 agent skill
 
-**MCP。** server 在本地通过 stdio 运行，提供 `workflow`、`tree`、`find`、`inspect`、`nodes`、`variables`、`bundle` 和 `export`。请传入绝对路径。加上 `--root /path/to/designs`（可重复）可把所有文件和输出路径限制在指定文件夹内。光栅导出会缩小到 `maxSize`（默认 1600 px），让内联图片保持小巧；SVG 只返回 metadata。
+**MCP。** server 在本地通过 stdio 运行，提供 `workflow`、`tree`、`find`、`inspect`、`nodes`、`variables`、`bundle`、`verify` 和 `export`。请传入绝对路径。加上 `--root /path/to/designs`（可重复）可把所有文件和输出路径限制在指定文件夹内。光栅导出会缩小到 `maxSize`（默认 1600 px），让内联图片保持小巧；SVG 只返回 metadata。
 
 agent 可通过 `workflow` 读取内建的 `build`、`images`、`plan`、`planning-details`，或明确请求时的 `yolo` 指引。它们与 portable skill 共用来源；MCP 用户可自行选择是否另装 skill。实际工作仍由 agent 使用项目及浏览器工具，并遵守 host 权限。读取指引不会执行工作流程；使用方式取决于客户端支持与模型行为。
 
@@ -162,6 +163,7 @@ skillshare sync && skillshare sync mcp --global
 | `variables <file> [node]` | 某个 frame 的绑定变量；不指定 node 则输出所有本地变量 |
 | `bundle <file> <node> <out.zip> [--states]` | 单个 frame 的设计 bundle；输出 `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | 一次解码，并行生成多个 bundle |
+| `verify <bundle>` | 按 manifest 检查 bundle（`.zip` 或解压后的目录）：已验证、缺失和被改动的文件，缺失的素材，以及需要在项目中确认的字体 |
 | `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG、PNG、JPG、WebP 或 AVIF；`--max-kb` 会降低有损质量直到符合大小 |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 本地只读 viewer；`--out` 写出独立的离线快照 |
 | `compare <file> <nodes.json> <node>` | 与同一 frame 的 REST 导出做差异比较 |

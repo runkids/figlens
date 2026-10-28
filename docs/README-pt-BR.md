@@ -55,6 +55,7 @@ frame.zip
 ├── context.md                Start here: instructions for your agent
 ├── design/
 │   ├── nodes.json            Layout, text, styles and expanded instances
+│   ├── fonts.json            Font faces the visible text uses, with node ids
 │   └── variables.json        Bound variables, collections, modes and aliases
 ├── assets/                   Image fills, SVGs and composited node renders
 ├── assets.json               Maps design references to asset files
@@ -126,7 +127,7 @@ Navegue por páginas e camadas, busque, meça, inspecione layout, tipografia, va
 
 ## Servidor MCP e skill para agents
 
-**MCP.** O servidor roda localmente por stdio e expõe `workflow`, `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` e `export`. Use caminhos absolutos. Adicione `--root /path/to/designs` (repetível) para confinar todo arquivo e caminho de saída às pastas escolhidas. Exportações raster são reduzidas a `maxSize` (padrão 1600 px) para manter as imagens inline pequenas; SVG retorna apenas metadados.
+**MCP.** O servidor roda localmente por stdio e expõe `workflow`, `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle`, `verify` e `export`. Use caminhos absolutos. Adicione `--root /path/to/designs` (repetível) para confinar todo arquivo e caminho de saída às pastas escolhidas. Exportações raster são reduzidas a `maxSize` (padrão 1600 px) para manter as imagens inline pequenas; SVG retorna apenas metadados.
 
 Com `workflow`, o agent pode ler os guias integrados `build`, `images`, `plan`, `planning-details` ou `yolo` quando solicitado explicitamente. Eles compartilham as fontes do skill portátil; sua instalação separada é opcional para MCP. O agent executa o trabalho com suas ferramentas de projeto e navegador e as permissões do host. Ler um guia não executa o fluxo; seu uso depende do cliente e do comportamento do modelo.
 
@@ -162,6 +163,7 @@ skillshare sync && skillshare sync mcp --global
 | `variables <file> [node]` | Variáveis vinculadas a um frame; sem nó, todas as variáveis locais |
 | `bundle <file> <node> <out.zip> [--states]` | Um bundle de design de um frame; imprime `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | Vários bundles a partir de uma decodificação, em paralelo |
+| `verify <bundle>` | Confere um bundle (`.zip` ou diretório extraído) com o manifesto: arquivos verificados, ausentes e alterados, assets ausentes e as fontes a confirmar no projeto |
 | `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP ou AVIF; `--max-kb` reduz a qualidade com perda até caber |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Viewer local somente leitura; `--out` grava um snapshot offline independente |
 | `compare <file> <nodes.json> <node>` | Diferenças em relação a uma exportação REST do mesmo frame |

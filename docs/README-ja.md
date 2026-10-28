@@ -55,6 +55,7 @@ frame.zip
 ├── context.md                ここから開始：エージェント向けの指示
 ├── design/
 │   ├── nodes.json            レイアウト、テキスト、スタイル、展開済みインスタンス
+│   ├── fonts.json            表示テキストが使うフォントフェイスとノード ID
 │   └── variables.json        バインドされた variables、コレクション、モード、エイリアス
 ├── assets/                   画像フィル、SVG、合成済みノードのレンダリング
 ├── assets.json               デザイン上の参照を素材ファイルに対応付ける
@@ -126,7 +127,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 誰に�
 
 ## MCP サーバーとエージェント skill
 
-**MCP。** サーバーは stdio 経由でローカル実行され、`workflow`、`tree`、`find`、`inspect`、`nodes`、`variables`、`bundle`、`export` を公開します。パスは絶対パスで渡します。`--root /path/to/designs`（複数指定可）を追加すると、すべてのファイルパスと出力パスを指定フォルダーに制限できます。ラスターエクスポートは `maxSize`（デフォルト 1600 px）に縮小され、インライン画像は小さく保たれます。SVG はメタデータのみを返します。
+**MCP。** サーバーは stdio 経由でローカル実行され、`workflow`、`tree`、`find`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`export` を公開します。パスは絶対パスで渡します。`--root /path/to/designs`（複数指定可）を追加すると、すべてのファイルパスと出力パスを指定フォルダーに制限できます。ラスターエクスポートは `maxSize`（デフォルト 1600 px）に縮小され、インライン画像は小さく保たれます。SVG はメタデータのみを返します。
 
 エージェントは `workflow` で `build`、`images`、`plan`、`planning-details`、または明示的に依頼された場合の `yolo` ガイドを取得できます。portable skill と同じソースを使うため、MCP 利用時の skill の別途インストールは任意です。実作業にはエージェント自身のプロジェクト・ブラウザツールとホストの権限を使います。ガイドを読むだけでは処理は実行されません。利用方法はクライアントの対応とモデルの動作に依存します。
 
@@ -162,6 +163,7 @@ skillshare sync && skillshare sync mcp --global
 | `variables <file> [node]` | frame にバインドされた variables。node を省略すると、すべてのローカル variables |
 | `bundle <file> <node> <out.zip> [--states]` | 1 つの frame の design bundle。`{nodeId, path, warnings}` を出力 |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | 1 回のデコードから複数の bundle を並列生成 |
+| `verify <bundle>` | bundle（`.zip` または展開したディレクトリ）を manifest と照合：検証済み・欠落・変更されたファイル、欠落アセット、プロジェクトで確認すべきフォント |
 | `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG、PNG、JPG、WebP、AVIF。`--max-kb` は収まるまで非可逆の品質を下げる |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | ローカルの読み取り専用 viewer。`--out` でスタンドアロンのオフラインスナップショットを書き出し |
 | `compare <file> <nodes.json> <node>` | 同じ frame の REST エクスポートとの差分 |

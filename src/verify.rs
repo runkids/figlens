@@ -12,6 +12,9 @@ use sha2::{Digest, Sha256};
 
 /// Largest JSON file read whole. Real bundles stay far below it; a crafted entry is refused.
 const JSON_LIMIT: u64 = 256 << 20;
+/// Bytes hashed per bundle. Real bundles stay below it (original images are capped at 256 MiB
+/// in total); files whose declared size no longer fits are left unhashed and reported.
+const HASH_BUDGET: u64 = 1 << 30;
 
 enum Bundle {
     Zip(zip::ZipArchive<BufReader<File>>),
@@ -113,16 +116,26 @@ pub fn verify(path: &Path) -> Result<Json, Box<dyn Error>> {
             "not a figlens bundle: manifest.json is missing or not format figlens-bundle version 1",
         )?;
     let (mut verified, mut missing, mut changed, mut invalid) = (0, vec![], vec![], vec![]);
+    let (mut budget, mut unhashed) = (HASH_BUDGET, 0);
     for file in manifest["files"].as_array().into_iter().flatten() {
         let listed = file["path"].as_str().unwrap_or("");
         if !relative(listed) {
             invalid.push(file["path"].clone());
             continue;
         }
-        // Read one byte past the declared size at most: a larger entry has already changed,
-        // and a crafted archive cannot keep the caller hashing.
-        let limit = file["size"].as_u64().unwrap_or(0).saturating_add(1);
-        match bundle.read(listed, |r| digest(&mut r.take(limit)))? {
+        // Read one byte past the declared size at most: a larger entry has already changed.
+        // Declared sizes are untrusted, so together they may not exceed the budget either.
+        let declared = file["size"].as_u64().unwrap_or(0);
+        if declared >= budget {
+            unhashed += 1;
+            continue;
+        }
+        let limit = declared + 1;
+        let found = bundle.read(listed, |r| digest(&mut r.take(limit)))?;
+        if let Found::File((size, _)) = &found {
+            budget -= size;
+        }
+        match found {
             Found::File((size, sha256))
                 if file["size"] == size && file["sha256"].as_str() == Some(&sha256) =>
             {
@@ -140,23 +153,37 @@ pub fn verify(path: &Path) -> Result<Json, Box<dyn Error>> {
             })),
         }
     }
-    let missing_assets = bundle.json("missing-assets.json")?.unwrap_or(json!([]));
-    let mut fonts = match bundle.json("design/nodes.json")? {
+    let mut unverified = vec![];
+    if unhashed > 0 {
+        unverified.push(format!("{unhashed} listed files were not hashed: their declared sizes exceed the {HASH_BUDGET}-byte verification budget."));
+    }
+    // A damaged metadata file is already listed as changed; keep the rest of the report.
+    let mut metadata = |path: &str, lost: &str| match bundle.json(path) {
+        Ok(value) => value,
+        Err(e) => {
+            unverified.push(format!("{e}; {lost}."));
+            None
+        }
+    };
+    let missing_assets =
+        metadata("missing-assets.json", "missingAssets is incomplete").unwrap_or(json!([]));
+    let mut fonts = match metadata("design/nodes.json", "font faces were not listed") {
         Some(nodes) => crate::bundle::fonts(&nodes["document"])["faces"].take(),
         None => json!([]),
     };
     for face in fonts.as_array_mut().into_iter().flatten() {
         face["status"] = json!("unverified");
     }
+    unverified.extend([
+        "Font faces: the bundle has no font files and figlens cannot see the project's fonts. Load each face in the running project with document.fonts.load and the design text and check the returned faces; document.fonts.check alone can pass on a fallback.".to_owned(),
+        "Browser delivery: check the deployed asset URLs, decoding and rendered dimensions in the running project.".to_owned(),
+    ]);
     Ok(json!({
         "path": path,
         "files": {"verified": verified, "missing": missing, "changed": changed, "invalid": invalid},
         "missingAssets": missing_assets,
         "fonts": fonts,
-        "unverified": [
-            "Font faces: the bundle has no font files and figlens cannot see the project's fonts. Load each face in the running project with document.fonts.load and the design text and check the returned faces; document.fonts.check alone can pass on a fallback.",
-            "Browser delivery: check the deployed asset URLs, decoding and rendered dimensions in the running project.",
-        ],
+        "unverified": unverified,
     }))
 }
 
@@ -265,6 +292,54 @@ mod tests {
         assert_eq!(
             verify(&dir.join("")).unwrap()["missingAssets"],
             json!([entry])
+        );
+    }
+
+    #[test]
+    fn damaged_metadata_keeps_the_integrity_report() {
+        let dir = TestDir::new();
+        let extracted = dir.join("extracted");
+        crate::open_zip(&fixture_bundle(&dir))
+            .unwrap()
+            .extract(&extracted)
+            .unwrap();
+        for damaged in ["design/nodes.json", "missing-assets.json"] {
+            std::fs::write(extracted.join(damaged), "{").unwrap();
+        }
+        let report = verify(&extracted).unwrap();
+        let changed: Vec<_> = report["files"]["changed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["path"].as_str().unwrap())
+            .collect();
+        let notes = report["unverified"].to_string();
+        assert_eq!(
+            (
+                changed,
+                notes.contains("font faces were not listed"),
+                notes.contains("missingAssets is incomplete")
+            ),
+            (vec!["design/nodes.json", "missing-assets.json"], true, true)
+        );
+    }
+
+    #[test]
+    fn declared_sizes_beyond_the_budget_are_reported_not_hashed() {
+        let dir = TestDir::new();
+        let files = json!([{"path": "huge.bin", "size": HASH_BUDGET, "sha256": "0"}]);
+        let manifest = json!({"format": "figlens-bundle", "version": 1, "files": files});
+        std::fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
+        std::fs::write(dir.join("huge.bin"), "small").unwrap();
+        let report = verify(&dir.join("")).unwrap();
+        assert_eq!(
+            (&report["files"]["changed"], &report["unverified"][0]),
+            (
+                &json!([]),
+                &json!(format!(
+                    "1 listed files were not hashed: their declared sizes exceed the {HASH_BUDGET}-byte verification budget."
+                ))
+            )
         );
     }
 

@@ -55,6 +55,7 @@ frame.zip
 ├── context.md                Start here: instructions for your agent
 ├── design/
 │   ├── nodes.json            Layout, text, styles and expanded instances
+│   ├── fonts.json            Font faces the visible text uses, with node ids
 │   └── variables.json        Bound variables, collections, modes and aliases
 ├── assets/                   Image fills, SVGs and composited node renders
 ├── assets.json               Maps design references to asset files
@@ -126,7 +127,7 @@ Browse pages and layers, search, measure, inspect layout, typography, variables 
 
 ## MCP server and agent skill
 
-**MCP.** The server runs locally over stdio and exposes `workflow`, `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle` and `export`. The agent can read built-in `build`, `images`, `plan`, `planning-details` or opt-in `yolo` guidance through `workflow`, then use its own project and browser tools to carry out the authorized task. These guides share the portable skill's source; installing that skill separately is optional for MCP users. Client support and model behavior determine how the guidance is used. Pass absolute paths. Add `--root /path/to/designs` (repeatable) to confine every file and output path to chosen folders. Raster exports are scaled down to `maxSize` (default 1600 px) so inline images stay small; SVG returns metadata only.
+**MCP.** The server runs locally over stdio and exposes `workflow`, `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle`, `verify` and `export`. The agent can read built-in `build`, `images`, `plan`, `planning-details` or opt-in `yolo` guidance through `workflow`, then use its own project and browser tools to carry out the authorized task. These guides share the portable skill's source; installing that skill separately is optional for MCP users. Client support and model behavior determine how the guidance is used. Pass absolute paths. Add `--root /path/to/designs` (repeatable) to confine every file and output path to chosen folders. Raster exports are scaled down to `maxSize` (default 1600 px) so inline images stay small; SVG returns metadata only.
 
 Native Windows with Claude Code: follow its [stdio setup notes](https://code.claude.com/docs/en/mcp#option-3-add-a-local-stdio-server) and the `cmd /c` wrapper for `npx`.
 
@@ -160,6 +161,7 @@ skillshare sync && skillshare sync mcp --global
 | `variables <file> [node]` | A frame's bound variables; without a node, every local variable |
 | `bundle <file> <node> <out.zip> [--states]` | A design bundle for one frame; prints `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | Many bundles from one decode, in parallel |
+| `verify <bundle>` | Check a bundle `.zip` or its extracted directory against its manifest: verified, missing and changed files, missing assets, and the font faces to confirm in the project |
 | `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP or AVIF; `--max-kb` lowers lossy quality until it fits |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Local read-only viewer; `--out` writes a standalone offline snapshot |
 | `compare <file> <nodes.json> <node>` | Diff against a REST export of the same frame |
