@@ -300,7 +300,7 @@ fn unrooted_paths_preserve_relative_labels_missing_parents_and_symlinks() {
         );
         assert!(!dir.join("missing").exists());
     }
-    // Unknown design-tool fields remain ignored, including fields named like another tool's paths.
+    // Unknown fields fail preparation before root checks, even when named like another tool's paths.
     let result = rooted_reply(
         &call(
             json!(3),
@@ -309,8 +309,10 @@ fn unrooted_paths_preserve_relative_labels_missing_parents_and_symlinks() {
         ),
         &[dir.join("").canonicalize().unwrap()],
     );
-    assert_eq!(result["result"]["isError"], false);
-    assert!(result["result"]["structuredContent"].get("path").is_none());
+    assert_eq!(
+        result["result"]["_meta"]["figlens"]["code"],
+        "invalid_arguments"
+    );
     #[cfg(unix)]
     {
         let target = dir.join("target.png");

@@ -6,6 +6,15 @@ fn check(tool: &str, args: Value) -> Result<contract::PreparedCall, contract::Fa
     contract::prepare(tool, &args)
 }
 
+/// Keep only the parameters this tool accepts, so one shared argument set fits every tool.
+fn own(tool: &str, mut args: Value) -> Value {
+    let params = TOOLS.iter().find(|t| t.0 == tool).unwrap().2;
+    args.as_object_mut()
+        .unwrap()
+        .retain(|key, _| params.iter().any(|p| p.0 == key));
+    args
+}
+
 #[test]
 fn schema_and_numeric_preflight_share_boundaries() {
     let list = mcp_reply(r#"{"id":1,"method":"tools/list"}"#).unwrap();
@@ -21,7 +30,10 @@ fn schema_and_numeric_preflight_share_boundaries() {
         let schema = &tools.iter().find(|t| t["name"] == tool).unwrap()["inputSchema"];
         assert_eq!(schema["properties"][key]["minimum"], min);
         assert_eq!(schema["properties"][key]["maximum"], max);
-        let mut args = json!({"file":"absent.fig", "node":"0:1", "query":"Frame", "out":"out.png"});
+        let mut args = own(
+            tool,
+            json!({"file":"absent.fig", "node":"0:1", "query":"Frame", "out":"out.png"}),
+        );
         for value in [min, max] {
             args[key] = json!(value);
             assert!(check(tool, args.clone()).is_ok()); // No expensive rendering at large bounds.
@@ -73,13 +85,14 @@ fn strict_types_unknowns_and_flag_like_nodes_are_explicit() {
         json!({"file":"a.fig","depth":"0"}),
         json!({"file":"a.fig","node":false}),
         json!({"file":"a.fig","depth":null}),
+        json!({"file":"a.fig","futureOption":42}),
+        json!({"file":"a.fig","nodeId":"0:1"}),
     ] {
         assert!(check("tree", args).is_err());
     }
     for args in [
         json!({"file":"a.fig","json":false}),
         json!({"file":"a.fig","node":"--json"}),
-        json!({"file":"a.fig","futureOption":42}),
     ] {
         assert!(check("tree", args).is_ok());
     }
@@ -118,7 +131,10 @@ fn discovery_and_preparation_share_defaults() {
         let args = if *name == "workflow" {
             json!({"topic":"build"})
         } else {
-            json!({"file":"a.fig","node":"0:1","query":"Frame","out":"a.png"})
+            own(
+                name,
+                json!({"file":"a.fig","node":"0:1","query":"Frame","out":"a.png"}),
+            )
         };
         let call = check(name, args.clone()).unwrap();
         for param in *params {
@@ -312,7 +328,10 @@ fn every_tool_rejects_missing_required_fields_and_wrong_types_before_io() {
         let valid = if *name == "workflow" {
             json!({"topic":"build"})
         } else {
-            json!({"file":"absent.fig","node":"0:1","query":"Frame","out":"out.png"})
+            own(
+                name,
+                json!({"file":"absent.fig","node":"0:1","query":"Frame","out":"out.png"}),
+            )
         };
         assert!(check(name, valid.clone()).is_ok());
         for (key, _, required, _) in *params {

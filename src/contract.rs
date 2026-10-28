@@ -329,8 +329,15 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
     let object = args
         .as_object()
         .ok_or_else(|| Failure::argument("arguments must be an object"))?;
-    if tool == "workflow" && object.len() != 1 {
-        return Err(Failure::argument("workflow requires only topic"));
+    // A misspelled optional parameter would otherwise fall back to its default and still succeed.
+    if let Some(key) = object
+        .keys()
+        .find(|key| !params.iter().any(|p| p.0 == *key))
+    {
+        let accepted = params.iter().map(|p| p.0).collect::<Vec<_>>().join(", ");
+        return Err(Failure::argument(format!(
+            "unknown parameter {key}; accepted: {accepted}"
+        )));
     }
     let mut checked = json!({});
     for param in *params {
@@ -407,7 +414,7 @@ pub fn tools() -> Value {
                     (param.0.to_owned(), property(name, param))
                 ).collect::<serde_json::Map<_, _>>(),
                 "required": params.iter().filter(|p| p.2).map(|p| p.0).collect::<Vec<_>>(),
-                "additionalProperties": *name != "workflow",
+                "additionalProperties": false,
             }
         });
         if let Some(schema) = output_schema(name) {
