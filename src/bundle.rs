@@ -396,15 +396,16 @@ pub(crate) fn fonts(document: &Json) -> Json {
             used.sort_by_key(|i| i.as_u64());
             used.dedup();
             for id in used {
-                let mut style = base.clone();
+                // verify reads edited bundles: a style that is not an object contributes nothing.
+                let mut style = base.as_object().cloned().unwrap_or_default();
                 for (key, value) in node["styleOverrideTable"][id.to_string()]
                     .as_object()
                     .into_iter()
                     .flatten()
                 {
-                    style[key] = value.clone();
+                    style.insert(key.clone(), value.clone());
                 }
-                styles.push(style);
+                styles.push(Json::Object(style));
             }
             for style in styles {
                 let (Some(family), Some(face)) =
@@ -1025,6 +1026,24 @@ mod tests {
         assert!(context.contains("Inventory truncated: true"));
         assert!(context.contains("missing_component"));
         assert!(context.contains("Hidden subtrees not expanded: true"));
+    }
+
+    #[test]
+    fn fonts_survive_a_style_that_is_not_an_object() {
+        let text = json!({
+            "id": "1:1", "type": "TEXT", "characters": "ab", "style": 42,
+            "characterStyleOverrides": [1, 1],
+            "styleOverrideTable": {"1": {"fontFamily": "Inter", "fontStyle": "Bold"}},
+        });
+        let faces = fonts(&text)["faces"].clone();
+        assert_eq!(
+            (
+                &faces[0]["family"],
+                &faces[0]["style"],
+                faces.as_array().unwrap().len()
+            ),
+            (&json!("Inter"), &json!("Bold"), 1)
+        );
     }
 
     #[test]
