@@ -55,17 +55,24 @@ pub fn export(
     max_px: Option<u32>,
 ) -> Result<Image, Box<dyn Error>> {
     let prepared = Prepared::new(tree, fig, id)?;
-    let unsupported = || {
+    let unsupported = |reason: &str| {
         crate::FigError::new(
             crate::ErrorKind::UnsupportedNode,
-            format!(
-                "node {id} is unsupported for export: no drawable bounds; inspect the node and select a sized drawable layer"
-            ),
+            format!("node {id} is unsupported for export: {reason}"),
         )
     };
+    let unbounded =
+        || unsupported("no drawable bounds; inspect the node and select a sized drawable layer");
+    // A hidden layer draws nothing: say so instead of writing an empty raster.
+    if prepared.node()["visible"] == false {
+        return Err(unsupported(
+            "the layer is hidden; show it in Figma and save a new local copy, or export a visible layer",
+        )
+        .into());
+    }
     if format == Format::Svg {
         let n = prepared.node();
-        let area = render::render_bounds(n).ok_or_else(unsupported)?;
+        let area = render::render_bounds(n).ok_or_else(unbounded)?;
         let lookup = |h: &str| prepared.images.get(h).cloned();
         // Keep original image fills embedded; raster export's downsampling would lose detail.
         let bytes = render::Svg::new(tree, &lookup)
@@ -98,7 +105,7 @@ pub fn export(
         }
         _ => scale,
     };
-    let svg = prepared.export_svg(tree, scale).ok_or_else(unsupported)?;
+    let svg = prepared.export_svg(tree, scale).ok_or_else(unbounded)?;
     let pixmap = render::pixmap(&svg)?;
     Ok(encode(&pixmap, format, quality, max_bytes)?)
 }
