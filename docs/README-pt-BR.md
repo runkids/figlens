@@ -166,7 +166,7 @@ skillshare sync && skillshare sync mcp --global
 | `variables <file> [node]` | Variáveis vinculadas a um frame; sem nó, todas as variáveis locais |
 | `bundle <file> <node> <out.zip> [--states]` | Um bundle de design de um frame; imprime `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | Vários bundles a partir de uma decodificação, em paralelo |
-| `verify <bundle>` | Confere um bundle (`.zip` ou diretório extraído) com o manifesto: arquivos verificados, ausentes e alterados, assets ausentes e as fontes a confirmar no projeto |
+| `verify <bundle>` | Confere um bundle (`.zip` ou diretório extraído) com o manifesto: arquivos verificados, ausentes e alterados, assets ausentes, as fontes a confirmar no projeto e `findings`: cada entrada de handoff ausente, não suportada ou não verificada, com nós, evidência e próxima ação |
 | `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP ou AVIF; `--max-kb` reduz a qualidade com perda até caber |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Viewer local somente leitura; `--out` grava um snapshot offline independente |
 | `compare <file> <nodes.json> <node>` | Diferenças em relação a uma exportação REST do mesmo frame |

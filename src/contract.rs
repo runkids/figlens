@@ -160,7 +160,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "verify",
-        "Check a bundle, zipped or extracted, against its manifest before building from it: verified, missing and changed files, the bundle's missing assets, and the font faces the visible text uses (with node ids). Fonts are always unverified here: confirm each face in the running project with document.fonts.load, and check browser delivery of assets there. Reports without blocking; no design file is read.",
+        "Check a bundle, zipped or extracted, against its manifest before building from it: verified, missing and changed files, the bundle's missing assets, and the font faces the visible text uses (with node ids). Fonts are always unverified here: confirm each face in the running project with document.fonts.load, and check browser delivery of assets there. findings gathers these checks with the bundle's unresolved variables, truncated state inventory, render limitations and unemitted semantics into one handoff preflight list, each with node ids, evidence, impact and next action. Reports without blocking; no design file is read.",
         &[(
             "bundle",
             "string",
@@ -256,8 +256,31 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                     "description": "family, style, weight, postScriptName, nodeIds and status, always unverified",
                 },
                 "unverified": { "type": "array", "items": { "type": "string" } },
+                "findings": {
+                    "type": "array",
+                    "items": { "type": "object" },
+                    "description": "handoff preflight, missing inputs first: category (integrity, asset, variable, scope, render, semantics, font), status (missing, unsupported or unverified), source file, nodeIds (at most 20) and nodeCount, evidence, impact and action; at most 500 entries and 4 MiB",
+                },
+                "findingsSummary": {
+                    "type": "object",
+                    "description": "scope (bundle root nodeId and name), total, returned, truncated, counts per category/status and the coverage the findings do not establish",
+                },
+                "truncated": {
+                    "type": "object",
+                    "description": "original length of each other list cut to stay within the reply budget (files.missing, files.changed, files.invalid, missingAssets, fonts); empty when nothing was cut",
+                },
             }),
-            ["path", "files", "missingAssets", "fonts", "unverified"].as_slice(),
+            [
+                "path",
+                "files",
+                "missingAssets",
+                "fonts",
+                "unverified",
+                "findings",
+                "findingsSummary",
+                "truncated",
+            ]
+            .as_slice(),
         ),
         _ => return None,
     };

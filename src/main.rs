@@ -62,7 +62,9 @@ usage:
                                              prints {path,width,height,bytes,quality}
   figlens verify <bundle.zip|dir>              check a bundle, zipped or extracted, against its manifest:
                                              verified/missing/changed files, missing assets and the font
-                                             faces to confirm in the project (always unverified here)
+                                             faces to confirm in the project (always unverified here),
+                                             plus findings: one entry per missing, unsupported or
+                                             unverified handoff input with node ids, evidence and action
   figlens preview <file.fig> [node] [--out preview.html] [--port N] [--bind IP]
                                              local read-only viewer (loopback, random port by default);
                                              --out requires a node and writes an offline snapshot

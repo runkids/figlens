@@ -166,7 +166,7 @@ skillshare sync && skillshare sync mcp --global
 | `variables <file> [node]` | frame에 연결된 변수. 노드 없이 실행하면 모든 로컬 변수 |
 | `bundle <file> <node> <out.zip> [--states]` | 한 frame의 디자인 bundle. `{nodeId, path, warnings}` 출력 |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | 한 번 디코딩해 여러 bundle을 병렬 생성 |
-| `verify <bundle>` | bundle(`.zip` 또는 압축을 푼 디렉터리)을 manifest와 대조: 검증·누락·변경된 파일, 누락된 asset, 프로젝트에서 확인할 폰트 |
+| `verify <bundle>` | bundle(`.zip` 또는 압축을 푼 디렉터리)을 manifest와 대조: 검증·누락·변경된 파일, 누락된 asset, 프로젝트에서 확인할 폰트, 그리고 `findings`: 누락·미지원·미검증 handoff 입력마다 노드, 근거, 다음 조치 |
 | `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP, AVIF. `--max-kb`는 크기에 맞을 때까지 손실 품질을 낮춤 |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 로컬 읽기 전용 viewer. `--out`은 독립 오프라인 스냅샷 생성 |
 | `compare <file> <nodes.json> <node>` | 같은 frame의 REST 내보내기와 차이 비교 |

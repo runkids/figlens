@@ -164,7 +164,7 @@ skillshare sync && skillshare sync mcp --global
 | `variables <file> [node]` | A frame's bound variables; without a node, every local variable |
 | `bundle <file> <node> <out.zip> [--states]` | A design bundle for one frame; prints `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | Many bundles from one decode, in parallel |
-| `verify <bundle>` | Check a bundle `.zip` or its extracted directory against its manifest: verified, missing and changed files, missing assets, and the font faces to confirm in the project |
+| `verify <bundle>` | Check a bundle `.zip` or its extracted directory against its manifest: verified, missing and changed files, missing assets, the font faces to confirm in the project, and `findings`: each missing, unsupported or unverified handoff input with its nodes, evidence and next action |
 | `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP or AVIF; `--max-kb` lowers lossy quality until it fits |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Local read-only viewer; `--out` writes a standalone offline snapshot |
 | `compare <file> <nodes.json> <node>` | Diff against a REST export of the same frame |

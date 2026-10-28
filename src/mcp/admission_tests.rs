@@ -466,8 +466,21 @@ fn verify_reads_only_bundles_inside_roots_and_keeps_the_caller_label() {
     );
     let label = inside.join("");
     let report = rooted_reply(&call(json!(2), "verify", json!({"bundle": label})), &roots);
+    let content = &report["result"]["structuredContent"];
     assert_eq!(
-        report["result"]["structuredContent"]["path"],
-        label.to_string_lossy().as_ref()
+        (
+            content["path"].as_str(),
+            content["findings"].is_array(),
+            &content["findingsSummary"]["unexamined"]
+        ),
+        (
+            Some(label.to_string_lossy().as_ref()),
+            true,
+            &json!([
+                "missing-assets.json",
+                "design/nodes.json",
+                "design/variables.json"
+            ])
+        )
     );
 }
