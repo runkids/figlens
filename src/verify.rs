@@ -132,7 +132,18 @@ pub fn verify(path: &Path) -> Result<Json, Box<dyn Error>> {
         }
         budget -= declared;
         let limit = declared + 1;
-        match bundle.read(listed, |r| digest(&mut r.take(limit)))? {
+        let found = match bundle.read(listed, |r| digest(&mut r.take(limit))) {
+            Ok(found) => found,
+            // A damaged entry is a changed file; the rest of the bundle is still checked.
+            Err(e) => {
+                changed.push(json!({
+                    "path": listed, "expected": {"size": file["size"], "sha256": file["sha256"]},
+                    "actual": null, "error": e.to_string(),
+                }));
+                continue;
+            }
+        };
+        match found {
             Found::File((size, sha256))
                 if file["size"] == size && file["sha256"].as_str() == Some(&sha256) =>
             {
@@ -188,6 +199,7 @@ pub fn verify(path: &Path) -> Result<Json, Box<dyn Error>> {
 mod tests {
     use super::*;
     use crate::test_support::TestDir;
+    use std::io::Write as _;
 
     fn fixture_bundle(dir: &TestDir) -> PathBuf {
         let fig = Path::new("examples/first-success/design.fig");
@@ -345,6 +357,39 @@ mod tests {
                     "1 listed files were not hashed: their declared sizes exceed the {HASH_BUDGET}-byte verification budget."
                 ))
             )
+        );
+    }
+
+    #[test]
+    fn an_undecodable_zip_entry_is_reported_and_checking_continues() {
+        let dir = TestDir::new();
+        let (data, path) = (b"figlens stored entry".as_slice(), dir.join("damaged.zip"));
+        let entry = |name| json!({"path": name, "size": data.len(), "sha256": digest(&mut &data[..]).unwrap().1});
+        let manifest = json!({"format": "figlens-bundle", "version": 1, "files": [entry("a.txt"), entry("b.txt")]});
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("manifest.json", stored).unwrap();
+        zip.write_all(manifest.to_string().as_bytes()).unwrap();
+        for name in ["a.txt", "b.txt"] {
+            zip.start_file(name, stored).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        let mut bytes = zip.finish().unwrap().into_inner();
+        // Damage a.txt's stored bytes so its CRC check fails while the directory stays readable.
+        let at = bytes.windows(data.len()).position(|w| w == data).unwrap();
+        bytes[at] ^= 1;
+        std::fs::write(&path, bytes).unwrap();
+        let report = verify(&path).unwrap();
+        let changed = &report["files"]["changed"][0];
+        assert_eq!(
+            (
+                &changed["path"],
+                &changed["actual"],
+                changed["error"].is_string(),
+                &report["files"]["verified"]
+            ),
+            (&json!("a.txt"), &Json::Null, true, &json!(1))
         );
     }
 

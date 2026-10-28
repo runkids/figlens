@@ -247,7 +247,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "path": { "type": "string" },
                 "files": {
                     "type": "object",
-                    "description": "verified count; missing paths; changed entries with expected and actual size/sha256 (actual null when larger than declared or not a regular file inside the bundle); invalid manifest paths",
+                    "description": "verified count; missing paths; changed entries with expected and actual size/sha256 (actual null when larger than declared, unreadable, with error, or not a regular file inside the bundle); invalid manifest paths",
                 },
                 "missingAssets": { "type": "array", "description": "missing-assets.json entries" },
                 "fonts": {
