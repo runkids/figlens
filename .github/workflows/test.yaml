@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # Draft PRs run nothing; marking one ready for review starts the full suite.
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -23,6 +25,7 @@ permissions:
 
 jobs:
   test:
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -60,6 +63,7 @@ jobs:
   # Releases ship a Windows build, and the Linux job above cannot catch a Windows-only failure
   # (paths, %LOCALAPPDATA%, gcloud.cmd). Native MSVC here; the release cross-builds windows-gnu.
   windows:
+    if: github.event.pull_request.draft != true
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -79,6 +83,7 @@ jobs:
   # Build each release-format target once; all installation jobs reuse these exact artifacts.
   # Independent of `test` so the installation jobs start as soon as the archives exist.
   candidate:
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
