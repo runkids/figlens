@@ -141,7 +141,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "out",
                 "string",
                 true,
-                "output path for the bundle ZIP; create the parent directory first",
+                "output path for the bundle ZIP; unless the user names one, use .figlens/exports/ under the project root, created with a .gitignore containing * so it stays out of Git; create the parent directory first",
             ),
             (
                 "fileKey",
@@ -168,7 +168,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "out",
                 "string",
                 true,
-                "output path ending in .png, .jpg, .jpeg, .webp, .avif or .svg; create the parent directory first",
+                "output path ending in .png, .jpg, .jpeg, .webp, .avif or .svg; shipped assets follow the project's asset conventions, reference and scratch files go in .figlens/exports/ under the project root, created with a .gitignore containing * so it stays out of Git; create the parent directory first",
             ),
             ("scale", "number", false, "default 1"),
             ("quality", "integer", false, "1-100, default 80"),

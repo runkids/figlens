@@ -73,6 +73,8 @@ usage:
   ~/.cache/figlens until the object changes).
 <node>: a Figma URL with ?node-id=..., 12-345 (URL form) or 12:345.
         nodes/inspect/export/bundle also accept full instance sublayer IDs from inspect/nodes.
+<out>: always explicit. Shipped assets go where the project keeps its assets; reference and
+       scratch files go in .figlens/exports/ (holding a .gitignore of *), not beside the .fig.
 JSON goes to stdout, errors to stderr; exit status 1 on any error.
 
 examples:

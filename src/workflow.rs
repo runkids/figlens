@@ -8,13 +8,14 @@ pub const INSTRUCTIONS: &str = "Read local Figma .fig snapshots with figlens. Re
 pub fn read(topic: &str) -> Result<String, String> {
     let headings: &[&str] = match topic {
         "build" => &[
+            "Where outputs go",
             "Building a frame",
             "Font and asset preflight",
             "Link back to Figma",
             "Reading the output",
             "Known gaps",
         ],
-        "images" => &["Images and slices", "Known gaps"],
+        "images" => &["Where outputs go", "Images and slices", "Known gaps"],
         "plan" | "planning-details" | "yolo" => &[],
         _ => {
             return Err(format!(
@@ -89,6 +90,8 @@ mod tests {
             images.contains("crop, mask or effects") && images.contains("browser transfer bytes")
         );
         assert!(!images.contains("## Building a frame"));
+        // Both guides lead to writes, and an agent may load only one of them.
+        assert!(build.contains("## Where outputs go") && images.contains("## Where outputs go"));
         let plan = read("plan").unwrap();
         assert!(plan.contains("A plan-only request ends with the plan"));
         assert!(plan.contains("(workflow:planning-details#save-and-resume-proportionately)"));

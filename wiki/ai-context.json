@@ -18,7 +18,12 @@
       "sources": [
         {
           "path": "wiki/mcp.md"
-        },
+        }
+      ]
+    },
+    "gcs": {
+      "description": "Changing the gs:// snapshot handoff, its download cache or refresh.",
+      "sources": [
         {
           "path": "wiki/gcs.md"
         }

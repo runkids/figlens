@@ -6,7 +6,8 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 
 | Topic | Use when | Main sources |
 |---|---|---|
-| `mcp` | Changing MCP instructions, tool discovery or built-in workflow guidance | `mcp.md`, `gcs.md` |
+| `mcp` | Changing MCP instructions, tool discovery or built-in workflow guidance | `mcp.md` |
+| `gcs` | Changing the `gs://` snapshot handoff, its download cache or refresh | `gcs.md` |
 | `performance` | Measuring load time and memory, reading the perf baseline, changing cache or decode cost | `performance.md` |
 | `parsing` | Changing untrusted container/schema/value decoding or parsing budgets | `parsing.md` |
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields, variables or the bundle | `fig-format.md` |
