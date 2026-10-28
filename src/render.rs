@@ -759,7 +759,10 @@ pub struct Svg<'t, 'a> {
     plain: std::collections::HashMap<String, String>,
     /// Outlines of the background blurs drawn so far, with their bounds: each blur replaces the
     /// backdrop inside its outline, so content drawn before it is cut there.
-    holes: Vec<(String, Rect)>,
+    holes: Vec<(String, Rect, usize)>,
+    /// Cost of the cuts made so far, against the same budget as blurs: each cut is another layer
+    /// that redraws the outlines it cuts.
+    cuts: usize,
     /// Set while drawing what is never seen itself: mask content, which only lends its alpha or
     /// luminance, or a zero-opacity subtree. A blur there is not drawn: it would not show, would
     /// use up the budget, and masks are referenced outside `<use>`, beyond blur-free copies.
@@ -790,6 +793,7 @@ impl<'t, 'a> Svg<'t, 'a> {
             plain: Default::default(),
             unseen: false,
             holes: Vec::new(),
+            cuts: 0,
             blurred: 0,
             scale: 1.0,
             area: [0.0; 4],
@@ -1060,10 +1064,17 @@ impl<'t, 'a> Svg<'t, 'a> {
                 kids += "</g>";
             }
             // Later blurs replace what they cover, here and in this node's own fills.
+            let mut cuts = std::collections::HashMap::new();
             for (body, from, bounds) in drawn {
-                if let Some(cut) = self.cut(&body, from, bounds) {
-                    kids = kids.replacen(&body, &cut, 1);
+                let id = body
+                    .strip_prefix("<use href=\"#")
+                    .and_then(|b| b.strip_suffix("\"/>"));
+                if let (Some(id), Some(cut)) = (id, self.cut(&body, from, bounds)) {
+                    cuts.insert(id.to_string(), cut);
                 }
+            }
+            if !cuts.is_empty() {
+                kids = swap_refs(&kids, &cuts);
             }
             if let Some(cut) = self.cut(&fills, own_holes, render_bounds(n)) {
                 inner = inner.replacen(&fills, &cut, 1);
@@ -1454,38 +1465,30 @@ impl<'t, 'a> Svg<'t, 'a> {
     /// them swapped for blur-free copies. Backdrops are drawn from these, so a blurred sibling is
     /// not blurred again into the next one: that nesting grows exponentially.
     fn without_blurs(&self, body: &str) -> String {
-        let mut parts = body.split("<use href=\"#");
-        let mut out = parts.next().unwrap_or_default().to_string();
-        for part in parts {
-            match part
-                .split_once("\"/>")
-                .filter(|(id, _)| self.plain.contains_key(*id))
-            {
-                Some((id, rest)) => {
-                    out += &self.plain[id];
-                    out += rest;
-                }
-                None => {
-                    out += "<use href=\"#";
-                    out += part;
-                }
-            }
-        }
-        out
+        swap_refs(body, &self.plain)
     }
 
     /// A mask that cuts the outlines of the blurs drawn since hole `from` (those overlapping
     /// `bounds`, or all of them) out of what it covers.
     fn erase(&mut self, from: usize, bounds: Option<Rect>) -> Option<String> {
         let mut holes = String::new();
-        for (id, r) in &self.holes[from..] {
+        let mut cost = 0usize;
+        for (id, r, len) in &self.holes[from..] {
             if bounds.is_none_or(|b| intersect(b, *r).is_some()) {
                 let _ = write!(holes, "<use href=\"#{id}\" fill=\"#000\"/>");
+                cost = cost.saturating_add(*len);
             }
         }
         if holes.is_empty() {
             return None;
         }
+        // Past the budget the blur is painted over what it covers, which differs only for a
+        // translucent backdrop.
+        let cost = cost.max(BLUR_BUDGET / MAX_CUTS);
+        if self.cuts.saturating_add(cost) > BLUR_BUDGET {
+            return None;
+        }
+        self.cuts += cost;
         let id = self.id("e");
         let _ = write!(
             self.defs,
@@ -1621,7 +1624,7 @@ impl<'t, 'a> Svg<'t, 'a> {
             " fill-rule=\"evenodd\""
         };
         let _ = write!(self.defs, "<path id=\"{hole}\" d=\"{d}\"{rule}/>");
-        self.holes.push((hole, [x0, y0, x1, y1]));
+        self.holes.push((hole, [x0, y0, x1, y1], d.len()));
         Some(format!("<use href=\"#{id}\"/>"))
     }
 
@@ -1749,6 +1752,30 @@ impl<'t, 'a> Svg<'t, 'a> {
 const BLUR_BUDGET: usize = 32 << 20;
 /// Background blurs one export may draw.
 const MAX_BLURS: usize = 64;
+/// Layers one export may cut background blur outlines from.
+const MAX_CUTS: usize = 4096;
+
+/// `body` with each `<use>` reference whose id `map` has replaced by its value, in one pass.
+fn swap_refs(body: &str, map: &std::collections::HashMap<String, String>) -> String {
+    let mut parts = body.split("<use href=\"#");
+    let mut out = parts.next().unwrap_or_default().to_string();
+    for part in parts {
+        match part
+            .split_once("\"/>")
+            .filter(|(id, _)| map.contains_key(*id))
+        {
+            Some((id, rest)) => {
+                out += &map[id];
+                out += rest;
+            }
+            None => {
+                out += "<use href=\"#";
+                out += part;
+            }
+        }
+    }
+    out
+}
 
 /// Shadows and layer blurs, which the node's own filter draws. Background blur is drawn
 /// separately; other types (such as GLASS) are skipped and reported, not drawn as blurs.
@@ -2308,6 +2335,34 @@ mod tests {
         // Blurring past the edge into nothing would leave the frame's corner translucent.
         let alpha = pixels.pixel(11, 11).unwrap().alpha();
         assert!(alpha >= 250, "{alpha}");
+    }
+
+    #[test]
+    fn cuts_for_background_blurs_stop_at_their_cap() {
+        let tree = Tree {
+            nodes: Default::default(),
+            children: Default::default(),
+            blobs: Vec::new(),
+        };
+        let rect = |i: usize, effects: Json| {
+            serde_json::json!({"id": format!("1:{}", i + 2), "type": "RECTANGLE", "_r": {
+                "m": [1, 0, 0, 1, 0, 0], "size": {"x": 10, "y": 10},
+                "fillPaints": [{"type": "SOLID", "color": {"r": 1, "g": 0, "b": 0, "a": 1}}],
+                "effects": effects,
+            }})
+        };
+        let mut kids: Vec<Json> = (0..MAX_CUTS + 100).map(|i| rect(i, Json::Null)).collect();
+        kids.push(rect(
+            MAX_CUTS + 100,
+            serde_json::json!([{"type": "BACKGROUND_BLUR", "radius": 4}]),
+        ));
+        let frame = serde_json::json!({"id": "1:1", "type": "FRAME", "_r": {
+            "m": [1, 0, 0, 1, 0, 0], "size": {"x": 10, "y": 10}, "fillPaints": [],
+        }, "children": kids});
+        let images = |_: &str| None;
+        let svg = Svg::new(&tree, &images).document(&frame, [0.0, 0.0, 10.0, 10.0], 1.0);
+        // Each cut redraws the outlines it cuts, so a crafted file must not multiply them.
+        assert_eq!(svg.matches("<mask id=").count(), MAX_CUTS);
     }
 
     #[test]
