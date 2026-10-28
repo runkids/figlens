@@ -29,7 +29,17 @@
 
 **Pas encore de fichier de design ?** [Vérifiez votre installation avec le petit exemple public](examples/first-success/README.md) : vérifiez le binaire choisi, trouvez un frame et validez son bundle. Aucun modèle nécessaire.
 
-Placez `design.fig` dans votre projet, puis choisissez votre agent.
+Placez `design.fig` dans votre projet, puis choisissez **une** configuration. Chacune donne à votre agent les outils figlens et le même guide intégré pour la planification, l'implémentation et la préparation des images.
+
+| Configuration | Pour | Le guide vient de |
+|---|---|---|
+| [MCP](#setup-mcp) | Claude Code, Cursor, Codex, Gemini CLI et les autres clients MCP | l'outil `workflow` du serveur |
+| [Pi](#setup-pi) | Pi 1.3.0+ | le paquet, qui inclut le skill |
+| [CLI](#setup-cli) | les agents qui n'exécutent que des commandes shell, les scripts et la CI, ou vous | `figlens workflow <topic>`, ou le [skill](#setup-skill) facultatif |
+
+<a id="setup-mcp"></a>
+
+### MCP
 
 **Claude Code** (Node.js 18+, macOS/Linux) :
 
@@ -37,21 +47,79 @@ Placez `design.fig` dans votre projet, puis choisissez votre agent.
 claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
 
-Démarrez une nouvelle session et vérifiez `/mcp`. Décrivez l’écran avec vos propres mots : MCP fournit à la demande des guides de planification, d’implémentation et de préparation des images ; aucune installation séparée du skill n’est nécessaire.
+**Tout client MCP :**
 
-**Pi** (1.3.0+) : un seul paquet fournit la CLI, MCP, le viewer et le skill.
+```json
+{
+  "mcpServers": {
+    "figlens": {
+      "command": "npx",
+      "args": ["-y", "@runkids/figlens", "mcp"]
+    }
+  }
+}
+```
+
+Sans Node.js, installez le binaire autonome ([CLI](#setup-cli)) et utilisez `"command": "figlens", "args": ["mcp"]`. Ouvrez une nouvelle session et vérifiez que les outils figlens apparaissent (`/mcp` dans Claude Code). Aucune installation séparée du skill n'est nécessaire. Ajoutez `--root <dir>` après `mcp` pour limiter les dossiers que figlens peut lire et écrire.
+
+<a id="setup-pi"></a>
+
+### Pi
+
+Un seul paquet fournit la CLI, MCP, le viewer, les commandes `/figlens` et le skill :
 
 ```sh
 pi install npm:@runkids/figlens
 ```
 
-**Tout client MCP** (Cursor, Codex, Gemini CLI, ...) :
+[Guide de l'extension Pi](docs/README-fr.md#pi)
 
-```json
-{ "mcpServers": { "figlens": { "command": "npx", "args": ["-y", "@runkids/figlens", "mcp"] } } }
+<a id="setup-cli"></a>
+
+### CLI
+
+Lancez-le via npm, ou installez le binaire autonome :
+
+```sh
+npx @runkids/figlens --help                                                                # Node.js 18+, sans installation
+curl -fsSL https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.sh | sh  # macOS, Linux
+brew install runkids/tap/figlens                                                           # Homebrew
+irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 | iex      # Windows PowerShell
 ```
 
-[Installation autonome](docs/README-fr.md#install)
+`npx` exécute le binaire de la version du paquet qu'il résout. Les installations par script se mettent à jour avec `figlens update`, celles de Homebrew avec `brew upgrade figlens`. Les binaires couvrent macOS (Apple silicon, Intel), Linux (arm64, x86_64) et Windows (x86_64).
+
+Un agent qui utilise la CLI lit son guide avec `figlens workflow build` (ainsi que `images`, `plan`, `planning-details` et `yolo`, réservé à une demande explicite), toujours aligné sur la version du binaire, ou via le [skill](#setup-skill).
+
+[Référence de la CLI](docs/README-fr.md#commands)
+
+<a id="setup-skill"></a>
+
+### Skill pour agents (facultatif)
+
+Le skill enseigne à un agent le même déroulé que le guide intégré : trouver le frame, lire le bundle par petits morceaux, planifier le périmètre et comparer l'UI en cours d'exécution avec le design. Il ne contient que des instructions : associez-le à la CLI ou à MCP. Les configurations MCP et Pi n'en ont pas besoin.
+
+**Recommandé : [skillshare](https://github.com/runkids/skillshare).** Installez le skill une fois et synchronisez-le avec chaque agent que vous utilisez :
+
+```sh
+skillshare install github.com/runkids/figlens/skills/figlens
+skillshare sync
+```
+
+Le même outil peut aussi configurer la connexion MCP de figlens pour ces agents :
+
+```sh
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
+skillshare sync mcp --global
+```
+
+Autres façons d'installer le skill :
+
+```sh
+npx skills add runkids/figlens --skill figlens   # Skills CLI
+```
+
+Ou copiez `skills/figlens/` depuis ce dépôt ou une archive de release dans le répertoire de skills de votre agent (Claude Code : `~/.claude/skills/`). Un skill installé se met à jour séparément du binaire ; `figlens workflow` correspond toujours au binaire.
 
 Demandez ensuite un écran :
 

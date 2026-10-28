@@ -18,7 +18,12 @@
       "sources": [
         {
           "path": "wiki/mcp.md"
-        },
+        }
+      ]
+    },
+    "gcs": {
+      "description": "Changing the gs:// snapshot handoff, its download cache or refresh.",
+      "sources": [
         {
           "path": "wiki/gcs.md"
         }
@@ -33,10 +38,18 @@
       ]
     },
     "fig-format": {
-      "description": "Changing decoding, instance expansion, emitted REST fields, variables or the bundle.",
+      "description": "Changing decoding, instance expansion, emitted REST fields or variables.",
       "sources": [
         {
           "path": "wiki/fig-format.md"
+        }
+      ]
+    },
+    "bundle": {
+      "description": "Changing the bundle zip, manifest, context.md, batch bundles, font inventory or verify.",
+      "sources": [
+        {
+          "path": "wiki/bundle.md"
         }
       ]
     },

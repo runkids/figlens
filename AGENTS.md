@@ -33,9 +33,11 @@ python3 scripts/ai-context.py check     # validate paths, headings and byte budg
 | Topic | Use when |
 |---|---|
 | `mcp` | Changing MCP instructions, tool discovery or built-in workflow guidance |
+| `gcs` | Changing the `gs://` snapshot handoff, its download cache or refresh |
 | `performance` | Measuring load time and memory, reading the perf baseline, changing cache or decode cost |
 | `parsing` | Changing untrusted container/schema/value decoding or parsing budgets |
-| `fig-format` | Changing decoding, instance expansion, emitted REST fields, variables or the bundle |
+| `fig-format` | Changing decoding, instance expansion, emitted REST fields or variables |
+| `bundle` | Changing the bundle zip, manifest, context.md, batch bundles, font inventory or `verify` |
 | `render` | Changing SVG or raster output: text and glyphs, image fills, effects, export areas, image adjustments |
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison |
 | `pi` | Changing the Pi extension, reviewed component mappings or its npm packaging |

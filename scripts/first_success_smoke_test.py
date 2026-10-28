@@ -44,7 +44,7 @@ class FirstSuccessSmokeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as work:
             path = Path(work) / 'wrong.zip'
             with zipfile.ZipFile(path, 'w') as bundle:
-                for name in ['design/nodes.json', 'design/variables.json', 'assets.json',
+                for name in ['design/nodes.json', 'design/variables.json', 'design/fonts.json', 'assets.json',
                              'missing-assets.json', 'references/screen.png', 'context.md']:
                     bundle.writestr(name, '{}')
                 bundle.writestr('manifest.json', json.dumps({
