@@ -24,7 +24,8 @@ pub enum Command {
         json: bool,
     },
     Node(String),
-    Nodes(String),
+    /// The node, and an MCP reply budget that stops oversized JSON before it is built.
+    Nodes(String, Option<usize>),
     Find {
         query: String,
         root: String,
@@ -144,7 +145,7 @@ impl Command {
                 Self::Tree { root, depth, json }
             }
             "node" => Self::Node(node()?),
-            "nodes" => Self::Nodes(node()?),
+            "nodes" => Self::Nodes(node()?, None),
             "find" => {
                 let query = node()?;
                 let (mut root, mut kind, mut limit) = ("0:0".to_owned(), None, 20);
@@ -265,7 +266,7 @@ impl Command {
                 depth: call.argument("depth").as_u64().unwrap() as usize,
                 json: call.argument("json") == true,
             },
-            "nodes" => Self::Nodes(node()?),
+            "nodes" => Self::Nodes(node()?, Some(crate::mcp::MAX_RESPONSE_BYTES)),
             "find" => Self::Find {
                 query: string("query").ok_or(USAGE)?,
                 root: normalize_id(call.string("node").unwrap()),
@@ -337,9 +338,12 @@ impl Command {
                 require_node(tree, &id)?;
                 pretty(to_json(tree.nodes[&id]))
             }
-            Self::Nodes(node) => {
+            Self::Nodes(node, budget) => {
                 let id = normalize_id(&node);
-                pretty(resolve_nodes(tree, &id)?)
+                pretty(match budget {
+                    Some(bytes) => figlens::rest::resolve_nodes_within(tree, &id, bytes)?,
+                    None => resolve_nodes(tree, &id)?,
+                })
             }
             Self::Find {
                 query,

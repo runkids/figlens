@@ -1242,4 +1242,55 @@ fn mcp_rejects_legacy_coercions_without_changing_cli() {
     assert!(!out.exists());
 }
 
+#[test]
+fn mcp_nodes_rejects_an_oversized_selection_early_then_serves_the_next_call() {
+    use super::Command;
+    use figlens::Tree;
+    use kiwi_schema::Value;
+    use std::collections::HashMap;
+
+    let frame = |name: String| {
+        Value::Object(
+            "Test",
+            [
+                ("type", Value::Enum("NodeType", "FRAME")),
+                ("name", Value::String(name)),
+            ]
+            .into_iter()
+            .collect(),
+        )
+    };
+    let (large, small) = (
+        frame("x".repeat(crate::mcp::MAX_RESPONSE_BYTES)),
+        frame("small".into()),
+    );
+    let tree = Tree {
+        nodes: HashMap::from([("0:1".into(), &large), ("0:2".into(), &small)]),
+        children: HashMap::new(),
+        blobs: Vec::new(),
+    };
+    // call_tool skips the wire-size check, so only the early guard can reject here.
+    let fixture = std::path::Path::new("examples/first-success/design.fig");
+    let call = |node: &str| {
+        call_tool(
+            &serde_json::json!({"name":"nodes","arguments":{"file":fixture,"node":node}}),
+            Some((fixture, &tree)),
+        )
+    };
+    let rejected = call("0:1");
+    assert_eq!(
+        rejected["_meta"]["figlens"]["code"],
+        "response_budget_exceeded"
+    );
+    assert!(serde_json::to_vec(&rejected).unwrap().len() < 1024);
+    let healthy = call("0:2");
+    assert_eq!(healthy["isError"], false, "{healthy}");
+    let doc: serde_json::Value =
+        serde_json::from_str(healthy["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(doc, figlens::rest::resolve_nodes(&tree, "0:2").unwrap());
+    // The CLI keeps full extraction.
+    let cli = Command::from_cli("nodes", &["0:1".into()], &tree).unwrap();
+    assert!(cli.execute(&tree, fixture).is_ok());
+}
+
 mod contract;

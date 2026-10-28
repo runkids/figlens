@@ -92,6 +92,12 @@ Earlier primitive profiling on `4ec0f36` attributes medium's cost mainly to Gaus
 
 No other frame regressed over 10%. All 90 before/after archive pairs had identical entry names and bytes except the manifest, including SVG assets and PNG references/composites. This establishes preservation, not improved Figma accuracy. The earlier single-thread stage baseline is retained separately: `RAYON_NUM_THREADS=1` must not be described as current `--jobs 1`. Raw profiles and paired CLI observations remain in gitignored `samples/perf-2026-10-26/filter-work/`; no private fixtures are distributed.
 
+## Early MCP nodes budget (2026-10-29)
+
+`scripts/measure-expansion.py --binary B --fixture F NODE...` records CLI `nodes` elapsed time, child peak RSS, output bytes, node/expanded-node counts and instance nesting per scope. Across every canvas of four private designs, the largest was 國際站PC `35:3155`: 188 MiB pretty JSON (52 MB compact), 34,966 nodes, 18,629 expanded, nesting 3, 3.0 s and 2.4 GiB peak (loading alone: 0.5 s, 807 MiB). A temporary stage probe split the build: expansion 223 ms / +130 MiB, REST builder about 1.9 s / +1.15 GiB, compact serialization 50 ms.
+
+Release build, Docker Linux aarch64, one run each, OS cache not flushed. On a warm MCP server, rejecting `nodes 35:3155` went from 2,383 ms and a lifetime high-water of 895 → 2,465 MiB to 545 ms and 895 → 1,041 MiB; the 414-byte `response_budget_exceeded` reply is unchanged. `inspect` of the same scope still succeeds (4,119 bytes) and builds the full selection. Eighteen fitting scopes from two held-out designs returned MCP JSON equal to CLI `nodes`. Raw observations are in ignored `samples/expansion-61/`. Expansion itself is not bounded; a crafted file with exponential instance fan-out remains a separate limit.
+
 ## Historical batch timings
 
 Historical runs: 24 frames: 28.6 s as separate processes, 8.1 s with `--jobs 1`, 2.9 s with 4; 96 frames: 32.3 s / 12.2 s / 8.5 s with 1 / 4 / 12 jobs, peak memory 1.6 / 1.9 / 2.6 GiB (the decoded `.fig` is about 1.2 GiB of it).
