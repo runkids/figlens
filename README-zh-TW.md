@@ -88,10 +88,10 @@ pi install npm:@runkids/figlens
 
 ### OpenCode V2
 
-加入 OpenCode V2 的插件設定：
+在 OpenCode V2 安裝套件：
 
-```json
-{ "plugins": ["@runkids/figlens"] }
+```sh
+opencode plugin add @runkids/figlens
 ```
 
 重新啟動 OpenCode，再執行 `/figlens help`。 [OpenCode V2](opencode/README.md)

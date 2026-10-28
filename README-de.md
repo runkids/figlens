@@ -88,10 +88,10 @@ pi install npm:@runkids/figlens
 
 ### OpenCode V2
 
-Zur Plugin-Konfiguration von OpenCode V2 hinzufügen:
+Das Paket in OpenCode V2 installieren:
 
-```json
-{ "plugins": ["@runkids/figlens"] }
+```sh
+opencode plugin add @runkids/figlens
 ```
 
 Den Host neu starten und `/figlens help` ausführen. [OpenCode V2](opencode/README.md)

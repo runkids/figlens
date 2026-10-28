@@ -47,7 +47,7 @@ Looping GIF at 3× the edited video’s playback speed. Click it for the full 78
 
 ## OpenCode V2 and OMP
 
-The same package includes independent entries for [OpenCode V2 2.2.0](https://github.com/runkids/figlens/tree/main/opencode) and [OMP 18.13.2](https://github.com/runkids/figlens/tree/main/omp). OpenCode V2 configuration: `{"plugins":["@runkids/figlens"]}`. OMP: `omp plugin install @runkids/figlens`.
+The same package includes independent entries for [OpenCode V2 2.2.0](https://github.com/runkids/figlens/tree/main/opencode) and [OMP 18.13.2](https://github.com/runkids/figlens/tree/main/omp). OpenCode V2: `opencode plugin add @runkids/figlens`. OMP: `omp plugin install @runkids/figlens`.
 
 The integrations share the CLI launcher, skill and component mapping file. Restart the host, then run `/figlens help`.
 

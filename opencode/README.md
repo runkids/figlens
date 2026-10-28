@@ -2,10 +2,10 @@
 
 The single `@runkids/figlens` npm package exposes an OpenCode server entry, `./tui` and `./rpc`, alongside its CLI, Pi and OMP entries. The root stays CommonJS for the CLI; `opencode/` has its own module boundary. Local acceptance targets OpenCode 2.2.0. Other OpenCode generations are not covered.
 
-Add the package to OpenCode V2's plugin configuration:
+Install the package in OpenCode V2:
 
-```json
-{ "plugins": ["@runkids/figlens"] }
+```sh
+opencode plugin add @runkids/figlens
 ```
 
 For a local candidate, use the unpacked package directory as a `file://` URL. The package export lets the host load server and TUI entries separately. No other host SDK is imported by these entries.
