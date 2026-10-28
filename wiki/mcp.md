@@ -44,17 +44,17 @@ Run Docker Rust tests/lint and `python3 scripts/ai-context.py check`. Tests cove
 
 | Parameter | Range / default |
 |---|---|
-| `tree.depth` | 0 through platform `usize::MAX`; omitted means unlimited tree depth |
+| `tree.depth` | 0 through `2^53-1` (JSON-safe); omitted means unlimited tree depth |
 | `inspect.depth` | 0–10 / 1 |
 | `find.limit` | 1–200 / 20 |
 | `export.scale` | finite and greater than 0 / 1 |
 | `export.quality` | 1–100 / 80 |
-| `export.maxKb` | 0 through `usize::MAX / 1024`; omitted means no byte budget |
+| `export.maxKb` | 0 through `2^53-1`; omitted means no byte budget |
 | `export.maxSize` | 0 through `u32::MAX` / 1600; 0 disables the raster side cap |
 
 `tree`/`find` root defaults to `0:0`; booleans default false. File/output strings are nonempty; find queries contain non-whitespace. Export extensions follow the existing case-insensitive encoder selection, including `.jpeg`. Search type remains a free-form, case-insensitive plugin type, not an invented enum. Successful outputs and CLI parameter order remain unchanged.
 
-Design tools ignore unknown fields (`additionalProperties: true`); workflow rejects extras and enumerates topics. **Breaking change:** MCP no longer translates arguments into CLI flags. Replace `depth: "0"` with `depth: 0`, `scale: "2x"` with `scale: 2`, and uncapped `maxSize: null`/`false` with `maxSize: 0` (omission means **1600**, not uncapped). Other optional null/non-boolean false values fail; boolean false is valid. Flag-like nodes are not CLI options. No legacy mode marker remains. Under `--root`, former legacy calls return `invalid_arguments`, not `permission_denied`. CLI is unchanged.
+Tools reject unknown fields (`additionalProperties: false`), so a misspelled `nodeId` cannot fall back to `0:0`; workflow enumerates topics. **Breaking change:** MCP no longer translates arguments into CLI flags. Replace `depth: "0"` with `depth: 0`, `scale: "2x"` with `scale: 2`, and uncapped `maxSize: null`/`false` with `maxSize: 0` (omission means **1600**, not uncapped). Other optional null/non-boolean false values fail; boolean false is valid. Flag-like nodes are not CLI options. No legacy mode marker remains. Under `--root`, former legacy calls return `invalid_arguments`, not `permission_denied`. CLI is unchanged.
 
 Tool failures retain `isError: true` and text content; additive `_meta.figlens` carries stable `code` and corrective `nextStep`. Success payload schemas do not change:
 

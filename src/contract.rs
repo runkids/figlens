@@ -254,15 +254,18 @@ fn default(tool: &str, key: &str) -> Option<Value> {
 
 const SOURCE_HELP: &str = "Cannot read the requested .fig source; check the path and valid local copy, or gcloud availability, connectivity and authorized object read access.";
 
+// Larger bounds break int64 and JavaScript schema parsers; some model backends reject every tool.
+const JSON_SAFE: u64 = (1 << 53) - 1;
+
 pub fn property(tool: &str, param: &Param) -> Value {
     let (key, kind, _, about) = *param;
     let mut p = json!({"type": kind, "description": about});
     let range = match (tool, key) {
         ("inspect", "depth") => Some((0, 10)),
-        ("tree", "depth") => Some((0, usize::MAX as u64)),
+        ("tree", "depth") => Some((0, JSON_SAFE.min(usize::MAX as u64))),
         ("find", "limit") => Some((1, 200)),
         ("export", "quality") => Some((1, 100)),
-        ("export", "maxKb") => Some((0, (usize::MAX / 1024) as u64)),
+        ("export", "maxKb") => Some((0, JSON_SAFE.min((usize::MAX / 1024) as u64))),
         ("export", "maxSize") => Some((0, u64::from(u32::MAX))),
         _ => None,
     };
@@ -326,8 +329,15 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
     let object = args
         .as_object()
         .ok_or_else(|| Failure::argument("arguments must be an object"))?;
-    if tool == "workflow" && object.len() != 1 {
-        return Err(Failure::argument("workflow requires only topic"));
+    // A misspelled optional parameter would otherwise fall back to its default and still succeed.
+    if let Some(key) = object
+        .keys()
+        .find(|key| !params.iter().any(|p| p.0 == *key))
+    {
+        let accepted = params.iter().map(|p| p.0).collect::<Vec<_>>().join(", ");
+        return Err(Failure::argument(format!(
+            "unknown parameter {key}; accepted: {accepted}"
+        )));
     }
     let mut checked = json!({});
     for param in *params {
@@ -404,7 +414,7 @@ pub fn tools() -> Value {
                     (param.0.to_owned(), property(name, param))
                 ).collect::<serde_json::Map<_, _>>(),
                 "required": params.iter().filter(|p| p.2).map(|p| p.0).collect::<Vec<_>>(),
-                "additionalProperties": *name != "workflow",
+                "additionalProperties": false,
             }
         });
         if let Some(schema) = output_schema(name) {
