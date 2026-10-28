@@ -160,6 +160,7 @@ skillshare sync && skillshare sync mcp --global
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 不分大小寫搜尋圖層名稱與文字；路徑、尺寸與預覽。預設 20 筆結果（1-200） |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | 精簡的展開後排版/文字摘要，最多 200 個節點。`--images` 會加上點陣圖尺寸與裁切範圍 |
 | `nodes <file> <node>` | REST 格式的 JSON：展開後的 instance 與 override、auto-layout、文字樣式、填色、效果、綁定的 variables、元件屬性、渲染邊界 |
+| `nodes <file> --frames <list>` | 一次解碼讀取多個節點：清單中每個 id 一行 JSON（帶 `nodeId` 的 `nodes` 輸出，或 `{nodeId, error}`） |
 | `variables <file> [node]` | frame 綁定的 variables；未指定節點時，列出所有本機 variables |
 | `bundle <file> <node> <out.zip> [--states]` | 單一 frame 的設計 bundle；輸出 `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | 一次解碼，平行產生多個 bundle |

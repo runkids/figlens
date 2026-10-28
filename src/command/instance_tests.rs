@@ -1390,6 +1390,38 @@ fn batch_uses_the_same_bundle_target_resolver() {
 }
 
 #[test]
+fn nodes_frames_match_single_nodes_calls_and_isolate_missing_ids() {
+    let f = Fixture::new();
+    let list = f.dir.join("nodes-frames.txt");
+    let ids = ["0:12", "I0:2;0:11", "9:9", "I0:3;0:14;0:21"];
+    std::fs::write(&list, format!("{}\n\n", ids.join("\n"))).unwrap();
+    let mut doc = figlens::Document::open(Path::new(&f.file)).unwrap();
+    let message = doc.take_message().unwrap();
+    let tree = Tree::new(&message);
+    let mut out = Vec::new();
+    crate::nodes_batch(&tree, list.to_str().unwrap(), &mut out).unwrap();
+    let lines: Vec<Value> = String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), ids.len());
+    for (id, mut line) in ids.into_iter().zip(lines) {
+        assert_eq!(line.as_object_mut().unwrap().remove("nodeId").unwrap(), id);
+        match f.cli("nodes", &[id]) {
+            Ok(single) => assert_eq!(
+                format!("{}\n", serde_json::to_string_pretty(&line).unwrap()),
+                single
+            ),
+            Err(e) => assert_eq!(line, json!({ "error": e.to_string() })),
+        }
+    }
+    std::fs::write(&list, "0:12\n".repeat(crate::MAX_NODE_FRAMES + 1)).unwrap();
+    let err = crate::nodes_batch(&tree, list.to_str().unwrap(), &mut Vec::new()).unwrap_err();
+    assert!(err.to_string().contains("at most"), "{err}");
+}
+
+#[test]
 fn missing_and_unsupported_ids_fail_without_fallback_or_output() {
     let f = Fixture::new();
     let png = f.dir.join("invalid.png");
