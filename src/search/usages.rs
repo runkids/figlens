@@ -641,6 +641,28 @@ pub struct Request {
     pub cursor: Option<String>,
 }
 
+impl Request {
+    /// The caller's question as tool arguments, for a recovery that repeats it elsewhere; the
+    /// cursor is left out, since it is bound to the source it came from.
+    pub(crate) fn arguments(&self) -> Json {
+        let target = if self.resource { "resource" } else { "node" };
+        let mut asked = json!({target: self.target, "scope": self.scope, "limit": self.limit});
+        if self.outgoing {
+            asked["direction"] = json!("out");
+        }
+        if !self.relations.is_empty() {
+            asked["relation"] = json!(self.relations.join(","));
+        }
+        if self.include_hidden {
+            asked["includeHidden"] = json!(true);
+        }
+        if let Some(snapshot) = &self.snapshot {
+            asked["snapshotId"] = json!(snapshot);
+        }
+        asked
+    }
+}
+
 /// The ordering key of one result: location record, relation and sequence.
 pub(crate) type Key = (u32, String, u32);
 
@@ -969,14 +991,16 @@ pub(crate) fn query(
     if let Some(asked) = &req.snapshot
         && *asked != snapshot
     {
+        // The recovery repeats the caller's whole question against the current snapshot.
+        let mut asked = req.arguments();
+        asked["snapshotId"] = json!(snapshot);
         return Err(FigError::new(
             ErrorKind::SourceStale,
             format!("{} was read from snapshot {asked}, but the source now serves {snapshot}; query again with the current snapshotId, and reopen the node in it",
                 req.target),
         )
         .with_recovery(json!([{"action": "use_current_snapshot", "requires": "none", "tool": "usages",
-            "arguments": {if req.resource { "resource" } else { "node" }: req.target,
-                "scope": req.scope, "snapshotId": snapshot},
+            "arguments": asked,
             "detail": "keep the file or workspaceId and sourceId you sent; the same id may name another layer in the new snapshot, so reopen it there first"}]))
         .into());
     }

@@ -1169,3 +1169,24 @@ fn a_bound_field_too_large_to_read_charges_the_visits_that_measured_it() {
     let index = build(&Tree::new(&big), "0:0", bounds(work + 10_000));
     assert_eq!(index.stop, Some("work_limit"));
 }
+
+#[test]
+fn a_stale_snapshot_recovery_repeats_the_callers_selectors() {
+    let index = index();
+    let mut r = req("0:20");
+    r.snapshot = Some("sha256:old".into());
+    r.outgoing = true;
+    r.relations = vec!["instance_of".into(), "uses_style".into()];
+    r.include_hidden = true;
+    r.limit = 7;
+    let e = run(&index, &r).unwrap_err();
+    let mut arguments =
+        e.downcast_ref::<FigError>().unwrap().recovery().unwrap()[0]["arguments"].clone();
+    assert_ne!(arguments["snapshotId"], "sha256:old");
+    arguments.as_object_mut().unwrap().remove("snapshotId");
+    assert_eq!(
+        arguments,
+        json!({"node": "0:20", "scope": r.scope, "limit": 7, "direction": "out",
+            "relation": "instance_of,uses_style", "includeHidden": true})
+    );
+}

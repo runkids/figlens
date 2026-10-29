@@ -67,27 +67,13 @@ pub fn usages(
         .collect::<rusqlite::Result<_>>()
         .map_err(sql)?;
     drop(stmt);
-    let target = if req.resource { "resource" } else { "node" };
     // The recovery repeats the caller's whole question against the new path.
-    let mut asked = json!({target: req.target, "scope": req.scope, "limit": req.limit});
-    if req.outgoing {
-        asked["direction"] = json!("out");
-    }
-    if !req.relations.is_empty() {
-        asked["relation"] = json!(req.relations.join(","));
-    }
-    if req.include_hidden {
-        asked["includeHidden"] = json!(true);
-    }
-    if let Some(snapshot) = &req.snapshot {
-        asked["snapshotId"] = json!(snapshot);
-    }
     super::query::relocated(
         storage,
         select,
         rows.iter().map(|r| r.1.as_str()),
         "usages",
-        asked,
+        req.arguments(),
     )?;
     // Invisible sources are dropped before anything about them is read or named.
     let visible: Vec<Row> = rows
