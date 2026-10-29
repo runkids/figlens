@@ -28,6 +28,7 @@ pub mod search;
 pub mod states;
 pub mod variables;
 pub mod verify;
+pub mod workspace;
 
 #[cfg(test)]
 mod test_support;
@@ -47,6 +48,9 @@ pub enum ErrorKind {
     OutputWrite,
     PermissionDenied,
     OperationFailed,
+    WorkspaceBusy,
+    IndexIncompatible,
+    StorageUnavailable,
 }
 
 #[derive(Debug)]

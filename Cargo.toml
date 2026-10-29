@@ -20,6 +20,8 @@ imagesize = "0.15.0"
 jpeg-encoder = "0.7.1"
 kiwi-schema = { version = "0.2.1", path = "vendor/kiwi-schema" }
 rayon = "1.12.0"
+# Bundled: the native binaries carry SQLite, so users install nothing.
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 # No `asm`: it needs nasm in every cross-build.
 ravif = { version = "0.13.0", default-features = false, features = ["threading"] }
 resvg = { version = "0.48.1", default-features = false, features = ["raster-images"] }
@@ -29,6 +31,10 @@ sha2 = "0.11.1"
 unicode-normalization = "0.1.26"
 webp = { version = "0.3.1", default-features = false }
 zip = "9.0.5"
+
+# The per-user Local AppData Known Folder, when %LOCALAPPDATA% is unset, and hard-link counts.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Shell"] }
 
 [profile.release]
 strip = true

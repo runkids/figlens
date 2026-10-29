@@ -1333,3 +1333,38 @@ fn mcp_nodes_rejects_an_oversized_selection_early_then_serves_the_next_call() {
 }
 
 mod contract;
+
+#[test]
+fn cli_index_rejects_bad_arguments_before_touching_storage() {
+    let index = |args: &[&str]| {
+        let args = ["index"]
+            .iter()
+            .chain(args)
+            .map(|a| a.to_string())
+            .collect();
+        run(args, &mut String::new()).unwrap_err().to_string()
+    };
+    assert!(index(&["status"]).contains("choose the workspace"));
+    assert!(index(&["status", "--id", "ws_1", "--workspace", "/"]).contains("choose one of"));
+    assert!(index(&["status", "--id"]).contains("--id needs a value"));
+    assert!(index(&["status", "--id", "nope"]).contains("is not a workspace id"));
+    assert!(
+        index(&["status", "--id", "ws_0000000000000000", "--storage", "rel"]).contains("absolute")
+    );
+    assert!(index(&["prune", "--id", "ws_0000000000000000"]).contains("usage: figlens index"));
+    assert!(index(&["status", "--bogus"]).contains("usage: figlens index"));
+    assert!(
+        index(&[
+            "reset",
+            "--id",
+            "ws_0000000000000000",
+            "--id",
+            "ws_1111111111111111"
+        ])
+        .contains("given twice")
+    );
+    assert!(
+        index(&["status", "--workspace", "--id", "ws_0000000000000000"])
+            .contains("--workspace needs a value")
+    );
+}

@@ -174,6 +174,7 @@ skillshare sync && skillshare sync mcp --global
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Viewer local de solo lectura; `--out` escribe un snapshot offline independiente |
 | `compare <file> <nodes.json> <node>` | Diff contra una exportación REST del mismo frame |
 | `node <file> <node>` | Un nodo `.fig` sin procesar |
+| `index prepare\|status\|add\|remove\|relocate\|reset` | Registro local de workspaces en el directorio de estado de figlens del usuario, o bajo un `--storage DIR` que el workspace recuerda después (hito parcial: `search` aún no lo usa); `reset` solo borra la base de datos del workspace, nunca diseños, exportaciones ni la ubicación recordada |
 | `mcp` | Servidor MCP local por stdio |
 | `update` | Reemplaza el binario por la última release |
 

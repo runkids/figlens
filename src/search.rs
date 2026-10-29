@@ -67,7 +67,12 @@ fn short_hash(data: impl AsRef<[u8]>) -> String {
     hex(&Sha256::digest(data))[..16].to_owned()
 }
 
-fn hex(bytes: &[u8]) -> String {
+/// The stable id of the local source at the canonical `path`; a workspace keeps it on relocate.
+pub(crate) fn source_id(path: &Path) -> String {
+    format!("local:{}", short_hash(path.to_string_lossy().as_bytes()))
+}
+
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -1164,10 +1169,7 @@ pub fn search(path: &Path, req: &Request) -> Result<Json, Box<dyn Error>> {
     let q = req.validate()?;
     let deadline = Instant::now() + DEADLINE;
     let canonical = std::fs::canonicalize(path)?;
-    let source_id = format!(
-        "local:{}",
-        short_hash(canonical.to_string_lossy().as_bytes())
-    );
+    let source_id = source_id(&canonical);
     let now = stamp(&canonical)?;
     let cached = CACHE.lock().ok().and_then(|cache| {
         cache

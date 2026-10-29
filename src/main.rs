@@ -123,6 +123,26 @@ usage:
                                              workflow:<topic> link means `figlens workflow <topic>`
   figlens cache [clear]                        show, or clear, the preview render cache
                                              (prints {path,bytes} or {path,freed})
+  figlens index prepare <file.fig> [--workspace DIR] [--storage DIR]
+                                             create or reuse a local workspace and register the file;
+                                             source-scoped, or the --workspace project directory's; prints
+                                             workspaceId, sourceId, incarnation, paths and roots. Partial
+                                             milestone: it keeps the source registry, search does not use it yet
+  figlens index status <select>              state, sources and storage rule; creates nothing
+  figlens index add <file.fig> <select>      add a source to a project workspace
+  figlens index remove <sourceId> <select>   unregister a source; the .fig is never touched
+  figlens index relocate <sourceId> <new.fig> <select>   keep the sourceId, change its path (project
+                                             workspaces; source-scoped relocate is not available yet)
+  figlens index reset <select>               remove the workspace database once no other figlens process
+                                             uses it (else workspace_busy); designs, .figlens/, exports and
+                                             other workspaces stay; prepare starts a new incarnation
+                                             <select>: --workspace DIR, --file <file.fig> (its source-scoped
+                                             workspace) or --id ws_...; every action accepts --storage DIR.
+                                             Storage: --storage DIR (absolute; uses DIR/state, cache, data),
+                                             else the location a prepare with --storage remembered for this
+                                             workspace (an error when unavailable), else each XDG_*_HOME/figlens,
+                                             else ~/.local/state/figlens etc. (Windows %LOCALAPPDATA%\\figlens\\state).
+                                             Config, holding the remembered locations, never moves; reset keeps them
   figlens update                               install the latest GitHub release over this binary
   figlens --help | --version
 
@@ -187,6 +207,7 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                     | "mcp"
                     | "workflow"
                     | "cache"
+                    | "index"
                     | "update"
             )
         )
@@ -222,6 +243,15 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             return Ok(());
         }
         Some("mcp") => return mcp(&args[1..]),
+        Some("index") => {
+            let report = index(&args[1..])?;
+            writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
+            // A partial reset prints what remains and still fails.
+            if report["failed"].as_array().is_some_and(|f| !f.is_empty()) {
+                return Err("reset could not remove every database file; see failed".into());
+            }
+            return Ok(());
+        }
         Some("verify") => {
             let bundle = args.get(1).ok_or(USAGE)?;
             let report = figlens::verify::verify(std::path::Path::new(bundle))?;
@@ -590,6 +620,62 @@ fn mcp(args: &[String]) -> Result<(), Box<dyn Error>> {
         roots.push(std::fs::canonicalize(dir).map_err(|e| format!("--root {dir}: {e}"))?);
     }
     mcp::serve(std::io::stdin().lock(), std::io::stdout().lock(), &roots)
+}
+
+/// `figlens index <action> ...`: the local workspace registry.
+fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
+    use figlens::workspace::{self, Select};
+    let usage = || -> Box<dyn Error> {
+        "usage: figlens index prepare|status|add|remove|relocate|reset ...; see `figlens --help`"
+            .into()
+    };
+    let action = args.first().ok_or_else(usage)?.as_str();
+    let (mut positional, mut storage, mut workspace, mut file, mut id) =
+        (Vec::new(), None, None, None, None);
+    let mut rest = args[1..].iter();
+    while let Some(arg) = rest.next() {
+        let slot = match arg.as_str() {
+            "--storage" => &mut storage,
+            "--workspace" => &mut workspace,
+            "--file" => &mut file,
+            "--id" => &mut id,
+            flag if flag.starts_with('-') => return Err(usage()),
+            _ => {
+                positional.push(arg.as_str());
+                continue;
+            }
+        };
+        // A repeated selector must not quietly pick one workspace for a destructive reset.
+        if slot.is_some() {
+            return Err(format!("{arg} is given twice").into());
+        }
+        let value = rest.next().filter(|v| !v.starts_with("--"));
+        *slot = Some(
+            value
+                .ok_or_else(|| format!("{arg} needs a value"))?
+                .as_str(),
+        );
+    }
+    let storage = workspace::storage(storage.map(Path::new))?;
+    let select = Select::from_choice(workspace.map(Path::new), file.map(Path::new), id)?;
+    let chosen = || {
+        select
+            .clone()
+            .ok_or("choose the workspace with --workspace, --file or --id")
+    };
+    match (action, positional.as_slice()) {
+        ("prepare", [path]) if file.is_none() && id.is_none() => {
+            workspace::prepare(&storage, Path::new(path), workspace.map(Path::new))
+        }
+        ("status", []) => workspace::status(&storage, &chosen()?),
+        ("add", [path]) => workspace::add(&storage, &chosen()?, Path::new(path)),
+        ("remove", [source]) => workspace::remove(&storage, &chosen()?, source),
+        ("relocate", [source, path]) => {
+            workspace::relocate(&storage, &chosen()?, source, Path::new(path))
+        }
+        ("reset", []) => workspace::reset(&storage, &chosen()?),
+        _ => Err(usage()),
+    }
 }
 
 /// Reruns the release installer (scripts/install.sh, or install.ps1 on Windows) into this

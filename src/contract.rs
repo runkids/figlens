@@ -666,6 +666,18 @@ impl Failure {
                 "operation_failed",
                 "Inspect the error and supported operation; report a reproducible case without private design data.",
             ),
+            ErrorKind::WorkspaceBusy => (
+                "workspace_busy",
+                "Another figlens process is using this workspace; retry after it finishes, without killing it.",
+            ),
+            ErrorKind::IndexIncompatible => (
+                "index_incompatible",
+                "The workspace database was written by a different figlens schema; use that figlens version or reset the workspace.",
+            ),
+            ErrorKind::StorageUnavailable => (
+                "storage_unavailable",
+                "The workspace storage is missing or offline; reconnect or restore it and retry, without another --storage or a reset.",
+            ),
         };
         json!({"code": code, "nextStep": next})
     }
