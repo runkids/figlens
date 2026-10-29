@@ -37,7 +37,7 @@ OpenCode/OMP profiles use explicit runtime/SDK paths and the same extracted cand
 
 ## CI matrix and boundaries
 
-`.github/workflows/test.yaml` retains existing Rust/Docker/Windows and viewer checks. A single candidate build produces Linux x64 musl, macOS arm64 and Windows x64 GNU archives plus one npm tarball. All installation jobs download that same artifact set and compare its commit with their checkout. Job timeouts and read-only repository permissions apply; no release secrets or `pull_request_target` are involved.
+`.github/workflows/test.yaml` retains existing Rust/Docker/Windows and viewer checks. `candidate-build` builds the Linux x64 musl, macOS arm64 and Windows x64 GNU archives on one runner each, in parallel, each with its own SHA256SUMS (the `Dockerfile.dist` image comes from the Actions layer cache; releases build theirs without it); `candidate` joins those sums, checks every archive against them and packs one npm tarball. All installation jobs download that same artifact set and compare its commit with their checkout. Job timeouts and read-only repository permissions apply; no release secrets or `pull_request_target` are involved.
 
 | Runner | Node | Pi | Purpose |
 |---|---|---|---|
