@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.9.2](https://github.com/runkids/figlens/compare/v0.9.1...v0.9.2) (2026-10-29)
+
+
+* release 0.9.2 ([088ba1f](https://github.com/runkids/figlens/commit/088ba1f4c5ffd312e108dc65c578aab6a066eed4))
+
+
+### New Features
+
+* **verify:** add scoped handoff preflight findings ([#67](https://github.com/runkids/figlens/issues/67)) ([4e6eba9](https://github.com/runkids/figlens/commit/4e6eba931710f732085f76bf0fdc71c62589b145))
+
+
+### Bug Fixes
+
+* **export:** refuse hidden layers with a clear error in every format ([#73](https://github.com/runkids/figlens/issues/73)) ([51653f2](https://github.com/runkids/figlens/commit/51653f251f18f8a443b19096d9fa5d875f825ad5))
+* **mcp:** bound instance expansion for nodes on a stored root ([#71](https://github.com/runkids/figlens/issues/71)) ([0f177c1](https://github.com/runkids/figlens/commit/0f177c118efe96d28d341fd33141f1a9e729f195))
+* **mcp:** stop building oversized nodes JSON before the reply check ([#70](https://github.com/runkids/figlens/issues/70)) ([5fa7e6e](https://github.com/runkids/figlens/commit/5fa7e6ef07536daf405d2d40c59a1e47bdd5b0d6))
+* **render:** tile TILE image fills instead of drawing them as FILL ([#72](https://github.com/runkids/figlens/issues/72)) ([09e7b06](https://github.com/runkids/figlens/commit/09e7b06de682b4ad96d0541f73e827cea3b8dba1))
+
 ## [0.9.1](https://github.com/runkids/figlens/compare/v0.9.0...v0.9.1) (2026-10-28)
 
 
