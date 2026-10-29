@@ -158,6 +158,7 @@ fn summarize(node: &Value, depth: usize, remaining: &mut usize, truncated: &mut 
         "paddingBottom",
         "primaryAxisAlignItems",
         "counterAxisAlignItems",
+        "individualStrokeWeights",
     ] {
         if let Some(value) = node.get(key) {
             summary[key] = value.clone();
@@ -275,11 +276,12 @@ mod tests {
                 )
             })
             .collect();
-        let node = json!({"id":"1:1","componentPropertyDefinitions":definitions,"_figlens":{"semantics":{"verification":"not-compared-with-figma","componentPropertyDefinitions":{"source":"componentPropDefs","state":"recorded","entries":vec![json!({"state":"recorded"});21]}},"renderDiagnostics":[{"state":"skipped"}]}});
+        let node = json!({"id":"1:1","individualStrokeWeights":{"top":0,"right":0,"bottom":3,"left":0},"componentPropertyDefinitions":definitions,"_figlens":{"semantics":{"verification":"not-compared-with-figma","componentPropertyDefinitions":{"source":"componentPropDefs","state":"recorded","entries":vec![json!({"state":"recorded"});21]}},"renderDiagnostics":[{"state":"skipped"}]}});
         let result = inspect_document(&node, 0);
         let summary = &result["node"];
         assert_eq!(result["truncated"], true);
         assert_eq!(summary["componentPropertyDefinitionCount"], 21);
+        assert_eq!(summary["individualStrokeWeights"]["bottom"], 3);
         assert_eq!(
             summary["componentPropertyDefinitions"]
                 .as_object()

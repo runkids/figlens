@@ -20,7 +20,7 @@ pub struct Report {
 }
 
 /// Style and binding fields compared as normalized JSON; like fills, they are counted apart from structure.
-pub const FIELDS: [&str; 19] = [
+pub const FIELDS: [&str; 20] = [
     "blendMode",
     "effects",
     "rotation",
@@ -38,6 +38,7 @@ pub const FIELDS: [&str; 19] = [
     "layoutGrow",
     "layoutAlign",
     "componentPropertyDefinitions",
+    "individualStrokeWeights",
     "meta",
     "renderBounds",
 ];
