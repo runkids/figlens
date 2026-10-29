@@ -797,15 +797,17 @@ fn finish_jobs(
                     std::thread::sleep(std::time::Duration::from_millis(200))
                 }
                 Some("interrupted") => {
+                    // Retried as the same kind: a rebuild of an unchanged scope must not
+                    // become a refresh that reuses it.
                     let select = Select::Id(ws.clone());
-                    let again = figlens::workspace::refresh(
-                        storage,
-                        &select,
-                        now["sourceId"].as_str(),
-                        now["scope"].as_str(),
-                        None,
-                    )?;
-                    for id in &again.run {
+                    let (source, scope) = (now["sourceId"].as_str(), now["scope"].as_str());
+                    let again = if now["kind"] == "rebuild" {
+                        jobs::rebuild_scope(storage, &select, source, scope, None)?
+                    } else {
+                        figlens::workspace::refresh(storage, &select, source, scope, None)?
+                    };
+                    // Another process may have taken it over first; then keep waiting.
+                    if let Some(id) = again.run.first() {
                         return jobs::run(storage, &ws, id, stop, &mut progress);
                     }
                 }

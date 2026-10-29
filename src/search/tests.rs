@@ -998,7 +998,7 @@ fn contains_and_instance_of_survive_a_stored_generation() {
         [],
     )
     .unwrap();
-    store::save(&mut conn, 1, &index, &mut |_, _, _| Ok(())).unwrap();
+    store::save(&mut conn, 1, &index, &|_| Ok(()), &mut |_, _, _| Ok(())).unwrap();
     let mut loaded = store::load(&conn, 1, &[]).unwrap();
     let all: Vec<u32> = (0..index.records.len() as u32).collect();
     store::add(&conn, 1, &mut loaded, &all).unwrap();
