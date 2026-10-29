@@ -1232,3 +1232,33 @@ fn a_full_build_that_stops_earlier_never_takes_text_search_from_the_text_build()
     roomy.keep(whole.clone());
     assert!(Arc::ptr_eq(&roomy.pick(false).unwrap(), &whole));
 }
+
+#[test]
+fn definitions_are_described_within_the_callers_bounds() {
+    // The only instance in scope points at a definition outside it whose name alone passes the
+    // caller's byte budget; describing it must stop the build, not draw on a fresh allowance.
+    let long = "n".repeat(1 << 20);
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(2, Some(0), "CANVAS", "Library", vec![]),
+            node(20, Some(2), "SYMBOL", &long, vec![]),
+            node(10, Some(1), "FRAME", "Home", vec![]),
+            instance(11, 10, "Use", 20, vec![]),
+        ]),
+    )]);
+    let tree = Tree::new(&message);
+    let small = Bounds {
+        bytes: 600 * 1024,
+        ..bounds(WORK)
+    };
+    let full = build_as(&tree, "0:10", small, true);
+    assert_eq!(
+        (full.stop, full.definitions.contains_key("0:20")),
+        (Some("byte_limit"), false)
+    );
+    let text = build_as(&tree, "0:10", small, false);
+    assert_eq!(text.stop, None);
+}

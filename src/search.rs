@@ -558,6 +558,18 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
 }
 
 fn build_as(tree: &Tree, scope: &str, bounds: Bounds, relations: bool) -> Index {
+    // A full build describes definitions within the caller's bounds: an eighth is kept back
+    // from expansion and indexing, and whatever those leave unused is added to it. A text-only
+    // build keeps nothing back.
+    let keep = match relations {
+        true => (bounds.work / 8, bounds.bytes / 8),
+        false => (0, 0),
+    };
+    let bounds = Bounds {
+        work: bounds.work - keep.0,
+        bytes: bounds.bytes - keep.1,
+        ..bounds
+    };
     // An eighth of the work and bytes is kept from expansion, so a stop there still leaves room to
     // index what was expanded and the stored layers; only a passed deadline ends both. Indexing
     // a 179 MB held-out file took 139k work and 35 MB against its expansion's 7.1M and 394 MB.
@@ -797,11 +809,11 @@ fn build_as(tree: &Tree, scope: &str, bounds: Bounds, relations: bool) -> Index 
             ));
         }
     }
-    // Definitions have their own budget, so a build its records stopped still describes the
-    // targets it kept; a stop here leaves some undescribed and marks coverage partial below.
+    // The kept share means a build its records stopped still describes the targets it kept; a
+    // stop here leaves some undescribed and marks coverage partial below.
     let mut own = Bounds {
-        work: WORK / 4,
-        bytes: BYTES / 4,
+        work: keep.0 + bounds.work,
+        bytes: keep.1 + bounds.bytes,
         depth: DEPTH,
         deadline: bounds.deadline,
         stop: None,
