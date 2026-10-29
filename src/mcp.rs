@@ -771,6 +771,9 @@ mod tests {
         assert_eq!(first(&page["children"][2]), None);
         let section = run(&["0:9", "--depth", "1", "--json"]);
         assert_eq!(first(&section["children"][0]), Some("Checkout".into()));
+        // Scoped to the frame itself, it keeps the text it has in the page listing.
+        assert_eq!(first(&run(&["0:2", "--json"])), Some("Onboarding".into()));
+        assert_eq!(first(&run(&["0:3", "--json"])), None);
         let frames = run(&["0:1", "--top-frames", "--json"]);
         assert_eq!(first(&frames[0]), Some("Onboarding".into()));
     }

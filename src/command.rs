@@ -358,15 +358,8 @@ impl Command {
             } => {
                 require_node(tree, &root)?;
                 // A section root still reports its page; the walk only sees pages below it.
-                let parent = |id: &str| {
-                    let mut parents = tree.children.iter();
-                    parents
-                        .find(|(_, c)| c.iter().any(|c| c == id))
-                        .map(|(p, _)| p.as_str())
-                        // `children` can name a parent the file lacks; the walk stops there.
-                        .filter(|p| tree.nodes.contains_key(*p))
-                };
-                let mut ancestors = std::iter::successors(Some(root.as_str()), |id| parent(id));
+                let mut ancestors =
+                    std::iter::successors(Some(root.as_str()), |id| parent(tree, id));
                 let page = ancestors.find(|id| plugin_type(tree.nodes[*id]) == "CANVAS");
                 let section =
                     (plugin_type(tree.nodes[&root]) == "SECTION").then_some(root.as_str());
@@ -403,7 +396,11 @@ impl Command {
             } => {
                 require_node(tree, &root)?;
                 if json {
-                    compact(tree_json(tree, &root, 0, depth, false))
+                    // A root on a page or section keeps the firstText it has in its parent's listing.
+                    let top = parent(tree, &root).is_some_and(|p| {
+                        matches!(plugin_type(tree.nodes[p]).as_str(), "CANVAS" | "SECTION")
+                    });
+                    compact(tree_json(tree, &root, 0, depth, top))
                 } else {
                     let mut out = String::new();
                     print_tree(&mut out, tree, &root, 0, depth)?;
@@ -825,6 +822,15 @@ fn top_frames<'t>(
             _ => {}
         }
     }
+}
+
+/// The stored parent of `id`. `children` can name a parent the file lacks; that is no parent.
+fn parent<'t>(tree: &'t Tree, id: &str) -> Option<&'t str> {
+    let mut parents = tree.children.iter();
+    parents
+        .find(|(_, c)| c.iter().any(|c| c == id))
+        .map(|(p, _)| p.as_str())
+        .filter(|p| tree.nodes.contains_key(*p))
 }
 
 /// The REST type `nodes` and `find` use, so `tree` output can be filtered by the same names.
