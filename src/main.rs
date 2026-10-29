@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 use figlens::compare::{FIELDS, compare};
-use figlens::rest::nodes;
 use figlens::variables::variables;
 use figlens::{Document, Tree, normalize_id};
 
@@ -369,7 +368,7 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                     .into());
                 }
                 let oracle: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
-                let report = compare(&tree, &oracle, root);
+                let report = compare(&tree, &oracle, root)?;
                 let status = if report.is_clean() { "OK  " } else { "DIFF" };
                 writeln!(
                     out,
@@ -385,7 +384,10 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                 if let Some(vars_path) = vars_path {
                     let theirs = serde_json::from_slice(&std::fs::read(vars_path)?)?;
                     // A variables capture has no document and holds every local variable.
-                    let doc = oracle["document"].is_object().then(|| nodes(&tree, root));
+                    let doc = oracle["document"]
+                        .is_object()
+                        .then(|| figlens::rest::resolve_nodes(&tree, root))
+                        .transpose()?;
                     let ours = variables(&tree, doc.as_ref().map(|d| &d["document"]));
                     let lines = figlens::variables::diff(&ours, &theirs);
                     if !lines.is_empty() {

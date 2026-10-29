@@ -115,6 +115,33 @@ pub struct Expanded {
     pub(crate) prototype_source: Option<crate::prototype::Source>,
 }
 
+/// Most layers a scope may hold below its root, stored and expanded together. Measured real
+/// files reach 21 stored levels; a release build aborts near 900 on Windows' 1 MiB main-thread
+/// stack, so a deeper crafted file fails with an error instead of ending the process.
+pub const MAX_DEPTH: usize = 256;
+
+/// `parse budget exceeded: layer depth` once a node `children` reaches lies more than
+/// `MAX_DEPTH` layers below `root`. It walks without recursion, so run it before a walk that
+/// recurses once per layer.
+pub fn check_depth<'a>(
+    root: &'a str,
+    children: impl Fn(&str) -> Option<&'a Vec<String>>,
+) -> Result<(), crate::FigError> {
+    let mut stack = vec![(root, 0)];
+    while let Some((id, depth)) = stack.pop() {
+        if depth > MAX_DEPTH {
+            return Err(crate::parse::exceeded("layer depth", MAX_DEPTH));
+        }
+        stack.extend(
+            children(id)
+                .into_iter()
+                .flatten()
+                .map(|c| (c.as_str(), depth + 1)),
+        );
+    }
+    Ok(())
+}
+
 /// Expanded nodes plus their child order (keys: instance or expanded ids).
 pub struct Expansion {
     pub nodes: HashMap<String, Expanded>,
@@ -787,6 +814,10 @@ impl Expander<'_, '_> {
             self.exceeded = true;
             return false;
         }
+        // Past the limit `rest::build` rejects what was inserted, unless stored children win.
+        if self.depth >= MAX_DEPTH {
+            return false;
+        }
         self.depth += 1;
         true
     }
@@ -1370,6 +1401,50 @@ mod tests {
         };
         let ex = expand_instances(&tree, "inst");
         assert_eq!((ex.nodes.len(), ex.children.get("Iinst;2:2")), (1, None));
+    }
+
+    /// `inst` shows main 1:0; main 1:k holds 2:k, an instance of main 1:k+1, for `mains` mains.
+    fn component_chain(mains: usize) -> Vec<(String, Value<'static>)> {
+        let instance = |k: usize| {
+            obj(vec![
+                ("type", Value::Enum("NodeType", "INSTANCE")),
+                ("symbolData", obj(vec![("symbolID", guid(1, k as u32))])),
+            ])
+        };
+        let mut nodes = vec![("inst".to_owned(), instance(0))];
+        for k in 0..mains {
+            nodes.push((format!("1:{k}"), obj(vec![])));
+            nodes.push((format!("2:{k}"), instance(k + 1)));
+        }
+        nodes
+    }
+
+    fn chain_tree<'a>(nodes: &'a [(String, Value<'a>)]) -> Tree<'a> {
+        let mains = nodes.len() / 2;
+        Tree {
+            nodes: nodes.iter().map(|(id, n)| (id.clone(), n)).collect(),
+            children: (0..mains - 1)
+                .map(|k| (format!("1:{k}"), vec![format!("2:{k}")]))
+                .collect(),
+            blobs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_component_chain_past_the_depth_limit_fails_the_scope() {
+        let nodes = component_chain(MAX_DEPTH + 2);
+        let error = crate::rest::resolve_nodes(&chain_tree(&nodes), "inst").unwrap_err();
+        assert!(error.to_string().contains("layer depth"), "{error}");
+    }
+
+    #[test]
+    fn stored_children_keep_a_too_deep_main_from_failing_the_scope() {
+        let nodes = component_chain(MAX_DEPTH + 2);
+        let stored = obj(vec![]);
+        let mut tree = chain_tree(&nodes);
+        tree.nodes.insert("s".into(), &stored);
+        tree.children.insert("inst".into(), vec!["s".into()]);
+        assert!(crate::rest::resolve_nodes(&tree, "inst").is_ok());
     }
 
     #[test]

@@ -1444,6 +1444,175 @@ fn nodes_frames_match_single_nodes_calls_and_isolate_missing_ids() {
     assert!(err.to_string().contains("at most"), "{err}");
 }
 
+fn layer(id: u32, parent: u32, kind: &'static str) -> K<'static> {
+    obj(
+        "NodeChange",
+        vec![
+            ("guid", guid(id)),
+            ("type", K::Enum("NodeType", kind)),
+            ("size", size(10.0, 10.0)),
+            (
+                "parentIndex",
+                obj(
+                    "ParentIndex",
+                    vec![("guid", guid(parent)), ("position", K::String("a".into()))],
+                ),
+            ),
+        ],
+    )
+}
+
+/// Under 0:0, `kind` 0:2 heads a chain of `kind` one layer more than the limit below it.
+fn too_deep_chain(kind: &'static str) -> Vec<K<'static>> {
+    let last = 2 + figlens::expand::MAX_DEPTH as u32 + 1;
+    let mut changes = vec![layer(2, 0, kind)];
+    changes.extend((3..=last).map(|id| layer(id, id - 1, kind)));
+    changes
+}
+
+/// Frame 0:1 is shallow; 0:2 holds a chain of `kind` one layer more than the limit below it.
+fn too_deep_message(kind: &'static str) -> K<'static> {
+    let mut changes = vec![
+        obj(
+            "NodeChange",
+            vec![("guid", guid(0)), ("type", K::Enum("NodeType", "CANVAS"))],
+        ),
+        layer(1, 0, "FRAME"),
+    ];
+    changes.extend(too_deep_chain(kind));
+    obj("Message", vec![("nodeChanges", K::Array(changes))])
+}
+
+#[test]
+fn nodes_frames_report_a_too_deep_frame_and_continue() {
+    let message = too_deep_message("FRAME");
+    let tree = Tree::new(&message);
+    let mut out = Vec::new();
+    crate::nodes_batch(&tree, &["0:2".into(), "0:1".into()], &mut out).unwrap();
+    let lines: Vec<Value> = String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(
+        (
+            lines[0]["error"]
+                .as_str()
+                .map(|e| e.contains("layer depth")),
+            &lines[1]["document"]["id"]
+        ),
+        (Some(true), &json!("0:1"))
+    );
+}
+
+#[test]
+fn bundle_frames_skip_a_too_deep_frame_and_continue() {
+    let message = too_deep_message("FRAME");
+    let tree = Tree::new(&message);
+    let dir = TestDir::new();
+    let list = dir.join("frames.txt");
+    std::fs::write(&list, "0:2\n0:1\n").unwrap();
+    let out = dir.join("out");
+    let args = [
+        "--frames",
+        list.to_str().unwrap(),
+        "--out-dir",
+        out.to_str().unwrap(),
+        "--jobs",
+        "2",
+    ];
+    let fig = Path::new("examples/first-success/design.fig");
+    crate::batch(&tree, fig, &args.map(String::from)).unwrap();
+    assert_eq!(
+        (out.join("0-2.zip").exists(), out.join("0-1.zip").exists()),
+        (false, true)
+    );
+}
+
+#[test]
+fn tree_listings_reject_a_too_deep_file_unless_depth_bounds_them() {
+    let message = too_deep_message("FRAME");
+    let tree = Tree::new(&message);
+    let rejected = |args: &[&str]| {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        Command::from_cli("tree", &args, &tree)
+            .unwrap()
+            .execute(&tree, Path::new("unused.fig"))
+            .err()
+            .map(|e| e.to_string().contains("layer depth"))
+    };
+    assert_eq!(
+        [
+            rejected(&[]),
+            rejected(&["--json"]),
+            rejected(&["--top-frames"]),
+            rejected(&["--depth", "2"]),
+        ],
+        [Some(true), Some(true), None, None]
+    );
+}
+
+#[test]
+fn top_frames_ignores_deep_sections_on_a_skipped_internal_page() {
+    // Document 0:90000 holds a public page with one screen, and internal page 0:0 whose
+    // sections nest past the limit.
+    let mut changes = vec![
+        obj(
+            "NodeChange",
+            vec![
+                ("guid", guid(90000)),
+                ("type", K::Enum("NodeType", "DOCUMENT")),
+            ],
+        ),
+        layer(90001, 90000, "CANVAS"),
+        layer(90002, 90001, "FRAME"),
+        obj(
+            "NodeChange",
+            vec![
+                ("guid", guid(0)),
+                ("type", K::Enum("NodeType", "CANVAS")),
+                ("internalOnly", K::Bool(true)),
+                (
+                    "parentIndex",
+                    obj(
+                        "ParentIndex",
+                        vec![("guid", guid(90000)), ("position", K::String("b".into()))],
+                    ),
+                ),
+            ],
+        ),
+    ];
+    changes.extend(too_deep_chain("SECTION"));
+    let message = obj("Message", vec![("nodeChanges", K::Array(changes))]);
+    let tree = Tree::new(&message);
+    let args = ["0:90000".to_owned(), "--top-frames".to_owned()];
+    let output = Command::from_cli("tree", &args, &tree)
+        .unwrap()
+        .execute(&tree, Path::new("unused.fig"))
+        .unwrap();
+    assert_eq!(output.text().unwrap(), "0:90002 FRAME \"\"\n");
+}
+
+#[test]
+fn top_frames_rejects_sections_nested_past_the_limit() {
+    let message = too_deep_message("SECTION");
+    let tree = Tree::new(&message);
+    let error = Command::from_cli("tree", &["--top-frames".into()], &tree)
+        .unwrap()
+        .execute(&tree, Path::new("unused.fig"))
+        .err();
+    assert!(error.is_some_and(|e| e.to_string().contains("layer depth")));
+}
+
+#[test]
+fn compare_reports_a_too_deep_scope_as_an_error() {
+    let message = too_deep_message("FRAME");
+    let tree = Tree::new(&message);
+    let oracle = json!({"document": {"id": "0:2"}});
+    let error = figlens::compare::compare(&tree, &oracle, "0:2").err();
+    assert!(error.is_some_and(|e| e.to_string().contains("layer depth")));
+}
+
 #[test]
 fn export_frames_match_single_exports_and_isolate_missing_ids() {
     let f = Fixture::new();

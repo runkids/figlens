@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use serde_json::{Map, Value as Json, json};
 
 use crate::expand::{
-    Expansion, Mat, Vec2, abs_matrix, expand_instances, expand_instances_within, plugin_type,
+    Expansion, Mat, Vec2, abs_matrix, check_depth, expand_instances, expand_instances_within,
+    plugin_type,
 };
 use crate::render::{self, Rect};
 use crate::{Tree, to_json};
@@ -24,12 +25,12 @@ type Modes = HashMap<String, String>;
 /// `{"document": ...}` for the frame `root`, with instances expanded, plus the
 /// `components`, `componentSets` and `styles` the document references.
 pub fn nodes(tree: &Tree, root: &str) -> Json {
-    build(tree, root, false, None)
+    build(tree, root, false, None).unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// `nodes` with each node's render input under `_r`, for `render::Svg`.
 pub fn render_nodes(tree: &Tree, root: &str) -> Json {
-    build(tree, root, true, None)
+    build(tree, root, true, None).unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// Select an exact stored or expanded ID, retaining its instance overrides and geometry.
@@ -71,7 +72,7 @@ fn resolve_target(
         used: Cell::new(0),
         inside: Cell::new(false),
     });
-    let mut doc = build(tree, root, render, budget.as_ref());
+    let mut doc = build(tree, root, render, budget.as_ref())?;
     if let Some(b) = budget.filter(Budget::exceeded) {
         return Err(crate::FigError::new(crate::ErrorKind::ResponseBudget, format!(
             "response exceeds {} bytes; use inspect, a scoped bundle, or CLI nodes instead of a larger MCP reply", b.bytes
@@ -106,7 +107,12 @@ impl Budget<'_> {
     }
 }
 
-fn build(tree: &Tree, root: &str, render: bool, budget: Option<&Budget>) -> Json {
+fn build(
+    tree: &Tree,
+    root: &str,
+    render: bool,
+    budget: Option<&Budget>,
+) -> Result<Json, crate::FigError> {
     let mut styles: HashMap<String, Vec<String>> = HashMap::new();
     for (id, node) in &tree.nodes {
         if let (Some(_), Some(key)) = (node.get("styleType"), node.get("key")) {
@@ -122,11 +128,15 @@ fn build(tree: &Tree, root: &str, render: bool, budget: Option<&Budget>) -> Json
             Some(ex) => ex,
             None => {
                 b.used.set(b.bytes.saturating_add(1));
-                return Json::Null;
+                return Ok(Json::Null);
             }
         },
         None => expand_instances(tree, root),
     };
+    // Building, rendering and dropping the result all recurse once per layer.
+    check_depth(root, |id| {
+        tree.children.get(id).or_else(|| ex.children.get(id))
+    })?;
     let b = Builder {
         tree,
         ex,
@@ -141,7 +151,7 @@ fn build(tree: &Tree, root: &str, render: bool, budget: Option<&Budget>) -> Json
     let modes = parent_id(tree, root).map_or_else(Modes::new, |p| context(tree, &b.vars, &p));
     let document = b.node(root, None, &modes, true, None);
     if budget.is_some_and(Budget::exceeded) {
-        return Json::Null;
+        return Ok(Json::Null);
     }
     let (mut components, mut sets, mut styles) = (Obj::new(), Obj::new(), Obj::new());
     let mut handoff = handoff::Inventory::default();
@@ -194,7 +204,7 @@ fn build(tree: &Tree, root: &str, render: bool, budget: Option<&Budget>) -> Json
     if let Some(summary) = handoff.finish() {
         result["_figlens"] = json!({"handoffDiagnostics":summary});
     }
-    result
+    Ok(result)
 }
 
 /// REST `components` / `componentSets` entry of a main component or component set.

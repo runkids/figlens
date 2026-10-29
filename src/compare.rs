@@ -6,7 +6,6 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value as Json;
 
 use crate::expand::{Vec2, abs_matrix, expand_instances, plugin_type, subtree};
-use crate::rest::nodes;
 use crate::{Tree, guid_key};
 
 /// Size tolerance in pixels; the plugin reports rounded boxes.
@@ -131,16 +130,20 @@ fn describe(id: &str, kind: &str, name: &str) -> String {
 }
 
 /// Compares the subtree under `root` (directly and through instance expansion) with `oracle`.
-pub fn compare(tree: &Tree, oracle: &Json, root: &str) -> Report {
+pub fn compare(
+    tree: &Tree,
+    oracle: &Json,
+    root: &str,
+) -> Result<Report, Box<dyn std::error::Error>> {
     if oracle["document"]["id"].as_str().is_none() {
-        return Report {
+        return Ok(Report {
             direct: 0,
             in_instances: 0,
             diffs: vec![(
                 "error",
                 vec![format!("{root}: oracle has no document node")],
             )],
-        };
+        });
     }
     let mut plugin = HashMap::new();
     index(&oracle["document"], &mut plugin);
@@ -303,7 +306,7 @@ pub fn compare(tree: &Tree, oracle: &Json, root: &str) -> Report {
     }
 
     // Properties, compared on the REST-shaped nodes `figlens nodes` prints.
-    let rest = nodes(tree, root);
+    let rest = crate::rest::resolve_nodes(tree, root)?;
     let mut ours_rest = HashMap::new();
     index(&rest["document"], &mut ours_rest);
     let mut props: Vec<(&'static str, Vec<String>)> = vec![
@@ -408,11 +411,11 @@ pub fn compare(tree: &Tree, oracle: &Json, root: &str) -> Report {
     for (_, lines) in &mut diffs {
         lines.sort();
     }
-    Report {
+    Ok(Report {
         direct: direct.len(),
         in_instances: inside.len(),
         diffs,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -432,7 +435,7 @@ mod tests {
             children: HashMap::new(),
             blobs: Vec::new(),
         };
-        let original = nodes(&tree, "1:1");
+        let original = crate::rest::nodes(&tree, "1:1");
         for field in [
             "constraints",
             "layoutGrow",
@@ -441,19 +444,19 @@ mod tests {
         ] {
             let mut changed = original.clone();
             changed["document"][field] = json!("changed");
-            let report = compare(&tree, &changed, "1:1");
+            let report = compare(&tree, &changed, "1:1").unwrap();
             assert_eq!(report.diffs.len(), 1);
             assert_eq!(report.diffs[0].0, field);
         }
         for map in ["components", "componentSets"] {
             let mut changed = original.clone();
             changed[map]["2:1"] = json!({"componentPropertyDefinitions":{"Label":{"type":"TEXT"}}});
-            let report = compare(&tree, &changed, "1:1");
+            let report = compare(&tree, &changed, "1:1").unwrap();
             assert!(!report.clean("componentPropertyDefinitions"));
         }
         let mut metadata = original.clone();
         metadata["document"]["_figlens"] = json!({"semantics":{"verification":"different"}});
-        assert!(compare(&tree, &metadata, "1:1").diffs.is_empty());
+        assert!(compare(&tree, &metadata, "1:1").unwrap().diffs.is_empty());
     }
 
     #[test]
@@ -463,7 +466,7 @@ mod tests {
             children: HashMap::new(),
             blobs: Vec::new(),
         };
-        let report = compare(&tree, &serde_json::json!({}), "1:2");
+        let report = compare(&tree, &serde_json::json!({}), "1:2").unwrap();
         assert!(!report.is_clean());
         assert_eq!(
             report.diffs,

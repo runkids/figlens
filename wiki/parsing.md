@@ -1,6 +1,6 @@
 # Defensive parsing budgets
 
-Load this when changing untrusted container, embedded-schema or value decoding. The reported historical MCP stack overflow is a risk lead, not a reproduced or fully established root cause.
+Load this when changing untrusted container, embedded-schema or value decoding. The reported historical MCP stack overflow is a risk lead, not a reproduced or fully established root cause; a layer-depth overflow is reproduced and bounded on scope builds ([Layer depth](#layer-depth)).
 
 ## Protected path
 
@@ -34,7 +34,24 @@ Original-image reads share `read_image` in `src/lib.rs`. `render::images` spends
 
 Budget failures use the existing `FigError` channel with the stable prefix `parse budget exceeded:`, a limit kind, its numeric ceiling and a next step. CLI calls fail; MCP returns `isError: true` with the text in `content`. Keep design contents out of error text. Panic catching and larger stacks do not replace these checks.
 
-This batch does not bound ZIP central-directory indexing before `canvas.fig` is selected, codec internals beyond their existing checks (including ruzstd's default window limit), every third-party decoder call made directly by library consumers, or later expansion/rendering/bundle work. Caller-constructed `Value` trees bypass document parsing. Layer-parent depth, output JSON size and request transport size are separate concerns. Do not claim that this makes every MCP input crash-proof.
+This batch does not bound ZIP central-directory indexing before `canvas.fig` is selected, codec internals beyond their existing checks (including ruzstd's default window limit), every third-party decoder call made directly by library consumers, or later expansion/rendering/bundle work beyond the layer depth below. Caller-constructed `Value` trees bypass document parsing. Output JSON size and request transport size are separate concerns. Do not claim that this makes every MCP input crash-proof.
+
+## Layer depth
+
+Layers nest through the flat `nodeChanges` list's `parentIndex`, so value depth does not bound them. Building, rendering and dropping a scope's JSON recurse once per layer; a deep enough chain overflows the stack, which aborts the process: every other item of a CLI batch and the whole MCP server, as `catch_unwind` cannot catch it. Measured on a synthetic frame chain, a release build aborts near 900 layers on a 1 MiB stack (Windows' main thread, where single commands and MCP run) and near 7,200 on 8 MiB; debug builds abort near a tenth of that. Ten local real designs reached at most 21 stored levels.
+
+`expand::MAX_DEPTH` (256) bounds every walk that recurses per layer. `expand::check_depth` walks children without recursion and returns `parse budget exceeded: layer depth (limit 256)` when a node lies deeper; run it before recursing. `Expander::descend` stops nesting one level past the limit, which bounds expansion's own recursion and leaves a node deeper than the limit wherever it stopped.
+
+| Walk | Checked from | On too deep |
+|---|---|---|
+| `rest::build` (`nodes`, `inspect`, `export`, `bundle`, render; CLI and MCP) | the scope root, over the children `Builder::node` visits (stored before expanded; an expansion that stored children replace does not count) | the item fails: a CLI batch writes its own `{nodeId,error}` line and continues, MCP returns `isError` |
+| `tree` and MCP `tree` | the root, when `depth` exceeds the limit (the default lists every level) or with `--top-frames`, over exactly what it recurses through: the document, the pages it does not skip (internal ones unless they are the root) and nested sections; a deep screen does not fail it | the command fails; `--depth 256` or less still lists |
+| preview catalog | `0:0`, on start and on each reload | start fails; a reload keeps the previous view |
+| `compare` | through `resolve_nodes` | the command fails |
+
+`rest::nodes`/`render_nodes` remain for tests and panic with the same message. Search's bounded expansion has its own depth of 256. A 256-level component chain built in release on a 1 MiB stack, the deepest accepted, did not abort.
+
+Regressions: `nodes_frames_report_a_too_deep_frame_and_continue` and `bundle_frames_skip_a_too_deep_frame_and_continue` (a frame one layer past the limit, then a shallow frame; bundle with two workers), `a_component_chain_past_the_depth_limit_fails_the_scope`, `stored_children_keep_a_too_deep_main_from_failing_the_scope`, `tree_listings_reject_a_too_deep_file_unless_depth_bounds_them`, `top_frames_rejects_sections_nested_past_the_limit`, `top_frames_ignores_deep_sections_on_a_skipped_internal_page`, `a_too_deep_file_fails_the_catalog_instead_of_aborting` and `compare_reports_a_too_deep_scope_as_an_error`. The batch tests abort the test process without the check. The check added no measurable time to `nodes --frames` over every top frame of three large local designs, with identical output.
 
 ## Completed output publication
 
