@@ -69,8 +69,9 @@ usage:
                                              prints {nodeId,path,warnings}
   figlens bundle ... --file-key KEY --name N   set the manifest's file key and frame name;
                                              --states adds related variants and evidence gaps to the bundle
-  figlens bundle <file.fig> --frames <list> --out-dir <dir> [--file-key KEY] [--jobs N] [--states]
-                                            one decode, many bundles: <list> has one node id per line;
+  figlens bundle <file.fig> --frames <list|-> --out-dir <dir> [--file-key KEY] [--jobs N] [--states]
+                                            one decode, many bundles: <list> has one node id per line
+                                             (- reads stdin);
                                              writes <dir>/<nodeId>.zip (`:` as `-`), prints one JSON line
                                              per frame ({nodeId,path,warnings} or {nodeId,error});
                                              --jobs limits concurrent frames (0/default: all cores), not rendering
@@ -383,7 +384,7 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// `bundle --frames <list> --out-dir <dir> [--file-key K] [--jobs N]`: one decode, the frames
+/// `bundle --frames <list|-> --out-dir <dir> [--file-key K] [--jobs N]`: one decode, the frames
 /// written in parallel, one JSON line per frame as each finishes. A frame's failure is its own line.
 fn batch(tree: &Tree, fig: &Path, args: &[String]) -> Result<(), Box<dyn Error>> {
     let (mut list, mut dir, mut file_key, mut jobs, mut states) = (None, None, None, None, false);
@@ -401,7 +402,7 @@ fn batch(tree: &Tree, fig: &Path, args: &[String]) -> Result<(), Box<dyn Error>>
     }
     let (list, dir) = (list.ok_or(USAGE)?, dir.ok_or("--frames needs --out-dir")?);
     std::fs::create_dir_all(&dir)?;
-    let frames = frame_ids(&std::fs::read_to_string(&list)?);
+    let frames = node_list(&["--frames".to_owned(), list])?;
     let jobs = jobs
         .filter(|&n| n > 0)
         .unwrap_or_else(rayon::current_num_threads);

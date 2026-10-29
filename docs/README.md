@@ -164,7 +164,7 @@ skillshare sync && skillshare sync mcp --global
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | One decode, many nodes: one JSON line per listed id, the `nodes` output with its `nodeId`, or `{nodeId, error}` |
 | `variables <file> [node]` | A frame's bound variables; without a node, every local variable |
 | `bundle <file> <node> <out.zip> [--states]` | A design bundle for one frame; prints `{nodeId, path, warnings}` |
-| `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | Many bundles from one decode, in parallel |
+| `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]`, `--frames -` (stdin) | Many bundles from one decode, in parallel |
 | `verify <bundle>` | Check a bundle `.zip` or its extracted directory against its manifest: verified, missing and changed files, missing assets, the font faces to confirm in the project, and `findings`: each missing, unsupported or unverified handoff input with its nodes, evidence and next action |
 | `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N] [--match-dir DIR]` | SVG, PNG, JPG, WebP or AVIF; `--max-kb` lowers lossy quality until it fits; `--bounds layout` exports the layout box instead of the render bounds; `--match-dir DIR` (SVG only, subfolders included) lists the SVGs there that draw the same outlines (`matches`) and up to 10 similar shapes with a score (`similar`) |
 | `export <file> --frames <list> --out-dir <dir> [--format F] [--scale N] ...`, `--frames -` (stdin) | One decode, many exports (default `png`): writes `<dir>/<nodeId>.<format>`, one JSON line per id, the `export` output with its `nodeId`, or `{nodeId, error}` |
