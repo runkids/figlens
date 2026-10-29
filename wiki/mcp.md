@@ -4,7 +4,7 @@ Use this topic for MCP instructions, tool discovery and built-in workflow guidan
 
 ## Intent and tool selection
 
-`src/mcp.rs` serves stdio JSON-RPC; `src/main.rs` configures roots and starts it. Initialization returns a short intent router: resolve recognizable screens through `find`/`tree` (or `search` for effective instance copy), read compact values with `inspect`, full style/mask/component data with `nodes`, tokens with `variables`, and pixels/assets with `export`. `bundle` writes a scoped handoff, `verify` checks it. Only if asked for an index: `index` prepare with a scope, `jobs` status, `search` with `workspaceId`. Ordinary questions and exports use those tools directly.
+`src/mcp.rs` serves stdio JSON-RPC; `src/main.rs` configures roots and starts it. Initialization returns a short intent router: resolve recognizable screens through `find`/`tree` (or `search` for effective instance copy), read compact values with `inspect`, full style/mask/component data with `nodes`, tokens with `variables`, and pixels/assets with `export`. `bundle` writes a scoped handoff, `verify` checks it. Only if asked for an index: `index` prepare with a scope, `jobs` status, `search` with `workspaceId`. `usages` takes an exact id on the file or within a prepared scope.
 
 `inspect` and `bundle` accept optional `states: true` (CLI `--states`) for a bounded, source-scoped list of explicitly related component variants. The agent supplies this per-call argument when related states are requested; no MCP configuration change is needed. Inspect adds `states`; bundle adds `design/states.json`, a manifest pointer and a bounded context summary. Independent inventory truncation/coverage must be checked; supported prototype fields retain exact sources and unknown markers, without business inference. Both reuse their selected effective subtree and do not render alternate variants. See [related variants](states.md) for evidence, batch usage and limits.
 
@@ -37,7 +37,7 @@ Audit adds `references/audit.md` to the shared evidence rules also returned by b
 
 Local reference links in returned text become `workflow:<topic>#<optional-section>`; the agent follows them with another call to this tool. No runtime Markdown files, network fetch or skill discovery mechanism is required. The binary can serve guidance from an empty working directory, including under `--root`; design/output path restrictions remain in force for design tools.
 
-The client decides whether initialization instructions enter model context. The workflow tool's description also exposes the choices so retrieval is discoverable through `tools/list`. This does not prove a particular model will select or follow the right guide. MCP prompts/resources are not required for this model-selected tool path.
+The client decides whether initialization instructions enter model context. The workflow tool's description also exposes the choices so retrieval is discoverable through `tools/list`. This does not prove a particular model will select or follow the right guide.
 
 ## Verification
 
@@ -51,8 +51,8 @@ Run Docker Rust tests/lint and `python3 scripts/ai-context.py check`. Tests cove
 |---|---|
 | `tree.depth` | 0 through `2^53-1` (JSON-safe); omitted means every level; past 256 levels the call fails with `parse_budget_exceeded` ([layer depth](parsing.md#layer-depth)) |
 | `inspect.depth` | 0–10 / 1 |
-| `find.limit` | 1–200 / 20 |
-| `search.limit` | 1–200 / 20 |
+| `find.limit`, `search.limit` | 1–200 / 20 |
+| `usages.limit`, `usages.scope` | 1–200 / 50; `0:0` |
 | `export.scale` | finite and greater than 0 / 1 |
 | `export.quality` | 1–100 / 80 |
 | `export.maxKb` | 0 through `2^53-1`; omitted means no byte budget |

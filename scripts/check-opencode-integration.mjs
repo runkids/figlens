@@ -36,16 +36,17 @@ const searchSteps = [
 // First use as spec 3.1 describes it: prepare the scope, poll its job, search the published index, inspect the ref.
 // A step either returns Code Mode source or names a plugin tool to call directly.
 const terminal = ['succeeded', 'failed', 'cancelled', 'interrupted'];
-const firstUseCode = paths => ['index', 'jobs', 'search', 'inspect'].every(name => tool(paths, name)) && `
+const firstUseCode = paths => ['index', 'jobs', 'search', 'inspect', 'usages'].every(name => tool(paths, name)) && `
   const before = await ${tool(paths, 'index')}(${JSON.stringify({ action: 'status', file: fixture })});
   const prepared = await ${tool(paths, 'index')}(${JSON.stringify({ action: 'prepare', file: fixture, scope: '0:0' })});
   let job = prepared.job, polls = 0;
   while (!${JSON.stringify(terminal)}.includes(job.state) && polls++ < 5000) job = await ${tool(paths, 'jobs')}({ action: 'status', jobId: job.jobId });
   const found = await ${tool(paths, 'search')}({ workspaceId: prepared.workspaceId, query: 'Mapping review' });
   const node = found.results?.[0] && await ${tool(paths, 'inspect')}({ file: ${JSON.stringify(fixture)}, node: found.results[0].ref.nodeId });
-  return { before: before.state, workspaceId: prepared.workspaceId, dispatched: prepared.job.state, job: job.state, polls,
+  const used = await ${tool(paths, 'usages')}({ workspaceId: prepared.workspaceId, node: '0:10' });
+  return { usedBy: used.results?.map(item => item.relation + ' ' + item.ref.nodeId), usedSource: used.results?.[0]?.ref.sourceId === found.results?.[0]?.ref.sourceId, before: before.state, workspaceId: prepared.workspaceId, dispatched: prepared.job.state, job: job.state, polls,
     ref: found.results?.[0]?.ref, sources: found.sources, complete: found.coverage?.complete, inspected: node?.node?.id };`;
-const firstUseSteps = [() => catalog(['index', 'jobs', 'search', 'inspect']), firstUseCode];
+const firstUseSteps = [() => catalog(['index', 'jobs', 'search', 'inspect', 'usages']), firstUseCode];
 const resetSteps = [() => catalog(['index']), paths => tool(paths, 'index') && `
   try { return { reset: await ${tool(paths, 'index')}(${JSON.stringify({ action: 'reset', file: fixture })}) }; }
   catch (error) { return { refused: String(error?.message ?? error) }; }`];
@@ -58,6 +59,13 @@ const cliSteps = [
   (status, prepared, job, found) => found?.results?.[0] && direct('figlens_inspect', { file: fixture, node: found.results[0].ref.nodeId }),
   // An exact instance sublayer id longer than 200 bytes passes the host's schema and reaches the binary.
   () => direct('figlens_inspect', { file: fixture, node: deepId }),
+  (status, prepared) => direct('figlens_usages', { workspaceId: prepared.workspaceId, node: '0:10', scope: '0:1' }),
+  // One result per page: the second page carries the first page's cursor and snapshot.
+  (status, prepared) => direct('figlens_usages', { workspaceId: prepared.workspaceId, node: '0:10', scope: '0:1', limit: 1 }),
+  (status, prepared, ...rest) => rest[5]?.nextCursor && direct('figlens_usages', { workspaceId: prepared.workspaceId, node: '0:10', scope: '0:1', limit: 1,
+    cursor: rest[5].nextCursor, snapshotId: rest[5].source.snapshotId }),
+  // The binary's own refusal reaches the agent unchanged.
+  (status, prepared) => direct('figlens_usages', { workspaceId: prepared.workspaceId, node: '0:10', scope: '0:1', relation: 'nope' }),
 ];
 const deepId = `I${Array(60).fill('9:9').join(';')}`;
 let steps = searchSteps;
@@ -153,8 +161,8 @@ try {
     assert.equal(status.mcp.status.status, 'connected');
     for (const tool of ['figlens_preview', 'figlens_bindings', 'figlens_propose_bindings']) assert.ok(status.mcp.tools.includes(tool), tool);
     for (const tool of ['figlensmcp_search', 'figlensmcp_inspect']) assert.ok(status.mcp.catalog.includes(tool), tool);
-    // The managed server serves index, jobs, search and inspect; the plugin adds no second copy.
-    for (const tool of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect']) assert.ok(!status.mcp.tools.includes(tool), tool);
+    // The managed server serves index, jobs, search, usages and inspect; the plugin adds no second copy.
+    for (const tool of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages']) assert.ok(!status.mcp.tools.includes(tool), tool);
     const skills = await client.skill.list({ location });
     assert.ok(JSON.stringify(skills).includes('figlens'));
     return { mcp: status.mcp, catalogAfterConnectedMs: Date.now() - connected, skills: skills.data.map(skill => skill.name) };
@@ -201,7 +209,10 @@ try {
     assert.deepEqual(flow.sources.map(source => source.state), ['ready']);
     assert.equal(flow.complete, true);
     assert.equal(flow.inspected, '0:1');
-    return { ...flow, sources: undefined, paths: paths.filter(item => /index|jobs|search|inspect/.test(item)), provider: 'scripted loopback, not a model' };
+    // The Button component's instances, from the same published index and source as the search.
+    assert.deepEqual(flow.usedBy, ['instance_of 0:2', 'instance_of 0:3'], JSON.stringify(flow));
+    assert.equal(flow.usedSource, true);
+    return { ...flow, sources: undefined, paths: paths.filter(item => /index|jobs|search|inspect|usages/.test(item)), provider: 'scripted loopback, not a model' };
   });
   await check('MCP reset asks the figlens_index permission: a deny rule keeps the database, an allow resets it', async () => {
     const [, refused] = await converse('Reset the design index.', resetSteps, [...allowAll, { action: 'figlens_index', resource: 'reset', effect: 'deny' }]);
@@ -306,7 +317,7 @@ try {
     await client.location.reload();
     const status = await rpc.run({ sessionID: session.id, action: 'status' }, options);
     assert.equal(status.mcp.managed, false, JSON.stringify(status.mcp));
-    for (const name of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect']) assert.ok(status.mcp.tools.includes(name), name);
+    for (const name of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages']) assert.ok(status.mcp.tools.includes(name), name);
     await execute(binary, ['index', 'reset', '--file', fixture], { cwd: project, env }).catch(() => {});
     const [before, prepared, job, found, node] = await converse('Enable an index for the mapping review frame (0:1) of mapping.fig, then find it.', cliSteps);
     assert.ok(node, JSON.stringify(scripted.raw).slice(0, 2000));
@@ -316,7 +327,14 @@ try {
     assert.equal(node.node.id, '0:1');
     const deep = scripted.raw[5] ?? '';
     assert.ok(deep.includes(`node ${deepId}`), `a ${deepId.length}-byte id must reach the binary, not fail the schema: ${deep.slice(0, 500)}`);
-    return { deepIdBytes: deepId.length, mcp: status.mcp.reason, before: before.state, job: job.state, ref: found.results[0].ref, inspected: node.node.id, tools: scripted.tools.filter(name => /^figlens_/.test(name)) };
+    const used = value(scripted.raw[6] ?? '');
+    assert.deepEqual(used?.results?.map(item => item.ref.nodeId), ['0:2', '0:3'], (scripted.raw[6] ?? '').slice(0, 500));
+    assert.equal(used.results[0].ref.sourceId, found.results[0].ref.sourceId);
+    const [first, second] = [7, 8].map(index => value(scripted.raw[index] ?? ''));
+    assert.deepEqual([first?.results?.map(item => item.ref.nodeId), first?.hasMore], [['0:2'], true], (scripted.raw[7] ?? '').slice(0, 500));
+    assert.deepEqual([second?.results?.map(item => item.ref.nodeId), second?.hasMore], [['0:3'], false], (scripted.raw[8] ?? '').slice(0, 500));
+    assert.match(JSON.parse(scripted.raw[9] ?? '{}').error?.message ?? '', /unknown relation "nope"/, (scripted.raw[9] ?? '').slice(0, 500));
+    return { pages: [first.results[0].ref.nodeId, second.results[0].ref.nodeId], refused: 'unknown relation', usedBy: used.results.map(item => item.ref.nodeId), deepIdBytes: deepId.length, mcp: status.mcp.reason, before: before.state, job: job.state, ref: found.results[0].ref, inspected: node.node.id, tools: scripted.tools.filter(name => /^figlens_/.test(name)) };
   });
 } finally {
   provider.close();

@@ -103,7 +103,7 @@ Guias de instalação: [OpenCode V2](../opencode/README.md) · [OMP](../omp/READ
 
 Reinicie o Pi ou execute `/reload` e peça uma tela em linguagem natural. O Pi encontra o frame, lê pelo servidor MCP registrado automaticamente e constrói com a sua stack. Sem IDs de nós, sem CLI global.
 
-Pedir um texto ou uma tela busca direto no `.fig` e não salva nada. Para buscas repetidas, peça ao Pi para ativar um índice de um design e escopo: ele prepara um índice local uma vez (sem comando de configuração), acompanha o job até ficar pronto e o reutiliza após reinícios e em outros hosts. Redefinir esse índice exige um pedido explícito seu. Detalhes: [índice local](#local-index).
+Pedir um texto ou uma tela busca direto no `.fig` e não salva nada. Para buscas repetidas, peça ao Pi para ativar um índice de um design e escopo: ele prepara um índice local uma vez (sem comando de configuração), acompanha o job até ficar pronto e o reutiliza após reinícios e em outros hosts. Redefinir esse índice exige um pedido explícito seu. Perguntar onde um componente, variável, estilo ou imagem é usado lista seus usages exatos do mesmo jeito: direto do `.fig` ou, depois de ativado, desse índice. Detalhes: [índice local](#local-index).
 
 - `/figlens plan <request>` cria apenas um plano; não modifica a aplicação.
 - `/figlens yolo <request>` planeja, constrói, confere e limpa o próprio plano temporário.
@@ -198,7 +198,7 @@ Moveu o `.fig`? `index relocate` mantém `workspaceId`, `sourceId` e armazenamen
 
 Dados: o banco SQLite guarda caminhos locais registrados, nomes de camadas e texto efetivo dos escopos escolhidos, postings de busca, relações exatas (contenção, instâncias, variantes, vínculos de variáveis/estilos/imagens, destinos de protótipo) e as definições a que apontam, hashes, gerações e jobs. O `.fig` original permanece inalterado onde está; seus bytes brutos não são guardados no banco.
 
-Pi, OpenCode e OMP usam o mesmo índice por meio de sua própria entrada opt-in, e o workspace é reutilizado entre reinícios e hosts. Não implementado: monitoramento de arquivos, ferramentas de usages no Pi, OpenCode e OMP, vetores, eventos e assinaturas.
+Pi, OpenCode e OMP usam o mesmo índice por meio de sua própria entrada opt-in, e o workspace é reutilizado entre reinícios e hosts. Não implementado: monitoramento de arquivos, vetores, eventos e assinaturas.
 
 <a id="commands"></a>
 

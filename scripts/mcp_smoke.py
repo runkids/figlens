@@ -81,7 +81,7 @@ def check_mcp(command, cwd, env, fixture, version):
         assert initialized['serverInfo']['version'] == version, initialized
         request('notifications/initialized', {})
         tools = request('tools/list', {})['tools']
-        assert {'find', 'search', 'inspect', 'nodes', 'bundle', 'export', 'workflow', 'index', 'jobs'} <= {t['name'] for t in tools}
+        assert {'find', 'search', 'inspect', 'nodes', 'bundle', 'export', 'workflow', 'index', 'jobs', 'usages'} <= {t['name'] for t in tools}
         found = request('tools/call', {'name': 'find', 'arguments': {'file': str(fixture), 'query': 'First success', 'type': 'FRAME'}})
         assert found['isError'] is False and found['structuredContent']['results'][0]['id'] == '0:1', found
         searched = request('tools/call', {'name': 'search', 'arguments': {'file': str(fixture), 'query': 'First success'}})
@@ -90,6 +90,8 @@ def check_mcp(command, cwd, env, fixture, version):
         ref = searched['structuredContent']['results'][0]['ref']['nodeId']
         opened = request('tools/call', {'name': 'inspect', 'arguments': {'file': str(fixture), 'node': ref}})
         assert opened['isError'] is False and opened['structuredContent']['node']['id'] == ref, opened
+        used = request('tools/call', {'name': 'usages', 'arguments': {'file': str(fixture), 'node': ref, 'relation': 'contains', 'direction': 'out'}})
+        assert used['isError'] is False and used['structuredContent']['results'][0]['target']['ref']['nodeId'] == '0:10', used
         failed = request('tools/call', {'name': 'inspect', 'arguments': {'file': str(fixture), 'node': '9:9'}})
         assert failed['isError'] is True and failed['_meta']['figlens']['code'] == 'node_not_found', failed
         schema = next(t for t in tools if t['name'] == 'inspect')['inputSchema']
@@ -174,7 +176,9 @@ def check_first_use(command, base, fixture, env):
         assert tools['jobs']['annotations']['readOnlyHint'] is False, tools['jobs']
         call(first, 'find', {'file': str(design), 'query': 'First success'})
         call(first, 'search', {'file': str(design), 'query': 'First success'})
-        assert not state.exists(), 'connecting, listing, find or stateless search created figlens state'
+        contains = {'node': '0:1', 'relation': 'contains', 'direction': 'out'}
+        call(first, 'usages', {'file': str(design), **contains})
+        assert not state.exists(), 'connecting, listing, find, stateless search or usages created figlens state'
         # Two hosts' first searches at once: one workspace, one database, both jobs succeed.
         with ThreadPoolExecutor(max_workers=2) as pool:
             replies = list(pool.map(lambda request: call(request, 'index', prepare), (first, second)))
@@ -183,6 +187,8 @@ def check_first_use(command, base, fixture, env):
         jobs = [settle(request, reply['job']) for request, reply in zip((first, second), replies)]
         assert len(list((state/'workspaces').glob('*/index.sqlite'))) == 1
         assert search(first, workspace) == ('ready', '0:1')
+        used = call(first, 'usages', {'workspaceId': workspace, **contains})
+        assert used['coverage']['complete'] and used['results'][0]['target']['ref']['nodeId'] == '0:10', used
         ref = call(first, 'search', {'workspaceId': workspace, 'query': 'First success'})['results'][0]['ref']['nodeId']
         assert call(first, 'inspect', {'file': str(design), 'node': ref})['node']['id'] == ref
         finished = call(first, 'jobs', {'action': 'cancel', 'jobId': jobs[0]['jobId']})

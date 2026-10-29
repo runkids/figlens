@@ -103,7 +103,7 @@ Guides d’installation: [OpenCode V2](../opencode/README.md) · [OMP](../omp/RE
 
 Redémarrez Pi ou lancez `/reload`, puis demandez un écran en langage courant. Pi trouve la frame, la lit via le serveur MCP enregistré automatiquement et construit avec votre stack. Pas d’ids de nodes, pas de CLI globale.
 
-Demander un texte ou un écran cherche directement dans le `.fig` et n'enregistre rien. Pour des recherches répétées, demandez à Pi d'activer un index pour un design et une portée : il prépare une fois un index local (sans commande d'installation), suit la tâche jusqu'à ce qu'il soit prêt et le réutilise après un redémarrage et dans d'autres hôtes. Réinitialiser cet index exige votre demande explicite. Détails : [index local](#local-index).
+Demander un texte ou un écran cherche directement dans le `.fig` et n'enregistre rien. Pour des recherches répétées, demandez à Pi d'activer un index pour un design et une portée : il prépare une fois un index local (sans commande d'installation), suit la tâche jusqu'à ce qu'il soit prêt et le réutilise après un redémarrage et dans d'autres hôtes. Réinitialiser cet index exige votre demande explicite. Demander où un composant, une variable, un style ou une image est utilisé liste ses usages exacts de la même façon : directement depuis le `.fig` ou, une fois activé, depuis cet index. Détails : [index local](#local-index).
 
 - `/figlens plan <request>` rédige uniquement un plan, sans modifier l’application.
 - `/figlens yolo <request>` planifie, construit, vérifie et nettoie son propre plan temporaire.
@@ -198,7 +198,7 @@ Cycle de vie : `refresh` reconstruit seulement les portées dont les octets du `
 
 Données : la base SQLite contient les chemins locaux enregistrés, les noms de calques et le texte effectif des portées choisies, les postings de recherche, les relations exactes (imbrication, instances, variantes, liaisons de variables/styles/images, cibles de prototype) et les définitions qu'elles désignent, les hashes, les générations et les jobs. Le `.fig` d'origine reste inchangé où il est ; ses octets bruts ne sont pas stockés dans la base.
 
-Pi, OpenCode et OMP utilisent le même index via leur propre entrée opt-in, et le workspace est réutilisé entre redémarrages et hôtes. Non implémenté : surveillance de fichiers, outils usages dans Pi, OpenCode et OMP, vecteurs, événements et abonnements.
+Pi, OpenCode et OMP utilisent le même index via leur propre entrée opt-in, et le workspace est réutilisé entre redémarrages et hôtes. Non implémenté : surveillance de fichiers, vecteurs, événements et abonnements.
 
 <a id="commands"></a>
 
