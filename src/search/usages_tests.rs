@@ -861,12 +861,14 @@ fn a_deep_nested_instance_id_from_search_is_a_valid_usages_target() {
         }
     }
     let message = obj(vec![("nodeChanges", K::Array(nodes))]);
-    let index = build(&Tree::new(&message), "0:0", bounds(WORK));
+    let tree = Tree::new(&message);
+    // A supported stored scope: the page.
+    let index = build(&tree, "0:1", bounds(WORK));
     let found = crate::search::search_index(
         &index,
         &crate::search::Request {
             query: "Deepest".into(),
-            scope: "0:0".into(),
+            scope: "0:1".into(),
             types: Vec::new(),
             include_hidden: false,
             include_internal: false,
@@ -890,6 +892,7 @@ fn a_deep_nested_instance_id_from_search_is_a_valid_usages_target() {
         id.len()
     );
     let mut r = req(&id);
+    r.scope = "0:1".into();
     r.outgoing = true;
     r.relations = vec!["instance_of".into()];
     let out = run(&index, &r).unwrap();
@@ -897,6 +900,18 @@ fn a_deep_nested_instance_id_from_search_is_a_valid_usages_target() {
     assert_eq!(out["results"][0]["target"]["ref"]["nodeId"], json!(main));
     r.target = "k".repeat(crate::search::store::ID_BYTES + 1);
     assert!(r.validate().is_err());
+    // Scopes stay stored nodes: the sublayer as a scope names its stored instance instead.
+    let Err(err) = crate::search::index_tree(&tree, &id, crate::search::deadline()) else {
+        panic!("a sublayer scope was accepted");
+    };
+    let err = err.downcast_ref::<FigError>().unwrap();
+    assert_eq!(
+        (
+            err.kind(),
+            err.to_string().contains("search its stored instance")
+        ),
+        (ErrorKind::UnsupportedNode, true)
+    );
 }
 
 #[test]
