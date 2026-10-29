@@ -1444,38 +1444,42 @@ fn nodes_frames_match_single_nodes_calls_and_isolate_missing_ids() {
     assert!(err.to_string().contains("at most"), "{err}");
 }
 
+fn layer(id: u32, parent: u32, kind: &'static str) -> K<'static> {
+    obj(
+        "NodeChange",
+        vec![
+            ("guid", guid(id)),
+            ("type", K::Enum("NodeType", kind)),
+            ("size", size(10.0, 10.0)),
+            (
+                "parentIndex",
+                obj(
+                    "ParentIndex",
+                    vec![("guid", guid(parent)), ("position", K::String("a".into()))],
+                ),
+            ),
+        ],
+    )
+}
+
+/// Under 0:0, `kind` 0:2 heads a chain of `kind` one layer more than the limit below it.
+fn too_deep_chain(kind: &'static str) -> Vec<K<'static>> {
+    let last = 2 + figlens::expand::MAX_DEPTH as u32 + 1;
+    let mut changes = vec![layer(2, 0, kind)];
+    changes.extend((3..=last).map(|id| layer(id, id - 1, kind)));
+    changes
+}
+
 /// Frame 0:1 is shallow; 0:2 holds a chain of `kind` one layer more than the limit below it.
 fn too_deep_message(kind: &'static str) -> K<'static> {
-    let node = |id: u32, parent: u32| {
-        obj(
-            "NodeChange",
-            vec![
-                ("guid", guid(id)),
-                (
-                    "type",
-                    K::Enum("NodeType", if id == 1 { "FRAME" } else { kind }),
-                ),
-                ("size", size(10.0, 10.0)),
-                (
-                    "parentIndex",
-                    obj(
-                        "ParentIndex",
-                        vec![("guid", guid(parent)), ("position", K::String("a".into()))],
-                    ),
-                ),
-            ],
-        )
-    };
-    let last = 2 + figlens::expand::MAX_DEPTH as u32 + 1;
     let mut changes = vec![
         obj(
             "NodeChange",
             vec![("guid", guid(0)), ("type", K::Enum("NodeType", "CANVAS"))],
         ),
-        node(1, 0),
-        node(2, 0),
+        layer(1, 0, "FRAME"),
     ];
-    changes.extend((3..=last).map(|id| node(id, id - 1)));
+    changes.extend(too_deep_chain(kind));
     obj("Message", vec![("nodeChanges", K::Array(changes))])
 }
 
@@ -1546,6 +1550,47 @@ fn tree_listings_reject_a_too_deep_file_unless_depth_bounds_them() {
         ],
         [Some(true), Some(true), None, None]
     );
+}
+
+#[test]
+fn top_frames_ignores_deep_sections_on_a_skipped_internal_page() {
+    // Document 0:90000 holds a public page with one screen, and internal page 0:0 whose
+    // sections nest past the limit.
+    let mut changes = vec![
+        obj(
+            "NodeChange",
+            vec![
+                ("guid", guid(90000)),
+                ("type", K::Enum("NodeType", "DOCUMENT")),
+            ],
+        ),
+        layer(90001, 90000, "CANVAS"),
+        layer(90002, 90001, "FRAME"),
+        obj(
+            "NodeChange",
+            vec![
+                ("guid", guid(0)),
+                ("type", K::Enum("NodeType", "CANVAS")),
+                ("internalOnly", K::Bool(true)),
+                (
+                    "parentIndex",
+                    obj(
+                        "ParentIndex",
+                        vec![("guid", guid(90000)), ("position", K::String("b".into()))],
+                    ),
+                ),
+            ],
+        ),
+    ];
+    changes.extend(too_deep_chain("SECTION"));
+    let message = obj("Message", vec![("nodeChanges", K::Array(changes))]);
+    let tree = Tree::new(&message);
+    let args = ["0:90000".to_owned(), "--top-frames".to_owned()];
+    let output = Command::from_cli("tree", &args, &tree)
+        .unwrap()
+        .execute(&tree, Path::new("unused.fig"))
+        .unwrap();
+    assert_eq!(output.text().unwrap(), "0:90002 FRAME \"\"\n");
 }
 
 #[test]

@@ -363,14 +363,18 @@ impl Command {
                 let page = ancestors.find(|id| plugin_type(tree.nodes[*id]) == "CANVAS");
                 let section =
                     (plugin_type(tree.nodes[&root]) == "SECTION").then_some(root.as_str());
-                // `top_frames` recurses only into the document, pages and sections.
+                // Only what `top_frames` walks: the document, sections and pages it does not skip.
                 figlens::expand::check_depth(&root, |id| {
-                    tree.children.get(id).filter(|_| {
-                        matches!(
-                            plugin_type(tree.nodes[id]).as_str(),
-                            "DOCUMENT" | "CANVAS" | "SECTION"
-                        )
-                    })
+                    let node = tree.nodes[id];
+                    let walked = match plugin_type(node).as_str() {
+                        "DOCUMENT" | "SECTION" => true,
+                        "CANVAS" => {
+                            id == root
+                                || node.get("internalOnly").map(|v| v.as_bool()) != Some(true)
+                        }
+                        _ => false,
+                    };
+                    tree.children.get(id).filter(|_| walked)
                 })?;
                 let mut frames = Vec::new();
                 top_frames(tree, &root, page, section, &mut frames);

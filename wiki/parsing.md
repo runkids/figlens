@@ -45,13 +45,13 @@ Layers nest through the flat `nodeChanges` list's `parentIndex`, so value depth 
 | Walk | Checked from | On too deep |
 |---|---|---|
 | `rest::build` (`nodes`, `inspect`, `export`, `bundle`, render; CLI and MCP) | the scope root, over the children `Builder::node` visits (stored before expanded; an expansion that stored children replace does not count) | the item fails: a CLI batch writes its own `{nodeId,error}` line and continues, MCP returns `isError` |
-| `tree` and MCP `tree` | the root, when `depth` exceeds the limit (the default lists every level) or with `--top-frames`, over the document, pages and nested sections it recurses through (a deep screen does not fail it) | the command fails; `--depth 256` or less still lists |
+| `tree` and MCP `tree` | the root, when `depth` exceeds the limit (the default lists every level) or with `--top-frames`, over exactly what it recurses through: the document, the pages it does not skip (internal ones unless they are the root) and nested sections; a deep screen does not fail it | the command fails; `--depth 256` or less still lists |
 | preview catalog | `0:0`, on start and on each reload | start fails; a reload keeps the previous view |
 | `compare` | through `resolve_nodes` | the command fails |
 
 `rest::nodes`/`render_nodes` remain for tests and panic with the same message. Search's bounded expansion has its own depth of 256. A 256-level component chain built in release on a 1 MiB stack, the deepest accepted, did not abort.
 
-Regressions: `nodes_frames_report_a_too_deep_frame_and_continue` and `bundle_frames_skip_a_too_deep_frame_and_continue` (a frame one layer past the limit, then a shallow frame; bundle with two workers), `a_component_chain_past_the_depth_limit_fails_the_scope`, `stored_children_keep_a_too_deep_main_from_failing_the_scope`, `tree_listings_reject_a_too_deep_file_unless_depth_bounds_them`, `top_frames_rejects_sections_nested_past_the_limit`, `a_too_deep_file_fails_the_catalog_instead_of_aborting` and `compare_reports_a_too_deep_scope_as_an_error`. The batch tests abort the test process without the check. The check added no measurable time to `nodes --frames` over every top frame of three large local designs, with identical output.
+Regressions: `nodes_frames_report_a_too_deep_frame_and_continue` and `bundle_frames_skip_a_too_deep_frame_and_continue` (a frame one layer past the limit, then a shallow frame; bundle with two workers), `a_component_chain_past_the_depth_limit_fails_the_scope`, `stored_children_keep_a_too_deep_main_from_failing_the_scope`, `tree_listings_reject_a_too_deep_file_unless_depth_bounds_them`, `top_frames_rejects_sections_nested_past_the_limit`, `top_frames_ignores_deep_sections_on_a_skipped_internal_page`, `a_too_deep_file_fails_the_catalog_instead_of_aborting` and `compare_reports_a_too_deep_scope_as_an_error`. The batch tests abort the test process without the check. The check added no measurable time to `nodes --frames` over every top frame of three large local designs, with identical output.
 
 ## Completed output publication
 
