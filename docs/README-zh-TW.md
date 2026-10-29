@@ -174,7 +174,7 @@ skillshare sync && skillshare sync mcp --global
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 本機唯讀 viewer；`--out` 會寫出獨立的離線快照 |
 | `compare <file> <nodes.json> <node>` | 與同一 frame 的 REST 匯出做差異比對 |
 | `node <file> <node>` | 單一原始 `.fig` 節點 |
-| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset` | 使用者 figlens state 目錄中的本機 workspace，或位於 workspace 之後會記住的 `--storage DIR` 下。`prepare <file> --scope NODE` 為該範圍建立一次搜尋索引；之後 `search --file <file>`（或 `--workspace DIR`）不再解析檔案，跨 workspace 的所有來源統一排序作答。`refresh` 重建有變更的檔案，`rebuild` 重建全部，`clear` 刪除未使用的索引；新索引就緒前繼續使用舊索引。`reset` 只刪除 workspace 資料庫，不會刪除設計、匯出或記住的位置 |
+| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset` | 使用者 figlens state 目錄中的本機 workspace，或位於 workspace 之後會記住的 `--storage DIR` 下。`prepare <file> --scope NODE` 為該範圍建立一次搜尋索引；之後 `search --file <file>`（或 `--workspace DIR`）不再解析檔案，跨 workspace 的所有來源統一排序作答。`refresh` 重建有變更的檔案，`rebuild` 重建全部或單一 `--source`/`--scope`，`clear` 刪除未使用的索引；新索引就緒前繼續使用舊索引。`reset` 只刪除 workspace 資料庫，不會刪除設計、匯出或記住的位置 |
 | `jobs status\|cancel <jobId>` | 查看或取消索引建置；`cancel` 在建置停止後才返回 |
 | `mcp` | 透過 stdio 的本機 MCP 伺服器 |
 | `update` | 將執行檔換成最新發行版 |

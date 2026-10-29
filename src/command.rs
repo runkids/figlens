@@ -782,10 +782,11 @@ pub fn index_tool(
             .clone()
             .ok_or_else(|| missing("workspace, workspaceId or file"))
     };
-    let unexpected = (scope.is_some() && !matches!(action, "prepare" | "refresh"))
+    let unexpected = (scope.is_some() && !matches!(action, "prepare" | "refresh" | "rebuild"))
         || (request.is_some() && !matches!(action, "prepare" | "refresh" | "rebuild"))
         || (call.argument("replaceUnavailable") == true && action != "prepare")
-        || (source_id.is_some() && !matches!(action, "remove" | "relocate" | "refresh"));
+        || (source_id.is_some()
+            && !matches!(action, "remove" | "relocate" | "refresh" | "rebuild"));
     if unexpected {
         return Err(figlens::FigError::new(
             figlens::ErrorKind::InvalidArguments,
@@ -833,7 +834,13 @@ pub fn index_tool(
             let done = if action == "refresh" {
                 workspace::refresh(&storage, &chosen()?, source_id, scope.as_deref(), request)?
             } else {
-                workspace::rebuild(&storage, &chosen()?, request)?
+                workspace::jobs::rebuild_scope(
+                    &storage,
+                    &chosen()?,
+                    source_id,
+                    scope.as_deref(),
+                    request,
+                )?
             };
             let value = done.report.clone();
             outcome = Some(done);

@@ -137,8 +137,10 @@ usage:
                                              --storage recreates an unusable workspace there, old files kept
   figlens index refresh <select> [--source ID] [--scope NODE] [--request-id ID]
                                              rebuild the published scopes whose .fig changed
-  figlens index rebuild <select> [--request-id ID]
-                                             rebuild every published scope; the old index serves until then
+  figlens index rebuild <select> [--source ID] [--scope NODE] [--request-id ID]
+                                             rebuild published scopes even when unchanged; the old index
+                                             serves until then. A reply with admission partial lists
+                                             deferred items, each with the call that builds it later
   figlens index clear|clear_cache <select>   delete retired and unfinished indexes; keeps published ones
   figlens index status <select>              state, sources and storage rule; creates nothing
   figlens index add <file.fig> <select>      add a source to a project workspace
@@ -941,10 +943,17 @@ fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
             )?;
             finish_jobs(&storage, outcome)
         }
-        ("rebuild", []) if a.scope.is_none() && a.source.is_empty() && !a.replace => finish_jobs(
-            &storage,
-            workspace::rebuild(&storage, &chosen()?, a.request)?,
-        ),
+        ("rebuild", []) if !a.replace => {
+            let scope = a.scope.map(normalize_id);
+            let outcome = workspace::jobs::rebuild_scope(
+                &storage,
+                &chosen()?,
+                only_source()?,
+                scope.as_deref(),
+                a.request,
+            )?;
+            finish_jobs(&storage, outcome)
+        }
         _ if scoped || !a.source.is_empty() => Err(usage()),
         ("status", []) => workspace::status(&storage, &chosen()?),
         ("add", [path]) => workspace::add(&storage, &chosen()?, Path::new(path)),

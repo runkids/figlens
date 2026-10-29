@@ -156,17 +156,17 @@ fn search_index(
     let (mut sources_read, mut records_read) = (0usize, 0usize);
     for row in &rows {
         let mut state = json!({"sourceId": row.id, "path": row.path});
-        let job: Option<(String, String, String)> = tx
+        let job: Option<(String, String, String, i64)> = tx
             .query_row(
-                "SELECT job_id, state, owner FROM jobs WHERE source_id = ?1 AND scope = ?2
+                "SELECT job_id, state, owner, attempt FROM jobs WHERE source_id = ?1 AND scope = ?2
                  AND state IN ('queued', 'running')",
                 [&row.id, &req.scope],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()
             .map_err(sql)?;
-        let job = job.map(|(id, s, holder)| {
-            let s = if jobs::alive(&dir, &holder) {
+        let job = job.map(|(id, s, holder, attempt)| {
+            let s = if jobs::job_alive(&dir, &holder, &id, attempt) {
                 s
             } else {
                 "interrupted".into()

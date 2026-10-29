@@ -13,13 +13,14 @@ Schema 2 adds `snapshots` (verified size and mtime per content hash), `generatio
 
 ## Jobs
 
-`prepare --scope`, `refresh` and `rebuild` submit jobs. One row per job; a unique partial index allows one queued or running job per source and scope across every process, so a second submit joins it (`joined: true`). A `requestId` with the same arguments replays the same job; with different arguments it is refused. A workspace accepts `MAX_ACTIVE` = 16 active jobs and keeps the last `KEPT` = 50 finished ones.
+`prepare --scope`, `refresh` and `rebuild` submit jobs. One row per job; a unique partial index allows one queued or running job per source and scope across every process, so a second submit joins it (`joined: true`). A `requestId` with the same arguments replays the same job; with different arguments it is refused. A workspace accepts `MAX_ACTIVE` = 16 active jobs and keeps the last `KEPT` = 50 finished ones. A refresh or rebuild that cannot admit every job replies `admission: partial` with `deferred` items (sourceId, scope and the `nextStep` index call that builds it later) and `deferredBecause`; otherwise `admission: complete`. A job that waits over 600 s for its build turn fails `workspace_busy`; a queued job's cancel is accepted at once. A publish that retires a scope past `MAX_SCOPES` names it in the job's `evictedScopes`.
 
 - The submitting process owns the job: it holds `<workspace>/owners/<token>.lock` for its lifetime and runs `figlens __index-worker <dir> <jobId>`. The child exits when its stdin closes, so it never outlives its owner. A job whose owner lock is free is `interrupted`; the next submit for that scope takes it over as a new attempt.
 - Stages: `stage` (owner), `hash`, `parse`, `write`, `verify` (child), `publish` (owner). The child writes an unpublished generation in batches of 2,000 rows; a build that would pass `DISK_CAP` = 2 GiB of database plus WAL fails, and before each batch it waits for the WAL to drop under `WAL_CAP` = 64 MiB.
 - Publication is one IMMEDIATE transaction fenced by the workspace incarnation and binding, the owner and attempt, the source's current membership, the cancel flag and the expected previous generation. Any mismatch publishes nothing and the prior generation keeps serving. Remove plus add of the same path gets a new membership, so a build started before cannot publish (ABA).
 - An unchanged snapshot (same hash and versions, complete) is reused instead of rebuilt, except by `rebuild`.
 - `jobs cancel` sets the flag; the owner polls it every 100 ms, kills the child, waits for its exit, drops its unpublished generation and only then reports `cancelled`. `cancel` replies `accepted` with the terminal state, or `pending` after `CANCEL_WAIT` = 2 s.
+- A CLI interrupted job is retried as its own kind: an interrupted rebuild stays a rebuild, never a refresh that reuses an unchanged generation.
 - `FIGLENS_TEST_HOLD=<stage>:<file>` holds a debug-build worker in a stage while the file exists; `tests/index_jobs.rs` uses it.
 
 ## Actions
@@ -27,7 +28,7 @@ Schema 2 adds `snapshots` (verified size and mtime per content hash), `generatio
 | Action | Effect |
 |---|---|
 | `refresh <select> [--source ID] [--scope NODE]` | Builds the chosen published scopes again when their bytes changed |
-| `rebuild <select>` | Builds every published scope again; the previous generations serve until each replacement publishes |
+| `rebuild <select> [--source ID] [--scope NODE]` | Builds the chosen published scopes again even when unchanged (a corrupt or deferred one included); the previous generations serve until each replacement publishes |
 | `clear_cache <select>` | Deletes retired generations, unpublished ones no live job writes, and unreferenced snapshots; keeps the registry, published indexes, jobs and location |
 | `jobs status <jobId>` / `jobs cancel <jobId>` | A job's state, stage, progress, attempt, generation and next steps |
 

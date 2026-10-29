@@ -455,6 +455,8 @@ fn stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
 const CONTROL_QUEUE: usize = 64;
 const INTERACTIVE_QUEUE: usize = 64;
 const INDEX_QUEUE: usize = 8;
+/// Replies waiting for stdout before every sender, the reader included, waits.
+const WRITER_QUEUE: usize = 64;
 /// Build submissions this server may hold before a build-submitting call is answered busy.
 const BUILD_QUEUE: usize = 8;
 
@@ -533,7 +535,9 @@ pub fn serve_with(
     roots: &[PathBuf],
     storage_roots: &[PathBuf],
 ) -> Result<(), Box<dyn Error>> {
-    let (to_writer, replies) = mpsc::channel::<Value>();
+    // Bounded: when stdout is slow, replies wait here and then the reader stops reading input,
+    // so memory stays at this many capped replies.
+    let (to_writer, replies) = mpsc::sync_channel::<Value>(WRITER_QUEUE);
     let stop = AtomicBool::new(false);
     let pending = Pending::default();
     let builds = std::sync::atomic::AtomicUsize::new(0);
@@ -815,6 +819,29 @@ mod tests {
             Admission::Call(call) => call.execute(None, roots, &[]),
             _ => panic!("expected reply"),
         }
+    }
+
+    #[test]
+    fn index_and_jobs_declare_that_they_change_state() {
+        let tools = contract::tools();
+        let hints = |name: &str| {
+            tools["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap()["annotations"]
+                .clone()
+        };
+        assert_eq!(
+            hints("index"),
+            serde_json::json!({"readOnlyHint": false, "destructiveHint": true,
+                "idempotentHint": false, "openWorldHint": false})
+        );
+        assert_eq!(
+            hints("jobs"),
+            serde_json::json!({"readOnlyHint": false, "destructiveHint": false, "openWorldHint": false})
+        );
     }
 
     #[test]

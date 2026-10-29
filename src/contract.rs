@@ -307,7 +307,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "index",
-        "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes); refresh rebuilds changed scopes (sourceId and scope narrow it); rebuild rebuilds every indexed scope while the previous index keeps serving; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
+        "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes); refresh rebuilds changed scopes and rebuild every indexed scope even when unchanged (sourceId and scope narrow both), while the previous index keeps serving; a reply that could not admit every job has admission partial and deferred items, each with the nextStep that builds it later; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
         &[
             (
                 "action",
@@ -332,13 +332,13 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "sourceId",
                 "string",
                 false,
-                "a registered source, for remove, relocate and refresh",
+                "a registered source, for remove, relocate, refresh and rebuild",
             ),
             (
                 "scope",
                 "string",
                 false,
-                "stored node id to index (prepare) or refresh; 0:0 is the whole file",
+                "stored node id to index (prepare), refresh or rebuild; 0:0 is the whole file",
             ),
             (
                 "requestId",
@@ -402,7 +402,10 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "incarnation": {"type": "string", "description": "changes when the database is recreated; cached results of another incarnation are void"},
                 "sources": {"type": "array", "items": {"type": "object"}, "description": "visible sources: sourceId, path, present and indexed scopes with snapshotId, records, complete and current"},
                 "job": {"type": "object", "description": "the build prepare started or joined: jobId, state, stage, progress"},
-                "jobs": {"type": "array", "items": {"type": "object"}, "description": "refresh and rebuild: one job per source and scope, each with joined"},
+                "jobs": {"type": "array", "items": {"type": "object"}, "description": "refresh and rebuild: one job per admitted source and scope, each with joined"},
+                "admission": {"type": "string", "description": "refresh and rebuild: complete, or partial when some jobs were not admitted"},
+                "deferred": {"type": "array", "items": {"type": "object"}, "description": "partial admission: sourceId, scope and the nextStep index call that builds it later"},
+                "deferredBecause": {"type": ["object", "null"], "description": "partial admission: the error that stopped admission, {code, message}"},
                 "coverage": {"type": "object", "description": "prepare without scope: text and relations not_requested"},
                 "nextSteps": {"type": "array", "items": {"type": "object"}},
                 "storage": {"type": "object"},
@@ -419,6 +422,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "progress": {"type": "object"},
                 "cancel": {"type": "string", "description": "cancel only: accepted, pending, too_late or not_active"},
                 "error": {"type": ["object", "null"]},
+                "evictedScopes": {"type": "array", "description": "a publish that retired the source's least recently published scope (past 8) names it"},
                 "nextSteps": {"type": "array", "items": {"type": "object"}},
             }),
             ["jobId", "state"].as_slice(),
@@ -730,8 +734,15 @@ pub fn tools() -> Value {
         if let Some(schema) = output_schema(name) {
             tool["outputSchema"] = schema;
         }
-        if *name == "workflow" {
-            tool["annotations"] = json!({ "readOnlyHint": true, "openWorldHint": false });
+        match *name {
+            "workflow" => tool["annotations"] = json!({ "readOnlyHint": true, "openWorldHint": false }),
+            // Mixed actions, reset among them.
+            "index" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": true,
+                "idempotentHint": false, "openWorldHint": false}),
+            // cancel changes a job.
+            "jobs" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": false,
+                "openWorldHint": false}),
+            _ => {}
         }
         tool
     }).collect::<Vec<_>>() })

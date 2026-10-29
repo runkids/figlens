@@ -174,7 +174,7 @@ skillshare sync && skillshare sync mcp --global
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | ローカルの読み取り専用 viewer。`--out` でスタンドアロンのオフラインスナップショットを書き出し |
 | `compare <file> <nodes.json> <node>` | 同じ frame の REST エクスポートとの差分 |
 | `node <file> <node>` | `.fig` の生ノード 1 つ |
-| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset` | ユーザーごとの figlens state ディレクトリ、または workspace が以後記憶する `--storage DIR` の下にあるローカル workspace。`prepare <file> --scope NODE` でその範囲の検索インデックスを一度だけ作成し、以後 `search --file <file>`（または `--workspace DIR`）は再解析せず、workspace の全ソースをまとめてランク付けして答えます。`refresh` は変更されたファイル、`rebuild` はすべてを再作成し、`clear` は使われていないインデックスを削除します。新しいインデックスができるまで以前のものが使われます。`reset` は workspace データベースだけを削除し、デザイン、エクスポート、記憶された場所には触れません |
+| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset` | ユーザーごとの figlens state ディレクトリ、または workspace が以後記憶する `--storage DIR` の下にあるローカル workspace。`prepare <file> --scope NODE` でその範囲の検索インデックスを一度だけ作成し、以後 `search --file <file>`（または `--workspace DIR`）は再解析せず、workspace の全ソースをまとめてランク付けして答えます。`refresh` は変更されたファイル、`rebuild` はすべて（または `--source`/`--scope` の一つ）を再作成し、`clear` は使われていないインデックスを削除します。新しいインデックスができるまで以前のものが使われます。`reset` は workspace データベースだけを削除し、デザイン、エクスポート、記憶された場所には触れません |
 | `jobs status\|cancel <jobId>` | インデックス作成の状態表示または取り消し。`cancel` は作成が止まってから戻ります |
 | `mcp` | stdio 経由のローカル MCP サーバー |
 | `update` | バイナリを最新リリースに置き換え |

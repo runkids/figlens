@@ -924,3 +924,42 @@ fn a_search_past_the_query_envelope_is_a_work_limit_with_narrower_searches_not_a
     let status = env.json(&["index", "status", "--workspace", dir]);
     assert_eq!(status["sources"].as_array().unwrap().len(), 11);
 }
+
+#[test]
+fn rebuild_narrowed_to_one_source_and_scope_builds_only_that_one_even_when_unchanged() {
+    let env = Env::new();
+    let project = env.dir.join("project");
+    std::fs::create_dir(&project).unwrap();
+    let dir = std::fs::canonicalize(project).unwrap();
+    let dir = dir.to_str().unwrap();
+    let mut sources = Vec::new();
+    for name in ["a.fig", "b.fig"] {
+        let fig = env.fig(name);
+        let done = env.json(&[
+            "index",
+            "prepare",
+            fig.to_str().unwrap(),
+            "--workspace",
+            dir,
+            "--scope",
+            "0:0",
+        ]);
+        sources.push(done["source"]["sourceId"].as_str().unwrap().to_owned());
+    }
+    let rebuilt = env.json(&[
+        "index",
+        "rebuild",
+        "--workspace",
+        dir,
+        "--source",
+        &sources[0],
+        "--scope",
+        "0:0",
+    ]);
+    let jobs = rebuilt["jobs"].as_array().unwrap();
+    assert_eq!(jobs.len(), 1, "{rebuilt}");
+    assert_eq!(jobs[0]["sourceId"], sources[0].as_str());
+    assert_eq!(jobs[0]["kind"], "rebuild");
+    assert_eq!(jobs[0]["state"], "succeeded");
+    assert_eq!(rebuilt["admission"], "complete");
+}
