@@ -234,8 +234,9 @@ pub(crate) fn save(
 
 /// Largest stored generation fields JSON; pages, roots and ancestors are bounded by the build.
 const INFO_BYTES: usize = 64 * 1024 * 1024;
-/// Largest node ID, type or component ID.
-const ID_BYTES: usize = 4096;
+/// Largest node ID, type or component ID: an effective ID gains one `sessionID:localID` GUID
+/// (at most 21 bytes) plus a separator and prefix per nested instance, up to `MAX_DEPTH` deep.
+const ID_BYTES: usize = (crate::expand::MAX_DEPTH + 1) * 23;
 
 fn bad() -> Box<dyn Error> {
     "invalid stored index; rebuild the index".into()
@@ -480,6 +481,19 @@ mod tests {
         let small = vec![0; BATCH + 1];
         let runs: Vec<usize> = batches(&small, |s| *s).map(<[_]>::len).collect();
         assert_eq!(runs, [BATCH, 1]);
+    }
+
+    #[test]
+    fn the_longest_effective_id_bounded_expansion_builds_reads_back() {
+        let guid = format!("{}:{}", u32::MAX, u32::MAX);
+        let id = format!("I{}", vec![guid; crate::expand::MAX_DEPTH + 1].join(";"));
+        let conn = Connection::open_in_memory().unwrap();
+        let read = conn
+            .query_row("SELECT ?1", [&id], |row| {
+                Ok(text_at(row, 0, ID_BYTES).map_err(|e| e.to_string()))
+            })
+            .unwrap();
+        assert_eq!(read, Ok(Some(id)));
     }
 
     #[test]
