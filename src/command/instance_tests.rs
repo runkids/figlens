@@ -1533,7 +1533,24 @@ fn export_bounds_pick_the_render_bounds_or_the_layout_box_and_report_both() {
                 .unwrap()
                 .contains("exported at the layout box")
         );
+        if ext == "svg" {
+            // The viewport rounds fractional sizes up, so only a clip keeps overflow out.
+            export(&["--bounds", "layout"]);
+            assert!(std::fs::read_to_string(&out).unwrap().contains("clip-path"));
+            export(&[]);
+            assert!(!std::fs::read_to_string(&out).unwrap().contains("clip-path"));
+        }
     }
+    // At scale 0.15 the 10px box rounds up to 2px; the last pixel must not show the overflow.
+    let small = f.dir.join("overflow-small.png");
+    let path = small.to_str().unwrap();
+    f.cli(
+        "export",
+        &["0:60", path, "--bounds", "layout", "--scale", "0.15"],
+    )
+    .unwrap();
+    let pixels = resvg::tiny_skia::Pixmap::load_png(&small).unwrap();
+    assert!(pixels.pixel(1, 1).unwrap().alpha() < 255);
     let png = f.dir.join("overflow-mcp.png");
     let reply = f.tool(
         "export",

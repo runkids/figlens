@@ -34,15 +34,16 @@ impl Prepared {
 
     /// A raster export includes page/section backdrops and uses export bounds, not asset bounds.
     pub fn export_svg(&self, tree: &Tree, scale: f64) -> Option<String> {
-        Some(self.export_svg_in(tree, export_area(self.node())?, scale))
+        Some(self.export_svg_in(tree, export_area(self.node())?, scale, false))
     }
 
-    /// Raster-ready SVG of the node over the page region `area`.
-    pub fn export_svg_in(&self, tree: &Tree, area: Rect, scale: f64) -> String {
+    /// Raster-ready SVG of the node over the page region `area`, cut to it when `clip`.
+    pub fn export_svg_in(&self, tree: &Tree, area: Rect, scale: f64, clip: bool) -> String {
         let n = self.node();
         let lookup = |h: &str| self.images.get(h).cloned();
         Svg::new(tree, &lookup)
             .for_raster()
+            .clipped(clip)
             .backdrop(n, area)
             .document(n, area, scale)
     }
@@ -779,6 +780,8 @@ pub struct Svg<'t, 'a> {
     edge: Option<Rect>,
     /// Downscaled images by hash and halving count; `None` keeps full images (SVG output).
     mips: Option<std::collections::HashMap<(String, u32), Vec<u8>>>,
+    /// Cut the drawing to the export area, which the output rounds up to whole pixels.
+    clip: bool,
 }
 
 impl<'t, 'a> Svg<'t, 'a> {
@@ -801,7 +804,15 @@ impl<'t, 'a> Svg<'t, 'a> {
             area: [0.0; 4],
             edge: None,
             mips: None,
+            clip: false,
         }
+    }
+
+    /// With `clip`, draws nothing outside the export area, even in the part of the last pixel
+    /// row and column that whole-pixel rounding adds past it.
+    pub fn clipped(mut self, clip: bool) -> Self {
+        self.clip = clip;
+        self
     }
 
     /// For output that is rasterized at the document's scale: large images are downscaled
@@ -967,6 +978,19 @@ impl<'t, 'a> Svg<'t, 'a> {
             Some(m) => format!("<g mask=\"url(#{m})\">{}</g>", self.backdrop),
             None => std::mem::take(&mut self.backdrop),
         };
+        let mut drawing = backdrop + &body;
+        if self.clip {
+            let id = self.id("area");
+            let _ = write!(
+                self.defs,
+                "<clipPath id=\"{id}\"><rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/></clipPath>",
+                num(area[0]),
+                num(area[1]),
+                num(area[2] - area[0]),
+                num(area[3] - area[1])
+            );
+            drawing = format!("<g clip-path=\"url(#{id})\">{drawing}</g>");
+        }
         // Exports are sized to the scaled box, rounded up, as Figma sizes them.
         // Float noise (26.0000001) must not round up a whole pixel.
         let px = |len: f64| (len * scale - 1e-3).ceil().max(1.0);
@@ -982,7 +1006,7 @@ impl<'t, 'a> Svg<'t, 'a> {
             self.defs,
             num(-area[0]),
             num(-area[1]),
-            backdrop + &body
+            drawing
         )
     }
 

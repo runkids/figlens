@@ -97,6 +97,7 @@ pub fn export(
         let lookup = |h: &str| prepared.images.get(h).cloned();
         // Keep original image fills embedded; raster export's downsampling would lose detail.
         let bytes = render::Svg::new(tree, &lookup)
+            .clipped(layout)
             .document(n, area, 1.0)
             .into_bytes();
         if max_bytes.is_some_and(|max| bytes.len() > max) {
@@ -121,7 +122,7 @@ pub fn export(
         Some(max) if longest > f64::from(max) => scale * f64::from(max) / longest,
         _ => scale,
     };
-    let pixmap = render::pixmap(&prepared.export_svg_in(tree, area, scale))?;
+    let pixmap = render::pixmap(&prepared.export_svg_in(tree, area, scale, layout))?;
     Ok((encode(&pixmap, format, quality, max_bytes)?, report))
 }
 
