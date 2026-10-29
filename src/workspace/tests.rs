@@ -889,3 +889,95 @@ fn server_storage_roots_judge_where_a_new_storage_path_really_leads() {
         "remembered"
     );
 }
+
+#[test]
+fn an_unavailable_storage_offers_recreation_elsewhere_that_keeps_the_old_files() {
+    let f = Fixture::new();
+    let a = f.fig("a.fig");
+    let (old, custom) = f.custom("old");
+    let first = prepare(&custom, &a, None).unwrap();
+    let moved = f.dir.join("offline");
+    std::fs::rename(&old, &moved).unwrap();
+    let error = prepare(&Fixture::at(&f.home, None), &a, None).unwrap_err();
+    let fig = error.downcast_ref::<FigError>().unwrap();
+    assert_eq!(fig.kind(), ErrorKind::StorageUnavailable);
+    let actions: Vec<&Json> = fig.recovery().unwrap().as_array().unwrap().iter().collect();
+    assert_eq!(actions[1]["action"], "recreate_elsewhere");
+    let (new, elsewhere) = f.custom("new");
+    let options = PrepareOptions {
+        replace_unavailable: true,
+        ..PrepareOptions::default()
+    };
+    let recreated = super::prepare(&elsewhere, &a, None, options)
+        .unwrap()
+        .report;
+    assert_ne!(recreated["incarnation"], first["incarnation"]);
+    assert!(new.join("state").is_dir());
+    assert!(moved.join("state/workspaces").read_dir().unwrap().count() > 0);
+    let select = Select::Locator(Locator::source(&a).unwrap());
+    assert_eq!(
+        status(&Fixture::at(&f.home, None), &select).unwrap()["incarnation"],
+        recreated["incarnation"]
+    );
+}
+
+#[test]
+fn a_confined_caller_cannot_reset_a_workspace_holding_sources_it_cannot_see() {
+    let f = Fixture::new();
+    let (inside, outside) = (f.dir.join("in"), f.dir.join("out"));
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let project = std::fs::canonicalize(f.dir.join("")).unwrap();
+    let seen = std::fs::canonicalize(&inside).unwrap().join("a.fig");
+    let hidden = std::fs::canonicalize(&outside).unwrap().join("b.fig");
+    std::fs::write(&seen, "a").unwrap();
+    std::fs::write(&hidden, "b").unwrap();
+    prepare(&f.storage, &seen, Some(&project)).unwrap();
+    prepare(&f.storage, &hidden, Some(&project)).unwrap();
+    let select = Select::Locator(Locator::project(&project).unwrap());
+    let confined = f
+        .storage
+        .clone()
+        .confined(&[std::fs::canonicalize(&inside).unwrap()]);
+    assert_eq!(
+        kind(&*reset(&confined, &select).unwrap_err()),
+        ErrorKind::PermissionDenied
+    );
+    assert_eq!(
+        status(&f.storage, &select).unwrap()["sources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    // A link inside the roots to a file outside them is not visible either.
+    #[cfg(unix)]
+    {
+        let link = std::fs::canonicalize(&inside).unwrap().join("link.fig");
+        std::os::unix::fs::symlink(&hidden, &link).unwrap();
+        assert!(!confined.sees(&link));
+        assert!(confined.sees(&seen));
+    }
+}
+
+#[test]
+fn a_stale_alias_neither_blocks_nor_captures_a_new_prepare_of_its_path() {
+    let f = Fixture::new();
+    let a = std::fs::canonicalize(f.fig("a.fig")).unwrap();
+    let ws = id_of(&prepare(&f.storage, &a, None).unwrap());
+    let b = f.dir.join("b.fig");
+    std::fs::rename(&a, &b).unwrap();
+    let b = std::fs::canonicalize(b).unwrap();
+    let own = crate::search::source_id(&a);
+    relocate(&f.storage, &Select::Id(ws.clone()), &own, &b).unwrap();
+    // Moved back: the alias of b no longer names a workspace holding b.
+    std::fs::rename(&b, &a).unwrap();
+    relocate(&f.storage, &Select::Id(ws.clone()), &own, &a).unwrap();
+    std::fs::rename(&a, &b).unwrap();
+    std::fs::write(&a, "a new design").unwrap();
+    let fresh = prepare(&f.storage, &b, None).unwrap();
+    assert_ne!(id_of(&fresh), ws);
+    // After a reset, the relocated path prepares a workspace again instead of failing.
+    reset(&f.storage, &Select::Id(id_of(&fresh))).unwrap();
+    assert!(prepare(&f.storage, &b, None).is_ok());
+}

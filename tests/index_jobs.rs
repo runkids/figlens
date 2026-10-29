@@ -153,6 +153,16 @@ fn a_prepared_scope_searches_like_the_stateless_search_and_survives_a_rebuild() 
     assert_eq!(indexed["state"], "ready");
     assert!(!ids(&stateless).is_empty());
     assert_eq!(ids(&indexed), ids(&stateless));
+    // Whole results agree; only the source identity is the workspace's own.
+    let plain = |reply: &Value| {
+        let mut results = reply["results"].clone();
+        for r in results.as_array_mut().unwrap() {
+            r["ref"].as_object_mut().unwrap().remove("sourceId");
+        }
+        results
+    };
+    assert_eq!(plain(&indexed), plain(&stateless));
+    assert_eq!(indexed["coverage"]["scannedRecords"], stateless["coverage"]["scannedRecords"]);
     assert_eq!(indexed["coverage"]["complete"], true);
     let rebuilt = env.json(&["index", "rebuild", "--file", file]);
     assert_eq!(rebuilt["jobs"][0]["state"], "succeeded");
@@ -642,4 +652,18 @@ fn mcp_searches_a_workspace_kept_under_a_storage_root() {
         json!({"workspaceId": prepared["workspaceId"], "storage": store, "query": "first"}),
     );
     assert_eq!(found["structuredContent"]["state"], "ready", "{found}");
+}
+
+#[test]
+fn a_stored_parent_cycle_is_refused_as_an_unreadable_index_instead_of_spinning() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    let prepared = env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let conn = rusqlite::Connection::open(prepared["paths"]["database"].as_str().unwrap()).unwrap();
+    conn.execute("UPDATE records SET parent = rid WHERE node_id = '0:1'", []).unwrap();
+    drop(conn);
+    let out = env.run(&["search", "--file", file, "first"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("rebuild"));
 }

@@ -269,13 +269,28 @@ pub fn prepare(
     };
     let id = locator.id()?;
     let (locations, _location) = location_exclusive(storage, &id)?;
-    // A relocated source-scoped file prepares the workspace that already holds it.
+    // A relocated source-scoped file prepares the workspace that holds it. An alias whose
+    // workspace no longer registers this path (reset, or moved on) is stale and is dropped.
     if project.is_none()
         && !options.replace_unavailable
         && let Some(old) = storage.alias(&id)?
     {
-        let (place, ws) = opened(storage, &Select::Id(old), true)?;
-        return registered(storage, place, ws, false, &source, options);
+        if let Ok((place, ws)) = opened(storage, &Select::Id(old), true)
+            && ws
+                .conn
+                .query_row(
+                    "SELECT 1 FROM sources WHERE path = ?1",
+                    [utf8(&source)?],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(sql)?
+                .is_some()
+        {
+            return registered(storage, place, ws, false, &source, options);
+        }
+        let record = locations.join(format!("{id}.json"));
+        std::fs::remove_file(&record).map_err(|e| storage_error(&record, e))?;
     }
     if options.replace_unavailable {
         return recreate(storage, &id, &locator, &source, options);
@@ -546,6 +561,25 @@ pub fn reset(storage: &Storage, select: &Select) -> Result<Json> {
     let select = &storage.follow(select)?;
     let id = select.id()?;
     let place = storage.place(&id, select.locator())?;
+    // A caller confined to some roots may not delete sources it cannot see.
+    if storage.visible.is_some()
+        && let Ok((_, ws)) = opened(storage, select, false)
+    {
+        let mut stmt = ws.conn.prepare("SELECT path FROM sources").map_err(sql)?;
+        let paths = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(sql)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql)?;
+        if !paths.iter().all(|p| storage.sees(Path::new(p))) {
+            return Err(fail(
+                ErrorKind::PermissionDenied,
+                format!(
+                    "workspace {id} holds sources outside this server's roots; reset it from the CLI"
+                ),
+            ));
+        }
+    }
     // Active jobs are asked to stop first; their owners stop the child and release the
     // workspace lock, which the exclusive lock below then waits for.
     if let Ok((_, ws)) = opened(storage, select, false)

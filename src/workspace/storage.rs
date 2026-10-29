@@ -102,11 +102,12 @@ impl Storage {
         self
     }
 
-    /// Whether a registered (canonical) source path is visible to this caller.
+    /// Whether a registered source is visible to this caller, judged where the path leads now,
+    /// so a file later replaced by a link out of the roots is not read through it.
     pub(super) fn sees(&self, path: &Path) -> bool {
-        self.visible
-            .as_ref()
-            .is_none_or(|roots| roots.iter().any(|r| path.starts_with(r)))
+        self.visible.as_ref().is_none_or(|roots| {
+            resolved(path).is_some_and(|path| roots.iter().any(|r| path.starts_with(r)))
+        })
     }
 }
 

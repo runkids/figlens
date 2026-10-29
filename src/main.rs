@@ -45,7 +45,7 @@ usage:
                                              boolean properties and swaps applied; exact refs, match
                                              reasons, UTF-16 spans, coverage and cursor pages (20, 1-200);
                                              hidden layers and internal pages need their flag
-  figlens search <select> <query> [--source ID]... [same options]
+  figlens search --workspace DIR|--file <file.fig>|--id ws_... <query> [--source ID]... [--storage DIR] [same options]
                                              the same search over a workspace's prepared indexes of
                                              --node (default 0:0) across its sources, without parsing;
                                              sources not ready are listed with the step that prepares them
@@ -135,10 +135,11 @@ usage:
                                              whole file), progress on stderr; prints workspaceId, sourceId,
                                              incarnation, job, paths and roots. --replace-unavailable with a new
                                              --storage recreates an unusable workspace there, old files kept
-  figlens index refresh <select> [--source ID] [--scope NODE]
+  figlens index refresh <select> [--source ID] [--scope NODE] [--request-id ID]
                                              rebuild the published scopes whose .fig changed
-  figlens index rebuild <select>             rebuild every published scope; the old index serves until then
-  figlens index clear <select>               delete retired and unfinished indexes; keeps published ones
+  figlens index rebuild <select> [--request-id ID]
+                                             rebuild every published scope; the old index serves until then
+  figlens index clear|clear_cache <select>   delete retired and unfinished indexes; keeps published ones
   figlens index status <select>              state, sources and storage rule; creates nothing
   figlens index add <file.fig> <select>      add a source to a project workspace
   figlens index remove <sourceId> <select>   unregister a source; the .fig is never touched

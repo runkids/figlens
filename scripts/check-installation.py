@@ -50,6 +50,13 @@ def check_index(binary, fixture, cwd, env):
     again = index('prepare', source)
     assert again['initialized'] and again['incarnation'] != first['incarnation'], again
     assert again['storage']['rule'] == 'remembered', again
+    # The shipped binary starts its own index worker, publishes, and serves search from it.
+    built = index('prepare', source, '--scope', '0:0')
+    assert built['job']['state'] == 'succeeded', built
+    searched = json.loads(run([binary, 'search', '--file', source, 'First success'], cwd, env))
+    assert searched['state'] == 'ready' and searched['results'][0]['ref']['nodeId'] == '0:1', searched
+    job = json.loads(run([binary, 'jobs', 'status', built['job']['jobId']], cwd, env))
+    assert job['state'] == 'succeeded', job
     # A removed remembered root is recreated by an equivalent spelling: on Windows the ordinary
     # path against the remembered \\?\ form, elsewhere a path through "..".
     shutil.rmtree(custom)
@@ -59,7 +66,7 @@ def check_index(binary, fixture, cwd, env):
     assert os.path.samefile(Path(recreated['paths']['database']).parents[2], custom/'state'), recreated
     assert sha(source) == before, 'index changed the source .fig'
     assert not (base/'state').exists(), 'a second database appeared in the default state root'
-    return {'customPrepare': True, 'rediscovered': True, 'resetNewIncarnation': True,
+    return {'customPrepare': True, 'rediscovered': True, 'resetNewIncarnation': True, 'indexedSearch': True,
             'removedRootRecreated': True, 'sourceUnchanged': True}
 
 

@@ -402,7 +402,8 @@ pub(crate) fn add(conn: &Connection, gen_id: i64, index: &mut Index, rids: &[u32
         if bytes > BYTES
             || record.page.is_some_and(|p| p as usize >= index.pages.len())
             || record.root.is_some_and(|p| p as usize >= index.roots.len())
-            || record.parent.is_some_and(|p| p as usize >= index.total)
+            // Builds number a parent before its children, so a stored parent cycle is corrupt.
+            || record.parent.is_some_and(|p| p >= rid)
         {
             return Err(bad());
         }

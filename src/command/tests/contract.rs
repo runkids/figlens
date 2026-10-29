@@ -379,3 +379,20 @@ fn every_tool_rejects_missing_required_fields_and_wrong_types_before_io() {
         }
     }
 }
+
+#[test]
+fn index_failures_carry_stable_codes_and_their_recovery() {
+    use figlens::{ErrorKind, FigError};
+    for (kind, code) in [
+        (ErrorKind::SourceStale, "source_stale"),
+        (ErrorKind::CursorStale, "cursor_stale"),
+        (ErrorKind::CursorExpired, "cursor_expired"),
+        (ErrorKind::Cancelled, "cancelled"),
+    ] {
+        let recovery = json!([{"action": "refresh", "requires": "none"}]);
+        let error = FigError::new(kind, "x").with_recovery(recovery.clone());
+        let meta = contract::Failure::from_error(Box::new(error)).metadata();
+        assert_eq!(meta["code"], code);
+        assert_eq!(meta["recovery"], recovery);
+    }
+}
