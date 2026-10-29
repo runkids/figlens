@@ -71,12 +71,17 @@ pub(super) fn settled(
     }
 }
 
-/// Whether sidecar `path` still reads as access denied. On Windows this is also how a file
-/// pending deletion reads (SQLite deletes it on a last close) until its last handle closes, so
-/// it may pass; error 5 alone cannot tell that from a real denial, hence the caller's deadline.
+/// Whether sidecar `path` is refused as access denied by the open `links` makes. On Windows a
+/// file pending deletion (SQLite deletes `-shm` on a last close) answers metadata yet refuses
+/// that open until its last handle closes, so it may pass; error 5 alone cannot tell that from
+/// a real denial, hence the caller's deadline. Only a regular file is probed past metadata.
 #[cfg(windows)]
 pub(super) fn sidecar_denied(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_err_and(|e| e.raw_os_error() == Some(5))
+    let denied = |e: &std::io::Error| e.raw_os_error() == Some(5);
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta.is_file() && File::open(path).is_err_and(|e| denied(&e)),
+        Err(e) => denied(&e),
+    }
 }
 
 #[cfg(not(windows))]

@@ -144,11 +144,11 @@ fn a_sidecar_being_deleted_is_waited_out_not_reported_denied() {
     let shm = dir.join("index.sqlite-shm");
     std::fs::write(&shm, b"").unwrap();
     let held = mark_deleted(&shm, false);
-    assert!(
-        sidecar_denied(&shm),
-        "{:?}",
-        std::fs::symlink_metadata(&shm)
-    );
+    // Metadata still answers; the open the alias check makes is refused until the holder closes.
+    assert!(std::fs::symlink_metadata(&shm).is_ok());
+    let read = File::open(&shm).map(drop);
+    assert_eq!(read.map_err(|e| e.raw_os_error()), Err(Some(5)));
+    assert!(sidecar_denied(&shm));
     let closer = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(200));
         drop(held);
@@ -160,7 +160,8 @@ fn a_sidecar_being_deleted_is_waited_out_not_reported_denied() {
 
 #[test]
 fn a_sidecar_read_as_no_links_is_probed_again_but_the_database_is_not() {
-    let soon = || Instant::now() + Duration::from_millis(200);
+    // Generous, so a busy runner never reaches it before the second probe.
+    let soon = || Instant::now() + Duration::from_secs(10);
     let (shm, path) = ("index.sqlite-shm", Path::new("index.sqlite-shm"));
     let scripted = |reads: Vec<u64>| {
         let mut reads = reads.into_iter();
@@ -184,7 +185,8 @@ fn a_sidecar_read_as_no_links_is_probed_again_but_the_database_is_not() {
     assert_eq!(settled(DB, Path::new(DB), soon(), &mut zero).unwrap(), 0);
     assert_eq!(calls, 1);
     let start = Instant::now();
-    let stuck = settled(shm, path, soon(), || Ok(0)).unwrap_err();
+    let shortly = start + Duration::from_millis(200);
+    let stuck = settled(shm, path, shortly, || Ok(0)).unwrap_err();
     assert!(start.elapsed() >= Duration::from_millis(200));
     assert_eq!(kind(&*stuck), ErrorKind::WorkspaceBusy, "{stuck}");
 }
