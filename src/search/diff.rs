@@ -83,6 +83,9 @@ const FIELDS: [&[&str]; 4] = [
         "rectangleTopRightCornerRadius",
         "rectangleBottomLeftCornerRadius",
         "rectangleBottomRightCornerRadius",
+        "fillGeometry",
+        "strokeGeometry",
+        "vectorData",
     ],
     &[
         "componentPropAssignments",
@@ -138,13 +141,39 @@ fn raw_bytes(v: &kiwi_schema::Value, h: &mut Sha256) {
             h.update(b);
         }
         K::Byte(b) => h.update([*b]),
-        K::Array(a) => a.iter().for_each(|x| raw_bytes(x, h)),
+        K::Array(a) => {
+            h.update((a.len() as u64).to_le_bytes());
+            a.iter().for_each(|x| raw_bytes(x, h));
+        }
         K::Object(_, o) => {
             let mut keys: Vec<_> = o.iter().collect();
             keys.sort_by_key(|(k, _)| *k);
             keys.into_iter().for_each(|(_, x)| raw_bytes(x, h));
         }
         _ => {}
+    }
+}
+
+/// Blob indexes in geometry and vector networks: numbers local to one file, so the digest takes
+/// the bytes they name instead.
+const BLOB_KEYS: [&str; 2] = ["commandsBlob", "vectorNetworkBlob"];
+
+/// `v` without its blob indexes, pushed to `refs` in key order.
+fn unblob(v: &Json, refs: &mut Vec<u64>) -> Json {
+    match v {
+        Json::Array(a) => Json::Array(a.iter().map(|x| unblob(x, refs)).collect()),
+        Json::Object(o) => Json::Object(
+            o.iter()
+                .filter_map(|(k, x)| match BLOB_KEYS.contains(&k.as_str()) {
+                    true => {
+                        refs.push(x.as_u64().unwrap_or(u64::MAX));
+                        None
+                    }
+                    false => Some((k.clone(), unblob(x, refs))),
+                })
+                .collect(),
+        ),
+        _ => v.clone(),
     }
 }
 
@@ -253,6 +282,41 @@ pub(super) fn facets(
                     &owned
                 }
             };
+            let mut refs = Vec::new();
+            let unblobbed;
+            let json = match ["fillGeometry", "strokeGeometry", "vectorData"].contains(key) {
+                true => {
+                    unblobbed = unblob(json, &mut refs);
+                    &unblobbed
+                }
+                false => json,
+            };
+            // Each named blob is hashed in place, never converted: a visit per 64 bytes, and one
+            // needing more than `VISITS` makes the field unread.
+            let mut blobs = Vec::with_capacity(refs.len());
+            let mut large = false;
+            for i in refs {
+                let b = tree.blobs.get(i as usize).and_then(|b| b.get("bytes"));
+                let n = match b {
+                    Some(kiwi_schema::Value::Bytes(x)) => x.len(),
+                    Some(kiwi_schema::Value::Array(x)) => x.len(),
+                    _ => 0,
+                };
+                large |= n / 64 > VISITS;
+                if !bounds.charge(1 + if large { 0 } else { n / 64 }, 0) {
+                    return None;
+                }
+                blobs.push(b);
+            }
+            if large {
+                fields.push(Field {
+                    key,
+                    facet: facet as u8,
+                    digest: None,
+                    value: None,
+                });
+                continue;
+            }
             // Streamed into the digest; only the first `FIELD_VALUE` bytes are ever buffered.
             let mut w = Digesting {
                 hash: Sha256::new(),
@@ -263,8 +327,14 @@ pub(super) fn facets(
             w.hash.update([0]);
             serde_json::to_writer(&mut w, json).ok()?;
             w.hash.update((w.len as u64).to_le_bytes());
-            if let Value::Kiwi(v) = &value {
+            // Only bytes `to_json` dropped are added, so a stored value and an equal override
+            // digest alike.
+            if let (Value::Kiwi(v), true) = (&value, placeholder(json)) {
                 raw_bytes(v, &mut w.hash);
+            }
+            for b in blobs {
+                w.hash.update([b.is_some() as u8]);
+                b.into_iter().for_each(|b| raw_bytes(b, &mut w.hash));
             }
             let fits = w.len <= FIELD_VALUE && kept + w.len <= RECORD_VALUES;
             // Escaping can make the stream longer than the estimate; that work is charged too.
@@ -1201,12 +1271,29 @@ fn page_with(
             .unwrap()
             .push(node);
     }
-    let coverage = |s: &Side| json!({"stop": s.index.stop, "scannedRecords": s.index.records.len(), "complete": s.index.stop.is_none(), "selected": s.present});
+    // Links the index could not verify or read, and layers below hidden ones it never expanded,
+    // may hide changes; each side counts them.
+    let gaps = |s: &Side| {
+        (
+            s.index.unverified_links + s.index.unread_fields,
+            s.index.hidden_content,
+        )
+    };
+    let coverage = |s: &Side| json!({"stop": s.index.stop, "scannedRecords": s.index.records.len(), "complete": s.index.stop.is_none() && gaps(s) == (0, 0), "selected": s.present});
     let unread = pair.unread;
     let mut reasons = Vec::new();
     for (name, s) in [("old", &pair.old), ("new", &pair.new)] {
         if let Some(stop) = s.index.stop {
             reasons.push(json!({"reason": stop, "side": name}));
+        }
+        let (links, hidden) = gaps(s);
+        if links > 0 {
+            reasons.push(json!({"reason": "relation_unverified", "side": name, "count": links}));
+        }
+        if hidden > 0 {
+            reasons.push(
+                json!({"reason": "hidden_content_not_expanded", "side": name, "count": hidden}),
+            );
         }
     }
     if let Some(stop) = pair.stop {

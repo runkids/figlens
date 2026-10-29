@@ -501,3 +501,82 @@ fn edges_past_the_page_work_end_the_page_or_fail_the_first_change() {
             .all(|n| n["edges"].is_object())
     );
 }
+
+#[test]
+fn a_vector_path_is_compared_by_its_blob_bytes_not_its_blob_index() {
+    let file = |at: usize, bytes: Vec<u8>| {
+        let mut blobs = vec![obj(vec![("bytes", K::Bytes(vec![9]))]); 2];
+        blobs[at] = obj(vec![("bytes", K::Bytes(bytes))]);
+        let geometry = obj(vec![("commandsBlob", K::UInt(at as u32))]);
+        let K::Object(name, mut fields) = doc(vec![node(
+            10,
+            Some(1),
+            "VECTOR",
+            "Icon",
+            vec![("fillGeometry", K::Array(vec![geometry]))],
+        )]) else {
+            unreachable!()
+        };
+        fields.insert("blobs", K::Array(blobs));
+        K::Object(name, fields)
+    };
+    let n = &run(file(0, vec![1, 2]), file(0, vec![1, 3]))["frames"][0]["nodes"][0];
+    assert_eq!(n["facets"], json!(["appearance"]));
+    assert_eq!(
+        run(file(0, vec![1, 2]), file(1, vec![1, 2]))["frames"],
+        json!([])
+    );
+}
+
+#[test]
+fn an_image_override_equal_to_the_main_fill_is_no_change() {
+    let image = || {
+        (
+            "fillPaints",
+            K::Array(vec![obj(vec![
+                ("type", K::Enum("PaintType", "IMAGE")),
+                ("image", obj(vec![("hash", K::Bytes(vec![0, 255]))])),
+            ])]),
+        )
+    };
+    let file = |overrides: Vec<K<'static>>| {
+        doc(vec![
+            node(30, Some(1), "SYMBOL", "A", vec![]),
+            node(31, Some(30), "RECTANGLE", "Bg", vec![image()]),
+            node(10, Some(1), "FRAME", "Home", vec![]),
+            instance(
+                11,
+                10,
+                "Use",
+                30,
+                vec![("symbolOverrides", K::Array(overrides))],
+            ),
+        ])
+    };
+    let same = obj(vec![path(&[31]), image()]);
+    assert_eq!(run(file(vec![]), file(vec![same]))["frames"], json!([]));
+}
+
+#[test]
+fn content_left_unexpanded_below_hidden_layers_makes_coverage_partial() {
+    let hidden = |red| {
+        doc(vec![
+            node(30, Some(1), "SYMBOL", "A", vec![]),
+            node(31, Some(30), "RECTANGLE", "Bg", vec![fill(red)]),
+            node(10, Some(1), "FRAME", "Home", vec![]),
+            instance(11, 10, "Use", 30, vec![("visible", K::Bool(false))]),
+        ])
+    };
+    let coverage = &run(hidden(1.0), hidden(0.0))["coverage"];
+    assert_eq!(
+        (&coverage["complete"], &coverage["new"]["complete"]),
+        (&json!(false), &json!(false))
+    );
+    assert!(
+        coverage["reasons"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"reason": "hidden_content_not_expanded", "side": "new", "count": 1})),
+        "{coverage}"
+    );
+}
