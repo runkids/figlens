@@ -360,6 +360,15 @@ pub fn plugin_type(node: &Value) -> String {
     .to_owned()
 }
 
+/// Placement fields an expanded node keeps even when its child lacks them.
+const PLACEMENT: [&str; 5] = [
+    "stackChildPrimaryGrow",
+    "stackChildAlignSelf",
+    "stackPositioning",
+    "horizontalConstraint",
+    "verticalConstraint",
+];
+
 /// `a:b;c:d` key of an override's `guidPath`.
 fn path_key(entry: &Value) -> String {
     let guids = entry.get("guidPath").and_then(|p| p.get("guids"));
@@ -874,19 +883,33 @@ impl Expander<'_, '_> {
                 .or(swapped.map(Value::as_string))
                 .unwrap_or_else(|| child.get("name").map_or("", Value::as_string));
             if self.bounds.is_some() {
+                let source = o.swap.as_ref().filter(|s| tree.nodes.contains_key(*s));
                 let derived = ["fillGeometry", "strokeGeometry", "derivedTextData"]
                     .iter()
                     .filter_map(|f| d.props.get(*f));
+                let placement = PLACEMENT.iter().filter_map(|f| Some((*f, child.get(f)?)));
+                // A geometry-size entry copies the source size only where Figma derived no outline.
+                let copies = ["fillGeometry", "strokeGeometry"]
+                    .iter()
+                    .filter(|f| !d.props.contains_key(**f))
+                    .count();
+                let size = tree.nodes[source.unwrap_or(child_id)]
+                    .get("size")
+                    .filter(|_| copies > 0);
+                // Field names and enum members come from the file's schema, so every converted
+                // value and copied key is charged at its length.
                 let estimate = |left: &mut usize| {
-                    o.props
-                        .values()
-                        .chain(derived)
-                        .map(|v| json_bytes(v, left))
-                        .sum()
+                    sum_while(&o.props, left, |(f, v), left| {
+                        f.len() + 24 + json_bytes(v, left)
+                    }) + sum_while(derived, left, json_bytes)
+                        + sum_while(placement, left, |(f, v), left| {
+                            f.len() + 24 + kiwi_bytes(v, left)
+                        })
+                        + size.map_or(0, |s| copies * (48 + kiwi_bytes(s, left)))
                 };
                 // Kept per node: the `I{outer};{pk}` id twice (child list and node key), the
-                // name, the source and prototype source ids, and the parent's child-list key.
-                let source = o.swap.as_ref().filter(|s| tree.nodes.contains_key(*s));
+                // name and kind, the source and prototype source ids, and the parent's
+                // child-list key.
                 let prototype = o.prototype_source.as_ref().map(|s| &s.node_id);
                 let parent_key = if self.out.children.contains_key(parent) {
                     0
@@ -895,6 +918,7 @@ impl Expander<'_, '_> {
                 };
                 let kept = 2 * (outer.len() + pk.len() + 2)
                     + name.len()
+                    + enum_name(child, "type").map_or(1, str::len)
                     + source.unwrap_or(child_id).len()
                     + prototype.unwrap_or(child_id).len()
                     + parent_key;
@@ -954,16 +978,10 @@ impl Expander<'_, '_> {
                 .unwrap_or(child_id)
                 .clone();
             // Keep placement complete for semantic readers, including fields absent on the child.
-            let mut props: Map<String, Json> = [
-                "stackChildPrimaryGrow",
-                "stackChildAlignSelf",
-                "stackPositioning",
-                "horizontalConstraint",
-                "verticalConstraint",
-            ]
-            .into_iter()
-            .filter_map(|f| Some((f.to_owned(), to_json(child.get(f)?))))
-            .collect();
+            let mut props: Map<String, Json> = PLACEMENT
+                .into_iter()
+                .filter_map(|f| Some((f.to_owned(), to_json(child.get(f)?))))
+                .collect();
             props.extend(o.props.clone());
             // Figma re-derives the outlines of resized and re-texted nodes; without them the
             // source's outlines are scaled from the size they were drawn at.
@@ -1831,6 +1849,135 @@ mod tests {
                 ("page".into(), vec!["inst".into()]),
                 ("1:1".into(), vec!["c".into()]),
             ]),
+            blobs: Vec::new(),
+        };
+        assert_eq!(
+            bounded(&tree, "page", 1 << 20, 15_000_000).1.stop,
+            Some(Stop::Bytes)
+        );
+        assert_eq!(bounded(&tree, "page", 1 << 20, 64 << 20).1.stop, None);
+    }
+
+    #[test]
+    fn a_bounded_expansion_charges_placement_and_size_conversions() {
+        // Schema enums and field shapes are file data: each layer converts a 10 kB placement
+        // enum and copies a size carrying a 10 kB field into both geometry-size entries.
+        let long: &'static str = Box::leak("e".repeat(10_000).into_boxed_str());
+        let inst = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            ("symbolData", obj(vec![("symbolID", guid(1, 1))])),
+        ]);
+        let layer = obj(vec![
+            ("type", Value::Enum("NodeType", "FRAME")),
+            ("stackChildAlignSelf", Value::Enum("Align", long)),
+            (
+                "size",
+                obj(vec![("x", Value::Float(1.0)), (long, Value::Bool(true))]),
+            ),
+        ]);
+        let (page, main) = (obj(vec![]), obj(vec![]));
+        let kids: Vec<String> = (0..1000).map(|i| format!("k{i}")).collect();
+        let mut nodes: HashMap<String, &Value> = HashMap::from([
+            ("page".into(), &page),
+            ("inst".into(), &inst),
+            ("1:1".into(), &main),
+        ]);
+        nodes.extend(kids.iter().map(|k| (k.clone(), &layer)));
+        let tree = Tree {
+            nodes,
+            children: HashMap::from([("page".into(), vec!["inst".into()]), ("1:1".into(), kids)]),
+            blobs: Vec::new(),
+        };
+        assert_eq!(
+            bounded(&tree, "page", 1 << 20, 15_000_000).1.stop,
+            Some(Stop::Bytes)
+        );
+        assert_eq!(bounded(&tree, "page", 1 << 20, 64 << 20).1.stop, None);
+    }
+
+    #[test]
+    fn a_bounded_expansion_charges_no_size_copy_where_both_outlines_are_derived() {
+        // 1,000 layers with a 10 kB-field size, all with derived fill and stroke outlines: no
+        // geometry-size entry copies the size, so only the derived data is charged.
+        let long: &'static str = Box::leak("e".repeat(10_000).into_boxed_str());
+        let derived = (0..1000)
+            .map(|i| {
+                obj(vec![
+                    (
+                        "guidPath",
+                        obj(vec![("guids", Value::Array(vec![guid(5, i)]))]),
+                    ),
+                    ("fillGeometry", Value::Array(vec![])),
+                    ("strokeGeometry", Value::Array(vec![])),
+                ])
+            })
+            .collect();
+        let inst = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            ("symbolData", obj(vec![("symbolID", guid(1, 1))])),
+            ("derivedSymbolData", Value::Array(derived)),
+        ]);
+        let layer = obj(vec![
+            ("type", Value::Enum("NodeType", "FRAME")),
+            (
+                "size",
+                obj(vec![("x", Value::Float(1.0)), (long, Value::Bool(true))]),
+            ),
+        ]);
+        let (page, main) = (obj(vec![]), obj(vec![]));
+        let kids: Vec<String> = (0..1000).map(|i| format!("5:{i}")).collect();
+        let mut nodes: HashMap<String, &Value> = HashMap::from([
+            ("page".into(), &page),
+            ("inst".into(), &inst),
+            ("1:1".into(), &main),
+        ]);
+        nodes.extend(kids.iter().map(|k| (k.clone(), &layer)));
+        let tree = Tree {
+            nodes,
+            children: HashMap::from([("page".into(), vec!["inst".into()]), ("1:1".into(), kids)]),
+            blobs: Vec::new(),
+        };
+        // Two charged size copies per layer alone would pass 20 MB.
+        assert_eq!(bounded(&tree, "page", 1 << 20, 4_000_000).1.stop, None);
+    }
+
+    #[test]
+    fn a_bounded_expansion_charges_the_field_names_an_expanded_node_copies() {
+        // 1,000 overrides of a 10 kB field, each copied with its name into its expanded layer.
+        let field: &'static str = Box::leak("f".repeat(10_000).into_boxed_str());
+        let overrides = (0..1000)
+            .map(|i| {
+                obj(vec![
+                    (
+                        "guidPath",
+                        obj(vec![("guids", Value::Array(vec![guid(5, i)]))]),
+                    ),
+                    (field, Value::Bool(true)),
+                ])
+            })
+            .collect();
+        let inst = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            (
+                "symbolData",
+                obj(vec![
+                    ("symbolID", guid(1, 1)),
+                    ("symbolOverrides", Value::Array(overrides)),
+                ]),
+            ),
+        ]);
+        let layer = obj(vec![("type", Value::Enum("NodeType", "FRAME"))]);
+        let (page, main) = (obj(vec![]), obj(vec![]));
+        let kids: Vec<String> = (0..1000).map(|i| format!("5:{i}")).collect();
+        let mut nodes: HashMap<String, &Value> = HashMap::from([
+            ("page".into(), &page),
+            ("inst".into(), &inst),
+            ("1:1".into(), &main),
+        ]);
+        nodes.extend(kids.iter().map(|k| (k.clone(), &layer)));
+        let tree = Tree {
+            nodes,
+            children: HashMap::from([("page".into(), vec!["inst".into()]), ("1:1".into(), kids)]),
             blobs: Vec::new(),
         };
         assert_eq!(
