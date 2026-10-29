@@ -583,7 +583,14 @@ impl Storage {
                 self.defaults.under(r, "remembered")
             });
             let current = home.state.path.join("workspaces").join(id).join(DB);
-            if !same_dir(&home.state.path, &explicit.join("state")) && current.exists() {
+            // Only a database known to be absent lets another root take over; an access error
+            // must not read as absent.
+            let exists = match std::fs::symlink_metadata(&current) {
+                Ok(_) => true,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                Err(e) => return Err(storage_error(&current, e)),
+            };
+            if exists && !same_dir(&home.state.path, &explicit.join("state")) {
                 return Err(fail(
                     ErrorKind::InvalidArguments,
                     format!(

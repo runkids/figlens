@@ -306,6 +306,31 @@ fn another_storage_for_a_workspace_with_a_database_is_refused() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn an_unreadable_current_storage_does_not_let_another_root_take_over() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let a = f.fig("a.fig");
+    let id = id_of(&prepare(&f.storage, &a, None).unwrap());
+    let (custom_root, custom) = f.custom("custom");
+    let closed = f.storage.defaults.state.path.join("workspaces");
+    std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let visible = std::fs::symlink_metadata(closed.join(&id).join(DB)).is_ok();
+    let error = prepare(&custom, &a, None).unwrap_err();
+    std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // A visible database is a conflict (root, or a mount that ignores the mode); a hidden one
+    // is an access error. Neither may let the other root take over.
+    let expected = if visible {
+        ErrorKind::InvalidArguments
+    } else {
+        ErrorKind::PermissionDenied
+    };
+    assert_eq!(kind(&*error), expected, "{error}");
+    assert!(!custom_root.exists());
+    assert!(!custom.locations().join(format!("{id}.json")).exists());
+}
+
 #[test]
 fn an_unavailable_remembered_storage_is_an_error_not_a_second_database() {
     let f = Fixture::new();
