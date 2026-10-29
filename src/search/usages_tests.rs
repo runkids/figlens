@@ -1071,3 +1071,66 @@ fn an_unused_local_variable_is_a_known_resource_with_no_uses() {
         (Some(0), &json!("Unused"))
     );
 }
+
+#[test]
+fn vector_region_fill_and_gradient_stop_variables_are_bound() {
+    let region = obj(vec![(
+        "styleOverrideTable",
+        K::Array(vec![obj(vec![
+            ("styleID", K::UInt(1)),
+            (
+                "fillPaints",
+                K::Array(vec![
+                    obj(vec![
+                        ("type", K::Enum("PaintType", "SOLID")),
+                        ("colorVar", alias(60)),
+                    ]),
+                    obj(vec![
+                        ("type", K::Enum("PaintType", "GRADIENT_LINEAR")),
+                        (
+                            "stopsVar",
+                            K::Array(vec![obj(vec![("colorVar", alias(61))])]),
+                        ),
+                    ]),
+                ]),
+            ),
+        ])]),
+    )]);
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(4, Some(1), "VECTOR", "Shape", vec![("vectorData", region)]),
+            node(60, Some(1), "VARIABLE", "Ink", vec![]),
+            node(61, Some(1), "VARIABLE", "Stop", vec![]),
+        ]),
+    )]);
+    let index = build(&Tree::new(&message), "0:0", bounds(WORK));
+    let conn = stored(&index);
+    let src = source();
+    let served = || Served {
+        source: &src,
+        gen_id: 1,
+    };
+    for variable in ["VariableID:0:60", "VariableID:0:61"] {
+        let r = req(variable);
+        let q = r.validate().unwrap();
+        let whole = query(&mut Whole(&index), &q, &r, served()).unwrap();
+        let mut disk = Stored {
+            conn: &conn,
+            gen_id: 1,
+            index: crate::search::store::load(&conn, 1, &[], &mut 0).unwrap(),
+            spent: 0,
+        };
+        assert_eq!(
+            (ids(&whole), &whole["coverage"]["complete"]),
+            (vec!["0:4".to_owned()], &json!(true))
+        );
+        assert_eq!(
+            whole["results"],
+            query(&mut disk, &q, &r, served()).unwrap()["results"]
+        );
+        assert_eq!(whole["results"][0]["evidence"], "vectorRegionFills");
+    }
+}

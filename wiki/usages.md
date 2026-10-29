@@ -11,7 +11,7 @@ Edges are extracted during the search build (`search::build` → `usages::extrac
 | `contains` | record `parent` | parent node id | resolved |
 | `instance_of` | stored `symbolData` (basis `recorded`) or the expansion's definition/swap (`resolved`, evidence `definition`/`swap`) | main component id | `resolved`, `missing` (absent), `unsupported` (not a COMPONENT) |
 | `variant_of` | COMPONENT whose parent is a COMPONENT_SET | set id | resolved |
-| `binds_variable` | `rest::bound_variables` over effective fields | `VariableID:…` | local `resolved`/`missing`, library `external` |
+| `binds_variable` | `rest::bound_variables` over effective fields, plus vector-region fills (`vectorRegionFills`) | `VariableID:…` | local `resolved`/`missing`, library `external` |
 | `uses_style` | `styleIdFor*` | node id, or `StyleKey:<key>` for an assetRef | `resolved`/`missing`, `external` |
 | `uses_image` | IMAGE fill/stroke hash, and per-range text / per-region vector fills (`styleOverrideTable`) | `image:<hash>` | `recorded` |
 | `prototype_target` | `prototype::node` recorded actions | destination node | `resolved`, `missing`, `unsupported`, `unresolved` |

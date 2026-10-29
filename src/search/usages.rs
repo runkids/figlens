@@ -177,7 +177,24 @@ pub(crate) fn extract(
         return Some(out);
     };
     let fields = effective(tree, id, e, bounds, unread)?;
-    for (field, aliases) in crate::rest::bound_variables(&fields) {
+    // REST lists no vector-region fills; usages reads their bindings like top-level fills.
+    let regions: Json = fields
+        .get("vectorData")
+        .and_then(|v| v["styleOverrideTable"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s["fillPaints"].as_array())
+        .flatten()
+        .cloned()
+        .collect();
+    let mut bound = crate::rest::bound_variables(&fields);
+    if let Some(list) =
+        crate::rest::bound_variables(&Map::from_iter([("fillPaints".into(), regions)]))
+            .remove("fills")
+    {
+        bound.insert("vectorRegionFills".into(), list);
+    }
+    for (field, aliases) in bound {
         let mut ids = Vec::new();
         crate::variables::aliases(&aliases, &mut ids);
         for variable in ids {
