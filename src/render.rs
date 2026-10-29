@@ -386,7 +386,7 @@ pub(crate) fn diagnostics(tree: &Tree, n: &Json) -> Vec<Json> {
                             "imageTile",
                             format!("{field}.imageScaleMode"),
                             "approximate",
-                            "TILE is rendered as FILL",
+                            "TILE is drawn unrotated and unverified against Figma exports",
                         );
                     }
                     for adjustment in ["contrast", "temperature", "tint", "highlights", "shadows"] {
@@ -1226,9 +1226,26 @@ impl<'t, 'a> Svg<'t, 'a> {
                     };
                     // A pattern keeps the painted bounds to the shape: an <image> clipped to it keeps
                     // the whole image's bounds, and resvg then cuts it off under an effect filter.
-                    let ((w, h), t, aspect) = match p["imageScaleMode"].as_str() {
+                    let mode = p["imageScaleMode"].as_str();
+                    // Tiles repeat from the node's origin at the image's natural size times `scale`;
+                    // an unknown size falls back to FILL.
+                    let tile = (mode == Some("TILE"))
+                        .then(|| {
+                            let s = p["scale"].as_f64().unwrap_or(1.0);
+                            match (
+                                p["originalImageWidth"].as_f64(),
+                                p["originalImageHeight"].as_f64(),
+                            ) {
+                                (Some(w), Some(h)) => Some((w, h)),
+                                _ => image_size(&bytes),
+                            }
+                            .map(|(w, h)| (w * s, h * s))
+                            .filter(|(w, h)| w.is_finite() && h.is_finite() && *w > 0.0 && *h > 0.0)
+                        })
+                        .flatten();
+                    let ((w, h), t, aspect) = match (mode, tile) {
                         // shortcut: STRETCH repeats past the image's edges where Figma leaves them empty; only matters for zoomed-out crops.
-                        Some("STRETCH") => (
+                        (Some("STRETCH"), _) => (
                             (1.0, 1.0),
                             m * Mat {
                                 a: size.x,
@@ -1240,8 +1257,9 @@ impl<'t, 'a> Svg<'t, 'a> {
                             } * kiwi_mat(&p["transform"]).inverse(),
                             "none",
                         ),
-                        // shortcut: TILE is drawn as FILL; tile with the image's natural size when a design needs it.
-                        mode => (
+                        // shortcut: TILE ignores the paint's rotation; rotate the pattern when a design needs it.
+                        (_, Some(tile)) => (tile, m, "none"),
+                        (mode, None) => (
                             (size.x, size.y),
                             m,
                             if mode == Some("FIT") {
@@ -1252,7 +1270,8 @@ impl<'t, 'a> Svg<'t, 'a> {
                         ),
                     };
                     // Device pixels the image covers along each of its axes.
-                    let len = |x: f64, y: f64| x.hypot(y) * self.scale;
+                    let scale = self.scale;
+                    let len = |x: f64, y: f64| x.hypot(y) * scale;
                     let covered = match p["imageScaleMode"].as_str() {
                         Some("STRETCH") => Some((len(t.a, t.b), len(t.c, t.d))),
                         _ => image_size(&bytes).map(|(iw, ih)| {
@@ -1288,6 +1307,19 @@ impl<'t, 'a> Svg<'t, 'a> {
                         }
                     } else {
                         (w, h, 0.0, 0.0, aspect)
+                    };
+                    // resvg allocates a whole pattern tile in device pixels: a tile over MAX_TILE_PX² is
+                    // cut to the node's box, bounded like FILL's, so a crafted `scale` cannot allocate a huge one.
+                    // shortcut: that cut shifts the period under strokes outside the box; only tiles
+                    // over MAX_TILE_PX² get there.
+                    let (w, h) = match tile {
+                        Some(_)
+                            if w * len(t.a, t.b) * h * len(t.c, t.d)
+                                > MAX_TILE_PX * MAX_TILE_PX =>
+                        {
+                            (w.min(size.x), h.min(size.y))
+                        }
+                        _ => (w, h),
                     };
                     let adjust = self.image_filter(&p["paintFilter"]);
                     let pattern = self.id("p");
@@ -1773,6 +1805,9 @@ impl<'t, 'a> Svg<'t, 'a> {
 const BLUR_BUDGET: usize = 32 << 20;
 /// Background blurs one export may draw.
 const MAX_BLURS: usize = 64;
+/// A TILE image fill keeps its whole tile in the pattern up to MAX_TILE_PX² device pixels.
+const MAX_TILE_PX: f64 = 2048.0;
+
 /// Mirrored backdrop tiles drawn past each side of the content's edge for a background blur.
 const MAX_TILES: f64 = 2.0;
 /// Layers one export may cut background blur outlines from.
@@ -2657,6 +2692,110 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn tile_fills_repeat_the_image_at_its_natural_size_from_the_node_origin() {
+        let tree = Tree {
+            nodes: Default::default(),
+            children: Default::default(),
+            blobs: Vec::new(),
+        };
+        // 20x10: left half red, right half blue.
+        let mut tile = resvg::tiny_skia::Pixmap::new(20, 10).unwrap();
+        for (i, pixel) in tile.data_mut().chunks_exact_mut(4).enumerate() {
+            pixel.copy_from_slice(if i % 20 < 10 {
+                &[255, 0, 0, 255]
+            } else {
+                &[0, 0, 255, 255]
+            });
+        }
+        let bytes = crate::export::encode(&tile, crate::export::Format::Png, 95, None)
+            .unwrap()
+            .bytes;
+        let images = |_: &str| Some(bytes.clone());
+        let (red, blue) = (true, false);
+        // (paint fields, child x offset in the clipping frame, [(frame x, red?)])
+        let cases = [
+            (
+                serde_json::json!({}),
+                0.0,
+                [(5.0, red), (15.0, blue), (25.0, red), (35.0, blue)],
+            ),
+            (
+                serde_json::json!({"scale": 0.5}),
+                0.0,
+                [(2.0, red), (7.0, blue), (12.0, red), (17.0, blue)],
+            ),
+            (
+                serde_json::json!({"originalImageWidth": 40, "originalImageHeight": 20}),
+                0.0,
+                [(15.0, red), (25.0, blue), (45.0, red), (5.0, red)],
+            ),
+            (
+                serde_json::json!({}),
+                -15.0,
+                [(2.0, blue), (7.0, red), (12.0, red), (17.0, blue)],
+            ),
+            // A tile larger than the node keeps its period.
+            (
+                serde_json::json!({"scale": 10}),
+                0.0,
+                [(5.0, red), (25.0, red), (45.0, red), (49.0, red)],
+            ),
+            // No usable tile size falls back to FILL: 80 wide, so red then blue at the middle.
+            (
+                serde_json::json!({"scale": 0}),
+                0.0,
+                [(5.0, red), (35.0, red), (45.0, blue), (49.0, blue)],
+            ),
+        ];
+        for (fields, offset, probes) in cases {
+            let mut paint = serde_json::json!({ "type": "IMAGE", "imageScaleMode": "TILE",
+                "image": { "hash": "tile" } });
+            paint
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            let frame = serde_json::json!({
+                "id": "frame", "type": "FRAME", "clipsContent": true,
+                "_r": { "size": { "x": 50, "y": 10 }, "m": [1,0,0,1,0,0] },
+                "children": [{ "id": "image", "type": "RECTANGLE", "_r": {
+                    "size": { "x": 80, "y": 10 }, "m": [1,0,0,1,offset,0],
+                    "fillPaints": [paint.clone()] }}]
+            });
+            for raster in [false, true] {
+                for scale in [1.0, 3.0] {
+                    let mut svg = Svg::new(&tree, &images);
+                    if raster {
+                        svg = svg.for_raster();
+                    }
+                    let pixels =
+                        pixmap(&svg.document(&frame, [0.0, 0.0, 50.0, 10.0], scale)).unwrap();
+                    for (x, is_red) in probes {
+                        let pixel = pixels
+                            .pixel((x * scale) as u32, (5.0 * scale) as u32)
+                            .unwrap();
+                        assert!(
+                            pixel.alpha() > 250
+                                && (pixel.red() > 250) == is_red
+                                && (pixel.blue() > 250) != is_red,
+                            "{paint} offset {offset} x {x}, scale {scale}, raster {raster}: {pixel:?}"
+                        );
+                    }
+                }
+            }
+        }
+        // Past MAX_TILE_PX² the pattern is cut to the node instead of holding the whole tile.
+        let node = serde_json::json!({ "id": "image", "type": "RECTANGLE", "_r": {
+            "size": { "x": 80, "y": 10 }, "m": [1,0,0,1,0,0],
+            "fillPaints": [{ "type": "IMAGE", "imageScaleMode": "TILE", "scale": 1000,
+                "image": { "hash": "tile" } }] }});
+        let svg = Svg::new(&tree, &images).document(&node, [0.0, 0.0, 80.0, 10.0], 1.0);
+        assert!(
+            svg.contains("width=\"80\" height=\"10\" patternTransform"),
+            "{svg}"
+        );
     }
 
     #[test]
