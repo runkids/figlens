@@ -1298,8 +1298,9 @@ impl<'t, 'a> Svg<'t, 'a> {
                             .filter(|(w, h)| w.is_finite() && h.is_finite() && *w > 0.0 && *h > 0.0)
                         })
                         .flatten();
+                    // STRETCH's paint transform maps the node's 0..1 box to image coordinates.
+                    let uv = kiwi_mat(&p["transform"]);
                     let ((w, h), t, aspect) = match (mode, tile) {
-                        // shortcut: STRETCH repeats past the image's edges where Figma leaves them empty; only matters for zoomed-out crops.
                         (Some("STRETCH"), _) => (
                             (1.0, 1.0),
                             m * Mat {
@@ -1309,7 +1310,7 @@ impl<'t, 'a> Svg<'t, 'a> {
                                 d: size.y,
                                 tx: 0.0,
                                 ty: 0.0,
-                            } * kiwi_mat(&p["transform"]).inverse(),
+                            } * uv.inverse(),
                             "none",
                         ),
                         // shortcut: TILE ignores the paint's rotation; rotate the pattern when a design needs it.
@@ -1376,11 +1377,44 @@ impl<'t, 'a> Svg<'t, 'a> {
                         }
                         _ => (w, h),
                     };
+                    // STRETCH draws the image once: the tile spans every image coordinate the
+                    // node's box samples, with the image at 0..1 and the rest empty, so a transform
+                    // past the image's edges leaves them empty instead of repeating it. A tile over
+                    // 4x the image's or node's device area (a transform shifted far away, or a crop of a very different shape) spans only
+                    // what the node samples, which costs about the node's area and still never repeats.
+                    // shortcut: strokes outside the box can still reach the next tile.
+                    let (px, py, w, h) = match mode {
+                        Some("STRETCH") => {
+                            let unit = Vec2 { x: 1.0, y: 1.0 };
+                            let (o, b) = (uv.origin(unit), uv.bbox(unit));
+                            let (x0, y0) = (o.x.min(0.0), o.y.min(0.0));
+                            let (x1, y1) = ((o.x + b.x).max(1.0), (o.y + b.y).max(1.0));
+                            let one = len(t.a, t.b) * len(t.c, t.d);
+                            let node =
+                                len(m.a * size.x, m.b * size.x) * len(m.c * size.y, m.d * size.y);
+                            let area = (x1 - x0) * (y1 - y0) * one;
+                            if !area.is_finite() {
+                                (0.0, 0.0, w, h)
+                            } else if area <= 4.0 * one.max(node) {
+                                (x0, y0, x1 - x0, y1 - y0)
+                            } else {
+                                (o.x, o.y, b.x, b.y)
+                            }
+                        }
+                        _ => (0.0, 0.0, w, h),
+                    };
+                    // Pattern content is placed from the tile's corner, so the image moves back to 0.
+                    let origin = if px != 0.0 || py != 0.0 {
+                        format!(" x=\"{}\" y=\"{}\"", num(px), num(py))
+                    } else {
+                        String::new()
+                    };
+                    let (x, y) = (x - px, y - py);
                     let adjust = self.image_filter(&p["paintFilter"]);
                     let pattern = self.id("p");
                     let _ = write!(
                         self.defs,
-                        "<pattern id=\"{pattern}\" patternUnits=\"userSpaceOnUse\" width=\"{w}\" height=\"{h}\" patternTransform=\"{}\"><image x=\"{x}\" y=\"{y}\" width=\"{iw}\" height=\"{ih}\" preserveAspectRatio=\"{aspect}\" href=\"data:{};base64,{}\"/></pattern>",
+                        "<pattern id=\"{pattern}\" patternUnits=\"userSpaceOnUse\"{origin} width=\"{w}\" height=\"{h}\" patternTransform=\"{}\"><image x=\"{x}\" y=\"{y}\" width=\"{iw}\" height=\"{ih}\" preserveAspectRatio=\"{aspect}\" href=\"data:{};base64,{}\"/></pattern>",
                         matrix(t),
                         media_type(&bytes),
                         base64(&bytes),
@@ -2813,6 +2847,121 @@ mod tests {
                                 && pixel.green().abs_diff(expected[1]) < 5
                                 && pixel.blue().abs_diff(expected[2]) < 5,
                             "sprite slice {index}, scale {scale}, raster {raster}, format {format:?}: {pixel:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stretch_fills_leave_the_area_past_the_image_empty() {
+        let tree = Tree {
+            nodes: Default::default(),
+            children: Default::default(),
+            blobs: Vec::new(),
+        };
+        // 10x20: top half red, bottom half blue.
+        let mut image = resvg::tiny_skia::Pixmap::new(10, 20).unwrap();
+        for (i, pixel) in image.data_mut().chunks_exact_mut(4).enumerate() {
+            pixel.copy_from_slice(if i / 10 < 10 {
+                &[255, 0, 0, 255]
+            } else {
+                &[0, 0, 255, 255]
+            });
+        }
+        let bytes = crate::export::encode(&image, crate::export::Format::Png, 95, None)
+            .unwrap()
+            .bytes;
+        let images = |_: &str| Some(bytes.clone());
+        let stretch = |m00: f64, m02: f64, m11: f64, m12: f64| {
+            serde_json::json!({ "type": "IMAGE", "imageScaleMode": "STRETCH",
+                "image": { "hash": "stretch" },
+                "transform": { "m00": m00, "m01": 0, "m02": m02, "m10": 0, "m11": m11, "m12": m12 } })
+        };
+        let (empty, red, blue) = (None, Some([255, 0, 0]), Some([0, 0, 255]));
+        // (paint, child y offset in the 20 px wide clipping frame, frame height, [(x, y, expected)])
+        let cases = [
+            // v -0.25..1.25 over the 30 px node: empty 0..5, red 5..15, blue 15..25, empty 25..30.
+            (
+                stretch(1.0, 0.0, 1.5, -0.25),
+                0.0,
+                30.0,
+                [
+                    (10.0, 2.0, empty),
+                    (10.0, 10.0, red),
+                    (10.0, 20.0, blue),
+                    (10.0, 28.0, empty),
+                ],
+            ),
+            (
+                stretch(1.0, 0.0, 1.5, -0.25),
+                -10.0,
+                20.0,
+                [
+                    (10.0, 2.0, red),
+                    (10.0, 8.0, blue),
+                    (10.0, 12.0, blue),
+                    (10.0, 18.0, empty),
+                ],
+            ),
+            // u -0.25..1.25 over the 20 px node: empty columns 0..3.3 and 16.7..20.
+            (
+                stretch(1.5, -0.25, 1.0, 0.0),
+                0.0,
+                30.0,
+                [
+                    (1.0, 10.0, empty),
+                    (10.0, 10.0, red),
+                    (10.0, 20.0, blue),
+                    (19.0, 20.0, empty),
+                ],
+            ),
+            // Shifted far right of the image: the node samples none of it.
+            (
+                stretch(1.0, 4.0, 1.0, 0.0),
+                0.0,
+                30.0,
+                [
+                    (1.0, 2.0, empty),
+                    (10.0, 10.0, empty),
+                    (10.0, 20.0, empty),
+                    (19.0, 28.0, empty),
+                ],
+            ),
+        ];
+        for (paint, offset, height, probes) in cases {
+            let frame = serde_json::json!({
+                "id": "frame", "type": "FRAME", "clipsContent": true,
+                "_r": { "size": { "x": 20, "y": height }, "m": [1,0,0,1,0,0] },
+                "children": [{ "id": "image", "type": "RECTANGLE", "_r": {
+                    "size": { "x": 20, "y": 30 }, "m": [1,0,0,1,0,offset],
+                    "fillPaints": [paint.clone()] }}]
+            });
+            for raster in [false, true] {
+                for scale in [1.0, 3.0] {
+                    let mut svg = Svg::new(&tree, &images);
+                    if raster {
+                        svg = svg.for_raster();
+                    }
+                    let pixels =
+                        pixmap(&svg.document(&frame, [0.0, 0.0, 20.0, height], scale)).unwrap();
+                    for (x, y, expected) in probes {
+                        let pixel = pixels
+                            .pixel((x * scale) as u32, (y * scale) as u32)
+                            .unwrap();
+                        let ok = match expected {
+                            None => pixel.alpha() < 5,
+                            Some([r, g, b]) => {
+                                pixel.alpha() > 250
+                                    && pixel.red().abs_diff(r) < 5
+                                    && pixel.green().abs_diff(g) < 5
+                                    && pixel.blue().abs_diff(b) < 5
+                            }
+                        };
+                        assert!(
+                            ok,
+                            "paint {paint}, offset {offset}, ({x}, {y}), scale {scale}, raster {raster}: {pixel:?}"
                         );
                     }
                 }

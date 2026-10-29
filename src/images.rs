@@ -35,7 +35,7 @@ pub fn inspect(fig: &Path, document: &Value) -> Result<Value, Box<dyn Error>> {
     Ok(json!({
         "items": items, "truncated": truncated,
         "visualAssessment": "not performed",
-        "note": "sourceRect is a rectangle in the original image's pixel coordinates, before masks, effects and ancestor clipping; not rendered-image dimensions or a blur diagnosis. FIT uses the whole source with letterboxing inside nodeSize.",
+        "note": "sourceRect is a rectangle in the original image's pixel coordinates, before masks, effects and ancestor clipping; not rendered-image dimensions or a blur diagnosis. FIT uses the whole source with letterboxing inside nodeSize. A STRETCH crop past the source is clamped to it, and outside gives the source pixels it reaches past each side, which figlens draws empty.",
     }))
 }
 
@@ -210,19 +210,27 @@ fn source_rect(item: &Value) -> (Value, Option<&'static str>) {
             if b != 0.0 || c != 0.0 || a == 0.0 || d == 0.0 {
                 return unknown("rotated, skewed or singular image transform");
             }
-            if x.min(x + a) < -1e-6
-                || x.max(x + a) > 1.0 + 1e-6
-                || y.min(y + d) < -1e-6
-                || y.max(y + d) > 1.0 + 1e-6
-            {
-                return unknown("image transform extends outside the source");
+            let (x0, x1, y0, y1) = (x.min(x + a), x.max(x + a), y.min(y + d), y.max(y + d));
+            let (cx0, cx1, cy0, cy1) = (x0.max(0.0), x1.min(1.0), y0.max(0.0), y1.min(1.0));
+            if cx0 >= cx1 || cy0 >= cy1 {
+                return unknown("image transform samples none of the source");
             }
-            rect(
-                x.min(x + a) * iw,
-                y.min(y + d) * ih,
-                a.abs() * iw,
-                d.abs() * ih,
-            )
+            let (mut found, reason) = rect(cx0 * iw, cy0 * ih, (cx1 - cx0) * iw, (cy1 - cy0) * ih);
+            // The node shows nothing past the source; say how far the transform reaches there.
+            let outside: serde_json::Map<String, Value> = [
+                ("left", -x0, iw),
+                ("top", -y0, ih),
+                ("right", x1 - 1.0, iw),
+                ("bottom", y1 - 1.0, ih),
+            ]
+            .into_iter()
+            .filter(|(_, by, _)| *by > 1e-6)
+            .map(|(side, by, px)| (side.to_owned(), json!(by * px)))
+            .collect();
+            if !outside.is_empty() {
+                found["outside"] = outside.into();
+            }
+            (found, reason)
         }
         _ => unknown("unsupported scale mode"),
     }
@@ -413,8 +421,18 @@ mod tests {
             source_rect(&item).0,
             json!({"coordinateSpace":"source-image-pixels","x":100.0,"y":0.0,"width":100.0,"height":100.0})
         );
+        item["imageTransform"] = json!([[1, 0, 0.125], [0, 1.25, -0.25]]);
+        assert_eq!(
+            source_rect(&item).0,
+            json!({"coordinateSpace":"source-image-pixels","x":50.0,"y":0.0,"width":350.0,"height":200.0,
+                "outside":{"top":50.0,"right":50.0}})
+        );
+        item["imageTransform"] = json!([[1, 0, 1.5], [0, 1, 0]]);
+        assert_eq!(
+            source_rect(&item).1,
+            Some("image transform samples none of the source")
+        );
         for matrix in [
-            json!([[1, 0, 0.1], [0, 1, 0]]),
             json!([[0.5, 0.1, 0], [0, 0.5, 0]]),
             json!([[0, 0, 0], [0, 0.5, 0]]),
         ] {
