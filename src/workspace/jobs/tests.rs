@@ -260,8 +260,7 @@ fn a_failed_run_reaps_its_child_before_it_records_and_cleans_up() {
         &job_id,
         "me",
         1,
-        Some(child),
-        held,
+        (Some(child), held, None),
         "spawn failed".into(),
     );
     assert_eq!(error.to_string(), "spawn failed");
@@ -295,7 +294,14 @@ fn a_run_that_cannot_record_its_end_reads_interrupted_and_retries_while_its_owne
     let held = claim(&dir, &job_id, 1).unwrap();
     // The end of the run meets storage that cannot be written.
     let mut read_only = open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-    let _ = abandon(&mut read_only, &job_id, &me, 1, None, held, "lost".into());
+    let _ = abandon(
+        &mut read_only,
+        &job_id,
+        &me,
+        1,
+        (None, held, None),
+        "lost".into(),
+    );
     drop(read_only);
     assert_eq!(state(&conn, &job_id), "running");
     let report = report_job(&conn, &dir, &job_id).unwrap().unwrap();
@@ -329,5 +335,158 @@ fn an_owner_file_that_cannot_be_opened_counts_as_alive() {
     assert!(
         !alive(dir, "nobody"),
         "a missing owner file is a dead owner"
+    );
+}
+
+/// Submits `scope` of the first source as this process's own queued job.
+fn queued(storage: &Storage, select: &Select, scope: &str) -> String {
+    let (_, mut ws) = opened(storage, select, true).unwrap();
+    let source = sources(&ws.conn)[0].clone();
+    submit(&mut ws, "refresh", &source, scope, None)
+        .unwrap()
+        .job_id
+}
+
+#[test]
+fn jobs_submitted_in_one_millisecond_build_in_submission_order() {
+    let d = TestDir::new();
+    let (_, _, dir) = workspace(&d, 1);
+    let me = owner(&dir).unwrap();
+    let conn = connection(&dir);
+    let source = sources(&conn)[0].clone();
+    let first = job(&conn, &source, "0:0", "queued", &me, 1);
+    let second = job(&conn, &source, "1:0", "queued", &me, 1);
+    // The later job gets the smaller id, so an id order would run it first.
+    let ws: String = first.split('.').next().unwrap().to_owned();
+    conn.execute(
+        "UPDATE jobs SET job_id = ?2 WHERE job_id = ?1",
+        params![second, format!("{ws}.0")],
+    )
+    .unwrap();
+    assert_eq!(queue_head(&conn, &dir).unwrap(), Some(first));
+}
+
+#[test]
+fn a_run_that_fails_before_it_can_write_leaves_its_job_interrupted() {
+    let d = TestDir::new();
+    let (storage, select, dir) = workspace(&d, 1);
+    let job_id = queued(&storage, &select, "0:0");
+    let conn = connection(&dir);
+    assert_eq!(
+        report_job(&conn, &dir, &job_id).unwrap().unwrap()["state"],
+        "queued"
+    );
+    // What `run` does first; an error before it writes anything then drops the claim.
+    drop(take_pending(&job_id));
+    let report = report_job(&conn, &dir, &job_id).unwrap().unwrap();
+    assert_eq!(report["state"], "interrupted", "{report}");
+    assert_eq!(queue_head(&conn, &dir).unwrap(), None);
+}
+
+#[test]
+fn cancelling_a_live_owners_queued_job_ends_it_at_once() {
+    let d = TestDir::new();
+    let (storage, select, dir) = workspace(&d, 1);
+    queued(&storage, &select, "0:0");
+    let behind = queued(&storage, &select, "1:0");
+    let report = cancel(&storage, &behind).unwrap();
+    assert_eq!(report["cancel"], "accepted", "{report}");
+    assert!(report["cancelWaitMs"].as_u64().unwrap() < 1000, "{report}");
+    let reply = run(
+        &storage,
+        &select.id().unwrap(),
+        &behind,
+        &AtomicBool::new(false),
+        &mut |_| {},
+    );
+    assert_eq!(reply.unwrap()["state"], "cancelled");
+    assert!(!claim_path(&dir, &behind, 1).exists());
+}
+
+#[test]
+fn a_job_waits_for_its_turn_only_so_long() {
+    let d = TestDir::new();
+    let (storage, select, dir) = workspace(&d, 1);
+    queued(&storage, &select, "0:0");
+    let behind = queued(&storage, &select, "1:0");
+    let started = Instant::now();
+    let reply = run(
+        &storage,
+        &select.id().unwrap(),
+        &behind,
+        &AtomicBool::new(false),
+        &mut |_| {},
+    );
+    let error = reply.unwrap_err().downcast::<FigError>().unwrap();
+    assert_eq!(error.kind(), ErrorKind::WorkspaceBusy);
+    assert!(started.elapsed() < QUEUE_WAIT * 10);
+    assert_eq!(state(&connection(&dir), &behind), "failed");
+}
+
+#[test]
+fn a_queued_source_that_left_the_visible_roots_is_never_built() {
+    let d = TestDir::new();
+    let (storage, select, dir) = workspace(&d, 1);
+    let job_id = queued(&storage, &select, "0:0");
+    let elsewhere = std::path::absolute(d.join("elsewhere")).unwrap();
+    let narrowed = Storage {
+        visible: Some(vec![elsewhere]),
+        ..storage
+    };
+    let reply = run(
+        &narrowed,
+        &select.id().unwrap(),
+        &job_id,
+        &AtomicBool::new(false),
+        &mut |_| {},
+    );
+    let error = reply.unwrap_err().to_string();
+    assert!(error.contains("visible roots"), "{error}");
+    let conn = connection(&dir);
+    assert_eq!(state(&conn, &job_id), "failed");
+    assert_eq!(count(&conn, GENERATIONS, &job_id), 0);
+}
+
+#[test]
+fn publishing_past_the_scope_cap_reports_and_prunes_the_evicted_scope() {
+    let d = TestDir::new();
+    let (storage, select, dir) = workspace(&d, 1);
+    let me = owner(&dir).unwrap();
+    let conn = connection(&dir);
+    let source = sources(&conn)[0].clone();
+    for page in 1..=MAX_SCOPES {
+        let old = job(&conn, &source, &format!("{page}:0"), "succeeded", &me, 1);
+        let gen_id = building(&conn, &old);
+        conn.execute(
+            "UPDATE generations SET state = 'published' WHERE gen = ?1",
+            [gen_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO published (source_id, scope, gen, published_ms) VALUES (?1, ?2, ?3, ?4)",
+            params![source, format!("{page}:0"), gen_id, page],
+        )
+        .unwrap();
+        // An older retired generation of the scope that is about to be evicted.
+        if page == 1 {
+            let older = building(&conn, &old);
+            conn.execute(
+                "UPDATE generations SET state = 'retired', retired_ms = 0 WHERE gen = ?1",
+                [older],
+            )
+            .unwrap();
+        }
+    }
+    let job_id = job(&conn, &source, "0:0", "running", &me, 1);
+    let gen_id = building(&conn, &job_id);
+    let built = json!({"gen": gen_id, "snapshot": "sha256:test", "bytes": 1, "mtimeNs": 1});
+    let report = publish(&storage, &select.id().unwrap(), &job_id, &me, 1, &built).unwrap();
+    assert_eq!(report["state"], "succeeded", "{report}");
+    assert_eq!(report["evictedScopes"], json!(["1:0"]), "{report}");
+    let kept = "SELECT count(*) FROM generations WHERE scope = ?1 AND state = 'retired'";
+    assert_eq!(
+        count(&conn, kept, "1:0"),
+        1,
+        "the evicted scope was not pruned"
     );
 }

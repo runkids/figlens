@@ -31,6 +31,13 @@ pub const WAL_CAP: u64 = 64 * 1024 * 1024;
 const POLL: Duration = Duration::from_millis(100);
 /// How long `jobs cancel` waits for the owner to report the job stopped.
 const CANCEL_WAIT: Duration = Duration::from_secs(2);
+/// Longest a queued job waits for its turn to build; past it, it fails `workspace_busy` and a
+/// refresh retries it.
+const QUEUE_WAIT: Duration = if cfg!(test) {
+    Duration::from_millis(300)
+} else {
+    Duration::from_secs(600)
+};
 
 /// Owner tokens and their held lock files, one per workspace directory this process owns jobs in.
 static OWNERS: Mutex<Vec<(PathBuf, String, File)>> = Mutex::new(Vec::new());
@@ -73,18 +80,26 @@ pub(crate) fn owner(dir: &Path) -> Result<String> {
             let _ = std::fs::remove_file(&path);
         }
     }
-    let token = random_hex();
-    let path = owners_dir.join(format!("{token}.lock"));
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|e| storage_error(&path, e))?;
-    file.try_lock()
-        .map_err(|_| fail(ErrorKind::OperationFailed, "cannot lock a new owner file"))?;
-    owners.push((dir.to_owned(), token.clone(), file));
-    Ok(token)
+    // Another process's cleanup can lock and delete a new file before its creator locks it;
+    // only a file still in place once locked is proof, so a lost race takes a new token.
+    for _ in 0..3 {
+        let token = random_hex();
+        let path = owners_dir.join(format!("{token}.lock"));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| storage_error(&path, e))?;
+        if file.try_lock().is_ok() && path.exists() {
+            owners.push((dir.to_owned(), token.clone(), file));
+            return Ok(token);
+        }
+    }
+    Err(fail(
+        ErrorKind::OperationFailed,
+        "cannot lock a new owner file",
+    ))
 }
 
 /// Whether the process owning `token` is alive: its owner lock is held. Read-only; never blocks.
@@ -120,9 +135,31 @@ struct Claim {
     _file: File,
 }
 
-/// Claims whose child could not be confirmed stopped, kept with that child: unknown exit is
-/// never released, so nothing takes the job over or deletes what the child may still write.
-static RETAINED: Mutex<Vec<(Child, Claim)>> = Mutex::new(Vec::new());
+/// Claims whose child could not be confirmed stopped, kept with that child and the build lock:
+/// unknown exit is never released, so nothing takes the job over, deletes what the child may
+/// still write or builds beside it. (The child holds its own workspace lock, so no reset runs.)
+static RETAINED: Mutex<Vec<(Child, Claim, Option<File>)>> = Mutex::new(Vec::new());
+
+/// Claims taken when this process admitted a job, until its `run` starts: a run that fails
+/// before it can write (the workspace busy, say) drops its claim, so the queued job reads
+/// interrupted instead of holding the head of the queue for as long as this process lives.
+static PENDING: Mutex<Vec<(String, i64, Claim)>> = Mutex::new(Vec::new());
+
+fn pre_claim(dir: &Path, job_id: &str, attempt: i64) {
+    // Unclaimed is still a live owner's job; `run` claims it then.
+    if let Ok(claim) = claim(dir, job_id, attempt)
+        && let Ok(mut pending) = PENDING.lock()
+    {
+        pending.push((job_id.to_owned(), attempt, claim));
+    }
+}
+
+fn take_pending(job_id: &str) -> Option<(i64, Claim)> {
+    let mut pending = PENDING.lock().ok()?;
+    let at = pending.iter().position(|(j, ..)| j == job_id)?;
+    let (_, attempt, claim) = pending.swap_remove(at);
+    Some((attempt, claim))
+}
 
 fn claim_path(dir: &Path, job_id: &str, attempt: i64) -> PathBuf {
     dir.join("claims").join(format!("{job_id}.{attempt}.lock"))
@@ -347,6 +384,13 @@ pub(crate) fn submit(
                 params![job_id, me, membership, now_ms()],
             )
             .map_err(sql)?;
+            tx.commit().map_err(sql)?;
+            pre_claim(&dir, &job_id, attempt + 1);
+            return Ok(Submitted {
+                job_id,
+                owned,
+                joined: false,
+            });
         } else if kind == "rebuild" {
             // A rebuild joining a queued refresh makes it skip the unchanged-snapshot shortcut.
             tx.execute(
@@ -420,6 +464,7 @@ pub(crate) fn submit(
     )
     .map_err(sql)?;
     tx.commit().map_err(sql)?;
+    pre_claim(&dir, &job_id, 1);
     Ok(Submitted {
         job_id,
         owned: true,
@@ -503,16 +548,15 @@ fn abandon(
     job_id: &str,
     me: &str,
     attempt: i64,
-    child: Option<Child>,
-    claim: Claim,
+    (child, claim, build_lock): (Option<Child>, Claim, Option<File>),
     e: Box<dyn Error>,
 ) -> Box<dyn Error> {
     if let Some(mut child) = child
         && !stop(&mut child)
     {
-        // Unknown exit: nothing is recorded or deleted, and the claim stays held.
+        // Unknown exit: nothing is recorded or deleted, and the claim and build lock stay held.
         if let Ok(mut kept) = RETAINED.lock() {
-            kept.push((child, claim));
+            kept.push((child, claim, build_lock));
         }
         return e;
     }
@@ -606,6 +650,8 @@ pub fn run(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(&Json),
 ) -> Result<Json> {
+    // First, so any early error or panic below drops it and the job reads interrupted.
+    let pending = take_pending(job_id);
     let select = Select::Id(ws_id.to_owned());
     let (_, mut ws) = opened(storage, &select, true)?;
     let dir = ws.held.dir.clone();
@@ -623,11 +669,24 @@ pub fn run(
         .filter(|(o, s, _)| *o == me && s == "queued")
         .map(|(.., a)| a)
     else {
+        // Ended (cancelled while queued, say) or taken over: its claim is no longer needed.
+        if let Some((_, claim)) = pending {
+            claim.done();
+        }
         return report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id));
     };
     // This attempt is this process's to end: every exit from here records its terminal state
     // or, if that write fails, releases its claim once nothing runs for it (see `abandon`).
-    let claim = match claim(&dir, job_id, attempt) {
+    let claimed = match pending {
+        Some((held, claim)) if held == attempt => Ok(claim),
+        stale => {
+            if let Some((_, claim)) = stale {
+                claim.done();
+            }
+            claim(&dir, job_id, attempt)
+        }
+    };
+    let claim = match claimed {
         Ok(claim) => claim,
         // Another run in this process holds this attempt, and ends it.
         Err(e)
@@ -646,10 +705,20 @@ pub fn run(
     // is stopped and reaped.
     let build_lock = match open_lock(&dir.join("build.lock"), true) {
         Ok(lock) => lock.expect("created"),
-        Err(e) => return Err(abandon(&mut ws.conn, job_id, &me, attempt, None, claim, e)),
+        Err(e) => {
+            return Err(abandon(
+                &mut ws.conn,
+                job_id,
+                &me,
+                attempt,
+                (None, claim, None),
+                e,
+            ));
+        }
     };
     let mut child = None;
     let built = match build(
+        storage,
         &mut ws,
         &dir,
         job_id,
@@ -665,7 +734,10 @@ pub fn run(
             claim.done();
             return report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id));
         }
-        Err(e) => return Err(abandon(&mut ws.conn, job_id, &me, attempt, child, claim, e)),
+        Err(e) => {
+            let held = (child, claim, Some(build_lock));
+            return Err(abandon(&mut ws.conn, job_id, &me, attempt, held, e));
+        }
     };
     // Publication: release the build and workspace locks, then take the location lock shared and
     // the workspace lock again (the lock order), re-open and re-validate everything, and publish
@@ -679,7 +751,14 @@ pub fn run(
             Ok(report)
         }
         Err(e) => match opened(storage, &select, true) {
-            Ok((_, mut ws)) => Err(abandon(&mut ws.conn, job_id, &me, attempt, None, claim, e)),
+            Ok((_, mut ws)) => Err(abandon(
+                &mut ws.conn,
+                job_id,
+                &me,
+                attempt,
+                (None, claim, None),
+                e,
+            )),
             Err(_) => {
                 claim.release();
                 Err(e)
@@ -688,12 +767,39 @@ pub fn run(
     }
 }
 
+/// The oldest live queued job, in submission order: within one millisecond, the first inserted.
+fn queue_head(conn: &Connection, dir: &Path) -> Result<Option<String>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT job_id, owner, attempt FROM jobs WHERE state = 'queued'
+             ORDER BY created_ms, rowid",
+        )
+        .map_err(sql)?;
+    for row in stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(sql)?
+    {
+        let (job, holder, held) = row.map_err(sql)?;
+        if job_alive(dir, &holder, &job, held) {
+            return Ok(Some(job));
+        }
+    }
+    Ok(None)
+}
+
 /// Waits for the build lock, then runs attempt `attempt` of job `job_id` in a child until it
 /// exits. Returns the child's result to publish, or `None` once the job ended here
 /// (cancelled or failed). `child` holds the running child, so a caller seeing an error can
 /// stop and reap it.
 #[allow(clippy::too_many_arguments)]
 fn build(
+    storage: &Storage,
     ws: &mut Opened,
     dir: &Path,
     job_id: &str,
@@ -706,39 +812,20 @@ fn build(
 ) -> Result<Option<Json>> {
     // Wait for the build lock, holding it only while this job is the oldest live queued job,
     // so no process holds it while waiting for its turn.
-    let mut beat = Instant::now();
+    let (waited, mut beat) = (Instant::now(), Instant::now());
     loop {
         if cancelled(&ws.conn, job_id, cancel)? {
             finish(&ws.conn, job_id, me, attempt, "cancelled", None)?;
             return Ok(None);
         }
+        if waited.elapsed() > QUEUE_WAIT {
+            return Err(fail(
+                ErrorKind::WorkspaceBusy,
+                "the job waited too long for its turn to build; refresh again later",
+            ));
+        }
         if build.try_lock().is_ok() {
-            let mut head = None;
-            let mut stmt = ws
-                .conn
-                .prepare(
-                    "SELECT job_id, owner, attempt FROM jobs WHERE state = 'queued'
-                     ORDER BY created_ms, job_id",
-                )
-                .map_err(sql)?;
-            for row in stmt
-                .query_map([], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, i64>(2)?,
-                    ))
-                })
-                .map_err(sql)?
-            {
-                let (job, holder, held) = row.map_err(sql)?;
-                if job_alive(dir, &holder, &job, held) {
-                    head = Some(job);
-                    break;
-                }
-            }
-            drop(stmt);
-            if head.as_deref() == Some(job_id) {
+            if queue_head(&ws.conn, dir)?.as_deref() == Some(job_id) {
                 break;
             }
             let _ = build.unlock();
@@ -769,6 +856,13 @@ fn build(
         return Ok(None);
     }
     drop_building(&mut ws.conn, job_id, me, attempt)?;
+    // The source can leave the visible roots (a symlink swapped, say) while the job queued.
+    if !visible_job(storage, &ws.conn, job_id)? {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            "the job's source is no longer inside the visible roots",
+        ));
+    }
     let running = child.insert(spawn(dir, job_id, me, attempt)?);
     let mut out = String::new();
     let mut stdout = running.stdout.take().expect("piped");
@@ -1015,7 +1109,18 @@ pub(crate) fn publish(
         params![source, scope, gen_id, now],
     )
     .map_err(sql)?;
-    // Bounded scopes: the least recently published one beyond the cap is retired.
+    // Bounded scopes: the least recently published one beyond the cap is retired, reported and
+    // pruned like the job's own scope.
+    let evicted: Vec<String> = tx
+        .prepare(
+            "SELECT scope FROM published WHERE source_id = ?1 ORDER BY published_ms DESC, scope
+             LIMIT -1 OFFSET ?2",
+        )
+        .and_then(|mut s| {
+            s.query_map(params![source, MAX_SCOPES], |r| r.get(0))?
+                .collect()
+        })
+        .map_err(sql)?;
     tx.execute(
         "UPDATE generations SET state = 'retired', retired_ms = ?2 WHERE gen IN
          (SELECT gen FROM published WHERE source_id = ?1 ORDER BY published_ms DESC, scope
@@ -1037,8 +1142,14 @@ pub(crate) fn publish(
     .map_err(sql)?;
     tx.commit().map_err(sql)?;
     // Retention, outside the publication: one retired generation per source and scope.
-    prune(&mut ws.conn, &source, &scope)?;
-    report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id))
+    for scope in evicted.iter().chain([&scope]) {
+        prune(&mut ws.conn, &source, scope)?;
+    }
+    let mut report = report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id))?;
+    if !evicted.is_empty() {
+        report["evictedScopes"] = json!(evicted);
+    }
+    Ok(report)
 }
 
 /// Deletes retired generations of `source` and `scope` beyond the newest one, and snapshots no
@@ -1157,12 +1268,24 @@ pub fn cancel(storage: &Storage, job_id: &str) -> Result<Json> {
             drop_building(&mut ws.conn, job_id, &holder, attempt)?;
         }
     } else {
-        ws.conn
+        // A queued job has no child or generation yet, so it ends here; its owner's start is
+        // fenced on `queued`.
+        let ended = ws
+            .conn
             .execute(
-                "UPDATE jobs SET cancel = 1 WHERE job_id = ?1 AND state IN ('queued', 'running')",
-                [job_id],
+                "UPDATE jobs SET state = 'cancelled', cancel = 1, finished_ms = ?2
+                 WHERE job_id = ?1 AND state = 'queued'",
+                params![job_id, now_ms()],
             )
             .map_err(sql)?;
+        if ended == 0 {
+            ws.conn
+                .execute(
+                    "UPDATE jobs SET cancel = 1 WHERE job_id = ?1 AND state = 'running'",
+                    [job_id],
+                )
+                .map_err(sql)?;
+        }
     }
     loop {
         let report = report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id))?;
@@ -1578,11 +1701,15 @@ fn release(ws: &Opened, run: &[String], e: Box<dyn Error>) -> Box<dyn Error> {
             .map_or("operation_failed", |f| kind_code(f.kind()));
         let error = error_json(code, &e).to_string();
         for job_id in run {
-            let _ = ws.conn.execute(
+            let ended = ws.conn.execute(
                 "UPDATE jobs SET state = 'failed', error = ?3, finished_ms = ?4 WHERE job_id = ?1
                  AND owner = ?2 AND state = 'queued'",
                 params![job_id, me, error, now_ms()],
             );
+            // Not ended: the dropped claim leaves it interrupted, for a refresh to retry.
+            if let (Ok(1), Some((_, claim))) = (ended, take_pending(job_id)) {
+                claim.done();
+            }
         }
     }
     e
