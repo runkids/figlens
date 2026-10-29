@@ -34,6 +34,9 @@ export function cliArgs(tool, input) {
   if (tool === 'inspect') return ['inspect', required(input, 'file'), required(input, 'node'), ...flag('--depth', input.depth),
     ...flag('--images', input.images), ...flag('--states', input.states), ...flag('--flat', input.flat), ...flag('--compare-variant', input.compareVariant)];
   if (tool === 'search') {
+    // As the MCP search tool: one corpus, and source narrowing never silently disappears.
+    if (!input.file === !input.workspaceId || (input.file && (input.sourceId || input.storage)))
+      throw new Error('search needs file or workspaceId, not both; sourceId and storage apply to workspaceId');
     const target = input.file ? [input.file] : ['--id', required(input, 'workspaceId'), ...flag('--source', input.sourceId), ...storage];
     const flags = [...flag('--node', input.node), ...flag('--type', input.type), ...flag('--limit', input.limit),
       ...flag('--cursor', input.cursor), ...flag('--include-hidden', input.includeHidden),
