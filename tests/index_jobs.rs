@@ -1823,11 +1823,12 @@ fn track_builds_a_baseline_with_facets_and_each_state_change_bumps_the_epoch() {
     assert_eq!(state(&on), (json!("baseline_pending"), json!(1)));
     assert_eq!(on["jobs"][0]["state"], "succeeded");
     assert!(faceted(&on));
-    // Tracking an already tracked scope changes nothing and builds nothing.
+    // The baseline's publication made tracking active; tracking again changes nothing and
+    // builds nothing.
     let again = track("track");
     assert_eq!(
         (state(&again), again["jobs"].clone()),
-        ((json!("baseline_pending"), json!(1)), json!([]))
+        ((json!("active"), json!(1)), json!([]))
     );
     assert_eq!(state(&track("untrack")), (json!("disabled"), json!(2)));
     assert!(!faceted(&env.json(&["index", "rebuild", "--file", file])));
@@ -1837,4 +1838,218 @@ fn track_builds_a_baseline_with_facets_and_each_state_change_bumps_the_epoch() {
     let out = env.run(&["index", "track", "--file", file, "--scope", "0:99"]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("no published scope 0:99"));
+}
+
+/// A corpus file prepared at scope 0:0 and tracked, with a save that replaces it and the
+/// workspace database's path.
+struct Tracked<'a> {
+    env: &'a Env,
+    path: PathBuf,
+    file: String,
+    db: String,
+}
+
+impl<'a> Tracked<'a> {
+    fn new(env: &'a Env) -> Self {
+        let path = env.dir.join("a.fig");
+        corpus::write(path.as_os_str(), false).unwrap();
+        let path = std::fs::canonicalize(path).unwrap();
+        let file = path.to_str().unwrap().to_owned();
+        let prepared = env.json(&["index", "prepare", &file, "--scope", "0:0"]);
+        let db = prepared["paths"]["database"].as_str().unwrap().to_owned();
+        let t = Self {
+            env,
+            path,
+            file,
+            db,
+        };
+        t.index("track");
+        t
+    }
+
+    fn index(&self, action: &str) -> Value {
+        self.env
+            .json(&["index", action, "--file", &self.file, "--scope", "0:0"])
+    }
+
+    /// Replaces the file, as Figma's save does.
+    fn save(&self, revised: bool) {
+        let next = self.env.dir.join("next.fig");
+        corpus::write(next.as_os_str(), revised).unwrap();
+        std::fs::rename(&next, &self.path).unwrap();
+    }
+
+    fn sql(&self, q: &str) {
+        rusqlite::Connection::open(&self.db)
+            .unwrap()
+            .execute_batch(q)
+            .unwrap();
+    }
+
+    /// Each revision: kind, coverage, change count, detail, whether it has a from generation,
+    /// its rows and how many facet sets its from generation still has.
+    fn revisions(&self) -> Vec<Value> {
+        let conn = rusqlite::Connection::open(&self.db).unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT r.kind, r.coverage, r.summary, r.detail, r.from_gen,
+                 (SELECT group_concat(node || '=' || change, ',') FROM
+                  (SELECT node, change FROM revision_changes WHERE rev = r.id ORDER BY node)),
+                 (SELECT COUNT(*) FROM facet_sets WHERE gen = r.from_gen)
+                 FROM revisions r ORDER BY seq",
+            )
+            .unwrap();
+        let text = |s: String| serde_json::from_str::<Value>(&s).unwrap();
+        stmt.query_map([], |r| {
+            Ok(json!([
+                r.get::<_, String>(0)?,
+                text(r.get(1)?),
+                text(r.get(2)?)["changes"],
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<i64>>(4)?.is_some(),
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, i64>(6)?
+            ]))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    }
+}
+
+#[test]
+fn a_tracked_scope_records_a_baseline_then_each_published_change_and_untracking_keeps_history() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let tracked = t.revisions();
+    t.index("untrack");
+    t.save(false);
+    t.index("refresh");
+    // The changes read like a live diff of the two saves; the replaced generation keeps no
+    // facets; an untracked save records nothing and the history stays.
+    assert_eq!(
+        (tracked.clone(), t.revisions()),
+        (
+            vec![
+                json!(["baseline", {"basis": "baseline", "reason": "tracking_started"}, null, "complete", false, null, 0]),
+                json!([
+                    "changes",
+                    tracked[1][1],
+                    4,
+                    "complete",
+                    true,
+                    "0:1=changed,0:11=changed,0:13=removed,0:14=added",
+                    0
+                ]),
+            ],
+            tracked.clone()
+        )
+    );
+    assert_eq!(tracked[1][1]["complete"], true);
+}
+
+#[test]
+fn a_failed_comparison_still_publishes_and_a_new_field_layout_is_a_baseline() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    // Unreadable facets of the generation being replaced: the save publishes, never unchanged.
+    t.sql("UPDATE facets SET blob = CAST('bogus' AS BLOB) WHERE gen = (SELECT gen FROM published)");
+    t.save(true);
+    t.index("refresh");
+    t.sql(
+        "UPDATE facet_sets SET facet_version = 'diff-v0:0' WHERE gen = (SELECT gen FROM published)",
+    );
+    t.save(false);
+    t.index("refresh");
+    let got: Vec<_> = t.revisions()[1..]
+        .iter()
+        .map(|r| {
+            (
+                r[0].clone(),
+                r[1]["reasons"][0]["reason"].clone(),
+                r[1]["reason"].clone(),
+                r[3].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (
+                json!("changes"),
+                json!("comparison_failed"),
+                json!(null),
+                json!("truncated")
+            ),
+            (
+                json!("baseline"),
+                json!(null),
+                json!("facet_version_changed"),
+                json!("complete")
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_tracking_change_after_the_comparison_records_no_revision() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    let gate = env.gate("compare.hold");
+    let mut owner = env.spawn(
+        &["index", "refresh", "--file", &t.file],
+        Some(("compare", &gate)),
+    );
+    let reached = PathBuf::from(format!("{}.reached", gate.display()));
+    wait_for("the comparison", || reached.exists());
+    t.sql("UPDATE tracking SET epoch = epoch + 1");
+    std::fs::remove_file(&gate).unwrap();
+    assert!(owner.wait().unwrap().success());
+    // The generation still publishes; only the stale revision is left out.
+    assert_eq!(
+        (
+            t.revisions().len(),
+            env.json(&["search", "--file", &t.file, "first"])["state"].clone()
+        ),
+        (1, json!("ready"))
+    );
+}
+
+#[test]
+fn relocating_a_tracked_source_keeps_its_history_and_removing_it_deletes_it() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let moved = env.dir.join("moved.fig");
+    std::fs::copy(&t.path, &moved).unwrap();
+    let moved = std::fs::canonicalize(moved).unwrap();
+    let ws = env.json(&["index", "status", "--file", &t.file]);
+    let (id, source) = (
+        ws["workspaceId"].as_str().unwrap().to_owned(),
+        ws["sources"][0]["sourceId"].as_str().unwrap().to_owned(),
+    );
+    env.json(&[
+        "index",
+        "relocate",
+        "--id",
+        &id,
+        &source,
+        moved.to_str().unwrap(),
+    ]);
+    let relocated = t.revisions().len();
+    env.json(&["index", "remove", "--id", &id, &source]);
+    let count = |table: &str| {
+        rusqlite::Connection::open(&t.db)
+            .unwrap()
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(
+        (relocated, count("revisions"), count("tracking")),
+        (1, 0, 0)
+    );
 }

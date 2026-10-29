@@ -512,8 +512,8 @@ pub(super) fn visible_path(
 }
 
 /// Removes `source_id` from the workspace's registry and, in the same transaction, withdraws
-/// its published indexes from search and asks its active jobs to stop. The `.fig` itself is
-/// never touched.
+/// its published indexes from search, deletes its change tracking and history, and asks its
+/// active jobs to stop. The `.fig` itself is never touched.
 pub fn remove(storage: &Storage, select: &Select, source_id: &str) -> Result<Json> {
     let (place, mut ws) = opened(storage, select, true)?;
     let tx = ws
@@ -534,6 +534,14 @@ pub fn remove(storage: &Storage, select: &Select, source_id: &str) -> Result<Jso
         .map_err(sql)?;
         tx.execute("DELETE FROM published WHERE source_id = ?1", [source_id])
             .map_err(sql)?;
+        // Its change history goes with it; a relocate keeps the id and so keeps the history.
+        for q in [
+            "DELETE FROM revision_changes WHERE rev IN (SELECT id FROM revisions WHERE source_id = ?1)",
+            "DELETE FROM revisions WHERE source_id = ?1",
+            "DELETE FROM tracking WHERE source_id = ?1",
+        ] {
+            tx.execute(q, [source_id]).map_err(sql)?;
+        }
         tx.execute(
             "UPDATE jobs SET cancel = 1 WHERE source_id = ?1 AND state IN ('queued', 'running')",
             [source_id],

@@ -890,3 +890,77 @@ fn a_rebuild_joining_a_queued_refresh_makes_it_a_rebuild_through_its_failure() {
         (true, &json!("rebuild"), &json!("rebuild"))
     );
 }
+
+#[test]
+fn revision_retention_deletes_and_expires_only_whole_groups() {
+    let dir = TestDir::new();
+    let (storage, select, _) = workspace(&dir, 1);
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    ws.conn
+        .execute_batch(
+            "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
+             VALUES ('s', '0:0', 'active', 1, 'v', 0);",
+        )
+        .unwrap();
+    // Five rows of 75 bytes a revision: the newest two fit the test's 1024 detail bytes.
+    let row = || search::diff::Row {
+        frame: "0:0".into(),
+        node: "0:1".into(),
+        kind: "FRAME".into(),
+        change: "changed",
+        facets: 1,
+        descendants: 0,
+    };
+    for gen_id in 2..=6 {
+        let planned = Planned {
+            epoch: 1,
+            from: gen_id - 1,
+            what: Ok(Ok(search::diff::Revision {
+                coverage: json!({"complete": true}),
+                summary: json!({"changes": 5}),
+                rows: (0..5).map(|_| row()).collect(),
+                truncated: false,
+            })),
+        };
+        let tx = ws.conn.transaction().unwrap();
+        tx.execute(
+            "INSERT OR IGNORE INTO facet_sets VALUES (?1, 'v', 1, 'null')",
+            [gen_id],
+        )
+        .unwrap();
+        let built = json!({"snapshot": "x"});
+        assert!(
+            record(
+                &tx,
+                "s",
+                "0:0",
+                gen_id,
+                Some(gen_id - 1),
+                &built,
+                Some(planned),
+                0
+            )
+            .unwrap()
+        );
+        tx.commit().unwrap();
+    }
+    let kept: Vec<(i64, String, i64)> = ws
+        .conn
+        .prepare(
+            "SELECT gen, detail, (SELECT COUNT(*) FROM revision_changes WHERE rev = id)
+             FROM revisions ORDER BY seq",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        kept,
+        [
+            (4, "expired".into(), 0),
+            (5, "complete".into(), 5),
+            (6, "complete".into(), 5)
+        ]
+    );
+}

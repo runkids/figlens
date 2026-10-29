@@ -1380,6 +1380,21 @@ fn page_with(
             .unwrap()
             .push(node);
     }
+    let mut source = json!({"old": pair.old.source, "new": pair.new.source, "freshness": {"reusedPair": reused}});
+    source["freshness"]["hashedAtMs"] = json!(super::ms(pair.hashed));
+    Ok(json!({
+        "source": source,
+        "node": pair.node,
+        // Two caller-chosen files: ids match within this pair, never a proven file lineage.
+        "matching": {"basis": "node_id+kind", "lineage": "unverified"},
+        "coverage": coverage(pair),
+        "frames": frames,
+        "nextCursor": (end < pair.changes.len()).then(|| cursor(pair, end)),
+    }))
+}
+
+/// What the pair compared and every reason it may have missed a change.
+fn coverage(pair: &Pair) -> Json {
     // Links the index could not verify or read, and layers below hidden ones it never expanded,
     // may hide changes; each side counts them.
     let gaps = |s: &Side| {
@@ -1389,7 +1404,7 @@ fn page_with(
         )
     };
     let known = |s: &Side| s.origin.is_ok();
-    let coverage = |s: &Side, outside: usize| json!({"stop": s.index.stop, "scannedRecords": s.index.records.len(), "complete": s.index.stop.is_none() && gaps(s) == (0, 0) && known(s) && outside == 0, "selected": s.present});
+    let side = |s: &Side, outside: usize| json!({"stop": s.index.stop, "scannedRecords": s.index.records.len(), "complete": s.index.stop.is_none() && gaps(s) == (0, 0) && known(s) && outside == 0, "selected": s.present});
     let unread = pair.unread;
     let mut reasons = Vec::new();
     for (name, s, outside) in [
@@ -1422,24 +1437,14 @@ fn page_with(
     if unread > 0 {
         reasons.push(json!({"reason": "unread_fields", "count": unread}));
     }
-    let mut source = json!({"old": pair.old.source, "new": pair.new.source, "freshness": {"reusedPair": reused}});
-    source["freshness"]["hashedAtMs"] = json!(super::ms(pair.hashed));
-    Ok(json!({
-        "source": source,
-        "node": pair.node,
-        // Two caller-chosen files: ids match within this pair, never a proven file lineage.
-        "matching": {"basis": "node_id+kind", "lineage": "unverified"},
-        "coverage": {
-            "complete": reasons.is_empty(),
-            "old": coverage(&pair.old, pair.outside[0]),
-            "new": coverage(&pair.new, pair.outside[1]),
-            "changes": pair.changes.len(),
-            "possibleMatches": pair.possible,
-            "reasons": reasons,
-        },
-        "frames": frames,
-        "nextCursor": (end < pair.changes.len()).then(|| cursor(pair, end)),
-    }))
+    json!({
+        "complete": reasons.is_empty(),
+        "old": side(&pair.old, pair.outside[0]),
+        "new": side(&pair.new, pair.outside[1]),
+        "changes": pair.changes.len(),
+        "possibleMatches": pair.possible,
+        "reasons": reasons,
+    })
 }
 
 /// The field layout stored facets were written with, derived from `VERSION` and `FIELDS`, so
@@ -1660,6 +1665,104 @@ pub(crate) fn stored_diff(
     req.validate()?;
     let (old, new) = (stored(conn, old.0, old.1)?, stored(conn, new.0, new.1)?);
     page(&compare(old, new, &req.node, PAIR_WORK), req, false)
+}
+
+/// Most change rows and bytes one revision keeps; past either its detail is `truncated`.
+pub(crate) const REVISION_ROWS: usize = 10_000;
+pub(crate) const REVISION_BYTES: usize = 4 * 1024 * 1024;
+
+/// One stored change of a revision: its frame, record id, layer type and change.
+pub(crate) struct Row {
+    pub frame: String,
+    pub node: String,
+    pub kind: String,
+    pub change: &'static str,
+    pub facets: u8,
+    pub descendants: u32,
+}
+
+/// What a revision records of a compared pair of stored generations: the coverage, exact counts
+/// of every change, and the first rows that fit `REVISION_ROWS` and `bytes`.
+pub(crate) struct Revision {
+    pub coverage: Json,
+    pub summary: Json,
+    pub rows: Vec<Row>,
+    pub truncated: bool,
+}
+
+/// Compares stored generations `old` and `new` of `scope` as `stored_diff` does, keeping at most
+/// `bytes` of change rows.
+pub(crate) fn revision(
+    conn: &rusqlite::Connection,
+    old: (i64, Json),
+    new: (i64, Json),
+    scope: &str,
+    bytes: usize,
+) -> Result<Revision, Box<dyn Error>> {
+    let pair = compare(
+        stored(conn, old.0, old.1)?,
+        stored(conn, new.0, new.1)?,
+        scope,
+        PAIR_WORK,
+    );
+    let (mut kinds, mut facets) = ([0u32; 5], vec![0u32; FACETS.len() + 1]);
+    let (mut rows, mut used, mut truncated) = (Vec::new(), 0, false);
+    for c in &pair.changes {
+        kinds[c.kind as usize] += 1;
+        for (i, n) in facets.iter_mut().enumerate() {
+            *n += u32::from(c.facets & (1 << i) != 0);
+        }
+        let side = if c.new.is_some() {
+            &pair.new
+        } else {
+            &pair.old
+        };
+        let r = &side.index.records[c.new.or(c.old).unwrap() as usize];
+        let frame = &pair.frames[c.frame as usize].id;
+        let cost = 64 + frame.len() + r.id.len() + r.kind.len();
+        if truncated || rows.len() == REVISION_ROWS || used + cost > bytes {
+            truncated = true;
+            continue;
+        }
+        used += cost;
+        rows.push(Row {
+            frame: frame.clone(),
+            node: r.id.clone(),
+            kind: r.kind.clone(),
+            change: c.kind.name(),
+            facets: c.facets,
+            descendants: c.descendants,
+        });
+    }
+    let named = |names: &[&str], counts: &[u32]| -> Json {
+        names
+            .iter()
+            .zip(counts)
+            .filter(|(_, n)| **n > 0)
+            .map(|(k, n)| ((*k).to_owned(), json!(n)))
+            .collect::<serde_json::Map<_, _>>()
+            .into()
+    };
+    let kind_names = [
+        Kind::Added,
+        Kind::Removed,
+        Kind::Changed,
+        Kind::Retyped,
+        Kind::Unknown,
+    ]
+    .map(Kind::name);
+    let facet_names: Vec<&str> = FACETS.iter().copied().chain(["bindings"]).collect();
+    Ok(Revision {
+        coverage: coverage(&pair),
+        summary: json!({
+            "changes": pair.changes.len(),
+            "kinds": named(&kind_names, &kinds),
+            "facets": named(&facet_names, &facets),
+            "possibleMatches": pair.possible,
+        }),
+        rows,
+        truncated,
+    })
 }
 
 #[cfg(test)]

@@ -1135,6 +1135,13 @@ pub(crate) fn publish(
     let gen_id = built["gen"].as_i64().expect("checked");
     let unchanged = built["unchanged"] == true;
     let incarnation = ws.incarnation.clone();
+    // A tracked scope's generations are compared before the publication, outside any write
+    // transaction; the publication only writes the result if tracking is still as read.
+    let planned = match unchanged {
+        true => None,
+        false => plan(&mut ws.conn, job_id, gen_id)?,
+    };
+    hold("compare");
     let tx = ws
         .conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -1284,6 +1291,10 @@ pub(crate) fn publish(
         [&source],
     )
     .map_err(sql)?;
+    let recorded = match unchanged {
+        true => false,
+        false => record(&tx, &source, &scope, gen_id, expected, built, planned, now)?,
+    };
     let evicted_json = (!evicted.is_empty()).then(|| json!(evicted).to_string());
     tx.execute(
         "UPDATE jobs SET state = 'succeeded', stage = 'publish', gen = ?2, finished_ms = ?3,
@@ -1292,6 +1303,14 @@ pub(crate) fn publish(
     )
     .map_err(sql)?;
     tx.commit().map_err(sql)?;
+    // The replaced generation's facets were only kept to be compared.
+    if let (true, Some(old)) = (recorded, expected) {
+        for table in ["facets", "facet_sets"] {
+            ws.conn
+                .execute(&format!("DELETE FROM {table} WHERE gen = ?1"), [old])
+                .map_err(sql)?;
+        }
+    }
     // Retention, outside the publication: one retired generation per source and scope.
     // An evicted scope serves nothing, so it keeps no retired generation: retention stays at
     // one per published scope, however many scopes a source has seen.
@@ -1300,6 +1319,249 @@ pub(crate) fn publish(
     }
     prune(&mut ws.conn, &source, &scope, 1)?;
     report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id))
+}
+
+/// Most revision groups kept per source and scope; older whole groups are deleted.
+const REVISIONS: i64 = if cfg!(test) { 3 } else { 1000 };
+/// Change-row bytes kept per source and scope; older groups beyond it keep only their summary.
+const DETAIL_BYTES: i64 = if cfg!(test) { 1024 } else { 16 * 1024 * 1024 };
+
+/// What a tracked scope's publication will record, compared against the generation it replaces.
+struct Planned {
+    epoch: i64,
+    from: i64,
+    /// `Err` is a reason the change is a new baseline; an `Err` inside is a failed comparison.
+    what: std::result::Result<std::result::Result<search::diff::Revision, String>, &'static str>,
+}
+
+/// Compares the generation job `job_id` expects to replace with its new one `gen_id`, in one
+/// read transaction, when the scope is actively tracked; `None` otherwise.
+fn plan(conn: &mut Connection, job_id: &str, gen_id: i64) -> Result<Option<Planned>> {
+    let tx = conn.transaction().map_err(sql)?;
+    let row: Option<(i64, i64, String, Option<String>)> = tx
+        .query_row(
+            "SELECT t.epoch, j.expected_gen, j.source_id, g.snapshot_id FROM jobs j
+             JOIN tracking t ON t.source_id = j.source_id AND t.scope = j.scope
+             AND t.state = 'active' JOIN generations g ON g.gen = j.expected_gen
+             WHERE j.job_id = ?1",
+            [job_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    let Some((epoch, from, source, old_snapshot)) = row else {
+        return Ok(None);
+    };
+    let (scope, new_snapshot): (String, Option<String>) = tx
+        .query_row(
+            "SELECT scope, snapshot_id FROM generations WHERE gen = ?1",
+            [gen_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(sql)?;
+    let version: Option<String> = tx
+        .query_row(
+            "SELECT facet_version FROM facet_sets WHERE gen = ?1",
+            [from],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    // A previous generation without facets, or with another field layout, is only a baseline:
+    // comparing it would report a layout change as design changes.
+    let what = match version {
+        None => Err("previous_untracked"),
+        Some(v) if v != search::diff::facet_version() => Err("facet_version_changed"),
+        Some(_) => {
+            let side =
+                |snapshot: Option<String>| json!({"sourceId": source, "snapshotId": snapshot});
+            Ok(search::diff::revision(
+                &tx,
+                (from, side(old_snapshot)),
+                (gen_id, side(new_snapshot)),
+                &scope,
+                search::diff::REVISION_BYTES,
+            )
+            .map_err(|e| e.to_string()))
+        }
+    };
+    Ok(Some(Planned { epoch, from, what }))
+}
+
+/// Records the revision publishing `gen_id` makes, inside the publication `tx`, if tracking is
+/// still as `planned` read it: a baseline when tracking just started, else the planned changes.
+/// Then retires whole revision groups past retention. Returns whether one was recorded.
+#[allow(clippy::too_many_arguments)]
+fn record(
+    tx: &Connection,
+    source: &str,
+    scope: &str,
+    gen_id: i64,
+    expected: Option<i64>,
+    built: &Json,
+    planned: Option<Planned>,
+    now: i64,
+) -> Result<bool> {
+    let tracking: Option<(String, i64)> = tx
+        .query_row(
+            "SELECT state, epoch FROM tracking WHERE source_id = ?1 AND scope = ?2",
+            [source, scope],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    let facetted: bool = tx
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM facet_sets WHERE gen = ?1)",
+            [gen_id],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    let Some((state, epoch)) = tracking.filter(|_| facetted) else {
+        return Ok(false);
+    };
+    let what = match (state.as_str(), planned) {
+        ("baseline_pending", _) => Err("tracking_started"),
+        ("active", Some(p)) if p.epoch == epoch && Some(p.from) == expected => match p.what {
+            Ok(compared) => Ok(compared),
+            Err(reason) => Err(reason),
+        },
+        _ => return Ok(false),
+    };
+    let (kind, from, coverage, summary, mut rows, mut truncated) = match what {
+        Err(reason) => (
+            "baseline",
+            None,
+            json!({"basis": "baseline", "reason": reason}),
+            json!({}),
+            Vec::new(),
+            false,
+        ),
+        Ok(Ok(r)) => (
+            "changes",
+            expected,
+            r.coverage,
+            r.summary,
+            r.rows,
+            r.truncated,
+        ),
+        // Never a false unchanged: the generation still publishes, the history stays.
+        Ok(Err(why)) => (
+            "changes",
+            expected,
+            json!({"complete": false, "reasons": [{"reason": "comparison_failed", "message": why.chars().take(500).collect::<String>()}]}),
+            json!({"changes": null}),
+            Vec::new(),
+            true,
+        ),
+    };
+    let row_bytes = |rows: &[search::diff::Row]| {
+        rows.iter()
+            .map(|r| 64 + r.frame.len() + r.node.len() + r.kind.len())
+            .sum::<usize>() as u64
+    };
+    // Publication writes are not capped by SQLite: rows that would pass the disk cap are left out.
+    let size: u64 = tx
+        .query_row(
+            "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map_err(sql)? as u64;
+    if size + row_bytes(&rows) > DISK_CAP {
+        rows.clear();
+        truncated = true;
+    }
+    let seq: i64 = tx
+        .query_row(
+            "INSERT INTO meta (key, value) VALUES ('revision_seq', '1') ON CONFLICT (key)
+             DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
+             RETURNING CAST(value AS INTEGER)",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    let id: Vec<u8> = tx
+        .query_row(
+            "INSERT INTO revisions (id, seq, source_id, scope, epoch, gen, from_gen, snapshot_id,
+             kind, coverage, summary, detail, detail_rows, detail_bytes, created_ms)
+             VALUES (randomblob(16), ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             RETURNING id",
+            params![
+                seq,
+                source,
+                scope,
+                epoch,
+                gen_id,
+                from,
+                built["snapshot"].as_str(),
+                kind,
+                coverage.to_string(),
+                summary.to_string(),
+                if truncated { "truncated" } else { "complete" },
+                rows.len() as i64,
+                row_bytes(&rows) as i64,
+                now
+            ],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    let mut insert = tx
+        .prepare_cached(
+            "INSERT INTO revision_changes (rev, ord, frame, node, kind, change, facets, descendants)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .map_err(sql)?;
+    for (ord, r) in rows.iter().enumerate() {
+        insert
+            .execute(params![
+                id,
+                ord as i64,
+                r.frame,
+                r.node,
+                r.kind,
+                r.change,
+                r.facets,
+                r.descendants
+            ])
+            .map_err(sql)?;
+    }
+    if state == "baseline_pending" {
+        tx.execute(
+            "UPDATE tracking SET state = 'active', baseline_gen = ?3
+             WHERE source_id = ?1 AND scope = ?2",
+            params![source, scope, gen_id],
+        )
+        .map_err(sql)?;
+    }
+    // Whole groups only: the oldest past the count are deleted, the oldest past the detail bytes
+    // keep their summary and read as `expired`.
+    let old = "SELECT id FROM revisions WHERE source_id = ?1 AND scope = ?2
+               ORDER BY seq DESC LIMIT -1 OFFSET ?3";
+    tx.execute(
+        &format!("DELETE FROM revision_changes WHERE rev IN ({old})"),
+        params![source, scope, REVISIONS],
+    )
+    .map_err(sql)?;
+    tx.execute(
+        &format!("DELETE FROM revisions WHERE id IN ({old})"),
+        params![source, scope, REVISIONS],
+    )
+    .map_err(sql)?;
+    let over = "SELECT id FROM (SELECT id, SUM(detail_bytes) OVER (ORDER BY seq DESC) AS total
+                FROM revisions WHERE source_id = ?1 AND scope = ?2 AND detail != 'expired')
+                WHERE total > ?3";
+    tx.execute(
+        &format!("DELETE FROM revision_changes WHERE rev IN ({over})"),
+        params![source, scope, DETAIL_BYTES],
+    )
+    .map_err(sql)?;
+    tx.execute(
+        &format!("UPDATE revisions SET detail = 'expired' WHERE id IN ({over})"),
+        params![source, scope, DETAIL_BYTES],
+    )
+    .map_err(sql)?;
+    Ok(true)
 }
 
 /// Deletes retired generations of `source` and `scope` beyond the newest `keep`, and snapshots no
@@ -1971,7 +2233,8 @@ pub fn rebuild_scope(
 
 /// `index track`: turns change tracking on for published scope `scope` of each chosen source and
 /// builds its baseline as a rebuild, which never reuses an unchanged snapshot and stores the
-/// scope's facets. A scope already tracked keeps its epoch and builds nothing.
+/// scope's facets; its publication records the baseline revision. A scope already tracked
+/// keeps its epoch and builds nothing unless its baseline is still pending.
 pub fn track(
     storage: &Storage,
     select: &Select,
@@ -2054,6 +2317,10 @@ fn set_tracking(
                 params![source_id, scope, search::diff::facet_version(), now_ms()],
             )
             .map_err(sql)?;
+            started = true;
+        } else if on && state.as_deref() == Some("baseline_pending") {
+            // A build that started before tracking stored no facets, so its publication left
+            // the baseline pending: tracking again builds it.
             started = true;
         } else if !on && tracked {
             tx.execute(
