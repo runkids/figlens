@@ -80,7 +80,14 @@ await check('packaged descriptor, bridge handshake and absolute design path', as
     const read = await callTool(connection, 'find', { file: path.join(project, 'mapping.fig'), query: 'Mapping review' });
     assert.equal(read.isError, false);
     assert.equal(read.structuredContent.results[0].id, '0:1');
-    return { descriptorCwd: config.cwd, bridge: config.args[0], absoluteFrame: '0:1', relativePathRejected: true };
+    const searched = await callTool(connection, 'search', { file: path.join(project, 'mapping.fig'), query: 'Mapping review' });
+    assert.equal(searched.isError, false);
+    assert.equal(searched.structuredContent.results[0].ref.nodeId, '0:1');
+    assert.equal(searched.structuredContent.coverage.complete, true);
+    const inspected = await callTool(connection, 'inspect', { file: path.join(project, 'mapping.fig'), node: searched.structuredContent.results[0].ref.nodeId });
+    assert.equal(inspected.structuredContent.node.id, '0:1');
+    return { descriptorCwd: config.cwd, bridge: config.args[0], absoluteFrame: '0:1', relativePathRejected: true,
+      searchRef: searched.structuredContent.results[0].ref };
   } finally { await disconnectServer(connection); }
 });
 await check('native disabled and remote overrides retain priority over the package descriptor', async () => {

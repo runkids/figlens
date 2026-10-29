@@ -77,9 +77,15 @@ def check_mcp(command, cwd, env, fixture, version):
         assert initialized['serverInfo']['version'] == version, initialized
         request('notifications/initialized', {})
         tools = request('tools/list', {})['tools']
-        assert {'find', 'inspect', 'nodes', 'bundle', 'export', 'workflow'} <= {t['name'] for t in tools}
+        assert {'find', 'search', 'inspect', 'nodes', 'bundle', 'export', 'workflow'} <= {t['name'] for t in tools}
         found = request('tools/call', {'name': 'find', 'arguments': {'file': str(fixture), 'query': 'First success', 'type': 'FRAME'}})
         assert found['isError'] is False and found['structuredContent']['results'][0]['id'] == '0:1', found
+        searched = request('tools/call', {'name': 'search', 'arguments': {'file': str(fixture), 'query': 'First success'}})
+        assert searched['isError'] is False and searched['structuredContent']['results'][0]['ref']['nodeId'] == '0:1', searched
+        assert searched['structuredContent']['coverage']['complete'] is True, searched
+        ref = searched['structuredContent']['results'][0]['ref']['nodeId']
+        opened = request('tools/call', {'name': 'inspect', 'arguments': {'file': str(fixture), 'node': ref}})
+        assert opened['isError'] is False and opened['structuredContent']['node']['id'] == ref, opened
         failed = request('tools/call', {'name': 'inspect', 'arguments': {'file': str(fixture), 'node': '9:9'}})
         assert failed['isError'] is True and failed['_meta']['figlens']['code'] == 'node_not_found', failed
         schema = next(t for t in tools if t['name'] == 'inspect')['inputSchema']
@@ -102,4 +108,4 @@ def check_mcp(command, cwd, env, fixture, version):
         cli_audit = run([*command[:-1], 'workflow', 'audit'], cwd, env)
         assert '# Audit an existing UI' in cli_audit
         assert cli_audit.split('# Audit an existing UI', 1)[1].rstrip() == audit['content'][0]['text'].split('# Audit an existing UI', 1)[1].rstrip()
-    return {"recoveredAfterMissingNode": True, "numericPreflight": True, "strictRejectionAndRecovery": True, "stdout": "JSON-RPC only"}
+    return {"recoveredAfterMissingNode": True, "searchedExactRef": True, "numericPreflight": True, "strictRejectionAndRecovery": True, "stdout": "JSON-RPC only"}

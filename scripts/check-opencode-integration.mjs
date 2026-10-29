@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -18,7 +19,56 @@ await mkdir(path.join(project, 'src'), { recursive: true });
 await mkdir(config);
 await copyFile(new URL('../samples/plugin-research/fixtures/mapping.fig', import.meta.url), path.join(project, 'mapping.fig'));
 await writeFile(path.join(project, 'src/Button.mjs'), 'export const Button = () => "button";\n');
-await writeFile(path.join(config, 'opencode.json'), JSON.stringify({ plugins: [pathToFileURL(packaged).href] }));
+// Scripted loopback provider: each turn returns a fixed Code Mode `execute` call (find the figlens
+// paths, search, then inspect the returned ref), so the real session loop runs the managed MCP
+// tools. Deterministic routing evidence, not a model.
+const scripted = { results: [], tools: null };
+const fixture = path.join(project, 'mapping.fig');
+// A step without its prerequisite ends the turn, so a missing tool fails the check instead of retrying.
+const tool = (paths, name) => Array.isArray(paths) && paths.find(item => item.endsWith(`.${name}`) || item.endsWith(`["${name}"]`));
+const steps = [
+  () => `return ['search', 'inspect'].flatMap(query => search({ query, namespace: 'figlensmcp' }).items.map(item => item.path));`,
+  paths => tool(paths, 'search') && `return await ${tool(paths, 'search')}(${JSON.stringify({ file: fixture, query: 'Mapping review' })});`,
+  (paths, found) => found?.results?.[0] && `return await ${tool(paths, 'inspect')}(${JSON.stringify({ file: fixture, node: found.results[0].ref.nodeId })});`,
+];
+const value = text => { try { return JSON.parse(text); } catch { return text; } };
+const provider = createServer((request, response) => reply(request, response).catch(error => {
+  scripted.error = error.stack;
+  response.writeHead(500).end();
+}));
+async function reply(request, response) {
+  let body = '';
+  for await (const chunk of request) body += chunk;
+  const { messages, tools } = JSON.parse(body);
+  scripted.tools ??= (tools ?? []).map(tool => tool.function?.name);
+  scripted.raw = messages.filter(message => message.role === 'tool').map(message =>
+    typeof message.content === 'string' ? message.content : message.content.map(part => part.text ?? '').join(''));
+  scripted.results = scripted.raw.map(value);
+  const code = steps[scripted.results.length]?.(...scripted.results);
+  const delta = code
+    ? { tool_calls: [{ index: 0, id: `call_${scripted.results.length}`, type: 'function', function: { name: 'execute', arguments: JSON.stringify({ code }) } }] }
+    : { content: 'done' };
+  const chunk = choice => `data: ${JSON.stringify({ id: 'scripted', object: 'chat.completion.chunk', created: 0, model: 'scripted', choices: [choice] })}\n\n`;
+  response.writeHead(200, { 'content-type': 'text/event-stream' });
+  response.end(chunk({ index: 0, delta: { role: 'assistant', ...delta } })
+    + chunk({ index: 0, delta: {}, finish_reason: code ? 'tool_calls' : 'stop' }) + 'data: [DONE]\n\n');
+}
+await new Promise(resolve => provider.listen(0, '127.0.0.1', resolve));
+const probe = path.join(config, 'scripted-provider');
+await mkdir(probe);
+await writeFile(path.join(probe, 'package.json'), JSON.stringify({ name: 'figlens-scripted-provider', type: 'module', exports: { '.': './index.mjs' } }));
+await writeFile(path.join(probe, 'index.mjs'), `import { Plugin } from '@opencode/plugin';
+export default Plugin.define({ id: 'figlens-scripted-provider', async setup(ctx) {
+  await ctx.provider.transform(editor => editor.add({
+    info: { id: 'figlens-scripted', name: 'Scripted loopback', activation: 'auto', package: '@opencode/ai/providers/openai-compatible',
+      settings: { baseURL: 'http://127.0.0.1:${provider.address().port}/v1', apiKey: 'dummy-local' } },
+    models: [{ id: 'scripted', modelID: 'scripted', providerID: 'figlens-scripted', type: 'chat', name: 'Scripted', settings: {},
+      capabilities: { tools: true, input: ['text'], output: ['text'], temperature: false }, variants: [], time: { released: 0 },
+      cost: [], status: 'active', enabled: true, limit: { context: 131072, output: 8192 } }],
+  }));
+} });
+`);
+await writeFile(path.join(config, 'opencode.json'), JSON.stringify({ plugins: [pathToFileURL(packaged).href, pathToFileURL(probe).href] }));
 const execute = promisify(execFile);
 const flow = new Workflow(project, async args => JSON.parse((await execute(binary, args, { cwd: project })).stdout));
 const proposal = instance => ({ instance, target: { path: 'src/Button.mjs', export: 'Button', import: 'import { Button } from "./src/Button.mjs";', example: 'Button()' }, rationale: 'Original synthetic fixture' });
@@ -63,11 +113,29 @@ try {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     assert.equal(status.mcp.managed, true);
+    assert.equal(status.mcp.server, 'figlensmcp');
     assert.equal(status.mcp.status.status, 'connected');
     for (const tool of ['figlens_preview', 'figlens_bindings', 'figlens_propose_bindings']) assert.ok(status.mcp.tools.includes(tool), tool);
     const skills = await client.skill.list({ location });
     assert.ok(JSON.stringify(skills).includes('figlens'));
     return { mcp: status.mcp, skills: skills.data.map(skill => skill.name) };
+  });
+  await check('session tool calls run managed MCP search and inspect its exact ref', async () => {
+    const searching = await client.session.create({ location, title: 'Scripted search', permissions: [{ action: '*', resource: '*', effect: 'allow' }] });
+    await client.session.switchModel({ sessionID: searching.id, model: { id: 'scripted', providerID: 'figlens-scripted' } });
+    await client.session.prompt({ sessionID: searching.id, text: 'Find the mapping review frame.' });
+    await client.session.wait({ sessionID: searching.id }, { signal: AbortSignal.timeout(60000) })
+      .catch(error => { throw new Error(`${error.message}; provider: ${scripted.error}; ${JSON.stringify(scripted.raw).slice(0, 2000)}`); });
+    assert.ok(!scripted.error, scripted.error + JSON.stringify(scripted.raw).slice(0, 2000));
+    const [paths, search, inspect] = scripted.results;
+    assert.ok(Array.isArray(paths) && paths.some(item => /search/.test(item)) && paths.some(item => /inspect/.test(item)), JSON.stringify(scripted.raw).slice(0, 2000));
+    assert.equal(search.results[0].ref.nodeId, '0:1', JSON.stringify(search).slice(0, 2000));
+    assert.equal(search.coverage.complete, true);
+    assert.equal(inspect.node.id, search.results[0].ref.nodeId, JSON.stringify(inspect).slice(0, 2000));
+    const context = await client.session.context({ sessionID: searching.id });
+    assert.ok(JSON.stringify(context).includes('done'));
+    return { paths: paths.filter(item => /search|inspect/.test(item)), searchRef: search.results[0].ref, inspected: inspect.node.id,
+      toolResults: scripted.results.length, provider: 'scripted loopback, not a model' };
   });
   await check('production local select exports real PNG bytes', async () => {
     const selected = await rpc.run({ sessionID: session.id, action: 'select', file: 'mapping.fig', node: '0:1' }, options);
@@ -154,6 +222,7 @@ try {
     return { ownedViewerClosed: true, operationRpcReloaded: true };
   });
 } finally {
+  provider.close();
   server.kill('SIGTERM');
   const timer = setTimeout(() => server.kill('SIGKILL'), 10000);
   result.serverExit = await exited;
