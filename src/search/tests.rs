@@ -1307,3 +1307,30 @@ fn search_coverage_marks_the_kinds_extraction_left_unverified_partial() {
         (&json!("partial"), &json!("ready"))
     );
 }
+
+#[test]
+fn loading_records_charges_their_edges_to_the_query_bytes() {
+    let message = message();
+    let index = build(&Tree::new(&message), "0:0", bounds(WORK));
+    let conn = stored(&index);
+    let mut partial = store::load(&conn, 1, &[], &mut 0).unwrap();
+    let all: Vec<u32> = (0..index.records.len() as u32).collect();
+    let text: usize = index
+        .records
+        .iter()
+        .map(|r| {
+            r.name.len()
+                + r.text.as_ref().map_or(0, String::len)
+                + r.norm[0].len()
+                + r.norm[1].len()
+        })
+        .sum();
+    assert!(index.records.iter().any(|r| !r.edges.is_empty()));
+    // Room for every record's text, none for its edges.
+    let mut spent = BYTES - text;
+    let err = store::add(&conn, 1, &mut partial, &all, &mut spent).unwrap_err();
+    assert_eq!(
+        err.downcast_ref::<FigError>().map(FigError::kind),
+        Some(ErrorKind::QueryWorkLimit)
+    );
+}

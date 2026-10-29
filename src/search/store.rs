@@ -511,6 +511,13 @@ pub(crate) fn add(
         if count > WORK {
             return Err(bad());
         }
+        // Target and evidence, measured in SQLite's buffer and charged before they are copied.
+        let size = 64
+            + [3, 6]
+                .into_iter()
+                .map(|i| text_len(row, i))
+                .sum::<rusqlite::Result<usize>>()?;
+        charge_query(spent, size)?;
         edges.entry(row.get(0)?).or_default().push(edge(row, 1)?);
     }
     let mut stmt = conn.prepare_cached(
@@ -525,23 +532,9 @@ pub(crate) fn add(
         // Name, text and both normalized fields, measured in SQLite's buffer before any copy.
         let size = [2, 4, 5, 6]
             .into_iter()
-            .map(|i| {
-                Ok(match row.get_ref(i)? {
-                    rusqlite::types::ValueRef::Text(t) | rusqlite::types::ValueRef::Blob(t) => {
-                        t.len()
-                    }
-                    _ => 0,
-                })
-            })
+            .map(|i| text_len(row, i))
             .sum::<rusqlite::Result<usize>>()?;
-        *spent = spent.saturating_add(size);
-        if *spent > BYTES {
-            return Err(FigError::new(
-                ErrorKind::QueryWorkLimit,
-                format!("the records this search needs exceed {BYTES} bytes"),
-            )
-            .into());
-        }
+        charge_query(spent, size)?;
         let record = Record {
             id: need(text_at(row, 1, ID_BYTES)?)?,
             name: need(text_at(row, 2, TEXT_BYTES)?)?,
@@ -579,6 +572,27 @@ pub(crate) fn add(
         .collect();
     all.sort_unstable_by_key(|(rid, _)| *rid);
     (index.rids, index.records) = all.into_iter().unzip();
+    Ok(())
+}
+
+/// The length of text or blob column `i` in SQLite's buffer, without copying it.
+fn text_len(row: &rusqlite::Row, i: usize) -> rusqlite::Result<usize> {
+    Ok(match row.get_ref(i)? {
+        rusqlite::types::ValueRef::Text(t) | rusqlite::types::ValueRef::Blob(t) => t.len(),
+        _ => 0,
+    })
+}
+
+/// Adds `size` to the bytes a query has copied, refusing past `BYTES`.
+fn charge_query(spent: &mut usize, size: usize) -> Result<()> {
+    *spent = spent.saturating_add(size);
+    if *spent > BYTES {
+        return Err(FigError::new(
+            ErrorKind::QueryWorkLimit,
+            format!("the records this search needs exceed {BYTES} bytes"),
+        )
+        .into());
+    }
     Ok(())
 }
 
