@@ -314,6 +314,28 @@ pub fn prepare(
         place.binding = Some(binding);
     }
     let (ws, initialized) = open_for_prepare(&place, &id, &locator)?;
+    if project.is_none() {
+        // A source-scoped workspace whose source moved away keeps it; a new file at the old
+        // path is not added beside it.
+        let moved: Option<String> = ws
+            .conn
+            .query_row(
+                "SELECT path FROM sources WHERE path <> ?1",
+                [utf8(&source)?],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(sql)?;
+        if let Some(moved) = moved {
+            return Err(fail(
+                ErrorKind::InvalidArguments,
+                format!(
+                    "workspace {id} now holds {moved}, relocated from {}; prepare that file, or reset this workspace to index the new file here",
+                    source.display()
+                ),
+            ));
+        }
+    }
     registered(storage, place, ws, initialized, &source, options)
 }
 

@@ -67,15 +67,19 @@ impl Storage {
         let Some(allowed) = &self.allowed else {
             return Ok(());
         };
-        // Judged where the path really leads, `..` and links included, before anything is
-        // created there; a path that cannot be resolved is refused.
+        // Judged where the path really leads, links included, before anything is created
+        // there; `..` is refused outright, since a missing directory before it hides where the
+        // rest leads, and a path that cannot be resolved is refused.
         let defaults = [
             &self.defaults.config.path,
             &self.defaults.state.path,
             &self.defaults.cache.path,
             &self.defaults.data.path,
         ];
-        if let Some(dir) = resolved(dir)
+        if !dir
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+            && let Some(dir) = resolved(dir)
             && allowed
                 .iter()
                 .chain(defaults)

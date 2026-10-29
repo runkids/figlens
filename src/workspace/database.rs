@@ -32,12 +32,16 @@ pub(super) fn unaliased(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The hard links of `path`; a file another connection removed since it was listed (SQLite
+/// deletes `-shm` and `-journal` on close) has none to write through, so it counts as one.
 #[cfg(unix)]
 pub(super) fn links(path: &Path) -> Result<u64> {
     use std::os::unix::fs::MetadataExt;
-    Ok(std::fs::symlink_metadata(path)
-        .map_err(|e| storage_error(path, e))?
-        .nlink())
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => Ok(meta.nlink()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(1),
+        Err(e) => Err(storage_error(path, e)),
+    }
 }
 
 #[cfg(windows)]
@@ -46,7 +50,11 @@ pub(super) fn links(path: &Path) -> Result<u64> {
     use windows_sys::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
     };
-    let file = File::open(path).map_err(|e| storage_error(path, e))?;
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(1),
+        Err(e) => return Err(storage_error(path, e)),
+    };
     // SAFETY: a valid open handle and an out struct the call fills on success.
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } == 0 {

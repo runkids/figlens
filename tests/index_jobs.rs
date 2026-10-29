@@ -727,3 +727,66 @@ fn an_unusable_workspace_lists_stateless_search_of_the_named_file() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("\"stateless_search\""), "{stderr}");
 }
+
+#[cfg(unix)]
+#[test]
+fn a_source_replaced_by_a_fifo_is_reported_unreadable_without_blocking() {
+    let env = Env::new();
+    let project = env.dir.join("project");
+    std::fs::create_dir(&project).unwrap();
+    let dir = std::fs::canonicalize(project).unwrap();
+    let dir = dir.to_str().unwrap();
+    let fig = env.fig("a.fig");
+    env.json(&[
+        "index",
+        "prepare",
+        fig.to_str().unwrap(),
+        "--workspace",
+        dir,
+        "--scope",
+        "0:0",
+    ]);
+    std::fs::remove_file(&fig).unwrap();
+    assert!(Command::new("mkfifo").arg(&fig).status().unwrap().success());
+    let mut search = env.spawn(&["search", "--workspace", dir, "first"], None);
+    let start = Instant::now();
+    while search.try_wait().unwrap().is_none() {
+        if start.elapsed() > Duration::from_secs(10) {
+            let _ = search.kill();
+            panic!("search blocked on a FIFO source");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let out = search.wait_with_output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no searched source can be read"));
+}
+
+#[test]
+fn the_old_path_of_a_relocated_source_does_not_serve_it_under_that_name() {
+    let env = Env::new();
+    let old = env.fig("a.fig");
+    let prepared = env.json(&["index", "prepare", old.to_str().unwrap(), "--scope", "0:0"]);
+    let new = env.dir.join("moved.fig");
+    std::fs::rename(&old, &new).unwrap();
+    let new = std::fs::canonicalize(new).unwrap();
+    let source = prepared["source"]["sourceId"].as_str().unwrap();
+    let (old_s, new_s) = (old.to_str().unwrap(), new.to_str().unwrap());
+    env.json(&["index", "relocate", source, new_s, "--file", old_s]);
+    // A different design now sits at the old path.
+    std::fs::copy("examples/first-success/design.fig", &old).unwrap();
+    let searched = env.run(&["search", "--file", old_s, "first"]);
+    assert!(!searched.status.success());
+    let stderr = String::from_utf8_lossy(&searched.stderr);
+    assert!(
+        stderr.contains("relocated") && stderr.contains(new_s),
+        "{stderr}"
+    );
+    let prepared_again = env.run(&["index", "prepare", old_s]);
+    assert!(!prepared_again.status.success());
+    assert!(String::from_utf8_lossy(&prepared_again.stderr).contains("relocated"));
+    // The new path still selects the workspace.
+    assert_eq!(
+        env.json(&["index", "status", "--file", new_s])["workspaceId"],
+        prepared["workspaceId"]
+    );
+}

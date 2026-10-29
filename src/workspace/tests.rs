@@ -981,3 +981,21 @@ fn a_stale_alias_neither_blocks_nor_captures_a_new_prepare_of_its_path() {
     reset(&f.storage, &Select::Id(id_of(&fresh))).unwrap();
     assert!(prepare(&f.storage, &b, None).is_ok());
 }
+
+#[cfg(unix)]
+#[test]
+fn server_storage_roots_refuse_parent_steps_that_reenter_a_link_out_of_them() {
+    let f = Fixture::new();
+    let allowed = std::path::absolute(f.dir.join("allowed")).unwrap();
+    let outside = std::path::absolute(f.dir.join("outside")).unwrap();
+    std::fs::create_dir_all(&allowed).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, allowed.join("link")).unwrap();
+    let combined = allowed.join("missing/../link/store");
+    let storage = Fixture::at(&f.home, Some(&combined)).allow(std::slice::from_ref(&allowed));
+    assert_eq!(
+        kind(&*prepare(&storage, &f.fig("a.fig"), None).unwrap_err()),
+        ErrorKind::PermissionDenied
+    );
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+}

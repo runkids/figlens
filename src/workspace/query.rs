@@ -119,6 +119,7 @@ fn search_index(
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(sql)?;
     drop(stmt);
+    relocated(storage, select, rows.iter().map(|r| r.path.as_str()), req)?;
     // Invisible sources are dropped before anything about them is read or counted.
     let rows: Vec<Row> = rows
         .into_iter()
@@ -160,8 +161,9 @@ fn search_index(
         }
         let refresh = json!({"tool": "index", "arguments": {"action": "refresh",
             "workspaceId": ws_id, "sourceId": row.id, "scope": req.scope}});
+        // Regular-file checks come before any open, so a source replaced by a FIFO cannot block.
         let stamp =
-            search::stamp(Path::new(&row.path)).and_then(|s| File::open(&row.path).map(|_| s));
+            readable(Path::new(&row.path)).and_then(|p| search::stamp(&p).map_err(Into::into));
         let current =
             row.gen_id.is_some() && row.gen_membership.as_deref() == Some(&row.membership);
         let label = match (&stamp, current, &job) {
@@ -307,6 +309,33 @@ fn search_index(
     out["sources"] = json!(states);
     out["nextSteps"] = json!(steps);
     Ok(out)
+}
+
+/// A `--file` whose workspace no longer holds that path (its source was relocated) must not
+/// serve the moved source under the old name; it names where the source went when visible.
+fn relocated<'a>(
+    storage: &Storage,
+    select: &Select,
+    mut paths: impl Iterator<Item = &'a str> + Clone,
+    req: &Request,
+) -> Result<()> {
+    let Select::Locator(Locator::Source(asked)) = select else {
+        return Ok(());
+    };
+    let asked = utf8(asked)?;
+    if paths.clone().any(|p| p == asked) {
+        return Ok(());
+    }
+    match paths.find(|p| storage.sees(Path::new(p))) {
+        Some(now) => Err(FigError::new(
+            ErrorKind::InvalidArguments,
+            format!("{asked} is no longer this workspace's source: it was relocated to {now}; search that file"),
+        )
+        .with_recovery(json!([{"action": "search_relocated", "requires": "none", "tool": "search",
+            "arguments": {"file": now, "query": req.query, "node": req.scope}}]))
+        .into()),
+        None => Ok(()),
+    }
 }
 
 /// A stored index this binary cannot read: rebuilding it is the recovery.
