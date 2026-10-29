@@ -316,6 +316,19 @@ test('CLI-path prepare with an explicit storage asks edit on the state root the 
   assert.deepEqual(ran, ['status'], 'nothing was written');
 });
 
+test('CLI-path workspace search of a missing workspace returns the binary\'s own error, not an update request', async t => {
+  const { ctx, adapter } = await context(t);
+  const asked = [];
+  ctx.permission.assert = async ({ action, resources }) => { asked.push([action, ...resources]); };
+  const current = await adapter.scope('session');
+  current.run = async args => {
+    if (args[1] === 'status') return { stdout: JSON.stringify({ state: 'absent', paths: null, roots: { config: { path: '/c' } } }) };
+    throw Object.assign(new Error('exit 1'), { stderr: 'figlens: workspace ws_0 is not prepared; run `figlens index prepare <file.fig>` first' });
+  };
+  await assert.rejects(adapter.cli(current, 'search', { workspaceId: 'ws_0', query: 'a' }), /ws_0 is not prepared/);
+  assert.deepEqual(asked, []);
+});
+
 test('CLI-path calls refuse a gs:// design before any permission or command, since its cache read is unauthorizable', async t => {
   const { ctx, adapter } = await context(t);
   const asked = [], ran = [];
