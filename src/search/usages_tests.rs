@@ -1730,3 +1730,26 @@ fn only_vector_regions_a_geometry_paints_lend_their_images_and_paint_bindings() 
         ]
     );
 }
+
+#[test]
+fn a_queried_definition_too_long_for_the_reply_is_a_budget_error() {
+    let long = "v".repeat(crate::search::REPLY_BYTES + 1);
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(2, Some(1), "FRAME", "Plain", vec![]),
+            node(9, Some(0), "CANVAS", "Internal", vec![]),
+            node(90, Some(9), "VARIABLE", &long, vec![]),
+        ]),
+    )]);
+    let index = build(&Tree::new(&message), "0:1", bounds(WORK));
+    let mut r = req("VariableID:0:90");
+    r.scope = "0:1".into();
+    let err = run(&index, &r).unwrap_err();
+    assert_eq!(
+        err.downcast_ref::<FigError>().map(FigError::kind),
+        Some(ErrorKind::ResponseBudget)
+    );
+}

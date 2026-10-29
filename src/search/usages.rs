@@ -226,6 +226,22 @@ pub(crate) fn extract(
             }
         }
     }
+    // The row paints copied below and by `rest::bound_variables` are charged first; each field
+    // was read within `VISITS`, so two fields' estimates fit twice that.
+    fn rows(t: Option<&Json>) -> impl Iterator<Item = &Json> {
+        t.and_then(|t| t["styleOverrideTable"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|s| s.get("fillPaints"))
+    }
+    let mut left = 2 * VISITS;
+    let copies: usize = rows(fields.get("vectorData"))
+        .chain(rows(fields.get("textData")))
+        .map(|p| json_bytes(p, &mut left))
+        .sum();
+    if !bounds.charge(2 * VISITS - left, copies) {
+        return None;
+    }
     // REST lists no vector-region fills; usages reads their bindings like top-level fills.
     let regions: Json = fields
         .get("vectorData")
@@ -1238,6 +1254,13 @@ pub(crate) fn query(
             }
         },
     };
+    // The queried definition is copied into every reply, so it counts toward each page's budget.
+    let head = definition.as_ref().map_or(0, |d| {
+        d.name.len()
+            + d.kind.len()
+            + d.set.as_ref().map_or(0, String::len)
+            + d.page.as_ref().map_or(0, String::len)
+    });
     let kind = definition.as_ref().map(|d| d.kind.as_str()).unwrap_or("");
     let mut members = Vec::new();
     let mut members_complete = true;
@@ -1274,7 +1297,7 @@ pub(crate) fn query(
         // Each target's definition is read once, and the reply budget is checked as it grows,
         // so repeated or large definitions never pile up copies past the budget.
         let mut defs: HashMap<&str, Option<Definition>> = HashMap::new();
-        let mut bytes = 0;
+        let mut bytes = head;
         for (_, e) in &hits {
             let name = match e.target.as_deref() {
                 Some(t) => {
@@ -1320,10 +1343,11 @@ pub(crate) fn query(
         let rids: Vec<u32> = found.iter().map(|h| h.0).collect();
         graph.load(&rids)?;
         let index = graph.index();
-        let bytes: usize = found
-            .iter()
-            .map(|(rid, _)| super::location_bytes(index, *rid))
-            .sum();
+        let bytes: usize = head
+            + found
+                .iter()
+                .map(|(rid, _)| super::location_bytes(index, *rid))
+                .sum::<usize>();
         if bytes > super::REPLY_BYTES {
             return Err(budget());
         }

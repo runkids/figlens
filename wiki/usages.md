@@ -28,7 +28,7 @@ Rules: a target that is not in the file stays as an explicit `missing`/`unresolv
 - No totals. `coverage.complete` is false after a budget stop or truncated members. Hidden instance content that was never expanded is a reason, not incompleteness. Hidden layers are left out unless requested; when the last page left any out, `hidden_locations_excluded` says so, so an empty page never reads as "unused". `layers.relations` stays `partial` with `relation_unavailable: library_identity`.
 - `snapshotId` pins the revision: a mismatch is `source_stale` with `use_current_snapshot`.
 - The scope filters returned locations only; definitions are looked up anywhere in the index.
-- Results are checked against the reply byte budget before serialization, like search.
+- Results and the queried definition's name, type, set and page are checked against the reply byte budget before serialization, like search. Row paints copied for bindings are charged to the build bounds before they are copied.
 
 ## Stateless vs workspace
 
