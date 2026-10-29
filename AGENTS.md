@@ -43,7 +43,7 @@ python3 scripts/ai-context.py check     # validate paths, headings, links, orpha
 | `discovery` | Changing find or inspect summaries (fields, limits, truncation, `--flat` lines), `tree --top-frames` screen lists or `export --match-dir` icon matching |
 | `search` | Changing search indexing, normalization, ranking, cursors, coverage or its budgets |
 | `workspace` | Changing local workspace roots, identity, ownership, the SQLite registry, locks or index actions |
-| `index` | Changing durable index generations, index jobs (refresh, rebuild, clear_cache, cancel), publication fences or workspace search |
+| `index` | Changing index generations, jobs, publication or workspace search |
 | `bundle` | Changing the bundle zip, manifest, context.md, batch bundles, font inventory or `verify` |
 | `render` | Changing SVG or raster output: text and glyphs, image fills, effects, export areas, image adjustments |
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison |
@@ -83,7 +83,7 @@ Keep OpenCode's managed MCP key apart from the plugin's `figlens_*` tool names, 
 Image-fill changes must test shifted sprites exported from a clipping frame; see `render`.
 Background blur backdrops reference blur-free copies within the per-export budget, or nested blurs grow exponentially; see `render`.
 Reproduce a browser SVG misdraw with the consumer's optimizer and inlining before changing export coordinates or ids; see `render`.
-Mark a job cancelled only after its worker exits; publish only via the fence; see `index`.
+Cancel a job only after its worker exits; publish via fence; see `index`.
 
 ```sh
 docker compose run --rm dev cargo test
