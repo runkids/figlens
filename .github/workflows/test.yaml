@@ -206,8 +206,29 @@ jobs:
           if [ -n "$PI_VERSION" ]; then args+=(--pi-version "$PI_VERSION"); fi
           python -B scripts/check-installation.py "${args[@]}"
 
+  # The fixture needs only this checkout, so it builds while the candidate does instead of
+  # adding a minute after it.
+  mapping-fixture:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - name: Generate original local mapping fixture
+        run: |
+          mkdir -p samples/plugin-research/fixtures
+          docker compose run --rm dev cargo run --locked --example mapping-fixture -- samples/plugin-research/fixtures/mapping.fig
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mapping-fixture
+          path: samples/plugin-research/fixtures/mapping.fig
+          if-no-files-found: error
+          retention-days: 3
+
   host-installation:
-    needs: candidate
+    needs: [candidate, mapping-fixture]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -224,10 +245,10 @@ jobs:
         with:
           name: installation-candidate
           path: dist/candidate/
-      - name: Generate original local mapping fixture
-        run: |
-          mkdir -p samples/plugin-research/fixtures
-          docker compose run --rm dev cargo run --locked --example mapping-fixture -- samples/plugin-research/fixtures/mapping.fig
+      - uses: actions/download-artifact@v4
+        with:
+          name: mapping-fixture
+          path: samples/plugin-research/fixtures/
       - name: Install isolated fixed host SDKs and verify OpenCode runtime bytes
         run: |
           npm install --prefix samples/plugin-research/hosts/omp --ignore-scripts --no-audit --no-fund @oh-my-pi/pi-coding-agent@18.13.2
