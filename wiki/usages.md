@@ -50,4 +50,4 @@ On one private 100 MB component library (11,557 records, scope `0:0`): cold CLI 
 
 - A ref without `snapshotId` is answered from the current revision; pass it to have an older ref rejected.
 - Alias chains between variables, variable modes, and detached copies (no detach field is decoded) are not edges.
-- Viewer relation panel and Pi/OpenCode/OMP host tools are later #91 slices.
+- The viewer relation panel is a later #91 slice.

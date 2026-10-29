@@ -103,7 +103,7 @@ pi install npm:@runkids/figlens
 
 重新啟動 Pi 或執行 `/reload`，然後用一般的話請它做一個畫面。Pi 會找到 frame，透過自動註冊的 MCP 伺服器讀取，並用你的技術堆疊實作。不需要 node ID，不需要全域 CLI。
 
-請它找文案或畫面時，會直接搜尋 `.fig`，不儲存任何東西。需要反覆搜尋時，請 Pi 為某個設計和範圍啟用索引：它會準備一次本機索引（不需要設定指令），完成前回報工作狀態，之後在重新啟動和其他 host 中繼續使用。重設該索引需要你明確要求。 詳情：[本機索引](#local-index)。
+請它找文案或畫面時，會直接搜尋 `.fig`，不儲存任何東西。需要反覆搜尋時，請 Pi 為某個設計和範圍啟用索引：它會準備一次本機索引（不需要設定指令），完成前回報工作狀態，之後在重新啟動和其他 host 中繼續使用。重設該索引需要你明確要求。詢問某個 component、variable、style 或圖片用在哪裡時，會以同樣方式列出精確的 usages：直接讀 `.fig`，或在啟用索引後讀該索引。 詳情：[本機索引](#local-index)。
 
 - `/figlens plan <request>` 只產生計劃書，不修改應用程式。
 - `/figlens yolo <request>` 規劃、實作、檢查，並清理自己的暫存規劃。
@@ -198,7 +198,7 @@ MCP：`index` 的 prepare 會回傳一個 job；輪詢 `jobs` 直到 `succeeded`
 
 資料：SQLite 資料庫保存已註冊的本機路徑、所選範圍的圖層名稱與有效文字、搜尋 postings、精確關係（包含、實例、變體、變數/樣式/圖片綁定、原型目標）及其指向的定義、雜湊、generation 和 job。原始 `.fig` 留在原處且保持不變；其原始位元組不會存入資料庫。
 
-Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，workspace 可跨重啟和宿主重複使用。尚未實作：檔案監看、Pi、OpenCode 與 OMP 的 usages 工具、向量、事件與訂閱。
+Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，workspace 可跨重啟和宿主重複使用。尚未實作：檔案監看、向量、事件與訂閱。
 
 <a id="commands"></a>
 

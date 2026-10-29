@@ -27,22 +27,36 @@ const required = (input, name) => {
   return input[name];
 };
 
-// The MCP index, jobs, search and inspect arguments as the same CLI command, for the plugin's CLI path.
+// The MCP index, jobs, search, usages and inspect arguments as the same CLI command, for the plugin's CLI path.
 export function cliArgs(tool, input) {
   const storage = flag('--storage', input.storage);
   if (tool === 'jobs') return ['jobs', input.action, required(input, 'jobId'), ...storage];
   if (tool === 'inspect') return ['inspect', required(input, 'file'), required(input, 'node'), ...flag('--depth', input.depth),
     ...flag('--images', input.images), ...flag('--states', input.states), ...flag('--flat', input.flat), ...flag('--compare-variant', input.compareVariant)];
-  if (tool === 'search') {
-    // As the MCP search tool: one corpus, and source narrowing never silently disappears.
+  // As the MCP search and usages tools: one corpus, and source narrowing never silently disappears.
+  const corpus = () => {
     if (!input.file === !input.workspaceId || (input.file && (input.sourceId || input.storage)))
-      throw new Error('search needs file or workspaceId, not both; sourceId and storage apply to workspaceId');
-    const target = input.file ? [input.file] : ['--id', required(input, 'workspaceId'), ...flag('--source', input.sourceId), ...storage];
+      throw new Error(`${tool} needs file or workspaceId, not both; sourceId and storage apply to workspaceId`);
+    return input.file ? [input.file] : ['--id', input.workspaceId, ...flag('--source', input.sourceId), ...storage];
+  };
+  if (tool === 'search') {
+    const target = corpus();
     const flags = [...flag('--node', input.node), ...flag('--type', input.type), ...flag('--limit', input.limit),
       ...flag('--cursor', input.cursor), ...flag('--include-hidden', input.includeHidden),
       ...flag('--include-internal', input.includeInternal), ...flag('--mode', input.mode)];
     // Workspace search reads everything after -- as the query, so a query may start with '-'.
     return input.file ? ['search', ...target, required(input, 'query'), ...flags] : ['search', ...target, ...flags, '--', required(input, 'query')];
+  }
+  if (tool === 'usages') {
+    const target = corpus();
+    if (!input.node === !input.resource) throw new Error('usages needs node or resource, not both');
+    // The CLI tells a resource from a layer by its prefix, so a mislabelled target would silently switch kinds; same messages as the core.
+    const resource = /^(VariableID:|StyleKey:|image:)/.test(input.node ?? input.resource);
+    if (input.resource && !resource) throw new Error('resource takes a VariableID:…, StyleKey:… or image:… id; pass a layer id as node');
+    if (input.node && resource) throw new Error('node takes a layer id; pass VariableID:…, StyleKey:… or image:… as resource');
+    return ['usages', ...target, input.node ?? input.resource, ...flag('--scope', input.scope), ...flag('--relation', input.relation),
+      ...flag('--out', input.direction === 'out'), ...flag('--snapshot', input.snapshotId), ...flag('--include-hidden', input.includeHidden),
+      ...flag('--limit', input.limit), ...flag('--cursor', input.cursor)];
   }
   // Every given selector and scope field reaches the CLI, which refuses conflicting selectors and fields an
   // action does not take, so none is dropped into a broader operation. A file is the operand of prepare, add
@@ -255,6 +269,8 @@ export function createAdapter(ctx, entry = import.meta.url) {
     return null;
   };
   async function cli(current, tool, input) {
+    // Invalid or conflicting arguments fail before any permission prompt.
+    const args = cliArgs(tool, input);
     const invoke = async (args, text = false) => {
       const build = args[0] === 'index' && ['prepare', 'refresh', 'rebuild'].includes(args[1]);
       try { const { stdout } = await current.run(args, build ? 0 : undefined); return text ? { flat: stdout } : JSON.parse(stdout); }
@@ -299,7 +315,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
     // A design the CLI reads honours read rules on its requested and canonical paths, as Workflow.source does; the
     // CLI gets the path unnormalized, so a `..` after a link reads where the link leads.
     if (input.file && (tool !== 'index' || ['prepare', 'add', 'relocate'].includes(input.action))) await current.authorize('read', await both([input.file]));
-    // Workspace search, refresh and rebuild read the registered designs' content, which this session may deny.
+    // Workspace search and usages, refresh and rebuild read the registered designs' content, which this session may deny.
     const readSources = async ({ state, sources }) => {
       // A workspace that does not exist yet reads no design; the command then fails as the MCP tool does.
       if (['absent', 'uninitialized'].includes(state)) return;
@@ -307,7 +323,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
       const paths = sources.filter(source => !input.sourceId || source.sourceId === input.sourceId).map(source => source.path);
       await current.authorize('read', [...new Set((await Promise.all(paths.map(async file => [file, await realpath(file).catch(() => file)]))).flat())]);
     };
-    if (tool === 'search' && !input.file) await readSources(await status(input));
+    if (['search', 'usages'].includes(tool) && !input.file) await readSources(await status(input));
     if (tool === 'jobs' && input.action === 'cancel') {
       const { workspaceId } = await invoke(cliArgs('jobs', { ...input, action: 'status' }));
       if (!workspaceId) throw missing("a job's workspace");
@@ -339,7 +355,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
       }
     }
     // inspect --flat prints lines, as the MCP tool's flat field.
-    return invoke(cliArgs(tool, input), tool === 'inspect' && input.flat === true);
+    return invoke(args, tool === 'inspect' && input.flat === true);
   }
   async function dispose() {
     lifetime.abort();

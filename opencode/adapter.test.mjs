@@ -165,7 +165,7 @@ test('bundled launcher runs with node under a Bun-built host', () => {
   assert.equal(launcherRuntime({ node: '24.0.0' }, '/usr/bin/node'), '/usr/bin/node');
 });
 
-test('CLI path runs the MCP index, jobs, search and inspect arguments as the same commands', () => {
+test('CLI path runs the MCP index, jobs, search, usages and inspect arguments as the same commands', () => {
   assert.deepEqual(cliArgs('index', { action: 'prepare', file: '/d.fig', scope: '0:0', requestId: 'r' }),
     ['index', 'prepare', '/d.fig', '--scope', '0:0', '--request-id', 'r']);
   assert.deepEqual(cliArgs('index', { action: 'status', file: '/d.fig' }), ['index', 'status', '--file', '/d.fig']);
@@ -183,6 +183,14 @@ test('CLI path runs the MCP index, jobs, search and inspect arguments as the sam
   for (const input of [{ file: '/a.fig', workspaceId: 'ws_p', sourceId: 'b', query: 'Pay' }, { file: '/a.fig', storage: '/s', query: 'Pay' }, { query: 'Pay' }])
     assert.throws(() => cliArgs('search', input), /file or workspaceId, not both/);
   assert.throws(() => cliArgs('index', { action: 'remove', workspaceId: 'ws_1' }), /needs sourceId/);
+  assert.deepEqual(cliArgs('usages', { file: '/d.fig', node: 'I1:2;3:4', relation: 'instance_of,uses_style', direction: 'out', includeHidden: true, limit: 5 }),
+    ['usages', '/d.fig', 'I1:2;3:4', '--relation', 'instance_of,uses_style', '--out', '--include-hidden', '--limit', '5']);
+  assert.deepEqual(cliArgs('usages', { workspaceId: 'ws_1', sourceId: 's', resource: 'VariableID:1:2', scope: '0:1', direction: 'in', snapshotId: 'snap', cursor: 'c' }),
+    ['usages', '--id', 'ws_1', '--source', 's', 'VariableID:1:2', '--scope', '0:1', '--snapshot', 'snap', '--cursor', 'c']);
+  for (const [input, message] of [[{ file: '/a.fig', workspaceId: 'ws_p', node: '1:2' }, /file or workspaceId, not both/],
+    [{ file: '/a.fig', sourceId: 's', node: '1:2' }, /file or workspaceId, not both/], [{ file: '/a.fig', node: '1:2', resource: 'image:a' }, /node or resource, not both/],
+    [{ file: '/a.fig', resource: '1:2' }, /pass a layer id as node/], [{ file: '/a.fig', node: 'StyleKey:k' }, /as resource/]])
+    assert.throws(() => cliArgs('usages', input), message);
 });
 
 test('CLI-path writes ask edit where the binary places the workspace; only reset and recreation ask figlens_index', async t => {
@@ -436,12 +444,14 @@ test('CLI-path calls refuse a gs:// design before any permission or command, sin
   const current = await adapter.scope('session');
   current.run = async args => { ran.push(args[0]); return { stdout: '{}' }; };
   for (const [tool, input] of [['search', { file: 'gs://b/d.fig', query: 'a' }], ['inspect', { file: 'gs://b/d.fig', node: '0:1' }],
-    ['index', { action: 'prepare', file: 'gs://b/d.fig', scope: '0:0' }]])
+    ['index', { action: 'prepare', file: 'gs://b/d.fig', scope: '0:0' }], ['usages', { file: 'gs://b/d.fig', node: '0:1' }]])
     await assert.rejects(adapter.cli(current, tool, input), /local \.fig files only.*figlens MCP server/);
+  // Conflicting selectors fail the same way, before the read check of the file they name.
+  await assert.rejects(adapter.cli(current, 'usages', { file: '/d.fig', workspaceId: 'ws_1', node: '0:1' }), /not both/);
   assert.deepEqual([asked, ran], [[], []]);
 });
 
-test('CLI-path workspace search and rebuild ask read on the selected registered designs before reading them', async t => {
+test('CLI-path workspace search, usages and rebuild ask read on the selected registered designs before reading them', async t => {
   const { ctx, adapter } = await context(t);
   const asked = [], ran = [];
   ctx.permission.assert = async ({ action, resources }) => {
@@ -456,8 +466,10 @@ test('CLI-path workspace search and rebuild ask read on the selected registered 
   };
   await assert.rejects(adapter.cli(current, 'search', { workspaceId: 'ws_1', sourceId: 's1', node: '0:1', query: 'a' }), /read denied/);
   await assert.rejects(adapter.cli(current, 'index', { action: 'rebuild', workspaceId: 'ws_1' }), /read denied/);
-  assert.deepEqual(asked, [['read', '/a.fig'], ['read', '/a.fig', '/b.fig']]);
-  assert.deepEqual(ran, ['status', 'status'], 'only the read-only status ran');
+  await assert.rejects(adapter.cli(current, 'usages', { workspaceId: 'ws_1', sourceId: 's2', node: '0:1' }), /read denied/);
+  await assert.rejects(adapter.cli(current, 'usages', { file: '/c.fig', node: '0:1' }), /read denied/);
+  assert.deepEqual(asked, [['read', '/a.fig'], ['read', '/a.fig', '/b.fig'], ['read', '/b.fig'], ['read', '/c.fig']]);
+  assert.deepEqual(ran, ['status', 'status', 'status'], 'only the read-only status ran');
 });
 
 test('CLI-path reset keeps every selector and scope field, so the CLI refuses a narrower or conflicting reset before any write', async t => {

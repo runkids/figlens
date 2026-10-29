@@ -131,19 +131,23 @@ await check('first use through the packaged bridge: prepare, poll, search the pu
     assert.deepEqual(found.sources.map(source => source.state), ['ready']);
     const inspected = await content('inspect', { file, node: found.results[0].ref.nodeId });
     assert.equal(inspected.node.id, '0:1');
+    const used = await content('usages', { workspaceId: prepared.workspaceId, node: '0:10' });
+    assert.deepEqual(used.results.map(item => `${item.relation} ${item.ref.nodeId}`), ['instance_of 0:2', 'instance_of 0:3']);
     // OMP approves every MCP tool at the write tier and shows the call's arguments; it has no per-action rule.
     const index = MCPTool.fromTools(connection, listed).find(tool => tool.mcpToolName === 'index');
     const reset = { action: 'reset', file };
     const decide = (mode, policy) => resolveApproval(index, reset, mode, policy).policy;
     const decisions = { alwaysAsk: decide('always-ask'), userDeny: decide('yolo', { [index.name]: 'deny' }), yolo: decide('yolo') };
     assert.equal(index.approval, 'write');
+    const usages = MCPTool.fromTools(connection, listed).find(tool => tool.mcpToolName === 'usages');
+    assert.equal(usages.approval, 'write');
     assert.equal(decisions.alwaysAsk, 'prompt');
     assert.equal(decisions.userDeny, 'deny');
     // The README states this: OMP's default yolo mode runs reset without asking.
     assert.equal(decisions.yolo, 'allow');
     assert.match(index.formatApprovalDetails(reset).join('\n'), /reset/);
     return { workspaceId: prepared.workspaceId, dispatched: prepared.job.state, job: job.state, polls, ref: found.results[0].ref,
-      inspected: inspected.node.id, approvalTier: index.approval, resetDecisions: decisions };
+      inspected: inspected.node.id, usedBy: used.results.map(item => item.ref.nodeId), approvalTier: index.approval, usagesTier: usages.approval, resetDecisions: decisions };
   } finally {
     await disconnectServer(connection);
     for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : process.env[name] = value;
