@@ -41,7 +41,8 @@ python3 scripts/ai-context.py check     # validate paths, headings, links, orpha
 | `parsing` | Changing untrusted container/schema/value decoding or parsing budgets |
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields or variables |
 | `discovery` | Changing find or inspect summaries (fields, limits, truncation, `--flat` lines), `tree --top-frames` screen lists or `export --match-dir` icon matching |
-| `search` | Changing search indexing, ranking, cursors, coverage, budgets or `diff` |
+| `search` | Changing search indexing, ranking, cursors, coverage or budgets |
+| `diff` | Changing diff |
 | `workspace` | Changing local workspace roots, identity, ownership, the SQLite registry, locks or index actions |
 | `index` | Changing index generations, jobs, publication or workspace search |
 | `bundle` | Changing the bundle zip, manifest, context.md, batch bundles, font inventory or `verify` |
@@ -78,7 +79,7 @@ Publish bundle/export/snapshot files through `output::write` to protect sources 
 Apply MCP budgets before request admission and to complete serialized replies; see `mcp`.
 Generated test fixtures use `src/test_support.rs` for atomic directory ownership and scoped cleanup; see `fig-format`.
 Stroke checks read `render::stroke_weights`, not `strokeWeight`, which per-side strokes can leave 0; see `render`.
-Charge search and bounded-expansion visits, copies and allocations to `expand::Bounds` before doing them; see `search`.
+Charge search and bounded-expansion visits, copies and allocations to `expand::Bounds` first; see `search`.
 Keep OpenCode's managed MCP key apart from the plugin's `figlens_*` tool names, or OpenCode drops the server; see `integrations`.
 Image-fill changes must test shifted sprites exported from a clipping frame; see `render`.
 Background blur backdrops reference blur-free copies within the per-export budget, or nested blurs grow exponentially; see `render`.

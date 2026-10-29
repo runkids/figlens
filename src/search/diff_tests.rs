@@ -54,7 +54,7 @@ fn req(limit: usize, cursor: Option<String>) -> Request {
 fn run(old: K<'static>, new: K<'static>) -> Json {
     let (a, b) = (Tree::new(&old), Tree::new(&new));
     page(
-        &compare_trees(&a, &b, [WORK, WORK], "0:0"),
+        &compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0"),
         &req(LIMIT, None),
         false,
     )
@@ -220,7 +220,7 @@ fn layers_past_a_side_that_stopped_are_unknown_not_removed() {
                 })
         })
         .unwrap();
-    let pair = compare_trees(&a, &b, [WORK, work], "0:0");
+    let pair = compare_trees(&a, &b, [WORK, work, PAIR_WORK], "0:0");
     let out = page(&pair, &req(LIMIT, None), false).unwrap();
     assert!(nodes(&out).iter().all(|(_, c)| c == "unknown"), "{out}");
     assert_eq!(out["coverage"]["complete"], false);
@@ -235,7 +235,7 @@ fn pages_walk_every_change_once_and_a_cursor_of_another_pair_is_stale() {
     };
     let (a, b) = (many(1.0), many(0.0));
     let (a, b) = (Tree::new(&a), Tree::new(&b));
-    let pair = compare_trees(&a, &b, [WORK, WORK], "0:0");
+    let pair = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
     let (mut seen, mut cursor) = (Vec::new(), None);
     loop {
         let out = page(&pair, &req(3, cursor), false).unwrap();
@@ -248,7 +248,7 @@ fn pages_walk_every_change_once_and_a_cursor_of_another_pair_is_stale() {
     assert_eq!(seen.len(), 7);
     let first = page(&pair, &req(3, None), false).unwrap();
     // Another selection of the same revisions binds another cursor.
-    let other = compare_trees(&a, &b, [WORK, WORK], "0:1");
+    let other = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:1");
     let err = page(
         &other,
         &req(3, first["nextCursor"].as_str().map(str::to_owned)),
@@ -335,7 +335,7 @@ fn a_selection_on_one_side_only_lists_its_children_for_drilling_in() {
     let (a, b) = (doc(screen("Hi", 1.0, 100.0)), doc(vec![]));
     let (a, b) = (Tree::new(&a), Tree::new(&b));
     let out = page(
-        &compare_trees(&a, &b, [WORK, WORK], "0:10"),
+        &compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:10"),
         &Request {
             node: "0:10".into(),
             limit: LIMIT,
@@ -372,4 +372,68 @@ fn binary_values_of_equal_length_differ_and_an_override_holding_bytes_is_unread(
         with_instance(30, vec![same]),
     ));
     assert_eq!(changes, [("I0:11;0:31".to_owned(), "changed".to_owned())]);
+}
+
+#[test]
+fn a_page_full_of_long_names_ends_early_and_its_cursor_reaches_every_change() {
+    let name = "n".repeat(2000);
+    let side = |red: f64| {
+        let mut nodes = vec![node(10, Some(1), "FRAME", "Home", vec![])];
+        nodes
+            .extend((0..200).map(|i| node(100 + i, Some(10), "RECTANGLE", &name, vec![fill(red)])));
+        doc(nodes)
+    };
+    let (a, b) = (side(1.0), side(0.5));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let pair = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
+    let (mut seen, mut cursor, mut pages) = (0, None, 0);
+    loop {
+        let out = page(&pair, &req(MAX_LIMIT, cursor), true).unwrap();
+        let listed = nodes(&out).len();
+        assert!(listed > 0 && listed < 200, "{listed}");
+        seen += listed;
+        pages += 1;
+        match out["nextCursor"].as_str() {
+            Some(c) => cursor = Some(c.to_owned()),
+            None => break,
+        }
+    }
+    assert_eq!((seen, pages > 1), (200, true));
+}
+
+#[test]
+fn possible_match_probes_are_charged_and_stop_the_pair_when_out_of_work() {
+    let frames = |first: u32| {
+        (0..300)
+            .map(move |i| node(first + i, Some(1), "FRAME", "A", vec![]))
+            .collect()
+    };
+    let (a, b) = (doc(frames(100)), doc(frames(1000)));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let run = |work| {
+        page(
+            &compare_trees(&a, &b, [WORK, WORK, work], "0:0"),
+            &req(1, None),
+            false,
+        )
+        .unwrap()
+    };
+    let full = run(PAIR_WORK);
+    assert_eq!(full["coverage"]["possibleMatches"], POSSIBLE);
+    // Enough for the maps and the 600 changes, not for every probe.
+    let short = run(2 * 600 + 600 * 4 + 100);
+    // Every change was kept; only the probes ran out.
+    assert_eq!(
+        (
+            &short["coverage"]["changes"],
+            &short["coverage"]["complete"]
+        ),
+        (&json!(600), &json!(false))
+    );
+    assert!(
+        short["coverage"]["reasons"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"reason": "diff_work_limit"}))
+    );
 }

@@ -5,7 +5,7 @@
 //! into facets. Records match by exact id and kind only; top-level frames left unmatched may be
 //! paired by name or geometry as a labelled `possible_match`, which never transfers identity.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -350,6 +350,8 @@ struct Pair {
     changes: Vec<Change>,
     frames: Vec<Frame>,
     possible: usize,
+    /// Changes with a field unread on either side, counted once when the pair is built.
+    unread: usize,
     /// Why the pair itself stopped short (`diff_work_limit`).
     stop: Option<&'static str>,
     hashed: SystemTime,
@@ -423,7 +425,7 @@ pub fn diff(old: &Path, new: &Path, req: &Request) -> Result<Json, Box<dyn Error
             if !old.present && !new.present {
                 return Err(missing_scope(&req.node));
             }
-            let pair = Arc::new(compare(old, new, &req.node));
+            let pair = Arc::new(compare(old, new, &req.node, PAIR_WORK));
             let stopped = |s: &Side| s.index.stop == Some("deadline");
             if !stopped(&pair.old)
                 && !stopped(&pair.new)
@@ -678,10 +680,10 @@ impl Collect {
     }
 }
 
-fn compare(old: Side, new: Side, node: &str) -> Pair {
+fn compare(old: Side, new: Side, node: &str, work: usize) -> Pair {
     let mut c = Collect {
         budget: Bounds {
-            work: PAIR_WORK,
+            work,
             bytes: PAIR_BYTES,
             depth: DEPTH,
             deadline: Instant::now() + DEADLINE,
@@ -701,6 +703,7 @@ fn compare(old: Side, new: Side, node: &str) -> Pair {
             changes: Vec::new(),
             frames: Vec::new(),
             possible: 0,
+            unread: 0,
             stop: Some("diff_work_limit"),
             hashed: SystemTime::now(),
         };
@@ -824,6 +827,7 @@ fn compare(old: Side, new: Side, node: &str) -> Pair {
         mut changes,
         ..
     } = c;
+    let unread = changes.iter().filter(|c| c.facets & UNREAD != 0).count();
     // Pages list changes frame by frame, in first-seen frame order.
     changes.sort_by_key(|c| c.frame);
     Pair {
@@ -833,6 +837,7 @@ fn compare(old: Side, new: Side, node: &str) -> Pair {
         changes,
         frames,
         possible,
+        unread,
         stop,
         hashed: SystemTime::now(),
     }
@@ -867,7 +872,8 @@ fn pair_frames(
             r(&t["m12"])
         ))
     };
-    let mut by: HashMap<(String, String), Vec<usize>> = HashMap::new();
+    // Candidates per key, with how far they were scanned: each is probed once in all.
+    let mut by: HashMap<(String, String), (Vec<usize>, usize)> = HashMap::new();
     for (i, f) in frames.iter().enumerate() {
         if f.change == Some(Kind::Added) {
             if !budget.charge(2, 192 + 2 * (f.page.len() + f.name.len())) {
@@ -875,10 +881,12 @@ fn pair_frames(
             }
             by.entry((f.page.clone(), format!("n:{}", f.name)))
                 .or_default()
+                .0
                 .push(i);
             if let Some(g) = geometry(new, &f.id) {
                 by.entry((f.page.clone(), format!("g:{g}")))
                     .or_default()
+                    .0
                     .push(i);
             }
         }
@@ -891,7 +899,9 @@ fn pair_frames(
         if frames[i].change != Some(Kind::Removed) {
             continue;
         }
-        if !budget.charge(2, 0) {
+        // The lookup keys are copies of the page and name, paid for before they are made.
+        let key_bytes = 192 + 2 * (frames[i].page.len() + frames[i].name.len());
+        if !budget.charge(2, key_bytes) {
             break;
         }
         let page = frames[i].page.clone();
@@ -903,11 +913,20 @@ fn pair_frames(
             ),
         ];
         for (key, basis) in keys {
-            let hit = by.get_mut(&(page.clone(), key)).and_then(|v| {
-                v.iter()
-                    .position(|j| frames[*j].possible.is_none())
-                    .map(|p| v.remove(p))
-            });
+            let mut hit = None;
+            if let Some((v, next)) = by.get_mut(&(page.clone(), key)) {
+                while *next < v.len() {
+                    if !budget.charge(1, 0) {
+                        return found;
+                    }
+                    let j = v[*next];
+                    *next += 1;
+                    if frames[j].possible.is_none() {
+                        hit = Some(j);
+                        break;
+                    }
+                }
+            }
             if let Some(j) = hit {
                 frames[i].possible = Some((frames[j].id.clone(), basis));
                 frames[j].possible = Some((frames[i].id.clone(), basis));
@@ -1008,29 +1027,58 @@ fn fields(pair: &Pair, c: &Change, left: &mut usize) -> Json {
     Json::Object(out)
 }
 
-/// Edge differences of a changed record: relation, target, state and evidence, old∪new.
-fn edges(pair: &Pair, c: &Change) -> Json {
+fn edge_key(e: &super::usages::Edge) -> (&str, Option<&str>, &str, &str) {
+    (
+        e.relation,
+        e.target.as_deref(),
+        e.state,
+        e.evidence.as_str(),
+    )
+}
+
+/// Edge differences of a changed record: relation, target, state and evidence, old minus new
+/// and new minus old, listed while they fit `left` page bytes; the rest are counted.
+fn edges(pair: &Pair, c: &Change, left: &mut usize) -> Json {
     let (Some(o), Some(n)) = (c.old, c.new) else {
         return Json::Null;
     };
-    let list = |s: &Side, r: u32| {
-        s.index.records[r as usize]
-            .edges
-            .iter()
-            .map(|e| json!({"relation": e.relation, "target": e.target, "state": e.state, "evidence": e.evidence}))
-            .collect::<Vec<_>>()
-    };
-    let (a, b) = (list(&pair.old, o), list(&pair.new, n));
-    let removed: Vec<_> = a.iter().filter(|e| !b.contains(e)).cloned().collect();
-    let added: Vec<_> = b.iter().filter(|e| !a.contains(e)).cloned().collect();
-    let main = |v: &[Json]| {
+    let (a, b) = (
+        &pair.old.index.records[o as usize].edges,
+        &pair.new.index.records[n as usize].edges,
+    );
+    let (sa, sb): (HashSet<_>, HashSet<_>) = (
+        a.iter().map(edge_key).collect(),
+        b.iter().map(edge_key).collect(),
+    );
+    let mut out = json!({"added": [], "removed": []});
+    let mut omitted = 0;
+    for (name, list, other) in [("removed", a, &sb), ("added", b, &sa)] {
+        for e in list.iter().filter(|e| !other.contains(&edge_key(e))) {
+            let cost = 64
+                + e.relation.len()
+                + e.target.as_ref().map_or(0, String::len)
+                + e.state.len()
+                + e.evidence.len();
+            if cost > *left {
+                omitted += 1;
+                continue;
+            }
+            *left -= cost;
+            out[name].as_array_mut().unwrap().push(
+                json!({"relation": e.relation, "target": e.target, "state": e.state, "evidence": e.evidence}),
+            );
+        }
+    }
+    if omitted > 0 {
+        out["truncated"] = json!(omitted);
+    }
+    let main = |v: &[super::usages::Edge]| {
         v.iter()
-            .find(|e| e["relation"] == "instance_of")
-            .map(|e| e["target"].clone())
+            .find(|e| e.relation == "instance_of")
+            .and_then(|e| e.target.clone())
     };
-    let mut out = json!({"added": added, "removed": removed});
-    if main(&a) != main(&b) {
-        out["swap"] = json!({"old": main(&a), "new": main(&b)});
+    if main(a) != main(b) {
+        out["swap"] = json!({"old": main(a), "new": main(b)});
     }
     out
 }
@@ -1042,11 +1090,11 @@ fn page(pair: &Pair, req: &Request, reused: bool) -> Result<Json, Box<dyn Error>
         .map(|c| offset(pair, c))
         .transpose()?
         .unwrap_or(0);
-    let end = (start + req.limit).min(pair.changes.len());
     let mut left = PAGE_VALUES;
     let mut frames: Vec<Json> = Vec::new();
     let mut last = None;
-    for c in &pair.changes[start..end] {
+    let mut end = start;
+    for c in &pair.changes[start..(start + req.limit).min(pair.changes.len())] {
         let side = if c.new.is_some() {
             &pair.new
         } else {
@@ -1054,6 +1102,19 @@ fn page(pair: &Pair, req: &Request, reused: bool) -> Result<Json, Box<dyn Error>
         };
         let rid = c.new.or(c.old).unwrap() as usize;
         let r = &side.index.records[rid];
+        // Names and frame headers count against the page too; a full page ends early and the
+        // cursor resumes at the next change, so none is dropped.
+        let f = &pair.frames[c.frame as usize];
+        let header = match last == Some(c.frame) {
+            true => 0,
+            false => 192 + f.id.len() + f.name.len() + f.page.len(),
+        };
+        let cost = 96 + r.id.len() + r.kind.len() + r.name.len() + header;
+        if cost > left && end > start {
+            break;
+        }
+        left = left.saturating_sub(cost);
+        end += 1;
         let mut node = json!({"id": r.id, "kind": r.kind, "name": r.name, "change": c.kind.name()});
         if c.kind == Kind::Retyped {
             node["identity"] = json!("identity_uncertain");
@@ -1073,14 +1134,13 @@ fn page(pair: &Pair, req: &Request, reused: bool) -> Result<Json, Box<dyn Error>
             }
             node["fields"] = fields(pair, c, &mut left);
             if c.facets & EDGES != 0 {
-                node["edges"] = edges(pair, c);
+                node["edges"] = edges(pair, c, &mut left);
             }
         }
         if c.descendants > 0 {
             node["descendants"] = json!(c.descendants);
         }
         if last != Some(c.frame) {
-            let f = &pair.frames[c.frame as usize];
             let mut frame = json!({"id": f.id, "name": f.name, "page": f.page, "summary": summary(&f.counts), "nodes": []});
             if let Some(k) = f.change {
                 frame["change"] = json!(k.name());
@@ -1098,11 +1158,7 @@ fn page(pair: &Pair, req: &Request, reused: bool) -> Result<Json, Box<dyn Error>
             .push(node);
     }
     let coverage = |s: &Side| json!({"stop": s.index.stop, "scannedRecords": s.index.records.len(), "complete": s.index.stop.is_none(), "selected": s.present});
-    let unread = pair
-        .changes
-        .iter()
-        .filter(|c| c.facets & UNREAD != 0)
-        .count();
+    let unread = pair.unread;
     let mut reasons = Vec::new();
     for (name, s) in [("old", &pair.old), ("new", &pair.new)] {
         if let Some(stop) = s.index.stop {
@@ -1136,7 +1192,7 @@ fn page(pair: &Pair, req: &Request, reused: bool) -> Result<Json, Box<dyn Error>
 }
 
 #[cfg(test)]
-fn compare_trees(old: &Tree, new: &Tree, works: [usize; 2], node: &str) -> Pair {
+fn compare_trees(old: &Tree, new: &Tree, works: [usize; 3], node: &str) -> Pair {
     let build = |tree: &Tree, label: &str, work: usize| {
         let bounds = Bounds {
             work,
@@ -1165,6 +1221,7 @@ fn compare_trees(old: &Tree, new: &Tree, works: [usize; 2], node: &str) -> Pair 
         build(old, "old", works[0]),
         build(new, "new", works[1]),
         node,
+        works[2],
     )
 }
 

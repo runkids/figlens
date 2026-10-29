@@ -140,14 +140,19 @@
       ]
     },
     "search": {
-      "description": "Changing search indexing, normalization, ranking, cursors, coverage or its budgets, or the diff engine.",
+      "description": "Changing search indexing, normalization, ranking, cursors, coverage or its budgets.",
       "sources": [
         {
           "path": "wiki/search.md"
         },
         {
           "path": "wiki/usages.md"
-        },
+        }
+      ]
+    },
+    "diff": {
+      "description": "Changing the diff engine: facets, matching, coverage, pair budgets, paging or its cursor.",
+      "sources": [
         {
           "path": "wiki/diff.md"
         }
