@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -192,18 +192,18 @@ test('CLI-path writes ask edit where the binary places the workspace; only reset
   await adapter.cli(current, 'index', { action: 'status', file: '/d.fig' });
   assert.deepEqual(asked, [], 'status creates nothing and asks nothing');
   await adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig', scope: '0:0' });
-  assert.deepEqual(asked, [['edit', '/state', '/config']]);
+  assert.deepEqual(asked, [['read', '/d.fig'], ['edit', '/state', '/config']]);
   status = { ...status, paths: { workspace: '/custom/state/workspaces/ws_1' }, storage: { rule: 'remembered', remembered: '/custom' } };
   await adapter.cli(current, 'index', { action: 'reset', file: '/d.fig' });
   await adapter.cli(current, 'index', { action: 'reset', file: '/d.fig' });
-  assert.deepEqual(asked.slice(1), [['figlens_index', 'reset'], ['edit', '/custom/state/workspaces/ws_1']]);
-  assert.equal(asked.length, 3, 'the second reset is already granted');
+  assert.deepEqual(asked.slice(2), [['figlens_index', 'reset'], ['edit', '/custom/state/workspaces/ws_1']]);
+  assert.equal(asked.length, 4, 'the second reset is already granted');
   assert.deepEqual(ran, ['index status', 'index status', 'index prepare', 'index status', 'index reset', 'index status', 'index reset']);
   // A relocation records the new path's alias under the config root.
   const other = await adapter.scope('other');
   other.run = current.run;
   await adapter.cli(other, 'index', { action: 'relocate', file: '/moved.fig', sourceId: 'local:1', workspaceId: 'ws_1' });
-  assert.deepEqual(asked.slice(3), [['edit', '/custom/state/workspaces/ws_1', '/config']]);
+  assert.deepEqual(asked.slice(4), [['read', '/moved.fig'], ['edit', '/custom/state/workspaces/ws_1', '/config']]);
 });
 
 test('CLI-path recreation asks edit on the new storage and the reported config root, though status fails', async t => {
@@ -217,7 +217,7 @@ test('CLI-path recreation asks edit on the new storage and the reported config r
     return { stdout: '{}' };
   };
   await adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig', storage: '/new', replaceUnavailable: true });
-  assert.deepEqual(asked, [['figlens_index', 'replace_unavailable'], ['edit', '/new', '/config']]);
+  assert.deepEqual(asked, [['read', '/d.fig'], ['figlens_index', 'replace_unavailable'], ['edit', '/new', '/config']]);
   assert.deepEqual(ran, ['index status', 'index prepare']);
 });
 
@@ -266,9 +266,51 @@ test('CLI-path prepare and reset run the recovery a failing status names, after 
   deny = null;
   await adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig' });
   await adapter.cli(current, 'index', { action: 'reset', file: '/d.fig' });
-  assert.deepEqual(asked, [['edit', '/state/workspaces/ws_1', '/config'], ['edit', '/state/workspaces/ws_1', '/config'], ['figlens_index', 'reset']]);
+  assert.deepEqual(asked, [['read', '/d.fig'], ['edit', '/state/workspaces/ws_1', '/config'], ['edit', '/state/workspaces/ws_1', '/config'], ['figlens_index', 'reset']]);
   await assert.rejects(adapter.cli(current, 'index', { action: 'refresh', file: '/d.fig' }), /lock is missing/);
   assert.deepEqual(ran, ['index status', 'index status', 'index prepare', 'index status', 'index reset', 'index status']);
+});
+
+test('CLI-path design reads ask read on the requested and canonical path, and builds run without the command timeout', async t => {
+  const { root, ctx, adapter } = await context(t);
+  const asked = [], timeouts = [];
+  ctx.permission.assert = async ({ action, resources }) => {
+    asked.push([action, ...resources]);
+    if (action === 'read') throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  const current = await adapter.scope('session');
+  current.run = async (args, timeout) => { timeouts.push([args[1], timeout]); return { stdout: '{}' }; };
+  await writeFile(path.join(root, 'real.fig'), '');
+  await symlink(path.join(root, 'real.fig'), path.join(root, 'link.fig'));
+  await assert.rejects(adapter.cli(current, 'search', { file: 'link.fig', query: 'a' }), /read denied/);
+  assert.deepEqual(asked, [['read', path.join(current.flow.root, 'link.fig'), await realpath(path.join(root, 'real.fig'))]]);
+  assert.deepEqual(timeouts, [], 'nothing ran');
+  ctx.permission.assert = async () => {};
+  current.run = async (args, timeout) => {
+    timeouts.push([args[1], timeout]);
+    return { stdout: JSON.stringify({ paths: { workspace: '/w' }, storage: { rule: 'default' }, roots: { config: { path: '/c' } }, sources: [] }) };
+  };
+  await adapter.cli(current, 'index', { action: 'refresh', workspaceId: 'ws_1' });
+  assert.deepEqual(timeouts, [['status', undefined], ['refresh', 0]]);
+});
+
+test('CLI-path workspace search and rebuild ask read on the selected registered designs before reading them', async t => {
+  const { ctx, adapter } = await context(t);
+  const asked = [], ran = [];
+  ctx.permission.assert = async ({ action, resources }) => {
+    asked.push([action, ...resources]);
+    if (action === 'read') throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  const current = await adapter.scope('new session');
+  current.run = async args => {
+    ran.push(args[1]);
+    return { stdout: JSON.stringify({ paths: { workspace: '/w' }, storage: { rule: 'default' }, roots: { config: { path: '/c' } },
+      sources: [{ sourceId: 's1', path: '/a.fig' }, { sourceId: 's2', path: '/b.fig' }] }) };
+  };
+  await assert.rejects(adapter.cli(current, 'search', { workspaceId: 'ws_1', sourceId: 's1', node: '0:1', query: 'a' }), /read denied/);
+  await assert.rejects(adapter.cli(current, 'index', { action: 'rebuild', workspaceId: 'ws_1' }), /read denied/);
+  assert.deepEqual(asked, [['read', '/a.fig'], ['read', '/a.fig', '/b.fig']]);
+  assert.deepEqual(ran, ['status', 'status'], 'only the read-only status ran');
 });
 
 test('CLI-path reset keeps every selector and scope field, so the CLI refuses a narrower or conflicting reset before any write', async t => {
