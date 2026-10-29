@@ -1299,7 +1299,7 @@ fn mcp_whose_reply_stream_closes_stops_its_build_and_exits_though_stdin_stays_op
         .command(&["mcp"], Some(("parse", &gate)))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     let mut lines = BufReader::new(child.stdout.take().unwrap());
@@ -1320,8 +1320,9 @@ fn mcp_whose_reply_stream_closes_stops_its_build_and_exits_though_stdin_stays_op
         .unwrap()
         .to_owned();
     active_job(&env, &fig, "parse");
-    // Only the reply stream closes; stdin stays open, and then a reply has to be written.
+    // The reply stream and stderr close; stdin stays open, and then a reply has to be written.
     drop(lines);
+    drop(child.stderr.take());
     send(json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}));
     wait_for("the server to exit", || child.try_wait().unwrap().is_some());
     let state = env.json(&["jobs", "status", &job])["state"].clone();

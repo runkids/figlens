@@ -717,7 +717,12 @@ pub fn serve_with(
                         std::thread::sleep(tick);
                     }
                 }
-                eprintln!("figlens mcp: cannot write a reply ({e}); stopped this server's builds");
+                // Not eprintln!: a closed stderr would panic and leave the reader's join hanging.
+                use std::io::Write as _;
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "figlens mcp: cannot write a reply ({e}); stopped this server's builds"
+                );
                 std::process::exit(1);
             }
         }
