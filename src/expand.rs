@@ -251,7 +251,9 @@ fn kiwi_bytes(v: &Value, left: &mut usize) -> usize {
     }
     *left -= 1;
     match v {
+        // Enum members convert to an owned string of their name.
         Value::String(s) => s.len() + 24,
+        Value::Enum(_, name) => name.len() + 24,
         Value::Bytes(b) => 24 + 4 * b.len(),
         Value::Array(a) => 24 + sum_while(a, left, kiwi_bytes),
         Value::Object(_, o) => {
@@ -269,7 +271,11 @@ fn patches_bytes(patches: &Patches, left: &mut usize) -> usize {
             .chain(p.prototype_source.as_ref().map(|s| &s.node_id))
             .map(String::len)
             .sum::<usize>();
-        128 + k.len() + owned + sum_while(p.props.values(), left, json_bytes)
+        // Field names come from the file's schema, so a clone copies them at any length.
+        let props = sum_while(&p.props, left, |(f, v), left| {
+            f.len() + 24 + json_bytes(v, left)
+        });
+        128 + k.len() + owned + props
     })
 }
 
@@ -1739,6 +1745,99 @@ mod tests {
             Some(Stop::Bytes)
         );
         assert_eq!(bounded(&tree, "page", 1 << 20, 8 << 20).1.stop, None);
+    }
+
+    #[test]
+    fn a_bounded_expansion_charges_the_enum_names_overrides_copy() {
+        // Each of 1,000 overrides converts a 10 kB enum member name into an owned string.
+        let member: &'static str = Box::leak("E".repeat(10_000).into_boxed_str());
+        let overrides = (0..1000)
+            .map(|i| {
+                obj(vec![
+                    (
+                        "guidPath",
+                        obj(vec![("guids", Value::Array(vec![guid(5, i)]))]),
+                    ),
+                    ("stackMode", Value::Enum("StackMode", member)),
+                ])
+            })
+            .collect();
+        let inst = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            (
+                "symbolData",
+                obj(vec![
+                    ("symbolID", guid(1, 1)),
+                    ("symbolOverrides", Value::Array(overrides)),
+                ]),
+            ),
+        ]);
+        let (page, main) = (obj(vec![]), obj(vec![]));
+        let tree = Tree {
+            nodes: HashMap::from([
+                ("page".into(), &page),
+                ("inst".into(), &inst),
+                ("1:1".into(), &main),
+            ]),
+            children: HashMap::from([("page".into(), vec!["inst".into()])]),
+            blobs: Vec::new(),
+        };
+        assert_eq!(
+            bounded(&tree, "page", 1 << 20, 4_000_000).1.stop,
+            Some(Stop::Bytes)
+        );
+        assert_eq!(bounded(&tree, "page", 1 << 20, 32 << 20).1.stop, None);
+    }
+
+    #[test]
+    fn a_bounded_expansion_charges_the_field_names_a_nested_merge_clones() {
+        // Schema field names are file data: 1,000 overrides of a 10 kB field, cloned at a nested instance.
+        let field: &'static str = Box::leak("f".repeat(10_000).into_boxed_str());
+        let overrides = (0..1000)
+            .map(|i| {
+                obj(vec![
+                    (
+                        "guidPath",
+                        obj(vec![("guids", Value::Array(vec![guid(5, i)]))]),
+                    ),
+                    (field, Value::Bool(true)),
+                ])
+            })
+            .collect();
+        let inst = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            (
+                "symbolData",
+                obj(vec![
+                    ("symbolID", guid(1, 1)),
+                    ("symbolOverrides", Value::Array(overrides)),
+                ]),
+            ),
+        ]);
+        let nested = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            ("symbolData", obj(vec![("symbolID", guid(2, 2))])),
+        ]);
+        let (page, outer, inner) = (obj(vec![]), obj(vec![]), obj(vec![]));
+        let tree = Tree {
+            nodes: HashMap::from([
+                ("page".into(), &page),
+                ("inst".into(), &inst),
+                ("1:1".into(), &outer),
+                ("2:2".into(), &inner),
+                ("c".into(), &nested),
+            ]),
+            children: HashMap::from([
+                ("page".into(), vec!["inst".into()]),
+                ("1:1".into(), vec!["c".into()]),
+            ]),
+            blobs: Vec::new(),
+        };
+        assert_eq!(
+            bounded(&tree, "page", 1 << 20, 15_000_000).1.stop,
+            Some(Stop::Bytes)
+        );
+        assert_eq!(bounded(&tree, "page", 1 << 20, 64 << 20).1.stop, None);
     }
 
     #[test]
