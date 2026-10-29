@@ -55,7 +55,7 @@ Hard refusals, checked before the work they bound:
 |---|---|---|
 | Ready sources one workspace search reads | 10 | `query_work_limit` before the generation that would cross it loads; recovery lists one search per visible source, keeping the request's node and filters (not its cursor) |
 | Records of those generations in total | 100,000 (not 10 times a per-source cap) | the same, plus `index_narrower_scope` when one source alone exceeds it |
-| Record text one load copies | 512 MiB | `query_work_limit`, never `index_incompatible` |
+| Record text one query copies over all its loads, checked before copying | 512 MiB | `query_work_limit`, never `index_incompatible` |
 | One scope extraction (build) | `WORK` 10M units | the generation is partial with `work_limit` |
 | Main database file | `DISK_CAP` 2 GiB: a hard `max_page_count` ceiling on builds at 2 GiB less 64 MiB headroom, or the current size when already larger (no growth, freed pages reused) | the build fails; the prior generation serves |
 | WAL | `WAL_CAP` 64 MiB threshold after each batch; one batch's pages over it at most | the build fails `workspace_busy`; the prior generation serves |

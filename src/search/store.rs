@@ -263,7 +263,13 @@ fn need(value: Option<String>) -> Result<String> {
 /// The part of generation `gen` that ranks `terms`: its corpus fields, the terms' document
 /// frequencies, and the records every term matches with only their postings, plus the scope
 /// root. Nothing else of the generation is read; `add` loads display ancestors later.
-pub(crate) fn load(conn: &Connection, gen_id: i64, terms: &[String]) -> Result<Index> {
+/// `spent` is the record text a query has copied so far, shared by every load and `add`.
+pub(crate) fn load(
+    conn: &Connection,
+    gen_id: i64,
+    terms: &[String],
+    spent: &mut usize,
+) -> Result<Index> {
     let (info, total): (Option<String>, i64) = conn.query_row(
         "SELECT info, records FROM generations WHERE gen = ?1",
         [gen_id],
@@ -371,13 +377,20 @@ pub(crate) fn load(conn: &Connection, gen_id: i64, terms: &[String]) -> Result<I
     if total > 0 {
         wanted.push(0);
     }
-    add(conn, gen_id, &mut index, &wanted)?;
+    add(conn, gen_id, &mut index, &wanted, spent)?;
     Ok(index)
 }
 
 /// Loads records `rids` of generation `gen` into the partial `index`, with their edges; ones
-/// already loaded are skipped. Every text is checked against its budget before it is copied.
-pub(crate) fn add(conn: &Connection, gen_id: i64, index: &mut Index, rids: &[u32]) -> Result<()> {
+/// already loaded are skipped. Every text is checked against its budget before it is copied:
+/// its own cap, and the query's `BYTES` with the `spent` it shares across every load.
+pub(crate) fn add(
+    conn: &Connection,
+    gen_id: i64,
+    index: &mut Index,
+    rids: &[u32],
+    spent: &mut usize,
+) -> Result<()> {
     let missing: BTreeSet<u32> = rids
         .iter()
         .copied()
@@ -410,9 +423,28 @@ pub(crate) fn add(conn: &Connection, gen_id: i64, index: &mut Index, rids: &[u32
     )?;
     let mut rows = stmt.query(params![gen_id, list])?;
     let mut loaded: Vec<(u32, Record)> = Vec::new();
-    let mut bytes = 0usize;
     while let Some(row) = rows.next()? {
         let rid: u32 = row.get(0)?;
+        // Name, text and both normalized fields, measured in SQLite's buffer before any copy.
+        let size = [2, 4, 5, 6]
+            .into_iter()
+            .map(|i| {
+                Ok(match row.get_ref(i)? {
+                    rusqlite::types::ValueRef::Text(t) | rusqlite::types::ValueRef::Blob(t) => {
+                        t.len()
+                    }
+                    _ => 0,
+                })
+            })
+            .sum::<rusqlite::Result<usize>>()?;
+        *spent = spent.saturating_add(size);
+        if *spent > BYTES {
+            return Err(FigError::new(
+                ErrorKind::QueryWorkLimit,
+                format!("the records this search needs exceed {BYTES} bytes"),
+            )
+            .into());
+        }
         let record = Record {
             id: need(text_at(row, 1, ID_BYTES)?)?,
             name: need(text_at(row, 2, TEXT_BYTES)?)?,
@@ -431,17 +463,6 @@ pub(crate) fn add(conn: &Connection, gen_id: i64, index: &mut Index, rids: &[u32
             root: row.get(14)?,
             instance: edges.remove(&rid),
         };
-        bytes += record.name.len()
-            + record.text.as_ref().map_or(0, String::len)
-            + record.norm[0].len()
-            + record.norm[1].len();
-        if bytes > BYTES {
-            return Err(FigError::new(
-                ErrorKind::QueryWorkLimit,
-                format!("the records this search needs exceed {BYTES} bytes"),
-            )
-            .into());
-        }
         if record.page.is_some_and(|p| p as usize >= index.pages.len())
             || record.root.is_some_and(|p| p as usize >= index.roots.len())
             // Builds number a parent before its children, so a stored parent cycle is corrupt.

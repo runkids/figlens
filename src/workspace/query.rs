@@ -171,6 +171,8 @@ fn search_index(
     let mut loaded: Vec<(Index, Json, i64, Json)> = Vec::new();
     let mut steps = Vec::new();
     let (mut sources_read, mut records_read) = (0usize, 0usize);
+    // Record text copied by every generation and ancestor load of this query.
+    let mut spent = 0usize;
     for row in &rows {
         let mut state = json!({"sourceId": row.id, "path": row.path});
         let job: Option<(String, String, String, i64)> = tx
@@ -256,7 +258,7 @@ fn search_index(
                     records as usize > QUERY_RECORDS,
                 ));
             }
-            let index = search::store::load(&tx, gen_id, q.terms())
+            let index = search::store::load(&tx, gen_id, q.terms(), &mut spent)
                 .map_err(|e| unreadable_index(&ws_id, &row.id, e))?;
             let identity = json!({"sourceId": row.id, "membership": row.membership,
                 "snapshotId": row.snapshot, "gen": gen_id, "versions": versions});
@@ -336,7 +338,7 @@ fn search_index(
     }
     for ((index, _, gen_id, identity), mut rids) in loaded.iter_mut().zip(wanted) {
         while !rids.is_empty() {
-            search::store::add(&tx, *gen_id, index, &rids).map_err(|e| {
+            search::store::add(&tx, *gen_id, index, &rids, &mut spent).map_err(|e| {
                 unreadable_index(&ws_id, identity["sourceId"].as_str().unwrap_or(""), e)
             })?;
             rids = rids

@@ -981,6 +981,38 @@ fn a_swap_to_a_missing_main_is_unresolved_not_the_definitions_main() {
 }
 
 #[test]
+fn one_query_budget_covers_every_load_and_is_checked_before_copying() {
+    let index = build(&Tree::new(&swaps()), "0:0", bounds(WORK));
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(&format!(
+        "CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+         added_at_ms INTEGER NOT NULL) STRICT; {}",
+        crate::workspace::V2
+    ))
+    .unwrap();
+    conn.execute(
+        "INSERT INTO generations (source_id, membership, scope, versions, job_id, state, created_ms)
+         VALUES ('s', 'm', '0:0', 'v', 'j', 'building', 0)",
+        [],
+    )
+    .unwrap();
+    store::save(&mut conn, 1, &index, &|_| Ok(()), &mut |_, _, _| Ok(())).unwrap();
+    let all: Vec<u32> = (0..index.records.len() as u32).collect();
+    let mut one = 0;
+    let mut first = store::load(&conn, 1, &[], &mut one).unwrap();
+    store::add(&conn, 1, &mut first, &all, &mut one).unwrap();
+    // A second load that fits alone, after others spent all but one byte of it.
+    let mut spent = BYTES - one + 1;
+    let second = store::load(&conn, 1, &[], &mut spent)
+        .and_then(|mut i| store::add(&conn, 1, &mut i, &all, &mut spent));
+    let kind = second
+        .unwrap_err()
+        .downcast_ref::<FigError>()
+        .map(FigError::kind);
+    assert_eq!((one > 0, kind), (true, Some(ErrorKind::QueryWorkLimit)));
+}
+
+#[test]
 fn contains_and_instance_of_survive_a_stored_generation() {
     let message = swaps();
     let tree = Tree::new(&message);
@@ -999,9 +1031,10 @@ fn contains_and_instance_of_survive_a_stored_generation() {
     )
     .unwrap();
     store::save(&mut conn, 1, &index, &|_| Ok(()), &mut |_, _, _| Ok(())).unwrap();
-    let mut loaded = store::load(&conn, 1, &[]).unwrap();
+    let mut spent = 0;
+    let mut loaded = store::load(&conn, 1, &[], &mut spent).unwrap();
     let all: Vec<u32> = (0..index.records.len() as u32).collect();
-    store::add(&conn, 1, &mut loaded, &all).unwrap();
+    store::add(&conn, 1, &mut loaded, &all, &mut spent).unwrap();
     let relations = |i: &Index| -> Vec<(String, Option<u32>, Option<Instance>)> {
         i.records
             .iter()

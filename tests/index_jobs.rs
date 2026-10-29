@@ -1288,3 +1288,43 @@ fn a_cancel_after_the_owner_died_is_pending_from_its_worker_s_start_to_its_exit(
         env.json(&["jobs", "cancel", &job])["cancel"] == "accepted"
     });
 }
+
+#[test]
+fn mcp_whose_reply_stream_closes_stops_its_build_and_exits_though_stdin_stays_open() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    let gate = env.gate("parse.hold");
+    let mut child = env
+        .command(&["mcp"], Some(("parse", &gate)))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap());
+    let mut stdin = child.stdin.take().unwrap();
+    let mut send = |message: Value| {
+        writeln!(stdin, "{message}").unwrap();
+        stdin.flush().unwrap();
+    };
+    send(
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "index",
+        "arguments": {"action": "prepare", "file": file, "scope": "0:0"}}}),
+    );
+    let mut line = String::new();
+    lines.read_line(&mut line).unwrap();
+    let started: Value = serde_json::from_str(&line).unwrap();
+    let job = started["result"]["structuredContent"]["job"]["jobId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    active_job(&env, &fig, "parse");
+    // Only the reply stream closes; stdin stays open, and then a reply has to be written.
+    drop(lines);
+    send(json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}));
+    wait_for("the server to exit", || child.try_wait().unwrap().is_some());
+    let state = env.json(&["jobs", "status", &job])["state"].clone();
+    std::fs::remove_file(&gate).unwrap();
+    assert_eq!(state, "cancelled");
+}

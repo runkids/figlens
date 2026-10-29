@@ -539,7 +539,8 @@ pub fn serve(
 }
 
 /// Serves MCP until `input` ends. `storage_roots` allow custom workspace storage besides the
-/// default roots. At the end of input, this server's running build is cancelled.
+/// default roots. At the end of input, this server's running build is cancelled; when a reply
+/// cannot be written, its builds are cancelled and the process exits 1.
 pub fn serve_with(
     mut input: impl BufRead + Send,
     mut output: impl std::io::Write,
@@ -573,19 +574,23 @@ pub fn serve_with(
                     if !live(pending, &req) {
                         continue;
                     }
-                    if build.is_some()
-                        && submits(&req)
-                        && builds.load(Ordering::SeqCst) >= BUILD_QUEUE
-                    {
+                    // Counted before the call creates its job, so a writer that fails meanwhile
+                    // waits for it instead of exiting with the job unowned.
+                    let counted = build.is_some() && submits(&req);
+                    if counted && builds.fetch_add(1, Ordering::SeqCst) >= BUILD_QUEUE {
+                        builds.fetch_sub(1, Ordering::SeqCst);
                         out.send(busy(&req["id"]));
                         continue;
                     }
+                    let mut queued = false;
                     match admit_value(req, roots) {
                         Admission::Call(call) => {
                             let (reply, runs) = call.run_workspace(roots, storage_roots);
                             if let (Some(runs), Some(build)) = (runs, &build) {
-                                builds.fetch_add(1, Ordering::SeqCst);
-                                let _ = build.send(runs);
+                                if !counted {
+                                    builds.fetch_add(1, Ordering::SeqCst);
+                                }
+                                queued = build.send(runs).is_ok();
                             }
                             out.send(reply);
                         }
@@ -594,10 +599,14 @@ pub fn serve_with(
                         }
                         _ => {}
                     }
+                    if counted && !queued {
+                        builds.fetch_sub(1, Ordering::SeqCst);
+                    }
                 }
             });
         }
-        // Build lane: this server's jobs, one at a time; they stop when input ends.
+        // Build lane: this server's jobs, one at a time; they stop when input ends or a reply
+        // cannot be written.
         scope.spawn(move || {
             for runs in build_rx {
                 for job in &runs.jobs {
@@ -687,18 +696,24 @@ pub fn serve_with(
             stop.store(true, Ordering::Relaxed);
         });
         drop(to_writer);
-        // Writer: every reply, already bounded, in completion order. After a write error the rest is
-        // drained so the lanes can finish.
-        let mut failed = None;
-        for value in replies {
-            if failed.is_some() {
-                continue;
-            }
+        // Writer: every reply, already bounded, in completion order.
+        for value in replies.iter() {
             if let Err(e) = writeln!(output, "{value}").and_then(|_| output.flush()) {
-                failed = Some(e);
+                // The client stopped reading, and the reader may wait on an open stdin forever:
+                // stop this server's builds, wait until they cancelled their workers, then end.
+                stop.store(true, Ordering::Relaxed);
+                // Replies still sent meanwhile are dropped, so no lane waits on this queue.
+                let tick = std::time::Duration::from_millis(20);
+                while builds.load(Ordering::SeqCst) > 0 {
+                    if let Err(mpsc::RecvTimeoutError::Disconnected) = replies.recv_timeout(tick) {
+                        std::thread::sleep(tick);
+                    }
+                }
+                eprintln!("figlens mcp: cannot write a reply ({e}); stopped this server's builds");
+                std::process::exit(1);
             }
         }
-        failed.map_or(Ok(()), |e| Err(e.into()))
+        Ok(())
     })
 }
 
