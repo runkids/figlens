@@ -787,6 +787,127 @@ fn a_resized_source_child_under_a_fixed_instance_size_is_an_appearance_change() 
     );
 }
 
+fn alias(id: u32) -> K<'static> {
+    obj(vec![
+        ("dataType", K::Enum("VariableDataType", "ALIAS")),
+        ("value", obj(vec![("alias", obj(vec![("guid", guid(id))]))])),
+    ])
+}
+
+/// A FLOAT variable 60 holding `value` in one mode, on the page.
+fn variable(value: f32) -> K<'static> {
+    let data = obj(vec![
+        ("dataType", K::Enum("VariableDataType", "FLOAT")),
+        ("value", obj(vec![("floatValue", K::Float(value))])),
+    ]);
+    let entry = obj(vec![("modeID", guid(70)), ("variableData", data)]);
+    node(
+        60,
+        Some(1),
+        "VARIABLE",
+        "Gap",
+        vec![(
+            "variableDataValues",
+            obj(vec![("entries", K::Array(vec![entry]))]),
+        )],
+    )
+}
+
+/// Frame 10 holds a layer filled from variable 60.
+fn bound_screen(value: f32) -> K<'static> {
+    let paint = obj(vec![
+        ("type", K::Enum("PaintType", "SOLID")),
+        ("colorVar", alias(60)),
+    ]);
+    doc(vec![
+        variable(value),
+        node(10, Some(1), "FRAME", "Home", vec![]),
+        node(
+            12,
+            Some(10),
+            "RECTANGLE",
+            "Card",
+            vec![("fillPaints", K::Array(vec![paint]))],
+        ),
+    ])
+}
+
+fn scoped(old: K<'static>, new: K<'static>, node: &str) -> Json {
+    let (a, b) = (Tree::new(&old), Tree::new(&new));
+    let mut r = req(LIMIT, None);
+    r.node = node.into();
+    page(
+        &compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], node),
+        &r,
+        false,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_text_style_outside_the_scope_makes_coverage_partial_instead_of_unchanged() {
+    // The style's own record changes, but only a layer referencing it is in scope.
+    let styled = |font: f32| {
+        doc(vec![
+            node(
+                20,
+                Some(1),
+                "TEXT",
+                "Body",
+                vec![("fontSize", K::Float(font))],
+            ),
+            node(10, Some(1), "FRAME", "Home", vec![]),
+            node(
+                11,
+                Some(10),
+                "TEXT",
+                "Title",
+                vec![
+                    text("Hi"),
+                    ("styleIdForText", obj(vec![("guid", guid(20))])),
+                ],
+            ),
+        ])
+    };
+    let out = scoped(styled(12.0), styled(16.0), "0:10");
+    assert_eq!(
+        (&out["coverage"]["complete"], &out["coverage"]["reasons"]),
+        (
+            &json!(false),
+            &json!([
+                {"reason": "definition_not_compared", "side": "old", "count": 1},
+                {"reason": "definition_not_compared", "side": "new", "count": 1},
+            ])
+        )
+    );
+}
+
+#[test]
+fn a_variable_value_change_over_the_whole_file_is_a_properties_change() {
+    let out = run(bound_screen(8.0), bound_screen(12.0));
+    let facets = out["frames"][0]["nodes"][0]["facets"].clone();
+    assert_eq!(
+        (nodes(&out), facets, &out["coverage"]["complete"]),
+        (
+            vec![("0:60".into(), "changed".into())],
+            json!(["properties"]),
+            &json!(true)
+        )
+    );
+}
+
+#[test]
+fn a_bound_variable_outside_the_scope_makes_coverage_partial() {
+    let out = scoped(bound_screen(8.0), bound_screen(8.0), "0:10");
+    assert_eq!(
+        out["coverage"]["reasons"],
+        json!([
+            {"reason": "definition_not_compared", "side": "old", "count": 1},
+            {"reason": "definition_not_compared", "side": "new", "count": 1},
+        ])
+    );
+}
+
 #[test]
 fn numeric_variants_trim_links_mask_type_and_grids_are_compared() {
     let link = |url: &str| obj(vec![("url", K::String(url.to_owned()))]);

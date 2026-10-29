@@ -22,7 +22,7 @@ use crate::expand::{Bounds, Expanded, json_bytes, kiwi_bytes};
 use crate::{Document, ErrorKind, FigError, Tree, guid_key, to_json};
 
 /// Bumped whenever a field list, facet or digest stream changes; cursors carry it.
-const VERSION: &str = "diff-v2";
+const VERSION: &str = "diff-v3";
 pub(crate) const FACETS: [&str; 5] = ["text", "layout", "appearance", "properties", "structure"];
 /// Effective kiwi fields per facet; `structure` (name, kind, parent, order, hidden) is the
 /// record's own and bindings are edges, not fields.
@@ -104,6 +104,11 @@ const FIELDS: [&[&str]; 4] = [
         "componentPropAssignments",
         "componentPropRefs",
         "variantPropSpecs",
+        // A variable's or collection's own values, types and modes.
+        "variableDataValues",
+        "variableResolvedType",
+        "variableSetID",
+        "variableSetModes",
     ],
 ];
 /// Largest value one field may scan; a larger one is `unread`, like a usages binding field.
@@ -461,6 +466,8 @@ struct Pair {
     unread: usize,
     /// Why the pair itself stopped short (`diff_work_limit`).
     stop: Option<&'static str>,
+    /// Per side, style and variable uses whose definition lies outside the compared records.
+    outside: [usize; 2],
     hashed: SystemTime,
 }
 
@@ -836,6 +843,7 @@ fn compare(old: Side, new: Side, node: &str, work: usize) -> Pair {
             possible: 0,
             unread: 0,
             stop: Some("diff_work_limit"),
+            outside: [0; 2],
             hashed: SystemTime::now(),
         };
     }
@@ -948,6 +956,16 @@ fn compare(old: Side, new: Side, node: &str, work: usize) -> Pair {
             break;
         }
     }
+    let mut outside = [0; 2];
+    for (i, (s, ids)) in [(&old, &old_ids), (&new, &new_ids)].into_iter().enumerate() {
+        if !full {
+            break;
+        }
+        match outside_uses(s, ids, &mut c.budget) {
+            Some(n) => outside[i] = n,
+            None => full = false,
+        }
+    }
     let possible = match full {
         true => pair_frames(&old, &new, &old_ids, &new_ids, &mut c.frames, &mut c.budget),
         false => 0,
@@ -970,8 +988,32 @@ fn compare(old: Side, new: Side, node: &str, work: usize) -> Pair {
         possible,
         unread,
         stop,
+        outside,
         hashed: SystemTime::now(),
     }
+}
+
+/// Style and variable uses on `s` whose definition is not one of its records: its values may
+/// change while every compared record stays the same. Each record and edge is charged before
+/// it is read.
+fn outside_uses(s: &Side, ids: &HashMap<&str, usize>, budget: &mut Bounds) -> Option<usize> {
+    let mut n = 0;
+    for r in &s.index.records {
+        if !budget.charge(1, 0) {
+            return None;
+        }
+        for e in &r.edges {
+            if !budget.charge(1, 0) {
+                return None;
+            }
+            if let ("uses_style" | "binds_variable", Some(t)) = (e.relation, e.target.as_deref())
+                && !matches!(e.state, "missing" | "unresolved")
+            {
+                n += usize::from(!ids.contains_key(t.strip_prefix("VariableID:").unwrap_or(t)));
+            }
+        }
+    }
+    Some(n)
 }
 
 /// Labels removed and added top-level frames of one page that share a name, else an exact
@@ -1336,10 +1378,13 @@ fn page_with(
         )
     };
     let known = |s: &Side| s.origin.is_ok();
-    let coverage = |s: &Side| json!({"stop": s.index.stop, "scannedRecords": s.index.records.len(), "complete": s.index.stop.is_none() && gaps(s) == (0, 0) && known(s), "selected": s.present});
+    let coverage = |s: &Side, outside: usize| json!({"stop": s.index.stop, "scannedRecords": s.index.records.len(), "complete": s.index.stop.is_none() && gaps(s) == (0, 0) && known(s) && outside == 0, "selected": s.present});
     let unread = pair.unread;
     let mut reasons = Vec::new();
-    for (name, s) in [("old", &pair.old), ("new", &pair.new)] {
+    for (name, s, outside) in [
+        ("old", &pair.old, pair.outside[0]),
+        ("new", &pair.new, pair.outside[1]),
+    ] {
         if let Some(stop) = s.index.stop {
             reasons.push(json!({"reason": stop, "side": name}));
         }
@@ -1354,6 +1399,10 @@ fn page_with(
         }
         if !known(s) {
             reasons.push(json!({"reason": "selection_context_unknown", "side": name}));
+        }
+        if outside > 0 {
+            reasons
+                .push(json!({"reason": "definition_not_compared", "side": name, "count": outside}));
         }
     }
     if let Some(stop) = pair.stop {
@@ -1371,8 +1420,8 @@ fn page_with(
         "matching": {"basis": "node_id+kind", "lineage": "unverified"},
         "coverage": {
             "complete": reasons.is_empty(),
-            "old": coverage(&pair.old),
-            "new": coverage(&pair.new),
+            "old": coverage(&pair.old, pair.outside[0]),
+            "new": coverage(&pair.new, pair.outside[1]),
             "changes": pair.changes.len(),
             "possibleMatches": pair.possible,
             "reasons": reasons,
