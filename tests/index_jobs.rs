@@ -551,6 +551,14 @@ fn mcp_roots_hide_sources_jobs_and_counts_outside_them() {
         1
     );
     assert!(!search.to_string().contains("/out/"));
+    let coverage = &search["structuredContent"]["coverage"];
+    assert_eq!(coverage["complete"], false, "{search}");
+    assert!(
+        coverage["reasons"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"code": "authorization_restricted"}))
+    );
     let job = mcp.call("jobs", json!({"action": "status", "jobId": hidden_job}));
     assert_eq!(job["isError"], true);
     assert!(!job.to_string().contains("/out/"));

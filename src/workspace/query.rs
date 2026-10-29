@@ -59,10 +59,15 @@ fn with_fallback(
         return fig.into();
     }
     let mut actions = fig.recovery().cloned().unwrap_or_else(|| json!([]));
+    // Only what the request gave: the default scope is not repeated as if it were chosen.
+    let mut arguments = json!({"file": file, "query": req.query});
+    if req.scope != "0:0" {
+        arguments["node"] = json!(req.scope);
+    }
     if let Some(list) = actions.as_array_mut() {
         list.push(
             json!({"action": "stateless_search", "requires": "none", "tool": "search",
-            "arguments": {"file": file, "query": req.query, "node": req.scope},
+            "arguments": arguments,
             "effects": {"note": "parses the .fig in this call; the workspace stays as it is"}}),
         );
     }
@@ -120,10 +125,16 @@ fn search_index(
         .map_err(sql)?;
     drop(stmt);
     relocated(storage, select, rows.iter().map(|r| r.path.as_str()), req)?;
-    // Invisible sources are dropped before anything about them is read or counted.
+    // Invisible sources are dropped before anything about them is read or counted; the reply
+    // says only that the corpus was restricted, never which sources or how many.
+    let all = rows.len();
     let rows: Vec<Row> = rows
         .into_iter()
         .filter(|r| storage.sees(Path::new(&r.path)))
+        .collect();
+    let restricted = rows.len() < all && only.is_empty();
+    let rows: Vec<Row> = rows
+        .into_iter()
         .filter(|r| only.is_empty() || only.contains(&r.id))
         .collect();
     if let Some(unknown) = only.iter().find(|o| !rows.iter().any(|r| r.id == **o)) {
@@ -183,6 +194,7 @@ fn search_index(
                 steps.push(json!({"tool": "index", "arguments": {"action": "refresh",
                     "workspaceId": ws_id, "sourceId": row.id, "scope": req.scope},
                     "why": "this scope is not indexed for this source yet"}));
+                state["reason"] = json!("scope_not_indexed");
                 "not_prepared"
             }
             _ if row.versions.as_deref() != Some(versions.as_str()) => {
@@ -268,7 +280,11 @@ fn search_index(
         if steps.is_empty() {
             steps.push(prepare_step(&ws_id, req));
         }
-        return Ok(not_ready(&ws_id, req, states, steps));
+        let mut out = not_ready(&ws_id, req, states, steps);
+        if restricted {
+            restrict(&mut out["coverage"]);
+        }
+        return Ok(out);
     }
     let key = json!(loaded.iter().map(|l| &l.3).collect::<Vec<_>>());
     let ranked = search::corpus_rank(&parts(&loaded), &q, req, &key)?;
@@ -304,6 +320,9 @@ fn search_index(
             );
         }
     }
+    if restricted {
+        restrict(&mut out["coverage"]);
+    }
     out["workspaceId"] = json!(ws_id);
     out["state"] = json!("ready");
     out["sources"] = json!(states);
@@ -335,6 +354,15 @@ fn relocated<'a>(
             "arguments": {"file": now, "query": req.query, "node": req.scope}}]))
         .into()),
         None => Ok(()),
+    }
+}
+
+/// Marks a reply whose corpus left out sources this caller may not see, without naming them.
+fn restrict(coverage: &mut Json) {
+    coverage["complete"] = json!(false);
+    coverage["totalRecords"] = Json::Null;
+    if let Some(reasons) = coverage["reasons"].as_array_mut() {
+        reasons.push(json!({"code": "authorization_restricted"}));
     }
 }
 
@@ -378,7 +406,7 @@ fn not_ready(ws_id: &str, req: &Request, states: Vec<Json>, steps: Vec<Json>) ->
         "results": [],
         "coverage": {"complete": false, "scannedRecords": 0, "totalRecords": null,
             "layers": {"text": {"state": if pending { "pending" } else { "not_prepared" }}},
-            "reasons": [{"code": "index_not_ready"}]},
+            "reasons": [{"code": if pending { "index_pending" } else { "scope_not_indexed" }}]},
         "hasMore": false,
         "nextCursor": null,
         "sources": states,
