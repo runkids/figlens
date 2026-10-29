@@ -1762,15 +1762,13 @@ fn an_outgoing_query_with_no_rows_still_checks_its_definition_against_the_budget
         K::Array(vec![
             node(0, None, "DOCUMENT", "Document", vec![]),
             node(1, Some(0), "CANVAS", "Page", vec![]),
-            node(2, Some(1), "FRAME", &long, vec![]),
+            node(2, Some(1), "FRAME", "Short", vec![]),
         ]),
     )]);
-    // A build allowed to index the name, so only the reply budget can refuse it.
-    let roomy = crate::expand::Bounds {
-        bytes: 1 << 34,
-        ..bounds(WORK)
-    };
-    let index = build(&Tree::new(&message), "0:0", roomy);
+    let mut index = build(&Tree::new(&message), "0:0", bounds(WORK));
+    // A name too long for the reply, set after a quick build so only the reply budget refuses.
+    let frame = index.records.iter_mut().find(|r| r.id == "0:2").unwrap();
+    frame.name = long;
     // A relation the node has none of: the reply has no rows, only the definition.
     let mut r = req("0:2");
     r.outgoing = true;

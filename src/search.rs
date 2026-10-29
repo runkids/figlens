@@ -747,9 +747,26 @@ fn build_as(tree: &Tree, scope: &str, bounds: Bounds, relations: bool) -> Index 
         let queued = kids.iter().map(|c| 96 + c.len()).sum::<usize>();
         let normalized =
             norm.iter().map(String::len).sum::<usize>() + tf.keys().map(String::len).sum::<usize>();
+        // A full build also prepays the usages reverse lookups, which copy the id and each edge
+        // target once more (estimated storage).
+        let (visits, reverse) = match relations {
+            true => (
+                1 + edges.len(),
+                64 + id.len()
+                    + edges
+                        .iter()
+                        .filter_map(|e| e.target.as_ref())
+                        .map(|t| 56 + t.len())
+                        .sum::<usize>(),
+            ),
+            false => (0, 0),
+        };
         // Normalized copies, terms, postings and queued children; nothing is committed to the
         // index until both charges pass.
-        if !bounds.charge(kids.len(), 24 * tf.len() + queued + normalized) {
+        if !bounds.charge(
+            kids.len() + visits,
+            24 * tf.len() + queued + normalized + reverse,
+        ) {
             break;
         }
         index.text_bytes += text_len;

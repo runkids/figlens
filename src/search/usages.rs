@@ -761,7 +761,10 @@ pub(crate) fn definitions(
             cur = parent_of(n);
         }
         let name = kiwi_name(node);
-        if !bounds.charge(1, 160 + target.len() + name.len() + kind.len()) {
+        // The reverse lookups visit every definition once more, and copy a set member's id and
+        // set again into the member lists (estimated storage).
+        let member = set.as_ref().map_or(0, |s| 48 + 2 * s.len() + target.len());
+        if !bounds.charge(2, 160 + target.len() + name.len() + kind.len() + member) {
             return None;
         }
         let name = name.to_owned();
@@ -785,7 +788,8 @@ pub(crate) fn definitions(
         }
         let node = tree.nodes[&s];
         let name = kiwi_name(node);
-        if !bounds.charge(1, 160 + s.len() + name.len()) {
+        // One more visit for the reverse lookups' pass over every definition.
+        if !bounds.charge(2, 160 + s.len() + name.len()) {
             return None;
         }
         let name = name.to_owned();
@@ -1003,7 +1007,8 @@ pub(crate) struct Reverse {
 }
 
 impl Reverse {
-    // The lookups copy ids and positions the build already charged, about as many again.
+    // A full build prepays these lookups' visits and estimated copies with each record, edge
+    // and definition, so they stay within the build's bounds.
     fn of(index: &Index) -> &Reverse {
         index.reverse.get_or_init(|| {
             let mut out = Reverse::default();
