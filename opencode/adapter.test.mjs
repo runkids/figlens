@@ -243,6 +243,26 @@ test('CLI-path writes also ask edit on the canonical target of a symlinked root,
   assert.deepEqual(ran, ['index status', 'index status', 'index status', 'index status'], 'nothing writes past a denied target');
 });
 
+test('CLI-path reads ask on the design a `..` after a link really names, so denying it blocks the read', async t => {
+  const { root, ctx, adapter } = await context(t);
+  const real = await realpath(root);
+  await mkdir(path.join(root, 'denied', 'deep'), { recursive: true });
+  await writeFile(path.join(root, 'denied', 'design.fig'), '');
+  await mkdir(path.join(root, 'allowed'));
+  await symlink(path.join(root, 'denied', 'deep'), path.join(root, 'allowed', 'link'));
+  const asked = [], ran = [];
+  ctx.permission.assert = async ({ action, resources }) => {
+    asked.push([action, ...resources]);
+    if (resources.some(file => file.startsWith(path.join(real, 'denied')))) throw Object.assign(new Error('denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  const current = await adapter.scope('session');
+  current.run = async args => { ran.push(args[0]); return { stdout: '{}' }; };
+  const file = `${path.join(root, 'allowed', 'link')}${path.sep}..${path.sep}design.fig`;
+  await assert.rejects(adapter.cli(current, 'search', { file, query: 'x' }), /denied/);
+  assert.deepEqual(asked, [['read', path.join(root, 'allowed', 'design.fig'), path.join(real, 'denied', 'design.fig')]]);
+  assert.deepEqual(ran, [], 'nothing reads past a denied target');
+});
+
 test('CLI-path writes fail closed before any edit ask when a write root runs through a file or a link loop', async t => {
   const { root, ctx, adapter } = await context(t);
   await writeFile(path.join(root, 'file'), '');

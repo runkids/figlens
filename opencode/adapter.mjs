@@ -290,15 +290,15 @@ export function createAdapter(ctx, entry = import.meta.url) {
         return path.join(await destination(path.dirname(file)), path.basename(file));
       }
     };
-    const edit = async files => current.authorize('edit', [...new Set((await Promise.all(files.map(async file =>
-      [path.resolve(current.flow.root, file), await destination(path.isAbsolute(file) ? file : `${current.flow.root}${path.sep}${file}`)]))).flat())]);
+    // Each path as requested and as its canonical destination.
+    const both = async files => [...new Set((await Promise.all(files.map(async file =>
+      [path.resolve(current.flow.root, file), await destination(path.isAbsolute(file) ? file : `${current.flow.root}${path.sep}${file}`)]))).flat())];
+    const edit = async files => current.authorize('edit', await both(files));
     // The CLI downloads a gs:// design into its own cache, which this path cannot authorize, so only MCP serves it.
     if (input.file?.startsWith('gs://')) throw new Error('The OpenCode CLI path reads local .fig files only. Enable the figlens MCP server for a gs:// design, or pass a local copy.');
-    // A design the CLI reads honours read rules on its requested and canonical paths, as Workflow.source does.
-    if (input.file && (tool !== 'index' || ['prepare', 'add', 'relocate'].includes(input.action))) {
-      const requested = path.resolve(current.flow.root, input.file);
-      await current.authorize('read', [...new Set([requested, await realpath(requested).catch(() => requested)])]);
-    }
+    // A design the CLI reads honours read rules on its requested and canonical paths, as Workflow.source does; the
+    // CLI gets the path unnormalized, so a `..` after a link reads where the link leads.
+    if (input.file && (tool !== 'index' || ['prepare', 'add', 'relocate'].includes(input.action))) await current.authorize('read', await both([input.file]));
     // Workspace search, refresh and rebuild read the registered designs' content, which this session may deny.
     const readSources = async ({ state, sources }) => {
       // A workspace that does not exist yet reads no design; the command then fails as the MCP tool does.
