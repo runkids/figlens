@@ -439,26 +439,71 @@ fn result_paths_are_charged_before_they_are_copied() {
 }
 
 #[test]
-fn snippets_stop_extending_over_a_long_attached_run() {
-    let run_text = format!("x{}", "\u{FE0F}".repeat(100_000));
+fn snippets_stay_bounded_around_long_attached_runs_and_wide_matches() {
+    // Attached runs on both sides of the match, then a match widened by composed jamo.
+    let runs = format!("y{0}x{0}", "\u{FE0F}".repeat(100_000));
+    let wide = "\u{1100}\u{1161}\u{11A8}".repeat(20_000);
     let message = obj(vec![(
         "nodeChanges",
         K::Array(vec![
             node(0, None, "DOCUMENT", "Document", vec![]),
             node(1, Some(0), "CANVAS", "Page", vec![]),
-            node(2, Some(1), "TEXT", "Copy", vec![text(&run_text)]),
+            node(2, Some(1), "TEXT", "Copy", vec![text(&runs)]),
+            node(3, Some(1), "TEXT", "Wide", vec![text(&wide)]),
         ]),
     )]);
     let tree = Tree::new(&message);
     let index = build(&tree, "0:0", bounds(WORK));
-    let req = request("x");
-    let q = req.validate().unwrap();
     let source = json!({"sourceId": "local:test", "snapshotId": "sha256:test"});
-    let found = reply(&index, &q, &req, source).unwrap();
-    let snippet = first(&found)["matches"][0]["snippet"]["text"]
-        .as_str()
-        .unwrap();
-    assert!(snippet.len() < 1024, "{}", snippet.len());
+    let snippet_of = |query: &str| {
+        let req = request(query);
+        let q = req.validate().unwrap();
+        let found = reply(&index, &q, &req, source.clone()).unwrap();
+        first(&found)["matches"][0]["snippet"].clone()
+    };
+    let runs = snippet_of("x");
+    let text = runs["text"].as_str().unwrap();
+    assert!(
+        text.contains('x') && text.len() <= SNIPPET_BYTES,
+        "{}",
+        text.len()
+    );
+    assert_eq!(
+        (runs["truncatedStart"].clone(), runs["truncatedEnd"].clone()),
+        (json!(true), json!(true))
+    );
+    let wide = snippet_of(&"각".repeat(256));
+    let text = wide["text"].as_str().unwrap();
+    assert!(
+        text.len() <= SNIPPET_BYTES && text.starts_with('\u{1100}'),
+        "{}",
+        text.len()
+    );
+    assert_eq!(wide["truncatedEnd"], json!(true));
+}
+
+#[test]
+fn case_folding_composes_across_a_whole_segment() {
+    // Folding J or T apart from its mark leaves it decomposed, unlike the precomposed query.
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(2, Some(1), "TEXT", "J\u{30C}", vec![]),
+            node(3, Some(1), "TEXT", "T\u{308}", vec![]),
+        ]),
+    )]);
+    let tree = Tree::new(&message);
+    let index = build(&tree, "0:0", bounds(WORK));
+    let source = json!({"sourceId": "local:test", "snapshotId": "sha256:test"});
+    for (query, id) in [("\u{1F0}", "0:2"), ("\u{1E97}", "0:3")] {
+        let req = request(query);
+        let q = req.validate().unwrap();
+        let found = reply(&index, &q, &req, source.clone()).unwrap();
+        assert_eq!(ids(&found), [id], "{query}");
+        assert_eq!(first(&found)["matches"][0]["reason"], "exact");
+    }
 }
 
 #[test]

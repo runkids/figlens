@@ -36,6 +36,8 @@ const TEXT_BYTES: usize = 64 * 1024 * 1024;
 const DEPTH: usize = 256;
 /// Combining marks in a row NFKC may buffer; stream-safe text keeps at most 30.
 const MAX_MARKS: usize = 1024;
+/// Bytes one snippet may copy, its context and matched span together.
+const SNIPPET_BYTES: usize = 2048;
 /// Names, ids and paths one page of results may copy; the MCP reply cap, so CLI and MCP agree.
 const REPLY_BYTES: usize = 8 * 1024 * 1024;
 const DEADLINE: Duration = Duration::from_secs(15);
@@ -55,7 +57,7 @@ fn tokenizer() -> String {
         caseless::UNICODE_VERSION,
     );
     format!(
-        "nfkc-{}.{}-casefold-{}.{}-cjk-bigram-camel-2",
+        "nfkc-{}.{}-casefold-{}.{}-segment-cjk-bigram-camel-3",
         n.0, n.1, c.0, c.1
     )
 }
@@ -194,8 +196,8 @@ struct Unit {
     camel: bool,
 }
 
-/// NFKC, full Unicode case folding and NFKC again, applied per base character with its
-/// combining marks so each output character maps back to original bytes. Whitespace runs
+/// NFKC, full Unicode case folding and NFKC again, applied per segment (a base character with
+/// its combining marks) so each output character maps back to original bytes. Whitespace runs
 /// become one space; leading and trailing whitespace is dropped.
 /// Whether NFKC may merge `c` into the character before it: its compatibility decomposition
 /// starts with a combining mark or a starter that composes backward, such as a jamo vowel.
@@ -225,30 +227,40 @@ fn normalize(text: &str) -> Vec<Unit> {
             end = i + c.len_utf8();
             chars.next();
         }
+        // Camel steps are read per compatibility character, then the whole segment is folded and
+        // composed together, since folding can enable composition across its characters.
+        let mut camel = Vec::new();
         for k in text[start..end].nfkc() {
-            let mut camel = k.is_uppercase() && lower;
+            camel.push(k.is_uppercase() && lower);
             lower = k.is_lowercase();
-            let folded: String = std::iter::once(k).default_case_fold().nfkc().collect();
-            for c in folded.chars() {
-                if c.is_whitespace() {
-                    if out.last().is_some_and(|u| u.c != ' ') {
-                        out.push(Unit {
-                            c: ' ',
-                            start,
-                            end,
-                            camel: false,
-                        });
-                    }
-                    continue;
+            camel.extend(std::iter::repeat_n(
+                false,
+                std::iter::once(k).default_case_fold().count() - 1,
+            ));
+        }
+        let folded: Vec<char> = text[start..end].nfkc().default_case_fold().nfkc().collect();
+        // shortcut: a fold that changes the length keeps only the segment's first camel step.
+        if folded.len() != camel.len() {
+            camel.truncate(1);
+        }
+        for (i, &c) in folded.iter().enumerate() {
+            if c.is_whitespace() {
+                if out.last().is_some_and(|u| u.c != ' ') {
+                    out.push(Unit {
+                        c: ' ',
+                        start,
+                        end,
+                        camel: false,
+                    });
                 }
-                out.push(Unit {
-                    c,
-                    start,
-                    end,
-                    camel,
-                });
-                camel = false;
+                continue;
             }
+            out.push(Unit {
+                c,
+                start,
+                end,
+                camel: camel.get(i).copied().unwrap_or(false),
+            });
         }
     }
     while out.last().is_some_and(|u| u.c == ' ') {
@@ -847,6 +859,13 @@ fn snippet(text: &str, start: usize, end: usize) -> Json {
         }
         b += text[b..].chars().next().unwrap().len_utf8();
     }
+    // Composed characters can widen the matched span itself, so the copy is cut at a fixed size.
+    if b - a > SNIPPET_BYTES {
+        b = a + SNIPPET_BYTES;
+        while !text.is_char_boundary(b) {
+            b -= 1;
+        }
+    }
     json!({"text": &text[a..b], "sourceStart": utf16(&text[..a]),
         "truncatedStart": a > 0, "truncatedEnd": b < text.len()})
 }
@@ -897,12 +916,14 @@ fn explain(field: u8, original: &str, q: &Prepared) -> Option<Json> {
     Some(out)
 }
 
-/// Bytes `result` copies for `hit`: its name, every path entry and its page, plus a fixed share
-/// for refs, spans and bounded snippets. Counted without allocating.
-fn result_bytes(index: &Index, hit: &Hit) -> usize {
+/// Bytes `result` copies for `hit`: its name, every path entry and its page, a capped snippet,
+/// the matched terms of both fields and a fixed share for refs and spans. Counted without
+/// allocating; serialization adds escaping, which MCP checks on the complete reply.
+fn result_bytes(index: &Index, hit: &Hit, q: &Prepared) -> usize {
     let entry = |id: &str, name: &str| 64 + id.len() + name.len();
     let r = &index.records[hit.record as usize];
-    let mut bytes = 1024 + r.name.len() + r.page.map_or(0, |p| index.pages[p as usize].name.len());
+    let mut bytes = 1024 + SNIPPET_BYTES + 2 * q.phrase.len() + r.name.len();
+    bytes += r.page.map_or(0, |p| index.pages[p as usize].name.len());
     let mut cur = Some(hit.record);
     while let Some(i) = cur {
         let node = &index.records[i as usize];
@@ -1006,29 +1027,19 @@ fn reply(index: &Index, q: &Prepared, req: &Request, source: Json) -> Result<Jso
         )
         .into()
     };
-    let mut bytes = hits
+    if hits
         .iter()
-        .map(|hit| result_bytes(index, hit))
-        .sum::<usize>();
-    if bytes > REPLY_BYTES {
+        .map(|hit| result_bytes(index, hit, q))
+        .sum::<usize>()
+        > REPLY_BYTES
+    {
         return Err(over());
     }
-    let mut results = Vec::with_capacity(hits.len());
-    for (i, hit) in hits.iter().enumerate() {
-        let out = result(index, hit, q.offset + i + 1, q, &source);
-        // A snippet spans its match, which composed marks can widen; count it once copied.
-        bytes += out["matches"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|m| m["snippet"]["text"].as_str())
-            .map(str::len)
-            .sum::<usize>();
-        if bytes > REPLY_BYTES {
-            return Err(over());
-        }
-        results.push(out);
-    }
+    let results: Vec<Json> = hits
+        .iter()
+        .enumerate()
+        .map(|(i, hit)| result(index, hit, q.offset + i + 1, q, &source))
+        .collect();
     let scope = index.records.first();
     Ok(json!({
         "query": {"text": req.query, "normalized": q.phrase, "mode": "text", "terms": q.terms},

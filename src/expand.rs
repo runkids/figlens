@@ -526,6 +526,16 @@ fn subtree_while(tree: &Tree, root: &str, mut more: impl FnMut() -> bool) -> Vec
 
 /// Product of transforms from `id` up to (excluding) `root`.
 pub fn abs_matrix(tree: &Tree, id: &str, root: &str) -> Mat {
+    abs_matrix_while(tree, id, root, || true).unwrap_or(Mat::IDENTITY)
+}
+
+/// `abs_matrix`, asking `more` before each ancestor step; None once it says stop.
+fn abs_matrix_while(
+    tree: &Tree,
+    id: &str,
+    root: &str,
+    mut more: impl FnMut() -> bool,
+) -> Option<Mat> {
     let mut m = Mat::IDENTITY;
     let mut cur = Some(id.to_owned());
     while let Some(node) = cur
@@ -533,12 +543,15 @@ pub fn abs_matrix(tree: &Tree, id: &str, root: &str) -> Mat {
         .filter(|c| *c != root)
         .and_then(|c| tree.nodes.get(c))
     {
+        if !more() {
+            return None;
+        }
         if let Some(t) = node.get("transform") {
             m = Mat::from_value(t) * m;
         }
         cur = parent_of(node);
     }
-    m
+    Some(m)
 }
 
 /// False when `id` or any ancestor up to `root` is hidden.
@@ -661,21 +674,16 @@ fn expand_all(
             &Patch::default(),
         );
         let dv = entries(inst.get("derivedSymbolData"), None);
+        // Each instance walks its ancestors for placement; bounded runs pay per step.
+        let Some(matrix) = abs_matrix_while(tree, &id, root, || ex.spend(1, 0)) else {
+            break;
+        };
         let resize = resized(
             tree.nodes[&main].get("size").map(vec2),
             inst.get("size").map(vec2),
         );
         ex.symbols = vec![main.clone()];
-        ex.expand(
-            &id,
-            &id,
-            &main,
-            &[],
-            &ov,
-            &dv,
-            abs_matrix(tree, &id, root),
-            resize,
-        );
+        ex.expand(&id, &id, &main, &[], &ov, &dv, matrix, resize);
     }
     (ex.out, ex.bounds, ex.exceeded)
 }
@@ -1394,6 +1402,51 @@ mod tests {
             bounded(&tree, "wide page", 1 << 20, 64 << 20).0.nodes.len(),
             100
         );
+    }
+
+    #[test]
+    fn a_bounded_expansion_charges_each_instance_ancestor_walk() {
+        // 2,000 nested frames, each holding a childless instance: placing them walks 2M ancestors.
+        let frames: Vec<Value> = (0..2000u32)
+            .map(|i| {
+                let mut fields = vec![("type", Value::Enum("NodeType", "FRAME"))];
+                if i > 0 {
+                    fields.push(("parentIndex", obj(vec![("guid", guid(0, i - 1))])));
+                }
+                obj(fields)
+            })
+            .collect();
+        let insts: Vec<Value> = (0..2000u32)
+            .map(|i| {
+                obj(vec![
+                    ("type", Value::Enum("NodeType", "INSTANCE")),
+                    ("symbolData", obj(vec![("symbolID", guid(1, 1))])),
+                    ("parentIndex", obj(vec![("guid", guid(0, i))])),
+                ])
+            })
+            .collect();
+        let main = obj(vec![]);
+        let mut nodes: HashMap<String, &Value> = HashMap::from([("1:1".into(), &main)]);
+        let mut children: HashMap<String, Vec<String>> = HashMap::new();
+        for i in 0..2000u32 {
+            nodes.insert(format!("0:{i}"), &frames[i as usize]);
+            nodes.insert(format!("i{i}"), &insts[i as usize]);
+            let kids = children.entry(format!("0:{i}")).or_default();
+            kids.push(format!("i{i}"));
+            if i + 1 < 2000 {
+                kids.push(format!("0:{}", i + 1));
+            }
+        }
+        let tree = Tree {
+            nodes,
+            children,
+            blobs: Vec::new(),
+        };
+        // Visiting the 4,000 stored nodes fits easily; the walks do not.
+        let (_, bounds) = bounded(&tree, "0:0", 100_000, 1 << 30);
+        assert_eq!(bounds.stop, Some(Stop::Work));
+        let (_, bounds) = bounded(&tree, "0:0", 5_000_000, 1 << 30);
+        assert_eq!(bounds.stop, None);
     }
 
     #[test]
