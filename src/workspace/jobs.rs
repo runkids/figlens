@@ -2308,6 +2308,33 @@ fn set_tracking(
             .optional()
             .map_err(sql)?;
         let tracked = state.as_deref().is_some_and(|s| s != "disabled");
+        let pending = !tracked || state.as_deref() == Some("baseline_pending");
+        // A running job that may already have read tracking off (a rebuild reads it once its
+        // stage reaches parse; a refresh may reuse an unfaceted snapshot) cannot be the
+        // baseline, and joining it would leave the baseline pending: track after it ends.
+        let busy: Option<String> = match on && pending {
+            true => tx
+                .query_row(
+                    "SELECT job_id FROM jobs WHERE source_id = ?1 AND scope = ?2
+                     AND state = 'running' AND (kind != 'rebuild' OR stage NOT IN ('stage', 'hash'))",
+                    [source_id, scope],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(sql)?,
+            false => None,
+        };
+        if let Some(job_id) = busy {
+            return Err(FigError::new(
+                ErrorKind::WorkspaceBusy,
+                format!("a build of source {source_id} scope {scope} is running without change tracking; track after it ends"),
+            )
+            .with_recovery(json!([{"action": "wait", "requires": "none", "tool": "jobs",
+                "arguments": {"action": "status", "jobId": job_id}},
+                {"action": "track", "requires": "none", "tool": "index",
+                "arguments": {"action": "track", "workspaceId": ws.held.id, "sourceId": source_id, "scope": scope}}]))
+            .into());
+        }
         if on && !tracked {
             tx.execute(
                 "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)

@@ -2053,3 +2053,31 @@ fn relocating_a_tracked_source_keeps_its_history_and_removing_it_deletes_it() {
         (1, 0, 0)
     );
 }
+
+#[test]
+fn tracking_during_a_build_that_read_it_off_is_refused_and_tracking_after_builds_the_baseline() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let gate = env.gate("write.hold");
+    let mut build = env.spawn(
+        &["index", "rebuild", "--file", file],
+        Some(("write", &gate)),
+    );
+    let reached = PathBuf::from(format!("{}.reached", gate.display()));
+    wait_for("the build to pass its tracking read", || reached.exists());
+    let refused = env.run(&["index", "track", "--file", file, "--scope", "0:0"]);
+    std::fs::remove_file(&gate).unwrap();
+    assert!(build.wait().unwrap().success());
+    let tracked = env.json(&["index", "track", "--file", file, "--scope", "0:0"]);
+    let state = env.json(&["index", "track", "--file", file, "--scope", "0:0"]);
+    assert_eq!(
+        (
+            String::from_utf8_lossy(&refused.stderr).contains("track after it ends"),
+            tracked["jobs"][0]["state"].clone(),
+            state["tracking"][0]["state"].clone()
+        ),
+        (true, json!("succeeded"), json!("active"))
+    );
+}
