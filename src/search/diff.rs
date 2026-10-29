@@ -105,8 +105,9 @@ const PAIR_BYTES: usize = 64 * 1024 * 1024;
 const POSSIBLE: usize = 200;
 /// Value bytes one page may carry.
 const PAGE_VALUES: usize = 256 * 1024;
-/// Edge visits one page may spend comparing changed records' edges, and the transient set
-/// bytes one record's comparison may build; both are checked before the sets are built.
+/// Edge visits one page may spend comparing changed records' edges, and an estimate (64 bytes
+/// an edge, not a measured heap cap) of the transient sets one record's comparison builds; both
+/// are checked before the sets are built.
 const PAGE_WORK: usize = 1_000_000;
 const EDGE_SET_BYTES: usize = 8 * 1024 * 1024;
 pub const LIMIT: usize = 100;
