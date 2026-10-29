@@ -179,6 +179,7 @@ test('CLI path runs the MCP index, jobs, search and inspect arguments as the sam
   assert.deepEqual(cliArgs('search', { workspaceId: 'ws_1', query: 'Pay now', limit: 5 }), ['search', '--id', 'ws_1', '--limit', '5', '--', 'Pay now']);
   assert.deepEqual(cliArgs('search', { file: '/d.fig', query: 'Pay', includeHidden: true }), ['search', '/d.fig', 'Pay', '--include-hidden']);
   assert.deepEqual(cliArgs('inspect', { file: '/d.fig', node: 'I1:2;3:4', depth: 0 }), ['inspect', '/d.fig', 'I1:2;3:4', '--depth', '0']);
+  assert.deepEqual(cliArgs('inspect', { file: '/d.fig', node: '1:2', compareVariant: '1:3' }), ['inspect', '/d.fig', '1:2', '--compare-variant', '1:3']);
   assert.throws(() => cliArgs('index', { action: 'remove', workspaceId: 'ws_1' }), /needs sourceId/);
 });
 
@@ -292,6 +293,17 @@ test('CLI-path design reads ask read on the requested and canonical path, and bu
   };
   await adapter.cli(current, 'index', { action: 'refresh', workspaceId: 'ws_1' });
   assert.deepEqual(timeouts, [['status', undefined], ['refresh', 0]]);
+});
+
+test('CLI-path prepare with an explicit storage asks edit on the state root the binary chose, not the remembered one', async t => {
+  const { ctx, adapter } = await context(t);
+  const asked = [];
+  ctx.permission.assert = async ({ action, resources }) => { if (action !== 'read') asked.push([action, ...resources]); };
+  const current = await adapter.scope('session');
+  current.run = async () => ({ stdout: JSON.stringify({ paths: null, storage: { rule: '--storage', remembered: '/old' },
+    roots: { state: { path: '/new/state' }, config: { path: '/config' } } }) });
+  await adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig', storage: '/new' });
+  assert.deepEqual(asked, [['edit', '/new/state', '/config']]);
 });
 
 test('CLI-path workspace search and rebuild ask read on the selected registered designs before reading them', async t => {

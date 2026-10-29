@@ -32,7 +32,7 @@ export function cliArgs(tool, input) {
   const storage = flag('--storage', input.storage);
   if (tool === 'jobs') return ['jobs', input.action, required(input, 'jobId'), ...storage];
   if (tool === 'inspect') return ['inspect', required(input, 'file'), required(input, 'node'), ...flag('--depth', input.depth),
-    ...flag('--images', input.images), ...flag('--states', input.states), ...flag('--flat', input.flat)];
+    ...flag('--images', input.images), ...flag('--states', input.states), ...flag('--flat', input.flat), ...flag('--compare-variant', input.compareVariant)];
   if (tool === 'search') {
     const target = input.file ? [input.file] : ['--id', required(input, 'workspaceId'), ...flag('--source', input.sourceId), ...storage];
     const flags = [...flag('--node', input.node), ...flag('--type', input.type), ...flag('--limit', input.limit),
@@ -266,8 +266,8 @@ export function createAdapter(ctx, entry = import.meta.url) {
     // operand file is not a selector, except that a prepare without a project directory is found by it.
     const status = ({ action, file, workspace, workspaceId, storage }) => invoke(cliArgs('index', { action: 'status', workspace, workspaceId, storage,
       file: ['add', 'relocate'].includes(action) || (action === 'prepare' && workspace) ? undefined : file }));
-    // Where the binary places this workspace: its directory, or the root a first prepare creates it under.
-    const place = ({ paths, storage, roots }) => paths?.workspace ?? (storage.rule === 'default' ? roots.state.path : storage.remembered ?? input.storage);
+    // Where the binary places this workspace: its directory, or the state root of the storage it chose.
+    const place = ({ paths, roots }) => paths?.workspace ?? roots.state.path;
     const missing = what => new Error(`This figlens binary does not report ${what}; update figlens to use these tools.`);
     // A design the CLI reads honours read rules on its requested and canonical paths, as Workflow.source does.
     if (input.file && (tool !== 'index' || ['prepare', 'add', 'relocate'].includes(input.action))) {
