@@ -350,3 +350,26 @@ fn a_selection_on_one_side_only_lists_its_children_for_drilling_in() {
     );
     assert_eq!(out["coverage"]["new"]["selected"], false);
 }
+
+#[test]
+fn binary_values_of_equal_length_differ_and_an_override_holding_bytes_is_unread() {
+    let blob = |b: u8| {
+        (
+            "fillPaints",
+            K::Array(vec![obj(vec![
+                ("type", K::Enum("PaintType", "SOLID")),
+                ("blob", K::Bytes(vec![1, b])),
+            ])]),
+        )
+    };
+    let one = |b| doc(vec![node(10, Some(1), "RECTANGLE", "R", vec![blob(b)])]);
+    let n = &run(one(2), one(3))["frames"][0]["nodes"][0];
+    assert_eq!(n["facets"], json!(["appearance"]));
+    // The override reaches the facets as JSON with `<2 bytes>`: unknown, not unchanged.
+    let same = obj(vec![path(&[31]), blob(2)]);
+    let changes = nodes(&run(
+        with_instance(30, vec![same.clone()]),
+        with_instance(30, vec![same]),
+    ));
+    assert_eq!(changes, [("I0:11;0:31".to_owned(), "changed".to_owned())]);
+}

@@ -123,6 +123,36 @@ pub(crate) struct Facets {
     fields: Vec<Field>,
 }
 
+/// Feeds the bytes `to_json` shows only as `<N bytes>` into `h`, in key order, so binary values
+/// of equal length still differ.
+fn raw_bytes(v: &kiwi_schema::Value, h: &mut Sha256) {
+    use kiwi_schema::Value as K;
+    match v {
+        K::Bytes(b) => {
+            h.update((b.len() as u64).to_le_bytes());
+            h.update(b);
+        }
+        K::Byte(b) => h.update([*b]),
+        K::Array(a) => a.iter().for_each(|x| raw_bytes(x, h)),
+        K::Object(_, o) => {
+            let mut keys: Vec<_> = o.iter().collect();
+            keys.sort_by_key(|(k, _)| *k);
+            keys.into_iter().for_each(|(_, x)| raw_bytes(x, h));
+        }
+        _ => {}
+    }
+}
+
+/// Whether `v` holds a `to_json` bytes placeholder, whose contents are gone.
+fn placeholder(v: &Json) -> bool {
+    match v {
+        Json::String(s) => s.starts_with('<') && s.ends_with(" bytes>"),
+        Json::Array(a) => a.iter().any(placeholder),
+        Json::Object(o) => o.values().any(placeholder),
+        _ => false,
+    }
+}
+
 /// Hashes what is written and counts it, keeping nothing.
 struct Digesting {
     hash: Sha256,
@@ -194,7 +224,13 @@ pub(super) fn facets(
             if !bounds.charge(VISITS - left + if unread { 0 } else { estimate / 64 }, 0) {
                 return None;
             }
-            if unread {
+            // An override's bytes were already shown as `<N bytes>`; equal lengths prove nothing.
+            let gone = match &value {
+                Value::Json(v) => placeholder(v),
+                Value::Owned(v) => placeholder(v),
+                Value::Kiwi(_) => false,
+            };
+            if unread || gone {
                 fields.push(Field {
                     key,
                     facet: facet as u8,
@@ -222,6 +258,9 @@ pub(super) fn facets(
             w.hash.update([0]);
             serde_json::to_writer(&mut w, json).ok()?;
             w.hash.update((w.len as u64).to_le_bytes());
+            if let Value::Kiwi(v) = &value {
+                raw_bytes(v, &mut w.hash);
+            }
             let fits = w.len <= FIELD_VALUE && kept + w.len <= RECORD_VALUES;
             // Escaping can make the stream longer than the estimate; that work is charged too.
             if !bounds.charge(w.len / 64, 64 + key.len() + if fits { w.len } else { 0 }) {
