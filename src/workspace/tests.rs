@@ -834,7 +834,16 @@ fn project_sources_are_added_removed_and_relocated_without_touching_files() {
     let solo = Select::Id(id_of(&prepare(&f.storage, &a, None).unwrap()));
     assert!(add(&f.storage, &solo, &b).is_err());
     let own = crate::search::source_id(&std::fs::canonicalize(&a).unwrap());
-    assert!(relocate(&f.storage, &solo, &own, &b).is_err());
+    // Relocating it keeps the workspace: the new path selects it through an alias.
+    relocate(&f.storage, &solo, &own, &b).unwrap();
+    let by_new_path = Select::Locator(Locator::source(&b).unwrap());
+    assert_eq!(
+        status(&f.storage, &by_new_path).unwrap()["workspaceId"],
+        json!(match &solo {
+            Select::Id(id) => id.clone(),
+            _ => unreachable!(),
+        })
+    );
     // Removing its own source leaves a valid, empty workspace that may add the file again.
     assert_eq!(remove(&f.storage, &solo, &own).unwrap()["removed"], true);
     assert_eq!(status(&f.storage, &solo).unwrap()["sources"], json!([]));
