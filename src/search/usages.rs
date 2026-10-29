@@ -493,9 +493,32 @@ pub(crate) fn definitions(
             }
         }
     }
+    // Variables are direct children of a page; each is a definition even when nothing in the
+    // scope binds it, so an unused one answers as such rather than as unknown.
+    let mut variables = Vec::new();
+    for page in tree.children.get("0:0").into_iter().flatten() {
+        for id in tree.children.get(page).into_iter().flatten() {
+            if !bounds.charge(1, 0) {
+                return None;
+            }
+            if tree
+                .nodes
+                .get(id)
+                .is_some_and(|n| plugin_type(n) == "VARIABLE")
+            {
+                if !bounds.charge(0, 64 + id.len()) {
+                    return None;
+                }
+                variables.push(format!("VariableID:{id}"));
+            }
+        }
+    }
     let mut out = BTreeMap::new();
     let mut sets = Vec::new();
-    for target in wanted {
+    for target in wanted
+        .into_iter()
+        .chain(variables.iter().map(String::as_str))
+    {
         let node_id = target.strip_prefix("VariableID:").unwrap_or(target);
         let Some(node) = tree.nodes.get(node_id) else {
             continue;

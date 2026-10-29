@@ -1034,3 +1034,43 @@ fn a_swapped_instance_s_own_prototype_links_are_partial() {
         (&json!("0:2"), &json!("partial"))
     );
 }
+
+#[test]
+fn an_unused_local_variable_is_a_known_resource_with_no_uses() {
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(2, Some(1), "FRAME", "Plain", vec![]),
+            node(9, Some(0), "CANVAS", "Internal", vec![]),
+            node(90, Some(9), "VARIABLE", "Unused", vec![]),
+        ]),
+    )]);
+    let index = build(&Tree::new(&message), "0:1", bounds(WORK));
+    let conn = stored(&index);
+    let mut r = req("VariableID:0:90");
+    r.resource = true;
+    r.scope = "0:1".into();
+    let q = r.validate().unwrap();
+    let src = source();
+    let served = || Served {
+        source: &src,
+        gen_id: 1,
+    };
+    let whole = query(&mut Whole(&index), &q, &r, served()).unwrap();
+    let mut disk = Stored {
+        conn: &conn,
+        gen_id: 1,
+        index: crate::search::store::load(&conn, 1, &[], &mut 0).unwrap(),
+        spent: 0,
+    };
+    assert_eq!(whole, query(&mut disk, &q, &r, served()).unwrap());
+    assert_eq!(
+        (
+            whole["results"].as_array().map(Vec::len),
+            &whole["definition"]["name"]
+        ),
+        (Some(0), &json!("Unused"))
+    );
+}
