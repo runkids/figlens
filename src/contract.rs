@@ -82,6 +82,61 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
         ],
     ),
     (
+        "search",
+        "Ranked search of layer names and full text in one stored scope, including instance text overrides, text/boolean properties and nested swaps as REST nodes resolve them. Each result has an exact ref {sourceId, snapshotId, nodeId} (instance sublayer IDs work with inspect/nodes/export), origin stored or instance-effective, textSource, page, scopeRoot (a navigation container, not a screen claim), path, and matches with reasons and UTF-16 spans. coverage says whether the scope was fully indexed (ready) or a work limit stopped it (partial, totalRecords null); hasMore/nextCursor page the same candidates. Hidden layers and internal pages are excluded unless requested. Reads and hashes the source itself; no index is written.",
+        &[
+            FILE,
+            (
+                "query",
+                "string",
+                true,
+                "words or a phrase; case, width and accents fold, CJK matches by character pairs or a single character; no regex",
+            ),
+            (
+                "node",
+                "string",
+                false,
+                "stored scope root; default the document; narrow it when coverage is partial",
+            ),
+            (
+                "type",
+                "string",
+                false,
+                "Figma node types to keep, comma-separated, e.g. TEXT or TEXT,INSTANCE",
+            ),
+            (
+                "limit",
+                "integer",
+                false,
+                "1-200 results per page, default 20; independent of indexing work limits",
+            ),
+            (
+                "cursor",
+                "string",
+                false,
+                "nextCursor from the previous page of the same query, filters and snapshot",
+            ),
+            (
+                "includeHidden",
+                "boolean",
+                false,
+                "also return hidden layers and instance copies hidden by overrides or properties",
+            ),
+            (
+                "includeInternal",
+                "boolean",
+                false,
+                "also return layers on Figma's internal-only page",
+            ),
+            (
+                "mode",
+                "string",
+                false,
+                "text, the only mode in this release",
+            ),
+        ],
+    ),
+    (
         "inspect",
         "Compact expanded node summary: bounds, layout, typography, text previews and child counts. A parent without auto-layout has childSpacing \"derived\": gaps between its children are coordinate differences, not an auto-layout rule; constraints may still pin them. For image decisions, images=true adds original dimensions/bytes and source-pixel rectangles before masks, not blur diagnoses. Depth and a 200-node budget bound the summary; image paints have their own 200-item limit. nodes returns full design data.",
         &[
@@ -215,6 +270,27 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
             }),
             ["root", "results", "truncated"].as_slice(),
         ),
+        "search" => (
+            serde_json::json!({
+                "query": {"type": "object", "description": "the query as given, its normalized phrase, mode and the whole tokens actually searched"},
+                "source": {"type": "object", "description": "sourceId (opaque, from this path), snapshotId (sha256 of the exact .fig bytes decoded) and freshness: file-stamp reuse, not a per-query disk hash"},
+                "scope": {"type": "object"},
+                "ranking": {"type": "object", "description": "ranking and tokenizer versions, field weights and tie order"},
+                "results": {"type": "array", "items": {"type": "object"}},
+                "coverage": {"type": "object", "description": "complete, scannedRecords, totalRecords (null unless complete), layers.text.state ready|partial, reasons with counts, excluded hidden/internal matches, knownGaps and work limits"},
+                "hasMore": {"type": "boolean"},
+                "nextCursor": {"type": ["string", "null"]},
+            }),
+            [
+                "query",
+                "source",
+                "results",
+                "coverage",
+                "hasMore",
+                "nextCursor",
+            ]
+            .as_slice(),
+        ),
         "inspect" => (
             serde_json::json!({
                 "node": {"type": "object", "description": "Compact node with partial layout semantics and type-only property definitions; childSpacing \"derived\" marks a parent without auto-layout; _figlens.semantics records source/verification. Definitions, definition evidence and _figlens.renderDiagnostics each have at most 20 entries per node; truncated includes omitted nodes or entries"},
@@ -299,12 +375,14 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
 fn default(tool: &str, key: &str) -> Option<Value> {
     match (tool, key) {
         ("tree", "depth") => Some(json!(usize::MAX)),
-        ("tree" | "find", "node") => Some(json!("0:0")),
-        ("tree", "json") | ("inspect", "images" | "states") | ("bundle", "states") => {
-            Some(json!(false))
-        }
+        ("tree" | "find" | "search", "node") => Some(json!("0:0")),
+        ("tree", "json")
+        | ("inspect", "images" | "states")
+        | ("bundle", "states")
+        | ("search", "includeHidden" | "includeInternal") => Some(json!(false)),
         ("inspect", "depth") | ("export", "scale") => Some(json!(1)),
-        ("find", "limit") => Some(json!(20)),
+        ("find" | "search", "limit") => Some(json!(20)),
+        ("search", "mode") => Some(json!("text")),
         ("export", "bounds") => Some(json!("render")),
         ("export", "quality") => Some(json!(80)),
         ("export", "maxSize") => Some(json!(1600)),
@@ -323,7 +401,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
     let range = match (tool, key) {
         ("inspect", "depth") => Some((0, 10)),
         ("tree", "depth") => Some((0, JSON_SAFE.min(usize::MAX as u64))),
-        ("find", "limit") => Some((1, 200)),
+        ("find" | "search", "limit") => Some((1, 200)),
         ("export", "quality") => Some((1, 100)),
         ("export", "maxKb") => Some((0, JSON_SAFE.min((usize::MAX / 1024) as u64))),
         ("export", "maxSize") => Some((0, u64::from(u32::MAX))),
@@ -336,7 +414,10 @@ pub fn property(tool: &str, param: &Param) -> Value {
     if let Some(value) = default(tool, key).filter(|_| (tool, key) != ("tree", "depth")) {
         p["default"] = value;
     }
-    if matches!(key, "file" | "out" | "query" | "compareVariant" | "bundle") {
+    if matches!(
+        key,
+        "file" | "out" | "query" | "compareVariant" | "bundle" | "cursor"
+    ) {
         p["minLength"] = json!(1);
     }
     if key == "query" {
@@ -350,6 +431,9 @@ pub fn property(tool: &str, param: &Param) -> Value {
     }
     if tool == "workflow" && key == "topic" {
         p["enum"] = json!(crate::workflow::TOPICS);
+    }
+    if tool == "search" && key == "mode" {
+        p["enum"] = json!(["text"]);
     }
     p
 }
@@ -460,10 +544,14 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
             "out must end in .png, .jpg, .jpeg, .webp, .avif or .svg",
         ));
     }
-    Ok(PreparedCall {
+    let call = PreparedCall {
         name,
         arguments: checked,
-    })
+    };
+    if tool == "search" {
+        crate::command::search_tool(&call).map_err(Failure::from_error)?;
+    }
+    Ok(call)
 }
 
 pub fn tools() -> Value {

@@ -129,7 +129,7 @@ Parcourez les pages et les calques, recherchez, mesurez, inspectez la mise en pa
 
 ## Serveur MCP et skill pour agent
 
-**MCP.** Le serveur s’exécute en local via stdio et expose `workflow`, `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle`, `verify` et `export`. Passez des chemins absolus. Ajoutez `--root /path/to/designs` (répétable) pour confiner chaque chemin de fichier et de sortie aux dossiers choisis. Les exports raster sont réduits à `maxSize` (1600 px par défaut) pour que les images inline restent légères ; SVG ne renvoie que des métadonnées.
+**MCP.** Le serveur s’exécute en local via stdio et expose `workflow`, `tree`, `find`, `search`, `inspect`, `nodes`, `variables`, `bundle`, `verify` et `export`. Passez des chemins absolus. Ajoutez `--root /path/to/designs` (répétable) pour confiner chaque chemin de fichier et de sortie aux dossiers choisis. Les exports raster sont réduits à `maxSize` (1600 px par défaut) pour que les images inline restent légères ; SVG ne renvoie que des métadonnées.
 
 Avec `workflow`, l’agent peut lire les guides intégrés `build`, `audit`, `images`, `plan`, `planning-details` ou `yolo` sur demande explicite. Ils partagent les sources du skill portable ; son installation séparée est facultative avec MCP. L’agent réalise le travail avec ses outils de projet et de navigateur et les permissions de l’hôte. Lire un guide n’exécute pas le workflow ; son utilisation dépend du client et du comportement du modèle.
 
@@ -160,6 +160,7 @@ skillshare sync && skillshare sync mcp --global
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | Ids, types REST (comme `nodes`) et noms des nodes ; texte indenté, ou JSON imbriqué avec la taille de chaque node, son masquage et son mode d'auto layout |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Recherche insensible à la casse dans les noms de calques et le texte ; chemins, tailles et aperçus. 20 résultats par défaut (1-200) |
+| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | Recherche classée dans les noms de calques et le texte complet, avec overrides d’instance, propriétés texte/booléennes et swaps appliqués ; références exactes de nœuds (y compris les ids de sous-calques `I…;…` pour `inspect`), raisons de correspondance, plages UTF-16, couverture et pages par curseur. 20 par défaut (1-200) ; calques masqués et pages internes exigent leur flag |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | Résumé compact de la mise en page/du texte étendus, 200 nodes au plus. `--images` ajoute les dimensions des bitmaps et les emprises de recadrage |
 | `nodes <file> <node>` | L'objet par nœud d'une réponse REST nodes (`document`, `components`, `componentSets`, `styles`) : instances étendues et overrides, auto-layout, styles de texte, fills, effets, variables liées, propriétés de composants, render bounds |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | Un seul décodage, plusieurs nœuds : une ligne JSON par id listé, la sortie de `nodes` avec son `nodeId`, ou `{nodeId, error}` |

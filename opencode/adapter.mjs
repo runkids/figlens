@@ -18,6 +18,8 @@ export function launcherRuntime(versions = process.versions, execPath = process.
   return versions.bun ? 'node' : execPath;
 }
 
+const MANAGED_MCP = 'figlensmcp';
+
 export function createAdapter(ctx, entry = import.meta.url) {
   const wrapper = fileURLToPath(new URL('../bin/figlens.js', entry));
   const bundled = !process.env.FIGLENS_BIN && existsSync(wrapper);
@@ -28,6 +30,9 @@ export function createAdapter(ctx, entry = import.meta.url) {
   const owners = new Map();
   const lifetime = new AbortController();
   let managedMcp = false;
+  // OpenCode drops an MCP server whose name matches this plugin's own figlens_* tool namespace, so
+  // the managed default uses another key; a user server under either key stays the one in use.
+  let mcpName = MANAGED_MCP;
   const mcpConfig = { type: 'local', command: [command, ...prefix, 'mcp'], cwd: ctx.location.directory,
     ...(process.env.FIGLENS_BIN ? { environment: { FIGLENS_BIN: process.env.FIGLENS_BIN } } : {}) };
 
@@ -91,15 +96,16 @@ export function createAdapter(ctx, entry = import.meta.url) {
       flow: new Workflow(root, async args => JSON.parse((await run(args)).stdout), authorize) };
   }
   function configureMcp(editor) {
-    managedMcp = !editor.get('figlens');
-    if (managedMcp) editor.set('figlens', mcpConfig);
+    mcpName = [MANAGED_MCP, 'figlens'].find(name => editor.get(name)) ?? MANAGED_MCP;
+    managedMcp = !editor.get(mcpName);
+    if (managedMcp) editor.set(mcpName, mcpConfig);
   }
   async function mcpStatus() {
     const { data } = await ctx.mcp.list();
-    const server = data.find(server => server.name === 'figlens');
-    return { managed: managedMcp, status: server?.status ?? { status: 'pending' },
+    const server = data.find(server => server.name === mcpName);
+    return { server: mcpName, managed: managedMcp, status: server?.status ?? { status: 'pending' },
       tools: (await ctx.tool.list()).filter(tool => tool.name.startsWith('figlens_')).map(tool => tool.name),
-      reason: managedMcp ? 'Package launcher; local project paths.' : 'Existing configuration preserved; server version and snapshot are unverified. MCP shortcuts are blocked.' };
+      reason: managedMcp ? 'Package launcher; local project paths.' : `Existing configuration preserved; server version and snapshot are unverified. MCP shortcuts are blocked.${mcpName === 'figlens' ? ` OpenCode drops a server named figlens because it collides with this plugin's figlens_* tools; rename it to ${MANAGED_MCP}.` : ''}` };
   }
   async function requireMcp(current) {
     const status = await mcpStatus();

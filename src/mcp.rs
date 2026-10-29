@@ -248,6 +248,11 @@ impl AdmittedCall {
         }
     }
 
+    /// The local source a warm tree serves; search reads and hashes its own snapshot instead.
+    fn tree_source(&self) -> Option<&Path> {
+        self.local().filter(|_| self.call.name() != "search")
+    }
+
     fn recheck(&self, roots: &[PathBuf]) -> Result<(), contract::Failure> {
         for path in self
             .local()
@@ -279,6 +284,16 @@ impl AdmittedCall {
                     value,
                     pretty: false,
                 });
+            }
+            if name == "search" {
+                let path = match self.source.as_ref().unwrap() {
+                    Source::Local(path) => path.clone(),
+                    Source::Remote(file) => figlens::remote::local(file)
+                        .map_err(|e| contract::Failure::from_error(contract::source(file, e)))?,
+                };
+                return command::search_tool(&self.call)
+                    .and_then(|request| command::search(&path, &request, ""))
+                    .map_err(contract::Failure::from_error);
             }
             let run = |tree: &Tree, path: &Path| {
                 command::Command::from_tool(&self.call, tree, self.output.as_deref())?
@@ -360,7 +375,7 @@ pub fn serve(
             }
             Some(Admission::Call(call)) => call,
         };
-        let Some(path) = call.local() else {
+        let Some(path) = call.tree_source() else {
             reply(call.execute(None, roots))?;
             continue;
         };
@@ -396,7 +411,7 @@ pub fn serve(
                 None => return Ok(()),
                 Some(Admission::Ignore) => {}
                 Some(Admission::Reply(value)) => reply(value)?,
-                Some(Admission::Call(next_call)) => match next_call.local() {
+                Some(Admission::Call(next_call)) => match next_call.tree_source() {
                     None => reply(next_call.execute(None, roots))?,
                     Some(next_path) if next_path == path && stamp(path) == Some(stamp_at_open) => {
                         reply(next_call.execute(Some((path, &tree)), roots))?
@@ -479,6 +494,7 @@ mod tests {
                 "workflow",
                 "tree",
                 "find",
+                "search",
                 "inspect",
                 "nodes",
                 "variables",
@@ -501,7 +517,7 @@ mod tests {
             .collect();
         assert_eq!(
             with_schema,
-            ["find", "inspect", "bundle", "verify", "export"]
+            ["find", "search", "inspect", "bundle", "verify", "export"]
         );
     }
 

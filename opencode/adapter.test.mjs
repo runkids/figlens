@@ -13,7 +13,7 @@ async function context(t) {
   const writes = [];
   const ctx = { location: { directory: root },
     session: { get: async () => ({ location: { directory: root } }), wait: async () => {}, prompt: async input => writes.push(input) },
-    mcp: { list: async () => ({ data: [{ name: 'figlens', status: { status: 'connected' } }] }) },
+    mcp: { list: async () => ({ data: [{ name: 'figlensmcp', status: { status: 'connected' } }] }) },
     tool: { list: async () => [] },
     permission: { assert: async () => {} },
   };
@@ -31,6 +31,22 @@ test('OpenCode preserves existing local, remote and disabled MCP settings and bl
   }
   assert.deepEqual(writes, []);
   assert.deepEqual(await readdir(root), []);
+});
+
+test('OpenCode manages its default under a key apart from its figlens_* tools and keeps user servers under either key', async t => {
+  const { adapter, ctx } = await context(t);
+  const set = [];
+  adapter.configureMcp({ get: () => undefined, set: (name, config) => set.push([name, config.command]) });
+  assert.deepEqual(set.map(([name]) => name), ['figlensmcp']);
+  assert.deepEqual((await adapter.operation({ sessionID: 'session', action: 'status' })).mcp.server, 'figlensmcp');
+  for (const name of ['figlensmcp', 'figlens']) {
+    ctx.mcp.list = async () => ({ data: [{ name, status: { status: 'connected' } }] });
+    adapter.configureMcp({ get: key => key === name ? { type: 'local', command: ['other', 'mcp'] } : undefined,
+      set: () => assert.fail('User configuration must remain unchanged') });
+    const { mcp } = await adapter.operation({ sessionID: 'session', action: 'status' });
+    assert.deepEqual([mcp.server, mcp.managed, mcp.status.status], [name, false, 'connected']);
+    assert.equal(/rename it to figlensmcp/.test(mcp.reason), name === 'figlens');
+  }
 });
 
 test('OpenCode rejects a foreign session before creating project state', async t => {

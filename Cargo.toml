@@ -14,6 +14,7 @@ categories = ["command-line-utilities", "parser-implementations", "multimedia::i
 include = ["src/**/*", "vendor/kiwi-schema/**/*", "skills/figlens/**/*", "scripts/make-first-success.rs", "scripts/probe-handoff.rs", "scripts/make-mapping-fixture.rs", "scripts/make-corpus.rs", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
 
 [dependencies]
+caseless = "0.2.2"
 flate2 = "1.1.10"
 imagesize = "0.15.0"
 jpeg-encoder = "0.7.1"
@@ -25,6 +26,7 @@ resvg = { version = "0.48.1", default-features = false, features = ["raster-imag
 ruzstd = "0.9.1"
 serde_json = "1.0.154"
 sha2 = "0.11.1"
+unicode-normalization = "0.1.26"
 webp = { version = "0.3.1", default-features = false }
 zip = "9.0.5"
 

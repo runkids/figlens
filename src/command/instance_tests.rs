@@ -1700,3 +1700,97 @@ fn missing_and_unsupported_ids_fail_without_fallback_or_output() {
         "I0:2;0:14;0:21"
     );
 }
+
+#[test]
+fn search_shares_effective_results_across_cli_and_mcp_and_validates_before_reading() {
+    use sha2::{Digest, Sha256};
+    let f = Fixture::new();
+    let without_freshness = |mut v: Value| {
+        v["source"]["freshness"] = Value::Null;
+        v
+    };
+    let cli: Value = serde_json::from_str(&f.cli("search", &["first"]).unwrap()).unwrap();
+    let mcp = f.tool("search", json!({"query": "first"}));
+    assert_eq!(mcp["isError"], false);
+    assert_eq!(
+        without_freshness(cli.clone()),
+        without_freshness(mcp["structuredContent"].clone())
+    );
+    let digest: String = Sha256::digest(std::fs::read(&f.file).unwrap())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(cli["source"]["snapshotId"], format!("sha256:{digest}"));
+    let hit = cli["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["ref"]["nodeId"] == "I0:2;0:13")
+        .unwrap();
+    assert_eq!(
+        (&hit["origin"], &hit["textSource"]),
+        (&json!("instance-effective"), &json!("override"))
+    );
+    // The exact reference opens with inspect; find keeps searching stored layers only.
+    let inspected = f.tool("inspect", json!({"node": "I0:2;0:13"}));
+    assert_eq!(
+        inspected["structuredContent"]["node"]["characters"],
+        "First"
+    );
+    let found = f.tool("find", json!({"query": "first"}));
+    assert!(
+        found["structuredContent"]["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| !r["id"].as_str().unwrap().starts_with('I'))
+    );
+    // A warm server reuses the index and still answers other tools from its tree.
+    let request = |id, name, arguments: Value| {
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": name, "arguments": arguments}}).to_string()
+    };
+    let input = [
+        request(1, "search", json!({"file": f.file, "query": "first"})),
+        request(2, "find", json!({"file": f.file, "query": "first"})),
+        request(3, "search", json!({"file": f.file, "query": "first"})),
+    ]
+    .join("\n")
+        + "\n";
+    let mut output = Vec::new();
+    serve(input.as_bytes(), &mut output, &[]).unwrap();
+    let replies: Vec<Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(
+        replies[1]["result"]["structuredContent"],
+        found["structuredContent"]
+    );
+    let warm = &replies[2]["result"]["structuredContent"];
+    assert_eq!(warm["source"]["freshness"]["reusedIndex"], true);
+    assert_eq!(without_freshness(warm.clone()), without_freshness(cli));
+    // Invalid arguments fail before the (missing) source is read.
+    for arguments in [
+        json!({"query": "x", "mode": "visual"}),
+        json!({"query": "x", "limit": 0}),
+        json!({"query": "x", "type": "te-xt"}),
+        json!({"query": " / "}),
+        json!({"query": "x", "cursor": "s1.bad"}),
+    ] {
+        let mut arguments = arguments;
+        arguments["file"] = "/nonexistent/missing.fig".into();
+        let reply = call_tool(&json!({"name": "search", "arguments": arguments}), None);
+        assert_eq!(
+            reply["_meta"]["figlens"]["code"], "invalid_arguments",
+            "{reply}"
+        );
+    }
+    let args = ["search", "/nonexistent/missing.fig", "x", "--limit", "0"];
+    let error = run(
+        args.iter().map(|s| (*s).into()).collect(),
+        &mut String::new(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("1-200"), "{error}");
+}

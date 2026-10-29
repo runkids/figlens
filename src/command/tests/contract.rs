@@ -22,6 +22,7 @@ fn schema_and_numeric_preflight_share_boundaries() {
     for (tool, key, min, max) in [
         ("inspect", "depth", 0, 10),
         ("find", "limit", 1, 200),
+        ("search", "limit", 1, 200),
         ("export", "quality", 1, 100),
         ("export", "maxSize", 0, u64::from(u32::MAX)),
         ("tree", "depth", 0, (1 << 53) - 1),
