@@ -201,6 +201,31 @@ pub(crate) fn extract(
             }
         }
     }
+    // A vector region row applies where a fill geometry paints its styleID; as in
+    // `render::region_fills`, the first row of one styleID that has fill paints wins.
+    if let Some(vector) = fields.get_mut("vectorData") {
+        let painted = vector["fillGeometryStyleIDs"].take();
+        let painted = painted.as_array().map_or(&[][..], Vec::as_slice);
+        if let Some(table) = vector["styleOverrideTable"].as_array_mut() {
+            if !bounds.charge(table.len(), 16 * table.len()) {
+                return None;
+            }
+            let mut seen = BTreeSet::new();
+            for row in table.iter_mut() {
+                let sid = row["styleID"].as_u64();
+                let used = row["fillPaints"].is_array()
+                    && sid.is_some_and(|sid| {
+                        painted
+                            .binary_search_by(|u| u.as_u64().cmp(&Some(sid)))
+                            .is_ok()
+                            && seen.insert(sid)
+                    });
+                if !used {
+                    *row = Json::Null;
+                }
+            }
+        }
+    }
     // REST lists no vector-region fills; usages reads their bindings like top-level fills.
     let regions: Json = fields
         .get("vectorData")
@@ -515,6 +540,35 @@ fn effective(
                 },
             }?;
             converted["characterStyleIDs"] = uses;
+        }
+        // Only the regions a fill geometry paints apply, as `render::region_fills` selects them;
+        // a geometry without a styleID paints style 0.
+        if *key == "vectorData" {
+            use kiwi_schema::Value as K;
+            let geometry = match e.and_then(|e| e.props.get("fillGeometry")) {
+                Some(g) => match g.as_array() {
+                    Some(list) => active(
+                        list.iter()
+                            .map(|g| Some(g["styleID"].as_u64().unwrap_or(0))),
+                        bounds,
+                        unread,
+                    ),
+                    None => Some(json!([])),
+                },
+                None => match node.and_then(|n| n.get("fillGeometry")) {
+                    Some(K::Array(list)) => active(
+                        list.iter().map(|g| match g.get("styleID") {
+                            Some(K::UInt(u)) => Some(u64::from(*u)),
+                            Some(K::UInt64(u)) => Some(*u),
+                            _ => Some(0),
+                        }),
+                        bounds,
+                        unread,
+                    ),
+                    _ => Some(json!([])),
+                },
+            }?;
+            converted["fillGeometryStyleIDs"] = geometry;
         }
         out.insert((*key).into(), converted);
     }

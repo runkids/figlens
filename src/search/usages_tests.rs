@@ -784,7 +784,13 @@ fn styled_text_and_vector_region_images_and_capped_prototypes_are_kept_or_partia
                 Some(1),
                 "VECTOR",
                 "Shape",
-                vec![("vectorData", obj(vec![table(0x02)]))],
+                vec![
+                    ("vectorData", obj(vec![table(0x02)])),
+                    (
+                        "fillGeometry",
+                        K::Array(vec![obj(vec![("styleID", K::UInt(1))])]),
+                    ),
+                ],
             ),
             node(
                 5,
@@ -1113,7 +1119,19 @@ fn vector_region_fill_and_gradient_stop_variables_are_bound() {
         K::Array(vec![
             node(0, None, "DOCUMENT", "Document", vec![]),
             node(1, Some(0), "CANVAS", "Page", vec![]),
-            node(4, Some(1), "VECTOR", "Shape", vec![("vectorData", region)]),
+            node(
+                4,
+                Some(1),
+                "VECTOR",
+                "Shape",
+                vec![
+                    ("vectorData", region),
+                    (
+                        "fillGeometry",
+                        K::Array(vec![obj(vec![("styleID", K::UInt(1))])]),
+                    ),
+                ],
+            ),
             node(60, Some(1), "VARIABLE", "Ink", vec![]),
             node(61, Some(1), "VARIABLE", "Stop", vec![]),
         ]),
@@ -1539,28 +1557,22 @@ fn only_text_rows_characters_use_lend_their_images_and_paint_bindings() {
                 "Body",
                 vec![("textData", rows(vec![1, 1, 3, 4]))],
             ),
-            // Vector regions keep every row.
-            node(
-                3,
-                Some(1),
-                "VECTOR",
-                "Shape",
-                vec![("vectorData", rows(vec![]))],
-            ),
         ]),
     )]);
     let index = build(&Tree::new(&message), "0:0", bounds(WORK));
     let users = |target: &str| {
         let mut r = req(target);
         r.resource = true;
-        ids(&run(&index, &r).unwrap())
+        // An image is no definition: with no use left it is not found, while a variable answers
+        // with no uses.
+        run(&index, &r).ok().map(|out| ids(&out))
     };
-    assert_eq!(users("image:10"), ["0:2", "0:3"]);
-    assert_eq!(users("image:11"), ["0:3"]);
-    assert_eq!(users("image:12"), ["0:3"]);
-    assert_eq!(users("image:13"), ["0:2", "0:3"]);
-    assert_eq!(users("VariableID:0:40"), ["0:2", "0:3"]);
-    assert_eq!(users("VariableID:0:41"), ["0:3"]);
+    assert_eq!(users("image:10"), Some(vec!["0:2".to_owned()]));
+    assert_eq!(users("image:11"), None);
+    assert_eq!(users("image:12"), None);
+    assert_eq!(users("image:13"), Some(vec!["0:2".to_owned()]));
+    assert_eq!(users("VariableID:0:40"), Some(vec!["0:2".to_owned()]));
+    assert_eq!(users("VariableID:0:41"), Some(vec![]));
     let mut r = req("0:2");
     r.outgoing = true;
     r.relations = vec!["binds_variable".into(), "uses_image".into()];
@@ -1588,6 +1600,132 @@ fn only_text_rows_characters_use_lend_their_images_and_paint_bindings() {
                 &json!("uses_image"),
                 &json!("image:13"),
                 &json!("textData.styleOverrideTable[5].fillPaints[0]")
+            ),
+        ]
+    );
+}
+
+#[test]
+fn only_vector_regions_a_geometry_paints_lend_their_images_and_paint_bindings() {
+    let image = |b: u8| {
+        K::Array(vec![obj(vec![
+            ("type", K::Enum("PaintType", "IMAGE")),
+            ("image", obj(vec![("hash", K::Bytes(vec![b]))])),
+        ])])
+    };
+    let row = |sid: u32, paints: Option<K<'static>>| {
+        let mut fields = vec![("styleID", K::UInt(sid))];
+        fields.extend(paints.map(|p| ("fillPaints", p)));
+        obj(fields)
+    };
+    let geometry = |ids: &[Option<u32>]| {
+        (
+            "fillGeometry",
+            K::Array(
+                ids.iter()
+                    .map(|id| obj(id.map(|id| ("styleID", K::UInt(id))).into_iter().collect()))
+                    .collect(),
+            ),
+        )
+    };
+    let vector = obj(vec![(
+        "styleOverrideTable",
+        K::Array(vec![
+            row(7, Some(image(0x40))),
+            // A later row of a painted styleID is not drawn.
+            row(7, Some(image(0x41))),
+            row(8, Some(image(0x42))),
+            row(0, Some(image(0x43))),
+            row(9, Some(solid(51))),
+            // The first row of one styleID that has fill paints wins.
+            row(10, None),
+            row(10, Some(solid(50))),
+        ]),
+    )]);
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(50, Some(1), "VARIABLE", "Painted", vec![]),
+            node(51, Some(1), "VARIABLE", "Unpainted", vec![]),
+            node(20, Some(1), "SYMBOL", "Icon", vec![]),
+            // A geometry without a styleID paints style 0.
+            node(
+                21,
+                Some(20),
+                "VECTOR",
+                "Shape",
+                vec![
+                    ("vectorData", vector),
+                    geometry(&[Some(7), Some(7), None, Some(10)]),
+                ],
+            ),
+            // An instance without a derived outline paints the source's regions.
+            instance(31, 1, "Plain", 20, vec![]),
+            // The instance re-derives the outline to paint style 8 only.
+            instance(
+                30,
+                1,
+                "Resized",
+                20,
+                vec![(
+                    "derivedSymbolData",
+                    K::Array(vec![obj(vec![path(&[21]), geometry(&[Some(8)])])]),
+                )],
+            ),
+        ]),
+    )]);
+    let index = build(&Tree::new(&message), "0:0", bounds(WORK));
+    let users = |target: &str| {
+        let mut r = req(target);
+        r.resource = true;
+        // An image is no definition: with no use left it is not found, while a variable answers
+        // with no uses.
+        run(&index, &r).ok().map(|out| ids(&out))
+    };
+    assert_eq!(
+        users("image:40"),
+        Some(vec!["0:21".to_owned(), "I0:31;0:21".to_owned()])
+    );
+    assert_eq!(users("image:41"), None);
+    assert_eq!(users("image:42"), Some(vec!["I0:30;0:21".to_owned()]));
+    assert_eq!(
+        users("image:43"),
+        Some(vec!["0:21".to_owned(), "I0:31;0:21".to_owned()])
+    );
+    assert_eq!(
+        users("VariableID:0:50"),
+        Some(vec!["0:21".to_owned(), "I0:31;0:21".to_owned()])
+    );
+    assert_eq!(users("VariableID:0:51"), Some(vec![]));
+    let mut r = req("0:21");
+    r.outgoing = true;
+    r.relations = vec!["binds_variable".into(), "uses_image".into()];
+    let out = run(&index, &r).unwrap();
+    let edges: Vec<(&Json, &Json, &Json)> = out["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (&e["relation"], &e["target"]["resource"], &e["evidence"]))
+        .collect();
+    assert_eq!(
+        edges,
+        [
+            (
+                &json!("binds_variable"),
+                &json!("VariableID:0:50"),
+                &json!("vectorRegionFills")
+            ),
+            (
+                &json!("uses_image"),
+                &json!("image:40"),
+                &json!("vectorData.styleOverrideTable[0].fillPaints[0]")
+            ),
+            (
+                &json!("uses_image"),
+                &json!("image:43"),
+                &json!("vectorData.styleOverrideTable[3].fillPaints[0]")
             ),
         ]
     );
