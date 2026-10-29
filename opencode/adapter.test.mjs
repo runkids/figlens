@@ -209,6 +209,55 @@ test('CLI-path writes ask edit where the binary places the workspace; only reset
   assert.deepEqual(asked.slice(4), [['read', '/moved.fig'], ['edit', '/custom/state/workspaces/ws_1', '/custom/state/workspaces/ws_1.lock', '/config']]);
 });
 
+test('CLI-path writes also ask edit on the canonical target of a symlinked root, so denying it blocks the write', async t => {
+  const { root, ctx, adapter } = await context(t);
+  await mkdir(path.join(root, 'target'));
+  await symlink(path.join(root, 'target'), path.join(root, 'alias'));
+  const real = path.join(await realpath(root), 'target');
+  const asked = [], ran = [];
+  ctx.permission.assert = async ({ action, resources }) => {
+    asked.push([action, ...resources]);
+    if (action === 'edit' && resources.some(file => file.startsWith(real))) throw Object.assign(new Error('denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  const current = await adapter.scope('session');
+  const roots = { state: { path: path.join(root, 'alias', 'state') }, config: { path: path.join(root, 'alias', 'config') } };
+  current.run = async args => {
+    ran.push(args.slice(0, 2).join(' '));
+    return { stdout: JSON.stringify(args[1] === 'status' ? { paths: null, roots } : {}) };
+  };
+  await assert.rejects(adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig', scope: '0:0' }), /denied/);
+  assert.deepEqual(asked.at(-1), ['edit', roots.state.path, path.join(real, 'state'), roots.config.path, path.join(real, 'config')]);
+  // Recreation places a new storage that does not exist yet; its existing parent resolves through the link.
+  await assert.rejects(adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig', storage: path.join(root, 'alias', 'new', 'store'), replaceUnavailable: true }), /denied/);
+  assert.deepEqual(asked.at(-1), ['edit', path.join(root, 'alias', 'new', 'store'), path.join(real, 'new', 'store'),
+    path.join(root, 'alias', 'new', 'store', 'state'), path.join(real, 'new', 'store', 'state'), roots.config.path, path.join(real, 'config')]);
+  // A `..` after the link climbs from the link's target, as the binary's canonicalize does.
+  await mkdir(path.join(root, 'target', 'deep'));
+  await symlink(path.join(root, 'target', 'deep'), path.join(root, 'down'));
+  await assert.rejects(adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig', storage: `${path.join(root, 'down')}${path.sep}..${path.sep}s`, replaceUnavailable: true }), /denied/);
+  assert.ok(asked.at(-1).includes(path.join(real, 's')), 'the physical parent of the link is asked');
+  // A dangling link is followed to where the write would land.
+  await symlink(path.join(real, 'gone'), path.join(root, 'dangling'));
+  await assert.rejects(adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig', storage: path.join(root, 'dangling'), replaceUnavailable: true }), /denied/);
+  assert.ok(asked.at(-1).includes(path.join(real, 'gone', 'state')), 'the dangling target is asked');
+  assert.deepEqual(ran, ['index status', 'index status', 'index status', 'index status'], 'nothing writes past a denied target');
+});
+
+test('CLI-path writes fail closed before any edit ask when a write root runs through a file or a link loop', async t => {
+  const { root, ctx, adapter } = await context(t);
+  await writeFile(path.join(root, 'file'), '');
+  await symlink(path.join(root, 'loop'), path.join(root, 'loop'));
+  const asked = [], ran = [];
+  ctx.permission.assert = async ({ action, resources }) => { asked.push([action, ...resources]); };
+  const current = await adapter.scope('session');
+  const roots = { state: { path: path.join(root, 'state') }, config: { path: path.join(root, 'config') } };
+  current.run = async args => { ran.push(args.slice(0, 2).join(' ')); return { stdout: JSON.stringify(args[1] === 'status' ? { paths: null, roots } : {}) }; };
+  for (const [storage, code] of [[path.join(root, 'file', 'store'), 'ENOTDIR'], [path.join(root, 'loop', 'store'), 'ELOOP']])
+    await assert.rejects(adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig', storage, replaceUnavailable: true }), { code });
+  assert.deepEqual(asked.filter(([action]) => action === 'edit'), []);
+  assert.deepEqual(ran, ['index status', 'index status'], 'nothing runs past the failed resolution');
+});
+
 test('CLI-path recreation asks edit on the new storage and the reported config root, though status fails', async t => {
   const { ctx, adapter } = await context(t);
   const asked = [], ran = [];
@@ -220,7 +269,7 @@ test('CLI-path recreation asks edit on the new storage and the reported config r
     return { stdout: '{}' };
   };
   await adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig', storage: '/new', replaceUnavailable: true });
-  assert.deepEqual(asked, [['read', '/d.fig'], ['figlens_index', 'replace_unavailable'], ['edit', '/new', '/config']]);
+  assert.deepEqual(asked, [['read', '/d.fig'], ['figlens_index', 'replace_unavailable'], ['edit', '/new', '/new/state', '/config']]);
   assert.deepEqual(ran, ['index status', 'index prepare']);
 });
 
