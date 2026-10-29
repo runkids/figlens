@@ -24,28 +24,9 @@ Canvas coordinates subtract `render::export_area`'s origin, not the frame boundi
 
 Live mode polls a tiny `revision` route every two seconds while idle and downloads the catalog only after a save. A file mtime change triggers a complete reload and revision increment only after successful decoding and a stable post-load timestamp. Failed/partial saves show a stale/error banner and are retried. Scope/image/bundle routes include the revision; old requests fail rather than mixing saved versions. Generated responses are discarded if the file changes during preparation. Selection is restored only if its ID is in the new expanded scope; a removed scope clears its reference, tree and handoff. Each revision is decoded once and served by a small pool of worker threads (2–8, by CPU count), so a long render no longer blocks other requests; a save is reloaded after the in-flight requests finish. The viewer keeps up to four thumbnail requests in flight; a socket that sends nothing within 300 ms (a browser preconnect) is closed without a reply so it cannot hold a worker or answer a later request. Thumbnail and original-image loads pause while a frame opens. Rendered images, thumbnails and originals are cached in memory for the current revision (256 MB cap); a save clears them. Renders (thumbnails, canvas tiers, full images, exports) also persist on disk under the figlens cache directory (`$XDG_CACHE_HOME`, `%LOCALAPPDATA%` or `~/.cache`, then `figlens/preview/<file>/<revision>/`), up to 512 MB per file; the revision folder is named by figlens version, modification time and size, so a save or an upgrade starts a new one and deletes the old. This keeps restarts fast and puts design renders on the local disk. `figlens cache` prints its path and size and `figlens cache clear` removes every file's renders; the viewer's ⋯ menu "Clear render cache" (after a confirmation) clears only the open file's renders through the revision-scoped `clear-cache/<revision>` route, the one route that changes state, and never touches the design file. A cache failure is reported once on stderr and rendering continues without it. Live scope data lists original images by key, and the viewer loads each through the revision-scoped `asset/<revision>/<scope>/<hex key>` route instead of embedding base64; snapshots still embed them. Develop with `cargo run` but judge viewer speed only with a `--release` binary: debug rendering is roughly 20× slower. `gs://` is resolved through the existing downloader once: the viewer watches the local cached file, not the cloud object. Filesystem timestamps, not a content hash, detect saves.
 
-## Agent API
+## Search and usages
 
-Snapshot files use [shared output publication](parsing.md#completed-output-publication).
-
-Original image loads and offline snapshots enforce the shared [image byte budgets](parsing.md#initial-fixed-ceilings). The live single-original route checks each requested image; scope preparation also caps the sum of unique originals. These read limits are separate from the viewer's memory and disk cache caps.
-
-Prototype rows use [shared source evidence](prototype.md), including exact override provenance and unverified inheritance. Missing fields display unspecified/unsupported instead of ON_CLICK/NAVIGATE; unresolved node destinations retain IDs without links. These are snapshot facts, not complete business logic.
-
-The page exposes `window.figlens` for browser-automation agents (Playwright, agent-browser, Claude in Chrome). It runs inside the page and calls the same routes as the UI, so it adds no service routes and keeps the read-only boundary; downloads are returned as base64 instead of opening the confirmation dialog.
-
-| Call | Result |
-|---|---|
-| `state()` | snapshot flag, revision, page, pages, canvas frames with boxes, open scope, selection, zoom |
-| `goToPage(id)` | switch page, nothing selected |
-| `open(id, {focus})` / `select(id, {focus})` | open a frame or select any layer by exact ID, including expanded `I…` IDs; opens the containing frame when needed |
-| `deselect()`, `fit()`, `zoomTo(id or 'page')`, `setZoom(level)` | canvas control |
-| `layersAt(x, y)` | layers of the open frame under a page-coordinate point, topmost first |
-| `search(text)` | up to 200 matching layers across pages |
-| `context()`, `prompt()` | the handoff context JSON and implementation prompt for the selection |
-| `exportImage({format, scale, quality})`, `bundle()` | `{mime, base64}` of a render (live only) or the real bundle |
-
-Selections also emit a `figlens:select` event on `window`. Design strings returned by the API are untrusted data.
+The live viewer's Relations panel has two tabs. Ranked search calls `search/<revision>?q=…&scope=…&type=…&hidden=0|1&internal=0|1&limit=…&cursor=…`; Usages calls `usages/<revision>?target=…&resource=0|1&relation=…&outgoing=0|1&hidden=0|1&snapshot=…` for the selection's exact ID. Queries are `URLSearchParams` form encoding (`+` is a space) with at most 32 known keys; unknown keys, a bad scope or an old revision fail, and refused values answer `{"error": {kind, message}, source}`. Replies are core's own JSON, coverage and reasons shown verbatim. Each revision stages the file's bytes once (search's 512 MiB source limit): `snapshotId` hashes exactly the bytes decoded, and refs and cursors carry it. Indexes are built lazily from the held tree with search's bounds, one per scope, shared by concurrent requests; at most two scopes, never evicting one in use or building, else `WorkspaceBusy` (Retry). Usages keep Definition, Members and Instances apart; unknown, missing or external targets show their state; identity is the node ID, never a name. Each panel drops replies from an older request or another snapshot; a save clears both. Opening or copying a row first re-reads `revision` and refuses a stale ref. Offline snapshots search only the packaged layers, labelled as such, and show usages as unavailable. Agent calls are in [preview-api](preview-api.md).
 
 ## Portable HTML and safety
 
