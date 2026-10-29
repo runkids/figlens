@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdir, readFile, readlink, realpath, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { homedir, tmpdir } from 'node:os';
@@ -276,6 +276,22 @@ export function createAdapter(ctx, entry = import.meta.url) {
       if (paths && !paths.lock) throw missing("its workspace's lock file");
       return paths ? [paths.workspace, paths.lock] : [roots.state.path];
     };
+    // The binary canonicalizes a root before writing under it, so an edit also covers the target of any link on the
+    // way; a path that does not exist yet resolves through its nearest existing parent. The walk starts from the
+    // unnormalized path, so a `..` after a link resolves as the binary resolves it, not textually.
+    const destination = async file => {
+      try { return await realpath(file); }
+      catch (error) {
+        // Only a missing entry climbs; a file in the way (ENOTDIR), a loop or a denied directory fails closed.
+        if (error.code !== 'ENOENT' || path.dirname(file) === file) throw error;
+        // A dangling link is written through, as output::destination follows it.
+        const link = await readlink(file).catch(() => null);
+        if (link) return destination(path.isAbsolute(link) ? link : `${path.dirname(file)}${path.sep}${link}`);
+        return path.join(await destination(path.dirname(file)), path.basename(file));
+      }
+    };
+    const edit = async files => current.authorize('edit', [...new Set((await Promise.all(files.map(async file =>
+      [path.resolve(current.flow.root, file), await destination(path.isAbsolute(file) ? file : `${current.flow.root}${path.sep}${file}`)]))).flat())]);
     // The CLI downloads a gs:// design into its own cache, which this path cannot authorize, so only MCP serves it.
     if (input.file?.startsWith('gs://')) throw new Error('The OpenCode CLI path reads local .fig files only. Enable the figlens MCP server for a gs:// design, or pass a local copy.');
     // A design the CLI reads honours read rules on its requested and canonical paths, as Workflow.source does.
@@ -295,7 +311,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
     if (tool === 'jobs' && input.action === 'cancel') {
       const { workspaceId } = await invoke(cliArgs('jobs', { ...input, action: 'status' }));
       if (!workspaceId) throw missing("a job's workspace");
-      await current.authorize('edit', place(await status({ workspaceId, storage: input.storage })));
+      await edit(place(await status({ workspaceId, storage: input.storage })));
     }
     if (tool === 'index' && input.action !== 'status') {
       const grant = indexGrant(input);
@@ -305,7 +321,8 @@ export function createAdapter(ctx, entry = import.meta.url) {
           error => report(error)?.recovery?.find(action => action.roots)?.roots ?? Promise.reject(error));
         if (!roots?.config) throw missing('its config root');
         await current.authorize('figlens_index', [grant]);
-        await current.authorize('edit', [required(input, 'storage'), roots.config.path]);
+        // The binary writes under DIR/state, which may itself be a link.
+        await edit([required(input, 'storage'), path.join(input.storage, 'state'), roots.config.path]);
       } else {
         // A lost lock or newer schema fails status; the binary's own prepare or reset recovery names the place.
         const found = await status(input).catch(error => {
@@ -317,7 +334,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
         if (['refresh', 'rebuild'].includes(input.action)) await readSources(found);
         if (grant) await current.authorize('figlens_index', [grant]);
         // Every write also takes a location lock or record under the config root (a build's publish, relocation's alias).
-        await current.authorize('edit', [...place(found), found.roots.config.path]);
+        await edit([...place(found), found.roots.config.path]);
       }
     }
     // inspect --flat prints lines, as the MCP tool's flat field.
