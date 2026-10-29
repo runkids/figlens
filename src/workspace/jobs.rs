@@ -6,7 +6,7 @@
 //! -> SQLite write transaction. A process's owner lock (`owners/<token>.lock`) lives as long as
 //! the process, so a job row is alive exactly while its owner process is.
 
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -191,23 +191,26 @@ fn claim_path(dir: &Path, job_id: &str, attempt: i64) -> PathBuf {
     dir.join("claims").join(format!("{job_id}.{attempt}.lock"))
 }
 
-/// `claims/<jobId>.<attempt>.worker`, locked by that attempt's worker for its whole life.
+/// `claims/<jobId>.<attempt>.worker`: created empty by the owner before it spawns that attempt's
+/// worker; the worker locks it, writes `started` and keeps the lock until it exits.
 fn worker_path(dir: &Path, job_id: &str, attempt: i64) -> PathBuf {
     dir.join("claims")
         .join(format!("{job_id}.{attempt}.worker"))
 }
 
 /// Whether the worker of attempt `attempt` may still run. It outlives a dead owner until its
-/// stdin watchdog fires, or longer when stopped; unknown counts as running.
+/// stdin watchdog fires, or longer when stopped. No file means it was never spawned; an empty
+/// unlocked one means it may not have locked yet, which counts as running.
 fn worker_alive(dir: &Path, job_id: &str, attempt: i64) -> bool {
     match File::open(worker_path(dir, job_id, attempt)) {
-        Ok(file) => match file.try_lock_shared() {
-            Ok(()) => {
-                let _ = file.unlock();
-                false
+        Ok(file) => {
+            if file.try_lock_shared().is_err() {
+                return true;
             }
-            Err(_) => true,
-        },
+            let started = file.metadata().is_ok_and(|m| m.len() > 0);
+            let _ = file.unlock();
+            !started
+        }
         Err(e) => e.kind() != std::io::ErrorKind::NotFound,
     }
 }
@@ -228,6 +231,7 @@ fn claim(dir: &Path, job_id: &str, attempt: i64) -> Result<Claim> {
 impl Claim {
     /// The attempt's terminal state is recorded; the claim is no longer needed.
     fn done(self) {
+        let _ = std::fs::remove_file(self.path.with_extension("worker"));
         let _ = std::fs::remove_file(&self.path);
     }
 
@@ -698,10 +702,14 @@ fn cancelled(conn: &Connection, job_id: &str, local: &AtomicBool) -> Result<bool
     .map(|c| c.unwrap_or(true))
 }
 
-/// The child process that builds one job. It exits when its stdin closes, which happens when
-/// this process exits or dies on every OS, so the build never outlives its owner.
+/// The child process that builds one job. Its stdin closes when this process exits or dies,
+/// which asks it to stop; a stopped child can outlive its owner, so it holds the worker lock.
 fn spawn(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Child> {
     let exe = std::env::current_exe()?;
+    // Before the child exists, so a cancel never mistakes a starting worker for an exited one.
+    mkdir(&dir.join("claims"))?;
+    let path = worker_path(dir, job_id, attempt);
+    File::create(&path).map_err(|e| storage_error(&path, e))?;
     Command::new(exe)
         .arg("__index-worker")
         .arg(dir)
@@ -720,7 +728,8 @@ fn spawn(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Child> {
 }
 
 /// Test builds only: `FIGLENS_TEST_HOLD=<stage>:<file>` keeps the worker in `stage` while
-/// `file` exists, so process tests reach each stage deterministically.
+/// `file` exists and creates `<file>.reached` when it gets there, so process tests reach each
+/// stage deterministically. `start` is before the worker locks its worker file.
 fn hold(stage: &str) {
     #[cfg(debug_assertions)]
     if let Some((at, file)) = std::env::var("FIGLENS_TEST_HOLD")
@@ -729,6 +738,7 @@ fn hold(stage: &str) {
         .and_then(|v| v.split_once(':'))
         && at == stage
     {
+        let _ = std::fs::write(format!("{file}.reached"), "");
         let start = Instant::now();
         while Path::new(file).exists() && start.elapsed() < Duration::from_secs(60) {
             std::thread::sleep(Duration::from_millis(10));
@@ -1421,19 +1431,27 @@ pub fn cancel(storage: &Storage, job_id: &str) -> Result<Json> {
 
 /// The hidden `__index-worker <workspace-dir> <jobId>` child: stages, hashes, parses, builds,
 /// writes and verifies one job's generation, printing one JSON line. It exits as soon as its
-/// stdin closes, so it never outlives the owner that spawned it.
+/// stdin closes, unless it is stopped, and holds the worker lock for its whole life.
 pub fn worker(dir: &Path, job_id: &str) -> Json {
-    std::thread::spawn(|| {
-        let mut sink = Vec::new();
-        let _ = std::io::stdin().lock().read_to_end(&mut sink);
-        std::process::exit(3);
-    });
+    // Test builds: `FIGLENS_TEST_ORPHAN` keeps a worker running after its owner died, as a
+    // stopped one would.
+    if !(cfg!(debug_assertions) && std::env::var_os("FIGLENS_TEST_ORPHAN").is_some()) {
+        std::thread::spawn(|| {
+            let mut sink = Vec::new();
+            let _ = std::io::stdin().lock().read_to_end(&mut sink);
+            std::process::exit(3);
+        });
+    }
     match launch().and_then(|(me, attempt)| {
-        // Held until this process exits, so a cancel after the owner died waits for it.
-        let alive = open_lock(&worker_path(dir, job_id, attempt), true)?.expect("created");
+        hold("start");
+        let path = worker_path(dir, job_id, attempt);
+        let mut alive = open_lock(&path, false)?.ok_or("the worker file is missing")?;
+        alive.lock().map_err(|e| storage_error(&path, e))?;
         alive
-            .lock()
-            .map_err(|e| storage_error(&worker_path(dir, job_id, attempt), e))?;
+            .write_all(b"started")
+            .map_err(|e| storage_error(&path, e))?;
+        // Unlocked only by this process's exit, after its output.
+        std::mem::forget(alive);
         work(dir, job_id, &me, attempt)
     }) {
         Ok(out) => out,

@@ -728,8 +728,9 @@ fn a_cancel_after_the_owner_died_waits_for_its_worker_to_exit() {
     let conn = connection(&dir);
     let job_id = job(&conn, &sources(&conn)[0], "0:0", "running", "dead", 1);
     std::fs::create_dir_all(dir.join("claims")).unwrap();
-    let worker = File::create(worker_path(&dir, &job_id, 1)).unwrap();
+    let mut worker = File::create(worker_path(&dir, &job_id, 1)).unwrap();
     worker.lock().unwrap();
+    std::io::Write::write_all(&mut worker, b"started").unwrap();
     assert_eq!(cancel(&storage, &job_id).unwrap()["cancel"], "pending");
     drop(worker);
     assert_eq!(cancel(&storage, &job_id).unwrap()["cancel"], "accepted");

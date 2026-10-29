@@ -1230,3 +1230,34 @@ fn a_queued_and_a_cancelled_before_start_job_match_the_jobs_output_schema() {
         conforms(&reply["structuredContent"], &schema, "jobs").unwrap();
     }
 }
+
+#[test]
+fn a_cancel_after_the_owner_died_is_pending_from_its_worker_s_start_to_its_exit() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file]);
+    let gate = env.gate("start.hold");
+    let mut owner = env
+        .command(
+            &["index", "prepare", file, "--scope", "0:0"],
+            Some(("start", &gate)),
+        )
+        .env("FIGLENS_TEST_ORPHAN", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let reached = env.dir.join("start.hold.reached");
+    wait_for("the worker to start", || reached.exists());
+    let job = active_job(&env, &fig, "stage");
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    // Not yet locked: a starting worker is not proof of exit.
+    let starting = env.json(&["jobs", "cancel", &job]);
+    assert_eq!(starting["cancel"], "pending", "{starting:#}");
+    std::fs::remove_file(&gate).unwrap();
+    wait_for("the orphaned worker to exit", || {
+        env.json(&["jobs", "cancel", &job])["cancel"] == "accepted"
+    });
+}
