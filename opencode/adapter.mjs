@@ -21,6 +21,44 @@ export function launcherRuntime(versions = process.versions, execPath = process.
 
 const MANAGED_MCP = 'figlensmcp';
 
+const flag = (name, value) => value === undefined || value === false ? [] : value === true ? [name] : [name, String(value)];
+const required = (input, name) => {
+  if (typeof input[name] !== 'string' || !input[name]) throw new Error(`${input.action ?? 'This call'} needs ${name}.`);
+  return input[name];
+};
+
+// The MCP index, jobs, search and inspect arguments as the same CLI command, for the plugin's CLI path.
+export function cliArgs(tool, input) {
+  const storage = flag('--storage', input.storage);
+  if (tool === 'jobs') return ['jobs', input.action, required(input, 'jobId'), ...storage];
+  if (tool === 'inspect') return ['inspect', required(input, 'file'), required(input, 'node'), ...flag('--depth', input.depth),
+    ...flag('--images', input.images), ...flag('--states', input.states), ...flag('--flat', input.flat)];
+  if (tool === 'search') {
+    const target = input.file ? [input.file] : ['--id', required(input, 'workspaceId'), ...flag('--source', input.sourceId), ...storage];
+    const flags = [...flag('--node', input.node), ...flag('--type', input.type), ...flag('--limit', input.limit),
+      ...flag('--cursor', input.cursor), ...flag('--include-hidden', input.includeHidden),
+      ...flag('--include-internal', input.includeInternal), ...flag('--mode', input.mode)];
+    // Workspace search reads everything after -- as the query, so a query may start with '-'.
+    return input.file ? ['search', ...target, required(input, 'query'), ...flags] : ['search', ...target, ...flags, '--', required(input, 'query')];
+  }
+  // Every given selector and scope field reaches the CLI, which refuses conflicting selectors and fields an
+  // action does not take, so none is dropped into a broader operation. A file is the operand of prepare, add
+  // and relocate, else it selects the workspace; a sourceId is the operand of remove and relocate.
+  const { action } = input;
+  const operands = ['prepare', 'add'].includes(action) ? [required(input, 'file')]
+    : action === 'remove' ? [required(input, 'sourceId')]
+    : action === 'relocate' ? [required(input, 'sourceId'), required(input, 'file')] : [];
+  return ['index', action, ...operands, ...flag('--workspace', input.workspace), ...flag('--id', input.workspaceId),
+    ...(['prepare', 'add', 'relocate'].includes(action) ? [] : flag('--file', input.file)),
+    ...(['remove', 'relocate'].includes(action) ? [] : flag('--source', input.sourceId)), ...storage,
+    ...flag('--scope', input.scope), ...flag('--request-id', input.requestId), ...flag('--replace-unavailable', input.replaceUnavailable)];
+}
+
+// Index actions that delete a database or start a new one elsewhere; each needs its own host permission.
+export function indexGrant(input) {
+  return input.action === 'reset' ? 'reset' : input.replaceUnavailable === true ? 'replace_unavailable' : null;
+}
+
 export function createAdapter(ctx, entry = import.meta.url) {
   const wrapper = fileURLToPath(new URL('../bin/figlens.js', entry));
   const bundled = !process.env.FIGLENS_BIN && existsSync(wrapper);
@@ -30,7 +68,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
   const commandLine = args => [command, ...prefix, ...args].map(value => `'${value.replaceAll("'", "'\\''")}'`).join(' ');
   const owners = new Map();
   const lifetime = new AbortController();
-  let managedMcp = false;
+  let managedMcp = false, cliPath = false;
   // OpenCode drops an MCP server whose name matches this plugin's own figlens_* tool namespace, so
   // the managed default uses another key; a user server under either key stays the one in use.
   let mcpName = MANAGED_MCP;
@@ -98,8 +136,11 @@ export function createAdapter(ctx, entry = import.meta.url) {
   }
   function configureMcp(editor) {
     mcpName = [MANAGED_MCP, 'figlens'].find(name => editor.get(name)) ?? MANAGED_MCP;
-    managedMcp = !editor.get(mcpName);
+    const config = editor.get(mcpName);
+    managedMcp = !config;
     if (managedMcp) editor.set(mcpName, mcpConfig);
+    // Only a disabled user server, or one OpenCode drops for its figlens name, leaves the search flow without MCP tools.
+    cliPath = !managedMcp && (config.enabled === false || config.disabled === true || mcpName === 'figlens');
   }
   async function mcpStatus() {
     const { data } = await ctx.mcp.list();
@@ -202,9 +243,57 @@ export function createAdapter(ctx, entry = import.meta.url) {
     } else throw new Error(`Unknown figlens command: ${kind}. ${HELP}`);
     await ctx.session.synthetic({ sessionID, text: typeof data === 'string' ? data : JSON.stringify(data, null, 2), resume: false });
   }
+  // The JSON report a failed CLI command prints after its message, if any.
+  const report = error => {
+    for (const line of (error.cause?.stderr ?? '').trim().split('\n').reverse()) {
+      try { return JSON.parse(line); } catch { /* the message line */ }
+    }
+    return null;
+  };
+  async function cli(current, tool, input) {
+    const invoke = async (args, text = false) => {
+      try { const { stdout } = await current.run(args); return text ? { flat: stdout } : JSON.parse(stdout); }
+      catch (error) {
+        // The CLI explains a failure on stderr; a partial reset or failed job also prints its report.
+        const text = [error.stderr, error.stdout].map(value => value?.trim()).filter(Boolean).join('\n');
+        if (current.signal.aborted || !text) throw error;
+        throw new Error(text, { cause: error });
+      }
+    };
+    // Status takes only the selectors, so conflicting ones fail here, before any permission or write. An
+    // operand file is not a selector, except that a prepare without a project directory is found by it.
+    const status = ({ action, file, workspace, workspaceId, storage }) => invoke(cliArgs('index', { action: 'status', workspace, workspaceId, storage,
+      file: ['add', 'relocate'].includes(action) || (action === 'prepare' && workspace) ? undefined : file }));
+    // Where the binary places this workspace: its directory, or the root a first prepare creates it under.
+    const place = ({ paths, storage, roots }) => paths?.workspace ?? (storage.rule === 'default' ? roots.state.path : storage.remembered ?? input.storage);
+    const missing = what => new Error(`This figlens binary does not report ${what}; update figlens to use these tools.`);
+    if (tool === 'jobs' && input.action === 'cancel') {
+      const { workspaceId } = await invoke(cliArgs('jobs', { ...input, action: 'status' }));
+      if (!workspaceId) throw missing("a job's workspace");
+      await current.authorize('edit', [place(await status({ workspaceId, storage: input.storage }))]);
+    }
+    if (tool === 'index' && input.action !== 'status') {
+      const grant = indexGrant(input);
+      if (grant === 'replace_unavailable') {
+        // The old place is unreachable, so status fails; its recovery still names the config root holding the location record.
+        const roots = await status(input).then(found => found.roots,
+          error => report(error)?.recovery?.find(action => action.roots)?.roots ?? Promise.reject(error));
+        if (!roots?.config) throw missing('its config root');
+        await current.authorize('figlens_index', [grant]);
+        await current.authorize('edit', [required(input, 'storage'), roots.config.path]);
+      } else {
+        const found = await status(input);
+        if (grant) await current.authorize('figlens_index', [grant]);
+        await current.authorize('edit', [place(found), ...(input.action === 'prepare' ? [found.roots.config.path] : [])]);
+      }
+    }
+    // inspect --flat prints lines, as the MCP tool's flat field.
+    return invoke(cliArgs(tool, input), tool === 'inspect' && input.flat === true);
+  }
   async function dispose() {
     lifetime.abort();
     await Promise.all([...owners.keys()].map(close));
   }
-  return { command, prefix, scope, preview, operation, commandHandler, configureMcp, mcpStatus, close, dispose, signal: lifetime.signal };
+  return { command, prefix, scope, preview, operation, commandHandler, configureMcp, mcpStatus, cli, close, dispose, signal: lifetime.signal,
+    get cliPath() { return cliPath; }, get mcpName() { return mcpName; } };
 }

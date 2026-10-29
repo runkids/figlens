@@ -103,6 +103,8 @@ Guides d’installation: [OpenCode V2](../opencode/README.md) · [OMP](../omp/RE
 
 Redémarrez Pi ou lancez `/reload`, puis demandez un écran en langage courant. Pi trouve la frame, la lit via le serveur MCP enregistré automatiquement et construit avec votre stack. Pas d’ids de nodes, pas de CLI globale.
 
+Demander un texte ou un écran cherche directement dans le `.fig` et n'enregistre rien. Pour des recherches répétées, demandez à Pi d'activer un index pour un design et une portée : il prépare une fois un index local (sans commande d'installation), suit la tâche jusqu'à ce qu'il soit prêt et le réutilise après un redémarrage et dans d'autres hôtes. Réinitialiser cet index exige votre demande explicite. Détails : [index local](#local-index).
+
 - `/figlens plan <request>` rédige uniquement un plan, sans modifier l’application.
 - `/figlens yolo <request>` planifie, construit, vérifie et nettoie son propre plan temporaire.
 - `/figlens preview [description]` ouvre le viewer local.
