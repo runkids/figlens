@@ -167,7 +167,7 @@ skillshare sync && skillshare sync mcp --global
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | 一次解码读取多个节点：列表中每个 id 一行 JSON（带 `nodeId` 的 `nodes` 输出，或 `{nodeId, error}`） |
 | `variables <file> [node]` | 某个 frame 的绑定变量；不指定 node 则输出所有本地变量 |
 | `bundle <file> <node> <out.zip> [--states]` | 单个 frame 的设计 bundle；输出 `{nodeId, path, warnings}` |
-| `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | 一次解码，并行生成多个 bundle |
+| `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]`, `--frames -` (stdin) | 一次解码，并行生成多个 bundle |
 | `verify <bundle>` | 按 manifest 检查 bundle（`.zip` 或解压后的目录）：已验证、缺失和被改动的文件，缺失的素材，需要在项目中确认的字体，以及 `findings`：每项缺失、不支持或未验证的 handoff 输入，附节点、证据和下一步 |
 | `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N] [--match-dir DIR]` | SVG、PNG、JPG、WebP 或 AVIF；`--max-kb` 会降低有损质量直到符合大小；`--bounds layout` 按 layout box 而不是 render bounds 导出；`--match-dir DIR`（仅 SVG，含子文件夹）列出绘制相同轮廓的 SVG（`matches`），以及最多 10 个带分数的相似形状（`similar`） |
 | `export <file> --frames <list> --out-dir <dir> [--format F] [--scale N] ...`, `--frames -` (stdin) | 一次解码导出多个节点（默认 `png`）：写入 `<dir>/<nodeId>.<format>`，每个 id 一行 JSON（带 `nodeId` 的 `export` 输出，或 `{nodeId, error}`） |
