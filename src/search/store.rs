@@ -134,19 +134,8 @@ pub(crate) fn save(
     guard: &dyn Fn(&Connection) -> Result<()>,
     between: &mut dyn FnMut(&Connection, usize, usize) -> Result<()>,
 ) -> Result<()> {
-    let pages: Vec<Json> = index
-        .pages
-        .iter()
-        .map(|p| json!([p.id, p.name, p.internal]))
-        .collect();
-    let info = json!({"pages": pages, "roots": index.roots, "above": index.above,
-        "lens": index.lens, "stop": index.stop, "hiddenContent": index.hidden_content,
-        "textBytes": index.text_bytes, "generation": index.generation})
-    .to_string();
     // JSON escaping can grow names past what `load` reads back; refuse before writing anything.
-    if info.len() > INFO_BYTES {
-        return Err(crate::parse::exceeded("index metadata bytes", INFO_BYTES).into());
-    }
+    let info = info_json(index, INFO_BYTES)?;
     let total = index.records.len() + index.terms.len();
     let mut done = 0;
     let record_bytes = |r: &Record| {
@@ -235,6 +224,69 @@ pub(crate) fn save(
     )?;
     tx.commit()?;
     Ok(())
+}
+
+/// Keeps at most `cap` bytes and fails the write that would pass it.
+pub(super) struct Capped {
+    pub(super) out: Vec<u8>,
+    cap: usize,
+}
+
+impl Capped {
+    pub(super) fn new(cap: usize) -> Self {
+        Self {
+            out: Vec::new(),
+            cap,
+        }
+    }
+}
+
+impl std::io::Write for Capped {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.out.len() + bytes.len() > self.cap {
+            return Err(std::io::Error::other("cap"));
+        }
+        self.out.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The generation's `info` JSON, serialized from borrowed fields into at most `cap` bytes;
+/// keys in sorted order, as `json!` wrote them.
+pub(super) fn info_json(index: &Index, cap: usize) -> Result<String> {
+    let mut w = Capped::new(cap);
+    let pages: Vec<_> = index
+        .pages
+        .iter()
+        .map(|p| (p.id.as_str(), p.name.as_str(), p.internal))
+        .collect();
+    (|| -> serde_json::Result<()> {
+        use std::io::Write as _;
+        let key =
+            |w: &mut Capped, k: &str| w.write_all(k.as_bytes()).map_err(serde_json::Error::io);
+        key(&mut w, "{\"above\":")?;
+        serde_json::to_writer(&mut w, &index.above)?;
+        key(&mut w, ",\"generation\":")?;
+        serde_json::to_writer(&mut w, &index.generation)?;
+        key(&mut w, ",\"hiddenContent\":")?;
+        serde_json::to_writer(&mut w, &index.hidden_content)?;
+        key(&mut w, ",\"lens\":")?;
+        serde_json::to_writer(&mut w, &index.lens)?;
+        key(&mut w, ",\"pages\":")?;
+        serde_json::to_writer(&mut w, &pages)?;
+        key(&mut w, ",\"roots\":")?;
+        serde_json::to_writer(&mut w, &index.roots)?;
+        key(&mut w, ",\"stop\":")?;
+        serde_json::to_writer(&mut w, &index.stop)?;
+        key(&mut w, ",\"textBytes\":")?;
+        serde_json::to_writer(&mut w, &index.text_bytes)?;
+        key(&mut w, "}")
+    })()
+    .map_err(|_| crate::parse::exceeded("index metadata bytes", cap))?;
+    Ok(String::from_utf8(w.out)?)
 }
 
 /// Largest stored generation fields JSON; pages, roots and ancestors are bounded by the build.

@@ -1042,6 +1042,32 @@ fn metadata_that_escapes_past_the_read_limit_is_never_published() {
 }
 
 #[test]
+fn index_metadata_serializes_as_before_within_its_cap_and_never_holds_more() {
+    let index = build(&Tree::new(&swaps()), "0:0", bounds(WORK));
+    let info = store::info_json(&index, usize::MAX).unwrap();
+    let pages: Vec<Json> = index
+        .pages
+        .iter()
+        .map(|p| json!([p.id, p.name, p.internal]))
+        .collect();
+    let before = json!({"pages": pages, "roots": index.roots, "above": index.above,
+        "lens": index.lens, "stop": index.stop, "hiddenContent": index.hidden_content,
+        "textBytes": index.text_bytes, "generation": index.generation});
+    assert_eq!(info, before.to_string());
+    assert!(store::info_json(&index, info.len()).is_ok());
+    // The write that would pass the cap is refused whole: nothing past it is ever held.
+    let (head, tail) = info.as_bytes().split_at(info.len() / 2);
+    let mut w = store::Capped::new(info.len() - 1);
+    let wrote = [head, tail].map(|part| std::io::Write::write_all(&mut w, part).is_ok());
+    assert_eq!((wrote, w.out.len()), ([true, false], head.len()));
+    let kind = store::info_json(&index, info.len() - 1).unwrap_err();
+    assert_eq!(
+        kind.downcast_ref::<FigError>().map(FigError::kind),
+        Some(ErrorKind::ParseBudget)
+    );
+}
+
+#[test]
 fn contains_and_instance_of_survive_a_stored_generation() {
     let message = swaps();
     let tree = Tree::new(&message);
