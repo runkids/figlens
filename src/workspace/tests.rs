@@ -365,6 +365,38 @@ fn an_unsyncable_new_config_directory_stops_prepare_before_any_database() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn an_unsyncable_workspace_entry_stops_prepare_before_its_database() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let a = f.fig("a.fig");
+    let state = std::path::absolute(f.dir.join("state")).unwrap();
+    let workspaces = state.join("figlens").join("workspaces");
+    std::fs::create_dir_all(&workspaces).unwrap();
+    // Entries can be created in `workspaces` but it cannot be opened to sync them.
+    std::fs::set_permissions(&workspaces, std::fs::Permissions::from_mode(0o300)).unwrap();
+    let unprivileged = File::open(&workspaces).is_err();
+    let home = f.home.to_str().unwrap().to_owned();
+    let vars = [
+        ("HOME", home.as_str()),
+        ("XDG_STATE_HOME", state.to_str().unwrap()),
+    ];
+    let storage = resolve(None, &env(&vars), false, &|| None).unwrap();
+    let result = prepare(&storage, &a, None);
+    std::fs::set_permissions(&workspaces, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Root opens any directory; there is nothing to observe then.
+    if unprivileged {
+        let error = result.unwrap_err();
+        assert_eq!(kind(&*error), ErrorKind::PermissionDenied, "{error}");
+        let databases = std::fs::read_dir(&workspaces)
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().path().join("index.sqlite").exists())
+            .count();
+        assert_eq!(databases, 0, "a database was created");
+    }
+}
+
 #[test]
 fn an_oversized_record_is_refused_and_leaves_the_old_one() {
     let f = Fixture::new();

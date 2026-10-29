@@ -126,7 +126,13 @@ fn plain(path: &Path, dir: bool) -> Result<bool> {
 /// Creates a plain directory unless it exists; true when this call created it.
 fn mkdir(path: &Path) -> Result<bool> {
     match std::fs::create_dir(path) {
-        Ok(()) => Ok(true),
+        // The new entry must outlive a crash before anything is built inside it.
+        Ok(()) => {
+            if let Some(parent) = path.parent() {
+                sync_dir(parent)?;
+            }
+            Ok(true)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             plain(path, true)?;
             Ok(false)
@@ -753,9 +759,7 @@ fn workspaces(state: &Path, create: bool) -> Result<Option<PathBuf>> {
     };
     let dir = root.join("workspaces");
     if create {
-        if mkdir(&dir)? {
-            sync_dir(&root)?;
-        }
+        mkdir(&dir)?;
         return Ok(Some(dir));
     }
     Ok(plain(&dir, true)?.then_some(dir))
