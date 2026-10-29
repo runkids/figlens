@@ -16,6 +16,7 @@ Reads Figma `.fig` files (File > Save local copy) so AI design-to-code pipelines
 - **Helper files go in the repo.** Helper scripts go in `scripts/`; private designs, Figma exports and run outputs go in the gitignored `samples/`. The original public fixture below and the reviewed regression baselines in `scripts/corpus/` are the exceptions.
 - **Review before every PR.** Run the `figlens-code-review` passes on the pinned diff and fix verified findings before opening or updating a PR, docs- and wiki-only changes included; see `review`.
 - **Open PRs as drafts.** Drafts skip CI; request `@codex review` on the new draft, fix review findings there, then mark the PR ready to run CI; see `review`.
+- **Open issues by the rules.** English, `<scope>: <summary>` titles, one type label plus `area:` labels, no private design details; see `review`.
 - **Own PR follow-up.** Check AI reviews and CI, fix verified findings, then request and check `@codex review` on the updated head; see `review`.
 
 ## Hard Limits
@@ -46,7 +47,7 @@ python3 scripts/ai-context.py check     # validate paths, headings and byte budg
 | `integrations` | Changing OpenCode V2/OMP, shared package, permissions or installed-host acceptance |
 | `accuracy` | Measuring output against Figma's own exports, running `compare`, finding test files, the CI regression corpus |
 | `release` | Packaging, GitHub releases, Homebrew, npm, install scripts and `figlens update` |
-| `review` | Delivering features/optimizations across CLI, MCP and Pi; reviews and PR follow-up |
+| `review` | Delivering features/optimizations across CLI, MCP and Pi; reviews, PR follow-up and opening issues |
 | `direction` | Deciding what to build next, or revisiting a past decision |
 | `ai-context` | Adding, moving or splitting docs and topics; `check` failures |
 

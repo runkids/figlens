@@ -69,3 +69,16 @@ After all verified fixes pass their checks:
 5. Report the PR link, reviewed head, review outcome and CI outcome separately. If an external review or check cannot complete, state what is still pending instead of reporting it as passed.
 
 Keep private fixtures and local report paths out of public comments. Model planning quality, deterministic tests and visual acceptance are separate evidence; preserve their actual results throughout follow-up.
+
+## Opening an issue
+
+Write issues in English and search open and closed issues first; link related ones instead of opening a duplicate.
+
+- **Title:** `<scope>: <summary>`, lowercase after the colon, no trailing period. The scope is the command (`export`, `tree`, `inspect`, `nodes`) or the wiki topic (`render`, `fig-format`, `bundle`, `mcp`) that the fix will touch, the same scopes commit messages use. The summary states the change or the defect, such as `export: render many nodes from one decode`.
+- **Body:** `## Current behavior` with evidence (commands, measured output, figlens version), `## Expected outcome`, and `## Acceptance criteria` as a checklist. A feature or optimization ends with the CLI/MCP/Pi/OpenCode/OMP coverage item above. Say plainly what was not reproduced or verified.
+- **Labels:** one type (`bug`, `enhancement` or `documentation`), one or more `area: *` labels (`area: cli` for command flags and output, the others name the wiki topic to load), `needs repro` until a reproducing case exists, and `feedback` for reports from downstream use.
+- **Privacy:** the repository is public. Leave out private file names, project names, node ids, layer names and screen text from user designs; describe the shape of the case instead.
+
+```sh
+gh issue create --title 'export: render many nodes from one decode' --body-file body.md --label 'enhancement,area: cli'
+```

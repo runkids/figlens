@@ -97,7 +97,7 @@
       ]
     },
     "review": {
-      "description": "Deliver features/optimizations across CLI, MCP, Pi, OpenCode and OMP; review changes and follow up on PR reviews and CI.",
+      "description": "Deliver features/optimizations across CLI, MCP, Pi, OpenCode and OMP; review changes, follow up on PR reviews and CI, and open issues.",
       "sources": [
         {
           "path": "wiki/review.md"

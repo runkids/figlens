@@ -18,7 +18,7 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 | `integrations` | Changing OpenCode V2/OMP, shared package, permissions or installed-host acceptance | `integrations.md` |
 | `accuracy` | Measuring output against Figma's own exports, running `compare`, finding test files, the CI regression corpus | `accuracy.md` |
 | `release` | Packaging, installation acceptance, GitHub releases, Homebrew and npm | `release.md`, `installation.md` |
-| `review` | Delivering features/optimizations across CLI, MCP and Pi; reviews and PR follow-up | `review.md` |
+| `review` | Delivering features/optimizations across CLI, MCP and Pi; reviews, PR follow-up and opening issues | `review.md` |
 | `direction` | Deciding what to build next, or revisiting a past decision | `direction.md`, `handoff-research.md` |
 | `ai-context` | Maintaining this router: add, move or split docs, fix `check` | `ai-context.md` |
 
