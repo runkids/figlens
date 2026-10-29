@@ -53,6 +53,8 @@ const FIELDS: [&str; 5] = [
     "parameterConsumptionMap",
     "variableConsumptionMap",
 ];
+/// Fields whose `styleOverrideTable` holds per-range (text) or per-region (vector) paints.
+const STYLED: [&str; 2] = ["textData", "vectorData"];
 const STYLES: [&str; 5] = [
     "styleIdForText",
     "styleIdForFill",
@@ -208,13 +210,27 @@ pub(crate) fn extract(
             return None;
         }
     }
-    for key in ["fillPaints", "strokePaints"] {
-        let paints = fields
-            .get(key)
+    // Top-level paints, and the per-range text and per-region vector fills the renderer selects.
+    let mut lists: Vec<(String, &Json)> = ["fillPaints", "strokePaints"]
+        .into_iter()
+        .filter_map(|k| Some((k.to_owned(), fields.get(k)?)))
+        .collect();
+    for table in ["textData", "vectorData"] {
+        let rows = fields.get(table).map(|t| &t["styleOverrideTable"]);
+        for (i, row) in rows
             .and_then(Json::as_array)
             .into_iter()
-            .flatten();
-        for (i, p) in paints.enumerate() {
+            .flatten()
+            .enumerate()
+        {
+            lists.push((
+                format!("{table}.styleOverrideTable[{i}].fillPaints"),
+                &row["fillPaints"],
+            ));
+        }
+    }
+    for (key, paints) in lists {
+        for (i, p) in paints.as_array().into_iter().flatten().enumerate() {
             let Some(hash) = p["image"]["hash"].as_str().filter(|_| p["type"] == "IMAGE") else {
                 continue;
             };
@@ -243,6 +259,10 @@ pub(crate) fn extract(
     if has_prototype && let Some(p) = crate::prototype::node(tree, id, e, kind) {
         // Interactions a component defines are not verified to apply to its instances.
         let inherited = p["basis"] == "component-definition";
+        // Actions past the reader's caps are not read, so their targets are not verified absent.
+        if p["truncated"] == true {
+            *unverified += 1;
+        }
         let interactions = p["interactions"].as_array().into_iter().flatten();
         for action in interactions.flat_map(|i| i["actions"].as_array().into_iter().flatten()) {
             let d = &action["destination"];
@@ -309,7 +329,11 @@ fn effective(
 ) -> Option<Map<String, Json>> {
     let node = tree.nodes.get(e.map_or(id, |e| e.source.as_str()));
     let mut out = Map::new();
-    for key in FIELDS.iter().chain(&STYLES).chain(["textData"].iter()) {
+    for key in FIELDS
+        .iter()
+        .chain(&STYLES)
+        .chain(["textData", "vectorData"].iter())
+    {
         let own = e.and_then(|e| e.props.get(*key));
         if own.is_some_and(|v| !linked_json(v)) {
             continue;
@@ -318,8 +342,8 @@ fn effective(
         let (bytes, value) = match own {
             Some(v) => (json_bytes(v, &mut left), None),
             None => match node.and_then(|n| n.get(key)) {
-                // Only the per-range fills of a text node carry bindings.
-                Some(v) if *key == "textData" => match v.get("styleOverrideTable") {
+                // Only the per-range / per-region style table of text and vectors is read.
+                Some(v) if STYLED.contains(key) => match v.get("styleOverrideTable") {
                     Some(t) if linked(t) => (kiwi_bytes(t, &mut left), Some(t)),
                     _ => continue,
                 },
@@ -336,11 +360,11 @@ fn effective(
             return None;
         }
         let converted = match (own, value) {
-            (Some(v), _) if *key == "textData" => {
+            (Some(v), _) if STYLED.contains(key) => {
                 json!({"styleOverrideTable": v["styleOverrideTable"]})
             }
             (Some(v), _) => v.clone(),
-            (None, Some(v)) if *key == "textData" => json!({"styleOverrideTable": to_json(v)}),
+            (None, Some(v)) if STYLED.contains(key) => json!({"styleOverrideTable": to_json(v)}),
             (None, Some(v)) => to_json(v),
             (None, None) => continue,
         };
@@ -395,10 +419,17 @@ pub(crate) fn definitions(
 ) -> Option<BTreeMap<String, Definition>> {
     let mut wanted = BTreeSet::new();
     for r in records {
+        if !bounds.charge(1 + r.edges.len(), 0) {
+            return None;
+        }
         for e in &r.edges {
             if let Some(t) = &e.target
                 && e.state == "resolved"
             {
+                // One set entry per target (and per variant member), charged before inserting.
+                if !bounds.charge(0, 64) {
+                    return None;
+                }
                 wanted.insert(t.as_str());
                 if e.relation == "variant_of" {
                     wanted.insert(r.id.as_str());

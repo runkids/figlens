@@ -721,3 +721,98 @@ fn a_page_past_its_scan_cap_is_a_work_limit_not_an_empty_complete_answer() {
         10
     );
 }
+
+#[test]
+fn styled_text_and_vector_region_images_and_capped_prototypes_are_kept_or_partial() {
+    let image = |b: u8| {
+        obj(vec![(
+            "styleOverrideTable",
+            K::Array(vec![obj(vec![
+                ("styleID", K::UInt(1)),
+                (
+                    "fillPaints",
+                    K::Array(vec![obj(vec![
+                        ("type", K::Enum("PaintType", "IMAGE")),
+                        ("image", obj(vec![("hash", K::Bytes(vec![b]))])),
+                    ])]),
+                ),
+            ])]),
+        )])
+    };
+    // 17 actions in one interaction: the reader keeps 16 and reports truncation.
+    let actions = K::Array(
+        (0..17)
+            .map(|_| {
+                obj(vec![
+                    ("transitionNodeID", guid(2)),
+                    ("navigationType", K::Enum("NavigationType", "NAVIGATE")),
+                ])
+            })
+            .collect(),
+    );
+    let click = obj(vec![
+        (
+            "event",
+            obj(vec![(
+                "interactionType",
+                K::Enum("InteractionType", "ON_CLICK"),
+            )]),
+        ),
+        ("actions", actions),
+    ]);
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(2, Some(1), "FRAME", "Target", vec![]),
+            node(3, Some(1), "TEXT", "Label", vec![("textData", image(0x01))]),
+            node(
+                4,
+                Some(1),
+                "VECTOR",
+                "Shape",
+                vec![("vectorData", image(0x02))],
+            ),
+            node(
+                5,
+                Some(1),
+                "FRAME",
+                "Menu",
+                vec![("prototypeInteractions", K::Array(vec![click]))],
+            ),
+        ]),
+    )]);
+    let index = build(&Tree::new(&message), "0:0", bounds(WORK));
+    for (hash, id, evidence) in [
+        (
+            "image:01",
+            "0:3",
+            "textData.styleOverrideTable[0].fillPaints[0]",
+        ),
+        (
+            "image:02",
+            "0:4",
+            "vectorData.styleOverrideTable[0].fillPaints[0]",
+        ),
+    ] {
+        let mut r = req(hash);
+        r.resource = true;
+        let out = run(&index, &r).unwrap();
+        assert_eq!(
+            (ids(&out), &out["results"][0]["evidence"]),
+            (vec![id.to_owned()], &json!(evidence))
+        );
+    }
+    let mut r = req("0:5");
+    r.outgoing = true;
+    r.relations = vec!["prototype_target".into()];
+    let out = run(&index, &r).unwrap();
+    assert_eq!(
+        (
+            &out["coverage"]["complete"],
+            &out["coverage"]["layers"]["relations"]["kinds"]["prototype_target"]
+        ),
+        (&json!(false), &json!("partial"))
+    );
+}

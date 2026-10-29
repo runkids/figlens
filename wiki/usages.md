@@ -13,7 +13,7 @@ Edges are extracted during the search build (`search::build` → `usages::extrac
 | `variant_of` | COMPONENT whose parent is a COMPONENT_SET | set id | resolved |
 | `binds_variable` | `rest::bound_variables` over effective fields | `VariableID:…` | local `resolved`/`missing`, library `external` |
 | `uses_style` | `styleIdFor*` | node id, or `StyleKey:<key>` for an assetRef | `resolved`/`missing`, `external` |
-| `uses_image` | IMAGE fill/stroke hash | `image:<hash>` | `recorded` |
+| `uses_image` | IMAGE fill/stroke hash, and per-range text / per-region vector fills (`styleOverrideTable`) | `image:<hash>` | `recorded` |
 | `prototype_target` | `prototype::node` recorded actions | destination node | `resolved`, `missing`, `unsupported`, `unresolved` |
 
 Rules: a target that is not in the file stays as an explicit `missing`/`unresolved`/`external` edge, never dropped. A name is never identity: two components with one name keep separate instances. Inherited prototype links from a component definition are skipped until their inheritance is verified. Cross-file library identity is #93; a local copy of a library style is `external`, not resolved.
@@ -36,7 +36,7 @@ Stateless usages reuse search's per-process index cache and create no database. 
 
 Schema V3 (`workspace/database.rs`) recreates `edges` with `seq/state` and a `(gen, target, rid, relation, seq)` index, adds `definitions`, `records_node` and `records_parent`. The relations version is part of `store::versions()`, so older generations read as incompatible.
 
-Other coverage reasons: `members_truncated` (over 200 members), `members_outside_scope` (the set is not in the scope: members are those the scope uses), `relation_unverified` (prototype links inherited from a component definition, or binding fields over the per-value cap, are left out and counted; that kind is `partial` and `complete` is false when it was asked for). Workspace replies without a ready index carry reason `index_pending` or `scope_not_indexed`. A target longer than any stored id stays an edge with no target, state `unsupported`. The viewer reuses its revision's tree through `search::index_tree` and `usages_index`, passing its own exact source identity.
+Other coverage reasons: `members_truncated` (over 200 members), `members_outside_scope` (the set is not in the scope: members are those the scope uses), `relation_unverified` (prototype links inherited from a component definition or past the prototype reader's caps, or binding fields over the per-value cap, are left out and counted; that kind is `partial` and `complete` is false when it was asked for). Workspace replies without a ready index carry reason `index_pending` or `scope_not_indexed`. A target longer than any stored id stays an edge with no target, state `unsupported`. The viewer reuses its revision's tree through `search::index_tree` and `usages_index`, passing its own exact source identity.
 
 ## Cost
 
