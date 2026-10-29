@@ -291,22 +291,30 @@ pub(super) fn facets(
                 }
                 false => json,
             };
-            // Each named blob is hashed in place, never converted: a visit per 64 bytes, and one
-            // needing more than `VISITS` makes the field unread.
+            // Each named blob is hashed in place, never converted, read as `Tree::blob` reads
+            // it: compact bytes (a visit per 64) or an array of bytes (a visit per element,
+            // charged before it is checked). A missing or malformed blob, or one needing more
+            // than `VISITS`, makes the field unread.
             let mut blobs = Vec::with_capacity(refs.len());
             let mut large = false;
             for i in refs {
+                use kiwi_schema::Value as K;
                 let b = tree.blobs.get(i as usize).and_then(|b| b.get("bytes"));
-                let n = match b {
-                    Some(kiwi_schema::Value::Bytes(x)) => x.len(),
-                    Some(kiwi_schema::Value::Array(x)) => x.len(),
-                    _ => 0,
+                let cost = match b {
+                    Some(K::Bytes(x)) => x.len() / 64,
+                    Some(K::Array(x)) => x.len(),
+                    _ => usize::MAX,
                 };
-                large |= n / 64 > VISITS;
-                if !bounds.charge(1 + if large { 0 } else { n / 64 }, 0) {
+                large |= cost > VISITS;
+                if !bounds.charge(1 + if large { 0 } else { cost }, 0) {
                     return None;
                 }
-                blobs.push(b);
+                large |=
+                    matches!(b, Some(K::Array(x)) if !x.iter().all(|v| matches!(v, K::Byte(_))));
+                if large {
+                    break;
+                }
+                blobs.extend(b);
             }
             if large {
                 fields.push(Field {
@@ -332,10 +340,8 @@ pub(super) fn facets(
             if let (Value::Kiwi(v), true) = (&value, placeholder(json)) {
                 raw_bytes(v, &mut w.hash);
             }
-            for b in blobs {
-                w.hash.update([b.is_some() as u8]);
-                b.into_iter().for_each(|b| raw_bytes(b, &mut w.hash));
-            }
+            // Bytes and an array of bytes hash alike: their length, then each byte.
+            blobs.into_iter().for_each(|b| raw_bytes(b, &mut w.hash));
             let fits = w.len <= FIELD_VALUE && kept + w.len <= RECORD_VALUES;
             // Escaping can make the stream longer than the estimate; that work is charged too.
             if !bounds.charge(w.len / 64, 64 + key.len() + if fits { w.len } else { 0 }) {

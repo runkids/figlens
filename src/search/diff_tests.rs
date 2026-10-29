@@ -580,3 +580,38 @@ fn content_left_unexpanded_below_hidden_layers_makes_coverage_partial() {
         "{coverage}"
     );
 }
+
+fn vector_with(blob: Option<K<'static>>) -> K<'static> {
+    let geometry = obj(vec![("commandsBlob", K::UInt(0))]);
+    let K::Object(name, mut fields) = doc(vec![node(
+        10,
+        Some(1),
+        "VECTOR",
+        "Icon",
+        vec![("fillGeometry", K::Array(vec![geometry]))],
+    )]) else {
+        unreachable!()
+    };
+    let blobs = blob.map(|b| obj(vec![("bytes", b)])).into_iter().collect();
+    fields.insert("blobs", K::Array(blobs));
+    K::Object(name, fields)
+}
+
+#[test]
+fn a_missing_or_malformed_blob_is_unread_never_unchanged() {
+    for blob in [None, Some(K::Array(vec![K::UInt(1)])), Some(K::UInt(1))] {
+        let out = run(vector_with(blob.clone()), vector_with(blob));
+        assert_eq!(nodes(&out), [("0:10".to_owned(), "changed".to_owned())]);
+        assert_eq!(out["coverage"]["complete"], false);
+    }
+}
+
+#[test]
+fn compact_blob_bytes_and_a_byte_array_digest_alike() {
+    let array = K::Array(vec![K::Byte(1), K::Byte(2)]);
+    let out = run(
+        vector_with(Some(K::Bytes(vec![1, 2]))),
+        vector_with(Some(array)),
+    );
+    assert_eq!(out["frames"], json!([]));
+}
