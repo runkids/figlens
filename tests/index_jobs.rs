@@ -1373,3 +1373,34 @@ fn mcp_whose_reply_stream_closes_mid_submit_cancels_the_job_it_was_admitting() {
         .collect();
     assert_eq!((early, states), (None, vec!["cancelled".to_owned()]));
 }
+
+#[test]
+fn a_cancel_completes_when_the_owner_dies_while_its_worker_is_starting() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file]);
+    let gate = env.gate("start.hold");
+    // No FIGLENS_TEST_ORPHAN: the worker's stdin watchdog fires once the owner dies.
+    let mut owner = env
+        .command(
+            &["index", "prepare", file, "--scope", "0:0"],
+            Some(("start", &gate)),
+        )
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for("the worker to start", || {
+        env.dir.join("start.hold.reached").exists()
+    });
+    let job = active_job(&env, &fig, "stage");
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    let starting = env.json(&["jobs", "cancel", &job]);
+    assert_eq!(starting["cancel"], "pending", "{starting:#}");
+    std::fs::remove_file(&gate).unwrap();
+    wait_for("the cancel to complete", || {
+        env.json(&["jobs", "cancel", &job])["cancel"] == "accepted"
+    });
+}

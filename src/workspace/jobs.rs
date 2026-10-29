@@ -1462,12 +1462,17 @@ pub fn cancel(storage: &Storage, job_id: &str) -> Result<Json> {
 /// writes and verifies one job's generation, printing one JSON line. It exits as soon as its
 /// stdin closes, unless it is stopped, and holds the worker lock for its whole life.
 pub fn worker(dir: &Path, job_id: &str) -> Json {
+    // Held until the worker file is locked and marked, so the watchdog never exits in between
+    // and leaves an empty file that would read as a worker still starting.
+    static STARTUP: Mutex<()> = Mutex::new(());
+    let startup = STARTUP.lock().unwrap_or_else(|e| e.into_inner());
     // Test builds: `FIGLENS_TEST_ORPHAN` keeps a worker running after its owner died, as a
     // stopped one would.
     if !(cfg!(debug_assertions) && std::env::var_os("FIGLENS_TEST_ORPHAN").is_some()) {
         std::thread::spawn(|| {
             let mut sink = Vec::new();
             let _ = std::io::stdin().lock().read_to_end(&mut sink);
+            let _started = STARTUP.lock();
             std::process::exit(3);
         });
     }
@@ -1481,6 +1486,7 @@ pub fn worker(dir: &Path, job_id: &str) -> Json {
             .map_err(|e| storage_error(&path, e))?;
         // Unlocked only by this process's exit, after its output.
         std::mem::forget(alive);
+        drop(startup);
         work(dir, job_id, &me, attempt)
     }) {
         Ok(out) => out,

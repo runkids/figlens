@@ -395,7 +395,7 @@ fn relocated<'a>(
             format!("{asked} is no longer this workspace's source: it was relocated to {now}; search that file"),
         )
         .with_recovery(json!([{"action": "search_relocated", "requires": "none", "tool": "search",
-            "arguments": {"file": now, "query": req.query, "node": req.scope}}]))
+            "arguments": selectors(json!({"file": now, "query": req.query}), req)}]))
         .into()),
         None => Ok(()),
     }

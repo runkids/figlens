@@ -1204,3 +1204,41 @@ fn an_unproven_workspace_offers_no_placed_reset() {
     let unmarked = offered(&f.storage);
     assert_eq!((foreign_newer, unmarked), (false, false));
 }
+
+#[test]
+fn search_relocated_recovery_keeps_the_callers_filters() {
+    let f = Fixture::new();
+    let a = std::fs::canonicalize(f.fig("a.fig")).unwrap();
+    let ws = id_of(&prepare(&f.storage, &a, None).unwrap());
+    let b = f.dir.join("b.fig");
+    std::fs::rename(&a, &b).unwrap();
+    let b = std::fs::canonicalize(b).unwrap();
+    relocate(
+        &f.storage,
+        &Select::Id(ws),
+        &crate::search::source_id(&a),
+        &b,
+    )
+    .unwrap();
+    let req = crate::search::Request {
+        query: "card".into(),
+        scope: "0:1".into(),
+        types: vec!["TEXT".into(), "FRAME".into()],
+        include_hidden: true,
+        include_internal: true,
+        limit: 7,
+        cursor: None,
+    };
+    let select = Select::Locator(Locator::source(&a).unwrap());
+    let e = query::search(&f.storage, &select, &[], &req).unwrap_err();
+    let recovery = e
+        .downcast_ref::<FigError>()
+        .and_then(FigError::recovery)
+        .unwrap_or_else(|| panic!("{e}"))[0]
+        .clone();
+    assert_eq!(
+        recovery["arguments"],
+        json!({"file": b.to_str().unwrap(), "query": "card", "node": "0:1", "type": "TEXT,FRAME",
+            "includeHidden": true, "includeInternal": true, "limit": 7})
+    );
+}
