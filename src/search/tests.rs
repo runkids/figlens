@@ -1142,3 +1142,93 @@ fn a_text_only_build_ranks_and_pages_like_a_full_one() {
     );
     assert_eq!(page(&full, &req)["results"], page(&text, &req)["results"]);
 }
+
+#[test]
+fn a_full_build_that_stops_earlier_never_takes_text_search_from_the_text_build() {
+    // Many plain gradients cost a full build work a text-only build never spends.
+    let plain = K::Array(
+        (0..400)
+            .map(|_| {
+                obj(vec![
+                    ("type", K::Enum("PaintType", "GRADIENT_LINEAR")),
+                    ("stopsVar", K::Array(vec![obj(vec![]), obj(vec![])])),
+                ])
+            })
+            .collect(),
+    );
+    let mut nodes = vec![
+        node(0, None, "DOCUMENT", "Document", vec![]),
+        node(1, Some(0), "CANVAS", "Page", vec![]),
+    ];
+    for i in 0..40 {
+        let name = format!("Label {i}");
+        nodes.push(node(
+            100 + i,
+            Some(1),
+            "RECTANGLE",
+            &name,
+            vec![("fillPaints", plain.clone())],
+        ));
+    }
+    let message = obj(vec![("nodeChanges", K::Array(nodes))]);
+    let tree = Tree::new(&message);
+    // The least work that lets the text-only build finish; the full one stops under it.
+    let work = (1..2000)
+        .map(|k| k * 50)
+        .find(|w| build_as(&tree, "0:0", bounds(*w), false).stop.is_none())
+        .unwrap();
+    let text = Arc::new(build_as(&tree, "0:0", bounds(work), false));
+    let full = Arc::new(build_as(&tree, "0:0", bounds(work), true));
+    assert_eq!(full.stop, Some("work_limit"));
+    let mut cached = Cached {
+        path: PathBuf::new(),
+        stamp: (SystemTime::UNIX_EPOCH, 0),
+        scope: "0:0".into(),
+        snapshot: "sha256:test".into(),
+        hashed: SystemTime::UNIX_EPOCH,
+        text: None,
+        full: None,
+    };
+    cached.keep(text.clone());
+    let source = json!({"sourceId": "local:test", "snapshotId": "sha256:test"});
+    let mut req = request("label");
+    req.limit = 5;
+    let first = search_index(&cached.pick(false).unwrap(), &req, source.clone()).unwrap();
+    cached.keep(full.clone());
+    // Usages reads its own partial build and says so; search keeps the text build and cursor.
+    let partial = usages_index(
+        &cached.pick(true).unwrap(),
+        &usages::Request {
+            target: "0:1".into(),
+            resource: false,
+            scope: "0:0".into(),
+            relations: vec!["contains".into()],
+            outgoing: false,
+            include_hidden: false,
+            limit: 5,
+            cursor: None,
+            snapshot: None,
+        },
+        source.clone(),
+    )
+    .unwrap();
+    assert_eq!(partial["coverage"]["complete"], false);
+    let after = cached.pick(false).unwrap();
+    assert!(Arc::ptr_eq(&after, &text));
+    assert_eq!(search_index(&after, &req, source.clone()).unwrap(), first);
+    req.cursor = Some(first["nextCursor"].as_str().unwrap().to_owned());
+    assert!(search_index(&after, &req, source.clone()).is_ok());
+    // A later text build of the same revision keeps the full one for usages.
+    cached.keep(Arc::new(build_as(&tree, "0:0", bounds(work), false)));
+    assert!(Arc::ptr_eq(&cached.pick(true).unwrap(), &full));
+    // With room for both, one full build serves both and no second copy is held.
+    let whole = Arc::new(build_as(&tree, "0:0", bounds(WORK), true));
+    let mut roomy = Cached {
+        text: None,
+        full: None,
+        ..cached
+    };
+    roomy.keep(Arc::new(build_as(&tree, "0:0", bounds(WORK), false)));
+    roomy.keep(whole.clone());
+    assert!(Arc::ptr_eq(&roomy.pick(false).unwrap(), &whole));
+}

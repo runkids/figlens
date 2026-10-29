@@ -1489,11 +1489,46 @@ struct Cached {
     scope: String,
     snapshot: String,
     hashed: SystemTime,
-    index: Arc<Index>,
+    /// What text search reads: a text-only build, or a full one that indexed the same corpus.
+    text: Option<Arc<Index>>,
+    /// What usages reads: a full build. It can stop earlier than the text one under the same
+    /// bounds, so it replaces the text one only when it indexed the same text corpus.
+    full: Option<Arc<Index>>,
 }
 
-// shortcut: one index per process, reused while path, scope and file stamp match; persistent
-// multi-scope indexes are #90's workspace.
+impl Cached {
+    /// The index that answers `relations` (usages) or text search, if this entry holds one.
+    fn pick(&self, relations: bool) -> Option<Arc<Index>> {
+        if relations {
+            self.full.clone()
+        } else {
+            self.text.clone()
+        }
+    }
+
+    /// Keeps `index` in its slot; a full build whose text corpus matches the text one serves
+    /// both, so the entry never holds two copies of one corpus.
+    fn keep(&mut self, index: Arc<Index>) {
+        let shares = |a: &Index, b: &Index| a.generation == b.generation && a.stop == b.stop;
+        if index.relations {
+            // A stopped full build may hold less text than a text-only one would.
+            let serves = match &self.text {
+                Some(t) => shares(t, &index),
+                None => index.stop.is_none(),
+            };
+            if serves {
+                self.text = Some(index.clone());
+            }
+            self.full = Some(index);
+        } else {
+            let full = self.full.as_ref().filter(|f| shares(f, &index));
+            self.text = Some(full.cloned().unwrap_or(index));
+        }
+    }
+}
+
+// shortcut: one source and scope per process, at most a text and a full index of it, reused
+// while path, scope and file stamp match; persistent multi-scope indexes are #90's workspace.
 static CACHE: Mutex<Option<Cached>> = Mutex::new(None);
 
 fn require_scope(tree: &Tree, scope: &str) -> Result<(), Box<dyn Error>> {
@@ -1640,8 +1675,7 @@ fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json
         cache
             .as_ref()
             .filter(|c| c.path == canonical && c.stamp == now && c.scope == scope)
-            .filter(|c| c.index.relations || !relations)
-            .map(|c| (c.snapshot.clone(), c.index.clone(), c.hashed))
+            .and_then(|c| Some((c.snapshot.clone(), c.pick(relations)?, c.hashed)))
     });
     let fresh = |hashed: SystemTime| hashed.elapsed().is_ok_and(|age| age < REHASH);
     let (snapshot, index, hashed, reused) = match cached {
@@ -1678,14 +1712,27 @@ fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json
                     if index.stop != Some("deadline")
                         && let Ok(mut cache) = CACHE.lock()
                     {
-                        *cache = Some(Cached {
-                            path: canonical.clone(),
-                            stamp: staged,
-                            scope: scope.to_owned(),
-                            snapshot: snapshot.clone(),
-                            hashed,
-                            index: index.clone(),
+                        // The other profile of this same revision stays beside it.
+                        let same = cache.as_ref().is_some_and(|c| {
+                            c.path == canonical
+                                && c.stamp == staged
+                                && c.scope == scope
+                                && c.snapshot == snapshot
                         });
+                        if !same {
+                            *cache = Some(Cached {
+                                path: canonical.clone(),
+                                stamp: staged,
+                                scope: scope.to_owned(),
+                                snapshot: snapshot.clone(),
+                                hashed,
+                                text: None,
+                                full: None,
+                            });
+                        }
+                        if let Some(c) = cache.as_mut() {
+                            c.keep(index.clone());
+                        }
                     }
                     (snapshot, index, hashed, false)
                 }
