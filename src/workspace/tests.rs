@@ -158,6 +158,37 @@ fn a_sidecar_being_deleted_is_waited_out_not_reported_denied() {
     assert!(!shm.exists());
 }
 
+#[test]
+fn a_sidecar_read_as_no_links_is_probed_again_but_the_database_is_not() {
+    let soon = || Instant::now() + Duration::from_millis(200);
+    let (shm, path) = ("index.sqlite-shm", Path::new("index.sqlite-shm"));
+    let scripted = |reads: Vec<u64>| {
+        let mut reads = reads.into_iter();
+        let calls = std::cell::Cell::new(0);
+        let count = settled(shm, path, soon(), || {
+            calls.set(calls.get() + 1);
+            Ok(reads.next().unwrap())
+        });
+        (count, calls.get())
+    };
+    assert_eq!(scripted(vec![0, 1]).0.unwrap(), 1);
+    // A path replaced by another hard link meanwhile reads its real count, which is refused.
+    assert_eq!(scripted(vec![0, 2]).0.unwrap(), 2);
+    let (more, calls) = scripted(vec![2]);
+    assert_eq!((more.unwrap(), calls), (2, 1));
+    let mut calls = 0;
+    let mut zero = || {
+        calls += 1;
+        Ok(0)
+    };
+    assert_eq!(settled(DB, Path::new(DB), soon(), &mut zero).unwrap(), 0);
+    assert_eq!(calls, 1);
+    let start = Instant::now();
+    let stuck = settled(shm, path, soon(), || Ok(0)).unwrap_err();
+    assert!(start.elapsed() >= Duration::from_millis(200));
+    assert_eq!(kind(&*stuck), ErrorKind::WorkspaceBusy, "{stuck}");
+}
+
 /// Marks `path` deleted through a new handle: `posix` removes its name at once, else the name
 /// stays, pending, until every handle to it closes. Returns that handle, still open.
 #[cfg(windows)]

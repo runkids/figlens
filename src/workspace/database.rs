@@ -22,15 +22,9 @@ pub(super) fn sql(error: rusqlite::Error) -> Box<dyn Error> {
 pub(super) fn unaliased(dir: &Path) -> Result<()> {
     for name in DB_FILES {
         let path = dir.join(name);
-        let deadline = Instant::now() + LOCK_WAIT;
-        let count = loop {
-            match plain(&path, false).and_then(|p| if p { links(&path) } else { Ok(1) }) {
-                Err(_) if name != DB && sidecar_denied(&path) && Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(10))
-                }
-                checked => break checked?,
-            }
-        };
+        let count = settled(name, &path, Instant::now() + LOCK_WAIT, || {
+            plain(&path, false).and_then(|p| if p { links(&path) } else { Ok(1) })
+        })?;
         if count != 1 {
             return Err(preserved(
                 &path,
@@ -41,6 +35,40 @@ pub(super) fn unaliased(dir: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The link count `probe` reads for `name`, probed again (path and all, each probe's handle
+/// closed) within `deadline` while a sidecar may be mid-deletion: it reads as access denied, or
+/// as 0 links once its name is deleted under the probe's open handle. A sidecar still reading 0
+/// at the deadline answers busy. `index.sqlite`, which SQLite never deletes, is read once.
+pub(super) fn settled(
+    name: &str,
+    path: &Path,
+    deadline: Instant,
+    mut probe: impl FnMut() -> Result<u64>,
+) -> Result<u64> {
+    loop {
+        let checked = probe();
+        let again = name != DB
+            && Instant::now() < deadline
+            && match &checked {
+                Ok(count) => *count == 0,
+                Err(_) => sidecar_denied(path),
+            };
+        if !again {
+            return match checked {
+                Ok(0) if name != DB => Err(fail(
+                    ErrorKind::WorkspaceBusy,
+                    format!(
+                        "{} is still being deleted by another SQLite connection; retry when it finishes",
+                        path.display()
+                    ),
+                )),
+                checked => checked,
+            };
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// Whether sidecar `path` still reads as access denied. On Windows this is also how a file
