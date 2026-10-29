@@ -825,3 +825,67 @@ fn a_failed_rebuild_recommends_a_rebuild_not_a_refresh() {
         (json!("rebuild"), json!("refresh"))
     );
 }
+
+#[test]
+fn a_rebuild_does_not_join_a_running_refresh_or_record_its_request_id() {
+    let d = TestDir::new();
+    let (storage, select, dir) = workspace(&d, 1);
+    std::fs::create_dir_all(dir.join("owners")).unwrap();
+    let other = File::create(dir.join("owners").join("other.lock")).unwrap();
+    other.lock().unwrap();
+    let conn = connection(&dir);
+    let source = sources(&conn)[0].clone();
+    let refresh = job(&conn, &source, "0:0", "running", "other", 1);
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    let Err(busy) = submit(&storage, &mut ws, "rebuild", &source, "0:0", Some("r1")) else {
+        panic!("joined a running refresh");
+    };
+    let fig = busy.downcast_ref::<FigError>().unwrap();
+    let steps = fig.recovery().unwrap();
+    conn.execute("UPDATE jobs SET state = 'succeeded'", [])
+        .unwrap();
+    let Ok(retried) = submit(&storage, &mut ws, "rebuild", &source, "0:0", Some("r1")) else {
+        panic!("not admitted after the refresh ended");
+    };
+    assert_eq!(
+        (
+            fig.kind(),
+            steps[1]["arguments"]["action"].as_str(),
+            retried.job_id != refresh,
+            kind_of(&conn, &retried.job_id)
+        ),
+        (
+            ErrorKind::WorkspaceBusy,
+            Some("rebuild"),
+            true,
+            "rebuild".to_owned()
+        )
+    );
+}
+
+#[test]
+fn a_rebuild_joining_a_queued_refresh_makes_it_a_rebuild_through_its_failure() {
+    let d = TestDir::new();
+    let (storage, select, dir) = workspace(&d, 1);
+    std::fs::create_dir_all(dir.join("owners")).unwrap();
+    let other = File::create(dir.join("owners").join("other.lock")).unwrap();
+    other.lock().unwrap();
+    let conn = connection(&dir);
+    let source = sources(&conn)[0].clone();
+    let refresh = job(&conn, &source, "0:0", "queued", "other", 1);
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    let Ok(joined) = submit(&storage, &mut ws, "rebuild", &source, "0:0", None) else {
+        panic!("not joined");
+    };
+    conn.execute("UPDATE jobs SET state = 'failed'", [])
+        .unwrap();
+    let report = report_job(&conn, &dir, &refresh).unwrap().unwrap();
+    assert_eq!(
+        (
+            joined.joined,
+            &report["kind"],
+            &report["nextSteps"][0]["arguments"]["action"]
+        ),
+        (true, &json!("rebuild"), &json!("rebuild"))
+    );
+}

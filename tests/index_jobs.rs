@@ -1107,15 +1107,17 @@ fn every_index_jobs_and_workspace_search_reply_matches_its_declared_output_schem
         "index",
         json!({"action": "refresh", "workspaceId": ws}),
     );
+    // A rebuild does not join a running refresh, so it starts once the refresh ended.
+    for job in refreshed["jobs"].as_array().unwrap() {
+        wait(&mut mcp, job["jobId"].as_str().unwrap());
+    }
     let rebuilt = check(
         &mut mcp,
         "index",
         json!({"action": "rebuild", "workspaceId": ws, "sourceId": source, "scope": "0:0"}),
     );
-    for done in [refreshed, rebuilt] {
-        for job in done["jobs"].as_array().unwrap() {
-            wait(&mut mcp, job["jobId"].as_str().unwrap());
-        }
+    for job in rebuilt["jobs"].as_array().unwrap() {
+        wait(&mut mcp, job["jobId"].as_str().unwrap());
     }
     check(
         &mut mcp,

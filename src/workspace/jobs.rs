@@ -482,7 +482,28 @@ pub(crate) fn submit(
                 joined: false,
             });
         } else if kind == "rebuild" {
-            // A rebuild joining a queued refresh makes it skip the unchanged-snapshot shortcut.
+            // A running refresh already read its kind and may reuse the unchanged snapshot, so
+            // a rebuild cannot join it: it runs after it, and its requestId is not recorded.
+            let (state, current): (String, String) = tx
+                .query_row(
+                    "SELECT state, kind FROM jobs WHERE job_id = ?1",
+                    [&job_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(sql)?;
+            if state == "running" && current != "rebuild" {
+                return Err(FigError::new(
+                    ErrorKind::WorkspaceBusy,
+                    format!("a refresh of source {source_id} scope {scope} is running and may reuse its unchanged snapshot; rebuild after it ends"),
+                )
+                .with_recovery(json!([{"action": "wait", "requires": "none", "tool": "jobs",
+                    "arguments": {"action": "status", "jobId": job_id}},
+                    {"action": "rebuild", "requires": "none", "tool": "index",
+                    "arguments": {"action": "rebuild", "workspaceId": id, "sourceId": source_id, "scope": scope}}]))
+                .into());
+            }
+            // A rebuild joining a queued refresh makes it skip the unchanged-snapshot shortcut:
+            // its worker reads the kind only once the job runs.
             tx.execute(
                 "UPDATE jobs SET kind = 'rebuild' WHERE job_id = ?1 AND state = 'queued'",
                 [&job_id],
