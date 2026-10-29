@@ -206,35 +206,21 @@ jobs:
           if [ -n "$PI_VERSION" ]; then args+=(--pi-version "$PI_VERSION"); fi
           python -B scripts/check-installation.py "${args[@]}"
 
-  # The fixture needs only this checkout, so it builds while the candidate does instead of
-  # adding a minute after it.
-  mapping-fixture:
-    if: github.event.pull_request.draft != true
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.ref || github.sha }}
-      - name: Generate original local mapping fixture
-        run: |
-          mkdir -p samples/plugin-research/fixtures
-          docker compose run --rm dev cargo run --locked --example mapping-fixture -- samples/plugin-research/fixtures/mapping.fig
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mapping-fixture
-          path: samples/plugin-research/fixtures/mapping.fig
-          if-no-files-found: error
-          retention-days: 3
-
   host-installation:
-    needs: [candidate, mapping-fixture]
+    needs: candidate
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.sha }}
+      # The fixture needs about a minute and only this checkout, so it builds while the steps below
+      # set up the hosts. It stays on this runner: only the first-success design is distributable.
+      - name: Start the original local mapping fixture
+        run: |
+          mkdir -p samples/plugin-research/fixtures
+          (docker compose run --rm dev cargo run --locked --example mapping-fixture -- samples/plugin-research/fixtures/mapping.fig \
+            > "$RUNNER_TEMP/fixture.log" 2>&1; echo $? > "$RUNNER_TEMP/fixture.tmp"; mv "$RUNNER_TEMP/fixture.tmp" "$RUNNER_TEMP/fixture.status") &
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
@@ -245,10 +231,6 @@ jobs:
         with:
           name: installation-candidate
           path: dist/candidate/
-      - uses: actions/download-artifact@v4
-        with:
-          name: mapping-fixture
-          path: samples/plugin-research/fixtures/
       - name: Install isolated fixed host SDKs and verify OpenCode runtime bytes
         run: |
           npm install --prefix samples/plugin-research/hosts/omp --ignore-scripts --no-audit --no-fund @oh-my-pi/pi-coding-agent@18.13.2
@@ -256,6 +238,11 @@ jobs:
           curl --fail --location --output samples/plugin-research/hosts/opencode/runtime.tar.gz https://github.com/anomalyco/opencode/releases/download/v2.2.0/opencode-linux-x64.tar.gz
           echo '6d597970a8cc448f1b9a9f645532584b339dd3ab9583bb5f063f13d83e54768f  samples/plugin-research/hosts/opencode/runtime.tar.gz' | sha256sum --check
           tar -xzf samples/plugin-research/hosts/opencode/runtime.tar.gz -C samples/plugin-research/hosts/opencode
+      - name: Wait for the mapping fixture
+        run: |
+          until [ -f "$RUNNER_TEMP/fixture.status" ]; do sleep 1; done
+          cat "$RUNNER_TEMP/fixture.log"
+          exit "$(cat "$RUNNER_TEMP/fixture.status")"
       - name: Same candidate, native loaders, MCP, review and cleanup without models
         run: |
           python3 -B scripts/check-installation.py \
