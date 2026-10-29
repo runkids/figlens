@@ -563,7 +563,8 @@ fn main_of<'t>(tree: &Tree<'t>, instance: &Value) -> Option<String> {
 }
 
 /// What `bind_properties` walks and may copy for one component: stored nodes, text bytes,
-/// property references and the bytes of the layer keys it builds.
+/// property references and the bytes of the layer keys it builds, once per layer and once
+/// more per reference on it.
 #[derive(Clone, Copy, Default)]
 struct Cost {
     nodes: usize,
@@ -581,7 +582,7 @@ impl Cost {
         }
         (self.nodes + self.refs)
             .saturating_mul(prefix.len() + 1)
-            .saturating_add(2 * self.keys)
+            .saturating_add(self.keys)
     }
 }
 
@@ -783,13 +784,14 @@ impl Expander<'_, '_> {
         // An overrideKey guid prints as at most "4294967295:4294967295".
         let keys = present()
             .map(|(id, n)| {
-                if n.get("overrideKey").is_some() {
+                let key = if n.get("overrideKey").is_some() {
                     21
                 } else {
                     id.len()
-                }
+                };
+                key.saturating_mul(1 + list_len(n.get("componentPropRefs")))
             })
-            .sum();
+            .fold(0usize, usize::saturating_add);
         let cost = Cost {
             nodes: ids.len(),
             text,
@@ -1612,6 +1614,29 @@ mod tests {
         assert_eq!((bounds.stop, ex.nodes.len()), (Some(Stop::Bytes), 1));
         assert_eq!(
             under_long_key(&nested, &extra, kids.clone(), 16 << 20)
+                .1
+                .stop,
+            None
+        );
+        // Each of 50 references on one layer clones its 100 kB key.
+        let refs = (0..50)
+            .map(|_| {
+                obj(vec![
+                    ("defID", guid(3, 1)),
+                    ("componentPropNodeField", Value::Enum("Field", "VISIBLE")),
+                ])
+            })
+            .collect();
+        let layer = obj(vec![
+            ("type", Value::Enum("NodeType", "FRAME")),
+            ("componentPropRefs", Value::Array(refs)),
+        ]);
+        let wide = "w".repeat(100_000);
+        let extra = [(wide.as_str(), &layer)];
+        let (ex, bounds) = under_long_key(&nested, &extra, vec![wide.clone()], 4_000_000);
+        assert_eq!((bounds.stop, ex.nodes.len()), (Some(Stop::Bytes), 1));
+        assert_eq!(
+            under_long_key(&nested, &extra, vec![wide.clone()], 16 << 20)
                 .1
                 .stop,
             None
