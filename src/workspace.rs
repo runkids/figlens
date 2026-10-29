@@ -354,6 +354,8 @@ pub use jobs::{clear_cache, rebuild, refresh};
 pub use registry::{Outcome, PrepareOptions, add, prepare, relocate, remove, reset, status};
 pub use storage::{Locator, Root, Roots, Select, Storage, storage};
 
+mod watch;
+
 #[cfg(test)]
 pub(crate) use database::{V2, V3, V4};
 #[cfg(test)]
