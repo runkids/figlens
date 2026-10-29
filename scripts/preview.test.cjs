@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {flat, clean, localBox, hits, prototypeRows, relQuery, acceptReply, reasonCodes, rowModel, groupUsages, localSearch} = require('../src/preview/viewer.js');
+const {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, acceptReply, reasonCodes, rowModel, groupUsages, localSearch} = require('../src/preview/viewer.js');
 
 test('prototype missing fields remain unspecified without click or navigation defaults', () => {
   const rows = prototypeRows({state:'recorded', sourceNodeId:'0:1', interactions:[
@@ -123,10 +123,14 @@ test('relation queries repeat keys, encode plus and spaces, and drop empty value
   assert.match(relQuery({q:'a+b c'}), /q=a%2Bb\+c/);
 });
 test('a reply counts only for the newest request on the loaded snapshot', () => {
-  assert.equal(acceptReply(3, 3, 's1', 's1'), true);
-  assert.equal(acceptReply(2, 3, 's1', 's1'), false);
-  assert.equal(acceptReply(3, 3, 's2', 's1'), false);
+  const a = {sourceId:'local:a', snapshotId:'s1'};
+  assert.equal(acceptReply(3, 3, a, {...a}), true);
+  assert.equal(acceptReply(2, 3, a, a), false);
+  assert.equal(acceptReply(3, 3, {...a, snapshotId:'s2'}, a), false);
+  // The same bytes under another source are not the loaded revision.
+  assert.equal(acceptReply(3, 3, {...a, sourceId:'local:b'}, a), false);
   assert.equal(acceptReply(3, 3, undefined, undefined), false);
+  assert.equal(sameSource({}, {}), false);
 });
 test('coverage reason codes stay verbatim and are not repeated', () => {
   const r = {code:'relation_unavailable', relations:['library_identity']};
@@ -136,7 +140,8 @@ test('coverage reason codes stay verbatim and are not repeated', () => {
 });
 test('usages rows keep identity on ref.nodeId and show unknown targets as rows', () => {
   const ref = {sourceId:'f', snapshotId:'s1', nodeId:'I1:2;3:4'};
-  const m = rowModel({target:{resource:'VariableID:x/1'}, relation:'binds_variable', state:'external'}, 's1');
+  const m = rowModel({target:{resource:'VariableID:x/1'}, relation:'binds_variable', state:'external'}, {sourceId:'f', snapshotId:'s1'});
+  assert.deepEqual([m.sourceId, m.snapshotId], ['f', 's1']);
   assert.equal(m.nodeId, null);
   assert.equal(m.resource, 'VariableID:x/1');
   assert.equal(m.state, 'external');

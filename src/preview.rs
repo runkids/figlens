@@ -1168,6 +1168,29 @@ mod tests {
     }
 
     #[test]
+    fn a_cursor_from_an_evicted_index_is_refused_by_a_different_rebuild() {
+        const PAGE: &str = "usages/1?target=0%3A2&relation=contains&limit=1";
+        served(|r| {
+            let first = reply(r, PAGE);
+            let cursor = first["nextCursor"].as_str().unwrap().to_owned();
+            assert!(reply(r, &format!("{PAGE}&cursor={cursor}"))["error"].is_null());
+            // Evicted, then rebuilt as another partial corpus of the same snapshot: one that
+            // stopped at its deadline at once.
+            let partial = search::index_tree(r.tree, "0:0", std::time::Instant::now()).unwrap();
+            let cell = Built::default();
+            assert!(cell.set(Ok(Arc::new(partial))).is_ok());
+            *r.indexes.lock().unwrap() = vec![("0:0".to_owned(), cell)];
+            let paged = reply(r, &format!("{PAGE}&cursor={cursor}"));
+            assert_eq!(
+                (paged["results"].is_null(), &paged["source"]["snapshotId"]),
+                (true, &first["source"]["snapshotId"]),
+                "{paged}"
+            );
+            assert!(paged["error"]["message"].is_string(), "{paged}");
+        });
+    }
+
+    #[test]
     fn query_decoding_matches_url_search_params() {
         let pairs = form("q=a+b%2Bc%E4%B8%AD&type=TEXT&type=FRAME&cursor=").unwrap();
         let text = |i: usize| (pairs[i].0.as_str(), pairs[i].1.as_str());

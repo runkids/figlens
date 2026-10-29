@@ -71,17 +71,19 @@ function relQuery(params) {
     return q.toString();
 }
 // A reply is applied only if its request is still the newest and it describes the snapshot now loaded.
-const acceptReply = (seq, current, replySnapshot, loadedSnapshot) => seq === current && !!replySnapshot && replySnapshot === loadedSnapshot;
+// Exact identity is the pair: the same bytes under another source are another revision.
+const sameSource = (a, b) => !!a?.snapshotId && a.snapshotId === b?.snapshotId && a.sourceId === b?.sourceId;
+const acceptReply = (seq, current, replySource, loadedSource) => seq === current && sameSource(replySource, loadedSource);
 // Coverage reasons, codes verbatim (with the relations a code names), without repeats.
 function reasonCodes(reply) {
     const text = r => typeof r === 'string' ? r : `${r.code}${r.relations?.length ? ` (${r.relations.join(', ')})` : ''}`;
     return [...new Set([...(reply.coverage?.reasons || []), ...(reply.coverage?.layers?.relations?.reasons || [])].map(text))];
 }
 // One display row from a search/usages result, a definition or an outgoing edge. Identity is ref.nodeId only.
-function rowModel(row, snapshotId) {
+function rowModel(row, source) {
     const ref = row.ref || row.target?.ref, resource = row.resource ?? row.target?.resource ?? null;
     return {
-        nodeId: ref?.nodeId ?? null, snapshotId: ref?.snapshotId ?? snapshotId, resource,
+        nodeId: ref?.nodeId ?? null, snapshotId: ref?.snapshotId ?? source?.snapshotId, sourceId: ref?.sourceId ?? source?.sourceId, resource,
         name: row.name ?? row.definition?.name ?? ref?.nodeId ?? resource ?? '(no target)',
         type: row.type ?? row.definition?.type ?? null, relation: row.relation ?? null, state: row.state ?? null,
         basis: row.basis ?? null, via: row.via ?? null, hidden: row.hidden === true,
@@ -93,7 +95,7 @@ function rowModel(row, snapshotId) {
 function groupUsages(reply) {
     const groups = new Map();
     for (const row of reply.results || []) {
-        const m = rowModel(row, reply.source?.snapshotId);
+        const m = rowModel(row, reply.source);
         if (!groups.has(m.relation)) groups.set(m.relation, []);
         groups.get(m.relation).push(m);
     }
@@ -113,7 +115,7 @@ function localSearch(roots, query, {types = [], hidden = false} = {}) {
     roots.forEach(n => walk(n, false));
     return {results: found.slice(0, 200).map(([n, off]) => ({name: n.name || n.id, type: n.type, ref: {nodeId: n.id}, hidden: off})), hasMore: found.length > 200};
 }
-if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits, prototypeRows, relQuery, acceptReply, reasonCodes, rowModel, groupUsages, localSearch};
+if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, acceptReply, reasonCodes, rowModel, groupUsages, localSearch};
 if (typeof document !== 'undefined') {
     const boot = JSON.parse(document.getElementById('boot').textContent);
     const $ = id => document.getElementById(id);
@@ -1492,7 +1494,7 @@ if (typeof document !== 'undefined') {
         u.more.hidden = true;
         try {
             const reply = await (await api(base + (cursor ? '&' + relQuery({cursor}) : ''), {signal: ctl.signal})).json();
-            if (!acceptReply(seq, p.seq, reply.source?.snapshotId, loadedSource?.snapshotId)) {
+            if (!acceptReply(seq, p.seq, reply.source, loadedSource)) {
                 if (seq === p.seq) relState(name, 'stale', 'Saved design changed — reply dropped; rerun.');
                 return;
             }
@@ -1509,7 +1511,7 @@ if (typeof document !== 'undefined') {
     function relShow(name) {
         const p = rel[name], u = relUI(name), acc = p.acc, n = acc.results.length, codes = reasonCodes(acc);
         const partial = acc.coverage?.complete === false;
-        if (name === 'ranked') u.list.replaceChildren(relList(name, acc.results.map(r => rowModel(r, acc.source?.snapshotId))));
+        if (name === 'ranked') u.list.replaceChildren(relList(name, acc.results.map(r => rowModel(r, acc.source))));
         else relUsages(acc);
         u.more.hidden = !(acc.hasMore && acc.nextCursor);
         let text = n ? `${n} shown${acc.hasMore ? ', more available' : ''}.` : `No matches in ${p.scope}.`;
@@ -1534,11 +1536,11 @@ if (typeof document !== 'undefined') {
     function relUsages(acc) {
         const g = groupUsages(acc), d = acc.definition, out = [];
         const section = (title, ...nodes) => { const s = el('section'); s.append(el('h4', title), ...nodes); out.push(s); };
-        section('Definition', relList('usages', [rowModel(d, acc.source?.snapshotId)]),
+        section('Definition', relList('usages', [rowModel(d, acc.source)]),
             ...(d.state !== 'indexed' ? [el('p', `Target state: ${d.state} (not indexed).`)] : []));
         if (g.members) {
             const name = id => (catalogIndex ??= new Map(flat(catalog).map(c => [c.id, c]))).get(id)?.name;
-            section('Members (component-set variants)', relList('usages', g.members.ids.map(id => rowModel({ref: {nodeId: id}, name: name(id)}, acc.source?.snapshotId))),
+            section('Members (component-set variants)', relList('usages', g.members.ids.map(id => rowModel({ref: {nodeId: id}, name: name(id)}, acc.source))),
                 ...(g.members.complete ? [] : [el('p', 'Member list is incomplete.')]));
         }
         const title = acc.direction === 'out' ? 'Outgoing relations' : 'Instances and usages';
@@ -1560,7 +1562,7 @@ if (typeof document !== 'undefined') {
     async function relFresh(m) {
         if (boot.snapshot) return;
         const {source} = await (await api('revision')).json();
-        if (source?.snapshotId !== m.snapshotId) throw new Error('Refused: stale reference — rerun search.');
+        if (!sameSource(source, m)) throw new Error('Refused: stale reference — rerun search.');
     }
     async function relOpen(name, m) {
         try {
