@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fmt::Write as _;
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 use figlens::compare::{FIELDS, compare};
@@ -60,6 +60,11 @@ usage:
                                              --max-kb lowers lossy quality until it fits;
                                              --max-size scales raster output to fit its longest side;
                                              prints {path,width,height,bytes,quality}
+  figlens export <file.fig> --frames <list|-> --out-dir <dir> [--format png|jpg|webp|avif|svg] ...
+                                             one decode, many exports (default png, same options):
+                                             writes <dir>/<nodeId>.<format> (`:` as `-`), prints one
+                                             JSON line per id, the export output with its nodeId, or
+                                             {nodeId,error}; at most 10000 ids
   figlens verify <bundle.zip|dir>              check a bundle, zipped or extracted, against its manifest:
                                              verified/missing/changed files, missing assets and the font
                                              faces to confirm in the project (always unverified here),
@@ -244,6 +249,9 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                 &node_list(&args[2..])?,
                 &mut std::io::stdout().lock(),
             )?;
+        }
+        "export" if args.get(2).map(String::as_str) == Some("--frames") => {
+            export_batch(&tree, &path, &args[2..], &mut std::io::stdout().lock())?;
         }
         "tree" | "find" | "inspect" | "node" | "nodes" | "variables" | "bundle" | "export" => {
             let command = command::Command::from_cli(command, &args[2..], &tree)?;
@@ -431,6 +439,18 @@ fn nodes_batch(
     frames: &[String],
     out: &mut impl std::io::Write,
 ) -> Result<(), Box<dyn Error>> {
+    batch_lines(frames, out, |id| {
+        figlens::rest::resolve_nodes(tree, id).map_err(|e| e.to_string())
+    })
+}
+
+/// One JSON line per id: `one(id)` with `nodeId` added, or `{nodeId,error}`. A missing, failing
+/// or panicking id is its own line; a reader that stops early (`... | head`) is not an error.
+fn batch_lines(
+    frames: &[String],
+    out: &mut impl std::io::Write,
+    one: impl Fn(&str) -> Result<serde_json::Value, String>,
+) -> Result<(), Box<dyn Error>> {
     if frames.len() > MAX_NODE_FRAMES {
         return Err(format!(
             "{} node ids listed; at most {MAX_NODE_FRAMES} per call",
@@ -439,8 +459,7 @@ fn nodes_batch(
         .into());
     }
     for id in frames {
-        let one = || figlens::rest::resolve_nodes(tree, id).map_err(|e| e.to_string());
-        let line = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(one))
+        let line = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| one(id)))
             .unwrap_or_else(|_| Err("figlens crashed on this node".to_owned()))
         {
             Ok(mut doc) => {
@@ -449,13 +468,57 @@ fn nodes_batch(
             }
             Err(e) => serde_json::json!({ "nodeId": id, "error": e }),
         };
-        // A reader that stops early (`... | head`) is not an error, as for single commands.
         match writeln!(out, "{line}") {
             Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
             result => result?,
         }
     }
     Ok(())
+}
+
+/// `export --frames <list|-> --out-dir <dir> [--format F] [export options]`: one decode, each id
+/// exported as a single `export` would be, one JSON line per id.
+fn export_batch(
+    tree: &Tree,
+    fig: &Path,
+    args: &[String],
+    out: &mut impl std::io::Write,
+) -> Result<(), Box<dyn Error>> {
+    let (mut list, mut dir, mut format, mut options) = (None, None, "png".to_owned(), Vec::new());
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let mut value = || rest.next().cloned().ok_or(format!("{arg} needs a value"));
+        match arg.as_str() {
+            "--frames" => list = Some(value()?),
+            "--out-dir" => dir = Some(value()?),
+            "--format" => format = value()?.to_ascii_lowercase(),
+            "--scale" | "--quality" | "--max-kb" | "--max-size" => {
+                options.extend([arg.clone(), value()?]);
+            }
+            _ => return Err(USAGE.into()),
+        }
+    }
+    let frames = node_list(&["--frames".to_owned(), list.ok_or(USAGE)?])?;
+    let dir = PathBuf::from(dir.ok_or("--frames needs --out-dir")?);
+    // Bad options fail once, before any file is written, instead of on every line.
+    let export_format = figlens::export::Format::from_ext(&format)
+        .ok_or("--format takes png, jpg, webp, avif or svg")?;
+    let (scale, quality, max_kb, max_size) = command::export_options(&options)?;
+    std::fs::create_dir_all(&dir)?;
+    // shortcut: frames export one after another; add bundle's --jobs if large batches need it.
+    batch_lines(&frames, out, |id| {
+        let export = command::Command::Export {
+            node: id.to_owned(),
+            out: dir.join(format!("{}.{format}", id.replace(':', "-"))),
+            format: export_format,
+            scale,
+            quality,
+            max_kb,
+            max_size,
+        };
+        let output = export.execute(tree, fig).map_err(|e| e.to_string())?;
+        Ok(output.json().cloned().unwrap_or_default())
+    })
 }
 
 #[cfg(test)]

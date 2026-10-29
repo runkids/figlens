@@ -168,6 +168,7 @@ skillshare sync && skillshare sync mcp --global
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | Plusieurs bundles depuis un seul décodage, en parallèle |
 | `verify <bundle>` | Vérifie un bundle (`.zip` ou dossier extrait) par rapport à son manifeste : fichiers vérifiés, manquants et modifiés, assets manquants, polices à confirmer dans le projet, et `findings` : chaque entrée de handoff manquante, non prise en charge ou non vérifiée, avec ses nœuds, preuves et prochaine action |
 | `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP ou AVIF ; `--max-kb` abaisse la qualité avec perte jusqu’à tenir dans la limite |
+| `export <file> --frames <list> --out-dir <dir> [--format F] [--scale N] ...`, `--frames -` (stdin) | Un décodage, plusieurs exports (`png` par défaut) : écrit `<dir>/<nodeId>.<format>`, une ligne JSON par id, la sortie d’`export` avec son `nodeId`, ou `{nodeId, error}` |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Viewer local en lecture seule ; `--out` écrit un snapshot hors ligne autonome |
 | `compare <file> <nodes.json> <node>` | Diff par rapport à un export REST de la même frame |
 | `node <file> <node>` | Un node `.fig` brut |

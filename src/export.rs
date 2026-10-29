@@ -21,8 +21,12 @@ pub enum Format {
 impl Format {
     /// The format an output path's extension names.
     pub fn of(path: &Path) -> Option<Format> {
-        let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-        Some(match ext.as_str() {
+        Format::from_ext(path.extension()?.to_str()?)
+    }
+
+    /// The format a bare extension (`png`, `JPEG`, ...) names.
+    pub fn from_ext(ext: &str) -> Option<Format> {
+        Some(match ext.to_ascii_lowercase().as_str() {
             "png" => Format::Png,
             "jpg" | "jpeg" => Format::Jpg,
             "webp" => Format::Webp,
