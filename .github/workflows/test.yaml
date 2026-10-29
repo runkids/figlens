@@ -88,10 +88,49 @@ jobs:
 
   # Build each release-format target once; all installation jobs reuse these exact artifacts.
   # Independent of `test` so the installation jobs start as soon as the archives exist.
-  candidate:
+  # One runner per target: each fat-LTO release build takes about two minutes, so building
+  # them one after another held every installation job back by the sum.
+  candidate-build:
     if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-apple-darwin, x86_64-pc-windows-gnu]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      # Building the toolchain image took about 80 s per runner, mostly `rustup target add`.
+      # The cache only stores layers: Dockerfile.dist still decides the image, and releases build their own.
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.dist
+          tags: figlens-dist
+          load: true
+          cache-from: type=gha,scope=dist
+          cache-to: type=gha,mode=max,scope=dist
+      - name: Build the candidate archive in the pinned release toolchain
+        env:
+          FIGLENS_TARGETS: ${{ matrix.target }}
+        run: |
+          mkdir -p dist/candidate
+          docker compose run --rm \
+            -e FIGLENS_TARGETS -e FIGLENS_DIST_DIR=dist/candidate \
+            dist scripts/build-dist.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-${{ matrix.target }}
+          path: dist/candidate/
+          if-no-files-found: error
+          retention-days: 1
+
+  candidate:
+    needs: candidate-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -99,17 +138,16 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
-      - name: Build candidate binaries in the pinned release toolchain
-        env:
-          FIGLENS_TARGETS: x86_64-unknown-linux-musl aarch64-apple-darwin x86_64-pc-windows-gnu
-        run: |
-          # The host npm packer needs to write beside the container-built archives.
-          mkdir -p dist/candidate
-          docker compose run --build --rm \
-            -e FIGLENS_TARGETS -e FIGLENS_DIST_DIR=dist/candidate \
-            dist scripts/build-dist.sh
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-*
+          path: dist/parts
       - name: Pack real npm tarball and bind artifacts to this checkout
         run: |
+          # Each build wrote the SHA256SUMS of its own archive; the packer checks every archive against them.
+          mkdir dist/candidate
+          mv dist/parts/*/figlens-* dist/candidate/
+          cat dist/parts/*/SHA256SUMS > dist/candidate/SHA256SUMS
           python3 -B scripts/pack-candidate.py dist/candidate
           python3 -c 'import json; assert not json.load(open("dist/candidate/candidate.json"))["dirty"], "Candidate source differs from checkout"'
       - uses: actions/upload-artifact@v4
