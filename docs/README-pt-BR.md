@@ -166,7 +166,7 @@ skillshare sync && skillshare sync mcp --global
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | Uma decodificação, muitos nós: uma linha JSON por id listado, a saída de `nodes` com seu `nodeId`, ou `{nodeId, error}` |
 | `variables <file> [node]` | Variáveis vinculadas a um frame; sem nó, todas as variáveis locais |
 | `bundle <file> <node> <out.zip> [--states]` | Um bundle de design de um frame; imprime `{nodeId, path, warnings}` |
-| `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | Vários bundles a partir de uma decodificação, em paralelo |
+| `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]`, `--frames -` (stdin) | Vários bundles a partir de uma decodificação, em paralelo |
 | `verify <bundle>` | Confere um bundle (`.zip` ou diretório extraído) com o manifesto: arquivos verificados, ausentes e alterados, assets ausentes, as fontes a confirmar no projeto e `findings`: cada entrada de handoff ausente, não suportada ou não verificada, com nós, evidência e próxima ação |
 | `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP ou AVIF; `--max-kb` reduz a qualidade com perda até caber; `--bounds layout` exporta a caixa de layout em vez dos limites de renderização |
 | `export <file> --frames <list> --out-dir <dir> [--format F] [--scale N] ...`, `--frames -` (stdin) | Uma decodificação, muitas exportações (padrão `png`): grava `<dir>/<nodeId>.<format>`, uma linha JSON por id, a saída de `export` com seu `nodeId`, ou `{nodeId, error}` |
