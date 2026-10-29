@@ -999,3 +999,36 @@ fn server_storage_roots_refuse_parent_steps_that_reenter_a_link_out_of_them() {
     );
     assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
 }
+
+#[test]
+fn a_replacement_whose_database_was_never_created_finishes_where_it_was_reserved() {
+    let f = Fixture::new();
+    let a = f.fig("a.fig");
+    let (old, custom) = f.custom("old");
+    prepare(&custom, &a, None).unwrap();
+    std::fs::rename(&old, f.dir.join("offline")).unwrap();
+    let (new, elsewhere) = f.custom("new");
+    let options = || PrepareOptions {
+        replace_unavailable: true,
+        ..PrepareOptions::default()
+    };
+    super::prepare(&elsewhere, &a, None, options()).unwrap();
+    // As if initialization failed after the record named the new storage.
+    let workspaces = new.join("state/workspaces");
+    for dir in std::fs::read_dir(&workspaces).unwrap() {
+        let dir = dir.unwrap().path();
+        if dir.is_dir() {
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+    let retried = super::prepare(&elsewhere, &a, None, options())
+        .unwrap()
+        .report;
+    assert_eq!(retried["initialized"], true);
+    assert_eq!(retried["previous"]["reason"], "storage_unavailable");
+    // Once its database exists there, the same call is refused instead of replacing it.
+    let Err(again) = super::prepare(&elsewhere, &a, None, options()) else {
+        panic!("a second replacement into the same storage was accepted");
+    };
+    assert!(again.to_string().contains("current storage"), "{again}");
+}

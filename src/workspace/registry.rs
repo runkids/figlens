@@ -56,7 +56,11 @@ pub(super) fn open_for_prepare(
     {
         return Ok((ws, false));
     }
-    let held = acquire_new(state, id, locator)?;
+    initialize_held(acquire_new(state, id, locator)?, place)
+}
+
+/// Opens, initializing or upgrading, the database of the workspace `held` locks exclusively.
+pub(super) fn initialize_held(held: Held, place: &Place) -> Result<(Opened, bool)> {
     let path = held.dir.join(DB);
     let flags = if plain(&path, false)? {
         OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -178,26 +182,42 @@ pub(super) fn recreate(
         .map_or(current.defaults.state.path.clone(), |r| {
             r.storage.join("state")
         });
-    if previous
-        .as_ref()
-        .is_some_and(|r| same_dir(&r.storage, &new))
-        || same_dir(&old_root, &new.join("state"))
-    {
-        return Err(fail(
+    let in_use = || {
+        fail(
             ErrorKind::InvalidArguments,
             format!(
                 "--storage {} is the workspace's current storage; choose a new directory",
                 new.display()
             ),
-        ));
-    }
-    let Some(reason) = unusable_reason(&current, id, locator)? else {
-        return Err(fail(
-            ErrorKind::InvalidArguments,
-            format!(
-                "workspace {id} can be used where it is; --replace-unavailable only recreates a workspace whose storage is unavailable, denied or has unreadable ownership"
-            ),
-        ));
+        )
+    };
+    let locations = locations(&current.defaults.config.path, true)?.expect("created");
+    let record_path = locations.join(format!("{id}.json"));
+    // A replacement whose record already names `new` but whose database was never created
+    // there (its initialization failed) is finished in place by the same call again.
+    let reserved = previous
+        .as_ref()
+        .is_some_and(|r| same_dir(&r.storage, &new));
+    let gone = if reserved {
+        let gone = read_small(&record_path)?["previous"].clone();
+        if !gone.is_object() {
+            return Err(in_use());
+        }
+        gone
+    } else {
+        if same_dir(&old_root, &new.join("state")) {
+            return Err(in_use());
+        }
+        let Some(reason) = unusable_reason(&current, id, locator)? else {
+            return Err(fail(
+                ErrorKind::InvalidArguments,
+                format!(
+                    "workspace {id} can be used where it is; --replace-unavailable only recreates a workspace whose storage is unavailable, denied or has unreadable ownership"
+                ),
+            ));
+        };
+        json!({"storage": previous.as_ref().map(|r| &r.storage).unwrap_or(&current.defaults.state.path),
+            "binding": previous.as_ref().and_then(|r| r.binding.clone()), "reason": reason, "atMs": now_ms()})
     };
     create_durable(&new)?;
     let canonical = std::fs::canonicalize(&new).map_err(|e| storage_error(&new, e))?;
@@ -208,30 +228,32 @@ pub(super) fn recreate(
         binding: None,
     };
     outside_storage(source, storage, &target)?;
-    // Claimed under the new root's workspace lock before the record names it: an existing
-    // database there is refused, never merged or overwritten.
+    // The new root's workspace lock is held from the emptiness check through the record and
+    // initialization, under the location lock: an existing database there is refused, never
+    // merged or overwritten, and no other process can create one in between.
     let held = acquire_new(&target.roots.state.path, id, locator)?;
     let db = held.dir.join(DB);
     if plain(&db, false)? {
-        return Err(preserved(
-            &db,
-            "already exists for this workspace; choose an empty directory for the recreated workspace",
-        ));
+        return Err(if reserved {
+            in_use()
+        } else {
+            preserved(
+                &db,
+                "already exists for this workspace; choose an empty directory for the recreated workspace",
+            )
+        });
     }
-    drop(held);
-    let binding = nonce()?;
-    let locations = locations(&current.defaults.config.path, true)?.expect("created");
-    let gone = json!({"storage": previous.as_ref().map(|r| &r.storage).unwrap_or(&current.defaults.state.path),
-        "binding": previous.as_ref().and_then(|r| r.binding.clone()), "reason": reason, "atMs": now_ms()});
-    let record = json!({"version": LOCATION, "workspaceId": id, "locator": locator.report()?,
-        "storage": utf8(&canonical)?, "binding": binding, "previous": gone});
-    write_small(&locations.join(format!("{id}.json")), &record)?;
+    if !reserved {
+        let record = json!({"version": LOCATION, "workspaceId": id, "locator": locator.report()?,
+            "storage": utf8(&canonical)?, "binding": nonce()?, "previous": gone});
+        write_small(&record_path, &record)?;
+    }
     let place = current.place(id, Some(locator))?;
-    let (mut ws, initialized) = open_for_prepare(&place, id, locator)?;
+    let (mut ws, initialized) = initialize_held(held, &place)?;
     let (source_id, _) = register(&mut ws.conn, source)?;
     let mut extra = json!({"initialized": initialized, "replaced": true,
         "source": {"sourceId": source_id, "path": source, "added": true},
-        "previous": {"storage": gone["storage"], "binding": gone["binding"], "reason": reason,
+        "previous": {"storage": gone["storage"], "binding": gone["binding"], "reason": gone["reason"],
             "state": "retained, not restored", "sources": "unknown", "metadata": "unknown"}});
     let mut run = Vec::new();
     match options.scope {
