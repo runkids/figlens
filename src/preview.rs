@@ -226,7 +226,7 @@ pub fn snapshot(file: &Path, id: &str, out: &Path) -> Result<()> {
 
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
-        && id.len() <= 1024
+        && id.len() <= search::store::ID_BYTES
         && id
             .bytes()
             .all(|b| b.is_ascii_digit() || b":;I".contains(&b))
@@ -434,18 +434,25 @@ impl DiskCache {
 /// A connection that sends nothing, such as a browser's speculative preconnect.
 const IDLE: &str = "idle connection";
 
+/// Request-line bytes: a usages target and a scope, each an ID of at most `ID_BYTES`
+/// percent-encoded (3 bytes per byte), plus the other bounded parameters.
+const MAX_LINE: usize = 6 * search::store::ID_BYTES + 4096;
+
 fn request(stream: &TcpStream, authority: &str, token: &str) -> Result<String> {
     // Requests are served one at a time, so an idle socket must not hold the service for long.
     stream.set_read_timeout(Some(Duration::from_millis(300)))?;
     let mut reader = BufReader::new(stream);
     let mut first = String::new();
-    let read = reader.by_ref().take(4097).read_line(&mut first);
+    let read = reader
+        .by_ref()
+        .take(MAX_LINE as u64 + 1)
+        .read_line(&mut first);
     if first.is_empty() {
         return Err(IDLE.into());
     }
     read?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-    if first.len() > 4096 {
+    if first.len() > MAX_LINE {
         return Err("request too large".into());
     }
     let parts: Vec<_> = first.split_whitespace().collect();
@@ -454,7 +461,7 @@ fn request(stream: &TcpStream, authority: &str, token: &str) -> Result<String> {
     }
     let mut host = false;
     let (mut cross_site, mut navigate, mut document) = (false, false, false);
-    let mut total = first.len();
+    let mut total = 0;
     loop {
         let mut line = String::new();
         reader.by_ref().take(4097).read_line(&mut line)?;
@@ -1085,12 +1092,17 @@ mod tests {
     }
     fn served<T>(check: impl FnOnce(&Revision) -> T) -> T {
         let file = Path::new("examples/first-success/design.fig");
-        let (doc, version, source) = staged(file).unwrap();
+        let doc = staged(file).unwrap().0;
         let message = doc.message().unwrap();
-        let tree = Tree::new(&message);
+        served_tree(&Tree::new(&message), check)
+    }
+
+    fn served_tree<T>(tree: &Tree, check: impl FnOnce(&Revision) -> T) -> T {
+        let file = Path::new("examples/first-success/design.fig");
+        let (_, version, source) = staged(file).unwrap();
         let dir = crate::test_support::TestDir::new();
         let revision = Revision {
-            tree: &tree,
+            tree,
             index: Value::Null,
             file,
             initial: None,
@@ -1188,6 +1200,94 @@ mod tests {
             );
             assert_eq!(paged["error"]["kind"], "CursorStale", "{paged}");
         });
+    }
+
+    #[test]
+    fn a_deep_effective_result_opens_and_queries_by_its_exact_id() {
+        use kiwi_schema::Value as K;
+        let obj = |f: Vec<(&'static str, K<'static>)>| K::Object("Test", f.into_iter().collect());
+        let named = |kind: &'static str, name: &str| {
+            obj(vec![
+                ("type", K::Enum("NodeType", kind)),
+                ("name", K::String(name.to_owned())),
+            ])
+        };
+        let instance = |main: u32| {
+            obj(vec![
+                ("type", K::Enum("NodeType", "INSTANCE")),
+                ("name", K::String("level".into())),
+                (
+                    "symbolData",
+                    obj(vec![(
+                        "symbolID",
+                        obj(vec![("sessionID", K::UInt(1)), ("localID", K::UInt(main))]),
+                    )]),
+                ),
+            ])
+        };
+        // Main 1:k holds an instance of main 1:k+1; the last main holds the target layer.
+        const LEVELS: u32 = 100;
+        let mut nodes = vec![
+            ("0:0".to_owned(), named("DOCUMENT", "doc")),
+            ("0:1".to_owned(), named("CANVAS", "page")),
+            ("3:0".to_owned(), named("FRAME", "screen")),
+            ("4:0".to_owned(), instance(0)),
+            ("5:0".to_owned(), named("RECTANGLE", "deepest")),
+        ];
+        let mut children = HashMap::from([
+            ("0:0".to_owned(), vec!["0:1".to_owned()]),
+            ("0:1".to_owned(), vec!["3:0".to_owned()]),
+            ("3:0".to_owned(), vec!["4:0".to_owned()]),
+            (format!("1:{LEVELS}"), vec!["5:0".to_owned()]),
+        ]);
+        for k in 0..=LEVELS {
+            nodes.push((format!("1:{k}"), named("COMPONENT", "main")));
+            if k < LEVELS {
+                nodes.push((format!("2000000000:{k}"), instance(k + 1)));
+                children.insert(format!("1:{k}"), vec![format!("2000000000:{k}")]);
+            }
+        }
+        let tree = Tree {
+            nodes: nodes.iter().map(|(id, n)| (id.clone(), n)).collect(),
+            children,
+            blobs: Vec::new(),
+        };
+        served_tree(&tree, |r| {
+            let found = reply(r, "search/1?q=deepest");
+            let id = found["results"][0]["ref"]["nodeId"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            assert!(id.len() > 1024 && id.ends_with(";5:0"), "{found}");
+            // Opening it reads the layer's own data at that exact ID.
+            let (_, data) = r.respond(&format!("data/1/{id}")).unwrap();
+            let data: Value = serde_json::from_slice(&data).unwrap();
+            assert_eq!(data["nodes"]["document"]["id"], id.as_str());
+            // Its usages request, as the viewer encodes it, is admitted and reaches core intact.
+            let query = format!(
+                "target={}&relation=contains&outgoing=1",
+                id.replace(':', "%3A").replace(';', "%3B")
+            );
+            let line = format!(
+                "GET /secret/usages/1?{query}&scope=0%3A0 HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n"
+            );
+            let route = parse(&line).unwrap();
+            let usages = reply(r, &route);
+            assert_eq!(
+                usages["definition"]["ref"]["nodeId"],
+                id.as_str(),
+                "{usages}"
+            );
+        });
+    }
+
+    fn parse(input: &str) -> Result<String> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let mut client = TcpStream::connect(listener.local_addr()?)?;
+        let (server, _) = listener.accept()?;
+        client.write_all(input.as_bytes())?;
+        client.shutdown(std::net::Shutdown::Write)?;
+        request(&server, "127.0.0.1:1234", "secret")
     }
 
     #[test]
@@ -1299,14 +1399,6 @@ mod tests {
     }
     #[test]
     fn requests_reject_cross_origin_hosts_methods_and_oversized_headers() {
-        fn parse(input: &str) -> Result<String> {
-            let listener = TcpListener::bind("127.0.0.1:0")?;
-            let mut client = TcpStream::connect(listener.local_addr()?)?;
-            let (server, _) = listener.accept()?;
-            client.write_all(input.as_bytes())?;
-            client.shutdown(std::net::Shutdown::Write)?;
-            request(&server, "127.0.0.1:1234", "secret")
-        }
         assert_eq!(
             parse("GET /secret/data/I1:2;3:4 HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n").unwrap(),
             "data/I1:2;3:4"
@@ -1325,6 +1417,7 @@ mod tests {
             "POST /secret/bundle/1:2 HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n".to_owned(),
             "GET /wrong/catalog HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n".to_owned(),
             format!("GET /secret/catalog HTTP/1.1\r\nHost: 127.0.0.1:1234\r\nX: {}\r\n\r\n", "x".repeat(9000)),
+            format!("GET /secret/data/{} HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n", "1".repeat(MAX_LINE)),
         ] { assert!(parse(&input).is_err(), "{input}"); }
     }
 
@@ -1380,5 +1473,6 @@ mod tests {
         for id in ["", "../secret", "1:2?x=3", "%2e", "<script>"] {
             assert!(!valid_id(id));
         }
+        assert!(!valid_id(&"1".repeat(search::store::ID_BYTES + 1)));
     }
 }
