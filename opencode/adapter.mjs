@@ -307,13 +307,15 @@ export function createAdapter(ctx, entry = import.meta.url) {
         const found = await status(input).catch(error => {
           const fix = report(error)?.recovery?.find(action => action.action === input.action && action.path && action.roots?.config);
           if (!fix) throw error;
-          return { paths: { workspace: fix.path }, roots: fix.roots };
+          return { paths: { workspace: fix.path, lock: fix.lock }, roots: fix.roots };
         });
         if (!found.roots?.config) throw missing('its config root');
+        // An existing workspace's lock sits beside its directory, and a recovery recreates it there.
+        if (found.paths && !found.paths.lock) throw missing("its workspace's lock file");
         if (['refresh', 'rebuild'].includes(input.action)) await readSources(found);
         if (grant) await current.authorize('figlens_index', [grant]);
         // Every write also takes a location lock or record under the config root (a build's publish, relocation's alias).
-        await current.authorize('edit', [place(found), found.roots.config.path]);
+        await current.authorize('edit', [place(found), ...found.paths ? [found.paths.lock] : [], found.roots.config.path]);
       }
     }
     // inspect --flat prints lines, as the MCP tool's flat field.
