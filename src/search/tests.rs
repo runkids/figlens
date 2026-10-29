@@ -424,6 +424,10 @@ fn names_split_at_slashes_and_camel_case() {
     let exact = run(&request("iconbutton/primary"));
     assert_eq!(first(&exact)["matches"][0]["reason"], "exact");
     assert_eq!(ids(&run(&request("ICONBUTTON"))), ["0:18"]);
+    // A mixed-case query finds a name or text without that capitalization.
+    let greeting = run(&request("GreeTing"));
+    assert_eq!(first(&greeting)["matches"][0]["reason"], "exact");
+    assert_eq!(ids(&run(&request("StrAsse"))), ["0:15"]);
 }
 
 #[test]

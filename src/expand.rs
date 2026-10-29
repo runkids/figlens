@@ -275,21 +275,22 @@ fn assignment_bytes(
     refs: usize,
     left: &mut usize,
 ) -> usize {
-    let (mut total, mut largest) = (0usize, 0usize);
+    let mut largest = 0;
     let own = match own {
         Some(Value::Array(items)) => &items[..],
         _ => &[],
     };
-    let mut add = |n: usize| {
-        total += n;
+    let mut total = sum_while(own, left, |v, left| {
+        let n = kiwi_bytes(v, left);
         largest = largest.max(n);
-    };
-    for v in own {
-        add(kiwi_bytes(v, left));
-    }
-    for v in inherited.and_then(Json::as_array).into_iter().flatten() {
-        add(json_bytes(v, left));
-    }
+        n
+    });
+    let inherited = inherited.and_then(Json::as_array).into_iter().flatten();
+    total += sum_while(inherited, left, |v, left| {
+        let n = json_bytes(v, left);
+        largest = largest.max(n);
+        n
+    });
     total.saturating_add(largest.saturating_mul(refs))
 }
 
@@ -1318,32 +1319,47 @@ mod tests {
         );
     }
 
-    fn bounded(tree: &Tree, bytes: usize) -> (Expansion, Bounds) {
+    fn bounded(tree: &Tree, root: &str, work: usize, bytes: usize) -> (Expansion, Bounds) {
         let bounds = Bounds {
-            work: 1 << 20,
+            work,
             bytes,
             depth: 64,
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
             stop: None,
         };
-        expand_instances_bounded(tree, "page", bounds)
+        expand_instances_bounded(tree, root, bounds)
     }
 
     #[test]
     fn a_bounded_expansion_charges_text_property_copies_before_binding_them() {
-        // One large assignment bound into 100 children copies it 100 times.
-        let big = "x".repeat(10_000);
-        let inst = obj(vec![
-            ("type", Value::Enum("NodeType", "INSTANCE")),
-            ("symbolData", obj(vec![("symbolID", guid(1, 1))])),
-            (
-                "componentPropAssignments",
-                Value::Array(vec![obj(vec![
-                    ("defID", guid(2, 1)),
-                    ("value", obj(vec![("textValue", Value::String(big))])),
-                ])]),
-            ),
-        ]);
+        // One large assignment bound into 100 children copies it 100 times; 1000 more
+        // assignments make every reference scan a wide list.
+        let assignment = |id: u32, text: String| {
+            obj(vec![
+                ("defID", guid(2, id)),
+                ("value", obj(vec![("textValue", Value::String(text))])),
+            ])
+        };
+        let instance = |extra: u32| {
+            let list = (0..=extra)
+                .map(|i| {
+                    assignment(
+                        i + 1,
+                        if i == 0 {
+                            "x".repeat(10_000)
+                        } else {
+                            "y".into()
+                        },
+                    )
+                })
+                .collect();
+            obj(vec![
+                ("type", Value::Enum("NodeType", "INSTANCE")),
+                ("symbolData", obj(vec![("symbolID", guid(1, 1))])),
+                ("componentPropAssignments", Value::Array(list)),
+            ])
+        };
+        let (inst, wide) = (instance(0), instance(1000));
         let child = obj(vec![
             ("type", Value::Enum("NodeType", "TEXT")),
             (
@@ -1359,17 +1375,30 @@ mod tests {
         let mut nodes: HashMap<String, &Value> = kids.iter().map(|k| (k.clone(), &child)).collect();
         nodes.extend([
             ("page".into(), &page),
+            ("wide page".into(), &page),
             ("inst".into(), &inst),
+            ("wide".into(), &wide),
             ("1:1".into(), &main),
         ]);
         let tree = Tree {
             nodes,
-            children: HashMap::from([("page".into(), vec!["inst".into()]), ("1:1".into(), kids)]),
+            children: HashMap::from([
+                ("page".into(), vec!["inst".into()]),
+                ("wide page".into(), vec!["wide".into()]),
+                ("1:1".into(), kids),
+            ]),
             blobs: Vec::new(),
         };
-        let (ex, bounds) = bounded(&tree, 200_000);
+        let (ex, bounds) = bounded(&tree, "page", 1 << 20, 200_000);
         assert_eq!((bounds.stop, ex.nodes.len()), (Some(Stop::Bytes), 0));
-        assert_eq!(bounded(&tree, 4 << 20).0.nodes.len(), 100);
+        assert_eq!(bounded(&tree, "page", 1 << 20, 4 << 20).0.nodes.len(), 100);
+        // 100 references over 1001 assignments: the scans' work is charged before binding.
+        let (ex, bounds) = bounded(&tree, "wide page", 50_000, 64 << 20);
+        assert_eq!((bounds.stop, ex.nodes.len()), (Some(Stop::Work), 0));
+        assert_eq!(
+            bounded(&tree, "wide page", 1 << 20, 64 << 20).0.nodes.len(),
+            100
+        );
     }
 
     #[test]
@@ -1396,10 +1425,10 @@ mod tests {
             children: HashMap::from([("page".into(), insts), ("1:1".into(), vec!["child".into()])]),
             blobs: Vec::new(),
         };
-        let (ex, bounds) = bounded(&tree, 100_000);
+        let (ex, bounds) = bounded(&tree, "page", 1 << 20, 100_000);
         assert_eq!(bounds.stop, Some(Stop::Bytes));
         assert!(ex.nodes.len() < 10, "{}", ex.nodes.len());
-        assert_eq!(bounded(&tree, 1 << 20).0.nodes.len(), 20);
+        assert_eq!(bounded(&tree, "page", 1 << 20, 1 << 20).0.nodes.len(), 20);
     }
 
     #[test]
