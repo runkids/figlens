@@ -790,3 +790,36 @@ fn the_old_path_of_a_relocated_source_does_not_serve_it_under_that_name() {
         prepared["workspaceId"]
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn ctrl_c_cancels_the_cli_owned_build_and_waits_for_its_worker() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let gate = env.gate("parse.hold");
+    let owner = env.spawn(
+        &["index", "rebuild", "--file", file],
+        Some(("parse", &gate)),
+    );
+    let job = active_job(&env, &fig, "parse");
+    assert!(
+        Command::new("kill")
+            .args(["-INT", &owner.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let start = Instant::now();
+    let out = owner.wait_with_output().unwrap();
+    assert!(start.elapsed() < Duration::from_millis(2500));
+    assert!(!out.status.success());
+    assert!(!worker_running(&job));
+    assert_eq!(env.json(&["jobs", "status", &job])["state"], "cancelled");
+    std::fs::remove_file(&gate).unwrap();
+    assert_eq!(
+        env.json(&["search", "--file", file, "first"])["state"],
+        "ready"
+    );
+}

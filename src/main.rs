@@ -269,6 +269,8 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             let (Some(dir), Some(job)) = (args.get(1), args.get(2)) else {
                 return Err(USAGE.into());
             };
+            // The terminal's Ctrl-C reaches the whole process group; the owner decides.
+            signals::ignore();
             let report = figlens::workspace::jobs::worker(Path::new(dir), job);
             writeln!(out, "{report}")?;
             return if report["error"].is_object() {
@@ -766,7 +768,8 @@ fn finish_jobs(
         .as_str()
         .unwrap_or_default()
         .to_owned();
-    let stop = std::sync::atomic::AtomicBool::new(false);
+    let stop = &signals::INTERRUPTED;
+    signals::catch();
     let mut progress = |job: &serde_json::Value| {
         eprintln!(
             "figlens: job {} {} {}/{}",
@@ -779,11 +782,15 @@ fn finish_jobs(
     let mut fin = |job: &serde_json::Value| -> Result<serde_json::Value, Box<dyn Error>> {
         let id = job["jobId"].as_str().unwrap_or_default().to_owned();
         if outcome.run.contains(&id) {
-            return jobs::run(storage, &ws, &id, &stop, &mut progress);
+            return jobs::run(storage, &ws, &id, stop, &mut progress);
         }
         loop {
             let now = jobs::status(storage, &id)?;
             match now["state"].as_str() {
+                // Another process owns it; an interrupt stops only the waiting.
+                Some("queued" | "running") if stop.load(std::sync::atomic::Ordering::Relaxed) => {
+                    return Ok(now);
+                }
                 Some("queued" | "running") => {
                     std::thread::sleep(std::time::Duration::from_millis(200))
                 }
@@ -797,7 +804,7 @@ fn finish_jobs(
                         None,
                     )?;
                     for id in &again.run {
-                        return jobs::run(storage, &ws, id, &stop, &mut progress);
+                        return jobs::run(storage, &ws, id, stop, &mut progress);
                     }
                 }
                 _ => return Ok(now),
@@ -819,6 +826,64 @@ fn finish_jobs(
         report["sources"] = now["sources"].clone();
     }
     Ok(report)
+}
+
+/// Ctrl-C and SIGTERM while the CLI runs its own index jobs cancel them: each job's owner kills
+/// its worker, waits for it, and records `cancelled`, so the previous index keeps serving.
+mod signals {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    pub static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+    #[cfg(unix)]
+    unsafe extern "C" {
+        fn signal(signum: i32, handler: usize) -> usize;
+    }
+
+    #[cfg(unix)]
+    extern "C" fn interrupted(_: i32) {
+        INTERRUPTED.store(true, Ordering::Relaxed);
+    }
+
+    #[cfg(unix)]
+    pub fn catch() {
+        let handler = interrupted as extern "C" fn(i32) as usize;
+        // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
+        unsafe {
+            signal(2, handler);
+            signal(15, handler);
+        }
+    }
+
+    #[cfg(unix)]
+    pub fn ignore() {
+        // SAFETY: SIG_IGN (1) for SIGINT.
+        unsafe {
+            signal(2, 1);
+        }
+    }
+
+    #[cfg(windows)]
+    unsafe extern "system" fn interrupted(_: u32) -> i32 {
+        INTERRUPTED.store(true, Ordering::Relaxed);
+        1
+    }
+
+    #[cfg(windows)]
+    pub fn catch() {
+        // SAFETY: registers a handler that only stores to an atomic.
+        unsafe {
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(interrupted), 1);
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn ignore() {
+        // SAFETY: a null handler with TRUE makes this process ignore Ctrl-C.
+        unsafe {
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 1);
+        }
+    }
 }
 
 /// `figlens index <action> ...`: workspaces, their sources and their indexes.
