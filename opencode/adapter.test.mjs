@@ -180,6 +180,8 @@ test('CLI path runs the MCP index, jobs, search and inspect arguments as the sam
   assert.deepEqual(cliArgs('search', { file: '/d.fig', query: 'Pay', includeHidden: true }), ['search', '/d.fig', 'Pay', '--include-hidden']);
   assert.deepEqual(cliArgs('inspect', { file: '/d.fig', node: 'I1:2;3:4', depth: 0 }), ['inspect', '/d.fig', 'I1:2;3:4', '--depth', '0']);
   assert.deepEqual(cliArgs('inspect', { file: '/d.fig', node: '1:2', compareVariant: '1:3' }), ['inspect', '/d.fig', '1:2', '--compare-variant', '1:3']);
+  for (const input of [{ file: '/a.fig', workspaceId: 'ws_p', sourceId: 'b', query: 'Pay' }, { file: '/a.fig', storage: '/s', query: 'Pay' }, { query: 'Pay' }])
+    assert.throws(() => cliArgs('search', input), /file or workspaceId, not both/);
   assert.throws(() => cliArgs('index', { action: 'remove', workspaceId: 'ws_1' }), /needs sourceId/);
 });
 
