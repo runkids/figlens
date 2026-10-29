@@ -404,8 +404,12 @@ fn effective(
             (None, Some(v)) => kiwi_bytes(v, &mut left),
             (None, None) => continue,
         };
-        // One field past the per-value cap is left out and counted, not the rest of the index.
+        // One field past the per-value cap is left out and counted, not the rest of the index;
+        // the visits that found it too large are still charged.
         if left == 0 {
+            if !bounds.charge(VISITS, 0) {
+                return None;
+            }
             *unread += 1;
             continue;
         }

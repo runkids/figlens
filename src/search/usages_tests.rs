@@ -1134,3 +1134,38 @@ fn vector_region_fill_and_gradient_stop_variables_are_bound() {
         assert_eq!(whole["results"][0]["evidence"], "vectorRegionFills");
     }
 }
+
+#[test]
+fn a_bound_field_too_large_to_read_charges_the_visits_that_measured_it() {
+    let doc = |paints: usize| {
+        let paint = obj(vec![
+            ("type", K::Enum("PaintType", "SOLID")),
+            ("colorVar", alias(60)),
+        ]);
+        let fills = K::Array(vec![paint; paints]);
+        obj(vec![(
+            "nodeChanges",
+            K::Array(vec![
+                node(0, None, "DOCUMENT", "Document", vec![]),
+                node(1, Some(0), "CANVAS", "Page", vec![]),
+                node(
+                    4,
+                    Some(1),
+                    "RECTANGLE",
+                    "Shape",
+                    vec![("fillPaints", fills)],
+                ),
+            ]),
+        )])
+    };
+    let small = doc(1);
+    let small = Tree::new(&small);
+    let work = (1..10_000)
+        .find(|w| build(&small, "0:0", bounds(*w)).stop.is_none())
+        .unwrap();
+    // The first paint binds a variable, so the prefilter passes at once; measuring the rest
+    // walks VISITS values, which must come out of the same work budget.
+    let big = doc(VISITS);
+    let index = build(&Tree::new(&big), "0:0", bounds(work + 10_000));
+    assert_eq!(index.stop, Some("work_limit"));
+}
