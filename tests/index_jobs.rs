@@ -1796,3 +1796,45 @@ fn only_a_tracked_scope_s_build_stores_facets() {
     );
     assert_eq!(count("SELECT max(gen) FROM facet_sets"), gen_id);
 }
+
+#[test]
+fn track_builds_a_baseline_with_facets_and_each_state_change_bumps_the_epoch() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    let prepared = env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let db = prepared["paths"]["database"].as_str().unwrap().to_owned();
+    // Whether the generation a reply's job built stored facets.
+    let faceted = |reply: &Value| {
+        let gen_id = reply["jobs"][0]["generation"].as_i64().unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let q = "SELECT EXISTS (SELECT 1 FROM facet_sets WHERE gen = ?1)";
+        conn.query_row(q, [gen_id], |r| r.get::<_, bool>(0))
+            .unwrap()
+    };
+    let track = |action: &str| env.json(&["index", action, "--file", file, "--scope", "0:0"]);
+    let state = |reply: &Value| {
+        (
+            reply["tracking"][0]["state"].clone(),
+            reply["tracking"][0]["epoch"].clone(),
+        )
+    };
+    let on = track("track");
+    assert_eq!(state(&on), (json!("baseline_pending"), json!(1)));
+    assert_eq!(on["jobs"][0]["state"], "succeeded");
+    assert!(faceted(&on));
+    // Tracking an already tracked scope changes nothing and builds nothing.
+    let again = track("track");
+    assert_eq!(
+        (state(&again), again["jobs"].clone()),
+        ((json!("baseline_pending"), json!(1)), json!([]))
+    );
+    assert_eq!(state(&track("untrack")), (json!("disabled"), json!(2)));
+    assert!(!faceted(&env.json(&["index", "rebuild", "--file", file])));
+    let retracked = track("track");
+    assert_eq!(state(&retracked), (json!("baseline_pending"), json!(3)));
+    assert!(faceted(&retracked));
+    let out = env.run(&["index", "track", "--file", file, "--scope", "0:99"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no published scope 0:99"));
+}

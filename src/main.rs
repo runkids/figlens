@@ -998,6 +998,16 @@ fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
             )?;
             finish_jobs(&storage, outcome)
         }
+        ("track", []) if !a.replace => {
+            let scope = normalize_id(a.scope.ok_or_else(usage)?);
+            let outcome =
+                workspace::jobs::track(&storage, &chosen()?, only_source()?, &scope, a.request)?;
+            finish_jobs(&storage, outcome)
+        }
+        ("untrack", []) if !a.replace && a.request.is_none() => {
+            let scope = normalize_id(a.scope.ok_or_else(usage)?);
+            workspace::jobs::untrack(&storage, &chosen()?, only_source()?, &scope)
+        }
         _ if scoped || !a.source.is_empty() => Err(usage()),
         ("status", []) => workspace::status(&storage, &chosen()?),
         ("add", [path]) => workspace::add(&storage, &chosen()?, Path::new(path)),

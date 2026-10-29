@@ -521,7 +521,7 @@ fn live(pending: &Pending, req: &Value) -> bool {
 fn submits(req: &Value) -> bool {
     matches!(
         req["params"]["arguments"]["action"].as_str(),
-        Some("prepare" | "refresh" | "rebuild")
+        Some("prepare" | "refresh" | "rebuild" | "track")
     )
 }
 

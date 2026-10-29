@@ -726,6 +726,8 @@ pub fn property(tool: &str, param: &Param) -> Value {
             "relocate",
             "refresh",
             "rebuild",
+            "track",
+            "untrack",
             "clear_cache",
             "reset"
         ]);

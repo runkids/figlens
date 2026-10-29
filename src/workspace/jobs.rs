@@ -1969,6 +1969,115 @@ pub fn rebuild_scope(
     submit_all(storage, select, "rebuild", source, scope, request_id)
 }
 
+/// `index track`: turns change tracking on for published scope `scope` of each chosen source and
+/// builds its baseline as a rebuild, which never reuses an unchanged snapshot and stores the
+/// scope's facets. A scope already tracked keeps its epoch and builds nothing.
+pub fn track(
+    storage: &Storage,
+    select: &Select,
+    source: Option<&str>,
+    scope: &str,
+    request_id: Option<&str>,
+) -> Result<Outcome> {
+    let (id, rows, started) = set_tracking(storage, select, source, scope, true)?;
+    let mut done = match started {
+        true => rebuild_scope(storage, select, source, Some(scope), request_id)?,
+        false => Outcome {
+            report: json!({"workspaceId": id, "jobs": []}),
+            run: Vec::new(),
+        },
+    };
+    done.report["tracking"] = rows;
+    Ok(done)
+}
+
+/// `index untrack`: later builds of the scope store no facets. Revisions and checkpoints stay.
+pub fn untrack(
+    storage: &Storage,
+    select: &Select,
+    source: Option<&str>,
+    scope: &str,
+) -> Result<Json> {
+    let (id, rows, _) = set_tracking(storage, select, source, scope, false)?;
+    Ok(json!({"workspaceId": id, "tracking": rows}))
+}
+
+/// Sets tracking of `scope` on or off for each chosen source in one transaction, bumping a
+/// row's epoch on every change so work begun under the old state can tell. Turning it on
+/// needs the scope published; returns whether any row became `baseline_pending`.
+fn set_tracking(
+    storage: &Storage,
+    select: &Select,
+    source: Option<&str>,
+    scope: &str,
+    on: bool,
+) -> Result<(String, Json, bool)> {
+    let (_, mut ws) = opened(storage, select, true)?;
+    let sources = chosen(storage, &ws, source)?;
+    let tx = ws
+        .conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(sql)?;
+    let (mut rows, mut started) = (Vec::new(), false);
+    for source_id in &sources {
+        let published: bool = tx
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM published WHERE source_id = ?1 AND scope = ?2)",
+                [source_id, scope],
+                |r| r.get(0),
+            )
+            .map_err(sql)?;
+        if on && !published {
+            return Err(FigError::new(
+                ErrorKind::InvalidArguments,
+                format!("source {source_id} has no published scope {scope} to track; index it first"),
+            )
+            .with_recovery(json!([{"action": "refresh", "requires": "none", "tool": "index",
+                "arguments": {"action": "refresh", "workspaceId": ws.held.id, "sourceId": source_id, "scope": scope}}]))
+            .into());
+        }
+        let state: Option<String> = tx
+            .query_row(
+                "SELECT state FROM tracking WHERE source_id = ?1 AND scope = ?2",
+                [source_id, scope],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(sql)?;
+        let tracked = state.as_deref().is_some_and(|s| s != "disabled");
+        if on && !tracked {
+            tx.execute(
+                "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
+                 VALUES (?1, ?2, 'baseline_pending', 1, ?3, ?4)
+                 ON CONFLICT (source_id, scope) DO UPDATE SET state = 'baseline_pending',
+                 epoch = epoch + 1, facet_version = ?3, enabled_ms = ?4, baseline_gen = NULL",
+                params![source_id, scope, search::diff::facet_version(), now_ms()],
+            )
+            .map_err(sql)?;
+            started = true;
+        } else if !on && tracked {
+            tx.execute(
+                "UPDATE tracking SET state = 'disabled', epoch = epoch + 1
+                 WHERE source_id = ?1 AND scope = ?2",
+                [source_id, scope],
+            )
+            .map_err(sql)?;
+        }
+        let row: Option<(String, i64)> = tx
+            .query_row(
+                "SELECT state, epoch FROM tracking WHERE source_id = ?1 AND scope = ?2",
+                [source_id, scope],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(sql)?;
+        let (state, epoch) = row.unwrap_or(("untracked".into(), 0));
+        rows.push(json!({"sourceId": source_id, "scope": scope, "state": state, "epoch": epoch}));
+    }
+    tx.commit().map_err(sql)?;
+    Ok((ws.held.id.clone(), Json::Array(rows), started))
+}
+
 /// `index clear_cache`: deletes only what a build can recreate and nothing serves: retired
 /// generations and unpublished ones no live job is writing, plus snapshots none names. The
 /// registry, published indexes, jobs and the location stay. figlens writes no cache files yet;
