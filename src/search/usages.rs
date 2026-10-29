@@ -258,7 +258,9 @@ pub(crate) fn extract(
         // Interactions a component defines are not verified to apply to its instances.
         let inherited = p["basis"] == "component-definition";
         // Actions past the reader's caps are not read, so their targets are not verified absent.
-        if p["truncated"] == true {
+        // Actions whose precedence over a swapped definition is unverified stay, but so does
+        // that uncertainty.
+        if p["truncated"] == true || p["precedenceState"] == "unsupported" {
             *unverified += 1;
         }
         let interactions = p["interactions"].as_array().into_iter().flatten();
@@ -333,21 +335,51 @@ fn effective(
         .chain(["textData", "vectorData"].iter())
     {
         let own = e.and_then(|e| e.props.get(*key));
-        if own.is_some_and(|v| !linked_json(v)) {
+        let value = match (own, node.and_then(|n| n.get(key))) {
+            (Some(_), _) | (None, None) => None,
+            // Only the per-range / per-region style table of text and vectors is read.
+            (None, Some(v)) if STYLED.contains(key) => match v.get("styleOverrideTable") {
+                Some(t) => Some(t),
+                None => continue,
+            },
+            (None, Some(v)) => Some(v),
+        };
+        // The prefilter's visits are charged whether or not it finds a link, never past the
+        // remaining work, and only after the deadline is checked.
+        if own.is_none() && value.is_none() {
             continue;
         }
+        if !bounds.charge(0, 0) {
+            return None;
+        }
+        let cap = VISITS.min(bounds.work);
+        let mut scan = cap;
+        let link = match (own, value) {
+            (Some(v), _) => linked_json(v, &mut scan),
+            (None, Some(v)) => linked(v, &mut scan),
+            (None, None) => continue,
+        };
+        if !bounds.charge(cap - scan, 0) {
+            return None;
+        }
+        match link {
+            Some(true) => {}
+            Some(false) => continue,
+            None if cap < VISITS => {
+                bounds.stop = Some(crate::expand::Stop::Work);
+                return None;
+            }
+            // A field too large to scan is left out and counted, like one too large to read.
+            None => {
+                *unread += 1;
+                continue;
+            }
+        }
         let mut left = VISITS;
-        let (bytes, value) = match own {
-            Some(v) => (json_bytes(v, &mut left), None),
-            None => match node.and_then(|n| n.get(key)) {
-                // Only the per-range / per-region style table of text and vectors is read.
-                Some(v) if STYLED.contains(key) => match v.get("styleOverrideTable") {
-                    Some(t) if linked(t) => (kiwi_bytes(t, &mut left), Some(t)),
-                    _ => continue,
-                },
-                Some(v) if linked(v) => (kiwi_bytes(v, &mut left), Some(v)),
-                _ => continue,
-            },
+        let bytes = match (own, value) {
+            (Some(v), _) => json_bytes(v, &mut left),
+            (None, Some(v)) => kiwi_bytes(v, &mut left),
+            (None, None) => continue,
         };
         // One field past the per-value cap is left out and counted, not the rest of the index.
         if left == 0 {
@@ -373,39 +405,64 @@ fn effective(
 
 /// Whether a stored field can yield an edge: a paint list (or text style table) with a bound
 /// color, gradient stop or image; any other field is kept whole. Skips converting the plain
-/// paints most layers carry.
-fn linked(v: &kiwi_schema::Value) -> bool {
+/// paints most layers carry. Each paint and stop takes one of `left` visits; `None` when they
+/// run out first.
+fn linked(v: &kiwi_schema::Value, left: &mut usize) -> Option<bool> {
     use kiwi_schema::Value;
     // Plain paints carry an unbound colorVar too; only an alias names a variable.
     fn alias(c: &Value) -> bool {
         matches!(c.get("dataType"), Some(Value::Enum(_, "ALIAS")))
     }
-    fn paint(p: &Value) -> bool {
-        p.get("colorVar").is_some_and(alias)
-            || matches!(p.get("stopsVar"), Some(Value::Array(s)) if s.iter().any(|s| s.get("colorVar").is_some_and(alias)))
+    let Value::Array(items) = v else {
+        return Some(true);
+    };
+    for p in items {
+        *left = left.checked_sub(1)?;
+        if p.get("colorVar").is_some_and(alias)
             || matches!(p.get("type"), Some(Value::Enum(_, "IMAGE")))
-            || p.get("fillPaints").is_some_and(linked)
+        {
+            return Some(true);
+        }
+        if let Some(Value::Array(stops)) = p.get("stopsVar") {
+            for stop in stops {
+                *left = left.checked_sub(1)?;
+                if stop.get("colorVar").is_some_and(alias) {
+                    return Some(true);
+                }
+            }
+        }
+        if let Some(f) = p.get("fillPaints")
+            && linked(f, left)?
+        {
+            return Some(true);
+        }
     }
-    match v {
-        Value::Array(items) => items.iter().any(paint),
-        _ => true,
-    }
+    Some(false)
 }
 
 /// `linked` for an override already in JSON.
-fn linked_json(v: &Json) -> bool {
-    fn paint(p: &Json) -> bool {
-        p["colorVar"]["dataType"] == "ALIAS"
-            || p["stopsVar"]
-                .as_array()
-                .is_some_and(|s| s.iter().any(|s| s["colorVar"]["dataType"] == "ALIAS"))
-            || p["type"] == "IMAGE"
-            || p.get("fillPaints").is_some_and(linked_json)
+fn linked_json(v: &Json, left: &mut usize) -> Option<bool> {
+    let Json::Array(items) = v else {
+        return Some(true);
+    };
+    for p in items {
+        *left = left.checked_sub(1)?;
+        if p["colorVar"]["dataType"] == "ALIAS" || p["type"] == "IMAGE" {
+            return Some(true);
+        }
+        for stop in p["stopsVar"].as_array().into_iter().flatten() {
+            *left = left.checked_sub(1)?;
+            if stop["colorVar"]["dataType"] == "ALIAS" {
+                return Some(true);
+            }
+        }
+        if let Some(f) = p.get("fillPaints")
+            && linked_json(f, left)?
+        {
+            return Some(true);
+        }
     }
-    match v {
-        Json::Array(items) => items.iter().any(paint),
-        _ => true,
-    }
+    Some(false)
 }
 
 /// What the index knows about each node or variable its edges point at, and about every
@@ -556,11 +613,11 @@ fn invalid(message: impl Into<String>) -> Box<dyn Error> {
 impl Request {
     /// Checks ids, relations, limit and cursor syntax; cheap, so callers run it before I/O.
     pub fn validate(&self) -> Result<Prepared> {
+        // Any id an index can store, the deepest expanded sublayer included.
+        let max = super::store::ID_BYTES;
         for (what, v) in [("node", &self.target), ("scope", &self.scope)] {
-            if v.is_empty() || v.len() > MAX_ID_BYTES {
-                return Err(invalid(format!(
-                    "usages {what} takes 1 to {MAX_ID_BYTES} bytes"
-                )));
+            if v.is_empty() || v.len() > max {
+                return Err(invalid(format!("usages {what} takes 1 to {max} bytes")));
             }
         }
         let resource = ["VariableID:", "StyleKey:", "image:"]

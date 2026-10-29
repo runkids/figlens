@@ -840,3 +840,182 @@ fn definitions_stop_on_spent_bounds_before_scanning_records() {
         (true, Some(crate::expand::Stop::Deadline))
     );
 }
+
+#[test]
+fn a_deep_nested_instance_id_from_search_is_a_valid_usages_target() {
+    // 120 nested components, each holding an instance of the next: the innermost expanded id
+    // is far past 1 KiB, yet within what an index stores.
+    let base = 1_000_000;
+    let depth = 120;
+    let mut nodes = vec![
+        node(0, None, "DOCUMENT", "Document", vec![]),
+        node(1, Some(0), "CANVAS", "Page", vec![]),
+        instance(5, 1, "Top", base, vec![]),
+    ];
+    for k in 0..=depth {
+        let symbol = base + 2 * k;
+        nodes.push(node(symbol, Some(1), "SYMBOL", "Level", vec![]));
+        if k < depth {
+            let name = if k + 1 == depth { "Deepest" } else { "Step" };
+            nodes.push(instance(symbol + 1, symbol, name, symbol + 2, vec![]));
+        }
+    }
+    let message = obj(vec![("nodeChanges", K::Array(nodes))]);
+    let index = build(&Tree::new(&message), "0:0", bounds(WORK));
+    let found = crate::search::search_index(
+        &index,
+        &crate::search::Request {
+            query: "Deepest".into(),
+            scope: "0:0".into(),
+            types: Vec::new(),
+            include_hidden: false,
+            include_internal: false,
+            limit: 50,
+            cursor: None,
+        },
+        source(),
+    )
+    .unwrap();
+    let id = found["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["ref"]["nodeId"].as_str())
+        .max_by_key(|id| id.len())
+        .unwrap()
+        .to_owned();
+    assert!(
+        id.len() > 1024 && id.len() <= crate::search::store::ID_BYTES,
+        "{}",
+        id.len()
+    );
+    let mut r = req(&id);
+    r.outgoing = true;
+    r.relations = vec!["instance_of".into()];
+    let out = run(&index, &r).unwrap();
+    let main = format!("0:{}", base + 2 * depth);
+    assert_eq!(out["results"][0]["target"]["ref"]["nodeId"], json!(main));
+    r.target = "k".repeat(crate::search::store::ID_BYTES + 1);
+    assert!(r.validate().is_err());
+}
+
+#[test]
+fn a_paint_scan_is_charged_even_when_nothing_links() {
+    // 600 plain gradient paints with stops: no alias, no image, so no edge.
+    let plain = K::Array(
+        (0..600)
+            .map(|_| {
+                obj(vec![
+                    ("type", K::Enum("PaintType", "GRADIENT_LINEAR")),
+                    ("stopsVar", K::Array(vec![obj(vec![]), obj(vec![])])),
+                ])
+            })
+            .collect(),
+    );
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(
+                2,
+                Some(1),
+                "RECTANGLE",
+                "Plain",
+                vec![("fillPaints", plain)],
+            ),
+        ]),
+    )]);
+    let tree = Tree::new(&message);
+    let (mut unverified, mut unread) = (0, 0);
+    let mut roomy = bounds(WORK);
+    let before = roomy.work;
+    let edges = extract(
+        &tree,
+        "0:2",
+        "RECTANGLE",
+        None,
+        &mut roomy,
+        &mut unverified,
+        &mut unread,
+    );
+    // 600 paints and 1,200 stops were visited and paid for although nothing linked.
+    assert_eq!(
+        (edges.map(|e| e.len()), before - roomy.work >= 1800),
+        (Some(0), true)
+    );
+    let mut tight = bounds(100);
+    assert_eq!(
+        (
+            extract(
+                &tree,
+                "0:2",
+                "RECTANGLE",
+                None,
+                &mut tight,
+                &mut unverified,
+                &mut unread
+            )
+            .is_none(),
+            tight.stop
+        ),
+        (true, Some(crate::expand::Stop::Work))
+    );
+    let mut late = bounds(WORK);
+    late.deadline = std::time::Instant::now();
+    assert!(
+        extract(
+            &tree,
+            "0:2",
+            "RECTANGLE",
+            None,
+            &mut late,
+            &mut unverified,
+            &mut unread
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn a_swapped_instance_s_own_prototype_links_are_partial() {
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(2, Some(1), "FRAME", "Target", vec![]),
+            node(10, Some(1), "SYMBOL", "Card", vec![]),
+            // A nested instance with its own link, swapped by the outer instance to 0:30.
+            instance(12, 10, "Slot", 20, vec![click_to(2)]),
+            node(20, Some(1), "SYMBOL", "Original", vec![]),
+            node(30, Some(1), "SYMBOL", "Replacement", vec![]),
+            instance(
+                40,
+                1,
+                "Use",
+                10,
+                vec![(
+                    "symbolOverrides",
+                    K::Array(vec![obj(vec![
+                        path(&[12]),
+                        ("overriddenSymbolID", guid(30)),
+                    ])]),
+                )],
+            ),
+        ]),
+    )]);
+    let index = build(&Tree::new(&message), "0:0", bounds(WORK));
+    let mut r = req("I0:40;0:12");
+    r.outgoing = true;
+    r.relations = vec!["prototype_target".into()];
+    let out = run(&index, &r).unwrap();
+    // The link stays, with its evidence; that it applies over the swap is not claimed.
+    assert_eq!(
+        (
+            &out["results"][0]["target"]["ref"]["nodeId"],
+            &out["coverage"]["layers"]["relations"]["kinds"]["prototype_target"]
+        ),
+        (&json!("0:2"), &json!("partial"))
+    );
+}
