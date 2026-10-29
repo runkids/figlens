@@ -859,10 +859,21 @@ impl Expander<'_, '_> {
                         .map(|v| json_bytes(v, left))
                         .sum()
                 };
-                if self
-                    .spend_estimated(1, 200 + outer.len() + pk.len() + name.len(), estimate)
-                    .is_none()
-                {
+                // Kept per node: the `I{outer};{pk}` id twice (child list and node key), the
+                // name, the source and prototype source ids, and the parent's child-list key.
+                let source = o.swap.as_ref().filter(|s| tree.nodes.contains_key(*s));
+                let prototype = o.prototype_source.as_ref().map(|s| &s.node_id);
+                let parent_key = if self.out.children.contains_key(parent) {
+                    0
+                } else {
+                    parent.len()
+                };
+                let kept = 2 * (outer.len() + pk.len() + 2)
+                    + name.len()
+                    + source.unwrap_or(child_id).len()
+                    + prototype.unwrap_or(child_id).len()
+                    + parent_key;
+                if self.spend_estimated(1, 200 + kept, estimate).is_none() {
                     return;
                 }
             }
@@ -1637,6 +1648,28 @@ mod tests {
         assert_eq!((bounds.stop, ex.nodes.len()), (Some(Stop::Bytes), 1));
         assert_eq!(
             under_long_key(&nested, &extra, vec![wide.clone()], 16 << 20)
+                .1
+                .stop,
+            None
+        );
+    }
+
+    #[test]
+    fn a_bounded_expansion_charges_every_string_an_expanded_node_keeps() {
+        // 1,000 layers with 1 kB ids under a 2 kB key: each keeps its ~3 kB id twice plus its source.
+        let nested = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            ("symbolData", obj(vec![("symbolID", guid(2, 2))])),
+        ]);
+        let layer = obj(vec![("type", Value::Enum("NodeType", "FRAME"))]);
+        let kids: Vec<String> = (0..1000)
+            .map(|i| format!("k{i}{}", "x".repeat(1000)))
+            .collect();
+        let extra: Vec<(&str, &Value)> = kids.iter().map(|k| (k.as_str(), &layer)).collect();
+        let (_, bounds) = under_long_key(&nested, &extra, kids.clone(), 6_000_000);
+        assert_eq!(bounds.stop, Some(Stop::Bytes));
+        assert_eq!(
+            under_long_key(&nested, &extra, kids.clone(), 16 << 20)
                 .1
                 .stop,
             None

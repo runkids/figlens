@@ -182,7 +182,7 @@ for line in sys.stdin:
 
     def test_mcp_audit_cli_uses_bounded_runner(self):
         guide = '# Audit an existing UI\nStatic review is not visual acceptance'
-        tools = [{'name': name} for name in ['find', 'nodes', 'bundle', 'export']]
+        tools = [{'name': name} for name in ['find', 'search', 'nodes', 'bundle', 'export']]
         tools.extend([
             {'name': 'inspect', 'inputSchema': {'properties': {'depth': {'maximum': 10}}}},
             {'name': 'workflow', 'inputSchema': {'properties': {'topic': {'enum': ['audit']}}}},
@@ -192,6 +192,9 @@ for line in sys.stdin:
             None,
             {'tools': tools},
             {'isError': False, 'structuredContent': {'results': [{'id': '0:1'}]}},
+            {'isError': False, 'structuredContent': {
+                'results': [{'ref': {'nodeId': '0:1'}}], 'coverage': {'complete': True}}},
+            {'isError': False, 'structuredContent': {'node': {'id': '0:1'}}},
             {'isError': True, '_meta': {'figlens': {'code': 'node_not_found'}}},
             {'isError': True, '_meta': {'figlens': {'code': 'invalid_arguments'}}},
             {'isError': True, '_meta': {'figlens': {'code': 'invalid_arguments'}}},
