@@ -141,8 +141,8 @@ def check_first_use(command, base, fixture, env):
     storage failures. `base` is a fresh directory holding every root and design copy."""
     base.mkdir()
     env = user_roots(base, env)
-    # Windows keeps figlens state under %LOCALAPPDATA%, not XDG.
-    state = base/'local/figlens/state' if os.name == 'nt' else base/'state/figlens'
+    # An absolute XDG_STATE_HOME takes precedence over %LOCALAPPDATA%, also on Windows.
+    state = base/'state/figlens'
     design, other = base/'design.fig', base/'other.fig'
     for path in (design, other, base/'frame.fig'):
         shutil.copy2(fixture, path)
