@@ -296,3 +296,57 @@ fn a_field_too_large_to_read_is_unread_never_unchanged() {
     );
     let _ = guid(0);
 }
+
+#[test]
+fn a_giant_field_is_unread_and_an_escaped_one_is_digested_without_keeping_its_value() {
+    let one = |s: &str| doc(vec![node(10, Some(1), "TEXT", "T", vec![text(s)])]);
+    // Past the conversion cap: never converted, listed as unread, not taken for unchanged.
+    let giant = "x".repeat(FIELD_BYTES + 1);
+    let out = run(one(&giant), one(&giant));
+    let n = &out["frames"][0]["nodes"][0];
+    assert_eq!((&n["unread"], &n["facets"]), (&json!(true), &json!([])));
+    // Control characters escape to six bytes each; the stream is hashed, the value dropped.
+    let escaped = "\u{1}".repeat(FIELD_BYTES / 8);
+    let out = run(one(&escaped), one(&format!("{escaped}\u{2}")));
+    let n = &out["frames"][0]["nodes"][0];
+    assert_eq!((&n["facets"], n.get("unread")), (&json!(["text"]), None));
+}
+
+#[test]
+fn content_a_now_hidden_instance_leaves_unexpanded_is_unknown_not_removed() {
+    let hidden = doc(vec![
+        node(30, Some(1), "SYMBOL", "A", vec![]),
+        node(31, Some(30), "RECTANGLE", "Bg", vec![fill(1.0)]),
+        node(40, Some(1), "SYMBOL", "B", vec![]),
+        node(41, Some(40), "RECTANGLE", "Bg", vec![fill(1.0)]),
+        node(10, Some(1), "FRAME", "Home", vec![]),
+        instance(11, 10, "Use", 30, vec![("visible", K::Bool(false))]),
+    ]);
+    let changes = nodes(&run(with_instance(30, vec![]), hidden));
+    assert!(
+        changes.contains(&("I0:11;0:31".into(), "unknown".into())),
+        "{changes:?}"
+    );
+    assert!(!changes.iter().any(|(_, c)| c == "removed"), "{changes:?}");
+}
+
+#[test]
+fn a_selection_on_one_side_only_lists_its_children_for_drilling_in() {
+    let (a, b) = (doc(screen("Hi", 1.0, 100.0)), doc(vec![]));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let out = page(
+        &compare_trees(&a, &b, [WORK, WORK], "0:10"),
+        &Request {
+            node: "0:10".into(),
+            limit: LIMIT,
+            cursor: None,
+        },
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        nodes(&out),
+        ["0:10", "0:11", "0:12", "0:13"].map(|id| (id.to_owned(), "removed".to_owned()))
+    );
+    assert_eq!(out["coverage"]["new"]["selected"], false);
+}

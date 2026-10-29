@@ -1653,3 +1653,65 @@ fn a_text_only_search_cache_upgrades_once_for_usages_and_keeps_search_cursors() 
     );
     drop(mcp);
 }
+
+#[path = "../scripts/make-corpus.rs"]
+#[allow(dead_code)]
+mod corpus;
+
+#[test]
+fn diff_of_two_revisions_pages_the_same_changes_over_the_cli_and_mcp() {
+    let env = Env::new();
+    let [old, new] = [("old.fig", false), ("new.fig", true)].map(|(name, revised)| {
+        let path = env.dir.join(name);
+        corpus::write(path.as_os_str(), revised).unwrap();
+        std::fs::canonicalize(path).unwrap()
+    });
+    let (old, new) = (old.to_str().unwrap(), new.to_str().unwrap());
+    let cli = env.json(&["diff", old, new, "--json"]);
+    let changes = |reply: &Value| {
+        let mut all: Vec<(String, String)> = reply["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|f| f["nodes"].as_array().unwrap())
+            .map(|n| {
+                (
+                    n["id"].as_str().unwrap().into(),
+                    n["change"].as_str().unwrap().into(),
+                )
+            })
+            .collect();
+        all.sort();
+        all
+    };
+    assert_eq!(
+        changes(&cli),
+        [
+            ("0:1", "changed"),
+            ("0:11", "changed"),
+            ("0:13", "removed"),
+            ("0:14", "added")
+        ]
+        .map(|(id, c)| (id.to_owned(), c.to_owned()))
+    );
+    assert_eq!(cli["coverage"]["complete"], true);
+    // One change per MCP page: the cached pair pages through the same list.
+    let mut mcp = Mcp::start(&env, &[]);
+    let (mut paged, mut cursor) = (Vec::new(), Value::Null);
+    loop {
+        let mut args = json!({"old": old, "file": new, "limit": 1});
+        if !cursor.is_null() {
+            args["cursor"] = cursor.clone();
+        }
+        let reply = mcp.call("diff", args)["structuredContent"].clone();
+        paged.extend(changes(&reply));
+        cursor = reply["nextCursor"].clone();
+        if cursor.is_null() {
+            break;
+        }
+    }
+    paged.sort();
+    assert_eq!(paged, changes(&cli));
+    // Stateless, like search: no database.
+    assert!(!env.home.join(".local/state/figlens").exists());
+}

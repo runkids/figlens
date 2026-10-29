@@ -15,8 +15,8 @@ use serde_json::{Map, Value as Json, json};
 use sha2::{Digest, Sha256};
 
 use super::{
-    BYTES, DEADLINE, DEPTH, Index, REHASH, Stamp, WORK, build_with, hex, require_scope,
-    snapshot_id, source_id, stage, stamp,
+    BYTES, DEADLINE, DEPTH, Index, REHASH, Stamp, WORK, build_with, hex, missing_scope,
+    require_scope, snapshot_id, source_id, stage, stamp,
 };
 use crate::expand::{Bounds, Expanded, json_bytes, kiwi_bytes};
 use crate::{Document, ErrorKind, FigError, Tree, to_json};
@@ -96,6 +96,8 @@ const VISITS: usize = 1 << 16;
 /// truncated; its digest still decides whether it changed.
 const FIELD_VALUE: usize = 512;
 const RECORD_VALUES: usize = 4 * 1024;
+/// Largest estimated field converted and digested; a larger one is `unread`.
+const FIELD_BYTES: usize = 64 * 1024;
 /// Changes and candidate probes one pair may hold or spend, charged before they are kept.
 const PAIR_WORK: usize = 2_000_000;
 const PAIR_BYTES: usize = 64 * 1024 * 1024;
@@ -119,6 +121,24 @@ pub(crate) struct Field {
 /// A record's effective fields in `FIELDS` order; absent fields are not listed.
 pub(crate) struct Facets {
     fields: Vec<Field>,
+}
+
+/// Hashes what is written and counts it, keeping nothing.
+struct Digesting {
+    hash: Sha256,
+    len: usize,
+}
+
+impl std::io::Write for Digesting {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.hash.update(buf);
+        self.len += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// The effective value of `key` for record `id`: its override, else the stored field.
@@ -164,15 +184,17 @@ pub(super) fn facets(
                 return None;
             }
             let mut left = VISITS;
-            match &value {
+            let estimate = match &value {
                 Value::Json(v) => json_bytes(v, &mut left),
                 Value::Owned(v) => json_bytes(v, &mut left),
                 Value::Kiwi(v) => kiwi_bytes(v, &mut left),
             };
-            if !bounds.charge(VISITS - left, 0) {
+            // Converting and hashing is paid for before it happens: a visit per 64 bytes.
+            let unread = left == 0 || estimate > FIELD_BYTES;
+            if !bounds.charge(VISITS - left + if unread { 0 } else { estimate / 64 }, 0) {
                 return None;
             }
-            if left == 0 {
+            if unread {
                 fields.push(Field {
                     key,
                     facet: facet as u8,
@@ -181,30 +203,38 @@ pub(super) fn facets(
                 });
                 continue;
             }
-            let json = match value {
-                Value::Json(v) => v.clone(),
+            let owned;
+            let json = match &value {
+                Value::Json(v) => *v,
                 Value::Owned(v) => v,
-                Value::Kiwi(v) => to_json(v),
+                Value::Kiwi(v) => {
+                    owned = to_json(v);
+                    &owned
+                }
             };
-            let bytes = serde_json::to_vec(&json).ok()?;
-            let mut h = Sha256::new();
-            h.update(key.as_bytes());
-            h.update([0]);
-            h.update((bytes.len() as u64).to_le_bytes());
-            h.update(&bytes);
-            let fits = bytes.len() <= FIELD_VALUE && kept + bytes.len() <= RECORD_VALUES;
-            // The converted copy is transient; only the digest and a fitting value are kept.
-            if !bounds.charge(1, 64 + key.len() + if fits { bytes.len() } else { 0 }) {
+            // Streamed into the digest; only the first `FIELD_VALUE` bytes are ever buffered.
+            let mut w = Digesting {
+                hash: Sha256::new(),
+                len: 0,
+            };
+            w.hash.update(VERSION.as_bytes());
+            w.hash.update(key.as_bytes());
+            w.hash.update([0]);
+            serde_json::to_writer(&mut w, json).ok()?;
+            w.hash.update((w.len as u64).to_le_bytes());
+            let fits = w.len <= FIELD_VALUE && kept + w.len <= RECORD_VALUES;
+            // Escaping can make the stream longer than the estimate; that work is charged too.
+            if !bounds.charge(w.len / 64, 64 + key.len() + if fits { w.len } else { 0 }) {
                 return None;
             }
             if fits {
-                kept += bytes.len();
+                kept += w.len;
             }
             fields.push(Field {
                 key,
                 facet: facet as u8,
-                digest: Some(h.finalize().into()),
-                value: fits.then_some(json),
+                digest: Some(w.hash.finalize().into()),
+                value: fits.then(|| json.clone()),
             });
         }
     }
@@ -220,6 +250,8 @@ struct Side {
     signature: String,
     path: PathBuf,
     stamp: Stamp,
+    /// Whether the selected node exists on this side; a side without it is complete and empty.
+    present: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -349,6 +381,9 @@ pub fn diff(old: &Path, new: &Path, req: &Request) -> Result<Json, Box<dyn Error
             let deadline = Instant::now() + DEADLINE;
             let old = side(&paths[0], old, &req.node, deadline)?;
             let new = side(&paths[1], new, &req.node, deadline)?;
+            if !old.present && !new.present {
+                return Err(missing_scope(&req.node));
+            }
             let pair = Arc::new(compare(old, new, &req.node));
             let stopped = |s: &Side| s.index.stop == Some("deadline");
             if !stopped(&pair.old)
@@ -376,7 +411,11 @@ fn side(
     drop(bytes);
     let message = doc.take_message()?;
     let tree = Tree::new(&message);
-    require_scope(&tree, node)?;
+    // Instance sublayers are never scopes; a stored node missing here only empties this side.
+    let present = tree.nodes.contains_key(node);
+    if node.starts_with('I') {
+        require_scope(&tree, node)?;
+    }
     let bounds = Bounds {
         work: WORK,
         bytes: BYTES,
@@ -385,7 +424,10 @@ fn side(
         stop: None,
     };
     let mut facets = Vec::new();
-    let index = build_with(&tree, node, bounds, true, Some(&mut facets));
+    let index = match present {
+        true => build_with(&tree, node, bounds, true, Some(&mut facets)),
+        false => Index::empty(),
+    };
     if stamp(canonical)? != staged {
         return Err(FigError::new(
             ErrorKind::SourceUnreadable,
@@ -400,6 +442,7 @@ fn side(
         facets,
         path: canonical.to_owned(),
         stamp: staged,
+        present,
     })
 }
 
@@ -443,44 +486,77 @@ fn by_id(s: &Side) -> HashMap<&str, usize> {
         .collect()
 }
 
-fn edge_keys(s: &Side, r: usize) -> Vec<(&str, Option<&str>, &str, &str)> {
-    s.index.records[r]
-        .edges
-        .iter()
-        .map(|e| {
-            (
-                e.relation,
-                e.target.as_deref(),
-                e.state,
-                e.evidence.as_str(),
-            )
-        })
-        .collect()
+fn edge_keys(s: &Side, r: usize) -> impl Iterator<Item = (&str, Option<&str>, &str, &str)> {
+    s.index.records[r].edges.iter().map(|e| {
+        (
+            e.relation,
+            e.target.as_deref(),
+            e.state,
+            e.evidence.as_str(),
+        )
+    })
+}
+
+/// Whether layer `rid` of `from`, missing on `side`, may be content `side` left unexpanded
+/// below a hidden layer rather than a deletion. Out of budget counts as may.
+fn unexpanded(
+    side: &Side,
+    ids: &HashMap<&str, usize>,
+    from: &Side,
+    rid: usize,
+    budget: &mut Bounds,
+) -> bool {
+    if side.index.hidden_content == 0 {
+        return false;
+    }
+    // The nearest ancestor present on `side`, then whether it or one above it is hidden there.
+    let mut up = from.index.records[rid].parent;
+    let mut at = loop {
+        let Some(p) = up else { return false };
+        if !budget.charge(1, 0) {
+            return true;
+        }
+        let r = &from.index.records[p as usize];
+        if let Some(&i) = ids.get(r.id.as_str()) {
+            break Some(i as u32);
+        }
+        up = r.parent;
+    };
+    while let Some(i) = at {
+        if !budget.charge(1, 0) {
+            return true;
+        }
+        let r = &side.index.records[i as usize];
+        if r.hidden {
+            return true;
+        }
+        at = r.parent;
+    }
+    false
+}
+
+fn in_facet(f: &[Field], facet: u8) -> impl Iterator<Item = (&str, Option<[u8; 32]>)> {
+    f.iter()
+        .filter(move |x| x.facet == facet)
+        .map(|x| (x.key, x.digest))
 }
 
 /// The facet bits on which two records of the same id and kind differ.
 fn differs(old: &Side, o: usize, oo: &[u32], new: &Side, n: usize, no: &[u32]) -> u8 {
     let mut bits = 0;
     let (a, b) = (&old.facets[o].fields, &new.facets[n].fields);
+    if a.iter().chain(b).any(|x| x.digest.is_none()) {
+        bits |= UNREAD;
+    }
     for facet in 0..FIELDS.len() as u8 {
-        let pick = |f: &[Field]| {
-            f.iter()
-                .filter(|x| x.facet == facet)
-                .map(|x| (x.key, x.digest))
-                .collect::<Vec<_>>()
-        };
-        let (x, y) = (pick(a), pick(b));
-        if x.iter().chain(&y).any(|(_, d)| d.is_none()) {
-            bits |= UNREAD;
-        }
-        if x != y {
+        if !in_facet(a, facet).eq(in_facet(b, facet)) {
             bits |= 1 << facet;
         }
     }
     if structure(&old.index, o, oo) != structure(&new.index, n, no) {
         bits |= 1 << 4;
     }
-    if edge_keys(old, o) != edge_keys(new, n) {
+    if !edge_keys(old, o).eq(edge_keys(new, n)) {
         bits |= EDGES;
     }
     bits
@@ -576,10 +652,30 @@ fn compare(old: Side, new: Side, node: &str) -> Pair {
         at: HashMap::new(),
         changes: Vec::new(),
     };
+    // Sibling orders and id maps of both sides are paid for before they are built.
+    let records = old.index.records.len() + new.index.records.len();
+    if !c.budget.charge(records, records * 48) {
+        return Pair {
+            old,
+            new,
+            node: node.to_owned(),
+            changes: Vec::new(),
+            frames: Vec::new(),
+            possible: 0,
+            stop: Some("diff_work_limit"),
+            hashed: SystemTime::now(),
+        };
+    }
     let (oo, no) = (orders(&old.index), orders(&new.index));
     let (old_ids, new_ids) = (by_id(&old), by_id(&new));
-    // Removed and added subtrees are reported at their top record, counting what lies below.
+    // Removed and added subtrees are reported at their top record, counting what lies below;
+    // the selected node's children are always listed, so a selection drills into a subtree.
     let mut reported: HashMap<(bool, usize), usize> = HashMap::new();
+    let below = |reported: &HashMap<(bool, usize), usize>, new: bool, parent: Option<u32>| {
+        parent
+            .filter(|&p| p != 0)
+            .and_then(|p| reported.get(&(new, p as usize)).copied())
+    };
     let mut full = true;
     for (o, r) in old.index.records.iter().enumerate() {
         let kept = match new_ids.get(r.id.as_str()) {
@@ -592,9 +688,16 @@ fn compare(old: Side, new: Side, node: &str) -> Pair {
                 0,
             ),
             Some(&n) => {
-                let bits = differs(&old, o, &oo, &new, n, &no);
-                c.budget.charge(1, 0)
-                    && (bits & !UNREAD == 0
+                let work = 1
+                    + old.facets[o].fields.len()
+                    + new.facets[n].fields.len()
+                    + r.edges.len()
+                    + new.index.records[n].edges.len();
+                c.budget.charge(work, 0) && {
+                    // A record that differs only where a field was unread is listed, never
+                    // taken for unchanged.
+                    let bits = differs(&old, o, &oo, &new, n, &no);
+                    bits == 0
                         || c.push(
                             &new,
                             &new_ids,
@@ -602,26 +705,31 @@ fn compare(old: Side, new: Side, node: &str) -> Pair {
                             (Some(o as u32), Some(n as u32)),
                             Kind::Changed,
                             bits,
-                        ))
+                        )
+                }
             }
-            None => match r
-                .parent
-                .and_then(|p| reported.get(&(false, p as usize)).copied())
-            {
+            None => match below(&reported, false, r.parent) {
                 Some(top) => {
-                    c.changes[top].descendants += 1;
-                    reported.insert((false, o), top);
-                    true
+                    c.budget.charge(1, 32) && {
+                        c.changes[top].descendants += 1;
+                        reported.insert((false, o), top);
+                        true
+                    }
                 }
                 None => {
-                    let kind = if new.index.stop.is_none() {
+                    let kind = if new.index.stop.is_none()
+                        && !unexpanded(&new, &new_ids, &old, o, &mut c.budget)
+                    {
                         Kind::Removed
                     } else {
                         Kind::Unknown
                     };
-                    let kept = c.push(&old, &old_ids, o, (Some(o as u32), None), kind, 0);
-                    reported.insert((false, o), c.changes.len().saturating_sub(1));
-                    kept
+                    c.push(&old, &old_ids, o, (Some(o as u32), None), kind, 0)
+                        && c.budget.charge(1, 32)
+                        && {
+                            reported.insert((false, o), c.changes.len() - 1);
+                            true
+                        }
                 }
             },
         };
@@ -631,27 +739,41 @@ fn compare(old: Side, new: Side, node: &str) -> Pair {
         }
     }
     for (n, r) in new.index.records.iter().enumerate().filter(|_| full) {
-        if old_ids.contains_key(r.id.as_str()) {
-            continue;
-        }
-        if let Some(top) = r
-            .parent
-            .and_then(|p| reported.get(&(true, p as usize)).copied())
-        {
-            c.changes[top].descendants += 1;
-            reported.insert((true, n), top);
-            continue;
-        }
-        let kind = if old.index.stop.is_none() {
-            Kind::Added
-        } else {
-            Kind::Unknown
-        };
-        if !c.push(&new, &new_ids, n, (None, Some(n as u32)), kind, 0) {
+        if !c.budget.charge(1, 0) {
             full = false;
             break;
         }
-        reported.insert((true, n), c.changes.len() - 1);
+        if old_ids.contains_key(r.id.as_str()) {
+            continue;
+        }
+        let kept = match below(&reported, true, r.parent) {
+            Some(top) => {
+                c.budget.charge(1, 32) && {
+                    c.changes[top].descendants += 1;
+                    reported.insert((true, n), top);
+                    true
+                }
+            }
+            None => {
+                let kind = if old.index.stop.is_none()
+                    && !unexpanded(&old, &old_ids, &new, n, &mut c.budget)
+                {
+                    Kind::Added
+                } else {
+                    Kind::Unknown
+                };
+                c.push(&new, &new_ids, n, (None, Some(n as u32)), kind, 0)
+                    && c.budget.charge(1, 32)
+                    && {
+                        reported.insert((true, n), c.changes.len() - 1);
+                        true
+                    }
+            }
+        };
+        if !kept {
+            full = false;
+            break;
+        }
     }
     let possible = match full {
         true => pair_frames(&old, &new, &old_ids, &new_ids, &mut c.frames, &mut c.budget),
@@ -709,7 +831,7 @@ fn pair_frames(
     let mut by: HashMap<(String, String), Vec<usize>> = HashMap::new();
     for (i, f) in frames.iter().enumerate() {
         if f.change == Some(Kind::Added) {
-            if !budget.charge(2, 128) {
+            if !budget.charge(2, 192 + 2 * (f.page.len() + f.name.len())) {
                 return 0;
             }
             by.entry((f.page.clone(), format!("n:{}", f.name)))
@@ -936,7 +1058,7 @@ fn page(pair: &Pair, req: &Request, reused: bool) -> Result<Json, Box<dyn Error>
             .unwrap()
             .push(node);
     }
-    let coverage = |s: &Side| json!({"stop": s.index.stop, "scannedRecords": s.index.records.len(), "complete": s.index.stop.is_none()});
+    let coverage = |s: &Side| json!({"stop": s.index.stop, "scannedRecords": s.index.records.len(), "complete": s.index.stop.is_none(), "selected": s.present});
     let unread = pair
         .changes
         .iter()
@@ -985,8 +1107,13 @@ fn compare_trees(old: &Tree, new: &Tree, works: [usize; 2], node: &str) -> Pair 
             stop: None,
         };
         let mut facets = Vec::new();
-        let index = build_with(tree, node, bounds, true, Some(&mut facets));
+        let present = tree.nodes.contains_key(node);
+        let index = match present {
+            true => build_with(tree, node, bounds, true, Some(&mut facets)),
+            false => Index::empty(),
+        };
         Side {
+            present,
             signature: format!("{}:{}", index.generation, index.stop.unwrap_or("")),
             source: json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")}),
             index,

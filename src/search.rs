@@ -493,6 +493,29 @@ pub struct Index {
 }
 
 impl Index {
+    /// A complete index of no records.
+    fn empty() -> Index {
+        Index {
+            records: Vec::new(),
+            rids: Vec::new(),
+            total: 0,
+            terms: BTreeMap::new(),
+            pages: Vec::new(),
+            roots: Vec::new(),
+            above: Vec::new(),
+            lens: [0; 2],
+            stop: None,
+            hidden_content: 0,
+            unverified_links: 0,
+            unread_fields: 0,
+            text_bytes: 0,
+            generation: String::new(),
+            relations: false,
+            definitions: BTreeMap::new(),
+            reverse: Default::default(),
+        }
+    }
+
     /// Record `rid`, which a partial index must have loaded.
     fn record(&self, rid: u32) -> &Record {
         if self.rids.is_empty() {
@@ -598,25 +621,7 @@ fn build_with(
     let expansion = bounds.stop.take_if(|stop| *stop != Stop::Deadline);
     bounds.work += reserve.0;
     bounds.bytes += reserve.1;
-    let mut index = Index {
-        records: Vec::new(),
-        rids: Vec::new(),
-        total: 0,
-        terms: BTreeMap::new(),
-        pages: Vec::new(),
-        roots: Vec::new(),
-        above: Vec::new(),
-        lens: [0; 2],
-        stop: None,
-        hidden_content: 0,
-        unverified_links: 0,
-        unread_fields: 0,
-        text_bytes: 0,
-        generation: String::new(),
-        relations: false,
-        definitions: BTreeMap::new(),
-        reverse: Default::default(),
-    };
+    let mut index = Index::empty();
     // Stored ancestors give the scope its page, navigation root and inherited visibility.
     let mut chain = Vec::new();
     let mut cur = tree.nodes.get(scope).and_then(|n| parent_of(n));
@@ -1612,17 +1617,24 @@ fn require_scope(tree: &Tree, scope: &str) -> Result<(), Box<dyn Error>> {
     if tree.nodes.contains_key(scope) {
         return Ok(());
     }
-    Err(if scope.starts_with('I') {
-        FigError::new(ErrorKind::UnsupportedNode, format!(
-            "node {scope} is an instance sublayer; search scopes are stored nodes, so search its stored instance or frame and filter the results"
-        ))
+    Err(missing_scope(scope))
+}
+
+fn missing_scope(scope: &str) -> Box<dyn Error> {
+    let e = if scope.starts_with('I') {
+        FigError::new(
+            ErrorKind::UnsupportedNode,
+            format!(
+                "node {scope} is an instance sublayer; search scopes are stored nodes, so search its stored instance or frame and filter the results"
+            ),
+        )
     } else {
         FigError::new(
             ErrorKind::NodeNotFound,
             format!("node {scope} not found; list ids with `figlens tree <file.fig> --depth 2`"),
         )
-    }
-    .into())
+    };
+    e.into()
 }
 
 /// The content identity of staged source bytes.
