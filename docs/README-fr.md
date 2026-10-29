@@ -159,6 +159,7 @@ skillshare sync && skillshare sync mcp --global
 | Commande | Sortie |
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | Ids, types REST (comme `nodes`) et noms des nodes ; texte indenté, ou JSON imbriqué avec la taille de chaque node, son masquage et son mode d'auto layout |
+| `tree <file> [node] --top-frames [--json]` | Uniquement les écrans, un par ligne, prêts pour `--frames -` : frames, composants, ensembles de composants et instances d'une page ou de ses sections (groupes et pages internes ignorés) ; `--json` ajoute les ids de page et de section |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Recherche insensible à la casse dans les noms de calques et le texte ; chemins, tailles et aperçus. 20 résultats par défaut (1-200) |
 | `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | Recherche classée dans les noms de calques et le texte complet, avec overrides d’instance, propriétés texte/booléennes et swaps appliqués ; références exactes de nœuds (y compris les ids de sous-calques `I…;…` pour `inspect`), raisons de correspondance, plages UTF-16, couverture et pages par curseur. 20 par défaut (1-200) ; calques masqués et pages internes exigent leur flag |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | Résumé compact de la mise en page/du texte étendus, 200 nodes au plus. `--images` ajoute les dimensions des bitmaps et les emprises de recadrage |

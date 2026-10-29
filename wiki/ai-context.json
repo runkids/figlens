@@ -46,7 +46,7 @@
       ]
     },
     "bundle": {
-      "description": "Changing the bundle zip, manifest, context.md, batch bundles, font inventory or verify.",
+      "description": "Changing the bundle zip, manifest, context.md, batch bundles and their frame lists (tree --top-frames), font inventory or verify.",
       "sources": [
         {
           "path": "wiki/bundle.md"

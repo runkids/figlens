@@ -48,6 +48,12 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 false,
                 "nested {id,type,name,size,visible,layoutMode,children} JSON instead of indented text (about 1.7x larger); size is the local pre-rotation [width,height] (absent on the document and pages), visible appears only when false and layoutMode only on auto-layout frames",
             ),
+            (
+                "topFrames",
+                "boolean",
+                false,
+                "list only the screens under the root, at any depth: FRAME, COMPONENT, COMPONENT_SET and INSTANCE children of a page or of a section on one (groups, shapes and text are not screens; internal pages are skipped unless they are the root); depth does not apply; text lines start with the id, as nodes/export/bundle frame lists read them; with json, a flat array of entries without children, adding page and, inside a section, section ids",
+            ),
         ],
     ),
     (
@@ -376,7 +382,7 @@ fn default(tool: &str, key: &str) -> Option<Value> {
     match (tool, key) {
         ("tree", "depth") => Some(json!(usize::MAX)),
         ("tree" | "find" | "search", "node") => Some(json!("0:0")),
-        ("tree", "json")
+        ("tree", "json" | "topFrames")
         | ("inspect", "images" | "states")
         | ("bundle", "states")
         | ("search", "includeHidden" | "includeInternal") => Some(json!(false)),

@@ -159,6 +159,7 @@ skillshare sync && skillshare sync mcp --global
 | Comando | Saída |
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | IDs, tipos REST (como em `nodes`) e nomes dos nós; texto indentado, ou JSON aninhado com o tamanho de cada nó, se está oculto e o modo de auto layout |
+| `tree <file> [node] --top-frames [--json]` | Só as telas, uma por linha, prontas para `--frames -`: frames, componentes, conjuntos de componentes e instâncias de uma página ou de suas seções (grupos e páginas internas ignorados); `--json` acrescenta os ids de página e seção |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Busca sem diferenciar maiúsculas em nomes de camadas e textos; caminhos, tamanhos e prévias. Padrão de 20 resultados (1-200) |
 | `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | Busca ranqueada em nomes de camadas e texto completo com overrides de instância, propriedades de texto/booleanas e swaps aplicados; referências exatas de nós (incluindo ids de subcamadas `I…;…` para `inspect`), motivos de correspondência, intervalos UTF-16, cobertura e páginas por cursor. Padrão de 20 (1-200); camadas ocultas e páginas internas exigem sua flag |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | Resumo compacto de layout/texto expandido, no máximo 200 nós. `--images` adiciona dimensões de bitmap e áreas de recorte |

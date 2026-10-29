@@ -21,13 +21,18 @@ mod workflow;
 const USAGE: &str = "figlens — read Figma .fig files (File > Save local copy) without Figma
 
 usage:
-  figlens tree <file.fig> [node] [--depth N] [--json]
+  figlens tree <file.fig> [node] [--depth N] [--json] [--top-frames]
                                              list ids, REST types (as in nodes) and names (default root:
                                              the document);
                                              --json prints them as nested
                                              {id,type,name,size,visible,layoutMode,children}: size is the local
                                              [width,height] (none on the document and pages), visible only when
-                                             false, layoutMode only on auto-layout frames, as in nodes
+                                             false, layoutMode only on auto-layout frames, as in nodes;
+                                             --top-frames lists only the screens, at any depth: frames,
+                                             components, component sets and instances directly on a page or in
+                                             a section on one (internal pages skipped); --depth does not apply;
+                                             each line starts with the id, so it pipes to --frames -; with
+                                             --json, a flat array that adds page and section ids
   figlens find <file.fig> <query> [--type TYPE] [--node ID] [--limit N]
                                              search stored layer names and text, case-insensitive;
                                              default 20 results (1-200), with paths and truncation flag
@@ -115,6 +120,7 @@ JSON goes to stdout, errors to stderr; exit status 1 on any error.
 
 examples:
   figlens tree design.fig --depth 2
+  figlens tree design.fig --top-frames | figlens export design.fig --frames - --out-dir shots
   figlens nodes design.fig 'https://www.figma.com/design/KEY/Name?node-id=12-345' > frame.json";
 
 /// Rendering recurses through the node tree; rayon's 2 MiB default stacks overflow sooner than

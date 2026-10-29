@@ -23,6 +23,7 @@ pub enum Command {
         root: String,
         depth: usize,
         json: bool,
+        top_frames: bool,
     },
     Node(String),
     /// The node, and an MCP reply budget that stops oversized JSON before it is built.
@@ -134,18 +135,26 @@ impl Command {
         let node = || args.first().cloned().ok_or(USAGE);
         Ok(match name {
             "tree" => {
-                let (mut root, mut depth, mut json) = ("0:0".to_owned(), usize::MAX, false);
+                let (mut root, mut depth) = ("0:0".to_owned(), usize::MAX);
+                let (mut json, mut top_frames) = (false, false);
                 let mut rest = args.iter();
                 while let Some(arg) = rest.next() {
                     if arg == "--depth" {
                         depth = rest.next().ok_or("--depth needs a number")?.parse()?;
                     } else if arg == "--json" {
                         json = true;
+                    } else if arg == "--top-frames" {
+                        top_frames = true;
                     } else {
                         root = normalize_id(arg);
                     }
                 }
-                Self::Tree { root, depth, json }
+                Self::Tree {
+                    root,
+                    depth,
+                    json,
+                    top_frames,
+                }
             }
             "node" => Self::Node(node()?),
             "nodes" => Self::Nodes(node()?, None),
@@ -258,6 +267,7 @@ impl Command {
                 root: normalize_id(call.string("node").unwrap()),
                 depth: call.argument("depth").as_u64().unwrap() as usize,
                 json: call.argument("json") == true,
+                top_frames: call.argument("topFrames") == true,
             },
             "nodes" => Self::Nodes(node()?, Some(crate::mcp::MAX_RESPONSE_BYTES)),
             "find" => Self::Find {
@@ -317,7 +327,55 @@ impl Command {
             pretty: false,
         };
         Ok(match self {
-            Self::Tree { root, depth, json } => {
+            Self::Tree {
+                root,
+                top_frames: true,
+                json,
+                ..
+            } => {
+                require_node(tree, &root)?;
+                // A section root still reports its page; the walk only sees pages below it.
+                let parent = |id: &str| {
+                    let mut parents = tree.children.iter();
+                    parents
+                        .find(|(_, c)| c.iter().any(|c| c == id))
+                        .map(|(p, _)| p.as_str())
+                };
+                let mut ancestors = std::iter::successors(Some(root.as_str()), |id| parent(id));
+                let page = ancestors.find(|id| plugin_type(tree.nodes[*id]) == "CANVAS");
+                let section =
+                    (plugin_type(tree.nodes[&root]) == "SECTION").then_some(root.as_str());
+                let mut frames = Vec::new();
+                top_frames(tree, &root, page, section, &mut frames);
+                if json {
+                    compact(Value::Array(
+                        frames
+                            .into_iter()
+                            .map(|(id, page, section)| {
+                                let mut frame = tree_json(tree, id, 0, 0);
+                                if let Some(page) = page {
+                                    frame["page"] = json!(page);
+                                }
+                                if let Some(section) = section {
+                                    frame["section"] = json!(section);
+                                }
+                                frame
+                            })
+                            .collect(),
+                    ))
+                } else {
+                    // The name is JSON-escaped so a newline in it cannot start another id line.
+                    let mut out = String::new();
+                    for (id, ..) in frames {
+                        let (kind, name) = label(tree, id);
+                        writeln!(out, "{id} {kind} {}", json!(name))?;
+                    }
+                    Output::Text(out)
+                }
+            }
+            Self::Tree {
+                root, depth, json, ..
+            } => {
                 require_node(tree, &root)?;
                 if json {
                     compact(tree_json(tree, &root, 0, depth))
@@ -637,6 +695,37 @@ fn tree_json(tree: &Tree, id: &str, level: usize, depth: usize) -> Value {
             .collect();
     }
     node
+}
+
+/// `tree --top-frames`: ids of the screens below `id`, with their page and innermost section.
+/// Screens are frames, components, component sets and instances that are direct children of a
+/// page or of a section on one, at any section depth, in tree order; groups, shapes and text are
+/// not screens. Internal pages are skipped unless they are the root.
+fn top_frames<'t>(
+    tree: &'t Tree,
+    id: &str,
+    page: Option<&'t str>,
+    section: Option<&'t str>,
+    out: &mut Vec<(&'t str, Option<&'t str>, Option<&'t str>)>,
+) {
+    let kind = plugin_type(tree.nodes[id]);
+    let holds_screens = matches!(kind.as_str(), "CANVAS" | "SECTION");
+    for child in tree.children.get(id).into_iter().flatten() {
+        let node = tree.nodes[child.as_str()];
+        match plugin_type(node).as_str() {
+            "CANVAS"
+                if kind == "DOCUMENT"
+                    && node.get("internalOnly").map(|v| v.as_bool()) != Some(true) =>
+            {
+                top_frames(tree, child, Some(child), None, out)
+            }
+            "SECTION" if holds_screens => top_frames(tree, child, page, Some(child), out),
+            "FRAME" | "COMPONENT" | "COMPONENT_SET" | "INSTANCE" if holds_screens => {
+                out.push((child, page, section))
+            }
+            _ => {}
+        }
+    }
 }
 
 /// The REST type `nodes` and `find` use, so `tree` output can be filtered by the same names.
