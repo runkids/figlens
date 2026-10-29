@@ -74,14 +74,19 @@ Tool failures retain `isError: true` and text content; additive `_meta.figlens` 
 | `parse_budget_exceeded` | A named finite parsing budget was crossed; use a smaller copy or report the limit |
 | `output_write_failed` | Bundle packing or export writing failed; create an authorized writable directory and check space/permissions |
 | `permission_denied` | Configured roots forbid the source/output; retain the restriction |
-| `workspace_busy` | CLI `figlens index` only for now: another figlens process holds the workspace; retry after it finishes, without killing it |
-| `storage_unavailable` | CLI `figlens index` only for now: the workspace's storage is missing or offline; reconnect or restore it and retry, without another `--storage` or a reset |
-| `index_incompatible` | CLI `figlens index` only for now: the workspace was written by another schema; use that figlens version or reset the workspace |
+| `workspace_busy` | Another figlens process holds the workspace; retry after it finishes, without killing it |
+| `storage_unavailable` | The workspace's storage is missing or offline; follow `_meta.figlens.recovery`: restore it, or with the user's confirmation recreate elsewhere |
+| `index_incompatible` | Another schema or index version; follow the recovery (`rebuild`, or that figlens version) |
+| `source_stale` | Every searched source changed since indexing; run the listed `refresh`, then search again |
+| `cursor_stale` / `cursor_expired` | A paged index was replaced or deleted; search again without the cursor |
+| `cancelled` | The job was cancelled; the previous index still serves |
 | `operation_failed` | Other existing operation error; inspect its diagnostic without assuming a more specific category |
 
 MCP source failures hide raw paths/cloud stderr. Local CLI errors retain their diagnostics; URL-source errors are redacted in both channels. Error categories follow typed provenance in the existing `FigError`, not human-text matching. They are a recoverability aid, not a promise that every possible process failure is caught.
 
 JSON parsing (`-32700`), invalid JSON-RPC envelopes (`-32600`), unknown methods (`-32601`) and a missing/non-string `tools/call` name (`-32602`) remain protocol errors. Business/argument failures inside a named tool call are tool results. Envelope-valid messages without `id` are ignored before preparation/I/O, even with unknown methods or invalid arguments. `id: null` gets a reply. Omitted `jsonrpc` remains accepted; prefer `"jsonrpc":"2.0"`.
+
+Workspace calls (`index`, `jobs`, `search` with `workspaceId`) are not served on the document thread. The stdin reader only frames and parses; `jobs` and index `status` go to a control lane, document tools and workspace search to the interactive lane (which keeps the warm document), and build-submitting `index` actions to an index lane whose jobs run one at a time on a build lane. Lanes have bounded queues (64, 64, 8); a full lane answers `operation_failed` ("busy with earlier calls") at once; retry after a reply arrives. Path checks and blocking I/O run in the executing lane, so status and cancel answer while a build or a slow search runs; closing stdin cancels running builds before exit. Storage roots (`--storage-root`) and `--root` visibility are in [workspace](workspace.md#mcp-authorization); jobs are in [index](index-jobs.md).
 
 Admission stores checked paths even without roots; execution/cache use them. Reply labels and encoders survive symlinks; missing parents stay missing. Roots reject dangling links/escapes. Cache reuse rechecks policy, readability, mtime and length.
 

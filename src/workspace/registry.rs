@@ -31,7 +31,7 @@ pub(super) fn nonce() -> Result<String> {
 /// The location lock of workspace `id`, exclusive: one prepare, replacement or relocation of
 /// this workspace at a time across every storage root. Publications take it shared.
 pub(super) fn location_exclusive(storage: &Storage, id: &str) -> Result<(PathBuf, File)> {
-    let locations = workspaces(&storage.defaults.config.path, true)?.expect("created");
+    let locations = locations(&storage.defaults.config.path, true)?.expect("created");
     // Its own name: config and state may be one root, and two opens of one lock file conflict.
     let path = locations.join(format!("{id}.location.lock"));
     let file = open_lock(&path, true)?.expect("created");
@@ -220,7 +220,7 @@ pub(super) fn recreate(
     }
     drop(held);
     let binding = nonce()?;
-    let locations = workspaces(&current.defaults.config.path, true)?.expect("created");
+    let locations = locations(&current.defaults.config.path, true)?.expect("created");
     let gone = json!({"storage": previous.as_ref().map(|r| &r.storage).unwrap_or(&current.defaults.state.path),
         "binding": previous.as_ref().and_then(|r| r.binding.clone()), "reason": reason, "atMs": now_ms()});
     let record = json!({"version": LOCATION, "workspaceId": id, "locator": locator.report()?,
@@ -476,7 +476,8 @@ pub fn relocate(storage: &Storage, select: &Select, source_id: &str, file: &Path
             let (locations, lock) = location_exclusive(storage, &new_id)?;
             _alias_lock = lock;
             let record = locations.join(format!("{new_id}.json"));
-            let own = plain(&record, false)? && storage.alias(&new_id)?.as_deref() != Some(&ws.held.id);
+            let own =
+                plain(&record, false)? && storage.alias(&new_id)?.as_deref() != Some(&ws.held.id);
             let state = storage.place(&new_id, None)?.roots.state.path;
             if own || acquire(&state, &Select::Id(new_id.clone()), false)?.is_some() {
                 return Err(fail(

@@ -45,6 +45,10 @@ usage:
                                              boolean properties and swaps applied; exact refs, match
                                              reasons, UTF-16 spans, coverage and cursor pages (20, 1-200);
                                              hidden layers and internal pages need their flag
+  figlens search <select> <query> [--source ID]... [same options]
+                                             the same search over a workspace's prepared indexes of
+                                             --node (default 0:0) across its sources, without parsing;
+                                             sources not ready are listed with the step that prepares them
   figlens inspect <file.fig> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]
                                              compact layout/text summary, instances expanded;
                                              depth 1 (0-10), at most 200 nodes, 200 characters per text;
@@ -114,24 +118,32 @@ usage:
   figlens node <file.fig> <node>               print one raw .fig node as JSON
   figlens compare <file.fig> <nodes.json> <node>   diff a frame against a REST nodes.json export
   figlens compare <file.fig> --frames <list.txt>   same for every `node|nodes.json[|variables.json]` line
-  figlens mcp [--root DIR]...                  serve workflow guidance, tree, find, search, inspect, nodes,
-                                             variables, bundle and export as MCP tools; raster export returns an inline image;
-                                             with --root, files and outputs must be under one of the folders
+  figlens mcp [--root DIR]... [--storage-root DIR]...
+                                             serve workflow guidance, tree, find, search, inspect, nodes,
+                                             variables, bundle, export, index and jobs as MCP tools; raster export returns an inline image;
+                                             with --root, files and outputs must be under one of the folders;
+                                             a custom index storage must be under a --storage-root
   figlens workflow <topic>                     print built-in agent guidance, the same text as MCP workflow:
                                              build, audit, images, plan, planning-details or yolo; a
                                              workflow:<topic> link means `figlens workflow <topic>`
   figlens cache [clear]                        show, or clear, the preview render cache
                                              (prints {path,bytes} or {path,freed})
-  figlens index prepare <file.fig> [--workspace DIR] [--storage DIR]
+  figlens index prepare <file.fig> [--workspace DIR] [--storage DIR] [--scope NODE] [--request-id ID]
                                              create or reuse a local workspace and register the file;
-                                             source-scoped, or the --workspace project directory's; prints
-                                             workspaceId, sourceId, incarnation, paths and roots. Partial
-                                             milestone: it keeps the source registry, search does not use it yet
+                                             source-scoped, or the --workspace project directory's; with
+                                             --scope, build and publish that node's search index (0:0 for the
+                                             whole file), progress on stderr; prints workspaceId, sourceId,
+                                             incarnation, job, paths and roots. --replace-unavailable with a new
+                                             --storage recreates an unusable workspace there, old files kept
+  figlens index refresh <select> [--source ID] [--scope NODE]
+                                             rebuild the published scopes whose .fig changed
+  figlens index rebuild <select>             rebuild every published scope; the old index serves until then
+  figlens index clear <select>               delete retired and unfinished indexes; keeps published ones
   figlens index status <select>              state, sources and storage rule; creates nothing
   figlens index add <file.fig> <select>      add a source to a project workspace
   figlens index remove <sourceId> <select>   unregister a source; the .fig is never touched
-  figlens index relocate <sourceId> <new.fig> <select>   keep the sourceId, change its path (project
-                                             workspaces; source-scoped relocate is not available yet)
+  figlens index relocate <sourceId> <new.fig> <select>   keep the sourceId, change its path; a
+                                             source-scoped workspace is then selected by the new path too
   figlens index reset <select>               remove the workspace database once no other figlens process
                                              uses it (else workspace_busy); designs, .figlens/, exports and
                                              other workspaces stay; prepare starts a new incarnation
@@ -142,6 +154,9 @@ usage:
                                              workspace (an error when unavailable), else each XDG_*_HOME/figlens,
                                              else ~/.local/state/figlens etc. (Windows %LOCALAPPDATA%\\figlens\\state).
                                              Config, holding the remembered locations, never moves; reset keeps them
+  figlens jobs status|cancel <jobId> [--storage DIR]
+                                             an index job's state and progress, or stop it; cancel returns
+                                             once the build stopped, and the previous index keeps serving
   figlens update                               install the latest GitHub release over this binary
   figlens --help | --version
 

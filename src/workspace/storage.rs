@@ -469,7 +469,7 @@ impl Storage {
     /// The remembered application root of workspace `id` and its locator, read from the fixed
     /// config directory. It only locates the workspace; ownership is checked at the workspace.
     pub(super) fn remembered(&self, id: &str) -> Result<Option<Remembered>> {
-        let Some(locations) = workspaces(&self.defaults.config.path, false)? else {
+        let Some(locations) = locations(&self.defaults.config.path, false)? else {
             return Ok(None);
         };
         let path = locations.join(format!("{id}.json"));
@@ -518,7 +518,7 @@ impl Storage {
     /// The workspace a relocated source-scoped `.fig` belongs to: the id its alias record
     /// `<config>/workspaces/<id>.json` `{"aliasOf": ...}` names.
     pub(super) fn alias(&self, id: &str) -> Result<Option<String>> {
-        let Some(locations) = workspaces(&self.defaults.config.path, false)? else {
+        let Some(locations) = locations(&self.defaults.config.path, false)? else {
             return Ok(None);
         };
         let path = locations.join(format!("{id}.json"));
@@ -641,6 +641,18 @@ impl Storage {
 /// `<root>/workspaces` of the state or config root, through the canonical root (which may be
 /// an alias) and a real directory, so a symlinked leaf cannot redirect reads, writes or
 /// cleanup. Created only when `create`.
+/// `<config>/workspaces`, the location records. Config never moves with `--storage`, so its
+/// errors say so instead of reading like a storage problem another root would avoid.
+pub(super) fn locations(config: &Path, create: bool) -> Result<Option<PathBuf>> {
+    workspaces(config, create).map_err(|e| match e.downcast::<FigError>() {
+        Ok(f) => fail(
+            f.kind(),
+            format!("{f} (the figlens config root, which holds workspace locations; --storage does not change it)"),
+        ),
+        Err(e) => e,
+    })
+}
+
 pub(super) fn workspaces(state: &Path, create: bool) -> Result<Option<PathBuf>> {
     if create {
         create_durable(state)?;

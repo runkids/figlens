@@ -14,6 +14,7 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 | `discovery` | Changing find or inspect summaries (fields, limits, truncation, `--flat` lines), `tree --top-frames` screen lists or `export --match-dir` icon matching | `discovery.md` |
 | `search` | Changing search indexing, normalization, ranking, cursors, coverage or its budgets | `search.md` |
 | `workspace` | Changing local workspace roots, identity, ownership, the SQLite registry, locks or index actions | `workspace.md` |
+| `index` | Changing durable index generations, index jobs (refresh, rebuild, clear_cache, cancel), publication fences or workspace search | `index-jobs.md` |
 | `bundle` | Changing the bundle zip, manifest, context.md, batch bundles, font inventory or `verify` | `bundle.md` |
 | `render` | Changing SVG or raster output: text and glyphs, image fills, effects, export areas, image adjustments | `render.md` |
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison | `preview.md` |

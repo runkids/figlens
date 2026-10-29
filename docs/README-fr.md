@@ -129,7 +129,7 @@ Parcourez les pages et les calques, recherchez, mesurez, inspectez la mise en pa
 
 ## Serveur MCP et skill pour agent
 
-**MCP.** Le serveur s’exécute en local via stdio et expose `workflow`, `tree`, `find`, `search`, `inspect`, `nodes`, `variables`, `bundle`, `verify` et `export`. Passez des chemins absolus. Ajoutez `--root /path/to/designs` (répétable) pour confiner chaque chemin de fichier et de sortie aux dossiers choisis. Les exports raster sont réduits à `maxSize` (1600 px par défaut) pour que les images inline restent légères ; SVG ne renvoie que des métadonnées.
+**MCP.** Le serveur s’exécute en local via stdio et expose `workflow`, `tree`, `find`, `search`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs` et `export`. Passez des chemins absolus. Ajoutez `--root /path/to/designs` (répétable) pour confiner chaque chemin de fichier et de sortie aux dossiers choisis. Un stockage d'index hors des répertoires par défaut de figlens exige `--storage-root DIR` (répétable). Les exports raster sont réduits à `maxSize` (1600 px par défaut) pour que les images inline restent légères ; SVG ne renvoie que des métadonnées.
 
 Avec `workflow`, l’agent peut lire les guides intégrés `build`, `audit`, `images`, `plan`, `planning-details` ou `yolo` sur demande explicite. Ils partagent les sources du skill portable ; son installation séparée est facultative avec MCP. L’agent réalise le travail avec ses outils de projet et de navigateur et les permissions de l’hôte. Lire un guide n’exécute pas le workflow ; son utilisation dépend du client et du comportement du modèle.
 
@@ -174,7 +174,8 @@ skillshare sync && skillshare sync mcp --global
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Viewer local en lecture seule ; `--out` écrit un snapshot hors ligne autonome |
 | `compare <file> <nodes.json> <node>` | Diff par rapport à un export REST de la même frame |
 | `node <file> <node>` | Un node `.fig` brut |
-| `index prepare\|status\|add\|remove\|relocate\|reset` | Registre local de workspaces dans le répertoire d'état figlens de l'utilisateur, ou sous un `--storage DIR` que le workspace mémorise ensuite (étape partielle : `search` ne l'utilise pas encore) ; `reset` ne supprime que la base de données du workspace, jamais les designs, les exports ni l'emplacement mémorisé |
+| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset` | Workspace local dans le répertoire d'état figlens de l'utilisateur, ou sous un `--storage DIR` que le workspace mémorise ensuite. `prepare <file> --scope NODE` construit une fois l'index de recherche de cette portée ; ensuite `search --file <file>` (ou `--workspace DIR`) répond sans réanalyser, avec un classement commun aux sources du workspace. `refresh` reconstruit les fichiers modifiés, `rebuild` tous, `clear` supprime les index inutilisés ; l'index précédent sert jusqu'à ce que le nouveau soit prêt. `reset` supprime uniquement la base de données du workspace, jamais les designs, les exports ni l'emplacement mémorisé |
+| `jobs status\|cancel <jobId>` | Afficher ou annuler une construction d'index ; `cancel` rend la main une fois la construction arrêtée |
 | `mcp` | Serveur MCP local via stdio |
 | `update` | Remplace le binaire par la dernière release |
 

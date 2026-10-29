@@ -850,3 +850,15 @@ fn project_sources_are_added_removed_and_relocated_without_touching_files() {
     assert_eq!(add(&f.storage, &solo, &a).unwrap()["source"]["added"], true);
     assert!(Select::from_choice(Some(&project), Some(&a), None).is_err());
 }
+
+#[test]
+fn an_unusable_config_root_is_named_as_config_not_storage() {
+    let f = Fixture::new();
+    std::fs::create_dir_all(f.home.join(".config")).unwrap();
+    std::fs::write(f.home.join(".config/figlens"), "not a directory").unwrap();
+    let (_, custom) = f.custom("custom");
+    let error = prepare(&custom, &f.fig("a.fig"), None)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("--storage does not change it"), "{error}");
+}
