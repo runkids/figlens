@@ -282,9 +282,16 @@ export function createAdapter(ctx, entry = import.meta.url) {
         await current.authorize('figlens_index', [grant]);
         await current.authorize('edit', [required(input, 'storage'), roots.config.path]);
       } else {
-        const found = await status(input);
+        // A lost lock or newer schema fails status; the binary's own prepare or reset recovery names the place.
+        const found = await status(input).catch(error => {
+          const fix = report(error)?.recovery?.find(action => action.action === input.action && action.path && action.roots?.config);
+          if (!fix) throw error;
+          return { paths: { workspace: fix.path }, roots: fix.roots };
+        });
+        if (!found.roots?.config) throw missing('its config root');
         if (grant) await current.authorize('figlens_index', [grant]);
-        await current.authorize('edit', [place(found), ...(input.action === 'prepare' ? [found.roots.config.path] : [])]);
+        // Every write also takes a location lock or record under the config root (a build's publish, relocation's alias).
+        await current.authorize('edit', [place(found), found.roots.config.path]);
       }
     }
     // inspect --flat prints lines, as the MCP tool's flat field.
