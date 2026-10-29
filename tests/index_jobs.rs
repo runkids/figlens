@@ -1182,3 +1182,51 @@ fn an_mcp_opt_in_of_one_frame_is_searched_and_inspected_at_that_scope_only() {
         "{whole}"
     );
 }
+
+#[test]
+fn a_queued_and_a_cancelled_before_start_job_match_the_jobs_output_schema() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    let gate = env.gate("parse.hold");
+    let mut child = env
+        .command(&["mcp"], Some(("parse", &gate)))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let lines = BufReader::new(child.stdout.take().unwrap());
+    let mut mcp = Mcp {
+        child,
+        lines,
+        next: 0,
+    };
+    mcp.send(json!({"jsonrpc": "2.0", "id": 0, "method": "tools/list"}));
+    let tools = mcp.read()["result"]["tools"].clone();
+    let schema = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "jobs")
+        .unwrap()["outputSchema"]
+        .clone();
+    mcp.call(
+        "index",
+        json!({"action": "prepare", "file": file, "scope": "0:0"}),
+    );
+    let queued = mcp.call(
+        "index",
+        json!({"action": "prepare", "file": file, "scope": "0:1"}),
+    );
+    let job = queued["structuredContent"]["job"]["jobId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let status = mcp.call("jobs", json!({"action": "status", "jobId": job}));
+    assert_eq!(status["structuredContent"]["state"], "queued", "{status}");
+    let cancelled = mcp.call("jobs", json!({"action": "cancel", "jobId": job}));
+    std::fs::remove_file(&gate).unwrap();
+    for reply in [status, cancelled] {
+        conforms(&reply["structuredContent"], &schema, "jobs").unwrap();
+    }
+}

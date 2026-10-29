@@ -419,7 +419,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "workspaceId": {"type": "string", "description": "the workspace the job builds in, for index status"},
                 "kind": {"type": "string", "description": "prepare, refresh or rebuild"},
                 "state": {"type": "string", "description": "queued, running, succeeded, failed, cancelled or interrupted (its owner exited)"},
-                "stage": {"type": "string"},
+                "stage": {"type": ["string", "null"], "description": "null until the job starts"},
                 "progress": {"type": "object"},
                 "cancel": {"type": "string", "description": "cancel only: accepted, pending, too_late or not_active"},
                 "error": {"type": ["object", "null"]},
