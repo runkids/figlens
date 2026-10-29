@@ -1,6 +1,6 @@
 # Defensive parsing budgets
 
-Load this when changing untrusted container, embedded-schema or value decoding. The reported historical MCP stack overflow is a risk lead, not a reproduced or fully established root cause.
+Load this when changing untrusted container, embedded-schema or value decoding. The reported historical MCP stack overflow is a risk lead, not a reproduced or fully established root cause; a layer-depth overflow is reproduced and bounded on scope builds ([Layer depth](#layer-depth)).
 
 ## Protected path
 
@@ -40,9 +40,11 @@ This batch does not bound ZIP central-directory indexing before `canvas.fig` is 
 
 Layers nest through the flat `nodeChanges` list's `parentIndex`, so value depth does not bound them. Building, rendering and dropping a scope's JSON recurse once per layer; a deep enough chain overflows the stack, which aborts the process: every other item of a CLI batch and the whole MCP server, as `catch_unwind` cannot catch it. Measured on a synthetic frame chain, a release build aborts near 900 layers on a 1 MiB stack (Windows' main thread, where single commands and MCP run) and near 7,200 on 8 MiB; debug builds abort near a tenth of that. Ten local real designs reached at most 21 stored levels.
 
-`expand::MAX_DEPTH` (256) bounds a scope: `Expander::descend` stops nesting there and sets `Expansion::too_deep`, and `rest::build` walks the stored and expanded children iteratively before it recurses. Either one fails the item with `parse budget exceeded: layer depth (limit 256)`. Every `nodes`, `inspect`, `export`, `bundle` and render scope goes through `rest::resolve_*`, so CLI batches report the item as its own `{nodeId,error}` line and continue, and MCP returns `isError`. `rest::nodes`/`render_nodes` (compare and tests) panic instead. `tree --depth`, `compare` and `search` walk outside this path; search's bounded expansion has its own depth of 256.
+`expand::MAX_DEPTH` (256) bounds a scope. `Expander::descend` stops nesting one level past it, which bounds expansion's own recursion and leaves a node deeper than the limit wherever it stopped. `rest::build` then walks the children `Builder::node` would visit (stored before expanded) without recursion, and fails the item with `parse budget exceeded: layer depth (limit 256)` when a node lies deeper. An expansion that stored children replace does not count. Every `nodes`, `inspect`, `export`, `bundle` and render scope goes through `rest::resolve_*`, so CLI batches report the item as its own `{nodeId,error}` line and continue, and MCP returns `isError`. `rest::nodes`/`render_nodes` (the maintainer `compare` command and tests) panic with the same message instead.
 
-Regressions: `nodes_frames_report_a_too_deep_frame_and_continue` (a frame one layer past the limit, then a shallow frame) and `a_component_chain_past_the_depth_limit_is_marked_too_deep`. Both abort the test process without the check. The check added no measurable time to `nodes --frames` over every top frame of three large local designs, with identical output.
+Still unbounded per layer: the preview `catalog`, `tree` (`--depth` is user-set; `--top-frames` recurses through nested sections) and `compare`'s own walks. Search's bounded expansion has its own depth of 256. A 256-level component chain built in release on a 1 MiB stack, the deepest accepted, did not abort.
+
+Regressions: `nodes_frames_report_a_too_deep_frame_and_continue` and `bundle_frames_skip_a_too_deep_frame_and_continue` (a frame one layer past the limit, then a shallow frame; bundle with two workers), `a_component_chain_past_the_depth_limit_fails_the_scope` and `stored_children_keep_a_too_deep_main_from_failing_the_scope`. The batch tests abort the test process without the check. The check added no measurable time to `nodes --frames` over every top frame of three large local designs, with identical output.
 
 ## Completed output publication
 

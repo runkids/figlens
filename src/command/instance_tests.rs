@@ -1444,8 +1444,8 @@ fn nodes_frames_match_single_nodes_calls_and_isolate_missing_ids() {
     assert!(err.to_string().contains("at most"), "{err}");
 }
 
-#[test]
-fn nodes_frames_report_a_too_deep_frame_and_continue() {
+/// Frame 0:1 is shallow; frame 0:2 holds one layer more than the limit below it.
+fn too_deep_message() -> K<'static> {
     let node = |id: u32, parent: u32| {
         obj(
             "NodeChange",
@@ -1463,7 +1463,6 @@ fn nodes_frames_report_a_too_deep_frame_and_continue() {
             ],
         )
     };
-    // Frame 0:1 is shallow; frame 0:2 holds one layer more than the limit below it.
     let last = 2 + figlens::expand::MAX_DEPTH as u32 + 1;
     let mut changes = vec![
         obj(
@@ -1474,7 +1473,12 @@ fn nodes_frames_report_a_too_deep_frame_and_continue() {
         node(2, 0),
     ];
     changes.extend((3..=last).map(|id| node(id, id - 1)));
-    let message = obj("Message", vec![("nodeChanges", K::Array(changes))]);
+    obj("Message", vec![("nodeChanges", K::Array(changes))])
+}
+
+#[test]
+fn nodes_frames_report_a_too_deep_frame_and_continue() {
+    let message = too_deep_message();
     let tree = Tree::new(&message);
     let mut out = Vec::new();
     crate::nodes_batch(&tree, &["0:2".into(), "0:1".into()], &mut out).unwrap();
@@ -1491,6 +1495,30 @@ fn nodes_frames_report_a_too_deep_frame_and_continue() {
             &lines[1]["document"]["id"]
         ),
         (Some(true), &json!("0:1"))
+    );
+}
+
+#[test]
+fn bundle_frames_skip_a_too_deep_frame_and_continue() {
+    let message = too_deep_message();
+    let tree = Tree::new(&message);
+    let dir = TestDir::new();
+    let list = dir.join("frames.txt");
+    std::fs::write(&list, "0:2\n0:1\n").unwrap();
+    let out = dir.join("out");
+    let args = [
+        "--frames",
+        list.to_str().unwrap(),
+        "--out-dir",
+        out.to_str().unwrap(),
+        "--jobs",
+        "2",
+    ];
+    let fig = Path::new("examples/first-success/design.fig");
+    crate::batch(&tree, fig, &args.map(String::from)).unwrap();
+    assert_eq!(
+        (out.join("0-2.zip").exists(), out.join("0-1.zip").exists()),
+        (false, true)
     );
 }
 

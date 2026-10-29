@@ -153,7 +153,7 @@ fn build(
         None => expand_instances(tree, root),
     };
     // Building, rendering and dropping the result all recurse once per layer.
-    if ex.too_deep || too_deep(tree, &ex, root) {
+    if too_deep(tree, &ex, root) {
         return Err(crate::parse::exceeded("layer depth", MAX_DEPTH));
     }
     let b = Builder {

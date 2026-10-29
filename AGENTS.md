@@ -70,7 +70,7 @@ Verify each host's independent entry from the same extracted npm candidate; disp
 Validate host reference-output directories before export, including symlinked parents; see `integrations`.
 Cancel owned CLI process trees and await exit before reference cleanup; see `integrations`.
 Check parsing budgets before Kiwi recursion or declared-length expansion; see `parsing`.
-Walk layers recursively only inside `rest::resolve_*`, which rejects scopes deeper than `expand::MAX_DEPTH` first; see `parsing`.
+Recurse over layers through `rest::resolve_*`, which rejects scopes deeper than `expand::MAX_DEPTH` first; preview catalog, `tree` and `compare` walks are still unbounded; see `parsing`.
 Bound declared and actual original-image bytes per image and per scope before retaining them; see `parsing`.
 Publish bundle/export/snapshot files through `output::write` to protect sources and existing outputs; see `parsing`.
 Apply MCP budgets before request admission and to complete serialized replies; see `mcp`.
