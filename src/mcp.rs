@@ -648,6 +648,27 @@ mod tests {
     }
 
     #[test]
+    fn tree_prints_the_rest_types_nodes_uses() {
+        let message = test_support::component_set();
+        let tree = Tree::new(&message);
+        let run = |args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            command::Command::from_cli("tree", &args, &tree)
+                .unwrap()
+                .execute(&tree, Path::new("unused.fig"))
+                .unwrap()
+        };
+        assert_eq!(
+            run(&["--depth", "2", "--json"]).json().unwrap(),
+            &serde_json::json!({ "id": "0:0", "type": "CANVAS", "name": "n0",
+                "children": [{ "id": "0:1", "type": "COMPONENT_SET", "name": "n1",
+                    "children": [{ "id": "0:2", "type": "COMPONENT", "name": "n2" }] }] })
+        );
+        let text = run(&["--depth", "2"]).text().unwrap();
+        assert!(text.contains("0:1 COMPONENT_SET \"n1\"") && text.contains("0:2 COMPONENT \"n2\""));
+    }
+
+    #[test]
     fn mcp_ignores_notifications() {
         assert!(mcp_reply(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
     }

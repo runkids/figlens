@@ -78,3 +78,49 @@ fn directories_keep_their_own_files_and_cleanup() {
         "first"
     );
 }
+
+/// A canvas holding a component set (a state-group frame) with one component main (`SYMBOL`).
+pub(crate) fn component_set() -> kiwi_schema::Value<'static> {
+    use kiwi_schema::Value;
+    use std::collections::HashMap;
+    let guid = |l| {
+        Value::Object(
+            "GUID",
+            HashMap::from([("sessionID", Value::UInt(0)), ("localID", Value::UInt(l))]),
+        )
+    };
+    let node = |l: u32, parent: Option<u32>, kind, extra: Vec<(&'static str, Value<'static>)>| {
+        let mut fields = HashMap::from([
+            ("guid", guid(l)),
+            ("type", Value::Enum("NodeType", kind)),
+            ("name", Value::String(format!("n{l}"))),
+        ]);
+        if let Some(p) = parent {
+            fields.insert(
+                "parentIndex",
+                Value::Object(
+                    "ParentIndex",
+                    HashMap::from([("guid", guid(p)), ("position", Value::String("a".into()))]),
+                ),
+            );
+        }
+        fields.extend(extra);
+        Value::Object("NodeChange", fields)
+    };
+    Value::Object(
+        "Message",
+        HashMap::from([(
+            "nodeChanges",
+            Value::Array(vec![
+                node(0, None, "CANVAS", vec![]),
+                node(
+                    1,
+                    Some(0),
+                    "FRAME",
+                    vec![("isStateGroup", Value::Bool(true))],
+                ),
+                node(2, Some(1), "SYMBOL", vec![]),
+            ]),
+        )]),
+    )
+}

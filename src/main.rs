@@ -22,7 +22,8 @@ const USAGE: &str = "figlens — read Figma .fig files (File > Save local copy) 
 
 usage:
   figlens tree <file.fig> [node] [--depth N] [--json]
-                                             list ids, types and names (default root: the document);
+                                             list ids, REST types (as in nodes) and names (default root:
+                                             the document);
                                              --json prints them as nested {id,type,name,children}
   figlens find <file.fig> <query> [--type TYPE] [--node ID] [--limit N]
                                              search stored layer names and text, case-insensitive;
