@@ -19,7 +19,7 @@ use super::{
     require_scope, snapshot_id, source_id, stage, stamp,
 };
 use crate::expand::{Bounds, Expanded, json_bytes, kiwi_bytes};
-use crate::{Document, ErrorKind, FigError, Tree, to_json};
+use crate::{Document, ErrorKind, FigError, Tree, guid_key, to_json};
 
 /// Bumped whenever a field list, facet or digest stream changes; cursors carry it.
 const VERSION: &str = "diff-v1";
@@ -39,6 +39,8 @@ const FIELDS: [&[&str]; 4] = [
         "textCase",
         "textDecoration",
         "paragraphSpacing",
+        "textTruncation",
+        "maxLines",
     ],
     &[
         "size",
@@ -259,11 +261,13 @@ pub(super) fn facets(
                 return None;
             }
             // An override's bytes were already shown as `<N bytes>`; equal lengths prove nothing.
-            let gone = match &value {
-                Value::Json(v) => placeholder(v),
-                Value::Owned(v) => placeholder(v),
-                Value::Kiwi(_) => false,
-            };
+            // An unread value is never scanned for one.
+            let gone = !unread
+                && match &value {
+                    Value::Json(v) => placeholder(v),
+                    Value::Owned(v) => placeholder(v),
+                    Value::Kiwi(_) => false,
+                };
             if unread || gone {
                 fields.push(Field {
                     key,
@@ -373,6 +377,9 @@ struct Side {
     stamp: Stamp,
     /// Whether the selected node exists on this side; a side without it is complete and empty.
     present: bool,
+    /// The selected node's own parent and position among its siblings, which the index's
+    /// root record leaves out.
+    origin: Option<(String, u32)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -558,6 +565,7 @@ fn side(
         )
         .into());
     }
+    let origin = origin(&tree, node);
     Ok(Side {
         signature: format!("{}:{}", index.generation, index.stop.unwrap_or("")),
         source: json!({"sourceId": source_id(canonical), "snapshotId": snapshot}),
@@ -566,24 +574,35 @@ fn side(
         path: canonical.to_owned(),
         stamp: staged,
         present,
+        origin,
     })
+}
+
+/// Stored node `node`'s parent and position among its siblings.
+fn origin(tree: &Tree, node: &str) -> Option<(String, u32)> {
+    let parent = guid_key(tree.nodes.get(node)?.get("parentIndex")?.get("guid")?)?;
+    let at = tree
+        .children
+        .get(&parent)
+        .and_then(|c| c.iter().position(|c| c == node));
+    Some((parent, at.unwrap_or(0) as u32))
 }
 
 /// A record's structure digest input: name, kind, parent id, order among siblings and hidden.
 fn structure<'a>(
-    index: &'a Index,
+    side: &'a Side,
     rid: usize,
     order: &[u32],
 ) -> (&'a str, &'a str, Option<&'a str>, u32, bool) {
+    let index = &side.index;
     let r = &index.records[rid];
-    let parent = r.parent.map(|p| index.records[p as usize].id.as_str());
-    (
-        r.name.as_str(),
-        r.kind.as_str(),
-        parent,
-        order[rid],
-        r.hidden,
-    )
+    // The selected root has no indexed parent; its stored one stands in.
+    let (parent, at) = match (r.parent, &side.origin) {
+        (Some(p), _) => (Some(index.records[p as usize].id.as_str()), order[rid]),
+        (None, Some((p, at))) => (Some(p.as_str()), *at),
+        (None, None) => (None, order[rid]),
+    };
+    (r.name.as_str(), r.kind.as_str(), parent, at, r.hidden)
 }
 
 /// Each record's position among its parent's indexed children.
@@ -676,7 +695,7 @@ fn differs(old: &Side, o: usize, oo: &[u32], new: &Side, n: usize, no: &[u32]) -
             bits |= 1 << facet;
         }
     }
-    if structure(&old.index, o, oo) != structure(&new.index, n, no) {
+    if structure(old, o, oo) != structure(new, n, no) {
         bits |= 1 << 4;
     }
     if !edge_keys(old, o).eq(edge_keys(new, n)) {
@@ -1353,6 +1372,7 @@ fn compare_trees(old: &Tree, new: &Tree, works: [usize; 3], node: &str) -> Pair 
             facets,
             path: PathBuf::new(),
             stamp: (SystemTime::UNIX_EPOCH, 0),
+            origin: origin(tree, node),
         }
     };
     compare(

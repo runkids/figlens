@@ -623,3 +623,46 @@ fn a_byte_array_blob_past_the_visit_cap_is_unread() {
     assert_eq!(nodes(&out), [("0:10".to_owned(), "changed".to_owned())]);
     assert_eq!(out["coverage"]["complete"], false);
 }
+
+#[test]
+fn a_changed_truncation_line_count_is_a_text_change() {
+    let one = |lines| {
+        doc(vec![node(
+            10,
+            Some(1),
+            "TEXT",
+            "Clamp",
+            vec![
+                ("textTruncation", K::Enum("TextTruncation", "ENDING")),
+                ("maxLines", K::UInt(lines)),
+            ],
+        )])
+    };
+    let n = &run(one(1), one(2))["frames"][0]["nodes"][0];
+    assert_eq!(n["facets"], json!(["text"]));
+}
+
+#[test]
+fn a_selected_node_moved_to_another_parent_is_a_structure_change() {
+    let file = |parent| {
+        doc(vec![
+            node(10, Some(1), "FRAME", "Home", vec![]),
+            node(20, Some(10), "FRAME", "Left", vec![]),
+            node(30, Some(10), "FRAME", "Right", vec![]),
+            node(21, Some(parent), "RECTANGLE", "Card", vec![fill(1.0)]),
+        ])
+    };
+    let (a, b) = (file(20), file(30));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let out = page(
+        &compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:21"),
+        &Request {
+            node: "0:21".into(),
+            limit: LIMIT,
+            cursor: None,
+        },
+        false,
+    )
+    .unwrap();
+    assert_eq!(out["frames"][0]["nodes"][0]["facets"], json!(["structure"]));
+}
