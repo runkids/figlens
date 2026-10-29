@@ -41,7 +41,7 @@ python3 scripts/ai-context.py check     # validate paths, headings, links, orpha
 | `parsing` | Changing untrusted container/schema/value decoding or parsing budgets |
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields or variables |
 | `discovery` | Changing find or inspect summaries (fields, limits, truncation, `--flat` lines), `tree --top-frames` screen lists or `export --match-dir` icon matching |
-| `search` | Changing search indexing, normalization, ranking, cursors, coverage or its budgets |
+| `search` | Changing search indexing, ranking, cursors, coverage, budgets or `diff` |
 | `workspace` | Changing local workspace roots, identity, ownership, the SQLite registry, locks or index actions |
 | `index` | Changing index generations, jobs, publication or workspace search |
 | `bundle` | Changing the bundle zip, manifest, context.md, batch bundles, font inventory or `verify` |

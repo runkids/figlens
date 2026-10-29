@@ -140,13 +140,16 @@
       ]
     },
     "search": {
-      "description": "Changing search indexing, normalization, ranking, cursors, coverage or its budgets.",
+      "description": "Changing search indexing, normalization, ranking, cursors, coverage or its budgets, or the diff engine.",
       "sources": [
         {
           "path": "wiki/search.md"
         },
         {
           "path": "wiki/usages.md"
+        },
+        {
+          "path": "wiki/diff.md"
         }
       ]
     },
