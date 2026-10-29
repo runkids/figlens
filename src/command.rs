@@ -51,6 +51,8 @@ pub enum Command {
         node: String,
         out: PathBuf,
         format: figlens::export::Format,
+        /// Export the layout box (`absoluteBoundingBox`) instead of the render bounds.
+        layout: bool,
         scale: f64,
         quality: u8,
         max_kb: Option<usize>,
@@ -226,11 +228,12 @@ impl Command {
                 let id = normalize_id(&node);
                 require_target_root(tree, &id)?;
                 let format = export_format(&out)?;
-                let (scale, quality, max_kb, max_size) = export_options(&args[2..])?;
+                let (layout, scale, quality, max_kb, max_size) = export_options(&args[2..])?;
                 Self::Export {
                     node,
                     out: out.into(),
                     format,
+                    layout,
                     scale,
                     quality,
                     max_kb,
@@ -291,6 +294,7 @@ impl Command {
                     out,
                     // Encoding follows the requested extension, not a symlink target's name.
                     format: export_format(call.string("out").unwrap())?,
+                    layout: call.string("bounds") == Some("layout"),
                     scale: call.argument("scale").as_f64().unwrap(),
                     quality: call.argument("quality").as_u64().unwrap() as u8,
                     max_kb: call.argument("maxKb").as_u64().map(|n| n as usize),
@@ -404,6 +408,7 @@ impl Command {
                 node,
                 out,
                 format,
+                layout,
                 scale,
                 quality,
                 max_kb,
@@ -412,11 +417,12 @@ impl Command {
                 let id = normalize_id(&node);
                 require_target_root(tree, &id)?;
                 let max_bytes = check_export(scale, quality, max_kb)?;
-                let image = figlens::export::export(
+                let (image, report) = figlens::export::export(
                     tree,
                     fig,
                     &id,
                     format,
+                    layout,
                     scale,
                     quality,
                     max_bytes,
@@ -426,8 +432,9 @@ impl Command {
                     std::io::Write::write_all(file, &image.bytes)?;
                     Ok(())
                 })?;
-                let value = json!({ "path": out.to_string_lossy(), "width": image.width, "height": image.height,
+                let mut value = json!({ "path": out.to_string_lossy(), "width": image.width, "height": image.height,
                     "bytes": image.bytes.len(), "quality": image.quality });
+                value.as_object_mut().unwrap().extend(report);
                 let mime = match format {
                     // Model image inputs commonly accept raster formats, not SVG attachments.
                     figlens::export::Format::Svg => return Ok(compact(value)),
@@ -446,13 +453,22 @@ impl Command {
     }
 }
 
-/// `--scale`, `--quality`, `--max-kb` and `--max-size`, as `(scale, quality, max_kb, max_size)`.
+/// `--bounds`, `--scale`, `--quality`, `--max-kb` and `--max-size`, as
+/// `(layout, scale, quality, max_kb, max_size)`.
 pub fn export_options(args: &[String]) -> Result<ExportOptions, Box<dyn Error>> {
-    let (mut scale, mut quality, mut max_kb, mut max_size) = (1.0_f64, 80, None, None);
+    let (mut layout, mut scale, mut quality, mut max_kb, mut max_size) =
+        (false, 1.0_f64, 80, None, None);
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
-        let mut value = || rest.next().ok_or(format!("{arg} needs a number"));
+        let mut value = || rest.next().ok_or(format!("{arg} needs a value"));
         match arg.as_str() {
+            "--bounds" => {
+                layout = match value()?.as_str() {
+                    "layout" => true,
+                    "render" => false,
+                    _ => return Err("--bounds takes layout or render".into()),
+                }
+            }
             "--scale" => scale = value()?.trim_end_matches('x').parse()?,
             "--quality" => quality = value()?.parse()?,
             "--max-kb" => max_kb = Some(value()?.parse::<usize>()?),
@@ -461,10 +477,10 @@ pub fn export_options(args: &[String]) -> Result<ExportOptions, Box<dyn Error>> 
         }
     }
     check_export(scale, quality, max_kb)?;
-    Ok((scale, quality, max_kb, max_size))
+    Ok((layout, scale, quality, max_kb, max_size))
 }
 
-type ExportOptions = (f64, u8, Option<usize>, Option<u32>);
+type ExportOptions = (bool, f64, u8, Option<usize>, Option<u32>);
 
 /// Rejects out-of-range options; returns `--max-kb` in bytes.
 fn check_export(

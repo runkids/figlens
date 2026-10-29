@@ -34,15 +34,17 @@ impl Prepared {
 
     /// A raster export includes page/section backdrops and uses export bounds, not asset bounds.
     pub fn export_svg(&self, tree: &Tree, scale: f64) -> Option<String> {
+        Some(self.export_svg_in(tree, export_area(self.node())?, scale))
+    }
+
+    /// Raster-ready SVG of the node over the page region `area`.
+    pub fn export_svg_in(&self, tree: &Tree, area: Rect, scale: f64) -> String {
         let n = self.node();
-        let area = export_area(n)?;
         let lookup = |h: &str| self.images.get(h).cloned();
-        Some(
-            Svg::new(tree, &lookup)
-                .for_raster()
-                .backdrop(n, area)
-                .document(n, area, scale),
-        )
+        Svg::new(tree, &lookup)
+            .for_raster()
+            .backdrop(n, area)
+            .document(n, area, scale)
     }
 }
 
@@ -295,7 +297,7 @@ fn kiwi_mat(t: &Json) -> Mat {
     }
 }
 
-fn visible(p: &Json) -> bool {
+pub(crate) fn visible(p: &Json) -> bool {
     p["visible"] != Json::Bool(false) && p["opacity"].as_f64().unwrap_or(1.0) > 0.0
 }
 
@@ -589,7 +591,7 @@ fn geometry_scale(r: &Json, field: &str) -> Mat {
     }
 }
 
-fn has_paint(list: &Json) -> bool {
+pub(crate) fn has_paint(list: &Json) -> bool {
     list.as_array().into_iter().flatten().any(visible)
 }
 
@@ -1963,6 +1965,11 @@ pub fn pixmap(svg: &str) -> Result<resvg::tiny_skia::Pixmap, String> {
     );
     resvg::render(&tree, transform, &mut pixmap.as_mut());
     Ok(pixmap)
+}
+
+/// Layout box from a REST node (`absoluteBoundingBox`).
+pub fn layout_bounds(n: &Json) -> Option<Rect> {
+    rect_of(&n["absoluteBoundingBox"])
 }
 
 /// Render bounds from a REST node (`absoluteRenderBounds`).

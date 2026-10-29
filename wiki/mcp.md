@@ -54,6 +54,7 @@ Run Docker Rust tests/lint and `python3 scripts/ai-context.py check`. Tests cove
 | `export.quality` | 1–100 / 80 |
 | `export.maxKb` | 0 through `2^53-1`; omitted means no byte budget |
 | `export.maxSize` | 0 through `u32::MAX` / 1600; 0 disables the raster side cap |
+| `export.bounds` | `render` or `layout` / `render` |
 
 `tree`/`find` root defaults to `0:0`; booleans default false. File/output strings are nonempty; find queries contain non-whitespace. Export extensions follow the existing case-insensitive encoder selection, including `.jpeg`. Search type remains a free-form, case-insensitive plugin type, not an invented enum. Successful outputs and CLI parameter order remain unchanged.
 

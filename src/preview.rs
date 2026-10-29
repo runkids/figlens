@@ -718,8 +718,9 @@ impl Revision<'_> {
             }
             "export" => {
                 let (format, mime, scale, quality) = export_spec(key).ok_or("unknown route")?;
-                let image =
-                    crate::export::export(tree, file, id, format, scale, quality, None, None)?;
+                let (image, _) = crate::export::export(
+                    tree, file, id, format, false, scale, quality, None, None,
+                )?;
                 (mime, image.bytes)
             }
             "data" => (
@@ -746,11 +747,12 @@ impl Revision<'_> {
                     _ => MAX_RENDER_SIDE / side,
                 }
                 .min(1.0);
-                let image = crate::export::export(
+                let (image, _) = crate::export::export(
                     tree,
                     file,
                     id,
                     crate::export::Format::Png,
+                    false,
                     scale,
                     80,
                     None,

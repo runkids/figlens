@@ -167,7 +167,7 @@ skillshare sync && skillshare sync mcp --global
 | `bundle <file> <node> <out.zip> [--states]` | Un bundle de diseño para un frame; imprime `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | Muchos bundles a partir de una sola decodificación, en paralelo |
 | `verify <bundle>` | Comprueba un bundle (`.zip` o su directorio extraído) contra su manifiesto: archivos verificados, ausentes y modificados, assets que faltan, las fuentes que hay que confirmar en el proyecto y `findings`: cada entrada de handoff ausente, no soportada o no verificada, con sus nodos, evidencia y siguiente acción |
-| `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP o AVIF; `--max-kb` reduce la calidad con pérdida hasta que quepa |
+| `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP o AVIF; `--max-kb` reduce la calidad con pérdida hasta que quepa; `--bounds layout` exporta la caja de layout en lugar de los límites de render |
 | `export <file> --frames <list> --out-dir <dir> [--format F] [--scale N] ...`, `--frames -` (stdin) | Una decodificación, muchas exportaciones (por defecto `png`): escribe `<dir>/<nodeId>.<format>`, una línea JSON por id, la salida de `export` con su `nodeId`, o `{nodeId, error}` |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Viewer local de solo lectura; `--out` escribe un snapshot offline independiente |
 | `compare <file> <nodes.json> <node>` | Diff contra una exportación REST del mismo frame |

@@ -416,6 +416,28 @@ impl Fixture {
                         "Badge artwork",
                         vec![("size", size(4.0, 3.0)), ("fillPaints", paint("red"))],
                     ),
+                    // Draws past its unclipped frame: render bounds 15x15 over a 10x10 box.
+                    node(
+                        60,
+                        Some(0),
+                        "FRAME",
+                        "Overflow",
+                        vec![
+                            ("size", size(10.0, 10.0)),
+                            ("transform", transform(200.0, 0.0)),
+                        ],
+                    ),
+                    node(
+                        61,
+                        Some(60),
+                        "RECTANGLE",
+                        "Overflowing artwork",
+                        vec![
+                            ("size", size(10.0, 10.0)),
+                            ("transform", transform(5.0, 5.0)),
+                            ("fillPaints", paint("red")),
+                        ],
+                    ),
                 ]),
             )],
         );
@@ -1473,6 +1495,63 @@ fn export_frames_match_single_exports_and_isolate_missing_ids() {
         assert!(result.is_err() && out.is_empty(), "{extra:?}");
         assert!(!dir.exists(), "{extra:?}");
     }
+}
+
+#[test]
+fn export_bounds_pick_the_render_bounds_or_the_layout_box_and_report_both() {
+    let f = Fixture::new();
+    for ext in ["svg", "png"] {
+        let out = f.dir.join(&format!("overflow.{ext}"));
+        let export = |extra: &[&str]| {
+            let mut args = vec!["0:60", out.to_str().unwrap()];
+            args.extend_from_slice(extra);
+            serde_json::from_str::<Value>(&f.cli("export", &args).unwrap()).unwrap()
+        };
+        let render = export(&[]);
+        let layout = export(&["--bounds", "layout"]);
+        assert_eq!(
+            (&render["width"], &layout["width"]),
+            (&json!(15), &json!(10)),
+            "{ext}"
+        );
+        assert_eq!(
+            (&render["height"], &layout["height"]),
+            (&json!(15), &json!(10)),
+            "{ext}"
+        );
+        assert_eq!(render["layoutBox"]["width"], 10.0);
+        assert_eq!(render["renderBox"]["width"], 15.0);
+        let warning = render["warnings"][0].as_str().unwrap();
+        assert!(
+            warning.contains("right 5, bottom 5, left 0 px")
+                && warning.contains("from child geometry"),
+            "{warning}"
+        );
+        assert!(
+            layout["warnings"][0]
+                .as_str()
+                .unwrap()
+                .contains("exported at the layout box")
+        );
+    }
+    let png = f.dir.join("overflow-mcp.png");
+    let reply = f.tool(
+        "export",
+        json!({"node": "0:60", "out": png, "bounds": "layout"}),
+    );
+    assert_eq!(reply["structuredContent"]["width"], 10, "{reply}");
+    let reply = f.tool(
+        "export",
+        json!({"node": "0:60", "out": png, "bounds": "box"}),
+    );
+    assert_eq!(reply["isError"], true, "{reply}");
+    let err = f
+        .cli(
+            "export",
+            &["0:60", png.to_str().unwrap(), "--bounds", "box"],
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("layout or render"), "{err}");
 }
 
 #[test]
