@@ -482,7 +482,8 @@ pub(super) fn report(
 ) -> Json {
     let mut out = json!({"workspaceId": id, "state": state, "schemaVersion": SCHEMA,
         "storage": place.report(), "roots": place.roots.report(),
-        "paths": dir.map(|d| json!({"workspace": d, "database": d.join(DB)}))});
+        "paths": dir.map(|d| json!({"workspace": d, "database": d.join(DB),
+            "lock": super::lock_beside(d)}))});
     if let (Some(out), Json::Object(extra)) = (out.as_object_mut(), extra) {
         out.extend(extra);
     }

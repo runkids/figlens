@@ -1138,10 +1138,18 @@ fn a_missing_lock_or_newer_schema_offers_placed_prepare_and_reset_with_the_confi
                     a["action"].as_str().unwrap().to_owned(),
                     a["path"].as_str().map(PathBuf::from),
                     a["roots"]["config"]["path"].as_str().map(PathBuf::from),
+                    a["lock"].as_str().map(PathBuf::from),
                 )
             })
             .collect::<Vec<_>>()
     };
+    // Status names the sibling lock a repair recreates, so hosts never derive it.
+    let reported = status(&f.storage, &Select::Id(id.clone())).unwrap();
+    let lock = PathBuf::from(reported["paths"]["lock"].as_str().unwrap());
+    assert_eq!(
+        (lock.exists(), lock.file_name().unwrap().to_str().unwrap()),
+        (true, format!("{id}.lock").as_str())
+    );
     // Recovery names the canonical workspace path (`\\?\D:\…` on Windows).
     let canonical = std::fs::canonicalize(&dir).unwrap();
     let placed = |action: &str| {
@@ -1149,6 +1157,7 @@ fn a_missing_lock_or_newer_schema_offers_placed_prepare_and_reset_with_the_confi
             action.to_owned(),
             Some(canonical.clone()),
             Some(f.storage.defaults.config.path.clone()),
+            Some(lock_beside(&canonical)),
         )
     };
     std::fs::remove_file(dir.with_extension("lock")).unwrap();
@@ -1168,7 +1177,7 @@ fn a_missing_lock_or_newer_schema_offers_placed_prepare_and_reset_with_the_confi
             vec![placed("prepare"), placed("reset")],
             vec![placed("prepare")],
             vec![
-                ("use_writer_version".to_owned(), None, None),
+                ("use_writer_version".to_owned(), None, None, None),
                 placed("reset")
             ],
         )

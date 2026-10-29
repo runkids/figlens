@@ -125,7 +125,16 @@ fn storage_error(path: &Path, error: std::io::Error) -> Box<dyn Error> {
 /// A recovery action for the workspace at `dir`, so a host can authorize that placement.
 fn placed(mut action: Json, dir: &Path) -> Json {
     action["path"] = json!(dir);
+    action["lock"] = json!(lock_beside(dir));
     action
+}
+
+/// `<workspaces>/<workspaceId>.lock`, the lock beside workspace directory `dir`, which a
+/// prepare or reset also writes; hosts authorize it from here rather than derive it.
+pub(crate) fn lock_beside(dir: &Path) -> PathBuf {
+    let mut path = dir.as_os_str().to_owned();
+    path.push(".lock");
+    PathBuf::from(path)
 }
 
 /// `e` with the config root named in each storage or placed workspace recovery action, so a
