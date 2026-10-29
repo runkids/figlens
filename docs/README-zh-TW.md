@@ -162,14 +162,14 @@ skillshare sync && skillshare sync mcp --global
 | `tree <file> [node] --top-frames [--json]` | 只列出畫面，每行一個，可直接傳給 `--frames -`：頁面或其 section 下的 frame、component、component set 與 instance（略過 group 與內部頁面）；`--json` 附上 page 與 section id |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 不分大小寫搜尋圖層名稱與文字；路徑、尺寸與預覽。預設 20 筆結果（1-200） |
 | `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | 對圖層名稱與完整文字做排序搜尋，已套用 instance override、文字/布林屬性與 swap；回傳精確節點參照（包括可用於 `inspect` 的 `I…;…` 子圖層 id）、比對原因、UTF-16 範圍、涵蓋狀態與 cursor 分頁。預設 20 筆（1-200）；隱藏圖層與內部頁面需加對應 flag |
-| `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | 精簡的展開後排版/文字摘要，最多 200 個節點。`--images` 會加上點陣圖尺寸與裁切範圍 |
+| `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | 精簡的展開後排版/文字摘要，最多 200 個節點。`--images` 會加上點陣圖尺寸與裁切範圍。`--flat` 改為每個節點一行：相對該節點的位置、尺寸、文字、字型、填色、描邊、圓角、auto-layout |
 | `nodes <file> <node>` | REST nodes 回應中單一節點的物件（`document`、`components`、`componentSets`、`styles`）：展開後的 instance 與 override、auto-layout、文字樣式、填色、效果、綁定的 variables、元件屬性、渲染邊界 |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | 一次解碼讀取多個節點：清單中每個 id 一行 JSON（帶 `nodeId` 的 `nodes` 輸出，或 `{nodeId, error}`） |
 | `variables <file> [node]` | frame 綁定的 variables；未指定節點時，列出所有本機 variables |
 | `bundle <file> <node> <out.zip> [--states]` | 單一 frame 的設計 bundle；輸出 `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | 一次解碼，平行產生多個 bundle |
 | `verify <bundle>` | 依 manifest 檢查 bundle（`.zip` 或解開後的目錄）：已驗證、缺少與被改動的檔案、缺少的素材，需在專案中確認的字型，以及 `findings`：每項缺少、不支援或未驗證的 handoff 輸入，附節點、證據與下一步 |
-| `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG、PNG、JPG、WebP 或 AVIF；`--max-kb` 會降低有損品質直到符合大小；`--bounds layout` 以 layout box 而非 render bounds 匯出 |
+| `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N] [--match-dir DIR]` | SVG、PNG、JPG、WebP 或 AVIF；`--max-kb` 會降低有損品質直到符合大小；`--bounds layout` 以 layout box 而非 render bounds 匯出；`--match-dir DIR`（僅 SVG，含子資料夾）列出繪製相同輪廓的 SVG（`matches`），以及最多 10 個附分數的相似形狀（`similar`） |
 | `export <file> --frames <list> --out-dir <dir> [--format F] [--scale N] ...`, `--frames -` (stdin) | 一次解碼匯出多個節點（預設 `png`）：寫入 `<dir>/<nodeId>.<format>`，每個 id 一行 JSON（帶 `nodeId` 的 `export` 輸出，或 `{nodeId, error}`） |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 本機唯讀 viewer；`--out` 會寫出獨立的離線快照 |
 | `compare <file> <nodes.json> <node>` | 與同一 frame 的 REST 匯出做差異比對 |

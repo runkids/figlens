@@ -162,14 +162,14 @@ skillshare sync && skillshare sync mcp --global
 | `tree <file> [node] --top-frames [--json]` | 画面だけを 1 行に 1 つ、`--frames -` にそのまま渡せる形で出力。ページまたはそのセクション直下のフレーム、コンポーネント、コンポーネントセット、インスタンス（グループと内部ページは除外）。`--json` はページとセクションの ID を追加 |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | レイヤー名とテキストの大文字小文字を区別しない検索。パス、サイズ、プレビュー。デフォルト 20 件（1-200） |
 | `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | インスタンスのオーバーライド、テキスト/ブーリアンプロパティ、スワップを適用したレイヤー名と全文のランク付き検索。正確なノード参照（`inspect` で使える `I…;…` サブレイヤー ID を含む）、一致理由、UTF-16 範囲、カバレッジ、カーソルによるページ送り。デフォルト 20 件（1-200）。非表示レイヤーと内部ページはそれぞれのフラグが必要 |
-| `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | 展開済みレイアウト/テキストのコンパクトな要約（最大 200 ノード）。`--images` でビットマップの寸法とクロップ範囲を追加 |
+| `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | 展開済みレイアウト/テキストのコンパクトな要約（最大 200 ノード）。`--images` でビットマップの寸法とクロップ範囲を追加。`--flat` は代わりに 1 ノード 1 行で出力（ノード基準の位置、サイズ、テキスト、フォント、塗り、線、角丸、auto-layout） |
 | `nodes <file> <node>` | REST nodes レスポンスのノードごとのオブジェクト（`document`、`components`、`componentSets`、`styles`）：展開済みインスタンスとオーバーライド、auto-layout、テキストスタイル、フィル、エフェクト、バインドされた variables、コンポーネントプロパティ、レンダリング bounds |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | 1 回のデコードで複数ノード：リストの id ごとに 1 行の JSON（`nodeId` 付きの `nodes` 出力、または `{nodeId, error}`） |
 | `variables <file> [node]` | frame にバインドされた variables。node を省略すると、すべてのローカル variables |
 | `bundle <file> <node> <out.zip> [--states]` | 1 つの frame の design bundle。`{nodeId, path, warnings}` を出力 |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | 1 回のデコードから複数の bundle を並列生成 |
 | `verify <bundle>` | bundle（`.zip` または展開したディレクトリ）を manifest と照合：検証済み・欠落・変更されたファイル、欠落アセット、プロジェクトで確認すべきフォント、および `findings`：欠落・未対応・未検証の handoff 入力ごとのノード、根拠、次のアクション |
-| `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG、PNG、JPG、WebP、AVIF。`--max-kb` は収まるまで非可逆の品質を下げる。`--bounds layout` は render bounds ではなく layout box で書き出す |
+| `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N] [--match-dir DIR]` | SVG、PNG、JPG、WebP、AVIF。`--max-kb` は収まるまで非可逆の品質を下げる。`--bounds layout` は render bounds ではなく layout box で書き出す。`--match-dir DIR`（SVG のみ、サブフォルダ含む）は同じアウトラインを描く SVG（`matches`）と、スコア付きの類似形状を最大 10 件（`similar`）列挙 |
 | `export <file> --frames <list> --out-dir <dir> [--format F] [--scale N] ...`, `--frames -` (stdin) | 1 回のデコードで複数を書き出し（既定は `png`）：`<dir>/<nodeId>.<format>` に書き、id ごとに 1 行の JSON（`nodeId` 付きの `export` 出力、または `{nodeId, error}`） |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | ローカルの読み取り専用 viewer。`--out` でスタンドアロンのオフラインスナップショットを書き出し |
 | `compare <file> <nodes.json> <node>` | 同じ frame の REST エクスポートとの差分 |

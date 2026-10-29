@@ -43,14 +43,20 @@ usage:
                                              boolean properties and swaps applied; exact refs, match
                                              reasons, UTF-16 spans, coverage and cursor pages (20, 1-200);
                                              hidden layers and internal pages need their flag
-  figlens inspect <file.fig> <node> [--depth N] [--images] [--states] [--compare-variant ID]
+  figlens inspect <file.fig> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]
                                              compact layout/text summary, instances expanded;
                                              depth 1 (0-10), at most 200 nodes, 200 characters per text;
                                              recorded text resize/truncation/decoration and known handoff gaps;
                                              childSpacing: derived marks gaps that are coordinates, not auto-layout;
                                              --images adds source pixels/bytes and source-pixel crop rectangles;
                                              --states lists related component variants and evidence gaps;
-                                             --compare-variant compares two stored variants in the same set
+                                             --compare-variant compares two stored variants in the same set;
+                                             --flat prints one line per node instead (not with the above):
+                                             id TYPE \"name\" @x,y WxH relative to the node, then hidden, rot,
+                                             component, text, font=family size/weight/lineHeight, fill,
+                                             stroke=paint/weight, r, H|V gap or GRID, pad=top,right,bottom,left
+                                             or spacing=derived, and opacity when set; children=N and
+                                             `… N more` mark omissions
   figlens nodes <file.fig> <node>              print a frame as the per-node object of a Figma REST
                                              nodes response: {document, components, componentSets,
                                              styles, schemaVersion}; instances expanded,
@@ -74,7 +80,7 @@ usage:
                                              per frame ({nodeId,path,warnings} or {nodeId,error});
                                              --jobs limits concurrent frames (0/default: all cores), not rendering
   figlens export <file.fig> <node> <out> [--bounds layout|render] [--scale N] [--quality 1-100]
-          [--max-kb N] [--max-size N]
+          [--max-kb N] [--max-size N] [--match-dir DIR]
                                             render a node to out.png|jpg|webp|avif|svg (default 1x,
                                              quality 80); SVG keeps vectors, scale/quality do not apply;
                                              --max-kb lowers lossy quality until it fits;
@@ -82,7 +88,13 @@ usage:
                                              --bounds layout exports the node's own box instead of
                                              what it draws (shadows, outside strokes, overflow);
                                              prints {path,width,height,bytes,quality,layoutBox,
-                                             renderBox,warnings}; warnings say when the boxes differ
+                                             renderBox,warnings}; warnings say when the boxes differ;
+                                             --match-dir (SVG only) compares with the .svg files under DIR
+                                             (subfolders included) to find an icon the project already has:
+                                             matches lists those drawing the same outlines, ignoring position,
+                                             paint and path syntax; similar lists up to 10 {file,score} (0.8-1)
+                                             drawing a similar shape, stroked or at another size, to confirm
+                                             by eye (1 for the same outlines at another size)
   figlens export <file.fig> --frames <list|-> --out-dir <dir> [--format png|jpg|webp|avif|svg] ...
                                              one decode, many exports (default png, same options):
                                              writes <dir>/<nodeId>.<format> (`:` as `-`), prints one
@@ -524,7 +536,7 @@ fn export_batch(
             "--frames" => list = Some(value()?),
             "--out-dir" => dir = Some(value()?),
             "--format" => format = value()?.to_ascii_lowercase(),
-            "--bounds" | "--scale" | "--quality" | "--max-kb" | "--max-size" => {
+            "--bounds" | "--scale" | "--quality" | "--max-kb" | "--max-size" | "--match-dir" => {
                 options.extend([arg.clone(), value()?]);
             }
             _ => return Err(USAGE.into()),
@@ -535,7 +547,9 @@ fn export_batch(
     // Bad options fail once, before any file is written, instead of on every line.
     let export_format = figlens::export::Format::from_ext(&format)
         .ok_or("--format takes png, jpg, webp, avif or svg")?;
-    let (layout, scale, quality, max_kb, max_size) = command::export_options(&options)?;
+    let (layout, scale, quality, max_kb, max_size, match_dir) = command::export_options(&options)?;
+    // Every export compares against the folder as it was before the batch wrote anything.
+    let match_index = command::match_index(match_dir, export_format)?;
     std::fs::create_dir_all(&dir)?;
     // shortcut: frames export one after another; add bundle's --jobs if large batches need it.
     batch_lines(&frames, out, |id| {
@@ -548,6 +562,7 @@ fn export_batch(
             quality,
             max_kb,
             max_size,
+            match_index: match_index.clone(),
         };
         let output = export.execute(tree, fig).map_err(|e| e.to_string())?;
         Ok(output.json().cloned().unwrap_or_default())

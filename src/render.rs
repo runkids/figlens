@@ -239,7 +239,8 @@ fn path_d(segs: &[Seg], m: Mat) -> String {
     d
 }
 
-fn num(x: f64) -> String {
+/// `x` with at most four decimals and no trailing zeros.
+pub fn num(x: f64) -> String {
     let s = format!("{:.4}", x);
     let s = s.trim_end_matches('0').trim_end_matches('.');
     if s == "-0" { "0".into() } else { s.into() }
@@ -298,7 +299,7 @@ fn kiwi_mat(t: &Json) -> Mat {
     }
 }
 
-pub(crate) fn visible(p: &Json) -> bool {
+pub fn visible(p: &Json) -> bool {
     p["visible"] != Json::Bool(false) && p["opacity"].as_f64().unwrap_or(1.0) > 0.0
 }
 
@@ -1993,7 +1994,8 @@ fn alpha_attr(name: &str, a: f64) -> String {
     }
 }
 
-fn hex(c: &Json) -> String {
+/// A REST color as `#rrggbb`, alpha ignored.
+pub fn hex(c: &Json) -> String {
     let ch = |k: &str| (c[k].as_f64().unwrap_or(0.0).clamp(0.0, 1.0) * 255.0).round() as u8;
     format!("#{:02x}{:02x}{:02x}", ch("r"), ch("g"), ch("b"))
 }

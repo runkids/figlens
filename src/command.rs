@@ -3,8 +3,10 @@
 use std::error::Error;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use figlens::expand::plugin_type;
+use figlens::export::SvgIndex;
 use figlens::rest::resolve_nodes;
 use figlens::variables::variables;
 use figlens::{Tree, normalize_id, to_json};
@@ -40,6 +42,8 @@ pub enum Command {
         images: bool,
         states: bool,
         compare_variant: Option<String>,
+        /// One line per node instead of JSON.
+        flat: bool,
     },
     Variables(Option<String>),
     Bundle {
@@ -60,11 +64,18 @@ pub enum Command {
         max_kb: Option<usize>,
         /// Longest side in pixels; raster formats are scaled down to fit.
         max_size: Option<u32>,
+        /// SVGs to report the files drawing the same or a similar shape.
+        match_index: Option<Arc<SvgIndex>>,
     },
 }
 
 pub enum Output {
     Text(String),
+    /// Text for people and grep, with the same content as JSON for MCP structured output.
+    Lines {
+        text: String,
+        value: Value,
+    },
     Json {
         value: Value,
         pretty: bool,
@@ -79,7 +90,7 @@ pub enum Output {
 impl Output {
     pub fn text(&self) -> Result<String, serde_json::Error> {
         match self {
-            Self::Text(text) => Ok(text.clone()),
+            Self::Text(text) | Self::Lines { text, .. } => Ok(text.clone()),
             Self::Image { value, .. } => Ok(format!("{}\n", serde_json::to_string(value)?)),
             Self::Json { value, pretty } => Ok(format!(
                 "{}\n",
@@ -94,7 +105,9 @@ impl Output {
 
     pub fn json(&self) -> Option<&Value> {
         match self {
-            Self::Json { value, .. } | Self::Image { value, .. } => Some(value),
+            Self::Json { value, .. } | Self::Image { value, .. } | Self::Lines { value, .. } => {
+                Some(value)
+            }
             Self::Text(_) => None,
         }
     }
@@ -180,7 +193,7 @@ impl Command {
             }
             "inspect" => {
                 let node = node()?;
-                let (mut depth, mut images, mut states) = (1, false, false);
+                let (mut depth, mut images, mut states, mut flat) = (1, false, false, false);
                 let mut compare_variant = None;
                 let mut rest = args[1..].iter();
                 while let Some(flag) = rest.next() {
@@ -190,6 +203,7 @@ impl Command {
                         }
                         "--images" => images = true,
                         "--states" => states = true,
+                        "--flat" => flat = true,
                         "--compare-variant" => {
                             compare_variant = Some(
                                 rest.next()
@@ -206,6 +220,7 @@ impl Command {
                     images,
                     states,
                     compare_variant,
+                    flat,
                 }
             }
             "variables" => Self::Variables(args.first().cloned()),
@@ -238,7 +253,8 @@ impl Command {
                 let id = normalize_id(&node);
                 require_target_root(tree, &id)?;
                 let format = export_format(&out)?;
-                let (layout, scale, quality, max_kb, max_size) = export_options(&args[2..])?;
+                let (layout, scale, quality, max_kb, max_size, match_dir) =
+                    export_options(&args[2..])?;
                 Self::Export {
                     node,
                     out: out.into(),
@@ -248,6 +264,7 @@ impl Command {
                     quality,
                     max_kb,
                     max_size,
+                    match_index: match_index(match_dir, format)?,
                 }
             }
             _ => return Err(USAGE.into()),
@@ -259,6 +276,7 @@ impl Command {
         call: &crate::contract::PreparedCall,
         tree: &Tree,
         output: Option<&Path>,
+        match_dir: Option<&Path>,
     ) -> Result<Self, Box<dyn Error>> {
         let string = |key: &str| call.string(key).map(str::to_owned);
         let node = || string("node").ok_or(USAGE);
@@ -282,6 +300,7 @@ impl Command {
                 images: call.argument("images") == true,
                 states: call.argument("states") == true,
                 compare_variant: string("compareVariant"),
+                flat: call.argument("flat") == true,
             },
             "variables" => Self::Variables(string("node")),
             "bundle" => {
@@ -311,6 +330,10 @@ impl Command {
                     max_kb: call.argument("maxKb").as_u64().map(|n| n as usize),
                     // Tool calls return the image inline, so cap it unless the agent says otherwise.
                     max_size: Some(call.argument("maxSize").as_u64().unwrap() as u32),
+                    match_index: match_index(
+                        match_dir.map(Path::to_owned),
+                        export_format(call.string("out").unwrap())?,
+                    )?,
                 }
             }
             _ => return Err(USAGE.into()),
@@ -414,8 +437,22 @@ impl Command {
                 images,
                 states,
                 compare_variant,
+                flat,
             } => {
                 let id = normalize_id(&node);
+                if flat {
+                    if images || states || compare_variant.is_some() {
+                        return Err(
+                            "--flat cannot be combined with --images, --states or --compare-variant"
+                                .into(),
+                        );
+                    }
+                    let (text, truncated) = discover::inspect_flat(tree, &id, depth)?;
+                    return Ok(Output::Lines {
+                        value: json!({ "flat": text, "truncated": truncated }),
+                        text,
+                    });
+                }
                 let compare_variant = compare_variant.as_deref().map(normalize_id);
                 compact(discover::inspect(
                     tree,
@@ -474,6 +511,7 @@ impl Command {
                 quality,
                 max_kb,
                 max_size,
+                match_index,
             } => {
                 let id = normalize_id(&node);
                 require_target_root(tree, &id)?;
@@ -496,6 +534,13 @@ impl Command {
                 let mut value = json!({ "path": out.to_string_lossy(), "width": image.width, "height": image.height,
                     "bytes": image.bytes.len(), "quality": image.quality });
                 value.as_object_mut().unwrap().extend(report);
+                if let Some(index) = match_index {
+                    // The export itself may sit in the folder; it is not a match.
+                    let own = std::fs::canonicalize(&out).ok();
+                    let (matches, similar) = index.compare(&image.bytes, own.as_deref());
+                    value["matches"] = json!(matches);
+                    value["similar"] = json!(similar);
+                }
                 let mime = match format {
                     // Model image inputs commonly accept raster formats, not SVG attachments.
                     figlens::export::Format::Svg => return Ok(compact(value)),
@@ -514,11 +559,11 @@ impl Command {
     }
 }
 
-/// `--bounds`, `--scale`, `--quality`, `--max-kb` and `--max-size`, as
-/// `(layout, scale, quality, max_kb, max_size)`.
+/// `--bounds`, `--scale`, `--quality`, `--max-kb`, `--max-size` and `--match-dir`, as
+/// `(layout, scale, quality, max_kb, max_size, match_dir)`.
 pub fn export_options(args: &[String]) -> Result<ExportOptions, Box<dyn Error>> {
-    let (mut layout, mut scale, mut quality, mut max_kb, mut max_size) =
-        (false, 1.0_f64, 80, None, None);
+    let (mut layout, mut scale, mut quality, mut max_kb, mut max_size, mut match_dir) =
+        (false, 1.0_f64, 80, None, None, None);
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let mut value = || rest.next().ok_or(format!("{arg} needs a value"));
@@ -534,14 +579,15 @@ pub fn export_options(args: &[String]) -> Result<ExportOptions, Box<dyn Error>> 
             "--quality" => quality = value()?.parse()?,
             "--max-kb" => max_kb = Some(value()?.parse::<usize>()?),
             "--max-size" => max_size = Some(value()?.parse::<u32>()?),
+            "--match-dir" => match_dir = Some(PathBuf::from(value()?)),
             _ => return Err(USAGE.into()),
         }
     }
     check_export(scale, quality, max_kb)?;
-    Ok((layout, scale, quality, max_kb, max_size))
+    Ok((layout, scale, quality, max_kb, max_size, match_dir))
 }
 
-type ExportOptions = (bool, f64, u8, Option<usize>, Option<u32>);
+type ExportOptions = (bool, f64, u8, Option<usize>, Option<u32>, Option<PathBuf>);
 
 /// Rejects out-of-range options; returns `--max-kb` in bytes.
 fn check_export(
@@ -648,6 +694,20 @@ pub fn search(
         value,
         pretty: false,
     })
+}
+
+/// The `--match-dir` folder parsed once, for SVG output only.
+pub fn match_index(
+    dir: Option<PathBuf>,
+    format: figlens::export::Format,
+) -> Result<Option<Arc<SvgIndex>>, Box<dyn Error>> {
+    let Some(dir) = dir else {
+        return Ok(None);
+    };
+    if format != figlens::export::Format::Svg {
+        return Err("--match-dir needs an .svg output".into());
+    }
+    Ok(Some(Arc::new(SvgIndex::load(&dir)?)))
 }
 
 fn export_format(out: &str) -> Result<figlens::export::Format, Box<dyn Error>> {

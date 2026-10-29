@@ -90,6 +90,8 @@ struct AdmittedCall {
     output: Option<PathBuf>,
     /// A bundle to verify: read, never loaded as a design.
     input: Option<PathBuf>,
+    /// An export's folder of SVGs to compare against.
+    match_dir: Option<PathBuf>,
 }
 
 enum Source {
@@ -222,7 +224,8 @@ fn admit(line: &str, roots: &[PathBuf]) -> Admission {
                 };
                 let output = call.string("out").map(|out| checked_path(Path::new(out), roots)).transpose()?;
                 let input = call.string("bundle").map(|path| checked_path(Path::new(path), roots)).transpose()?;
-                Ok(AdmittedCall { id:id.clone(), call, source, output, input })
+                let match_dir = call.string("matchDir").map(|path| checked_path(Path::new(path), roots)).transpose()?;
+                Ok(AdmittedCall { id:id.clone(), call, source, output, input, match_dir })
             });
             return match admitted {
                 Ok(call) => Admission::Call(call),
@@ -259,6 +262,7 @@ impl AdmittedCall {
             .into_iter()
             .chain(self.output.as_deref())
             .chain(self.input.as_deref())
+            .chain(self.match_dir.as_deref())
         {
             // Recheck current filesystem state, not raw arguments or a permanent authorization lease.
             checked_path(path, roots)?;
@@ -296,8 +300,13 @@ impl AdmittedCall {
                     .map_err(contract::Failure::from_error);
             }
             let run = |tree: &Tree, path: &Path| {
-                command::Command::from_tool(&self.call, tree, self.output.as_deref())?
-                    .execute(tree, path)
+                command::Command::from_tool(
+                    &self.call,
+                    tree,
+                    self.output.as_deref(),
+                    self.match_dir.as_deref(),
+                )?
+                .execute(tree, path)
             };
             let result: Result<command::Output, Box<dyn Error>> = (|| {
                 if let Some((path, tree)) = loaded {

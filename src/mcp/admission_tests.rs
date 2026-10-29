@@ -434,7 +434,7 @@ fn non_utf8_output_targets_are_not_reinterpreted_as_lossy_paths() {
         )
         .unwrap();
         // Assert the handoff without requiring the host filesystem to store non-UTF-8 names.
-        let command = command::Command::from_tool(&prepared, &tree, Some(&target)).unwrap();
+        let command = command::Command::from_tool(&prepared, &tree, Some(&target), None).unwrap();
         let out = match command {
             command::Command::Bundle { out, .. } | command::Command::Export { out, .. } => out,
             _ => panic!("expected output command"),
@@ -442,6 +442,41 @@ fn non_utf8_output_targets_are_not_reinterpreted_as_lossy_paths() {
         assert_eq!(out, target);
         assert_ne!(out, PathBuf::from(target.to_string_lossy().as_ref()));
     }
+}
+
+#[test]
+fn export_match_dir_stays_inside_roots_and_flat_inspect_is_structured() {
+    let inside = TestDir::new();
+    let outside = TestDir::new();
+    let file = fixture(&inside, "design.fig");
+    let roots = [inside.join("").canonicalize().unwrap()];
+    let export = |id, dir: PathBuf| {
+        let args = json!({"file":file,"node":"0:2","out":inside.join("card.svg"),"matchDir":dir});
+        rooted_reply(&call(json!(id), "export", args), &roots)
+    };
+    assert_eq!(
+        export(1, outside.join(""))["result"]["_meta"]["figlens"]["code"],
+        "permission_denied"
+    );
+    let matches =
+        |id| export(id, inside.join(""))["result"]["structuredContent"]["matches"].clone();
+    // The export itself is in the folder but is not reported.
+    assert_eq!(matches(2), json!([]));
+    std::fs::copy(inside.join("card.svg"), inside.join("copy.svg")).unwrap();
+    assert_eq!(matches(3), json!(["copy.svg"]));
+    let flat = rooted_reply(
+        &call(
+            json!(4),
+            "inspect",
+            json!({"file":file,"node":"0:1","flat":true}),
+        ),
+        &roots,
+    );
+    let result = &flat["result"];
+    assert_eq!(
+        result["structuredContent"]["flat"],
+        result["content"][0]["text"]
+    );
 }
 
 #[test]

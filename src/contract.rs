@@ -172,6 +172,12 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 false,
                 "compare node with this other stored variant in the same component set; adds bounded raw-field and descendant-multiset differences, exact sources and unknown pairing; no alternate rendering or business inference",
             ),
+            (
+                "flat",
+                "boolean",
+                false,
+                "one line per node instead of node JSON, for scanning a screen against an implementation: id, type, name, @x,y WxH relative to the inspected node, then hidden, rot, component, text, font=family size/weight/lineHeight, fill, stroke=paint/weight, r, H|V gap or GRID (grid gaps are not decoded), pad=top,right,bottom,left (or spacing=derived without auto-layout), opacity when set; children=N and '… N more' mark omitted nodes; same depth and node limits; not combinable with images, states or compareVariant; default false",
+            ),
         ],
     ),
     (
@@ -261,6 +267,12 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 false,
                 "longest side in pixels, default 1600; 0 keeps the scaled size",
             ),
+            (
+                "matchDir",
+                "string",
+                false,
+                "SVG output only: a folder of SVG files, subfolders included, to compare with the export, to find an icon the project already has; matches lists the files (relative paths) that draw the same outlines once both are moved to the origin, ignoring paint, ids and path syntax; similar lists up to 10 others with a similar shape (drawn with strokes, or the same outlines at another size, which score 1) as {file, score} from 0.8, best first; confirm a similar file by looking at both",
+            ),
         ],
     ),
 ];
@@ -299,6 +311,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
         ),
         "inspect" => (
             serde_json::json!({
+                "flat": {"type": "string", "description": "the one-line-per-node text when flat=true, instead of node"},
                 "node": {"type": "object", "description": "Compact node with partial layout semantics and type-only property definitions; childSpacing \"derived\" marks a parent without auto-layout; _figlens.semantics records source/verification. Definitions, definition evidence and _figlens.renderDiagnostics each have at most 20 entries per node; truncated includes omitted nodes or entries"},
                 "truncated": {"type": "boolean"},
                 "images": {"type": "object", "description": "optional source image evidence when images=true"},
@@ -306,7 +319,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "variantComparison": {"type":"object", "description":"optional same-set definition comparison when compareVariant is supplied; raw fields, descendant value multisets, unpaired nodes, unknowns and independent truncation; not a pixel comparison"},
                 "handoffDiagnostics": {"type":"object", "description":"optional known stored semantics not emitted by the projection; counts cover the selected expanded subtree independently of summary depth, with at most five example IDs per feature and explicit coverage limits"},
             }),
-            ["node", "truncated"].as_slice(),
+            ["truncated"].as_slice(),
         ),
         "export" => (
             serde_json::json!({
@@ -318,6 +331,8 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "layoutBox": { "type": ["object", "null"], "description": "absoluteBoundingBox in page coordinates" },
                 "renderBox": { "type": ["object", "null"], "description": "absoluteRenderBounds in page coordinates" },
                 "warnings": { "type": "array", "items": { "type": "string" }, "description": "empty unless the drawn area differs from the layout box; then how far it reaches past each side, what draws there when known, and which box was exported" },
+                "matches": { "type": "array", "items": { "type": "string" }, "description": "with matchDir: files there (relative paths) that draw the same outlines" },
+                "similar": { "type": "array", "items": { "type": "object" }, "description": "with matchDir: up to 10 other files with a similar shape as {file, score}, score 0.8-1, best first; not proof of the same icon" },
             }),
             ["path", "width", "height", "bytes", "quality"].as_slice(),
         ),
@@ -383,7 +398,7 @@ fn default(tool: &str, key: &str) -> Option<Value> {
         ("tree", "depth") => Some(json!(usize::MAX)),
         ("tree" | "find" | "search", "node") => Some(json!("0:0")),
         ("tree", "json" | "topFrames")
-        | ("inspect", "images" | "states")
+        | ("inspect", "images" | "states" | "flat")
         | ("bundle", "states")
         | ("search", "includeHidden" | "includeInternal") => Some(json!(false)),
         ("inspect", "depth") | ("export", "scale") => Some(json!(1)),
@@ -422,7 +437,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
     }
     if matches!(
         key,
-        "file" | "out" | "query" | "compareVariant" | "bundle" | "cursor"
+        "file" | "out" | "query" | "compareVariant" | "bundle" | "cursor" | "matchDir"
     ) {
         p["minLength"] = json!(1);
     }

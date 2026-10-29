@@ -162,14 +162,14 @@ skillshare sync && skillshare sync mcp --global
 | `tree <file> [node] --top-frames [--json]` | 화면만 한 줄에 하나씩, `--frames -`에 바로 넘길 수 있게 출력. 페이지나 그 섹션 바로 아래의 프레임, 컴포넌트, 컴포넌트 세트, 인스턴스(그룹과 내부 페이지 제외). `--json`은 페이지와 섹션 ID를 추가 |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 대소문자 구분 없이 레이어 이름과 텍스트 검색. 경로, 크기, 미리보기. 기본 20개(1-200) |
 | `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | 인스턴스 오버라이드, 텍스트/불리언 속성, 스왑을 적용한 레이어 이름과 전체 텍스트의 순위 검색. 정확한 노드 참조(`inspect`에 쓰는 `I…;…` 하위 레이어 ID 포함), 일치 이유, UTF-16 범위, 커버리지, 커서 페이지. 기본 20개(1-200), 숨긴 레이어와 내부 페이지는 해당 플래그 필요 |
-| `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | 펼쳐진 간결한 레이아웃/텍스트 요약, 최대 200노드. `--images`는 비트맵 크기와 크롭 범위를 추가 |
+| `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | 펼쳐진 간결한 레이아웃/텍스트 요약, 최대 200노드. `--images`는 비트맵 크기와 크롭 범위를 추가. `--flat`은 대신 노드당 한 줄로 출력(노드 기준 위치, 크기, 텍스트, 폰트, 채우기, 선, 반경, auto-layout) |
 | `nodes <file> <node>` | REST nodes 응답의 노드별 객체(`document`, `components`, `componentSets`, `styles`): 펼쳐진 인스턴스와 재정의, 자동 레이아웃, 텍스트 스타일, 채우기, 효과, 연결 변수, 컴포넌트 속성, 렌더링 경계 |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | 한 번 디코딩해 여러 노드: 목록의 id마다 JSON 한 줄(`nodeId`가 붙은 `nodes` 출력 또는 `{nodeId, error}`) |
 | `variables <file> [node]` | frame에 연결된 변수. 노드 없이 실행하면 모든 로컬 변수 |
 | `bundle <file> <node> <out.zip> [--states]` | 한 frame의 디자인 bundle. `{nodeId, path, warnings}` 출력 |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | 한 번 디코딩해 여러 bundle을 병렬 생성 |
 | `verify <bundle>` | bundle(`.zip` 또는 압축을 푼 디렉터리)을 manifest와 대조: 검증·누락·변경된 파일, 누락된 asset, 프로젝트에서 확인할 폰트, 그리고 `findings`: 누락·미지원·미검증 handoff 입력마다 노드, 근거, 다음 조치 |
-| `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG, PNG, JPG, WebP, AVIF. `--max-kb`는 크기에 맞을 때까지 손실 품질을 낮춤. `--bounds layout`은 render bounds 대신 layout box로 내보냄 |
+| `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N] [--match-dir DIR]` | SVG, PNG, JPG, WebP, AVIF. `--max-kb`는 크기에 맞을 때까지 손실 품질을 낮춤. `--bounds layout`은 render bounds 대신 layout box로 내보냄. `--match-dir DIR`(SVG만, 하위 폴더 포함)은 같은 윤곽을 그리는 SVG(`matches`)와 점수가 붙은 비슷한 형태 최대 10개(`similar`)를 나열 |
 | `export <file> --frames <list> --out-dir <dir> [--format F] [--scale N] ...`, `--frames -` (stdin) | 한 번 디코딩해 여러 개 내보내기(기본 `png`): `<dir>/<nodeId>.<format>`에 쓰고 id마다 JSON 한 줄(`nodeId`가 붙은 `export` 출력 또는 `{nodeId, error}`) |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 로컬 읽기 전용 viewer. `--out`은 독립 오프라인 스냅샷 생성 |
 | `compare <file> <nodes.json> <node>` | 같은 frame의 REST 내보내기와 차이 비교 |
