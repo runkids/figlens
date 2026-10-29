@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.9.3](https://github.com/runkids/figlens/compare/v0.9.2...v0.9.3) (2026-10-29)
+
+
+### New Features
+
+* **export:** export at the layout box and report both boxes ([#86](https://github.com/runkids/figlens/issues/86)) ([2e71d4e](https://github.com/runkids/figlens/commit/2e71d4e5844a4a5e6378b0492081d5d605fc1579))
+* **export:** export many nodes from one decode ([#84](https://github.com/runkids/figlens/issues/84)) ([a2b9211](https://github.com/runkids/figlens/commit/a2b9211514e5e0cace07172e1c20d4b34e5b5654))
+* **render:** decode and draw per-side stroke weights ([#96](https://github.com/runkids/figlens/issues/96)) ([d832069](https://github.com/runkids/figlens/commit/d83206940db8ca6b3a68891169dc259328c3a65f))
+* **tree:** include size and visibility in --json ([#99](https://github.com/runkids/figlens/issues/99)) ([d1f63b2](https://github.com/runkids/figlens/commit/d1f63b2dca4191d2ada3348dedb98dbb38f27ac3))
+
+
+### Bug Fixes
+
+* **tree:** print the REST node types nodes and find use ([#97](https://github.com/runkids/figlens/issues/97)) ([0363bb8](https://github.com/runkids/figlens/commit/0363bb8fe2f4c5e27cc218fbac54d9a96bc3a975))
+
 ## [0.9.2](https://github.com/runkids/figlens/compare/v0.9.1...v0.9.2) (2026-10-29)
 
 
