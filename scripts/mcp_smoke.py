@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import json
 import os
 import queue
+import shutil
 import subprocess
 import threading
 from installation import run, stop_process
@@ -77,7 +78,7 @@ def check_mcp(command, cwd, env, fixture, version):
         assert initialized['serverInfo']['version'] == version, initialized
         request('notifications/initialized', {})
         tools = request('tools/list', {})['tools']
-        assert {'find', 'search', 'inspect', 'nodes', 'bundle', 'export', 'workflow', 'index', 'jobs'} <= {t['name'] for t in tools}
+        assert {'find', 'search', 'inspect', 'diff', 'nodes', 'bundle', 'export', 'workflow', 'index', 'jobs'} <= {t['name'] for t in tools}
         found = request('tools/call', {'name': 'find', 'arguments': {'file': str(fixture), 'query': 'First success', 'type': 'FRAME'}})
         assert found['isError'] is False and found['structuredContent']['results'][0]['id'] == '0:1', found
         searched = request('tools/call', {'name': 'search', 'arguments': {'file': str(fixture), 'query': 'First success'}})
@@ -86,6 +87,18 @@ def check_mcp(command, cwd, env, fixture, version):
         ref = searched['structuredContent']['results'][0]['ref']['nodeId']
         opened = request('tools/call', {'name': 'inspect', 'arguments': {'file': str(fixture), 'node': ref}})
         assert opened['isError'] is False and opened['structuredContent']['node']['id'] == ref, opened
+        # Wiring only: two copies of one file are two sources with no changes; the engine's
+        # revised-pair semantics are tested in the crate.
+        old = fixture.with_name('diff-old.fig')
+        shutil.copyfile(fixture, old)
+        try:
+            diffed = request('tools/call', {'name': 'diff', 'arguments': {'old': str(old), 'file': str(fixture)}})
+        finally:
+            old.unlink()
+        pair = diffed.get('structuredContent', {})
+        assert diffed['isError'] is False and pair['coverage']['complete'] is True and pair['coverage']['changes'] == 0, diffed
+        assert pair['source']['old']['sourceId'] != pair['source']['new']['sourceId'], diffed
+        assert pair['source']['old']['snapshotId'] == pair['source']['new']['snapshotId'], diffed
         failed = request('tools/call', {'name': 'inspect', 'arguments': {'file': str(fixture), 'node': '9:9'}})
         assert failed['isError'] is True and failed['_meta']['figlens']['code'] == 'node_not_found', failed
         schema = next(t for t in tools if t['name'] == 'inspect')['inputSchema']
@@ -108,4 +121,4 @@ def check_mcp(command, cwd, env, fixture, version):
         cli_audit = run([*command[:-1], 'workflow', 'audit'], cwd, env)
         assert '# Audit an existing UI' in cli_audit
         assert cli_audit.split('# Audit an existing UI', 1)[1].rstrip() == audit['content'][0]['text'].split('# Audit an existing UI', 1)[1].rstrip()
-    return {"recoveredAfterMissingNode": True, "searchedExactRef": True, "numericPreflight": True, "strictRejectionAndRecovery": True, "stdout": "JSON-RPC only"}
+    return {"recoveredAfterMissingNode": True, "searchedExactRef": True, "diffedTwoCopies": True, "numericPreflight": True, "strictRejectionAndRecovery": True, "stdout": "JSON-RPC only"}

@@ -16,6 +16,7 @@ await mkdir(path.join(project, 'src'), { recursive: true });
 process.env.PI_CODING_AGENT_DIR = path.join(output, 'agent');
 process.env.FIGLENS_BIN = binary;
 await copyFile(new URL('../samples/plugin-research/fixtures/mapping.fig', import.meta.url), path.join(project, 'mapping.fig'));
+await copyFile(path.join(project, 'mapping.fig'), path.join(project, 'mapping-old.fig'));
 await writeFile(path.join(project, 'src/Button.mjs'), 'export const Button = () => "button";\n');
 const execute = promisify(execFile);
 const flow = new Workflow(project, async args => JSON.parse((await execute(binary, args, { cwd: project })).stdout));
@@ -86,8 +87,14 @@ await check('packaged descriptor, bridge handshake and absolute design path', as
     assert.equal(searched.structuredContent.coverage.complete, true);
     const inspected = await callTool(connection, 'inspect', { file: path.join(project, 'mapping.fig'), node: searched.structuredContent.results[0].ref.nodeId });
     assert.equal(inspected.structuredContent.node.id, '0:1');
+    // Wiring only: two copies of one file are two sources with no changes.
+    const diffed = await callTool(connection, 'diff', { old: path.join(project, 'mapping-old.fig'), file: path.join(project, 'mapping.fig') });
+    assert.equal(diffed.isError, false);
+    assert.equal(diffed.structuredContent.coverage.complete, true);
+    assert.equal(diffed.structuredContent.coverage.changes, 0);
+    assert.notEqual(diffed.structuredContent.source.old.sourceId, diffed.structuredContent.source.new.sourceId);
     return { descriptorCwd: config.cwd, bridge: config.args[0], absoluteFrame: '0:1', relativePathRejected: true,
-      searchRef: searched.structuredContent.results[0].ref };
+      searchRef: searched.structuredContent.results[0].ref, diffedTwoCopies: diffed.structuredContent.source };
   } finally { await disconnectServer(connection); }
 });
 await check('native disabled and remote overrides retain priority over the package descriptor', async () => {

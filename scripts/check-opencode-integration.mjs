@@ -18,18 +18,20 @@ const project = path.join(output, 'project'), config = path.join(output, 'config
 await mkdir(path.join(project, 'src'), { recursive: true });
 await mkdir(config);
 await copyFile(new URL('../samples/plugin-research/fixtures/mapping.fig', import.meta.url), path.join(project, 'mapping.fig'));
+await copyFile(path.join(project, 'mapping.fig'), path.join(project, 'mapping-old.fig'));
 await writeFile(path.join(project, 'src/Button.mjs'), 'export const Button = () => "button";\n');
 // Scripted loopback provider: each turn returns a fixed Code Mode `execute` call (find the figlens
-// paths, search, then inspect the returned ref), so the real session loop runs the managed MCP
+// paths, search, inspect the returned ref, then diff two copies of the file), so the real session loop runs the managed MCP
 // tools. Deterministic routing evidence, not a model.
 const scripted = { results: [], tools: null };
 const fixture = path.join(project, 'mapping.fig');
 // A step without its prerequisite ends the turn, so a missing tool fails the check instead of retrying.
 const tool = (paths, name) => Array.isArray(paths) && paths.find(item => item.endsWith(`.${name}`) || item.endsWith(`["${name}"]`));
 const steps = [
-  () => `return ['search', 'inspect'].flatMap(query => search({ query, namespace: 'figlensmcp' }).items.map(item => item.path));`,
+  () => `return ['search', 'inspect', 'diff'].flatMap(query => search({ query, namespace: 'figlensmcp' }).items.map(item => item.path));`,
   paths => tool(paths, 'search') && `return await ${tool(paths, 'search')}(${JSON.stringify({ file: fixture, query: 'Mapping review' })});`,
   (paths, found) => found?.results?.[0] && `return await ${tool(paths, 'inspect')}(${JSON.stringify({ file: fixture, node: found.results[0].ref.nodeId })});`,
+  paths => tool(paths, 'diff') && `return await ${tool(paths, 'diff')}(${JSON.stringify({ old: path.join(project, 'mapping-old.fig'), file: fixture })});`,
 ];
 const value = text => { try { return JSON.parse(text); } catch { return text; } };
 const provider = createServer((request, response) => reply(request, response).catch(error => {
@@ -118,26 +120,29 @@ try {
     assert.equal(status.mcp.server, 'figlensmcp');
     assert.equal(status.mcp.status.status, 'connected');
     for (const tool of ['figlens_preview', 'figlens_bindings', 'figlens_propose_bindings']) assert.ok(status.mcp.tools.includes(tool), tool);
-    for (const tool of ['figlensmcp_search', 'figlensmcp_inspect']) assert.ok(status.mcp.catalog.includes(tool), tool);
+    for (const tool of ['figlensmcp_search', 'figlensmcp_inspect', 'figlensmcp_diff']) assert.ok(status.mcp.catalog.includes(tool), tool);
     const skills = await client.skill.list({ location });
     assert.ok(JSON.stringify(skills).includes('figlens'));
     return { mcp: status.mcp, catalogAfterConnectedMs: Date.now() - connected, skills: skills.data.map(skill => skill.name) };
   });
-  await check('session tool calls run managed MCP search and inspect its exact ref', async () => {
+  await check('session tool calls run managed MCP search, inspect its exact ref and diff two copies', async () => {
     const searching = await client.session.create({ location, title: 'Scripted search', permissions: [{ action: '*', resource: '*', effect: 'allow' }] });
     await client.session.switchModel({ sessionID: searching.id, model: { id: 'scripted', providerID: 'figlens-scripted' } });
     await client.session.prompt({ sessionID: searching.id, text: 'Find the mapping review frame.' });
     await client.session.wait({ sessionID: searching.id }, { signal: AbortSignal.timeout(60000) })
       .catch(error => { throw new Error(`${error.message}; provider: ${scripted.error}; ${JSON.stringify(scripted.raw).slice(0, 2000)}`); });
     assert.ok(!scripted.error, scripted.error + JSON.stringify(scripted.raw).slice(0, 2000));
-    const [paths, search, inspect] = scripted.results;
-    assert.ok(Array.isArray(paths) && paths.some(item => /search/.test(item)) && paths.some(item => /inspect/.test(item)), JSON.stringify(scripted.raw).slice(0, 2000));
+    const [paths, search, inspect, diff] = scripted.results;
+    assert.ok(Array.isArray(paths) && ['search', 'inspect', 'diff'].every(name => paths.some(item => item.includes(name))), JSON.stringify(scripted.raw).slice(0, 2000));
     assert.equal(search.results[0].ref.nodeId, '0:1', JSON.stringify(search).slice(0, 2000));
     assert.equal(search.coverage.complete, true);
     assert.equal(inspect.node.id, search.results[0].ref.nodeId, JSON.stringify(inspect).slice(0, 2000));
+    // Wiring only: two copies of one file are two sources with no changes.
+    assert.ok(diff?.coverage?.complete === true && diff.coverage.changes === 0, JSON.stringify(diff).slice(0, 2000));
+    assert.notEqual(diff.source.old.sourceId, diff.source.new.sourceId);
     const context = await client.session.context({ sessionID: searching.id });
     assert.ok(JSON.stringify(context).includes('done'));
-    return { paths: paths.filter(item => /search|inspect/.test(item)), searchRef: search.results[0].ref, inspected: inspect.node.id,
+    return { paths: paths.filter(item => /search|inspect|diff/.test(item)), searchRef: search.results[0].ref, inspected: inspect.node.id, diffedTwoCopies: diff.source,
       toolResults: scripted.results.length, provider: 'scripted loopback, not a model' };
   });
   await check('production local select exports real PNG bytes', async () => {
