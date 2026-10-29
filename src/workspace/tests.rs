@@ -138,6 +138,99 @@ fn roots_refuse_a_relative_storage_or_missing_home() {
 
 #[cfg(windows)]
 #[test]
+fn a_sidecar_being_deleted_is_waited_out_not_reported_denied() {
+    let dir = TestDir::new();
+    std::fs::write(dir.join("index.sqlite"), b"").unwrap();
+    let shm = dir.join("index.sqlite-shm");
+    std::fs::write(&shm, b"").unwrap();
+    let held = mark_deleted(&shm, false);
+    assert!(
+        sidecar_denied(&shm),
+        "{:?}",
+        std::fs::symlink_metadata(&shm)
+    );
+    let closer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        drop(held);
+    });
+    unaliased(&dir.join("")).unwrap();
+    closer.join().unwrap();
+    assert!(!shm.exists());
+}
+
+/// Marks `path` deleted through a new handle: `posix` removes its name at once, else the name
+/// stays, pending, until every handle to it closes. Returns that handle, still open.
+#[cfg(windows)]
+fn mark_deleted(path: &Path, posix: bool) -> File {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+        FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FileDispositionInfo,
+        FileDispositionInfoEx, SetFileInformationByHandle,
+    };
+    let handle = OpenOptions::new()
+        .read(true)
+        .access_mode(DELETE | 0x8000_0000)
+        .open(path)
+        .unwrap();
+    let plain = FILE_DISPOSITION_INFO { DeleteFile: true };
+    let ex = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+    };
+    // SAFETY: a valid open handle with DELETE access and a matching info struct and size.
+    let set = unsafe {
+        if posix {
+            SetFileInformationByHandle(
+                handle.as_raw_handle() as _,
+                FileDispositionInfoEx,
+                &ex as *const _ as _,
+                std::mem::size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+            )
+        } else {
+            SetFileInformationByHandle(
+                handle.as_raw_handle() as _,
+                FileDispositionInfo,
+                &plain as *const _ as _,
+                std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+            )
+        }
+    };
+    assert_ne!(set, 0, "{}", std::io::Error::last_os_error());
+    handle
+}
+
+/// Platform behaviour only: an open handle reads 0 links once its name is deleted with POSIX
+/// semantics. The alias check still refuses any count but 1.
+#[cfg(windows)]
+#[test]
+fn a_file_deleted_under_an_open_handle_reports_no_links() {
+    let dir = TestDir::new();
+    let shm = dir.join("index.sqlite-shm");
+    std::fs::write(&shm, b"").unwrap();
+    let probe = File::open(&shm).unwrap();
+    drop(mark_deleted(&shm, true));
+    assert!(!shm.exists());
+    assert_eq!(handle_links(&probe, &shm).unwrap(), 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn a_sidecar_denied_past_the_lock_wait_is_still_reported_denied() {
+    let dir = TestDir::new();
+    std::fs::write(dir.join("index.sqlite"), b"").unwrap();
+    let shm = dir.join("index.sqlite-shm");
+    std::fs::write(&shm, b"").unwrap();
+    let held = mark_deleted(&shm, false);
+    let start = Instant::now();
+    let error = unaliased(&dir.join("")).unwrap_err();
+    assert!(start.elapsed() >= LOCK_WAIT, "{:?}", start.elapsed());
+    assert_eq!(kind(&*error), ErrorKind::PermissionDenied, "{error}");
+    drop(held);
+}
+
+#[cfg(windows)]
+#[test]
 fn windows_known_folder_resolves_to_an_absolute_path() {
     assert!(local_app_data().is_some_and(|p| p.is_absolute()));
 }

@@ -22,14 +22,38 @@ pub(super) fn sql(error: rusqlite::Error) -> Box<dyn Error> {
 pub(super) fn unaliased(dir: &Path) -> Result<()> {
     for name in DB_FILES {
         let path = dir.join(name);
-        if plain(&path, false)? && links(&path)? != 1 {
+        let deadline = Instant::now() + LOCK_WAIT;
+        let count = loop {
+            match plain(&path, false).and_then(|p| if p { links(&path) } else { Ok(1) }) {
+                Err(_) if name != DB && sidecar_denied(&path) && Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                checked => break checked?,
+            }
+        };
+        if count != 1 {
             return Err(preserved(
                 &path,
-                "has other hard links, through which SQLite would write; figlens leaves it as found: remove the other link, then retry",
+                &format!(
+                    "has {count} hard links, through which SQLite would write; figlens leaves it as found: remove the other link, then retry"
+                ),
             ));
         }
     }
     Ok(())
+}
+
+/// Whether sidecar `path` still reads as access denied. On Windows this is also how a file
+/// pending deletion reads (SQLite deletes it on a last close) until its last handle closes, so
+/// it may pass; error 5 alone cannot tell that from a real denial, hence the caller's deadline.
+#[cfg(windows)]
+pub(super) fn sidecar_denied(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_err_and(|e| e.raw_os_error() == Some(5))
+}
+
+#[cfg(not(windows))]
+pub(super) fn sidecar_denied(_: &Path) -> bool {
+    false
 }
 
 /// The hard links of `path`; a file another connection removed since it was listed (SQLite
@@ -46,14 +70,18 @@ pub(super) fn links(path: &Path) -> Result<u64> {
 
 #[cfg(windows)]
 pub(super) fn links(path: &Path) -> Result<u64> {
+    match File::open(path) {
+        Ok(file) => handle_links(&file, path),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(1),
+        Err(e) => Err(storage_error(path, e)),
+    }
+}
+
+#[cfg(windows)]
+pub(super) fn handle_links(file: &File, path: &Path) -> Result<u64> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
-    };
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(1),
-        Err(e) => return Err(storage_error(path, e)),
     };
     // SAFETY: a valid open handle and an out struct the call fills on success.
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
