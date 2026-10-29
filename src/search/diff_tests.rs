@@ -988,31 +988,33 @@ fn scoped(old: K<'static>, new: K<'static>, node: &str) -> Json {
     .unwrap()
 }
 
+/// Text style 20 at `font`, used by a layer of frame 10 but outside it.
+fn styled(font: f32) -> K<'static> {
+    doc(vec![
+        node(
+            20,
+            Some(1),
+            "TEXT",
+            "Body",
+            vec![("fontSize", K::Float(font))],
+        ),
+        node(10, Some(1), "FRAME", "Home", vec![]),
+        node(
+            11,
+            Some(10),
+            "TEXT",
+            "Title",
+            vec![
+                text("Hi"),
+                ("styleIdForText", obj(vec![("guid", guid(20))])),
+            ],
+        ),
+    ])
+}
+
 #[test]
 fn a_text_style_outside_the_scope_makes_coverage_partial_instead_of_unchanged() {
     // The style's own record changes, but only a layer referencing it is in scope.
-    let styled = |font: f32| {
-        doc(vec![
-            node(
-                20,
-                Some(1),
-                "TEXT",
-                "Body",
-                vec![("fontSize", K::Float(font))],
-            ),
-            node(10, Some(1), "FRAME", "Home", vec![]),
-            node(
-                11,
-                Some(10),
-                "TEXT",
-                "Title",
-                vec![
-                    text("Hi"),
-                    ("styleIdForText", obj(vec![("guid", guid(20))])),
-                ],
-            ),
-        ])
-    };
     let out = scoped(styled(12.0), styled(16.0), "0:10");
     assert_eq!(
         (&out["coverage"]["complete"], &out["coverage"]["reasons"]),
@@ -1175,7 +1177,7 @@ fn a_main_outside_the_scope_makes_coverage_partial_when_its_property_definitions
 }
 
 /// A workspace schema in memory, with `trees` saved as generations 1, 2, … of scope `0:0`.
-fn saved(trees: &[&Tree]) -> rusqlite::Connection {
+fn saved(trees: &[&Tree], scope: &str) -> rusqlite::Connection {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(&format!(
         "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
@@ -1190,11 +1192,11 @@ fn saved(trees: &[&Tree]) -> rusqlite::Connection {
         let gen_id = i as i64 + 1;
         conn.execute(
             "INSERT INTO generations (gen, source_id, membership, scope, versions, job_id, state,
-             created_ms) VALUES (?1, 's', 'm', '0:0', 'v', 'j', 'building', 0)",
-            [gen_id],
+             created_ms) VALUES (?1, 's', 'm', ?2, 'v', 'j', 'building', 0)",
+            rusqlite::params![gen_id, scope],
         )
         .unwrap();
-        let (index, tracked) = tracked(tree, "0:0", Instant::now() + DEADLINE);
+        let (index, tracked) = tracked(tree, scope, Instant::now() + DEADLINE);
         crate::search::store::save(
             &mut conn,
             gen_id,
@@ -1225,13 +1227,41 @@ fn stored_generations_diff_exactly_like_the_live_trees() {
     )
     .unwrap();
     let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
-    let conn = saved(&[&a, &b]);
+    let conn = saved(&[&a, &b], "0:0");
     let stored = stored_diff(&conn, (1, side("old")), (2, side("new")), &req(LIMIT, None));
     let unstamped = |mut v: Json| {
         v["source"]["freshness"]["hashedAtMs"].take();
         v
     };
     assert_eq!(unstamped(stored.unwrap()), unstamped(live));
+}
+
+#[test]
+fn stored_generations_report_an_outside_definition_like_the_live_trees() {
+    let (old, new) = (styled(12.0), styled(16.0));
+    let (a, b) = (Tree::new(&old), Tree::new(&new));
+    let mut r = req(LIMIT, None);
+    r.node = "0:10".into();
+    let live = page(
+        &compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:10"),
+        &r,
+        false,
+    )
+    .unwrap();
+    let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
+    let conn = saved(&[&a, &b], "0:10");
+    let stored = stored_diff(&conn, (1, side("old")), (2, side("new")), &r).unwrap();
+    let coverage = |v: &Json| {
+        (
+            v["coverage"]["complete"].clone(),
+            v["coverage"]["reasons"].clone(),
+        )
+    };
+    assert_eq!(
+        coverage(&stored),
+        (json!(false), coverage(&live).1),
+        "{stored}"
+    );
 }
 
 #[test]
@@ -1249,14 +1279,14 @@ fn tampered_or_other_layout_facets_are_refused_not_compared() {
         .unwrap_err();
         err.downcast_ref::<FigError>().map(FigError::kind)
     };
-    let conn = saved(&[&tree]);
+    let conn = saved(&[&tree], "0:0");
     conn.execute(
         "UPDATE facets SET blob = CAST('[[\"bogus\",null]]' AS BLOB) WHERE rid = 1",
         [],
     )
     .unwrap();
     assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
-    let conn = saved(&[&tree]);
+    let conn = saved(&[&tree], "0:0");
     conn.execute("UPDATE facet_sets SET facet_version = 'diff-v0:0'", [])
         .unwrap();
     assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
