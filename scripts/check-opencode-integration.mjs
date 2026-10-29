@@ -25,6 +25,9 @@ await writeFile(path.join(project, 'src/Button.mjs'), 'export const Button = () 
 const scripted = { results: [], tools: null };
 const fixture = path.join(project, 'mapping.fig');
 // A step without its prerequisite ends the turn, so a missing tool fails the check instead of retrying.
+// The one exception is an empty catalog search: the managed MCP reports connected before Code Mode
+// has catalogued its tools, so that search repeats a bounded number of times.
+const emptyCatalog = result => Array.isArray(result) && !result.length;
 const tool = (paths, name) => Array.isArray(paths) && paths.find(item => item.endsWith(`.${name}`) || item.endsWith(`["${name}"]`));
 const steps = [
   () => `return ['search', 'inspect'].flatMap(query => search({ query, namespace: 'figlensmcp' }).items.map(item => item.path));`,
@@ -44,7 +47,10 @@ async function reply(request, response) {
   scripted.raw = messages.filter(message => message.role === 'tool').map(message =>
     typeof message.content === 'string' ? message.content : message.content.map(part => part.text ?? '').join(''));
   scripted.results = scripted.raw.map(value);
-  const code = steps[scripted.results.length]?.(...scripted.results);
+  const done = scripted.done = scripted.results.filter(result => !emptyCatalog(result));
+  scripted.catalogRetries = scripted.results.length - done.length;
+  if (emptyCatalog(scripted.results.at(-1))) await new Promise(resolve => setTimeout(resolve, 250));
+  const code = scripted.catalogRetries <= 40 ? steps[done.length]?.(...done) : undefined;
   const delta = code
     ? { tool_calls: [{ index: 0, id: `call_${scripted.results.length}`, type: 'function', function: { name: 'execute', arguments: JSON.stringify({ code }) } }] }
     : { content: 'done' };
@@ -127,7 +133,7 @@ try {
     await client.session.wait({ sessionID: searching.id }, { signal: AbortSignal.timeout(60000) })
       .catch(error => { throw new Error(`${error.message}; provider: ${scripted.error}; ${JSON.stringify(scripted.raw).slice(0, 2000)}`); });
     assert.ok(!scripted.error, scripted.error + JSON.stringify(scripted.raw).slice(0, 2000));
-    const [paths, search, inspect] = scripted.results;
+    const [paths, search, inspect] = scripted.done;
     assert.ok(Array.isArray(paths) && paths.some(item => /search/.test(item)) && paths.some(item => /inspect/.test(item)), JSON.stringify(scripted.raw).slice(0, 2000));
     assert.equal(search.results[0].ref.nodeId, '0:1', JSON.stringify(search).slice(0, 2000));
     assert.equal(search.coverage.complete, true);
@@ -135,7 +141,7 @@ try {
     const context = await client.session.context({ sessionID: searching.id });
     assert.ok(JSON.stringify(context).includes('done'));
     return { paths: paths.filter(item => /search|inspect/.test(item)), searchRef: search.results[0].ref, inspected: inspect.node.id,
-      toolResults: scripted.results.length, provider: 'scripted loopback, not a model' };
+      toolResults: scripted.results.length, catalogRetries: scripted.catalogRetries, provider: 'scripted loopback, not a model' };
   });
   await check('production local select exports real PNG bytes', async () => {
     const selected = await rpc.run({ sessionID: session.id, action: 'select', file: 'mapping.fig', node: '0:1' }, options);
