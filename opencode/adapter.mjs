@@ -280,7 +280,9 @@ export function createAdapter(ctx, entry = import.meta.url) {
       await current.authorize('read', [...new Set([requested, await realpath(requested).catch(() => requested)])]);
     }
     // Workspace search, refresh and rebuild read the registered designs' content, which this session may deny.
-    const readSources = async ({ sources }) => {
+    const readSources = async ({ state, sources }) => {
+      // A workspace that does not exist yet reads no design; the command then fails as the MCP tool does.
+      if (['absent', 'uninitialized'].includes(state)) return;
       if (!Array.isArray(sources)) throw missing("a workspace's sources");
       const paths = sources.filter(source => !input.sourceId || source.sourceId === input.sourceId).map(source => source.path);
       await current.authorize('read', [...new Set((await Promise.all(paths.map(async file => [file, await realpath(file).catch(() => file)]))).flat())]);
