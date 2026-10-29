@@ -615,3 +615,11 @@ fn compact_blob_bytes_and_a_byte_array_digest_alike() {
     );
     assert_eq!(out["frames"], json!([]));
 }
+
+#[test]
+fn a_byte_array_blob_past_the_visit_cap_is_unread() {
+    let blob = || Some(K::Array(vec![K::Byte(1); VISITS + 1]));
+    let out = run(vector_with(blob()), vector_with(blob()));
+    assert_eq!(nodes(&out), [("0:10".to_owned(), "changed".to_owned())]);
+    assert_eq!(out["coverage"]["complete"], false);
+}

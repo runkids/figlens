@@ -309,8 +309,9 @@ pub(super) fn facets(
                 if !bounds.charge(1 + if large { 0 } else { cost }, 0) {
                     return None;
                 }
-                large |=
-                    matches!(b, Some(K::Array(x)) if !x.iter().all(|v| matches!(v, K::Byte(_))));
+                // `||` keeps an array past the cap from being walked.
+                large = large
+                    || matches!(b, Some(K::Array(x)) if !x.iter().all(|v| matches!(v, K::Byte(_))));
                 if large {
                     break;
                 }
