@@ -214,6 +214,16 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.sha }}
+      # The fixture needs about a minute and only this checkout, so it builds while the steps below
+      # set up the hosts. It stays on this runner: only the first-success design is distributable.
+      - name: Start the original local mapping fixture
+        run: |
+          mkdir -p samples/plugin-research/fixtures
+          # `|| status=$?` keeps the step's `bash -e` from ending the subshell before it records a failure.
+          (status=0
+           docker compose run --rm dev cargo run --locked --example mapping-fixture -- samples/plugin-research/fixtures/mapping.fig \
+             > "$RUNNER_TEMP/fixture.log" 2>&1 || status=$?
+           echo "$status" > "$RUNNER_TEMP/fixture.tmp"; mv "$RUNNER_TEMP/fixture.tmp" "$RUNNER_TEMP/fixture.status") &
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
@@ -224,10 +234,6 @@ jobs:
         with:
           name: installation-candidate
           path: dist/candidate/
-      - name: Generate original local mapping fixture
-        run: |
-          mkdir -p samples/plugin-research/fixtures
-          docker compose run --rm dev cargo run --locked --example mapping-fixture -- samples/plugin-research/fixtures/mapping.fig
       - name: Install isolated fixed host SDKs and verify OpenCode runtime bytes
         run: |
           npm install --prefix samples/plugin-research/hosts/omp --ignore-scripts --no-audit --no-fund @oh-my-pi/pi-coding-agent@18.13.2
@@ -235,6 +241,11 @@ jobs:
           curl --fail --location --output samples/plugin-research/hosts/opencode/runtime.tar.gz https://github.com/anomalyco/opencode/releases/download/v2.2.0/opencode-linux-x64.tar.gz
           echo '6d597970a8cc448f1b9a9f645532584b339dd3ab9583bb5f063f13d83e54768f  samples/plugin-research/hosts/opencode/runtime.tar.gz' | sha256sum --check
           tar -xzf samples/plugin-research/hosts/opencode/runtime.tar.gz -C samples/plugin-research/hosts/opencode
+      - name: Wait for the mapping fixture
+        run: |
+          until [ -f "$RUNNER_TEMP/fixture.status" ]; do sleep 1; done
+          cat "$RUNNER_TEMP/fixture.log"
+          exit "$(cat "$RUNNER_TEMP/fixture.status")"
       - name: Same candidate, native loaders, MCP, review and cleanup without models
         run: |
           python3 -B scripts/check-installation.py \
