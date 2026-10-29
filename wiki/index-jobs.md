@@ -4,7 +4,7 @@
 
 ## Generations
 
-Schema 2 adds `snapshots` (verified size and mtime per content hash), `generations`, `published` (one generation per source and scope), `records`, `terms` (delta-varint postings per term and field), `edges` and `jobs`; schema 3 reshapes `edges` and adds `definitions` ([usages](usages.md)). A v1 registry is upgraded in place under the exclusive workspace lock, keeping every source.
+Schema 2 adds `snapshots` (verified size and mtime per content hash), `generations`, `published` (one generation per source and scope), `records`, `terms` (delta-varint postings per term and field), `edges` and `jobs`; schema 3 reshapes `edges` and adds `definitions` ([usages](usages.md)); schema 4 adds change-tracking tables, empty until a scope is tracked. A v1 registry is upgraded in place under the exclusive workspace lock, keeping every source.
 
 - A generation is one source, one exact scope node and one membership. Search never widens or narrows the scope and never parses the `.fig`. Prepare without `--scope` only registers.
 - `versions` records ranking, tokenizer and budgets. A generation from other versions is `incompatible` and `rebuild` is the recovery.

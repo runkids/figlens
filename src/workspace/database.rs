@@ -311,8 +311,39 @@ pub(crate) const V3: &str = "
     CREATE INDEX records_parent ON records (gen, parent, rid);
     PRAGMA user_version = 3;";
 
-/// Upgrades a schema 1 registry to schema 2 in one transaction, keeping every source and the
-/// incarnation. The caller holds the workspace lock exclusively.
+/// Schema 4: explicit change tracking per source and scope, each tracked generation's record
+/// facets, published revisions with their bounded change rows, consumer checkpoints, and the
+/// secret cursor MACs are keyed with. `seq` orders revisions across the workspace and is never
+/// exposed; `id` is the random public revision id.
+pub(crate) const V4: &str = "
+    CREATE TABLE tracking (
+        source_id TEXT NOT NULL, scope TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('baseline_pending', 'active', 'disabled')),
+        epoch INTEGER NOT NULL, facet_version TEXT NOT NULL, enabled_ms INTEGER NOT NULL,
+        baseline_gen INTEGER, PRIMARY KEY (source_id, scope)) STRICT;
+    CREATE TABLE facets (
+        gen INTEGER NOT NULL, rid INTEGER NOT NULL, blob BLOB NOT NULL,
+        PRIMARY KEY (gen, rid)) STRICT, WITHOUT ROWID;
+    CREATE TABLE revisions (
+        id BLOB PRIMARY KEY, seq INTEGER NOT NULL UNIQUE, source_id TEXT NOT NULL,
+        scope TEXT NOT NULL, epoch INTEGER NOT NULL, gen INTEGER NOT NULL, from_gen INTEGER,
+        snapshot_id TEXT, kind TEXT NOT NULL, coverage TEXT NOT NULL, summary TEXT NOT NULL,
+        detail TEXT NOT NULL CHECK (detail IN ('complete', 'truncated', 'expired')),
+        detail_rows INTEGER NOT NULL, detail_bytes INTEGER NOT NULL,
+        created_ms INTEGER NOT NULL) STRICT;
+    CREATE INDEX revisions_scope ON revisions (source_id, scope, seq);
+    CREATE TABLE revision_changes (
+        rev BLOB NOT NULL, ord INTEGER NOT NULL, frame TEXT, node TEXT NOT NULL,
+        kind TEXT NOT NULL, change TEXT NOT NULL, facets INTEGER NOT NULL,
+        descendants INTEGER NOT NULL, PRIMARY KEY (rev, ord)) STRICT, WITHOUT ROWID;
+    CREATE TABLE consumers (
+        consumer TEXT NOT NULL, filter TEXT NOT NULL, after_seq INTEGER NOT NULL,
+        updated_ms INTEGER NOT NULL, PRIMARY KEY (consumer, filter)) STRICT;
+    INSERT INTO meta (key, value) VALUES ('cursor_secret', lower(hex(randomblob(32))));
+    PRAGMA user_version = 4;";
+
+/// Upgrades schemas 1 to 3 to the current one in one transaction, keeping every source, index,
+/// job and the incarnation. The caller holds the workspace lock exclusively.
 pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -325,6 +356,9 @@ pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
     }
     if version <= 2 {
         tx.execute_batch(V3).map_err(sql)?;
+    }
+    if version <= 3 {
+        tx.execute_batch(V4).map_err(sql)?;
     }
     tx.commit().map_err(sql)
 }
@@ -368,6 +402,7 @@ pub(super) fn initialize(
     .map_err(sql)?;
     tx.execute_batch(V2).map_err(sql)?;
     tx.execute_batch(V3).map_err(sql)?;
+    tx.execute_batch(V4).map_err(sql)?;
     if let Some(binding) = binding {
         tx.execute(
             "INSERT INTO meta (key, value) VALUES ('binding', ?1)",
