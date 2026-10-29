@@ -1173,3 +1173,91 @@ fn a_main_outside_the_scope_makes_coverage_partial_when_its_property_definitions
         )
     );
 }
+
+/// A workspace schema in memory, with `trees` saved as generations 1, 2, … of scope `0:0`.
+fn saved(trees: &[&Tree]) -> rusqlite::Connection {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(&format!(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+         CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+         added_at_ms INTEGER NOT NULL) STRICT; {} {} {}",
+        crate::workspace::V2,
+        crate::workspace::V3,
+        crate::workspace::V4
+    ))
+    .unwrap();
+    for (i, tree) in trees.iter().enumerate() {
+        let gen_id = i as i64 + 1;
+        conn.execute(
+            "INSERT INTO generations (gen, source_id, membership, scope, versions, job_id, state,
+             created_ms) VALUES (?1, 's', 'm', '0:0', 'v', 'j', 'building', 0)",
+            [gen_id],
+        )
+        .unwrap();
+        let (index, tracked) = tracked(tree, "0:0", Instant::now() + DEADLINE);
+        crate::search::store::save(
+            &mut conn,
+            gen_id,
+            &index,
+            &|_| Ok(()),
+            &mut |_, _, _| Ok(()),
+        )
+        .unwrap();
+        save_facets(&mut conn, gen_id, &tracked, &|_| Ok(()), &mut |_, _, _| {
+            Ok(())
+        })
+        .unwrap();
+    }
+    conn
+}
+
+#[test]
+fn stored_generations_diff_exactly_like_the_live_trees() {
+    let mut moved = screen("Hi", 0.0, 420.0);
+    moved.push(node(14, Some(1), "FRAME", "Other", vec![]));
+    moved[3] = node(13, Some(14), "RECTANGLE", "Same", vec![fill(0.5)]);
+    let (old, new) = (doc(screen("Hello", 1.0, 400.0)), doc(moved));
+    let (a, b) = (Tree::new(&old), Tree::new(&new));
+    let live = page(
+        &compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0"),
+        &req(LIMIT, None),
+        false,
+    )
+    .unwrap();
+    let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
+    let conn = saved(&[&a, &b]);
+    let stored = stored_diff(&conn, (1, side("old")), (2, side("new")), &req(LIMIT, None));
+    let unstamped = |mut v: Json| {
+        v["source"]["freshness"]["hashedAtMs"].take();
+        v
+    };
+    assert_eq!(unstamped(stored.unwrap()), unstamped(live));
+}
+
+#[test]
+fn tampered_or_other_layout_facets_are_refused_not_compared() {
+    let old = doc(screen("Hello", 1.0, 400.0));
+    let tree = Tree::new(&old);
+    let source = json!({"sourceId": "local:a", "snapshotId": "sha256:a"});
+    let run = |conn: &rusqlite::Connection| {
+        let err = stored_diff(
+            conn,
+            (1, source.clone()),
+            (1, source.clone()),
+            &req(LIMIT, None),
+        )
+        .unwrap_err();
+        err.downcast_ref::<FigError>().map(FigError::kind)
+    };
+    let conn = saved(&[&tree]);
+    conn.execute(
+        "UPDATE facets SET blob = CAST('[[\"bogus\",null]]' AS BLOB) WHERE rid = 1",
+        [],
+    )
+    .unwrap();
+    assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
+    let conn = saved(&[&tree]);
+    conn.execute("UPDATE facet_sets SET facet_version = 'diff-v0:0'", [])
+        .unwrap();
+    assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
+}

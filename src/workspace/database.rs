@@ -311,8 +311,8 @@ pub(crate) const V3: &str = "
     CREATE INDEX records_parent ON records (gen, parent, rid);
     PRAGMA user_version = 3;";
 
-/// Schema 4: explicit change tracking per source and scope, each tracked generation's record
-/// facets, published revisions with their bounded change rows, consumer checkpoints, and the
+/// Schema 4: explicit change tracking per source and scope, each tracked generation's facet
+/// layout, selected-node context and record facets, published revisions with their bounded change rows, consumer checkpoints, and the
 /// secret cursor MACs are keyed with. `seq` orders revisions across the workspace and is never
 /// exposed; `id` is the random public revision id.
 pub(crate) const V4: &str = "
@@ -321,6 +321,9 @@ pub(crate) const V4: &str = "
         state TEXT NOT NULL CHECK (state IN ('baseline_pending', 'active', 'disabled')),
         epoch INTEGER NOT NULL, facet_version TEXT NOT NULL, enabled_ms INTEGER NOT NULL,
         baseline_gen INTEGER, PRIMARY KEY (source_id, scope)) STRICT;
+    CREATE TABLE facet_sets (
+        gen INTEGER PRIMARY KEY, facet_version TEXT NOT NULL, present INTEGER NOT NULL,
+        origin TEXT NOT NULL) STRICT;
     CREATE TABLE facets (
         gen INTEGER NOT NULL, rid INTEGER NOT NULL, blob BLOB NOT NULL,
         PRIMARY KEY (gen, rid)) STRICT, WITHOUT ROWID;

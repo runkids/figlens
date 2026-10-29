@@ -604,7 +604,15 @@ pub(crate) fn submit(
 
 /// Deletes generation `gen_id` and everything it holds, in one transaction.
 fn drop_gen(conn: &Connection, gen_id: i64) -> rusqlite::Result<()> {
-    for table in ["records", "terms", "edges", "definitions", "generations"] {
+    for table in [
+        "records",
+        "terms",
+        "edges",
+        "definitions",
+        "facets",
+        "facet_sets",
+        "generations",
+    ] {
         conn.execute(&format!("DELETE FROM {table} WHERE gen = ?1"), [gen_id])?;
     }
     Ok(())
@@ -1695,7 +1703,26 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
     }
     stage(&conn, "parse")?;
     let label = path.display().to_string();
-    let index = search::index_bytes(bytes, &label, &scope, search::deadline())?;
+    // Only a tracked scope's build keeps facets; an untracked one writes what it always did.
+    let tracking: bool = conn
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM tracking WHERE source_id = ?1 AND scope = ?2
+             AND state != 'disabled')",
+            [&source_id, &scope],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    let (index, tracked) = match tracking {
+        true => {
+            let (index, tracked) =
+                search::index_bytes_tracked(bytes, &label, &scope, search::deadline())?;
+            (index, Some(tracked))
+        }
+        false => (
+            search::index_bytes(bytes, &label, &scope, search::deadline())?,
+            None,
+        ),
+    };
     stage(&conn, "write")?;
     // One statement, so the fence and the insert are atomic.
     fenced(
@@ -1753,6 +1780,10 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
     search::store::save(&mut conn, gen_id, &index, &guard, &mut between)
         .map_err(|e| full(e, ceiling))?;
     drop(index);
+    if let Some(tracked) = tracked {
+        search::diff::save_facets(&mut conn, gen_id, &tracked, &guard, &mut between)
+            .map_err(|e| full(e, ceiling))?;
+    }
     stage(&conn, "verify")?;
     // The source is read and hashed again: a save that kept its size and time is caught here.
     let (again, _) = search::stage(&path)?;

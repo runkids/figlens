@@ -1747,3 +1747,52 @@ fn diff_of_two_revisions_pages_the_same_changes_over_the_cli_and_mcp() {
     // Stateless, like search: no database.
     assert!(!env.home.join(".local/state/figlens").exists());
 }
+
+#[test]
+fn only_a_tracked_scope_s_build_stores_facets() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    let prepared = env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let db = prepared["paths"]["database"].as_str().unwrap().to_owned();
+    let count = |q: &str| {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.query_row(q, [], |r| r.get::<_, i64>(0)).unwrap()
+    };
+    assert_eq!(
+        count("SELECT count(*) FROM facet_sets") + count("SELECT count(*) FROM facets"),
+        0
+    );
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
+             SELECT source_id, '0:0', 'active', 1, 'v', 0 FROM sources",
+            [],
+        )
+        .unwrap();
+    let rebuilt = env.json(&["index", "rebuild", "--file", file]);
+    let gen_id = rebuilt["jobs"][0]["generation"].as_i64().unwrap();
+    assert_eq!(
+        [
+            count(&format!(
+                "SELECT count(*) FROM facet_sets WHERE gen = {gen_id}"
+            )),
+            count(&format!("SELECT count(*) FROM facets WHERE gen = {gen_id}")),
+        ],
+        [
+            1,
+            count(&format!(
+                "SELECT count(*) FROM records WHERE gen = {gen_id}"
+            ))
+        ]
+    );
+    // Facets live and go with their generation; none outlive it.
+    let again = env.json(&["index", "rebuild", "--file", file]);
+    let gen_id = again["jobs"][0]["generation"].as_i64().unwrap();
+    assert_eq!(
+        count("SELECT count(*) FROM facets WHERE gen NOT IN (SELECT gen FROM generations)"),
+        0
+    );
+    assert_eq!(count("SELECT max(gen) FROM facet_sets"), gen_id);
+}

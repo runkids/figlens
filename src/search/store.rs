@@ -18,7 +18,7 @@ use super::{
     tokenizer,
 };
 
-type Result<T> = std::result::Result<T, Box<dyn Error>>;
+pub(crate) type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 /// Rows per write transaction; between batches the caller reports progress and checks space.
 pub(crate) const BATCH: usize = 2000;
@@ -28,7 +28,7 @@ pub(crate) const BATCH_BYTES: usize = if cfg!(test) { 1024 } else { 8 * 1024 * 1
 
 /// `items` in runs of at most `BATCH` rows and, past each run's first row, `BATCH_BYTES` of
 /// `size`.
-fn batches<T>(items: &[T], size: impl Fn(&T) -> usize) -> impl Iterator<Item = &[T]> {
+pub(crate) fn batches<T>(items: &[T], size: impl Fn(&T) -> usize) -> impl Iterator<Item = &[T]> {
     let mut rest = items;
     std::iter::from_fn(move || {
         let (mut n, mut bytes) = (0, 0);

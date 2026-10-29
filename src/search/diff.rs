@@ -599,19 +599,7 @@ fn side(
     if node.starts_with('I') {
         require_scope(&tree, node)?;
     }
-    let mut bounds = Bounds {
-        work: WORK,
-        bytes: BYTES,
-        depth: DEPTH,
-        deadline,
-        stop: None,
-    };
-    let origin = origin(&tree, node, &mut bounds);
-    let mut facets = Vec::new();
-    let index = match present {
-        true => build_with(&tree, node, bounds, true, Some(&mut facets)),
-        false => Index::empty(),
-    };
+    let (index, tracked) = tracked(&tree, node, deadline);
     if stamp(canonical)? != staged {
         return Err(FigError::new(
             ErrorKind::SourceUnreadable,
@@ -623,11 +611,11 @@ fn side(
         signature: format!("{}:{}", index.generation, index.stop.unwrap_or("")),
         source: json!({"sourceId": source_id(canonical), "snapshotId": snapshot}),
         index,
-        facets,
+        facets: tracked.facets,
         path: canonical.to_owned(),
         stamp: staged,
         present,
-        origin,
+        origin: tracked.origin,
     })
 }
 
@@ -1452,6 +1440,226 @@ fn page_with(
         "frames": frames,
         "nextCursor": (end < pair.changes.len()).then(|| cursor(pair, end)),
     }))
+}
+
+/// The field layout stored facets were written with, derived from `VERSION` and `FIELDS`, so
+/// generations stored under another layout are never compared field by field.
+pub(crate) fn facet_version() -> String {
+    let mut h = Sha256::new();
+    for keys in FIELDS {
+        keys.iter()
+            .for_each(|k| h.update([k.as_bytes(), &[0]].concat()));
+        h.update([1]);
+    }
+    format!("{VERSION}:{}", &hex(&h.finalize())[..16])
+}
+
+/// A stored record's facets: `[key, digest]`, or `[key, digest, value]` when the value was kept;
+/// an unread field's digest is `null`.
+fn encode(f: &Facets) -> String {
+    let rows = f.fields.iter().map(|f| {
+        let digest = f.digest.map(|d| hex(&d));
+        match &f.value {
+            Some(v) => json!([f.key, digest, v]),
+            None => json!([f.key, digest]),
+        }
+    });
+    Json::Array(rows.collect()).to_string()
+}
+
+/// The inverse of `encode`; `None` for a key outside `FIELDS`, out of order, or a bad digest.
+fn decode(text: &str) -> Option<Facets> {
+    let mut keys = FIELDS
+        .iter()
+        .enumerate()
+        .flat_map(|(facet, keys)| keys.iter().map(move |k| (*k, facet as u8)));
+    let mut fields = Vec::new();
+    for row in serde_json::from_str::<Vec<Vec<Json>>>(text).ok()? {
+        let name = row.first()?.as_str()?;
+        let (key, facet) = keys.find(|(k, _)| *k == name)?;
+        let digest = match row.get(1)? {
+            Json::Null => None,
+            d => {
+                let d = d.as_str().filter(|d| d.len() == 64)?;
+                let mut out = [0; 32];
+                for (i, b) in out.iter_mut().enumerate() {
+                    *b = u8::from_str_radix(d.get(2 * i..2 * i + 2)?, 16).ok()?;
+                }
+                Some(out)
+            }
+        };
+        if row.len() > 3 || (digest.is_none() && row.len() == 3) {
+            return None;
+        }
+        fields.push(Field {
+            key,
+            facet,
+            digest,
+            value: row.get(2).cloned(),
+        });
+    }
+    Some(Facets { fields })
+}
+
+/// Stores a tracked build's facets and selected-node context as generation `gen`'s, beside the
+/// records `store::save` wrote, in the same fenced batches: `guard` runs in every write
+/// transaction and `between` after each.
+pub(crate) fn save_facets(
+    conn: &mut rusqlite::Connection,
+    gen_id: i64,
+    tracked: &Tracked,
+    guard: &dyn Fn(&rusqlite::Connection) -> super::store::Result<()>,
+    between: &mut dyn FnMut(&rusqlite::Connection, usize, usize) -> super::store::Result<()>,
+) -> super::store::Result<()> {
+    let origin = match &tracked.origin {
+        Ok(o) => json!(o),
+        Err(()) => json!("unknown"),
+    };
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    guard(&tx)?;
+    tx.execute(
+        "INSERT INTO facet_sets (gen, facet_version, present, origin) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![gen_id, facet_version(), tracked.present, origin.to_string()],
+    )?;
+    tx.commit()?;
+    let size = |f: &Facets| {
+        f.fields
+            .iter()
+            // A kept value is at most `FIELD_VALUE` bytes.
+            .map(|x| 96 + if x.value.is_some() { FIELD_VALUE } else { 0 })
+            .sum()
+    };
+    let (total, mut done) = (tracked.facets.len(), 0);
+    for chunk in super::store::batches(&tracked.facets, size) {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        guard(&tx)?;
+        {
+            let mut stmt =
+                tx.prepare_cached("INSERT INTO facets (gen, rid, blob) VALUES (?1, ?2, ?3)")?;
+            for (i, f) in chunk.iter().enumerate() {
+                let rid = (done + i) as i64;
+                stmt.execute(rusqlite::params![gen_id, rid, encode(f).into_bytes()])?;
+            }
+        }
+        tx.commit()?;
+        done += chunk.len();
+        between(conn, done, total)?;
+    }
+    Ok(())
+}
+
+/// What a tracked build keeps beside its index for change tracking (#92).
+pub(crate) struct Tracked {
+    facets: Vec<Facets>,
+    present: bool,
+    origin: Result<Option<(String, u32)>, ()>,
+}
+
+/// A full build of `node` that also keeps every record's facets and the node's own parent and
+/// position, all within one build's bounds; a node absent from `tree` builds empty.
+pub(crate) fn tracked(tree: &Tree, node: &str, deadline: Instant) -> (Index, Tracked) {
+    let mut bounds = Bounds {
+        work: WORK,
+        bytes: BYTES,
+        depth: DEPTH,
+        deadline,
+        stop: None,
+    };
+    let origin = origin(tree, node, &mut bounds);
+    let mut facets = Vec::new();
+    let present = tree.nodes.contains_key(node);
+    let index = match present {
+        true => build_with(tree, node, bounds, true, Some(&mut facets)),
+        false => Index::empty(),
+    };
+    let t = Tracked {
+        facets,
+        present,
+        origin,
+    };
+    (index, t)
+}
+
+fn bad() -> Box<dyn Error> {
+    FigError::new(
+        ErrorKind::IndexIncompatible,
+        "stored change-tracking facets are missing or invalid; track the scope again",
+    )
+    .into()
+}
+
+/// One side read back from stored generation `gen`: every record and edge through `store`,
+/// within the same `BYTES` a live build has, then its facets and selected-node context.
+fn stored(conn: &rusqlite::Connection, gen_id: i64, source: Json) -> Result<Side, Box<dyn Error>> {
+    use rusqlite::OptionalExtension;
+    let set: Option<(String, bool, String)> = conn
+        .query_row(
+            "SELECT facet_version, present, origin FROM facet_sets WHERE gen = ?1",
+            [gen_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let (version, present, origin) = set.ok_or_else(bad)?;
+    if version != facet_version() || origin.len() > 64 + super::store::ID_BYTES {
+        return Err(bad());
+    }
+    let origin = match serde_json::from_str::<Json>(&origin)? {
+        Json::Null => Ok(None),
+        Json::String(s) if s == "unknown" => Err(()),
+        o => Ok(Some((
+            o[0].as_str().ok_or_else(bad)?.to_owned(),
+            o[1].as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(bad)?,
+        ))),
+    };
+    let mut spent = 0;
+    let mut index = super::store::load(conn, gen_id, &[], &mut spent)?;
+    let all: Vec<u32> = (0..index.total as u32).collect();
+    super::store::add(conn, gen_id, &mut index, &all, &mut spent)?;
+    let mut facets = Vec::with_capacity(index.records.len());
+    let mut stmt = conn
+        .prepare_cached("SELECT rid, length(blob), blob FROM facets WHERE gen = ?1 ORDER BY rid")?;
+    let mut rows = stmt.query([gen_id])?;
+    while let Some(row) = rows.next()? {
+        let (rid, len): (i64, i64) = (row.get(0)?, row.get(1)?);
+        spent += len.max(0) as usize;
+        if rid != facets.len() as i64 || len as usize > FIELD_BYTES || spent > BYTES {
+            return Err(bad());
+        }
+        let text = std::str::from_utf8(row.get_ref(2)?.as_blob()?).map_err(|_| bad())?;
+        facets.push(decode(text).ok_or_else(bad)?);
+    }
+    if facets.len() != index.records.len() || present != (index.total > 0) {
+        return Err(bad());
+    }
+    Ok(Side {
+        signature: format!("{}:{}", index.generation, index.stop.unwrap_or("")),
+        source,
+        index,
+        facets,
+        path: PathBuf::new(),
+        stamp: (SystemTime::UNIX_EPOCH, 0),
+        present,
+        origin,
+    })
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "change publication, the next #92 step, reads it")
+)]
+/// The first page of the exact diff between two stored generations of `req.node`, read inside
+/// the caller's read transaction; each side's `source` names its source and snapshot.
+pub(crate) fn stored_diff(
+    conn: &rusqlite::Connection,
+    old: (i64, Json),
+    new: (i64, Json),
+    req: &Request,
+) -> Result<Json, Box<dyn Error>> {
+    req.validate()?;
+    let (old, new) = (stored(conn, old.0, old.1)?, stored(conn, new.0, new.1)?);
+    page(&compare(old, new, &req.node, PAIR_WORK), req, false)
 }
 
 #[cfg(test)]

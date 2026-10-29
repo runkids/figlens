@@ -1652,6 +1652,22 @@ pub(crate) fn index_bytes(
     decode_index(bytes, label, scope, deadline, true)
 }
 
+/// `index_bytes` of a scope with change tracking on: the same full build, plus the facets and
+/// selected-node context change tracking stores beside it.
+pub(crate) fn index_bytes_tracked(
+    bytes: Vec<u8>,
+    label: &str,
+    scope: &str,
+    deadline: Instant,
+) -> Result<(Index, diff::Tracked), Box<dyn Error>> {
+    let mut doc = Document::from_bytes(&bytes, label)?;
+    drop(bytes);
+    let message = doc.take_message()?;
+    let tree = Tree::new(&message);
+    require_scope(&tree, scope)?;
+    Ok(diff::tracked(&tree, scope, deadline))
+}
+
 fn decode_index(
     bytes: Vec<u8>,
     label: &str,

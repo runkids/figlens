@@ -354,6 +354,6 @@ pub use registry::{Outcome, PrepareOptions, add, prepare, relocate, remove, rese
 pub use storage::{Locator, Root, Roots, Select, Storage, storage};
 
 #[cfg(test)]
-pub(crate) use database::{V2, V3};
+pub(crate) use database::{V2, V3, V4};
 #[cfg(test)]
 mod tests;
