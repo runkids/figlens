@@ -63,17 +63,25 @@ The registry and every published index stay when a search exceeds the envelope. 
 
 ## Measurements
 
-Docker on Apple silicon, release build, a public 60 MB Community file:
+Docker (linux/aarch64 on Apple silicon), release build, a public 60 MB Community file kept in the OS page cache (warm file cache); each figlens call is a new process. n=20 unless stated.
 
-| Case | Result |
-|---|---|
-| Scope `0:0`, 36,171 records: build | p50 0.85 to 0.95 s; worker max RSS about 600 MiB; database 4 to 12 MiB; WAL 0 after checkpoint |
-| Page scope, 2,263 records: build x20 | p50 432 ms, p95 526 ms; RSS 534 MiB; database 780 KiB |
-| Warm workspace search x100 (CLI process) | p95 1.7 to 4.9 ms; stateless search 347 to 620 ms |
-| Cancel x20 per stage, request to terminal state with no worker left | max 130 (stage), 121 (hash), 102 (parse), 230 (write), 136 (verify) ms |
-| Parity, 36 queries and filters including page 2 | identical to stateless search |
+| Case | Scope `0:0` (38,520 rows) | Page scope (2,263 records) |
+|---|---|---|
+| First `prepare --scope`, new workspace | p50 865 ms, p95 962 ms | p50 461 ms, p95 562 ms |
+| `rebuild` | p50 865 ms, p95 945 ms | p50 531 ms, p95 546 ms |
+| Stages p50 (stage, hash, parse, write, verify) | 13, 21, 558, 161, 100 ms | 15, 21, 318, 24, 133 ms |
+| Peak RSS, owner plus worker summed | 606 MiB | 533 MiB |
+| Database after rebuilds (WAL after checkpoint) | 12.4 MiB (0) | 780 KiB (0) |
+| Publication transaction alone, n=100 | p50 1.0 ms, p95 1.5 ms | p50 0.9 ms, p95 1.2 ms |
+| Warm workspace search, n=100, p95 | 4.9 ms (`button`), 2.1 ms (`sign in`), 8.8 ms (most common term, df 5,054) | 1.9, 1.9, 2.7 ms (df 532) |
+| Stateless search / `find` / `inspect`, p50 | 600 / 319 / 326 ms | 351 / 320 / 382 ms |
 
-Worker memory is the parse of the whole `.fig`, as in stateless search; a database is bounded by `DISK_CAP`. A cancelled or failed build leaves the previous generation serving. Native Windows and macOS runs are not measured yet.
+- Hashing the 57 MiB file (sha256, page-cached) takes about 26 ms; verify also re-reads the written generation.
+- Cancel, request to terminal state with no worker left, x20 per stage, max: 132 (stage), 121 (hash), 104 (parse), 186 (write), 137 (verify) ms.
+- Parity: 36 queries and filters including page 2 return the same results as stateless search.
+- Stage times come from a 2 ms poll of the job row; the publication transaction is the fenced pointer swap replayed on a copy.
+
+Worker memory is the parse of the whole `.fig`, as in stateless search. Not measured yet: a cold OS cache, native Windows and macOS (PR3 hosts), and a corpus near the 100,000-record, 10-source envelope.
 
 ## Tests
 
