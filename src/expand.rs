@@ -423,10 +423,11 @@ fn bind_properties(
     instance: &Value,
     patch: &Patch,
 ) -> Patches {
-    let own = instance
-        .get("componentPropAssignments")
-        .map(to_json)
-        .unwrap_or(Json::Null);
+    // Only a list is read, so anything else is not converted.
+    let own = match instance.get("componentPropAssignments") {
+        Some(list @ Value::Array(_)) => to_json(list),
+        _ => Json::Null,
+    };
     let assignments: Vec<_> = own
         .as_array()
         .into_iter()
@@ -453,14 +454,10 @@ fn bind_properties(
         };
         if let Some(Value::Array(refs)) = child.get("componentPropRefs") {
             for reference in refs {
-                let Some(def) = reference.get("defID") else {
+                let Some(def) = reference.get("defID").map(to_json) else {
                     continue;
                 };
-                let Some(assignment) = assignments
-                    .iter()
-                    .rev()
-                    .find(|a| a["defID"] == to_json(def))
-                else {
+                let Some(assignment) = assignments.iter().rev().find(|a| a["defID"] == def) else {
                     continue;
                 };
                 let value = assignment
@@ -608,6 +605,8 @@ struct Cost {
     text: usize,
     refs: usize,
     keys: usize,
+    /// Converted bytes of every reference's `defID`, which the file's schema can make any size.
+    defs: usize,
 }
 
 impl Cost {
@@ -620,6 +619,16 @@ impl Cost {
         (self.nodes + self.refs)
             .saturating_mul(prefix.len() + 1)
             .saturating_add(self.keys)
+    }
+
+    /// Work converting each reference id once per binding and comparing it with `assignments`
+    /// assignments: one visit per 64 bytes, since an equality check reads at most the smaller
+    /// id. Each converted id is dropped before the next, so it is work, not retained bytes.
+    fn comparisons(&self, assignments: usize) -> usize {
+        if assignments == 0 {
+            return 0;
+        }
+        assignments.saturating_add(1).saturating_mul(self.defs / 64)
     }
 }
 
@@ -712,10 +721,15 @@ fn expand_all(
                 inst.get("derivedSymbolData"),
                 inst.get("componentPropAssignments"),
             );
-            let work = nodes
-                + list_len(overrides)
-                + list_len(derived)
-                + refs.saturating_mul(list_len(assignments));
+            let work = [
+                nodes,
+                list_len(overrides),
+                list_len(derived),
+                refs.saturating_mul(list_len(assignments)),
+                cost.comparisons(list_len(assignments)),
+            ]
+            .into_iter()
+            .fold(0, usize::saturating_add);
             let estimate = |left: &mut usize| {
                 entries_bytes(overrides, &id, left)
                     + entries_bytes(derived, "", left)
@@ -788,8 +802,11 @@ impl Expander<'_, '_> {
         let start = self.bounds.as_ref()?.work.saturating_add(1);
         let mut left = start;
         let estimated = estimate(&mut left);
-        self.spend(work + (start - left), bytes + estimated)
-            .then_some(estimated)
+        self.spend(
+            work.saturating_add(start - left),
+            bytes.saturating_add(estimated),
+        )
+        .then_some(estimated)
     }
 
     /// `Cost` of `symbol`, measured once per component by walks charged as they go. Only
@@ -826,11 +843,24 @@ impl Expander<'_, '_> {
                 key.saturating_mul(1 + list_len(n.get("componentPropRefs")))
             })
             .fold(0usize, usize::saturating_add);
+        let defs = present()
+            .filter_map(|(_, n)| match n.get("componentPropRefs") {
+                Some(Value::Array(refs)) => Some(refs),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|r| r.get("defID"));
+        // Measured, not kept: only the walk is charged.
+        let start = self.bounds.as_ref().map_or(0, |b| b.work).saturating_add(1);
+        let mut left = start;
+        let defs = sum_while(defs, &mut left, kiwi_bytes);
+        self.spend(start - left, 0);
         let cost = Cost {
             nodes: ids.len(),
             text,
             refs,
             keys,
+            defs,
         };
         self.sizes.insert(symbol.to_owned(), cost);
         cost
@@ -1080,12 +1110,17 @@ impl Expander<'_, '_> {
                     );
                     let assignments =
                         list_len(own) + inherited.and_then(Json::as_array).map_or(0, Vec::len);
-                    let work = nodes
-                        + ov.len()
-                        + dv.len()
-                        + list_len(overrides)
-                        + list_len(derived)
-                        + refs.saturating_mul(assignments);
+                    let work = [
+                        nodes,
+                        ov.len(),
+                        dv.len(),
+                        list_len(overrides),
+                        list_len(derived),
+                        refs.saturating_mul(assignments),
+                        cost.comparisons(assignments),
+                    ]
+                    .into_iter()
+                    .fold(0, usize::saturating_add);
                     let estimate = |left: &mut usize| {
                         patches_bytes(ov, left)
                             + patches_bytes(dv, left)
@@ -1985,6 +2020,126 @@ mod tests {
             Some(Stop::Bytes)
         );
         assert_eq!(bounded(&tree, "page", 1 << 20, 64 << 20).1.stop, None);
+    }
+
+    #[test]
+    fn a_bounded_expansion_charges_comparing_large_reference_ids() {
+        // Schema-defined defIDs: 100 references of a 10 kB enum against 100 small assignments.
+        let long: &'static str = Box::leak("d".repeat(10_000).into_boxed_str());
+        let assignments = (0..100)
+            .map(|i| {
+                obj(vec![
+                    ("defID", guid(3, i)),
+                    ("value", obj(vec![("boolValue", Value::Bool(false))])),
+                ])
+            })
+            .collect();
+        let inst = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            ("symbolData", obj(vec![("symbolID", guid(1, 1))])),
+            ("componentPropAssignments", Value::Array(assignments)),
+        ]);
+        let refs = (0..100)
+            .map(|_| {
+                obj(vec![
+                    ("defID", Value::Enum("Def", long)),
+                    ("componentPropNodeField", Value::Enum("Field", "VISIBLE")),
+                ])
+            })
+            .collect();
+        let layer = obj(vec![
+            ("type", Value::Enum("NodeType", "FRAME")),
+            ("componentPropRefs", Value::Array(refs)),
+        ]);
+        let (page, main) = (obj(vec![]), obj(vec![]));
+        let tree = Tree {
+            nodes: HashMap::from([
+                ("page".into(), &page),
+                ("inst".into(), &inst),
+                ("1:1".into(), &main),
+                ("5:1".into(), &layer),
+            ]),
+            children: HashMap::from([
+                ("page".into(), vec!["inst".into()]),
+                ("1:1".into(), vec!["5:1".into()]),
+            ]),
+            blobs: Vec::new(),
+        };
+        assert_eq!(
+            bounded(&tree, "page", 200_000, 64 << 20).1.stop,
+            Some(Stop::Work)
+        );
+        assert_eq!(bounded(&tree, "page", 4_000_000, 64 << 20).1.stop, None);
+    }
+
+    #[test]
+    fn properties_bind_by_equal_definition_ids_of_any_shape() {
+        let bound = |def: Value<'static>| {
+            let inst = obj(vec![(
+                "componentPropAssignments",
+                Value::Array(vec![obj(vec![
+                    ("defID", def.clone()),
+                    ("value", obj(vec![("boolValue", Value::Bool(false))])),
+                ])]),
+            )]);
+            let layer = obj(vec![(
+                "componentPropRefs",
+                Value::Array(vec![obj(vec![
+                    ("defID", def),
+                    ("componentPropNodeField", Value::Enum("Field", "VISIBLE")),
+                ])]),
+            )]);
+            let main = obj(vec![]);
+            let tree = Tree {
+                nodes: HashMap::from([("1:1".into(), &main), ("5:1".into(), &layer)]),
+                children: HashMap::from([("1:1".into(), vec!["5:1".into()])]),
+                blobs: Vec::new(),
+            };
+            bind_properties(&tree, "1:1", "", Patches::new(), &inst, &Patch::default())
+                .get("5:1")
+                .and_then(|p| p.visible)
+        };
+        assert_eq!(bound(guid(3, 1)), Some(false));
+        assert_eq!(bound(Value::Enum("Def", "same")), Some(false));
+    }
+
+    #[test]
+    fn maximal_charges_stop_on_work_instead_of_overflowing() {
+        let cost = Cost {
+            defs: usize::MAX,
+            ..Cost::default()
+        };
+        assert_eq!(cost.comparisons(usize::MAX), usize::MAX);
+        let tree = Tree {
+            nodes: HashMap::new(),
+            children: HashMap::new(),
+            blobs: Vec::new(),
+        };
+        let mut ex = Expander {
+            bounds: Some(Bounds {
+                work: 10,
+                bytes: 10,
+                depth: 64,
+                deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+                stop: None,
+            }),
+            depth: 0,
+            sizes: HashMap::new(),
+            tree: &tree,
+            out: Expansion {
+                nodes: HashMap::new(),
+                children: HashMap::new(),
+            },
+            symbols: Vec::new(),
+            budget: None,
+            exceeded: false,
+        };
+        let estimate = |left: &mut usize| {
+            *left -= 1;
+            usize::MAX
+        };
+        assert_eq!(ex.spend_estimated(usize::MAX, usize::MAX, estimate), None);
+        assert_eq!(ex.bounds.unwrap().stop, Some(Stop::Work));
     }
 
     #[test]
