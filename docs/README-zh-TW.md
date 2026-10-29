@@ -158,7 +158,7 @@ skillshare sync && skillshare sync mcp --global
 
 | 指令 | 輸出 |
 |---|---|
-| `tree <file> [node] [--depth N] [--json]` | 節點 id、REST 類型（與 `nodes` 相同）與名稱；縮排文字或巢狀 JSON |
+| `tree <file> [node] [--depth N] [--json]` | 節點 id、REST 類型（與 `nodes` 相同）與名稱；縮排文字，或附上每個節點尺寸、隱藏狀態與 auto layout 模式的巢狀 JSON |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 不分大小寫搜尋圖層名稱與文字；路徑、尺寸與預覽。預設 20 筆結果（1-200） |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | 精簡的展開後排版/文字摘要，最多 200 個節點。`--images` 會加上點陣圖尺寸與裁切範圍 |
 | `nodes <file> <node>` | REST 格式的 JSON：展開後的 instance 與 override、auto-layout、文字樣式、填色、效果、綁定的 variables、元件屬性、渲染邊界 |

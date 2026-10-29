@@ -17,6 +17,13 @@ fn text_preview(summary: &mut Value, text: &str) {
     }
 }
 
+/// A stored node's local pre-rotation size, kept as f32 so output digits match `nodes`.
+pub(super) fn local_size(node: &kiwi_schema::Value) -> Option<[f32; 2]> {
+    let size = node.get("size")?;
+    let axis = |k| size.get(k).map_or(0.0, |v| v.as_float());
+    Some([axis("x"), axis("y")])
+}
+
 pub fn find(
     tree: &Tree,
     query: &str,
@@ -74,11 +81,8 @@ pub fn find(
             "childCount": tree.children.get(&id).map_or(0, Vec::len),
             "matchedOn": {"name": name_match, "text": text_match},
         });
-        if let Some(size) = node.get("size") {
-            summary["size"] = json!({
-                "width": size.get("x").map_or(0.0, |v| v.as_float()),
-                "height": size.get("y").map_or(0.0, |v| v.as_float()),
-            });
+        if let Some([width, height]) = local_size(node) {
+            summary["size"] = json!({ "width": width, "height": height });
         }
         if node_type == "TEXT" {
             text_preview(&mut summary, text);

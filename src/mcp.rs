@@ -662,7 +662,9 @@ mod tests {
             run(&["--depth", "2", "--json"]).json().unwrap(),
             &serde_json::json!({ "id": "0:0", "type": "CANVAS", "name": "n0",
                 "children": [{ "id": "0:1", "type": "COMPONENT_SET", "name": "n1",
-                    "children": [{ "id": "0:2", "type": "COMPONENT", "name": "n2" }] }] })
+                    "layoutMode": "HORIZONTAL",
+                    "children": [{ "id": "0:2", "type": "COMPONENT", "name": "n2", "visible": false,
+                        "size": [24.0, 16.0] }] }] })
         );
         let text = run(&["--depth", "2"]).text().unwrap();
         assert!(text.contains("0:1 COMPONENT_SET \"n1\"") && text.contains("0:2 COMPONENT \"n2\""));

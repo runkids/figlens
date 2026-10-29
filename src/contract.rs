@@ -46,7 +46,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "json",
                 "boolean",
                 false,
-                "nested {id,type,name,children} JSON instead of indented text (about 1.6x larger)",
+                "nested {id,type,name,size,visible,layoutMode,children} JSON instead of indented text (about 1.7x larger); size is the local pre-rotation [width,height] (absent on the document and pages), visible appears only when false and layoutMode only on auto-layout frames",
             ),
         ],
     ),
