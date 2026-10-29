@@ -161,7 +161,7 @@ skillshare sync && skillshare sync mcp --global
 | `tree <file> [node] [--depth N] [--json]` | Ids, tipos REST (como en `nodes`) y nombres de nodos; texto con sangría, o JSON anidado con el tamaño de cada nodo, si está oculto y el modo de auto layout |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Búsqueda sin distinguir mayúsculas en nombres de capas y texto; rutas, tamaños y vistas previas. 20 resultados por defecto (1-200) |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | Resumen compacto de layout/texto expandido, como máximo 200 nodos. `--images` añade dimensiones de bitmap y áreas de recorte |
-| `nodes <file> <node>` | JSON con forma REST: instancias expandidas y overrides, auto-layout, estilos de texto, fills, efectos, variables enlazadas, propiedades de componentes, render bounds |
+| `nodes <file> <node>` | El objeto por nodo de una respuesta REST de nodes (`document`, `components`, `componentSets`, `styles`): instancias expandidas y overrides, auto-layout, estilos de texto, fills, efectos, variables enlazadas, propiedades de componentes, render bounds |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | Una decodificación, muchos nodos: una línea JSON por id listado, la salida de `nodes` con su `nodeId`, o `{nodeId, error}` |
 | `variables <file> [node]` | Las variables enlazadas de un frame; sin nodo, todas las variables locales |
 | `bundle <file> <node> <out.zip> [--states]` | Un bundle de diseño para un frame; imprime `{nodeId, path, warnings}` |

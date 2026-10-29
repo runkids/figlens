@@ -161,7 +161,7 @@ skillshare sync && skillshare sync mcp --global
 | `tree <file> [node] [--depth N] [--json]` | 노드 ID, REST 유형(`nodes`와 동일), 이름. 들여쓰기 텍스트, 또는 각 노드의 크기, 숨김 여부, 오토 레이아웃 모드을 담은 중첩 JSON |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 대소문자 구분 없이 레이어 이름과 텍스트 검색. 경로, 크기, 미리보기. 기본 20개(1-200) |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | 펼쳐진 간결한 레이아웃/텍스트 요약, 최대 200노드. `--images`는 비트맵 크기와 크롭 범위를 추가 |
-| `nodes <file> <node>` | REST 형태 JSON: 펼쳐진 인스턴스와 재정의, 자동 레이아웃, 텍스트 스타일, 채우기, 효과, 연결 변수, 컴포넌트 속성, 렌더링 경계 |
+| `nodes <file> <node>` | REST nodes 응답의 노드별 객체(`document`, `components`, `componentSets`, `styles`): 펼쳐진 인스턴스와 재정의, 자동 레이아웃, 텍스트 스타일, 채우기, 효과, 연결 변수, 컴포넌트 속성, 렌더링 경계 |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | 한 번 디코딩해 여러 노드: 목록의 id마다 JSON 한 줄(`nodeId`가 붙은 `nodes` 출력 또는 `{nodeId, error}`) |
 | `variables <file> [node]` | frame에 연결된 변수. 노드 없이 실행하면 모든 로컬 변수 |
 | `bundle <file> <node> <out.zip> [--states]` | 한 frame의 디자인 bundle. `{nodeId, path, warnings}` 출력 |

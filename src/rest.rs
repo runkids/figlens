@@ -1487,6 +1487,38 @@ mod tests {
     }
 
     #[test]
+    fn library_style_reference_resolves_to_its_key() {
+        use kiwi_schema::Value as K;
+        let object = |fields: Vec<(&'static str, K<'static>)>| {
+            K::Object("Test", fields.into_iter().collect())
+        };
+        let style = object(vec![
+            ("name", K::String("Brand/Primary".into())),
+            ("styleType", K::Enum("StyleType", "FILL")),
+            ("key", K::String("abc123".into())),
+        ]);
+        let frame = object(vec![
+            ("type", K::Enum("NodeType", "FRAME")),
+            (
+                "styleIdForFill",
+                object(vec![(
+                    "assetRef",
+                    object(vec![("key", K::String("abc123".into()))]),
+                )]),
+            ),
+        ]);
+        let tree = Tree {
+            nodes: HashMap::from([("1:1".into(), &frame), ("2:1".into(), &style)]),
+            children: HashMap::new(),
+            blobs: Vec::new(),
+        };
+        assert_eq!(
+            nodes(&tree, "1:1")["styles"]["2:1"],
+            json!({"name": "Brand/Primary", "styleType": "FILL", "remote": true, "description": "", "key": "abc123"})
+        );
+    }
+
+    #[test]
     fn auto_layout_fields_use_rest_names_and_skip_defaults() {
         let k = obj(json!({
             "stackMode": "HORIZONTAL",
