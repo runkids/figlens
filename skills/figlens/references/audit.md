@@ -10,7 +10,7 @@ For a page or several pages, list only the requested screens/states and mark eac
 
 ## 2. Gather targeted evidence
 
-For the same snapshot and scope, reuse its existing bundle or saved output when it answers the question; revalidate it if the design changes. Read the relevant subtree rather than repeatedly loading the whole file. Use `inspect` for bounds/layout/text and its truncation markers, `nodes` for full paints/masks/styles, and `variables` for tokens. Export the containing frame when overlap, clipping or a backdrop matters. Check render/handoff diagnostics and font/asset gaps before treating figlens pixels as design evidence; absence of diagnostics is not a fidelity guarantee.
+For the same snapshot and scope, reuse its existing bundle or saved output when it answers the question; revalidate it if the design changes. Read the relevant subtree rather than repeatedly loading the whole file. Use `inspect` for bounds/layout/text and its truncation markers (`childSpacing: "derived"` means the gaps are coordinate differences, not an auto-layout rule), `nodes` for full paints/masks/styles, and `variables` for tokens. Export the containing frame when overlap, clipping or a backdrop matters. Check render/handoff diagnostics and font/asset gaps before treating figlens pixels as design evidence; absence of diagnostics is not a fidelity guarantee.
 
 A flattened image supplies visual evidence, not editable child typography or layout values. Mark those values unavailable rather than inventing them from the image's outer bounds.
 
