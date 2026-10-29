@@ -554,7 +554,6 @@ fn abs_matrix_while(
     Some(m)
 }
 
-/// False when `id` or any ancestor up to `root` is hidden.
 fn main_of<'t>(tree: &Tree<'t>, instance: &Value) -> Option<String> {
     instance
         .get("symbolData")?
