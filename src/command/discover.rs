@@ -271,14 +271,18 @@ fn flat_lines(
     }
     if let Some(mode) = node["layoutMode"].as_str() {
         let n = |k: &str| num(node[k].as_f64().unwrap_or(0.0));
+        // REST leaves grid gaps out (they are not decoded), so a grid gets no gap rather than 0.
+        let gap = match mode {
+            "GRID" => String::new(),
+            _ => format!(" gap={}", n("itemSpacing")),
+        };
         add(format!(
-            "{} gap={} pad={},{},{},{}",
+            "{}{gap} pad={},{},{},{}",
             match mode {
                 "HORIZONTAL" => "H",
                 "VERTICAL" => "V",
                 other => other,
             },
-            n("itemSpacing"),
             n("paddingTop"),
             n("paddingRight"),
             n("paddingBottom"),
@@ -543,6 +547,14 @@ mod tests {
             Value::Null
         );
         assert_eq!(spacing(json!({"id":"1:1","type":"FRAME"})), Value::Null);
+    }
+
+    #[test]
+    fn flat_grid_lines_leave_out_the_gap_rest_does_not_emit() {
+        let node = json!({"id":"1:1","type":"FRAME","name":"g","layoutMode":"GRID","paddingTop":4});
+        let (mut out, mut truncated) = (String::new(), false);
+        flat_lines(&mut out, &node, (0.0, 0.0), 0, 0, &mut 1, &mut truncated);
+        assert_eq!(out, "1:1 FRAME \"g\" GRID pad=4,0,0,0\n");
     }
 
     #[test]

@@ -310,6 +310,10 @@ impl SvgIndex {
     /// Parses the `.svg` files in `dir` and its subfolders. Links are not followed, so a search
     /// stays inside the folder; files over 1 MiB and files that do not parse are skipped.
     pub fn load(dir: &Path) -> Result<Self, Box<dyn Error>> {
+        Self::load_within(dir, MAX_SVG_BYTES)
+    }
+
+    fn load_within(dir: &Path, max_bytes: u64) -> Result<Self, Box<dyn Error>> {
         use std::io::Read as _;
         let fail = |path: &Path| {
             let path = path.to_owned();
@@ -350,12 +354,13 @@ impl SvgIndex {
                 std::fs::File::open(&path)
                     .and_then(|f| f.take((1 << 20) + 1).read_to_end(&mut data))
                     .map_err(fail(&path))?;
+                // Skipped oversized files still cost their read.
+                bytes += data.len() as u64;
+                if bytes > max_bytes {
+                    return Err(too_broad(&format!("{} MiB of SVG", max_bytes >> 20)).into());
+                }
                 if data.len() > 1 << 20 {
                     continue;
-                }
-                bytes += data.len() as u64;
-                if bytes > MAX_SVG_BYTES {
-                    return Err(too_broad("64 MiB of SVG").into());
                 }
                 let Some(shape) = shape(&data) else {
                     continue;
@@ -390,13 +395,15 @@ impl SvgIndex {
             if Some(path.as_path()) == skip {
                 continue;
             }
-            if same_outline(&want.outline, &got.outline, 1.0) {
+            // A clip or mask hides part of the outline; only the rendered masks can compare it.
+            let outlines = !want.clipped && !got.clipped;
+            if outlines && same_outline(&want.outline, &got.outline, 1.0) {
                 matches.push(name.clone());
                 continue;
             }
             // The same outlines at another size are the best similar result.
             let scale = want.extent / got.extent.max(f32::EPSILON);
-            let score = if same_outline(&want.outline, &got.outline, scale) {
+            let score = if outlines && same_outline(&want.outline, &got.outline, scale) {
                 1.0
             } else {
                 overlap(&want.mask, &got.mask)
@@ -421,6 +428,8 @@ struct Shape {
     outline: Vec<(u8, Vec<f32>)>,
     /// The outline's larger side, to compare outlines drawn at another size.
     extent: f32,
+    /// Drawn through a clip path or mask, so the outline overstates what shows.
+    clipped: bool,
     mask: [u64; 64],
 }
 
@@ -476,6 +485,14 @@ fn grow(m: &[u64; 64]) -> [u64; 64] {
 fn shape(svg: &[u8]) -> Option<Shape> {
     use resvg::tiny_skia::PathSegment as S;
     use resvg::usvg::{Group, Node, Options, Tree};
+    fn clipped(group: &Group) -> bool {
+        group.clip_path().is_some()
+            || group.mask().is_some()
+            || group
+                .children()
+                .iter()
+                .any(|n| matches!(n, Node::Group(g) if clipped(g)))
+    }
     fn walk(group: &Group, out: &mut Vec<(u8, Vec<f32>)>) {
         for node in group.children() {
             match node {
@@ -573,6 +590,7 @@ fn shape(svg: &[u8]) -> Option<Shape> {
     Some(Shape {
         outline,
         extent,
+        clipped: clipped(tree.root()),
         mask,
     })
 }
@@ -722,5 +740,32 @@ mod tests {
         let index = SvgIndex::load(&dir.join("")).unwrap();
         let moved = r#"<svg xmlns="http://www.w3.org/2000/svg"><rect x="5" y="9" width="1000" height="1"/></svg>"#;
         assert_eq!(index.compare(moved.as_bytes(), None).0, ["rule.svg"]);
+    }
+
+    #[test]
+    fn svg_index_does_not_call_clipped_geometry_an_exact_match() {
+        let dir = crate::test_support::TestDir::new();
+        let svg = |body: &str| format!(r#"<svg xmlns="http://www.w3.org/2000/svg">{body}</svg>"#);
+        std::fs::write(
+            dir.join("circle.svg"),
+            svg(r#"<circle cx="10" cy="10" r="10"/>"#),
+        )
+        .unwrap();
+        let index = SvgIndex::load(&dir.join("")).unwrap();
+        // A layout-bounds export clips the overflowing half of the same circle.
+        let half = svg(
+            r#"<defs><clipPath id="a"><rect width="10" height="20"/></clipPath></defs><g clip-path="url(#a)"><circle cx="10" cy="10" r="10"/></g>"#,
+        );
+        assert!(index.compare(half.as_bytes(), None).0.is_empty());
+    }
+
+    #[test]
+    fn svg_index_charges_skipped_oversized_files_to_the_byte_budget() {
+        let dir = crate::test_support::TestDir::new();
+        for i in 0..3 {
+            std::fs::write(dir.join(&format!("big{i}.svg")), vec![b' '; (1 << 20) + 10]).unwrap();
+        }
+        let err = SvgIndex::load_within(&dir.join(""), 2 << 20).err().unwrap();
+        assert!(err.to_string().contains("more than"), "{err}");
     }
 }

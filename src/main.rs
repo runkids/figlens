@@ -49,7 +49,7 @@ usage:
                                              --flat prints one line per node instead (not with the above):
                                              id TYPE \"name\" @x,y WxH relative to the node, then hidden, rot,
                                              component, text, font=family size/weight/lineHeight, fill,
-                                             stroke=paint/weight, r, H|V|GRID gap pad=top,right,bottom,left
+                                             stroke=paint/weight, r, H|V gap or GRID, pad=top,right,bottom,left
                                              or spacing=derived, and opacity when set; children=N and
                                              `… N more` mark omissions
   figlens nodes <file.fig> <node>              print a frame as the per-node object of a Figma REST
