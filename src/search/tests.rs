@@ -507,6 +507,34 @@ fn case_folding_composes_across_a_whole_segment() {
 }
 
 #[test]
+fn a_phrase_after_a_rejected_overlap_ranks_as_a_phrase() {
+    // Same terms in both names; only the second holds "bar bar" as whole words, after an
+    // occurrence that starts inside "foobar".
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(2, Some(1), "FRAME", "bar foobar bar", vec![]),
+            node(3, Some(1), "FRAME", "foobar bar bar", vec![]),
+        ]),
+    )]);
+    let tree = Tree::new(&message);
+    let index = build(&tree, "0:0", bounds(WORK));
+    let req = request("bar bar");
+    let q = req.validate().unwrap();
+    let source = json!({"sourceId": "local:test", "snapshotId": "sha256:test"});
+    let found = reply(&index, &q, &req, source).unwrap();
+    assert_eq!(ids(&found), ["0:3", "0:2"]);
+    let matched = &first(&found)["matches"][0];
+    assert_eq!(matched["reason"], "phrase");
+    assert_eq!(
+        matched["span"],
+        json!({"start": 7, "end": 14, "unit": "utf16"})
+    );
+}
+
+#[test]
 fn names_split_at_slashes_and_camel_case() {
     assert_eq!(ids(&run(&request("button primary"))), ["0:18"]);
     assert_eq!(
@@ -848,6 +876,8 @@ fn phrases_match_whole_words_except_in_cjk() {
     assert_eq!(phrase_at("arrow row", "row"), Some(6));
     assert_eq!(phrase_at("pay now", "pay now"), Some(0));
     assert_eq!(phrase_at("立即購買", "購買"), Some(6));
+    // A rejected occurrence inside a word must not hide an overlapping whole-word one.
+    assert_eq!(phrase_at("foobar bar bar", "bar bar"), Some(7));
 }
 
 #[test]

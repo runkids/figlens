@@ -893,10 +893,24 @@ fn phrase_at(norm: &str, phrase: &str) -> Option<usize> {
     let joins = |a: Option<char>, b: char| {
         a.is_some_and(|a| class(a) == Class::Word && class(b) == Class::Word)
     };
-    norm.match_indices(phrase).map(|(at, _)| at).find(|&at| {
-        !joins(norm[..at].chars().next_back(), first)
+    let mut from = 0;
+    while let Some(i) = norm[from..].find(phrase) {
+        let at = from + i;
+        if !joins(norm[..at].chars().next_back(), first)
             && !joins(norm[at + phrase.len()..].chars().next(), last)
-    })
+        {
+            return Some(at);
+        }
+        // Occurrences may overlap, so resume one character on; a phrase starting with a word
+        // character can only start a word, so the rest of this word is skipped.
+        from = at + first.len_utf8();
+        if class(first) == Class::Word {
+            from += norm[from..]
+                .find(|c| class(c) != Class::Word)
+                .unwrap_or(norm.len() - from);
+        }
+    }
+    None
 }
 
 /// Why `original` matched: reason, matched terms and the UTF-16 span in the original field.
