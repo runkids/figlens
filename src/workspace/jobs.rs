@@ -320,6 +320,7 @@ fn fingerprint(kind: &str, ws: &str, source: &str, membership: &str, scope: &str
 /// whatever its kind: a second request joins it, and a job whose owner died is taken over as
 /// a new attempt. A `request_id` replays its first job, and refuses a different request.
 pub(crate) fn submit(
+    storage: &Storage,
     ws: &mut Opened,
     kind: &str,
     source_id: &str,
@@ -377,17 +378,28 @@ pub(crate) fn submit(
             None => {}
         }
     }
-    let active: Option<(String, String, i64)> = tx
+    let active: Option<(String, String, i64, String)> = tx
         .query_row(
-            "SELECT job_id, owner, attempt FROM jobs WHERE source_id = ?1 AND scope = ?2
+            "SELECT job_id, owner, attempt, membership FROM jobs WHERE source_id = ?1 AND scope = ?2
              AND state IN ('queued', 'running')",
             [source_id, scope],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()
         .map_err(sql)?;
-    if let Some((job_id, holder, attempt)) = active {
+    if let Some((job_id, holder, attempt, built)) = active {
         let owned = !job_alive(&dir, &holder, &job_id, attempt);
+        // A live build of the source's previous registration cannot publish; joining it would
+        // build nothing, and its slot frees once it stops.
+        if !owned && built != membership {
+            return Err(FigError::new(
+                ErrorKind::WorkspaceBusy,
+                format!("a build of source {source_id}'s previous path is still stopping; retry after it ends"),
+            )
+            .with_recovery(json!([{"action": "wait", "requires": "none", "tool": "jobs",
+                "arguments": {"action": "status", "jobId": job_id}}]))
+            .into());
+        }
         if owned {
             // Its owner died: this process takes it over as a new attempt from the start.
             tx.execute(
@@ -418,9 +430,12 @@ pub(crate) fn submit(
             joined: !owned,
         });
     }
-    let mut live = Vec::new();
+    let (mut live, mut shown) = (0, Vec::new());
     let mut stmt = tx
-        .prepare("SELECT job_id, owner, attempt FROM jobs WHERE state IN ('queued', 'running')")
+        .prepare(
+            "SELECT j.job_id, j.owner, j.attempt, s.path FROM jobs j
+             LEFT JOIN sources s ON s.source_id = j.source_id WHERE j.state IN ('queued', 'running')",
+        )
         .map_err(sql)?;
     for row in stmt
         .query_map([], |r| {
@@ -428,23 +443,32 @@ pub(crate) fn submit(
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, i64>(2)?,
+                r.get::<_, Option<String>>(3)?,
             ))
         })
         .map_err(sql)?
     {
-        let (job, holder, attempt) = row.map_err(sql)?;
+        let (job, holder, attempt, path) = row.map_err(sql)?;
         if job_alive(&dir, &holder, &job, attempt) {
-            live.push(job);
+            live += 1;
+            // A confined caller is never told about jobs of sources it cannot see.
+            if path.is_some_and(|p| storage.sees(Path::new(&p))) {
+                shown.push(job);
+            }
         }
     }
     drop(stmt);
-    if live.len() as i64 >= MAX_ACTIVE {
+    if live >= MAX_ACTIVE {
+        let mut wait = json!({"action": "wait", "requires": "none", "jobIds": shown});
+        if let Some(first) = shown.first() {
+            wait["tool"] = json!("jobs");
+            wait["arguments"] = json!({"action": "status", "jobId": first});
+        }
         return Err(FigError::new(
             ErrorKind::WorkspaceBusy,
             format!("workspace {id} already has {MAX_ACTIVE} queued or running jobs; retry after one finishes"),
         )
-        .with_recovery(json!([{"action": "wait", "requires": "none", "jobIds": live,
-            "tool": "jobs", "arguments": {"action": "status", "jobId": live[0]}}]))
+        .with_recovery(json!([wait]))
         .into());
     }
     let job_id = format!("{id}.{}", random_hex());
@@ -778,8 +802,11 @@ pub fn run(
     }
 }
 
-/// The oldest live queued job, in submission order: within one millisecond, the first inserted.
-fn queue_head(conn: &Connection, dir: &Path) -> Result<Option<String>> {
+/// Whether `job_id` is the oldest live queued job, in submission order (within one
+/// millisecond, the first inserted). The owner `me` runs its own jobs one at a time, so its
+/// other queued jobs never come first: a job it took over keeps its original submission time
+/// and would otherwise wait for a newer one it runs only afterwards.
+fn my_turn(conn: &Connection, dir: &Path, me: &str, job_id: &str) -> Result<bool> {
     let mut stmt = conn
         .prepare(
             "SELECT job_id, owner, attempt FROM jobs WHERE state = 'queued'
@@ -797,11 +824,14 @@ fn queue_head(conn: &Connection, dir: &Path) -> Result<Option<String>> {
         .map_err(sql)?
     {
         let (job, holder, held) = row.map_err(sql)?;
-        if job_alive(dir, &holder, &job, held) {
-            return Ok(Some(job));
+        if job == job_id {
+            return Ok(true);
+        }
+        if holder != me && job_alive(dir, &holder, &job, held) {
+            return Ok(false);
         }
     }
-    Ok(None)
+    Ok(false)
 }
 
 /// Waits for the build lock, then runs attempt `attempt` of job `job_id` in a child until it
@@ -836,7 +866,7 @@ fn build(
             ));
         }
         if build.try_lock().is_ok() {
-            if queue_head(&ws.conn, dir)?.as_deref() == Some(job_id) {
+            if my_turn(&ws.conn, dir, me, job_id)? {
                 break;
             }
             let _ = build.unlock();
@@ -1666,7 +1696,7 @@ fn submit_all(
             deferred.push(later(&source, &scope));
             continue;
         }
-        let job = match submit(&mut ws, kind, &source, &scope, request_id) {
+        let job = match submit(storage, &mut ws, kind, &source, &scope, request_id) {
             Ok(job) => job,
             // Each admitted job is committed and owned by this process, which never lets it
             // go: the caller gets them to run, and the rest (past MAX_ACTIVE, say) is reported.
@@ -1705,7 +1735,7 @@ fn submit_all(
 
 /// Ends the jobs `run` this process admitted but will not return to run, as `failed` with
 /// `e`, so none is left queued under a live owner. Returns `e`.
-fn release(ws: &Opened, run: &[String], e: Box<dyn Error>) -> Box<dyn Error> {
+pub(super) fn release(ws: &Opened, run: &[String], e: Box<dyn Error>) -> Box<dyn Error> {
     if let Ok(me) = owner(&ws.held.dir) {
         let code = e
             .downcast_ref::<FigError>()

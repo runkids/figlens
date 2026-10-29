@@ -308,7 +308,7 @@ fn a_run_that_cannot_record_its_end_reads_interrupted_and_retries_while_its_owne
     assert_eq!(report["state"], "interrupted", "{report}");
     // Storage is back: a refresh takes the job over as the next attempt.
     let (_, mut ws) = opened(&storage, &select, true).unwrap();
-    let again = submit(&mut ws, "refresh", &source, "0:0", None).unwrap();
+    let again = submit(&storage, &mut ws, "refresh", &source, "0:0", None).unwrap();
     assert!(again.owned && again.job_id == job_id);
     let attempt = "SELECT attempt FROM jobs WHERE job_id = ?1";
     assert_eq!(count(&conn, attempt, &job_id), 2);
@@ -342,7 +342,7 @@ fn an_owner_file_that_cannot_be_opened_counts_as_alive() {
 fn queued(storage: &Storage, select: &Select, scope: &str) -> String {
     let (_, mut ws) = opened(storage, select, true).unwrap();
     let source = sources(&ws.conn)[0].clone();
-    submit(&mut ws, "refresh", &source, scope, None)
+    submit(storage, &mut ws, "refresh", &source, scope, None)
         .unwrap()
         .job_id
 }
@@ -354,7 +354,11 @@ fn jobs_submitted_in_one_millisecond_build_in_submission_order() {
     let me = owner(&dir).unwrap();
     let conn = connection(&dir);
     let source = sources(&conn)[0].clone();
-    let first = job(&conn, &source, "0:0", "queued", &me, 1);
+    // The first job's owner is another live process.
+    std::fs::create_dir_all(dir.join("owners")).unwrap();
+    let other = File::create(dir.join("owners").join("other.lock")).unwrap();
+    other.lock().unwrap();
+    let first = job(&conn, &source, "0:0", "queued", "other", 1);
     let second = job(&conn, &source, "1:0", "queued", &me, 1);
     // The later job gets the smaller id, so an id order would run it first.
     let ws: String = first.split('.').next().unwrap().to_owned();
@@ -363,7 +367,10 @@ fn jobs_submitted_in_one_millisecond_build_in_submission_order() {
         params![second, format!("{ws}.0")],
     )
     .unwrap();
-    assert_eq!(queue_head(&conn, &dir).unwrap(), Some(first));
+    assert!(
+        !my_turn(&conn, &dir, &me, &second).unwrap(),
+        "{first} goes first"
+    );
 }
 
 #[test]
@@ -392,7 +399,7 @@ fn a_run_that_fails_before_it_can_write_leaves_its_job_interrupted() {
     assert_eq!(error.kind(), ErrorKind::WorkspaceBusy);
     let report = report_job(&conn, &dir, &job_id).unwrap().unwrap();
     assert_eq!(report["state"], "interrupted", "{report}");
-    assert_eq!(queue_head(&conn, &dir).unwrap(), None);
+    assert!(!job_alive(&dir, &owner(&dir).unwrap(), &job_id, 1));
 }
 
 #[test]
@@ -419,8 +426,13 @@ fn cancelling_a_live_owners_queued_job_ends_it_at_once() {
 fn a_job_waits_for_its_turn_only_so_long() {
     let d = TestDir::new();
     let (storage, select, dir) = workspace(&d, 1);
-    queued(&storage, &select, "0:0");
     let behind = queued(&storage, &select, "1:0");
+    // An older job of another live process holds the turn.
+    std::fs::create_dir_all(dir.join("owners")).unwrap();
+    let other = File::create(dir.join("owners").join("other.lock")).unwrap();
+    other.lock().unwrap();
+    let conn = connection(&dir);
+    job(&conn, &sources(&conn)[0], "0:0", "queued", "other", 1);
     let started = Instant::now();
     let reply = run(
         &storage,
@@ -514,6 +526,59 @@ fn a_job_that_cannot_be_claimed_is_not_admitted() {
     std::fs::write(dir.join("claims"), "").unwrap();
     let (_, mut ws) = opened(&storage, &select, true).unwrap();
     let source = sources(&ws.conn)[0].clone();
-    assert!(submit(&mut ws, "refresh", &source, "0:0", None).is_err());
+    assert!(submit(&storage, &mut ws, "refresh", &source, "0:0", None).is_err());
     assert_eq!(count(&ws.conn, "SELECT count(*) FROM jobs WHERE ?1", 1), 0);
+}
+
+#[test]
+fn an_owner_runs_its_newer_job_before_an_older_one_it_took_over() {
+    let d = TestDir::new();
+    let (_, _, dir) = workspace(&d, 1);
+    let me = owner(&dir).unwrap();
+    let conn = connection(&dir);
+    let source = sources(&conn)[0].clone();
+    job(&conn, &source, "0:0", "queued", &me, 2);
+    let newer = job(&conn, &source, "1:0", "queued", &me, 1);
+    assert!(my_turn(&conn, &dir, &me, &newer).unwrap());
+}
+
+#[test]
+fn a_submit_never_joins_a_build_of_the_source_s_previous_registration() {
+    let d = TestDir::new();
+    let (storage, select, _) = workspace(&d, 1);
+    queued(&storage, &select, "0:0");
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    ws.conn
+        .execute("UPDATE sources SET membership = 'relocated'", [])
+        .unwrap();
+    let source = sources(&ws.conn)[0].clone();
+    let Err(error) = submit(&storage, &mut ws, "refresh", &source, "0:0", None) else {
+        panic!("admitted");
+    };
+    assert_eq!(
+        error.downcast_ref::<FigError>().unwrap().kind(),
+        ErrorKind::WorkspaceBusy
+    );
+}
+
+#[test]
+fn a_full_workspace_names_no_job_of_a_source_the_caller_cannot_see() {
+    let d = TestDir::new();
+    let (storage, select, _) = workspace(&d, 1);
+    for i in 0..MAX_ACTIVE {
+        queued(&storage, &select, &format!("{i}:0"));
+    }
+    let elsewhere = std::fs::canonicalize(d.join("home")).unwrap();
+    let confined = storage.clone().confined(&[elsewhere]);
+    let (_, mut ws) = opened(&confined, &select, true).unwrap();
+    let source = sources(&ws.conn)[0].clone();
+    let Err(error) = submit(&confined, &mut ws, "refresh", &source, "99:0", None) else {
+        panic!("admitted");
+    };
+    let recovery = error
+        .downcast_ref::<FigError>()
+        .unwrap()
+        .recovery()
+        .unwrap();
+    assert_eq!(recovery[0]["jobIds"], json!([]), "{recovery}");
 }

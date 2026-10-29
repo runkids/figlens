@@ -915,7 +915,7 @@ fn a_search_past_the_query_envelope_is_a_work_limit_with_narrower_searches_not_a
     let stderr = String::from_utf8_lossy(&out.stderr);
     let recovery: Value = serde_json::from_str(stderr.lines().last().unwrap()).unwrap();
     let actions = recovery["recovery"].as_array().unwrap();
-    assert_eq!(actions.len(), 10, "{stderr}");
+    assert_eq!(actions.len(), 11, "{stderr}");
     assert!(actions.iter().all(|a| a["action"] == "search_one_source"));
     let one = actions[0]["arguments"]["sourceId"].as_str().unwrap();
     let narrowed = env.json(&["search", "--workspace", dir, "first", "--source", one]);

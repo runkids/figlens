@@ -74,7 +74,7 @@ Tool failures retain `isError: true` and text content; additive `_meta.figlens` 
 | `parse_budget_exceeded` | A named finite parsing budget was crossed; use a smaller copy or report the limit |
 | `output_write_failed` | Bundle packing or export writing failed; create an authorized writable directory and check space/permissions |
 | `permission_denied` | Configured roots forbid the source/output; retain the restriction |
-| `workspace_busy` | Another figlens process holds the workspace; retry after it finishes, without killing it |
+| `workspace_busy` | Another process holds the workspace, or a lane is full; retry once clear, never kill it |
 | `storage_unavailable` | The workspace's storage is missing or offline; follow `_meta.figlens.recovery`: restore it, or with the user's confirmation recreate elsewhere |
 | `index_incompatible` | Another schema or index version; follow the recovery (`rebuild`, or that figlens version) |
 | `query_work_limit` | Over 10 sources or 100k records per search; run a listed narrower one |

@@ -271,19 +271,28 @@ pub(super) fn recreate(
     let mut run = Vec::new();
     match options.scope {
         Some(scope) => {
-            let job = jobs::submit(&mut ws, "prepare", &source_id, scope, options.request_id)?;
+            let job = jobs::submit(
+                storage,
+                &mut ws,
+                "prepare",
+                &source_id,
+                scope,
+                options.request_id,
+            )?;
             if job.owned {
                 run.push(job.job_id.clone());
             }
-            extra["job"] =
-                jobs::report_job(&ws.conn, &ws.held.dir, &job.job_id)?.unwrap_or(Json::Null);
+            match jobs::report_job(&ws.conn, &ws.held.dir, &job.job_id) {
+                Ok(job) => extra["job"] = job.unwrap_or(Json::Null),
+                Err(e) => return Err(jobs::release(&ws, &run, e)),
+            }
         }
         None => extra["coverage"] = not_requested(),
     }
-    Ok(Outcome {
-        report: opened_report(storage, &place, &ws, extra)?,
-        run,
-    })
+    match opened_report(storage, &place, &ws, extra) {
+        Ok(report) => Ok(Outcome { report, run }),
+        Err(e) => Err(jobs::release(&ws, &run, e)),
+    }
 }
 
 /// Creates or reuses the workspace for `file` (source-scoped, or the `project` directory's)
@@ -310,19 +319,25 @@ pub fn prepare(
         && !options.replace_unavailable
         && let Some(old) = storage.alias(&id)?
     {
-        if let Ok((place, ws)) = opened(storage, &Select::Id(old), true)
-            && ws
-                .conn
-                .query_row(
-                    "SELECT 1 FROM sources WHERE path = ?1",
-                    [utf8(&source)?],
-                    |_| Ok(()),
-                )
-                .optional()
-                .map_err(sql)?
-                .is_some()
-        {
-            return registered(storage, place, ws, false, &source, options);
+        match opened(storage, &Select::Id(old), true) {
+            Ok((place, ws)) => {
+                let holds = ws
+                    .conn
+                    .query_row(
+                        "SELECT 1 FROM sources WHERE path = ?1",
+                        [utf8(&source)?],
+                        |_| Ok(()),
+                    )
+                    .optional()
+                    .map_err(sql)?;
+                if holds.is_some() {
+                    return registered(storage, place, ws, false, &source, options);
+                }
+            }
+            // Only a workspace that is gone makes the alias stale; a busy or unavailable one
+            // still holds the source.
+            Err(e) if !gone(&*e) => return Err(e),
+            Err(_) => {}
         }
         let record = locations.join(format!("{id}.json"));
         std::fs::remove_file(&record).map_err(|e| storage_error(&record, e))?;
@@ -389,12 +404,21 @@ fn registered(
     let mut run = Vec::new();
     match options.scope {
         Some(scope) => {
-            let job = jobs::submit(&mut ws, "prepare", &source_id, scope, options.request_id)?;
+            let job = jobs::submit(
+                storage,
+                &mut ws,
+                "prepare",
+                &source_id,
+                scope,
+                options.request_id,
+            )?;
             if job.owned {
                 run.push(job.job_id.clone());
             }
-            extra["job"] =
-                jobs::report_job(&ws.conn, &ws.held.dir, &job.job_id)?.unwrap_or(Json::Null);
+            match jobs::report_job(&ws.conn, &ws.held.dir, &job.job_id) {
+                Ok(report) => extra["job"] = report.unwrap_or(Json::Null),
+                Err(e) => return Err(jobs::release(&ws, &run, e)),
+            }
             extra["job"]["joined"] = json!(job.joined);
         }
         None => {
@@ -408,10 +432,10 @@ fn registered(
         remembered: storage.explicit.clone().or(place.remembered.clone()),
         ..place
     };
-    Ok(Outcome {
-        report: opened_report(storage, &place, &ws, extra)?,
-        run,
-    })
+    match opened_report(storage, &place, &ws, extra) {
+        Ok(report) => Ok(Outcome { report, run }),
+        Err(e) => Err(jobs::release(&ws, &run, e)),
+    }
 }
 
 /// The workspace's state and sources. A missing workspace creates nothing at all; an existing
@@ -443,12 +467,10 @@ pub fn status(storage: &Storage, select: &Select) -> Result<Json> {
     }
 }
 
-/// A source-scoped workspace is its one file: it may only add that file (`Some` of it), and
-/// relocating it (`None`) is refused. shortcut: source-scoped relocate needs a locator move,
-/// deferred to the durable-index milestone of #90.
-pub(super) fn project_only(ws: &Opened, file: Option<&Path>) -> Result<()> {
+/// A source-scoped workspace is its one file: it may only add that file.
+pub(super) fn project_only(ws: &Opened, file: &Path) -> Result<()> {
     match &ws.held.locator {
-        Locator::Source(own) if file != Some(own.as_path()) => Err(fail(
+        Locator::Source(own) if file != own.as_path() => Err(fail(
             ErrorKind::InvalidArguments,
             "a source-scoped workspace holds only its own file; prepare with --workspace <dir> to manage several sources, or reset this one",
         )),
@@ -461,7 +483,7 @@ pub fn add(storage: &Storage, select: &Select, file: &Path) -> Result<Json> {
     let source = readable(file)?;
     let (place, mut ws) = opened(storage, select, true)?;
     outside_storage(&source, storage, &place)?;
-    project_only(&ws, Some(&source))?;
+    project_only(&ws, &source)?;
     let (source_id, added) = register(&mut ws.conn, &source)?;
     opened_report(
         storage,
@@ -530,6 +552,9 @@ pub fn remove(storage: &Storage, select: &Select, source_id: &str) -> Result<Jso
 /// Points `source_id` at `file`, keeping its id.
 pub fn relocate(storage: &Storage, select: &Select, source_id: &str, file: &Path) -> Result<Json> {
     let source = readable(file)?;
+    // The new path's location lock comes before the workspace lock, the order prepare takes.
+    let new_id = Locator::Source(source.clone()).id()?;
+    let (locations, alias_lock) = location_exclusive(storage, &new_id)?;
     let (place, ws) = opened(storage, select, true)?;
     outside_storage(&source, storage, &place)?;
     if visible_path(storage, &ws.conn, source_id)?.is_none() || !storage.sees(&source) {
@@ -541,31 +566,26 @@ pub fn relocate(storage: &Storage, select: &Select, source_id: &str, file: &Path
     // A source-scoped workspace keeps its id: the new path's id becomes an alias of it, written
     // first, so an interruption leaves the alias pointing at the workspace still holding the
     // old path, and a retry completes the move.
-    let _alias_lock;
-    if let Locator::Source(_) = ws.held.locator {
-        let new_id = Locator::Source(source.clone()).id()?;
-        if new_id != ws.held.id {
-            let (locations, lock) = location_exclusive(storage, &new_id)?;
-            _alias_lock = lock;
-            let record = locations.join(format!("{new_id}.json"));
-            let own =
-                plain(&record, false)? && storage.alias(&new_id)?.as_deref() != Some(&ws.held.id);
-            let state = storage.place(&new_id, None)?.roots.state.path;
-            if own || acquire(&state, &Select::Id(new_id.clone()), false)?.is_some() {
-                return Err(fail(
-                    ErrorKind::InvalidArguments,
-                    format!(
-                        "{} has its own workspace {new_id}; reset that workspace first, or relocate into a project workspace",
-                        source.display()
-                    ),
-                ));
-            }
-            write_small(
-                &record,
-                &json!({"version": LOCATION, "aliasOf": ws.held.id,
-                    "locator": Locator::Source(source.clone()).report()?}),
-            )?;
+    if let Locator::Source(_) = ws.held.locator
+        && new_id != ws.held.id
+    {
+        let record = locations.join(format!("{new_id}.json"));
+        let own = plain(&record, false)? && storage.alias(&new_id)?.as_deref() != Some(&ws.held.id);
+        let state = storage.place(&new_id, None)?.roots.state.path;
+        if own || acquire(&state, &Select::Id(new_id.clone()), false)?.is_some() {
+            return Err(fail(
+                ErrorKind::InvalidArguments,
+                format!(
+                    "{} has its own workspace {new_id}; reset that workspace first, or relocate into a project workspace",
+                    source.display()
+                ),
+            ));
         }
+        write_small(
+            &record,
+            &json!({"version": LOCATION, "aliasOf": ws.held.id,
+                "locator": Locator::Source(source.clone()).report()?}),
+        )?;
     }
     // A new membership: indexes of the old path stop being served until a refresh, and a
     // build still running for the old path cannot publish.
@@ -591,6 +611,14 @@ pub fn relocate(storage: &Storage, select: &Select, source_id: &str, file: &Path
             format!("workspace {} has no source {source_id}", ws.held.id),
         ));
     }
+    // Builds of the old path cannot publish any more; stop them.
+    ws.conn
+        .execute(
+            "UPDATE jobs SET cancel = 1 WHERE source_id = ?1 AND state IN ('queued', 'running')",
+            [source_id],
+        )
+        .map_err(sql)?;
+    drop(alias_lock);
     opened_report(
         storage,
         &place,
@@ -620,7 +648,18 @@ pub fn reset(storage: &Storage, select: &Select) -> Result<Json> {
     let place = storage.place(&id, select.locator())?;
     // A caller confined to some roots may not delete sources it cannot see.
     if storage.visible.is_some()
-        && let Ok((_, ws)) = opened(storage, select, false)
+        && let Some((_, ws)) = match opened(storage, select, false) {
+            Ok(opened) => Some(opened),
+            Err(e) if gone(&*e) => None,
+            Err(e) => {
+                return Err(fail(
+                    ErrorKind::PermissionDenied,
+                    format!(
+                        "workspace {id}'s sources cannot be checked against this server's roots ({e}); reset it from the CLI"
+                    ),
+                ));
+            }
+        }
     {
         let mut stmt = ws.conn.prepare("SELECT path FROM sources").map_err(sql)?;
         let paths = stmt

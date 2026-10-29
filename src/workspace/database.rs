@@ -361,6 +361,13 @@ pub(super) fn missing(id: &str) -> Box<dyn Error> {
     )
 }
 
+/// Whether opening a workspace failed as [`missing`] does, the workspace being absent, rather
+/// than busy, unavailable or unreadable.
+pub(super) fn gone(e: &(dyn Error + 'static)) -> bool {
+    e.downcast_ref::<FigError>()
+        .is_some_and(|f| f.kind() == ErrorKind::InvalidArguments)
+}
+
 /// The `sourceId` registered for `source`, adding it when new; true when added.
 pub(super) fn register(conn: &mut Connection, source: &Path) -> Result<(String, bool)> {
     let path = utf8(source)?;

@@ -1032,3 +1032,67 @@ fn a_replacement_whose_database_was_never_created_finishes_where_it_was_reserved
     };
     assert!(again.to_string().contains("current storage"), "{again}");
 }
+
+#[cfg(unix)]
+#[test]
+fn an_alias_whose_workspace_is_busy_is_kept_and_the_prepare_reports_busy() {
+    let f = Fixture::new();
+    let a = std::fs::canonicalize(f.fig("a.fig")).unwrap();
+    let ws = id_of(&prepare(&f.storage, &a, None).unwrap());
+    let b = f.dir.join("b.fig");
+    std::fs::rename(&a, &b).unwrap();
+    let b = std::fs::canonicalize(b).unwrap();
+    let own = crate::search::source_id(&a);
+    relocate(&f.storage, &Select::Id(ws.clone()), &own, &b).unwrap();
+    let select = Select::Id(ws.clone());
+    let place = f.storage.place(&ws, None).unwrap();
+    let held = acquire(&place.roots.state.path, &select, true).unwrap();
+    let error = prepare(&f.storage, &b, None).unwrap_err();
+    drop(held);
+    assert_eq!(kind(&*error), ErrorKind::WorkspaceBusy);
+    let alias = Locator::Source(b.clone()).id().unwrap();
+    assert_eq!(f.storage.alias(&alias).unwrap(), Some(ws));
+}
+
+#[test]
+fn a_confined_caller_cannot_reset_a_workspace_whose_sources_it_cannot_read() {
+    let f = Fixture::new();
+    let inside = f.dir.join("in");
+    std::fs::create_dir_all(&inside).unwrap();
+    let inside = std::fs::canonicalize(&inside).unwrap();
+    let project = std::fs::canonicalize(f.dir.join("")).unwrap();
+    let seen = inside.join("a.fig");
+    std::fs::write(&seen, "a").unwrap();
+    let id = id_of(&prepare(&f.storage, &seen, Some(&project)).unwrap());
+    let db = f.workspace(&id).join(DB);
+    std::fs::write(&db, "not a database").unwrap();
+    let confined = f.storage.clone().confined(&[inside]);
+    let select = Select::Locator(Locator::project(&project).unwrap());
+    assert_eq!(
+        kind(&*reset(&confined, &select).unwrap_err()),
+        ErrorKind::PermissionDenied
+    );
+    assert!(db.is_file());
+}
+
+#[test]
+fn a_relocate_interrupted_after_its_alias_completes_when_retried() {
+    let f = Fixture::new();
+    let a = std::fs::canonicalize(f.fig("a.fig")).unwrap();
+    let ws = id_of(&prepare(&f.storage, &a, None).unwrap());
+    let b = f.dir.join("b.fig");
+    std::fs::rename(&a, &b).unwrap();
+    let b = std::fs::canonicalize(b).unwrap();
+    let own = crate::search::source_id(&a);
+    let select = Select::Id(ws.clone());
+    relocate(&f.storage, &select, &own, &b).unwrap();
+    // Interrupted after the alias was written, before the source row moved.
+    let (_, opened_ws) = opened(&f.storage, &select, true).unwrap();
+    opened_ws
+        .conn
+        .execute("UPDATE sources SET path = ?1", [a.to_str().unwrap()])
+        .unwrap();
+    drop(opened_ws);
+    relocate(&f.storage, &select, &own, &b).unwrap();
+    assert_eq!(id_of(&prepare(&f.storage, &b, None).unwrap()), ws);
+}

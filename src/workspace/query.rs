@@ -397,7 +397,6 @@ fn restrict(coverage: &mut Json) {
 fn work_limit(ws_id: &str, req: &Request, rows: &[Row], one_too_big: bool) -> Box<dyn Error> {
     let mut actions: Vec<Json> = rows
         .iter()
-        .take(QUERY_SOURCES)
         .map(|r| {
             json!({"action": "search_one_source", "requires": "none", "tool": "search",
             "arguments": {"workspaceId": ws_id, "query": req.query, "sourceId": r.id}})
