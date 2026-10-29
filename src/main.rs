@@ -50,6 +50,18 @@ usage:
                                              the same search over a workspace's prepared indexes of
                                              --node (default 0:0) across its sources, without parsing;
                                              sources not ready are listed with the step that prepares them
+  figlens usages <file.fig> <node>|<resource> [--scope ID] [--relation R[,R]] [--out]
+          [--snapshot S] [--include-hidden] [--limit N] [--cursor C]
+                                             exact relations of a node or resource (VariableID:...,
+                                             StyleKey:..., image:...) in one stored scope (default: the
+                                             document), nested instances and swaps included: instance_of,
+                                             variant_of, binds_variable, uses_style, uses_image,
+                                             prototype_target, contains (asked for); in by default, --out
+                                             for what it points at; state, basis and evidence per edge;
+                                             coverage and cursor pages (50, 1-200), never a total
+  figlens usages --workspace DIR|--file <file.fig>|--id ws_... <node>|<resource> [--source ID] [--storage DIR] [same options]
+                                             the same over one source's prepared index of --scope,
+                                             without parsing; a changed source is source_stale
   figlens inspect <file.fig> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]
                                              compact layout/text summary, instances expanded;
                                              depth 1 (0-10), at most 200 nodes, 200 characters per text;
@@ -220,6 +232,7 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                 "tree"
                     | "find"
                     | "search"
+                    | "usages"
                     | "inspect"
                     | "node"
                     | "nodes"
@@ -308,6 +321,11 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             writeln!(out, "{report}")?;
             return Ok(());
         }
+        Some("usages") if args.get(1).is_some_and(|a| a.starts_with("--")) => {
+            let report = workspace_usages(&args[1..])?;
+            writeln!(out, "{report}")?;
+            return Ok(());
+        }
         Some("verify") => {
             let bundle = args.get(1).ok_or(USAGE)?;
             let report = figlens::verify::verify(std::path::Path::new(bundle))?;
@@ -333,9 +351,16 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
     let search = (command == "search")
         .then(|| command::search_request(&args[2..]))
         .transpose()?;
+    let usages = (command == "usages")
+        .then(|| command::usages_request(&args[2..]))
+        .transpose()?;
     let path = figlens::remote::local(file).map_err(|e| contract::source(file, e))?;
     if let Some(request) = search {
         out.push_str(&command::search(&path, &request, file)?.text()?);
+        return Ok(());
+    }
+    if let Some(request) = usages {
+        out.push_str(&command::usages(&path, &request, file)?.text()?);
         return Ok(());
     }
     if command == "preview" {
@@ -733,7 +758,7 @@ fn index_args<'a>(args: &'a [String], search: bool) -> Result<IndexArgs<'a>, Box
             }
             flag if search && flag.starts_with('-') => {
                 parsed.search.push(arg.clone());
-                if !matches!(flag, "--include-hidden" | "--include-internal") {
+                if !matches!(flag, "--include-hidden" | "--include-internal" | "--out") {
                     parsed
                         .search
                         .push(rest.next().ok_or(format!("{arg} needs a value"))?.clone());
@@ -1002,6 +1027,26 @@ fn workspace_search(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>
     let request = command::search_request(&search_args)?;
     let only: Vec<String> = a.source.iter().map(|s| s.to_string()).collect();
     workspace::query::search(&storage, &select, &only, &request)
+}
+
+/// `figlens usages --workspace DIR|--file <file.fig>|--id ws_... <node>|<resource> [--source ID] [options]`:
+/// usages over one source's published index of `--scope`; nothing is built.
+fn workspace_usages(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
+    use figlens::workspace::{self, Select};
+    let a = index_args(args, true)?;
+    let [target] = a.positional.as_slice() else {
+        return Err("usage: figlens usages --workspace DIR|--file <file.fig>|--id ws_... <node>|<resource> [--source ID] [--scope ID]".into());
+    };
+    let storage = workspace::storage(a.storage.map(Path::new))?;
+    let select = Select::from_choice(a.workspace.map(Path::new), a.file.map(Path::new), a.id)?
+        .ok_or("choose the workspace with --workspace, --file or --id")?;
+    let mut usages_args = vec![target.to_string()];
+    usages_args.extend(a.search.iter().cloned());
+    let request = command::usages_request(&usages_args)?;
+    if a.source.len() > 1 {
+        return Err("usages reads one source; pass --source once".into());
+    }
+    workspace::usages::usages(&storage, &select, a.source.first().copied(), &request)
 }
 
 /// Reruns the release installer (scripts/install.sh, or install.ps1 on Windows) into this

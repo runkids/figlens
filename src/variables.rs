@@ -117,7 +117,7 @@ fn push(ids: &mut Vec<String>, id: Option<String>) {
 }
 
 /// Every `VARIABLE_ALIAS` id under `v`, once each.
-fn aliases(v: &Json, ids: &mut Vec<String>) {
+pub(crate) fn aliases(v: &Json, ids: &mut Vec<String>) {
     match v {
         Json::Array(a) => a.iter().for_each(|x| aliases(x, ids)),
         Json::Object(o) => {

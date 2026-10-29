@@ -1,19 +1,19 @@
 use super::*;
 use kiwi_schema::Value as K;
 
-fn obj(fields: Vec<(&'static str, K<'static>)>) -> K<'static> {
+pub(super) fn obj(fields: Vec<(&'static str, K<'static>)>) -> K<'static> {
     K::Object("Test", fields.into_iter().collect())
 }
 
-fn guid(id: u32) -> K<'static> {
+pub(super) fn guid(id: u32) -> K<'static> {
     obj(vec![("sessionID", K::UInt(0)), ("localID", K::UInt(id))])
 }
 
-fn text(s: &str) -> (&'static str, K<'static>) {
+pub(super) fn text(s: &str) -> (&'static str, K<'static>) {
     ("textData", obj(vec![("characters", K::String(s.into()))]))
 }
 
-fn path(ids: &[u32]) -> (&'static str, K<'static>) {
+pub(super) fn path(ids: &[u32]) -> (&'static str, K<'static>) {
     (
         "guidPath",
         obj(vec![(
@@ -23,7 +23,7 @@ fn path(ids: &[u32]) -> (&'static str, K<'static>) {
     )
 }
 
-fn node(
+pub(super) fn node(
     id: u32,
     parent: Option<u32>,
     kind: &'static str,
@@ -83,7 +83,7 @@ fn assignments(label: &str, show_hint: bool) -> (&'static str, K<'static>) {
     )
 }
 
-fn instance(
+pub(super) fn instance(
     id: u32,
     parent: u32,
     name: &str,
@@ -190,7 +190,7 @@ fn message() -> K<'static> {
     )])
 }
 
-fn bounds(work: usize) -> Bounds {
+pub(super) fn bounds(work: usize) -> Bounds {
     Bounds {
         work,
         bytes: BYTES,
@@ -955,48 +955,44 @@ fn swaps() -> K<'static> {
 }
 
 #[test]
-fn a_swap_to_a_missing_main_is_unresolved_not_the_definitions_main() {
+fn a_swap_to_a_missing_main_keeps_its_id_as_missing_not_the_definitions_main() {
     let message = swaps();
     let tree = Tree::new(&message);
     let index = build(&tree, "0:0", bounds(WORK));
     let of = |id: &str| {
         let r = index.records.iter().find(|r| r.id == id).unwrap();
-        r.instance.clone().unwrap()
+        let e = r
+            .edges
+            .iter()
+            .find(|e| e.relation == "instance_of")
+            .unwrap();
+        (e.target.clone(), e.state, e.basis, e.evidence.clone())
     };
-    let unresolved = |evidence| Instance {
-        target: None,
-        basis: "resolved",
-        evidence,
+    let swap = |target: &str, state| {
+        (
+            Some(target.to_owned()),
+            state,
+            "resolved",
+            "swap".to_owned(),
+        )
     };
-    assert_eq!(of("I0:3;0:31"), unresolved("swap"));
-    assert_eq!(of("I0:3;0:32"), unresolved("swap"));
+    assert_eq!(of("I0:3;0:31"), swap("0:99", "missing"));
+    assert_eq!(of("I0:3;0:32"), swap("0:40", "unsupported"));
     assert_eq!(
         of("0:33"),
-        Instance {
-            target: Some("0:20".into()),
-            basis: "recorded",
-            evidence: "symbolData",
-        }
+        (
+            Some("0:20".into()),
+            "resolved",
+            "recorded",
+            "symbolData".into()
+        )
     );
 }
 
 #[test]
 fn one_query_budget_covers_every_load_and_is_checked_before_copying() {
     let index = build(&Tree::new(&swaps()), "0:0", bounds(WORK));
-    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(&format!(
-        "CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
-         added_at_ms INTEGER NOT NULL) STRICT; {}",
-        crate::workspace::V2
-    ))
-    .unwrap();
-    conn.execute(
-        "INSERT INTO generations (source_id, membership, scope, versions, job_id, state, created_ms)
-         VALUES ('s', 'm', '0:0', 'v', 'j', 'building', 0)",
-        [],
-    )
-    .unwrap();
-    store::save(&mut conn, 1, &index, &|_| Ok(()), &mut |_, _, _| Ok(())).unwrap();
+    let conn = stored(&index);
     let all: Vec<u32> = (0..index.records.len() as u32).collect();
     let mut one = 0;
     let mut first = store::load(&conn, 1, &[], &mut one).unwrap();
@@ -1052,7 +1048,8 @@ fn index_metadata_serializes_as_before_within_its_cap_and_never_holds_more() {
         .collect();
     let before = json!({"pages": pages, "roots": index.roots, "above": index.above,
         "lens": index.lens, "stop": index.stop, "hiddenContent": index.hidden_content,
-        "textBytes": index.text_bytes, "generation": index.generation});
+        "textBytes": index.text_bytes, "generation": index.generation,
+        "unverifiedLinks": index.unverified_links, "unreadFields": index.unread_fields});
     assert_eq!(info, before.to_string());
     assert!(store::info_json(&index, info.len()).is_ok());
     // The write that would pass the cap is refused whole: nothing past it is ever held.
@@ -1068,15 +1065,38 @@ fn index_metadata_serializes_as_before_within_its_cap_and_never_holds_more() {
 }
 
 #[test]
-fn contains_and_instance_of_survive_a_stored_generation() {
+fn edges_and_definitions_survive_a_stored_generation() {
     let message = swaps();
     let tree = Tree::new(&message);
     let index = build(&tree, "0:0", bounds(WORK));
+    let conn = stored(&index);
+    let mut spent = 0;
+    let mut loaded = store::load(&conn, 1, &[], &mut spent).unwrap();
+    let all: Vec<u32> = (0..index.records.len() as u32).collect();
+    store::add(&conn, 1, &mut loaded, &all, &mut spent).unwrap();
+    let relations = |i: &Index| -> Vec<(String, Option<u32>, Vec<usages::Edge>)> {
+        i.records
+            .iter()
+            .map(|r| (r.id.clone(), r.parent, r.edges.clone()))
+            .collect()
+    };
+    assert_eq!(relations(&loaded), relations(&index));
+    assert!(
+        index
+            .records
+            .iter()
+            .any(|r| r.edges.iter().any(|e| e.state == "missing"))
+    );
+}
+
+/// A workspace schema in memory holding `index` as generation 1.
+pub(super) fn stored(index: &Index) -> rusqlite::Connection {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(&format!(
         "CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
-         added_at_ms INTEGER NOT NULL) STRICT; {}",
-        crate::workspace::V2
+         added_at_ms INTEGER NOT NULL) STRICT; {} {}",
+        crate::workspace::V2,
+        crate::workspace::V3
     ))
     .unwrap();
     conn.execute(
@@ -1085,22 +1105,6 @@ fn contains_and_instance_of_survive_a_stored_generation() {
         [],
     )
     .unwrap();
-    store::save(&mut conn, 1, &index, &|_| Ok(()), &mut |_, _, _| Ok(())).unwrap();
-    let mut spent = 0;
-    let mut loaded = store::load(&conn, 1, &[], &mut spent).unwrap();
-    let all: Vec<u32> = (0..index.records.len() as u32).collect();
-    store::add(&conn, 1, &mut loaded, &all, &mut spent).unwrap();
-    let relations = |i: &Index| -> Vec<(String, Option<u32>, Option<Instance>)> {
-        i.records
-            .iter()
-            .map(|r| (r.id.clone(), r.parent, r.instance.clone()))
-            .collect()
-    };
-    assert_eq!(relations(&loaded), relations(&index));
-    assert!(
-        index
-            .records
-            .iter()
-            .any(|r| r.instance.as_ref().is_some_and(|i| i.target.is_none()))
-    );
+    store::save(&mut conn, 1, index, &|_| Ok(()), &mut |_, _, _| Ok(())).unwrap();
+    conn
 }

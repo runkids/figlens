@@ -146,7 +146,13 @@ fn search_index(
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(sql)?;
     drop(stmt);
-    relocated(storage, select, rows.iter().map(|r| r.path.as_str()), req)?;
+    relocated(
+        storage,
+        select,
+        rows.iter().map(|r| r.path.as_str()),
+        "search",
+        selectors(json!({"query": req.query}), req),
+    )?;
     // Invisible sources are dropped before anything about them is read or counted; the reply
     // says only that the corpus was restricted, never which sources or how many.
     let all = rows.len();
@@ -376,11 +382,14 @@ fn search_index(
 
 /// A `--file` whose workspace no longer holds that path (its source was relocated) must not
 /// serve the moved source under the old name; it names where the source went when visible.
-fn relocated<'a>(
+/// Refuses a `--file` that no longer names this workspace's source; the recovery reruns `tool`
+/// with `arguments` on the file it was relocated to.
+pub(super) fn relocated<'a>(
     storage: &Storage,
     select: &Select,
     mut paths: impl Iterator<Item = &'a str> + Clone,
-    req: &Request,
+    tool: &str,
+    mut arguments: Json,
 ) -> Result<()> {
     let Select::Locator(Locator::Source(asked)) = select else {
         return Ok(());
@@ -390,13 +399,16 @@ fn relocated<'a>(
         return Ok(());
     }
     match paths.find(|p| storage.sees(Path::new(p))) {
-        Some(now) => Err(FigError::new(
-            ErrorKind::InvalidArguments,
-            format!("{asked} is no longer this workspace's source: it was relocated to {now}; search that file"),
-        )
-        .with_recovery(json!([{"action": "search_relocated", "requires": "none", "tool": "search",
-            "arguments": selectors(json!({"file": now, "query": req.query}), req)}]))
-        .into()),
+        Some(now) => {
+            arguments["file"] = json!(now);
+            Err(FigError::new(
+                ErrorKind::InvalidArguments,
+                format!("{asked} is no longer this workspace's source: it was relocated to {now}; {tool} that file"),
+            )
+            .with_recovery(json!([{"action": format!("{tool}_relocated"), "requires": "none",
+                "tool": tool, "arguments": arguments}]))
+            .into())
+        }
         None => Ok(()),
     }
 }
@@ -435,7 +447,7 @@ fn work_limit(ws_id: &str, req: &Request, rows: &[Row], one_too_big: bool) -> Bo
 
 /// A stored index this binary cannot read: rebuilding it is the recovery. A query budget
 /// crossed while loading is passed on as it is: the index is fine.
-fn unreadable_index(ws_id: &str, source: &str, e: Box<dyn Error>) -> Box<dyn Error> {
+pub(super) fn unreadable_index(ws_id: &str, source: &str, e: Box<dyn Error>) -> Box<dyn Error> {
     if e.downcast_ref::<FigError>()
         .is_some_and(|f| f.kind() == ErrorKind::QueryWorkLimit)
     {

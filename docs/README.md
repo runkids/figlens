@@ -129,7 +129,7 @@ Browse pages and layers, search, measure, inspect layout, typography, variables 
 
 ## MCP server and agent skill
 
-**MCP.** The server runs locally over stdio and exposes `workflow`, `tree`, `find`, `search`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs` and `export`. The agent can read built-in `build`, `audit`, `images`, `plan`, `planning-details` or opt-in `yolo` guidance through `workflow`, then use its own project and browser tools to carry out the authorized task. These guides share the portable skill's source; installing that skill separately is optional for MCP users. Client support and model behavior determine how the guidance is used. Pass absolute paths. Add `--root /path/to/designs` (repeatable) to confine every file and output path to chosen folders. Index storage outside the default figlens directories needs `--storage-root DIR` (repeatable). Raster exports are scaled down to `maxSize` (default 1600 px) so inline images stay small; SVG returns metadata only.
+**MCP.** The server runs locally over stdio and exposes `workflow`, `tree`, `find`, `search`, `usages`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs` and `export`. The agent can read built-in `build`, `audit`, `images`, `plan`, `planning-details` or opt-in `yolo` guidance through `workflow`, then use its own project and browser tools to carry out the authorized task. These guides share the portable skill's source; installing that skill separately is optional for MCP users. Client support and model behavior determine how the guidance is used. Pass absolute paths. Add `--root /path/to/designs` (repeatable) to confine every file and output path to chosen folders. Index storage outside the default figlens directories needs `--storage-root DIR` (repeatable). Raster exports are scaled down to `maxSize` (default 1600 px) so inline images stay small; SVG returns metadata only.
 
 Native Windows with Claude Code: follow its [stdio setup notes](https://code.claude.com/docs/en/mcp#option-3-add-a-local-stdio-server) and the `cmd /c` wrapper for `npx`.
 
@@ -158,7 +158,7 @@ skillshare sync && skillshare sync mcp --global
 |---|---|---|
 | What it does | Reads the `.fig` on each call and answers `search`, `find`, `inspect` and `export`. | Builds a search index of a chosen scope once, then answers `search` from it, ranked across sources. |
 | What is written | No workspace or index database (`export` writes only the files you ask for). | A local workspace (SQLite database) in the per-user state directory, or the `--storage` you chose. |
-| When to use | One-off questions, scripts, CI. | Repeated searches of one file; several files of a project as one corpus (`--workspace <dir>`); known parent/instance relations in coverage. |
+| When to use | One-off questions, scripts, CI. | Repeated searches of one file; several files of a project as one corpus (`--workspace <dir>`); exact usages of components, variables, styles and images. |
 
 A normal design question never creates an index. You opt in once, explicitly ("create an index for this design"); figlens picks the storage and needs no SQLite or other setup.
 
@@ -192,9 +192,9 @@ Lifecycle: `refresh` rebuilds only scopes whose `.fig` bytes changed; `rebuild` 
 
 Moved the `.fig`? `index relocate` keeps `workspaceId`, `sourceId` and storage; then `refresh` the affected scopes. There is no auto-discovery and no hash-based merge, and no reset is needed.
 
-Data: the SQLite database holds registered local paths, the selected scopes' layer names and effective text, search postings, known parent/instance relations, hashes, generations and jobs. The original `.fig` stays unchanged where it is; its raw bytes are not stored in the database.
+Data: the SQLite database holds registered local paths, the selected scopes' layer names and effective text, search postings, exact relations (containment, instances, variants, variable/style/image bindings, prototype targets) and the definitions they point at, hashes, generations and jobs. The original `.fig` stays unchanged where it is; its raw bytes are not stored in the database.
 
-Pi, OpenCode and OMP use the same index through their own opt-in entry, and the workspace is reused across restarts and hosts. Not implemented: file watching, usages/relationship tools, vectors, events and subscriptions.
+Pi, OpenCode and OMP use the same index through their own opt-in entry, and the workspace is reused across restarts and hosts. Not implemented: file watching, Pi, OpenCode and OMP usages tools, vectors, events and subscriptions.
 
 <a id="commands"></a>
 
@@ -206,6 +206,7 @@ Pi, OpenCode and OMP use the same index through their own opt-in entry, and the 
 | `tree <file> [node] --top-frames [--json]` | Only the screens, one per line, ready for `--frames -`: frames, components, component sets and instances on a page or in its sections (groups and internal pages skipped); `--json` adds page and section ids and each screen's first visible text (`firstText`), which tells canvas labels from screens |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Case-insensitive search over layer names and text; paths, sizes and previews. Default 20 results (1-200) |
 | `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | Ranked search of layer names and full text with instance overrides, text/boolean properties and swaps applied; exact node refs (including `I…;…` sublayer ids for `inspect`), match reasons, UTF-16 spans, coverage and cursor pages. Default 20 (1-200); hidden layers and internal pages need their flag. With `--file`/`--workspace`/`--id` instead of `<file>` it reads the workspace's prepared index (see `index`) |
+| `usages <file> <node\|resource> [--scope ID] [--relation R[,R]] [--out] [--snapshot S] [--include-hidden] [--limit N] [--cursor C]` | Exact relations of one layer or resource (`VariableID:…`, `StyleKey:…`, `image:…`) in one stored scope, nested instances and swaps included: where a component, set, variable, style or image is used (default), or what a layer points at (`--out`). Each result keeps its exact ref, relation, state (`resolved`, `missing`, `unresolved`, …), basis and evidence; names never count as identity. No totals: coverage says complete or partial. Default 50 (1-200). With `--file`/`--workspace`/`--id` instead of `<file>` it reads the workspace's prepared index of `--scope` |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | Compact expanded layout/text summary, at most 200 nodes. `--images` adds bitmap dimensions and crop footprints. `--flat` prints one line per node instead: position relative to the node, size, text, font, fill, stroke, radius, auto-layout |
 | `nodes <file> <node>` | The per-node object of a REST nodes response (`document`, `components`, `componentSets`, `styles`): expanded instances and overrides, auto-layout, text styles, fills, effects, bound variables, component properties, render bounds |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | One decode, many nodes: one JSON line per listed id, the `nodes` output with its `nodeId`, or `{nodeId, error}` |

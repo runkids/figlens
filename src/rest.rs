@@ -1274,7 +1274,7 @@ fn prop_value_source(a: &Json) -> Option<(Json, &'static str)> {
 }
 
 /// REST `boundVariables` of a node: paint, effect and field (`variableConsumptionMap`) bindings.
-fn bound_variables(k: &Obj) -> Obj {
+pub(crate) fn bound_variables(k: &Obj) -> Obj {
     let mut out = Obj::new();
     let text_fills: Json = at(k, "textData")["styleOverrideTable"]
         .as_array()

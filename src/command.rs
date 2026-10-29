@@ -691,6 +691,119 @@ pub fn search_tool(
     Ok(request)
 }
 
+/// CLI usages arguments after the source: the node or resource, then options; checked before
+/// the source is read.
+pub fn usages_request(args: &[String]) -> Result<figlens::search::usages::Request, Box<dyn Error>> {
+    use figlens::search::usages;
+    let target = args.first().ok_or(USAGE)?;
+    let resource = ["VariableID:", "StyleKey:", "image:"]
+        .iter()
+        .any(|p| target.starts_with(p));
+    let mut request = usages::Request {
+        target: if resource {
+            target.clone()
+        } else {
+            normalize_id(target)
+        },
+        resource,
+        scope: "0:0".into(),
+        relations: Vec::new(),
+        outgoing: false,
+        snapshot: None,
+        include_hidden: false,
+        limit: usages::DEFAULT_LIMIT,
+        cursor: None,
+    };
+    let mut rest = args[1..].iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--include-hidden" => request.include_hidden = true,
+            "--out" => request.outgoing = true,
+            _ => {
+                let value = rest.next().ok_or(format!("{arg} needs a value"))?;
+                match arg.as_str() {
+                    "--scope" => request.scope = normalize_id(value),
+                    "--relation" => request
+                        .relations
+                        .extend(value.split(',').map(|r| r.trim().to_owned())),
+                    "--snapshot" => request.snapshot = Some(value.clone()),
+                    "--limit" => request.limit = value.parse().unwrap_or(0),
+                    "--cursor" => request.cursor = Some(value.clone()),
+                    _ => return Err(USAGE.into()),
+                }
+            }
+        }
+    }
+    request.validate()?;
+    Ok(request)
+}
+
+/// The same request from schema-checked MCP arguments.
+pub fn usages_tool(
+    call: &crate::contract::PreparedCall,
+) -> Result<figlens::search::usages::Request, Box<dyn Error>> {
+    let (target, resource) = match (call.string("node"), call.string("resource")) {
+        (Some(node), None) => (normalize_id(node), false),
+        (None, Some(resource)) => (resource.to_owned(), true),
+        _ => return Err("usages needs node or resource, not both".into()),
+    };
+    let request = figlens::search::usages::Request {
+        target,
+        resource,
+        scope: normalize_id(call.string("scope").unwrap()),
+        relations: call
+            .string("relation")
+            .map(|r| r.split(',').map(|r| r.trim().to_owned()).collect())
+            .unwrap_or_default(),
+        outgoing: call.string("direction") == Some("out"),
+        snapshot: call.string("snapshotId").map(str::to_owned),
+        include_hidden: call.argument("includeHidden") == true,
+        limit: call.argument("limit").as_u64().unwrap() as usize,
+        cursor: call.string("cursor").map(str::to_owned),
+    };
+    request.validate()?;
+    Ok(request)
+}
+
+/// MCP `usages` with `workspaceId`: one source's prepared index, never a build.
+pub fn workspace_usages_tool(
+    call: &crate::contract::PreparedCall,
+    roots: &[PathBuf],
+    storage_roots: &[PathBuf],
+) -> Result<Output, Box<dyn Error>> {
+    let storage = tool_storage(call, roots, storage_roots)?;
+    let select = figlens::workspace::Select::Id(call.string("workspaceId").unwrap().to_owned());
+    let value = figlens::workspace::usages::usages(
+        &storage,
+        &select,
+        call.string("sourceId"),
+        &usages_tool(call)?,
+    )?;
+    Ok(Output::Json {
+        value,
+        pretty: false,
+    })
+}
+
+/// Stateless usages: the same cached index search reads, so nothing is written.
+pub fn usages(
+    path: &Path,
+    request: &figlens::search::usages::Request,
+    label: &str,
+) -> Result<Output, Box<dyn Error>> {
+    let value = figlens::search::usages(path, request).map_err(|e| {
+        if e.is::<figlens::FigError>() {
+            e
+        } else {
+            crate::contract::source(label, e)
+        }
+    })?;
+    Ok(Output::Json {
+        value,
+        pretty: false,
+    })
+}
+
 /// The storage an MCP index, jobs or workspace search call uses: its custom `storage` only
 /// under the server's storage roots, and only sources under the design roots visible.
 fn tool_storage(

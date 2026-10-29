@@ -710,8 +710,9 @@ fn a_reader_holding_the_wal_fails_the_build_busy_within_one_batch_of_the_thresho
     let error = error.downcast::<FigError>().unwrap();
     assert_eq!(error.kind(), ErrorKind::WorkspaceBusy, "{error}");
     let wal = wal_bytes(&dir);
+    // One batch writes a page or more into each of the generation's b-trees and indexes.
     assert!(
-        wal > WAL_CAP && wal <= WAL_CAP + 64 * 1024,
+        wal > WAL_CAP && wal <= WAL_CAP + 128 * 1024,
         "WAL at {wal} bytes"
     );
     assert_eq!(serving(&conn, "0:0"), good);

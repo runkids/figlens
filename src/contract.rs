@@ -173,6 +173,85 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
         ],
     ),
     (
+        "usages",
+        "Exact relations of one node or resource in one stored scope, from the same effective index as search (nested instances and swaps included): direction in (default) lists the locations that point at it, out lists what it points at. Relations: instance_of (instance to main component, recorded symbolData or resolved definition/swap), variant_of (component to its set; a COMPONENT_SET node also lists its known members and returns their instances with via), binds_variable (paint, effect and field variable bindings, local or library), uses_style, uses_image, prototype_target (recorded transitions; never a claim that a flow is reachable) and contains (asked for explicitly). Every result keeps an exact ref {sourceId, snapshotId, nodeId}, relation, state (resolved, missing, unresolved, unsupported, external, recorded), basis (recorded or resolved), evidence, page, scopeRoot and path; names never establish identity. The definition may lie outside the scope; scope limits only the returned locations. No total is reported; coverage says complete or partial with reasons (work limits, hidden content not expanded, truncated members, library_identity unavailable), and nextCursor pages in a stable order. Give file to read that .fig now (nothing is written), or workspaceId to read a source's prepared index of exactly this scope (never builds). Pass snapshotId from the ref you hold: another current snapshot is source_stale.",
+        &[
+            (
+                "file",
+                "string",
+                false,
+                "the saved .fig to read now: a local path or gs://bucket/object; give file or workspaceId",
+            ),
+            (
+                "workspaceId",
+                "string",
+                false,
+                "ws_... from the index tool: read its prepared index instead of the file",
+            ),
+            (
+                "sourceId",
+                "string",
+                false,
+                "with workspaceId, the source to read; needed when several have this scope",
+            ),
+            STORAGE,
+            (
+                "node",
+                "string",
+                false,
+                "the exact layer id, stored or an instance sublayer I...;...; give node or resource",
+            ),
+            (
+                "resource",
+                "string",
+                false,
+                "a resource id instead of a layer: VariableID:..., StyleKey:... or image:<hash>",
+            ),
+            (
+                "scope",
+                "string",
+                false,
+                "stored scope root whose locations are returned; default the document; a workspace needs a prepared scope",
+            ),
+            (
+                "relation",
+                "string",
+                false,
+                "relations to keep, comma-separated; default every one but contains",
+            ),
+            (
+                "direction",
+                "string",
+                false,
+                "in (what points at it) or out (what it points at)",
+            ),
+            (
+                "snapshotId",
+                "string",
+                false,
+                "the snapshot your ref came from; a different current snapshot is source_stale",
+            ),
+            (
+                "limit",
+                "integer",
+                false,
+                "1-200 results per page, default 50",
+            ),
+            (
+                "cursor",
+                "string",
+                false,
+                "nextCursor from the previous page of the same query and snapshot",
+            ),
+            (
+                "includeHidden",
+                "boolean",
+                false,
+                "also return hidden locations",
+            ),
+        ],
+    ),
+    (
         "inspect",
         "Compact expanded node summary: bounds, layout, typography, text previews and child counts. A parent without auto-layout has childSpacing \"derived\": gaps between its children are coordinate differences, not an auto-layout rule; constraints may still pin them. For image decisions, images=true adds original dimensions/bytes and source-pixel rectangles before masks, not blur diagnoses. Depth and a 200-node budget bound the summary; image paints have their own 200-item limit. nodes returns full design data.",
         &[
@@ -394,6 +473,24 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
             }),
             ["query", "results", "coverage", "hasMore", "nextCursor"].as_slice(),
         ),
+        "usages" => (
+            serde_json::json!({
+                "definition": {"type": ["object", "null"], "description": "null while a workspace scope is pending or not_prepared; else ref or resource, state (indexed in scope, outside_scope, or the state of the edges that name it: missing, unresolved, external, recorded), name, type, setId and page when known"},
+                "direction": {"type": "string"},
+                "relations": {"type": "array", "items": {"type": "string"}},
+                "scope": {"type": "object"},
+                "members": {"type": "object", "description": "COMPONENT_SET queries: the known member ids and whether they are complete"},
+                "results": {"type": "array", "items": {"type": "object"}, "description": "in: each location's ref, name, type, origin, hidden, page, scopeRoot, path, relation, state, basis, evidence and via (the member a set query matched); out: target ref or resource, its definition and the edge fields"},
+                "coverage": {"type": "object", "description": "complete, layers.relations kinds and version, reasons; never a total count"},
+                "hasMore": {"type": "boolean"},
+                "nextCursor": {"type": ["string", "null"]},
+                "source": {"type": "object", "description": "sourceId and snapshotId; stateless calls add freshness"},
+                "workspaceId": {"type": "string", "description": "workspace queries only"},
+                "state": {"type": "string", "description": "workspace queries without a ready index: pending or not_prepared"},
+                "nextSteps": {"type": "array", "items": {"type": "object"}, "description": "the jobs or index call that makes the scope ready"},
+            }),
+            ["definition", "results", "coverage", "hasMore", "nextCursor"].as_slice(),
+        ),
         "index" => (
             serde_json::json!({
                 "workspaceId": {"type": "string"},
@@ -523,6 +620,10 @@ fn default(tool: &str, key: &str) -> Option<Value> {
         ("inspect", "depth") | ("export", "scale") => Some(json!(1)),
         ("find" | "search", "limit") => Some(json!(20)),
         ("search", "mode") => Some(json!("text")),
+        ("usages", "scope") => Some(json!("0:0")),
+        ("usages", "direction") => Some(json!("in")),
+        ("usages", "limit") => Some(json!(50)),
+        ("usages", "includeHidden") => Some(json!(false)),
         ("export", "bounds") => Some(json!("render")),
         ("export", "quality") => Some(json!(80)),
         ("export", "maxSize") => Some(json!(1600)),
@@ -541,7 +642,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
     let range = match (tool, key) {
         ("inspect", "depth") => Some((0, 10)),
         ("tree", "depth") => Some((0, JSON_SAFE.min(usize::MAX as u64))),
-        ("find" | "search", "limit") => Some((1, 200)),
+        ("find" | "search" | "usages", "limit") => Some((1, 200)),
         ("export", "quality") => Some((1, 100)),
         ("export", "maxKb") => Some((0, JSON_SAFE.min((usize::MAX / 1024) as u64))),
         ("export", "maxSize") => Some((0, u64::from(u32::MAX))),
@@ -590,6 +691,9 @@ pub fn property(tool: &str, param: &Param) -> Value {
     }
     if tool == "search" && key == "mode" {
         p["enum"] = json!(["text"]);
+    }
+    if tool == "usages" && key == "direction" {
+        p["enum"] = json!(["in", "out"]);
     }
     p
 }
@@ -714,6 +818,17 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
             ));
         }
         crate::command::search_tool(&call).map_err(Failure::from_error)?;
+    }
+    if tool == "usages" {
+        let file = call.string("file").is_some();
+        if file == call.string("workspaceId").is_some()
+            || (file && (call.string("sourceId").is_some() || call.string("storage").is_some()))
+        {
+            return Err(Failure::argument(
+                "usages needs file or workspaceId, not both; sourceId and storage apply to workspaceId",
+            ));
+        }
+        crate::command::usages_tool(&call).map_err(Failure::from_error)?;
     }
     Ok(call)
 }

@@ -14,9 +14,7 @@ use sha2::{Digest, Sha256};
 use unicode_normalization::char::{canonical_combining_class, decompose_compatible};
 use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfkc_quick};
 
-use crate::expand::{
-    Bounds, Expansion, Stop, expand_instances_bounded, main_of, parent_of, plugin_type,
-};
+use crate::expand::{Bounds, Expansion, Stop, expand_instances_bounded, parent_of, plugin_type};
 use crate::{Document, ErrorKind, FigError, Tree};
 
 pub const DEFAULT_LIMIT: usize = 20;
@@ -432,18 +430,8 @@ pub(crate) struct Record {
     hidden: bool,
     page: Option<u32>,
     root: Option<u32>,
-    /// An instance's main component and the evidence for it; `None` target means unresolved.
-    instance: Option<Instance>,
-}
-
-/// The `instance_of` relation of one INSTANCE record, from the binding expansion actually used.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Instance {
-    pub target: Option<String>,
-    /// `recorded` (stored symbolData) or `resolved` (expansion: copied binding or swap).
-    pub basis: &'static str,
-    /// `symbolData`, `definition` (the copied definition child's symbolData) or `swap`.
-    pub evidence: &'static str,
+    /// Its relations, `contains` excepted (that is `parent`), in relation and sequence order.
+    edges: Vec<usages::Edge>,
 }
 
 struct Posting {
@@ -488,8 +476,17 @@ pub struct Index {
     lens: [u64; 2],
     stop: Option<&'static str>,
     hidden_content: usize,
+    /// Prototype links inherited from a component definition, left out as unverified.
+    unverified_links: usize,
+    /// Binding fields left out for being too large to read.
+    unread_fields: usize,
     text_bytes: usize,
     generation: String,
+    /// Edge targets and component-set members described for usages; a partial index holds the
+    /// ones a query read.
+    definitions: BTreeMap<String, usages::Definition>,
+    /// Reverse lookups over a whole index, built on its first usages query.
+    reverse: std::sync::OnceLock<usages::Reverse>,
 }
 
 impl Index {
@@ -580,8 +577,12 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
         lens: [0; 2],
         stop: None,
         hidden_content: 0,
+        unverified_links: 0,
+        unread_fields: 0,
         text_bytes: 0,
         generation: String::new(),
+        definitions: BTreeMap::new(),
+        reverse: Default::default(),
     };
     // Stored ancestors give the scope its page, navigation root and inherited visibility.
     let mut chain = Vec::new();
@@ -709,7 +710,18 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
             }
         }
         let hidden = hidden || own_hidden;
-        let instance = (kind == "INSTANCE").then(|| instance_of(tree, &id, ex.nodes.get(&id)));
+        let Some(mut edges) = usages::extract(
+            tree,
+            &id,
+            &kind,
+            ex.nodes.get(&id),
+            &mut bounds,
+            &mut index.unverified_links,
+            &mut index.unread_fields,
+        ) else {
+            break;
+        };
+        edges.sort_by(|a, b| (a.relation, a.seq).cmp(&(b.relation, b.seq)));
         let children = tree.children.get(&id).or_else(|| ex.children.get(&id));
         let kids = children.map_or(&[][..], Vec::as_slice);
         let queued = kids.iter().map(|c| 96 + c.len()).sum::<usize>();
@@ -764,7 +776,7 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
             hidden,
             page,
             root,
-            instance,
+            edges,
         });
         for child in kids.iter().rev() {
             stack.push((
@@ -777,6 +789,17 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
             ));
         }
     }
+    // Definitions have their own budget, so a build its records stopped still describes the
+    // targets it kept; a stop here leaves some undescribed and marks coverage partial below.
+    let mut own = Bounds {
+        work: WORK / 4,
+        bytes: BYTES / 4,
+        depth: DEPTH,
+        deadline: bounds.deadline,
+        stop: None,
+    };
+    index.definitions = usages::definitions(tree, &index.records, &mut own).unwrap_or_default();
+    bounds.stop = bounds.stop.or(own.stop);
     if index.stop.is_none() {
         index.stop = bounds.stop.or(expansion).map(|stop| match stop {
             Stop::Work => "work_limit",
@@ -794,37 +817,6 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
 fn average(n: usize, lens: [u64; 2]) -> [f64; 2] {
     let n = n.max(1) as f64;
     [(lens[0] as f64 / n).max(1.0), (lens[1] as f64 / n).max(1.0)]
-}
-
-/// The main component an INSTANCE record uses: its own symbolData when stored, else the
-/// main expansion followed. A main that is missing or not a component is unresolved.
-fn instance_of(tree: &Tree, id: &str, expanded: Option<&crate::expand::Expanded>) -> Instance {
-    let component = |main: &String| {
-        tree.nodes
-            .get(main)
-            .is_some_and(|n| plugin_type(n) == "COMPONENT")
-    };
-    match expanded {
-        None => Instance {
-            target: tree
-                .nodes
-                .get(id)
-                .and_then(|n| main_of(tree, n))
-                .filter(component),
-            basis: "recorded",
-            evidence: "symbolData",
-        },
-        Some(e) => Instance {
-            target: e
-                .main
-                .as_ref()
-                .map(|m| &m.0)
-                .filter(|m| component(m))
-                .cloned(),
-            basis: "resolved",
-            evidence: e.main.as_ref().map_or("definition", |m| m.1),
-        },
-    }
 }
 
 /// Identifies the indexed corpus, so a cursor never pages over another partial build of the
@@ -1096,11 +1088,16 @@ fn explain(field: u8, original: &str, q: &Prepared) -> Option<Json> {
 /// the matched terms of both fields and a fixed share for refs and spans. Counted without
 /// allocating; serialization adds escaping, which MCP checks on the complete reply.
 fn result_bytes(index: &Index, hit: &Hit, q: &Prepared) -> usize {
+    SNIPPET_BYTES + 2 * q.phrase.len() + location_bytes(index, hit.record)
+}
+
+/// Bytes `location` copies for record `rid`: its name, page and path, plus a fixed share.
+fn location_bytes(index: &Index, rid: u32) -> usize {
     let entry = |id: &str, name: &str| 64 + id.len() + name.len();
-    let r = index.record(hit.record);
-    let mut bytes = 1024 + SNIPPET_BYTES + 2 * q.phrase.len() + r.name.len();
+    let r = index.record(rid);
+    let mut bytes = 1024 + r.name.len();
     bytes += r.page.map_or(0, |p| index.pages[p as usize].name.len());
-    let mut cur = Some(hit.record);
+    let mut cur = Some(rid);
     while let Some(i) = cur {
         let node = index.record(i);
         bytes += entry(&node.id, &node.name);
@@ -1116,8 +1113,27 @@ fn result_bytes(index: &Index, hit: &Hit, q: &Prepared) -> usize {
 
 fn result(index: &Index, hit: &Hit, rank: usize, q: &Prepared, source: &Json) -> Json {
     let r = index.record(hit.record);
+    let matches: Vec<Json> = [explain(NAME, &r.name, q)]
+        .into_iter()
+        .chain([r.text.as_deref().and_then(|t| explain(TEXT, t, q))])
+        .flatten()
+        .collect();
+    let mut out = location(index, hit.record, source);
+    out["rank"] = json!(rank);
+    out["matches"] = json!(matches);
+    if let (Some(text), Some(from)) = (&r.text, r.text_source) {
+        out["textSource"] = json!(from);
+        out["textLength"] = json!(utf16(text));
+    }
+    out
+}
+
+/// The exact ref of record `rid` with what navigates to it: type, origin, page, scope root and
+/// path.
+fn location(index: &Index, rid: u32, source: &Json) -> Json {
+    let r = index.record(rid);
     let mut path: Vec<Json> = Vec::new();
-    let mut cur = Some(hit.record);
+    let mut cur = Some(rid);
     while let Some(i) = cur {
         let node = index.record(i);
         path.push(json!({"id": node.id, "name": node.name}));
@@ -1132,14 +1148,8 @@ fn result(index: &Index, hit: &Hit, rank: usize, q: &Prepared, source: &Json) ->
     );
     path.reverse();
     let page = r.page.map(|p| &index.pages[p as usize]);
-    let matches: Vec<Json> = [explain(NAME, &r.name, q)]
-        .into_iter()
-        .chain([r.text.as_deref().and_then(|t| explain(TEXT, t, q))])
-        .flatten()
-        .collect();
     let mut out = json!({
         "ref": {"sourceId": source["sourceId"], "snapshotId": source["snapshotId"], "nodeId": r.id},
-        "rank": rank,
         "name": r.name,
         "type": r.kind,
         "origin": if r.source.is_some() { "instance-effective" } else { "stored" },
@@ -1148,25 +1158,23 @@ fn result(index: &Index, hit: &Hit, rank: usize, q: &Prepared, source: &Json) ->
         "page": page.map(|p| json!({"id": p.id, "name": p.name})),
         "scopeRoot": r.root.map(|i| &index.roots[i as usize]),
         "path": path,
-        "matches": matches,
     });
     if let Some(source) = &r.source {
         out["sourceNodeId"] = json!(source);
     }
-    if let (Some(text), Some(from)) = (&r.text, r.text_source) {
-        out["textSource"] = json!(from);
-        out["textLength"] = json!(utf16(text));
-    }
     out
 }
 
-/// The relations layer: `contains` (each record's parent) and `instance_of` (each INSTANCE's
-/// component, or unresolved) are stored for every indexed record; no other kind is extracted.
+/// The relations layer: every kind in `usages::KINDS` is extracted for each indexed record;
+/// `library_identity` (cross-file identity) is not, so the layer is never `ready`.
 pub(crate) fn relations(state: &str) -> Json {
+    let kinds: serde_json::Map<String, Json> = usages::KINDS
+        .iter()
+        .map(|k| ((*k).to_owned(), json!(state)))
+        .collect();
     json!({"state": if state == "ready" { "partial" } else { state },
-        "kinds": {"contains": state, "instance_of": state},
-        "reasons": [{"code": "relation_unavailable", "relations": ["variant_of", "binds_variable",
-            "uses_style", "uses_image", "prototype_target", "library_identity"]}]})
+        "kinds": kinds, "version": usages::RELATIONS,
+        "reasons": [{"code": "relation_unavailable", "relations": ["library_identity"]}]})
 }
 
 fn coverage(index: &Index, req: &Request, excluded: [usize; 2]) -> Json {
@@ -1494,8 +1502,17 @@ pub(crate) fn index_bytes(
     let mut doc = Document::from_bytes(&bytes, label)?;
     drop(bytes);
     let message = doc.take_message()?;
-    let tree = Tree::new(&message);
-    require_scope(&tree, scope)?;
+    index_tree(&Tree::new(&message), scope, deadline)
+}
+
+/// The index of `scope` in an already decoded tree, within the bounds every search build uses,
+/// so a caller that holds one revision's tree (the viewer) never decodes the file again.
+pub(crate) fn index_tree(
+    tree: &Tree,
+    scope: &str,
+    deadline: Instant,
+) -> Result<Index, Box<dyn Error>> {
+    require_scope(tree, scope)?;
     let bounds = Bounds {
         work: WORK,
         bytes: BYTES,
@@ -1503,7 +1520,33 @@ pub(crate) fn index_bytes(
         deadline,
         stop: None,
     };
-    Ok(build(&tree, scope, bounds))
+    Ok(build(tree, scope, bounds))
+}
+
+/// Searches a built index. `source` is the caller's exact identity of the revision the index
+/// was built from (`sourceId`, `snapshotId`); it is copied into refs and cursors, never guessed.
+pub(crate) fn search_index(
+    index: &Index,
+    req: &Request,
+    source: Json,
+) -> Result<Json, Box<dyn Error>> {
+    reply(index, &req.validate()?, req, source)
+}
+
+/// Usages over a built index, with the caller's exact source identity as in `search_index`.
+pub(crate) fn usages_index(
+    index: &Index,
+    req: &usages::Request,
+    source: Json,
+) -> Result<Json, Box<dyn Error>> {
+    let q = req.validate()?;
+    let served = usages::Served {
+        source: &source,
+        gen_id: 0,
+    };
+    let mut out = usages::query(&mut usages::Whole(index), &q, req, served)?;
+    out["source"] = source;
+    Ok(out)
 }
 
 /// The build deadline of one index.
@@ -1520,7 +1563,21 @@ fn ms(t: SystemTime) -> u64 {
 /// decoded. A later call reuses the index while path, scope and file stamp are unchanged, and
 /// hashes the bytes again once `REHASH` has passed, since a save can keep the stamp.
 pub fn search(path: &Path, req: &Request) -> Result<Json, Box<dyn Error>> {
-    let q = req.validate()?;
+    req.validate()?;
+    let (index, source) = loaded(path, &req.scope)?;
+    search_index(&index, req, source)
+}
+
+/// Exact usages of a node or resource in `scope` of the `.fig` at `path`, from the same cached
+/// index search uses; nothing is stored.
+pub fn usages(path: &Path, req: &usages::Request) -> Result<Json, Box<dyn Error>> {
+    req.validate()?;
+    let (index, source) = loaded(path, &req.scope)?;
+    usages_index(&index, req, source)
+}
+
+/// The index of `scope` and its source identity, from the process cache while it is fresh.
+fn loaded(path: &Path, scope: &str) -> Result<(Arc<Index>, Json), Box<dyn Error>> {
     let deadline = Instant::now() + DEADLINE;
     let canonical = std::fs::canonicalize(path)?;
     let source_id = source_id(&canonical);
@@ -1528,7 +1585,7 @@ pub fn search(path: &Path, req: &Request) -> Result<Json, Box<dyn Error>> {
     let cached = CACHE.lock().ok().and_then(|cache| {
         cache
             .as_ref()
-            .filter(|c| c.path == canonical && c.stamp == now && c.scope == req.scope)
+            .filter(|c| c.path == canonical && c.stamp == now && c.scope == scope)
             .map(|c| (c.snapshot.clone(), c.index.clone(), c.hashed))
     });
     let fresh = |hashed: SystemTime| hashed.elapsed().is_ok_and(|age| age < REHASH);
@@ -1546,7 +1603,7 @@ pub fn search(path: &Path, req: &Request) -> Result<Json, Box<dyn Error>> {
                 Some((snapshot, index, _)) => {
                     if let Ok(mut cache) = CACHE.lock()
                         && let Some(c) = cache.as_mut()
-                        && (c.path == canonical && c.scope == req.scope && c.snapshot == snapshot)
+                        && (c.path == canonical && c.scope == scope && c.snapshot == snapshot)
                     {
                         c.hashed = hashed;
                     }
@@ -1554,7 +1611,7 @@ pub fn search(path: &Path, req: &Request) -> Result<Json, Box<dyn Error>> {
                 }
                 None => {
                     let label = path.display().to_string();
-                    let index = Arc::new(index_bytes(bytes, &label, &req.scope, deadline)?);
+                    let index = Arc::new(index_bytes(bytes, &label, scope, deadline)?);
                     if stamp(&canonical)? != staged {
                         return Err(FigError::new(
                             ErrorKind::SourceUnreadable,
@@ -1569,7 +1626,7 @@ pub fn search(path: &Path, req: &Request) -> Result<Json, Box<dyn Error>> {
                         *cache = Some(Cached {
                             path: canonical.clone(),
                             stamp: staged,
-                            scope: req.scope.clone(),
+                            scope: scope.to_owned(),
                             snapshot: snapshot.clone(),
                             hashed,
                             index: index.clone(),
@@ -1583,10 +1640,11 @@ pub fn search(path: &Path, req: &Request) -> Result<Json, Box<dyn Error>> {
     let source = json!({"sourceId": source_id, "snapshotId": snapshot, "freshness": {
         "reusedIndex": reused, "hashedAtMs": ms(hashed), "stampCheckedAtMs": ms(SystemTime::now()),
         "rehashAfterMs": REHASH.as_millis() as u64}});
-    reply(&index, &q, req, source)
+    Ok((index, source))
 }
 
 pub(crate) mod store;
+pub mod usages;
 
 #[cfg(test)]
 mod tests;

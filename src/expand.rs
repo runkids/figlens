@@ -259,7 +259,7 @@ fn sum_while<T>(
 
 /// A cheap upper estimate of `v`'s retained size, computed without allocating; it visits at
 /// most `left` values, so a payload larger than the remaining work stops early.
-fn json_bytes(v: &Json, left: &mut usize) -> usize {
+pub(crate) fn json_bytes(v: &Json, left: &mut usize) -> usize {
     if *left == 0 {
         return 0;
     }
@@ -275,7 +275,7 @@ fn json_bytes(v: &Json, left: &mut usize) -> usize {
 }
 
 /// `json_bytes` of `v` once converted, estimated from the kiwi value without converting it.
-fn kiwi_bytes(v: &Value, left: &mut usize) -> usize {
+pub(crate) fn kiwi_bytes(v: &Value, left: &mut usize) -> usize {
     if *left == 0 {
         return 0;
     }

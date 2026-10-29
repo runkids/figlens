@@ -1,5 +1,5 @@
-//! One index generation as SQLite rows: records, terms with their postings, `instance_of`
-//! edges and the generation's own fields. A query loads only its terms' postings and the
+//! One index generation as SQLite rows: records, terms with their postings, relation edges,
+//! the definitions they point at and the generation's own fields. A query loads only its terms' postings and the
 //! records they rank, into a partial `Index` that persisted and stateless search rank through
 //! the same code.
 
@@ -12,9 +12,10 @@ use serde_json::{Value as Json, json};
 
 use rusqlite::OptionalExtension;
 
+use super::usages::{self, Definition, Edge, Graph, KINDS, Key, RELATIONS, STATES};
 use super::{
-    BYTES, DEPTH, Index, IndexTerm, Instance, MAX_MARKS, Page, Posting, RANKING, Record,
-    TEXT_BYTES, WORK, tokenizer,
+    BYTES, DEPTH, Index, IndexTerm, MAX_MARKS, Page, Posting, RANKING, Record, TEXT_BYTES, WORK,
+    tokenizer,
 };
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -44,7 +45,7 @@ fn batches<T>(items: &[T], size: impl Fn(&T) -> usize) -> impl Iterator<Item = &
 /// What a published generation was built with; a generation built by other versions is rebuilt,
 /// never reused.
 pub(crate) fn versions() -> String {
-    json!({"ranking": RANKING, "tokenizer": tokenizer(),
+    json!({"ranking": RANKING, "tokenizer": tokenizer(), "relations": RELATIONS,
         "budgets": [WORK, BYTES, TEXT_BYTES, DEPTH, MAX_MARKS]})
     .to_string()
 }
@@ -58,8 +59,6 @@ const STOPS: [&str; 6] = [
     "depth_limit",
     "deadline",
 ];
-const BASES: [&str; 2] = ["recorded", "resolved"];
-const EVIDENCE: [&str; 3] = ["symbolData", "definition", "swap"];
 
 fn known(list: &'static [&'static str], value: Option<String>) -> Result<Option<&'static str>> {
     match value {
@@ -136,11 +135,23 @@ pub(crate) fn save(
 ) -> Result<()> {
     // JSON escaping can grow names past what `load` reads back; refuse before writing anything.
     let info = info_json(index, INFO_BYTES)?;
-    let total = index.records.len() + index.terms.len();
+    let total = index.records.len() + index.terms.len() + index.definitions.len();
     let mut done = 0;
     let record_bytes = |r: &Record| {
         let text = r.text.as_ref().map_or(0, String::len);
-        r.id.len() + r.name.len() + r.kind.len() + text + r.norm[0].len() + r.norm[1].len() + 64
+        let edges: usize = r
+            .edges
+            .iter()
+            .map(|e| 64 + e.target.as_ref().map_or(0, String::len) + e.evidence.len())
+            .sum();
+        r.id.len()
+            + r.name.len()
+            + r.kind.len()
+            + text
+            + r.norm[0].len()
+            + r.norm[1].len()
+            + 64
+            + edges
     };
     for chunk in batches(&index.records, record_bytes) {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -152,8 +163,8 @@ pub(crate) fn save(
                  (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             )?;
             let mut edge = tx.prepare_cached(
-                "INSERT INTO edges (gen, rid, relation, target, basis, evidence)
-                 VALUES (?1, ?2, 'instance_of', ?3, ?4, ?5)",
+                "INSERT INTO edges (gen, rid, relation, seq, target, state, basis, evidence)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
             for (i, r) in chunk.iter().enumerate() {
                 let rid = (done + i) as i64;
@@ -175,8 +186,10 @@ pub(crate) fn save(
                     r.page,
                     r.root
                 ])?;
-                if let Some(inst) = &r.instance {
-                    edge.execute(params![gen_id, rid, inst.target, inst.basis, inst.evidence])?;
+                for e in &r.edges {
+                    edge.execute(params![
+                        gen_id, rid, e.relation, e.seq, e.target, e.state, e.basis, e.evidence
+                    ])?;
                 }
             }
         }
@@ -204,6 +217,26 @@ pub(crate) fn save(
                     last = p.record;
                 }
                 stmt.execute(params![gen_id, term, entry.df, blob])?;
+            }
+        }
+        tx.commit()?;
+        done += chunk.len();
+        between(conn, done, total)?;
+    }
+    let definitions: Vec<(&String, &Definition)> = index.definitions.iter().collect();
+    let definition_bytes = |d: &(&String, &Definition)| {
+        let opt = |v: &Option<String>| v.as_ref().map_or(0, String::len);
+        d.0.len() + d.1.name.len() + d.1.kind.len() + opt(&d.1.set) + opt(&d.1.page) + 32
+    };
+    for chunk in batches(&definitions, definition_bytes) {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        guard(&tx)?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO definitions (gen, id, name, kind, set_id, page) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for (id, d) in chunk {
+                stmt.execute(params![gen_id, id, d.name, d.kind, d.set, d.page])?;
             }
         }
         tx.commit()?;
@@ -283,6 +316,10 @@ pub(super) fn info_json(index: &Index, cap: usize) -> Result<String> {
         serde_json::to_writer(&mut w, &index.stop)?;
         key(&mut w, ",\"textBytes\":")?;
         serde_json::to_writer(&mut w, &index.text_bytes)?;
+        key(&mut w, ",\"unreadFields\":")?;
+        serde_json::to_writer(&mut w, &index.unread_fields)?;
+        key(&mut w, ",\"unverifiedLinks\":")?;
+        serde_json::to_writer(&mut w, &index.unverified_links)?;
         key(&mut w, "}")
     })()
     .map_err(|_| crate::parse::exceeded("index metadata bytes", cap))?;
@@ -293,7 +330,7 @@ pub(super) fn info_json(index: &Index, cap: usize) -> Result<String> {
 const INFO_BYTES: usize = 64 * 1024 * 1024;
 /// Largest node ID, type or component ID: an effective ID gains one `sessionID:localID` GUID
 /// (at most 21 bytes) plus a separator and prefix per nested instance, up to `MAX_DEPTH` deep.
-const ID_BYTES: usize = (crate::expand::MAX_DEPTH + 1) * 23;
+pub(crate) const ID_BYTES: usize = (crate::expand::MAX_DEPTH + 1) * 23;
 
 fn bad() -> Box<dyn Error> {
     "invalid stored index; rebuild the index".into()
@@ -427,8 +464,12 @@ pub(crate) fn load(
         ],
         stop: known(&STOPS, info["stop"].as_str().map(str::to_owned))?,
         hidden_content: info["hiddenContent"].as_u64().ok_or_else(bad)? as usize,
+        unverified_links: info["unverifiedLinks"].as_u64().ok_or_else(bad)? as usize,
+        unread_fields: info["unreadFields"].as_u64().ok_or_else(bad)? as usize,
         text_bytes: info["textBytes"].as_u64().ok_or_else(bad)? as usize,
         generation: text(&info["generation"])?,
+        definitions: BTreeMap::new(),
+        reverse: Default::default(),
     };
     let mut wanted: Vec<u32> = survivors.into_iter().collect();
     if total > 0 {
@@ -457,21 +498,19 @@ pub(crate) fn add(
         return Ok(());
     }
     let list = serde_json::to_string(&missing)?;
-    let mut edges: BTreeMap<u32, Instance> = BTreeMap::new();
+    let mut edges: BTreeMap<u32, Vec<Edge>> = BTreeMap::new();
     let mut stmt = conn.prepare_cached(
-        "SELECT rid, target, basis, evidence FROM edges
-         WHERE gen = ?1 AND rid IN (SELECT value FROM json_each(?2))",
+        "SELECT rid, relation, seq, target, state, basis, evidence FROM edges
+         WHERE gen = ?1 AND rid IN (SELECT value FROM json_each(?2)) ORDER BY rid, relation, seq",
     )?;
     let mut rows = stmt.query(params![gen_id, list])?;
+    let mut count = 0usize;
     while let Some(row) = rows.next()? {
-        edges.insert(
-            row.get(0)?,
-            Instance {
-                target: text_at(row, 1, ID_BYTES)?,
-                basis: known(&BASES, text_at(row, 2, ID_BYTES)?)?.ok_or_else(bad)?,
-                evidence: known(&EVIDENCE, text_at(row, 3, ID_BYTES)?)?.ok_or_else(bad)?,
-            },
-        );
+        count += 1;
+        if count > WORK {
+            return Err(bad());
+        }
+        edges.entry(row.get(0)?).or_default().push(edge(row, 1)?);
     }
     let mut stmt = conn.prepare_cached(
         "SELECT rid, node_id, name, kind, text, norm0, norm1, len0, len1, parent, source,
@@ -518,7 +557,7 @@ pub(crate) fn add(
             hidden: row.get(12)?,
             page: row.get(13)?,
             root: row.get(14)?,
-            instance: edges.remove(&rid),
+            edges: edges.remove(&rid).unwrap_or_default(),
         };
         if record.page.is_some_and(|p| p as usize >= index.pages.len())
             || record.root.is_some_and(|p| p as usize >= index.roots.len())
@@ -540,6 +579,214 @@ pub(crate) fn add(
     all.sort_unstable_by_key(|(rid, _)| *rid);
     (index.rids, index.records) = all.into_iter().unzip();
     Ok(())
+}
+
+/// One edge from `row`'s columns `at..at + 6`: relation, seq, target, state, basis, evidence.
+fn edge(row: &rusqlite::Row, at: usize) -> Result<Edge> {
+    Ok(Edge {
+        relation: known(&KINDS, text_at(row, at, ID_BYTES)?)?.ok_or_else(bad)?,
+        seq: row.get(at + 1)?,
+        target: text_at(row, at + 2, ID_BYTES)?,
+        state: known(&STATES, text_at(row, at + 3, ID_BYTES)?)?.ok_or_else(bad)?,
+        basis: known(&usages::BASES, text_at(row, at + 4, ID_BYTES)?)?.ok_or_else(bad)?,
+        evidence: need(text_at(row, at + 5, ID_BYTES)?)?,
+    })
+}
+
+/// One stored generation read through bounded, indexed queries; records load on demand.
+/// The edges that point at one target from a cursor on, in key order, straight from
+/// `edges_target` (named: without statistics the planner prefers the primary key, which reads
+/// every later edge of the generation); the caller filters relation and visibility while it reads.
+pub(super) const INBOUND: &str =
+    "SELECT e.rid, e.relation, e.seq, e.target, e.state, e.basis, e.evidence, r.hidden
+     FROM edges e INDEXED BY edges_target JOIN records r ON r.gen = e.gen AND r.rid = e.rid
+     WHERE e.gen = ?1 AND e.target = ?2 AND (e.rid, e.relation, e.seq) > (?3, ?4, ?5)
+     ORDER BY e.rid, e.relation, e.seq";
+
+/// The children of one record from the cursor's rid on, from `records_parent`.
+pub(super) const CHILDREN: &str =
+    "SELECT rid, source IS NOT NULL, hidden FROM records INDEXED BY records_parent
+     WHERE gen = ?1 AND parent = ?2 AND rid >= ?3 ORDER BY rid";
+
+pub(crate) struct Stored<'c> {
+    pub conn: &'c Connection,
+    pub gen_id: i64,
+    pub index: Index,
+    /// The query's record budget spent so far, carried into every ancestor load.
+    pub spent: usize,
+}
+
+impl Graph for Stored<'_> {
+    fn index(&self) -> &Index {
+        &self.index
+    }
+    fn rid_of(&mut self, node: &str) -> Result<Option<u32>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT rid FROM records WHERE gen = ?1 AND node_id = ?2",
+                params![self.gen_id, node],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+    fn definition(&mut self, id: &str) -> Result<Option<Definition>> {
+        if let Some(d) = self.index.definitions.get(id) {
+            return Ok(Some(d.clone()));
+        }
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT name, kind, set_id, page FROM definitions WHERE gen = ?1 AND id = ?2",
+        )?;
+        let mut rows = stmt.query(params![self.gen_id, id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let d = Definition {
+            name: need(text_at(row, 0, TEXT_BYTES)?)?,
+            kind: need(text_at(row, 1, ID_BYTES)?)?,
+            set: text_at(row, 2, ID_BYTES)?,
+            page: text_at(row, 3, ID_BYTES)?,
+        };
+        self.index.definitions.insert(id.to_owned(), d.clone());
+        Ok(Some(d))
+    }
+    fn members(&mut self, set: &str, limit: usize) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id FROM definitions WHERE gen = ?1 AND set_id = ?2 ORDER BY id LIMIT ?3",
+        )?;
+        let mut rows = stmt.query(params![self.gen_id, set, limit as i64])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(need(text_at(row, 0, ID_BYTES)?)?);
+        }
+        Ok(out)
+    }
+    fn targeted(&mut self, target: &str) -> Result<Option<&'static str>> {
+        let state: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT state FROM edges WHERE gen = ?1 AND target = ?2 LIMIT 1",
+                params![self.gen_id, target],
+                |r| r.get(0),
+            )
+            .optional()?;
+        known(&STATES, state)
+    }
+    fn inbound(
+        &mut self,
+        targets: &[String],
+        relations: &[&'static str],
+        parent: Option<u32>,
+        hidden: bool,
+        after: Option<&Key>,
+        limit: usize,
+    ) -> Result<Vec<(u32, Edge)>> {
+        // One index range per target, read in key order from the cursor on, so a page costs
+        // what it returns plus the rows its filters pass over, never every earlier match.
+        let (rid, relation, seq) = match after {
+            Some(a) => (i64::from(a.0), a.1.clone(), a.2),
+            None => (-1, String::new(), 0),
+        };
+        let mut out = Vec::new();
+        let mut scanned = 0;
+        let mut stmt = self.conn.prepare_cached(INBOUND)?;
+        for target in targets {
+            let mut rows = stmt.query(params![self.gen_id, target, rid, relation, seq])?;
+            let mut kept = 0;
+            while kept < limit
+                && let Some(row) = rows.next()?
+            {
+                scanned += 1;
+                if scanned > usages::SCAN {
+                    return Err(usages::scan_limit());
+                }
+                let e = edge(row, 1)?;
+                if (row.get::<_, bool>(7)? && !hidden) || !relations.contains(&e.relation) {
+                    continue;
+                }
+                out.push((row.get(0)?, e));
+                kept += 1;
+            }
+        }
+        if let Some(parent) = parent.filter(|_| relations.contains(&"contains")) {
+            let mut stmt = self.conn.prepare_cached(CHILDREN)?;
+            let mut rows = stmt.query(params![self.gen_id, parent, rid])?;
+            let mut kept = 0;
+            while kept < limit
+                && let Some(row) = rows.next()?
+            {
+                let child: u32 = row.get(0)?;
+                if after.is_some_and(|a| (child, "contains", 0) <= (a.0, a.1.as_str(), a.2)) {
+                    continue;
+                }
+                scanned += 1;
+                if scanned > usages::SCAN {
+                    return Err(usages::scan_limit());
+                }
+                if row.get::<_, bool>(2)? && !hidden {
+                    continue;
+                }
+                let expanded: bool = row.get(1)?;
+                out.push((
+                    child,
+                    Edge {
+                        relation: "contains",
+                        seq: 0,
+                        target: None,
+                        state: "resolved",
+                        basis: if expanded { "resolved" } else { "recorded" },
+                        evidence: "parent".into(),
+                    },
+                ));
+                kept += 1;
+            }
+        }
+        out.sort_by(|a, b| (a.0, a.1.relation, a.1.seq).cmp(&(b.0, b.1.relation, b.1.seq)));
+        out.truncate(limit);
+        Ok(out)
+    }
+    fn outbound(&mut self, rid: u32) -> Result<Vec<Edge>> {
+        self.load(&[rid])?;
+        let r = self.index.record(rid);
+        let mut out: Vec<Edge> = r.edges.clone();
+        if let Some(p) = r.parent {
+            let kind = if r.source.is_some() {
+                "resolved"
+            } else {
+                "recorded"
+            };
+            out.push(Edge {
+                relation: "contains",
+                seq: 0,
+                target: Some(self.index.record(p).id.clone()),
+                state: "resolved",
+                basis: kind,
+                evidence: "parent".into(),
+            });
+        }
+        out.sort_by(|a, b| (a.relation, a.seq).cmp(&(b.relation, b.seq)));
+        Ok(out)
+    }
+    fn load(&mut self, rids: &[u32]) -> Result<()> {
+        let mut rids = rids.to_vec();
+        // Each round reads one more ancestor level, so paths and parents are readable.
+        while !rids.is_empty() {
+            add(
+                self.conn,
+                self.gen_id,
+                &mut self.index,
+                &rids,
+                &mut self.spent,
+            )?;
+            rids = rids
+                .iter()
+                .filter_map(|r| super::parent(&self.index, *r))
+                .collect();
+            rids.sort_unstable();
+            rids.dedup();
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -129,7 +129,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可发�
 
 ## MCP server 与 agent skill
 
-**MCP。** server 在本地通过 stdio 运行，提供 `workflow`、`tree`、`find`、`search`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs` 和 `export`。请传入绝对路径。加上 `--root /path/to/designs`（可重复）可把所有文件和输出路径限制在指定文件夹内。把索引存放在 figlens 默认目录之外时，需要 `--storage-root DIR`（可重复）。光栅导出会缩小到 `maxSize`（默认 1600 px），让内联图片保持小巧；SVG 只返回 metadata。
+**MCP。** server 在本地通过 stdio 运行，提供 `workflow`、`tree`、`find`、`search`、`usages`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs` 和 `export`。请传入绝对路径。加上 `--root /path/to/designs`（可重复）可把所有文件和输出路径限制在指定文件夹内。把索引存放在 figlens 默认目录之外时，需要 `--storage-root DIR`（可重复）。光栅导出会缩小到 `maxSize`（默认 1600 px），让内联图片保持小巧；SVG 只返回 metadata。
 
 agent 可通过 `workflow` 读取内建的 `build`、`audit`、`images`、`plan`、`planning-details`，或明确请求时的 `yolo` 指引。它们与 portable skill 共用来源；MCP 用户可自行选择是否另装 skill。实际工作仍由 agent 使用项目及浏览器工具，并遵守 host 权限。读取指引不会执行工作流程；使用方式取决于客户端支持与模型行为。
 
@@ -160,7 +160,7 @@ skillshare sync && skillshare sync mcp --global
 |---|---|---|
 | 作用 | 每次调用都读取 `.fig`，回答 `search`、`find`、`inspect` 和 `export`。 | 为选定范围一次性建立搜索索引，之后 `search` 从索引作答，并跨来源统一排序。 |
 | 写入内容 | 不创建 workspace 或索引数据库（`export` 只写入你要求的文件）。 | 用户 state 目录或所选 `--storage` 下的本地 workspace（SQLite 数据库）。 |
-| 适用场景 | 一次性提问、脚本、CI。 | 反复搜索同一文件；把项目的多个文件当作一个语料搜索（`--workspace <dir>`）；在 coverage 中使用已知的父/实例关系。 |
+| 适用场景 | 一次性提问、脚本、CI。 | 反复搜索同一文件；把项目的多个文件当作一个语料搜索（`--workspace <dir>`）；查找组件、变量、样式和图片的精确使用位置。 |
 
 普通的设计问题不会创建索引。你只需明确选择启用一次（“为这个设计创建索引”）；存储位置由 figlens 决定，不需要配置 SQLite 或其他东西。
 
@@ -194,9 +194,9 @@ MCP：`index` 的 prepare 返回一个 job；轮询 `jobs` 直到 `succeeded`，
 
 移动了 `.fig`？`index relocate` 保留 `workspaceId`、`sourceId` 和存储位置；然后对受影响的范围执行 `refresh`。没有自动发现，也没有基于哈希的自动合并，不需要 reset。
 
-数据：SQLite 数据库保存已注册的本地路径、所选范围的图层名称与有效文本、搜索 postings、已知的父/实例关系、哈希、generation 和 job。原始 `.fig` 留在原处且保持不变；其原始字节不会存入数据库。
+数据：SQLite 数据库保存已注册的本地路径、所选范围的图层名称与有效文本、搜索 postings、精确关系（包含、实例、变体、变量/样式/图片绑定、原型目标）及其指向的定义、哈希、generation 和 job。原始 `.fig` 留在原处且保持不变；其原始字节不会存入数据库。
 
-Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，workspace 可跨重启和宿主复用。尚未实现：文件监视、usages/关系工具、向量、事件与订阅。
+Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，workspace 可跨重启和宿主复用。尚未实现：文件监视、Pi、OpenCode 与 OMP 的 usages 工具、向量、事件与订阅。
 
 <a id="commands"></a>
 
@@ -208,6 +208,7 @@ Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，works
 | `tree <file> [node] --top-frames [--json]` | 只列出画面，每行一个，可直接传给 `--frames -`：页面或其 section 下的 frame、component、component set 与 instance（跳过 group 与内部页面）；`--json` 附上 page 与 section id，以及每个画面第一段可见文字（`firstText`），可用来区分画布标签与画面 |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 不区分大小写地搜索图层名称和文字；返回路径、尺寸和预览。默认 20 条结果（1-200） |
 | `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | 对图层名称和完整文字做排序搜索，已套用 instance override、文字/布尔属性和 swap；返回精确节点引用（包括可用于 `inspect` 的 `I…;…` 子图层 id）、匹配原因、UTF-16 范围、覆盖情况和 cursor 分页。默认 20 条（1-200）；隐藏图层和内部页面需加对应 flag。以 `--file`/`--workspace`/`--id` 取代 `<file>` 时，读取 workspace 已准备的索引（见 `index`） |
+| `usages <file> <node\|resource> [--scope ID] [--relation R[,R]] [--out] [--snapshot S] [--include-hidden] [--limit N] [--cursor C]` | 在一个已保存范围内返回图层或资源（`VariableID:…`、`StyleKey:…`、`image:…`）的精确关系，包括嵌套 instance 和 swap：默认返回组件、组件集、变量、样式或图片被使用的位置，`--out` 返回图层指向的目标。每个结果保留精确引用、关系、状态（`resolved`、`missing`、`unresolved` 等）、依据和证据；名称从不算作同一身份。不返回总数，coverage 说明完整或部分。默认 50 条（1-200）。用 `--file`/`--workspace`/`--id` 代替 `<file>` 时读取 workspace 已准备好的 `--scope` 索引 |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | 展开后的精简布局/文字摘要，最多 200 个节点。`--images` 会加上位图尺寸和裁切范围。`--flat` 改为每个节点一行：相对该节点的位置、尺寸、文字、字体、填充、描边、圆角、auto-layout |
 | `nodes <file> <node>` | REST nodes 响应中单个节点的对象（`document`、`components`、`componentSets`、`styles`）：展开的 instance 与覆写、auto-layout、文字样式、填充、效果、绑定变量、组件属性、渲染边界 |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | 一次解码读取多个节点：列表中每个 id 一行 JSON（带 `nodeId` 的 `nodes` 输出，或 `{nodeId, error}`） |

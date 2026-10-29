@@ -4,11 +4,11 @@
 
 ## Generations
 
-Schema 2 adds `snapshots` (verified size and mtime per content hash), `generations`, `published` (one generation per source and scope), `records`, `terms` (delta-varint postings per term and field), `edges` and `jobs`. A v1 registry is upgraded in place under the exclusive workspace lock, keeping every source.
+Schema 2 adds `snapshots` (verified size and mtime per content hash), `generations`, `published` (one generation per source and scope), `records`, `terms` (delta-varint postings per term and field), `edges` and `jobs`; schema 3 reshapes `edges` and adds `definitions` ([usages](usages.md)). A v1 registry is upgraded in place under the exclusive workspace lock, keeping every source.
 
 - A generation is one source, one exact scope node and one membership. Search never widens or narrows the scope and never parses the `.fig`. Prepare without `--scope` only registers.
 - `versions` records ranking, tokenizer and budgets. A generation from other versions is `incompatible` and `rebuild` is the recovery.
-- `edges` keep only evidence-correct relations: an instance's `instance_of` points at its component only when the expansion followed that component (symbolData, definition or swap) and it is a COMPONENT. A swap to a missing main is stored unresolved (no target), never the definition's main. `contains` is each record's stored `parent`. Coverage reports `layers.relations` with both kinds' state and lists `variant_of`, `binds_variable`, `uses_style`, `uses_image`, `prototype_target` and `library_identity` as `relation_unavailable`, so the layer is never `ready`. There is no usages tool (#91).
+- `edges` and `definitions` hold the usages relations (schema V3); their kinds, states and paging are in [usages](usages.md). An `instance_of` edge points at the main the expansion actually followed (symbolData, definition or swap); a swap to a missing main keeps its id as `missing`, never the definition's main. Coverage `layers.relations` lists every kind with the relations version and stays `partial` because `library_identity` (#93) is unavailable.
 - Each source keeps at most `MAX_SCOPES` = 8 published scopes; the least recently published is evicted, keeps no generation, and is named in the job's `evictedScopes` (stored in `jobs.evicted`). A published scope keeps at most one retired generation; older ones and abandoned ones go at the next publish or `clear_cache`.
 - No lease protects a generation a query reads: a workspace search reads every generation in one SQLite read transaction, and a cursor over a generation no longer published is `cursor_stale`, or `cursor_expired` once it is deleted.
 

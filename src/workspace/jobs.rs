@@ -604,7 +604,7 @@ pub(crate) fn submit(
 
 /// Deletes generation `gen_id` and everything it holds, in one transaction.
 fn drop_gen(conn: &Connection, gen_id: i64) -> rusqlite::Result<()> {
-    for table in ["records", "terms", "edges", "generations"] {
+    for table in ["records", "terms", "edges", "definitions", "generations"] {
         conn.execute(&format!("DELETE FROM {table} WHERE gen = ?1"), [gen_id])?;
     }
     Ok(())

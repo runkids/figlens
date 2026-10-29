@@ -129,7 +129,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 누구�
 
 ## MCP 서버와 에이전트 skill
 
-**MCP.** 서버는 로컬에서 stdio로 실행되며 `workflow`, `tree`, `find`, `search`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs`, `export`를 제공합니다. 절대 경로를 전달하세요. `--root /path/to/designs`(반복 가능)를 추가하면 모든 파일과 출력 경로를 선택한 폴더로 제한합니다. figlens 기본 디렉터리 밖에 인덱스를 저장하려면 `--storage-root DIR`(반복 가능)이 필요합니다. 래스터 내보내기는 `maxSize`(기본 1600px)에 맞게 축소되어 인라인 이미지가 작게 유지되며, SVG는 메타데이터만 반환합니다.
+**MCP.** 서버는 로컬에서 stdio로 실행되며 `workflow`, `tree`, `find`, `search`, `usages`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs`, `export`를 제공합니다. 절대 경로를 전달하세요. `--root /path/to/designs`(반복 가능)를 추가하면 모든 파일과 출력 경로를 선택한 폴더로 제한합니다. figlens 기본 디렉터리 밖에 인덱스를 저장하려면 `--storage-root DIR`(반복 가능)이 필요합니다. 래스터 내보내기는 `maxSize`(기본 1600px)에 맞게 축소되어 인라인 이미지가 작게 유지되며, SVG는 메타데이터만 반환합니다.
 
 agent는 `workflow`로 `build`, `audit`, `images`, `plan`, `planning-details` 또는 명시적으로 요청된 경우 `yolo` 가이드를 읽을 수 있습니다. portable skill과 같은 소스를 사용하므로 MCP 사용 시 별도 skill 설치는 선택 사항입니다. 실제 작업은 agent의 프로젝트·브라우저 도구와 호스트 권한으로 수행합니다. 가이드를 읽는 것만으로 작업이 실행되지는 않으며, 활용 방식은 클라이언트 지원과 모델 동작에 따라 달라집니다.
 
@@ -160,7 +160,7 @@ skillshare sync && skillshare sync mcp --global
 |---|---|---|
 | 하는 일 | 호출할 때마다 `.fig`를 읽어 `search`, `find`, `inspect`, `export`에 답합니다. | 선택한 범위의 검색 인덱스를 한 번 만들고, 이후 `search`는 그 인덱스로 소스 전체를 함께 순위 매겨 답합니다. |
 | 기록되는 것 | workspace도 인덱스 데이터베이스도 만들지 않습니다(`export`는 요청한 파일만 씁니다). | 사용자별 state 디렉터리 또는 선택한 `--storage` 아래의 로컬 workspace(SQLite 데이터베이스). |
-| 쓰는 때 | 일회성 질문, 스크립트, CI. | 한 파일을 반복 검색할 때, 프로젝트의 여러 파일을 하나의 코퍼스로 검색할 때(`--workspace <dir>`), coverage에서 알려진 부모/인스턴스 관계를 쓰고 싶을 때. |
+| 쓰는 때 | 일회성 질문, 스크립트, CI. | 한 파일을 반복 검색할 때, 프로젝트의 여러 파일을 하나의 코퍼스로 검색할 때(`--workspace <dir>`), 컴포넌트, 변수, 스타일, 이미지의 정확한 사용처를 찾을 때. |
 
 일반적인 디자인 질문은 인덱스를 만들지 않습니다. 한 번 명시적으로 켭니다("이 디자인의 인덱스를 만들어 줘"). 저장 위치는 figlens가 고르며 SQLite 등 별도 설정은 필요 없습니다.
 
@@ -194,9 +194,9 @@ MCP: `index` prepare는 job을 반환합니다. `succeeded`가 될 때까지 `jo
 
 `.fig`를 옮겼나요? `index relocate`는 `workspaceId`, `sourceId`, 저장 위치를 유지합니다. 이후 영향받은 범위를 `refresh`하세요. 자동 탐색이나 해시 기반 자동 병합은 없으며 reset은 필요 없습니다.
 
-데이터: SQLite 데이터베이스에는 등록된 로컬 경로, 선택한 범위의 레이어 이름과 유효 텍스트, 검색 postings, 알려진 부모/인스턴스 관계, 해시, 세대, job이 들어 있습니다. 원본 `.fig`는 제자리에서 변경되지 않으며, 원시 바이트는 데이터베이스에 저장되지 않습니다.
+데이터: SQLite 데이터베이스에는 등록된 로컬 경로, 선택한 범위의 레이어 이름과 유효 텍스트, 검색 postings, 정확한 관계(포함, 인스턴스, 변형, 변수/스타일/이미지 바인딩, 프로토타입 대상)와 그 대상 정의, 해시, 세대, job이 들어 있습니다. 원본 `.fig`는 제자리에서 변경되지 않으며, 원시 바이트는 데이터베이스에 저장되지 않습니다.
 
-Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며, workspace는 재시작과 호스트를 넘어 재사용됩니다. 미구현: 파일 감시, usages/관계 도구, 벡터, 이벤트, 구독.
+Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며, workspace는 재시작과 호스트를 넘어 재사용됩니다. 미구현: 파일 감시, Pi, OpenCode, OMP의 usages 도구, 벡터, 이벤트, 구독.
 
 <a id="commands"></a>
 
@@ -208,6 +208,7 @@ Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며
 | `tree <file> [node] --top-frames [--json]` | 화면만 한 줄에 하나씩, `--frames -`에 바로 넘길 수 있게 출력. 페이지나 그 섹션 바로 아래의 프레임, 컴포넌트, 컴포넌트 세트, 인스턴스(그룹과 내부 페이지 제외). `--json`은 페이지와 섹션 ID, 그리고 캔버스 라벨과 화면을 구분할 수 있는 각 화면의 첫 번째 보이는 텍스트(`firstText`)를 추가 |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 대소문자 구분 없이 레이어 이름과 텍스트 검색. 경로, 크기, 미리보기. 기본 20개(1-200) |
 | `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | 인스턴스 오버라이드, 텍스트/불리언 속성, 스왑을 적용한 레이어 이름과 전체 텍스트의 순위 검색. 정확한 노드 참조(`inspect`에 쓰는 `I…;…` 하위 레이어 ID 포함), 일치 이유, UTF-16 범위, 커버리지, 커서 페이지. 기본 20개(1-200), 숨긴 레이어와 내부 페이지는 해당 플래그 필요. `<file>` 대신 `--file`/`--workspace`/`--id`를 쓰면 workspace의 준비된 인덱스를 읽습니다(`index` 참고) |
+| `usages <file> <node\|resource> [--scope ID] [--relation R[,R]] [--out] [--snapshot S] [--include-hidden] [--limit N] [--cursor C]` | 저장된 한 범위에서 레이어 또는 리소스(`VariableID:…`, `StyleKey:…`, `image:…`)의 정확한 관계를 반환합니다. 중첩 인스턴스와 스왑도 포함합니다. 기본은 컴포넌트, 세트, 변수, 스타일, 이미지가 쓰이는 위치이고 `--out`은 레이어가 가리키는 대상입니다. 각 결과는 정확한 참조, 관계, 상태(`resolved`, `missing`, `unresolved` 등), 근거, 증거를 유지하며 이름은 동일성으로 보지 않습니다. 총합은 없고 coverage가 완전 또는 부분을 알려 줍니다. 기본 50개(1-200). `<file>` 대신 `--file`/`--workspace`/`--id`를 주면 workspace에 준비된 `--scope` 인덱스를 읽습니다 |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | 펼쳐진 간결한 레이아웃/텍스트 요약, 최대 200노드. `--images`는 비트맵 크기와 크롭 범위를 추가. `--flat`은 대신 노드당 한 줄로 출력(노드 기준 위치, 크기, 텍스트, 폰트, 채우기, 선, 반경, auto-layout) |
 | `nodes <file> <node>` | REST nodes 응답의 노드별 객체(`document`, `components`, `componentSets`, `styles`): 펼쳐진 인스턴스와 재정의, 자동 레이아웃, 텍스트 스타일, 채우기, 효과, 연결 변수, 컴포넌트 속성, 렌더링 경계 |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | 한 번 디코딩해 여러 노드: 목록의 id마다 JSON 한 줄(`nodeId`가 붙은 `nodes` 출력 또는 `{nodeId, error}`) |

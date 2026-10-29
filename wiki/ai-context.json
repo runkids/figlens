@@ -144,6 +144,9 @@
       "sources": [
         {
           "path": "wiki/search.md"
+        },
+        {
+          "path": "wiki/usages.md"
         }
       ]
     },

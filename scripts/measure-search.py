@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Search cost on one approved input: cold CLI, MCP first call and warm retrieval, peak RSS.
+"""Search and usages cost on one approved input: cold CLI, MCP first call and warm retrieval,
+workspace builds, peak RSS.
 
 Reports counts and timings, never names or text from the design, plus the caller's own
 `--query`/`--node` values as metadata: treat a report on a private file as private and keep
@@ -58,7 +59,72 @@ def shape(reply):
             'origins': sorted({r['origin'] for r in reply['results']})}
 
 
-def measure(binary, fixture, node, queries, cold, warm):
+def usage_shape(reply):
+    """What a usages reply says, without any design content."""
+    return {'results': len(reply['results']), 'hasMore': reply['hasMore'],
+            'complete': reply['coverage']['complete'],
+            'relations': sorted({r['relation'] for r in reply['results']}),
+            'members': len(reply.get('members', {}).get('nodeIds', []))}
+
+
+def measure_usages(binary, fixture, node, targets, cold, warm, builds, work, env, cli, samples):
+    """Stateless cold CLI and warm MCP usages, then cold workspace builds and warm workspace usages."""
+    shapes = {}
+    for _ in range(cold):
+        for target in targets:
+            shapes[target] = usage_shape(json.loads(cli('cliUsages', [binary, 'usages', fixture, target, '--scope', node])))
+    memory = {}
+    with session([binary, 'mcp'], work, env, timeout=60) as request:
+        request('initialize', {'protocolVersion': '2025-06-18'})
+        request('notifications/initialized', {})
+        def call(arguments):
+            target = arguments.pop('node')
+            arguments['resource' if target.startswith(('VariableID:', 'StyleKey:', 'image:')) else 'node'] = target
+            reply = request('tools/call', {'name': 'usages', 'arguments': arguments})
+            assert not reply['isError'], reply
+            return reply['structuredContent']
+        for i in range(warm + 1):
+            target = targets[i % len(targets)]
+            start = time.perf_counter()
+            reply = call({'file': str(fixture), 'node': target, 'scope': node})
+            samples.setdefault('mcpWarmUsages' if i else 'mcpFirstUsages', []).append((time.perf_counter() - start) * 1000)
+            assert usage_shape(reply) == shapes[target]
+        memory['statelessAfterWarm'] = baseline.memory(request.pid)
+        # Each build is a fresh generation of the whole scope: hash, parse, index, write, verify.
+        cli('cliIndexPrepare', [binary, 'index', 'prepare', fixture, '--scope', node])
+        for _ in range(builds - 1):
+            cli('cliIndexRebuild', [binary, 'index', 'rebuild', '--file', fixture, '--scope', node])
+        ws = json.loads(cli('cliIndexStatus', [binary, 'index', 'status', '--file', fixture]))['workspaceId']
+        for i in range(warm):
+            target = targets[i % len(targets)]
+            start = time.perf_counter()
+            reply = call({'workspaceId': ws, 'node': target, 'scope': node})
+            samples.setdefault('mcpWorkspaceUsages', []).append((time.perf_counter() - start) * 1000)
+            assert usage_shape(reply) == shapes[target], (target, reply)
+        memory['workspaceAfterWarm'] = baseline.memory(request.pid)
+        # Every page of each target: a late page must cost about what the first one does.
+        pages = {}
+        for target in targets:
+            for lane, base in [('stateless', {'file': str(fixture)}), ('workspace', {'workspaceId': ws})]:
+                cursor, times = None, []
+                while True:
+                    arguments = {**base, 'node': target, 'scope': node, 'limit': 50}
+                    if cursor:
+                        arguments['cursor'] = cursor
+                    start = time.perf_counter()
+                    reply = call(arguments)
+                    times.append(round((time.perf_counter() - start) * 1000, 3))
+                    cursor = reply['nextCursor']
+                    if not cursor:
+                        break
+                pages.setdefault(lane, []).append({'pages': len(times), 'firstMs': times[0], 'lastMs': times[-1], 'maxMs': max(times)})
+        memory['pages'] = pages
+    for target in targets:
+        cli('cliWorkspaceUsages', [binary, 'usages', '--file', fixture, target, '--scope', node])
+    return shapes, memory
+
+
+def measure(binary, fixture, node, queries, cold, warm, targets=(), builds=0):
     samples, peaks, shapes = {}, {}, {}
     with tempfile.TemporaryDirectory(prefix='search-', dir=ROOT/'samples') as directory:
         work = Path(directory)
@@ -93,6 +159,7 @@ def measure(binary, fixture, node, queries, cold, warm):
                 assert reply['source']['freshness']['reusedIndex']
                 assert shape(reply) == shapes[query]
             after_warm = baseline.memory(request.pid)
+        usages = measure_usages(binary, fixture, node, targets, cold, warm, builds, work, env, cli, samples) if targets else None
     return {
         'version': run([binary, '--version'], ROOT, os.environ)[2].strip(),
         'node': node, 'queries': queries, 'fixtureBytes': Path(fixture).stat().st_size,
@@ -101,7 +168,8 @@ def measure(binary, fixture, node, queries, cold, warm):
         'mcpMemory': {'afterFirst': after_first, 'afterWarm': after_warm},
         'container': baseline.container_memory(),
         'shapes': shapes,
-        'costBoundaries': 'CLI includes spawn and up to 1 ms wait4 polling; cliSearch is a cold process: stage, SHA-256, decode, scope expansion, indexing and retrieval. MCP first call is the same in a server; warm calls reuse the index (stamp check, open check, retrieval, serialization, IPC). The MCP server spawns no children, so its RSS is the process tree.',
+        'usages': usages and {'targets': len(targets), 'shapes': list(usages[0].values()), 'mcpMemory': usages[1]},
+        'costBoundaries': 'CLI includes spawn and up to 1 ms wait4 polling; cliSearch is a cold process: stage, SHA-256, decode, scope expansion, indexing and retrieval. MCP first call is the same in a server; warm calls reuse the index (stamp check, open check, retrieval, serialization, IPC). Usages: cliUsages is a cold stateless process like cliSearch; mcpWarmUsages reuse the process index; cliIndexPrepare/Rebuild wait for a whole build and their RSS includes the waited worker; mcpWorkspaceUsages read the published generation from SQLite. The MCP server spawns no children, so its RSS is the process tree.',
     }
 
 
@@ -113,8 +181,10 @@ def main():
     parser.add_argument('--query', action='append', required=True)
     parser.add_argument('--cold', type=int, default=5)
     parser.add_argument('--warm', type=int, default=100)
+    parser.add_argument('--usages', action='append', default=[], help='node or resource id; repeatable')
+    parser.add_argument('--builds', type=int, default=20)
     args = parser.parse_args()
-    print(json.dumps(measure(args.binary.resolve(), args.fixture.resolve(), args.node, args.query, args.cold, args.warm), indent=2))
+    print(json.dumps(measure(args.binary.resolve(), args.fixture.resolve(), args.node, args.query, args.cold, args.warm, args.usages, args.builds), indent=2))
 
 
 if __name__ == '__main__':

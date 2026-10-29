@@ -491,6 +491,82 @@ impl Drop for Mcp {
 }
 
 #[test]
+fn usages_agree_stateless_over_mcp_and_from_a_prepared_scope_and_reject_a_stale_ref() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    let stateless = env.json(&["usages", file, "0:1", "--relation", "contains"]);
+    assert_eq!(ids(&stateless), ["0:2"]);
+    let mut mcp = Mcp::start(&env, &[]);
+    let over_mcp = mcp.call(
+        "usages",
+        json!({"file": file, "node": "0:1", "relation": "contains"}),
+    );
+    drop(mcp);
+    assert_eq!(
+        over_mcp["structuredContent"]["results"],
+        stateless["results"]
+    );
+    // Stateless usages, like search, never create a database.
+    assert!(!env.home.join(".local/state/figlens").exists());
+    let prepared = env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    assert_eq!(prepared["job"]["state"], "succeeded");
+    // Each call is a new process: the published index is reused, never rebuilt.
+    for _ in 0..2 {
+        let indexed = env.json(&["usages", "--file", file, "0:1", "--relation", "contains"]);
+        let plain = |reply: &Value| {
+            let mut results = reply["results"].clone();
+            for r in results.as_array_mut().unwrap() {
+                r["ref"].as_object_mut().unwrap().remove("sourceId");
+            }
+            results
+        };
+        assert_eq!(plain(&indexed), plain(&stateless));
+        assert_eq!(indexed["definition"]["state"], "indexed");
+    }
+    let snapshot = stateless["source"]["snapshotId"].as_str().unwrap();
+    let current = env.run(&["usages", "--file", file, "0:1", "--snapshot", snapshot]);
+    assert!(current.status.success());
+    let stale = env.run(&["usages", "--file", file, "0:1", "--snapshot", "sha256:old"]);
+    assert!(!stale.status.success());
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("now serves"));
+}
+
+#[test]
+fn usages_of_a_scope_not_ready_report_its_state_next_step_and_null_fields() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file]);
+    let idle = env.json(&["usages", "--file", file, "0:1"]);
+    assert_eq!(idle["state"], "not_prepared");
+    assert_eq!(idle["nextSteps"][0]["arguments"]["action"], "refresh");
+    let gate = env.gate("parse.hold");
+    let mut owner = env.spawn(
+        &["index", "prepare", file, "--scope", "0:0"],
+        Some(("parse", &gate)),
+    );
+    let job = active_job(&env, &fig, "parse");
+    let mut mcp = Mcp::start(&env, &[]);
+    let ws = idle["workspaceId"].as_str().unwrap();
+    let reply = mcp.call("usages", json!({"workspaceId": ws, "node": "0:1"}));
+    drop(mcp);
+    assert_eq!(reply["isError"], false, "{reply}");
+    let pending = &reply["structuredContent"];
+    assert_eq!(pending["state"], "pending");
+    assert_eq!(pending["nextSteps"][0]["arguments"]["jobId"], job.as_str());
+    // The fields the output schema requires are present; definition is null until ready.
+    for key in ["definition", "results", "coverage", "hasMore", "nextCursor"] {
+        assert!(pending.get(key).is_some(), "{key}");
+    }
+    assert_eq!(pending["definition"], Value::Null);
+    std::fs::remove_file(&gate).unwrap();
+    assert!(owner.wait().unwrap().success());
+    let ready = env.json(&["usages", "--file", file, "0:1"]);
+    assert_eq!(ready["definition"]["state"], "indexed");
+}
+
+#[test]
 fn mcp_builds_in_the_background_and_answers_status_and_search_meanwhile() {
     let env = Env::new();
     let fig = env.fig("a.fig");
@@ -628,6 +704,26 @@ fn mcp_roots_hide_sources_jobs_and_counts_outside_them() {
     let job = mcp.call("jobs", json!({"action": "status", "jobId": hidden_job}));
     assert_eq!(job["isError"], true);
     assert!(!job.to_string().contains("/out/"));
+    // Usages read only the visible source; naming the hidden one finds nothing to read.
+    let usages = mcp.call("usages", json!({"workspaceId": ws, "node": "0:1"}));
+    assert_eq!(usages["isError"], false, "{usages}");
+    assert!(!usages.to_string().contains("/out/"));
+    let all = env.json(&["index", "status", "--workspace", dir]);
+    let hidden_id = all["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["path"].as_str().unwrap().contains("/out/"))
+        .unwrap()["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let refused = mcp.call(
+        "usages",
+        json!({"workspaceId": ws, "sourceId": hidden_id, "node": "0:1"}),
+    );
+    assert_eq!(refused["isError"], true);
+    assert!(!refused.to_string().contains("/out/"));
 }
 
 #[test]
