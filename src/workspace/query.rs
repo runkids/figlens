@@ -29,6 +29,52 @@ fn mtime_ns(t: SystemTime) -> i64 {
 /// one corpus. Sources that are not ready are listed with their state and next step; stale
 /// indexes are not served. Every request re-resolves the workspace's location and binding.
 pub fn search(storage: &Storage, select: &Select, only: &[String], req: &Request) -> Result<Json> {
+    search_index(storage, select, only, req).map_err(|e| with_fallback(storage, select, req, e))
+}
+
+/// A workspace that cannot be used now still leaves the named `.fig` searchable directly; that
+/// is listed only when the request named a file this caller may read and it is readable now.
+fn with_fallback(
+    storage: &Storage,
+    select: &Select,
+    req: &Request,
+    e: Box<dyn Error>,
+) -> Box<dyn Error> {
+    let Select::Locator(Locator::Source(file)) = select else {
+        return e;
+    };
+    let fig = match e.downcast::<FigError>() {
+        Ok(fig) => *fig,
+        Err(e) => return e,
+    };
+    let unusable = matches!(
+        fig.kind(),
+        ErrorKind::StorageUnavailable
+            | ErrorKind::PermissionDenied
+            | ErrorKind::WorkspaceBusy
+            | ErrorKind::IndexIncompatible
+            | ErrorKind::OperationFailed
+    );
+    if !unusable || !storage.sees(file) || readable(file).is_err() {
+        return fig.into();
+    }
+    let mut actions = fig.recovery().cloned().unwrap_or_else(|| json!([]));
+    if let Some(list) = actions.as_array_mut() {
+        list.push(
+            json!({"action": "stateless_search", "requires": "none", "tool": "search",
+            "arguments": {"file": file, "query": req.query, "node": req.scope},
+            "effects": {"note": "parses the .fig in this call; the workspace stays as it is"}}),
+        );
+    }
+    fig.with_recovery(actions).into()
+}
+
+fn search_index(
+    storage: &Storage,
+    select: &Select,
+    only: &[String],
+    req: &Request,
+) -> Result<Json> {
     let q = req.validate()?;
     let (_, ws) = opened(storage, select, false)?;
     let ws_id = ws.held.id.clone();

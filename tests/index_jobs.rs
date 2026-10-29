@@ -162,7 +162,10 @@ fn a_prepared_scope_searches_like_the_stateless_search_and_survives_a_rebuild() 
         results
     };
     assert_eq!(plain(&indexed), plain(&stateless));
-    assert_eq!(indexed["coverage"]["scannedRecords"], stateless["coverage"]["scannedRecords"]);
+    assert_eq!(
+        indexed["coverage"]["scannedRecords"],
+        stateless["coverage"]["scannedRecords"]
+    );
     assert_eq!(indexed["coverage"]["complete"], true);
     let rebuilt = env.json(&["index", "rebuild", "--file", file]);
     assert_eq!(rebuilt["jobs"][0]["state"], "succeeded");
@@ -661,9 +664,66 @@ fn a_stored_parent_cycle_is_refused_as_an_unreadable_index_instead_of_spinning()
     let file = fig.to_str().unwrap();
     let prepared = env.json(&["index", "prepare", file, "--scope", "0:0"]);
     let conn = rusqlite::Connection::open(prepared["paths"]["database"].as_str().unwrap()).unwrap();
-    conn.execute("UPDATE records SET parent = rid WHERE node_id = '0:1'", []).unwrap();
+    conn.execute("UPDATE records SET parent = rid WHERE node_id = '0:1'", [])
+        .unwrap();
     drop(conn);
     let out = env.run(&["search", "--file", file, "first"]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("rebuild"));
+}
+
+#[cfg(unix)]
+#[test]
+fn mcp_roots_do_not_serve_a_source_later_replaced_by_a_link_out_of_them() {
+    let env = Env::new();
+    let (inside, outside) = (env.dir.join("in"), env.dir.join("out"));
+    std::fs::create_dir(&inside).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    let (inside, outside) = (
+        std::fs::canonicalize(inside).unwrap(),
+        std::fs::canonicalize(outside).unwrap(),
+    );
+    let fig = inside.join("design.fig");
+    std::fs::copy("examples/first-success/design.fig", &fig).unwrap();
+    let prepared = env.json(&["index", "prepare", fig.to_str().unwrap(), "--scope", "0:0"]);
+    let secret = outside.join("secret.fig");
+    std::fs::rename(&fig, &secret).unwrap();
+    std::os::unix::fs::symlink(&secret, &fig).unwrap();
+    let mut mcp = Mcp::start(&env, &["--root", inside.to_str().unwrap()]);
+    let found = mcp.call(
+        "search",
+        json!({"workspaceId": prepared["workspaceId"], "query": "first"}),
+    );
+    let text = found.to_string();
+    assert!(!text.contains("secret"), "{text}");
+    assert!(
+        found["structuredContent"]["results"]
+            .as_array()
+            .is_none_or(Vec::is_empty),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_unusable_workspace_lists_stateless_search_of_the_named_file() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    let store = env.dir.join("store");
+    std::fs::create_dir(&store).unwrap();
+    let store = std::fs::canonicalize(store).unwrap();
+    env.json(&[
+        "index",
+        "prepare",
+        file,
+        "--storage",
+        store.to_str().unwrap(),
+        "--scope",
+        "0:0",
+    ]);
+    std::fs::rename(&store, env.dir.join("offline")).unwrap();
+    let out = env.run(&["search", "--file", file, "first"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("\"stateless_search\""), "{stderr}");
 }
