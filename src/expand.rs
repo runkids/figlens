@@ -169,6 +169,111 @@ impl Patch {
 type Patches = HashMap<String, Patch>;
 type Resize = Option<(Vec2, Vec2)>;
 
+/// What stopped a bounded run first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stop {
+    Work,
+    Bytes,
+    Depth,
+    Deadline,
+}
+
+/// Work left for a bounded run, spent before the visits, clones and allocations it pays for.
+#[derive(Clone, Copy, Debug)]
+pub struct Bounds {
+    /// Node visits plus override entries converted, merged or walked.
+    pub work: usize,
+    /// Estimated bytes converted, copied or retained, including a caller's own records.
+    pub bytes: usize,
+    /// Nested expansion depth.
+    pub depth: usize,
+    pub deadline: std::time::Instant,
+    pub stop: Option<Stop>,
+}
+
+impl Bounds {
+    /// Spends `work` and `bytes`; false, with `stop` set, once any bound has run out.
+    pub fn charge(&mut self, work: usize, bytes: usize) -> bool {
+        if self.stop.is_none() {
+            self.stop = if std::time::Instant::now() >= self.deadline {
+                Some(Stop::Deadline)
+            } else if work > self.work {
+                Some(Stop::Work)
+            } else if bytes > self.bytes {
+                Some(Stop::Bytes)
+            } else {
+                self.work -= work;
+                self.bytes -= bytes;
+                return true;
+            };
+        }
+        false
+    }
+}
+
+/// Sums `f` over `items` until `left` runs out, without enumerating the rest of a collection.
+fn sum_while<T>(
+    items: impl IntoIterator<Item = T>,
+    left: &mut usize,
+    mut f: impl FnMut(T, &mut usize) -> usize,
+) -> usize {
+    let mut total = 0;
+    for item in items {
+        if *left == 0 {
+            break;
+        }
+        total += f(item, left);
+    }
+    total
+}
+
+/// A cheap upper estimate of `v`'s retained size, computed without allocating; it visits at
+/// most `left` values, so a payload larger than the remaining work stops early.
+fn json_bytes(v: &Json, left: &mut usize) -> usize {
+    if *left == 0 {
+        return 0;
+    }
+    *left -= 1;
+    match v {
+        Json::String(s) => s.len() + 24,
+        Json::Array(a) => 24 + sum_while(a, left, json_bytes),
+        Json::Object(o) => {
+            48 + sum_while(o, left, |(k, v), left| k.len() + 24 + json_bytes(v, left))
+        }
+        _ => 16,
+    }
+}
+
+/// `json_bytes` of `v` once converted, estimated from the kiwi value without converting it.
+fn kiwi_bytes(v: &Value, left: &mut usize) -> usize {
+    if *left == 0 {
+        return 0;
+    }
+    *left -= 1;
+    match v {
+        Value::String(s) => s.len() + 24,
+        Value::Bytes(b) => 24 + 4 * b.len(),
+        Value::Array(a) => 24 + sum_while(a, left, kiwi_bytes),
+        Value::Object(_, o) => {
+            48 + sum_while(o, left, |(k, v), left| k.len() + 24 + kiwi_bytes(v, left))
+        }
+        _ => 16,
+    }
+}
+
+fn patches_bytes(patches: &Patches, left: &mut usize) -> usize {
+    sum_while(patches, left, |(k, p), left| {
+        128 + k.len() + sum_while(p.props.values(), left, json_bytes)
+    })
+}
+
+fn list_len(v: Option<&Value>) -> usize {
+    match v {
+        Some(Value::Array(items)) => items.len(),
+        _ => 0,
+    }
+}
+
 fn vec2(v: &Value) -> Vec2 {
     let f = |name: &str| v.get(name).map_or(0.0, |x| x.as_float() as f64);
     Vec2 {
@@ -363,18 +468,26 @@ fn resized(from: Option<Vec2>, to: Option<Vec2>) -> Resize {
     }
 }
 
-fn parent_of(node: &Value) -> Option<String> {
+pub(crate) fn parent_of(node: &Value) -> Option<String> {
     node.get("parentIndex")?.get("guid").and_then(guid_key)
 }
 
 /// `root` and every descendant, in tree order.
 pub fn subtree(tree: &Tree, root: &str) -> Vec<String> {
+    subtree_while(tree, root, || true)
+}
+
+/// `subtree`, stopping before the first node `more` refuses.
+fn subtree_while(tree: &Tree, root: &str, mut more: impl FnMut() -> bool) -> Vec<String> {
     let mut out = vec![root.to_owned()];
     // A crafted file can make a node its own descendant; visit each id once.
     let mut seen: std::collections::HashSet<String> = out.iter().cloned().collect();
     let mut i = 0;
     while i < out.len() {
         for c in tree.children.get(&out[i]).into_iter().flatten() {
+            if !seen.contains(c) && !more() {
+                return out;
+            }
             if seen.insert(c.clone()) {
                 out.push(c.clone());
             }
@@ -431,21 +544,40 @@ struct Expander<'t, 'a> {
     symbols: Vec<String>,
     /// Bytes left for the `id`, `name` and `type` every expanded node emits; `None` is unbounded.
     budget: Option<usize>,
+    /// Shared work bounds of `expand_instances_bounded`; `None` is unbounded.
+    bounds: Option<Bounds>,
+    depth: usize,
+    /// `symbol_cost` per component.
+    sizes: HashMap<String, (usize, usize)>,
     exceeded: bool,
 }
 
 /// Expands every visible instance under `root` into `I<instance>;<path>` nodes.
 pub fn expand_instances(tree: &Tree, root: &str) -> Expansion {
-    expand_all(tree, root, None).unwrap()
+    expand_all(tree, root, None, None).0
 }
 
 /// `expand_instances`, or `None` once the expanded nodes' emitted `id`, `name` and `type`
 /// alone exceed `bytes`: a lower bound of `root`'s REST JSON, so a fitting scope still expands.
 pub fn expand_instances_within(tree: &Tree, root: &str, bytes: usize) -> Option<Expansion> {
-    expand_all(tree, root, Some(bytes))
+    let (ex, _, exceeded) = expand_all(tree, root, Some(bytes), None);
+    (!exceeded).then_some(ex)
 }
 
-fn expand_all(tree: &Tree, root: &str, budget: Option<usize>) -> Option<Expansion> {
+/// `expand_instances` that spends `bounds` before each stored visit, override conversion or
+/// merge, expanded node and nesting level, and keeps what it expanded when they run out
+/// (`Bounds::stop`). Stored children still win over an expansion, as in REST output.
+pub fn expand_instances_bounded(tree: &Tree, root: &str, bounds: Bounds) -> (Expansion, Bounds) {
+    let (ex, bounds, _) = expand_all(tree, root, None, Some(bounds));
+    (ex, bounds.unwrap())
+}
+
+fn expand_all(
+    tree: &Tree,
+    root: &str,
+    budget: Option<usize>,
+    bounds: Option<Bounds>,
+) -> (Expansion, Option<Bounds>, bool) {
     let mut ex = Expander {
         tree,
         out: Expansion {
@@ -454,21 +586,46 @@ fn expand_all(tree: &Tree, root: &str, budget: Option<usize>) -> Option<Expansio
         },
         symbols: Vec::new(),
         budget,
+        bounds,
+        depth: 0,
+        sizes: HashMap::new(),
         exceeded: false,
     };
-    for id in subtree(tree, root) {
+    let stored = subtree_while(tree, root, || ex.spend(1, 0));
+    for id in stored {
+        if ex.exceeded {
+            break;
+        }
         let inst = tree.nodes[&id];
         if enum_name(inst, "type") != Some("INSTANCE") || !shown(tree, &id, root) {
             continue;
         }
         // REST output keeps stored children over an expansion, so a bounded run skips it unread.
-        if budget.is_some() && tree.children.contains_key(&id) {
+        if (budget.is_some() || ex.bounds.is_some()) && tree.children.contains_key(&id) {
             continue;
         }
         let Some(main) = main_of(tree, inst) else {
             continue;
         };
         let sd = inst.get("symbolData");
+        if ex.bounds.is_some() {
+            let (nodes, text) = ex.symbol_cost(&main);
+            let (overrides, derived) = (
+                sd.and_then(|s| s.get("symbolOverrides")),
+                inst.get("derivedSymbolData"),
+            );
+            let work = nodes + list_len(overrides) + list_len(derived);
+            let estimate = |left: &mut usize| {
+                [overrides, derived]
+                    .into_iter()
+                    .flatten()
+                    .map(|v| kiwi_bytes(v, left))
+                    .sum()
+            };
+            if ex.spend_estimated(work, text, estimate).is_none() {
+                break;
+            }
+        }
         let ov = bind_properties(
             tree,
             &main,
@@ -493,14 +650,70 @@ fn expand_all(tree: &Tree, root: &str, budget: Option<usize>) -> Option<Expansio
             abs_matrix(tree, &id, root),
             resize,
         );
-        if ex.exceeded {
-            return None;
-        }
     }
-    Some(ex.out)
+    (ex.out, ex.bounds, ex.exceeded)
 }
 
 impl Expander<'_, '_> {
+    /// Charges the shared bounds, if any; false once they ran out.
+    fn spend(&mut self, work: usize, bytes: usize) -> bool {
+        if let Some(b) = &mut self.bounds
+            && !b.charge(work, bytes)
+        {
+            self.exceeded = true;
+            return false;
+        }
+        true
+    }
+
+    /// Enters one more nesting level; false once a bounded run is too deep.
+    fn descend(&mut self) -> bool {
+        if let Some(b) = &mut self.bounds
+            && self.depth >= b.depth
+        {
+            b.stop.get_or_insert(Stop::Depth);
+            self.exceeded = true;
+            return false;
+        }
+        self.depth += 1;
+        true
+    }
+
+    /// Spends `work` and `bytes` plus what `estimate` measures; the estimate's value visits
+    /// are charged as work and stop at the remaining work. The estimated bytes, or None.
+    fn spend_estimated(
+        &mut self,
+        work: usize,
+        bytes: usize,
+        estimate: impl FnOnce(&mut usize) -> usize,
+    ) -> Option<usize> {
+        let start = self.bounds.as_ref()?.work.saturating_add(1);
+        let mut left = start;
+        let estimated = estimate(&mut left);
+        self.spend(work + (start - left), bytes + estimated)
+            .then_some(estimated)
+    }
+
+    /// Stored nodes and text bytes `bind_properties` walks and may copy, measured once per
+    /// component by walks charged as they go. Only bounded runs measure.
+    fn symbol_cost(&mut self, symbol: &str) -> (usize, usize) {
+        if self.bounds.is_none() {
+            return (0, 0);
+        }
+        if let Some(cost) = self.sizes.get(symbol) {
+            return *cost;
+        }
+        let tree = self.tree;
+        let ids = subtree_while(tree, symbol, || self.spend(1, 0));
+        let texts = ids.iter().filter_map(|id| tree.nodes[id].get("textData"));
+        let text = self
+            .spend_estimated(0, 0, |left| texts.map(|t| kiwi_bytes(t, left)).sum())
+            .unwrap_or(0);
+        let cost = (ids.len(), text);
+        self.sizes.insert(symbol.to_owned(), cost);
+        cost
+    }
+
     /// `path` holds only instance boundaries: Figma ids skip plain frames in between.
     #[allow(clippy::too_many_arguments)]
     fn expand(
@@ -527,8 +740,27 @@ impl Expander<'_, '_> {
                 .unwrap_or_else(|| child_id.clone());
             let p: Vec<String> = path.iter().cloned().chain([key]).collect();
             let pk = p.join(";");
-            let o = ov.get(&pk).cloned().unwrap_or_default();
-            let d = dv.get(&pk).cloned().unwrap_or_default();
+            let none = Patch::default();
+            let o = ov.get(&pk).unwrap_or(&none);
+            let d = dv.get(&pk).unwrap_or(&none);
+            if self.bounds.is_some() {
+                let derived = ["fillGeometry", "strokeGeometry", "derivedTextData"]
+                    .iter()
+                    .filter_map(|f| d.props.get(*f));
+                let estimate = |left: &mut usize| {
+                    o.props
+                        .values()
+                        .chain(derived)
+                        .map(|v| json_bytes(v, left))
+                        .sum()
+                };
+                if self
+                    .spend_estimated(1, 200 + outer.len() + pk.len(), estimate)
+                    .is_none()
+                {
+                    return;
+                }
+            }
             let kind = enum_name(child, "type");
             let own_size = child.get("size").map(vec2);
             // Auto-layout owns normal-flow child geometry; constraints only apply to absolute children.
@@ -687,6 +919,31 @@ impl Expander<'_, '_> {
                 if self.symbols.contains(&nested) {
                     continue;
                 }
+                if !self.descend() {
+                    return;
+                }
+                // Converting and merging the nested overrides copies the outer ones too.
+                if self.bounds.is_some() {
+                    let (nodes, text) = self.symbol_cost(&nested);
+                    let (overrides, derived) = (
+                        sd.and_then(|s| s.get("symbolOverrides")),
+                        child.get("derivedSymbolData"),
+                    );
+                    let work =
+                        nodes + ov.len() + dv.len() + list_len(overrides) + list_len(derived);
+                    let estimate = |left: &mut usize| {
+                        patches_bytes(ov, left)
+                            + patches_bytes(dv, left)
+                            + [overrides, derived]
+                                .into_iter()
+                                .flatten()
+                                .map(|v| kiwi_bytes(v, left))
+                                .sum::<usize>()
+                    };
+                    if self.spend_estimated(work, text, estimate).is_none() {
+                        return;
+                    }
+                }
                 let merged = bind_properties(
                     tree,
                     &nested,
@@ -697,7 +954,7 @@ impl Expander<'_, '_> {
                         entries(sd.and_then(|s| s.get("symbolOverrides")), Some(child_id)),
                     ),
                     child,
-                    &o,
+                    o,
                 );
                 let merged_derived = nest(dv, &pk, entries(child.get("derivedSymbolData"), None));
                 let main_size = tree
@@ -717,8 +974,13 @@ impl Expander<'_, '_> {
                     resized(main_size, size),
                 );
                 self.symbols.pop();
+                self.depth -= 1;
             } else {
+                if !self.descend() {
+                    return;
+                }
                 self.expand(outer, &id, child_id, path, ov, dv, matrix, child_resize);
+                self.depth -= 1;
             }
         }
     }
@@ -776,6 +1038,9 @@ mod tests {
                 blobs: Vec::new(),
             };
             let mut ex = Expander {
+                bounds: None,
+                depth: 0,
+                sizes: HashMap::new(),
                 tree: &tree,
                 out: Expansion {
                     nodes: HashMap::new(),
@@ -844,6 +1109,9 @@ mod tests {
         };
         for name in [None, Some("explicit name".to_owned())] {
             let mut ex = Expander {
+                bounds: None,
+                depth: 0,
+                sizes: HashMap::new(),
                 tree: &tree,
                 out: Expansion {
                     nodes: HashMap::new(),
@@ -1277,6 +1545,9 @@ mod tests {
         };
         for visible in [None, Some(false)] {
             let mut ex = Expander {
+                bounds: None,
+                depth: 0,
+                sizes: HashMap::new(),
                 tree: &tree,
                 out: Expansion {
                     nodes: HashMap::new(),
@@ -1528,5 +1799,54 @@ mod tests {
             (patch.swap.as_deref(), patch.size),
             (Some("18:1"), Some(v2(10.0, 20.0)))
         );
+    }
+    #[test]
+    fn an_estimate_stops_at_the_remaining_work() {
+        let tree = Tree {
+            nodes: HashMap::new(),
+            children: HashMap::new(),
+            blobs: Vec::new(),
+        };
+        let mut ex = Expander {
+            bounds: Some(Bounds {
+                work: 10,
+                bytes: usize::MAX,
+                depth: 8,
+                deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+                stop: None,
+            }),
+            depth: 0,
+            sizes: HashMap::new(),
+            tree: &tree,
+            out: Expansion {
+                nodes: HashMap::new(),
+                children: HashMap::new(),
+            },
+            symbols: Vec::new(),
+            budget: None,
+            exceeded: false,
+        };
+        let payload = Value::Array(vec![Value::Int(0); 100_000]);
+        let mut visited = 0;
+        let estimate = |left: &mut usize| {
+            let before = *left;
+            let bytes = kiwi_bytes(&payload, left);
+            visited = before - *left;
+            bytes
+        };
+        assert_eq!(ex.spend_estimated(0, 0, estimate), None);
+        assert_eq!((visited, ex.bounds.unwrap().stop), (11, Some(Stop::Work)));
+    }
+
+    #[test]
+    fn an_exhausted_estimate_stops_enumerating_its_collection() {
+        let mut yielded = 0;
+        let items = (0..100_000).inspect(|_| yielded += 1);
+        let mut left = 10;
+        sum_while(items, &mut left, |_, left| {
+            *left -= 1;
+            1
+        });
+        assert_eq!(yielded, 11);
     }
 }

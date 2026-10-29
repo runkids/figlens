@@ -130,6 +130,14 @@
           "path": "wiki/integrations.md"
         }
       ]
+    },
+    "search": {
+      "description": "Changing search indexing, normalization, ranking, cursors, coverage or its budgets.",
+      "sources": [
+        {
+          "path": "wiki/search.md"
+        }
+      ]
     }
   },
   "unrouted": {

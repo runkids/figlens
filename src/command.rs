@@ -497,6 +497,99 @@ fn check_export(
         .transpose()?)
 }
 
+fn search_mode(mode: &str) -> Result<(), Box<dyn Error>> {
+    if mode == "text" {
+        return Ok(());
+    }
+    Err(figlens::FigError::new(
+        figlens::ErrorKind::InvalidArguments,
+        format!("search mode {mode:?} is unavailable; this release searches text only"),
+    )
+    .into())
+}
+
+fn search_types(value: &str) -> impl Iterator<Item = String> + '_ {
+    value
+        .split(',')
+        .map(|t| t.trim().to_uppercase())
+        .filter(|t| !t.is_empty())
+}
+
+/// CLI search arguments, checked before the source is downloaded or read.
+pub fn search_request(args: &[String]) -> Result<figlens::search::Request, Box<dyn Error>> {
+    let mut request = figlens::search::Request {
+        query: args.first().cloned().ok_or(USAGE)?,
+        scope: "0:0".into(),
+        types: Vec::new(),
+        include_hidden: false,
+        include_internal: false,
+        limit: figlens::search::DEFAULT_LIMIT,
+        cursor: None,
+    };
+    let mut rest = args[1..].iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--include-hidden" => request.include_hidden = true,
+            "--include-internal" => request.include_internal = true,
+            _ => {
+                let value = rest.next().ok_or(format!("{arg} needs a value"))?;
+                match arg.as_str() {
+                    "--node" => request.scope = normalize_id(value),
+                    "--type" => request.types.extend(search_types(value)),
+                    "--limit" => request.limit = value.parse().unwrap_or(0),
+                    "--cursor" => request.cursor = Some(value.clone()),
+                    "--mode" => search_mode(value)?,
+                    _ => return Err(USAGE.into()),
+                }
+            }
+        }
+    }
+    request.validate()?;
+    Ok(request)
+}
+
+/// The same request from schema-checked MCP arguments.
+pub fn search_tool(
+    call: &crate::contract::PreparedCall,
+) -> Result<figlens::search::Request, Box<dyn Error>> {
+    search_mode(call.string("mode").unwrap())?;
+    let request = figlens::search::Request {
+        query: call.string("query").ok_or(USAGE)?.to_owned(),
+        scope: normalize_id(call.string("node").unwrap()),
+        types: call
+            .string("type")
+            .map(search_types)
+            .into_iter()
+            .flatten()
+            .collect(),
+        include_hidden: call.argument("includeHidden") == true,
+        include_internal: call.argument("includeInternal") == true,
+        limit: call.argument("limit").as_u64().unwrap() as usize,
+        cursor: call.string("cursor").map(str::to_owned),
+    };
+    request.validate()?;
+    Ok(request)
+}
+
+/// Search reads and hashes its own snapshot of `path`, so it never needs a loaded tree.
+pub fn search(
+    path: &Path,
+    request: &figlens::search::Request,
+    label: &str,
+) -> Result<Output, Box<dyn Error>> {
+    let value = figlens::search::search(path, request).map_err(|e| {
+        if e.is::<figlens::FigError>() {
+            e
+        } else {
+            crate::contract::source(label, e)
+        }
+    })?;
+    Ok(Output::Json {
+        value,
+        pretty: false,
+    })
+}
+
 fn export_format(out: &str) -> Result<figlens::export::Format, Box<dyn Error>> {
     figlens::export::Format::of(Path::new(out))
         .ok_or_else(|| "the output must end in .png, .jpg, .webp, .avif or .svg".into())

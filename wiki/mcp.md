@@ -4,7 +4,7 @@ Use this topic for MCP instructions, tool discovery and built-in workflow guidan
 
 ## Intent and tool selection
 
-`src/mcp.rs` serves stdio JSON-RPC; `src/main.rs` configures roots and starts it. Initialization returns a short intent router: resolve recognizable screens through `find`/`tree`, read compact values with `inspect`, full style/mask/component data with `nodes`, tokens with `variables`, and pixels/assets with `export`. `bundle` writes a scoped handoff, `verify` checks it. Ordinary questions and exports use those tools directly.
+`src/mcp.rs` serves stdio JSON-RPC; `src/main.rs` configures roots and starts it. Initialization returns a short intent router: resolve recognizable screens through `find`/`tree` (or `search` for effective instance copy), read compact values with `inspect`, full style/mask/component data with `nodes`, tokens with `variables`, and pixels/assets with `export`. `bundle` writes a scoped handoff, `verify` checks it. Ordinary questions and exports use those tools directly.
 
 `inspect` and `bundle` accept optional `states: true` (CLI `--states`) for a bounded, source-scoped list of explicitly related component variants. The agent supplies this per-call argument when related states are requested; no MCP configuration change is needed. Inspect adds `states`; bundle adds `design/states.json`, a manifest pointer and a bounded context summary. Independent inventory truncation/coverage must be checked; supported prototype fields retain exact sources and unknown markers, without business inference. Both reuse their selected effective subtree and do not render alternate variants. See [related variants](states.md) for evidence, batch usage and limits.
 
@@ -50,13 +50,14 @@ Run Docker Rust tests/lint and `python3 scripts/ai-context.py check`. Tests cove
 | `tree.depth` | 0 through `2^53-1` (JSON-safe); omitted means unlimited tree depth |
 | `inspect.depth` | 0–10 / 1 |
 | `find.limit` | 1–200 / 20 |
+| `search.limit` | 1–200 / 20 |
 | `export.scale` | finite and greater than 0 / 1 |
 | `export.quality` | 1–100 / 80 |
 | `export.maxKb` | 0 through `2^53-1`; omitted means no byte budget |
 | `export.maxSize` | 0 through `u32::MAX` / 1600; 0 disables the raster side cap |
 | `export.bounds` | `render` or `layout` / `render` |
 
-`tree`/`find` root defaults to `0:0`; booleans default false. File/output strings are nonempty; find queries contain non-whitespace. Export extensions follow the existing case-insensitive encoder selection, including `.jpeg`. Search type remains a free-form, case-insensitive plugin type, not an invented enum. Successful outputs and CLI parameter order remain unchanged.
+`tree`/`find`/`search` root defaults to `0:0`; booleans default false. Search queries take at most 256 characters and 64 distinct terms (a CJK run of n characters is n-1 bigrams), types 16 names, scopes 1 KiB and cursors offset 100,000 (past it `hasMore` stays true without a `nextCursor`, so narrow the query); `scripts/measure-search.py` measures cold CLI, MCP first and warm search cost and peak RSS on one approved input. File/output strings are nonempty; find queries contain non-whitespace. Export extensions follow the existing case-insensitive encoder selection, including `.jpeg`. Search type remains a free-form, case-insensitive plugin type, not an invented enum. Successful outputs and CLI parameter order remain unchanged.
 
 Tools reject unknown fields (`additionalProperties: false`), so a misspelled `nodeId` cannot fall back to `0:0`; workflow enumerates topics. **Breaking change:** MCP no longer translates arguments into CLI flags. Replace `depth: "0"` with `depth: 0`, `scale: "2x"` with `scale: 2`, and uncapped `maxSize: null`/`false` with `maxSize: 0` (omission means **1600**, not uncapped). Other optional null/non-boolean false values fail; boolean false is valid. Flag-like nodes are not CLI options. No legacy mode marker remains. Under `--root`, former legacy calls return `invalid_arguments`, not `permission_denied`. CLI is unchanged.
 

@@ -24,6 +24,7 @@ mod prototype;
 pub mod remote;
 pub mod render;
 pub mod rest;
+pub mod search;
 pub mod states;
 pub mod variables;
 pub mod verify;
@@ -103,11 +104,34 @@ pub struct Document {
 impl Document {
     /// Opens a `.fig` zip and decodes its `canvas.fig`.
     pub fn open(path: &Path) -> Result<Document, Box<dyn Error>> {
-        let mut archive = open_zip(path)?;
+        Self::from_archive(open_zip(path)?, &path.display().to_string())
+    }
+
+    /// `open` for `.fig` bytes already in memory, so a caller can hash exactly what it decodes.
+    pub fn from_bytes(fig: &[u8], label: &str) -> Result<Document, Box<dyn Error>> {
+        // Same known-offset fast path as `open_zip`, with Detect only as the fallback.
+        let config = zip::read::Config {
+            archive_offset: zip::read::ArchiveOffset::Known(0),
+        };
+        let archive = zip::ZipArchive::with_config(config, std::io::Cursor::new(fig))
+            .or_else(|_| zip::ZipArchive::new(std::io::Cursor::new(fig)))
+            .map_err(|e| {
+                FigError::new(
+                    ErrorKind::InvalidData,
+                    format!("{label}: not a .fig zip ({e})"),
+                )
+            })?;
+        Self::from_archive(archive, label)
+    }
+
+    fn from_archive<R: Read + std::io::Seek>(
+        mut archive: zip::ZipArchive<R>,
+        label: &str,
+    ) -> Result<Document, Box<dyn Error>> {
         let canvas_file = archive.by_name("canvas.fig").map_err(|e| {
             FigError::new(
                 ErrorKind::InvalidData,
-                format!("{}: no canvas.fig ({e})", path.display()),
+                format!("{label}: no canvas.fig ({e})"),
             )
         })?;
         if canvas_file.size() > parse::CANVAS_BYTES {
@@ -446,6 +470,19 @@ mod tests {
         assert_eq!(
             to_json(&recovered.message().unwrap()),
             to_json(&normal.message().unwrap())
+        );
+        let in_memory =
+            Document::from_bytes(&std::fs::read(&path).unwrap(), "prefixed.fig").unwrap();
+        assert_eq!(
+            to_json(&in_memory.message().unwrap()),
+            to_json(&normal.message().unwrap())
+        );
+        let error = Document::from_bytes(b"not a zip", "broken.fig")
+            .err()
+            .unwrap();
+        assert!(
+            error.to_string().starts_with("broken.fig: not a .fig zip"),
+            "{error}"
         );
     }
 

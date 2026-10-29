@@ -28,6 +28,13 @@ usage:
   figlens find <file.fig> <query> [--type TYPE] [--node ID] [--limit N]
                                              search stored layer names and text, case-insensitive;
                                              default 20 results (1-200), with paths and truncation flag
+  figlens search <file.fig> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C]
+          [--include-hidden] [--include-internal] [--mode text]
+                                             ranked search of names and full text in one stored scope
+                                             (default: the document), with instance overrides, text and
+                                             boolean properties and swaps applied; exact refs, match
+                                             reasons, UTF-16 spans, coverage and cursor pages (20, 1-200);
+                                             hidden layers and internal pages need their flag
   figlens inspect <file.fig> <node> [--depth N] [--images] [--states] [--compare-variant ID]
                                              compact layout/text summary, instances expanded;
                                              depth 1 (0-10), at most 200 nodes, 200 characters per text;
@@ -81,8 +88,8 @@ usage:
   figlens node <file.fig> <node>               print one raw .fig node as JSON
   figlens compare <file.fig> <nodes.json> <node>   diff a frame against a REST nodes.json export
   figlens compare <file.fig> --frames <list.txt>   same for every `node|nodes.json[|variables.json]` line
-  figlens mcp [--root DIR]...                  serve workflow guidance, tree, find, inspect, nodes, variables,
-                                             bundle and export as MCP tools; raster export returns an inline image;
+  figlens mcp [--root DIR]...                  serve workflow guidance, tree, find, search, inspect, nodes,
+                                             variables, bundle and export as MCP tools; raster export returns an inline image;
                                              with --root, files and outputs must be under one of the folders
   figlens workflow <topic>                     print built-in agent guidance, the same text as MCP workflow:
                                              build, audit, images, plan, planning-details or yolo; a
@@ -139,6 +146,7 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             Some(
                 "tree"
                     | "find"
+                    | "search"
                     | "inspect"
                     | "node"
                     | "nodes"
@@ -208,7 +216,14 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
         (Some(c), Some(f)) => (c.as_str(), f),
         _ => return Err(USAGE.into()),
     };
+    let search = (command == "search")
+        .then(|| command::search_request(&args[2..]))
+        .transpose()?;
     let path = figlens::remote::local(file).map_err(|e| contract::source(file, e))?;
+    if let Some(request) = search {
+        out.push_str(&command::search(&path, &request, file)?.text()?);
+        return Ok(());
+    }
     if command == "preview" {
         let (mut node, mut output, mut port, mut bind) =
             (None, None, 0u16, "127.0.0.1".parse::<std::net::IpAddr>()?);

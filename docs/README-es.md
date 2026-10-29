@@ -129,7 +129,7 @@ Explora páginas y capas, busca, mide, inspecciona layout, tipografía, variable
 
 ## Servidor MCP y skill para agents
 
-**MCP.** El servidor se ejecuta en local por stdio y expone `workflow`, `tree`, `find`, `inspect`, `nodes`, `variables`, `bundle`, `verify` y `export`. Pasa rutas absolutas. Añade `--root /path/to/designs` (repetible) para limitar todas las rutas de archivos y de salida a las carpetas elegidas. Las exportaciones raster se reducen a `maxSize` (por defecto 1600 px) para que las imágenes inline sean pequeñas; SVG devuelve solo metadatos.
+**MCP.** El servidor se ejecuta en local por stdio y expone `workflow`, `tree`, `find`, `search`, `inspect`, `nodes`, `variables`, `bundle`, `verify` y `export`. Pasa rutas absolutas. Añade `--root /path/to/designs` (repetible) para limitar todas las rutas de archivos y de salida a las carpetas elegidas. Las exportaciones raster se reducen a `maxSize` (por defecto 1600 px) para que las imágenes inline sean pequeñas; SVG devuelve solo metadatos.
 
 Con `workflow`, el agent puede leer las guías integradas `build`, `audit`, `images`, `plan`, `planning-details` o `yolo` cuando se solicite expresamente. Comparten las fuentes del skill portable; instalarlo aparte es opcional para MCP. El agent realiza el trabajo con sus herramientas de proyecto y navegador y los permisos del host. Leer una guía no ejecuta el flujo; su uso depende del cliente y del comportamiento del modelo.
 
@@ -160,6 +160,7 @@ skillshare sync && skillshare sync mcp --global
 |---|---|
 | `tree <file> [node] [--depth N] [--json]` | Ids, tipos REST (como en `nodes`) y nombres de nodos; texto con sangría o JSON anidado |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Búsqueda sin distinguir mayúsculas en nombres de capas y texto; rutas, tamaños y vistas previas. 20 resultados por defecto (1-200) |
+| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | Búsqueda clasificada en nombres de capas y texto completo con overrides de instancias, propiedades de texto/booleanas y swaps aplicados; referencias exactas de nodos (incluidos ids de subcapas `I…;…` para `inspect`), motivos de coincidencia, rangos UTF-16, cobertura y páginas con cursor. 20 por defecto (1-200); las capas ocultas y las páginas internas necesitan su flag |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | Resumen compacto de layout/texto expandido, como máximo 200 nodos. `--images` añade dimensiones de bitmap y áreas de recorte |
 | `nodes <file> <node>` | JSON con forma REST: instancias expandidas y overrides, auto-layout, estilos de texto, fills, efectos, variables enlazadas, propiedades de componentes, render bounds |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | Una decodificación, muchos nodos: una línea JSON por id listado, la salida de `nodes` con su `nodeId`, o `{nodeId, error}` |
