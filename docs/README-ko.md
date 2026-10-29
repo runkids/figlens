@@ -158,8 +158,8 @@ skillshare sync && skillshare sync mcp --global
 
 | 명령어 | 출력 |
 |---|---|
-| `tree <file> [node] [--depth N] [--json]` | 노드 ID, REST 유형(`nodes`와 동일), 이름. 들여쓰기 텍스트, 또는 각 노드의 크기, 숨김 여부, 오토 레이아웃 모드을 담은 중첩 JSON |
-| `tree <file> [node] --top-frames [--json]` | 화면만 한 줄에 하나씩, `--frames -`에 바로 넘길 수 있게 출력. 페이지나 그 섹션 바로 아래의 프레임, 컴포넌트, 컴포넌트 세트, 인스턴스(그룹과 내부 페이지 제외). `--json`은 페이지와 섹션 ID를 추가 |
+| `tree <file> [node] [--depth N] [--json]` | 노드 ID, REST 유형(`nodes`와 동일), 이름. 들여쓰기 텍스트, 또는 각 노드의 크기, 숨김 여부, 오토 레이아웃 모드을 담은 중첩 JSON. 페이지나 섹션 바로 아래 노드에는 `firstText`(첫 번째 보이는 텍스트)도 포함 |
+| `tree <file> [node] --top-frames [--json]` | 화면만 한 줄에 하나씩, `--frames -`에 바로 넘길 수 있게 출력. 페이지나 그 섹션 바로 아래의 프레임, 컴포넌트, 컴포넌트 세트, 인스턴스(그룹과 내부 페이지 제외). `--json`은 페이지와 섹션 ID, 그리고 캔버스 라벨과 화면을 구분할 수 있는 각 화면의 첫 번째 보이는 텍스트(`firstText`)를 추가 |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 대소문자 구분 없이 레이어 이름과 텍스트 검색. 경로, 크기, 미리보기. 기본 20개(1-200) |
 | `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | 인스턴스 오버라이드, 텍스트/불리언 속성, 스왑을 적용한 레이어 이름과 전체 텍스트의 순위 검색. 정확한 노드 참조(`inspect`에 쓰는 `I…;…` 하위 레이어 ID 포함), 일치 이유, UTF-16 범위, 커버리지, 커서 페이지. 기본 20개(1-200), 숨긴 레이어와 내부 페이지는 해당 플래그 필요 |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | 펼쳐진 간결한 레이아웃/텍스트 요약, 최대 200노드. `--images`는 비트맵 크기와 크롭 범위를 추가. `--flat`은 대신 노드당 한 줄로 출력(노드 기준 위치, 크기, 텍스트, 폰트, 채우기, 선, 반경, auto-layout) |

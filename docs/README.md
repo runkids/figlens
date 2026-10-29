@@ -156,8 +156,8 @@ skillshare sync && skillshare sync mcp --global
 
 | Command | Output |
 |---|---|
-| `tree <file> [node] [--depth N] [--json]` | Node ids, REST types (as in `nodes`) and names; indented text, or nested JSON with each node's size, hidden flag and auto-layout mode |
-| `tree <file> [node] --top-frames [--json]` | Only the screens, one per line, ready for `--frames -`: frames, components, component sets and instances on a page or in its sections (groups and internal pages skipped); `--json` adds page and section ids |
+| `tree <file> [node] [--depth N] [--json]` | Node ids, REST types (as in `nodes`) and names; indented text, or nested JSON with each node's size, hidden flag and auto-layout mode, plus `firstText` (first visible text) on nodes of a page or section |
+| `tree <file> [node] --top-frames [--json]` | Only the screens, one per line, ready for `--frames -`: frames, components, component sets and instances on a page or in its sections (groups and internal pages skipped); `--json` adds page and section ids and each screen's first visible text (`firstText`), which tells canvas labels from screens |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Case-insensitive search over layer names and text; paths, sizes and previews. Default 20 results (1-200) |
 | `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | Ranked search of layer names and full text with instance overrides, text/boolean properties and swaps applied; exact node refs (including `I…;…` sublayer ids for `inspect`), match reasons, UTF-16 spans, coverage and cursor pages. Default 20 (1-200); hidden layers and internal pages need their flag |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | Compact expanded layout/text summary, at most 200 nodes. `--images` adds bitmap dimensions and crop footprints. `--flat` prints one line per node instead: position relative to the node, size, text, font, fill, stroke, radius, auto-layout |
