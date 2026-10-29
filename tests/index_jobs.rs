@@ -399,6 +399,18 @@ impl Mcp {
         }
     }
 
+    fn send(&mut self, message: Value) {
+        let stdin = self.child.stdin.as_mut().unwrap();
+        writeln!(stdin, "{message}").unwrap();
+        stdin.flush().unwrap();
+    }
+
+    fn read(&mut self) -> Value {
+        let mut line = String::new();
+        self.lines.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+
     fn call(&mut self, tool: &str, arguments: Value) -> Value {
         self.next += 1;
         let request = json!({"jsonrpc": "2.0", "id": self.next, "method": "tools/call",
@@ -830,4 +842,51 @@ fn ctrl_c_cancels_the_cli_owned_build_and_waits_for_its_worker() {
         env.json(&["search", "--file", file, "first"])["state"],
         "ready"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn mcp_answers_ping_while_control_waits_and_drops_a_queued_call_the_client_cancelled() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let gate = env.gate("parse.hold");
+    let mut owner = env.spawn(
+        &["index", "rebuild", "--file", file],
+        Some(("parse", &gate)),
+    );
+    let job = active_job(&env, &fig, "parse");
+    // A stopped owner cannot act on a cancel, so `jobs cancel` waits its whole CANCEL_WAIT.
+    let pid = owner.id().to_string();
+    assert!(
+        Command::new("kill")
+            .args(["-STOP", &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut mcp = Mcp::start(&env, &[]);
+    let call = |id: u64, arguments: Value| {
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": "jobs", "arguments": arguments}})
+    };
+    mcp.send(call(1, json!({"action": "cancel", "jobId": job})));
+    mcp.send(call(2, json!({"action": "status", "jobId": job})));
+    mcp.send(
+        json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 2}}),
+    );
+    mcp.send(json!({"jsonrpc": "2.0", "id": 3, "method": "ping"}));
+    mcp.send(call(4, json!({"action": "status", "jobId": job})));
+    let ids: Vec<Value> = (0..3).map(|_| mcp.read()["id"].clone()).collect();
+    assert_eq!(ids, [json!(3), json!(1), json!(4)]);
+    assert!(
+        Command::new("kill")
+            .args(["-CONT", &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::remove_file(&gate).unwrap();
+    owner.wait().unwrap();
 }

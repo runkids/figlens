@@ -1,6 +1,6 @@
 //! Normal, generated local-copy fixture: two copies of a component with a nested instance.
 use super::*;
-use crate::{call_tool, run, serve, test_support::TestDir};
+use crate::{call_tool, in_request_order, run, serve, test_support::TestDir};
 use kiwi_schema::{
     Def, DefKind, Field, Schema, TYPE_BOOL, TYPE_FLOAT, TYPE_STRING, TYPE_UINT, Value as K,
 };
@@ -1876,6 +1876,7 @@ fn missing_and_unsupported_ids_fail_without_fallback_or_output() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(replies.len(), 3);
+    let replies = in_request_order(&replies, &[1.into(), 2.into(), 3.into()]);
     assert_eq!(replies[0]["result"]["isError"], true);
     assert_eq!(replies[1]["result"], json!({}));
     assert_eq!(replies[2]["result"]["isError"], false);

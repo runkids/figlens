@@ -112,6 +112,8 @@ enum Source {
 
 enum Admission {
     Ignore,
+    /// `notifications/cancelled` for this request id.
+    Cancel(Value),
     Reply(Value),
     Call(AdmittedCall),
     /// A parsed tools/call, admitted later by the lane that runs it.
@@ -126,6 +128,9 @@ fn frame(line: &str, roots: &[PathBuf]) -> Admission {
     };
     if envelope(&req) && req.get("id").is_some() && req["method"] == "tools/call" {
         return Admission::Request(req);
+    }
+    if envelope(&req) && req.get("id").is_none() && req["method"] == "notifications/cancelled" {
+        return Admission::Cancel(req["params"]["requestId"].clone());
     }
     admit_value(req, roots)
 }
@@ -450,6 +455,25 @@ fn stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
 const CONTROL_QUEUE: usize = 64;
 const INTERACTIVE_QUEUE: usize = 64;
 const INDEX_QUEUE: usize = 8;
+/// Build submissions this server may hold before a build-submitting call is answered busy.
+const BUILD_QUEUE: usize = 8;
+
+/// Tool calls queued in a lane, by request id; `true` once the client cancelled one before it
+/// ran. Bounded by the lane queues, since only queued ids are kept.
+type Pending = std::sync::Mutex<std::collections::HashMap<String, bool>>;
+
+/// Takes a call off the pending list as its lane starts it; false when it was cancelled.
+fn live(pending: &Pending, req: &Value) -> bool {
+    pending.lock().unwrap().remove(&req["id"].to_string()) != Some(true)
+}
+
+/// Whether an index call submits jobs to the build lane.
+fn submits(req: &Value) -> bool {
+    matches!(
+        req["params"]["arguments"]["action"].as_str(),
+        Some("prepare" | "refresh" | "rebuild")
+    )
+}
 
 enum Lane {
     Control,
@@ -475,11 +499,20 @@ fn busy(id: &Value) -> Value {
         tool_reply(
             "",
             Err(contract::Failure::new(
-                ErrorKind::OperationFailed,
+                ErrorKind::WorkspaceBusy,
                 "figlens is busy with earlier calls of this kind; retry after a reply arrives",
             )),
         ),
     )
+}
+
+/// Replies listed in the order of `ids`: protocol replies answer at once, so they can overtake
+/// earlier tool calls; JSON-RPC pairs them by id.
+#[cfg(test)]
+pub(crate) fn in_request_order(replies: &[Value], ids: &[Value]) -> Vec<Value> {
+    ids.iter()
+        .map(|id| replies.iter().find(|r| &r["id"] == id).cloned().unwrap())
+        .collect()
 }
 
 /// Serves MCP on `input`/`output` with design roots `roots` and no custom storage roots.
@@ -502,15 +535,16 @@ pub fn serve_with(
 ) -> Result<(), Box<dyn Error>> {
     let (to_writer, replies) = mpsc::channel::<Value>();
     let stop = AtomicBool::new(false);
+    let pending = Pending::default();
+    let builds = std::sync::atomic::AtomicUsize::new(0);
     #[cfg(test)]
     let counters = Counter::share();
     std::thread::scope(|scope| -> Result<(), Box<dyn Error>> {
         let (control, control_rx) = mpsc::sync_channel::<Value>(CONTROL_QUEUE);
-        // Protocol replies queue here too, so they keep their order with design calls.
         let (interactive, interactive_rx) = mpsc::sync_channel::<Admission>(INTERACTIVE_QUEUE);
         let (index, index_rx) = mpsc::sync_channel::<Value>(INDEX_QUEUE);
         let (to_build, build_rx) = mpsc::channel::<command::Runs>();
-        let stop = &stop;
+        let (stop, pending, builds) = (&stop, &pending, &builds);
         // Control and index lanes: each call admitted and run in arrival order.
         for (rx, build) in [(control_rx, None), (index_rx, Some(to_build))] {
             let out = to_writer.clone();
@@ -520,10 +554,21 @@ pub fn serve_with(
                 #[cfg(test)]
                 Counter::adopt(counters);
                 for req in rx {
+                    if !live(pending, &req) {
+                        continue;
+                    }
+                    if build.is_some()
+                        && submits(&req)
+                        && builds.load(Ordering::SeqCst) >= BUILD_QUEUE
+                    {
+                        let _ = out.send(busy(&req["id"]));
+                        continue;
+                    }
                     match admit_value(req, roots) {
                         Admission::Call(call) => {
                             let (reply, runs) = call.run_workspace(roots, storage_roots);
                             if let (Some(runs), Some(build)) = (runs, &build) {
+                                builds.fetch_add(1, Ordering::SeqCst);
                                 let _ = build.send(runs);
                             }
                             let _ = out.send(reply);
@@ -548,6 +593,7 @@ pub fn serve_with(
                         &mut |_| {},
                     );
                 }
+                builds.fetch_sub(1, Ordering::SeqCst);
             }
         });
         // Interactive lane: the warm Tree stays on this thread.
@@ -559,6 +605,7 @@ pub fn serve_with(
             Counter::adopt(lane_counters);
             let next = || {
                 interactive_rx.recv().ok().map(|a| match a {
+                    Admission::Request(req) if !live(pending, &req) => Admission::Ignore,
                     Admission::Request(req) => admit_value(req, roots),
                     other => other,
                 })
@@ -594,15 +641,18 @@ pub fn serve_with(
                     }
                 };
                 match request {
+                    // Protocol replies never wait behind a lane, so ping stays responsive.
                     Admission::Reply(reply) => {
-                        if let Err(mpsc::TrySendError::Full(Admission::Reply(reply))) =
-                            interactive.try_send(Admission::Reply(reply))
-                        {
-                            let _ = reader.send(reply);
+                        let _ = reader.send(reply);
+                    }
+                    Admission::Cancel(id) => {
+                        if let Some(cancelled) = pending.lock().unwrap().get_mut(&id.to_string()) {
+                            *cancelled = true;
                         }
                     }
                     Admission::Request(req) => {
                         let id = req["id"].clone();
+                        pending.lock().unwrap().insert(id.to_string(), false);
                         let full = match lane(&req) {
                             Lane::Interactive => interactive
                                 .try_send(Admission::Request(req))
@@ -615,6 +665,7 @@ pub fn serve_with(
                                 .is_err_and(|e| matches!(e, mpsc::TrySendError::Full(_))),
                         };
                         if full {
+                            pending.lock().unwrap().remove(&id.to_string());
                             let _ = reader.send(busy(&id));
                         }
                     }
@@ -1254,9 +1305,13 @@ mod tests {
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
         assert_eq!(replies.len(), 3);
-        assert_eq!(replies[0]["result"]["isError"], true);
-        assert_eq!(replies[1]["result"]["isError"], true);
-        assert_eq!(replies[2]["result"], serde_json::json!({}));
+        let calls: Vec<_> = replies.iter().filter(|r| r["id"] == 1).collect();
+        assert!(calls.len() == 2 && calls.iter().all(|r| r["result"]["isError"] == true));
+        assert!(
+            replies
+                .iter()
+                .any(|r| r["id"] == 2 && r["result"] == serde_json::json!({}))
+        );
     }
 
     #[test]

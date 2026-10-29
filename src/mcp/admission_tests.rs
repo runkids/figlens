@@ -141,7 +141,13 @@ fn notification_and_explicit_null_matrix_has_no_hidden_work() {
             json!({"id":null,"method":"ping"}).to_string(),
         ]
         .join("\n");
-        let results = replies(messages.as_bytes(), &roots);
+        let mut results = replies(messages.as_bytes(), &roots);
+        // The ping answers as soon as it is read, maybe before the tool calls above it.
+        let ping = results
+            .iter()
+            .position(|r| r.get("result") == Some(&json!({})))
+            .unwrap();
+        results.remove(ping);
         for (result, code) in results.iter().zip([
             -32700, -32600, -32600, -32600, -32600, -32601, -32602, -32602,
         ]) {
@@ -155,7 +161,6 @@ fn notification_and_explicit_null_matrix_has_no_hidden_work() {
             );
         }
         assert_eq!(results[10]["result"]["isError"], false);
-        assert_eq!(results[11]["result"], json!({}));
         assert!(results.iter().all(|result| result["id"].is_null()));
     }
 }

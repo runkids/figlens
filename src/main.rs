@@ -662,6 +662,8 @@ fn export_batch(
 #[cfg(test)]
 use contract::TOOLS;
 #[cfg(test)]
+use mcp::in_request_order;
+#[cfg(test)]
 use mcp::{call_tool, mcp_reply, serve};
 
 /// Start stdio after canonicalizing configured roots.
