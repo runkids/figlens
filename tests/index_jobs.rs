@@ -648,6 +648,9 @@ fn mcp_roots_hide_sources_jobs_and_counts_outside_them() {
         std::fs::canonicalize(path).unwrap()
     };
     let (seen, hidden) = (copy(&inside), copy(&outside));
+    // The hidden directory as it appears inside a JSON reply, with the host's separators.
+    let leak = serde_json::to_string(hidden.parent().unwrap()).unwrap();
+    let leak = leak.trim_matches('"').to_owned();
     let dir = project.to_str().unwrap();
     env.json(&[
         "index",
@@ -692,7 +695,7 @@ fn mcp_roots_hide_sources_jobs_and_counts_outside_them() {
             .len(),
         1
     );
-    assert!(!search.to_string().contains("/out/"));
+    assert!(!search.to_string().contains(&leak));
     let coverage = &search["structuredContent"]["coverage"];
     assert_eq!(coverage["complete"], false, "{search}");
     assert!(
@@ -703,17 +706,19 @@ fn mcp_roots_hide_sources_jobs_and_counts_outside_them() {
     );
     let job = mcp.call("jobs", json!({"action": "status", "jobId": hidden_job}));
     assert_eq!(job["isError"], true);
-    assert!(!job.to_string().contains("/out/"));
+    assert!(!job.to_string().contains(&leak));
     // Usages read only the visible source; naming the hidden one finds nothing to read.
     let usages = mcp.call("usages", json!({"workspaceId": ws, "node": "0:1"}));
     assert_eq!(usages["isError"], false, "{usages}");
-    assert!(!usages.to_string().contains("/out/"));
+    assert!(!usages.to_string().contains(&leak));
     let all = env.json(&["index", "status", "--workspace", dir]);
+    // The unrestricted status lists the hidden copy, so the token matches on this host.
+    assert!(all.to_string().contains(&leak));
     let hidden_id = all["sources"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|s| s["path"].as_str().unwrap().contains("/out/"))
+        .find(|s| Path::new(s["path"].as_str().unwrap()) == hidden)
         .unwrap()["sourceId"]
         .as_str()
         .unwrap()
@@ -723,7 +728,7 @@ fn mcp_roots_hide_sources_jobs_and_counts_outside_them() {
         json!({"workspaceId": ws, "sourceId": hidden_id, "node": "0:1"}),
     );
     assert_eq!(refused["isError"], true);
-    assert!(!refused.to_string().contains("/out/"));
+    assert!(!refused.to_string().contains(&leak));
 }
 
 #[test]
