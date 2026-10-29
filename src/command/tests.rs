@@ -305,7 +305,13 @@ impl Fixture {
     }
 
     fn named(name: &str) -> Self {
-        use kiwi_schema::{Def, DefKind, Field, Schema, TYPE_FLOAT, TYPE_STRING, TYPE_UINT, Value};
+        Self::build(name, true)
+    }
+
+    fn build(name: &str, visible: bool) -> Self {
+        use kiwi_schema::{
+            Def, DefKind, Field, Schema, TYPE_BOOL, TYPE_FLOAT, TYPE_STRING, TYPE_UINT, Value,
+        };
         use std::collections::HashMap;
         let dir = TestDir::new();
         let field = |name: &str, type_id, value, is_array| Field {
@@ -353,6 +359,7 @@ impl Fixture {
                     field("name", TYPE_STRING, 3, false),
                     field("parentIndex", 3, 4, false),
                     field("size", 2, 5, false),
+                    field("visible", TYPE_BOOL, 6, false),
                 ],
             ),
             Def::new(
@@ -406,6 +413,7 @@ impl Fixture {
                                     ]),
                                 ),
                             ),
+                            ("visible", Value::Bool(visible)),
                         ]),
                     ),
                 ]),
@@ -817,6 +825,36 @@ fn serve_does_not_hand_a_remote_call_the_local_tree() {
     // The remote file resolves through gcloud, which is absent here: an error, not our tree.
     assert_eq!(replies[1]["result"]["isError"], true, "{}", replies[1]);
     assert_eq!(replies[2]["result"], replies[0]["result"]);
+}
+
+#[test]
+fn hidden_layers_are_refused_by_every_export_format_through_cli_and_mcp() {
+    let fixture = Fixture::build("Frame", false);
+    for name in ["frame.svg", "frame.png"] {
+        let out = fixture.0.join(name);
+        let error = run(
+            vec![
+                "export".into(),
+                fixture.file(),
+                "0:1".into(),
+                out.display().to_string(),
+            ],
+            &mut String::new(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("the layer is hidden"), "{error}");
+        let reply = call_tool(
+            &serde_json::json!({"name": "export", "arguments": {
+                "file": fixture.file(), "node": "0:1", "out": out,
+            }}),
+            None,
+        );
+        assert_eq!(reply["isError"], true, "{reply}");
+        assert_eq!(reply["_meta"]["figlens"]["code"], "unsupported_node");
+        assert_eq!(reply["content"][0]["text"], error);
+        assert!(!out.exists());
+    }
 }
 
 #[test]
