@@ -1212,6 +1212,29 @@ fn built(index: &Index, mut layer: Json) -> Json {
             layer["kinds"][*k] = json!("not_built");
         }
     }
+    gapped(index.unverified_links, index.unread_fields, layer)
+}
+
+/// `layer` with the kinds extraction left unverified marked partial and a reason for each:
+/// prototype links it could not attribute, and binding fields too large to read. Text coverage
+/// is not affected.
+pub(crate) fn gapped(links: usize, fields: usize, mut layer: Json) -> Json {
+    let mut add = |kinds: &[&str], counts: Json| {
+        for k in kinds {
+            layer["kinds"][*k] = json!("partial");
+        }
+        layer["state"] = json!("partial");
+        layer["reasons"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"code": "relation_unverified", "relations": kinds, "counts": counts}));
+    };
+    if fields > 0 {
+        add(&usages::FIELDED, json!({"fields": fields}));
+    }
+    if links > 0 {
+        add(&["prototype_target"], json!({"links": links}));
+    }
     layer
 }
 
@@ -1299,11 +1322,14 @@ pub(crate) struct Part<'a> {
 fn corpus_coverage(parts: &[Part], req: &Request, excluded: [usize; 2]) -> Json {
     let mut reasons = Vec::new();
     let (mut scanned, mut text_bytes, mut hidden) = (0, 0, 0);
+    let (mut links, mut fields) = (0, 0);
     for part in parts {
         let index = part.index;
         scanned += index.total;
         text_bytes += index.text_bytes;
         hidden += index.hidden_content;
+        links += index.unverified_links;
+        fields += index.unread_fields;
         if let Some(code) = index.stop {
             reasons.push(json!({"code": code, "sourceId": part.source["sourceId"],
                 "counts": {"scannedRecords": index.total}}));
@@ -1319,7 +1345,7 @@ fn corpus_coverage(parts: &[Part], req: &Request, excluded: [usize; 2]) -> Json 
         "scannedRecords": scanned,
         "totalRecords": if complete { json!(scanned) } else { Json::Null },
         "indexedTextBytes": text_bytes,
-        "layers": {"text": {"state": state}, "relations": relations(state)},
+        "layers": {"text": {"state": state}, "relations": gapped(links, fields, relations(state))},
         "reasons": reasons,
         "excluded": {"hidden": excluded[0], "internal": excluded[1]},
         "knownGaps": [{"code": "component_property_values_not_indexed"},

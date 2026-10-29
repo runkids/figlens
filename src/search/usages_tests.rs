@@ -1753,3 +1753,31 @@ fn a_queried_definition_too_long_for_the_reply_is_a_budget_error() {
         Some(ErrorKind::ResponseBudget)
     );
 }
+
+#[test]
+fn an_outgoing_query_with_no_rows_still_checks_its_definition_against_the_budget() {
+    let long = "n".repeat(crate::search::REPLY_BYTES + 1);
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(2, Some(1), "FRAME", &long, vec![]),
+        ]),
+    )]);
+    // A build allowed to index the name, so only the reply budget can refuse it.
+    let roomy = crate::expand::Bounds {
+        bytes: 1 << 34,
+        ..bounds(WORK)
+    };
+    let index = build(&Tree::new(&message), "0:0", roomy);
+    // A relation the node has none of: the reply has no rows, only the definition.
+    let mut r = req("0:2");
+    r.outgoing = true;
+    r.relations = vec!["binds_variable".into()];
+    let err = run(&index, &r).unwrap_err();
+    assert_eq!(
+        err.downcast_ref::<FigError>().map(FigError::kind),
+        Some(ErrorKind::ResponseBudget)
+    );
+}

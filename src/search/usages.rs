@@ -40,6 +40,8 @@ pub(crate) const STATES: [&str; 6] = [
 ];
 pub(crate) const BASES: [&str; 2] = ["recorded", "resolved"];
 /// The kinds a text-only build (ordinary stateless search) still extracts.
+/// Kinds read from binding fields, which a field too large to read leaves partial.
+pub(crate) const FIELDED: [&str; 3] = ["binds_variable", "uses_style", "uses_image"];
 pub(crate) const TEXT_ONLY: [&str; 3] = ["contains", "instance_of", "variant_of"];
 pub const DEFAULT_LIMIT: usize = 50;
 pub const MAX_LIMIT: usize = 200;
@@ -1254,13 +1256,6 @@ pub(crate) fn query(
             }
         },
     };
-    // The queried definition is copied into every reply, so it counts toward each page's budget.
-    let head = definition.as_ref().map_or(0, |d| {
-        d.name.len()
-            + d.kind.len()
-            + d.set.as_ref().map_or(0, String::len)
-            + d.page.as_ref().map_or(0, String::len)
-    });
     let kind = definition.as_ref().map(|d| d.kind.as_str()).unwrap_or("");
     let mut members = Vec::new();
     let mut members_complete = true;
@@ -1272,6 +1267,20 @@ pub(crate) fn query(
         members_truncated = members.len() > MAX_MEMBERS;
         members_complete = !members_truncated && rid.is_some() && graph.index().stop.is_none();
         members.truncate(MAX_MEMBERS);
+    }
+    // Every reply copies the queried id, its definition and the members, so they start each
+    // page's budget and are checked even when no row follows.
+    let head = 256
+        + target.len()
+        + definition.as_ref().map_or(0, |d| {
+            d.name.len()
+                + d.kind.len()
+                + d.set.as_ref().map_or(0, String::len)
+                + d.page.as_ref().map_or(0, String::len)
+        })
+        + members.iter().map(|m| 8 + m.len()).sum::<usize>();
+    if head > super::REPLY_BYTES {
+        return Err(budget());
     }
     let after = q.after.as_ref();
     let (hits, more, results): (Vec<(u32, Edge)>, bool, Vec<Json>);
@@ -1390,7 +1399,7 @@ pub(crate) fn query(
         reasons.push(json!({"code": "members_outside_scope",
             "detail": "the set lies outside the scope; members are the ones the scope uses"}));
     }
-    let fielded = ["binds_variable", "uses_style", "uses_image"];
+    let fielded = FIELDED;
     let unread = index.unread_fields > 0 && q.relations.iter().any(|r| fielded.contains(r));
     if unread {
         reasons.push(json!({"code": "relation_unverified", "relations": fielded,

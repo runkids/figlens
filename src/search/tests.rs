@@ -1262,3 +1262,48 @@ fn definitions_are_described_within_the_callers_bounds() {
     let text = build_as(&tree, "0:10", small, false);
     assert_eq!(text.stop, None);
 }
+
+#[test]
+fn search_coverage_marks_the_kinds_extraction_left_unverified_partial() {
+    // 17 actions in one interaction: the prototype reader keeps 16 and counts the link.
+    let action = || {
+        obj(vec![
+            ("transitionNodeID", guid(2)),
+            ("navigationType", K::Enum("NavigationType", "NAVIGATE")),
+        ])
+    };
+    let click = obj(vec![
+        (
+            "event",
+            obj(vec![(
+                "interactionType",
+                K::Enum("InteractionType", "ON_CLICK"),
+            )]),
+        ),
+        ("actions", K::Array((0..17).map(|_| action()).collect())),
+    ]);
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(2, Some(1), "FRAME", "Target", vec![]),
+            node(
+                5,
+                Some(1),
+                "FRAME",
+                "Menu",
+                vec![("prototypeInteractions", K::Array(vec![click]))],
+            ),
+        ]),
+    )]);
+    let index = build_as(&Tree::new(&message), "0:0", bounds(WORK), true);
+    let layer = built(&index, relations("ready"));
+    assert_eq!(
+        (
+            &layer["kinds"]["prototype_target"],
+            &layer["kinds"]["contains"]
+        ),
+        (&json!("partial"), &json!("ready"))
+    );
+}
