@@ -10,6 +10,8 @@ Use this topic for MCP instructions, tool discovery and built-in workflow guidan
 
 For two selected variants, `inspect` accepts `compareVariant: "other-node-id"` (CLI `--compare-variant ID`) and adds `variantComparison`. Both IDs must be stored component definitions in the same set. It compares bounded raw root fields and descendant value multisets, retains exact sources/unknowns and leaves descendants unpaired. It performs no alternate expansion/rendering and changes no bundle or preview controls. See [variant comparison](states.md#compare-two-variants).
 
+`inspect` accepts `flat: true` (CLI `--flat`): the content text is one line per node and `structuredContent` is `{flat, truncated}` without `node`, which is why the inspect output schema requires only `truncated`. `export` accepts `matchDir` (CLI `--match-dir`) for SVG output; it is admitted and rechecked under `--root` like `out`, and the reply adds `matches` and `similar` (paths relative to that folder; see [render](render.md)).
+
 The `workflow` tool lets a model retrieve detailed guidance without a separate skill installation:
 
 | `topic` | Use when |

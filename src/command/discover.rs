@@ -128,11 +128,219 @@ pub fn inspect(
     Ok(result)
 }
 
+/// `inspect --flat`: one line per node, within the same depth and node limits as `inspect`.
+/// Returns the lines and whether nodes were left out.
+pub fn inspect_flat(tree: &Tree, id: &str, depth: usize) -> Result<(String, bool), Box<dyn Error>> {
+    if depth > 10 {
+        return Err("--depth takes 0-10 for inspect".into());
+    }
+    let doc = figlens::rest::resolve_nodes(tree, id)?;
+    let root = &doc["document"]["absoluteBoundingBox"];
+    let origin = (
+        root["x"].as_f64().unwrap_or(0.0),
+        root["y"].as_f64().unwrap_or(0.0),
+    );
+    let (mut out, mut remaining, mut truncated) = (String::new(), MAX_NODES, false);
+    flat_lines(
+        &mut out,
+        &doc["document"],
+        origin,
+        0,
+        depth,
+        &mut remaining,
+        &mut truncated,
+    );
+    Ok((out, truncated))
+}
+
+/// `id TYPE "name" @x,y WxH` (position relative to the inspected root), then whichever of
+/// hidden, rotation, component, text, font, fill, stroke, radius, auto-layout and opacity apply.
+/// `children=N` marks children cut by depth; a `… N more` line marks those cut by the node limit.
+fn flat_lines(
+    out: &mut String,
+    node: &Value,
+    origin: (f64, f64),
+    level: usize,
+    depth: usize,
+    remaining: &mut usize,
+    truncated: &mut bool,
+) {
+    use figlens::render::{hex, num};
+    use std::fmt::Write as _;
+    *remaining -= 1;
+    let indent = "  ".repeat(level);
+    let quote = |s: &str| serde_json::to_string(s).unwrap();
+    let mut line = format!(
+        "{indent}{} {} {}",
+        node["id"].as_str().unwrap_or(""),
+        node["type"].as_str().unwrap_or(""),
+        quote(node["name"].as_str().unwrap_or(""))
+    );
+    let mut add = |token: String| {
+        line.push(' ');
+        line.push_str(&token);
+    };
+    let b = &node["absoluteBoundingBox"];
+    if let (Some(x), Some(y), Some(w), Some(h)) = (
+        b["x"].as_f64(),
+        b["y"].as_f64(),
+        b["width"].as_f64(),
+        b["height"].as_f64(),
+    ) {
+        add(format!(
+            "@{},{} {}x{}",
+            num(x - origin.0),
+            num(y - origin.1),
+            num(w),
+            num(h)
+        ));
+    }
+    if node["visible"] == false {
+        add("hidden".into());
+    }
+    if let Some(r) = node["rotation"].as_f64() {
+        add(format!("rot={}deg", num(r.to_degrees())));
+    }
+    if let Some(main) = node["componentId"].as_str() {
+        add(format!("component={main}"));
+    }
+    if let Some(text) = node["characters"].as_str() {
+        add(quote(&text.chars().take(TEXT_CHARS).collect::<String>()));
+        if text.chars().count() > TEXT_CHARS {
+            add("textTruncated".into());
+        }
+        let style = &node["style"];
+        let n = |k: &str| style[k].as_f64().map_or("?".into(), num);
+        add(format!(
+            "font={} {}/{}/{}",
+            quote(style["fontFamily"].as_str().unwrap_or("?")),
+            n("fontSize"),
+            n("fontWeight"),
+            n("lineHeightPx")
+        ));
+    }
+    // Visible paints: solid colors as hex (with /alpha below 1), others by type.
+    let paints = |list: &Value| {
+        list.as_array()
+            .into_iter()
+            .flatten()
+            .filter(|p| figlens::render::visible(p))
+            .map(|p| match p["type"].as_str() {
+                Some("SOLID") => {
+                    let a = p["color"]["a"].as_f64().unwrap_or(1.0)
+                        * p["opacity"].as_f64().unwrap_or(1.0);
+                    let alpha = if a < 1.0 {
+                        format!("/{}", num(a))
+                    } else {
+                        String::new()
+                    };
+                    format!("{}{alpha}", hex(&p["color"]))
+                }
+                kind => kind.unwrap_or("?").to_owned(),
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let fill = paints(&node["fills"]);
+    if !fill.is_empty() {
+        add(format!("fill={fill}"));
+    }
+    let stroke = paints(&node["strokes"]);
+    // Per-side weights win: `strokeWeight` can be 0 when only some sides are set.
+    let sides = &node["individualStrokeWeights"];
+    let weights: Vec<f64> = if sides.is_object() {
+        ["top", "right", "bottom", "left"]
+            .iter()
+            .map(|s| sides[s].as_f64().unwrap_or(0.0))
+            .collect()
+    } else {
+        vec![node["strokeWeight"].as_f64().unwrap_or(0.0)]
+    };
+    if !stroke.is_empty() && weights.iter().any(|w| *w > 0.0) {
+        let weights: Vec<_> = weights.into_iter().map(num).collect();
+        add(format!("stroke={stroke}/{}", weights.join(",")));
+    }
+    if let Some(radii) = node["rectangleCornerRadii"].as_array() {
+        let radii: Vec<_> = radii
+            .iter()
+            .map(|r| num(r.as_f64().unwrap_or(0.0)))
+            .collect();
+        add(format!("r={}", radii.join(",")));
+    } else if let Some(r) = node["cornerRadius"].as_f64() {
+        add(format!("r={}", num(r)));
+    }
+    if let Some(mode) = node["layoutMode"].as_str() {
+        let n = |k: &str| num(node[k].as_f64().unwrap_or(0.0));
+        // REST leaves grid gaps out (they are not decoded), so a grid gets no gap rather than 0.
+        let gap = match mode {
+            "GRID" => String::new(),
+            _ => format!(" gap={}", n("itemSpacing")),
+        };
+        add(format!(
+            "{}{gap} pad={},{},{},{}",
+            match mode {
+                "HORIZONTAL" => "H",
+                "VERTICAL" => "V",
+                other => other,
+            },
+            n("paddingTop"),
+            n("paddingRight"),
+            n("paddingBottom"),
+            n("paddingLeft")
+        ));
+    }
+    if derived_spacing(node) {
+        add("spacing=derived".into());
+    }
+    if let Some(o) = node["opacity"].as_f64() {
+        add(format!("opacity={}", num(o)));
+    }
+    let children = node["children"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if depth == 0 && !children.is_empty() {
+        add(format!("children={}", children.len()));
+        *truncated = true;
+    }
+    writeln!(out, "{line}").unwrap();
+    if depth == 0 {
+        return;
+    }
+    for (i, child) in children.iter().enumerate() {
+        if *remaining == 0 {
+            writeln!(out, "{indent}  … {} more", children.len() - i).unwrap();
+            *truncated = true;
+            break;
+        }
+        flat_lines(
+            out,
+            child,
+            origin,
+            level + 1,
+            depth - 1,
+            remaining,
+            truncated,
+        );
+    }
+}
+
 fn inspect_document(document: &Value, depth: usize) -> Value {
     let mut remaining = MAX_NODES;
     let mut truncated = false;
     let node = summarize(document, depth, &mut remaining, &mut truncated);
     json!({"node": node, "truncated": truncated})
+}
+
+/// Without auto-layout, gaps between children are coordinate differences, not a rule.
+/// Boolean operands and pages are not laid-out children. REST omits layoutMode NONE.
+fn derived_spacing(node: &Value) -> bool {
+    node["children"].as_array().is_some_and(|c| !c.is_empty())
+        && node.get("layoutMode").is_none()
+        && !matches!(
+            node["type"].as_str(),
+            Some("BOOLEAN_OPERATION" | "DOCUMENT")
+        )
 }
 
 fn summarize(node: &Value, depth: usize, remaining: &mut usize, truncated: &mut bool) -> Value {
@@ -235,15 +443,7 @@ fn summarize(node: &Value, depth: usize, remaining: &mut usize, truncated: &mut 
         .map(Vec::as_slice)
         .unwrap_or(&[]);
     summary["childCount"] = children.len().into();
-    // Without auto-layout, gaps between children are coordinate differences, not a rule.
-    // Boolean operands and pages are not laid-out children. REST omits layoutMode NONE.
-    if !children.is_empty()
-        && node.get("layoutMode").is_none()
-        && !matches!(
-            node["type"].as_str(),
-            Some("BOOLEAN_OPERATION" | "DOCUMENT")
-        )
-    {
+    if derived_spacing(node) {
         summary["childSpacing"] = "derived".into();
     }
     if depth > 0 && !children.is_empty() {
@@ -347,6 +547,42 @@ mod tests {
             Value::Null
         );
         assert_eq!(spacing(json!({"id":"1:1","type":"FRAME"})), Value::Null);
+    }
+
+    #[test]
+    fn flat_grid_lines_leave_out_the_gap_rest_does_not_emit() {
+        let node = json!({"id":"1:1","type":"FRAME","name":"g","layoutMode":"GRID","paddingTop":4});
+        let (mut out, mut truncated) = (String::new(), false);
+        flat_lines(&mut out, &node, (0.0, 0.0), 0, 0, &mut 1, &mut truncated);
+        assert_eq!(out, "1:1 FRAME \"g\" GRID pad=4,0,0,0\n");
+    }
+
+    #[test]
+    fn flat_lines_are_relative_to_the_root_and_mark_omitted_children() {
+        let b = |x, y, w, h| json!({"x":x,"y":y,"width":w,"height":h});
+        let leaf = |id: &str| json!({"id":id,"type":"RECTANGLE","name":"r","absoluteBoundingBox":b(110,60,4,4)});
+        let node = json!({"id":"1:1","type":"FRAME","name":"Card \"A\"","absoluteBoundingBox":b(100,50,280,111),
+        "fills":[{"type":"SOLID","color":{"r":1,"g":1,"b":1,"a":1},"opacity":0.5},{"type":"IMAGE","visible":false},{"type":"SOLID","color":{"r":0,"g":0,"b":0,"a":1},"opacity":0}],
+        "strokes":[{"type":"SOLID","color":{"r":0,"g":0,"b":0,"a":1}}],"strokeWeight":0,
+        "individualStrokeWeights":{"top":0,"right":0,"bottom":1,"left":0},"cornerRadius":8,
+        "layoutMode":"VERTICAL","itemSpacing":10,"paddingTop":1,"paddingRight":2,"paddingBottom":3,"paddingLeft":4,
+        "children":[
+            {"id":"1:2","type":"TEXT","name":"Title","visible":false,"absoluteBoundingBox":b(112,60,56,21),"characters":"Cancel\nnow",
+                "style":{"fontFamily":"Inter","fontSize":14,"fontWeight":400,"lineHeightPx":21},"children":[leaf("1:5")]},
+            leaf("1:3"), leaf("1:4"),
+        ]});
+        let (mut out, mut truncated) = (String::new(), false);
+        flat_lines(&mut out, &node, (100.0, 50.0), 0, 1, &mut 3, &mut truncated);
+        assert_eq!(
+            out,
+            concat!(
+                "1:1 FRAME \"Card \\\"A\\\"\" @0,0 280x111 fill=#ffffff/0.5 stroke=#000000/0,0,1,0 r=8 V gap=10 pad=1,2,3,4\n",
+                "  1:2 TEXT \"Title\" @12,10 56x21 hidden \"Cancel\\nnow\" font=\"Inter\" 14/400/21 spacing=derived children=1\n",
+                "  1:3 RECTANGLE \"r\" @10,10 4x4\n",
+                "  … 1 more\n",
+            )
+        );
+        assert!(truncated);
     }
 
     #[test]

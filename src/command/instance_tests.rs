@@ -1482,6 +1482,20 @@ fn export_frames_match_single_exports_and_isolate_missing_ids() {
             Err(e) => assert_eq!(line, json!({ "error": e.to_string() })),
         }
     }
+    // --match-dir reaches every line; the folder is read once, before the batch writes.
+    let icons = f.dir.join("icons");
+    std::fs::create_dir_all(&icons).unwrap();
+    f.cli(
+        "export",
+        &["0:12", icons.join("card.svg").to_str().unwrap()],
+    )
+    .unwrap();
+    let mut out = Vec::new();
+    let matching = args(&["--match-dir", icons.to_str().unwrap()]);
+    crate::export_batch(&tree, Path::new(&f.file), &matching, &mut out).unwrap();
+    let first: Value =
+        serde_json::from_str(String::from_utf8(out).unwrap().lines().next().unwrap()).unwrap();
+    assert_eq!(first["matches"], json!(["card.svg"]));
     // Invalid options fail the whole call before anything is written.
     std::fs::remove_dir_all(&dir).unwrap();
     let huge = (usize::MAX / 1024 + 1).to_string();
@@ -1489,6 +1503,7 @@ fn export_frames_match_single_exports_and_isolate_missing_ids() {
         &["--quality", "0"][..],
         &["--format", "a/b.png"],
         &["--max-kb", &huge],
+        &["--format", "png", "--match-dir", icons.to_str().unwrap()],
     ] {
         let mut out = Vec::new();
         let result = crate::export_batch(&tree, Path::new(&f.file), &args(extra), &mut out);

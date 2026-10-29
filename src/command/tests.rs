@@ -1094,6 +1094,7 @@ fn variables_commands_distinguish_local_variables_from_frame_bindings() {
                 .unwrap(),
                 &tree,
                 None,
+                None,
             )
             .unwrap(),
         ] {

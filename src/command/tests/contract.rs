@@ -238,6 +238,35 @@ fn compare_variant_is_an_optional_nonempty_string() {
 }
 
 #[test]
+fn flat_is_a_strict_boolean_and_match_dir_a_nonempty_string() {
+    let inspect = json!({"file":"absent.fig","node":"0:10"});
+    let export = json!({"file":"absent.fig","node":"0:10","out":"a.svg"});
+    for value in [
+        json!(true),
+        json!(false),
+        json!("true"),
+        json!(1),
+        Value::Null,
+    ] {
+        let mut args = inspect.clone();
+        args["flat"] = value.clone();
+        assert_eq!(check("inspect", args).is_ok(), value.is_boolean());
+    }
+    for value in [json!("icons"), json!(""), json!(true), Value::Null] {
+        let mut args = export.clone();
+        args["matchDir"] = value.clone();
+        assert_eq!(
+            check("export", args).is_ok(),
+            value.as_str().is_some_and(|s| !s.is_empty())
+        );
+    }
+    // A flat reply has no `node`, so the inspect schema may only require `truncated`.
+    let schema = contract::output_schema("inspect").unwrap();
+    assert_eq!(schema["required"], json!(["truncated"]));
+    assert_eq!(schema["properties"]["flat"]["type"], "string");
+}
+
+#[test]
 fn bundle_states_is_an_optional_strict_boolean() {
     let base = json!({"file":"absent.fig", "node":"0:1", "out":"out.zip"});
     assert_eq!(
