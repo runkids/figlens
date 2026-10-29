@@ -21,6 +21,25 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 /// Rows per write transaction; between batches the caller reports progress and checks space.
 pub(crate) const BATCH: usize = 2000;
+/// Estimated row bytes per write transaction: a batch also ends here, so one batch adds about
+/// this much plus b-tree overhead to the WAL; a single row estimated larger is its own batch.
+pub(crate) const BATCH_BYTES: usize = if cfg!(test) { 1024 } else { 8 * 1024 * 1024 };
+
+/// `items` in runs of at most `BATCH` rows and, past each run's first row, `BATCH_BYTES` of
+/// `size`.
+fn batches<T>(items: &[T], size: impl Fn(&T) -> usize) -> impl Iterator<Item = &[T]> {
+    let mut rest = items;
+    std::iter::from_fn(move || {
+        let (mut n, mut bytes) = (0, 0);
+        while n < rest.len() && n < BATCH && (n == 0 || bytes + size(&rest[n]) <= BATCH_BYTES) {
+            bytes += size(&rest[n]);
+            n += 1;
+        }
+        let (run, tail) = rest.split_at(n);
+        rest = tail;
+        (!run.is_empty()).then_some(run)
+    })
+}
 
 /// What a published generation was built with; a generation built by other versions is rebuilt,
 /// never reused.
@@ -104,7 +123,8 @@ fn postings(blob: &[u8], total: usize) -> Result<Vec<Posting>> {
 }
 
 /// The records, terms and edges of `index` as generation `gen`, in transactions of `BATCH`
-/// rows; `between` runs after each committed batch with the rows written so far and in total.
+/// rows or `BATCH_BYTES`; `between` runs after each committed batch with the rows written so
+/// far and in total.
 /// `guard` runs first inside every write transaction, the final generation update included,
 /// so a writer that lost its right to write commits nothing.
 pub(crate) fn save(
@@ -116,7 +136,11 @@ pub(crate) fn save(
 ) -> Result<()> {
     let total = index.records.len() + index.terms.len();
     let mut done = 0;
-    for chunk in index.records.chunks(BATCH) {
+    let record_bytes = |r: &Record| {
+        let text = r.text.as_ref().map_or(0, String::len);
+        r.id.len() + r.name.len() + r.kind.len() + text + r.norm[0].len() + r.norm[1].len() + 64
+    };
+    for chunk in batches(&index.records, record_bytes) {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         guard(&tx)?;
         {
@@ -159,7 +183,9 @@ pub(crate) fn save(
         between(conn, done, total)?;
     }
     let terms: Vec<(&String, &IndexTerm)> = index.terms.iter().collect();
-    for chunk in terms.chunks(BATCH) {
+    // A posting packs into at most 10 bytes of varints.
+    let term_bytes = |t: &(&String, &IndexTerm)| t.0.len() + t.1.postings.len() * 10 + 16;
+    for chunk in batches(&terms, term_bytes) {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         guard(&tx)?;
         {
@@ -440,6 +466,21 @@ pub(crate) fn add(conn: &Connection, gen_id: i64, index: &mut Index, rids: &[u32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_batches_end_at_their_byte_budget_or_row_count() {
+        let sizes = [400, 400, 400, 5000, 10];
+        let runs: Vec<usize> = batches(&sizes, |s| *s).map(<[_]>::len).collect();
+        assert_eq!(BATCH_BYTES, 1024);
+        assert_eq!(
+            runs,
+            [2, 1, 1, 1],
+            "a row past the budget starts the next batch"
+        );
+        let small = vec![0; BATCH + 1];
+        let runs: Vec<usize> = batches(&small, |s| *s).map(<[_]>::len).collect();
+        assert_eq!(runs, [BATCH, 1]);
+    }
 
     #[test]
     fn postings_round_trip_and_reject_corrupt_values() {

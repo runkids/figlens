@@ -22,11 +22,31 @@ pub const MAX_ACTIVE: i64 = 16;
 const KEPT: i64 = 50;
 /// Published scopes one source keeps; publishing another retires the least recently published.
 pub const MAX_SCOPES: i64 = 8;
-/// Database plus WAL bytes a workspace may reach; a build that would pass it fails, keeping the
-/// published generation.
-pub const DISK_CAP: u64 = 2 * 1024 * 1024 * 1024;
-/// WAL bytes a build waits to see reclaimed before writing its next batch.
-pub const WAL_CAP: u64 = 64 * 1024 * 1024;
+/// Main database file bytes: SQLite enforces this less `BUILD_HEADROOM` on the build writer
+/// (`max_page_count`), or the file's current size when that is already larger, since SQLite
+/// never lowers the ceiling below it: such a file only reuses its freed pages. A build that
+/// needs a page past the ceiling fails in that batch, which rolls back; the published
+/// generation keeps serving.
+pub const DISK_CAP: u64 = if cfg!(test) {
+    1024 * 1024
+} else {
+    2 * 1024 * 1024 * 1024
+};
+/// Part of `DISK_CAP` no build may use, left for publication, registry and job writes, which
+/// SQLite does not cap.
+const BUILD_HEADROOM: u64 = if cfg!(test) {
+    128 * 1024
+} else {
+    64 * 1024 * 1024
+};
+/// WAL bytes a build waits to see reclaimed after each batch before writing the next: a
+/// threshold, not a ceiling, since the WAL can pass it by one batch's pages (an estimated
+/// `BATCH_BYTES` of rows, or one larger row alone, plus b-tree overhead).
+pub const WAL_CAP: u64 = if cfg!(test) {
+    16 * 1024
+} else {
+    64 * 1024 * 1024
+};
 /// How often an owner checks for a cancel request while its child builds.
 const POLL: Duration = Duration::from_millis(100);
 /// How long `jobs cancel` waits for the owner to report the job stopped.
@@ -1390,9 +1410,24 @@ pub(crate) fn kind_code(kind: ErrorKind) -> &'static str {
 }
 
 /// Database plus WAL bytes of the workspace at `dir`.
-fn disk(dir: &Path) -> (u64, u64) {
-    let size = |name: &str| std::fs::metadata(dir.join(name)).map_or(0, |m| m.len());
-    (size(DB), size("index.sqlite-wal"))
+fn wal_bytes(dir: &Path) -> u64 {
+    std::fs::metadata(dir.join("index.sqlite-wal")).map_or(0, |m| m.len())
+}
+
+/// The capacity error for SQLite refusing a page past the build's `ceiling` bytes (or a full
+/// disk), so the caller sees what to do instead of `database or disk is full`.
+fn full(e: Box<dyn Error>, ceiling: u64) -> Box<dyn Error> {
+    match e.downcast_ref::<rusqlite::Error>() {
+        Some(rusqlite::Error::SqliteFailure(f, _)) if f.code == rusqlite::ErrorCode::DiskFull => {
+            fail(
+                ErrorKind::OperationFailed,
+                format!(
+                    "the workspace database reached its {ceiling}-byte build ceiling (a {DISK_CAP}-byte cap less headroom, or the file's size when already larger) or the disk is full; the previous index stays published; clear_cache, remove sources or index a narrower scope"
+                ),
+            )
+        }
+        _ => e,
+    }
 }
 
 /// Ok while job `job_id`'s row still names `me`'s `attempt` running; checked inside each write
@@ -1447,6 +1482,18 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
     }
     let mut conn = open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     writable(&conn)?;
+    // The hard ceiling, on this connection only: pages a failed build freed are reused first, so
+    // a retry fits again without a VACUUM. SQLite answers with the ceiling it actually set.
+    let page: i64 = conn
+        .query_row("PRAGMA page_size", [], |r| r.get(0))
+        .map_err(sql)?;
+    let pages = (DISK_CAP - BUILD_HEADROOM) / page.max(512) as u64;
+    let set: i64 = conn
+        .query_row(&format!("PRAGMA max_page_count = {pages}"), [], |r| {
+            r.get(0)
+        })
+        .map_err(sql)?;
+    let ceiling = set as u64 * page as u64;
     let (kind, source_id, membership, scope, incarnation, expected): (
         String,
         String,
@@ -1569,22 +1616,13 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
             )
             .map_err(sql)?,
         )?;
-        // Space: a batch adds at most a few MiB, so checking at every boundary keeps the
-        // overshoot to one batch.
-        let (db, wal) = disk(dir);
-        if db + wal > DISK_CAP {
-            return Err(fail(
-                ErrorKind::OperationFailed,
-                format!(
-                    "the workspace database reached its {DISK_CAP}-byte cap; clear_cache, remove sources or index a narrower scope"
-                ),
-            ));
-        }
+        // The WAL: reclaimed after every batch, so it passes `WAL_CAP` by about one batch at
+        // most; a reader that keeps it from resetting fails the build after `LOCK_WAIT`.
         let wait = Instant::now();
         loop {
             let _ = conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
             let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
-            if disk(dir).1 <= WAL_CAP {
+            if wal_bytes(dir) <= WAL_CAP {
                 return Ok(());
             }
             if wait.elapsed() > LOCK_WAIT {
@@ -1599,7 +1637,8 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
         }
     };
     let guard = |conn: &Connection| owns_launch(conn, job_id, me, attempt);
-    search::store::save(&mut conn, gen_id, &index, &guard, &mut between)?;
+    search::store::save(&mut conn, gen_id, &index, &guard, &mut between)
+        .map_err(|e| full(e, ceiling))?;
     drop(index);
     stage(&conn, "verify")?;
     // The source is read and hashed again: a save that kept its size and time is caught here.

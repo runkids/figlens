@@ -582,3 +582,126 @@ fn a_full_workspace_names_no_job_of_a_source_the_caller_cannot_see() {
         .unwrap();
     assert_eq!(recovery[0]["jobIds"], json!([]), "{recovery}");
 }
+
+/// The logical size of the database in bytes, uncheckpointed pages included.
+fn used(conn: &Connection) -> u64 {
+    let pages: i64 = conn
+        .query_row("PRAGMA page_count", [], |r| r.get(0))
+        .unwrap();
+    let size: i64 = conn
+        .query_row("PRAGMA page_size", [], |r| r.get(0))
+        .unwrap();
+    (pages * size) as u64
+}
+
+/// A published generation of `scope` for the first source: the last good index a failed build
+/// must leave serving.
+fn published(conn: &Connection, scope: &str) -> i64 {
+    let source = sources(conn)[0].clone();
+    conn.execute(
+        "INSERT INTO generations (source_id, membership, scope, versions, job_id, state, complete,
+         created_ms) SELECT source_id, membership, ?2, 'test', 'old', 'published', 1, 0
+         FROM sources WHERE source_id = ?1",
+        params![source, scope],
+    )
+    .unwrap();
+    let gen_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO published (source_id, scope, gen, published_ms) VALUES (?1, ?2, ?3, 0)",
+        params![source, scope, gen_id],
+    )
+    .unwrap();
+    gen_id
+}
+
+fn serving(conn: &Connection, scope: &str) -> i64 {
+    conn.query_row("SELECT gen FROM published WHERE scope = ?1", [scope], |r| {
+        r.get(0)
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_build_in_a_file_already_past_its_quota_never_grows_it_and_fits_once_space_is_freed() {
+    let d = TestDir::new();
+    let (_, _, dir) = workspace(&d, 1);
+    let me = owner(&dir).unwrap();
+    let mut conn = connection(&dir);
+    let source = sources(&conn)[0].clone();
+    let good = published(&conn, "0:0");
+    // Packed pages of a later generation's rows, so the build's rows split a full page instead
+    // of fitting into free space left inside existing pages.
+    conn.execute_batch(
+        "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 199)
+         INSERT INTO records (gen, rid, node_id, name, kind, norm0, norm1, len0, len1, hidden)
+         SELECT 999999, i, printf('%0100d', i), '', '', '', '', 0, 0, 0 FROM n;
+         WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 199)
+         INSERT INTO terms (gen, term, df, postings)
+         SELECT 999999, printf('%0100d', i), 0, x'' FROM n;
+         VACUUM;",
+    )
+    .unwrap();
+    // Uncapped writes take the file past the build's share of the cap, into the headroom.
+    let filler = job(&conn, &source, "1:0", "succeeded", &me, 1);
+    let room = (DISK_CAP - BUILD_HEADROOM - used(&conn)) as usize + 32 * 1024;
+    conn.execute(
+        "UPDATE jobs SET error = ?2 WHERE job_id = ?1",
+        params![filler, "x".repeat(room)],
+    )
+    .unwrap();
+    let job_id = job(&conn, &source, "0:0", "running", &me, 1);
+    let full = used(&conn);
+    assert!(full > DISK_CAP - BUILD_HEADROOM);
+    let error = work(&dir, &job_id, &me, 1).unwrap_err().to_string();
+    // The ceiling SQLite actually set is the file's size, not the smaller quota.
+    assert!(
+        error.contains(&format!("{full}-byte build ceiling")),
+        "{error}"
+    );
+    assert_eq!(used(&conn), full, "the build grew the file");
+    assert_eq!(serving(&conn, "0:0"), good);
+    // The owner drops the failed build; freeing the filler leaves the file at its high-water
+    // mark, yet the retry reuses the freed pages.
+    drop_building(&mut conn, &job_id, &me, 1).unwrap();
+    conn.execute("DELETE FROM jobs WHERE job_id = ?1", [&filler])
+        .unwrap();
+    conn.execute("UPDATE jobs SET attempt = 2 WHERE job_id = ?1", [&job_id])
+        .unwrap();
+    let out = work(&dir, &job_id, &me, 2).unwrap();
+    assert!(out["gen"].is_i64(), "{out}");
+    assert_eq!(
+        used(&conn),
+        full,
+        "the retry grew the file instead of reusing freed pages"
+    );
+}
+
+#[test]
+fn a_reader_holding_the_wal_fails_the_build_busy_within_one_batch_of_the_threshold() {
+    let d = TestDir::new();
+    let (_, _, dir) = workspace(&d, 1);
+    let me = owner(&dir).unwrap();
+    let conn = connection(&dir);
+    let source = sources(&conn)[0].clone();
+    let good = published(&conn, "0:0");
+    let job_id = job(&conn, &source, "0:0", "running", &me, 1);
+    // A search's read transaction pins the WAL: no checkpoint can reset it.
+    let reader = connection(&dir);
+    reader.execute_batch("BEGIN").unwrap();
+    let _: i64 = reader
+        .query_row("SELECT count(*) FROM generations", [], |r| r.get(0))
+        .unwrap();
+    let error = work(&dir, &job_id, &me, 1).unwrap_err();
+    let error = error.downcast::<FigError>().unwrap();
+    assert_eq!(error.kind(), ErrorKind::WorkspaceBusy, "{error}");
+    let wal = wal_bytes(&dir);
+    assert!(
+        wal > WAL_CAP && wal <= WAL_CAP + 64 * 1024,
+        "WAL at {wal} bytes"
+    );
+    assert_eq!(serving(&conn, "0:0"), good);
+    reader.execute_batch("COMMIT").unwrap();
+    conn.execute("UPDATE jobs SET attempt = 2 WHERE job_id = ?1", [&job_id])
+        .unwrap();
+    assert!(work(&dir, &job_id, &me, 2).unwrap()["gen"].is_i64());
+}
