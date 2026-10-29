@@ -172,7 +172,7 @@ figlens search design.fig "checkout button"
 figlens index prepare design.fig --scope 0:0
 
 # 索引搜尋；若索引範圍不是整個檔案，加上 --node
-figlens search --file design.fig "checkout button"
+figlens search --file design.fig "checkout button" --node 0:0
 
 # 編輯或重新匯出 .fig 後：只重建位元組有變化的範圍
 figlens index refresh --file design.fig
@@ -187,7 +187,7 @@ MCP：`index` 的 prepare 會回傳一個 job；輪詢 `jobs` 直到 `succeeded`
 ```json
 {"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
 {"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
-{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "query": "checkout button"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "node": "0:0", "query": "checkout button"}}
 ```
 
 生命週期：`refresh` 只重建 `.fig` 位元組有變化的範圍；`rebuild` 即使沒有變化也重建；`clear_cache` 只刪除建置可重新產生的資料，保留註冊表和已發布的索引；`reset` 刪除此 workspace 的資料庫（絕不刪除 `.fig` 或匯出），僅在你明確要求時執行。新增來源、擴大範圍、reset 和重新建立，各自都需要單獨的明確請求。

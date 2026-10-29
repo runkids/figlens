@@ -172,7 +172,7 @@ figlens search design.fig "checkout button"
 figlens index prepare design.fig --scope 0:0
 
 # 인덱스 검색; 인덱스 범위가 파일 전체가 아니면 --node 추가
-figlens search --file design.fig "checkout button"
+figlens search --file design.fig "checkout button" --node 0:0
 
 # .fig를 수정하거나 다시 내보낸 뒤: 바이트가 바뀐 범위만 다시 빌드
 figlens index refresh --file design.fig
@@ -187,7 +187,7 @@ MCP: `index` prepare는 job을 반환합니다. `succeeded`가 될 때까지 `jo
 ```json
 {"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
 {"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
-{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "query": "checkout button"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "node": "0:0", "query": "checkout button"}}
 ```
 
 수명 주기: `refresh`는 `.fig` 바이트가 바뀐 범위만 다시 빌드하고, `rebuild`는 바뀌지 않았어도 다시 빌드합니다. `clear_cache`는 빌드로 다시 만들 수 있는 데이터만 지우며 레지스트리와 게시된 인덱스는 유지합니다. `reset`은 이 workspace의 데이터베이스를 지우며(`.fig`와 내보내기는 건드리지 않음) 명시적으로 요청했을 때만 실행됩니다. 새 소스, 더 넓은 범위, reset, 재생성은 각각 별도의 명시적 요청이 필요합니다.

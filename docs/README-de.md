@@ -172,7 +172,7 @@ figlens search design.fig "checkout button"
 figlens index prepare design.fig --scope 0:0
 
 # Indexierte Suche; --node ergänzen, wenn der indexierte Bereich nicht die ganze Datei ist
-figlens search --file design.fig "checkout button"
+figlens search --file design.fig "checkout button" --node 0:0
 
 # Nach Änderung oder neuem Export der .fig: nur Bereiche mit geänderten Bytes neu bauen
 figlens index refresh --file design.fig
@@ -187,7 +187,7 @@ MCP: `index` prepare liefert einen Job; `jobs` abfragen, bis `succeeded`, dann m
 ```json
 {"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
 {"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
-{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "query": "checkout button"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "node": "0:0", "query": "checkout button"}}
 ```
 
 Lebenszyklus: `refresh` baut nur Bereiche neu, deren `.fig`-Bytes sich geändert haben; `rebuild` baut auch Unveränderte neu; `clear_cache` löscht nur Daten, die ein Build neu erzeugen kann, und behält Registry und veröffentlichte Indizes; `reset` löscht die Datenbank dieses Workspaces (nie die `.fig` oder Exporte) und läuft nur auf ausdrücklichen Wunsch. Neue Quellen, ein größerer Bereich, reset und Neuanlage brauchen jeweils eine eigene ausdrückliche Anfrage.

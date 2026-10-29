@@ -172,7 +172,7 @@ figlens search design.fig "checkout button"
 figlens index prepare design.fig --scope 0:0
 
 # 索引搜索；若索引范围不是整个文件，加上 --node
-figlens search --file design.fig "checkout button"
+figlens search --file design.fig "checkout button" --node 0:0
 
 # 编辑或重新导出 .fig 后：只重建字节有变化的范围
 figlens index refresh --file design.fig
@@ -187,7 +187,7 @@ MCP：`index` 的 prepare 返回一个 job；轮询 `jobs` 直到 `succeeded`，
 ```json
 {"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
 {"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
-{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "query": "checkout button"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "node": "0:0", "query": "checkout button"}}
 ```
 
 生命周期：`refresh` 只重建 `.fig` 字节有变化的范围；`rebuild` 即使没有变化也重建；`clear_cache` 只删除构建可重新生成的数据，保留注册表和已发布的索引；`reset` 删除此 workspace 的数据库（绝不删除 `.fig` 或导出），仅在你明确要求时执行。新增来源、扩大范围、reset 和重新创建，各自都需要单独的明确请求。

@@ -1143,3 +1143,42 @@ fn a_workspace_search_takes_a_query_starting_with_a_dash_after_double_dash() {
     let found = env.json(&["search", "--file", file, "--", "-20%"]);
     assert_eq!(found["state"], "ready", "{found}");
 }
+
+#[test]
+fn an_mcp_opt_in_of_one_frame_is_searched_and_inspected_at_that_scope_only() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    let mut mcp = Mcp::start(&env, &[]);
+    let started = mcp.call(
+        "index",
+        json!({"action": "prepare", "file": file, "scope": "0:1"}),
+    );
+    let job = started["structuredContent"]["job"]["jobId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let ws = started["structuredContent"]["workspaceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    wait_for("the job", || {
+        mcp.call("jobs", json!({"action": "status", "jobId": job}))["structuredContent"]["state"]
+            == "succeeded"
+    });
+    let found = mcp.call(
+        "search",
+        json!({"workspaceId": ws, "node": "0:1", "query": "first"}),
+    )["structuredContent"]
+        .clone();
+    assert_eq!(found["state"], "ready", "{found}");
+    let node = found["results"][0]["ref"]["nodeId"].as_str().unwrap();
+    let inspected = mcp.call("inspect", json!({"file": file, "node": node}));
+    assert_eq!(inspected["isError"], false, "{inspected}");
+    // The whole file was never opted in: no implicit 0:0 build.
+    let whole = mcp.call("search", json!({"workspaceId": ws, "query": "first"}));
+    assert_eq!(
+        whole["structuredContent"]["sources"][0]["reason"], "scope_not_indexed",
+        "{whole}"
+    );
+}

@@ -172,7 +172,7 @@ figlens search design.fig "checkout button"
 figlens index prepare design.fig --scope 0:0
 
 # Recherche indexée ; ajouter --node si la portée indexée n'est pas tout le fichier
-figlens search --file design.fig "checkout button"
+figlens search --file design.fig "checkout button" --node 0:0
 
 # Après modification ou réexport du .fig : reconstruire seulement les portées dont les octets ont changé
 figlens index refresh --file design.fig
@@ -187,7 +187,7 @@ MCP : `index` prepare renvoie un job ; interroger `jobs` jusqu'à `succeeded`, p
 ```json
 {"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
 {"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
-{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "query": "checkout button"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "node": "0:0", "query": "checkout button"}}
 ```
 
 Cycle de vie : `refresh` reconstruit seulement les portées dont les octets du `.fig` ont changé ; `rebuild` reconstruit même sans changement ; `clear_cache` supprime seulement ce qu'une construction peut recréer et garde le registre et les index publiés ; `reset` supprime la base de ce workspace (jamais le `.fig` ni les exports) et ne s'exécute que sur demande explicite. De nouvelles sources, une portée plus large, reset et recréation exigent chacun leur propre demande explicite.

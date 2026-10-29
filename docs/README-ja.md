@@ -172,7 +172,7 @@ figlens search design.fig "checkout button"
 figlens index prepare design.fig --scope 0:0
 
 # インデックス検索。インデックス範囲がファイル全体でない場合は --node を付ける
-figlens search --file design.fig "checkout button"
+figlens search --file design.fig "checkout button" --node 0:0
 
 # .fig を編集・再エクスポートしたら、バイトが変わった範囲だけ再構築
 figlens index refresh --file design.fig
@@ -187,7 +187,7 @@ MCP：`index` の prepare は job を返します。`succeeded` になるまで 
 ```json
 {"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
 {"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
-{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "query": "checkout button"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "node": "0:0", "query": "checkout button"}}
 ```
 
 ライフサイクル：`refresh` は `.fig` のバイトが変わった範囲だけを再構築し、`rebuild` は変更がなくても再構築します。`clear_cache` はビルドで再作成できるデータだけを削除し、レジストリと公開済みインデックスは残します。`reset` はこの workspace のデータベースを削除し（`.fig` やエクスポートは対象外）、明示的に求めたときだけ実行されます。新しいソース、範囲の拡大、reset、再作成は、それぞれ個別の明示的な依頼が必要です。

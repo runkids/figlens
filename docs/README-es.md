@@ -172,7 +172,7 @@ figlens search design.fig "checkout button"
 figlens index prepare design.fig --scope 0:0
 
 # Búsqueda indexada; añade --node si el ámbito indexado no es todo el archivo
-figlens search --file design.fig "checkout button"
+figlens search --file design.fig "checkout button" --node 0:0
 
 # Tras editar o reexportar el .fig: reconstruye solo los ámbitos cuyos bytes cambiaron
 figlens index refresh --file design.fig
@@ -187,7 +187,7 @@ MCP: `index` prepare devuelve un job; consulta `jobs` hasta `succeeded` y busca 
 ```json
 {"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
 {"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
-{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "query": "checkout button"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "node": "0:0", "query": "checkout button"}}
 ```
 
 Ciclo de vida: `refresh` reconstruye solo los ámbitos cuyos bytes del `.fig` cambiaron; `rebuild` reconstruye aunque no haya cambios; `clear_cache` borra solo datos que una construcción puede recrear y conserva el registro y los índices publicados; `reset` borra la base de datos de este workspace (nunca el `.fig` ni las exportaciones) y solo se ejecuta a petición explícita. Nuevas fuentes, un ámbito más amplio, reset y recrear exigen cada uno su propia petición explícita.

@@ -169,8 +169,8 @@ figlens search design.fig "checkout button"
 # Advanced, once: pick a scope (a node id, or 0:0 for the whole file); the build runs in the foreground
 figlens index prepare design.fig --scope 0:0
 
-# Indexed search; add --node when the indexed scope is not the whole file
-figlens search --file design.fig "checkout button"
+# Indexed search: pass the scope you prepared as --node
+figlens search --file design.fig "checkout button" --node 0:0
 
 # After you edit or re-export the .fig: rebuild only the scopes whose bytes changed
 figlens index refresh --file design.fig
@@ -180,12 +180,12 @@ figlens index relocate <sourceId> new/design.fig --id <workspaceId>
 figlens index refresh --id <workspaceId>
 ```
 
-MCP: `index` prepare returns a job; poll `jobs` until `succeeded`, then search with the `workspaceId` from the reply.
+MCP: `index` prepare returns a job; poll `jobs` until `succeeded`, then search with the `workspaceId` from the reply and `node` set to the prepared scope (without `node`, search reads `0:0`).
 
 ```json
 {"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
 {"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
-{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "query": "checkout button"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "node": "0:0", "query": "checkout button"}}
 ```
 
 Lifecycle: `refresh` rebuilds only scopes whose `.fig` bytes changed; `rebuild` rebuilds even when unchanged; `clear_cache` deletes only data a build can recreate and keeps the registry and published indexes; `reset` deletes this workspace's database (never the `.fig` or exports) and runs only on your explicit request. New sources, a wider scope, reset and recreate each need their own explicit request.

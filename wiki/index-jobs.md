@@ -65,23 +65,25 @@ The registry and every published index stay when a search exceeds the envelope. 
 
 ## Measurements
 
-Docker (linux/aarch64 on Apple silicon), release build, a public 60 MB Community file kept in the OS page cache (warm file cache); each figlens call is a new process. n=20 unless stated.
+Measured at `fd8d4bf` (the contended and base rows at `ba08580`) in Docker (linux/aarch64 on Apple silicon), release build, a public 60 MB Community file kept in the OS page cache (warm file cache); each figlens call is a new process. n=20 unless stated.
 
-| Case | Scope `0:0` (38,520 rows) | Page scope (2,263 records) |
+| Case | Scope `0:0` (36,171 records, 2,349 terms, 6,351 edges) | Page scope (2,263 records) |
 |---|---|---|
 | First `prepare --scope`, new workspace | p50 865 ms, p95 962 ms | p50 461 ms, p95 562 ms |
 | `rebuild` | p50 865 ms, p95 945 ms | p50 531 ms, p95 546 ms |
 | Stages p50 (stage, hash, parse, write, verify) | 13, 21, 558, 161, 100 ms | 15, 21, 318, 24, 133 ms |
 | Peak RSS, owner plus worker summed | 606 MiB | 533 MiB |
 | Database after rebuilds (WAL after checkpoint) | 12.4 MiB (0) | 780 KiB (0) |
-| Publication transaction alone, n=100 | p50 1.0 ms, p95 1.5 ms | p50 0.9 ms, p95 1.2 ms |
+| SQL subset of the publication transaction (3 selects, update, insert) on a copy, n=100; not the fenced `publish()` | p50 1.0 ms, p95 1.5 ms | p50 0.9 ms, p95 1.2 ms |
 | Warm workspace search, n=100, p95 | 4.9 ms (`button`), 2.1 ms (`sign in`), 8.8 ms (most common term, df 5,054) | 1.9, 1.9, 2.7 ms (df 532) |
 | Stateless search / `find` / `inspect`, p50 | 600 / 319 / 326 ms | 351 / 320 / 382 ms |
+| Workspace search, n=100, while a rebuild loop writes and publishes (7 publishes, 0 errors) | p50 4.6, p95 5.4, max 9.6 ms (idle: 3.9, 4.3, 5.6) | — |
+| `find` / `inspect 0:1` / stateless search vs base `0b6d8a6`, n=20 interleaved, p50 (p95) | find 318 (412) vs 320 (352); inspect 317 (324) vs 313 (322); search 582 (605) vs 578 (638) ms | — |
 
 - Hashing the 57 MiB file (sha256, page-cached) takes about 26 ms; verify also re-reads the written generation.
 - Cancel, request to terminal state with no worker left, x20 per stage, max: 132 (stage), 121 (hash), 104 (parse), 186 (write), 137 (verify) ms.
 - Parity: 36 queries and filters including page 2 return the same results as stateless search.
-- Stage times come from a 2 ms poll of the job row; the publication transaction is the fenced pointer swap replayed on a copy.
+- Stage times come from a 2 ms poll of the job row; whole rebuild timings include the real fenced publication. `find` and `inspect` output is byte-identical to the base; stateless search adds only `coverage.layers.relations` (plus its per-run freshness timestamps).
 
 Worker memory is the parse of the whole `.fig`, as in stateless search. Not measured yet: a cold OS cache, native Windows and macOS (PR3 hosts), and a corpus near the 100,000-record, 10-source envelope.
 
