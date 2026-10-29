@@ -862,6 +862,16 @@ impl Request {
 /// The ordering key of one result: location record, relation and sequence.
 pub(crate) type Key = (u32, String, u32);
 
+/// Matching locations in key order, and the smallest key of a hidden one passed over.
+pub(crate) type Inbound = (Vec<(u32, Edge)>, Option<Key>);
+
+/// Keeps the smaller of `left` and `key`.
+pub(crate) fn lowest(left: &mut Option<Key>, key: Key) {
+    if left.as_ref().is_none_or(|l| key < *l) {
+        *left = Some(key);
+    }
+}
+
 /// A request that passed validation, before any source is read.
 pub struct Prepared {
     pub(crate) relations: Vec<&'static str>,
@@ -970,8 +980,8 @@ pub(crate) trait Graph {
     /// The state of any edge that points at `target`.
     fn targeted(&mut self, target: &str) -> Result<Option<&'static str>>;
     /// Up to `limit` edges after `after` whose target is in `targets`, in key order, with
-    /// hidden locations left out unless `hidden`. A `contains` relation matches children of
-    /// `parent`.
+    /// hidden locations left out unless `hidden`, with the smallest key of a matching hidden
+    /// location the same scan passed over. A `contains` relation matches children of `parent`.
     fn inbound(
         &mut self,
         targets: &[String],
@@ -980,7 +990,7 @@ pub(crate) trait Graph {
         hidden: bool,
         after: Option<&Key>,
         limit: usize,
-    ) -> Result<Vec<(u32, Edge)>>;
+    ) -> Result<Inbound>;
     /// The edges of record `rid`, its parent as `contains`, in key order.
     fn outbound(&mut self, rid: u32) -> Result<Vec<Edge>>;
     /// Makes records `rids` and their ancestors readable through `index`.
@@ -1074,14 +1084,14 @@ impl Graph for Whole<'_> {
         hidden: bool,
         after: Option<&Key>,
         limit: usize,
-    ) -> Result<Vec<(u32, Edge)>> {
+    ) -> Result<Inbound> {
         let index = self.0;
         let rev = Reverse::of(index);
         let past = |rid: u32, relation: &str, seq: u32| {
             after.is_none_or(|a| (rid, relation, seq) > (a.0, a.1.as_str(), a.2))
         };
         let mut out = Vec::new();
-        let mut scanned = 0;
+        let (mut scanned, mut left) = (0, None);
         for t in targets {
             let list = rev.by_target.get(t).map_or(&[][..], Vec::as_slice);
             let edge = |&(rid, i): &(u32, u32)| (rid, &index.record(rid).edges[i as usize]);
@@ -1099,7 +1109,11 @@ impl Graph for Whole<'_> {
                     return Err(scan_limit());
                 }
                 let (rid, e) = edge(p);
-                if (index.record(rid).hidden && !hidden) || !relations.contains(&e.relation) {
+                if !relations.contains(&e.relation) {
+                    continue;
+                }
+                if index.record(rid).hidden && !hidden {
+                    lowest(&mut left, (rid, e.relation.into(), e.seq));
                     continue;
                 }
                 out.push((rid, e.clone()));
@@ -1119,7 +1133,9 @@ impl Graph for Whole<'_> {
                     return Err(scan_limit());
                 }
                 let r = index.record(rid);
-                if !r.hidden || hidden {
+                if r.hidden && !hidden {
+                    lowest(&mut left, (rid, "contains".into(), 0));
+                } else {
                     out.push((rid, contains(r)));
                     kept += 1;
                 }
@@ -1127,7 +1143,7 @@ impl Graph for Whole<'_> {
         }
         out.sort_by(|a, b| (a.0, a.1.relation, a.1.seq).cmp(&(b.0, b.1.relation, b.1.seq)));
         out.truncate(limit);
-        Ok(out)
+        Ok((out, left))
     }
     fn outbound(&mut self, rid: u32) -> Result<Vec<Edge>> {
         let r = self.0.record(rid);
@@ -1344,7 +1360,7 @@ pub(crate) fn query(
     } else {
         let mut targets = vec![target.to_owned()];
         targets.extend(members.iter().cloned());
-        let mut found = graph.inbound(
+        let (mut found, left) = graph.inbound(
             &targets,
             &q.relations,
             rid,
@@ -1354,12 +1370,14 @@ pub(crate) fn query(
         )?;
         more = found.len() > req.limit;
         found.truncate(req.limit);
-        // On the last page every visible match after the cursor is here, so a longer answer
-        // with hidden layers included means hidden locations were left out.
-        if !more && !req.include_hidden {
-            let all = graph.inbound(&targets, &q.relations, rid, true, after, found.len() + 1)?;
-            hidden_excluded = all.len() > found.len();
-        }
+        // A hidden match the scan passed over inside this page's range, or anywhere after the
+        // cursor on the last page, so a reader of all pages sees every exclusion at any limit.
+        hidden_excluded = left.is_some_and(|h| {
+            !more
+                || found
+                    .last()
+                    .is_some_and(|(r, e)| h < (*r, e.relation.into(), e.seq))
+        });
         let rids: Vec<u32> = found.iter().map(|h| h.0).collect();
         graph.load(&rids)?;
         let index = graph.index();

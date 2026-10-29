@@ -1812,3 +1812,67 @@ fn a_prototype_projection_is_reserved_from_the_build_bounds_even_without_destina
     assert_eq!(build_as(&tree, "0:0", tight, false).stop, None);
     assert!(build(&tree, "0:0", tight).stop.is_some());
 }
+
+#[test]
+fn a_hidden_use_before_the_visible_ones_is_reported_by_some_page() {
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(20, Some(1), "COMPONENT", "Button", vec![]),
+            instance(30, 1, "Hidden", 20, vec![("visible", K::Bool(false))]),
+            instance(31, 1, "One", 20, vec![]),
+            instance(32, 1, "Two", 20, vec![]),
+        ]),
+    )]);
+    let index = build(&Tree::new(&message), "0:0", bounds(WORK));
+    let conn = stored(&index);
+    // Its instances, and the page's children through `contains`, each from memory and SQLite.
+    for (target, want) in [
+        ("0:20", vec!["0:31", "0:32"]),
+        ("0:1", vec!["0:20", "0:31", "0:32"]),
+    ] {
+        for disk in [false, true] {
+            let mut r = req(target);
+            r.limit = 1;
+            if target == "0:1" {
+                r.relations = vec!["contains".into()];
+            }
+            let (mut seen, mut reported) = (Vec::new(), false);
+            loop {
+                let q = r.validate().unwrap();
+                let served = Served {
+                    source: &source(),
+                    gen_id: 1,
+                };
+                let out = if disk {
+                    let graph = &mut Stored {
+                        conn: &conn,
+                        gen_id: 1,
+                        index: crate::search::store::load(&conn, 1, &[], &mut 0).unwrap(),
+                        spent: 0,
+                    };
+                    query(graph, &q, &r, served)
+                } else {
+                    query(&mut Whole(&index), &q, &r, served)
+                }
+                .unwrap();
+                seen.extend(ids(&out));
+                let reasons = out["coverage"]["reasons"].as_array().unwrap();
+                reported |= reasons
+                    .iter()
+                    .any(|x| x["code"] == "hidden_locations_excluded");
+                match out["nextCursor"].as_str() {
+                    Some(next) => r.cursor = Some(next.to_owned()),
+                    None => break,
+                }
+            }
+            assert_eq!(
+                (seen, reported),
+                (want.iter().map(|s| s.to_string()).collect(), true),
+                "{target} disk={disk}"
+            );
+        }
+    }
+}

@@ -695,7 +695,7 @@ impl Graph for Stored<'_> {
         hidden: bool,
         after: Option<&Key>,
         limit: usize,
-    ) -> Result<Vec<(u32, Edge)>> {
+    ) -> Result<usages::Inbound> {
         // One index range per target, read in key order from the cursor on, so a page costs
         // what it returns plus the rows its filters pass over, never every earlier match.
         let (rid, relation, seq) = match after {
@@ -703,7 +703,7 @@ impl Graph for Stored<'_> {
             None => (-1, String::new(), 0),
         };
         let mut out = Vec::new();
-        let mut scanned = 0;
+        let (mut scanned, mut left) = (0, None);
         let mut stmt = self.conn.prepare_cached(INBOUND)?;
         for target in targets {
             let mut rows = stmt.query(params![self.gen_id, target, rid, relation, seq])?;
@@ -716,7 +716,11 @@ impl Graph for Stored<'_> {
                     return Err(usages::scan_limit());
                 }
                 let e = edge(row, 1)?;
-                if (row.get::<_, bool>(7)? && !hidden) || !relations.contains(&e.relation) {
+                if !relations.contains(&e.relation) {
+                    continue;
+                }
+                if row.get::<_, bool>(7)? && !hidden {
+                    usages::lowest(&mut left, (row.get(0)?, e.relation.into(), e.seq));
                     continue;
                 }
                 out.push((row.get(0)?, e));
@@ -739,6 +743,7 @@ impl Graph for Stored<'_> {
                     return Err(usages::scan_limit());
                 }
                 if row.get::<_, bool>(2)? && !hidden {
+                    usages::lowest(&mut left, (child, "contains".into(), 0));
                     continue;
                 }
                 let expanded: bool = row.get(1)?;
@@ -758,7 +763,7 @@ impl Graph for Stored<'_> {
         }
         out.sort_by(|a, b| (a.0, a.1.relation, a.1.seq).cmp(&(b.0, b.1.relation, b.1.seq)));
         out.truncate(limit);
-        Ok(out)
+        Ok((out, left))
     }
     fn outbound(&mut self, rid: u32) -> Result<Vec<Edge>> {
         self.load(&[rid])?;
