@@ -557,3 +557,30 @@ fn listing_tools_and_stateless_calls_create_no_database() {
     drop(mcp);
     assert!(!env.home.join(".local/state/figlens").exists());
 }
+
+#[test]
+fn a_relocated_source_scoped_file_keeps_its_workspace_and_source_under_the_new_path() {
+    let env = Env::new();
+    let old = env.fig("a.fig");
+    let prepared = env.json(&["index", "prepare", old.to_str().unwrap(), "--scope", "0:0"]);
+    let (ws, source) = (&prepared["workspaceId"], &prepared["source"]["sourceId"]);
+    let new = env.dir.join("moved.fig");
+    std::fs::rename(&old, &new).unwrap();
+    let new = std::fs::canonicalize(new).unwrap();
+    let (old, new) = (old.to_str().unwrap(), new.to_str().unwrap());
+    let source_id = source.as_str().unwrap();
+    env.json(&["index", "relocate", source_id, new, "--file", old]);
+    let status = env.json(&["index", "status", "--file", new]);
+    assert_eq!(&status["workspaceId"], ws);
+    assert_eq!(&status["sources"][0]["sourceId"], source);
+    // The new membership stops serving the old path's index until a refresh.
+    let stale = env.run(&["search", "--file", new, "first"]);
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("refresh"));
+    env.json(&["index", "refresh", "--file", new, "--scope", "0:0"]);
+    let found = env.json(&["search", "--file", new, "first"]);
+    assert_eq!(&found["workspaceId"], ws);
+    assert_eq!(&found["results"][0]["ref"]["sourceId"], source);
+    let again = env.json(&["index", "prepare", new]);
+    assert_eq!(&again["workspaceId"], ws);
+    assert_eq!(again["source"]["added"], false);
+}

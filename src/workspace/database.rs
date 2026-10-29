@@ -488,6 +488,7 @@ pub(super) fn opened_report(
 /// Opens the selected, initialized workspace with its storage place. A writer upgrades a
 /// schema 1 registry first, briefly holding the workspace lock exclusively.
 pub(super) fn opened(storage: &Storage, select: &Select, write: bool) -> Result<(Place, Opened)> {
+    let select = &storage.follow(select)?;
     let id = select.id()?;
     let place = storage.place(&id, select.locator())?;
     let held = acquire(&place.roots.state.path, select, false)?.ok_or_else(|| missing(&id))?;

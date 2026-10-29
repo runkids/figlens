@@ -260,9 +260,31 @@ impl Locator {
         Ok(Self::Project(canonical))
     }
 
-    /// The source-scoped workspace of the `.fig` at `file`.
+    /// The source-scoped workspace of the `.fig` at `file`. A file that was moved away still
+    /// selects its workspace through its directory, so it can be relocated or reset.
     pub fn source(file: &Path) -> Result<Self> {
-        Ok(Self::Source(readable(file)?))
+        match readable(file) {
+            Ok(path) => Ok(Self::Source(path)),
+            Err(e) => match (
+                std::fs::symlink_metadata(file),
+                file.parent(),
+                file.file_name(),
+            ) {
+                (Err(gone), Some(dir), Some(name))
+                    if gone.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    let dir = if dir.as_os_str().is_empty() {
+                        Path::new(".")
+                    } else {
+                        dir
+                    };
+                    std::fs::canonicalize(dir)
+                        .map(|d| Self::Source(d.join(name)))
+                        .map_err(|_| e)
+                }
+                _ => Err(e),
+            },
+        }
     }
 
     pub(super) fn kind(&self) -> &'static str {
@@ -455,6 +477,10 @@ impl Storage {
             return Ok(None);
         }
         let record = read_small(&path)?;
+        // A relocated source's alias names another workspace; this id has no location.
+        if record.get("aliasOf").is_some() {
+            return Ok(None);
+        }
         if record["version"] != 1 && record["version"] != LOCATION {
             return Err(fail(
                 ErrorKind::IndexIncompatible,
@@ -487,6 +513,34 @@ impl Storage {
             })),
             _ => Err(preserved(&path, "is not this workspace's location record")),
         }
+    }
+
+    /// The workspace a relocated source-scoped `.fig` belongs to: the id its alias record
+    /// `<config>/workspaces/<id>.json` `{"aliasOf": ...}` names.
+    pub(super) fn alias(&self, id: &str) -> Result<Option<String>> {
+        let Some(locations) = workspaces(&self.defaults.config.path, false)? else {
+            return Ok(None);
+        };
+        let path = locations.join(format!("{id}.json"));
+        if !plain(&path, false)? {
+            return Ok(None);
+        }
+        let record = read_small(&path)?;
+        match &record["aliasOf"] {
+            Json::Null => Ok(None),
+            Json::String(old) if Select::Id(old.clone()).id().is_ok() => Ok(Some(old.clone())),
+            _ => Err(preserved(&path, "is not a valid alias record")),
+        }
+    }
+
+    /// `select`, with a relocated source's file selecting the workspace that now holds it.
+    pub(super) fn follow(&self, select: &Select) -> Result<Select> {
+        if let Select::Locator(locator @ Locator::Source(_)) = select
+            && let Some(old) = self.alias(&locator.id()?)?
+        {
+            return Ok(Select::Id(old));
+        }
+        Ok(select.clone())
     }
 
     /// Precedence: this command's `--storage`, then the workspace's remembered root, then the

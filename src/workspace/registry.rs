@@ -269,6 +269,14 @@ pub fn prepare(
     };
     let id = locator.id()?;
     let (locations, _location) = location_exclusive(storage, &id)?;
+    // A relocated source-scoped file prepares the workspace that already holds it.
+    if project.is_none()
+        && !options.replace_unavailable
+        && let Some(old) = storage.alias(&id)?
+    {
+        let (place, ws) = opened(storage, &Select::Id(old), true)?;
+        return registered(storage, place, ws, false, &source, options);
+    }
     if options.replace_unavailable {
         return recreate(storage, &id, &locator, &source, options);
     }
@@ -290,8 +298,20 @@ pub fn prepare(
         write_small(&locations.join(format!("{id}.json")), &record)?;
         place.binding = Some(binding);
     }
-    let (mut ws, initialized) = open_for_prepare(&place, &id, &locator)?;
-    let (source_id, added) = register(&mut ws.conn, &source)?;
+    let (ws, initialized) = open_for_prepare(&place, &id, &locator)?;
+    registered(storage, place, ws, initialized, &source, options)
+}
+
+/// Registers `source` in the open workspace and submits the requested scope's build.
+fn registered(
+    storage: &Storage,
+    place: Place,
+    mut ws: Opened,
+    initialized: bool,
+    source: &Path,
+    options: PrepareOptions,
+) -> Result<Outcome> {
+    let (source_id, added) = register(&mut ws.conn, source)?;
     let mut extra = json!({"initialized": initialized,
         "source": {"sourceId": source_id, "path": source, "added": added}});
     let mut run = Vec::new();
@@ -325,6 +345,7 @@ pub fn prepare(
 /// The workspace's state and sources. A missing workspace creates nothing at all; an existing
 /// one is read through a read-only connection.
 pub fn status(storage: &Storage, select: &Select) -> Result<Json> {
+    let select = &storage.follow(select)?;
     let id = select.id()?;
     let place = storage.place(&id, select.locator())?;
     let Some(held) = acquire(&place.roots.state.path, select, false)? else {
@@ -438,13 +459,40 @@ pub fn remove(storage: &Storage, select: &Select, source_id: &str) -> Result<Jso
 pub fn relocate(storage: &Storage, select: &Select, source_id: &str, file: &Path) -> Result<Json> {
     let source = readable(file)?;
     let (place, ws) = opened(storage, select, true)?;
-    project_only(&ws, None)?;
     outside_storage(&source, storage, &place)?;
     if visible_path(storage, &ws.conn, source_id)?.is_none() || !storage.sees(&source) {
         return Err(fail(
             ErrorKind::InvalidArguments,
             format!("workspace {} has no source {source_id}", ws.held.id),
         ));
+    }
+    // A source-scoped workspace keeps its id: the new path's id becomes an alias of it, written
+    // first, so an interruption leaves the alias pointing at the workspace still holding the
+    // old path, and a retry completes the move.
+    let _alias_lock;
+    if let Locator::Source(_) = ws.held.locator {
+        let new_id = Locator::Source(source.clone()).id()?;
+        if new_id != ws.held.id {
+            let (locations, lock) = location_exclusive(storage, &new_id)?;
+            _alias_lock = lock;
+            let record = locations.join(format!("{new_id}.json"));
+            let own = plain(&record, false)? && storage.alias(&new_id)?.as_deref() != Some(&ws.held.id);
+            let state = storage.place(&new_id, None)?.roots.state.path;
+            if own || acquire(&state, &Select::Id(new_id.clone()), false)?.is_some() {
+                return Err(fail(
+                    ErrorKind::InvalidArguments,
+                    format!(
+                        "{} has its own workspace {new_id}; reset that workspace first, or relocate into a project workspace",
+                        source.display()
+                    ),
+                ));
+            }
+            write_small(
+                &record,
+                &json!({"version": LOCATION, "aliasOf": ws.held.id,
+                    "locator": Locator::Source(source.clone()).report()?}),
+            )?;
+        }
     }
     // A new membership: indexes of the old path stop being served until a refresh, and a
     // build still running for the old path cannot publish.
@@ -494,6 +542,7 @@ pub(super) fn resettable(conn: &Connection, path: &Path, id: &str) -> Result<()>
 /// a new incarnation. Sources, project mappings, exports and other workspaces are never
 /// touched. `failed` lists what remains.
 pub fn reset(storage: &Storage, select: &Select) -> Result<Json> {
+    let select = &storage.follow(select)?;
     let id = select.id()?;
     let place = storage.place(&id, select.locator())?;
     // Active jobs are asked to stop first; their owners stop the child and release the
