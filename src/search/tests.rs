@@ -910,11 +910,62 @@ fn queries_up_to_the_term_limit_retrieve_only_records_with_every_term() {
     let index = build(&tree, "0:0", bounds(WORK));
     for n in [32, 33, MAX_TERMS] {
         let req = request(&words[..n].join(" "));
-        let (hits, ..) = retrieve(&index, &req.validate().unwrap(), &req);
+        let (hits, ..) = retrieve(&[&index], &req.validate().unwrap(), &req);
         let ids: Vec<&str> = hits
             .iter()
             .map(|h| index.records[h.record as usize].id.as_str())
             .collect();
         assert_eq!(ids, ["0:1"], "{n} terms");
     }
+}
+
+#[test]
+fn a_swap_to_a_missing_main_is_unresolved_not_the_definitions_main() {
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(20, Some(1), "SYMBOL", "Icon", vec![]),
+            node(40, Some(1), "FRAME", "Not a component", vec![]),
+            node(30, Some(1), "SYMBOL", "Card", vec![]),
+            instance(31, 30, "Default slot", 20, vec![]),
+            instance(32, 30, "Frame slot", 20, vec![]),
+            instance(
+                3,
+                1,
+                "Card copy",
+                30,
+                vec![(
+                    "symbolOverrides",
+                    K::Array(vec![
+                        obj(vec![path(&[31]), ("overriddenSymbolID", guid(99))]),
+                        obj(vec![path(&[32]), ("overriddenSymbolID", guid(40))]),
+                    ]),
+                )],
+            ),
+            instance(33, 1, "Stored", 20, vec![]),
+        ]),
+    )]);
+    let tree = Tree::new(&message);
+    let index = build(&tree, "0:0", bounds(WORK));
+    let of = |id: &str| {
+        let r = index.records.iter().find(|r| r.id == id).unwrap();
+        r.instance.clone().unwrap()
+    };
+    let unresolved = |evidence| Instance {
+        target: None,
+        basis: "resolved",
+        evidence,
+    };
+    assert_eq!(of("I0:3;0:31"), unresolved("swap"));
+    assert_eq!(of("I0:3;0:32"), unresolved("swap"));
+    assert_eq!(
+        of("0:33"),
+        Instance {
+            target: Some("0:20".into()),
+            basis: "recorded",
+            evidence: "symbolData",
+        }
+    );
 }

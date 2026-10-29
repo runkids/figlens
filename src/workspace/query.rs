@@ -1,0 +1,281 @@
+//! Search over a workspace's published indexes: every visible source with a published
+//! generation of exactly the requested scope, whose file still has the verified size and time,
+//! ranked together. Search reads only; it never builds, so a source without a ready index is
+//! reported with the action that prepares it.
+
+use super::*;
+use crate::search::{self, Index, Part, Request};
+
+/// One registered source as the query found it.
+struct Row {
+    id: String,
+    path: String,
+    membership: String,
+    gen_id: Option<i64>,
+    gen_membership: Option<String>,
+    snapshot: Option<String>,
+    versions: Option<String>,
+    bytes: Option<i64>,
+    mtime_ns: Option<i64>,
+    verified_ms: Option<i64>,
+}
+
+fn mtime_ns(t: SystemTime) -> i64 {
+    t.duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as i64)
+}
+
+/// Searches `req.scope` across the workspace's visible sources (or the `only` ones), ranked as
+/// one corpus. Sources that are not ready are listed with their state and next step; stale
+/// indexes are not served. Every request re-resolves the workspace's location and binding.
+pub fn search(storage: &Storage, select: &Select, only: &[String], req: &Request) -> Result<Json> {
+    let q = req.validate()?;
+    let (_, ws) = opened(storage, select, false)?;
+    let ws_id = ws.held.id.clone();
+    let dir = ws.held.dir.clone();
+    if ws.version < 2 {
+        return Ok(not_ready(&ws_id, req, Vec::new(), vec![prepare_step(&ws_id, req)]));
+    }
+    // One read transaction: every source and generation comes from the same commit.
+    let tx = ws.conn.unchecked_transaction().map_err(sql)?;
+    let mut stmt = tx
+        .prepare(
+            "SELECT s.source_id, s.path, s.membership, p.gen, g.membership, g.snapshot_id,
+             g.versions, n.bytes, n.mtime_ns, n.verified_ms
+             FROM sources s
+             LEFT JOIN published p ON p.source_id = s.source_id AND p.scope = ?1
+             LEFT JOIN generations g ON g.gen = p.gen
+             LEFT JOIN snapshots n ON n.source_id = s.source_id AND n.snapshot_id = g.snapshot_id
+             ORDER BY s.added_at_ms, s.source_id",
+        )
+        .map_err(sql)?;
+    let rows = stmt
+        .query_map([&req.scope], |r| {
+            Ok(Row {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                membership: r.get(2)?,
+                gen_id: r.get(3)?,
+                gen_membership: r.get(4)?,
+                snapshot: r.get(5)?,
+                versions: r.get(6)?,
+                bytes: r.get(7)?,
+                mtime_ns: r.get(8)?,
+                verified_ms: r.get(9)?,
+            })
+        })
+        .map_err(sql)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(sql)?;
+    drop(stmt);
+    // Invisible sources are dropped before anything about them is read or counted.
+    let rows: Vec<Row> = rows
+        .into_iter()
+        .filter(|r| storage.sees(Path::new(&r.path)))
+        .filter(|r| only.is_empty() || only.contains(&r.id))
+        .collect();
+    if let Some(unknown) = only.iter().find(|o| !rows.iter().any(|r| r.id == **o)) {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            format!("workspace {ws_id} has no source {unknown}"),
+        ));
+    }
+    let versions = search::store::versions();
+    let now = now_ms();
+    let mut states = Vec::new();
+    let mut loaded: Vec<(Index, Json, i64, Json)> = Vec::new();
+    let mut steps = Vec::new();
+    for row in &rows {
+        let mut state = json!({"sourceId": row.id, "path": row.path});
+        let job: Option<(String, String, String)> = tx
+            .query_row(
+                "SELECT job_id, state, owner FROM jobs WHERE source_id = ?1 AND scope = ?2
+                 AND state IN ('queued', 'running')",
+                [&row.id, &req.scope],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(sql)?;
+        let job = job.map(|(id, s, holder)| {
+            let s = if jobs::alive(&dir, &holder) { s } else { "interrupted".into() };
+            json!({"jobId": id, "state": s})
+        });
+        if let Some(job) = &job {
+            state["job"] = job.clone();
+        }
+        let refresh = json!({"tool": "index", "arguments": {"action": "refresh",
+            "workspaceId": ws_id, "sourceId": row.id, "scope": req.scope}});
+        let stamp = search::stamp(Path::new(&row.path))
+            .and_then(|s| File::open(&row.path).map(|_| s));
+        let current = row.gen_id.is_some() && row.gen_membership.as_deref() == Some(&row.membership);
+        let label = match (&stamp, current, &job) {
+            (Err(_), ..) => "unreadable",
+            (_, false, Some(j)) if j["state"] != "interrupted" => {
+                steps.push(json!({"tool": "jobs", "arguments": {"action": "status", "jobId": j["jobId"]}}));
+                "pending"
+            }
+            (_, false, _) if row.gen_id.is_some() => {
+                // Relocated or re-added since its index was built.
+                steps.push(refresh.clone());
+                "stale"
+            }
+            (_, false, _) => {
+                steps.push(json!({"tool": "index", "arguments": {"action": "refresh",
+                    "workspaceId": ws_id, "sourceId": row.id, "scope": req.scope},
+                    "why": "this scope is not indexed for this source yet"}));
+                "not_prepared"
+            }
+            _ if row.versions.as_deref() != Some(versions.as_str()) => {
+                steps.push(json!({"tool": "index", "arguments": {"action": "rebuild", "workspaceId": ws_id}}));
+                "incompatible"
+            }
+            (Ok(s), ..) if Some(s.1 as i64) != row.bytes || Some(mtime_ns(s.0)) != row.mtime_ns => {
+                steps.push(refresh.clone());
+                "stale"
+            }
+            _ => "ready",
+        };
+        state["state"] = json!(label);
+        if let Some(snapshot) = &row.snapshot {
+            state["snapshotId"] = json!(snapshot);
+            state["freshness"] = json!({"verifiedAtMs": row.verified_ms, "stampCheckedAtMs": now,
+                "basis": "size and modification time equal to the verified snapshot"});
+        }
+        if label == "ready" {
+            let gen_id = row.gen_id.expect("ready");
+            let index = search::store::load(&tx, gen_id, q.terms())
+                .map_err(|e| unreadable_index(&ws_id, &row.id, e))?;
+            let identity = json!({"sourceId": row.id, "membership": row.membership,
+                "snapshotId": row.snapshot, "gen": gen_id, "versions": versions});
+            loaded.push((
+                index,
+                json!({"sourceId": row.id, "snapshotId": row.snapshot}),
+                gen_id,
+                identity,
+            ));
+        }
+        states.push(state);
+    }
+    let used: Vec<i64> = loaded.iter().map(|l| l.2).collect();
+    if let Some(gens) = q.cursor_gens()
+        && gens != used.as_slice()
+    {
+        let gone = gens.iter().any(|g| {
+            tx.query_row("SELECT 1 FROM generations WHERE gen = ?1", [g], |_| Ok(()))
+                .optional()
+                .ok()
+                .flatten()
+                .is_none()
+        });
+        let (kind, why) = if gone {
+            (ErrorKind::CursorExpired, "an index this cursor paged was deleted")
+        } else {
+            (ErrorKind::CursorStale, "a source this cursor paged was reindexed or left the search")
+        };
+        return Err(FigError::new(kind, format!("{why}; search again without cursor")).into());
+    }
+    if loaded.is_empty() {
+        if states.iter().any(|s| s["state"] == "stale") {
+            return Err(FigError::new(
+                ErrorKind::SourceStale,
+                "every searched source changed since it was indexed; refresh it, then search again",
+            )
+            .with_recovery(json!(steps.iter().map(|s| {
+                let mut s = s.clone();
+                s["requires"] = json!("none");
+                s["action"] = json!("refresh");
+                s
+            }).collect::<Vec<_>>()))
+            .into());
+        }
+        if !states.is_empty() && states.iter().all(|s| s["state"] == "unreadable") {
+            return Err(fail(
+                ErrorKind::SourceUnreadable,
+                "no searched source can be read now; restore access to it, then search again",
+            ));
+        }
+        if steps.is_empty() {
+            steps.push(prepare_step(&ws_id, req));
+        }
+        return Ok(not_ready(&ws_id, req, states, steps));
+    }
+    let key = json!(loaded.iter().map(|l| &l.3).collect::<Vec<_>>());
+    let ranked = search::corpus_rank(&parts(&loaded), &q, req, &key)?;
+    // Only the shown page reads its records' ancestors, one tree level per query.
+    let mut wanted: Vec<Vec<u32>> = vec![Vec::new(); loaded.len()];
+    for (part, rid) in ranked.shown() {
+        wanted[part].push(rid);
+    }
+    for ((index, _, gen_id, identity), mut rids) in loaded.iter_mut().zip(wanted) {
+        while !rids.is_empty() {
+            search::store::add(&tx, *gen_id, index, &rids)
+                .map_err(|e| unreadable_index(&ws_id, identity["sourceId"].as_str().unwrap_or(""), e))?;
+            rids = rids.iter().filter_map(|r| search::parent(index, *r)).collect();
+            rids.sort_unstable();
+            rids.dedup();
+        }
+    }
+    let mut out = search::corpus_page(&parts(&loaded), &q, req, ranked)?;
+    let left_out: Vec<&Json> = states.iter().filter(|s| s["state"] != "ready").collect();
+    if !left_out.is_empty() {
+        let coverage = &mut out["coverage"];
+        coverage["complete"] = json!(false);
+        coverage["totalRecords"] = Json::Null;
+        coverage["layers"]["text"]["state"] = json!("partial");
+        if let Some(reasons) = coverage["reasons"].as_array_mut() {
+            reasons.push(json!({"code": "sources_not_ready", "counts": {"sources": left_out.len()},
+                "sourceIds": left_out.iter().map(|s| &s["sourceId"]).collect::<Vec<_>>()}));
+        }
+    }
+    out["workspaceId"] = json!(ws_id);
+    out["state"] = json!("ready");
+    out["sources"] = json!(states);
+    out["nextSteps"] = json!(steps);
+    Ok(out)
+}
+
+/// A stored index this binary cannot read: rebuilding it is the recovery.
+fn unreadable_index(ws_id: &str, source: &str, e: Box<dyn Error>) -> Box<dyn Error> {
+    FigError::new(
+        ErrorKind::IndexIncompatible,
+        format!("the index of {source} cannot be read: {e}"),
+    )
+    .with_recovery(json!([{"action": "rebuild", "requires": "none", "tool": "index",
+        "arguments": {"action": "rebuild", "workspaceId": ws_id}}]))
+    .into()
+}
+
+fn parts(loaded: &[(Index, Json, i64, Json)]) -> Vec<Part<'_>> {
+    loaded
+        .iter()
+        .map(|(index, source, gen_id, _)| Part {
+            index,
+            source: source.clone(),
+            gen_id: *gen_id,
+        })
+        .collect()
+}
+
+fn prepare_step(ws_id: &str, req: &Request) -> Json {
+    json!({"tool": "index", "arguments": {"action": "refresh", "workspaceId": ws_id, "scope": req.scope}})
+}
+
+/// A search with no ready source: a structured state with the next step, never an empty result
+/// set that reads as "nothing matched".
+fn not_ready(ws_id: &str, req: &Request, states: Vec<Json>, steps: Vec<Json>) -> Json {
+    let pending = states.iter().any(|s| s["state"] == "pending");
+    json!({
+        "workspaceId": ws_id,
+        "state": if pending { "pending" } else { "not_prepared" },
+        "query": {"text": req.query},
+        "scope": {"nodeId": req.scope},
+        "results": [],
+        "coverage": {"complete": false, "scannedRecords": 0, "totalRecords": null,
+            "layers": {"text": {"state": if pending { "pending" } else { "not_prepared" }}},
+            "reasons": [{"code": "index_not_ready"}]},
+        "hasMore": false,
+        "nextCursor": null,
+        "sources": states,
+        "nextSteps": steps,
+    })
+}

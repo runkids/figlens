@@ -1,6 +1,11 @@
 use super::*;
 use crate::test_support::TestDir;
 
+/// `prepare` of the registry alone, as schema 1 tests call it.
+fn prepare(storage: &Storage, file: &Path, project: Option<&Path>) -> Result<Json> {
+    super::prepare(storage, file, project, PrepareOptions::default()).map(|o| o.report)
+}
+
 struct Fixture {
     dir: TestDir,
     home: PathBuf,
@@ -223,7 +228,7 @@ fn reset_waits_for_an_active_reader_then_reports_busy_and_keeps_every_file() {
     let error = reset(&f.storage, &select).unwrap_err();
     assert_eq!(kind(&*error), ErrorKind::WorkspaceBusy);
     assert_eq!(listing(&dir), before);
-    assert_eq!(sources(&reader.conn).unwrap().len(), 1);
+    assert_eq!(sources(&f.storage, &reader).unwrap().len(), 1);
 }
 
 #[test]
@@ -700,7 +705,7 @@ fn a_foreign_or_newer_database_is_refused_untouched() {
     let db = f.workspace(&id).join(DB);
     Connection::open(&db)
         .unwrap()
-        .execute_batch("PRAGMA user_version = 2;")
+        .execute_batch(&format!("PRAGMA user_version = {};", SCHEMA + 1))
         .unwrap();
     let bytes = std::fs::read(&db).unwrap();
     let select = Select::Id(id.clone());

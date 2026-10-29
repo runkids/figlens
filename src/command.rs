@@ -691,6 +691,156 @@ pub fn search_tool(
     Ok(request)
 }
 
+/// The storage an MCP index, jobs or workspace search call uses: its custom `storage` only
+/// under the server's storage roots, and only sources under the design roots visible.
+fn tool_storage(
+    call: &crate::contract::PreparedCall,
+    roots: &[PathBuf],
+    storage_roots: &[PathBuf],
+) -> Result<figlens::workspace::Storage, Box<dyn Error>> {
+    Ok(
+        figlens::workspace::storage(call.string("storage").map(Path::new))?
+            .confined(roots)
+            .allow(storage_roots),
+    )
+}
+
+/// MCP `search` with `workspaceId`: the workspace's prepared indexes, never a build.
+pub fn workspace_search_tool(
+    call: &crate::contract::PreparedCall,
+    roots: &[PathBuf],
+    storage_roots: &[PathBuf],
+) -> Result<Output, Box<dyn Error>> {
+    let storage = tool_storage(call, roots, storage_roots)?;
+    let select = figlens::workspace::Select::Id(call.string("workspaceId").unwrap().to_owned());
+    let only: Vec<String> = call.string("sourceId").map(str::to_owned).into_iter().collect();
+    let value =
+        figlens::workspace::query::search(&storage, &select, &only, &search_tool(call)?)?;
+    Ok(Output::Json {
+        value,
+        pretty: false,
+    })
+}
+
+/// MCP `jobs`: status or cancel of one job.
+pub fn jobs_tool(
+    call: &crate::contract::PreparedCall,
+    roots: &[PathBuf],
+    storage_roots: &[PathBuf],
+) -> Result<Output, Box<dyn Error>> {
+    use figlens::workspace::jobs;
+    let storage = tool_storage(call, roots, storage_roots)?;
+    let id = call.string("jobId").unwrap();
+    let value = match call.string("action").unwrap() {
+        "status" => jobs::status(&storage, id)?,
+        _ => jobs::cancel(&storage, id)?,
+    };
+    Ok(Output::Json {
+        value,
+        pretty: false,
+    })
+}
+
+/// Jobs an index call submitted that this process owns and must run.
+pub struct Runs {
+    pub storage: figlens::workspace::Storage,
+    pub workspace_id: String,
+    pub jobs: Vec<String>,
+}
+
+/// MCP `index`: one workspace action. `file` and `project` are admitted paths. Returns the
+/// reply and the jobs to run in the background; the reply already names them as queued.
+pub fn index_tool(
+    call: &crate::contract::PreparedCall,
+    file: Option<&Path>,
+    project: Option<&Path>,
+    roots: &[PathBuf],
+    storage_roots: &[PathBuf],
+) -> Result<(Output, Option<Runs>), Box<dyn Error>> {
+    use figlens::workspace::{self, PrepareOptions, Select};
+    let storage = tool_storage(call, roots, storage_roots)?;
+    let action = call.string("action").unwrap();
+    let source_id = call.string("sourceId");
+    let scope = call.string("scope").map(normalize_id);
+    let request = call.string("requestId");
+    let id = call.string("workspaceId");
+    let missing = |what: &str| -> Box<dyn Error> {
+        figlens::FigError::new(
+            figlens::ErrorKind::InvalidArguments,
+            format!("index {action} needs {what}"),
+        )
+        .into()
+    };
+    // The file is the source itself for prepare, add and relocate, and a selector otherwise.
+    let source_action = matches!(action, "prepare" | "add" | "relocate");
+    let select = Select::from_choice(project, file.filter(|_| !source_action), id)?;
+    let chosen = || select.clone().ok_or_else(|| missing("workspace, workspaceId or file"));
+    let unexpected = (scope.is_some() && !matches!(action, "prepare" | "refresh"))
+        || (request.is_some() && !matches!(action, "prepare" | "refresh" | "rebuild"))
+        || (call.argument("replaceUnavailable") == true && action != "prepare")
+        || (source_id.is_some() && !matches!(action, "remove" | "relocate" | "refresh"));
+    if unexpected {
+        return Err(figlens::FigError::new(
+            figlens::ErrorKind::InvalidArguments,
+            format!("an argument given does not apply to index {action}; see the tool description"),
+        )
+        .into());
+    }
+    let mut outcome = None;
+    let value = match action {
+        "prepare" => {
+            if id.is_some() {
+                return Err(missing("file (and workspace for a project), not workspaceId"));
+            }
+            let options = PrepareOptions {
+                scope: scope.as_deref(),
+                request_id: request,
+                replace_unavailable: call.argument("replaceUnavailable") == true,
+            };
+            let done =
+                workspace::prepare(&storage, file.ok_or_else(|| missing("file"))?, project, options)?;
+            let value = done.report.clone();
+            outcome = Some(done);
+            value
+        }
+        "status" => workspace::status(&storage, &chosen()?)?,
+        "add" => workspace::add(&storage, &chosen()?, file.ok_or_else(|| missing("file"))?)?,
+        "remove" => {
+            workspace::remove(&storage, &chosen()?, source_id.ok_or_else(|| missing("sourceId"))?)?
+        }
+        "relocate" => workspace::relocate(
+            &storage,
+            &chosen()?,
+            source_id.ok_or_else(|| missing("sourceId"))?,
+            file.ok_or_else(|| missing("file"))?,
+        )?,
+        "refresh" | "rebuild" => {
+            let done = if action == "refresh" {
+                workspace::refresh(&storage, &chosen()?, source_id, scope.as_deref(), request)?
+            } else {
+                workspace::rebuild(&storage, &chosen()?, request)?
+            };
+            let value = done.report.clone();
+            outcome = Some(done);
+            value
+        }
+        "clear_cache" => workspace::clear_cache(&storage, &chosen()?)?,
+        _ => workspace::reset(&storage, &chosen()?)?,
+    };
+    let runs = outcome.filter(|o| !o.run.is_empty()).map(|o| Runs {
+        workspace_id: value["workspaceId"].as_str().unwrap_or_default().to_owned(),
+        storage,
+        jobs: o.run,
+    });
+    Ok((
+        Output::Json {
+            value,
+            pretty: false,
+        },
+        runs,
+    ))
+}
+
 /// Search reads and hashes its own snapshot of `path`, so it never needs a loaded tree.
 pub fn search(
     path: &Path,

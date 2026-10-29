@@ -15,10 +15,12 @@ use sha2::{Digest, Sha256};
 
 use crate::{ErrorKind, FigError};
 
-/// The registry schema this binary reads and writes; any other version is left untouched.
-pub const SCHEMA: i64 = 1;
-/// The version of a remembered workspace location record.
-const LOCATION: i64 = 1;
+/// The workspace schema this binary writes. Schema 1 (the registry alone) is upgraded in place,
+/// keeping every registered source; any other version is left untouched.
+pub const SCHEMA: i64 = 2;
+/// The version of a remembered workspace location record this binary writes; version 1 (no
+/// binding) is still read.
+const LOCATION: i64 = 2;
 /// The longest wait for another process's workspace lock.
 #[cfg(not(test))]
 const LOCK_WAIT: Duration = Duration::from_secs(5);
@@ -65,13 +67,39 @@ fn recovery(error: &std::io::Error) -> (ErrorKind, &'static str) {
 /// exist, so no other storage may take over: the only way on is access to this one.
 fn blocked(id: &str, path: &Path, error: std::io::Error) -> Box<dyn Error> {
     let (kind, next) = recovery(&error);
-    fail(
-        kind,
-        format!(
-            "workspace {id} may still have its database under {}, which cannot be checked: {error}; {next}; figlens does not start another database while it may exist",
-            path.display()
-        ),
-    )
+    let message = format!(
+        "workspace {id} may still have its database under {}, which cannot be checked: {error}; {next}; figlens does not start another database while it may exist",
+        path.display()
+    );
+    match kind {
+        ErrorKind::StorageUnavailable | ErrorKind::PermissionDenied => {
+            FigError::new(kind, message).with_recovery(unusable(kind)).into()
+        }
+        _ => fail(kind, message),
+    }
+}
+
+/// The recovery of a workspace whose storage is unusable: restore it, or recreate the workspace
+/// at a new location from an explicitly authorized source, leaving every old file in place.
+fn unusable(kind: ErrorKind) -> Json {
+    let restore = if kind == ErrorKind::PermissionDenied {
+        "restore_access"
+    } else {
+        "restore_storage"
+    };
+    json!([{"action": restore, "requires": "none",
+            "detail": "make the named storage reachable again, then retry the same call"},
+        recreate_elsewhere()])
+}
+
+/// Recreating at a new location: a new database there knows only the sources named in the call.
+fn recreate_elsewhere() -> Json {
+    json!({"action": "recreate_elsewhere", "requires": "user_confirmation",
+        "tool": "index", "arguments": {"action": "prepare", "file": "<a .fig of this workspace>",
+            "storage": "<new absolute directory>", "replaceUnavailable": true},
+        "cli": "figlens index prepare <file.fig> --storage <dir> --replace-unavailable",
+        "effects": {"keeps": "the old database and every old file, untouched",
+            "new": "an empty workspace with a new incarnation that knows only the given source"}})
 }
 
 /// A storage failure names its path and never moves on to another directory.
@@ -293,6 +321,61 @@ impl Roots {
 pub struct Storage {
     defaults: Roots,
     explicit: Option<PathBuf>,
+    /// Canonical design roots a caller may see (MCP `--root`); sources outside them are left
+    /// out of every report, search and job, with no path, name or count. `None` sees all.
+    visible: Option<Vec<PathBuf>>,
+    /// Canonical storage directories an MCP server may use besides the default roots
+    /// (`--storage-root`); `None` allows any, as the CLI does.
+    allowed: Option<Vec<PathBuf>>,
+}
+
+impl Storage {
+    /// Allows custom storage only under `roots` (canonical paths); the default roots stay allowed.
+    pub fn allow(mut self, roots: &[PathBuf]) -> Self {
+        self.allowed = Some(roots.to_vec());
+        self
+    }
+
+    /// Refuses a custom storage directory outside the allowed roots before anything there is
+    /// read, so an excluded location's state is never revealed.
+    fn authorized(&self, dir: &Path) -> Result<()> {
+        let Some(allowed) = &self.allowed else {
+            return Ok(());
+        };
+        let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_owned());
+        let defaults = [
+            &self.defaults.config.path,
+            &self.defaults.state.path,
+            &self.defaults.cache.path,
+            &self.defaults.data.path,
+        ];
+        if allowed.iter().chain(defaults).any(|r| dir.starts_with(r)) {
+            return Ok(());
+        }
+        Err(FigError::new(
+            ErrorKind::PermissionDenied,
+            format!(
+                "storage {} is outside this server's storage roots; start figlens mcp with --storage-root <dir> to allow it",
+                dir.display()
+            ),
+        )
+        .into())
+    }
+
+    /// Limits every report, search and job to sources under `roots` (canonical paths).
+    pub fn confined(mut self, roots: &[PathBuf]) -> Self {
+        if !roots.is_empty() {
+            self.visible = Some(roots.to_vec());
+        }
+        self
+    }
+
+    /// Whether a registered (canonical) source path is visible to this caller.
+    fn sees(&self, path: &Path) -> bool {
+        self.visible
+            .as_ref()
+            .is_none_or(|roots| roots.iter().any(|r| path.starts_with(r)))
+    }
 }
 
 /// (name, XDG variable, default under HOME) for each root.
@@ -366,6 +449,8 @@ fn resolve(
             data: default(data)?,
         },
         explicit: explicit.map(Path::to_path_buf),
+        visible: None,
+        allowed: None,
     })
 }
 
@@ -611,6 +696,16 @@ struct Place {
     rule: &'static str,
     /// The remembered application root, when there is one.
     remembered: Option<PathBuf>,
+    /// The nonce the location record and the database it names share; `None` for a database
+    /// with no record, or one recorded before bindings existed.
+    binding: Option<String>,
+}
+
+/// A location record: where the workspace lives, which locator it serves and its binding.
+struct Remembered {
+    storage: PathBuf,
+    locator: Locator,
+    binding: Option<String>,
 }
 
 impl Place {
@@ -626,7 +721,7 @@ impl Storage {
 
     /// The remembered application root of workspace `id` and its locator, read from the fixed
     /// config directory. It only locates the workspace; ownership is checked at the workspace.
-    fn remembered(&self, id: &str) -> Result<Option<(PathBuf, Locator)>> {
+    fn remembered(&self, id: &str) -> Result<Option<Remembered>> {
         let Some(locations) = workspaces(&self.defaults.config.path, false)? else {
             return Ok(None);
         };
@@ -635,7 +730,7 @@ impl Storage {
             return Ok(None);
         }
         let record = read_small(&path)?;
-        if record["version"] != LOCATION {
+        if record["version"] != 1 && record["version"] != LOCATION {
             return Err(fail(
                 ErrorKind::IndexIncompatible,
                 format!(
@@ -649,12 +744,22 @@ impl Storage {
             .as_str()
             .map(PathBuf::from)
             .filter(|p| p.is_absolute());
+        let binding = match &record["binding"] {
+            Json::Null => Some(None),
+            Json::String(b) if b.len() == 32 => Some(Some(b.clone())),
+            _ => None,
+        };
         match (
             record["workspaceId"] == id,
             storage,
             Locator::parse(&record["locator"]),
+            binding,
         ) {
-            (true, Some(storage), Some(locator)) => Ok(Some((storage, locator))),
+            (true, Some(storage), Some(locator), Some(binding)) => Ok(Some(Remembered {
+                storage,
+                locator,
+                binding,
+            })),
             _ => Err(preserved(&path, "is not this workspace's location record")),
         }
     }
@@ -663,30 +768,36 @@ impl Storage {
     /// default roots. A remembered root that is gone is an error, never a second database.
     fn place(&self, id: &str, wanted: Option<&Locator>) -> Result<Place> {
         let remembered = self.remembered(id)?;
-        if let (Some((_, found)), Some(wanted)) = (&remembered, wanted)
-            && found != wanted
+        if let (Some(found), Some(wanted)) = (&remembered, wanted)
+            && found.locator != *wanted
         {
             return Err(preserved(
                 &self.locations().join(format!("{id}.json")),
                 "records a different workspace with the same id",
             ));
         }
-        let remembered = remembered.map(|(root, _)| root);
+        let binding = remembered.as_ref().and_then(|r| r.binding.clone());
+        let remembered = remembered.map(|r| r.storage);
+        for dir in self.explicit.iter().chain(&remembered) {
+            self.authorized(dir)?;
+        }
         // Its database may still be there, so even --storage must not start another one;
         // retrying the same --storage recreates its own place, which is not a second database.
         if let Some(dir) = &remembered
             && !self.explicit.as_ref().is_some_and(|e| same_dir(e, dir))
         {
             let record = self.locations().join(format!("{id}.json"));
-            let gone = |why: &str| {
-                fail(
+            let gone = |why: &str| -> Box<dyn Error> {
+                FigError::new(
                     ErrorKind::StorageUnavailable,
                     format!(
-                        "workspace {id} is remembered at {}, which {why}; reconnect or restore it, then retry; only if its database is gone for good, delete {} to forget it; no other database was created",
+                        "workspace {id} is remembered at {}, which {why}; reconnect or restore it, then retry; only if its database is gone for good, delete {} to forget it, or recreate the workspace elsewhere; no other database was created",
                         dir.display(),
                         record.display()
                     ),
                 )
+                .with_recovery(unusable(ErrorKind::StorageUnavailable))
+                .into()
             };
             match std::fs::metadata(dir) {
                 Ok(meta) if meta.is_dir() => {}
@@ -727,17 +838,20 @@ impl Storage {
             (Some(dir), _) => Place {
                 roots: self.defaults.under(dir, "--storage"),
                 rule: "--storage",
+                binding: binding.filter(|_| remembered.as_ref().is_some_and(|r| same_dir(r, dir))),
                 remembered,
             },
             (None, Some(dir)) => Place {
                 roots: self.defaults.under(dir, "remembered"),
                 rule: "remembered",
                 remembered: remembered.clone(),
+                binding,
             },
             (None, None) => Place {
                 roots: self.defaults.clone(),
                 rule: "default",
                 remembered: None,
+                binding: None,
             },
         })
     }
@@ -1013,9 +1127,16 @@ fn meta(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
         .optional()
 }
 
-/// The incarnation of this workspace's registry, or `None` for an empty database. Schema and
-/// identity are read before any write: another schema or workspace is refused untouched.
-fn contents(conn: &Connection, path: &Path, held: &Held) -> Result<Option<String>> {
+/// What an initialized database holds: its schema version, incarnation and binding.
+struct Contents {
+    version: i64,
+    incarnation: String,
+    binding: Option<String>,
+}
+
+/// The contents of this workspace's database, or `None` for an empty one. Schema and identity
+/// are read before any write: another schema or workspace is refused untouched.
+fn contents(conn: &Connection, path: &Path, held: &Held) -> Result<Option<Contents>> {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .map_err(sql)?;
@@ -1026,14 +1147,8 @@ fn contents(conn: &Connection, path: &Path, held: &Held) -> Result<Option<String
             Err(preserved(path, "is not a figlens workspace database"))
         };
     }
-    if version != SCHEMA {
-        return Err(fail(
-            ErrorKind::IndexIncompatible,
-            format!(
-                "{} has workspace schema {version}; this figlens reads schema {SCHEMA} and left it untouched",
-                path.display()
-            ),
-        ));
+    if !(1..=SCHEMA).contains(&version) {
+        return Err(incompatible(path, version));
     }
     let found = Locator::parse(&json!({
         "kind": meta(conn, "locator_kind").map_err(sql)?,
@@ -1044,9 +1159,125 @@ fn contents(conn: &Connection, path: &Path, held: &Held) -> Result<Option<String
     {
         return Err(preserved(path, "belongs to a different workspace"));
     }
-    Ok(Some(
-        meta(conn, "incarnation").map_err(sql)?.unwrap_or_default(),
-    ))
+    Ok(Some(Contents {
+        version,
+        incarnation: meta(conn, "incarnation").map_err(sql)?.unwrap_or_default(),
+        binding: meta(conn, "binding").map_err(sql)?,
+    }))
+}
+
+/// Whether the database at `path` still names its owner: `Some(true)` for workspace `id`,
+/// `Some(false)` for another one, `None` when its ownership metadata cannot be read at all.
+fn owner_of(path: &Path, id: &str) -> Option<bool> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    meta(&conn, "workspace_id").ok().flatten().map(|owner| owner == id)
+}
+
+/// Adds the recovery that applies to a database this binary cannot read: a readable ownership
+/// record allows an explicit reset; an unreadable one only a recreation elsewhere, since reset
+/// deletes only a database that proves it is this workspace's. A foreign database, a newer
+/// schema or a storage error keeps its own error.
+fn damaged(path: &Path, id: &str, error: Box<dyn Error>) -> Box<dyn Error> {
+    let kind = error.downcast_ref::<FigError>().map(FigError::kind);
+    if matches!(
+        kind,
+        Some(
+            ErrorKind::IndexIncompatible
+                | ErrorKind::WorkspaceBusy
+                | ErrorKind::PermissionDenied
+                | ErrorKind::StorageUnavailable
+        )
+    ) {
+        return error;
+    }
+    let recovery = match owner_of(path, id) {
+        Some(false) => return error,
+        Some(true) => json!([{"action": "reset", "requires": "user_confirmation",
+            "tool": "index", "arguments": {"action": "reset", "workspaceId": id},
+            "effects": {"removes": "this workspace's database: registry, jobs and indexes",
+                "keeps": ".fig sources, .figlens/, exports and other workspaces"}}]),
+        None => json!([recreate_elsewhere()]),
+    };
+    FigError::new(
+        ErrorKind::IndexIncompatible,
+        format!("{} cannot be read as this workspace's database: {error}", path.display()),
+    )
+    .with_recovery(recovery)
+    .into()
+}
+
+/// A newer schema: only the figlens that wrote it can read it, so nothing is offered as safe here.
+fn incompatible(path: &Path, version: i64) -> Box<dyn Error> {
+    FigError::new(
+        ErrorKind::IndexIncompatible,
+        format!(
+            "{} has workspace schema {version}; this figlens reads schemas 1-{SCHEMA} and left it untouched",
+            path.display()
+        ),
+    )
+    .with_recovery(json!([{"action": "use_writer_version", "requires": "none",
+        "detail": format!("run the figlens version that wrote schema {version}")}]))
+    .into()
+}
+
+/// Schema 2 beside the schema 1 registry: membership tokens on sources, snapshots, index
+/// generations with their records, terms and edges, the published pointer and jobs.
+const V2: &str = "
+    ALTER TABLE sources ADD COLUMN membership TEXT NOT NULL DEFAULT '';
+    UPDATE sources SET membership = lower(hex(randomblob(16)));
+    CREATE TABLE snapshots (
+        source_id TEXT NOT NULL, snapshot_id TEXT NOT NULL, bytes INTEGER NOT NULL,
+        mtime_ns INTEGER NOT NULL, verified_ms INTEGER NOT NULL,
+        PRIMARY KEY (source_id, snapshot_id)) STRICT;
+    CREATE TABLE generations (
+        gen INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL,
+        membership TEXT NOT NULL, scope TEXT NOT NULL, snapshot_id TEXT, versions TEXT NOT NULL,
+        job_id TEXT NOT NULL, state TEXT NOT NULL, complete INTEGER NOT NULL DEFAULT 0,
+        stop TEXT, records INTEGER NOT NULL DEFAULT 0, info TEXT, created_ms INTEGER NOT NULL,
+        retired_ms INTEGER) STRICT;
+    CREATE INDEX generations_job ON generations (job_id);
+    CREATE TABLE published (
+        source_id TEXT NOT NULL, scope TEXT NOT NULL, gen INTEGER NOT NULL,
+        published_ms INTEGER NOT NULL, PRIMARY KEY (source_id, scope)) STRICT;
+    CREATE TABLE records (
+        gen INTEGER NOT NULL, rid INTEGER NOT NULL, node_id TEXT NOT NULL, name TEXT NOT NULL,
+        kind TEXT NOT NULL, text TEXT, norm0 TEXT NOT NULL, norm1 TEXT NOT NULL,
+        len0 INTEGER NOT NULL, len1 INTEGER NOT NULL, parent INTEGER, source TEXT,
+        text_source TEXT, hidden INTEGER NOT NULL, page INTEGER, root INTEGER,
+        PRIMARY KEY (gen, rid)) STRICT, WITHOUT ROWID;
+    CREATE TABLE terms (
+        gen INTEGER NOT NULL, term TEXT NOT NULL, df INTEGER NOT NULL, postings BLOB NOT NULL,
+        PRIMARY KEY (gen, term)) STRICT, WITHOUT ROWID;
+    CREATE TABLE edges (
+        gen INTEGER NOT NULL, rid INTEGER NOT NULL, relation TEXT NOT NULL, target TEXT,
+        basis TEXT NOT NULL, evidence TEXT NOT NULL,
+        PRIMARY KEY (gen, rid, relation)) STRICT, WITHOUT ROWID;
+    CREATE INDEX edges_target ON edges (gen, relation, target);
+    CREATE TABLE jobs (
+        job_id TEXT PRIMARY KEY, request_id TEXT UNIQUE, fingerprint TEXT NOT NULL,
+        kind TEXT NOT NULL, source_id TEXT NOT NULL, membership TEXT NOT NULL,
+        scope TEXT NOT NULL, incarnation TEXT NOT NULL, expected_gen INTEGER,
+        state TEXT NOT NULL, stage TEXT, done INTEGER NOT NULL DEFAULT 0, total INTEGER,
+        error TEXT, owner TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 1,
+        cancel INTEGER NOT NULL DEFAULT 0, gen INTEGER, created_ms INTEGER NOT NULL,
+        heartbeat_ms INTEGER NOT NULL, finished_ms INTEGER) STRICT;
+    -- One active build per source and scope, whatever its kind: a second request joins it.
+    CREATE UNIQUE INDEX jobs_active ON jobs (source_id, scope) WHERE state IN ('queued', 'running');
+    PRAGMA user_version = 2;";
+
+/// Upgrades a schema 1 registry to schema 2 in one transaction, keeping every source and the
+/// incarnation. The caller holds the workspace lock exclusively.
+fn upgrade(conn: &mut Connection) -> Result<()> {
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(sql)?;
+    let version: i64 = tx
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(sql)?;
+    if version == 1 {
+        tx.execute_batch(V2).map_err(sql)?;
+    }
+    tx.commit().map_err(sql)
 }
 
 /// Durable WAL settings for a writing connection.
@@ -1071,7 +1302,7 @@ fn writable(conn: &Connection) -> Result<()> {
 
 /// Creates the registry in one transaction. The incarnation is new for every initialization,
 /// so ids handed out before a reset never match the recreated workspace.
-fn initialize(conn: &mut Connection, held: &Held) -> Result<String> {
+fn initialize(conn: &mut Connection, held: &Held, binding: Option<&str>) -> Result<String> {
     let tx = conn.transaction().map_err(sql)?;
     tx.execute_batch(
         "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
@@ -1082,6 +1313,14 @@ fn initialize(conn: &mut Connection, held: &Held) -> Result<String> {
          ) STRICT;",
     )
     .map_err(sql)?;
+    tx.execute_batch(V2).map_err(sql)?;
+    if let Some(binding) = binding {
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('binding', ?1)",
+            [binding],
+        )
+        .map_err(sql)?;
+    }
     let incarnation: String = tx
         .query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))
         .map_err(sql)?;
@@ -1098,22 +1337,23 @@ fn initialize(conn: &mut Connection, held: &Held) -> Result<String> {
         )
         .map_err(sql)?;
     }
-    tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA};"))
-        .map_err(sql)?;
     tx.commit().map_err(sql)?;
     Ok(incarnation)
 }
 
 /// An initialized workspace opened for one command under its held lock.
-struct Opened {
+pub(crate) struct Opened {
     incarnation: String,
+    version: i64,
     // Declared before `held`, so the connection closes before the lock is released.
     conn: Connection,
     held: Held,
 }
 
-/// Opens the database of a held workspace, or `None` when it has none (after reset).
-fn open_held(held: Held, write: bool) -> Result<Option<Opened>> {
+/// Opens the database of a held workspace, or `None` when it has none (after reset). A
+/// database whose binding differs from its location record's is detached: another database
+/// replaced it, so it is never served.
+fn open_held(held: Held, write: bool, place: &Place) -> Result<Option<Opened>> {
     let path = held.dir.join(DB);
     if !plain(&path, false)? {
         return Ok(None);
@@ -1124,14 +1364,25 @@ fn open_held(held: Held, write: bool) -> Result<Option<Opened>> {
         OpenFlags::SQLITE_OPEN_READ_ONLY
     };
     let conn = open(&path, flags)?;
-    let Some(incarnation) = contents(&conn, &path, &held)? else {
+    let Some(found) = contents(&conn, &path, &held).map_err(|e| damaged(&path, &held.id, e))?
+    else {
         return Ok(None);
     };
+    if found.binding != place.binding {
+        return Err(fail(
+            ErrorKind::OperationFailed,
+            format!(
+                "{} is detached: its location record names another database; figlens left it untouched",
+                path.display()
+            ),
+        ));
+    }
     if write {
         writable(&conn)?;
     }
     Ok(Some(Opened {
-        incarnation,
+        incarnation: found.incarnation,
+        version: found.version,
         conn,
         held,
     }))
@@ -1179,7 +1430,8 @@ fn register(conn: &mut Connection, source: &Path) -> Result<(String, bool)> {
         ));
     }
     tx.execute(
-        "INSERT INTO sources (source_id, path, added_at_ms) VALUES (?1, ?2, ?3)",
+        "INSERT INTO sources (source_id, path, added_at_ms, membership)
+         VALUES (?1, ?2, ?3, lower(hex(randomblob(16))))",
         rusqlite::params![id, path, now_ms()],
     )
     .map_err(sql)?;
@@ -1187,19 +1439,46 @@ fn register(conn: &mut Connection, source: &Path) -> Result<(String, bool)> {
     Ok((id, true))
 }
 
-fn sources(conn: &Connection) -> Result<Vec<Json>> {
+/// The registered sources this caller may see, in registry order, with their published scopes.
+fn sources(storage: &Storage, ws: &Opened) -> Result<Vec<Json>> {
+    let conn = &ws.conn;
     let mut stmt = conn
         .prepare("SELECT source_id, path FROM sources ORDER BY added_at_ms, source_id")
         .map_err(sql)?;
     let rows = stmt
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
         .map_err(sql)?;
-    rows.map(|row| {
+    let mut out = Vec::new();
+    for row in rows {
         let (id, path) = row.map_err(sql)?;
+        if !storage.sees(Path::new(&path)) {
+            continue;
+        }
         let present = std::fs::metadata(&path).is_ok_and(|m| m.is_file());
-        Ok(json!({"sourceId": id, "path": path, "present": present}))
-    })
-    .collect()
+        let mut source = json!({"sourceId": id, "path": path, "present": present});
+        if ws.version >= 2 {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT p.scope, g.snapshot_id, g.complete, g.records, g.membership = s.membership
+                     FROM published p JOIN generations g ON g.gen = p.gen
+                     JOIN sources s ON s.source_id = p.source_id
+                     WHERE p.source_id = ?1 ORDER BY p.published_ms DESC",
+                )
+                .map_err(sql)?;
+            let scopes = stmt
+                .query_map([&id], |r| {
+                    Ok(json!({"scope": r.get::<_, String>(0)?, "snapshotId": r.get::<_, Option<String>>(1)?,
+                        "complete": r.get::<_, bool>(2)?, "records": r.get::<_, i64>(3)?,
+                        "current": r.get::<_, bool>(4)?}))
+                })
+                .map_err(sql)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(sql)?;
+            source["indexed"] = json!(scopes);
+        }
+        out.push(source);
+    }
+    Ok(out)
 }
 
 // ---- Reports ----
@@ -1216,12 +1495,16 @@ fn report(place: &Place, id: &str, dir: Option<&Path>, state: &str, extra: Json)
 }
 
 /// The report of an initialized workspace: its incarnation, locator and sources, plus `extra`.
-fn opened_report(place: &Place, ws: &Opened, extra: Json) -> Result<Json> {
+fn opened_report(storage: &Storage, place: &Place, ws: &Opened, extra: Json) -> Result<Json> {
     let mut extra = extra;
     extra["incarnation"] = json!(ws.incarnation);
+    extra["schemaVersion"] = json!(ws.version);
     extra["locator"] = ws.held.locator.report()?;
-    extra["sources"] = json!(sources(&ws.conn)?);
-    extra["nextSteps"] = json!([NEXT_SEARCH]);
+    extra["sources"] = json!(sources(storage, ws)?);
+    if extra["nextSteps"].is_null() {
+        extra["nextSteps"] = json!([{"tool": "search", "arguments": {"workspaceId": ws.held.id,
+            "node": "<an indexed scope>", "query": "<words>"}}]);
+    }
     Ok(report(
         place,
         &ws.held.id,
@@ -1231,38 +1514,274 @@ fn opened_report(place: &Place, ws: &Opened, extra: Json) -> Result<Json> {
     ))
 }
 
-/// The milestone note every initialized report carries: the registry exists, its index does not.
-const NEXT_SEARCH: &str = "search still reads the .fig directly: `figlens search <file.fig> <query>`; this workspace holds the source registry only, no index yet";
 
 // ---- Actions ----
 
-/// Opens the selected, initialized workspace with its storage place.
+/// Opens the selected, initialized workspace with its storage place. A writer upgrades a
+/// schema 1 registry first, briefly holding the workspace lock exclusively.
 fn opened(storage: &Storage, select: &Select, write: bool) -> Result<(Place, Opened)> {
     let id = select.id()?;
     let place = storage.place(&id, select.locator())?;
     let held = acquire(&place.roots.state.path, select, false)?.ok_or_else(|| missing(&id))?;
-    let ws = open_held(held, write)?.ok_or_else(|| missing(&id))?;
+    let ws = open_held(held, write, &place)?.ok_or_else(|| missing(&id))?;
+    if !write || ws.version == SCHEMA {
+        return Ok((place, ws));
+    }
+    drop(ws);
+    let held = acquire(&place.roots.state.path, select, true)?.ok_or_else(|| missing(&id))?;
+    let mut ws = open_held(held, true, &place)?.ok_or_else(|| missing(&id))?;
+    upgrade(&mut ws.conn)?;
+    drop(ws);
+    let held = acquire(&place.roots.state.path, select, false)?.ok_or_else(|| missing(&id))?;
+    let ws = open_held(held, write, &place)?.ok_or_else(|| missing(&id))?;
     Ok((place, ws))
+}
+
+/// What `prepare`, `refresh` and `rebuild` did, and the jobs this process must now run (it
+/// owns them); jobs joined from another live process are only reported.
+pub struct Outcome {
+    pub report: Json,
+    pub run: Vec<String>,
+}
+
+/// `prepare` choices beyond the file and project.
+#[derive(Default, Clone, Copy)]
+pub struct PrepareOptions<'a> {
+    /// The stored scope to index now; without it only the registry is prepared.
+    pub scope: Option<&'a str>,
+    /// Makes a retried request return its first job instead of starting another.
+    pub request_id: Option<&'a str>,
+    /// Recreate the workspace at `--storage` because its current storage cannot be used.
+    pub replace_unavailable: bool,
+}
+
+/// A fresh 128-bit hex nonce from SQLite's random source.
+fn nonce() -> Result<String> {
+    Connection::open_in_memory()
+        .and_then(|c| c.query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0)))
+        .map_err(sql)
+}
+
+/// The location lock of workspace `id`, exclusive: one prepare, replacement or relocation of
+/// this workspace at a time across every storage root. Publications take it shared.
+fn location_exclusive(storage: &Storage, id: &str) -> Result<(PathBuf, File)> {
+    let locations = workspaces(&storage.defaults.config.path, true)?.expect("created");
+    // Its own name: config and state may be one root, and two opens of one lock file conflict.
+    let path = locations.join(format!("{id}.location.lock"));
+    let file = open_lock(&path, true)?.expect("created");
+    lock(&file, &path, true, id)?;
+    Ok((locations, file))
+}
+
+/// Opens the workspace for writing, initializing or upgrading it first when needed. An
+/// initialized current database is reused under the shared lock, so a prepare never waits
+/// behind a running build; only initialization and upgrade take the lock exclusively.
+fn open_for_prepare(place: &Place, id: &str, locator: &Locator) -> Result<(Opened, bool)> {
+    let state = &place.roots.state.path;
+    // A shared lock suffices for an existing current database; anything else, including an
+    // unmarked directory, takes the exclusive path that classifies it.
+    if let Ok(Some(held)) = acquire(state, &Select::Locator(locator.clone()), false)
+        && let Some(ws) = open_held(held, true, place)?
+        && ws.version == SCHEMA
+    {
+        return Ok((ws, false));
+    }
+    let held = acquire_new(state, id, locator)?;
+    let path = held.dir.join(DB);
+    let flags = if plain(&path, false)? {
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+    } else {
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
+    };
+    let mut conn = open(&path, flags)?;
+    let found = contents(&conn, &path, &held).map_err(|e| damaged(&path, &held.id, e))?;
+    if let Some(found) = &found
+        && found.binding != place.binding
+    {
+        return Err(fail(
+            ErrorKind::OperationFailed,
+            format!(
+                "{} is detached: its location record names another database; figlens left it untouched",
+                path.display()
+            ),
+        ));
+    }
+    writable(&conn)?;
+    let (incarnation, initialized) = match found {
+        Some(found) => {
+            upgrade(&mut conn)?;
+            (found.incarnation, false)
+        }
+        None => (initialize(&mut conn, &held, place.binding.as_deref())?, true),
+    };
+    Ok((
+        Opened {
+            incarnation,
+            version: SCHEMA,
+            conn,
+            held,
+        },
+        initialized,
+    ))
+}
+
+/// The coverage of a prepare that indexed nothing yet: only the registry exists.
+fn not_requested() -> Json {
+    json!({"layers": {"text": {"state": "not_requested"}, "relations": {"state": "not_requested"}},
+        "reasons": [{"code": "scope_not_requested"}]})
+}
+
+/// Why workspace `id` cannot be used where it lives now: `storage_unavailable`,
+/// `permission_denied` or `ownership_unreadable`; `None` when it works or has no database.
+fn unusable_reason(current: &Storage, id: &str, locator: &Locator) -> Result<Option<&'static str>> {
+    let classify = |e: Box<dyn Error>| -> Result<Option<&'static str>> {
+        match e.downcast_ref::<FigError>().map(FigError::kind) {
+            Some(ErrorKind::StorageUnavailable) => Ok(Some("storage_unavailable")),
+            Some(ErrorKind::PermissionDenied) => Ok(Some("permission_denied")),
+            _ => Err(e),
+        }
+    };
+    let place = match current.place(id, Some(locator)) {
+        Ok(place) => place,
+        Err(e) => return classify(e),
+    };
+    let held = match acquire(&place.roots.state.path, &Select::Locator(locator.clone()), false) {
+        Ok(Some(held)) => held,
+        Ok(None) => return Ok(None),
+        Err(e) => return classify(e),
+    };
+    let path = held.dir.join(DB);
+    match plain(&path, false) {
+        Ok(false) => return Ok(None),
+        Ok(true) => {}
+        Err(e) => return classify(e),
+    }
+    match open_held(held, false, &place) {
+        Ok(_) => Ok(None),
+        Err(e) if owner_of(&path, id).is_none() => match classify(e) {
+            Ok(reason) => Ok(reason),
+            Err(_) => Ok(Some("ownership_unreadable")),
+        },
+        Err(e) => classify(e),
+    }
+}
+
+/// Recreates workspace `id` at `--storage` because its current storage cannot be used: missing
+/// or offline, access denied, or a database whose ownership cannot be read. Under the location
+/// lock, the new root's workspace directory is claimed (absent or empty, never merged), the
+/// location record is rewritten with a fresh binding, and a new incarnation is initialized
+/// there that knows only `source`. The old database and files are never touched; a builder or
+/// reader of the old database is fenced by the binding. A failed initialization is retried by
+/// the next prepare at the same place and binding.
+fn recreate(
+    storage: &Storage,
+    id: &str,
+    locator: &Locator,
+    source: &Path,
+    options: PrepareOptions,
+) -> Result<Outcome> {
+    let new = storage.explicit.clone().ok_or_else(|| {
+        fail(
+            ErrorKind::InvalidArguments,
+            "--replace-unavailable needs --storage <new absolute directory>",
+        )
+    })?;
+    storage.authorized(&new)?;
+    let current = Storage {
+        explicit: None,
+        ..storage.clone()
+    };
+    let previous = current.remembered(id).ok().flatten();
+    let old_root = previous
+        .as_ref()
+        .map_or(current.defaults.state.path.clone(), |r| r.storage.join("state"));
+    if previous.as_ref().is_some_and(|r| same_dir(&r.storage, &new))
+        || same_dir(&old_root, &new.join("state"))
+    {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            format!("--storage {} is the workspace's current storage; choose a new directory", new.display()),
+        ));
+    }
+    let Some(reason) = unusable_reason(&current, id, locator)? else {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            format!("workspace {id} can be used where it is; --replace-unavailable only recreates a workspace whose storage is unavailable, denied or has unreadable ownership"),
+        ));
+    };
+    create_durable(&new)?;
+    let canonical = std::fs::canonicalize(&new).map_err(|e| storage_error(&new, e))?;
+    let target = Place {
+        roots: current.defaults.under(&canonical, "remembered"),
+        rule: "remembered",
+        remembered: Some(canonical.clone()),
+        binding: None,
+    };
+    outside_storage(source, storage, &target)?;
+    // Claimed under the new root's workspace lock before the record names it: an existing
+    // database there is refused, never merged or overwritten.
+    let held = acquire_new(&target.roots.state.path, id, locator)?;
+    let db = held.dir.join(DB);
+    if plain(&db, false)? {
+        return Err(preserved(
+            &db,
+            "already exists for this workspace; choose an empty directory for the recreated workspace",
+        ));
+    }
+    drop(held);
+    let binding = nonce()?;
+    let locations = workspaces(&current.defaults.config.path, true)?.expect("created");
+    let gone = json!({"storage": previous.as_ref().map(|r| &r.storage).unwrap_or(&current.defaults.state.path),
+        "binding": previous.as_ref().and_then(|r| r.binding.clone()), "reason": reason, "atMs": now_ms()});
+    let record = json!({"version": LOCATION, "workspaceId": id, "locator": locator.report()?,
+        "storage": utf8(&canonical)?, "binding": binding, "previous": gone});
+    write_small(&locations.join(format!("{id}.json")), &record)?;
+    let place = current.place(id, Some(locator))?;
+    let (mut ws, initialized) = open_for_prepare(&place, id, locator)?;
+    let (source_id, _) = register(&mut ws.conn, source)?;
+    let mut extra = json!({"initialized": initialized, "replaced": true,
+        "source": {"sourceId": source_id, "path": source, "added": true},
+        "previous": {"storage": gone["storage"], "binding": gone["binding"], "reason": reason,
+            "state": "retained, not restored", "sources": "unknown", "metadata": "unknown"}});
+    let mut run = Vec::new();
+    match options.scope {
+        Some(scope) => {
+            let job = jobs::submit(&mut ws, "prepare", &source_id, scope, options.request_id)?;
+            if job.owned {
+                run.push(job.job_id.clone());
+            }
+            extra["job"] = jobs::report_job(&ws.conn, &ws.held.dir, &job.job_id)?.unwrap_or(Json::Null);
+        }
+        None => extra["coverage"] = not_requested(),
+    }
+    Ok(Outcome {
+        report: opened_report(storage, &place, &ws, extra)?,
+        run,
+    })
 }
 
 /// Creates or reuses the workspace for `file` (source-scoped, or the `project` directory's)
 /// and registers the file. Concurrent calls for one workspace create one database. With
 /// a new `--storage`, the workspace's location is remembered before its database is created.
-pub fn prepare(storage: &Storage, file: &Path, project: Option<&Path>) -> Result<Json> {
+/// With a scope, it starts or joins that scope's build; without one, it prepares the registry
+/// only and indexes nothing, never the whole file implicitly.
+pub fn prepare(
+    storage: &Storage,
+    file: &Path,
+    project: Option<&Path>,
+    options: PrepareOptions,
+) -> Result<Outcome> {
     let source = readable(file)?;
     let locator = match project {
         Some(dir) => Locator::project(dir)?,
         None => Locator::Source(source.clone()),
     };
     let id = locator.id()?;
-    // One prepare per workspace at a time across every storage root, so two roots never both
-    // initialize it and its location record is never written concurrently.
-    let locations = workspaces(&storage.defaults.config.path, true)?.expect("created");
-    // Its own name: config and state may be one root, and two opens of one lock file conflict.
-    let config_path = locations.join(format!("{id}.location.lock"));
-    let config_lock = open_lock(&config_path, true)?.expect("created");
-    lock(&config_lock, &config_path, true, &id)?;
-    let place = storage.place(&id, Some(&locator))?;
+    let (locations, _location) = location_exclusive(storage, &id)?;
+    if options.replace_unavailable {
+        return recreate(storage, &id, &locator, &source, options);
+    }
+    let mut place = storage.place(&id, Some(&locator))?;
     outside_storage(&source, storage, &place)?;
     // Remember a new --storage before creating anything there: a database normal discovery
     // cannot find is never left behind, and a failed initialization is retried in that place.
@@ -1274,39 +1793,42 @@ pub fn prepare(storage: &Storage, file: &Path, project: Option<&Path>) -> Result
     {
         create_durable(explicit)?;
         let canonical = std::fs::canonicalize(explicit).map_err(|e| storage_error(explicit, e))?;
+        let binding = nonce()?;
         let record = json!({"version": LOCATION, "workspaceId": id,
-            "locator": locator.report()?, "storage": utf8(&canonical)?});
+            "locator": locator.report()?, "storage": utf8(&canonical)?, "binding": binding});
         write_small(&locations.join(format!("{id}.json")), &record)?;
+        place.binding = Some(binding);
     }
-    let held = acquire_new(&place.roots.state.path, &id, &locator)?;
-    let path = held.dir.join(DB);
-    let flags = if plain(&path, false)? {
-        OpenFlags::SQLITE_OPEN_READ_WRITE
-    } else {
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
+    let (mut ws, initialized) = open_for_prepare(&place, &id, &locator)?;
+    let (source_id, added) = register(&mut ws.conn, &source)?;
+    let mut extra = json!({"initialized": initialized,
+        "source": {"sourceId": source_id, "path": source, "added": added}});
+    let mut run = Vec::new();
+    match options.scope {
+        Some(scope) => {
+            let job = jobs::submit(&mut ws, "prepare", &source_id, scope, options.request_id)?;
+            if job.owned {
+                run.push(job.job_id.clone());
+            }
+            extra["job"] = jobs::report_job(&ws.conn, &ws.held.dir, &job.job_id)?
+                .unwrap_or(Json::Null);
+            extra["job"]["joined"] = json!(job.joined);
+        }
+        None => {
+            extra["coverage"] = not_requested();
+            extra["nextSteps"] = json!([{"tool": "index", "arguments": {"action": "prepare",
+                "file": source, "scope": "<stored node id>"},
+                "why": "only the registry was prepared; choose the scope to search (find or tree), or 0:0 for the whole file"}]);
+        }
+    }
+    let place = Place {
+        remembered: storage.explicit.clone().or(place.remembered.clone()),
+        ..place
     };
-    let mut conn = open(&path, flags)?;
-    let found = contents(&conn, &path, &held)?;
-    writable(&conn)?;
-    let (incarnation, initialized) = match found {
-        Some(incarnation) => (incarnation, false),
-        None => (initialize(&mut conn, &held)?, true),
-    };
-    let (source_id, added) = register(&mut conn, &source)?;
-    let ws = Opened {
-        incarnation,
-        conn,
-        held,
-    };
-    opened_report(
-        &Place {
-            remembered: storage.explicit.clone().or(place.remembered.clone()),
-            ..place
-        },
-        &ws,
-        json!({"initialized": initialized,
-            "source": {"sourceId": source_id, "path": source, "added": added}}),
-    )
+    Ok(Outcome {
+        report: opened_report(storage, &place, &ws, extra)?,
+        run,
+    })
 }
 
 fn same_dir(a: &Path, b: &Path) -> bool {
@@ -1354,8 +1876,8 @@ pub fn status(storage: &Storage, select: &Select) -> Result<Json> {
         ));
     };
     let (dir, locator) = (held.dir.clone(), held.locator.report()?);
-    match open_held(held, false)? {
-        Some(ws) => opened_report(&place, &ws, json!({})),
+    match open_held(held, false, &place)? {
+        Some(ws) => opened_report(storage, &place, &ws, json!({})),
         None => Ok(report(
             &place,
             &id,
@@ -1388,6 +1910,7 @@ pub fn add(storage: &Storage, select: &Select, file: &Path) -> Result<Json> {
     project_only(&ws, Some(&source))?;
     let (source_id, added) = register(&mut ws.conn, &source)?;
     opened_report(
+        storage,
         &place,
         &ws,
         json!({"source": {"sourceId": source_id, "path": source, "added": added}}),
@@ -1395,14 +1918,51 @@ pub fn add(storage: &Storage, select: &Select, file: &Path) -> Result<Json> {
 }
 
 /// Removes `source_id` from the workspace's registry. The `.fig` itself is never touched.
+/// The path of `source_id` when this caller may see it; an invisible source reads as unknown.
+fn visible_path(storage: &Storage, conn: &Connection, source_id: &str) -> Result<Option<String>> {
+    let path: Option<String> = conn
+        .query_row(
+            "SELECT path FROM sources WHERE source_id = ?1",
+            [source_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    Ok(path.filter(|p| storage.sees(Path::new(p))))
+}
+
+/// Removes `source_id` from the workspace's registry and, in the same transaction, withdraws
+/// its published indexes from search and asks its active jobs to stop. The `.fig` itself is
+/// never touched.
 pub fn remove(storage: &Storage, select: &Select, source_id: &str) -> Result<Json> {
-    let (place, ws) = opened(storage, select, true)?;
-    let removed = ws
+    let (place, mut ws) = opened(storage, select, true)?;
+    let tx = ws
         .conn
-        .execute("DELETE FROM sources WHERE source_id = ?1", [source_id])
-        .map_err(sql)?
-        > 0;
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(sql)?;
+    let removed = visible_path(storage, &tx, source_id)?.is_some()
+        && tx
+            .execute("DELETE FROM sources WHERE source_id = ?1", [source_id])
+            .map_err(sql)?
+            > 0;
+    if removed {
+        tx.execute(
+            "UPDATE generations SET state = 'retired', retired_ms = ?2 WHERE gen IN
+             (SELECT gen FROM published WHERE source_id = ?1)",
+            rusqlite::params![source_id, now_ms()],
+        )
+        .map_err(sql)?;
+        tx.execute("DELETE FROM published WHERE source_id = ?1", [source_id])
+            .map_err(sql)?;
+        tx.execute(
+            "UPDATE jobs SET cancel = 1 WHERE source_id = ?1 AND state IN ('queued', 'running')",
+            [source_id],
+        )
+        .map_err(sql)?;
+    }
+    tx.commit().map_err(sql)?;
     opened_report(
+        storage,
         &place,
         &ws,
         json!({"sourceId": source_id, "removed": removed}),
@@ -1415,8 +1975,16 @@ pub fn relocate(storage: &Storage, select: &Select, source_id: &str, file: &Path
     let (place, ws) = opened(storage, select, true)?;
     project_only(&ws, None)?;
     outside_storage(&source, storage, &place)?;
+    if visible_path(storage, &ws.conn, source_id)?.is_none() || !storage.sees(&source) {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            format!("workspace {} has no source {source_id}", ws.held.id),
+        ));
+    }
+    // A new membership: indexes of the old path stop being served until a refresh, and a
+    // build still running for the old path cannot publish.
     let changed = match ws.conn.execute(
-        "UPDATE sources SET path = ?1 WHERE source_id = ?2",
+        "UPDATE sources SET path = ?1, membership = lower(hex(randomblob(16))) WHERE source_id = ?2",
         [utf8(&source)?, source_id],
     ) {
         Ok(n) => n,
@@ -1438,6 +2006,7 @@ pub fn relocate(storage: &Storage, select: &Select, source_id: &str, file: &Path
         ));
     }
     opened_report(
+        storage,
         &place,
         &ws,
         json!({"source": {"sourceId": source_id, "path": source}}),
@@ -1462,6 +2031,19 @@ fn resettable(conn: &Connection, path: &Path, id: &str) -> Result<()> {
 pub fn reset(storage: &Storage, select: &Select) -> Result<Json> {
     let id = select.id()?;
     let place = storage.place(&id, select.locator())?;
+    // Active jobs are asked to stop first; their owners stop the child and release the
+    // workspace lock, which the exclusive lock below then waits for.
+    if let Ok((_, ws)) = opened(storage, select, false)
+        && ws.version >= 2
+        && let Ok((_, ws)) = (drop(ws), opened(storage, select, true)).1
+    {
+        ws.conn
+            .execute(
+                "UPDATE jobs SET cancel = 1 WHERE state IN ('queued', 'running')",
+                [],
+            )
+            .map_err(sql)?;
+    }
     let Some(held) = acquire(&place.roots.state.path, select, true)? else {
         return Ok(report(
             &place,
@@ -1525,6 +2107,11 @@ pub fn reset(storage: &Storage, select: &Select) -> Result<Json> {
             "nextSteps": ["`figlens index prepare <file.fig>` initializes it again in the same storage with a new incarnation; earlier sourceIds must be added again"]}),
     ))
 }
+
+pub mod jobs;
+pub mod query;
+
+pub use jobs::{clear_cache, rebuild, refresh};
 
 #[cfg(test)]
 mod tests;

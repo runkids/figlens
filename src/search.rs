@@ -14,7 +14,9 @@ use sha2::{Digest, Sha256};
 use unicode_normalization::char::{canonical_combining_class, decompose_compatible};
 use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfkc_quick};
 
-use crate::expand::{Bounds, Expansion, Stop, expand_instances_bounded, parent_of, plugin_type};
+use crate::expand::{
+    Bounds, Expansion, Stop, expand_instances_bounded, main_of, parent_of, plugin_type,
+};
 use crate::{Document, ErrorKind, FigError, Tree};
 
 pub const DEFAULT_LIMIT: usize = 20;
@@ -26,6 +28,8 @@ const MAX_TERMS: usize = 64;
 const MAX_TYPES: usize = 16;
 const MAX_SCOPE_BYTES: usize = 1024;
 const MAX_OFFSET: usize = 100_000;
+/// Sources one workspace search reads together; the supported workspace holds at most 10.
+pub(crate) const MAX_SOURCES: usize = 16;
 
 /// Work bounds of one scope extraction, independent of the result limit.
 const SOURCE_BYTES: u64 = 512 * 1024 * 1024;
@@ -98,6 +102,19 @@ pub struct Prepared {
     terms: Vec<String>,
     offset: usize,
     fingerprint: Option<String>,
+    /// The generations a workspace cursor paged, `None` for a stateless cursor.
+    gens: Option<Vec<i64>>,
+}
+
+impl Prepared {
+    pub(crate) fn terms(&self) -> &[String] {
+        &self.terms
+    }
+
+    /// The generations of the sources a workspace cursor paged.
+    pub(crate) fn cursor_gens(&self) -> Option<&[i64]> {
+        self.gens.as_deref()
+    }
 }
 
 impl Request {
@@ -145,11 +162,25 @@ impl Request {
                 "search types take up to {MAX_TYPES} node types such as TEXT or FRAME"
             )));
         }
-        let (offset, fingerprint) = match &self.cursor {
-            None => (0, None),
+        let (offset, fingerprint, gens) = match &self.cursor {
+            None => (0, None, None),
             Some(cursor) => {
-                let parsed = cursor
-                    .strip_prefix("s1.")
+                // A workspace cursor also lists the generations it paged: `w1.fp.offset.g-g`.
+                let (rest, gens) = match cursor.strip_prefix("w1.") {
+                    Some(rest) => match rest.rsplit_once('.') {
+                        Some((rest, gens)) => (
+                            Some(rest),
+                            gens.split('-')
+                                .map(|g| g.parse::<i64>().ok())
+                                .collect::<Option<Vec<_>>>()
+                                .filter(|g| (1..=MAX_SOURCES).contains(&g.len())),
+                        ),
+                        None => (None, None),
+                    },
+                    None => (cursor.strip_prefix("s1."), None),
+                };
+                let parsed = rest
+                    .filter(|_| cursor.starts_with("s1.") || gens.is_some())
                     .and_then(|c| c.split_once('.'))
                     .filter(|(fp, _)| fp.len() == 16 && fp.bytes().all(|b| b.is_ascii_hexdigit()))
                     .and_then(|(fp, offset)| Some((offset.parse::<usize>().ok()?, fp)))
@@ -157,7 +188,7 @@ impl Request {
                 let (offset, fp) = parsed.ok_or_else(|| {
                     invalid("invalid search cursor; pass nextCursor from the previous reply")
                 })?;
-                (offset, Some(fp.to_owned()))
+                (offset, Some(fp.to_owned()), gens)
             }
         };
         Ok(Prepared {
@@ -165,6 +196,7 @@ impl Request {
             terms,
             offset,
             fingerprint,
+            gens,
         })
     }
 
@@ -386,7 +418,7 @@ fn tokens(units: &[Unit], query: bool) -> Vec<Token> {
 
 // ---- Index ----
 
-struct Record {
+pub(crate) struct Record {
     id: String,
     name: String,
     kind: String,
@@ -400,6 +432,18 @@ struct Record {
     hidden: bool,
     page: Option<u32>,
     root: Option<u32>,
+    /// An instance's main component and the evidence for it; `None` target means unresolved.
+    instance: Option<Instance>,
+}
+
+/// The `instance_of` relation of one INSTANCE record, from the binding expansion actually used.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Instance {
+    pub target: Option<String>,
+    /// `recorded` (stored symbolData) or `resolved` (expansion: copied binding or swap).
+    pub basis: &'static str,
+    /// `symbolData`, `definition` (the copied definition child's symbolData) or `swap`.
+    pub evidence: &'static str,
 }
 
 struct Posting {
@@ -412,6 +456,15 @@ struct Posting {
 struct IndexTerm {
     df: u32,
     postings: Vec<Posting>,
+    /// Postings before a partial load kept only the surviving records'; ranking orders terms
+    /// by it, so scores sum in the same order as over the whole index.
+    full: Option<usize>,
+}
+
+impl IndexTerm {
+    fn size(&self) -> usize {
+        self.full.unwrap_or(self.postings.len())
+    }
 }
 
 struct Page {
@@ -422,16 +475,37 @@ struct Page {
 
 pub struct Index {
     records: Vec<Record>,
+    /// The record IDs of `records` when only some were loaded, ascending; empty when all were.
+    rids: Vec<u32>,
+    /// Records in the whole index, loaded or not.
+    total: usize,
     terms: BTreeMap<String, IndexTerm>,
     pages: Vec<Page>,
     roots: Vec<String>,
     /// Stored ancestors above the scope root, top-down.
     above: Vec<(String, String)>,
-    avg: [f64; 2],
+    /// Token counts summed per field, so several indexes share one average.
+    lens: [u64; 2],
     stop: Option<&'static str>,
     hidden_content: usize,
     text_bytes: usize,
     generation: String,
+}
+
+impl Index {
+    /// Record `rid`, which a partial index must have loaded.
+    fn record(&self, rid: u32) -> &Record {
+        if self.rids.is_empty() {
+            &self.records[rid as usize]
+        } else {
+            &self.records[self.rids.binary_search(&rid).expect("loaded record")]
+        }
+    }
+
+    /// The scope root's record, the first in document order.
+    fn scope(&self) -> Option<&Record> {
+        (self.total > 0).then(|| self.record(0))
+    }
 }
 
 fn kiwi_text<'a>(node: &'a kiwi_schema::Value) -> Option<&'a str> {
@@ -497,11 +571,13 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
     bounds.bytes += reserve.1;
     let mut index = Index {
         records: Vec::new(),
+        rids: Vec::new(),
+        total: 0,
         terms: BTreeMap::new(),
         pages: Vec::new(),
         roots: Vec::new(),
         above: Vec::new(),
-        avg: [0.0; 2],
+        lens: [0; 2],
         stop: None,
         hidden_content: 0,
         text_bytes: 0,
@@ -633,6 +709,7 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
             }
         }
         let hidden = hidden || own_hidden;
+        let instance = (kind == "INSTANCE").then(|| instance_of(tree, &id, ex.nodes.get(&id)));
         let children = tree.children.get(&id).or_else(|| ex.children.get(&id));
         let kids = children.map_or(&[][..], Vec::as_slice);
         let queued = kids.iter().map(|c| 96 + c.len()).sum::<usize>();
@@ -687,6 +764,7 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
             hidden,
             page,
             root,
+            instance,
         });
         for child in kids.iter().rev() {
             stack.push((
@@ -707,10 +785,41 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
             Stop::Deadline => "deadline",
         });
     }
-    let n = index.records.len().max(1) as f64;
-    index.avg = [(lens[0] as f64 / n).max(1.0), (lens[1] as f64 / n).max(1.0)];
+    index.lens = lens;
+    index.total = index.records.len();
     index.generation = generation(&index);
     index
+}
+
+fn average(n: usize, lens: [u64; 2]) -> [f64; 2] {
+    let n = n.max(1) as f64;
+    [(lens[0] as f64 / n).max(1.0), (lens[1] as f64 / n).max(1.0)]
+}
+
+/// The main component an INSTANCE record uses: its own symbolData when stored, else the
+/// main expansion followed. A main that is missing or not a component is unresolved.
+fn instance_of(tree: &Tree, id: &str, expanded: Option<&crate::expand::Expanded>) -> Instance {
+    let component = |main: &String| {
+        tree.nodes
+            .get(main)
+            .is_some_and(|n| plugin_type(n) == "COMPONENT")
+    };
+    match expanded {
+        None => Instance {
+            target: tree
+                .nodes
+                .get(id)
+                .and_then(|n| main_of(tree, n))
+                .filter(component),
+            basis: "recorded",
+            evidence: "symbolData",
+        },
+        Some(e) => Instance {
+            target: e.main.as_ref().map(|m| &m.0).filter(|m| component(m)).cloned(),
+            basis: "resolved",
+            evidence: e.main.as_ref().map_or("definition", |m| m.1),
+        },
+    }
 }
 
 /// Identifies the indexed corpus, so a cursor never pages over another partial build of the
@@ -750,6 +859,8 @@ fn hides_content(tree: &Tree, ex: &Expansion, id: &str, kind: &str) -> bool {
 // ---- Retrieval ----
 
 struct Hit {
+    /// Position of the hit's index in the corpus.
+    source: usize,
     record: u32,
     tier: u8,
     score: f64,
@@ -760,73 +871,90 @@ fn idf(n: usize, df: u32) -> f64 {
     (1.0 + (n - df + 0.5) / (df + 0.5)).ln()
 }
 
-/// Ranked page of `req` over `index`: candidates must contain every query term; exact name,
-/// name phrase and text phrase matches lead, then field-weighted BM25, then document order.
-fn retrieve(index: &Index, q: &Prepared, req: &Request) -> (Vec<Hit>, bool, [usize; 2]) {
-    let n = index.records.len();
-    let mut lists: Vec<&IndexTerm> = Vec::new();
-    for term in &q.terms {
-        match index.terms.get(term) {
-            Some(found) => lists.push(found),
-            None => return (Vec::new(), false, [0; 2]),
-        }
-    }
-    lists.sort_by_key(|t| t.postings.len());
-    // Score and the last term each record matched: after term i only records matching it stay,
-    // so the survivors match every term, with no bitmask width to outgrow.
-    let mut acc: HashMap<u32, (f64, usize)> = HashMap::new();
-    for (i, term) in lists.iter().enumerate() {
-        let idf = idf(n, term.df);
-        for p in &term.postings {
-            if i > 0 && !acc.contains_key(&p.record) {
-                continue;
-            }
-            let r = &index.records[p.record as usize];
-            let f = usize::from(p.field);
-            let tf = f64::from(p.tf);
-            let norm = 1.0 - B + B * f64::from(r.lens[f]) / index.avg[f];
-            let entry = acc.entry(p.record).or_insert((0.0, 0));
-            entry.0 += idf * WEIGHTS[f] * tf * (K1 + 1.0) / (tf + K1 * norm);
-            entry.1 = i;
-        }
-        acc.retain(|_, (_, last)| *last == i);
-    }
+/// Ranked page of `req` over every index of `corpus` together: candidates must contain every
+/// query term; exact name, name phrase and text phrase matches lead, then field-weighted BM25,
+/// then corpus order and document order. Record counts, document frequencies and field lengths
+/// are summed over the whole corpus before any record is scored, so one source's hits are never
+/// ranked alone and merged afterwards; one index ranks exactly as it always did.
+fn retrieve(corpus: &[&Index], q: &Prepared, req: &Request) -> (Vec<Hit>, bool, [usize; 2]) {
+    let n: usize = corpus.iter().map(|i| i.total).sum();
+    let lens = corpus.iter().fold([0u64; 2], |a, i| [a[0] + i.lens[0], a[1] + i.lens[1]]);
+    let avg = average(n, lens);
+    let df: Vec<u32> = q
+        .terms
+        .iter()
+        .map(|t| corpus.iter().filter_map(|i| i.terms.get(t)).map(|t| t.df).sum())
+        .collect();
     let mut excluded = [0usize; 2];
     let mut hits: Vec<Hit> = Vec::new();
-    for (record, (score, _)) in acc {
-        let r = &index.records[record as usize];
-        if !req.types.is_empty() && !req.types.contains(&r.kind) {
+    for (source, index) in corpus.iter().enumerate() {
+        let mut lists: Vec<(&IndexTerm, u32)> = Vec::new();
+        for (term, &df) in q.terms.iter().zip(&df) {
+            match index.terms.get(term) {
+                Some(found) => lists.push((found, df)),
+                None => break,
+            }
+        }
+        if lists.len() < q.terms.len() {
             continue;
         }
-        let internal = r.page.is_some_and(|p| index.pages[p as usize].internal);
-        if r.hidden && !req.include_hidden {
-            excluded[0] += 1;
-            continue;
+        lists.sort_by_key(|(t, _)| t.size());
+        // Score and the last term each record matched: after term i only records matching it
+        // stay, so the survivors match every term, with no bitmask width to outgrow.
+        let mut acc: HashMap<u32, (f64, usize)> = HashMap::new();
+        for (i, (term, df)) in lists.iter().enumerate() {
+            let idf = idf(n, *df);
+            for p in &term.postings {
+                if i > 0 && !acc.contains_key(&p.record) {
+                    continue;
+                }
+                let r = index.record(p.record);
+                let f = usize::from(p.field);
+                let tf = f64::from(p.tf);
+                let norm = 1.0 - B + B * f64::from(r.lens[f]) / avg[f];
+                let entry = acc.entry(p.record).or_insert((0.0, 0));
+                entry.0 += idf * WEIGHTS[f] * tf * (K1 + 1.0) / (tf + K1 * norm);
+                entry.1 = i;
+            }
+            acc.retain(|_, (_, last)| *last == i);
         }
-        if internal && !req.include_internal {
-            excluded[1] += 1;
-            continue;
+        for (record, (score, _)) in acc {
+            let r = index.record(record);
+            if !req.types.is_empty() && !req.types.contains(&r.kind) {
+                continue;
+            }
+            let internal = r.page.is_some_and(|p| index.pages[p as usize].internal);
+            if r.hidden && !req.include_hidden {
+                excluded[0] += 1;
+                continue;
+            }
+            if internal && !req.include_internal {
+                excluded[1] += 1;
+                continue;
+            }
+            let [name, text] = &r.norm;
+            let tier = if *name == q.phrase {
+                3
+            } else if phrase_at(name, &q.phrase).is_some() {
+                2
+            } else if phrase_at(text, &q.phrase).is_some() {
+                1
+            } else {
+                0
+            };
+            hits.push(Hit {
+                source,
+                record,
+                tier,
+                score,
+            });
         }
-        let [name, text] = &r.norm;
-        let tier = if *name == q.phrase {
-            3
-        } else if phrase_at(name, &q.phrase).is_some() {
-            2
-        } else if phrase_at(text, &q.phrase).is_some() {
-            1
-        } else {
-            0
-        };
-        hits.push(Hit {
-            record,
-            tier,
-            score,
-        });
     }
     let order = |a: &Hit, b: &Hit| {
         b.tier
             .cmp(&a.tier)
             .then(b.score.total_cmp(&a.score))
+            .then(a.source.cmp(&b.source))
             .then(a.record.cmp(&b.record))
     };
     // Select only the requested page plus one before sorting it.
@@ -956,12 +1084,12 @@ fn explain(field: u8, original: &str, q: &Prepared) -> Option<Json> {
 /// allocating; serialization adds escaping, which MCP checks on the complete reply.
 fn result_bytes(index: &Index, hit: &Hit, q: &Prepared) -> usize {
     let entry = |id: &str, name: &str| 64 + id.len() + name.len();
-    let r = &index.records[hit.record as usize];
+    let r = index.record(hit.record);
     let mut bytes = 1024 + SNIPPET_BYTES + 2 * q.phrase.len() + r.name.len();
     bytes += r.page.map_or(0, |p| index.pages[p as usize].name.len());
     let mut cur = Some(hit.record);
     while let Some(i) = cur {
-        let node = &index.records[i as usize];
+        let node = index.record(i);
         bytes += entry(&node.id, &node.name);
         cur = node.parent;
     }
@@ -974,11 +1102,11 @@ fn result_bytes(index: &Index, hit: &Hit, q: &Prepared) -> usize {
 }
 
 fn result(index: &Index, hit: &Hit, rank: usize, q: &Prepared, source: &Json) -> Json {
-    let r = &index.records[hit.record as usize];
+    let r = index.record(hit.record);
     let mut path: Vec<Json> = Vec::new();
     let mut cur = Some(hit.record);
     while let Some(i) = cur {
-        let node = &index.records[i as usize];
+        let node = index.record(i);
         path.push(json!({"id": node.id, "name": node.name}));
         cur = node.parent;
     }
@@ -1020,7 +1148,7 @@ fn result(index: &Index, hit: &Hit, rank: usize, q: &Prepared, source: &Json) ->
 }
 
 fn coverage(index: &Index, req: &Request, excluded: [usize; 2]) -> Json {
-    let scanned = index.records.len();
+    let scanned = index.total;
     let mut reasons = Vec::new();
     if let Some(code) = index.stop {
         reasons.push(json!({"code": code, "counts": {"scannedRecords": scanned}}));
@@ -1049,12 +1177,12 @@ fn coverage(index: &Index, req: &Request, excluded: [usize; 2]) -> Json {
 /// The reply for `req` over an index whose source and snapshot `source` names.
 fn reply(index: &Index, q: &Prepared, req: &Request, source: Json) -> Result<Json, Box<dyn Error>> {
     let fingerprint = req.fingerprint(q, &source, index);
-    if q.fingerprint.as_ref().is_some_and(|fp| *fp != fingerprint) {
+    if q.gens.is_some() || q.fingerprint.as_ref().is_some_and(|fp| *fp != fingerprint) {
         return Err(invalid(
             "search cursor belongs to another query, filter set, source, snapshot or index generation; search again without cursor",
         ));
     }
-    let (hits, more, excluded) = retrieve(index, q, req);
+    let (hits, more, excluded) = retrieve(&[index], q, req);
     let over = || -> Box<dyn Error> {
         FigError::new(
             ErrorKind::ResponseBudget,
@@ -1075,7 +1203,7 @@ fn reply(index: &Index, q: &Prepared, req: &Request, source: Json) -> Result<Jso
         .enumerate()
         .map(|(i, hit)| result(index, hit, q.offset + i + 1, q, &source))
         .collect();
-    let scope = index.records.first();
+    let scope = index.scope();
     Ok(json!({
         "query": {"text": req.query, "normalized": q.phrase, "mode": "text", "terms": q.terms},
         "source": source,
@@ -1090,11 +1218,159 @@ fn reply(index: &Index, q: &Prepared, req: &Request, source: Json) -> Result<Jso
     }))
 }
 
+/// One source of a workspace search: its loaded generation and its result identity
+/// (`sourceId`, `snapshotId`), plus the generation and cursor key the cursor binds.
+pub(crate) struct Part<'a> {
+    pub index: &'a Index,
+    pub source: Json,
+    pub gen_id: i64,
+}
+
+/// Coverage of several sources: summed counts, and each stop as its source's reason.
+fn corpus_coverage(parts: &[Part], req: &Request, excluded: [usize; 2]) -> Json {
+    let mut reasons = Vec::new();
+    let (mut scanned, mut text_bytes, mut hidden) = (0, 0, 0);
+    for part in parts {
+        let index = part.index;
+        scanned += index.total;
+        text_bytes += index.text_bytes;
+        hidden += index.hidden_content;
+        if let Some(code) = index.stop {
+            reasons.push(json!({"code": code, "sourceId": part.source["sourceId"],
+                "counts": {"scannedRecords": index.total}}));
+        }
+    }
+    if req.include_hidden && hidden > 0 {
+        reasons.push(json!({"code": "hidden_content_not_expanded", "counts": {"layers": hidden}}));
+    }
+    let complete = reasons.is_empty();
+    let state = if complete { "ready" } else { "partial" };
+    json!({
+        "complete": complete,
+        "scannedRecords": scanned,
+        "totalRecords": if complete { json!(scanned) } else { Json::Null },
+        "indexedTextBytes": text_bytes,
+        "layers": {"text": {"state": state}},
+        "reasons": reasons,
+        "excluded": {"hidden": excluded[0], "internal": excluded[1]},
+        "knownGaps": [{"code": "component_property_values_not_indexed"},
+            {"code": "non_text_layer_content_not_indexed"}],
+        "limits": {"work": WORK, "bytes": BYTES, "textBytes": TEXT_BYTES,
+            "depth": DEPTH, "deadlineMs": DEADLINE.as_millis() as u64, "sourceBytes": SOURCE_BYTES,
+            "combiningRun": MAX_MARKS, "replyBytes": REPLY_BYTES},
+    })
+}
+
+/// One page of a corpus-wide ranking, before its records' paths are known.
+pub(crate) struct Ranked {
+    hits: Vec<Hit>,
+    more: bool,
+    excluded: [usize; 2],
+    fingerprint: String,
+}
+
+impl Ranked {
+    /// (part, record) of every hit on the page, which display reads with its ancestors.
+    pub(crate) fn shown(&self) -> impl Iterator<Item = (usize, u32)> + '_ {
+        self.hits.iter().map(|h| (h.source, h.record))
+    }
+}
+
+/// The parent of a record, for a caller that loads a partial index's display ancestors.
+pub(crate) fn parent(index: &Index, rid: u32) -> Option<u32> {
+    index.record(rid).parent
+}
+
+/// Ranks `req` over every part together: corpus-wide statistics and phrase tiers for every
+/// survivor first, then the global page. `key` identifies the sources used (ids, memberships,
+/// snapshots, generations and versions); the cursor binds it with the corpus statistics the
+/// scores came from, and lists the generations it paged.
+pub(crate) fn corpus_rank(
+    parts: &[Part],
+    q: &Prepared,
+    req: &Request,
+    key: &Json,
+) -> Result<Ranked, Box<dyn Error>> {
+    let corpus: Vec<&Index> = parts.iter().map(|p| p.index).collect();
+    let n: usize = corpus.iter().map(|i| i.total).sum();
+    let lens = corpus.iter().fold([0u64; 2], |a, i| [a[0] + i.lens[0], a[1] + i.lens[1]]);
+    let df: Vec<u32> = q
+        .terms
+        .iter()
+        .map(|t| corpus.iter().filter_map(|i| i.terms.get(t)).map(|t| t.df).sum())
+        .collect();
+    let fingerprint = short_hash(
+        json!([key, n, lens, df, req.scope, q.phrase, q.terms, req.types, req.include_hidden,
+            req.include_internal, req.limit, RANKING, tokenizer()])
+        .to_string(),
+    );
+    if q.fingerprint.as_ref().is_some_and(|fp| *fp != fingerprint) || (q.fingerprint.is_some() && q.gens.is_none()) {
+        return Err(invalid(
+            "search cursor belongs to another query, filter set or workspace search; search again without cursor",
+        ));
+    }
+    let (hits, more, excluded) = retrieve(&corpus, q, req);
+    Ok(Ranked {
+        hits,
+        more,
+        excluded,
+        fingerprint,
+    })
+}
+
+/// The reply for a ranked page; every part has the shown records and their ancestors.
+pub(crate) fn corpus_page(
+    parts: &[Part],
+    q: &Prepared,
+    req: &Request,
+    ranked: Ranked,
+) -> Result<Json, Box<dyn Error>> {
+    let corpus: Vec<&Index> = parts.iter().map(|p| p.index).collect();
+    let Ranked {
+        hits,
+        more,
+        excluded,
+        fingerprint,
+    } = ranked;
+    let bytes: usize = hits
+        .iter()
+        .map(|hit| result_bytes(corpus[hit.source], hit, q))
+        .sum();
+    if bytes > REPLY_BYTES {
+        return Err(FigError::new(
+            ErrorKind::ResponseBudget,
+            format!("search results would copy more than {REPLY_BYTES} bytes of names, paths and snippets; lower limit or search a narrower node"),
+        )
+        .into());
+    }
+    let results: Vec<Json> = hits
+        .iter()
+        .enumerate()
+        .map(|(i, hit)| {
+            let part = &parts[hit.source];
+            result(part.index, hit, q.offset + i + 1, q, &part.source)
+        })
+        .collect();
+    let gens: Vec<String> = parts.iter().map(|p| p.gen_id.to_string()).collect();
+    let scope = corpus.iter().find_map(|i| i.scope());
+    Ok(json!({
+        "query": {"text": req.query, "normalized": q.phrase, "mode": "text", "terms": q.terms},
+        "scope": {"nodeId": req.scope, "name": scope.map(|r| r.name.as_str())},
+        "ranking": {"version": RANKING, "tokenizer": tokenizer(), "weights": {"name": WEIGHTS[0], "text": WEIGHTS[1]},
+            "k1": K1, "b": B, "order": ["exact-name", "name-phrase", "text-phrase", "score", "source-order", "document-order"]},
+        "results": results,
+        "coverage": corpus_coverage(parts, req, excluded),
+        "hasMore": more,
+        "nextCursor": (more && q.offset + req.limit <= MAX_OFFSET)
+            .then(|| format!("w1.{fingerprint}.{}.{}", q.offset + req.limit, gens.join("-"))),
+    }))
+}
+
 // ---- Source snapshot and cache ----
 
-type Stamp = (SystemTime, u64);
+pub(crate) type Stamp = (SystemTime, u64);
 
-fn stamp(path: &Path) -> std::io::Result<Stamp> {
+pub(crate) fn stamp(path: &Path) -> std::io::Result<Stamp> {
     let meta = std::fs::metadata(path)?;
     if !meta.is_file() {
         return Err(std::io::Error::new(
@@ -1106,7 +1382,7 @@ fn stamp(path: &Path) -> std::io::Result<Stamp> {
 }
 
 /// The source's bytes, read once within `SOURCE_BYTES` while its size and time stayed put.
-fn stage(path: &Path) -> Result<(Vec<u8>, Stamp), Box<dyn Error>> {
+pub(crate) fn stage(path: &Path) -> Result<(Vec<u8>, Stamp), Box<dyn Error>> {
     for _ in 0..3 {
         let before = stamp(path)?;
         if before.1 > SOURCE_BYTES {
@@ -1157,6 +1433,38 @@ fn require_scope(tree: &Tree, scope: &str) -> Result<(), Box<dyn Error>> {
     .into())
 }
 
+/// The content identity of staged source bytes.
+pub(crate) fn snapshot_id(bytes: &[u8]) -> String {
+    format!("sha256:{}", hex(&Sha256::digest(bytes)))
+}
+
+/// The index of `scope` in staged source bytes, within the bounds every search build uses.
+pub(crate) fn index_bytes(
+    bytes: Vec<u8>,
+    label: &str,
+    scope: &str,
+    deadline: Instant,
+) -> Result<Index, Box<dyn Error>> {
+    let mut doc = Document::from_bytes(&bytes, label)?;
+    drop(bytes);
+    let message = doc.take_message()?;
+    let tree = Tree::new(&message);
+    require_scope(&tree, scope)?;
+    let bounds = Bounds {
+        work: WORK,
+        bytes: BYTES,
+        depth: DEPTH,
+        deadline,
+        stop: None,
+    };
+    Ok(build(&tree, scope, bounds))
+}
+
+/// The build deadline of one index.
+pub(crate) fn deadline() -> Instant {
+    Instant::now() + DEADLINE
+}
+
 fn ms(t: SystemTime) -> u64 {
     t.duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
@@ -1187,7 +1495,7 @@ pub fn search(path: &Path, req: &Request) -> Result<Json, Box<dyn Error>> {
         cached => {
             let (bytes, staged) = stage(&canonical)?;
             let hashed = SystemTime::now();
-            let snapshot = format!("sha256:{}", hex(&Sha256::digest(&bytes)));
+            let snapshot = snapshot_id(&bytes);
             match cached.filter(|(s, ..)| *s == snapshot) {
                 Some((snapshot, index, _)) => {
                     if let Ok(mut cache) = CACHE.lock()
@@ -1199,19 +1507,8 @@ pub fn search(path: &Path, req: &Request) -> Result<Json, Box<dyn Error>> {
                     (snapshot, index, hashed, true)
                 }
                 None => {
-                    let mut doc = Document::from_bytes(&bytes, &path.display().to_string())?;
-                    drop(bytes);
-                    let message = doc.take_message()?;
-                    let tree = Tree::new(&message);
-                    require_scope(&tree, &req.scope)?;
-                    let bounds = Bounds {
-                        work: WORK,
-                        bytes: BYTES,
-                        depth: DEPTH,
-                        deadline,
-                        stop: None,
-                    };
-                    let index = Arc::new(build(&tree, &req.scope, bounds));
+                    let label = path.display().to_string();
+                    let index = Arc::new(index_bytes(bytes, &label, &req.scope, deadline)?);
                     if stamp(&canonical)? != staged {
                         return Err(FigError::new(
                             ErrorKind::SourceUnreadable,
@@ -1242,6 +1539,8 @@ pub fn search(path: &Path, req: &Request) -> Result<Json, Box<dyn Error>> {
         "rehashAfterMs": REHASH.as_millis() as u64}});
     reply(&index, &q, req, source)
 }
+
+pub(crate) mod store;
 
 #[cfg(test)]
 mod tests;

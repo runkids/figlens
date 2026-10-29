@@ -66,7 +66,7 @@ fn call(id: Value, tool: &str, arguments: Value) -> String {
     json!({"id":id,"method":"tools/call","params":{"name":tool,"arguments":arguments}}).to_string()
 }
 
-fn replies(input: impl BufRead, roots: &[PathBuf]) -> Vec<Value> {
+fn replies(input: impl BufRead + Send, roots: &[PathBuf]) -> Vec<Value> {
     let mut output = Vec::new();
     serve(input, &mut output, roots).unwrap();
     String::from_utf8(output)
@@ -80,7 +80,7 @@ fn rooted_reply(line: &str, roots: &[PathBuf]) -> Value {
     match admit(line, roots) {
         Admission::Reply(reply) => reply,
         Admission::Call(call) => call.execute(None, roots),
-        Admission::Ignore => panic!("expected reply"),
+        _ => panic!("expected reply"),
     }
 }
 
@@ -145,7 +145,7 @@ fn notification_and_explicit_null_matrix_has_no_hidden_work() {
         for (result, code) in results.iter().zip([
             -32700, -32600, -32600, -32600, -32600, -32601, -32602, -32602,
         ]) {
-            assert_eq!(result["error"]["code"], code);
+            assert_eq!(result["error"]["code"], code, "{results:?}");
             assert!(result["id"].is_null());
         }
         for result in &results[8..10] {
@@ -161,11 +161,30 @@ fn notification_and_explicit_null_matrix_has_no_hidden_work() {
 }
 
 // Run mutations between lines without globals, sleeps or permission-bit assumptions.
-type Step = (String, Option<Box<dyn FnOnce()>>);
+type Step = (String, Option<Box<dyn FnOnce() + Send>>);
+/// Gives each request line, and runs its action, only after every earlier reply was written,
+/// as a client waiting for each reply would.
 struct Steps {
     pending: VecDeque<Step>,
     current: Vec<u8>,
     offset: usize,
+    given: usize,
+    seen: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// Collected output that counts the reply lines written so far.
+struct Counted(Vec<u8>, std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl std::io::Write for Counted {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.extend_from_slice(bytes);
+        let lines = bytes.iter().filter(|b| **b == b'\n').count();
+        self.1.fetch_add(lines, std::sync::atomic::Ordering::SeqCst);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 impl Read for Steps {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
@@ -182,6 +201,12 @@ impl BufRead for Steps {
             self.current.clear();
             self.offset = 0;
             if let Some((line, action)) = self.pending.pop_front() {
+                let start = std::time::Instant::now();
+                while self.seen.load(std::sync::atomic::Ordering::SeqCst) < self.given {
+                    assert!(start.elapsed().as_secs() < 30, "a reply never arrived");
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                self.given += 1;
                 if let Some(action) = action {
                     action();
                 }
@@ -208,6 +233,7 @@ fn cache_carries_prepared_calls_once_and_recovers_from_source_changes() {
     let changed = file.clone();
     let removed = file.clone();
     let restored = file.clone();
+    let seen: std::sync::Arc<std::sync::atomic::AtomicUsize> = Default::default();
     let steps = Steps {
         pending: VecDeque::from([
             (request(1, &file), None),
@@ -219,7 +245,7 @@ fn cache_carries_prepared_calls_once_and_recovers_from_source_changes() {
             ),
             (
                 request(5, &file),
-                Some(Box::new(|| LOADS.with(|n| assert_eq!(n.get(), 1))) as Box<dyn FnOnce()>),
+                Some(Box::new(|| LOADS.with(|n| assert_eq!(n.get(), 1))) as Box<dyn FnOnce() + Send>),
             ),
             (
                 request(6, &file),
@@ -246,8 +272,16 @@ fn cache_carries_prepared_calls_once_and_recovers_from_source_changes() {
         ]),
         current: Vec::new(),
         offset: 0,
+        given: 0,
+        seen: seen.clone(),
     };
-    let results = replies(steps, &[]);
+    let mut output = Counted(Vec::new(), seen);
+    serve(steps, &mut output, &[]).unwrap();
+    let results: Vec<Value> = String::from_utf8(output.0)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
     assert_eq!(results.len(), 11);
     for id in [1, 3, 5, 8, 9, 10] {
         assert_eq!(
