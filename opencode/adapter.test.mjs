@@ -263,6 +263,31 @@ test('CLI-path reads ask on the design a `..` after a link really names, so deny
   assert.deepEqual(ran, [], 'nothing reads past a denied target');
 });
 
+test('CLI-path recreation asks edit on the state child the raw storage really names, so a denied one blocks it', async t => {
+  const { root, ctx, adapter } = await context(t);
+  const real = await realpath(root);
+  // allowed/link leads to actual/deep, so allowed/link/../store is actual/store, whose state links to denied.
+  for (const dir of ['allowed', 'actual/deep', 'actual/store', 'denied']) await mkdir(path.join(root, dir), { recursive: true });
+  await symlink(path.join(root, 'actual', 'deep'), path.join(root, 'allowed', 'link'));
+  await symlink(path.join(root, 'denied'), path.join(root, 'actual', 'store', 'state'));
+  const asked = [], ran = [];
+  ctx.permission.assert = async ({ action, resources }) => {
+    asked.push([action, ...resources]);
+    if (action === 'edit' && resources.some(file => file.startsWith(path.join(real, 'denied')))) throw Object.assign(new Error('denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  const current = await adapter.scope('session');
+  current.run = async args => {
+    ran.push(args.slice(0, 2).join(' '));
+    if (args[1] === 'status') throw Object.assign(new Error('exit 1'), { stderr: 'figlens: workspace is missing\n' + JSON.stringify({ recovery: [{ action: 'recreate_elsewhere', roots: { config: { path: path.join(root, 'allowed', 'config') }, state: { path: path.join(root, 'allowed', 'state') } } }] }) });
+    return { stdout: '{}' };
+  };
+  const storage = `${path.join(root, 'allowed', 'link')}${path.sep}..${path.sep}store`;
+  await assert.rejects(adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig', storage, replaceUnavailable: true }), /denied/);
+  assert.ok(asked.at(-1).includes(path.join(real, 'actual', 'store')), 'the storage the link really names is asked');
+  assert.ok(asked.at(-1).includes(path.join(real, 'denied')), 'its state child is asked where it really leads');
+  assert.deepEqual(ran, ['index status'], 'nothing writes past a denied state child');
+});
+
 test('CLI-path writes fail closed before any edit ask when a write root runs through a file or a link loop', async t => {
   const { root, ctx, adapter } = await context(t);
   await writeFile(path.join(root, 'file'), '');

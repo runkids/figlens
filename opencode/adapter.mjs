@@ -322,7 +322,8 @@ export function createAdapter(ctx, entry = import.meta.url) {
         if (!roots?.config) throw missing('its config root');
         await current.authorize('figlens_index', [grant]);
         // The binary writes under DIR/state, which may itself be a link.
-        await edit([required(input, 'storage'), path.join(input.storage, 'state'), roots.config.path]);
+        // The state child joins the raw storage, so a `..` after a link resolves as the binary resolves it.
+        await edit([required(input, 'storage'), `${input.storage}${path.sep}state`, roots.config.path]);
       } else {
         // A lost lock or newer schema fails status; the binary's own prepare or reset recovery names the place.
         const found = await status(input).catch(error => {
