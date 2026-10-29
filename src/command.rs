@@ -340,6 +340,8 @@ impl Command {
                     parents
                         .find(|(_, c)| c.iter().any(|c| c == id))
                         .map(|(p, _)| p.as_str())
+                        // `children` can name a parent the file lacks; the walk stops there.
+                        .filter(|p| tree.nodes.contains_key(*p))
                 };
                 let mut ancestors = std::iter::successors(Some(root.as_str()), |id| parent(id));
                 let page = ancestors.find(|id| plugin_type(tree.nodes[*id]) == "CANVAS");

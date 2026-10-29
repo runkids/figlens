@@ -742,6 +742,8 @@ mod tests {
                     node(11, Some(0), "CANVAS", Some("internalOnly")),
                     node(12, Some(11), "FRAME", None),
                     node(13, Some(3), "FRAME", Some("newline")),
+                    node(14, Some(99), "SECTION", None),
+                    node(15, Some(14), "FRAME", None),
                 ]),
             )]),
         );
@@ -768,6 +770,11 @@ mod tests {
                 { "id": "0:6", "type": "INSTANCE", "name": "n6", "page": "0:1", "section": "0:5" },
                 { "id": "0:13", "type": "FRAME", "name": "a\n0:9 b", "page": "0:1", "section": "0:3" },
             ])
+        );
+        // A section under a parent the file lacks lists its screens without a page.
+        assert_eq!(
+            run(&["0:14", "--top-frames", "--json"]).json().unwrap(),
+            &serde_json::json!([{ "id": "0:15", "type": "FRAME", "name": "n15", "section": "0:14" }])
         );
         // A section root keeps its page; a frame root is not a page or section and lists nothing.
         let section = run(&["0:3", "--top-frames", "--json"])
