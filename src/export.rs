@@ -151,8 +151,7 @@ fn bounds_report(n: &Json, drawn: Option<render::Rect>, layout: bool) -> Map<Str
             {
                 causes.push("effects");
             }
-            if render::has_paint(&r["strokePaints"])
-                && r["strokeWeight"].as_f64().is_some_and(|w| w > 0.0)
+            if render::has_stroke(n)
                 && matches!(r["strokeAlign"].as_str(), Some("OUTSIDE" | "CENTER"))
             {
                 causes.push("stroke");
@@ -343,6 +342,14 @@ mod tests {
             json!([{ "absoluteRenderBounds": { "x": 5, "y": 5, "width": 7, "height": 7 } }]),
         );
         assert!(warning(overflow, [0.0, 0.0, 12.0, 12.0]).contains("from child geometry;"));
+        let mut underline = node(
+            "FRAME",
+            json!({ "strokeWeight": 0, "strokeAlign": "OUTSIDE", "strokePaints": [{ "type": "SOLID" }] }),
+            json!([]),
+        );
+        underline["individualStrokeWeights"] =
+            json!({ "top": 0, "right": 0, "bottom": 2, "left": 0 });
+        assert!(warning(underline, [0.0, 0.0, 10.0, 12.0]).contains("from stroke;"));
         let section = node("SECTION", json!({}), json!([]));
         let margin = warning(section, [-40.0, -40.0, 52.0, 52.0]);
         assert!(

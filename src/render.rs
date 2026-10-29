@@ -370,7 +370,7 @@ pub(crate) fn diagnostics(tree: &Tree, n: &Json) -> Vec<Json> {
     if base {
         lists.push((&r["fillPaints"], "fillPaints".into()));
     }
-    if r["strokeWeight"].as_f64().unwrap_or(0.0) > 0.0 && has_paint(&r["strokePaints"]) {
+    if has_stroke(n) {
         lists.push((&r["strokePaints"], "strokePaints".into()));
     }
     for (list, path) in lists {
@@ -538,6 +538,26 @@ fn glyphs(tree: &Tree, r: &Json) -> Vec<(Vec<Seg>, Mat, usize)> {
         .collect()
 }
 
+/// The box a stroke without geometry covers, grown outward and shrunk inward by each side's
+/// weight as the alignment places it, in node space: `(outer, inner)` outlines. Weights past
+/// the box shrink the inner outline to nothing rather than flip it.
+fn stroke_band(n: &Json) -> (Vec<Seg>, Vec<Seg>) {
+    let r = &n["_r"];
+    let s = size_of(r);
+    let out = match r["strokeAlign"].as_str() {
+        Some("OUTSIDE") => 1.0,
+        Some("CENTER") => 0.5,
+        _ => 0.0,
+    };
+    let [t, rt, b, l] = stroke_weights(n);
+    let rect = |k: f64| {
+        let [t, rt, b, l] = [t * k, rt * k, b * k, l * k];
+        let (w, h) = ((s.x + (l + rt)).max(0.0), (s.y + (t + b)).max(0.0));
+        rect_segs(-l, -t, w, h, [0.0; 4])
+    };
+    (rect(out), rect(out - 1.0))
+}
+
 /// Stroke outlines in page space: stroke geometry when the file has it, else the box's outline
 /// (`None` geometry) to be stroked with `stroke-width`.
 fn stroke_shapes(tree: &Tree, n: &Json) -> Vec<(Vec<Seg>, bool, Mat)> {
@@ -590,6 +610,22 @@ fn geometry_scale(r: &Json, field: &str) -> Mat {
         tx: 0.0,
         ty: 0.0,
     }
+}
+
+/// Stroke weight per side (top, right, bottom, left) of REST node `n`: its
+/// `individualStrokeWeights` when set, else `strokeWeight`.
+pub(crate) fn stroke_weights(n: &Json) -> [f64; 4] {
+    let sides = &n["individualStrokeWeights"];
+    if sides.is_object() {
+        ["top", "right", "bottom", "left"].map(|s| sides[s].as_f64().unwrap_or(0.0))
+    } else {
+        [n["_r"]["strokeWeight"].as_f64().unwrap_or(0.0); 4]
+    }
+}
+
+/// Whether `n` draws a stroke: a visible stroke paint and a side with weight.
+pub(crate) fn has_stroke(n: &Json) -> bool {
+    has_paint(&n["_r"]["strokePaints"]) && stroke_weights(n).iter().any(|w| *w > 0.0)
 }
 
 pub(crate) fn has_paint(list: &Json) -> bool {
@@ -651,18 +687,11 @@ pub fn base_bounds(tree: &Tree, n: &Json) -> Option<Rect> {
     let fill_box = fill_shapes(tree, n)
         .iter()
         .fold(None, |b, (segs, _, sm)| union(b, path_bounds(segs, *sm)));
-    let weight = r["strokeWeight"].as_f64().unwrap_or(0.0);
-    if has_paint(&r["strokePaints"]) && weight > 0.0 {
+    if has_stroke(n) {
         let shapes = stroke_shapes(tree, n);
         if shapes.is_empty() && n["type"] != "TEXT" {
-            let s = size_of(r);
-            let grow = match r["strokeAlign"].as_str() {
-                Some("OUTSIDE") => weight,
-                Some("CENTER") => weight / 2.0,
-                _ => 0.0,
-            };
-            let segs = rect_segs(-grow, -grow, s.x + 2.0 * grow, s.y + 2.0 * grow, [0.0; 4]);
-            b = union(b, path_bounds(&segs, m));
+            let (outer, _) = stroke_band(n);
+            b = union(b, path_bounds(&outer, m));
         }
         // Stroke geometry is a double-width centered outline; an inside stroke keeps the part within the shape.
         let inside = r["strokeAlign"] == "INSIDE";
@@ -1417,10 +1446,11 @@ impl<'t, 'a> Svg<'t, 'a> {
 
     fn strokes(&mut self, n: &Json) -> String {
         let r = &n["_r"];
-        let weight = r["strokeWeight"].as_f64().unwrap_or(0.0);
-        if weight <= 0.0 || !has_paint(&r["strokePaints"]) {
+        if !has_stroke(n) {
             return String::new();
         }
+        let weights = stroke_weights(n);
+        let weight = weights[0];
         let shapes = stroke_shapes(self.tree, n);
         if !shapes.is_empty() {
             let body = self.fills(&strip_text(n), &r["strokePaints"], shapes);
@@ -1450,6 +1480,13 @@ impl<'t, 'a> Svg<'t, 'a> {
         }
         if n["type"] == "TEXT" {
             return String::new();
+        }
+        // Per-side weights without stroke geometry: fill the band between the grown and shrunk box.
+        // shortcut: square corners and no dashes, as no sample had such strokes without geometry.
+        if weights.iter().any(|w| *w != weight) {
+            let (mut band, inner) = stroke_band(n);
+            band.extend(inner);
+            return self.fills(n, &r["strokePaints"], vec![(band, true, mat(&r["m"]))]);
         }
         // Boxes without stroke geometry: stroke the box outline, moved by the alignment.
         let m = mat(&r["m"]);
@@ -2089,7 +2126,8 @@ mod tests {
             blobs: vec![&blob],
         };
         for geometry in [false, true] {
-            for weight in [0, 2] {
+            // The third case: per-side weights with a zero strokeWeight, which count as stroked.
+            for (weight, sides) in [(0, false), (2, false), (0, true)] {
                 let mut node = serde_json::json!({"id":"1:1","type":"RECTANGLE","_r":{
                     "fillPaints":[{"type":"GRADIENT_ANGULAR"}],
                     "strokeWeight":weight,
@@ -2107,10 +2145,14 @@ mod tests {
                 if geometry {
                     node["_r"]["strokeGeometry"] = serde_json::json!([{"commandsBlob":0}]);
                 }
+                if sides {
+                    node["individualStrokeWeights"] =
+                        serde_json::json!({"top":0,"right":0,"bottom":2,"left":0});
+                }
                 let found = diagnostics(&tree, &node);
                 let fields: Vec<_> = found.iter().map(|d| d["field"].as_str().unwrap()).collect();
                 let mut expected = vec!["fillPaints[0].type"];
-                if geometry && weight > 0 {
+                if geometry && (weight > 0 || sides) {
                     expected.extend([
                         "strokePaints[5].type",
                         "strokePaints[6].imageScaleMode",
@@ -2426,6 +2468,59 @@ mod tests {
         // Painting the inner blur over the outer one would give 0.75 alpha.
         let alpha = pixmap(&svg).unwrap().pixel(5, 5).unwrap().alpha();
         assert!((126..=130).contains(&alpha), "{alpha}");
+    }
+
+    #[test]
+    fn per_side_strokes_draw_with_a_zero_stroke_weight_from_geometry_or_the_box() {
+        use kiwi_schema::Value;
+        // A 2px outside bottom stroke on a 16x10 box: Figma saves a 4px band centered on the edge.
+        let mut bytes = Vec::new();
+        for (command, x, y) in [(1u8, 0f32, 8f32), (2, 16., 8.), (2, 16., 12.), (2, 0., 12.)] {
+            bytes.push(command);
+            bytes.extend(x.to_le_bytes());
+            bytes.extend(y.to_le_bytes());
+        }
+        bytes.push(0);
+        let blob = Value::Object(
+            "Blob",
+            std::collections::HashMap::from([("bytes", Value::Bytes(bytes))]),
+        );
+        let tree = Tree {
+            nodes: Default::default(),
+            children: Default::default(),
+            blobs: vec![&blob],
+        };
+        let images = |_: &str| None;
+        let node = |align: &str, height: f64, bottom: f64| {
+            serde_json::json!({"id": "1:1", "type": "FRAME",
+                "individualStrokeWeights": {"top": 0, "right": 0, "bottom": bottom, "left": 0},
+                "_r": {
+                    "m": [1, 0, 0, 1, 0, 0], "size": {"x": 16, "y": height},
+                    "strokeWeight": 0, "strokeAlign": align,
+                    "strokePaints": [{"type": "SOLID", "color": {"r": 0, "g": 0, "b": 1, "a": 1}}],
+            }})
+        };
+        // Alpha down the middle column, one value per row.
+        let column = |n: &Json, rows: i32| {
+            let svg = Svg::new(&tree, &images).document(n, [0.0, 0.0, 16.0, rows as f64], 1.0);
+            let pixels = pixmap(&svg).unwrap();
+            (0..rows)
+                .map(|y| pixels.pixel(8, y as u32).unwrap().alpha())
+                .collect::<Vec<_>>()
+        };
+        for geometry in [false, true] {
+            let mut n = node("OUTSIDE", 10.0, 2.0);
+            if geometry {
+                n["_r"]["strokeGeometry"] = serde_json::json!([{"commandsBlob": 0}]);
+            }
+            assert_eq!(base_bounds(&tree, &n), Some([0.0, 0.0, 16.0, 12.0]));
+            let alpha = column(&n, 14);
+            assert_eq!([alpha[1], alpha[9], alpha[11], alpha[13]], [0, 0, 255, 0]);
+        }
+        // Without geometry each alignment places the band; a weight past the box fills it.
+        assert_eq!(column(&node("INSIDE", 4.0, 2.0), 4), [0, 0, 255, 255]);
+        assert_eq!(column(&node("CENTER", 4.0, 2.0), 6), [0, 0, 0, 255, 255, 0]);
+        assert_eq!(column(&node("INSIDE", 2.0, 3.0), 4), [255, 255, 0, 0]);
     }
 
     #[test]

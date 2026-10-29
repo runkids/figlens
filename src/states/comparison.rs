@@ -19,6 +19,11 @@ const FIELDS: &[&str] = &[
     "effects",
     "blendMode",
     "strokeWeight",
+    "borderStrokeWeightsIndependent",
+    "borderTopWeight",
+    "borderRightWeight",
+    "borderBottomWeight",
+    "borderLeftWeight",
     "cornerRadius",
     "rectangleCornerRadiiIndependent",
     "rectangleTopLeftCornerRadius",
@@ -142,7 +147,9 @@ fn field(raw: &K, path: &str, id: &str, budget: &mut Budget) -> Value {
     };
     let mut remaining = MAX_VALUE_BYTES;
     let shape = match path {
-        "visible" | "rectangleCornerRadiiIndependent" => matches!(value, K::Bool(_)),
+        "visible" | "rectangleCornerRadiiIndependent" | "borderStrokeWeightsIndependent" => {
+            matches!(value, K::Bool(_))
+        }
         "size" => matches!(
             (value.get("x"), value.get("y")),
             (Some(K::Float(_)), Some(K::Float(_)))

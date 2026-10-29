@@ -96,7 +96,7 @@ When referring to a specific frame or node in an answer or design document, link
 
 ## Reading the output
 
-- **Shape** is Figma REST: `document` is the frame; `children`; `absoluteBoundingBox {x,y,width,height}` in page coordinates (subtract the frame's x/y for positions inside it); `fills`/`strokes`/`effects`; auto-layout in `layoutMode`, `itemSpacing`, `padding*`, `primaryAxisAlignItems`, `counterAxisAlignItems`, `layoutSizingHorizontal`/`Vertical` (`FILL`/`HUG`/`FIXED`).
+- **Shape** is Figma REST: `document` is the frame; `children`; `absoluteBoundingBox {x,y,width,height}` in page coordinates (subtract the frame's x/y for positions inside it); `fills`/`strokes`/`effects`; `strokeWeight`, or `individualStrokeWeights {top,right,bottom,left}` when sides are set independently; read that instead, since `strokeWeight` can then be 0 (a bottom-only underline); auto-layout in `layoutMode`, `itemSpacing`, `padding*`, `primaryAxisAlignItems`, `counterAxisAlignItems`, `layoutSizingHorizontal`/`Vertical` (`FILL`/`HUG`/`FIXED`).
 - **Absolute children**: `layoutPositioning: "ABSOLUTE"` marks a child of an auto-layout frame that sits outside the flow (title bars, floating inputs, badges). Place it with its bounding box, out of the flex flow.
 - **Colors** are `r,g,b,a` floats in 0–1: multiply by 255. A paint's own `opacity` multiplies `a`.
 - **Text**: `characters` and `style` (family, weight, size, `lineHeightPx`, letter spacing). Mixed styles inside one text are in `characterStyleOverrides` (one style id per character) and `styleOverrideTable` (id → the fields that differ), e.g. one bold word in a sentence.

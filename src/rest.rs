@@ -785,6 +785,19 @@ impl Builder<'_, '_> {
     }
 }
 
+/// Per-side stroke weights in the REST shape, when the node sets them independently. A side
+/// the `.fig` leaves out is 0: its saved stroke geometry draws nothing there.
+fn individual_stroke_weights(k: &Obj) -> Option<Json> {
+    (k.get("borderStrokeWeightsIndependent") == Some(&json!(true))).then(|| {
+        let side = |s: &str| {
+            k.get(&format!("border{s}Weight"))
+                .and_then(Json::as_f64)
+                .unwrap_or(0.0)
+        };
+        json!({ "top": side("Top"), "right": side("Right"), "bottom": side("Bottom"), "left": side("Left") })
+    })
+}
+
 /// What `render` needs of a node beyond its REST fields, with its page transform.
 fn render_input(k: &Obj, matrix: Mat) -> Json {
     let text = at(k, "textData");
@@ -890,6 +903,9 @@ fn fields(k: &Obj, kind: &str, parent: Option<&Obj>) -> Obj {
         if let Some(v) = k.get(name) {
             put(name, v.clone());
         }
+    }
+    if let Some(sides) = individual_stroke_weights(k) {
+        put("individualStrokeWeights", sides);
     }
     // With independent corners the four radii win over cornerRadius; equal ones are reported as one.
     let mut radius = num("cornerRadius");
@@ -1511,6 +1527,21 @@ mod tests {
                 Some(json!("HUG")),
             ]
         );
+    }
+
+    #[test]
+    fn per_side_stroke_weights_use_the_rest_shape_and_leave_out_sides_as_zero() {
+        let k = obj(json!({
+            "strokeWeight": 0.0,
+            "borderStrokeWeightsIndependent": true,
+            "borderBottomWeight": 3.0,
+        }));
+        assert_eq!(
+            fields(&k, "FRAME", None)["individualStrokeWeights"],
+            json!({ "top": 0.0, "right": 0.0, "bottom": 3.0, "left": 0.0 })
+        );
+        let uniform = obj(json!({ "strokeWeight": 1.0, "borderBottomWeight": 3.0 }));
+        assert!(!fields(&uniform, "FRAME", None).contains_key("individualStrokeWeights"));
     }
 
     #[test]

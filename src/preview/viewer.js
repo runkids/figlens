@@ -342,7 +342,16 @@ if (typeof document !== 'undefined') {
         if (n.type === 'TEXT') add('color', fills[0]);
         else if (fills.length) add('background', fills.reverse().join(', '));
         const stroke = (n.strokes || []).map((p, i) => paint(p, n.boundVariables?.strokes?.[i])).find(Boolean);
-        if (stroke && n.strokeWeight) {
+        const sides = n.individualStrokeWeights;
+        if (stroke && sides && Object.values(sides).some(Boolean)) {
+            add('border-style', 'solid');
+            add('border-width', [sides.top, sides.right, sides.bottom, sides.left].map(px).join(' '));
+            // A gradient is not a border colour; CSS paints it through border-image.
+            if (stroke.startsWith('linear-gradient')) {
+                add('border-color', 'transparent');
+                add('border-image', `${stroke} 1`);
+            } else add('border-color', stroke);
+        } else if (stroke && n.strokeWeight) {
             // A gradient is not a border colour; CSS paints it through border-image.
             if (stroke.startsWith('linear-gradient')) {
                 add('border', `${px(n.strokeWeight)} solid transparent`);
@@ -476,10 +485,10 @@ if (typeof document !== 'undefined') {
             n.blendMode && !['PASS_THROUGH', 'NORMAL'].includes(n.blendMode) ? field('', words(n.blendMode), 'Blend', '', true) : null,
             ...(n.fills || []).map(p => paint('Fill', p)),
             ...(n.strokes || []).map(p => paint('Stroke', p)),
-            n.strokes?.length ? field('', num(n.strokeWeight), n.strokeAlign ? words(n.strokeAlign) : 'Weight', '', true) : null,
+            n.strokes?.length ? field('', n.individualStrokeWeights ? ['top', 'right', 'bottom', 'left'].map(s => num(n.individualStrokeWeights[s])).join(' ') : num(n.strokeWeight), n.strokeAlign ? words(n.strokeAlign) : 'Weight', '', true) : null,
             ...(n.effects || []).map(e => field('', `${words(e.type)}${Number.isFinite(e.radius) ? ' · ' + num(e.radius) : ''}${e.visible === false ? ' (hidden)' : ''}`,
                 e.offset ? `${num(e.offset.x)}, ${num(e.offset.y)}` : '', rgba(e.color), true)),
-        ], pick(['fills', 'strokes', 'strokeWeight', 'cornerRadius', 'rectangleCornerRadii', 'effects', 'opacity', 'blendMode']));
+        ], pick(['fills', 'strokes', 'strokeWeight', 'individualStrokeWeights', 'cornerRadius', 'rectangleCornerRadii', 'effects', 'opacity', 'blendMode']));
         group('Component', [
             field('ID', n.componentId, '', '', true),
             ...Object.entries(n.componentProperties || {}).map(([k, v]) => field(k.split('#')[0], v?.value === undefined ? undefined : String(v.value), v?.type ? words(v.type) : '', '', true)),
