@@ -1013,6 +1013,35 @@ fn one_query_budget_covers_every_load_and_is_checked_before_copying() {
 }
 
 #[test]
+fn metadata_that_escapes_past_the_read_limit_is_never_published() {
+    let mut index = build(&Tree::new(&swaps()), "0:0", bounds(WORK));
+    // Each U+0001 is one byte in the name and six once JSON-escaped.
+    let name = "\u{1}".repeat(12 * 1024 * 1024);
+    index.above.push(("1:1".into(), name));
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(&format!(
+        "CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+         added_at_ms INTEGER NOT NULL) STRICT; {}",
+        crate::workspace::V2
+    ))
+    .unwrap();
+    conn.execute(
+        "INSERT INTO generations (source_id, membership, scope, versions, job_id, state, created_ms)
+         VALUES ('s', 'm', '0:0', 'v', 'j', 'building', 0)",
+        [],
+    )
+    .unwrap();
+    let e = store::save(&mut conn, 1, &index, &|_| Ok(()), &mut |_, _, _| Ok(())).unwrap_err();
+    let rows: i64 = conn
+        .query_row("SELECT count(*) FROM records", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        (e.downcast_ref::<FigError>().map(FigError::kind), rows),
+        (Some(ErrorKind::ParseBudget), 0)
+    );
+}
+
+#[test]
 fn contains_and_instance_of_survive_a_stored_generation() {
     let message = swaps();
     let tree = Tree::new(&message);

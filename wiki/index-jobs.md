@@ -58,6 +58,7 @@ Hard refusals, checked before the work they bound:
 | Record text one query copies over all its loads, checked before copying | 512 MiB | `query_work_limit`, never `index_incompatible` |
 | One scope extraction (build) | `WORK` 10M units | the generation is partial with `work_limit` |
 | Main database file | `DISK_CAP` 2 GiB: a hard `max_page_count` ceiling on builds at 2 GiB less 64 MiB headroom, or the current size when already larger (no growth, freed pages reused) | the build fails; the prior generation serves |
+| A generation's serialized metadata (pages, roots, ancestors, as JSON) | 64 MiB, the size a search reads back | the build fails `parse_budget_exceeded` before writing any row; the prior generation serves |
 | WAL | `WAL_CAP` 64 MiB threshold after each batch; one batch's pages over it at most | the build fails `workspace_busy`; the prior generation serves |
 | Published scopes per source, active jobs per workspace | 8, 16 | oldest scope retired; submit refused |
 

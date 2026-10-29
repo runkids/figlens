@@ -134,6 +134,19 @@ pub(crate) fn save(
     guard: &dyn Fn(&Connection) -> Result<()>,
     between: &mut dyn FnMut(&Connection, usize, usize) -> Result<()>,
 ) -> Result<()> {
+    let pages: Vec<Json> = index
+        .pages
+        .iter()
+        .map(|p| json!([p.id, p.name, p.internal]))
+        .collect();
+    let info = json!({"pages": pages, "roots": index.roots, "above": index.above,
+        "lens": index.lens, "stop": index.stop, "hiddenContent": index.hidden_content,
+        "textBytes": index.text_bytes, "generation": index.generation})
+    .to_string();
+    // JSON escaping can grow names past what `load` reads back; refuse before writing anything.
+    if info.len() > INFO_BYTES {
+        return Err(crate::parse::exceeded("index metadata bytes", INFO_BYTES).into());
+    }
     let total = index.records.len() + index.terms.len();
     let mut done = 0;
     let record_bytes = |r: &Record| {
@@ -208,21 +221,13 @@ pub(crate) fn save(
         done += chunk.len();
         between(conn, done, total)?;
     }
-    let pages: Vec<Json> = index
-        .pages
-        .iter()
-        .map(|p| json!([p.id, p.name, p.internal]))
-        .collect();
-    let info = json!({"pages": pages, "roots": index.roots, "above": index.above,
-        "lens": index.lens, "stop": index.stop, "hiddenContent": index.hidden_content,
-        "textBytes": index.text_bytes, "generation": index.generation});
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     guard(&tx)?;
     tx.execute(
         "UPDATE generations SET info = ?2, records = ?3, complete = ?4, stop = ?5 WHERE gen = ?1",
         params![
             gen_id,
-            info.to_string(),
+            info,
             index.records.len() as i64,
             index.stop.is_none(),
             index.stop
