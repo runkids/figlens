@@ -41,18 +41,46 @@ fn fail(kind: ErrorKind, message: impl Into<String>) -> Box<dyn Error> {
     FigError::new(kind, message).into()
 }
 
-/// A storage write failure names its path and never moves on to another directory.
-fn storage_error(path: &Path, error: std::io::Error) -> Box<dyn Error> {
-    let kind = match error.kind() {
-        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => {
-            ErrorKind::PermissionDenied
-        }
-        _ => ErrorKind::OperationFailed,
-    };
+/// The error kind and the recovery an agent or user can act on for a storage I/O failure.
+/// None of them is another --storage: that would meet the same blocked storage again.
+fn recovery(error: &std::io::Error) -> (ErrorKind, &'static str) {
+    use std::io::ErrorKind as Io;
+    match error.kind() {
+        Io::PermissionDenied | Io::ReadOnlyFilesystem => (
+            ErrorKind::PermissionDenied,
+            "restore access to it (figlens never changes permissions), then retry",
+        ),
+        Io::NotFound | Io::NotConnected | Io::TimedOut | Io::StaleNetworkFileHandle => (
+            ErrorKind::StorageUnavailable,
+            "it is missing or offline: reconnect or restore it, then retry",
+        ),
+        _ => (
+            ErrorKind::OperationFailed,
+            "fix the storage there, then retry",
+        ),
+    }
+}
+
+/// The current storage of workspace `id` cannot be checked at `path`. Its database may still
+/// exist, so no other storage may take over: the only way on is access to this one.
+fn blocked(id: &str, path: &Path, error: std::io::Error) -> Box<dyn Error> {
+    let (kind, next) = recovery(&error);
     fail(
         kind,
         format!(
-            "cannot use figlens storage at {}: {error}; fix its permissions or pass a writable --storage <dir>; nothing was written elsewhere",
+            "workspace {id} may still have its database under {}, which cannot be checked: {error}; {next}; figlens does not start another database while it may exist",
+            path.display()
+        ),
+    )
+}
+
+/// A storage failure names its path and never moves on to another directory.
+fn storage_error(path: &Path, error: std::io::Error) -> Box<dyn Error> {
+    let (kind, next) = recovery(&error);
+    fail(
+        kind,
+        format!(
+            "cannot use figlens storage at {}: {error}; {next}; nothing was written elsewhere",
             path.display()
         ),
     )
@@ -560,20 +588,25 @@ impl Storage {
         if let Some(dir) = &remembered
             && !self.explicit.as_ref().is_some_and(|e| same_dir(e, dir))
         {
-            let cause = match std::fs::metadata(dir) {
-                Ok(meta) if meta.is_dir() => None,
-                Ok(_) => Some("it is not a directory".to_owned()),
-                Err(e) => Some(e.to_string()),
-            };
-            if let Some(cause) = cause {
-                return Err(fail(
-                    ErrorKind::OperationFailed,
+            let record = self.locations().join(format!("{id}.json"));
+            let gone = |why: &str| {
+                fail(
+                    ErrorKind::StorageUnavailable,
                     format!(
-                        "workspace {id} is remembered at {}, which is unavailable ({cause}); restore it, or delete {} to forget it; no other database was created",
+                        "workspace {id} is remembered at {}, which {why}; reconnect or restore it, then retry; only if its database is gone for good, delete {} to forget it; no other database was created",
                         dir.display(),
-                        self.locations().join(format!("{id}.json")).display()
+                        record.display()
                     ),
-                ));
+                )
+            };
+            match std::fs::metadata(dir) {
+                Ok(meta) if meta.is_dir() => {}
+                Ok(_) => return Err(gone("is not a directory")),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(gone("is missing or offline"));
+                }
+                // Its database may be intact behind the error, so forgetting it is not offered.
+                Err(e) => return Err(blocked(id, dir, e)),
             }
         }
         if let Some(explicit) = &self.explicit {
@@ -588,7 +621,7 @@ impl Storage {
             let exists = match std::fs::symlink_metadata(&current) {
                 Ok(_) => true,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-                Err(e) => return Err(storage_error(&current, e)),
+                Err(e) => return Err(blocked(id, &current, e)),
             };
             if exists && !same_dir(&home.state.path, &explicit.join("state")) {
                 return Err(fail(

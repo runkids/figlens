@@ -50,6 +50,7 @@ pub enum ErrorKind {
     OperationFailed,
     WorkspaceBusy,
     IndexIncompatible,
+    StorageUnavailable,
 }
 
 #[derive(Debug)]

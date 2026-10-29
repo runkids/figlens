@@ -37,6 +37,20 @@ A workspace is `<state>/workspaces/<workspaceId>/` holding `workspace.json` (the
 - Every connection holds the lock file shared for its lifetime; `prepare` and `reset` hold it exclusive. Locks are `std::fs::File` advisory locks (flock, `LockFileEx`) taken with `try_lock` until a 5 s deadline, then `workspace_busy`. The lock file is never removed, so every process locks the same file.
 - `incarnation` is `hex(randomblob(16))`, new for every initialization. Later cursors and jobs must bind it so a handle from before a reset never matches the recreated workspace.
 
+## Errors and recovery
+
+Every storage error names the workspace or path and one way on; none suggests another `--storage`, which would meet the same blocked storage. `workspace::recovery` maps the I/O error:
+
+| Kind | Cause | Next step |
+|---|---|---|
+| `permission_denied` | Access denied or read-only | Restore access; figlens never changes permissions |
+| `storage_unavailable` | Missing, unmounted or offline (`NotFound`, `NotConnected`, `TimedOut`, stale network handle) | Reconnect or restore it, then retry; a missing remembered root may be forgotten by deleting its record only if its database is gone for good |
+| `workspace_busy` | Another process holds the lock | Retry after it finishes |
+| `index_incompatible` | Another schema | Use that figlens version, or reset |
+| `operation_failed` | Anything else | Fix the storage at the named path |
+
+When the current storage cannot be checked, a different `--storage` is refused with that error (`blocked`), because the database may still exist behind it. Reset and later rebuilds need the old database and stay blocked the same way. Stateless search of a readable `.fig` (CLI `figlens search` or the MCP `search` tool) is unaffected and is the fallback. In this milestone no automatic workaround (another `--storage`, reset, deleting files) is offered; explicit recovery and rebuild arrive with the durable index. Structured MCP recovery fields arrive with the MCP `index` tools.
+
 ## Actions
 
 | Action | Effect |

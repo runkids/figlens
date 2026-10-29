@@ -327,6 +327,11 @@ fn an_unreadable_current_storage_does_not_let_another_root_take_over() {
         ErrorKind::PermissionDenied
     };
     assert_eq!(kind(&*error), expected, "{error}");
+    if !visible {
+        // The only way on is access to the old storage, never another --storage.
+        assert!(error.to_string().contains("restore access"), "{error}");
+        assert!(error.to_string().contains(&id), "{error}");
+    }
     assert!(!custom_root.exists());
     assert!(!custom.locations().join(format!("{id}.json")).exists());
 }
@@ -343,7 +348,8 @@ fn an_unavailable_remembered_storage_is_an_error_not_a_second_database() {
         prepare(&f.storage, &a, None).unwrap_err(),
         prepare(&f.custom("other").1, &a, None).unwrap_err(),
     ] {
-        assert_eq!(kind(&*error), ErrorKind::OperationFailed);
+        assert_eq!(kind(&*error), ErrorKind::StorageUnavailable);
+        assert!(!error.to_string().contains("another --storage"), "{error}");
     }
     assert!(!f.dir.join("other").exists());
     assert!(!f.storage.defaults.state.path.exists());

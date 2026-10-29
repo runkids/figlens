@@ -653,6 +653,10 @@ impl Failure {
                 "index_incompatible",
                 "The workspace database was written by a different figlens schema; use that figlens version or reset the workspace.",
             ),
+            ErrorKind::StorageUnavailable => (
+                "storage_unavailable",
+                "The workspace storage is missing or offline; reconnect or restore it and retry, without another --storage or a reset.",
+            ),
         };
         json!({"code": code, "nextStep": next})
     }

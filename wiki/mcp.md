@@ -73,6 +73,7 @@ Tool failures retain `isError: true` and text content; additive `_meta.figlens` 
 | `output_write_failed` | Bundle packing or export writing failed; create an authorized writable directory and check space/permissions |
 | `permission_denied` | Configured roots forbid the source/output; retain the restriction |
 | `workspace_busy` | CLI `figlens index` only for now: another figlens process holds the workspace; retry after it finishes, without killing it |
+| `storage_unavailable` | CLI `figlens index` only for now: the workspace's storage is missing or offline; reconnect or restore it and retry, without another `--storage` or a reset |
 | `index_incompatible` | CLI `figlens index` only for now: the workspace was written by another schema; use that figlens version or reset the workspace |
 | `operation_failed` | Other existing operation error; inspect its diagnostic without assuming a more specific category |
 
