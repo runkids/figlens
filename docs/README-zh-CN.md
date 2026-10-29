@@ -161,7 +161,7 @@ skillshare sync && skillshare sync mcp --global
 | `tree <file> [node] [--depth N] [--json]` | 节点 id、REST 类型（与 `nodes` 相同）和名称；缩进文本，或附带每个节点尺寸、隐藏状态与 auto layout 模式的嵌套 JSON |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 不区分大小写地搜索图层名称和文字；返回路径、尺寸和预览。默认 20 条结果（1-200） |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | 展开后的精简布局/文字摘要，最多 200 个节点。`--images` 会加上位图尺寸和裁切范围 |
-| `nodes <file> <node>` | REST 格式 JSON：展开的 instance 与覆写、auto-layout、文字样式、填充、效果、绑定变量、组件属性、渲染边界 |
+| `nodes <file> <node>` | REST nodes 响应中单个节点的对象（`document`、`components`、`componentSets`、`styles`）：展开的 instance 与覆写、auto-layout、文字样式、填充、效果、绑定变量、组件属性、渲染边界 |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | 一次解码读取多个节点：列表中每个 id 一行 JSON（带 `nodeId` 的 `nodes` 输出，或 `{nodeId, error}`） |
 | `variables <file> [node]` | 某个 frame 的绑定变量；不指定 node 则输出所有本地变量 |
 | `bundle <file> <node> <out.zip> [--states]` | 单个 frame 的设计 bundle；输出 `{nodeId, path, warnings}` |

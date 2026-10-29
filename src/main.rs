@@ -38,8 +38,10 @@ usage:
                                              --images adds source pixels/bytes and source-pixel crop rectangles;
                                              --states lists related component variants and evidence gaps;
                                              --compare-variant compares two stored variants in the same set
-  figlens nodes <file.fig> <node>              print a frame as Figma REST-shaped nodes.json
-                                             (instances expanded, fills/text/auto-layout included)
+  figlens nodes <file.fig> <node>              print a frame as the per-node object of a Figma REST
+                                             nodes response: {document, components, componentSets,
+                                             styles, schemaVersion}; instances expanded,
+                                             fills/text/auto-layout included
   figlens nodes <file.fig> --frames <list|-> | --ids <node>...
                                              one decode, many nodes: <list> has one node id per line
                                              (- reads stdin), or name ids after --ids (at most 10000);
