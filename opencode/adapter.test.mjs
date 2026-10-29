@@ -33,6 +33,27 @@ test('OpenCode preserves existing local, remote and disabled MCP settings and bl
   assert.deepEqual(await readdir(root), []);
 });
 
+test('OpenCode shortcuts wait until the managed MCP tools reach the tool registry', async t => {
+  const { root, ctx, writes } = await context(t);
+  const override = process.env.FIGLENS_BIN;
+  delete process.env.FIGLENS_BIN;
+  t.after(() => {
+    if (override === undefined) delete process.env.FIGLENS_BIN; else process.env.FIGLENS_BIN = override;
+  });
+  await mkdir(path.join(root, 'package/bin'), { recursive: true });
+  await writeFile(path.join(root, 'package/package.json'), JSON.stringify({ version: '1.2.3' }));
+  await writeFile(path.join(root, 'package/bin/figlens.js'), 'console.log("figlens 1.2.3");');
+  let lists = 0;
+  // Connected from the start; the server's tools appear only on the third registry read.
+  ctx.tool.list = async () => ++lists < 3 ? [] : [{ id: 'figlensmcp_search', name: 'search', options: { namespace: 'figlensmcp' } }];
+  const adapter = createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href);
+  t.after(() => adapter.dispose());
+  adapter.configureMcp({ get: () => undefined, set: () => {} });
+  await adapter.commandHandler({ sessionID: 'session', prompt: { text: 'open the hero' } });
+  assert.equal(lists, 3);
+  assert.equal(writes.length, 1);
+});
+
 test('OpenCode manages its default under a key apart from its figlens_* tools and keeps user servers under either key', async t => {
   const { adapter, ctx } = await context(t);
   const set = [];
