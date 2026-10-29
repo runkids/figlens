@@ -989,7 +989,13 @@ impl Expander<'_, '_> {
                                 .sum::<usize>()
                             + assignment_bytes(own, inherited, refs, left)
                     };
-                    if self.spend_estimated(work, text, estimate).is_none() {
+                    // `nest` writes `pk;` in front of every inner key it merges.
+                    let prefixes =
+                        (list_len(overrides) + list_len(derived)).saturating_mul(pk.len() + 1);
+                    if self
+                        .spend_estimated(work, text.saturating_add(prefixes), estimate)
+                        .is_none()
+                    {
                         return;
                     }
                 }
@@ -1445,6 +1451,56 @@ mod tests {
         let (_, bounds) = bounded(&tree, "0:0", 100_000, 1 << 30);
         assert_eq!(bounds.stop, Some(Stop::Work));
         let (_, bounds) = bounded(&tree, "0:0", 5_000_000, 1 << 30);
+        assert_eq!(bounds.stop, None);
+    }
+
+    #[test]
+    fn a_bounded_expansion_charges_the_prefix_nested_overrides_copy() {
+        // A nested instance under a 2 kB id key: each of its 1,000 overrides copies that prefix.
+        let inst = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            ("symbolData", obj(vec![("symbolID", guid(1, 1))])),
+        ]);
+        let overrides = (0..1000)
+            .map(|i| {
+                obj(vec![
+                    (
+                        "guidPath",
+                        obj(vec![("guids", Value::Array(vec![guid(5, i)]))]),
+                    ),
+                    ("visible", Value::Bool(false)),
+                ])
+            })
+            .collect();
+        let nested = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            (
+                "symbolData",
+                obj(vec![
+                    ("symbolID", guid(2, 2)),
+                    ("symbolOverrides", Value::Array(overrides)),
+                ]),
+            ),
+        ]);
+        let long = "n".repeat(2000);
+        let (page, outer, inner) = (obj(vec![]), obj(vec![]), obj(vec![]));
+        let tree = Tree {
+            nodes: HashMap::from([
+                ("page".into(), &page),
+                ("inst".into(), &inst),
+                ("1:1".into(), &outer),
+                ("2:2".into(), &inner),
+                (long.clone(), &nested),
+            ]),
+            children: HashMap::from([
+                ("page".into(), vec!["inst".into()]),
+                ("1:1".into(), vec![long]),
+            ]),
+            blobs: Vec::new(),
+        };
+        let (_, bounds) = bounded(&tree, "page", 1 << 20, 1_500_000);
+        assert_eq!(bounds.stop, Some(Stop::Bytes));
+        let (_, bounds) = bounded(&tree, "page", 1 << 20, 8 << 20);
         assert_eq!(bounds.stop, None);
     }
 
