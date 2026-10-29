@@ -316,6 +316,18 @@ test('CLI-path prepare with an explicit storage asks edit on the state root the 
   assert.deepEqual(ran, ['status'], 'nothing was written');
 });
 
+test('CLI-path calls refuse a gs:// design before any permission or command, since its cache read is unauthorizable', async t => {
+  const { ctx, adapter } = await context(t);
+  const asked = [], ran = [];
+  ctx.permission.assert = async ({ action, resources }) => { asked.push([action, ...resources]); };
+  const current = await adapter.scope('session');
+  current.run = async args => { ran.push(args[0]); return { stdout: '{}' }; };
+  for (const [tool, input] of [['search', { file: 'gs://b/d.fig', query: 'a' }], ['inspect', { file: 'gs://b/d.fig', node: '0:1' }],
+    ['index', { action: 'prepare', file: 'gs://b/d.fig', scope: '0:0' }]])
+    await assert.rejects(adapter.cli(current, tool, input), /local \.fig files only.*figlens MCP server/);
+  assert.deepEqual([asked, ran], [[], []]);
+});
+
 test('CLI-path workspace search and rebuild ask read on the selected registered designs before reading them', async t => {
   const { ctx, adapter } = await context(t);
   const asked = [], ran = [];
