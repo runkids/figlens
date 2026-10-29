@@ -52,7 +52,10 @@ fn tokenizer() -> String {
         unicode_normalization::UNICODE_VERSION,
         caseless::UNICODE_VERSION,
     );
-    format!("nfkc-{}.{}-casefold-{}.{}-cjk-bigram-1", n.0, n.1, c.0, c.1)
+    format!(
+        "nfkc-{}.{}-casefold-{}.{}-cjk-bigram-camel-2",
+        n.0, n.1, c.0, c.1
+    )
 }
 
 /// The first 16 hex digits of a SHA-256: enough to tell sources, queries and builds apart.
@@ -289,7 +292,7 @@ struct Token {
     end: usize,
 }
 
-/// Words split at spaces, punctuation, slashes and camel case; CJK runs as character bigrams
+/// Words split at spaces, punctuation and slashes, fields also at camel case; CJK runs as character bigrams
 /// plus single characters (a query uses single characters only for a one-character run);
 /// emoji clusters as one term each.
 fn tokens(units: &[Unit], query: bool) -> Vec<Token> {
@@ -300,8 +303,21 @@ fn tokens(units: &[Unit], query: bool) -> Vec<Token> {
         let mut j = i + 1;
         match class(units[i].c) {
             Class::Word => {
-                while j < units.len() && class(units[j].c) == Class::Word && !units[j].camel {
+                while j < units.len() && class(units[j].c) == Class::Word {
                     j += 1;
+                }
+                // Fields index camel-case parts plus the whole word, so a query matches whether
+                // or not it repeats the capitalization; queries keep the whole word.
+                let mut start = i;
+                for k in (i + 1..j).filter(|&k| !query && units[k].camel).chain([j]) {
+                    if start > i || k < j {
+                        out.push(Token {
+                            term: term(start, k),
+                            start,
+                            end: k,
+                        });
+                    }
+                    start = k;
                 }
                 out.push(Token {
                     term: term(i, j),

@@ -267,6 +267,32 @@ fn patches_bytes(patches: &Patches, left: &mut usize) -> usize {
     })
 }
 
+/// Bytes `bind_properties` converts and copies for property assignments: each converts once,
+/// and each property reference may copy the largest one into its layer.
+fn assignment_bytes(
+    own: Option<&Value>,
+    inherited: Option<&Json>,
+    refs: usize,
+    left: &mut usize,
+) -> usize {
+    let (mut total, mut largest) = (0usize, 0usize);
+    let own = match own {
+        Some(Value::Array(items)) => &items[..],
+        _ => &[],
+    };
+    let mut add = |n: usize| {
+        total += n;
+        largest = largest.max(n);
+    };
+    for v in own {
+        add(kiwi_bytes(v, left));
+    }
+    for v in inherited.and_then(Json::as_array).into_iter().flatten() {
+        add(json_bytes(v, left));
+    }
+    total.saturating_add(largest.saturating_mul(refs))
+}
+
 fn list_len(v: Option<&Value>) -> usize {
     match v {
         Some(Value::Array(items)) => items.len(),
@@ -548,7 +574,7 @@ struct Expander<'t, 'a> {
     bounds: Option<Bounds>,
     depth: usize,
     /// `symbol_cost` per component.
-    sizes: HashMap<String, (usize, usize)>,
+    sizes: HashMap<String, (usize, usize, usize)>,
     exceeded: bool,
 }
 
@@ -609,18 +635,23 @@ fn expand_all(
         };
         let sd = inst.get("symbolData");
         if ex.bounds.is_some() {
-            let (nodes, text) = ex.symbol_cost(&main);
-            let (overrides, derived) = (
+            let (nodes, text, refs) = ex.symbol_cost(&main);
+            let (overrides, derived, assignments) = (
                 sd.and_then(|s| s.get("symbolOverrides")),
                 inst.get("derivedSymbolData"),
+                inst.get("componentPropAssignments"),
             );
-            let work = nodes + list_len(overrides) + list_len(derived);
+            let work = nodes
+                + list_len(overrides)
+                + list_len(derived)
+                + refs.saturating_mul(list_len(assignments));
             let estimate = |left: &mut usize| {
                 [overrides, derived]
                     .into_iter()
                     .flatten()
                     .map(|v| kiwi_bytes(v, left))
-                    .sum()
+                    .sum::<usize>()
+                    + assignment_bytes(assignments, None, refs, left)
             };
             if ex.spend_estimated(work, text, estimate).is_none() {
                 break;
@@ -694,11 +725,11 @@ impl Expander<'_, '_> {
             .then_some(estimated)
     }
 
-    /// Stored nodes and text bytes `bind_properties` walks and may copy, measured once per
-    /// component by walks charged as they go. Only bounded runs measure.
-    fn symbol_cost(&mut self, symbol: &str) -> (usize, usize) {
+    /// Stored nodes, text bytes and property references `bind_properties` walks and may copy,
+    /// measured once per component by walks charged as they go. Only bounded runs measure.
+    fn symbol_cost(&mut self, symbol: &str) -> (usize, usize, usize) {
         if self.bounds.is_none() {
-            return (0, 0);
+            return (0, 0, 0);
         }
         if let Some(cost) = self.sizes.get(symbol) {
             return *cost;
@@ -709,7 +740,11 @@ impl Expander<'_, '_> {
         let text = self
             .spend_estimated(0, 0, |left| texts.map(|t| kiwi_bytes(t, left)).sum())
             .unwrap_or(0);
-        let cost = (ids.len(), text);
+        let refs = ids
+            .iter()
+            .map(|id| list_len(tree.nodes[id].get("componentPropRefs")))
+            .sum();
+        let cost = (ids.len(), text, refs);
         self.sizes.insert(symbol.to_owned(), cost);
         cost
     }
@@ -743,6 +778,23 @@ impl Expander<'_, '_> {
             let none = Patch::default();
             let o = ov.get(&pk).unwrap_or(&none);
             let d = dv.get(&pk).unwrap_or(&none);
+            // Swaps reset the inherited name; variants use their component set's name.
+            let swapped = o
+                .swap
+                .as_ref()
+                .filter(|_| o.name.is_none())
+                .and_then(|id| tree.nodes.get(id))
+                .and_then(|main| {
+                    let set = parent_of(main)
+                        .and_then(|id| tree.nodes.get(&id).copied())
+                        .filter(|p| flag(p, "isStateGroup") == Some(true));
+                    set.unwrap_or(main).get("name")
+                });
+            let name = o
+                .name
+                .as_deref()
+                .or(swapped.map(Value::as_string))
+                .unwrap_or_else(|| child.get("name").map_or("", Value::as_string));
             if self.bounds.is_some() {
                 let derived = ["fillGeometry", "strokeGeometry", "derivedTextData"]
                     .iter()
@@ -755,7 +807,7 @@ impl Expander<'_, '_> {
                         .sum()
                 };
                 if self
-                    .spend_estimated(1, 200 + outer.len() + pk.len(), estimate)
+                    .spend_estimated(1, 200 + outer.len() + pk.len() + name.len(), estimate)
                     .is_none()
                 {
                     return;
@@ -797,22 +849,7 @@ impl Expander<'_, '_> {
                 resized(own_size, size)
             };
 
-            let mut name = o.name.clone().unwrap_or_else(|| {
-                child
-                    .get("name")
-                    .map_or(String::new(), |n| n.as_string().to_owned())
-            });
-            // Swaps reset the inherited name; variants use their component set's name.
-            if o.name.is_none()
-                && let Some(main) = o.swap.as_ref().and_then(|id| tree.nodes.get(id))
-            {
-                let set = parent_of(main)
-                    .and_then(|id| tree.nodes.get(&id).copied())
-                    .filter(|p| flag(p, "isStateGroup") == Some(true));
-                if let Some(n) = set.unwrap_or(main).get("name") {
-                    name = n.as_string().to_owned();
-                }
-            }
+            let name = name.to_owned();
 
             let matrix = m
                 * (d.transform.or(o.transform).unwrap_or_else(|| {
@@ -924,13 +961,21 @@ impl Expander<'_, '_> {
                 }
                 // Converting and merging the nested overrides copies the outer ones too.
                 if self.bounds.is_some() {
-                    let (nodes, text) = self.symbol_cost(&nested);
-                    let (overrides, derived) = (
+                    let (nodes, text, refs) = self.symbol_cost(&nested);
+                    let (overrides, derived, own, inherited) = (
                         sd.and_then(|s| s.get("symbolOverrides")),
                         child.get("derivedSymbolData"),
+                        child.get("componentPropAssignments"),
+                        o.props.get("componentPropAssignments"),
                     );
-                    let work =
-                        nodes + ov.len() + dv.len() + list_len(overrides) + list_len(derived);
+                    let assignments =
+                        list_len(own) + inherited.and_then(Json::as_array).map_or(0, Vec::len);
+                    let work = nodes
+                        + ov.len()
+                        + dv.len()
+                        + list_len(overrides)
+                        + list_len(derived)
+                        + refs.saturating_mul(assignments);
                     let estimate = |left: &mut usize| {
                         patches_bytes(ov, left)
                             + patches_bytes(dv, left)
@@ -939,6 +984,7 @@ impl Expander<'_, '_> {
                                 .flatten()
                                 .map(|v| kiwi_bytes(v, left))
                                 .sum::<usize>()
+                            + assignment_bytes(own, inherited, refs, left)
                     };
                     if self.spend_estimated(work, text, estimate).is_none() {
                         return;
@@ -1270,6 +1316,90 @@ mod tests {
             crate::rest::resolve_nodes_within(&tree, "inst", size).unwrap(),
             full
         );
+    }
+
+    fn bounded(tree: &Tree, bytes: usize) -> (Expansion, Bounds) {
+        let bounds = Bounds {
+            work: 1 << 20,
+            bytes,
+            depth: 64,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+            stop: None,
+        };
+        expand_instances_bounded(tree, "page", bounds)
+    }
+
+    #[test]
+    fn a_bounded_expansion_charges_text_property_copies_before_binding_them() {
+        // One large assignment bound into 100 children copies it 100 times.
+        let big = "x".repeat(10_000);
+        let inst = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            ("symbolData", obj(vec![("symbolID", guid(1, 1))])),
+            (
+                "componentPropAssignments",
+                Value::Array(vec![obj(vec![
+                    ("defID", guid(2, 1)),
+                    ("value", obj(vec![("textValue", Value::String(big))])),
+                ])]),
+            ),
+        ]);
+        let child = obj(vec![
+            ("type", Value::Enum("NodeType", "TEXT")),
+            (
+                "componentPropRefs",
+                Value::Array(vec![obj(vec![
+                    ("defID", guid(2, 1)),
+                    ("componentPropNodeField", Value::Enum("Field", "TEXT_DATA")),
+                ])]),
+            ),
+        ]);
+        let (page, main) = (obj(vec![]), obj(vec![]));
+        let kids: Vec<String> = (0..100).map(|i| format!("c{i}")).collect();
+        let mut nodes: HashMap<String, &Value> = kids.iter().map(|k| (k.clone(), &child)).collect();
+        nodes.extend([
+            ("page".into(), &page),
+            ("inst".into(), &inst),
+            ("1:1".into(), &main),
+        ]);
+        let tree = Tree {
+            nodes,
+            children: HashMap::from([("page".into(), vec!["inst".into()]), ("1:1".into(), kids)]),
+            blobs: Vec::new(),
+        };
+        let (ex, bounds) = bounded(&tree, 200_000);
+        assert_eq!((bounds.stop, ex.nodes.len()), (Some(Stop::Bytes), 0));
+        assert_eq!(bounded(&tree, 4 << 20).0.nodes.len(), 100);
+    }
+
+    #[test]
+    fn a_bounded_expansion_charges_the_names_it_copies() {
+        // Twenty instances each copy the main child's 10 kB default name.
+        let inst = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            ("symbolData", obj(vec![("symbolID", guid(1, 1))])),
+        ]);
+        let child = obj(vec![
+            ("type", Value::Enum("NodeType", "FRAME")),
+            ("name", Value::String("n".repeat(10_000))),
+        ]);
+        let (page, main) = (obj(vec![]), obj(vec![]));
+        let insts: Vec<String> = (0..20).map(|i| format!("i{i}")).collect();
+        let mut nodes: HashMap<String, &Value> = insts.iter().map(|k| (k.clone(), &inst)).collect();
+        nodes.extend([
+            ("page".into(), &page),
+            ("1:1".into(), &main),
+            ("child".into(), &child),
+        ]);
+        let tree = Tree {
+            nodes,
+            children: HashMap::from([("page".into(), insts), ("1:1".into(), vec!["child".into()])]),
+            blobs: Vec::new(),
+        };
+        let (ex, bounds) = bounded(&tree, 100_000);
+        assert_eq!(bounds.stop, Some(Stop::Bytes));
+        assert!(ex.nodes.len() < 10, "{}", ex.nodes.len());
+        assert_eq!(bounded(&tree, 1 << 20).0.nodes.len(), 20);
     }
 
     #[test]

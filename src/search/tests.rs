@@ -420,6 +420,10 @@ fn names_split_at_slashes_and_camel_case() {
         first(&run(&request("icon/primary")))["ref"]["nodeId"],
         "0:18"
     );
+    // Case folding alone decides an exact name, whichever side carries the camel case.
+    let exact = run(&request("iconbutton/primary"));
+    assert_eq!(first(&exact)["matches"][0]["reason"], "exact");
+    assert_eq!(ids(&run(&request("ICONBUTTON"))), ["0:18"]);
 }
 
 #[test]
