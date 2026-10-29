@@ -105,6 +105,10 @@ const PAIR_BYTES: usize = 64 * 1024 * 1024;
 const POSSIBLE: usize = 200;
 /// Value bytes one page may carry.
 const PAGE_VALUES: usize = 256 * 1024;
+/// Edge visits one page may spend comparing changed records' edges, and the transient set
+/// bytes one record's comparison may build; both are checked before the sets are built.
+const PAGE_WORK: usize = 1_000_000;
+const EDGE_SET_BYTES: usize = 8 * 1024 * 1024;
 pub const LIMIT: usize = 100;
 pub const MAX_LIMIT: usize = 500;
 
@@ -1038,14 +1042,20 @@ fn edge_key(e: &super::usages::Edge) -> (&str, Option<&str>, &str, &str) {
 
 /// Edge differences of a changed record: relation, target, state and evidence, old minus new
 /// and new minus old, listed while they fit `left` page bytes; the rest are counted.
-fn edges(pair: &Pair, c: &Change, left: &mut usize) -> Json {
+/// `None` when comparing them would pass the page's remaining `work` or `EDGE_SET_BYTES`.
+fn edges(pair: &Pair, c: &Change, left: &mut usize, work: &mut usize) -> Option<Json> {
     let (Some(o), Some(n)) = (c.old, c.new) else {
-        return Json::Null;
+        return Some(Json::Null);
     };
     let (a, b) = (
         &pair.old.index.records[o as usize].edges,
         &pair.new.index.records[n as usize].edges,
     );
+    let count = a.len() + b.len();
+    if count > *work || count * 64 > EDGE_SET_BYTES {
+        return None;
+    }
+    *work -= count;
     let (sa, sb): (HashSet<_>, HashSet<_>) = (
         a.iter().map(edge_key).collect(),
         b.iter().map(edge_key).collect(),
@@ -1080,17 +1090,27 @@ fn edges(pair: &Pair, c: &Change, left: &mut usize) -> Json {
     if main(a) != main(b) {
         out["swap"] = json!({"old": main(a), "new": main(b)});
     }
-    out
+    Some(out)
 }
 
 fn page(pair: &Pair, req: &Request, reused: bool) -> Result<Json, Box<dyn Error>> {
+    page_with(pair, req, reused, [PAGE_VALUES, PAGE_WORK])
+}
+
+/// `page` within `budget`: page bytes and edge visits.
+fn page_with(
+    pair: &Pair,
+    req: &Request,
+    reused: bool,
+    budget: [usize; 2],
+) -> Result<Json, Box<dyn Error>> {
     let start = req
         .cursor
         .as_deref()
         .map(|c| offset(pair, c))
         .transpose()?
         .unwrap_or(0);
-    let mut left = PAGE_VALUES;
+    let [mut left, mut work] = budget;
     let mut frames: Vec<Json> = Vec::new();
     let mut last = None;
     let mut end = start;
@@ -1110,10 +1130,33 @@ fn page(pair: &Pair, req: &Request, reused: bool) -> Result<Json, Box<dyn Error>
             false => 192 + f.id.len() + f.name.len() + f.page.len(),
         };
         let cost = 96 + r.id.len() + r.kind.len() + r.name.len() + header;
-        if cost > left && end > start {
-            break;
+        if cost > left {
+            if end > start {
+                break;
+            }
+            return Err(FigError::new(
+                ErrorKind::ResponseBudget,
+                format!("change {} needs more than {PAGE_VALUES} bytes for its name and frame; inspect it on each side with `figlens inspect`", r.id),
+            )
+            .into());
         }
-        left = left.saturating_sub(cost);
+        left -= cost;
+        // A changed record whose edges do not fit this page ends it before it, or fails when it
+        // is the first: never listed without them.
+        let edge_list = match c.kind == Kind::Changed && c.facets & EDGES != 0 {
+            true => match edges(pair, c, &mut left, &mut work) {
+                Some(e) => Some(e),
+                None if end > start => break,
+                None => {
+                    return Err(FigError::new(
+                        ErrorKind::QueryWorkLimit,
+                        format!("the edges of change {} are too many to compare in one page; list them on each side with `figlens usages <file> {} --out`", r.id, r.id),
+                    )
+                    .into())
+                }
+            },
+            false => None,
+        };
         end += 1;
         let mut node = json!({"id": r.id, "kind": r.kind, "name": r.name, "change": c.kind.name()});
         if c.kind == Kind::Retyped {
@@ -1133,8 +1176,8 @@ fn page(pair: &Pair, req: &Request, reused: bool) -> Result<Json, Box<dyn Error>
                 node["unread"] = json!(true);
             }
             node["fields"] = fields(pair, c, &mut left);
-            if c.facets & EDGES != 0 {
-                node["edges"] = edges(pair, c, &mut left);
+            if let Some(e) = edge_list {
+                node["edges"] = e;
             }
         }
         if c.descendants > 0 {

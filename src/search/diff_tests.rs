@@ -437,3 +437,67 @@ fn possible_match_probes_are_charged_and_stop_the_pair_when_out_of_work() {
             .contains(&json!({"reason": "diff_work_limit"}))
     );
 }
+
+#[test]
+fn a_first_change_too_large_for_a_page_is_an_error_not_an_oversized_page() {
+    let long = "n".repeat(PAGE_VALUES + 1);
+    let one = |red| doc(vec![node(10, Some(1), "RECTANGLE", &long, vec![fill(red)])]);
+    let (a, b) = (one(1.0), one(0.5));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let pair = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
+    let e = page(&pair, &req(LIMIT, None), false).unwrap_err();
+    assert_eq!(
+        e.downcast_ref::<FigError>().unwrap().kind(),
+        ErrorKind::ResponseBudget
+    );
+}
+
+#[test]
+fn edges_past_the_page_work_end_the_page_or_fail_the_first_change() {
+    let side = |main: u32| {
+        doc(vec![
+            node(30, Some(1), "SYMBOL", "A", vec![]),
+            node(40, Some(1), "SYMBOL", "B", vec![]),
+            node(10, Some(1), "FRAME", "Home", vec![]),
+            instance(11, 10, "One", main, vec![]),
+            instance(12, 10, "Two", main, vec![]),
+        ])
+    };
+    let (a, b) = (side(30), side(40));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let pair = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
+    let at = |work, cursor| page_with(&pair, &req(LIMIT, cursor), false, [PAGE_VALUES, work]);
+    let e = at(0, None).unwrap_err();
+    assert_eq!(
+        e.downcast_ref::<FigError>().unwrap().kind(),
+        ErrorKind::QueryWorkLimit
+    );
+    // The least work that lists one changed instance lists only it; the cursor reaches the other.
+    let work = (1..100).find(|w| at(*w, None).is_ok()).unwrap();
+    let first = at(work, None).unwrap();
+    let next = first["nextCursor"].as_str().map(str::to_owned);
+    let instances = |page: &Json| {
+        nodes(page)
+            .into_iter()
+            .filter(|(id, _)| id == "0:11" || id == "0:12")
+            .count()
+    };
+    assert_eq!(instances(&first), 1);
+    let second = at(work, next).unwrap();
+    let all: Vec<_> = nodes(&first)
+        .into_iter()
+        .chain(nodes(&second))
+        .map(|(id, _)| id)
+        .collect();
+    assert!(
+        all.contains(&"0:11".to_owned()) && all.contains(&"0:12".to_owned()),
+        "{all:?}"
+    );
+    assert!(
+        first["frames"][0]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|n| n["edges"].is_object())
+    );
+}
