@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { Workflow } from '../pi/workflow.mjs';
 import { stopProcess, Viewer } from '../pi/viewer.mjs';
@@ -103,13 +104,22 @@ export function createAdapter(ctx, entry = import.meta.url) {
   async function mcpStatus() {
     const { data } = await ctx.mcp.list();
     const server = data.find(server => server.name === mcpName);
+    const tools = await ctx.tool.list();
     return { server: mcpName, managed: managedMcp, status: server?.status ?? { status: 'pending' },
-      tools: (await ctx.tool.list()).filter(tool => tool.name.startsWith('figlens_')).map(tool => tool.name),
+      tools: tools.filter(tool => tool.name.startsWith('figlens_')).map(tool => tool.name),
+      catalog: tools.filter(tool => tool.options?.namespace === mcpName).map(tool => tool.id),
       reason: managedMcp ? 'Package launcher; local project paths.' : `Existing configuration preserved; server version and snapshot are unverified. MCP shortcuts are blocked.${mcpName === 'figlens' ? ` OpenCode drops a server named figlens because it collides with this plugin's figlens_* tools; rename it to ${MANAGED_MCP}.` : ''}` };
   }
+  // OpenCode reports MCP connected before its tool registry reloads the server's tools; a turn started
+  // in between gets a Code Mode catalog without them, so wait for the registry, not the connection.
   async function requireMcp(current) {
-    const status = await mcpStatus();
+    let status = await mcpStatus();
+    for (let attempt = 0; attempt < 40 && status.managed && status.status.status === 'connected' && !status.catalog.length; attempt++) {
+      await delay(250, undefined, { signal: current.signal });
+      status = await mcpStatus();
+    }
     if (!status.managed || status.status.status !== 'connected') throw new Error(`figlens MCP is unavailable for shortcuts: ${JSON.stringify(status)}. Check the host MCP configuration; local preview, frame and review remain available.`);
+    if (!status.catalog.length) throw new Error(`figlens MCP is connected, but OpenCode has not catalogued its tools after 10 s: ${JSON.stringify(status)}. Retry the command; local preview, frame and review remain available.`);
     const pkg = JSON.parse(await readFile(new URL('../package.json', entry), 'utf8'));
     const version = (await current.run(['--version'])).stdout.trim();
     if (version !== `figlens ${pkg.version}`) throw new Error(`Launcher version differs: ${version}; package ${pkg.version}.`);

@@ -25,9 +25,6 @@ await writeFile(path.join(project, 'src/Button.mjs'), 'export const Button = () 
 const scripted = { results: [], tools: null };
 const fixture = path.join(project, 'mapping.fig');
 // A step without its prerequisite ends the turn, so a missing tool fails the check instead of retrying.
-// The one exception is an empty catalog search: the managed MCP reports connected before Code Mode
-// has catalogued its tools, so that search repeats a bounded number of times.
-const emptyCatalog = result => Array.isArray(result) && !result.length;
 const tool = (paths, name) => Array.isArray(paths) && paths.find(item => item.endsWith(`.${name}`) || item.endsWith(`["${name}"]`));
 const steps = [
   () => `return ['search', 'inspect'].flatMap(query => search({ query, namespace: 'figlensmcp' }).items.map(item => item.path));`,
@@ -47,10 +44,7 @@ async function reply(request, response) {
   scripted.raw = messages.filter(message => message.role === 'tool').map(message =>
     typeof message.content === 'string' ? message.content : message.content.map(part => part.text ?? '').join(''));
   scripted.results = scripted.raw.map(value);
-  const done = scripted.done = scripted.results.filter(result => !emptyCatalog(result));
-  scripted.catalogRetries = scripted.results.length - done.length;
-  if (emptyCatalog(scripted.results.at(-1))) await new Promise(resolve => setTimeout(resolve, 250));
-  const code = scripted.catalogRetries <= 40 ? steps[done.length]?.(...done) : undefined;
+  const code = steps[scripted.results.length]?.(...scripted.results);
   const delta = code
     ? { tool_calls: [{ index: 0, id: `call_${scripted.results.length}`, type: 'function', function: { name: 'execute', arguments: JSON.stringify({ code }) } }] }
     : { content: 'done' };
@@ -112,19 +106,22 @@ try {
   const session = await client.session.create({ location, title: 'Installed integration', permissions: [{ action: '*', resource: '*', effect: 'allow' }] });
   let activeUrl;
   await check('production loader, skill and managed MCP ready', async () => {
-    let status;
-    for (let attempt = 0; attempt < 60; attempt++) {
+    // Ready means the managed tools are in OpenCode's tool registry, which `connected` precedes (#125).
+    let status, connected;
+    for (let attempt = 0; attempt < 100; attempt++) {
       status = await rpc.run({ sessionID: session.id, action: 'status' }, options);
-      if (status.mcp.status.status === 'connected') break;
+      if (status.mcp.status.status === 'connected') connected ??= Date.now();
+      if (status.mcp.catalog.length) break;
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     assert.equal(status.mcp.managed, true);
     assert.equal(status.mcp.server, 'figlensmcp');
     assert.equal(status.mcp.status.status, 'connected');
     for (const tool of ['figlens_preview', 'figlens_bindings', 'figlens_propose_bindings']) assert.ok(status.mcp.tools.includes(tool), tool);
+    for (const tool of ['figlensmcp_search', 'figlensmcp_inspect']) assert.ok(status.mcp.catalog.includes(tool), tool);
     const skills = await client.skill.list({ location });
     assert.ok(JSON.stringify(skills).includes('figlens'));
-    return { mcp: status.mcp, skills: skills.data.map(skill => skill.name) };
+    return { mcp: status.mcp, catalogAfterConnectedMs: Date.now() - connected, skills: skills.data.map(skill => skill.name) };
   });
   await check('session tool calls run managed MCP search and inspect its exact ref', async () => {
     const searching = await client.session.create({ location, title: 'Scripted search', permissions: [{ action: '*', resource: '*', effect: 'allow' }] });
@@ -133,7 +130,7 @@ try {
     await client.session.wait({ sessionID: searching.id }, { signal: AbortSignal.timeout(60000) })
       .catch(error => { throw new Error(`${error.message}; provider: ${scripted.error}; ${JSON.stringify(scripted.raw).slice(0, 2000)}`); });
     assert.ok(!scripted.error, scripted.error + JSON.stringify(scripted.raw).slice(0, 2000));
-    const [paths, search, inspect] = scripted.done;
+    const [paths, search, inspect] = scripted.results;
     assert.ok(Array.isArray(paths) && paths.some(item => /search/.test(item)) && paths.some(item => /inspect/.test(item)), JSON.stringify(scripted.raw).slice(0, 2000));
     assert.equal(search.results[0].ref.nodeId, '0:1', JSON.stringify(search).slice(0, 2000));
     assert.equal(search.coverage.complete, true);
@@ -141,7 +138,7 @@ try {
     const context = await client.session.context({ sessionID: searching.id });
     assert.ok(JSON.stringify(context).includes('done'));
     return { paths: paths.filter(item => /search|inspect/.test(item)), searchRef: search.results[0].ref, inspected: inspect.node.id,
-      toolResults: scripted.results.length, catalogRetries: scripted.catalogRetries, provider: 'scripted loopback, not a model' };
+      toolResults: scripted.results.length, provider: 'scripted loopback, not a model' };
   });
   await check('production local select exports real PNG bytes', async () => {
     const selected = await rpc.run({ sessionID: session.id, action: 'select', file: 'mapping.fig', node: '0:1' }, options);
