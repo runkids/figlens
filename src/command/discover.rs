@@ -235,6 +235,17 @@ fn summarize(node: &Value, depth: usize, remaining: &mut usize, truncated: &mut 
         .map(Vec::as_slice)
         .unwrap_or(&[]);
     summary["childCount"] = children.len().into();
+    // Without auto-layout, gaps between children are coordinate differences, not a rule.
+    // Boolean operands and pages are not laid-out children. REST omits layoutMode NONE.
+    if !children.is_empty()
+        && node.get("layoutMode").is_none()
+        && !matches!(
+            node["type"].as_str(),
+            Some("BOOLEAN_OPERATION" | "DOCUMENT")
+        )
+    {
+        summary["childSpacing"] = "derived".into();
+    }
     if depth > 0 && !children.is_empty() {
         let mut included = Vec::new();
         for child in children {
@@ -307,6 +318,35 @@ mod tests {
             summary["_figlens"]["renderDiagnostics"][0]["state"],
             "skipped"
         );
+    }
+
+    #[test]
+    fn inspect_marks_spacing_derived_only_under_parents_without_auto_layout() {
+        let child = json!({"id":"1:2","type":"RECTANGLE"});
+        let spacing = |parent: Value| inspect_document(&parent, 0)["node"]["childSpacing"].clone();
+        assert_eq!(
+            spacing(json!({"id":"1:1","type":"FRAME","children":[child]})),
+            "derived"
+        );
+        assert_eq!(
+            spacing(json!({"id":"1:1","type":"GROUP","children":[child]})),
+            "derived"
+        );
+        assert_eq!(
+            spacing(
+                json!({"id":"1:1","type":"FRAME","layoutMode":"VERTICAL","itemSpacing":8,"children":[child]})
+            ),
+            Value::Null
+        );
+        assert_eq!(
+            spacing(json!({"id":"1:1","type":"BOOLEAN_OPERATION","children":[child]})),
+            Value::Null
+        );
+        assert_eq!(
+            spacing(json!({"id":"0:0","type":"DOCUMENT","children":[child]})),
+            Value::Null
+        );
+        assert_eq!(spacing(json!({"id":"1:1","type":"FRAME"})), Value::Null);
     }
 
     #[test]
