@@ -414,6 +414,31 @@ fn emoji_and_rtl_text_match_with_utf16_spans() {
 }
 
 #[test]
+fn result_paths_are_charged_before_they_are_copied() {
+    // 200 hits under 20 ancestors with 100 kB names would copy 400 MB of paths.
+    let name = "a".repeat(100_000);
+    let mut nodes = vec![
+        node(0, None, "DOCUMENT", "Document", vec![]),
+        node(1, Some(0), "CANVAS", "Page", vec![]),
+    ];
+    nodes.extend((2..22).map(|id| node(id, Some(id - 1), "FRAME", &name, vec![])));
+    nodes.extend((100..300).map(|id| node(id, Some(21), "TEXT", "Row", vec![])));
+    let message = obj(vec![("nodeChanges", K::Array(nodes))]);
+    let tree = Tree::new(&message);
+    let index = build(&tree, "0:0", bounds(WORK));
+    let source = json!({"sourceId": "local:test", "snapshotId": "sha256:test"});
+    let mut req = request("row");
+    req.limit = MAX_LIMIT;
+    let q = req.validate().unwrap();
+    let error = reply(&index, &q, &req, source.clone()).unwrap_err();
+    let error = error.downcast_ref::<FigError>().unwrap();
+    assert_eq!(error.kind(), ErrorKind::ResponseBudget);
+    req.limit = 3;
+    let q = req.validate().unwrap();
+    assert_eq!(ids(&reply(&index, &q, &req, source).unwrap()).len(), 3);
+}
+
+#[test]
 fn names_split_at_slashes_and_camel_case() {
     assert_eq!(ids(&run(&request("button primary"))), ["0:18"]);
     assert_eq!(

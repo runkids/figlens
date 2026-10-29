@@ -36,6 +36,8 @@ const TEXT_BYTES: usize = 64 * 1024 * 1024;
 const DEPTH: usize = 256;
 /// Combining marks in a row NFKC may buffer; stream-safe text keeps at most 30.
 const MAX_MARKS: usize = 1024;
+/// Names, ids and paths one page of results may copy; the MCP reply cap, so CLI and MCP agree.
+const REPLY_BYTES: usize = 8 * 1024 * 1024;
 const DEADLINE: Duration = Duration::from_secs(15);
 /// Same-stamp reuse lasts at most this long before the bytes are hashed again.
 const REHASH: Duration = Duration::from_secs(60);
@@ -888,6 +890,26 @@ fn explain(field: u8, original: &str, q: &Prepared) -> Option<Json> {
     Some(out)
 }
 
+/// Bytes `result` copies for `hit`: its name, every path entry and its page, plus a fixed share
+/// for refs, spans and bounded snippets. Counted without allocating.
+fn result_bytes(index: &Index, hit: &Hit) -> usize {
+    let entry = |id: &str, name: &str| 64 + id.len() + name.len();
+    let r = &index.records[hit.record as usize];
+    let mut bytes = 1024 + r.name.len() + r.page.map_or(0, |p| index.pages[p as usize].name.len());
+    let mut cur = Some(hit.record);
+    while let Some(i) = cur {
+        let node = &index.records[i as usize];
+        bytes += entry(&node.id, &node.name);
+        cur = node.parent;
+    }
+    bytes
+        + index
+            .above
+            .iter()
+            .map(|(id, name)| entry(id, name))
+            .sum::<usize>()
+}
+
 fn result(index: &Index, hit: &Hit, rank: usize, q: &Prepared, source: &Json) -> Json {
     let r = &index.records[hit.record as usize];
     let mut path: Vec<Json> = Vec::new();
@@ -957,7 +979,7 @@ fn coverage(index: &Index, req: &Request, excluded: [usize; 2]) -> Json {
             {"code": "non_text_layer_content_not_indexed"}],
         "limits": {"work": WORK, "bytes": BYTES, "textBytes": TEXT_BYTES,
             "depth": DEPTH, "deadlineMs": DEADLINE.as_millis() as u64, "sourceBytes": SOURCE_BYTES,
-            "combiningRun": MAX_MARKS},
+            "combiningRun": MAX_MARKS, "replyBytes": REPLY_BYTES},
     })
 }
 
@@ -970,6 +992,18 @@ fn reply(index: &Index, q: &Prepared, req: &Request, source: Json) -> Result<Jso
         ));
     }
     let (hits, more, excluded) = retrieve(index, q, req);
+    if hits
+        .iter()
+        .map(|hit| result_bytes(index, hit))
+        .sum::<usize>()
+        > REPLY_BYTES
+    {
+        return Err(FigError::new(
+            ErrorKind::ResponseBudget,
+            format!("search results would copy more than {REPLY_BYTES} bytes of names and paths; lower limit or search a narrower node"),
+        )
+        .into());
+    }
     let results: Vec<Json> = hits
         .iter()
         .enumerate()
