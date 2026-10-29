@@ -154,9 +154,10 @@ test('usages group members apart from results, and results by relation', () => {
   assert.equal(groupUsages({results:[]}).members, null);
 });
 test('offline search covers the packaged layers only and hides hidden layers by default', () => {
-  const list = [{id:'1:1',name:'Button',type:'FRAME'},{id:'1:2',name:'x',type:'TEXT',characters:'button text'},{id:'1:3',name:'Button 2',type:'FRAME',visible:false}];
+  const list = [{id:'0:1',name:'Page',type:'FRAME',children:[{id:'1:1',name:'Button',type:'FRAME'},{id:'1:2',name:'x',type:'TEXT',characters:'button text'},
+    {id:'1:3',name:'Button 2',type:'FRAME',visible:false,children:[{id:'1:4',name:'Inner button',type:'TEXT'}]}]}];
   assert.deepEqual(localSearch(list, 'BUTTON').results.map(r => r.ref.nodeId), ['1:1','1:2']);
   assert.deepEqual(localSearch(list, 'button', {types:['TEXT']}).results.map(r => r.ref.nodeId), ['1:2']);
-  assert.deepEqual(localSearch(list, 'button', {hidden:true}).results.map(r => r.ref.nodeId), ['1:1','1:2','1:3']);
+  assert.deepEqual(localSearch(list, 'button', {hidden:true}).results.map(r => [r.ref.nodeId, r.hidden]), [['1:1',false],['1:2',false],['1:3',true],['1:4',true]]);
   assert.deepEqual(localSearch(list, '').results, []);
 });

@@ -85,6 +85,7 @@ function rowModel(row, snapshotId) {
         name: row.name ?? row.definition?.name ?? ref?.nodeId ?? resource ?? '(no target)',
         type: row.type ?? row.definition?.type ?? null, relation: row.relation ?? null, state: row.state ?? null,
         basis: row.basis ?? null, via: row.via ?? null, hidden: row.hidden === true,
+        origin: row.origin ?? null, scopeRoot: row.scopeRoot ?? null,
         path: (row.path || []).map(p => p.name || p.id).join(' / '),
     };
 }
@@ -100,11 +101,17 @@ function groupUsages(reply) {
     return {members: members || null, groups: [...groups]};
 }
 // Offline snapshots: substring search over the packaged layers only (names and text), capped like the live list.
-function localSearch(list, query, {types = [], hidden = false} = {}) {
-    const q = String(query).toLowerCase();
-    const found = q ? list.filter(n => `${n.name || ''} ${n.characters || ''}`.toLowerCase().includes(q)
-        && (!types.length || types.includes(n.type)) && (hidden || n.visible !== false)) : [];
-    return {results: found.slice(0, 200).map(n => ({name: n.name || n.id, type: n.type, ref: {nodeId: n.id}, hidden: n.visible === false})), hasMore: found.length > 200};
+// Packaged layers under `roots`; a layer under a hidden ancestor counts as hidden, as in core.
+function localSearch(roots, query, {types = [], hidden = false} = {}) {
+    const q = String(query).toLowerCase(), found = [];
+    const walk = (n, inherited) => {
+        const off = inherited || n.visible === false;
+        if (q && `${n.name || ''} ${n.characters || ''}`.toLowerCase().includes(q)
+            && (!types.length || types.includes(n.type)) && (hidden || !off)) found.push([n, off]);
+        for (const c of n.children || []) walk(c, off);
+    };
+    roots.forEach(n => walk(n, false));
+    return {results: found.slice(0, 200).map(([n, off]) => ({name: n.name || n.id, type: n.type, ref: {nodeId: n.id}, hidden: off})), hasMore: found.length > 200};
 }
 if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits, prototypeRows, relQuery, acceptReply, reasonCodes, rowModel, groupUsages, localSearch};
 if (typeof document !== 'undefined') {
@@ -137,8 +144,8 @@ if (typeof document !== 'undefined') {
     const tiles = new Map();
     const buttons = new Map(), parents = new Map();
     function status(message) { $('status').textContent = message; }
-    async function api(route) {
-        const response = await fetch(route, {cache: 'no-store'});
+    async function api(route, init) {
+        const response = await fetch(route, {cache: 'no-store', ...init});
         if (!response.ok) throw new Error(await response.text());
         return response;
     }
@@ -1454,7 +1461,7 @@ if (typeof document !== 'undefined') {
         u.panel.dataset.state = state;
         u.panel.setAttribute('aria-busy', String(state === 'loading'));
         u.status.textContent = text;
-        u.retry.hidden = state !== 'busy';
+        u.retry.hidden = state !== 'busy' && state !== 'error';
     }
     function relAbort(name) {
         rel[name].ctl?.abort();
@@ -1484,9 +1491,7 @@ if (typeof document !== 'undefined') {
         relState(name, 'loading', 'Loading…');
         u.more.hidden = true;
         try {
-            const response = await fetch(base + (cursor ? '&' + relQuery({cursor}) : ''), {cache: 'no-store', signal: ctl.signal});
-            if (!response.ok) throw new Error(await response.text());
-            const reply = await response.json();
+            const reply = await (await api(base + (cursor ? '&' + relQuery({cursor}) : ''), {signal: ctl.signal})).json();
             if (!acceptReply(seq, p.seq, reply.source?.snapshotId, loadedSource?.snapshotId)) {
                 if (seq === p.seq) relState(name, 'stale', 'Saved design changed — reply dropped; rerun.');
                 return;
@@ -1517,7 +1522,7 @@ if (typeof document !== 'undefined') {
         for (const m of models) {
             const li = el('li'), open = button(m.name, () => relOpen(name, m));
             open.disabled = !m.nodeId;
-            li.append(open, el('span', [m.type, m.relation, m.state && `state ${m.state}`, m.basis, m.via && `via ${m.via}`, m.hidden && 'hidden', m.resource && `resource ${m.resource}`, m.path].filter(Boolean).join(' · ')));
+            li.append(open, el('span', [m.type, m.relation, m.state && `state ${m.state}`, m.basis, m.via && `via ${m.via}`, m.origin, m.scopeRoot && `in ${m.scopeRoot}`, m.hidden && 'hidden', m.resource && `resource ${m.resource}`, m.path].filter(Boolean).join(' · ')));
             if (m.nodeId && !boot.snapshot) {
                 const copyBtn = button('Copy ID', () => relCopy(name, m, copyBtn));
                 li.append(copyBtn);
@@ -1576,7 +1581,7 @@ if (typeof document !== 'undefined') {
         if (boot.snapshot) {
             relAbort('ranked');
             p.ran = true;
-            p.acc = {...localSearch(nodes, q, {types, hidden}), source: {}};
+            p.acc = {...localSearch(nodes.slice(0, 1), q, {types, hidden}), source: {}};
             p.scope = 'the packaged scope (absence here says nothing about the rest of the file)';
             relUI('ranked').list.replaceChildren(relList('ranked', p.acc.results.map(r => rowModel(r))));
             relUI('ranked').more.hidden = true;
@@ -1640,11 +1645,7 @@ if (typeof document !== 'undefined') {
         relState('usages', 'unavailable', 'Unavailable in offline snapshots');
         for (const id of ['usagesGo', 'usagesDir', 'usagesHidden']) $(id).disabled = true;
     }
-    const relGet = async route => {
-        const response = await fetch(route, {cache: 'no-store'});
-        if (!response.ok) throw new Error(await response.text());
-        return response.json();
-    };
+    const relGet = async route => (await api(route)).json();
     // Agent API: the same operations as the UI, for browser-automation agents (Playwright, agent-browser,
     // Claude in Chrome). It runs in the page, so it adds no service routes and keeps the read-only boundary.
     const toBase64 = bytes => {
@@ -1731,7 +1732,7 @@ if (typeof document !== 'undefined') {
                 .slice(0, 200).map(n => ({id: n.id, name: n.name, type: n.type}));
         },
         async rankedSearch(query, {scope, types, hidden, internal, limit, cursor} = {}) {
-            if (boot.snapshot) return {packagedOnly: true, ...localSearch(nodes, query, {types, hidden})};
+            if (boot.snapshot) return {packagedOnly: true, ...localSearch(nodes.slice(0, 1), query, {types, hidden})};
             return relGet(`search/${generation}?` + relQuery({q: query, scope, type: types, hidden, internal, limit, cursor}));
         },
         async usages(id, {resource, scope, relations, outgoing, hidden, limit, cursor, snapshot} = {}) {

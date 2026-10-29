@@ -864,7 +864,6 @@ impl Revision<'_> {
             return Err("scope takes a node ID".into());
         }
         let reply = (|| -> Result<Value> {
-            let index = self.index(&scope)?;
             if usages {
                 let req = search::usages::Request {
                     target: one("target").unwrap_or_default(),
@@ -877,7 +876,9 @@ impl Revision<'_> {
                     limit: limit(search::usages::DEFAULT_LIMIT)?,
                     cursor: one("cursor"),
                 };
-                search::usages_index(&index, &req, self.source.clone())
+                // Validated before the index exists, so a bad request never pays for a build.
+                req.validate()?;
+                search::usages_index(&*self.index(&req.scope)?, &req, self.source.clone())
             } else {
                 let req = search::Request {
                     query: one("q").unwrap_or_default(),
@@ -888,7 +889,8 @@ impl Revision<'_> {
                     limit: limit(search::DEFAULT_LIMIT)?,
                     cursor: one("cursor"),
                 };
-                search::search_index(&index, &req, self.source.clone())
+                req.validate()?;
+                search::search_index(&*self.index(&req.scope)?, &req, self.source.clone())
             }
         })()
         .unwrap_or_else(|e| {
@@ -900,12 +902,24 @@ impl Revision<'_> {
         Ok(reply.to_string().into_bytes())
     }
 
-    /// The index of `scope`, built on first use. A new scope replaces the least recently used
-    /// index nobody holds; when every slot is building or in use the request is refused.
+    /// The index of `scope`, built on first use by one request. Requests for a scope still
+    /// building are refused rather than holding a worker; so is a new scope when every slot is
+    /// building or in use, else it replaces the least recently used idle index. A failed
+    /// build is dropped so a retry builds again.
     fn index(&self, scope: &str) -> Result<Arc<search::Index>> {
+        let busy = |what: &str| -> Box<dyn Error> {
+            FigError::new(
+                crate::ErrorKind::WorkspaceBusy,
+                format!("{what}; retry shortly"),
+            )
+            .into()
+        };
         let cell = {
             let mut cells = self.indexes.lock().map_err(|_| "index cache poisoned")?;
             if let Some(i) = cells.iter().position(|(s, _)| s == scope) {
+                if cells[i].1.get().is_none() {
+                    return Err(busy("the search index of this scope is still building"));
+                }
                 let entry = cells.remove(i);
                 cells.push(entry);
             } else {
@@ -917,10 +931,7 @@ impl Revision<'_> {
                             })
                     };
                     let i = cells.iter().position(|(_, c)| idle(c)).ok_or_else(|| {
-                        FigError::new(
-                            crate::ErrorKind::WorkspaceBusy,
-                            "every search index of this revision is building or in use; retry shortly",
-                        )
+                        busy("every search index of this revision is building or in use")
                     })?;
                     cells.remove(i);
                 }
@@ -929,13 +940,19 @@ impl Revision<'_> {
             cells.last().expect("pushed").1.clone()
         };
         // Built outside the lock, so other scopes and other routes are not held up.
-        cell.get_or_init(|| {
-            search::index_tree(self.tree, scope, search::deadline())
-                .map(Arc::new)
-                .map_err(|e| e.to_string())
-        })
-        .clone()
-        .map_err(Into::into)
+        let built = cell
+            .get_or_init(|| {
+                search::index_tree(self.tree, scope, search::deadline())
+                    .map(Arc::new)
+                    .map_err(|e| e.to_string())
+            })
+            .clone();
+        if built.is_err()
+            && let Ok(mut cells) = self.indexes.lock()
+        {
+            cells.retain(|(_, c)| !Arc::ptr_eq(c, &cell));
+        }
+        built.map_err(Into::into)
     }
 }
 
@@ -1145,6 +1162,8 @@ mod tests {
                 ),
                 (&json!("hidden takes 0 or 1"), true)
             );
+            // None of them paid for an index build.
+            assert!(r.indexes.lock().unwrap().is_empty());
         });
     }
 
@@ -1174,6 +1193,15 @@ mod tests {
             drop((again, b));
             let c = r.index("0:2").map(|_| ());
             let kept = Arc::ptr_eq(&a, &r.index("0:0").unwrap());
+            // A scope that fails to build is not cached, so it is tried again.
+            assert!(r.index("9:9").is_err());
+            assert!(!r.indexes.lock().unwrap().iter().any(|(s, _)| s == "9:9"));
+            r.indexes
+                .lock()
+                .unwrap()
+                .push(("8:8".to_owned(), Built::default()));
+            let building = r.index("8:8").map(|_| ()).unwrap_err().to_string();
+            assert!(building.contains("still building"), "{building}");
             assert_eq!(
                 (busy.contains("building or in use"), c.is_ok(), kept),
                 (true, true, true)
