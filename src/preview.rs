@@ -70,7 +70,8 @@ fn catalog(tree: &Tree, id: &str) -> Value {
         }
         child
     });
-    let mut out = json!({"id":id,"name":n["name"],"type":n["type"],"text":n["textData"]["characters"],
+    let kind = tree.nodes.get(id).copied().map(crate::expand::plugin_type);
+    let mut out = json!({"id":id,"name":n["name"],"type":kind,"text":n["textData"]["characters"],
         "children":children.collect::<Vec<_>>()});
     // Figma hides its internal canvas (library components, styles, variables) from the page list.
     if n["internalOnly"] == true {
@@ -797,6 +798,16 @@ fn reload(file: &Path, stamp: SystemTime) -> Result<Document> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_lists_the_rest_types_nodes_uses() {
+        let message = crate::test_support::component_set();
+        let set = &catalog(&Tree::new(&message), "0:0")["children"][0];
+        assert_eq!(
+            (&set["type"], &set["children"][0]["type"]),
+            (&json!("COMPONENT_SET"), &json!("COMPONENT"))
+        );
+    }
 
     #[test]
     fn live_original_image_route_obeys_the_image_budget() {

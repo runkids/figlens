@@ -32,7 +32,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "tree",
-        "List node ids, types and names under a chosen root. A shallow outline locates pages and frames when their names are unknown; find searches known names or visible text directly.",
+        "List node ids, REST types (as in nodes and find) and names under a chosen root. A shallow outline locates pages and frames when their names are unknown; find searches known names or visible text directly.",
         &[
             FILE,
             (

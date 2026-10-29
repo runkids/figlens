@@ -117,8 +117,8 @@ if (typeof document !== 'undefined') {
         TEXT: 'M5 6V4h14v2M12 4v16M9 20h6', INSTANCE: 'M12 3l9 9-9 9-9-9z',
         COMPONENT: 'M12 2l4 4-4 4-4-4zM12 14l4 4-4 4-4-4zM6 8l4 4-4 4-4-4zM18 8l4 4-4 4-4-4z',
     };
-    // Internal .fig type names map to the icon Figma shows for them.
-    Object.assign(ICONS, {COMPONENT_SET: ICONS.COMPONENT, SYMBOL: ICONS.COMPONENT, ROUNDED_RECTANGLE: ICONS.RECTANGLE});
+    // A component set shows the component icon, as in Figma.
+    Object.assign(ICONS, {COMPONENT_SET: ICONS.COMPONENT});
     function icon(type) {
         const ns = 'http://www.w3.org/2000/svg', svg = document.createElementNS(ns, 'svg'), path = document.createElementNS(ns, 'path');
         svg.setAttribute('viewBox', '0 0 24 24');
@@ -685,7 +685,7 @@ if (typeof document !== 'undefined') {
     function pageFrames() {
         return pageItems(flat(catalog).find(n => n.id === $('pages').value) || catalog);
     }
-    const LABELLED = new Set(['FRAME', 'SECTION', 'COMPONENT', 'COMPONENT_SET', 'SYMBOL', 'INSTANCE']);
+    const LABELLED = new Set(['FRAME', 'SECTION', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE']);
     function renderPage() {
         tileObserver?.disconnect();
         for (const t of tiles.values()) if (t.url) URL.revokeObjectURL(t.url);

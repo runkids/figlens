@@ -4,6 +4,7 @@ use std::error::Error;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use figlens::expand::plugin_type;
 use figlens::rest::resolve_nodes;
 use figlens::variables::variables;
 use figlens::{Tree, normalize_id, to_json};
@@ -531,11 +532,9 @@ fn tree_json(tree: &Tree, id: &str, level: usize, depth: usize) -> Value {
     node
 }
 
-fn label<'a>(tree: &Tree<'a>, id: &str) -> (&'a str, &'a str) {
+/// The REST type `nodes` and `find` use, so `tree` output can be filtered by the same names.
+fn label<'a>(tree: &Tree<'a>, id: &str) -> (String, &'a str) {
     let node = tree.nodes[id];
-    let kind = match node.get("type") {
-        Some(kiwi_schema::Value::Enum(_, name)) => *name,
-        _ => "?",
-    };
-    (kind, node.get("name").map(|n| n.as_string()).unwrap_or(""))
+    let name = node.get("name").map(|n| n.as_string()).unwrap_or("");
+    (plugin_type(node), name)
 }

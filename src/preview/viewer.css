@@ -93,7 +93,7 @@ aside > h2:has(+ #overview:empty), #overview:empty, #overview:empty + .split { d
 #tree button[aria-current=true] { background: var(--sel-bg); }
 #tree .label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .icon { flex: none; width: 12px; height: 12px; color: var(--muted); }
-.icon.INSTANCE, .icon.COMPONENT, .icon.COMPONENT_SET, .icon.SYMBOL, .icon.INSTANCE + .label { color: var(--instance); }
+.icon.INSTANCE, .icon.COMPONENT, .icon.COMPONENT_SET, .icon.INSTANCE + .label { color: var(--instance); }
 #workspace { position: relative; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 /* Figma UI3 framing: floating breadcrumb pill top-left, floating toolbar bottom-center. */
 .bar { display: contents; }
