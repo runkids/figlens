@@ -143,9 +143,23 @@ fn read_small(path: &Path) -> Result<Json> {
     serde_json::from_str(&text).map_err(|_| preserved(path, "is not a figlens record"))
 }
 
-/// Writes `value` to `path` through a sibling temporary file and a rename.
+/// Writes `value` to `path` through a sibling temporary file and a rename, asking the OS to
+/// flush the bytes and the new entry before the caller goes on, so a database created after a
+/// location record does not outlive that record in a crash the filesystem honours flushes for.
 /// Callers hold the lock that serializes writers of `path`, so a leftover `.part` is stale.
 fn write_small(path: &Path, value: &Json) -> Result<()> {
+    let text = format!("{value}\n");
+    // read_small reads at most SMALL_FILE bytes, so a longer record could never be read back.
+    if text.len() as u64 > SMALL_FILE {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            format!(
+                "{}: the record would be {} bytes, over the {SMALL_FILE}-byte limit; use shorter paths",
+                path.display(),
+                text.len()
+            ),
+        ));
+    }
     let part = path.with_extension("json.part");
     if plain(&part, false)? {
         std::fs::remove_file(&part).map_err(|e| storage_error(&part, e))?;
@@ -155,12 +169,71 @@ fn write_small(path: &Path, value: &Json) -> Result<()> {
         .write(true)
         .create_new(true)
         .open(&part)
-        .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{value}\n").as_bytes()))
-        .and_then(|()| std::fs::rename(&part, path));
+        .and_then(|mut f| {
+            std::io::Write::write_all(&mut f, text.as_bytes())?;
+            f.sync_all()
+        })
+        .and_then(|()| replace(&part, path));
     written.map_err(|e| {
         let _ = std::fs::remove_file(&part);
         storage_error(path, e)
-    })
+    })?;
+    match path.parent() {
+        Some(dir) => sync_dir(dir),
+        None => Ok(()),
+    }
+}
+
+#[cfg(unix)]
+fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::rename(from, to)
+}
+
+/// Returns only once the move is flushed to disk, which syncing the directory gives on Unix.
+#[cfg(windows)]
+fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+    let wide = |p: &Path| -> std::io::Result<Vec<u16>> {
+        let wide: Vec<u16> = p.as_os_str().encode_wide().collect();
+        if wide.contains(&0) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "path contains a NUL character",
+            ));
+        }
+        Ok(wide.into_iter().chain([0]).collect())
+    };
+    let (from, to) = (wide(from)?, wide(to)?);
+    // SAFETY: both are NUL-terminated UTF-16 paths that outlive the call.
+    let moved = unsafe {
+        MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Makes the entries of `dir` durable; an error stops the caller before it builds on them.
+#[cfg(unix)]
+fn sync_dir(dir: &Path) -> Result<()> {
+    File::open(dir)
+        .and_then(|d| d.sync_all())
+        .map_err(|e| storage_error(dir, e))
+}
+
+/// A no-op: std cannot open a directory to sync it on Windows. Records get a file sync and a
+/// same-volume write-through move (`replace`); new directories are not flushed explicitly.
+#[cfg(windows)]
+fn sync_dir(_: &Path) -> Result<()> {
+    Ok(())
 }
 
 fn now_ms() -> i64 {
@@ -671,7 +744,7 @@ impl Storage {
 /// cleanup. Created only when `create`.
 fn workspaces(state: &Path, create: bool) -> Result<Option<PathBuf>> {
     if create {
-        std::fs::create_dir_all(state).map_err(|e| storage_error(state, e))?;
+        create_durable(state)?;
     }
     let root = match std::fs::canonicalize(state) {
         Ok(root) => root,
@@ -680,10 +753,38 @@ fn workspaces(state: &Path, create: bool) -> Result<Option<PathBuf>> {
     };
     let dir = root.join("workspaces");
     if create {
-        mkdir(&dir)?;
+        if mkdir(&dir)? {
+            sync_dir(&root)?;
+        }
         return Ok(Some(dir));
     }
     Ok(plain(&dir, true)?.then_some(dir))
+}
+
+/// Creates `dir` and its missing ancestors, syncing each new entry into its parent (Unix; see
+/// `sync_dir`), so a record or database written below them is not lost with them in a crash.
+/// Directories that already existed are left as they are.
+fn create_durable(dir: &Path) -> Result<()> {
+    let mut missing = Vec::new();
+    for path in dir.ancestors() {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => missing.push(path),
+            Err(e) => return Err(storage_error(path, e)),
+        }
+    }
+    for path in missing.into_iter().rev() {
+        match std::fs::create_dir(path) {
+            Ok(()) => {}
+            // Created concurrently: sync its entry all the same before building on it.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && path.is_dir() => {}
+            Err(e) => return Err(storage_error(path, e)),
+        }
+        if let Some(parent) = path.parent() {
+            sync_dir(parent)?;
+        }
+    }
+    Ok(())
 }
 
 /// Opens the lock file at `path`, creating it when `create`. Every database connection holds
@@ -1167,7 +1268,7 @@ pub fn prepare(storage: &Storage, file: &Path, project: Option<&Path>) -> Result
             .as_ref()
             .is_some_and(|r| same_dir(r, explicit))
     {
-        std::fs::create_dir_all(explicit).map_err(|e| storage_error(explicit, e))?;
+        create_durable(explicit)?;
         let canonical = std::fs::canonicalize(explicit).map_err(|e| storage_error(explicit, e))?;
         let record = json!({"version": LOCATION, "workspaceId": id,
             "locator": locator.report()?, "storage": utf8(&canonical)?});

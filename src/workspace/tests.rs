@@ -334,6 +334,49 @@ fn a_fifo_source_is_refused_without_blocking() {
     assert!(!f.storage.defaults.state.path.exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn an_unsyncable_new_config_directory_stops_prepare_before_any_database() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let a = f.fig("a.fig");
+    // Entries can be created in `locked` but it cannot be opened to sync them.
+    let locked = std::path::absolute(f.dir.join("locked")).unwrap();
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o300)).unwrap();
+    let unprivileged = File::open(&locked).is_err();
+    let config = locked.join("config");
+    let home = f.home.to_str().unwrap().to_owned();
+    let vars = [
+        ("HOME", home.as_str()),
+        ("XDG_CONFIG_HOME", config.to_str().unwrap()),
+    ];
+    let storage = resolve(None, &env(&vars), false, &|| None).unwrap();
+    let result = prepare(&storage, &a, None);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Root opens any directory; there is nothing to observe then.
+    if unprivileged {
+        let error = result.unwrap_err();
+        assert_eq!(kind(&*error), ErrorKind::PermissionDenied, "{error}");
+        assert!(
+            !storage.defaults.state.path.exists(),
+            "a database root was created"
+        );
+    }
+}
+
+#[test]
+fn an_oversized_record_is_refused_and_leaves_the_old_one() {
+    let f = Fixture::new();
+    let path = f.dir.join("record.json");
+    write_small(&path, &json!({"root": "old"})).unwrap();
+    let long = "x".repeat(SMALL_FILE as usize);
+    let error = write_small(&path, &json!({ "root": long })).unwrap_err();
+    assert_eq!(kind(&*error), ErrorKind::InvalidArguments, "{error}");
+    assert_eq!(read_small(&path).unwrap(), json!({"root": "old"}));
+    assert!(!path.with_extension("json.part").exists());
+}
+
 #[test]
 fn custom_storage_is_remembered_for_that_workspace_only() {
     let f = Fixture::new();
