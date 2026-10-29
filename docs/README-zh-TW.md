@@ -103,6 +103,8 @@ pi install npm:@runkids/figlens
 
 重新啟動 Pi 或執行 `/reload`，然後用一般的話請它做一個畫面。Pi 會找到 frame，透過自動註冊的 MCP 伺服器讀取，並用你的技術堆疊實作。不需要 node ID，不需要全域 CLI。
 
+請它找文案或畫面時，會直接搜尋 `.fig`，不儲存任何東西。需要反覆搜尋時，請 Pi 為某個設計和範圍啟用索引：它會準備一次本機索引（不需要設定指令），完成前回報工作狀態，之後在重新啟動和其他 host 中繼續使用。重設該索引需要你明確要求。 詳情：[本機索引](#local-index)。
+
 - `/figlens plan <request>` 只產生計劃書，不修改應用程式。
 - `/figlens yolo <request>` 規劃、實作、檢查，並清理自己的暫存規劃。
 - `/figlens preview [description]` 開啟本機 viewer。

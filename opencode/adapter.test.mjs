@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { setTimeout } from 'node:timers/promises';
-import { createAdapter, launcherRuntime } from './adapter.mjs';
+import { cliArgs, createAdapter, indexGrant, launcherRuntime } from './adapter.mjs';
 
 async function context(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'figlens-opencode-'));
@@ -25,8 +25,9 @@ async function context(t) {
 test('OpenCode preserves existing local, remote and disabled MCP settings and blocks unverified dispatch', async t => {
   const { root, adapter, writes } = await context(t);
   for (const config of [{ type: 'local', command: ['other', 'mcp'] }, { type: 'remote', url: 'https://example.invalid/mcp' },
-    { type: 'local', command: ['other'], disabled: true }]) {
+    { type: 'local', command: ['other'], disabled: true }, { type: 'local', command: ['other'], enabled: false }]) {
     adapter.configureMcp({ get: () => config, set: () => assert.fail('User configuration must remain unchanged') });
+    assert.equal(adapter.cliPath, config.disabled === true || config.enabled === false);
     await assert.rejects(adapter.commandHandler({ sessionID: 'session', prompt: { text: 'plan Only the hero' } }), /MCP is unavailable/);
   }
   assert.deepEqual(writes, []);
@@ -67,6 +68,7 @@ test('OpenCode manages its default under a key apart from its figlens_* tools an
     const { mcp } = await adapter.operation({ sessionID: 'session', action: 'status' });
     assert.deepEqual([mcp.server, mcp.managed, mcp.status.status], [name, false, 'connected']);
     assert.equal(/rename it to figlensmcp/.test(mcp.reason), name === 'figlens');
+    assert.equal(adapter.cliPath, name === 'figlens');
   }
 });
 
@@ -161,4 +163,97 @@ else if (process.argv[2] === 'export') {
 test('bundled launcher runs with node under a Bun-built host', () => {
   assert.equal(launcherRuntime({ bun: '1.4.3' }, '/opt/opencode'), 'node');
   assert.equal(launcherRuntime({ node: '24.0.0' }, '/usr/bin/node'), '/usr/bin/node');
+});
+
+test('CLI path runs the MCP index, jobs, search and inspect arguments as the same commands', () => {
+  assert.deepEqual(cliArgs('index', { action: 'prepare', file: '/d.fig', scope: '0:0', requestId: 'r' }),
+    ['index', 'prepare', '/d.fig', '--scope', '0:0', '--request-id', 'r']);
+  assert.deepEqual(cliArgs('index', { action: 'status', file: '/d.fig' }), ['index', 'status', '--file', '/d.fig']);
+  assert.deepEqual(cliArgs('index', { action: 'add', file: '/b.fig', workspaceId: 'ws_1' }), ['index', 'add', '/b.fig', '--id', 'ws_1']);
+  assert.deepEqual(cliArgs('index', { action: 'relocate', sourceId: 's', file: '/n.fig', workspace: '/p' }),
+    ['index', 'relocate', 's', '/n.fig', '--workspace', '/p']);
+  assert.deepEqual(cliArgs('index', { action: 'refresh', workspaceId: 'ws_1', sourceId: 's', scope: '1:2' }),
+    ['index', 'refresh', '--id', 'ws_1', '--source', 's', '--scope', '1:2']);
+  assert.deepEqual(cliArgs('index', { action: 'rebuild', file: '/d.fig', scope: '0:0' }), ['index', 'rebuild', '--file', '/d.fig', '--scope', '0:0']);
+  assert.deepEqual(cliArgs('jobs', { action: 'cancel', jobId: 'j' }), ['jobs', 'cancel', 'j']);
+  assert.deepEqual(cliArgs('search', { workspaceId: 'ws_1', query: 'Pay now', limit: 5 }), ['search', '--id', 'ws_1', '--limit', '5', '--', 'Pay now']);
+  assert.deepEqual(cliArgs('search', { file: '/d.fig', query: 'Pay', includeHidden: true }), ['search', '/d.fig', 'Pay', '--include-hidden']);
+  assert.deepEqual(cliArgs('inspect', { file: '/d.fig', node: 'I1:2;3:4', depth: 0 }), ['inspect', '/d.fig', 'I1:2;3:4', '--depth', '0']);
+  assert.throws(() => cliArgs('index', { action: 'remove', workspaceId: 'ws_1' }), /needs sourceId/);
+});
+
+test('CLI-path writes ask edit where the binary places the workspace; only reset and recreation ask figlens_index', async t => {
+  const { ctx, adapter } = await context(t);
+  const asked = [], ran = [];
+  ctx.permission.assert = async ({ action, resources }) => { asked.push([action, ...resources]); };
+  const current = await adapter.scope('session');
+  let status = { paths: null, storage: { rule: 'default', remembered: null }, roots: { state: { path: '/state' }, config: { path: '/config' } } };
+  current.run = async args => { ran.push(args.slice(0, 2).join(' ')); return { stdout: JSON.stringify(args[1] === 'status' ? status : { args }) }; };
+  await adapter.cli(current, 'index', { action: 'status', file: '/d.fig' });
+  assert.deepEqual(asked, [], 'status creates nothing and asks nothing');
+  await adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig', scope: '0:0' });
+  assert.deepEqual(asked, [['edit', '/state', '/config']]);
+  status = { ...status, paths: { workspace: '/custom/state/workspaces/ws_1' }, storage: { rule: 'remembered', remembered: '/custom' } };
+  await adapter.cli(current, 'index', { action: 'reset', file: '/d.fig' });
+  await adapter.cli(current, 'index', { action: 'reset', file: '/d.fig' });
+  assert.deepEqual(asked.slice(1), [['figlens_index', 'reset'], ['edit', '/custom/state/workspaces/ws_1']]);
+  assert.equal(asked.length, 3, 'the second reset is already granted');
+  assert.deepEqual(ran, ['index status', 'index status', 'index prepare', 'index status', 'index reset', 'index status', 'index reset']);
+});
+
+test('CLI-path recreation asks edit on the new storage and the reported config root, though status fails', async t => {
+  const { ctx, adapter } = await context(t);
+  const asked = [], ran = [];
+  ctx.permission.assert = async ({ action, resources }) => { asked.push([action, ...resources]); };
+  const current = await adapter.scope('session');
+  current.run = async args => {
+    ran.push(args.slice(0, 2).join(' '));
+    if (args[1] === 'status') throw Object.assign(new Error('exit 1'), { stderr: 'figlens: workspace is missing\n' + JSON.stringify({ recovery: [{ action: 'recreate_elsewhere', roots: { config: { path: '/config' }, state: { path: '/state' } } }] }) });
+    return { stdout: '{}' };
+  };
+  await adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig', storage: '/new', replaceUnavailable: true });
+  assert.deepEqual(asked, [['figlens_index', 'replace_unavailable'], ['edit', '/new', '/config']]);
+  assert.deepEqual(ran, ['index status', 'index prepare']);
+});
+
+test('CLI-path cancel asks edit on the job workspace, and a denial leaves the job running', async t => {
+  const { ctx, adapter } = await context(t);
+  const ran = [];
+  ctx.permission.assert = async ({ action, resources }) => {
+    if (action === 'edit') throw Object.assign(new Error(`denied ${resources}`), { _tag: 'Permission.DeclinedError' });
+  };
+  const current = await adapter.scope('session');
+  current.run = async args => {
+    ran.push(args.slice(0, 2).join(' '));
+    return { stdout: JSON.stringify(args[0] === 'jobs' ? { workspaceId: 'ws_1', state: 'running' }
+      : { paths: { workspace: '/state/workspaces/ws_1' }, storage: { rule: 'default' }, roots: {} }) };
+  };
+  await assert.rejects(adapter.cli(current, 'jobs', { action: 'cancel', jobId: 'ws_1.j' }), /denied \/state\/workspaces\/ws_1/);
+  assert.deepEqual(ran, ['jobs status', 'index status']);
+});
+
+test('CLI-path flat inspect returns its text lines as the MCP flat field', async t => {
+  const { adapter } = await context(t);
+  const current = await adapter.scope('session');
+  current.run = async () => ({ stdout: '0:1 FRAME "First success" @0,0 320x200\n' });
+  assert.deepEqual(await adapter.cli(current, 'inspect', { file: '/d.fig', node: '0:1', flat: true }), { flat: '0:1 FRAME "First success" @0,0 320x200\n' });
+});
+
+test('CLI-path reset keeps every selector and scope field, so the CLI refuses a narrower or conflicting reset before any write', async t => {
+  const { ctx, adapter } = await context(t);
+  const asked = [], ran = [];
+  ctx.permission.assert = async ({ action, resources }) => { asked.push([action, ...resources]); };
+  const current = await adapter.scope('session');
+  // As the binary: two selectors, or a field the action does not take, is a usage error.
+  current.run = async args => {
+    ran.push(args.join(' '));
+    if (args.filter(arg => ['--id', '--file', '--workspace'].includes(arg)).length > 1 || (args[1] !== 'status' && args.includes('--source')))
+      throw Object.assign(new Error('exit 2'), { stderr: 'usage: figlens index ...' });
+    return { stdout: JSON.stringify({ paths: { workspace: '/state/workspaces/ws_a' }, storage: { rule: 'default' }, roots: { config: { path: '/config' } } }) };
+  };
+  await assert.rejects(adapter.cli(current, 'index', { action: 'reset', workspaceId: 'ws_a', file: '/b.fig' }), /usage/);
+  assert.deepEqual(asked, [], 'conflicting selectors fail before any permission');
+  await assert.rejects(adapter.cli(current, 'index', { action: 'reset', workspaceId: 'ws_a', sourceId: 's' }), /usage/);
+  await assert.rejects(adapter.cli(current, 'index', { action: 'prepare', file: '/b.fig', workspaceId: 'ws_a', storage: '/new', replaceUnavailable: true }), /usage/);
+  assert.deepEqual(ran.filter(command => !command.startsWith('index status')), ['index reset --id ws_a --source s']);
 });

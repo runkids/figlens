@@ -15,6 +15,7 @@ const HELP = [
   "",
   "Ask Pi directly: **\"Build the List views screen from ./design.fig using this project's components.\"**",
   "Pi can find and read the design through MCP. No open command or node ID is needed.",
+  "Asking Pi to find copy or a screen searches the .fig directly and stores nothing. For repeated searches, ask it to enable an index for a design and scope: it prepares a local index once (no setup command), reports the job until ready, then reuses it across restarts and hosts. Resetting that index needs your explicit request.",
   "",
   "Optional shortcuts:",
   "- `/figlens open [description]` — tell Pi what you know: a file, screen name, purpose or visible text. Pi finds it or asks a recognizable follow-up.",
