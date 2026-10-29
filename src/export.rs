@@ -400,7 +400,8 @@ impl SvgIndex {
             // so they count only when they also cover the same pixels.
             let outlines = !want.clipped
                 && !got.clipped
-                && (want.mask == got.mask || overlap(&want.mask, &got.mask) >= 0.95);
+                && (want.coverage == got.coverage
+                    || overlap(&want.coverage, &got.coverage) >= 0.95);
             if outlines && same_outline(&want.outline, &got.outline, 1.0) {
                 matches.push(name.clone());
                 continue;
@@ -435,6 +436,8 @@ struct Shape {
     /// Drawn through a clip path or mask, so the outline overstates what shows.
     clipped: bool,
     mask: [u64; 64],
+    /// Every drawn pixel whatever its paint, to check that equal outlines cover the same area.
+    coverage: [u64; 64],
 }
 
 /// Same segments with points within 0.01 once `b` is scaled by `scale`.
@@ -579,8 +582,11 @@ fn shape(svg: &[u8]) -> Option<Shape> {
     }
     // A shape too thin to cover a pixel keeps an empty mask; its outline still matches.
     let main = counts.into_iter().max_by_key(|e| (e.1, e.0)).map(|e| e.0);
-    let mut mask = [0u64; 64];
+    let (mut mask, mut coverage) = ([0u64; 64], [0u64; 64]);
     for (i, px) in pixmap.pixels().iter().enumerate() {
+        if px.alpha() >= 64 {
+            coverage[i / 64] |= 1 << (i % 64);
+        }
         let near = main.is_some_and(|main| {
             color(px)
                 .iter()
@@ -595,6 +601,7 @@ fn shape(svg: &[u8]) -> Option<Shape> {
         outline,
         extent,
         clipped: clipped(tree.root()),
+        coverage,
         mask,
     })
 }
@@ -806,5 +813,19 @@ mod tests {
         .unwrap();
         let index = SvgIndex::load(&dir.join("")).unwrap();
         assert!(index.compare(svg("").as_bytes(), None).0.is_empty());
+    }
+
+    #[test]
+    fn svg_index_matches_a_gradient_fill_with_the_same_solid_outline() {
+        let dir = crate::test_support::TestDir::new();
+        let square = r#"<path d="M0 0H20V20H0Z" fill="black"/>"#;
+        std::fs::write(
+            dir.join("solid.svg"),
+            format!(r#"<svg xmlns="http://www.w3.org/2000/svg">{square}</svg>"#),
+        )
+        .unwrap();
+        let index = SvgIndex::load(&dir.join("")).unwrap();
+        let gradient = r#"<svg xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g"><stop offset="0"/><stop offset="1" stop-color="white"/></linearGradient></defs><path d="M0 0H20V20H0Z" fill="url(#g)"/></svg>"#;
+        assert_eq!(index.compare(gradient.as_bytes(), None).0, ["solid.svg"]);
     }
 }

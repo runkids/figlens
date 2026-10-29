@@ -46,7 +46,7 @@
       ]
     },
     "discovery": {
-      "description": "Changing find or inspect summaries: fields, limits, truncation and --flat lines.",
+      "description": "Changing find or inspect summaries (fields, limits, truncation, --flat lines) or export --match-dir icon matching.",
       "sources": [
         {
           "path": "wiki/discovery.md"
