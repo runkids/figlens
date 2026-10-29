@@ -396,11 +396,11 @@ impl SvgIndex {
                 continue;
             }
             // A clip or mask hides part of the outline; only the rendered masks can compare it.
-            // Optimizers rewrite even-odd as nonzero when the winding allows, so differing rules
-            // keep the outline match only when the fills cover the same pixels.
+            // The same segments can paint differently (fill vs stroke, even-odd vs nonzero),
+            // so they count only when they also cover the same pixels.
             let outlines = !want.clipped
                 && !got.clipped
-                && (want.evenodd == got.evenodd || overlap(&want.mask, &got.mask) >= 0.95);
+                && (want.mask == got.mask || overlap(&want.mask, &got.mask) >= 0.95);
             if outlines && same_outline(&want.outline, &got.outline, 1.0) {
                 matches.push(name.clone());
                 continue;
@@ -434,8 +434,6 @@ struct Shape {
     extent: f32,
     /// Drawn through a clip path or mask, so the outline overstates what shows.
     clipped: bool,
-    /// Fills even-odd, which can cover overlapping subpaths differently than nonzero.
-    evenodd: bool,
     mask: [u64; 64],
 }
 
@@ -490,7 +488,7 @@ fn grow(m: &[u64; 64]) -> [u64; 64] {
 /// None when the SVG does not parse or draws no path.
 fn shape(svg: &[u8]) -> Option<Shape> {
     use resvg::tiny_skia::PathSegment as S;
-    use resvg::usvg::{FillRule, Group, Node, Options, Tree};
+    use resvg::usvg::{Group, Node, Options, Tree};
     fn clipped(group: &Group) -> bool {
         group.clip_path().is_some()
             || group.mask().is_some()
@@ -499,12 +497,11 @@ fn shape(svg: &[u8]) -> Option<Shape> {
                 .iter()
                 .any(|n| matches!(n, Node::Group(g) if clipped(g)))
     }
-    fn walk(group: &Group, out: &mut Vec<(u8, Vec<f32>)>, evenodd: &mut bool) {
+    fn walk(group: &Group, out: &mut Vec<(u8, Vec<f32>)>) {
         for node in group.children() {
             match node {
-                Node::Group(g) => walk(g, out, evenodd),
+                Node::Group(g) => walk(g, out),
                 Node::Path(p) => {
-                    *evenodd |= p.fill().is_some_and(|f| f.rule() == FillRule::EvenOdd);
                     let Some(data) = p.data().clone().transform(p.abs_transform()) else {
                         continue;
                     };
@@ -538,8 +535,7 @@ fn shape(svg: &[u8]) -> Option<Shape> {
     options.image_href_resolver.resolve_string = Box::new(|_, _| None);
     let tree = Tree::from_data(svg, &options).ok()?;
     let mut outline = Vec::new();
-    let mut evenodd = false;
-    walk(tree.root(), &mut outline, &mut evenodd);
+    walk(tree.root(), &mut outline);
     if outline.is_empty() {
         return None;
     }
@@ -599,7 +595,6 @@ fn shape(svg: &[u8]) -> Option<Shape> {
         outline,
         extent,
         clipped: clipped(tree.root()),
-        evenodd,
         mask,
     })
 }
@@ -794,5 +789,22 @@ mod tests {
             index.compare(svg("nonzero").as_bytes(), None).0,
             ["solid.svg"]
         );
+    }
+
+    #[test]
+    fn svg_index_keeps_a_stroked_border_apart_from_the_filled_square() {
+        let dir = crate::test_support::TestDir::new();
+        let svg = |paint: &str| {
+            format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg"><path {paint} d="M0 0H20V20H0Z"/></svg>"#
+            )
+        };
+        std::fs::write(
+            dir.join("border.svg"),
+            svg(r#"fill="none" stroke="black" stroke-width="2""#),
+        )
+        .unwrap();
+        let index = SvgIndex::load(&dir.join("")).unwrap();
+        assert!(index.compare(svg("").as_bytes(), None).0.is_empty());
     }
 }
