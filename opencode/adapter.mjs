@@ -272,6 +272,8 @@ export function createAdapter(ctx, entry = import.meta.url) {
     // Where the binary places this workspace: its directory, or the state root of the storage it chose.
     const place = ({ paths, roots }) => paths?.workspace ?? roots.state.path;
     const missing = what => new Error(`This figlens binary does not report ${what}; update figlens to use these tools.`);
+    // The CLI downloads a gs:// design into its own cache, which this path cannot authorize, so only MCP serves it.
+    if (input.file?.startsWith('gs://')) throw new Error('The OpenCode CLI path reads local .fig files only. Enable the figlens MCP server for a gs:// design, or pass a local copy.');
     // A design the CLI reads honours read rules on its requested and canonical paths, as Workflow.source does.
     if (input.file && (tool !== 'index' || ['prepare', 'add', 'relocate'].includes(input.action))) {
       const requested = path.resolve(current.flow.root, input.file);
