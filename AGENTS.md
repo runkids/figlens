@@ -40,6 +40,7 @@ python3 scripts/ai-context.py check     # validate paths, headings, links, orpha
 | `performance` | Measuring load time and memory, reading the perf baseline, changing cache or decode cost |
 | `parsing` | Changing untrusted container/schema/value decoding or parsing budgets |
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields or variables |
+| `discovery` | Changing find or inspect summaries (fields, limits, truncation, `--flat` lines) or `export --match-dir` icon matching |
 | `search` | Changing search indexing, normalization, ranking, cursors, coverage or its budgets |
 | `bundle` | Changing the bundle zip, manifest, context.md, batch bundles, font inventory or `verify` |
 | `render` | Changing SVG or raster output: text and glyphs, image fills, effects, export areas, image adjustments |
