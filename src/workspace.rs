@@ -1198,10 +1198,33 @@ pub fn prepare(storage: &Storage, file: &Path, project: Option<&Path>) -> Result
 }
 
 fn same_dir(a: &Path, b: &Path) -> bool {
-    a == b
-        || std::fs::canonicalize(a)
-            .ok()
-            .is_some_and(|a| std::fs::canonicalize(b).is_ok_and(|b| a == b))
+    a == b || resolved(a).is_some_and(|a| resolved(b).is_some_and(|b| a == b))
+}
+
+/// `path` with its longest existing prefix canonicalized and the missing rest applied
+/// lexically, so two spellings of one directory compare equal even after it was removed
+/// (`C:\store` and a remembered `\\?\C:\store`, or a path through `..`).
+fn resolved(path: &Path) -> Option<PathBuf> {
+    for base in path.ancestors() {
+        match std::fs::canonicalize(base) {
+            Ok(mut dir) => {
+                for part in path.strip_prefix(base).ok()?.components() {
+                    match part {
+                        std::path::Component::Normal(name) => dir.push(name),
+                        std::path::Component::ParentDir => {
+                            dir.pop();
+                        }
+                        std::path::Component::CurDir => {}
+                        _ => return None,
+                    }
+                }
+                return Some(dir);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
+    }
+    None
 }
 
 /// The workspace's state and sources. A missing workspace creates nothing at all; an existing

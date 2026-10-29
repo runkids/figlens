@@ -50,9 +50,17 @@ def check_index(binary, fixture, cwd, env):
     again = index('prepare', source)
     assert again['initialized'] and again['incarnation'] != first['incarnation'], again
     assert again['storage']['rule'] == 'remembered', again
+    # A removed remembered root is recreated by an equivalent spelling: on Windows the ordinary
+    # path against the remembered \\?\ form, elsewhere a path through "..".
+    shutil.rmtree(custom)
+    spelling = str(custom) if os.name == 'nt' else f'{custom}{os.sep}..{os.sep}{custom.name}'
+    recreated = index('prepare', source, '--storage', spelling)
+    assert recreated['initialized'] and recreated['incarnation'] != again['incarnation'], recreated
+    assert os.path.samefile(Path(recreated['paths']['database']).parents[2], custom/'state'), recreated
     assert sha(source) == before, 'index changed the source .fig'
     assert not (base/'state').exists(), 'a second database appeared in the default state root'
-    return {'customPrepare': True, 'rediscovered': True, 'resetNewIncarnation': True, 'sourceUnchanged': True}
+    return {'customPrepare': True, 'rediscovered': True, 'resetNewIncarnation': True,
+            'removedRootRecreated': True, 'sourceUnchanged': True}
 
 
 def main():

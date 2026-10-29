@@ -298,6 +298,19 @@ fn a_symlinked_config_workspaces_directory_is_refused() {
 }
 
 #[test]
+fn a_removed_remembered_storage_is_recreated_by_another_spelling_of_it() {
+    let f = Fixture::new();
+    let a = f.fig("a.fig");
+    let (root, custom) = f.custom("custom");
+    prepare(&custom, &a, None).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let respelled = root.join("..").join("custom");
+    let again = Fixture::at(&f.home, Some(&respelled));
+    let report = prepare(&again, &a, None).unwrap();
+    assert!(root.join("state").is_dir(), "{report}");
+}
+
+#[test]
 fn custom_storage_is_remembered_for_that_workspace_only() {
     let f = Fixture::new();
     let (a, b) = (f.fig("a.fig"), f.fig("b.fig"));
