@@ -77,6 +77,7 @@ Tool failures retain `isError: true` and text content; additive `_meta.figlens` 
 | `workspace_busy` | Another figlens process holds the workspace; retry after it finishes, without killing it |
 | `storage_unavailable` | The workspace's storage is missing or offline; follow `_meta.figlens.recovery`: restore it, or with the user's confirmation recreate elsewhere |
 | `index_incompatible` | Another schema or index version; follow the recovery (`rebuild`, or that figlens version) |
+| `query_work_limit` | Over 10 sources or 100k records per search; run a listed narrower one |
 | `source_stale` | Every searched source changed since indexing; run the listed `refresh`, then search again |
 | `cursor_stale` / `cursor_expired` | A paged index was replaced or deleted; search again without the cursor |
 | `cancelled` | The job was cancelled; the previous index still serves |

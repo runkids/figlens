@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 
+use crate::{ErrorKind, FigError};
 use rusqlite::{Connection, params};
 use serde_json::{Value as Json, json};
 
@@ -399,8 +400,14 @@ pub(crate) fn add(conn: &Connection, gen_id: i64, index: &mut Index, rids: &[u32
             + record.text.as_ref().map_or(0, String::len)
             + record.norm[0].len()
             + record.norm[1].len();
-        if bytes > BYTES
-            || record.page.is_some_and(|p| p as usize >= index.pages.len())
+        if bytes > BYTES {
+            return Err(FigError::new(
+                ErrorKind::QueryWorkLimit,
+                format!("the records this search needs exceed {BYTES} bytes"),
+            )
+            .into());
+        }
+        if record.page.is_some_and(|p| p as usize >= index.pages.len())
             || record.root.is_some_and(|p| p as usize >= index.roots.len())
             // Builds number a parent before its children, so a stored parent cycle is corrupt.
             || record.parent.is_some_and(|p| p >= rid)

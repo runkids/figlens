@@ -890,3 +890,37 @@ fn mcp_answers_ping_while_control_waits_and_drops_a_queued_call_the_client_cance
     std::fs::remove_file(&gate).unwrap();
     owner.wait().unwrap();
 }
+
+#[test]
+fn a_search_past_the_query_envelope_is_a_work_limit_with_narrower_searches_not_a_bad_index() {
+    let env = Env::new();
+    let project = env.dir.join("project");
+    std::fs::create_dir(&project).unwrap();
+    let dir = std::fs::canonicalize(project).unwrap();
+    let dir = dir.to_str().unwrap();
+    for n in 0..11 {
+        let fig = env.fig(&format!("{n}.fig"));
+        env.json(&[
+            "index",
+            "prepare",
+            fig.to_str().unwrap(),
+            "--workspace",
+            dir,
+            "--scope",
+            "0:0",
+        ]);
+    }
+    let out = env.run(&["search", "--workspace", dir, "first"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let recovery: Value = serde_json::from_str(stderr.lines().last().unwrap()).unwrap();
+    let actions = recovery["recovery"].as_array().unwrap();
+    assert_eq!(actions.len(), 10, "{stderr}");
+    assert!(actions.iter().all(|a| a["action"] == "search_one_source"));
+    let one = actions[0]["arguments"]["sourceId"].as_str().unwrap();
+    let narrowed = env.json(&["search", "--workspace", dir, "first", "--source", one]);
+    assert_eq!(narrowed["state"], "ready");
+    // Nothing was dropped from the registry.
+    let status = env.json(&["index", "status", "--workspace", dir]);
+    assert_eq!(status["sources"].as_array().unwrap().len(), 11);
+}

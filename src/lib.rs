@@ -58,6 +58,8 @@ pub enum ErrorKind {
     /// A cursor's generation no longer exists.
     CursorExpired,
     Cancelled,
+    /// A workspace search would read more indexed data than one query supports.
+    QueryWorkLimit,
 }
 
 #[derive(Debug)]

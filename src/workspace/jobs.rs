@@ -882,6 +882,7 @@ pub(crate) fn kind_code(kind: ErrorKind) -> &'static str {
         ErrorKind::CursorStale => "cursor_stale",
         ErrorKind::CursorExpired => "cursor_expired",
         ErrorKind::Cancelled => "cancelled",
+        ErrorKind::QueryWorkLimit => "query_work_limit",
     }
 }
 

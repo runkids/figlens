@@ -841,6 +841,10 @@ impl Failure {
                 "cancelled",
                 "The operation was cancelled before it finished; nothing was published.",
             ),
+            ErrorKind::QueryWorkLimit => (
+                "query_work_limit",
+                "The search would read more indexed data than one query supports; follow recovery to search fewer sources or index a narrower scope. Nothing is wrong with the index.",
+            ),
         };
         let mut meta = json!({"code": code, "nextStep": next});
         if let Some(recovery) = &self.recovery {

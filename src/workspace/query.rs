@@ -6,6 +6,11 @@
 use super::*;
 use crate::search::{self, Index, Part, Request};
 
+/// The supported query envelope: ready sources one workspace search reads together, and the
+/// records of their generations in total. Checked from stored counts before any is loaded.
+const QUERY_SOURCES: usize = 10;
+const QUERY_RECORDS: usize = 100_000;
+
 /// One registered source as the query found it.
 struct Row {
     id: String,
@@ -148,6 +153,7 @@ fn search_index(
     let mut states = Vec::new();
     let mut loaded: Vec<(Index, Json, i64, Json)> = Vec::new();
     let mut steps = Vec::new();
+    let (mut sources_read, mut records_read) = (0usize, 0usize);
     for row in &rows {
         let mut state = json!({"sourceId": row.id, "path": row.path});
         let job: Option<(String, String, String)> = tx
@@ -215,6 +221,24 @@ fn search_index(
         }
         if label == "ready" {
             let gen_id = row.gen_id.expect("ready");
+            let records: i64 = tx
+                .query_row(
+                    "SELECT records FROM generations WHERE gen = ?1",
+                    [gen_id],
+                    |r| r.get(0),
+                )
+                .map_err(sql)?;
+            sources_read += 1;
+            records_read =
+                records_read.saturating_add(usize::try_from(records).unwrap_or(usize::MAX));
+            if sources_read > QUERY_SOURCES || records_read > QUERY_RECORDS {
+                return Err(work_limit(
+                    &ws_id,
+                    req,
+                    &rows,
+                    records as usize > QUERY_RECORDS,
+                ));
+            }
             let index = search::store::load(&tx, gen_id, q.terms())
                 .map_err(|e| unreadable_index(&ws_id, &row.id, e))?;
             let identity = json!({"sourceId": row.id, "membership": row.membership,
@@ -366,8 +390,38 @@ fn restrict(coverage: &mut Json) {
     }
 }
 
-/// A stored index this binary cannot read: rebuilding it is the recovery.
+/// The search exceeds the query envelope: the registry and indexes stay as they are, and each
+/// visible source can be searched alone; a single source over the envelope needs a narrower
+/// indexed scope, a node the caller picks inside the current one.
+fn work_limit(ws_id: &str, req: &Request, rows: &[Row], one_too_big: bool) -> Box<dyn Error> {
+    let mut actions: Vec<Json> = rows
+        .iter()
+        .take(QUERY_SOURCES)
+        .map(|r| {
+            json!({"action": "search_one_source", "requires": "none", "tool": "search",
+            "arguments": {"workspaceId": ws_id, "query": req.query, "sourceId": r.id}})
+        })
+        .collect();
+    if one_too_big {
+        actions.push(json!({"action": "index_narrower_scope", "requires": "node_choice", "tool": "index",
+            "arguments": {"action": "refresh", "workspaceId": ws_id, "scope": "<a node inside the current scope>"}}));
+    }
+    FigError::new(
+        ErrorKind::QueryWorkLimit,
+        format!("this search would read more than {QUERY_SOURCES} sources or {QUERY_RECORDS} indexed records; search fewer sources or a narrower scope"),
+    )
+    .with_recovery(json!(actions))
+    .into()
+}
+
+/// A stored index this binary cannot read: rebuilding it is the recovery. A query budget
+/// crossed while loading is passed on as it is: the index is fine.
 fn unreadable_index(ws_id: &str, source: &str, e: Box<dyn Error>) -> Box<dyn Error> {
+    if e.downcast_ref::<FigError>()
+        .is_some_and(|f| f.kind() == ErrorKind::QueryWorkLimit)
+    {
+        return e;
+    }
     FigError::new(
         ErrorKind::IndexIncompatible,
         format!("the index of {source} cannot be read: {e}"),

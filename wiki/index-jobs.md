@@ -45,6 +45,21 @@ The CLI runs owned jobs in the foreground with stderr progress, then exits 1 if 
 
 Results equal stateless search of the same scope; only `ref.sourceId` differs after a relocate, by design.
 
+## Capacity
+
+Hard refusals, checked before the work they bound:
+
+| Limit | Value | When crossed |
+|---|---|---|
+| Ready sources one workspace search reads | 10 | `query_work_limit` before any index loads; recovery lists one search per source |
+| Records of those generations in total | 100,000 (not 10 times a per-source cap) | the same, plus `index_narrower_scope` when one source alone exceeds it |
+| Record text one load copies | 512 MiB | `query_work_limit`, never `index_incompatible` |
+| One scope extraction (build) | `WORK` 10M units | the generation is partial with `work_limit` |
+| Database plus WAL | `DISK_CAP` 2 GiB, WAL `WAL_CAP` 64 MiB | the build fails; the prior generation serves |
+| Published scopes per source, active jobs per workspace | 8, 16 | oldest scope retired; submit refused |
+
+The registry and every published index stay when a search exceeds the envelope. Measured so far: one source of 36,171 records and the two-source and eleven-source test corpora; a corpus near 100,000 records over 10 sources is not measured yet.
+
 ## Measurements
 
 Docker on Apple silicon, release build, a public 60 MB Community file:
