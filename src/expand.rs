@@ -562,6 +562,29 @@ fn main_of<'t>(tree: &Tree<'t>, instance: &Value) -> Option<String> {
         .filter(|id| tree.nodes.contains_key(id))
 }
 
+/// What `bind_properties` walks and may copy for one component: stored nodes, text bytes,
+/// property references and the bytes of the layer keys it builds.
+#[derive(Clone, Copy, Default)]
+struct Cost {
+    nodes: usize,
+    text: usize,
+    refs: usize,
+    keys: usize,
+}
+
+impl Cost {
+    /// Bytes binding assignments under `prefix` builds: a key per walked layer, kept for each
+    /// reference it fills.
+    fn binding(&self, assignments: usize, prefix: &str) -> usize {
+        if assignments == 0 {
+            return 0;
+        }
+        (self.nodes + self.refs)
+            .saturating_mul(prefix.len() + 1)
+            .saturating_add(2 * self.keys)
+    }
+}
+
 struct Expander<'t, 'a> {
     tree: &'t Tree<'a>,
     out: Expansion,
@@ -573,7 +596,7 @@ struct Expander<'t, 'a> {
     bounds: Option<Bounds>,
     depth: usize,
     /// `symbol_cost` per component.
-    sizes: HashMap<String, (usize, usize, usize)>,
+    sizes: HashMap<String, Cost>,
     exceeded: bool,
 }
 
@@ -642,7 +665,10 @@ fn expand_all(
         };
         let sd = inst.get("symbolData");
         if ex.bounds.is_some() {
-            let (nodes, text, refs) = ex.symbol_cost(&main);
+            let cost = ex.symbol_cost(&main);
+            let Cost {
+                nodes, text, refs, ..
+            } = cost;
             let (overrides, derived, assignments) = (
                 sd.and_then(|s| s.get("symbolOverrides")),
                 inst.get("derivedSymbolData"),
@@ -660,7 +686,11 @@ fn expand_all(
                     .sum::<usize>()
                     + assignment_bytes(assignments, None, refs, left)
             };
-            if ex.spend_estimated(work, text, estimate).is_none() {
+            let binding = cost.binding(list_len(assignments), "");
+            if ex
+                .spend_estimated(work, text.saturating_add(binding), estimate)
+                .is_none()
+            {
                 break;
             }
         }
@@ -727,11 +757,11 @@ impl Expander<'_, '_> {
             .then_some(estimated)
     }
 
-    /// Stored nodes, text bytes and property references `bind_properties` walks and may copy,
-    /// measured once per component by walks charged as they go. Only bounded runs measure.
-    fn symbol_cost(&mut self, symbol: &str) -> (usize, usize, usize) {
+    /// `Cost` of `symbol`, measured once per component by walks charged as they go. Only
+    /// bounded runs measure.
+    fn symbol_cost(&mut self, symbol: &str) -> Cost {
         if self.bounds.is_none() {
-            return (0, 0, 0);
+            return Cost::default();
         }
         if let Some(cost) = self.sizes.get(symbol) {
             return *cost;
@@ -739,15 +769,33 @@ impl Expander<'_, '_> {
         let tree = self.tree;
         let ids = subtree_while(tree, symbol, || self.spend(1, 0));
         // A nested instance may name a component the file lacks; it expands to nothing.
-        let present = || ids.iter().filter_map(|id| tree.nodes.get(id));
-        let texts = present().filter_map(|n| n.get("textData"));
+        let present = || {
+            ids.iter()
+                .filter_map(|id| tree.nodes.get(id).map(|n| (id, n)))
+        };
+        let texts = present().filter_map(|(_, n)| n.get("textData"));
         let text = self
             .spend_estimated(0, 0, |left| texts.map(|t| kiwi_bytes(t, left)).sum())
             .unwrap_or(0);
         let refs = present()
-            .map(|n| list_len(n.get("componentPropRefs")))
+            .map(|(_, n)| list_len(n.get("componentPropRefs")))
             .sum();
-        let cost = (ids.len(), text, refs);
+        // An overrideKey guid prints as at most "4294967295:4294967295".
+        let keys = present()
+            .map(|(id, n)| {
+                if n.get("overrideKey").is_some() {
+                    21
+                } else {
+                    id.len()
+                }
+            })
+            .sum();
+        let cost = Cost {
+            nodes: ids.len(),
+            text,
+            refs,
+            keys,
+        };
         self.sizes.insert(symbol.to_owned(), cost);
         cost
     }
@@ -964,7 +1012,10 @@ impl Expander<'_, '_> {
                 }
                 // Converting and merging the nested overrides copies the outer ones too.
                 if self.bounds.is_some() {
-                    let (nodes, text, refs) = self.symbol_cost(&nested);
+                    let cost = self.symbol_cost(&nested);
+                    let Cost {
+                        nodes, text, refs, ..
+                    } = cost;
                     let (overrides, derived, own, inherited) = (
                         sd.and_then(|s| s.get("symbolOverrides")),
                         child.get("derivedSymbolData"),
@@ -990,8 +1041,9 @@ impl Expander<'_, '_> {
                             + assignment_bytes(own, inherited, refs, left)
                     };
                     // `nest` writes `pk;` in front of every inner key it merges.
-                    let prefixes =
-                        (list_len(overrides) + list_len(derived)).saturating_mul(pk.len() + 1);
+                    let prefixes = (list_len(overrides) + list_len(derived))
+                        .saturating_mul(pk.len() + 1)
+                        .saturating_add(cost.binding(assignments, &pk));
                     if self
                         .spend_estimated(work, text.saturating_add(prefixes), estimate)
                         .is_none()
@@ -1454,14 +1506,44 @@ mod tests {
         assert_eq!(bounds.stop, None);
     }
 
-    #[test]
-    fn a_bounded_expansion_charges_the_prefix_nested_overrides_copy() {
-        // A nested instance under a 2 kB id key: each of its 1,000 overrides copies that prefix.
+    /// Expands `nested` under a 2 kB id key inside one top-level instance; `extra` and
+    /// `inner_children` populate its component.
+    fn under_long_key<'v>(
+        nested: &'v Value<'v>,
+        extra: &[(&str, &'v Value<'v>)],
+        inner_children: Vec<String>,
+        bytes: usize,
+    ) -> (Expansion, Bounds) {
         let inst = obj(vec![
             ("type", Value::Enum("NodeType", "INSTANCE")),
             ("symbolData", obj(vec![("symbolID", guid(1, 1))])),
         ]);
-        let overrides = (0..1000)
+        let (page, outer, inner) = (obj(vec![]), obj(vec![]), obj(vec![]));
+        let long = "n".repeat(2000);
+        let mut nodes: HashMap<String, &Value> = HashMap::from([
+            ("page".into(), &page),
+            ("inst".into(), &inst),
+            ("1:1".into(), &outer),
+            ("2:2".into(), &inner),
+            (long.clone(), nested),
+        ]);
+        nodes.extend(extra.iter().map(|(k, v)| (k.to_string(), *v)));
+        let tree = Tree {
+            nodes,
+            children: HashMap::from([
+                ("page".into(), vec!["inst".into()]),
+                ("1:1".into(), vec![long]),
+                ("2:2".into(), inner_children),
+            ]),
+            blobs: Vec::new(),
+        };
+        bounded(&tree, "page", 1 << 20, bytes)
+    }
+
+    #[test]
+    fn a_bounded_expansion_charges_the_prefix_nested_overrides_copy() {
+        // Each of 1,000 override or derived entries copies the 2 kB key prefix when merged.
+        let entries: Vec<Value> = (0..1000)
             .map(|i| {
                 obj(vec![
                     (
@@ -1472,36 +1554,68 @@ mod tests {
                 ])
             })
             .collect();
+        let symbol = |extra: Vec<(&'static str, Value<'static>)>| {
+            let mut fields = vec![("symbolID", guid(2, 2))];
+            fields.extend(extra);
+            obj(fields)
+        };
+        for nested in [
+            obj(vec![
+                ("type", Value::Enum("NodeType", "INSTANCE")),
+                (
+                    "symbolData",
+                    symbol(vec![("symbolOverrides", Value::Array(entries.clone()))]),
+                ),
+            ]),
+            obj(vec![
+                ("type", Value::Enum("NodeType", "INSTANCE")),
+                ("symbolData", symbol(vec![])),
+                ("derivedSymbolData", Value::Array(entries.clone())),
+            ]),
+        ] {
+            let (ex, bounds) = under_long_key(&nested, &[], Vec::new(), 1_500_000);
+            assert_eq!((bounds.stop, ex.nodes.len()), (Some(Stop::Bytes), 1));
+            assert_eq!(
+                under_long_key(&nested, &[], Vec::new(), 8 << 20).1.stop,
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn a_bounded_expansion_charges_the_keys_property_binding_builds() {
+        // Binding one assignment writes the 2 kB prefix into a key for each of 1,000 layers.
         let nested = obj(vec![
             ("type", Value::Enum("NodeType", "INSTANCE")),
+            ("symbolData", obj(vec![("symbolID", guid(2, 2))])),
             (
-                "symbolData",
-                obj(vec![
-                    ("symbolID", guid(2, 2)),
-                    ("symbolOverrides", Value::Array(overrides)),
-                ]),
+                "componentPropAssignments",
+                Value::Array(vec![obj(vec![
+                    ("defID", guid(3, 1)),
+                    ("value", obj(vec![("boolValue", Value::Bool(false))])),
+                ])]),
             ),
         ]);
-        let long = "n".repeat(2000);
-        let (page, outer, inner) = (obj(vec![]), obj(vec![]), obj(vec![]));
-        let tree = Tree {
-            nodes: HashMap::from([
-                ("page".into(), &page),
-                ("inst".into(), &inst),
-                ("1:1".into(), &outer),
-                ("2:2".into(), &inner),
-                (long.clone(), &nested),
-            ]),
-            children: HashMap::from([
-                ("page".into(), vec!["inst".into()]),
-                ("1:1".into(), vec![long]),
-            ]),
-            blobs: Vec::new(),
-        };
-        let (_, bounds) = bounded(&tree, "page", 1 << 20, 1_500_000);
-        assert_eq!(bounds.stop, Some(Stop::Bytes));
-        let (_, bounds) = bounded(&tree, "page", 1 << 20, 8 << 20);
-        assert_eq!(bounds.stop, None);
+        let layer = obj(vec![
+            ("type", Value::Enum("NodeType", "FRAME")),
+            (
+                "componentPropRefs",
+                Value::Array(vec![obj(vec![
+                    ("defID", guid(3, 1)),
+                    ("componentPropNodeField", Value::Enum("Field", "VISIBLE")),
+                ])]),
+            ),
+        ]);
+        let kids: Vec<String> = (0..1000).map(|i| format!("k{i}")).collect();
+        let extra: Vec<(&str, &Value)> = kids.iter().map(|k| (k.as_str(), &layer)).collect();
+        let (ex, bounds) = under_long_key(&nested, &extra, kids.clone(), 1_500_000);
+        assert_eq!((bounds.stop, ex.nodes.len()), (Some(Stop::Bytes), 1));
+        assert_eq!(
+            under_long_key(&nested, &extra, kids.clone(), 16 << 20)
+                .1
+                .stop,
+            None
+        );
     }
 
     #[test]
