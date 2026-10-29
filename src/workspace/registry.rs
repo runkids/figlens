@@ -104,7 +104,7 @@ pub(super) fn initialize_held(held: Held, place: &Place) -> Result<(Opened, bool
 
 /// The `index prepare` call that (re)creates the workspace `locator` names, as a next step:
 /// its own file for a source-scoped workspace, any of its files for a project one.
-fn prepare_step(locator: Option<&Locator>, why: &str) -> Json {
+pub(super) fn prepare_step(locator: Option<&Locator>, why: &str) -> Json {
     let arguments = match locator {
         Some(Locator::Source(file)) => json!({"action": "prepare", "file": file}),
         Some(Locator::Project(dir)) => {

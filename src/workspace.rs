@@ -122,8 +122,15 @@ fn storage_error(path: &Path, error: std::io::Error) -> Box<dyn Error> {
     }
 }
 
-/// `e` with the config root named in each storage recovery action, so a host can ask for access
-/// to it (recreation writes the location record there) before running it.
+/// A recovery action for the workspace at `dir`, so a host can authorize that placement.
+fn placed(mut action: Json, dir: &Path) -> Json {
+    action["path"] = json!(dir);
+    action
+}
+
+/// `e` with the config root named in each storage or placed workspace recovery action, so a
+/// host can ask for access to it (recreation writes the location record there) before running
+/// it. A caller confined to roots is not offered a reset, which it cannot run.
 pub fn rooted(storage: &Storage, e: Box<dyn Error>) -> Box<dyn Error> {
     let Some(fig) = e.downcast_ref::<FigError>() else {
         return e;
@@ -137,13 +144,14 @@ pub fn rooted(storage: &Storage, e: Box<dyn Error>) -> Box<dyn Error> {
         matches!(
             a["action"].as_str(),
             Some("restore_access" | "restore_storage" | "recreate_elsewhere")
-        )
+        ) || (matches!(a["action"].as_str(), Some("prepare" | "reset")) && a.get("path").is_some())
     };
     if !actions.iter().any(storage_action) {
         return e;
     }
     let actions: Vec<Json> = actions
         .iter()
+        .filter(|a| storage.visible.is_none() || a["action"] != "reset")
         .map(|a| {
             let mut a = a.clone();
             if storage_action(&a) {

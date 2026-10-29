@@ -104,7 +104,7 @@ pub(super) fn contents(conn: &Connection, path: &Path, held: &Held) -> Result<Op
         };
     }
     if !(1..=SCHEMA).contains(&version) {
-        return Err(incompatible(path, version));
+        return Err(incompatible(path, version, held));
     }
     let found = Locator::parse(&json!({
         "kind": meta(conn, "locator_kind").map_err(sql)?,
@@ -151,10 +151,7 @@ pub(super) fn damaged(path: &Path, id: &str, error: Box<dyn Error>) -> Box<dyn E
     }
     let recovery = match owner_of(path, id) {
         Some(false) => return error,
-        Some(true) => json!([{"action": "reset", "requires": "user_confirmation",
-            "tool": "index", "arguments": {"action": "reset", "workspaceId": id},
-            "effects": {"removes": "this workspace's database: registry, jobs and indexes",
-                "keeps": ".fig sources, .figlens/, exports and other workspaces"}}]),
+        Some(true) => json!([reset_action(id)]),
         None => json!([recreate_elsewhere()]),
     };
     FigError::new(
@@ -168,8 +165,17 @@ pub(super) fn damaged(path: &Path, id: &str, error: Box<dyn Error>) -> Box<dyn E
     .into()
 }
 
-/// A newer schema: only the figlens that wrote it can read it, so nothing is offered as safe here.
-pub(super) fn incompatible(path: &Path, version: i64) -> Box<dyn Error> {
+/// The explicit reset of workspace `id`, after the user confirms it.
+pub(super) fn reset_action(id: &str) -> Json {
+    json!({"action": "reset", "requires": "user_confirmation",
+        "tool": "index", "arguments": {"action": "reset", "workspaceId": id},
+        "effects": {"removes": "this workspace's database: registry, jobs and indexes",
+            "keeps": ".fig sources, .figlens/, exports and other workspaces"}})
+}
+
+/// A newer schema: only the figlens that wrote it can read it, so nothing is offered as safe
+/// here; an explicit reset is the confirmed alternative when its ownership record names `held`.
+pub(super) fn incompatible(path: &Path, version: i64, held: &Held) -> Box<dyn Error> {
     FigError::new(
         ErrorKind::IndexIncompatible,
         format!(
@@ -177,8 +183,14 @@ pub(super) fn incompatible(path: &Path, version: i64) -> Box<dyn Error> {
             path.display()
         ),
     )
-    .with_recovery(json!([{"action": "use_writer_version", "requires": "none",
-        "detail": format!("run the figlens version that wrote schema {version}")}]))
+    .with_recovery({
+        let mut actions = vec![json!({"action": "use_writer_version", "requires": "none",
+            "detail": format!("run the figlens version that wrote schema {version}")})];
+        if owner_of(path, &held.id) == Some(true) {
+            actions.push(placed(reset_action(&held.id), &held.dir));
+        }
+        json!(actions)
+    })
     .into()
 }
 

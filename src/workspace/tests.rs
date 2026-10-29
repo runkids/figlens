@@ -1118,3 +1118,87 @@ fn a_denied_storage_offers_restore_access_naming_the_path_and_roots() {
         )
     );
 }
+
+#[test]
+fn a_missing_lock_or_newer_schema_offers_placed_prepare_and_reset_with_the_config_root() {
+    let f = Fixture::new();
+    let fig = f.fig("a.fig");
+    let id = id_of(&prepare(&f.storage, &fig, None).unwrap());
+    let dir = f.workspace(&id);
+    let actions = |storage: &Storage, select: &Select| {
+        let error = rooted(storage, status(storage, select).unwrap_err());
+        let fig = error.downcast_ref::<FigError>().unwrap();
+        fig.recovery()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| {
+                (
+                    a["action"].as_str().unwrap().to_owned(),
+                    a["path"].as_str().map(PathBuf::from),
+                    a["roots"]["config"]["path"].as_str().map(PathBuf::from),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let placed = |action: &str| {
+        (
+            action.to_owned(),
+            Some(dir.clone()),
+            Some(f.storage.defaults.config.path.clone()),
+        )
+    };
+    std::fs::remove_file(dir.with_extension("lock")).unwrap();
+    let source = Select::Locator(Locator::source(&fig).unwrap());
+    let missing = actions(&f.storage, &source);
+    let confined = f.storage.clone().confined(&[f.dir.join("")]);
+    let missing_confined = actions(&confined, &source);
+    prepare(&f.storage, &fig, None).unwrap();
+    Connection::open(dir.join(DB))
+        .unwrap()
+        .execute_batch(&format!("PRAGMA user_version = {};", SCHEMA + 1))
+        .unwrap();
+    let newer = actions(&f.storage, &Select::Id(id.clone()));
+    assert_eq!(
+        (missing, missing_confined, newer),
+        (
+            vec![placed("prepare"), placed("reset")],
+            vec![placed("prepare")],
+            vec![
+                ("use_writer_version".to_owned(), None, None),
+                placed("reset")
+            ],
+        )
+    );
+}
+
+#[test]
+fn an_unproven_workspace_offers_no_placed_reset() {
+    let f = Fixture::new();
+    let fig = f.fig("a.fig");
+    let id = id_of(&prepare(&f.storage, &fig, None).unwrap());
+    let dir = f.workspace(&id);
+    let select = Select::Id(id.clone());
+    let offered = |storage: &Storage| {
+        let error = rooted(storage, status(storage, &select).unwrap_err());
+        let fig = error.downcast_ref::<FigError>().unwrap();
+        fig.recovery()
+            .and_then(Json::as_array)
+            .is_some_and(|a| a.iter().any(|a| a["action"] == "reset"))
+    };
+    let conn = Connection::open(dir.join(DB)).unwrap();
+    conn.execute(
+        "UPDATE meta SET value = 'ws_other' WHERE key = 'workspace_id'",
+        [],
+    )
+    .unwrap();
+    conn.execute_batch(&format!("PRAGMA user_version = {};", SCHEMA + 1))
+        .unwrap();
+    drop(conn);
+    let foreign_newer = offered(&f.storage);
+    std::fs::remove_file(dir.with_extension("lock")).unwrap();
+    std::fs::remove_file(dir.join(MARKER)).unwrap();
+    let unmarked = offered(&f.storage);
+    assert_eq!((foreign_newer, unmarked), (false, false));
+}

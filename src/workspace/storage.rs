@@ -835,15 +835,27 @@ pub(super) fn acquire(state: &Path, select: &Select, exclusive: bool) -> Result<
         return Ok(None);
     }
     let lock_path = parent.join(format!("{id}.lock"));
-    let lock_file = open_lock(&lock_path, exclusive)?.ok_or_else(|| {
-        fail(
+    let Some(lock_file) = open_lock(&lock_path, exclusive)? else {
+        let missing = FigError::new(
             ErrorKind::OperationFailed,
             format!(
                 "{} is missing; `figlens index prepare` or `figlens index reset` recreates it",
                 lock_path.display()
             ),
-        )
-    })?;
+        );
+        // Placed actions only for a directory whose marker proves it is the selected workspace.
+        let marker = read_marker(&dir, &id).ok().flatten();
+        if !marker.is_some_and(|found| select.locator().is_none_or(|wanted| *wanted == found)) {
+            return Err(missing.into());
+        }
+        let mut actions = vec![placed(reset_action(&id), &dir)];
+        if let Some(locator) = select.locator() {
+            let prepare = json!({"action": "prepare", "requires": "user_confirmation",
+                "tool": "index", "arguments": registry::prepare_step(Some(locator), "")[0]["arguments"]});
+            actions.insert(0, placed(prepare, &dir));
+        }
+        return Err(missing.with_recovery(json!(actions)).into());
+    };
     lock(&lock_file, &lock_path, exclusive, &id)?;
     let locator = read_marker(&dir, &id)?
         .ok_or_else(|| preserved(&dir, "has no figlens workspace marker"))?;
