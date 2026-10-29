@@ -332,7 +332,9 @@ fn custom_storage_is_remembered_for_that_workspace_only() {
     assert_eq!(again["incarnation"], first["incarnation"]);
     let status = status(&f.storage, &Select::Id(id.clone())).unwrap();
     assert_eq!(status["state"], "initialized");
-    assert_eq!(status["storage"]["remembered"], json!(custom_root));
+    // The record keeps the canonical root (\\?\ on Windows), not the supplied spelling.
+    let canonical = std::fs::canonicalize(&custom_root).unwrap();
+    assert_eq!(status["storage"]["remembered"], json!(canonical));
     // Another workspace keeps the defaults.
     let other = prepare(&f.storage, &b, None).unwrap();
     assert_eq!(other["storage"]["rule"], "default");
