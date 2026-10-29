@@ -105,11 +105,12 @@ export function createAdapter(ctx, entry = import.meta.url) {
       combined.throwIfAborted();
       for (const resource of remaining) admitted.add(JSON.stringify([action, resource]));
     }
-    async function run(args) {
+    // A foreground index build runs until its jobs finish, so it gets no timeout of its own.
+    async function run(args, timeout = 120000) {
       const argv = [...prefix, ...args];
       if (bundled) await authorize('edit', [cacheRoot]);
       await authorize('bash', [commandLine(args)]);
-      const signal = AbortSignal.any([combined, AbortSignal.timeout(120000)]);
+      const signal = timeout ? AbortSignal.any([combined, AbortSignal.timeout(timeout)]) : combined;
       const execution = execute(command, argv, { cwd: root, detached: process.platform !== 'win32', maxBuffer: 64 * 1024 * 1024 });
       let stopping;
       const abort = () => {
@@ -252,7 +253,8 @@ export function createAdapter(ctx, entry = import.meta.url) {
   };
   async function cli(current, tool, input) {
     const invoke = async (args, text = false) => {
-      try { const { stdout } = await current.run(args); return text ? { flat: stdout } : JSON.parse(stdout); }
+      const build = args[0] === 'index' && ['prepare', 'refresh', 'rebuild'].includes(args[1]);
+      try { const { stdout } = await current.run(args, build ? 0 : undefined); return text ? { flat: stdout } : JSON.parse(stdout); }
       catch (error) {
         // The CLI explains a failure on stderr; a partial reset or failed job also prints its report.
         const text = [error.stderr, error.stdout].map(value => value?.trim()).filter(Boolean).join('\n');
@@ -267,6 +269,18 @@ export function createAdapter(ctx, entry = import.meta.url) {
     // Where the binary places this workspace: its directory, or the root a first prepare creates it under.
     const place = ({ paths, storage, roots }) => paths?.workspace ?? (storage.rule === 'default' ? roots.state.path : storage.remembered ?? input.storage);
     const missing = what => new Error(`This figlens binary does not report ${what}; update figlens to use these tools.`);
+    // A design the CLI reads honours read rules on its requested and canonical paths, as Workflow.source does.
+    if (input.file && (tool !== 'index' || ['prepare', 'add', 'relocate'].includes(input.action))) {
+      const requested = path.resolve(current.flow.root, input.file);
+      await current.authorize('read', [...new Set([requested, await realpath(requested).catch(() => requested)])]);
+    }
+    // Workspace search, refresh and rebuild read the registered designs' content, which this session may deny.
+    const readSources = async ({ sources }) => {
+      if (!Array.isArray(sources)) throw missing("a workspace's sources");
+      const paths = sources.filter(source => !input.sourceId || source.sourceId === input.sourceId).map(source => source.path);
+      await current.authorize('read', [...new Set((await Promise.all(paths.map(async file => [file, await realpath(file).catch(() => file)]))).flat())]);
+    };
+    if (tool === 'search' && !input.file) await readSources(await status(input));
     if (tool === 'jobs' && input.action === 'cancel') {
       const { workspaceId } = await invoke(cliArgs('jobs', { ...input, action: 'status' }));
       if (!workspaceId) throw missing("a job's workspace");
@@ -289,6 +303,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
           return { paths: { workspace: fix.path }, roots: fix.roots };
         });
         if (!found.roots?.config) throw missing('its config root');
+        if (['refresh', 'rebuild'].includes(input.action)) await readSources(found);
         if (grant) await current.authorize('figlens_index', [grant]);
         // Every write also takes a location lock or record under the config root (a build's publish, relocation's alias).
         await current.authorize('edit', [place(found), found.roots.config.path]);
