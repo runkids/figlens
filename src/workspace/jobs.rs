@@ -191,6 +191,27 @@ fn claim_path(dir: &Path, job_id: &str, attempt: i64) -> PathBuf {
     dir.join("claims").join(format!("{job_id}.{attempt}.lock"))
 }
 
+/// `claims/<jobId>.<attempt>.worker`, locked by that attempt's worker for its whole life.
+fn worker_path(dir: &Path, job_id: &str, attempt: i64) -> PathBuf {
+    dir.join("claims")
+        .join(format!("{job_id}.{attempt}.worker"))
+}
+
+/// Whether the worker of attempt `attempt` may still run. It outlives a dead owner until its
+/// stdin watchdog fires, or longer when stopped; unknown counts as running.
+fn worker_alive(dir: &Path, job_id: &str, attempt: i64) -> bool {
+    match File::open(worker_path(dir, job_id, attempt)) {
+        Ok(file) => match file.try_lock_shared() {
+            Ok(()) => {
+                let _ = file.unlock();
+                false
+            }
+            Err(_) => true,
+        },
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
 fn claim(dir: &Path, job_id: &str, attempt: i64) -> Result<Claim> {
     mkdir(&dir.join("claims"))?;
     let path = claim_path(dir, job_id, attempt);
@@ -336,6 +357,18 @@ fn fingerprint(kind: &str, ws: &str, source: &str, membership: &str, scope: &str
         .to_owned()
 }
 
+/// Records `request_id` for a job it joined or took over, so a retry replays that job.
+fn remember(tx: &Connection, request_id: Option<&str>, print: &str, job_id: &str) -> Result<()> {
+    if let Some(request) = request_id {
+        tx.execute(
+            "INSERT INTO requests (request_id, fingerprint, job_id) VALUES (?1, ?2, ?3)",
+            params![request, print, job_id],
+        )
+        .map_err(sql)?;
+    }
+    Ok(())
+}
+
 /// Starts or joins the build of `scope` of `source_id`. One active job per source and scope,
 /// whatever its kind: a second request joins it, and a job whose owner died is taken over as
 /// a new attempt. A `request_id` replays its first job, and refuses a different request.
@@ -372,7 +405,8 @@ pub(crate) fn submit(
     if let Some(request) = request_id {
         let found: Option<(String, String)> = tx
             .query_row(
-                "SELECT job_id, fingerprint FROM jobs WHERE request_id = ?1",
+                "SELECT job_id, fingerprint FROM jobs WHERE request_id = ?1
+                 UNION ALL SELECT job_id, fingerprint FROM requests WHERE request_id = ?1",
                 [request],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -425,10 +459,12 @@ pub(crate) fn submit(
             tx.execute(
                 "UPDATE jobs SET owner = ?2, attempt = attempt + 1, state = 'queued', stage = NULL,
                  done = 0, total = NULL, error = NULL, cancel = 0, membership = ?3, heartbeat_ms = ?4,
-                 seq = (SELECT max(seq) + 1 FROM jobs) WHERE job_id = ?1",
-                params![job_id, me, membership, now_ms()],
+                 seq = (SELECT max(seq) + 1 FROM jobs),
+                 kind = CASE WHEN ?5 = 'rebuild' THEN 'rebuild' ELSE kind END WHERE job_id = ?1",
+                params![job_id, me, membership, now_ms(), kind],
             )
             .map_err(sql)?;
+            remember(&tx, request_id, &print, &job_id)?;
             admit(tx, &dir, &job_id, attempt + 1)?;
             return Ok(Submitted {
                 job_id,
@@ -443,6 +479,7 @@ pub(crate) fn submit(
             )
             .map_err(sql)?;
         }
+        remember(&tx, request_id, &print, &job_id)?;
         tx.commit().map_err(sql)?;
         return Ok(Submitted {
             job_id,
@@ -518,6 +555,11 @@ pub(crate) fn submit(
          (SELECT job_id FROM jobs WHERE state NOT IN ('queued', 'running')
           ORDER BY created_ms DESC LIMIT ?1)",
         [KEPT],
+    )
+    .map_err(sql)?;
+    tx.execute(
+        "DELETE FROM requests WHERE job_id NOT IN (SELECT job_id FROM jobs)",
+        [],
     )
     .map_err(sql)?;
     admit(tx, &dir, &job_id, 1)?;
@@ -1316,6 +1358,17 @@ pub fn cancel(storage: &Storage, job_id: &str) -> Result<Json> {
     }
     let accepted = Instant::now();
     if !job_alive(&dir, &holder, job_id, attempt) {
+        // The dead owner's worker may still run: end the job only once it exited; until then
+        // the cancel is pending and a later cancel ends it.
+        while worker_alive(&dir, job_id, attempt) && accepted.elapsed() < CANCEL_WAIT {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if worker_alive(&dir, job_id, attempt) {
+            let report = report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id))?;
+            let mut report = out(report, "pending")?;
+            report["cancelWaitMs"] = json!(accepted.elapsed().as_millis() as u64);
+            return Ok(report);
+        }
         // Fenced to the dead owner's attempt: a takeover since the read is left running.
         let ended = ws
             .conn
@@ -1375,7 +1428,14 @@ pub fn worker(dir: &Path, job_id: &str) -> Json {
         let _ = std::io::stdin().lock().read_to_end(&mut sink);
         std::process::exit(3);
     });
-    match launch().and_then(|(me, attempt)| work(dir, job_id, &me, attempt)) {
+    match launch().and_then(|(me, attempt)| {
+        // Held until this process exits, so a cancel after the owner died waits for it.
+        let alive = open_lock(&worker_path(dir, job_id, attempt), true)?.expect("created");
+        alive
+            .lock()
+            .map_err(|e| storage_error(&worker_path(dir, job_id, attempt), e))?;
+        work(dir, job_id, &me, attempt)
+    }) {
         Ok(out) => out,
         Err(e) => {
             let code = e

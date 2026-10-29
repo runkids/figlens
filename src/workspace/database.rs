@@ -224,6 +224,9 @@ pub(crate) const V2: &str = "
         cancel INTEGER NOT NULL DEFAULT 0, gen INTEGER, created_ms INTEGER NOT NULL,
         heartbeat_ms INTEGER NOT NULL, finished_ms INTEGER, evicted TEXT,
         seq INTEGER NOT NULL DEFAULT 0) STRICT;
+    -- Further requestIds that joined or took over a job, so each replays it.
+    CREATE TABLE requests (request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
+        job_id TEXT NOT NULL) STRICT;
     -- One active build per source and scope, whatever its kind: a second request joins it.
     CREATE UNIQUE INDEX jobs_active ON jobs (source_id, scope) WHERE state IN ('queued', 'running');
     PRAGMA user_version = 2;";

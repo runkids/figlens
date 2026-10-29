@@ -720,3 +720,60 @@ fn a_reader_holding_the_wal_fails_the_build_busy_within_one_batch_of_the_thresho
         .unwrap();
     assert!(work(&dir, &job_id, &me, 2).unwrap()["gen"].is_i64());
 }
+
+#[test]
+fn a_cancel_after_the_owner_died_waits_for_its_worker_to_exit() {
+    let d = TestDir::new();
+    let (storage, _, dir) = workspace(&d, 1);
+    let conn = connection(&dir);
+    let job_id = job(&conn, &sources(&conn)[0], "0:0", "running", "dead", 1);
+    std::fs::create_dir_all(dir.join("claims")).unwrap();
+    let worker = File::create(worker_path(&dir, &job_id, 1)).unwrap();
+    worker.lock().unwrap();
+    assert_eq!(cancel(&storage, &job_id).unwrap()["cancel"], "pending");
+    drop(worker);
+    assert_eq!(cancel(&storage, &job_id).unwrap()["cancel"], "accepted");
+}
+
+#[test]
+fn a_rebuild_that_takes_over_an_interrupted_refresh_rebuilds() {
+    let d = TestDir::new();
+    let (storage, select, dir) = workspace(&d, 1);
+    let conn = connection(&dir);
+    let source = sources(&conn)[0].clone();
+    let job_id = job(&conn, &source, "0:0", "queued", "dead", 1);
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    let Ok(taken) = submit(&storage, &mut ws, "rebuild", &source, "0:0", None) else {
+        panic!("not taken over");
+    };
+    assert_eq!(
+        (taken.job_id.as_str(), kind_of(&conn, &job_id).as_str()),
+        (job_id.as_str(), "rebuild")
+    );
+}
+
+#[test]
+fn a_request_id_that_joined_a_job_replays_it_after_the_job_ended() {
+    let d = TestDir::new();
+    let (storage, select, dir) = workspace(&d, 1);
+    let first = queued(&storage, &select, "0:0");
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    let source = sources(&ws.conn)[0].clone();
+    let Ok(_) = submit(&storage, &mut ws, "refresh", &source, "0:0", Some("r1")) else {
+        panic!("not joined");
+    };
+    connection(&dir)
+        .execute("UPDATE jobs SET state = 'succeeded'", [])
+        .unwrap();
+    let Ok(again) = submit(&storage, &mut ws, "refresh", &source, "0:0", Some("r1")) else {
+        panic!("not replayed");
+    };
+    assert_eq!(again.job_id, first);
+}
+
+fn kind_of(conn: &Connection, job_id: &str) -> String {
+    conn.query_row("SELECT kind FROM jobs WHERE job_id = ?1", [job_id], |r| {
+        r.get(0)
+    })
+    .unwrap()
+}

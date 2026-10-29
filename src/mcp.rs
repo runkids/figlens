@@ -55,6 +55,17 @@ fn bounded_response(value: Value) -> Value {
     }
 }
 
+/// The writer's queue. Each reply is bounded before it waits there, so a stalled stdout holds
+/// at most `WRITER_QUEUE` replies within the response budget, never complete oversized ones.
+#[derive(Clone)]
+struct Writer(mpsc::SyncSender<Value>);
+
+impl Writer {
+    fn send(&self, value: Value) {
+        let _ = self.0.send(bounded_response(value));
+    }
+}
+
 /// The next request line, parsed: no path, file or storage is touched here.
 fn next_request(input: &mut impl BufRead, roots: &[PathBuf]) -> std::io::Result<Option<Admission>> {
     loop {
@@ -537,7 +548,8 @@ pub fn serve_with(
 ) -> Result<(), Box<dyn Error>> {
     // Bounded: when stdout is slow, replies wait here and then the reader stops reading input,
     // so memory stays at this many capped replies.
-    let (to_writer, replies) = mpsc::sync_channel::<Value>(WRITER_QUEUE);
+    let (sender, replies) = mpsc::sync_channel::<Value>(WRITER_QUEUE);
+    let to_writer = Writer(sender);
     let stop = AtomicBool::new(false);
     let pending = Pending::default();
     let builds = std::sync::atomic::AtomicUsize::new(0);
@@ -565,7 +577,7 @@ pub fn serve_with(
                         && submits(&req)
                         && builds.load(Ordering::SeqCst) >= BUILD_QUEUE
                     {
-                        let _ = out.send(busy(&req["id"]));
+                        out.send(busy(&req["id"]));
                         continue;
                     }
                     match admit_value(req, roots) {
@@ -575,10 +587,10 @@ pub fn serve_with(
                                 builds.fetch_add(1, Ordering::SeqCst);
                                 let _ = build.send(runs);
                             }
-                            let _ = out.send(reply);
+                            out.send(reply);
                         }
                         Admission::Reply(reply) => {
-                            let _ = out.send(reply);
+                            out.send(reply);
                         }
                         _ => {}
                     }
@@ -617,7 +629,7 @@ pub fn serve_with(
             interactive_loop(
                 next,
                 |value| {
-                    let _ = out.send(value);
+                    out.send(value);
                 },
                 roots,
                 storage_roots,
@@ -636,18 +648,14 @@ pub fn serve_with(
                     Ok(Some(request)) => request,
                     Ok(None) => break,
                     Err(e) => {
-                        let _ = reader.send(protocol(
-                            Value::Null,
-                            -32700,
-                            &format!("input failed: {e}"),
-                        ));
+                        reader.send(protocol(Value::Null, -32700, &format!("input failed: {e}")));
                         break;
                     }
                 };
                 match request {
                     // Protocol replies never wait behind a lane, so ping stays responsive.
                     Admission::Reply(reply) => {
-                        let _ = reader.send(reply);
+                        reader.send(reply);
                     }
                     Admission::Cancel(id) => {
                         if let Some(cancelled) = pending.lock().unwrap().get_mut(&id.to_string()) {
@@ -670,7 +678,7 @@ pub fn serve_with(
                         };
                         if full {
                             pending.lock().unwrap().remove(&id.to_string());
-                            let _ = reader.send(busy(&id));
+                            reader.send(busy(&id));
                         }
                     }
                     _ => {}
@@ -679,14 +687,13 @@ pub fn serve_with(
             stop.store(true, Ordering::Relaxed);
         });
         drop(to_writer);
-        // Writer: every reply, bounded, in completion order. After a write error the rest is
+        // Writer: every reply, already bounded, in completion order. After a write error the rest is
         // drained so the lanes can finish.
         let mut failed = None;
         for value in replies {
             if failed.is_some() {
                 continue;
             }
-            let value = bounded_response(value);
             if let Err(e) = writeln!(output, "{value}").and_then(|_| output.flush()) {
                 failed = Some(e);
             }
@@ -819,6 +826,15 @@ mod tests {
             Admission::Call(call) => call.execute(None, roots, &[]),
             _ => panic!("expected reply"),
         }
+    }
+
+    #[test]
+    fn an_oversized_reply_is_bounded_before_it_waits_for_the_writer() {
+        let (sender, replies) = mpsc::sync_channel(1);
+        let text = "x".repeat(9 << 20);
+        Writer(sender).send(serde_json::json!({"jsonrpc": "2.0", "id": 1,
+            "result": {"content": [{"type": "text", "text": text}], "isError": false}}));
+        assert!(replies.recv().unwrap().to_string().len() < 1 << 20);
     }
 
     #[test]
