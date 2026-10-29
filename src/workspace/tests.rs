@@ -310,6 +310,30 @@ fn a_removed_remembered_storage_is_recreated_by_another_spelling_of_it() {
     assert!(root.join("state").is_dir(), "{report}");
 }
 
+#[cfg(unix)]
+#[test]
+fn a_fifo_source_is_refused_without_blocking() {
+    let f = Fixture::new();
+    let fifo = f.dir.join("pipe.fig");
+    let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+    assert!(
+        made.is_ok_and(|s| s.success()),
+        "mkfifo is needed for this test"
+    );
+    let storage = Fixture::at(&f.home, None);
+    let (sent, received) = std::sync::mpsc::channel();
+    let path = fifo.clone();
+    std::thread::spawn(move || {
+        let _ = sent.send(prepare(&storage, &path, None).map_err(|e| e.to_string()));
+    });
+    let result = received
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("prepare blocked on a FIFO source");
+    let error = result.unwrap_err();
+    assert!(error.contains("not a regular .fig file"), "{error}");
+    assert!(!f.storage.defaults.state.path.exists());
+}
+
 #[test]
 fn custom_storage_is_remembered_for_that_workspace_only() {
     let f = Fixture::new();

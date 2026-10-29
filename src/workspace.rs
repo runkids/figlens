@@ -479,16 +479,23 @@ fn readable(file: &Path) -> Result<PathBuf> {
         )
     };
     let path = std::fs::canonicalize(file).map_err(source)?;
-    if !File::open(&path)
-        .and_then(|f| f.metadata())
-        .map_err(source)?
-        .is_file()
-    {
-        return Err(fail(
-            ErrorKind::SourceUnreadable,
-            format!("{} is not a regular .fig file", file.display()),
-        ));
-    }
+    let regular = |meta: std::fs::Metadata| {
+        if meta.is_file() {
+            Ok(())
+        } else {
+            Err(fail(
+                ErrorKind::SourceUnreadable,
+                format!("{} is not a regular .fig file", file.display()),
+            ))
+        }
+    };
+    // Checked before opening too: opening a FIFO or device can block indefinitely.
+    regular(std::fs::metadata(&path).map_err(source)?)?;
+    regular(
+        File::open(&path)
+            .and_then(|f| f.metadata())
+            .map_err(source)?,
+    )?;
     Ok(path)
 }
 

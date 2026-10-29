@@ -25,6 +25,7 @@ A workspace is `<state>/workspaces/<workspaceId>/` holding `workspace.json` (the
 
 - `workspaceId` is `ws_` plus 16 hex digits of SHA-256 over the locator kind and canonical path: a `--workspace` project directory, or the `.fig` itself for a source-scoped workspace. The marker, the remembered location and the database `meta` table keep the full locator, so an id collision is refused instead of reused.
 - `sourceId` starts as `search::source_id` of the canonical source path, the id stateless `search` derives. `relocate` keeps the registered id, while stateless `search` still derives one from the current path, so after a relocate the two differ until search reads the workspace.
+- A source (prepare, add, relocate, `--file`) must be a readable regular file, checked by metadata before it is opened, so a FIFO or device is refused instead of blocking.
 - Writes go through the canonical root and real directories only: a symlinked `workspaces/` (under state or config, so location records and their lock are never read or written through a link; the root itself may be an alias) or workspace directory, a source inside any figlens root (default or placed), or an unwritable root fails with the path named. Nothing falls back to another directory. Only a missing root reads as absent; any other error keeps its path and kind.
 - Every open, read-only included, first refuses an `index.sqlite`, `-wal`, `-shm` or `-journal` that is not a plain file or has another hard link (`nlink`, or `GetFileInformationByHandle` on Windows): SQLite writes through such a link, so a `.fig` linked there would be overwritten. Reset refuses it too; remove the other link to recover.
 - A directory is figlens-owned only when its marker names its id. `prepare` takes the lock beside the directory first, then creates the directory and writes its marker, so a concurrent prepare never sees an unmarked one. An empty directory, or one holding only an unfinished `workspace.json.part`, is claimed, so an interrupted prepare can be retried. Any other directory without the marker, or a database without this workspace's `meta`, is left as found and reported. A missing lock file beside an owned directory is an error until `prepare` or `reset` recreates it.
@@ -76,6 +77,7 @@ Not exposed yet: `rebuild`, `refresh` and `clear_cache` (no derived index or cac
 - status creating nothing
 - reset refused while a reader holds the lock, then a reset and re-prepare with a new incarnation
 - unmarked, colliding, foreign and newer-schema directories preserved
+- a FIFO source refused promptly, with no state created
 - a public-fixture source hard-linked as the WAL, refused with its bytes unchanged (without the guard, an add rewrote it)
 - an injected location-write failure that leaves no database, and a prepare that fails after remembering its place, then succeeds there without `--storage`
 - symlinked roots, state and config `workspaces/` and workspace directories, config and state sharing one root, a source inside storage, unwritable storage and a claimed empty directory
