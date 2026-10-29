@@ -713,9 +713,12 @@ pub fn workspace_search_tool(
 ) -> Result<Output, Box<dyn Error>> {
     let storage = tool_storage(call, roots, storage_roots)?;
     let select = figlens::workspace::Select::Id(call.string("workspaceId").unwrap().to_owned());
-    let only: Vec<String> = call.string("sourceId").map(str::to_owned).into_iter().collect();
-    let value =
-        figlens::workspace::query::search(&storage, &select, &only, &search_tool(call)?)?;
+    let only: Vec<String> = call
+        .string("sourceId")
+        .map(str::to_owned)
+        .into_iter()
+        .collect();
+    let value = figlens::workspace::query::search(&storage, &select, &only, &search_tool(call)?)?;
     Ok(Output::Json {
         value,
         pretty: false,
@@ -774,7 +777,11 @@ pub fn index_tool(
     // The file is the source itself for prepare, add and relocate, and a selector otherwise.
     let source_action = matches!(action, "prepare" | "add" | "relocate");
     let select = Select::from_choice(project, file.filter(|_| !source_action), id)?;
-    let chosen = || select.clone().ok_or_else(|| missing("workspace, workspaceId or file"));
+    let chosen = || {
+        select
+            .clone()
+            .ok_or_else(|| missing("workspace, workspaceId or file"))
+    };
     let unexpected = (scope.is_some() && !matches!(action, "prepare" | "refresh"))
         || (request.is_some() && !matches!(action, "prepare" | "refresh" | "rebuild"))
         || (call.argument("replaceUnavailable") == true && action != "prepare")
@@ -790,24 +797,32 @@ pub fn index_tool(
     let value = match action {
         "prepare" => {
             if id.is_some() {
-                return Err(missing("file (and workspace for a project), not workspaceId"));
+                return Err(missing(
+                    "file (and workspace for a project), not workspaceId",
+                ));
             }
             let options = PrepareOptions {
                 scope: scope.as_deref(),
                 request_id: request,
                 replace_unavailable: call.argument("replaceUnavailable") == true,
             };
-            let done =
-                workspace::prepare(&storage, file.ok_or_else(|| missing("file"))?, project, options)?;
+            let done = workspace::prepare(
+                &storage,
+                file.ok_or_else(|| missing("file"))?,
+                project,
+                options,
+            )?;
             let value = done.report.clone();
             outcome = Some(done);
             value
         }
         "status" => workspace::status(&storage, &chosen()?)?,
         "add" => workspace::add(&storage, &chosen()?, file.ok_or_else(|| missing("file"))?)?,
-        "remove" => {
-            workspace::remove(&storage, &chosen()?, source_id.ok_or_else(|| missing("sourceId"))?)?
-        }
+        "remove" => workspace::remove(
+            &storage,
+            &chosen()?,
+            source_id.ok_or_else(|| missing("sourceId"))?,
+        )?,
         "relocate" => workspace::relocate(
             &storage,
             &chosen()?,

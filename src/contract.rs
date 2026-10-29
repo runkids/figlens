@@ -359,18 +359,8 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
         "jobs",
         "Status or cancellation of an index job. status reports state (queued, running, succeeded, failed, cancelled, interrupted), stage, progress and the error or published generation; cancel stops the build and its worker process before reporting cancelled, and a job already publishing finishes (too_late). Responds while builds and searches run.",
         &[
-            (
-                "action",
-                "string",
-                true,
-                "status or cancel",
-            ),
-            (
-                "jobId",
-                "string",
-                true,
-                "the jobId from an index reply",
-            ),
+            ("action", "string", true, "status or cancel"),
+            ("jobId", "string", true, "the jobId from an index reply"),
             STORAGE,
         ],
     ),
@@ -578,7 +568,17 @@ pub fn property(tool: &str, param: &Param) -> Value {
         p["enum"] = json!(crate::workflow::TOPICS);
     }
     if tool == "index" && key == "action" {
-        p["enum"] = json!(["prepare", "status", "add", "remove", "relocate", "refresh", "rebuild", "clear_cache", "reset"]);
+        p["enum"] = json!([
+            "prepare",
+            "status",
+            "add",
+            "remove",
+            "relocate",
+            "refresh",
+            "rebuild",
+            "clear_cache",
+            "reset"
+        ]);
     }
     if tool == "jobs" && key == "action" {
         p["enum"] = json!(["status", "cancel"]);

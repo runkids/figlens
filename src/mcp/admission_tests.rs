@@ -245,7 +245,9 @@ fn cache_carries_prepared_calls_once_and_recovers_from_source_changes() {
             ),
             (
                 request(5, &file),
-                Some(Box::new(|| LOADS.with(|n| assert_eq!(n.get(), 1))) as Box<dyn FnOnce() + Send>),
+                Some(
+                    Box::new(|| LOADS.with(|n| assert_eq!(n.get(), 1))) as Box<dyn FnOnce() + Send>
+                ),
             ),
             (
                 request(6, &file),

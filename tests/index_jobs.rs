@@ -84,7 +84,10 @@ impl Env {
 fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
     let start = Instant::now();
     while !done() {
-        assert!(start.elapsed() < Duration::from_secs(30), "timed out: {what}");
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "timed out: {what}"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
 }
@@ -96,11 +99,9 @@ fn active_job(env: &Env, file: &Path, stage: &str) -> String {
         let status = env.json(&["index", "status", "--file", file.to_str().unwrap()]);
         let ws = status["workspaceId"].as_str().unwrap().to_owned();
         let db = PathBuf::from(status["paths"]["database"].as_str().unwrap());
-        let conn = rusqlite::Connection::open_with_flags(
-            db,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .unwrap();
+        let conn =
+            rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
         let row: Option<(String, Option<String>)> = conn
             .query_row(
                 "SELECT job_id, stage FROM jobs WHERE state IN ('queued', 'running')",
@@ -120,10 +121,13 @@ fn active_job(env: &Env, file: &Path, stage: &str) -> String {
 }
 
 fn worker_running(job: &str) -> bool {
-    let out = Command::new("ps").args(["-eo", "stat=,args="]).output().unwrap();
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .any(|l| l.contains("__index-worker") && l.contains(job) && !l.trim_start().starts_with('Z'))
+    let out = Command::new("ps")
+        .args(["-eo", "stat=,args="])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).lines().any(|l| {
+        l.contains("__index-worker") && l.contains(job) && !l.trim_start().starts_with('Z')
+    })
 }
 
 fn ids(reply: &Value) -> Vec<&str> {
@@ -140,8 +144,8 @@ fn a_prepared_scope_searches_like_the_stateless_search_and_survives_a_rebuild() 
     let env = Env::new();
     let fig = env.fig("a.fig");
     let file = fig.to_str().unwrap();
-    let before = env.json(&["search", "--file", file, "first"]);
-    assert_eq!(before["state"], "not_prepared");
+    let before = env.run(&["search", "--file", file, "first"]);
+    assert!(String::from_utf8_lossy(&before.stderr).contains("is not prepared"));
     let prepared = env.json(&["index", "prepare", file, "--scope", "0:0"]);
     assert_eq!(prepared["job"]["state"], "succeeded");
     let stateless = env.json(&["search", file, "first"]);
@@ -152,20 +156,72 @@ fn a_prepared_scope_searches_like_the_stateless_search_and_survives_a_rebuild() 
     assert_eq!(indexed["coverage"]["complete"], true);
     let rebuilt = env.json(&["index", "rebuild", "--file", file]);
     assert_eq!(rebuilt["jobs"][0]["state"], "succeeded");
-    assert_ne!(rebuilt["jobs"][0]["generation"], prepared["job"]["generation"]);
-    assert_eq!(ids(&env.json(&["search", "--file", file, "first"])), ids(&stateless));
+    assert_ne!(
+        rebuilt["jobs"][0]["generation"],
+        prepared["job"]["generation"]
+    );
+    assert_eq!(
+        ids(&env.json(&["search", "--file", file, "first"])),
+        ids(&stateless)
+    );
 }
 
 #[test]
-fn a_cursor_over_a_replaced_generation_is_stale() {
+fn two_sources_rank_as_one_corpus_and_a_cursor_over_a_replaced_generation_is_stale() {
     let env = Env::new();
-    let fig = env.fig("a.fig");
-    let file = fig.to_str().unwrap();
-    env.json(&["index", "prepare", file, "--scope", "0:0"]);
-    let page = env.json(&["search", "--file", file, "first", "--limit", "1"]);
-    let cursor = page["nextCursor"].as_str().expect("a second page").to_owned();
-    env.json(&["index", "rebuild", "--file", file]);
-    let out = env.run(&["search", "--file", file, "first", "--limit", "1", "--cursor", &cursor]);
+    let project = env.dir.join("project");
+    std::fs::create_dir(&project).unwrap();
+    let dir = std::fs::canonicalize(project).unwrap();
+    let dir = dir.to_str().unwrap();
+    for name in ["a.fig", "b.fig"] {
+        let fig = env.fig(name);
+        env.json(&[
+            "index",
+            "prepare",
+            fig.to_str().unwrap(),
+            "--workspace",
+            dir,
+            "--scope",
+            "0:0",
+        ]);
+    }
+    let all = env.json(&["search", "--workspace", dir, "first"]);
+    let sources: Vec<&Value> = all["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| &r["ref"]["sourceId"])
+        .collect();
+    assert_eq!(sources.len(), 2);
+    assert_ne!(sources[0], sources[1]);
+    let page = env.json(&["search", "--workspace", dir, "first", "--limit", "1"]);
+    assert_eq!(page["results"][0]["ref"], all["results"][0]["ref"]);
+    let cursor = page["nextCursor"]
+        .as_str()
+        .expect("a second page")
+        .to_owned();
+    let next = env.json(&[
+        "search",
+        "--workspace",
+        dir,
+        "first",
+        "--limit",
+        "1",
+        "--cursor",
+        &cursor,
+    ]);
+    assert_eq!(next["results"][0]["ref"], all["results"][1]["ref"]);
+    env.json(&["index", "rebuild", "--workspace", dir]);
+    let out = env.run(&[
+        "search",
+        "--workspace",
+        dir,
+        "first",
+        "--limit",
+        "1",
+        "--cursor",
+        &cursor,
+    ]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("search again without cursor"));
 }
@@ -207,7 +263,10 @@ fn a_dead_owner_leaves_an_interrupted_job_whose_worker_exits_and_a_refresh_retri
     let file = fig.to_str().unwrap();
     env.json(&["index", "prepare", file]);
     let gate = env.gate("parse.hold");
-    let mut owner = env.spawn(&["index", "prepare", file, "--scope", "0:0"], Some(("parse", &gate)));
+    let mut owner = env.spawn(
+        &["index", "prepare", file, "--scope", "0:0"],
+        Some(("parse", &gate)),
+    );
     let job = active_job(&env, &fig, "parse");
     owner.kill().unwrap();
     owner.wait().unwrap();
@@ -217,7 +276,10 @@ fn a_dead_owner_leaves_an_interrupted_job_whose_worker_exits_and_a_refresh_retri
     std::fs::remove_file(&gate).unwrap();
     let retried = env.json(&["index", "refresh", "--file", file, "--scope", "0:0"]);
     assert_eq!(retried["jobs"][0]["state"], "succeeded");
-    assert_eq!(env.json(&["search", "--file", file, "first"])["state"], "ready");
+    assert_eq!(
+        env.json(&["search", "--file", file, "first"])["state"],
+        "ready"
+    );
 }
 
 #[test]
@@ -227,7 +289,10 @@ fn concurrent_prepares_of_one_scope_share_one_job() {
     let file = fig.to_str().unwrap();
     env.json(&["index", "prepare", file]);
     let gate = env.gate("parse.hold");
-    let first = env.spawn(&["index", "prepare", file, "--scope", "0:0"], Some(("parse", &gate)));
+    let first = env.spawn(
+        &["index", "prepare", file, "--scope", "0:0"],
+        Some(("parse", &gate)),
+    );
     let job = active_job(&env, &fig, "parse");
     let second = env.spawn(&["index", "prepare", file, "--scope", "0:0"], None);
     std::thread::sleep(Duration::from_millis(300));
@@ -236,7 +301,11 @@ fn concurrent_prepares_of_one_scope_share_one_job() {
         .into_iter()
         .map(|c| {
             let out = c.wait_with_output().unwrap();
-            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             serde_json::from_slice(&out.stdout).unwrap()
         })
         .collect();
@@ -258,15 +327,24 @@ fn a_source_removed_and_added_during_a_build_is_not_published_by_that_build() {
     let source = prepared["source"]["sourceId"].as_str().unwrap().to_owned();
     let gate = env.gate("write.hold");
     let owner = env.spawn(
-        &["index", "prepare", file, "--workspace", dir, "--scope", "0:0"],
+        &[
+            "index",
+            "prepare",
+            file,
+            "--workspace",
+            dir,
+            "--scope",
+            "0:0",
+        ],
         Some(("write", &gate)),
     );
     let mut job = String::new();
     wait_for("the build to reach write", || {
         let status = env.json(&["index", "status", "--workspace", dir]);
         let db = status["paths"]["database"].as_str().unwrap().to_owned();
-        let conn = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .unwrap();
+        let conn =
+            rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
         conn.query_row(
             "SELECT job_id FROM jobs WHERE stage = 'write' AND state = 'running'",
             [],
@@ -301,7 +379,11 @@ impl Mcp {
             .spawn()
             .unwrap();
         let lines = BufReader::new(child.stdout.take().unwrap());
-        Self { child, lines, next: 0 }
+        Self {
+            child,
+            lines,
+            next: 0,
+        }
     }
 
     fn call(&mut self, tool: &str, arguments: Value) -> Value {
@@ -345,11 +427,24 @@ fn mcp_builds_in_the_background_and_answers_status_and_search_meanwhile() {
         .spawn()
         .unwrap();
     let lines = BufReader::new(child.stdout.take().unwrap());
-    mcp = Mcp { child, lines, next: 0 };
-    let started = mcp.call("index", json!({"action": "prepare", "file": file, "scope": "0:0"}));
+    mcp = Mcp {
+        child,
+        lines,
+        next: 0,
+    };
+    let started = mcp.call(
+        "index",
+        json!({"action": "prepare", "file": file, "scope": "0:0"}),
+    );
     assert_eq!(started["isError"], false, "{started}");
-    let job = started["structuredContent"]["job"]["jobId"].as_str().unwrap().to_owned();
-    let ws = started["structuredContent"]["workspaceId"].as_str().unwrap().to_owned();
+    let job = started["structuredContent"]["job"]["jobId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let ws = started["structuredContent"]["workspaceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     wait_for("the build to start", || {
         mcp.call("jobs", json!({"action": "status", "jobId": job}))["structuredContent"]["stage"]
             == "parse"
@@ -359,11 +454,20 @@ fn mcp_builds_in_the_background_and_answers_status_and_search_meanwhile() {
     let start = Instant::now();
     let cancelled = mcp.call("jobs", json!({"action": "cancel", "jobId": job}));
     assert!(start.elapsed() < Duration::from_millis(2500));
-    assert_eq!(cancelled["structuredContent"]["state"], "cancelled", "{cancelled}");
+    assert_eq!(
+        cancelled["structuredContent"]["state"], "cancelled",
+        "{cancelled}"
+    );
     assert!(!worker_running(&job));
     std::fs::remove_file(&gate).unwrap();
-    let again = mcp.call("index", json!({"action": "refresh", "workspaceId": ws, "scope": "0:0"}));
-    let job = again["structuredContent"]["jobs"][0]["jobId"].as_str().unwrap().to_owned();
+    let again = mcp.call(
+        "index",
+        json!({"action": "refresh", "workspaceId": ws, "scope": "0:0"}),
+    );
+    let job = again["structuredContent"]["jobs"][0]["jobId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     wait_for("the refresh to finish", || {
         mcp.call("jobs", json!({"action": "status", "jobId": job}))["structuredContent"]["state"]
             == "succeeded"
@@ -390,18 +494,49 @@ fn mcp_roots_hide_sources_jobs_and_counts_outside_them() {
     };
     let (seen, hidden) = (copy(&inside), copy(&outside));
     let dir = project.to_str().unwrap();
-    env.json(&["index", "prepare", seen.to_str().unwrap(), "--workspace", dir, "--scope", "0:0"]);
-    let other = env.json(&["index", "prepare", hidden.to_str().unwrap(), "--workspace", dir, "--scope", "0:0"]);
+    env.json(&[
+        "index",
+        "prepare",
+        seen.to_str().unwrap(),
+        "--workspace",
+        dir,
+        "--scope",
+        "0:0",
+    ]);
+    let other = env.json(&[
+        "index",
+        "prepare",
+        hidden.to_str().unwrap(),
+        "--workspace",
+        dir,
+        "--scope",
+        "0:0",
+    ]);
     let hidden_job = other["job"]["jobId"].as_str().unwrap().to_owned();
     let ws = other["workspaceId"].as_str().unwrap().to_owned();
     let root = std::fs::canonicalize(&inside).unwrap();
     let mut mcp = Mcp::start(&env, &["--root", root.to_str().unwrap()]);
     let status = mcp.call("index", json!({"action": "status", "workspaceId": ws}));
     let text = status.to_string();
-    assert!(!text.contains(outside.file_name().unwrap().to_str().unwrap()), "{text}");
-    assert_eq!(status["structuredContent"]["sources"].as_array().unwrap().len(), 1);
+    assert!(
+        !text.contains(outside.file_name().unwrap().to_str().unwrap()),
+        "{text}"
+    );
+    assert_eq!(
+        status["structuredContent"]["sources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     let search = mcp.call("search", json!({"workspaceId": ws, "query": "first"}));
-    assert_eq!(search["structuredContent"]["sources"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        search["structuredContent"]["sources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     assert!(!search.to_string().contains("/out/"));
     let job = mcp.call("jobs", json!({"action": "status", "jobId": hidden_job}));
     assert_eq!(job["isError"], true);
@@ -415,7 +550,10 @@ fn listing_tools_and_stateless_calls_create_no_database() {
     let mut mcp = Mcp::start(&env, &[]);
     mcp.call("find", json!({"file": fig, "query": "first"}));
     mcp.call("search", json!({"file": fig, "query": "first"}));
-    mcp.call("search", json!({"workspaceId": "ws_0000000000000000", "query": "first"}));
+    mcp.call(
+        "search",
+        json!({"workspaceId": "ws_0000000000000000", "query": "first"}),
+    );
     drop(mcp);
     assert!(!env.home.join(".local/state/figlens").exists());
 }

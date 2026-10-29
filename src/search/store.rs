@@ -64,7 +64,9 @@ fn varint(out: &mut Vec<u8>, mut n: u64) {
 fn read_varint(data: &[u8], at: &mut usize) -> Result<u64> {
     let mut n = 0u64;
     for shift in (0..64).step_by(7) {
-        let byte = *data.get(*at).ok_or("truncated postings; rebuild the index")?;
+        let byte = *data
+            .get(*at)
+            .ok_or("truncated postings; rebuild the index")?;
         *at += 1;
         // The tenth byte carries only bit 63.
         if shift == 63 && byte > 1 {
@@ -229,9 +231,17 @@ pub(crate) fn load(conn: &Connection, gen_id: i64, terms: &[String]) -> Result<I
     let (info, total): (Option<String>, i64) = conn.query_row(
         "SELECT info, records FROM generations WHERE gen = ?1",
         [gen_id],
-        |r| Ok((text_at(r, 0, INFO_BYTES).map_err(|_| rusqlite::Error::InvalidQuery)?, r.get(1)?)),
+        |r| {
+            Ok((
+                text_at(r, 0, INFO_BYTES).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                r.get(1)?,
+            ))
+        },
     )?;
-    let total = usize::try_from(total).ok().filter(|t| *t <= WORK).ok_or_else(bad)?;
+    let total = usize::try_from(total)
+        .ok()
+        .filter(|t| *t <= WORK)
+        .ok_or_else(bad)?;
     let info: Json = serde_json::from_str(&need(info)?)?;
     let mut found = BTreeMap::new();
     let mut survivors: Option<BTreeSet<u32>> = None;
@@ -424,7 +434,9 @@ mod tests {
         }
         let list = postings(&blob, 304).unwrap();
         assert_eq!(
-            list.iter().map(|p| (p.record, p.tf, p.field)).collect::<Vec<_>>(),
+            list.iter()
+                .map(|p| (p.record, p.tf, p.field))
+                .collect::<Vec<_>>(),
             [(3, 2, 1), (303, 1, 0)]
         );
         // A tenth byte above 1 would shift payload bits out of a u64.

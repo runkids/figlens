@@ -331,7 +331,10 @@ impl AdmittedCall {
                 "figlens crashed on this workspace call",
             ))
         });
-        (response(&self.id, tool_reply(self.call.name(), result)), runs)
+        (
+            response(&self.id, tool_reply(self.call.name(), result)),
+            runs,
+        )
     }
 
     fn recheck(&self, roots: &[PathBuf]) -> Result<(), contract::Failure> {
@@ -555,9 +558,13 @@ pub fn serve_with(
                     other => other,
                 })
             };
-            interactive_loop(next, |value| {
-                let _ = out.send(value);
-            }, roots);
+            interactive_loop(
+                next,
+                |value| {
+                    let _ = out.send(value);
+                },
+                roots,
+            );
         });
         // Reader: framing and protocol only.
         let reader = to_writer.clone();
@@ -572,7 +579,11 @@ pub fn serve_with(
                     Ok(Some(request)) => request,
                     Ok(None) => break,
                     Err(e) => {
-                        let _ = reader.send(protocol(Value::Null, -32700, &format!("input failed: {e}")));
+                        let _ = reader.send(protocol(
+                            Value::Null,
+                            -32700,
+                            &format!("input failed: {e}"),
+                        ));
                         break;
                     }
                 };
@@ -788,7 +799,9 @@ mod tests {
             .collect();
         assert_eq!(
             with_schema,
-            ["find", "search", "inspect", "bundle", "verify", "export"]
+            [
+                "find", "search", "inspect", "bundle", "verify", "export", "index", "jobs"
+            ]
         );
     }
 
@@ -1276,7 +1289,10 @@ impl Counter {
         [&PREPARATIONS, &PATH_CHECKS, &LOADS].map(|c| c.with(|c| c.0.borrow().clone()))
     }
     fn adopt(shared: Shared) {
-        for (c, s) in [&PREPARATIONS, &PATH_CHECKS, &LOADS].into_iter().zip(shared) {
+        for (c, s) in [&PREPARATIONS, &PATH_CHECKS, &LOADS]
+            .into_iter()
+            .zip(shared)
+        {
             c.with(|c| *c.0.borrow_mut() = s);
         }
     }

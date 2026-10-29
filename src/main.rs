@@ -713,7 +713,10 @@ fn index_args<'a>(args: &'a [String], search: bool) -> Result<IndexArgs<'a>, Box
                 continue;
             }
             flag if flag.starts_with('-') => {
-                return Err(format!("unknown flag {flag}; usage: figlens index|jobs|search, see `figlens --help`").into());
+                return Err(format!(
+                    "unknown flag {flag}; usage: figlens index|jobs|search, see `figlens --help`"
+                )
+                .into());
             }
             _ => {
                 parsed.positional.push(arg.as_str());
@@ -743,7 +746,10 @@ fn finish_jobs(
 ) -> Result<serde_json::Value, Box<dyn Error>> {
     use figlens::workspace::{Select, jobs};
     let mut report = outcome.report;
-    let ws = report["workspaceId"].as_str().unwrap_or_default().to_owned();
+    let ws = report["workspaceId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
     let stop = std::sync::atomic::AtomicBool::new(false);
     let mut progress = |job: &serde_json::Value| {
         eprintln!(
@@ -831,19 +837,29 @@ fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
                 request_id: a.request,
                 replace_unavailable: a.replace,
             };
-            let outcome =
-                workspace::prepare(&storage, Path::new(path), a.workspace.map(Path::new), options)?;
+            let outcome = workspace::prepare(
+                &storage,
+                Path::new(path),
+                a.workspace.map(Path::new),
+                options,
+            )?;
             finish_jobs(&storage, outcome)
         }
         ("refresh", []) if !a.replace => {
             let scope = a.scope.map(normalize_id);
-            let outcome =
-                workspace::refresh(&storage, &chosen()?, only_source()?, scope.as_deref(), a.request)?;
+            let outcome = workspace::refresh(
+                &storage,
+                &chosen()?,
+                only_source()?,
+                scope.as_deref(),
+                a.request,
+            )?;
             finish_jobs(&storage, outcome)
         }
-        ("rebuild", []) if a.scope.is_none() && a.source.is_empty() && !a.replace => {
-            finish_jobs(&storage, workspace::rebuild(&storage, &chosen()?, a.request)?)
-        }
+        ("rebuild", []) if a.scope.is_none() && a.source.is_empty() && !a.replace => finish_jobs(
+            &storage,
+            workspace::rebuild(&storage, &chosen()?, a.request)?,
+        ),
         _ if scoped || !a.source.is_empty() => Err(usage()),
         ("status", []) => workspace::status(&storage, &chosen()?),
         ("add", [path]) => workspace::add(&storage, &chosen()?, Path::new(path)),

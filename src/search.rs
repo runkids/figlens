@@ -815,7 +815,12 @@ fn instance_of(tree: &Tree, id: &str, expanded: Option<&crate::expand::Expanded>
             evidence: "symbolData",
         },
         Some(e) => Instance {
-            target: e.main.as_ref().map(|m| &m.0).filter(|m| component(m)).cloned(),
+            target: e
+                .main
+                .as_ref()
+                .map(|m| &m.0)
+                .filter(|m| component(m))
+                .cloned(),
             basis: "resolved",
             evidence: e.main.as_ref().map_or("definition", |m| m.1),
         },
@@ -878,12 +883,20 @@ fn idf(n: usize, df: u32) -> f64 {
 /// ranked alone and merged afterwards; one index ranks exactly as it always did.
 fn retrieve(corpus: &[&Index], q: &Prepared, req: &Request) -> (Vec<Hit>, bool, [usize; 2]) {
     let n: usize = corpus.iter().map(|i| i.total).sum();
-    let lens = corpus.iter().fold([0u64; 2], |a, i| [a[0] + i.lens[0], a[1] + i.lens[1]]);
+    let lens = corpus
+        .iter()
+        .fold([0u64; 2], |a, i| [a[0] + i.lens[0], a[1] + i.lens[1]]);
     let avg = average(n, lens);
     let df: Vec<u32> = q
         .terms
         .iter()
-        .map(|t| corpus.iter().filter_map(|i| i.terms.get(t)).map(|t| t.df).sum())
+        .map(|t| {
+            corpus
+                .iter()
+                .filter_map(|i| i.terms.get(t))
+                .map(|t| t.df)
+                .sum()
+        })
         .collect();
     let mut excluded = [0usize; 2];
     let mut hits: Vec<Hit> = Vec::new();
@@ -1293,18 +1306,41 @@ pub(crate) fn corpus_rank(
 ) -> Result<Ranked, Box<dyn Error>> {
     let corpus: Vec<&Index> = parts.iter().map(|p| p.index).collect();
     let n: usize = corpus.iter().map(|i| i.total).sum();
-    let lens = corpus.iter().fold([0u64; 2], |a, i| [a[0] + i.lens[0], a[1] + i.lens[1]]);
+    let lens = corpus
+        .iter()
+        .fold([0u64; 2], |a, i| [a[0] + i.lens[0], a[1] + i.lens[1]]);
     let df: Vec<u32> = q
         .terms
         .iter()
-        .map(|t| corpus.iter().filter_map(|i| i.terms.get(t)).map(|t| t.df).sum())
+        .map(|t| {
+            corpus
+                .iter()
+                .filter_map(|i| i.terms.get(t))
+                .map(|t| t.df)
+                .sum()
+        })
         .collect();
     let fingerprint = short_hash(
-        json!([key, n, lens, df, req.scope, q.phrase, q.terms, req.types, req.include_hidden,
-            req.include_internal, req.limit, RANKING, tokenizer()])
+        json!([
+            key,
+            n,
+            lens,
+            df,
+            req.scope,
+            q.phrase,
+            q.terms,
+            req.types,
+            req.include_hidden,
+            req.include_internal,
+            req.limit,
+            RANKING,
+            tokenizer()
+        ])
         .to_string(),
     );
-    if q.fingerprint.as_ref().is_some_and(|fp| *fp != fingerprint) || (q.fingerprint.is_some() && q.gens.is_none()) {
+    if q.fingerprint.as_ref().is_some_and(|fp| *fp != fingerprint)
+        || (q.fingerprint.is_some() && q.gens.is_none())
+    {
         return Err(invalid(
             "search cursor belongs to another query, filter set or workspace search; search again without cursor",
         ));

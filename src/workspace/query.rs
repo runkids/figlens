@@ -34,7 +34,12 @@ pub fn search(storage: &Storage, select: &Select, only: &[String], req: &Request
     let ws_id = ws.held.id.clone();
     let dir = ws.held.dir.clone();
     if ws.version < 2 {
-        return Ok(not_ready(&ws_id, req, Vec::new(), vec![prepare_step(&ws_id, req)]));
+        return Ok(not_ready(
+            &ws_id,
+            req,
+            Vec::new(),
+            vec![prepare_step(&ws_id, req)],
+        ));
     }
     // One read transaction: every source and generation comes from the same commit.
     let tx = ws.conn.unchecked_transaction().map_err(sql)?;
@@ -97,7 +102,11 @@ pub fn search(storage: &Storage, select: &Select, only: &[String], req: &Request
             .optional()
             .map_err(sql)?;
         let job = job.map(|(id, s, holder)| {
-            let s = if jobs::alive(&dir, &holder) { s } else { "interrupted".into() };
+            let s = if jobs::alive(&dir, &holder) {
+                s
+            } else {
+                "interrupted".into()
+            };
             json!({"jobId": id, "state": s})
         });
         if let Some(job) = &job {
@@ -105,13 +114,16 @@ pub fn search(storage: &Storage, select: &Select, only: &[String], req: &Request
         }
         let refresh = json!({"tool": "index", "arguments": {"action": "refresh",
             "workspaceId": ws_id, "sourceId": row.id, "scope": req.scope}});
-        let stamp = search::stamp(Path::new(&row.path))
-            .and_then(|s| File::open(&row.path).map(|_| s));
-        let current = row.gen_id.is_some() && row.gen_membership.as_deref() == Some(&row.membership);
+        let stamp =
+            search::stamp(Path::new(&row.path)).and_then(|s| File::open(&row.path).map(|_| s));
+        let current =
+            row.gen_id.is_some() && row.gen_membership.as_deref() == Some(&row.membership);
         let label = match (&stamp, current, &job) {
             (Err(_), ..) => "unreadable",
             (_, false, Some(j)) if j["state"] != "interrupted" => {
-                steps.push(json!({"tool": "jobs", "arguments": {"action": "status", "jobId": j["jobId"]}}));
+                steps.push(
+                    json!({"tool": "jobs", "arguments": {"action": "status", "jobId": j["jobId"]}}),
+                );
                 "pending"
             }
             (_, false, _) if row.gen_id.is_some() => {
@@ -168,9 +180,15 @@ pub fn search(storage: &Storage, select: &Select, only: &[String], req: &Request
                 .is_none()
         });
         let (kind, why) = if gone {
-            (ErrorKind::CursorExpired, "an index this cursor paged was deleted")
+            (
+                ErrorKind::CursorExpired,
+                "an index this cursor paged was deleted",
+            )
         } else {
-            (ErrorKind::CursorStale, "a source this cursor paged was reindexed or left the search")
+            (
+                ErrorKind::CursorStale,
+                "a source this cursor paged was reindexed or left the search",
+            )
         };
         return Err(FigError::new(kind, format!("{why}; search again without cursor")).into());
     }
@@ -180,12 +198,17 @@ pub fn search(storage: &Storage, select: &Select, only: &[String], req: &Request
                 ErrorKind::SourceStale,
                 "every searched source changed since it was indexed; refresh it, then search again",
             )
-            .with_recovery(json!(steps.iter().map(|s| {
-                let mut s = s.clone();
-                s["requires"] = json!("none");
-                s["action"] = json!("refresh");
-                s
-            }).collect::<Vec<_>>()))
+            .with_recovery(json!(
+                steps
+                    .iter()
+                    .map(|s| {
+                        let mut s = s.clone();
+                        s["requires"] = json!("none");
+                        s["action"] = json!("refresh");
+                        s
+                    })
+                    .collect::<Vec<_>>()
+            ))
             .into());
         }
         if !states.is_empty() && states.iter().all(|s| s["state"] == "unreadable") {
@@ -208,9 +231,13 @@ pub fn search(storage: &Storage, select: &Select, only: &[String], req: &Request
     }
     for ((index, _, gen_id, identity), mut rids) in loaded.iter_mut().zip(wanted) {
         while !rids.is_empty() {
-            search::store::add(&tx, *gen_id, index, &rids)
-                .map_err(|e| unreadable_index(&ws_id, identity["sourceId"].as_str().unwrap_or(""), e))?;
-            rids = rids.iter().filter_map(|r| search::parent(index, *r)).collect();
+            search::store::add(&tx, *gen_id, index, &rids).map_err(|e| {
+                unreadable_index(&ws_id, identity["sourceId"].as_str().unwrap_or(""), e)
+            })?;
+            rids = rids
+                .iter()
+                .filter_map(|r| search::parent(index, *r))
+                .collect();
             rids.sort_unstable();
             rids.dedup();
         }
@@ -223,8 +250,10 @@ pub fn search(storage: &Storage, select: &Select, only: &[String], req: &Request
         coverage["totalRecords"] = Json::Null;
         coverage["layers"]["text"]["state"] = json!("partial");
         if let Some(reasons) = coverage["reasons"].as_array_mut() {
-            reasons.push(json!({"code": "sources_not_ready", "counts": {"sources": left_out.len()},
-                "sourceIds": left_out.iter().map(|s| &s["sourceId"]).collect::<Vec<_>>()}));
+            reasons.push(
+                json!({"code": "sources_not_ready", "counts": {"sources": left_out.len()},
+                "sourceIds": left_out.iter().map(|s| &s["sourceId"]).collect::<Vec<_>>()}),
+            );
         }
     }
     out["workspaceId"] = json!(ws_id);
@@ -240,8 +269,10 @@ fn unreadable_index(ws_id: &str, source: &str, e: Box<dyn Error>) -> Box<dyn Err
         ErrorKind::IndexIncompatible,
         format!("the index of {source} cannot be read: {e}"),
     )
-    .with_recovery(json!([{"action": "rebuild", "requires": "none", "tool": "index",
-        "arguments": {"action": "rebuild", "workspaceId": ws_id}}]))
+    .with_recovery(
+        json!([{"action": "rebuild", "requires": "none", "tool": "index",
+        "arguments": {"action": "rebuild", "workspaceId": ws_id}}]),
+    )
     .into()
 }
 
