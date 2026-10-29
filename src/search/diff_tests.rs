@@ -666,3 +666,26 @@ fn a_selected_node_moved_to_another_parent_is_a_structure_change() {
     .unwrap();
     assert_eq!(out["frames"][0]["nodes"][0]["facets"], json!(["structure"]));
 }
+
+#[test]
+fn a_selected_context_past_the_side_budget_is_unknown_not_position_zero() {
+    let mut nodes = vec![node(10, Some(1), "FRAME", "Home", vec![])];
+    nodes.extend((20..30).map(|i| node(i, Some(10), "RECTANGLE", "Card", vec![])));
+    let file = doc(nodes);
+    let tree = Tree::new(&file);
+    let out = page(
+        &compare_trees(&tree, &tree, [2, WORK, PAIR_WORK], "0:29"),
+        &Request {
+            node: "0:29".into(),
+            limit: LIMIT,
+            cursor: None,
+        },
+        false,
+    )
+    .unwrap();
+    let reasons = out["coverage"]["reasons"].as_array().unwrap();
+    assert!(
+        reasons.contains(&json!({"reason": "selection_context_unknown", "side": "old"})),
+        "{reasons:?}"
+    );
+}

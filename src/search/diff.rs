@@ -378,8 +378,8 @@ struct Side {
     /// Whether the selected node exists on this side; a side without it is complete and empty.
     present: bool,
     /// The selected node's own parent and position among its siblings, which the index's
-    /// root record leaves out.
-    origin: Option<(String, u32)>,
+    /// root record leaves out; `Err` when it could not be verified within the side's bounds.
+    origin: Result<Option<(String, u32)>, ()>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -546,13 +546,14 @@ fn side(
     if node.starts_with('I') {
         require_scope(&tree, node)?;
     }
-    let bounds = Bounds {
+    let mut bounds = Bounds {
         work: WORK,
         bytes: BYTES,
         depth: DEPTH,
         deadline,
         stop: None,
     };
+    let origin = origin(&tree, node, &mut bounds);
     let mut facets = Vec::new();
     let index = match present {
         true => build_with(&tree, node, bounds, true, Some(&mut facets)),
@@ -565,7 +566,6 @@ fn side(
         )
         .into());
     }
-    let origin = origin(&tree, node);
     Ok(Side {
         signature: format!("{}:{}", index.generation, index.stop.unwrap_or("")),
         source: json!({"sourceId": source_id(canonical), "snapshotId": snapshot}),
@@ -578,14 +578,26 @@ fn side(
     })
 }
 
-/// Stored node `node`'s parent and position among its siblings.
-fn origin(tree: &Tree, node: &str) -> Option<(String, u32)> {
-    let parent = guid_key(tree.nodes.get(node)?.get("parentIndex")?.get("guid")?)?;
-    let at = tree
-        .children
-        .get(&parent)
-        .and_then(|c| c.iter().position(|c| c == node));
-    Some((parent, at.unwrap_or(0) as u32))
+/// Stored node `node`'s parent and position among its siblings, charged to `bounds` before
+/// the parent id is copied and the siblings scanned; `Err` when out of bounds or not found.
+fn origin(tree: &Tree, node: &str, bounds: &mut Bounds) -> Result<Option<(String, u32)>, ()> {
+    let Some(guid) = tree
+        .nodes
+        .get(node)
+        .and_then(|n| n.get("parentIndex")?.get("guid"))
+    else {
+        return Ok(None);
+    };
+    if !bounds.charge(1, 64) {
+        return Err(());
+    }
+    let parent = guid_key(guid).ok_or(())?;
+    let siblings = tree.children.get(&parent).map_or(&[][..], Vec::as_slice);
+    if !bounds.charge(siblings.len(), 0) {
+        return Err(());
+    }
+    let at = siblings.iter().position(|c| c == node).ok_or(())?;
+    Ok(Some((parent, at as u32)))
 }
 
 /// A record's structure digest input: name, kind, parent id, order among siblings and hidden.
@@ -599,8 +611,8 @@ fn structure<'a>(
     // The selected root has no indexed parent; its stored one stands in.
     let (parent, at) = match (r.parent, &side.origin) {
         (Some(p), _) => (Some(index.records[p as usize].id.as_str()), order[rid]),
-        (None, Some((p, at))) => (Some(p.as_str()), *at),
-        (None, None) => (None, order[rid]),
+        (None, Ok(Some((p, at)))) => (Some(p.as_str()), *at),
+        (None, _) => (None, order[rid]),
     };
     (r.name.as_str(), r.kind.as_str(), parent, at, r.hidden)
 }
@@ -1305,7 +1317,8 @@ fn page_with(
             s.index.hidden_content,
         )
     };
-    let coverage = |s: &Side| json!({"stop": s.index.stop, "scannedRecords": s.index.records.len(), "complete": s.index.stop.is_none() && gaps(s) == (0, 0), "selected": s.present});
+    let known = |s: &Side| s.origin.is_ok();
+    let coverage = |s: &Side| json!({"stop": s.index.stop, "scannedRecords": s.index.records.len(), "complete": s.index.stop.is_none() && gaps(s) == (0, 0) && known(s), "selected": s.present});
     let unread = pair.unread;
     let mut reasons = Vec::new();
     for (name, s) in [("old", &pair.old), ("new", &pair.new)] {
@@ -1320,6 +1333,9 @@ fn page_with(
             reasons.push(
                 json!({"reason": "hidden_content_not_expanded", "side": name, "count": hidden}),
             );
+        }
+        if !known(s) {
+            reasons.push(json!({"reason": "selection_context_unknown", "side": name}));
         }
     }
     if let Some(stop) = pair.stop {
@@ -1351,13 +1367,14 @@ fn page_with(
 #[cfg(test)]
 fn compare_trees(old: &Tree, new: &Tree, works: [usize; 3], node: &str) -> Pair {
     let build = |tree: &Tree, label: &str, work: usize| {
-        let bounds = Bounds {
+        let mut bounds = Bounds {
             work,
             bytes: BYTES,
             depth: DEPTH,
             deadline: Instant::now() + DEADLINE,
             stop: None,
         };
+        let origin = origin(tree, node, &mut bounds);
         let mut facets = Vec::new();
         let present = tree.nodes.contains_key(node);
         let index = match present {
@@ -1372,7 +1389,7 @@ fn compare_trees(old: &Tree, new: &Tree, works: [usize; 3], node: &str) -> Pair 
             facets,
             path: PathBuf::new(),
             stamp: (SystemTime::UNIX_EPOCH, 0),
-            origin: origin(tree, node),
+            origin,
         }
     };
     compare(
