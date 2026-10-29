@@ -152,6 +152,52 @@ skillshare sync && skillshare sync mcp --global
 
 **インストールの注意。** npm ランチャーは初回使用時に対応するネイティブバイナリをダウンロードし、リリースの SHA-256 チェックサムで検証してキャッシュします。スクリプトでインストールした場合は `figlens update`、Homebrew の場合は `brew upgrade figlens` で更新します。バイナリは macOS（Apple silicon、Intel）、Linux（arm64、x86_64、静的 musl）、Windows（x86_64）に対応しています。
 
+<a id="local-index"></a>
+
+## 通常の検索と任意のローカルインデックス
+
+|  | 通常（デフォルト） | 上級：ローカルインデックス（任意） |
+|---|---|---|
+| できること | 呼び出しごとに `.fig` を読み、`search`、`find`、`inspect`、`export` に答えます。 | 選んだ範囲の検索インデックスを一度作り、以後の `search` はそこから、ソース横断でランク付けして答えます。 |
+| 書き込まれるもの | なし。workspace もデータベースも作りません。 | ユーザーごとの state ディレクトリ、または選んだ `--storage` の下にあるローカル workspace（SQLite データベース）。 |
+| 使う場面 | 単発の質問、スクリプト、CI。 | 同じファイルを繰り返し検索する場合、プロジェクトの複数ファイルを一つのコーパスとして検索する場合（`--workspace <dir>`）、coverage で既知の親/インスタンス関係を使いたい場合。 |
+
+通常のデザインに関する質問でインデックスが作られることはありません。明示的に一度だけ有効にします（「このデザインのインデックスを作成して」）。保存先は figlens が選び、SQLite などの設定は不要です。
+
+```sh
+# 通常：ステートレスで何も作らない
+figlens search design.fig "checkout button"
+
+# 上級、一度だけ：範囲（ノード ID、またはファイル全体なら 0:0）を指定。ビルドはフォアグラウンドで実行
+figlens index prepare design.fig --scope 0:0
+
+# インデックス検索。インデックス範囲がファイル全体でない場合は --node を付ける
+figlens search --file design.fig "checkout button"
+
+# .fig を編集・再エクスポートしたら、バイトが変わった範囲だけ再構築
+figlens index refresh --file design.fig
+
+# .fig を移動したら：workspace を維持して refresh（prepare が出力した workspaceId を使う）
+figlens index relocate <sourceId> new/design.fig --id <workspaceId>
+figlens index refresh --id <workspaceId>
+```
+
+MCP：`index` の prepare は job を返します。`succeeded` になるまで `jobs` を確認し、返信の `workspaceId` で検索します。
+
+```json
+{"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
+{"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "query": "checkout button"}}
+```
+
+ライフサイクル：`refresh` は `.fig` のバイトが変わった範囲だけを再構築し、`rebuild` は変更がなくても再構築します。`clear_cache` はビルドで再作成できるデータだけを削除し、レジストリと公開済みインデックスは残します。`reset` はこの workspace のデータベースを削除し（`.fig` やエクスポートは対象外）、明示的に求めたときだけ実行されます。新しいソース、範囲の拡大、reset、再作成は、それぞれ個別の明示的な依頼が必要です。
+
+`.fig` を移動した場合：`index relocate` は `workspaceId`、`sourceId`、保存先を維持します。その後、影響を受けた範囲を `refresh` します。自動検出やハッシュによる自動統合はなく、reset は不要です。
+
+データ：SQLite データベースには、登録されたローカルパス、選択した範囲のレイヤー名と実効テキスト、検索 postings、既知の親/インスタンス関係、ハッシュ、世代、job が入ります。元の `.fig` はそのままの場所にあり、コピーも変更もされません。
+
+Pi、OpenCode、OMP は、それぞれのオプトイン用エントリから同じインデックスを使い、workspace は再起動やホストをまたいで再利用されます。未実装：ファイル監視、usages/関係ツール、ベクトル、イベント、サブスクリプション。
+
 <a id="commands"></a>
 
 ## CLI リファレンス

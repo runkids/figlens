@@ -150,6 +150,52 @@ skillshare sync && skillshare sync mcp --global
 
 **Install notes.** The npm launcher downloads the matching native binary on first use, verifies it against the release's SHA-256 checksums and caches it. Script installs update with `figlens update`; Homebrew installs with `brew upgrade figlens`. Binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, static musl) and Windows (x86_64).
 
+<a id="local-index"></a>
+
+## Ordinary search and the optional local index
+
+|  | Ordinary (default) | Advanced: local index (optional) |
+|---|---|---|
+| What it does | Reads the `.fig` on each call and answers `search`, `find`, `inspect` and `export`. | Builds a search index of a chosen scope once, then answers `search` from it, ranked across sources. |
+| What is written | Nothing: no workspace, no database. | A local workspace (SQLite database) in the per-user state directory, or the `--storage` you chose. |
+| When to use | One-off questions, scripts, CI. | Repeated searches of one file; several files of a project as one corpus (`--workspace <dir>`); known parent/instance relations in coverage. |
+
+A normal design question never creates an index. You opt in once, explicitly ("create an index for this design"); figlens picks the storage and needs no SQLite or other setup.
+
+```sh
+# Ordinary: stateless, creates nothing
+figlens search design.fig "checkout button"
+
+# Advanced, once: pick a scope (a node id, or 0:0 for the whole file); the build runs in the foreground
+figlens index prepare design.fig --scope 0:0
+
+# Indexed search; add --node when the indexed scope is not the whole file
+figlens search --file design.fig "checkout button"
+
+# After you edit or re-export the .fig: rebuild only the scopes whose bytes changed
+figlens index refresh --file design.fig
+
+# After you move the .fig: keep the workspace, then refresh (use the workspaceId printed by prepare)
+figlens index relocate <sourceId> new/design.fig --id <workspaceId>
+figlens index refresh --id <workspaceId>
+```
+
+MCP: `index` prepare returns a job; poll `jobs` until `succeeded`, then search with the `workspaceId` from the reply.
+
+```json
+{"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
+{"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "query": "checkout button"}}
+```
+
+Lifecycle: `refresh` rebuilds only scopes whose `.fig` bytes changed; `rebuild` rebuilds even when unchanged; `clear_cache` deletes only data a build can recreate and keeps the registry and published indexes; `reset` deletes this workspace's database (never the `.fig` or exports) and runs only on your explicit request. New sources, a wider scope, reset and recreate each need their own explicit request.
+
+Moved the `.fig`? `index relocate` keeps `workspaceId`, `sourceId` and storage; then `refresh` the affected scopes. There is no auto-discovery and no hash-based merge, and no reset is needed.
+
+Data: the SQLite database holds registered local paths, the selected scopes' layer names and effective text, search postings, known parent/instance relations, hashes, generations and jobs. The original `.fig` stays where it is and is never copied or modified.
+
+Pi, OpenCode and OMP use the same index through their own opt-in entry, and the workspace is reused across restarts and hosts. Not implemented: file watching, usages/relationship tools, vectors, events and subscriptions.
+
 <a id="commands"></a>
 
 ## CLI reference

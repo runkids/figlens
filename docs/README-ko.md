@@ -152,6 +152,52 @@ skillshare sync && skillshare sync mcp --global
 
 **설치 참고.** npm 런처는 처음 사용할 때 해당 네이티브 바이너리를 내려받고, 릴리스의 SHA-256 체크섬으로 검증한 뒤 캐시합니다. 스크립트로 설치했다면 `figlens update`, Homebrew로 설치했다면 `brew upgrade figlens`로 업데이트하세요. 바이너리는 macOS(Apple silicon, Intel), Linux(arm64, x86_64, 정적 musl), Windows(x86_64)를 지원합니다.
 
+<a id="local-index"></a>
+
+## 일반 검색과 선택형 로컬 인덱스
+
+|  | 일반(기본) | 고급: 로컬 인덱스(선택) |
+|---|---|---|
+| 하는 일 | 호출할 때마다 `.fig`를 읽어 `search`, `find`, `inspect`, `export`에 답합니다. | 선택한 범위의 검색 인덱스를 한 번 만들고, 이후 `search`는 그 인덱스로 소스 전체를 함께 순위 매겨 답합니다. |
+| 기록되는 것 | 없음: workspace도 데이터베이스도 만들지 않습니다. | 사용자별 state 디렉터리 또는 선택한 `--storage` 아래의 로컬 workspace(SQLite 데이터베이스). |
+| 쓰는 때 | 일회성 질문, 스크립트, CI. | 한 파일을 반복 검색할 때, 프로젝트의 여러 파일을 하나의 코퍼스로 검색할 때(`--workspace <dir>`), coverage에서 알려진 부모/인스턴스 관계를 쓰고 싶을 때. |
+
+일반적인 디자인 질문은 인덱스를 만들지 않습니다. 한 번 명시적으로 켭니다("이 디자인의 인덱스를 만들어 줘"). 저장 위치는 figlens가 고르며 SQLite 등 별도 설정은 필요 없습니다.
+
+```sh
+# 일반: 상태 없음, 아무것도 만들지 않음
+figlens search design.fig "checkout button"
+
+# 고급, 한 번만: 범위(노드 id, 파일 전체는 0:0) 선택; 빌드는 포그라운드로 실행
+figlens index prepare design.fig --scope 0:0
+
+# 인덱스 검색; 인덱스 범위가 파일 전체가 아니면 --node 추가
+figlens search --file design.fig "checkout button"
+
+# .fig를 수정하거나 다시 내보낸 뒤: 바이트가 바뀐 범위만 다시 빌드
+figlens index refresh --file design.fig
+
+# .fig를 옮긴 뒤: workspace를 유지하고 refresh (prepare가 출력한 workspaceId 사용)
+figlens index relocate <sourceId> new/design.fig --id <workspaceId>
+figlens index refresh --id <workspaceId>
+```
+
+MCP: `index` prepare는 job을 반환합니다. `succeeded`가 될 때까지 `jobs`를 조회한 뒤 응답의 `workspaceId`로 검색합니다.
+
+```json
+{"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
+{"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "query": "checkout button"}}
+```
+
+수명 주기: `refresh`는 `.fig` 바이트가 바뀐 범위만 다시 빌드하고, `rebuild`는 바뀌지 않았어도 다시 빌드합니다. `clear_cache`는 빌드로 다시 만들 수 있는 데이터만 지우며 레지스트리와 게시된 인덱스는 유지합니다. `reset`은 이 workspace의 데이터베이스를 지우며(`.fig`와 내보내기는 건드리지 않음) 명시적으로 요청했을 때만 실행됩니다. 새 소스, 더 넓은 범위, reset, 재생성은 각각 별도의 명시적 요청이 필요합니다.
+
+`.fig`를 옮겼나요? `index relocate`는 `workspaceId`, `sourceId`, 저장 위치를 유지합니다. 이후 영향받은 범위를 `refresh`하세요. 자동 탐색이나 해시 기반 자동 병합은 없으며 reset은 필요 없습니다.
+
+데이터: SQLite 데이터베이스에는 등록된 로컬 경로, 선택한 범위의 레이어 이름과 유효 텍스트, 검색 postings, 알려진 부모/인스턴스 관계, 해시, 세대, job이 들어 있습니다. 원본 `.fig`는 제자리에 그대로 있으며 복사되거나 수정되지 않습니다.
+
+Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며, workspace는 재시작과 호스트를 넘어 재사용됩니다. 미구현: 파일 감시, usages/관계 도구, 벡터, 이벤트, 구독.
+
 <a id="commands"></a>
 
 ## CLI 레퍼런스

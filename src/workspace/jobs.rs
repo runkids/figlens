@@ -309,7 +309,7 @@ pub(crate) fn report_job(conn: &Connection, dir: &Path, job_id: &str) -> Result<
         }
         _ => json!([]),
     };
-    let mut report = json!({"jobId": job_id, "kind": kind, "sourceId": source, "scope": scope,
+    let mut report = json!({"jobId": job_id, "workspaceId": ws, "kind": kind, "sourceId": source, "scope": scope,
         "state": state, "stage": stage, "progress": {"units": done, "total": total},
         "cancelRequested": cancel, "attempt": attempt, "generation": gen_id, "error": error,
         "createdMs": created, "heartbeatMs": beat, "finishedMs": finished, "nextSteps": next});
@@ -424,8 +424,8 @@ pub(crate) fn submit(
             // Its owner died: this process takes it over as a new attempt from the start.
             tx.execute(
                 "UPDATE jobs SET owner = ?2, attempt = attempt + 1, state = 'queued', stage = NULL,
-                 done = 0, total = NULL, error = NULL, cancel = 0, membership = ?3, heartbeat_ms = ?4
-                 WHERE job_id = ?1",
+                 done = 0, total = NULL, error = NULL, cancel = 0, membership = ?3, heartbeat_ms = ?4,
+                 seq = (SELECT max(seq) + 1 FROM jobs) WHERE job_id = ?1",
                 params![job_id, me, membership, now_ms()],
             )
             .map_err(sql)?;
@@ -495,8 +495,9 @@ pub(crate) fn submit(
     let now = now_ms();
     tx.execute(
         "INSERT INTO jobs (job_id, request_id, fingerprint, kind, source_id, membership, scope,
-         incarnation, state, owner, created_ms, heartbeat_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'queued', ?9, ?10, ?10)",
+         incarnation, state, owner, created_ms, heartbeat_ms, seq)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'queued', ?9, ?10, ?10,
+                 (SELECT COALESCE(max(seq), 0) + 1 FROM jobs))",
         params![
             job_id,
             request_id,
@@ -822,15 +823,14 @@ pub fn run(
     }
 }
 
-/// Whether `job_id` is the oldest live queued job, in submission order (within one
-/// millisecond, the first inserted). The owner `me` runs its own jobs one at a time, so its
-/// other queued jobs never come first: a job it took over keeps its original submission time
-/// and would otherwise wait for a newer one it runs only afterwards.
-fn my_turn(conn: &Connection, dir: &Path, me: &str, job_id: &str) -> Result<bool> {
+/// Whether `job_id` is the first live queued job in admission order. `seq` is assigned under
+/// the submit transaction, at admission and again at takeover, so each owner's jobs are in the
+/// order it runs them and no two owners can wait on each other.
+fn my_turn(conn: &Connection, dir: &Path, job_id: &str) -> Result<bool> {
     let mut stmt = conn
         .prepare(
             "SELECT job_id, owner, attempt FROM jobs WHERE state = 'queued'
-             ORDER BY created_ms, rowid",
+             ORDER BY seq, rowid",
         )
         .map_err(sql)?;
     for row in stmt
@@ -847,7 +847,7 @@ fn my_turn(conn: &Connection, dir: &Path, me: &str, job_id: &str) -> Result<bool
         if job == job_id {
             return Ok(true);
         }
-        if holder != me && job_alive(dir, &holder, &job, held) {
+        if job_alive(dir, &holder, &job, held) {
             return Ok(false);
         }
     }
@@ -886,7 +886,7 @@ fn build(
             ));
         }
         if build.try_lock().is_ok() {
-            if my_turn(&ws.conn, dir, me, job_id)? {
+            if my_turn(&ws.conn, dir, job_id)? {
                 break;
             }
             let _ = build.unlock();

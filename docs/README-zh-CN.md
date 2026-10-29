@@ -152,6 +152,52 @@ skillshare sync && skillshare sync mcp --global
 
 **安装说明。** npm launcher 会在首次使用时下载匹配的原生可执行文件，对照 release 的 SHA-256 校验和进行验证并缓存。用安装脚本装的通过 `figlens update` 更新；Homebrew 装的通过 `brew upgrade figlens` 更新。可执行文件覆盖 macOS（Apple silicon、Intel）、Linux（arm64、x86_64、静态 musl）和 Windows（x86_64）。
 
+<a id="local-index"></a>
+
+## 普通搜索与可选的本地索引
+
+|  | 普通（默认） | 高级：本地索引（可选） |
+|---|---|---|
+| 作用 | 每次调用都读取 `.fig`，回答 `search`、`find`、`inspect` 和 `export`。 | 为选定范围一次性建立搜索索引，之后 `search` 从索引作答，并跨来源统一排序。 |
+| 写入内容 | 无：不创建 workspace，也没有数据库。 | 用户 state 目录或所选 `--storage` 下的本地 workspace（SQLite 数据库）。 |
+| 适用场景 | 一次性提问、脚本、CI。 | 反复搜索同一文件；把项目的多个文件当作一个语料搜索（`--workspace <dir>`）；在 coverage 中使用已知的父/实例关系。 |
+
+普通的设计问题不会创建索引。你只需明确选择启用一次（“为这个设计创建索引”）；存储位置由 figlens 决定，不需要配置 SQLite 或其他东西。
+
+```sh
+# 普通：无状态，不创建任何东西
+figlens search design.fig "checkout button"
+
+# 高级，仅一次：选择范围（节点 id，整个文件用 0:0）；构建在前台运行
+figlens index prepare design.fig --scope 0:0
+
+# 索引搜索；若索引范围不是整个文件，加上 --node
+figlens search --file design.fig "checkout button"
+
+# 编辑或重新导出 .fig 后：只重建字节有变化的范围
+figlens index refresh --file design.fig
+
+# 移动 .fig 后：保留 workspace，再 refresh（使用 prepare 输出的 workspaceId）
+figlens index relocate <sourceId> new/design.fig --id <workspaceId>
+figlens index refresh --id <workspaceId>
+```
+
+MCP：`index` 的 prepare 返回一个 job；轮询 `jobs` 直到 `succeeded`，再用回复中的 `workspaceId` 搜索。
+
+```json
+{"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
+{"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "query": "checkout button"}}
+```
+
+生命周期：`refresh` 只重建 `.fig` 字节有变化的范围；`rebuild` 即使没有变化也重建；`clear_cache` 只删除构建可重新生成的数据，保留注册表和已发布的索引；`reset` 删除此 workspace 的数据库（绝不删除 `.fig` 或导出），仅在你明确要求时执行。新增来源、扩大范围、reset 和重新创建，各自都需要单独的明确请求。
+
+移动了 `.fig`？`index relocate` 保留 `workspaceId`、`sourceId` 和存储位置；然后对受影响的范围执行 `refresh`。没有自动发现，也没有基于哈希的自动合并，不需要 reset。
+
+数据：SQLite 数据库保存已注册的本地路径、所选范围的图层名称与有效文本、搜索 postings、已知的父/实例关系、哈希、generation 和 job。原始 `.fig` 留在原处，不会被复制或修改。
+
+Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，workspace 可跨重启和宿主复用。尚未实现：文件监视、usages/关系工具、向量、事件与订阅。
+
 <a id="commands"></a>
 
 ## CLI 参考

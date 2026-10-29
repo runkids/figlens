@@ -152,6 +152,52 @@ skillshare sync && skillshare sync mcp --global
 
 **Notas de instalação.** O launcher npm baixa o binário nativo correspondente no primeiro uso, verifica-o contra os checksums SHA-256 da release e o armazena em cache. Instalações por script são atualizadas com `figlens update`; as do Homebrew, com `brew upgrade figlens`. Os binários cobrem macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl estático) e Windows (x86_64).
 
+<a id="local-index"></a>
+
+## Busca comum e o índice local opcional
+
+|  | Comum (padrão) | Avançado: índice local (opcional) |
+|---|---|---|
+| O que faz | Lê o `.fig` a cada chamada e responde `search`, `find`, `inspect` e `export`. | Cria uma vez um índice de busca de um escopo escolhido e responde `search` a partir dele, com ranking entre fontes. |
+| O que é gravado | Nada: sem workspace nem banco de dados. | Um workspace local (banco SQLite) no diretório de estado do usuário, ou no `--storage` escolhido. |
+| Quando usar | Perguntas pontuais, scripts, CI. | Buscas repetidas em um arquivo; vários arquivos de um projeto como um único corpus (`--workspace <dir>`); relações pai/instância conhecidas na cobertura. |
+
+Uma pergunta de design comum nunca cria um índice. Você ativa uma vez, de forma explícita ("crie um índice para este design"); o figlens escolhe o armazenamento e não exige SQLite nem outra configuração.
+
+```sh
+# Comum: sem estado, não cria nada
+figlens search design.fig "checkout button"
+
+# Avançado, uma vez: escolha um escopo (um id de nó, ou 0:0 para o arquivo inteiro); o build roda em primeiro plano
+figlens index prepare design.fig --scope 0:0
+
+# Busca indexada; adicione --node quando o escopo indexado não for o arquivo inteiro
+figlens search --file design.fig "checkout button"
+
+# Depois de editar ou reexportar o .fig: recrie só os escopos cujos bytes mudaram
+figlens index refresh --file design.fig
+
+# Depois de mover o .fig: mantenha o workspace e faça refresh (use o workspaceId impresso por prepare)
+figlens index relocate <sourceId> new/design.fig --id <workspaceId>
+figlens index refresh --id <workspaceId>
+```
+
+MCP: `index` prepare devolve um job; consulte `jobs` até `succeeded` e busque com o `workspaceId` da resposta.
+
+```json
+{"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
+{"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "query": "checkout button"}}
+```
+
+Ciclo de vida: `refresh` recria só os escopos cujos bytes do `.fig` mudaram; `rebuild` recria mesmo sem mudança; `clear_cache` apaga só dados que um build pode recriar e mantém o registro e os índices publicados; `reset` apaga o banco de dados deste workspace (nunca o `.fig` nem as exportações) e só roda a pedido explícito. Novas fontes, um escopo maior, reset e recriação exigem, cada um, um pedido explícito próprio.
+
+Moveu o `.fig`? `index relocate` mantém `workspaceId`, `sourceId` e armazenamento; depois faça `refresh` dos escopos afetados. Não há descoberta automática nem fusão por hash, e não é preciso reset.
+
+Dados: o banco SQLite guarda caminhos locais registrados, nomes de camadas e texto efetivo dos escopos escolhidos, postings de busca, relações pai/instância conhecidas, hashes, gerações e jobs. O `.fig` original permanece onde está e nunca é copiado nem modificado.
+
+Pi, OpenCode e OMP usam o mesmo índice por meio de sua própria entrada opt-in, e o workspace é reutilizado entre reinícios e hosts. Não implementado: monitoramento de arquivos, ferramentas de usos/relações, vetores, eventos e assinaturas.
+
 <a id="commands"></a>
 
 ## Referência da CLI

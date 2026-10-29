@@ -152,6 +152,52 @@ skillshare sync && skillshare sync mcp --global
 
 **Installationshinweise.** Der npm-Launcher lädt beim ersten Aufruf das passende native Binary herunter, prüft es gegen die SHA-256-Prüfsummen des Releases und legt es im Cache ab. Skript-Installationen aktualisierst du mit `figlens update`, Homebrew-Installationen mit `brew upgrade figlens`. Die Binaries decken macOS (Apple Silicon, Intel), Linux (arm64, x86_64, statisch mit musl) und Windows (x86_64) ab.
 
+<a id="local-index"></a>
+
+## Normale Suche und der optionale lokale Index
+
+|  | Normal (Standard) | Fortgeschritten: lokaler Index (optional) |
+|---|---|---|
+| Was es tut | Liest die `.fig` bei jedem Aufruf und beantwortet `search`, `find`, `inspect` und `export`. | Baut einmal einen Suchindex für einen gewählten Bereich und beantwortet `search` daraus, gerankt über Quellen. |
+| Was geschrieben wird | Nichts: kein Workspace, keine Datenbank. | Ein lokaler Workspace (SQLite-Datenbank) im Statusverzeichnis des Benutzers oder unter dem gewählten `--storage`. |
+| Wann sinnvoll | Einzelfragen, Skripte, CI. | Wiederholte Suchen in einer Datei; mehrere Dateien eines Projekts als ein Korpus (`--workspace <dir>`); bekannte Parent-/Instanz-Beziehungen in der Coverage. |
+
+Eine normale Designfrage legt nie einen Index an. Sie aktivieren ihn einmal ausdrücklich („Lege einen Index für dieses Design an“); figlens wählt den Speicherort und braucht kein SQLite oder sonstiges Setup.
+
+```sh
+# Normal: zustandslos, legt nichts an
+figlens search design.fig "checkout button"
+
+# Fortgeschritten, einmalig: Bereich wählen (Node-ID oder 0:0 für die ganze Datei); der Build läuft im Vordergrund
+figlens index prepare design.fig --scope 0:0
+
+# Indexierte Suche; --node ergänzen, wenn der indexierte Bereich nicht die ganze Datei ist
+figlens search --file design.fig "checkout button"
+
+# Nach Änderung oder neuem Export der .fig: nur Bereiche mit geänderten Bytes neu bauen
+figlens index refresh --file design.fig
+
+# Nach dem Verschieben der .fig: Workspace behalten, dann refresh (workspaceId aus der Ausgabe von prepare)
+figlens index relocate <sourceId> new/design.fig --id <workspaceId>
+figlens index refresh --id <workspaceId>
+```
+
+MCP: `index` prepare liefert einen Job; `jobs` abfragen, bis `succeeded`, dann mit der `workspaceId` aus der Antwort suchen.
+
+```json
+{"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
+{"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "query": "checkout button"}}
+```
+
+Lebenszyklus: `refresh` baut nur Bereiche neu, deren `.fig`-Bytes sich geändert haben; `rebuild` baut auch Unveränderte neu; `clear_cache` löscht nur Daten, die ein Build neu erzeugen kann, und behält Registry und veröffentlichte Indizes; `reset` löscht die Datenbank dieses Workspaces (nie die `.fig` oder Exporte) und läuft nur auf ausdrücklichen Wunsch. Neue Quellen, ein größerer Bereich, reset und Neuanlage brauchen jeweils eine eigene ausdrückliche Anfrage.
+
+`.fig` verschoben? `index relocate` behält `workspaceId`, `sourceId` und Speicherort; danach die betroffenen Bereiche mit `refresh` aktualisieren. Es gibt keine automatische Erkennung und kein Hash-basiertes Zusammenführen; ein reset ist nicht nötig.
+
+Daten: Die SQLite-Datenbank enthält registrierte lokale Pfade, Layer-Namen und effektiven Text der gewählten Bereiche, Such-Postings, bekannte Parent-/Instanz-Beziehungen, Hashes, Generationen und Jobs. Die ursprüngliche `.fig` bleibt, wo sie ist, und wird weder kopiert noch verändert.
+
+Pi, OpenCode und OMP nutzen denselben Index über ihren eigenen Opt-in-Einstieg; der Workspace wird über Neustarts und Hosts hinweg wiederverwendet. Nicht implementiert: Dateiüberwachung, Usages-/Beziehungs-Tools, Vektoren, Events und Subscriptions.
+
 <a id="commands"></a>
 
 ## CLI-Referenz

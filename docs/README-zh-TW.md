@@ -152,6 +152,52 @@ skillshare sync && skillshare sync mcp --global
 
 **安裝說明。** npm launcher 在首次使用時下載對應的原生執行檔，以發行版的 SHA-256 checksum 驗證後快取。用安裝腳本裝的以 `figlens update` 更新；Homebrew 裝的以 `brew upgrade figlens` 更新。執行檔涵蓋 macOS（Apple silicon、Intel）、Linux（arm64、x86_64、靜態 musl）與 Windows（x86_64）。
 
+<a id="local-index"></a>
+
+## 一般搜尋與選用的本機索引
+
+|  | 一般（預設） | 進階：本機索引（選用） |
+|---|---|---|
+| 作用 | 每次呼叫都讀取 `.fig`，回答 `search`、`find`、`inspect` 和 `export`。 | 為選定範圍一次建立搜尋索引，之後 `search` 從索引作答，並跨來源統一排序。 |
+| 寫入內容 | 無：不建立 workspace，也沒有資料庫。 | 使用者 state 目錄或所選 `--storage` 下的本機 workspace（SQLite 資料庫）。 |
+| 適用情境 | 一次性提問、腳本、CI。 | 反覆搜尋同一檔案；把專案的多個檔案當作一個語料搜尋（`--workspace <dir>`）；在 coverage 中使用已知的父/實例關係。 |
+
+一般的設計問題不會建立索引。你只需明確選擇啟用一次（「為這個設計建立索引」）；儲存位置由 figlens 決定，不需要設定 SQLite 或其他東西。
+
+```sh
+# 一般：無狀態，不建立任何東西
+figlens search design.fig "checkout button"
+
+# 進階，僅一次：選擇範圍（節點 id，整個檔案用 0:0）；建置在前景執行
+figlens index prepare design.fig --scope 0:0
+
+# 索引搜尋；若索引範圍不是整個檔案，加上 --node
+figlens search --file design.fig "checkout button"
+
+# 編輯或重新匯出 .fig 後：只重建位元組有變化的範圍
+figlens index refresh --file design.fig
+
+# 移動 .fig 後：保留 workspace，再 refresh（使用 prepare 輸出的 workspaceId）
+figlens index relocate <sourceId> new/design.fig --id <workspaceId>
+figlens index refresh --id <workspaceId>
+```
+
+MCP：`index` 的 prepare 會回傳一個 job；輪詢 `jobs` 直到 `succeeded`，再用回應中的 `workspaceId` 搜尋。
+
+```json
+{"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
+{"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "query": "checkout button"}}
+```
+
+生命週期：`refresh` 只重建 `.fig` 位元組有變化的範圍；`rebuild` 即使沒有變化也重建；`clear_cache` 只刪除建置可重新產生的資料，保留註冊表和已發布的索引；`reset` 刪除此 workspace 的資料庫（絕不刪除 `.fig` 或匯出），僅在你明確要求時執行。新增來源、擴大範圍、reset 和重新建立，各自都需要單獨的明確請求。
+
+移動了 `.fig`？`index relocate` 保留 `workspaceId`、`sourceId` 和儲存位置；接著對受影響的範圍執行 `refresh`。沒有自動探索，也沒有以雜湊為基礎的自動合併，不需要 reset。
+
+資料：SQLite 資料庫保存已註冊的本機路徑、所選範圍的圖層名稱與有效文字、搜尋 postings、已知的父/實例關係、雜湊、generation 和 job。原始 `.fig` 留在原處，不會被複製或修改。
+
+Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，workspace 可跨重啟和宿主重複使用。尚未實作：檔案監看、usages/關係工具、向量、事件與訂閱。
+
 <a id="commands"></a>
 
 ## CLI 參考

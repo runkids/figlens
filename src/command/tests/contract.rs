@@ -397,3 +397,18 @@ fn index_failures_carry_stable_codes_and_their_recovery() {
         assert_eq!(meta["recovery"], recovery);
     }
 }
+
+#[test]
+fn a_storage_failure_points_at_restoring_the_storage_not_the_design_roots() {
+    use figlens::{ErrorKind, FigError};
+    let recovery = json!([{"action": "restore_access", "requires": "none"}]);
+    let error = FigError::new(ErrorKind::PermissionDenied, "x").with_recovery(recovery);
+    let meta = contract::Failure::from_error(Box::new(error)).metadata();
+    assert!(
+        meta["nextStep"]
+            .as_str()
+            .unwrap()
+            .contains("figlens storage"),
+        "{meta}"
+    );
+}

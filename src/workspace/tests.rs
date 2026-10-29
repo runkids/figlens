@@ -1096,3 +1096,25 @@ fn a_relocate_interrupted_after_its_alias_completes_when_retried() {
     relocate(&f.storage, &select, &own, &b).unwrap();
     assert_eq!(id_of(&prepare(&f.storage, &b, None).unwrap()), ws);
 }
+
+#[test]
+fn a_denied_storage_offers_restore_access_naming_the_path_and_roots() {
+    let f = Fixture::new();
+    let path = f.storage.defaults.state.path.join("workspaces");
+    let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+    let error = rooted(&f.storage, storage_error(&path, denied));
+    let fig = error.downcast_ref::<FigError>().unwrap();
+    let restore = &fig.recovery().unwrap()[0];
+    assert_eq!(
+        (
+            restore["action"].as_str(),
+            restore["path"].as_str(),
+            restore["roots"]["config"]["path"].as_str()
+        ),
+        (
+            Some("restore_access"),
+            path.to_str(),
+            f.storage.defaults.config.path.to_str()
+        )
+    );
+}

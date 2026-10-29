@@ -760,8 +760,18 @@ pub fn index_tool(
     roots: &[PathBuf],
     storage_roots: &[PathBuf],
 ) -> Result<(Output, Option<Runs>), Box<dyn Error>> {
-    use figlens::workspace::{self, PrepareOptions, Select};
     let storage = tool_storage(call, roots, storage_roots)?;
+    index_on(call, file, project, storage.clone())
+        .map_err(|e| figlens::workspace::rooted(&storage, e))
+}
+
+fn index_on(
+    call: &crate::contract::PreparedCall,
+    file: Option<&Path>,
+    project: Option<&Path>,
+    storage: figlens::workspace::Storage,
+) -> Result<(Output, Option<Runs>), Box<dyn Error>> {
+    use figlens::workspace::{self, PrepareOptions, Select};
     let action = call.string("action").unwrap();
     let source_id = call.string("sourceId");
     let scope = call.string("scope").map(normalize_id);

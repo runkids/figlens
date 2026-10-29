@@ -416,6 +416,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
         "jobs" => (
             serde_json::json!({
                 "jobId": {"type": "string"},
+                "workspaceId": {"type": "string", "description": "the workspace the job builds in, for index status"},
                 "kind": {"type": "string", "description": "prepare, refresh or rebuild"},
                 "state": {"type": "string", "description": "queued, running, succeeded, failed, cancelled or interrupted (its owner exited)"},
                 "stage": {"type": "string"},
@@ -856,6 +857,17 @@ impl Failure {
                 "query_work_limit",
                 "The search would read more indexed data than one query supports; follow recovery to search fewer sources or index a narrower scope. Nothing is wrong with the index.",
             ),
+        };
+        // A storage failure is fixed by restoring that storage, not by the design roots.
+        let storage = self
+            .recovery
+            .as_ref()
+            .and_then(|r| r[0]["action"].as_str())
+            .is_some_and(|a| a.starts_with("restore_"));
+        let next = if storage {
+            "The figlens storage named in the error is missing or denied; ask the user to restore it (never change permissions yourself), then retry; recreate_elsewhere only after the user confirms."
+        } else {
+            next
         };
         let mut meta = json!({"code": code, "nextStep": next});
         if let Some(recovery) = &self.recovery {

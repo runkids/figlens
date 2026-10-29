@@ -1059,7 +1059,8 @@ fn every_index_jobs_and_workspace_search_reply_matches_its_declared_output_schem
     let ws = started["workspaceId"].as_str().unwrap().to_owned();
     let source = started["source"]["sourceId"].as_str().unwrap().to_owned();
     wait(&mut mcp, &job);
-    check(&mut mcp, "jobs", json!({"action": "status", "jobId": job}));
+    let report = check(&mut mcp, "jobs", json!({"action": "status", "jobId": job}));
+    assert_eq!(report["workspaceId"], ws.as_str());
     check(&mut mcp, "jobs", json!({"action": "cancel", "jobId": job}));
     check(
         &mut mcp,
@@ -1131,4 +1132,14 @@ fn every_index_jobs_and_workspace_search_reply_matches_its_declared_output_schem
         "index",
         json!({"action": "remove", "workspaceId": pws, "sourceId": added_id}),
     );
+}
+
+#[test]
+fn a_workspace_search_takes_a_query_starting_with_a_dash_after_double_dash() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let found = env.json(&["search", "--file", file, "--", "-20%"]);
+    assert_eq!(found["state"], "ready", "{found}");
 }

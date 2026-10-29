@@ -41,6 +41,8 @@ Pon `design.fig` en tu proyecto y elige **una** configuración. Cada una le da a
 | [OMP](#setup-omp) | OMP 18.13.2 | el skill incluido en el paquete |
 | [CLI](#setup-cli) | agents que solo ejecutan comandos de shell, scripts y CI, o tú | `figlens workflow <topic>`, o el [skill](#setup-skill) opcional |
 
+**Ordinario vs. avanzado.** El uso ordinario no requiere configuración: `figlens search design.fig "query"` lee el `.fig` y no crea nada. Un índice local opcional solo se crea cuando lo pides (`figlens index prepare design.fig --scope 0:0`) y luego se reutiliza entre reinicios y hosts. Consulta [Búsqueda ordinaria e índice local opcional](docs/README-es.md#local-index).
+
 <a id="setup-mcp"></a>
 
 ### MCP

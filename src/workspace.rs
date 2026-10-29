@@ -105,13 +105,59 @@ fn recreate_elsewhere() -> Json {
 /// A storage failure names its path and never moves on to another directory.
 fn storage_error(path: &Path, error: std::io::Error) -> Box<dyn Error> {
     let (kind, next) = recovery(&error);
-    fail(
+    let failure = FigError::new(
         kind,
         format!(
             "cannot use figlens storage at {}: {error}; {next}; nothing was written elsewhere",
             path.display()
         ),
-    )
+    );
+    match unusable(kind).get(0) {
+        Some(restore) if kind != ErrorKind::OperationFailed => {
+            let mut restore = restore.clone();
+            restore["path"] = json!(path);
+            failure.with_recovery(json!([restore])).into()
+        }
+        _ => failure.into(),
+    }
+}
+
+/// `e` with the configured config and state roots named in each storage recovery action, so a
+/// host can ask for access to exactly those paths before running it.
+pub fn rooted(storage: &Storage, e: Box<dyn Error>) -> Box<dyn Error> {
+    let Some(fig) = e.downcast_ref::<FigError>() else {
+        return e;
+    };
+    let Some(Json::Array(actions)) = fig.recovery() else {
+        return e;
+    };
+    let state = storage
+        .explicit
+        .as_ref()
+        .map_or(storage.defaults.state.path.clone(), |d| d.join("state"));
+    let roots = json!({"config": {"path": storage.defaults.config.path}, "state": {"path": state}});
+    let storage_action = |a: &Json| {
+        matches!(
+            a["action"].as_str(),
+            Some("restore_access" | "restore_storage" | "recreate_elsewhere")
+        )
+    };
+    if !actions.iter().any(storage_action) {
+        return e;
+    }
+    let actions: Vec<Json> = actions
+        .iter()
+        .map(|a| {
+            let mut a = a.clone();
+            if storage_action(&a) {
+                a["roots"] = roots.clone();
+            }
+            a
+        })
+        .collect();
+    FigError::new(fig.kind(), fig.to_string())
+        .with_recovery(json!(actions))
+        .into()
 }
 
 fn preserved(path: &Path, why: &str) -> Box<dyn Error> {

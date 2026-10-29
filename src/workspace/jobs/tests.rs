@@ -368,7 +368,7 @@ fn jobs_submitted_in_one_millisecond_build_in_submission_order() {
     )
     .unwrap();
     assert!(
-        !my_turn(&conn, &dir, &me, &second).unwrap(),
+        !my_turn(&conn, &dir, &second).unwrap(),
         "{first} goes first"
     );
 }
@@ -531,15 +531,30 @@ fn a_job_that_cannot_be_claimed_is_not_admitted() {
 }
 
 #[test]
-fn an_owner_runs_its_newer_job_before_an_older_one_it_took_over() {
+fn a_taken_over_job_queues_behind_another_owner_s_job_so_no_two_owners_wait_on_each_other() {
     let d = TestDir::new();
-    let (_, _, dir) = workspace(&d, 1);
-    let me = owner(&dir).unwrap();
+    let (storage, select, dir) = workspace(&d, 1);
+    // This owner (A) admits a new job; owner B has a queued job; A then takes over an older job
+    // whose owner died.
+    let a1 = queued(&storage, &select, "2:0");
+    std::fs::create_dir_all(dir.join("owners")).unwrap();
+    let other = File::create(dir.join("owners").join("other.lock")).unwrap();
+    other.lock().unwrap();
     let conn = connection(&dir);
     let source = sources(&conn)[0].clone();
-    job(&conn, &source, "0:0", "queued", &me, 2);
-    let newer = job(&conn, &source, "1:0", "queued", &me, 1);
-    assert!(my_turn(&conn, &dir, &me, &newer).unwrap());
+    job(&conn, &source, "0:0", "queued", "dead", 1);
+    let b1 = job(&conn, &source, "1:0", "queued", "other", 1);
+    conn.execute("UPDATE jobs SET seq = 1 WHERE job_id = ?1", [&b1])
+        .unwrap();
+    conn.execute("UPDATE jobs SET seq = 2 WHERE job_id = ?1", [&a1])
+        .unwrap();
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    let Ok(a2) = submit(&storage, &mut ws, "refresh", &source, "0:0", None) else {
+        panic!("not taken over");
+    };
+    assert!(a2.owned);
+    // B runs its job first; A waits for it, then runs its own in the order it admitted them.
+    assert!(my_turn(&conn, &dir, &b1).unwrap());
 }
 
 #[test]

@@ -46,6 +46,7 @@ usage:
                                              reasons, UTF-16 spans, coverage and cursor pages (20, 1-200);
                                              hidden layers and internal pages need their flag
   figlens search --workspace DIR|--file <file.fig>|--id ws_... <query> [--source ID]... [--storage DIR] [same options]
+                                           (put -- before a query that starts with -)
                                              the same search over a workspace's prepared indexes of
                                              --node (default 0:0) across its sources, without parsing;
                                              sources not ready are listed with the step that prepares them
@@ -725,6 +726,11 @@ fn index_args<'a>(args: &'a [String], search: bool) -> Result<IndexArgs<'a>, Box
                 parsed.source.push(value);
                 continue;
             }
+            // Everything after `--` is the query, even when it starts with `-`.
+            "--" if search => {
+                parsed.positional.extend(rest.by_ref().map(String::as_str));
+                break;
+            }
             flag if search && flag.starts_with('-') => {
                 parsed.search.push(arg.clone());
                 if !matches!(flag, "--include-hidden" | "--include-internal") {
@@ -916,7 +922,7 @@ fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
         }
     };
     let scoped = a.scope.is_some() || a.request.is_some() || a.replace;
-    match (action, a.positional.as_slice()) {
+    let result = match (action, a.positional.as_slice()) {
         ("prepare", [path]) if a.file.is_none() && a.id.is_none() && a.source.is_empty() => {
             let scope = a.scope.map(normalize_id);
             let options = PrepareOptions {
@@ -964,7 +970,8 @@ fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
         ("clear" | "clear_cache", []) => workspace::clear_cache(&storage, &chosen()?),
         ("reset", []) => workspace::reset(&storage, &chosen()?),
         _ => Err(usage()),
-    }
+    };
+    result.map_err(|e| workspace::rooted(&storage, e))
 }
 
 /// `figlens jobs status|cancel <jobId> [--storage DIR]`.
