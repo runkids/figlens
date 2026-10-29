@@ -129,7 +129,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 誰に�
 
 ## MCP サーバーとエージェント skill
 
-**MCP。** サーバーは stdio 経由でローカル実行され、`workflow`、`tree`、`find`、`search`、`inspect`、`nodes`、`variables`、`bundle`、`verify`, `index`, `jobs`、`export` を公開します。パスは絶対パスで渡します。`--root /path/to/designs`（複数指定可）を追加すると、すべてのファイルパスと出力パスを指定フォルダーに制限できます。figlens の既定ディレクトリ以外にインデックスを保存するには `--storage-root DIR`（複数指定可）が必要です。ラスターエクスポートは `maxSize`（デフォルト 1600 px）に縮小され、インライン画像は小さく保たれます。SVG はメタデータのみを返します。
+**MCP。** サーバーは stdio 経由でローカル実行され、`workflow`、`tree`、`find`、`search`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`export` を公開します。パスは絶対パスで渡します。`--root /path/to/designs`（複数指定可）を追加すると、すべてのファイルパスと出力パスを指定フォルダーに制限できます。figlens の既定ディレクトリ以外にインデックスを保存するには `--storage-root DIR`（複数指定可）が必要です。ラスターエクスポートは `maxSize`（デフォルト 1600 px）に縮小され、インライン画像は小さく保たれます。SVG はメタデータのみを返します。
 
 エージェントは `workflow` で `build`、`audit`、`images`、`plan`、`planning-details`、または明示的に依頼された場合の `yolo` ガイドを取得できます。portable skill と同じソースを使うため、MCP 利用時の skill の別途インストールは任意です。実作業にはエージェント自身のプロジェクト・ブラウザツールとホストの権限を使います。ガイドを読むだけでは処理は実行されません。利用方法はクライアントの対応とモデルの動作に依存します。
 
@@ -161,7 +161,7 @@ skillshare sync && skillshare sync mcp --global
 | `tree <file> [node] [--depth N] [--json]` | ノード ID、REST タイプ（`nodes` と同じ）、名前。インデント付きテキスト、または各ノードのサイズ、非表示状態、オートレイアウトのモードを含むネストした JSON。ページやセクション直下のノードには `firstText`（最初の表示テキスト）も付く |
 | `tree <file> [node] --top-frames [--json]` | 画面だけを 1 行に 1 つ、`--frames -` にそのまま渡せる形で出力。ページまたはそのセクション直下のフレーム、コンポーネント、コンポーネントセット、インスタンス（グループと内部ページは除外）。`--json` はページとセクションの ID と、キャンバスのラベルと画面を見分けるための各画面の最初の表示テキスト（`firstText`）を追加 |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | レイヤー名とテキストの大文字小文字を区別しない検索。パス、サイズ、プレビュー。デフォルト 20 件（1-200） |
-| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | インスタンスのオーバーライド、テキスト/ブーリアンプロパティ、スワップを適用したレイヤー名と全文のランク付き検索。正確なノード参照（`inspect` で使える `I…;…` サブレイヤー ID を含む）、一致理由、UTF-16 範囲、カバレッジ、カーソルによるページ送り。デフォルト 20 件（1-200）。非表示レイヤーと内部ページはそれぞれのフラグが必要 |
+| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | インスタンスのオーバーライド、テキスト/ブーリアンプロパティ、スワップを適用したレイヤー名と全文のランク付き検索。正確なノード参照（`inspect` で使える `I…;…` サブレイヤー ID を含む）、一致理由、UTF-16 範囲、カバレッジ、カーソルによるページ送り。デフォルト 20 件（1-200）。非表示レイヤーと内部ページはそれぞれのフラグが必要。`<file>` の代わりに `--file`/`--workspace`/`--id` を使うと、workspace の準備済みインデックスを読みます（`index` を参照） |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | 展開済みレイアウト/テキストのコンパクトな要約（最大 200 ノード）。`--images` でビットマップの寸法とクロップ範囲を追加。`--flat` は代わりに 1 ノード 1 行で出力（ノード基準の位置、サイズ、テキスト、フォント、塗り、線、角丸、auto-layout） |
 | `nodes <file> <node>` | REST nodes レスポンスのノードごとのオブジェクト（`document`、`components`、`componentSets`、`styles`）：展開済みインスタンスとオーバーライド、auto-layout、テキストスタイル、フィル、エフェクト、バインドされた variables、コンポーネントプロパティ、レンダリング bounds |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | 1 回のデコードで複数ノード：リストの id ごとに 1 行の JSON（`nodeId` 付きの `nodes` 出力、または `{nodeId, error}`） |

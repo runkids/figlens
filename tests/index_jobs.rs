@@ -617,3 +617,29 @@ fn mcp_without_flags_reuses_a_workspace_the_cli_placed_in_custom_storage() {
     drop(mcp);
     assert!(!env.home.join(".local/state/figlens/workspaces").exists());
 }
+
+#[test]
+fn mcp_searches_a_workspace_kept_under_a_storage_root() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    let store = env.dir.join("store");
+    std::fs::create_dir(&store).unwrap();
+    let store = std::fs::canonicalize(store).unwrap();
+    let store = store.to_str().unwrap();
+    let prepared = env.json(&[
+        "index",
+        "prepare",
+        file,
+        "--storage",
+        store,
+        "--scope",
+        "0:0",
+    ]);
+    let mut mcp = Mcp::start(&env, &["--storage-root", store]);
+    let found = mcp.call(
+        "search",
+        json!({"workspaceId": prepared["workspaceId"], "storage": store, "query": "first"}),
+    );
+    assert_eq!(found["structuredContent"]["state"], "ready", "{found}");
+}

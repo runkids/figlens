@@ -352,9 +352,14 @@ impl AdmittedCall {
         Ok(())
     }
 
-    fn execute(&self, loaded: Option<(&Path, &Tree)>, roots: &[PathBuf]) -> Value {
+    fn execute(
+        &self,
+        loaded: Option<(&Path, &Tree)>,
+        roots: &[PathBuf],
+        storage_roots: &[PathBuf],
+    ) -> Value {
         if self.workspace() {
-            return self.run_workspace(roots, &[]).0;
+            return self.run_workspace(roots, storage_roots).0;
         }
         let name = self.call.name();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -564,6 +569,7 @@ pub fn serve_with(
                     let _ = out.send(value);
                 },
                 roots,
+                storage_roots,
             );
         });
         // Reader: framing and protocol only.
@@ -639,6 +645,7 @@ fn interactive_loop(
     mut next: impl FnMut() -> Option<Admission>,
     mut reply: impl FnMut(Value),
     roots: &[PathBuf],
+    storage_roots: &[PathBuf],
 ) {
     let mut carried = None;
     loop {
@@ -656,11 +663,11 @@ fn interactive_loop(
             Some(_) => continue,
         };
         let Some(path) = call.tree_source() else {
-            reply(call.execute(None, roots));
+            reply(call.execute(None, roots, storage_roots));
             continue;
         };
         let Some(stamp_at_open) = stamp(path) else {
-            reply(call.execute(None, roots));
+            reply(call.execute(None, roots, storage_roots));
             continue;
         };
         if let Err(error) = call.recheck(roots) {
@@ -670,7 +677,7 @@ fn interactive_loop(
         #[cfg(test)]
         LOADS.with(Counter::bump);
         let Ok(Ok(mut doc)) = std::panic::catch_unwind(|| Document::open(path)) else {
-            reply(call.execute(None, roots));
+            reply(call.execute(None, roots, storage_roots));
             continue;
         };
         let document = &mut doc;
@@ -678,22 +685,22 @@ fn interactive_loop(
             let document = document;
             document.take_message()
         })) else {
-            reply(call.execute(None, roots));
+            reply(call.execute(None, roots, storage_roots));
             continue;
         };
         let Ok(tree) = std::panic::catch_unwind(|| Tree::new(&message)) else {
-            reply(call.execute(None, roots));
+            reply(call.execute(None, roots, storage_roots));
             continue;
         };
-        reply(call.execute(Some((path, &tree)), roots));
+        reply(call.execute(Some((path, &tree)), roots, storage_roots));
         loop {
             match next() {
                 None => return,
                 Some(Admission::Reply(value)) => reply(value),
                 Some(Admission::Call(next_call)) => match next_call.tree_source() {
-                    None => reply(next_call.execute(None, roots)),
+                    None => reply(next_call.execute(None, roots, storage_roots)),
                     Some(next_path) if next_path == path && stamp(path) == Some(stamp_at_open) => {
-                        reply(next_call.execute(Some((path, &tree)), roots))
+                        reply(next_call.execute(Some((path, &tree)), roots, storage_roots))
                     }
                     Some(_) => {
                         carried = Some(next_call);
@@ -754,7 +761,7 @@ mod tests {
     fn rooted_reply(line: &str, roots: &[PathBuf]) -> Value {
         match admit(line, roots) {
             Admission::Reply(reply) => reply,
-            Admission::Call(call) => call.execute(None, roots),
+            Admission::Call(call) => call.execute(None, roots, &[]),
             _ => panic!("expected reply"),
         }
     }
@@ -1309,7 +1316,7 @@ thread_local! {
 pub fn mcp_reply(line: &str) -> Option<Value> {
     match admit(line, &[]) {
         Admission::Reply(reply) => Some(reply),
-        Admission::Call(call) => Some(call.execute(None, &[])),
+        Admission::Call(call) => Some(call.execute(None, &[], &[])),
         _ => None,
     }
 }
@@ -1319,7 +1326,7 @@ pub fn call_tool(params: &Value, loaded: Option<(&Path, &Tree)>) -> Value {
     let request = json!({"id":1,"method":"tools/call","params":params}).to_string();
     match admit(&request, &[]) {
         Admission::Reply(reply) => reply["result"].clone(),
-        Admission::Call(call) => call.execute(loaded, &[])["result"].clone(),
+        Admission::Call(call) => call.execute(loaded, &[], &[])["result"].clone(),
         _ => unreachable!(),
     }
 }

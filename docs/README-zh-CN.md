@@ -129,7 +129,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可发�
 
 ## MCP server 与 agent skill
 
-**MCP。** server 在本地通过 stdio 运行，提供 `workflow`、`tree`、`find`、`search`、`inspect`、`nodes`、`variables`、`bundle`、`verify`, `index`, `jobs` 和 `export`。请传入绝对路径。加上 `--root /path/to/designs`（可重复）可把所有文件和输出路径限制在指定文件夹内。把索引存放在 figlens 默认目录之外时，需要 `--storage-root DIR`（可重复）。光栅导出会缩小到 `maxSize`（默认 1600 px），让内联图片保持小巧；SVG 只返回 metadata。
+**MCP。** server 在本地通过 stdio 运行，提供 `workflow`、`tree`、`find`、`search`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs` 和 `export`。请传入绝对路径。加上 `--root /path/to/designs`（可重复）可把所有文件和输出路径限制在指定文件夹内。把索引存放在 figlens 默认目录之外时，需要 `--storage-root DIR`（可重复）。光栅导出会缩小到 `maxSize`（默认 1600 px），让内联图片保持小巧；SVG 只返回 metadata。
 
 agent 可通过 `workflow` 读取内建的 `build`、`audit`、`images`、`plan`、`planning-details`，或明确请求时的 `yolo` 指引。它们与 portable skill 共用来源；MCP 用户可自行选择是否另装 skill。实际工作仍由 agent 使用项目及浏览器工具，并遵守 host 权限。读取指引不会执行工作流程；使用方式取决于客户端支持与模型行为。
 
@@ -161,7 +161,7 @@ skillshare sync && skillshare sync mcp --global
 | `tree <file> [node] [--depth N] [--json]` | 节点 id、REST 类型（与 `nodes` 相同）和名称；缩进文本，或附带每个节点尺寸、隐藏状态与 auto layout 模式的嵌套 JSON；页面或 section 下的节点另附 `firstText`（第一段可见文字） |
 | `tree <file> [node] --top-frames [--json]` | 只列出画面，每行一个，可直接传给 `--frames -`：页面或其 section 下的 frame、component、component set 与 instance（跳过 group 与内部页面）；`--json` 附上 page 与 section id，以及每个画面第一段可见文字（`firstText`），可用来区分画布标签与画面 |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 不区分大小写地搜索图层名称和文字；返回路径、尺寸和预览。默认 20 条结果（1-200） |
-| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | 对图层名称和完整文字做排序搜索，已套用 instance override、文字/布尔属性和 swap；返回精确节点引用（包括可用于 `inspect` 的 `I…;…` 子图层 id）、匹配原因、UTF-16 范围、覆盖情况和 cursor 分页。默认 20 条（1-200）；隐藏图层和内部页面需加对应 flag |
+| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | 对图层名称和完整文字做排序搜索，已套用 instance override、文字/布尔属性和 swap；返回精确节点引用（包括可用于 `inspect` 的 `I…;…` 子图层 id）、匹配原因、UTF-16 范围、覆盖情况和 cursor 分页。默认 20 条（1-200）；隐藏图层和内部页面需加对应 flag。以 `--file`/`--workspace`/`--id` 取代 `<file>` 时，读取 workspace 已准备的索引（见 `index`） |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | 展开后的精简布局/文字摘要，最多 200 个节点。`--images` 会加上位图尺寸和裁切范围。`--flat` 改为每个节点一行：相对该节点的位置、尺寸、文字、字体、填充、描边、圆角、auto-layout |
 | `nodes <file> <node>` | REST nodes 响应中单个节点的对象（`document`、`components`、`componentSets`、`styles`）：展开的 instance 与覆写、auto-layout、文字样式、填充、效果、绑定变量、组件属性、渲染边界 |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | 一次解码读取多个节点：列表中每个 id 一行 JSON（带 `nodeId` 的 `nodes` 输出，或 `{nodeId, error}`） |

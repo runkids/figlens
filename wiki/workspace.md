@@ -47,7 +47,7 @@ Every storage error names the workspace or path and one way on; none suggests an
 | `permission_denied` | Access denied or read-only | Restore access; figlens never changes permissions |
 | `storage_unavailable` | Missing, unmounted or offline (`NotFound`, `NotConnected`, `TimedOut`, stale network handle) | Reconnect or restore it, then retry; a missing remembered root may be forgotten by deleting its record only if its database is gone for good |
 | `workspace_busy` | Another process holds the lock | Retry after it finishes |
-| `index_incompatible` | Another schema | Use that figlens version, or reset |
+| `index_incompatible` | Another schema, or an index built by other versions | Use that figlens version or reset; for an index, `rebuild` |
 | `operation_failed` | Anything else | Fix the storage at the named path |
 
 When the current storage cannot be checked, a different `--storage` is refused with that error (`blocked`), because the database may still exist behind it. Reset and rebuild need the old database and stay blocked the same way. Stateless search of a readable `.fig` is unaffected and is the fallback.

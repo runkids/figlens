@@ -10,6 +10,8 @@ Load this for OpenCode V2, OMP, cross-host ownership, the shared npm package or 
 
 `prepare-npm.cjs` stages maintained `pi/`, `omp/`, `opencode/`, the shared skill and `omp/mcp.json` as root `.mcp.json`. Generated copies are ignored. Exact package inventory is checked in `check-installation.py`; tests, probes, private files and generated `.fig` fixtures are not shipped. Native archives and npm resources take guidance from the same sources. Keep version, launcher/cache/checksum handling and release pipeline shared.
 
+Pi, OpenCode and OMP start `figlens mcp` without `--storage-root`, so they get the `index` and `jobs` tools unchanged: default storage and a location the user once chose with CLI `--storage` work there; a new custom `storage` in a host call is refused until the server gets that flag. Host first-use guidance is a separate change.
+
 ## OpenCode V2
 
 Current local runtime evidence uses OpenCode 2.2.0. OpenCode is a Bun-built binary: `process.execPath` is the host, not Node, so `opencode/adapter.mjs` runs the bundled launcher with `node` from PATH (`launcherRuntime`). The CI harness sets `FIGLENS_BIN`, which skips that path; the unit test covers it. The server registers MCP/skill transforms, three model tools and the argument-taking `figlens` command. Native slash submission preserves files, agent/skill mentions and delivery; the server signals TUI review/frame dialogs through a typed RPC event. Human operations use `figlens-operation` and `figlens-review` RPC definitions. Noninteractive review leaves proposals pending. No model tool approves mappings.

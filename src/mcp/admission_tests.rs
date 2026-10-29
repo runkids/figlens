@@ -79,7 +79,7 @@ fn replies(input: impl BufRead + Send, roots: &[PathBuf]) -> Vec<Value> {
 fn rooted_reply(line: &str, roots: &[PathBuf]) -> Value {
     match admit(line, roots) {
         Admission::Reply(reply) => reply,
-        Admission::Call(call) => call.execute(None, roots),
+        Admission::Call(call) => call.execute(None, roots, &[]),
         _ => panic!("expected reply"),
     }
 }
@@ -414,7 +414,10 @@ fn admitted_paths_survive_alias_changes_and_recheck_output_parents() {
     };
     std::fs::remove_file(&alias).unwrap();
     std::os::unix::fs::symlink(outside.join("outside.fig"), &alias).unwrap();
-    assert_eq!(admitted.execute(None, &roots)["result"]["isError"], false);
+    assert_eq!(
+        admitted.execute(None, &roots, &[])["result"]["isError"],
+        false
+    );
     // Execution used the stored source, not the now-retargeted argument.
     assert_eq!(
         admitted.local(),
@@ -444,7 +447,7 @@ fn admitted_paths_survive_alias_changes_and_recheck_output_parents() {
     )
     .unwrap();
     assert_eq!(
-        admitted.execute(None, &roots)["result"]["_meta"]["figlens"]["code"],
+        admitted.execute(None, &roots, &[])["result"]["_meta"]["figlens"]["code"],
         "permission_denied"
     );
     assert!(!outside.join("new.png").exists());
