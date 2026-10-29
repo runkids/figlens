@@ -122,14 +122,26 @@ fn active_job(env: &Env, file: &Path, stage: &str) -> String {
     found
 }
 
-fn worker_running(job: &str) -> bool {
-    let out = Command::new("ps")
-        .args(["-eo", "stat=,args="])
-        .output()
-        .unwrap();
-    String::from_utf8_lossy(&out.stdout).lines().any(|l| {
-        l.contains("__index-worker") && l.contains(job) && !l.trim_start().starts_with('Z')
-    })
+/// Whether a worker of `job` is alive: it holds its `claims/<job>.<attempt>.worker` file
+/// locked until the process exits, on every platform (`ps` does not list arguments on Windows).
+fn worker_running(env: &Env, job: &str) -> bool {
+    let prefix = format!("{job}.");
+    let mut dirs = vec![env.dir.join("")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if name.starts_with(&prefix)
+                && name.ends_with(".worker")
+                && std::fs::File::open(&path).is_ok_and(|f| f.try_lock_shared().is_err())
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn ids(reply: &Value) -> Vec<&str> {
@@ -276,13 +288,16 @@ fn cancel_stops_the_worker_before_reporting_and_keeps_the_previous_index() {
         let gate = env.gate(&format!("{stage}.hold"));
         let mut owner = env.spawn(&["index", "rebuild", "--file", file], Some((stage, &gate)));
         let job = active_job(&env, &fig, stage);
-        assert!(worker_running(&job));
+        assert!(worker_running(&env, &job));
         let start = Instant::now();
         let reply = env.json(&["jobs", "cancel", &job]);
         assert_eq!(reply["cancel"], "accepted", "{stage}: {reply}");
         assert_eq!(reply["state"], "cancelled");
         // Reported only after the worker exited.
-        assert!(!worker_running(&job), "{stage}: worker outlived the cancel");
+        assert!(
+            !worker_running(&env, &job),
+            "{stage}: worker outlived the cancel"
+        );
         assert!(start.elapsed() < Duration::from_millis(2500));
         assert!(!owner.wait().unwrap().success());
         std::fs::remove_file(&gate).unwrap();
@@ -307,7 +322,9 @@ fn a_dead_owner_leaves_an_interrupted_job_whose_worker_exits_and_a_refresh_retri
     owner.kill().unwrap();
     owner.wait().unwrap();
     // The worker sees its stdin close and exits although its stage is still held.
-    wait_for("the orphaned worker to exit", || !worker_running(&job));
+    wait_for("the orphaned worker to exit", || {
+        !worker_running(&env, &job)
+    });
     assert_eq!(env.json(&["jobs", "status", &job])["state"], "interrupted");
     std::fs::remove_file(&gate).unwrap();
     let retried = env.json(&["index", "refresh", "--file", file, "--scope", "0:0"]);
@@ -506,7 +523,7 @@ fn mcp_builds_in_the_background_and_answers_status_and_search_meanwhile() {
         cancelled["structuredContent"]["state"], "cancelled",
         "{cancelled}"
     );
-    assert!(!worker_running(&job));
+    assert!(!worker_running(&env, &job));
     std::fs::remove_file(&gate).unwrap();
     let again = mcp.call(
         "index",
@@ -858,7 +875,7 @@ fn ctrl_c_cancels_the_cli_owned_build_and_waits_for_its_worker() {
     let out = owner.wait_with_output().unwrap();
     assert!(start.elapsed() < Duration::from_millis(2500));
     assert!(!out.status.success());
-    assert!(!worker_running(&job));
+    assert!(!worker_running(&env, &job));
     assert_eq!(env.json(&["jobs", "status", &job])["state"], "cancelled");
     std::fs::remove_file(&gate).unwrap();
     assert_eq!(
@@ -1082,15 +1099,23 @@ fn every_index_jobs_and_workspace_search_reply_matches_its_declared_output_schem
         conforms(content, &schema(tool), tool).unwrap_or_else(|e| panic!("{arguments}: {e}"));
         content.clone()
     };
-    let wait = |mcp: &mut Mcp, job: &str| loop {
-        let now = mcp.call("jobs", json!({"action": "status", "jobId": job}));
-        if !matches!(
-            now["structuredContent"]["state"].as_str(),
-            Some("queued" | "running")
-        ) {
-            break;
+    // Until the job's own reply is terminal: a busy or failed status call is not an end.
+    let wait = |mcp: &mut Mcp, job: &str| {
+        let start = Instant::now();
+        loop {
+            let now = mcp.call("jobs", json!({"action": "status", "jobId": job}));
+            if matches!(
+                now["structuredContent"]["state"].as_str(),
+                Some("succeeded" | "failed" | "cancelled")
+            ) {
+                break;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(30),
+                "job {job} never ended: {now}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
         }
-        std::thread::sleep(Duration::from_millis(50));
     };
     check(&mut mcp, "index", json!({"action": "status", "file": file}));
     check(
