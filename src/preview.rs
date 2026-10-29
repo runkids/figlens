@@ -6,12 +6,13 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, SystemTime};
 
 use crate::{
-    Document, Tree,
+    Document, FigError, Tree,
     render::{self, Prepared},
+    search,
 };
 use serde_json::{Value, json};
 use std::hash::{BuildHasher, Hasher};
@@ -294,7 +295,7 @@ fn scope_route(route: &str, generation: u64) -> Result<(&str, &str)> {
         return Err("unknown route".into());
     }
     if revision != generation {
-        return Err("Saved design changed; wait for the preview to refresh.".into());
+        return Err(STALE.into());
     }
     Ok((action, id))
 }
@@ -534,15 +535,14 @@ pub fn serve(file: &Path, initial: Option<&str>, address: SocketAddr) -> Result<
     eprintln!(
         "Preview: http://{authority}/{token}/\nRead-only local service. Press Ctrl+C to stop."
     );
-    let mut document = Document::open(file)?;
-    let mut version = fs::metadata(file)?.modified()?;
+    let (mut document, mut version, mut source) = staged(file)?;
     let mut generation = 1u64;
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get().clamp(2, 8));
     // A connection accepted just as a save was noticed is answered after the reload.
     let mut pending: Option<TcpStream> = None;
     loop {
         // Decode once per revision; the revision's workers share the tree and finish before a reload.
-        let (fresh, stamp) = {
+        let (fresh, stamp, identity) = {
             let message = document.take_message()?;
             let tree = Tree::new(&message);
             let ctx = Revision {
@@ -558,10 +558,12 @@ pub fn serve(file: &Path, initial: Option<&str>, address: SocketAddr) -> Result<
                 memory: Mutex::new(Memory::default()),
                 disk: Mutex::new(DiskCache::open(file, version)),
                 bundles: AtomicUsize::new(0),
+                source: source.clone(),
+                indexes: Mutex::default(),
             };
             let (jobs, queue) = mpsc::channel::<TcpStream>();
             let queue = Mutex::new(queue);
-            std::thread::scope(|scope| -> Result<(Document, SystemTime)> {
+            std::thread::scope(|scope| -> Result<Staged> {
                 for _ in 0..workers {
                     // Rendering recurses through the node tree: give workers the CLI's 8 MiB stack.
                     std::thread::Builder::new()
@@ -586,7 +588,7 @@ pub fn serve(file: &Path, initial: Option<&str>, address: SocketAddr) -> Result<
                         match reload(file, stamp) {
                             Ok(fresh) => {
                                 pending = Some(stream);
-                                return Ok((fresh, stamp));
+                                return Ok(fresh);
                             }
                             Err(e) => {
                                 reply(stream, Err(e), None);
@@ -600,6 +602,7 @@ pub fn serve(file: &Path, initial: Option<&str>, address: SocketAddr) -> Result<
         };
         document = fresh;
         version = stamp;
+        source = identity;
         generation += 1;
     }
 }
@@ -626,7 +629,20 @@ struct Revision<'r> {
     memory: Mutex<Memory>,
     disk: Mutex<DiskCache>,
     bundles: AtomicUsize,
+    /// `sourceId` and `snapshotId` of the bytes this revision decoded.
+    source: Value,
+    /// Search indexes of this revision's scopes, most recently used last.
+    indexes: Mutex<Vec<(String, Built)>>,
 }
+
+/// One scope's index, built once by the first request and shared by those that wait on it.
+type Built = Arc<OnceLock<std::result::Result<Arc<search::Index>, String>>>;
+
+/// Scopes indexed at once per revision; each index stays within search's build bounds, and an
+/// index still in use or building is never evicted, so no more than this many are alive.
+const INDEXED_SCOPES: usize = 2;
+/// Query parameters one search or usages route takes.
+const MAX_PARAMS: usize = 32;
 
 impl Revision<'_> {
     fn serve(&self, stream: TcpStream) {
@@ -658,7 +674,7 @@ impl Revision<'_> {
         if route == "revision" {
             return Ok((
                 "application/json",
-                json!({"generation":self.generation})
+                json!({"generation":self.generation,"source":self.source})
                     .to_string()
                     .into_bytes(),
             ));
@@ -684,10 +700,16 @@ impl Revision<'_> {
         if route == "catalog" {
             return Ok((
                 "application/json",
-                json!({"generation":self.generation,"document":self.index})
+                json!({"generation":self.generation,"source":self.source,"document":self.index})
                     .to_string()
                     .into_bytes(),
             ));
+        }
+        if let Some(rest) = route.strip_prefix("search/") {
+            return Ok(("application/json", self.relations(false, rest)?));
+        }
+        if let Some(rest) = route.strip_prefix("usages/") {
+            return Ok(("application/json", self.relations(true, rest)?));
         }
         let (action, id) = scope_route(route, self.generation)?;
         let (id, key) = id.rsplit_once('/').unwrap_or((id, ""));
@@ -791,14 +813,188 @@ impl Revision<'_> {
     }
 }
 
+impl Revision<'_> {
+    /// Ranked search (`search/<revision>?q=…`) or exact usages (`usages/<revision>?target=…`)
+    /// over this revision's index of `scope`. Refused queries answer `{"error": …}`.
+    fn relations(&self, usages: bool, rest: &str) -> Result<Vec<u8>> {
+        let (revision, query) = rest.split_once('?').unwrap_or((rest, ""));
+        if revision.parse::<u64>().map_err(|_| "unknown route")? != self.generation {
+            return Err(STALE.into());
+        }
+        let params = form(query)?;
+        let known: &[&str] = if usages {
+            &[
+                "target", "resource", "scope", "relation", "outgoing", "hidden", "limit", "cursor",
+                "snapshot",
+            ]
+        } else {
+            &[
+                "q", "scope", "type", "hidden", "internal", "limit", "cursor",
+            ]
+        };
+        if let Some((key, _)) = params.iter().find(|(k, _)| !known.contains(&k.as_str())) {
+            return Err(format!("unknown parameter {key}").into());
+        }
+        let one = |key: &str| {
+            params
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+        };
+        let all = |key: &str| {
+            params
+                .iter()
+                .filter(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .collect()
+        };
+        let flag = |key: &str| match one(key).as_deref() {
+            None | Some("0") => Ok(false),
+            Some("1") => Ok(true),
+            _ => Err(format!("{key} takes 0 or 1")),
+        };
+        let limit = |default: usize| match one("limit") {
+            None => Ok(default),
+            Some(n) => n
+                .parse::<usize>()
+                .map_err(|_| "limit takes a number".to_owned()),
+        };
+        let scope = one("scope").unwrap_or_else(|| "0:0".to_owned());
+        if !valid_id(&scope) {
+            return Err("scope takes a node ID".into());
+        }
+        let reply = (|| -> Result<Value> {
+            let index = self.index(&scope)?;
+            if usages {
+                let req = search::usages::Request {
+                    target: one("target").unwrap_or_default(),
+                    resource: flag("resource")?,
+                    scope,
+                    relations: all("relation"),
+                    outgoing: flag("outgoing")?,
+                    snapshot: one("snapshot"),
+                    include_hidden: flag("hidden")?,
+                    limit: limit(search::usages::DEFAULT_LIMIT)?,
+                    cursor: one("cursor"),
+                };
+                search::usages_index(&index, &req, self.source.clone())
+            } else {
+                let req = search::Request {
+                    query: one("q").unwrap_or_default(),
+                    scope,
+                    types: all("type"),
+                    include_hidden: flag("hidden")?,
+                    include_internal: flag("internal")?,
+                    limit: limit(search::DEFAULT_LIMIT)?,
+                    cursor: one("cursor"),
+                };
+                search::search_index(&index, &req, self.source.clone())
+            }
+        })()
+        .unwrap_or_else(|e| {
+            let kind = e
+                .downcast_ref::<FigError>()
+                .map(|f| format!("{:?}", f.kind()));
+            json!({"error": {"kind": kind, "message": e.to_string()}, "source": self.source})
+        });
+        Ok(reply.to_string().into_bytes())
+    }
+
+    /// The index of `scope`, built on first use. A new scope replaces the least recently used
+    /// index nobody holds; when every slot is building or in use the request is refused.
+    fn index(&self, scope: &str) -> Result<Arc<search::Index>> {
+        let cell = {
+            let mut cells = self.indexes.lock().map_err(|_| "index cache poisoned")?;
+            if let Some(i) = cells.iter().position(|(s, _)| s == scope) {
+                let entry = cells.remove(i);
+                cells.push(entry);
+            } else {
+                if cells.len() >= INDEXED_SCOPES {
+                    let idle = |cell: &Built| {
+                        Arc::strong_count(cell) == 1
+                            && cell.get().is_some_and(|r| {
+                                r.as_ref().map_or(true, |i| Arc::strong_count(i) == 1)
+                            })
+                    };
+                    let i = cells.iter().position(|(_, c)| idle(c)).ok_or_else(|| {
+                        FigError::new(
+                            crate::ErrorKind::WorkspaceBusy,
+                            "every search index of this revision is building or in use; retry shortly",
+                        )
+                    })?;
+                    cells.remove(i);
+                }
+                cells.push((scope.to_owned(), Built::default()));
+            }
+            cells.last().expect("pushed").1.clone()
+        };
+        // Built outside the lock, so other scopes and other routes are not held up.
+        cell.get_or_init(|| {
+            search::index_tree(self.tree, scope, search::deadline())
+                .map(Arc::new)
+                .map_err(|e| e.to_string())
+        })
+        .clone()
+        .map_err(Into::into)
+    }
+}
+
+const STALE: &str = "Saved design changed; wait for the preview to refresh.";
+
+/// `application/x-www-form-urlencoded` pairs, as `URLSearchParams` writes them: `+` is a space.
+fn form(query: &str) -> Result<Vec<(String, String)>> {
+    let decode = |text: &str| -> Result<String> {
+        let mut out = Vec::with_capacity(text.len());
+        let mut bytes = text.bytes();
+        while let Some(b) = bytes.next() {
+            out.push(match b {
+                b'+' => b' ',
+                b'%' => {
+                    let mut hex = || bytes.next().and_then(|h| (h as char).to_digit(16));
+                    match (hex(), hex()) {
+                        (Some(hi), Some(lo)) => (hi * 16 + lo) as u8,
+                        _ => return Err("bad percent escape".into()),
+                    }
+                }
+                b => b,
+            });
+        }
+        Ok(String::from_utf8(out).map_err(|_| "query is not UTF-8")?)
+    };
+    let pairs: Vec<&str> = query.split('&').filter(|p| !p.is_empty()).collect();
+    if pairs.len() > MAX_PARAMS {
+        return Err("too many query parameters".into());
+    }
+    pairs
+        .into_iter()
+        .map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            Ok((decode(key)?, decode(value)?))
+        })
+        .collect()
+}
+
 /// Opens a saved revision only once it decodes and its timestamp is stable.
-fn reload(file: &Path, stamp: SystemTime) -> Result<Document> {
-    let fresh = Document::open(file)?;
-    checked_catalog(&Tree::new(&fresh.message()?))?;
+fn reload(file: &Path, stamp: SystemTime) -> Result<Staged> {
+    let fresh = staged(file)?;
+    checked_catalog(&Tree::new(&fresh.0.message()?))?;
     if fs::metadata(file)?.modified()? != stamp {
         return Err("Save in progress; previous view is stale. Retrying.".into());
     }
     Ok(fresh)
+}
+
+/// A revision's document, modification time and source identity: `snapshotId` hashes exactly
+/// the bytes decoded, so search and usages refs name the revision this viewer serves.
+type Staged = (Document, SystemTime, Value);
+
+fn staged(file: &Path) -> Result<Staged> {
+    let canonical = fs::canonicalize(file)?;
+    let (bytes, (modified, _)) = search::stage(&canonical)?;
+    let source = json!({"sourceId": search::source_id(&canonical),
+        "snapshotId": search::snapshot_id(&bytes)});
+    let document = Document::from_bytes(&bytes, &file.display().to_string())?;
+    Ok((document, modified, source))
 }
 
 #[cfg(test)]
@@ -859,6 +1055,8 @@ mod tests {
                 used: 0,
             }),
             bundles: AtomicUsize::new(0),
+            source: Value::Null,
+            indexes: Mutex::default(),
         };
         let error = revision.respond("asset/1/0:1/a1b2").unwrap_err();
         assert!(
@@ -868,6 +1066,121 @@ mod tests {
         );
         assert!(revision.respond("catalog").is_ok());
     }
+    fn served<T>(check: impl FnOnce(&Revision) -> T) -> T {
+        let file = Path::new("examples/first-success/design.fig");
+        let (doc, version, source) = staged(file).unwrap();
+        let message = doc.message().unwrap();
+        let tree = Tree::new(&message);
+        let dir = crate::test_support::TestDir::new();
+        let revision = Revision {
+            tree: &tree,
+            index: Value::Null,
+            file,
+            initial: None,
+            generation: 1,
+            version,
+            workspace: &dir.join("bundles"),
+            authority: "127.0.0.1:1234",
+            token: "test",
+            memory: Mutex::new(Memory::default()),
+            disk: Mutex::new(DiskCache { dir: None, used: 0 }),
+            bundles: AtomicUsize::new(0),
+            source,
+            indexes: Mutex::default(),
+        };
+        check(&revision)
+    }
+
+    fn reply(revision: &Revision, route: &str) -> Value {
+        serde_json::from_slice(&revision.respond(route).unwrap().1).unwrap()
+    }
+
+    #[test]
+    fn search_and_usages_name_the_snapshot_of_the_bytes_served() {
+        let bytes = fs::read("examples/first-success/design.fig").unwrap();
+        let snapshot = search::snapshot_id(&bytes);
+        served(|r| {
+            let found = reply(r, "search/1?q=card");
+            let usages = reply(r, "usages/1?target=0%3A2&relation=contains");
+            assert_eq!(
+                (
+                    &found["results"][0]["ref"]["snapshotId"],
+                    &found["results"][0]["ref"]["nodeId"],
+                    &usages["source"]["snapshotId"],
+                    usages["error"].is_null(),
+                    &reply(r, "revision")["source"]["snapshotId"],
+                ),
+                (
+                    &json!(snapshot),
+                    &json!("0:2"),
+                    &json!(snapshot),
+                    true,
+                    &json!(snapshot)
+                )
+            );
+        });
+    }
+
+    #[test]
+    fn relation_routes_refuse_stale_revisions_and_unknown_or_bad_parameters() {
+        served(|r| {
+            let refused = |route: &str| r.respond(route).unwrap_err().to_string();
+            assert_eq!(
+                [
+                    refused("search/2?q=card"),
+                    refused("search/1?q=card&path=x"),
+                    refused("search/1?q=card&scope=..%2F"),
+                ],
+                [
+                    STALE.to_owned(),
+                    "unknown parameter path".to_owned(),
+                    "scope takes a node ID".to_owned(),
+                ]
+            );
+            // Refused values answer as data, with the served source.
+            assert_eq!(
+                (
+                    &reply(r, "usages/1?target=0:2&hidden=yes")["error"]["message"],
+                    reply(r, "search/1?q=%20")["error"]["message"].is_string(),
+                ),
+                (&json!("hidden takes 0 or 1"), true)
+            );
+        });
+    }
+
+    #[test]
+    fn query_decoding_matches_url_search_params() {
+        let pairs = form("q=a+b%2Bc%E4%B8%AD&type=TEXT&type=FRAME&cursor=").unwrap();
+        let text = |i: usize| (pairs[i].0.as_str(), pairs[i].1.as_str());
+        assert_eq!(
+            (text(0), text(1), text(2), text(3)),
+            (
+                ("q", "a b+c中"),
+                ("type", "TEXT"),
+                ("type", "FRAME"),
+                ("cursor", "")
+            )
+        );
+        assert!(form("q=%E4%B8").is_err() && form("q=%zz").is_err());
+        assert!(form(&"a=1&".repeat(MAX_PARAMS + 1)).is_err());
+    }
+
+    #[test]
+    fn one_index_per_scope_is_shared_and_held_ones_are_never_evicted() {
+        served(|r| {
+            let (a, again) = (r.index("0:0").unwrap(), r.index("0:0").unwrap());
+            let b = r.index("0:1").unwrap();
+            let busy = r.index("0:2").map(|_| ()).unwrap_err().to_string();
+            drop((again, b));
+            let c = r.index("0:2").map(|_| ());
+            let kept = Arc::ptr_eq(&a, &r.index("0:0").unwrap());
+            assert_eq!(
+                (busy.contains("building or in use"), c.is_ok(), kept),
+                (true, true, true)
+            );
+        });
+    }
+
     #[test]
     fn disk_cache_round_trips_renders_and_their_export_area() {
         let dir = crate::test_support::TestDir::new();
