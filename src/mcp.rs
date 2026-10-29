@@ -696,6 +696,86 @@ mod tests {
     }
 
     #[test]
+    fn tree_json_gives_top_level_nodes_their_first_visible_text() {
+        use kiwi_schema::Value;
+        use std::collections::HashMap;
+        let g = |l| {
+            Value::Object(
+                "GUID",
+                HashMap::from([("sessionID", Value::UInt(0)), ("localID", Value::UInt(l))]),
+            )
+        };
+        let node = |l: u32, parent: u32, kind, text: Option<&str>, visible: bool| {
+            let mut fields = HashMap::from([
+                ("guid", g(l)),
+                ("type", Value::Enum("NodeType", kind)),
+                ("name", Value::String(format!("n{l}"))),
+                ("visible", Value::Bool(visible)),
+                (
+                    "parentIndex",
+                    Value::Object(
+                        "ParentIndex",
+                        HashMap::from([
+                            ("guid", g(parent)),
+                            ("position", Value::String(format!("{l:02}"))),
+                        ]),
+                    ),
+                ),
+            ]);
+            if let Some(text) = text {
+                let chars = HashMap::from([("characters", Value::String(text.into()))]);
+                fields.insert("textData", Value::Object("TextData", chars));
+            }
+            Value::Object("NodeChange", fields)
+        };
+        let message = Value::Object(
+            "Message",
+            HashMap::from([(
+                "nodeChanges",
+                Value::Array(vec![
+                    node(1, 0, "CANVAS", None, true),
+                    // A canvas label: a box around one line of text.
+                    node(2, 1, "FRAME", None, true),
+                    node(3, 2, "TEXT", Some("Onboarding"), true),
+                    // A screen whose hidden text is skipped for the next visible one, deeper down.
+                    node(4, 1, "FRAME", None, true),
+                    node(5, 4, "TEXT", Some("hidden"), false),
+                    node(6, 4, "FRAME", None, true),
+                    node(7, 6, "TEXT", Some(&"x".repeat(250)), true),
+                    node(8, 1, "FRAME", None, true),
+                    // Inside a section, blank text is passed over for the next visible text.
+                    node(9, 1, "SECTION", None, true),
+                    node(10, 9, "FRAME", None, true),
+                    node(11, 10, "TEXT", Some(" \n"), true),
+                    node(12, 10, "TEXT", Some("Checkout"), true),
+                ]),
+            )]),
+        );
+        let tree = Tree::new(&message);
+        let run = |args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            command::Command::from_cli("tree", &args, &tree)
+                .unwrap()
+                .execute(&tree, Path::new("unused.fig"))
+                .unwrap()
+                .json()
+                .unwrap()
+                .clone()
+        };
+        let page = run(&["0:1", "--depth", "2", "--json"]);
+        let first = |v: &serde_json::Value| v.get("firstText").cloned();
+        assert_eq!(first(&page["children"][0]), Some("Onboarding".into()));
+        assert_eq!(first(&page["children"][1]), Some("x".repeat(200).into()));
+        // Only children of a page or section carry it; a node without text has none.
+        assert_eq!(first(&page["children"][0]["children"][0]), None);
+        assert_eq!(first(&page["children"][2]), None);
+        let section = run(&["0:9", "--depth", "1", "--json"]);
+        assert_eq!(first(&section["children"][0]), Some("Checkout".into()));
+        let frames = run(&["0:1", "--top-frames", "--json"]);
+        assert_eq!(first(&frames[0]), Some("Onboarding".into()));
+    }
+
+    #[test]
     fn tree_top_frames_lists_screens_in_pages_and_sections_for_frame_lists() {
         use kiwi_schema::Value;
         use std::collections::HashMap;

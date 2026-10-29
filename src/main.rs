@@ -28,11 +28,14 @@ usage:
                                              {id,type,name,size,visible,layoutMode,children}: size is the local
                                              [width,height] (none on the document and pages), visible only when
                                              false, layoutMode only on auto-layout frames, as in nodes;
+                                             nodes on a page or in a section add firstText, their first
+                                             visible stored text (200 chars max), to tell labels from screens;
                                              --top-frames lists only the screens, at any depth: frames,
                                              components, component sets and instances directly on a page or in
                                              a section on one (internal pages skipped); --depth does not apply;
                                              each line starts with the id, so it pipes to --frames -; with
                                              --json, a flat array that adds page and section ids
+                                             (entries carry firstText too)
   figlens find <file.fig> <query> [--type TYPE] [--node ID] [--limit N]
                                              search stored layer names and text, case-insensitive;
                                              default 20 results (1-200), with paths and truncation flag

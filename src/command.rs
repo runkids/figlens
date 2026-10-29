@@ -377,7 +377,7 @@ impl Command {
                         frames
                             .into_iter()
                             .map(|(id, page, section)| {
-                                let mut frame = tree_json(tree, id, 0, 0);
+                                let mut frame = tree_json(tree, id, 0, 0, true);
                                 if let Some(page) = page {
                                     frame["page"] = json!(page);
                                 }
@@ -403,7 +403,7 @@ impl Command {
             } => {
                 require_node(tree, &root)?;
                 if json {
-                    compact(tree_json(tree, &root, 0, depth))
+                    compact(tree_json(tree, &root, 0, depth, false))
                 } else {
                     let mut out = String::new();
                     print_tree(&mut out, tree, &root, 0, depth)?;
@@ -735,7 +735,9 @@ fn print_tree(
 /// `children` is only included where the requested depth reaches. `size` is the local
 /// pre-rotation `[width, height]`, absent without one (document, pages); `visible` appears
 /// only when false and `layoutMode` (`HORIZONTAL`, `VERTICAL` or `GRID`) only when set, as in `nodes`.
-fn tree_json(tree: &Tree, id: &str, level: usize, depth: usize) -> Value {
+/// A `top` node (a child of a page or section) adds `firstText`, so callers can tell a canvas
+/// label (a box around one line of text) from a screen without opening it.
+fn tree_json(tree: &Tree, id: &str, level: usize, depth: usize, top: bool) -> Value {
     let (kind, name) = label(tree, id);
     let raw = tree.nodes[id];
     let mut node = json!({ "id": id, "type": kind, "name": name });
@@ -750,13 +752,48 @@ fn tree_json(tree: &Tree, id: &str, level: usize, depth: usize) -> Value {
     {
         node["layoutMode"] = json!(mode);
     }
+    if let Some(text) = top.then(|| first_text(tree, id)).flatten() {
+        node["firstText"] = json!(text);
+    }
     if let Some(children) = tree.children.get(id).filter(|_| level < depth) {
+        let top = matches!(kind.as_str(), "CANVAS" | "SECTION");
         node["children"] = children
             .iter()
-            .map(|child| tree_json(tree, child, level + 1, depth))
+            .map(|child| tree_json(tree, child, level + 1, depth, top))
             .collect();
     }
     node
+}
+
+/// The first visible, non-blank TEXT's characters under `id` (itself included), breadth-first over stored
+/// nodes, at most 200 characters. Instances are not expanded, so their text is not seen.
+fn first_text(tree: &Tree, id: &str) -> Option<String> {
+    let hidden = |id: &str| {
+        matches!(
+            tree.nodes.get(id).and_then(|n| n.get("visible")),
+            Some(kiwi_schema::Value::Bool(false))
+        )
+    };
+    let mut queue = std::collections::VecDeque::from([id]);
+    // A crafted file can make a node its own descendant; visit each id once.
+    let mut seen = std::collections::HashSet::from([id]);
+    while let Some(id) = queue.pop_front() {
+        let Some(node) = tree.nodes.get(id).filter(|_| !hidden(id)) else {
+            continue;
+        };
+        let text = node.get("textData").and_then(|t| t.get("characters"));
+        // Blank text is no label; keep looking.
+        let text = text.map(|t| t.as_string()).filter(|t| !t.trim().is_empty());
+        if let Some(text) = text.filter(|_| plugin_type(node) == "TEXT") {
+            return Some(text.chars().take(200).collect());
+        }
+        for child in tree.children.get(id).into_iter().flatten() {
+            if seen.insert(child) {
+                queue.push_back(child);
+            }
+        }
+    }
+    None
 }
 
 /// `tree --top-frames`: ids of the screens below `id`, with their page and innermost section.
