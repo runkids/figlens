@@ -75,6 +75,7 @@ Generated test fixtures use `src/test_support.rs` for atomic directory ownership
 Stroke checks read `render::stroke_weights`, not `strokeWeight`, which per-side strokes can leave 0; see `render`.
 Image-fill changes must test shifted sprites exported from a clipping frame; see `render`.
 Background blur backdrops reference blur-free copies within the per-export budget, or nested blurs grow exponentially; see `render`.
+Reproduce a browser SVG misdraw with the consumer's optimizer and inlining before changing export coordinates or ids; see `render`.
 
 ```sh
 docker compose run --rm dev cargo test
