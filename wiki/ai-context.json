@@ -45,6 +45,14 @@
         }
       ]
     },
+    "discovery": {
+      "description": "Changing find or inspect summaries: fields, limits, truncation and --flat lines.",
+      "sources": [
+        {
+          "path": "wiki/discovery.md"
+        }
+      ]
+    },
     "bundle": {
       "description": "Changing the bundle zip, manifest, context.md, batch bundles, font inventory or verify.",
       "sources": [

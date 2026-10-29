@@ -2,7 +2,7 @@
 //! with its layout box on request. Raster formats support a quality setting and a size budget.
 
 use std::error::Error;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use resvg::tiny_skia::Pixmap;
 use serde_json::{Map, Value as Json, json};
@@ -291,6 +291,292 @@ fn encode_at(p: &Pixmap, format: Format, quality: u8) -> Result<Vec<u8>, String>
     }
 }
 
+/// SVG files a folder holds, parsed once to compare exports against.
+pub struct SvgIndex {
+    /// Path relative to the folder (`/`-separated), canonical path and drawing.
+    files: Vec<(String, PathBuf, Shape)>,
+}
+
+/// A folder needing more than this is too broad to search: SVG files, SVG bytes read, and
+/// directory entries visited.
+const MAX_SVG_FILES: usize = 10_000;
+const MAX_SVG_BYTES: u64 = 64 << 20;
+const MAX_ENTRIES: usize = 100_000;
+/// Lowest mask overlap a similar drawing reports, and how many are reported.
+const SIMILAR: f64 = 0.8;
+const MAX_SIMILAR: usize = 10;
+
+impl SvgIndex {
+    /// Parses the `.svg` files in `dir` and its subfolders. Links are not followed, so a search
+    /// stays inside the folder; files over 1 MiB and files that do not parse are skipped.
+    pub fn load(dir: &Path) -> Result<Self, Box<dyn Error>> {
+        use std::io::Read as _;
+        let fail = |path: &Path| {
+            let path = path.to_owned();
+            move |e: std::io::Error| format!("--match-dir {}: {e}", path.display())
+        };
+        let too_broad = |what: &str| {
+            format!(
+                "--match-dir {} holds more than {what}; pass the icon folder",
+                dir.display()
+            )
+        };
+        let (mut files, mut entries, mut bytes) = (Vec::new(), 0, 0);
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(folder) = pending.pop() {
+            for entry in std::fs::read_dir(&folder).map_err(fail(&folder))? {
+                entries += 1;
+                if entries > MAX_ENTRIES {
+                    return Err(too_broad(&format!("{MAX_ENTRIES} entries")).into());
+                }
+                let entry = entry.map_err(fail(&folder))?;
+                let path = entry.path();
+                let kind = entry.file_type().map_err(fail(&path))?;
+                if kind.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                let is_svg = path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("svg"));
+                if !kind.is_file() || !is_svg {
+                    continue;
+                }
+                if files.len() == MAX_SVG_FILES {
+                    return Err(too_broad(&format!("{MAX_SVG_FILES} SVG files")).into());
+                }
+                // Read one byte past the limit, so a file that grew after listing is still skipped.
+                let mut data = Vec::new();
+                std::fs::File::open(&path)
+                    .and_then(|f| f.take((1 << 20) + 1).read_to_end(&mut data))
+                    .map_err(fail(&path))?;
+                if data.len() > 1 << 20 {
+                    continue;
+                }
+                bytes += data.len() as u64;
+                if bytes > MAX_SVG_BYTES {
+                    return Err(too_broad("64 MiB of SVG").into());
+                }
+                let Some(shape) = shape(&data) else {
+                    continue;
+                };
+                let name = path.strip_prefix(dir).unwrap_or(&path);
+                let name = name
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                files.push((
+                    name,
+                    std::fs::canonicalize(&path).map_err(fail(&path))?,
+                    shape,
+                ));
+            }
+        }
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(Self { files })
+    }
+
+    /// The files drawing the same outlines as `svg` once both are moved to the origin (paint,
+    /// ids, path syntax and `<path>` splits ignored), and up to ten others whose coverage, scaled
+    /// to the same size, overlaps it by at least 0.8 as `{file, score}`, best first. `skip` (the
+    /// export itself) is never reported.
+    pub fn compare(&self, svg: &[u8], skip: Option<&Path>) -> (Vec<String>, Vec<Json>) {
+        let (mut matches, mut similar) = (Vec::new(), Vec::new());
+        let Some(want) = shape(svg) else {
+            return (matches, Vec::new());
+        };
+        for (name, path, got) in &self.files {
+            if Some(path.as_path()) == skip {
+                continue;
+            }
+            if same_outline(&want.outline, &got.outline, 1.0) {
+                matches.push(name.clone());
+                continue;
+            }
+            // The same outlines at another size are the best similar result.
+            let scale = want.extent / got.extent.max(f32::EPSILON);
+            let score = if same_outline(&want.outline, &got.outline, scale) {
+                1.0
+            } else {
+                overlap(&want.mask, &got.mask)
+            };
+            if score >= SIMILAR {
+                similar.push((name, score));
+            }
+        }
+        similar.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(b.0)));
+        let similar = similar
+            .into_iter()
+            .take(MAX_SIMILAR)
+            .map(|(file, score)| json!({ "file": file, "score": (score * 100.0).round() / 100.0 }))
+            .collect();
+        (matches, similar)
+    }
+}
+
+/// What an SVG draws: its path segments in page space, moved so the points start at 0,0, as
+/// (verb, coordinates), and its coverage scaled to fit 64×64, one bit per pixel.
+struct Shape {
+    outline: Vec<(u8, Vec<f32>)>,
+    /// The outline's larger side, to compare outlines drawn at another size.
+    extent: f32,
+    mask: [u64; 64],
+}
+
+/// Same segments with points within 0.01 once `b` is scaled by `scale`.
+fn same_outline(a: &[(u8, Vec<f32>)], b: &[(u8, Vec<f32>)], scale: f32) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(a, b)| {
+            a.0 == b.0
+                && a.1
+                    .iter()
+                    .zip(&b.1)
+                    .all(|(p, q)| (p - q * scale).abs() <= 0.01)
+        })
+}
+
+/// How well two masks cover each other within two pixels, so line weight and anti-aliasing
+/// matter less than shape: the smaller of the share of `a` near `b` and of `b` near `a`.
+fn overlap(a: &[u64; 64], b: &[u64; 64]) -> f64 {
+    let near = |m: &[u64; 64], other: &[u64; 64]| {
+        let grown = grow(other);
+        let total: u32 = m.iter().map(|r| r.count_ones()).sum();
+        let hit: u32 = m
+            .iter()
+            .zip(&grown)
+            .map(|(r, g)| (r & g).count_ones())
+            .sum();
+        if total == 0 {
+            0.0
+        } else {
+            f64::from(hit) / f64::from(total)
+        }
+    };
+    near(a, b).min(near(b, a))
+}
+
+/// `m` grown by two pixels in every direction.
+fn grow(m: &[u64; 64]) -> [u64; 64] {
+    let mut out = [0u64; 64];
+    for (y, row) in m.iter().enumerate() {
+        let wide = (-2..=2).fold(0, |acc, d: i32| {
+            acc | if d < 0 { row >> -d } else { row << d }
+        });
+        for dy in -2..=2_i32 {
+            if let Some(o) = out.get_mut((y as i32 + dy) as usize) {
+                *o |= wide;
+            }
+        }
+    }
+    out
+}
+
+/// None when the SVG does not parse or draws no path.
+fn shape(svg: &[u8]) -> Option<Shape> {
+    use resvg::tiny_skia::PathSegment as S;
+    use resvg::usvg::{Group, Node, Options, Tree};
+    fn walk(group: &Group, out: &mut Vec<(u8, Vec<f32>)>) {
+        for node in group.children() {
+            match node {
+                Node::Group(g) => walk(g, out),
+                Node::Path(p) => {
+                    let Some(data) = p.data().clone().transform(p.abs_transform()) else {
+                        continue;
+                    };
+                    let mut start = vec![];
+                    for segment in data.segments() {
+                        let item = match segment {
+                            S::MoveTo(a) => {
+                                start = vec![a.x, a.y];
+                                (0, start.clone())
+                            }
+                            S::LineTo(a) => (1, vec![a.x, a.y]),
+                            S::QuadTo(a, b) => (2, vec![a.x, a.y, b.x, b.y]),
+                            S::CubicTo(a, b, c) => (3, vec![a.x, a.y, b.x, b.y, c.x, c.y]),
+                            S::Close => {
+                                // A line back to the start before closing draws nothing; optimizers drop it.
+                                if out.last().is_some_and(|l| l.0 == 1 && l.1 == start) {
+                                    out.pop();
+                                }
+                                (4, vec![])
+                            }
+                        };
+                        out.push(item);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    // Never let an href read a file from disk.
+    let mut options = Options::default();
+    options.image_href_resolver.resolve_string = Box::new(|_, _| None);
+    let tree = Tree::from_data(svg, &options).ok()?;
+    let mut outline = Vec::new();
+    walk(tree.root(), &mut outline);
+    if outline.is_empty() {
+        return None;
+    }
+    let min = |axis: usize| {
+        outline
+            .iter()
+            .flat_map(|s| s.1.iter().skip(axis).step_by(2))
+            .fold(f32::INFINITY, |m, v| m.min(*v))
+    };
+    let (x, y) = (min(0), min(1));
+    for (_, points) in &mut outline {
+        for (i, v) in points.iter_mut().enumerate() {
+            *v -= if i % 2 == 0 { x } else { y };
+        }
+    }
+    let extent = outline
+        .iter()
+        .flat_map(|s| s.1.iter())
+        .fold(0.0_f32, |m, v| m.max(*v));
+    // Strokes count as what they cover, so a stroked icon compares with its outlined copy.
+    let b = tree.root().abs_stroke_bounding_box();
+    let scale = 64.0 / b.width().max(b.height()).max(f32::EPSILON);
+    let transform = resvg::tiny_skia::Transform::from_row(
+        scale,
+        0.0,
+        0.0,
+        scale,
+        (64.0 - b.width() * scale) / 2.0 - b.x() * scale,
+        (64.0 - b.height() * scale) / 2.0 - b.y() * scale,
+    );
+    let mut pixmap = Pixmap::new(64, 64)?;
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    // Only the main color counts, so a white glyph on a colored badge is a hole, not ink.
+    let color = |px: &resvg::tiny_skia::PremultipliedColorU8| {
+        let c = px.demultiply();
+        [c.red(), c.green(), c.blue()]
+    };
+    let mut counts = std::collections::HashMap::new();
+    for px in pixmap.pixels().iter().filter(|px| px.alpha() >= 64) {
+        *counts.entry(color(px).map(|c| c >> 4)).or_insert(0) += 1;
+    }
+    // A shape too thin to cover a pixel keeps an empty mask; its outline still matches.
+    let main = counts.into_iter().max_by_key(|e| (e.1, e.0)).map(|e| e.0);
+    let mut mask = [0u64; 64];
+    for (i, px) in pixmap.pixels().iter().enumerate() {
+        let near = main.is_some_and(|main| {
+            color(px)
+                .iter()
+                .zip(main)
+                .all(|(c, m)| c.abs_diff(m << 4 | 8) <= 40)
+        });
+        if px.alpha() >= 64 && near {
+            mask[i / 64] |= 1 << (i % 64);
+        }
+    }
+    Some(Shape {
+        outline,
+        extent,
+        mask,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,5 +668,59 @@ mod tests {
                 &b"ftypavif"[..]
             )
         );
+    }
+
+    #[test]
+    fn svg_index_matches_exact_outlines_in_subfolders_and_ranks_similar_shapes() {
+        let dir = crate::test_support::TestDir::new();
+        let file = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                path,
+                format!(r#"<svg xmlns="http://www.w3.org/2000/svg">{body}</svg>"#),
+            )
+            .unwrap();
+        };
+        // The export: a 20px square ring drawn as an outline, away from the origin.
+        let ring = r#"<path fill-rule="evenodd" d="M100 50H120V70H100ZM102 52V68H118V52Z"/>"#;
+        file(
+            "deep/same.svg",
+            r#"<path fill="red" d="m0 0h20v20h-20zm2 2v16h16v-16z"/>"#,
+        );
+        file(
+            "double.svg",
+            r#"<path fill-rule="evenodd" d="M0 0H40V40H0ZM4 4V36H36V4Z"/>"#,
+        );
+        file(
+            "stroked.svg",
+            r#"<rect x="1" y="1" width="18" height="18" fill="none" stroke="black" stroke-width="2"/>"#,
+        );
+        file("dot.svg", r#"<circle cx="10" cy="10" r="10"/>"#);
+        file("broken.svg", "<path");
+        let index = SvgIndex::load(&dir.join("")).unwrap();
+        let export = format!(r#"<svg xmlns="http://www.w3.org/2000/svg">{ring}</svg>"#);
+        let (matches, similar) = index.compare(export.as_bytes(), None);
+        assert_eq!(matches, ["deep/same.svg"]);
+        let files: Vec<_> = similar
+            .iter()
+            .map(|s| s["file"].as_str().unwrap())
+            .collect();
+        // The same outlines at twice the size score 1; the stroked copy covers the same pixels.
+        assert_eq!(files, ["double.svg", "stroked.svg"]);
+        assert_eq!(similar[0]["score"], 1.0);
+        let own = std::fs::canonicalize(dir.join("deep/same.svg")).unwrap();
+        assert!(index.compare(export.as_bytes(), Some(&own)).0.is_empty());
+    }
+
+    #[test]
+    fn svg_index_keeps_exact_matching_for_shapes_too_thin_to_rasterize() {
+        let dir = crate::test_support::TestDir::new();
+        let rule =
+            r#"<svg xmlns="http://www.w3.org/2000/svg"><rect width="1000" height="1"/></svg>"#;
+        std::fs::write(dir.join("rule.svg"), rule).unwrap();
+        let index = SvgIndex::load(&dir.join("")).unwrap();
+        let moved = r#"<svg xmlns="http://www.w3.org/2000/svg"><rect x="5" y="9" width="1000" height="1"/></svg>"#;
+        assert_eq!(index.compare(moved.as_bytes(), None).0, ["rule.svg"]);
     }
 }
