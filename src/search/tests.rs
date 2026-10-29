@@ -439,6 +439,29 @@ fn result_paths_are_charged_before_they_are_copied() {
 }
 
 #[test]
+fn snippets_stop_extending_over_a_long_attached_run() {
+    let run_text = format!("x{}", "\u{FE0F}".repeat(100_000));
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(2, Some(1), "TEXT", "Copy", vec![text(&run_text)]),
+        ]),
+    )]);
+    let tree = Tree::new(&message);
+    let index = build(&tree, "0:0", bounds(WORK));
+    let req = request("x");
+    let q = req.validate().unwrap();
+    let source = json!({"sourceId": "local:test", "snapshotId": "sha256:test"});
+    let found = reply(&index, &q, &req, source).unwrap();
+    let snippet = first(&found)["matches"][0]["snippet"]["text"]
+        .as_str()
+        .unwrap();
+    assert!(snippet.len() < 1024, "{}", snippet.len());
+}
+
+#[test]
 fn names_split_at_slashes_and_camel_case() {
     assert_eq!(ids(&run(&request("button primary"))), ["0:18"]);
     assert_eq!(

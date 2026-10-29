@@ -834,10 +834,17 @@ fn snippet(text: &str, start: usize, end: usize) -> Json {
             None => break,
         }
     }
-    while a > 0 && attached(text, a) {
+    // Stream-safe text attaches at most 30 marks; a longer crafted run is cut there.
+    for _ in 0..32 {
+        if a == 0 || !attached(text, a) {
+            break;
+        }
         a -= text[..a].chars().next_back().unwrap().len_utf8();
     }
-    while b < text.len() && attached(text, b) {
+    for _ in 0..32 {
+        if b == text.len() || !attached(text, b) {
+            break;
+        }
         b += text[b..].chars().next().unwrap().len_utf8();
     }
     json!({"text": &text[a..b], "sourceStart": utf16(&text[..a]),
@@ -992,23 +999,36 @@ fn reply(index: &Index, q: &Prepared, req: &Request, source: Json) -> Result<Jso
         ));
     }
     let (hits, more, excluded) = retrieve(index, q, req);
-    if hits
+    let over = || -> Box<dyn Error> {
+        FigError::new(
+            ErrorKind::ResponseBudget,
+            format!("search results would copy more than {REPLY_BYTES} bytes of names, paths and snippets; lower limit or search a narrower node"),
+        )
+        .into()
+    };
+    let mut bytes = hits
         .iter()
         .map(|hit| result_bytes(index, hit))
-        .sum::<usize>()
-        > REPLY_BYTES
-    {
-        return Err(FigError::new(
-            ErrorKind::ResponseBudget,
-            format!("search results would copy more than {REPLY_BYTES} bytes of names and paths; lower limit or search a narrower node"),
-        )
-        .into());
+        .sum::<usize>();
+    if bytes > REPLY_BYTES {
+        return Err(over());
     }
-    let results: Vec<Json> = hits
-        .iter()
-        .enumerate()
-        .map(|(i, hit)| result(index, hit, q.offset + i + 1, q, &source))
-        .collect();
+    let mut results = Vec::with_capacity(hits.len());
+    for (i, hit) in hits.iter().enumerate() {
+        let out = result(index, hit, q.offset + i + 1, q, &source);
+        // A snippet spans its match, which composed marks can widen; count it once copied.
+        bytes += out["matches"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m["snippet"]["text"].as_str())
+            .map(str::len)
+            .sum::<usize>();
+        if bytes > REPLY_BYTES {
+            return Err(over());
+        }
+        results.push(out);
+    }
     let scope = index.records.first();
     Ok(json!({
         "query": {"text": req.query, "normalized": q.phrase, "mode": "text", "terms": q.terms},

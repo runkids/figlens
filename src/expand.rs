@@ -542,20 +542,6 @@ pub fn abs_matrix(tree: &Tree, id: &str, root: &str) -> Mat {
 }
 
 /// False when `id` or any ancestor up to `root` is hidden.
-fn shown(tree: &Tree, id: &str, root: &str) -> bool {
-    let mut cur = Some(id.to_owned());
-    while let Some(node) = cur.as_deref().and_then(|c| tree.nodes.get(c)) {
-        if flag(node, "visible") == Some(false) {
-            return false;
-        }
-        if cur.as_deref() == Some(root) {
-            break;
-        }
-        cur = parent_of(node);
-    }
-    true
-}
-
 fn main_of<'t>(tree: &Tree<'t>, instance: &Value) -> Option<String> {
     instance
         .get("symbolData")?
@@ -619,12 +605,20 @@ fn expand_all(
         exceeded: false,
     };
     let stored = subtree_while(tree, root, || ex.spend(1, 0));
+    // Parents come before their children, so visibility is inherited in one pass.
+    let mut hidden = std::collections::HashSet::new();
     for id in stored {
         if ex.exceeded {
             break;
         }
         let inst = tree.nodes[&id];
-        if enum_name(inst, "type") != Some("INSTANCE") || !shown(tree, &id, root) {
+        if flag(inst, "visible") == Some(false)
+            || (id != root && parent_of(inst).is_some_and(|p| hidden.contains(&p)))
+        {
+            hidden.insert(id);
+            continue;
+        }
+        if enum_name(inst, "type") != Some("INSTANCE") {
             continue;
         }
         // REST output keeps stored children over an expansion, so a bounded run skips it unread.
@@ -737,13 +731,14 @@ impl Expander<'_, '_> {
         }
         let tree = self.tree;
         let ids = subtree_while(tree, symbol, || self.spend(1, 0));
-        let texts = ids.iter().filter_map(|id| tree.nodes[id].get("textData"));
+        // A nested instance may name a component the file lacks; it expands to nothing.
+        let present = || ids.iter().filter_map(|id| tree.nodes.get(id));
+        let texts = present().filter_map(|n| n.get("textData"));
         let text = self
             .spend_estimated(0, 0, |left| texts.map(|t| kiwi_bytes(t, left)).sum())
             .unwrap_or(0);
-        let refs = ids
-            .iter()
-            .map(|id| list_len(tree.nodes[id].get("componentPropRefs")))
+        let refs = present()
+            .map(|n| list_len(n.get("componentPropRefs")))
             .sum();
         let cost = (ids.len(), text, refs);
         self.sizes.insert(symbol.to_owned(), cost);
@@ -1399,6 +1394,35 @@ mod tests {
             bounded(&tree, "wide page", 1 << 20, 64 << 20).0.nodes.len(),
             100
         );
+    }
+
+    #[test]
+    fn a_bounded_expansion_skips_a_nested_instance_of_a_missing_component() {
+        let inst = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            ("symbolData", obj(vec![("symbolID", guid(1, 1))])),
+        ]);
+        let nested = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            ("symbolData", obj(vec![("symbolID", guid(9, 9))])),
+        ]);
+        let (page, main) = (obj(vec![]), obj(vec![]));
+        let tree = Tree {
+            nodes: HashMap::from([
+                ("page".into(), &page),
+                ("inst".into(), &inst),
+                ("1:1".into(), &main),
+                ("nested".into(), &nested),
+            ]),
+            children: HashMap::from([
+                ("page".into(), vec!["inst".into()]),
+                ("1:1".into(), vec!["nested".into()]),
+            ]),
+            blobs: Vec::new(),
+        };
+        let (ex, bounds) = bounded(&tree, "page", 1 << 20, 1 << 20);
+        assert_eq!(bounds.stop, None);
+        assert_eq!(ex.children, expand_instances(&tree, "page").children);
     }
 
     #[test]
