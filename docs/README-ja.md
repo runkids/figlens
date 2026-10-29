@@ -158,7 +158,7 @@ skillshare sync && skillshare sync mcp --global
 
 | コマンド | 出力 |
 |---|---|
-| `tree <file> [node] [--depth N] [--json]` | ノード ID、REST タイプ（`nodes` と同じ）、名前。インデント付きテキストまたはネストした JSON |
+| `tree <file> [node] [--depth N] [--json]` | ノード ID、REST タイプ（`nodes` と同じ）、名前。インデント付きテキスト、または各ノードのサイズと非表示状態を含むネストした JSON |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | レイヤー名とテキストの大文字小文字を区別しない検索。パス、サイズ、プレビュー。デフォルト 20 件（1-200） |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | 展開済みレイアウト/テキストのコンパクトな要約（最大 200 ノード）。`--images` でビットマップの寸法とクロップ範囲を追加 |
 | `nodes <file> <node>` | REST 形式の JSON：展開済みインスタンスとオーバーライド、auto-layout、テキストスタイル、フィル、エフェクト、バインドされた variables、コンポーネントプロパティ、レンダリング bounds |

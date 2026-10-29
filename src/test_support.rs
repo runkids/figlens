@@ -79,7 +79,8 @@ fn directories_keep_their_own_files_and_cleanup() {
     );
 }
 
-/// A canvas holding a component set (a state-group frame) with one component main (`SYMBOL`).
+/// A canvas holding a component set (a state-group frame) with one hidden 24x16 component
+/// main (`SYMBOL`).
 pub(crate) fn component_set() -> kiwi_schema::Value<'static> {
     use kiwi_schema::Value;
     use std::collections::HashMap;
@@ -119,7 +120,24 @@ pub(crate) fn component_set() -> kiwi_schema::Value<'static> {
                     "FRAME",
                     vec![("isStateGroup", Value::Bool(true))],
                 ),
-                node(2, Some(1), "SYMBOL", vec![]),
+                node(
+                    2,
+                    Some(1),
+                    "SYMBOL",
+                    vec![
+                        ("visible", Value::Bool(false)),
+                        (
+                            "size",
+                            Value::Object(
+                                "Vector",
+                                HashMap::from([
+                                    ("x", Value::Float(24.0)),
+                                    ("y", Value::Float(16.0)),
+                                ]),
+                            ),
+                        ),
+                    ],
+                ),
             ]),
         )]),
     )
