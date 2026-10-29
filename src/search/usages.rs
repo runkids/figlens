@@ -176,7 +176,31 @@ pub(crate) fn extract(
     let Some((unverified, unread)) = gaps else {
         return Some(out);
     };
-    let fields = effective(tree, id, e, bounds, unread, false)?;
+    let mut fields = effective(tree, id, e, bounds, unread, false)?;
+    // A text range row applies where a character uses its styleID; as in `rest::text_overrides`,
+    // the last row of one styleID wins. Unused rows are blanked in place, so every relation read
+    // from the rows skips them and the rest keep their index. Charged per row first.
+    if let Some(text) = fields.get_mut("textData") {
+        let uses = text["characterStyleIDs"].take();
+        let uses = uses.as_array().map_or(&[][..], Vec::as_slice);
+        if let Some(table) = text["styleOverrideTable"].as_array_mut() {
+            if !bounds.charge(table.len(), 16 * table.len()) {
+                return None;
+            }
+            let mut seen = BTreeSet::new();
+            for row in table.iter_mut().rev() {
+                let sid = row["styleID"].as_u64();
+                let used = seen.insert(sid)
+                    && sid.is_some_and(|sid| {
+                        uses.binary_search_by(|u| u.as_u64().cmp(&Some(sid)))
+                            .is_ok()
+                    });
+                if !used {
+                    *row = Json::Null;
+                }
+            }
+        }
+    }
     // REST lists no vector-region fills; usages reads their bindings like top-level fills.
     let regions: Json = fields
         .get("vectorData")
@@ -245,37 +269,18 @@ pub(crate) fn extract(
         }
         (None, None) => None,
     };
-    // A range row applies where a character uses its styleID; as in `rest::text_overrides`, the
-    // last row of one styleID wins. Looked up in the sorted ids, charged per row first.
-    let text = fields.get("textData");
-    let table = text
+    let rows = fields
+        .get("textData")
         .and_then(|t| t["styleOverrideTable"].as_array())
-        .map_or(&[][..], Vec::as_slice);
-    let uses = text
-        .and_then(|t| t["characterStyleIDs"].as_array())
-        .map_or(&[][..], Vec::as_slice);
-    if !bounds.charge(table.len(), 16 * table.len()) {
-        return None;
-    }
-    let mut seen = BTreeSet::new();
-    let mut kept: Vec<usize> = (0..table.len())
-        .rev()
-        .filter(|&i| {
-            let sid = table[i]["styleID"].as_u64();
-            seen.insert(sid)
-                && sid.is_some_and(|sid| {
-                    uses.binary_search_by(|u| u.as_u64().cmp(&Some(sid)))
-                        .is_ok()
-                })
-        })
-        .collect();
-    kept.reverse();
-    let rows = kept.into_iter().filter_map(|i| {
-        Some((
-            table[i].get("styleIdForText")?,
-            format!("textData.styleOverrideTable[{i}].styleIdForText"),
-        ))
-    });
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(i, row)| {
+            Some((
+                row.get("styleIdForText")?,
+                format!("textData.styleOverrideTable[{i}].styleIdForText"),
+            ))
+        });
     let top = STYLES
         .into_iter()
         .filter_map(|k| Some((fields.get(k)?, k.to_owned())));
@@ -489,11 +494,7 @@ fn effective(
             (None, None) => continue,
         };
         // Only the rows a character uses apply, as `rest::text_overrides` selects them.
-        if *key == "textData"
-            && converted["styleOverrideTable"]
-                .as_array()
-                .is_some_and(|t| t.iter().any(|r| r.get("styleIdForText").is_some()))
-        {
+        if *key == "textData" {
             use kiwi_schema::Value as K;
             let uses = match own {
                 Some(v) => match v["characterStyleIDs"].as_array() {

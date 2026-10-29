@@ -724,8 +724,8 @@ fn a_page_past_its_scan_cap_is_a_work_limit_not_an_empty_complete_answer() {
 
 #[test]
 fn styled_text_and_vector_region_images_and_capped_prototypes_are_kept_or_partial() {
-    let image = |b: u8| {
-        obj(vec![(
+    let table = |b: u8| {
+        (
             "styleOverrideTable",
             K::Array(vec![obj(vec![
                 ("styleID", K::UInt(1)),
@@ -737,7 +737,7 @@ fn styled_text_and_vector_region_images_and_capped_prototypes_are_kept_or_partia
                     ])]),
                 ),
             ])]),
-        )])
+        )
     };
     // 17 actions in one interaction: the reader keeps 16 and reports truncation.
     let actions = K::Array(
@@ -766,13 +766,25 @@ fn styled_text_and_vector_region_images_and_capped_prototypes_are_kept_or_partia
             node(0, None, "DOCUMENT", "Document", vec![]),
             node(1, Some(0), "CANVAS", "Page", vec![]),
             node(2, Some(1), "FRAME", "Target", vec![]),
-            node(3, Some(1), "TEXT", "Label", vec![("textData", image(0x01))]),
+            node(
+                3,
+                Some(1),
+                "TEXT",
+                "Label",
+                vec![(
+                    "textData",
+                    obj(vec![
+                        ("characterStyleIDs", K::Array(vec![K::UInt(1)])),
+                        table(0x01),
+                    ]),
+                )],
+            ),
             node(
                 4,
                 Some(1),
                 "VECTOR",
                 "Shape",
-                vec![("vectorData", image(0x02))],
+                vec![("vectorData", obj(vec![table(0x02)]))],
             ),
             node(
                 5,
@@ -1399,6 +1411,13 @@ fn a_text_too_long_to_select_its_rows_leaves_its_range_styles_partial() {
                             K::Array(vec![obj(vec![
                                 ("styleID", K::UInt(1)),
                                 ("styleIdForText", obj(vec![("guid", guid(2))])),
+                                (
+                                    "fillPaints",
+                                    K::Array(vec![obj(vec![
+                                        ("type", K::Enum("PaintType", "IMAGE")),
+                                        ("image", obj(vec![("hash", K::Bytes(vec![0x20]))])),
+                                    ])]),
+                                ),
                             ])]),
                         ),
                     ]),
@@ -1412,6 +1431,11 @@ fn a_text_too_long_to_select_its_rows_leaves_its_range_styles_partial() {
         (ids(&out).len(), &out["coverage"]["complete"]),
         (0, &json!(false))
     );
+    // An image is no definition: with its only use unread, the answer is not found, never a
+    // complete empty one.
+    let mut image = req("image:20");
+    image.resource = true;
+    assert!(run(&index, &image).is_err());
 }
 
 #[test]
@@ -1422,6 +1446,13 @@ fn an_instance_text_override_applies_its_range_style_only_where_characters_use_i
             K::Array(vec![obj(vec![
                 ("styleID", K::UInt(1)),
                 ("styleIdForText", obj(vec![("guid", guid(12))])),
+                (
+                    "fillPaints",
+                    K::Array(vec![obj(vec![
+                        ("type", K::Enum("PaintType", "IMAGE")),
+                        ("image", obj(vec![("hash", K::Bytes(vec![0x30]))])),
+                    ])]),
+                ),
             ])]),
         )];
         if let Some(ids) = ids {
@@ -1457,5 +1488,107 @@ fn an_instance_text_override_applies_its_range_style_only_where_characters_use_i
             vec!["I0:30;0:21".to_owned()],
             &json!("textData.styleOverrideTable[0].styleIdForText")
         )
+    );
+    let mut image = req("image:30");
+    image.resource = true;
+    image.scope = "0:3".into();
+    assert_eq!(ids(&run(&index, &image).unwrap()), ["I0:30;0:21"]);
+}
+
+#[test]
+fn only_text_rows_characters_use_lend_their_images_and_paint_bindings() {
+    let image = |b: u8| {
+        K::Array(vec![obj(vec![
+            ("type", K::Enum("PaintType", "IMAGE")),
+            ("image", obj(vec![("hash", K::Bytes(vec![b]))])),
+        ])])
+    };
+    let row =
+        |sid: u32, paints: K<'static>| obj(vec![("styleID", K::UInt(sid)), ("fillPaints", paints)]);
+    let rows = |used: Vec<u32>| {
+        obj(vec![
+            (
+                "characterStyleIDs",
+                K::Array(used.into_iter().map(K::UInt).collect()),
+            ),
+            (
+                "styleOverrideTable",
+                K::Array(vec![
+                    row(1, image(0x10)),
+                    row(2, image(0x11)),
+                    row(4, solid(40)),
+                    row(5, solid(41)),
+                    // Two rows of one styleID: the last applies.
+                    row(3, image(0x12)),
+                    row(3, image(0x13)),
+                ]),
+            ),
+        ])
+    };
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(40, Some(1), "VARIABLE", "Used", vec![]),
+            node(41, Some(1), "VARIABLE", "Unused", vec![]),
+            node(
+                2,
+                Some(1),
+                "TEXT",
+                "Body",
+                vec![("textData", rows(vec![1, 1, 3, 4]))],
+            ),
+            // Vector regions keep every row.
+            node(
+                3,
+                Some(1),
+                "VECTOR",
+                "Shape",
+                vec![("vectorData", rows(vec![]))],
+            ),
+        ]),
+    )]);
+    let index = build(&Tree::new(&message), "0:0", bounds(WORK));
+    let users = |target: &str| {
+        let mut r = req(target);
+        r.resource = true;
+        ids(&run(&index, &r).unwrap())
+    };
+    assert_eq!(users("image:10"), ["0:2", "0:3"]);
+    assert_eq!(users("image:11"), ["0:3"]);
+    assert_eq!(users("image:12"), ["0:3"]);
+    assert_eq!(users("image:13"), ["0:2", "0:3"]);
+    assert_eq!(users("VariableID:0:40"), ["0:2", "0:3"]);
+    assert_eq!(users("VariableID:0:41"), ["0:3"]);
+    let mut r = req("0:2");
+    r.outgoing = true;
+    r.relations = vec!["binds_variable".into(), "uses_image".into()];
+    let out = run(&index, &r).unwrap();
+    let edges: Vec<(&Json, &Json, &Json)> = out["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (&e["relation"], &e["target"]["resource"], &e["evidence"]))
+        .collect();
+    assert_eq!(
+        edges,
+        [
+            (
+                &json!("binds_variable"),
+                &json!("VariableID:0:40"),
+                &json!("textRangeFills")
+            ),
+            (
+                &json!("uses_image"),
+                &json!("image:10"),
+                &json!("textData.styleOverrideTable[0].fillPaints[0]")
+            ),
+            (
+                &json!("uses_image"),
+                &json!("image:13"),
+                &json!("textData.styleOverrideTable[5].fillPaints[0]")
+            ),
+        ]
     );
 }
