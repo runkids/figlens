@@ -384,9 +384,15 @@ pub(crate) fn extract(
             .nodes
             .get(e.map_or(id, |e| e.source.as_str()))
             .is_some_and(|n| n.get("prototypeInteractions").is_some());
-    // The evidence JSON is transient and capped by the prototype reader; only kept edges are
-    // retained, each charged before it is.
-    if has_prototype && let Some(p) = crate::prototype::node(tree, id, e, kind) {
+    // The reader reserves each projection at its caps from the build bounds before reading
+    // it; only kept edges are retained, each charged before it is.
+    let p = match has_prototype {
+        true => {
+            crate::prototype::node_with(tree, id, e, kind, &mut |w, b| bounds.charge(w, b)).ok()?
+        }
+        false => None,
+    };
+    if let Some(p) = p {
         // Interactions a component defines are not verified to apply to its instances.
         let inherited = p["basis"] == "component-definition";
         // Actions past the reader's caps are not read, so their targets are not verified absent.

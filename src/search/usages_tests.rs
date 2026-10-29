@@ -1,7 +1,7 @@
 use super::super::tests::{bounds, guid, instance, node, obj, path, stored};
 use super::*;
 use crate::search::store::Stored;
-use crate::search::{WORK, build};
+use crate::search::{WORK, build, build_as};
 use kiwi_schema::Value as K;
 
 fn alias(id: u32) -> K<'static> {
@@ -1778,4 +1778,37 @@ fn an_outgoing_query_with_no_rows_still_checks_its_definition_against_the_budget
         err.downcast_ref::<FigError>().map(FigError::kind),
         Some(ErrorKind::ResponseBudget)
     );
+}
+
+#[test]
+fn a_prototype_projection_is_reserved_from_the_build_bounds_even_without_destinations() {
+    // A scroll action has no destination, so no edge would ever charge for reading it.
+    let scroll = obj(vec![(
+        "actions",
+        K::Array(vec![obj(vec![(
+            "navigationType",
+            K::Enum("NavigationType", "SCROLL_TO"),
+        )])]),
+    )]);
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(
+                2,
+                Some(1),
+                "FRAME",
+                "Menu",
+                vec![("prototypeInteractions", K::Array(vec![scroll]))],
+            ),
+        ]),
+    )]);
+    let tree = Tree::new(&message);
+    let tight = crate::expand::Bounds {
+        bytes: 8 * 1024,
+        ..bounds(WORK)
+    };
+    assert_eq!(build_as(&tree, "0:0", tight, false).stop, None);
+    assert!(build(&tree, "0:0", tight).stop.is_some());
 }
