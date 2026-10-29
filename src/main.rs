@@ -54,12 +54,16 @@ usage:
                                              writes <dir>/<nodeId>.zip (`:` as `-`), prints one JSON line
                                              per frame ({nodeId,path,warnings} or {nodeId,error});
                                              --jobs limits concurrent frames (0/default: all cores), not rendering
-  figlens export <file.fig> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]
+  figlens export <file.fig> <node> <out> [--bounds layout|render] [--scale N] [--quality 1-100]
+          [--max-kb N] [--max-size N]
                                             render a node to out.png|jpg|webp|avif|svg (default 1x,
                                              quality 80); SVG keeps vectors, scale/quality do not apply;
                                              --max-kb lowers lossy quality until it fits;
                                              --max-size scales raster output to fit its longest side;
-                                             prints {path,width,height,bytes,quality}
+                                             --bounds layout exports the node's own box instead of
+                                             what it draws (shadows, outside strokes, overflow);
+                                             prints {path,width,height,bytes,quality,layoutBox,
+                                             renderBox,warnings}; warnings say when the boxes differ
   figlens export <file.fig> --frames <list|-> --out-dir <dir> [--format png|jpg|webp|avif|svg] ...
                                              one decode, many exports (default png, same options):
                                              writes <dir>/<nodeId>.<format> (`:` as `-`), prints one
@@ -492,7 +496,7 @@ fn export_batch(
             "--frames" => list = Some(value()?),
             "--out-dir" => dir = Some(value()?),
             "--format" => format = value()?.to_ascii_lowercase(),
-            "--scale" | "--quality" | "--max-kb" | "--max-size" => {
+            "--bounds" | "--scale" | "--quality" | "--max-kb" | "--max-size" => {
                 options.extend([arg.clone(), value()?]);
             }
             _ => return Err(USAGE.into()),
@@ -503,7 +507,7 @@ fn export_batch(
     // Bad options fail once, before any file is written, instead of on every line.
     let export_format = figlens::export::Format::from_ext(&format)
         .ok_or("--format takes png, jpg, webp, avif or svg")?;
-    let (scale, quality, max_kb, max_size) = command::export_options(&options)?;
+    let (layout, scale, quality, max_kb, max_size) = command::export_options(&options)?;
     std::fs::create_dir_all(&dir)?;
     // shortcut: frames export one after another; add bundle's --jobs if large batches need it.
     batch_lines(&frames, out, |id| {
@@ -511,6 +515,7 @@ fn export_batch(
             node: id.to_owned(),
             out: dir.join(format!("{}.{format}", id.replace(':', "-"))),
             format: export_format,
+            layout,
             scale,
             quality,
             max_kb,

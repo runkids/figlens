@@ -170,7 +170,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "export",
-        "Export a node to SVG, PNG, JPG, WebP or AVIF. Create the output directory first. Returns metadata and, for raster formats, an inline image. PNG suits inline references. For website assets, follow the target project's existing image pipeline; otherwise start with WebP for bitmaps, sized for display dimensions and DPR using scale/maxSize and quality/maxKb. SVG embeds original images and can be large; keep it for vector artwork. scale, quality and maxSize affect raster formats only; maxSize defaults to 1600. Check returned dimensions/bytes and isError; read content on failure.",
+        "Export a node to SVG, PNG, JPG, WebP or AVIF. Create the output directory first. Returns metadata and, for raster formats, an inline image. PNG suits inline references. For website assets, follow the target project's existing image pipeline; otherwise start with WebP for bitmaps, sized for display dimensions and DPR using scale/maxSize and quality/maxKb. SVG embeds original images and can be large; keep it for vector artwork. The export covers what the node draws; bounds: layout exports the layout box, and warnings report when the two differ. scale, quality and maxSize affect raster formats only; maxSize defaults to 1600. Check returned dimensions/bytes and isError; read content on failure.",
         &[
             FILE,
             NODE,
@@ -179,6 +179,12 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "string",
                 true,
                 "output path ending in .png, .jpg, .jpeg, .webp, .avif or .svg; shipped assets follow the project's asset conventions, reference and scratch files go in .figlens/exports/ under the project root, created with a .gitignore containing * so it stays out of Git; create the parent directory first",
+            ),
+            (
+                "bounds",
+                "string",
+                false,
+                "render (default): what the node draws, shadows, outside strokes and overflowing children included, as Figma's Export panel; layout: the node's own box (absoluteBoundingBox), cutting off what is drawn past it",
             ),
             ("scale", "number", false, "default 1"),
             ("quality", "integer", false, "1-100, default 80"),
@@ -227,6 +233,9 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "height": { "type": "integer" },
                 "bytes": { "type": "integer" },
                 "quality": { "type": "integer", "description": "the quality used; --max-kb may lower it" },
+                "layoutBox": { "type": ["object", "null"], "description": "absoluteBoundingBox in page coordinates" },
+                "renderBox": { "type": ["object", "null"], "description": "absoluteRenderBounds in page coordinates" },
+                "warnings": { "type": "array", "items": { "type": "string" }, "description": "empty unless the drawn area differs from the layout box; then how far it reaches past each side, what draws there when known, and which box was exported" },
             }),
             ["path", "width", "height", "bytes", "quality"].as_slice(),
         ),
@@ -296,6 +305,7 @@ fn default(tool: &str, key: &str) -> Option<Value> {
         }
         ("inspect", "depth") | ("export", "scale") => Some(json!(1)),
         ("find", "limit") => Some(json!(20)),
+        ("export", "bounds") => Some(json!("render")),
         ("export", "quality") => Some(json!(80)),
         ("export", "maxSize") => Some(json!(1600)),
         _ => None,
@@ -334,6 +344,9 @@ pub fn property(tool: &str, param: &Param) -> Value {
     }
     if tool == "export" && key == "scale" {
         p["exclusiveMinimum"] = json!(0);
+    }
+    if tool == "export" && key == "bounds" {
+        p["enum"] = json!(["render", "layout"]);
     }
     if tool == "workflow" && key == "topic" {
         p["enum"] = json!(crate::workflow::TOPICS);

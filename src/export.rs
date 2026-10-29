@@ -1,10 +1,11 @@
-//! Export one node as SVG or a raster image, with render bounds so shadows are included.
-//! Raster formats support a quality setting and an optional size budget.
+//! Export one node as SVG or a raster image, with render bounds so shadows are included, or
+//! with its layout box on request. Raster formats support a quality setting and a size budget.
 
 use std::error::Error;
 use std::path::Path;
 
 use resvg::tiny_skia::Pixmap;
+use serde_json::{Map, Value as Json, json};
 
 use crate::Tree;
 use crate::render::{self, Prepared};
@@ -46,18 +47,21 @@ pub struct Image {
     pub quality: u8,
 }
 
-/// Renders node `id` and encodes it. SVG keeps its original dimensions and ignores quality.
+/// Renders node `id` over its render bounds, or its layout box when `layout`, and encodes it.
+/// SVG keeps its original dimensions and ignores quality. Also returns `layoutBox`, `renderBox`
+/// and `warnings`.
 #[allow(clippy::too_many_arguments)]
 pub fn export(
     tree: &Tree,
     fig: &Path,
     id: &str,
     format: Format,
+    layout: bool,
     scale: f64,
     quality: u8,
     max_bytes: Option<usize>,
     max_px: Option<u32>,
-) -> Result<Image, Box<dyn Error>> {
+) -> Result<(Image, Map<String, Json>), Box<dyn Error>> {
     let prepared = Prepared::new(tree, fig, id)?;
     let unsupported = |reason: &str| {
         crate::FigError::new(
@@ -74,12 +78,26 @@ pub fn export(
         )
         .into());
     }
+    let n = prepared.node();
+    // What a render-bounds export covers: raster adds a SECTION's margin and frames a page.
+    let drawn = if format == Format::Svg {
+        render::render_bounds(n)
+    } else {
+        render::export_area(n)
+    };
+    let area = if layout {
+        render::layout_bounds(n).ok_or_else(|| {
+            unsupported("it has no layout box (a page has none); export it without bounds layout")
+        })?
+    } else {
+        drawn.ok_or_else(unbounded)?
+    };
+    let report = bounds_report(n, drawn, layout);
     if format == Format::Svg {
-        let n = prepared.node();
-        let area = render::render_bounds(n).ok_or_else(unbounded)?;
         let lookup = |h: &str| prepared.images.get(h).cloned();
         // Keep original image fills embedded; raster export's downsampling would lose detail.
         let bytes = render::Svg::new(tree, &lookup)
+            .clipped(layout)
             .document(n, area, 1.0)
             .into_bytes();
         if max_bytes.is_some_and(|max| bytes.len() > max) {
@@ -90,28 +108,96 @@ pub fn export(
             .into());
         }
         let px = |len: f64| (len - 1e-3).ceil().max(1.0) as u32;
-        return Ok(Image {
+        let image = Image {
             bytes,
             width: px(area[2] - area[0]),
             height: px(area[3] - area[1]),
             quality,
-        });
+        };
+        return Ok((image, report));
     }
     // Fit the longest side into `max_px`, so an agent's inline image stays small.
-    let scale = match (max_px, render::export_area(prepared.node())) {
-        (Some(max), Some(area)) => {
-            let longest = (area[2] - area[0]).max(area[3] - area[1]) * scale;
-            if longest > f64::from(max) {
-                scale * f64::from(max) / longest
-            } else {
-                scale
-            }
-        }
+    let longest = (area[2] - area[0]).max(area[3] - area[1]) * scale;
+    let scale = match max_px {
+        Some(max) if longest > f64::from(max) => scale * f64::from(max) / longest,
         _ => scale,
     };
-    let svg = prepared.export_svg(tree, scale).ok_or_else(unbounded)?;
-    let pixmap = render::pixmap(&svg)?;
-    Ok(encode(&pixmap, format, quality, max_bytes)?)
+    let pixmap = render::pixmap(&prepared.export_svg_in(tree, area, scale, layout))?;
+    Ok((encode(&pixmap, format, quality, max_bytes)?, report))
+}
+
+/// Both boxes of REST node `n`, and a warning naming what is drawn past the layout box when
+/// `drawn` (what a render-bounds export covers) differs from it, since such an asset does not fit
+/// the layout slot. Causes follow the renderer's reach: shadows and layer blurs, outside or
+/// centered strokes, children past an unclipped box, and a SECTION's margin.
+fn bounds_report(n: &Json, drawn: Option<render::Rect>, layout: bool) -> Map<String, Json> {
+    let mut warnings = Vec::new();
+    if let (Some(l), Some(d)) = (render::layout_bounds(n), drawn) {
+        // How far the drawn area reaches past each side of the layout box; negative is inside.
+        let past = [l[1] - d[1], d[2] - l[2], d[3] - l[3], l[0] - d[0]];
+        if past.iter().any(|d| d.abs() >= 0.01) {
+            let r = &n["_r"];
+            let mut causes = Vec::new();
+            let reaches = |e: &Json| {
+                render::visible(e)
+                    && matches!(
+                        e["type"].as_str(),
+                        Some("DROP_SHADOW" | "FOREGROUND_BLUR" | "LAYER_BLUR")
+                    )
+            };
+            if r["effects"]
+                .as_array()
+                .is_some_and(|e| e.iter().any(reaches))
+            {
+                causes.push("effects");
+            }
+            if render::has_paint(&r["strokePaints"])
+                && r["strokeWeight"].as_f64().is_some_and(|w| w > 0.0)
+                && matches!(r["strokeAlign"].as_str(), Some("OUTSIDE" | "CENTER"))
+            {
+                causes.push("stroke");
+            }
+            let outside = |c: &Json| {
+                render::visible(c)
+                    && render::render_bounds(c)
+                        .is_some_and(|b| b[0] < l[0] || b[1] < l[1] || b[2] > l[2] || b[3] > l[3])
+            };
+            if n["clipsContent"] != true
+                && n["children"]
+                    .as_array()
+                    .is_some_and(|c| c.iter().any(outside))
+            {
+                causes.push("child geometry");
+            }
+            if n["type"] == "SECTION" && drawn != render::render_bounds(n) {
+                causes.push("section margin");
+            }
+            let sides = ["top", "right", "bottom", "left"]
+                .iter()
+                .zip(past)
+                .map(|(side, d)| format!("{side} {}", (d * 100.0).round() / 100.0 + 0.0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let from = if past.iter().any(|&d| d >= 0.01) && !causes.is_empty() {
+                format!(" from {}", causes.join(", "))
+            } else {
+                String::new()
+            };
+            let used = if layout {
+                "exported at the layout box, cutting off what is drawn past it"
+            } else {
+                "exported over what is drawn; bounds layout exports the layout box"
+            };
+            warnings.push(format!(
+                "the drawn area differs from the layout box by {sides} px (positive reaches past it){from}; {used}"
+            ));
+        }
+    }
+    let mut report = Map::new();
+    report.insert("layoutBox".into(), n["absoluteBoundingBox"].clone());
+    report.insert("renderBox".into(), n["absoluteRenderBounds"].clone());
+    report.insert("warnings".into(), json!(warnings));
+    report
 }
 
 /// The real node an id lives in: an instance sublayer `I<instance>;…` exists only once
@@ -228,6 +314,42 @@ mod tests {
         let full = encode(&p, Format::Jpg, 90, None).unwrap().bytes.len();
         let fit = encode(&p, Format::Jpg, 90, Some(full / 2)).unwrap();
         assert!(fit.bytes.len() <= full / 2 && fit.quality < 90);
+    }
+
+    #[test]
+    fn bounds_report_names_only_what_the_renderer_draws_past_the_box() {
+        let warning = |n: Json, drawn: render::Rect| {
+            bounds_report(&n, Some(drawn), false)["warnings"][0]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        let node = |kind: &str, r: Json, children: Json| {
+            json!({ "type": kind, "_r": r, "children": children,
+                "absoluteBoundingBox": { "x": 0, "y": 0, "width": 10, "height": 10 },
+                "absoluteRenderBounds": { "x": 0, "y": 0, "width": 12, "height": 12 } })
+        };
+        let shadow = node(
+            "FRAME",
+            json!({ "effects": [{ "type": "DROP_SHADOW" }, { "type": "INNER_SHADOW" }] }),
+            json!([]),
+        );
+        assert!(warning(shadow, [0.0, 0.0, 12.0, 12.0]).contains("from effects;"));
+        // An inner shadow and a stroke with no outward alignment stay inside the box.
+        let overflow = node(
+            "FRAME",
+            json!({ "effects": [{ "type": "INNER_SHADOW" }], "strokeWeight": 2,
+                "strokePaints": [{ "type": "SOLID" }] }),
+            json!([{ "absoluteRenderBounds": { "x": 5, "y": 5, "width": 7, "height": 7 } }]),
+        );
+        assert!(warning(overflow, [0.0, 0.0, 12.0, 12.0]).contains("from child geometry;"));
+        let section = node("SECTION", json!({}), json!([]));
+        let margin = warning(section, [-40.0, -40.0, 52.0, 52.0]);
+        assert!(
+            margin.contains("top 40, right 42, bottom 42, left 40 px"),
+            "{margin}"
+        );
+        assert!(margin.contains("from section margin;"), "{margin}");
     }
 
     #[test]
