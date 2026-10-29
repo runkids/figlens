@@ -197,6 +197,10 @@ jobs:
         shell: bash
         env:
           PI_VERSION: ${{ matrix.pi }}
+          # The default TEMP on Windows runners is on C:, where installing the Pi SDK's 15k files
+          # took 108 s against 10 s on the runner's D: work drive.
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: |
           args=(--artifacts dist/candidate --commit "$(git rev-parse HEAD)")
           if [ -n "$PI_VERSION" ]; then args+=(--pi-version "$PI_VERSION"); fi
