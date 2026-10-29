@@ -4,12 +4,16 @@ import { Viewer } from './viewer.mjs';
 
 const service = `
 const http = require('node:http');
+// reset.fig drops its first two connections, a network-level failure fetch reports as TypeError.
+let resets = process.argv.includes('reset.fig') ? 2 : 0;
 if (process.argv.includes('bad.fig')) { console.error('Invalid design'); process.exit(1); }
 if (process.argv.includes('early-exit.fig')) { console.error('Preview: http://127.0.0.1:9/test-token/'); process.exit(1); }
 if (!process.argv.includes('slow.fig')) {
   const server = http.createServer((req, res) => {
+    if (resets > 0) { resets--; return req.socket.destroy(); }
     if (req.url === '/test-token/catalog') {
-      res.end(process.argv.includes('invalid-catalog.fig') ? 'not json' : JSON.stringify({ generation: 1 }));
+      res.end(process.argv.includes('invalid-catalog.fig') ? 'not json'
+        : process.argv.includes('null-catalog.fig') ? 'null' : JSON.stringify({ generation: 1 }));
     } else if (req.url.startsWith('/test-token/data/1/')) {
       const id = req.url.slice('/test-token/data/1/'.length);
       if (['999:999', 'I12:3;999:999'].includes(id)) { res.writeHead(400); res.end('node not found'); }
@@ -45,6 +49,17 @@ for (const [name, script] of [
   await viewer.close();
   assert.equal(viewer.children.size, 0);
   await assert.rejects(fetch(second.url));
+});
+
+test('a network-level failure before the service answers is retried until startup succeeds', async t => {
+  const viewer = new Viewer(process.execPath, ['-e', service]);
+  t.after(() => viewer.close());
+  const started = await viewer.start('reset.fig');
+  assert.deepEqual(await (await fetch(started.url)).json(), ['preview', 'reset.fig']);
+  // A TypeError from reading a bad catalog is not a connection failure: it ends startup at once.
+  const begun = Date.now();
+  await assert.rejects(viewer.start('null-catalog.fig', '12:3'), /Preview is not ready/);
+  assert.ok(Date.now() - begun < 5000);
 });
 
 test('cancelled startup stops its server and a failed spawn reports its error', async t => {

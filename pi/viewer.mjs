@@ -31,6 +31,8 @@ export async function stopProcess(child) {
   await closed;
 }
 
+const described = error => `${error.message}${error.cause ? ` (${error.cause.code ?? error.cause.message})` : ''}`;
+
 export class Viewer {
   constructor(command, prefix = []) {
     this.command = command;
@@ -54,11 +56,13 @@ export class Viewer {
       const url = await new Promise((resolve, reject) => {
         let finished = false;
         let checking = false;
+        let retry, failure = '';
         const request = new AbortController();
         const finish = (error, value) => {
           if (finished) return;
           finished = true;
           clearTimeout(timer);
+          clearTimeout(retry);
           request.abort();
           signal?.removeEventListener('abort', abort);
           child.stderr.removeListener('data', data);
@@ -75,8 +79,16 @@ export class Viewer {
           if (match && !checking) {
             checking = true;
             // The CLI prints its URL before decoding. Check the file and requested scope.
-            fetch(`${match[1]}catalog`, { signal: request.signal })
+            const probe = () => fetch(`${match[1]}catalog`, { signal: request.signal })
+              .catch(error => {
+                // fetch rejects with TypeError on a network-level failure (cause unknown on Windows,
+                // #113): retry until the startup timeout; an exit or HTTP/JSON failure ends startup.
+                if (error.name !== 'TypeError' || finished) throw error;
+                failure = `; last: ${described(error)}`;
+                retry = setTimeout(probe, 250);
+              })
               .then(async response => {
+                if (!response) return;
                 if (!response.ok) throw new Error(`Preview catalog returned HTTP ${response.status}.`);
                 const catalog = await response.json();
                 if (node) {
@@ -91,10 +103,11 @@ export class Viewer {
                 }
                 finish(null, match[1]);
               })
-              .catch(error => finish(new Error(`Preview is not ready: ${error.message}; ${stderr.trim()}`)));
+              .catch(error => finish(new Error(`Preview is not ready: ${described(error)}; ${stderr.trim()}`)));
+            probe();
           }
         };
-        const timer = setTimeout(() => finish(new Error('Preview startup timed out.')), 120000);
+        const timer = setTimeout(() => finish(new Error(`Preview startup timed out${failure}; ${stderr.trim()}`)), 120000);
         child.stderr.on('data', data);
         child.once('error', failed);
         child.once('exit', exited);
