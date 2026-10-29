@@ -816,3 +816,27 @@ fn styled_text_and_vector_region_images_and_capped_prototypes_are_kept_or_partia
         (&json!(false), &json!("partial"))
     );
 }
+
+#[test]
+fn definitions_stop_on_spent_bounds_before_scanning_records() {
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(2, Some(1), "FRAME", "Plain", vec![]),
+        ]),
+    )]);
+    let tree = Tree::new(&message);
+    let index = build(&tree, "0:0", bounds(WORK));
+    let mut spent = bounds(WORK);
+    spent.deadline = std::time::Instant::now();
+    // No record has a resolved target, so only the charge per record can stop it.
+    assert_eq!(
+        (
+            definitions(&tree, &index.records, &mut spent).is_none(),
+            spent.stop
+        ),
+        (true, Some(crate::expand::Stop::Deadline))
+    );
+}

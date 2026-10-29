@@ -210,27 +210,22 @@ pub(crate) fn extract(
             return None;
         }
     }
-    // Top-level paints, and the per-range text and per-region vector fills the renderer selects.
-    let mut lists: Vec<(String, &Json)> = ["fillPaints", "strokePaints"]
+    // Top-level paints, and the per-range text and per-region vector fills the renderer selects,
+    // streamed from the fields `effective` already charged; only a kept edge names its path.
+    let top = ["fillPaints", "strokePaints"]
         .into_iter()
-        .filter_map(|k| Some((k.to_owned(), fields.get(k)?)))
-        .collect();
-    for table in ["textData", "vectorData"] {
+        .map(|k| (None, k, fields.get(k)));
+    let styled = STYLED.into_iter().flat_map(|table| {
         let rows = fields.get(table).map(|t| &t["styleOverrideTable"]);
-        for (i, row) in rows
-            .and_then(Json::as_array)
+        rows.and_then(Json::as_array)
             .into_iter()
             .flatten()
             .enumerate()
-        {
-            lists.push((
-                format!("{table}.styleOverrideTable[{i}].fillPaints"),
-                &row["fillPaints"],
-            ));
-        }
-    }
-    for (key, paints) in lists {
-        for (i, p) in paints.as_array().into_iter().flatten().enumerate() {
+            .map(move |(i, row)| (Some((table, i)), "fillPaints", row.get("fillPaints")))
+    });
+    for (row, key, paints) in top.chain(styled) {
+        let paints = paints.and_then(Json::as_array).into_iter().flatten();
+        for (i, p) in paints.enumerate() {
             let Some(hash) = p["image"]["hash"].as_str().filter(|_| p["type"] == "IMAGE") else {
                 continue;
             };
@@ -241,7 +236,10 @@ pub(crate) fn extract(
                 target,
                 "recorded",
                 "recorded",
-                format!("{key}[{i}]"),
+                match row {
+                    Some((table, r)) => format!("{table}.styleOverrideTable[{r}].{key}[{i}]"),
+                    None => format!("{key}[{i}]"),
+                },
             ) {
                 return None;
             }
@@ -426,8 +424,9 @@ pub(crate) fn definitions(
             if let Some(t) = &e.target
                 && e.state == "resolved"
             {
-                // One set entry per target (and per variant member), charged before inserting.
-                if !bounds.charge(0, 64) {
+                // One set entry per target, and one more per variant member, charged first.
+                let entries = 1 + usize::from(e.relation == "variant_of");
+                if !bounds.charge(0, 64 * entries) {
                     return None;
                 }
                 wanted.insert(t.as_str());
