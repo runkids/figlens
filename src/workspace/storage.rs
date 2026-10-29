@@ -67,14 +67,21 @@ impl Storage {
         let Some(allowed) = &self.allowed else {
             return Ok(());
         };
-        let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_owned());
+        // Judged where the path really leads, `..` and links included, before anything is
+        // created there; a path that cannot be resolved is refused.
         let defaults = [
             &self.defaults.config.path,
             &self.defaults.state.path,
             &self.defaults.cache.path,
             &self.defaults.data.path,
         ];
-        if allowed.iter().chain(defaults).any(|r| dir.starts_with(r)) {
+        if let Some(dir) = resolved(dir)
+            && allowed
+                .iter()
+                .chain(defaults)
+                .filter_map(|r| resolved(r))
+                .any(|r| dir.starts_with(r))
+        {
             return Ok(());
         }
         Err(FigError::new(
@@ -557,7 +564,9 @@ impl Storage {
         }
         let binding = remembered.as_ref().and_then(|r| r.binding.clone());
         let remembered = remembered.map(|r| r.storage);
-        for dir in self.explicit.iter().chain(&remembered) {
+        // A remembered root is the user's own choice from config, valid for every host; only a
+        // new request's storage must lie under this server's storage roots.
+        if let Some(dir) = &self.explicit {
             self.authorized(dir)?;
         }
         // Its database may still be there, so even --storage must not start another one;

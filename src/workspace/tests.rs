@@ -862,3 +862,30 @@ fn an_unusable_config_root_is_named_as_config_not_storage() {
         .to_string();
     assert!(error.contains("--storage does not change it"), "{error}");
 }
+
+#[test]
+fn server_storage_roots_judge_where_a_new_storage_path_really_leads() {
+    let f = Fixture::new();
+    let allowed = std::path::absolute(f.dir.join("allowed")).unwrap();
+    let outside = std::path::absolute(f.dir.join("outside")).unwrap();
+    std::fs::create_dir_all(&allowed).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let fig = f.fig("a.fig");
+    let at = |dir: &Path| Fixture::at(&f.home, Some(dir)).allow(std::slice::from_ref(&allowed));
+    let escape = allowed.join("missing/../../outside/store");
+    assert!(prepare(&at(&escape), &fig, None).is_err());
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&outside, allowed.join("link")).unwrap();
+        assert!(prepare(&at(&allowed.join("link/store")), &fig, None).is_err());
+    }
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    prepare(&at(&allowed.join("store")), &fig, None).unwrap();
+    // The remembered root is reused by a server that allows no custom storage.
+    let server = Fixture::at(&f.home, None).allow(&[]);
+    let select = Select::Locator(Locator::source(&fig).unwrap());
+    assert_eq!(
+        status(&server, &select).unwrap()["storage"]["rule"],
+        "remembered"
+    );
+}

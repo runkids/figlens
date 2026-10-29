@@ -72,7 +72,7 @@ Remove retires the source's published generations and cancels its jobs in the sa
 
 ## MCP authorization
 
-`figlens mcp` uses the default roots without configuration. A custom `storage` must lie under a repeatable `--storage-root <dir>` (separate from design `--root`s), checked before anything there is read, for explicit and remembered storage alike. With `--root`, sources and jobs outside the roots are invisible: they are filtered before statistics and serialization, and read as unknown.
+`figlens mcp` uses the default roots without configuration. A custom `storage` in a request must lie under a repeatable `--storage-root <dir>` (separate from design `--root`s), judged where it really leads (`..` and links resolved) before anything there is read or created. A remembered root is the user's earlier choice from config and is reused by every host without a flag. With `--root`, sources and jobs outside the roots are invisible: they are filtered before statistics and serialization, and read as unknown.
 
 ## Tests
 

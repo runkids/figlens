@@ -584,3 +584,36 @@ fn a_relocated_source_scoped_file_keeps_its_workspace_and_source_under_the_new_p
     assert_eq!(&again["workspaceId"], ws);
     assert_eq!(again["source"]["added"], false);
 }
+
+#[test]
+fn mcp_without_flags_reuses_a_workspace_the_cli_placed_in_custom_storage() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    let store = env.dir.join("store");
+    std::fs::create_dir(&store).unwrap();
+    let store = std::fs::canonicalize(store).unwrap();
+    let prepared = env.json(&[
+        "index",
+        "prepare",
+        file,
+        "--storage",
+        store.to_str().unwrap(),
+        "--scope",
+        "0:0",
+    ]);
+    let mut mcp = Mcp::start(&env, &[]);
+    let status = mcp.call("index", json!({"action": "status", "file": file}));
+    assert_eq!(
+        status["structuredContent"]["incarnation"], prepared["incarnation"],
+        "{status}"
+    );
+    assert_eq!(status["structuredContent"]["paths"], prepared["paths"]);
+    let found = mcp.call(
+        "search",
+        json!({"workspaceId": prepared["workspaceId"], "query": "first"}),
+    );
+    assert_eq!(found["structuredContent"]["state"], "ready", "{found}");
+    drop(mcp);
+    assert!(!env.home.join(".local/state/figlens/workspaces").exists());
+}
