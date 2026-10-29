@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {flat, clean, localBox, hits, prototypeRows} = require('../src/preview/viewer.js');
+const {flat, clean, localBox, hits, prototypeRows, relQuery, acceptReply, reasonCodes, rowModel, groupUsages, localSearch} = require('../src/preview/viewer.js');
 
 test('prototype missing fields remain unspecified without click or navigation defaults', () => {
   const rows = prototypeRows({state:'recorded', sourceNodeId:'0:1', interactions:[
@@ -111,4 +111,52 @@ test('vector outlines decide picks inside their box', () => {
   const triangle = (x, y) => y >= x; // lower-left half of the box, in page coordinates
   assert.deepEqual(hits([icon],[0,0,10,10],2,8,{},0,{icon:triangle}).map(n=>n.id),['icon']);
   assert.deepEqual(hits([icon],[0,0,10,10],8,2,{},0,{icon:triangle}),[]);
+});
+
+test('relation queries repeat keys, encode plus and spaces, and drop empty values', () => {
+  const q = new URLSearchParams(relQuery({q:'a+b c', type:['FRAME','TEXT'], hidden:false, internal:true, scope:null, cursor:''}));
+  assert.equal(q.get('q'), 'a+b c');
+  assert.deepEqual(q.getAll('type'), ['FRAME','TEXT']);
+  assert.equal(q.get('hidden'), '0');
+  assert.equal(q.get('internal'), '1');
+  assert.equal(q.has('scope') || q.has('cursor'), false);
+  assert.match(relQuery({q:'a+b c'}), /q=a%2Bb\+c/);
+});
+test('a reply counts only for the newest request on the loaded snapshot', () => {
+  assert.equal(acceptReply(3, 3, 's1', 's1'), true);
+  assert.equal(acceptReply(2, 3, 's1', 's1'), false);
+  assert.equal(acceptReply(3, 3, 's2', 's1'), false);
+  assert.equal(acceptReply(3, 3, undefined, undefined), false);
+});
+test('coverage reason codes stay verbatim and are not repeated', () => {
+  const r = {code:'relation_unavailable', relations:['library_identity']};
+  assert.deepEqual(reasonCodes({coverage:{reasons:[{code:'scan_limit'}, r], layers:{relations:{reasons:[r]}}}}),
+    ['scan_limit', 'relation_unavailable (library_identity)']);
+  assert.deepEqual(reasonCodes({}), []);
+});
+test('usages rows keep identity on ref.nodeId and show unknown targets as rows', () => {
+  const ref = {sourceId:'f', snapshotId:'s1', nodeId:'I1:2;3:4'};
+  const m = rowModel({target:{resource:'VariableID:x/1'}, relation:'binds_variable', state:'external'}, 's1');
+  assert.equal(m.nodeId, null);
+  assert.equal(m.resource, 'VariableID:x/1');
+  assert.equal(m.state, 'external');
+  assert.equal(rowModel({ref, name:'Same name'}).nodeId, 'I1:2;3:4');
+  assert.equal(rowModel({target:null, relation:'instance_of', state:'missing'}).name, '(no target)');
+});
+test('usages group members apart from results, and results by relation', () => {
+  const g = groupUsages({source:{snapshotId:'s1'}, members:{nodeIds:['1:2','1:3'], complete:false}, results:[
+    {ref:{nodeId:'5:1', snapshotId:'s1'}, name:'A', relation:'instance_of'},
+    {ref:{nodeId:'5:2', snapshotId:'s1'}, name:'B', relation:'contains'},
+    {ref:{nodeId:'5:3', snapshotId:'s1'}, name:'C', relation:'instance_of', via:'1:2'},
+  ]});
+  assert.deepEqual(g.members, {ids:['1:2','1:3'], complete:false});
+  assert.deepEqual(g.groups.map(([k, rows]) => [k, rows.map(r => r.nodeId)]), [['instance_of',['5:1','5:3']],['contains',['5:2']]]);
+  assert.equal(groupUsages({results:[]}).members, null);
+});
+test('offline search covers the packaged layers only and hides hidden layers by default', () => {
+  const list = [{id:'1:1',name:'Button',type:'FRAME'},{id:'1:2',name:'x',type:'TEXT',characters:'button text'},{id:'1:3',name:'Button 2',type:'FRAME',visible:false}];
+  assert.deepEqual(localSearch(list, 'BUTTON').results.map(r => r.ref.nodeId), ['1:1','1:2']);
+  assert.deepEqual(localSearch(list, 'button', {types:['TEXT']}).results.map(r => r.ref.nodeId), ['1:2']);
+  assert.deepEqual(localSearch(list, 'button', {hidden:true}).results.map(r => r.ref.nodeId), ['1:1','1:2','1:3']);
+  assert.deepEqual(localSearch(list, '').results, []);
 });
