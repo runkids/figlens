@@ -1180,6 +1180,10 @@ fn a_stale_snapshot_recovery_repeats_the_callers_selectors() {
     r.include_hidden = true;
     r.limit = 7;
     let e = run(&index, &r).unwrap_err();
+    assert!(
+        e.to_string().contains("read from snapshot sha256:old"),
+        "{e}"
+    );
     let mut arguments =
         e.downcast_ref::<FigError>().unwrap().recovery().unwrap()[0]["arguments"].clone();
     assert_ne!(arguments["snapshotId"], "sha256:old");

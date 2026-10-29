@@ -992,15 +992,15 @@ pub(crate) fn query(
         && *asked != snapshot
     {
         // The recovery repeats the caller's whole question against the current snapshot.
-        let mut asked = req.arguments();
-        asked["snapshotId"] = json!(snapshot);
+        let mut retry = req.arguments();
+        retry["snapshotId"] = json!(snapshot);
         return Err(FigError::new(
             ErrorKind::SourceStale,
             format!("{} was read from snapshot {asked}, but the source now serves {snapshot}; query again with the current snapshotId, and reopen the node in it",
                 req.target),
         )
         .with_recovery(json!([{"action": "use_current_snapshot", "requires": "none", "tool": "usages",
-            "arguments": asked,
+            "arguments": retry,
             "detail": "keep the file or workspaceId and sourceId you sent; the same id may name another layer in the new snapshot, so reopen it there first"}]))
         .into());
     }

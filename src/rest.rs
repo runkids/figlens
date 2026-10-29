@@ -1764,6 +1764,28 @@ mod tests {
     }
 
     #[test]
+    fn paint_aliases_list_each_color_and_stop_alias_once_in_first_seen_order() {
+        let var = |l: u32| json!({ "dataType": "ALIAS", "value": { "alias": { "guid": { "sessionID": 1, "localID": l } } } });
+        let paints = json!([
+            { "colorVar": var(3), "stopsVar": [{ "colorVar": var(1) }, { "colorVar": var(3) }] },
+            { "colorVar": var(1) },
+            { "stopsVar": [{ "colorVar": var(2) }] },
+        ]);
+        let ids: Vec<Json> = paint_aliases(Some(&paints))
+            .into_iter()
+            .map(|a| a["id"].clone())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                json!("VariableID:1:3"),
+                json!("VariableID:1:1"),
+                json!("VariableID:1:2")
+            ]
+        );
+    }
+
+    #[test]
     fn bound_variables_list_library_ones_by_key_then_local_ones_by_guid() {
         let mut ids = [
             "VariableID:6:14",
