@@ -34,7 +34,7 @@ try {
   await command(`preview "${path.resolve(fig)}"`);
   assert.equal(prompts.length, 1, 'a known file starts immediately without a model');
   const direct = messages.findLast(message => message.content.includes('Open design viewer'));
-  assert.ok(direct);
+  assert.ok(direct, `no viewer link; extension messages: ${JSON.stringify(messages.map(message => message.content))}`);
   const directUrl = direct.content.match(/\((http:[^)]+)\)/)[1];
   const directResponse = await fetch(directUrl);
   assert.equal(directResponse.status, 200);
