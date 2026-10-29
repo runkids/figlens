@@ -15,4 +15,5 @@ Load this to decide what to work on next or to revisit an architecture decision.
 - Goal: AI design-to-code unconstrained by Figma (no API rate limits, no login, no running Figma), not replacing Figma for designers (2026-10-21).
 - Raster export encoders (2026-10-22): `jpeg-encoder` and `ravif` (pure Rust, `asm` off so no nasm), and libwebp via `webp` because the pure-Rust WebP encoder is lossless only and export needs a quality setting.
 - Rust chosen for rendering; Go lacks 2D/CJK text shaping. The renderer draws the outlines the `.fig` already stores (shape geometry, text glyphs) to SVG and rasterizes with resvg, so no font files or text shaping are needed.
+- `nodes` prints the per-node object of a REST nodes response, with no option for the `{nodes: {id: ...}}` envelope (2026-10-29, #82): `jq '{nodes: {("<id>"): .}}'` wraps it, and `--frames` lines already carry `nodeId`. A flag across CLI, MCP and docs is not worth a one-line wrap.
 - Rejected: Figma remote MCP and REST as the read path (rate limits; REST file reads are Tier 1), a self-built Figma replacement, unreviewed `.fig` parsers.

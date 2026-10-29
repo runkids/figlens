@@ -408,7 +408,7 @@ dependencies = [
 
 [[package]]
 name = "figlens"
-version = "0.9.2"
+version = "0.9.3"
 dependencies = [
  "caseless",
  "flate2",

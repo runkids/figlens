@@ -30,7 +30,7 @@ Reads Figma `.fig` files (File > Save local copy) so AI design-to-code pipelines
 ```sh
 python3 scripts/ai-context.py list      # topics and when to pick them
 python3 scripts/ai-context.py <topic>   # print only that topic's sections
-python3 scripts/ai-context.py check     # validate paths, headings and byte budgets
+python3 scripts/ai-context.py check     # validate paths, headings, links, orphans and byte budgets
 ```
 
 | Topic | Use when |
