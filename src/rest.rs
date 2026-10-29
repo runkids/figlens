@@ -1217,13 +1217,15 @@ pub(crate) fn alias(binding: &Json) -> Option<Json> {
 /// Aliases bound anywhere in a paint list (solid colors and gradient stops), each once.
 fn paint_aliases(list: Option<&Json>) -> Vec<Json> {
     let mut out: Vec<Json> = Vec::new();
+    // A set keeps thousands of distinct aliases linear; `out` keeps first-seen order.
+    let mut seen = std::collections::HashSet::new();
     for p in list.and_then(Json::as_array).into_iter().flatten() {
         let stops = p["stopsVar"].as_array().into_iter().flatten();
         for a in std::iter::once(&p["colorVar"])
             .chain(stops.map(|s| &s["colorVar"]))
             .filter_map(alias)
         {
-            if !out.contains(&a) {
+            if seen.insert(a.to_string()) {
                 out.push(a);
             }
         }
