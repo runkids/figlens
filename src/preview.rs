@@ -912,7 +912,8 @@ impl Revision<'_> {
     /// The index of `scope`, built on first use by one request. Requests for a scope still
     /// building are refused rather than holding a worker; so is a new scope when every slot is
     /// building or in use, else it replaces the least recently used idle index. A failed
-    /// build is dropped so a retry builds again.
+    /// build is dropped so a retry builds again; one stopped by its deadline keeps its slot
+    /// and is rebuilt there once no reply holds it.
     fn index(&self, scope: &str) -> Result<Arc<search::Index>> {
         let busy = |what: &str| -> Box<dyn Error> {
             FigError::new(
@@ -921,22 +922,31 @@ impl Revision<'_> {
             )
             .into()
         };
+        let idle = |cell: &Built| {
+            Arc::strong_count(cell) == 1
+                && cell
+                    .get()
+                    .is_some_and(|r| r.as_ref().map_or(true, |i| Arc::strong_count(i) == 1))
+        };
         let cell = {
             let mut cells = self.indexes.lock().map_err(|_| "index cache poisoned")?;
             if let Some(i) = cells.iter().position(|(s, _)| s == scope) {
-                if cells[i].1.get().is_none() {
+                let Some(built) = cells[i].1.get() else {
                     return Err(busy("the search index of this scope is still building"));
+                };
+                // A deadline stop depends on load, not the revision, as in stateless search.
+                if built.as_ref().is_ok_and(|x| x.stop == Some("deadline")) {
+                    if !idle(&cells[i].1) {
+                        return Err(busy(
+                            "the search index of this scope stopped at its deadline and is in use",
+                        ));
+                    }
+                    cells[i].1 = Built::default();
                 }
                 let entry = cells.remove(i);
                 cells.push(entry);
             } else {
                 if cells.len() >= INDEXED_SCOPES {
-                    let idle = |cell: &Built| {
-                        Arc::strong_count(cell) == 1
-                            && cell.get().is_some_and(|r| {
-                                r.as_ref().map_or(true, |i| Arc::strong_count(i) == 1)
-                            })
-                    };
                     let i = cells.iter().position(|(_, c)| idle(c)).ok_or_else(|| {
                         busy("every search index of this revision is building or in use")
                     })?;
@@ -1186,9 +1196,10 @@ mod tests {
             let first = reply(r, PAGE);
             let cursor = first["nextCursor"].as_str().unwrap().to_owned();
             assert!(reply(r, &format!("{PAGE}&cursor={cursor}"))["error"].is_null());
-            // Evicted, then rebuilt as another partial corpus of the same snapshot: one that
-            // stopped at its deadline at once.
-            let partial = search::index_tree(r.tree, "0:0", std::time::Instant::now()).unwrap();
+            // Evicted, then rebuilt as another partial corpus of the same snapshot, kept like
+            // one a byte limit stopped (a deadline stop would be rebuilt whole on next use).
+            let mut partial = search::index_tree(r.tree, "0:0", std::time::Instant::now()).unwrap();
+            partial.stop = Some("text_bytes_limit");
             let cell = Built::default();
             assert!(cell.set(Ok(Arc::new(partial))).is_ok());
             *r.indexes.lock().unwrap() = vec![("0:0".to_owned(), cell)];
@@ -1199,6 +1210,32 @@ mod tests {
                 "{paged}"
             );
             assert_eq!(paged["error"]["kind"], "CursorStale", "{paged}");
+        });
+    }
+
+    #[test]
+    fn a_deadline_stopped_index_keeps_its_slot_until_idle_then_rebuilds_there() {
+        served(|r| {
+            let partial =
+                Arc::new(search::index_tree(r.tree, "0:0", std::time::Instant::now()).unwrap());
+            assert_eq!(partial.stop, Some("deadline"));
+            let cell = Built::default();
+            assert!(cell.set(Ok(partial.clone())).is_ok());
+            *r.indexes.lock().unwrap() = vec![("0:0".to_owned(), cell)];
+            let other = r.index("0:1").unwrap();
+            let kind = |e: Box<dyn Error>| e.downcast_ref::<FigError>().map(|f| f.kind());
+            // While a reply holds the partial index it stays counted: no rebuild, no third slot.
+            assert_eq!(
+                r.index("0:0").err().and_then(kind),
+                Some(crate::ErrorKind::WorkspaceBusy)
+            );
+            assert_eq!(
+                r.index("0:2").err().and_then(kind),
+                Some(crate::ErrorKind::WorkspaceBusy)
+            );
+            drop((partial, other));
+            assert_eq!(r.index("0:0").unwrap().stop, None);
+            assert_eq!(r.indexes.lock().unwrap().len(), 2);
         });
     }
 

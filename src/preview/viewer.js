@@ -1596,6 +1596,7 @@ if (typeof document !== 'undefined') {
         if (more) return relRun('ranked', p.base, p.acc.nextCursor);
         const scoped = $('rankedSelection').checked;
         if (scoped && !selected) return relState('ranked', 'idle', 'Select a layer to search within it.');
+        if (scoped && selected.id.startsWith('I')) return relState('ranked', 'idle', 'Search scopes are stored layers: select the instance that holds this layer, or search the whole file.');
         p.scope = scoped ? `selection “${selected.name || selected.id}”` : 'the whole file';
         relRun('ranked', `search/${generation}?` + relQuery({q, scope: scoped ? selected.id : null, type: types, hidden, internal: $('rankedInternal').checked}));
     }
