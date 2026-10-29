@@ -691,6 +691,103 @@ fn a_selected_context_past_the_side_budget_is_unknown_not_position_zero() {
 }
 
 #[test]
+fn an_explicit_variable_mode_switch_is_an_appearance_change() {
+    // Switching the theme leaves every cached paint below as it was; only the frame's mode map
+    // changes, and it re-resolves their bound colors.
+    let themed = |mode: u32| {
+        let modes = obj(vec![(
+            "entries",
+            K::Array(vec![obj(vec![
+                ("variableSetID", obj(vec![("guid", guid(70))])),
+                ("variableModeID", guid(mode)),
+            ])]),
+        )]);
+        doc(vec![
+            node(
+                10,
+                Some(1),
+                "FRAME",
+                "Home",
+                vec![("variableModeBySetMap", modes)],
+            ),
+            node(12, Some(10), "RECTANGLE", "Card", vec![fill(1.0)]),
+        ])
+    };
+    let out = run(themed(71), themed(72));
+    assert_eq!(nodes(&out), [("0:10".into(), "changed".into())]);
+    assert_eq!(
+        out["frames"][0]["nodes"][0]["facets"],
+        json!(["appearance"])
+    );
+}
+
+#[test]
+fn a_resized_source_child_under_a_fixed_instance_size_is_an_appearance_change() {
+    // The instance keeps its child at 20x20 and the outline bytes stay the same, but the
+    // expanded child's outline is scaled from the source size it was drawn at.
+    let file = |source: f32| {
+        let K::Object(name, mut fields) = doc(vec![
+            node(30, Some(1), "SYMBOL", "Icon", vec![]),
+            node(
+                31,
+                Some(30),
+                "VECTOR",
+                "Glyph",
+                vec![
+                    size(source, source),
+                    (
+                        "fillGeometry",
+                        K::Array(vec![obj(vec![("commandsBlob", K::UInt(0))])]),
+                    ),
+                ],
+            ),
+            // A layer without an outline draws the same at any source size.
+            node(
+                32,
+                Some(30),
+                "RECTANGLE",
+                "Plate",
+                vec![size(source, source)],
+            ),
+            node(10, Some(1), "FRAME", "Home", vec![]),
+            instance(
+                11,
+                10,
+                "Use",
+                30,
+                vec![(
+                    "symbolOverrides",
+                    K::Array(vec![
+                        obj(vec![path(&[31]), size(20.0, 20.0)]),
+                        obj(vec![path(&[32]), size(20.0, 20.0)]),
+                    ]),
+                )],
+            ),
+        ]) else {
+            unreachable!()
+        };
+        fields.insert(
+            "blobs",
+            K::Array(vec![obj(vec![("bytes", K::Bytes(vec![1, 2]))])]),
+        );
+        K::Object(name, fields)
+    };
+    let (old, new) = (file(10.0), file(40.0));
+    let (a, b) = (Tree::new(&old), Tree::new(&new));
+    let out = page(
+        &compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:11"),
+        &req(LIMIT, None),
+        false,
+    )
+    .unwrap();
+    assert_eq!(nodes(&out), [("I0:11;0:31".into(), "changed".into())]);
+    assert_eq!(
+        out["frames"][0]["nodes"][0]["facets"],
+        json!(["appearance"])
+    );
+}
+
+#[test]
 fn numeric_variants_trim_links_mask_type_and_grids_are_compared() {
     let link = |url: &str| obj(vec![("url", K::String(url.to_owned()))]);
     for (key, old, new, facet) in [

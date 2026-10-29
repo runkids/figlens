@@ -22,7 +22,7 @@ use crate::expand::{Bounds, Expanded, json_bytes, kiwi_bytes};
 use crate::{Document, ErrorKind, FigError, Tree, guid_key, to_json};
 
 /// Bumped whenever a field list, facet or digest stream changes; cursors carry it.
-const VERSION: &str = "diff-v1";
+const VERSION: &str = "diff-v2";
 pub(crate) const FACETS: [&str; 5] = ["text", "layout", "appearance", "properties", "structure"];
 /// Effective kiwi fields per facet; `structure` (name, kind, parent, order, hidden) is the
 /// record's own and bindings are edges, not fields.
@@ -93,7 +93,12 @@ const FIELDS: [&[&str]; 4] = [
         "rectangleBottomRightCornerRadius",
         "fillGeometry",
         "strokeGeometry",
+        // An expanded layer's outlines are scaled from the source size they were drawn at.
+        "fillGeometrySize",
+        "strokeGeometrySize",
         "vectorData",
+        // Explicit modes re-resolve the bound colors of every layer below.
+        "variableModeBySetMap",
     ],
     &[
         "componentPropAssignments",
@@ -232,6 +237,13 @@ pub(super) fn facets(
     let mut kept = 0;
     for (facet, keys) in FIELDS.iter().enumerate() {
         for key in *keys {
+            // A geometry size only scales outlines, so a layer without that outline has none.
+            if let Some(outline) = key.strip_suffix("Size").filter(|k| k.ends_with("Geometry"))
+                && e.and_then(|e| e.props.get(outline)).is_none()
+                && node.and_then(|n| n.get(outline)).is_none()
+            {
+                continue;
+            }
             let value = match (e, *key) {
                 (Some(e), "size") if e.size.is_some() => {
                     let s = e.size.unwrap();
