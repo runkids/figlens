@@ -17,7 +17,7 @@ import sys
 import tarfile
 import tempfile
 from installation import environment, run, toolchain
-from mcp_smoke import check_mcp
+from mcp_smoke import check_first_use, check_mcp, check_reuse
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -150,6 +150,11 @@ def main():
         native_mcp = check_mcp([cache, 'mcp'], consumer, env, fixture, metadata['version'])
         gcs = runpy.run_path(str(ROOT/'scripts/check-gcs-snapshot.py'))['check_gcs'](cache, fixture)
         index = check_index(cache, fixture, consumer, env)
+        # Each entry starts its own first use from clean roots, the way a host would launch it.
+        first_use = {'nativeMcp': check_first_use([cache, 'mcp'], work/'first-use-native', fixture, env),
+                     'wrapperMcp': check_first_use(wrapper + ['mcp'], work/'first-use-wrapper', fixture, wrapped_env)}
+        # The wrapper, as a second host, reuses the index the native first use enabled.
+        first_use['crossHost'] = check_reuse(wrapper + ['mcp'], work/'first-use-native', wrapped_env)
         # Cold MCP startup must keep extraction/installation output off its protocol stdout.
         mcp_cache = work/'mcp-cache'
         mcp_env = dict(wrapped_env, XDG_CACHE_HOME=str(mcp_cache), LOCALAPPDATA=str(mcp_cache))
@@ -168,6 +173,7 @@ def main():
                                            fixture, work/'preview', installed/'pi/index.ts'], consumer, env))
             config = pi['mcp']
             pi['stdio'] = check_mcp([config['command'], *config['args']], consumer, wrapped_env, fixture, metadata['version'])
+            first_use['piMcp'] = check_first_use([config['command'], *config['args']], work/'first-use-pi', fixture, wrapped_env)
         if args.opencode_bin:
             hosts['opencode'] = json.loads(run([node, ROOT/'scripts/check-opencode-integration.mjs',
                 args.opencode_bin.resolve(), args.opencode_sdk.resolve(), installed, cache, work/'opencode', '--tui'],
@@ -187,7 +193,7 @@ def main():
                           'node': run([node, '--version'], consumer, env).strip(),
                           'npm': run(npm + ['--version'], consumer, env).strip(),
                           'coldInstall': True, 'warmCacheNoDownload': True, 'parallelFirstUse': True,
-                          'nativeMcp': native_mcp, 'wrapperMcp': wrapped_mcp, 'gcsMock': gcs, 'index': index, 'pi': pi, 'hosts': hosts}, indent=2))
+                          'nativeMcp': native_mcp, 'wrapperMcp': wrapped_mcp, 'gcsMock': gcs, 'index': index, 'firstUse': first_use, 'pi': pi, 'hosts': hosts}, indent=2))
 
 
 if __name__ == '__main__':
