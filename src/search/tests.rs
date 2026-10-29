@@ -641,6 +641,11 @@ fn a_budget_stop_reports_partial_coverage_without_a_continuation() {
     assert_eq!(found["nextCursor"], Json::Null);
     let full = run(&request("row"))["coverage"].clone();
     assert_eq!(full["layers"]["text"]["state"], "ready");
+    assert_eq!(full["layers"]["relations"]["kinds"]["instance_of"], "ready");
+    assert_eq!(
+        full["layers"]["relations"]["reasons"][0]["code"],
+        "relation_unavailable"
+    );
     assert_eq!(full["totalRecords"], full["scannedRecords"]);
 }
 
@@ -919,9 +924,9 @@ fn queries_up_to_the_term_limit_retrieve_only_records_with_every_term() {
     }
 }
 
-#[test]
-fn a_swap_to_a_missing_main_is_unresolved_not_the_definitions_main() {
-    let message = obj(vec![(
+/// Instances stored, swapped to a missing main and swapped to a non-component.
+fn swaps() -> K<'static> {
+    obj(vec![(
         "nodeChanges",
         K::Array(vec![
             node(0, None, "DOCUMENT", "Document", vec![]),
@@ -946,7 +951,12 @@ fn a_swap_to_a_missing_main_is_unresolved_not_the_definitions_main() {
             ),
             instance(33, 1, "Stored", 20, vec![]),
         ]),
-    )]);
+    )])
+}
+
+#[test]
+fn a_swap_to_a_missing_main_is_unresolved_not_the_definitions_main() {
+    let message = swaps();
     let tree = Tree::new(&message);
     let index = build(&tree, "0:0", bounds(WORK));
     let of = |id: &str| {
@@ -967,5 +977,42 @@ fn a_swap_to_a_missing_main_is_unresolved_not_the_definitions_main() {
             basis: "recorded",
             evidence: "symbolData",
         }
+    );
+}
+
+#[test]
+fn contains_and_instance_of_survive_a_stored_generation() {
+    let message = swaps();
+    let tree = Tree::new(&message);
+    let index = build(&tree, "0:0", bounds(WORK));
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(&format!(
+        "CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+         added_at_ms INTEGER NOT NULL) STRICT; {}",
+        crate::workspace::V2
+    ))
+    .unwrap();
+    conn.execute(
+        "INSERT INTO generations (source_id, membership, scope, versions, job_id, state, created_ms)
+         VALUES ('s', 'm', '0:0', 'v', 'j', 'building', 0)",
+        [],
+    )
+    .unwrap();
+    store::save(&mut conn, 1, &index, &mut |_, _, _| Ok(())).unwrap();
+    let mut loaded = store::load(&conn, 1, &[]).unwrap();
+    let all: Vec<u32> = (0..index.records.len() as u32).collect();
+    store::add(&conn, 1, &mut loaded, &all).unwrap();
+    let relations = |i: &Index| -> Vec<(String, Option<u32>, Option<Instance>)> {
+        i.records
+            .iter()
+            .map(|r| (r.id.clone(), r.parent, r.instance.clone()))
+            .collect()
+    };
+    assert_eq!(relations(&loaded), relations(&index));
+    assert!(
+        index
+            .records
+            .iter()
+            .any(|r| r.instance.as_ref().is_some_and(|i| i.target.is_none()))
     );
 }

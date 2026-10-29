@@ -184,7 +184,7 @@ pub(super) fn incompatible(path: &Path, version: i64) -> Box<dyn Error> {
 
 /// Schema 2 beside the schema 1 registry: membership tokens on sources, snapshots, index
 /// generations with their records, terms and edges, the published pointer and jobs.
-pub(super) const V2: &str = "
+pub(crate) const V2: &str = "
     ALTER TABLE sources ADD COLUMN membership TEXT NOT NULL DEFAULT '';
     UPDATE sources SET membership = lower(hex(randomblob(16)));
     CREATE TABLE snapshots (

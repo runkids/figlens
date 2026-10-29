@@ -1160,6 +1160,15 @@ fn result(index: &Index, hit: &Hit, rank: usize, q: &Prepared, source: &Json) ->
     out
 }
 
+/// The relations layer: `contains` (each record's parent) and `instance_of` (each INSTANCE's
+/// component, or unresolved) are stored for every indexed record; no other kind is extracted.
+pub(crate) fn relations(state: &str) -> Json {
+    json!({"state": if state == "ready" { "partial" } else { state },
+        "kinds": {"contains": state, "instance_of": state},
+        "reasons": [{"code": "relation_unavailable", "relations": ["variant_of", "binds_variable",
+            "uses_style", "uses_image", "prototype_target", "library_identity"]}]})
+}
+
 fn coverage(index: &Index, req: &Request, excluded: [usize; 2]) -> Json {
     let scanned = index.total;
     let mut reasons = Vec::new();
@@ -1176,7 +1185,8 @@ fn coverage(index: &Index, req: &Request, excluded: [usize; 2]) -> Json {
         "scannedRecords": scanned,
         "totalRecords": if complete { json!(scanned) } else { Json::Null },
         "indexedTextBytes": index.text_bytes,
-        "layers": {"text": {"state": if complete { "ready" } else { "partial" }}},
+        "layers": {"text": {"state": if complete { "ready" } else { "partial" }},
+            "relations": relations(if complete { "ready" } else { "partial" })},
         "reasons": reasons,
         "excluded": {"hidden": excluded[0], "internal": excluded[1]},
         "knownGaps": [{"code": "component_property_values_not_indexed"},
@@ -1263,7 +1273,7 @@ fn corpus_coverage(parts: &[Part], req: &Request, excluded: [usize; 2]) -> Json 
         "scannedRecords": scanned,
         "totalRecords": if complete { json!(scanned) } else { Json::Null },
         "indexedTextBytes": text_bytes,
-        "layers": {"text": {"state": state}},
+        "layers": {"text": {"state": state}, "relations": relations(state)},
         "reasons": reasons,
         "excluded": {"hidden": excluded[0], "internal": excluded[1]},
         "knownGaps": [{"code": "component_property_values_not_indexed"},

@@ -337,6 +337,7 @@ fn search_index(
         coverage["complete"] = json!(false);
         coverage["totalRecords"] = Json::Null;
         coverage["layers"]["text"]["state"] = json!("partial");
+        coverage["layers"]["relations"] = search::relations("partial");
         if let Some(reasons) = coverage["reasons"].as_array_mut() {
             reasons.push(
                 json!({"code": "sources_not_ready", "counts": {"sources": left_out.len()},
@@ -459,7 +460,8 @@ fn not_ready(ws_id: &str, req: &Request, states: Vec<Json>, steps: Vec<Json>) ->
         "scope": {"nodeId": req.scope},
         "results": [],
         "coverage": {"complete": false, "scannedRecords": 0, "totalRecords": null,
-            "layers": {"text": {"state": if pending { "pending" } else { "not_prepared" }}},
+            "layers": {"text": {"state": if pending { "pending" } else { "not_prepared" }},
+                "relations": search::relations(if pending { "pending" } else { "not_prepared" })},
             "reasons": [{"code": if pending { "index_pending" } else { "scope_not_indexed" }}]},
         "hasMore": false,
         "nextCursor": null,

@@ -8,7 +8,7 @@ Schema 2 adds `snapshots` (verified size and mtime per content hash), `generatio
 
 - A generation is one source, one exact scope node and one membership. Search never widens or narrows the scope and never parses the `.fig`. Prepare without `--scope` only registers.
 - `versions` records ranking, tokenizer and budgets. A generation from other versions is `incompatible` and `rebuild` is the recovery.
-- `edges` keep only evidence-correct relations: an instance's `instance_of` points at its component only when the expansion followed that component (symbolData, definition or swap) and it is a COMPONENT. A swap to a missing main is unresolved, never the definition's main.
+- `edges` keep only evidence-correct relations: an instance's `instance_of` points at its component only when the expansion followed that component (symbolData, definition or swap) and it is a COMPONENT. A swap to a missing main is stored unresolved (no target), never the definition's main. `contains` is each record's stored `parent`. Coverage reports `layers.relations` with both kinds' state and lists `variant_of`, `binds_variable`, `uses_style`, `uses_image`, `prototype_target` and `library_identity` as `relation_unavailable`, so the layer is never `ready`. There is no usages tool (#91).
 - Each source keeps at most `MAX_SCOPES` = 8 published scopes; the least recently published is retired. Retired and abandoned generations go at the next publish or `clear_cache`.
 
 ## Jobs
