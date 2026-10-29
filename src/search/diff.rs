@@ -164,7 +164,7 @@ pub(super) fn facets(
                 return None;
             }
             let mut left = VISITS;
-            let size = match &value {
+            match &value {
                 Value::Json(v) => json_bytes(v, &mut left),
                 Value::Owned(v) => json_bytes(v, &mut left),
                 Value::Kiwi(v) => kiwi_bytes(v, &mut left),
@@ -197,7 +197,6 @@ pub(super) fn facets(
             if !bounds.charge(1, 64 + key.len() + if fits { bytes.len() } else { 0 }) {
                 return None;
             }
-            let _ = size;
             if fits {
                 kept += bytes.len();
             }
