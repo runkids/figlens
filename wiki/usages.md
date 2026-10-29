@@ -4,7 +4,7 @@ Exact, revision-bound relationships over one indexed scope (issue #91, core slic
 
 ## Edges
 
-Edges are extracted during the search build (`search::build` → `usages::extract`), under the same `expand::Bounds`, so a budget stop leaves coverage partial instead of dropping edges silently. A node's prototype projection is reserved at the reader's caps (32 interactions × 16 actions, 16 KiB) from those bounds before it is read, even when no action has a destination; the standalone prototype reader is unbounded as before. Each edge is `(rid, relation, seq, target, state, basis, evidence)`.
+Edges are extracted during the search build (`search::build` → `usages::extract`), under the same `expand::Bounds`, so a budget stop leaves coverage partial instead of dropping edges silently. Every prototype projection reserves its header from those bounds before any evidence is built, and a non-empty interaction list also its caps (32 interactions × 16 actions, 16 KiB), even when no action has a destination; the standalone prototype reader is unbounded as before. Each edge is `(rid, relation, seq, target, state, basis, evidence)`.
 
 | Relation | From | Target | State |
 |---|---|---|---|

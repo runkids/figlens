@@ -665,3 +665,33 @@ fn prototype_action_limits_distinguish_omitted_actions_from_empty_lists() {
     assert_eq!(evidence["interactions"][0]["actionsTruncated"], false);
     assert_eq!(evidence["truncated"], false);
 }
+
+#[test]
+fn every_projection_is_reserved_before_its_evidence_and_an_empty_list_pays_only_its_header() {
+    for (value, full) in [
+        (K::Bool(true), false),
+        (K::Array(vec![]), false),
+        (
+            K::Array(vec![event("ON_CLICK", vec![action("NAVIGATE", 9)])]),
+            true,
+        ),
+    ] {
+        let message = message(vec![
+            layer(0, None, "DOCUMENT", vec![]),
+            layer(1, Some(0), "CANVAS", vec![]),
+            layer(2, Some(1), "FRAME", vec![("prototypeInteractions", value)]),
+        ]);
+        let tree = Tree::new(&message);
+        assert_eq!(
+            node_with(&tree, "0:2", None, "FRAME", &mut |_, _| false),
+            Err(())
+        );
+        let mut paid = 0;
+        let read = node_with(&tree, "0:2", None, "FRAME", &mut |_, b| {
+            paid += b;
+            true
+        });
+        assert_eq!(read, Ok(node(&tree, "0:2", None, "FRAME")));
+        assert_eq!(paid > MAX_BYTES, full, "{paid}");
+    }
+}

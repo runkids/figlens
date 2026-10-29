@@ -88,9 +88,23 @@ fn read(
     basis: &str,
     charge: &mut dyn FnMut(usize, usize) -> bool,
 ) -> Option<Value> {
-    let field = source.field();
     let record = source.record(tree);
     let value = record.and_then(|n| n.get("prototypeInteractions"));
+    // Reserved before any evidence is built: the header (ids, field path and the few keys a
+    // caller adds) for every projection, plus the capped entries when there is a list to read.
+    let listed = match value {
+        Some(K::Array(list)) => list.len().min(MAX_INTERACTIONS),
+        _ => 0,
+    };
+    let header = 1024 + 2 * source.node_id.len();
+    let (work, bytes) = match listed {
+        0 => (1, header),
+        n => (1 + n * (1 + MAX_ACTIONS), header + MAX_BYTES),
+    };
+    if !charge(work, bytes) {
+        return None;
+    }
+    let field = source.field();
     let mut result = json!({"sourceNodeId":source.node_id,"sourceField":field,"basis":basis,
         "verification":"not-compared-with-figma","interpretation":"stored-fields-only",
         "state": if !matches!(record,Some(K::Object(..))) { "unsupported" } else if value.is_none() { "absent" } else { "unsupported" },
@@ -102,13 +116,6 @@ fn read(
     let Some(K::Array(list)) = value else {
         return Some(result);
     };
-    // Reserved at the caps, before any interaction is read or any evidence built.
-    if !charge(
-        list.len().min(MAX_INTERACTIONS) * (1 + MAX_ACTIONS),
-        MAX_BYTES,
-    ) {
-        return None;
-    }
     result["state"] = "recorded".into();
     let mut interactions = Vec::new();
     let mut remaining = MAX_BYTES - 1024;
