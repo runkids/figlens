@@ -575,9 +575,21 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
             index.stop = Some("text_bytes_limit");
             break;
         }
-        // Originals, ids and the record, before allocating them; normalized copies are charged
-        // at their real size below, since NFKC can expand a character many times over.
-        let retained = 256 + 2 * id.len() + name.len() + text_len + kind.len();
+        // Kept before allocating them: the record and its id, name, text, kind and source
+        // copies, plus a page's id and name or a top-level frame's id. Normalized copies are
+        // charged at their real size below, since NFKC can expand a character many times over.
+        let listed = match kind.as_str() {
+            "CANVAS" => id.len() + name.len(),
+            _ if parent_canvas => id.len(),
+            _ => 0,
+        };
+        let retained = 256
+            + id.len()
+            + listed
+            + name.len()
+            + text_len
+            + kind.len()
+            + source.map_or(0, |s| s.len());
         let peak = [Some(name), text]
             .into_iter()
             .flatten()
