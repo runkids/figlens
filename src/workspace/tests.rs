@@ -251,6 +251,53 @@ fn reset_removes_only_the_database_and_prepare_starts_a_new_incarnation() {
 }
 
 #[test]
+fn config_and_state_may_share_one_root() {
+    let f = Fixture::new();
+    let shared = f.home.join("shared").to_str().unwrap().to_owned();
+    let home = f.home.to_str().unwrap().to_owned();
+    let vars = [
+        ("HOME", home.as_str()),
+        ("XDG_CONFIG_HOME", shared.as_str()),
+        ("XDG_STATE_HOME", shared.as_str()),
+    ];
+    let storage = resolve(None, &env(&vars), false, &|| None).unwrap();
+    assert_eq!(storage.defaults.config.path, storage.defaults.state.path);
+    let a = f.fig("a.fig");
+    let first = prepare(&storage, &a, None).unwrap();
+    assert_eq!(id_of(&prepare(&storage, &a, None).unwrap()), id_of(&first));
+    reset(&storage, &Select::Id(id_of(&first))).unwrap();
+    prepare(&storage, &a, None).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_config_workspaces_directory_is_refused() {
+    let f = Fixture::new();
+    let a = f.fig("a.fig");
+    let (_, custom) = f.custom("custom");
+    let id = id_of(&prepare(&custom, &a, None).unwrap());
+    let locations = custom.defaults.config.path.join("workspaces");
+    let outside = f.dir.join("outside");
+    std::fs::rename(&locations, &outside).unwrap();
+    std::os::unix::fs::symlink(&outside, &locations).unwrap();
+    let before = std::fs::read_dir(&outside).unwrap().count();
+    // Neither the record lookup nor a prepare follows it, so nothing is read or written there.
+    let error = status(&f.storage, &source(&a)).unwrap_err();
+    assert!(
+        error.to_string().contains("not a plain directory"),
+        "{error}"
+    );
+    let (_, other) = f.custom("other");
+    let error = prepare(&other, &f.fig("b.fig"), None).unwrap_err();
+    assert!(
+        error.to_string().contains("not a plain directory"),
+        "{error}"
+    );
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), before);
+    assert!(outside.join(format!("{id}.json")).exists());
+}
+
+#[test]
 fn custom_storage_is_remembered_for_that_workspace_only() {
     let f = Fixture::new();
     let (a, b) = (f.fig("a.fig"), f.fig("b.fig"));

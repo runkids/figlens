@@ -541,7 +541,10 @@ impl Storage {
     /// The remembered application root of workspace `id` and its locator, read from the fixed
     /// config directory. It only locates the workspace; ownership is checked at the workspace.
     fn remembered(&self, id: &str) -> Result<Option<(PathBuf, Locator)>> {
-        let path = self.locations().join(format!("{id}.json"));
+        let Some(locations) = workspaces(&self.defaults.config.path, false)? else {
+            return Ok(None);
+        };
+        let path = locations.join(format!("{id}.json"));
         if !plain(&path, false)? {
             return Ok(None);
         }
@@ -656,8 +659,9 @@ impl Storage {
 
 // ---- Owned directories and locks ----
 
-/// `<state>/workspaces`, through the canonical root and a real directory, so a symlinked
-/// leaf cannot redirect writes or cleanup. Created only when `create`.
+/// `<root>/workspaces` of the state or config root, through the canonical root (which may be
+/// an alias) and a real directory, so a symlinked leaf cannot redirect reads, writes or
+/// cleanup. Created only when `create`.
 fn workspaces(state: &Path, create: bool) -> Result<Option<PathBuf>> {
     if create {
         std::fs::create_dir_all(state).map_err(|e| storage_error(state, e))?;
@@ -1141,9 +1145,9 @@ pub fn prepare(storage: &Storage, file: &Path, project: Option<&Path>) -> Result
     let id = locator.id()?;
     // One prepare per workspace at a time across every storage root, so two roots never both
     // initialize it and its location record is never written concurrently.
-    let locations = storage.locations();
-    std::fs::create_dir_all(&locations).map_err(|e| storage_error(&locations, e))?;
-    let config_path = locations.join(format!("{id}.lock"));
+    let locations = workspaces(&storage.defaults.config.path, true)?.expect("created");
+    // Its own name: config and state may be one root, and two opens of one lock file conflict.
+    let config_path = locations.join(format!("{id}.location.lock"));
     let config_lock = open_lock(&config_path, true)?.expect("created");
     lock(&config_lock, &config_path, true, &id)?;
     let place = storage.place(&id, Some(&locator))?;
