@@ -1380,9 +1380,10 @@ impl<'t, 'a> Svg<'t, 'a> {
                     // STRETCH draws the image once: the tile spans every image coordinate the
                     // node's box samples, with the image at 0..1 and the rest empty, so a transform
                     // past the image's edges leaves them empty instead of repeating it. A tile over
-                    // 4x the image's or node's device area (a transform shifted far away, or a crop of a very different shape) spans only
-                    // what the node samples, which costs about the node's area and still never repeats.
-                    // shortcut: strokes outside the box can still reach the next tile.
+                    // 4x the image's or node's device area (a transform shifted far away, or a crop
+                    // of a very different shape) spans only what the node samples instead.
+                    // shortcut: a skewed transform whose sampled range still exceeds that keeps the
+                    // one-image tile, which repeats; strokes outside the box can reach the next tile.
                     let (px, py, w, h) = match mode {
                         Some("STRETCH") => {
                             let unit = Vec2 { x: 1.0, y: 1.0 };
@@ -1392,13 +1393,14 @@ impl<'t, 'a> Svg<'t, 'a> {
                             let one = len(t.a, t.b) * len(t.c, t.d);
                             let node =
                                 len(m.a * size.x, m.b * size.x) * len(m.c * size.y, m.d * size.y);
-                            let area = (x1 - x0) * (y1 - y0) * one;
-                            if !area.is_finite() {
-                                (0.0, 0.0, w, h)
-                            } else if area <= 4.0 * one.max(node) {
+                            // resvg allocates the whole tile at the pattern transform's scale.
+                            let fits = |w: f64, h: f64| w * h * one <= 4.0 * one.max(node);
+                            if fits(x1 - x0, y1 - y0) {
                                 (x0, y0, x1 - x0, y1 - y0)
-                            } else {
+                            } else if fits(b.x, b.y) {
                                 (o.x, o.y, b.x, b.y)
+                            } else {
+                                (0.0, 0.0, w, h)
                             }
                         }
                         _ => (0.0, 0.0, w, h),
@@ -2930,6 +2932,13 @@ mod tests {
                 ],
             ),
         ];
+        // A skew whose sampled range is ~1000x1000 image units would need a ~400M px tile.
+        let mut skewed = stretch(1.0, 0.0, 1000.0, 0.0);
+        skewed["transform"]["m01"] = 1000.into();
+        let node = serde_json::json!({ "id": "image", "type": "RECTANGLE", "_r": {
+            "size": { "x": 20, "y": 30 }, "m": [1,0,0,1,0,0], "fillPaints": [skewed] }});
+        let svg = Svg::new(&tree, &images).document(&node, [0.0, 0.0, 20.0, 30.0], 1.0);
+        assert!(svg.contains("width=\"1\" height=\"1\""), "{svg}");
         for (paint, offset, height, probes) in cases {
             let frame = serde_json::json!({
                 "id": "frame", "type": "FRAME", "clipsContent": true,
