@@ -521,7 +521,7 @@ fn print_tree(
 
 /// `children` is only included where the requested depth reaches. `size` is the local
 /// pre-rotation `[width, height]`, absent without one (document, pages); `visible` appears
-/// only when false, as in `nodes`.
+/// only when false and `layoutMode` (`HORIZONTAL`, `VERTICAL` or `GRID`) only when set, as in `nodes`.
 fn tree_json(tree: &Tree, id: &str, level: usize, depth: usize) -> Value {
     let (kind, name) = label(tree, id);
     let raw = tree.nodes[id];
@@ -531,6 +531,11 @@ fn tree_json(tree: &Tree, id: &str, level: usize, depth: usize) -> Value {
     }
     if matches!(raw.get("visible"), Some(kiwi_schema::Value::Bool(false))) {
         node["visible"] = json!(false);
+    }
+    if let Some(kiwi_schema::Value::Enum(_, mode)) = raw.get("stackMode")
+        && *mode != "NONE"
+    {
+        node["layoutMode"] = json!(mode);
     }
     if let Some(children) = tree.children.get(id).filter(|_| level < depth) {
         node["children"] = children

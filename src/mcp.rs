@@ -662,6 +662,7 @@ mod tests {
             run(&["--depth", "2", "--json"]).json().unwrap(),
             &serde_json::json!({ "id": "0:0", "type": "CANVAS", "name": "n0",
                 "children": [{ "id": "0:1", "type": "COMPONENT_SET", "name": "n1",
+                    "layoutMode": "HORIZONTAL",
                     "children": [{ "id": "0:2", "type": "COMPONENT", "name": "n2", "visible": false,
                         "size": [24.0, 16.0] }] }] })
         );

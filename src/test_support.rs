@@ -79,8 +79,8 @@ fn directories_keep_their_own_files_and_cleanup() {
     );
 }
 
-/// A canvas holding a component set (a state-group frame) with one hidden 24x16 component
-/// main (`SYMBOL`).
+/// A canvas holding a horizontal auto-layout component set (a state-group frame) with one
+/// hidden 24x16 component main (`SYMBOL`) whose auto-layout is off.
 pub(crate) fn component_set() -> kiwi_schema::Value<'static> {
     use kiwi_schema::Value;
     use std::collections::HashMap;
@@ -118,7 +118,10 @@ pub(crate) fn component_set() -> kiwi_schema::Value<'static> {
                     1,
                     Some(0),
                     "FRAME",
-                    vec![("isStateGroup", Value::Bool(true))],
+                    vec![
+                        ("isStateGroup", Value::Bool(true)),
+                        ("stackMode", Value::Enum("StackMode", "HORIZONTAL")),
+                    ],
                 ),
                 node(
                     2,
@@ -126,6 +129,7 @@ pub(crate) fn component_set() -> kiwi_schema::Value<'static> {
                     "SYMBOL",
                     vec![
                         ("visible", Value::Bool(false)),
+                        ("stackMode", Value::Enum("StackMode", "NONE")),
                         (
                             "size",
                             Value::Object(

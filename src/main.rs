@@ -24,9 +24,10 @@ usage:
   figlens tree <file.fig> [node] [--depth N] [--json]
                                              list ids, REST types (as in nodes) and names (default root:
                                              the document);
-                                             --json prints them as nested {id,type,name,size,visible,children}:
-                                             size is the local [width,height] (none on the document and pages),
-                                             visible only when false
+                                             --json prints them as nested
+                                             {id,type,name,size,visible,layoutMode,children}: size is the local
+                                             [width,height] (none on the document and pages), visible only when
+                                             false, layoutMode only on auto-layout frames, as in nodes
   figlens find <file.fig> <query> [--type TYPE] [--node ID] [--limit N]
                                              search stored layer names and text, case-insensitive;
                                              default 20 results (1-200), with paths and truncation flag

@@ -158,7 +158,7 @@ skillshare sync && skillshare sync mcp --global
 
 | Commande | Sortie |
 |---|---|
-| `tree <file> [node] [--depth N] [--json]` | Ids, types REST (comme `nodes`) et noms des nodes ; texte indenté, ou JSON imbriqué avec la taille de chaque node et son masquage |
+| `tree <file> [node] [--depth N] [--json]` | Ids, types REST (comme `nodes`) et noms des nodes ; texte indenté, ou JSON imbriqué avec la taille de chaque node, son masquage et son mode d'auto layout |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Recherche insensible à la casse dans les noms de calques et le texte ; chemins, tailles et aperçus. 20 résultats par défaut (1-200) |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID]` | Résumé compact de la mise en page/du texte étendus, 200 nodes au plus. `--images` ajoute les dimensions des bitmaps et les emprises de recadrage |
 | `nodes <file> <node>` | JSON au format REST : instances étendues et overrides, auto-layout, styles de texte, fills, effets, variables liées, propriétés de composants, render bounds |
