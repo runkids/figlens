@@ -409,7 +409,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "coverage": {"type": "object", "description": "prepare without scope: text and relations not_requested"},
                 "nextSteps": {"type": "array", "items": {"type": "object"}},
                 "storage": {"type": "object"},
-                "paths": {"type": "object"},
+                "paths": {"type": ["object", "null"], "description": "workspace and database paths; null when the workspace does not exist"},
             }),
             ["workspaceId", "state"].as_slice(),
         ),

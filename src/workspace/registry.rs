@@ -102,6 +102,19 @@ pub(super) fn initialize_held(held: Held, place: &Place) -> Result<(Opened, bool
     ))
 }
 
+/// The `index prepare` call that (re)creates the workspace `locator` names, as a next step:
+/// its own file for a source-scoped workspace, any of its files for a project one.
+fn prepare_step(locator: Option<&Locator>, why: &str) -> Json {
+    let arguments = match locator {
+        Some(Locator::Source(file)) => json!({"action": "prepare", "file": file}),
+        Some(Locator::Project(dir)) => {
+            json!({"action": "prepare", "file": "<a .fig of this project>", "workspace": dir})
+        }
+        None => json!({"action": "prepare", "file": "<file.fig>"}),
+    };
+    json!([{"tool": "index", "arguments": arguments, "why": why}])
+}
+
 /// The coverage of a prepare that indexed nothing yet: only the registry exists.
 pub(super) fn not_requested() -> Json {
     json!({"layers": {"text": {"state": "not_requested"}, "relations": {"state": "not_requested"}},
@@ -413,7 +426,7 @@ pub fn status(storage: &Storage, select: &Select) -> Result<Json> {
             &id,
             None,
             "absent",
-            json!({"nextSteps": ["`figlens index prepare <file.fig>` creates it"]}),
+            json!({"nextSteps": prepare_step(select.locator(), "the workspace does not exist; prepare creates it")}),
         ));
     };
     let (dir, locator) = (held.dir.clone(), held.locator.report()?);
@@ -424,8 +437,8 @@ pub fn status(storage: &Storage, select: &Select) -> Result<Json> {
             &id,
             Some(&dir),
             "uninitialized",
-            json!({"locator": locator,
-                "nextSteps": ["`figlens index prepare <file.fig>` initializes it with a new incarnation"]}),
+            json!({"locator": locator, "nextSteps": prepare_step(select.locator(),
+                "prepare initializes it with a new incarnation")}),
         )),
     }
 }
@@ -697,6 +710,6 @@ pub fn reset(storage: &Storage, select: &Select) -> Result<Json> {
             "partial"
         },
         json!({"removed": removed, "retained": retained, "failed": failed,
-            "nextSteps": ["`figlens index prepare <file.fig>` initializes it again in the same storage with a new incarnation; earlier sourceIds must be added again"]}),
+            "nextSteps": prepare_step(select.locator(), "prepare initializes it again in the same storage with a new incarnation; earlier sourceIds must be added again")}),
     ))
 }

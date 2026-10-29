@@ -963,3 +963,172 @@ fn rebuild_narrowed_to_one_source_and_scope_builds_only_that_one_even_when_uncha
     assert_eq!(jobs[0]["state"], "succeeded");
     assert_eq!(rebuilt["admission"], "complete");
 }
+
+/// Whether `value` has the JSON types `schema` declares, recursively through `properties`,
+/// `required` and `items`: what an MCP client validating structuredContent checks.
+fn conforms(value: &Value, schema: &Value, at: &str) -> Result<(), String> {
+    let kind = |t: &str| match t {
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "string" => value.is_string(),
+        "integer" => value.is_i64() || value.is_u64(),
+        "number" => value.is_number(),
+        "boolean" => value.is_boolean(),
+        "null" => value.is_null(),
+        _ => true,
+    };
+    let ok = match &schema["type"] {
+        Value::String(t) => kind(t),
+        Value::Array(ts) => ts.iter().any(|t| kind(t.as_str().unwrap_or(""))),
+        _ => true,
+    };
+    if !ok {
+        return Err(format!("{at}: {value} is not {}", schema["type"]));
+    }
+    for name in schema["required"].as_array().into_iter().flatten() {
+        if value.get(name.as_str().unwrap()).is_none() {
+            return Err(format!("{at}: missing {name}"));
+        }
+    }
+    if let (Some(props), Some(object)) = (schema["properties"].as_object(), value.as_object()) {
+        for (name, sub) in props {
+            if let Some(v) = object.get(name) {
+                conforms(v, sub, &format!("{at}/{name}"))?;
+            }
+        }
+    }
+    if let (Some(items), Some(list)) = (schema.get("items"), value.as_array()) {
+        for (i, v) in list.iter().enumerate() {
+            conforms(v, items, &format!("{at}/{i}"))?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn every_index_jobs_and_workspace_search_reply_matches_its_declared_output_schema() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    let project = env.dir.join("project");
+    std::fs::create_dir(&project).unwrap();
+    let project = std::fs::canonicalize(project).unwrap();
+    let dir = project.to_str().unwrap();
+    let other = env.fig("b.fig");
+    let mut mcp = Mcp::start(&env, &[]);
+    mcp.send(json!({"jsonrpc": "2.0", "id": 0, "method": "tools/list"}));
+    let tools = mcp.read()["result"]["tools"].clone();
+    let schema = |name: &str| {
+        tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap()["outputSchema"]
+            .clone()
+    };
+    let check = |mcp: &mut Mcp, tool: &str, arguments: Value| -> Value {
+        let reply = mcp.call(tool, arguments.clone());
+        assert_eq!(reply["isError"], false, "{tool} {arguments}: {reply}");
+        let content = &reply["structuredContent"];
+        conforms(content, &schema(tool), tool).unwrap_or_else(|e| panic!("{arguments}: {e}"));
+        content.clone()
+    };
+    let wait = |mcp: &mut Mcp, job: &str| loop {
+        let now = mcp.call("jobs", json!({"action": "status", "jobId": job}));
+        if !matches!(
+            now["structuredContent"]["state"].as_str(),
+            Some("queued" | "running")
+        ) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    check(&mut mcp, "index", json!({"action": "status", "file": file}));
+    check(
+        &mut mcp,
+        "index",
+        json!({"action": "prepare", "file": file}),
+    );
+    let started = check(
+        &mut mcp,
+        "index",
+        json!({"action": "prepare", "file": file, "scope": "0:0"}),
+    );
+    let job = started["job"]["jobId"].as_str().unwrap().to_owned();
+    let ws = started["workspaceId"].as_str().unwrap().to_owned();
+    let source = started["source"]["sourceId"].as_str().unwrap().to_owned();
+    wait(&mut mcp, &job);
+    check(&mut mcp, "jobs", json!({"action": "status", "jobId": job}));
+    check(&mut mcp, "jobs", json!({"action": "cancel", "jobId": job}));
+    check(
+        &mut mcp,
+        "index",
+        json!({"action": "status", "workspaceId": ws}),
+    );
+    check(
+        &mut mcp,
+        "search",
+        json!({"workspaceId": ws, "query": "first"}),
+    );
+    check(
+        &mut mcp,
+        "search",
+        json!({"workspaceId": ws, "query": "first", "node": "0:2"}),
+    );
+    let refreshed = check(
+        &mut mcp,
+        "index",
+        json!({"action": "refresh", "workspaceId": ws}),
+    );
+    let rebuilt = check(
+        &mut mcp,
+        "index",
+        json!({"action": "rebuild", "workspaceId": ws, "sourceId": source, "scope": "0:0"}),
+    );
+    for done in [refreshed, rebuilt] {
+        for job in done["jobs"].as_array().unwrap() {
+            wait(&mut mcp, job["jobId"].as_str().unwrap());
+        }
+    }
+    check(
+        &mut mcp,
+        "index",
+        json!({"action": "clear_cache", "workspaceId": ws}),
+    );
+    check(
+        &mut mcp,
+        "index",
+        json!({"action": "reset", "workspaceId": ws}),
+    );
+    check(
+        &mut mcp,
+        "index",
+        json!({"action": "status", "workspaceId": ws}),
+    );
+    // A project workspace: add, relocate and remove.
+    let prepared = check(
+        &mut mcp,
+        "index",
+        json!({"action": "prepare", "file": file, "workspace": dir}),
+    );
+    let pws = prepared["workspaceId"].as_str().unwrap().to_owned();
+    let added = check(
+        &mut mcp,
+        "index",
+        json!({"action": "add", "workspaceId": pws, "file": other}),
+    );
+    let added_id = added["source"]["sourceId"].as_str().unwrap().to_owned();
+    let moved = env.dir.join("moved.fig");
+    std::fs::rename(&other, &moved).unwrap();
+    check(
+        &mut mcp,
+        "index",
+        json!({"action": "relocate", "workspaceId": pws, "sourceId": added_id, "file": moved}),
+    );
+    check(
+        &mut mcp,
+        "index",
+        json!({"action": "remove", "workspaceId": pws, "sourceId": added_id}),
+    );
+}
