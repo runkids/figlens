@@ -575,8 +575,9 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
             index.stop = Some("text_bytes_limit");
             break;
         }
-        // Originals and normalized copies, ids and the record, before allocating them.
-        let retained = 256 + 2 * id.len() + 3 * (name.len() + text_len) + kind.len();
+        // Originals, ids and the record, before allocating them; normalized copies are charged
+        // at their real size below, since NFKC can expand a character many times over.
+        let retained = 256 + 2 * id.len() + name.len() + text_len + kind.len();
         let peak = [Some(name), text]
             .into_iter()
             .flatten()
@@ -618,8 +619,11 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
         let children = tree.children.get(&id).or_else(|| ex.children.get(&id));
         let kids = children.map_or(&[][..], Vec::as_slice);
         let queued = kids.iter().map(|c| 96 + c.len()).sum::<usize>();
-        // Postings and queued children; nothing is committed to the index until both charges pass.
-        if !bounds.charge(kids.len(), 24 * tf.len() + queued) {
+        let normalized =
+            norm.iter().map(String::len).sum::<usize>() + tf.keys().map(String::len).sum::<usize>();
+        // Normalized copies, terms, postings and queued children; nothing is committed to the
+        // index until both charges pass.
+        if !bounds.charge(kids.len(), 24 * tf.len() + queued + normalized) {
             break;
         }
         index.text_bytes += text_len;

@@ -263,7 +263,29 @@ fn kiwi_bytes(v: &Value, left: &mut usize) -> usize {
 
 fn patches_bytes(patches: &Patches, left: &mut usize) -> usize {
     sum_while(patches, left, |(k, p), left| {
-        128 + k.len() + sum_while(p.props.values(), left, json_bytes)
+        let owned = [p.name.as_ref(), p.swap.as_ref()]
+            .into_iter()
+            .flatten()
+            .chain(p.prototype_source.as_ref().map(|s| &s.node_id))
+            .map(String::len)
+            .sum::<usize>();
+        128 + k.len() + owned + sum_while(p.props.values(), left, json_bytes)
+    })
+}
+
+/// `kiwi_bytes` of override or derived `list` plus the strings `entries` keeps outside each
+/// patch's props: its name again, its swap id and the `source` id of a prototype override.
+fn entries_bytes(list: Option<&Value>, source: &str, left: &mut usize) -> usize {
+    let Some(Value::Array(items)) = list else {
+        return 0;
+    };
+    24 + sum_while(items, left, |entry, left| {
+        let name = entry.get("name").map_or(0, |n| n.as_string().len());
+        let prototype = entry
+            .get("prototypeInteractions")
+            .map_or(0, |_| source.len());
+        // A swap's guid key prints as at most "4294967295:4294967295".
+        kiwi_bytes(entry, left) + name + 21 + prototype
     })
 }
 
@@ -680,11 +702,8 @@ fn expand_all(
                 + list_len(derived)
                 + refs.saturating_mul(list_len(assignments));
             let estimate = |left: &mut usize| {
-                [overrides, derived]
-                    .into_iter()
-                    .flatten()
-                    .map(|v| kiwi_bytes(v, left))
-                    .sum::<usize>()
+                entries_bytes(overrides, &id, left)
+                    + entries_bytes(derived, "", left)
                     + assignment_bytes(assignments, None, refs, left)
             };
             let binding = cost.binding(list_len(assignments), "");
@@ -1046,11 +1065,8 @@ impl Expander<'_, '_> {
                     let estimate = |left: &mut usize| {
                         patches_bytes(ov, left)
                             + patches_bytes(dv, left)
-                            + [overrides, derived]
-                                .into_iter()
-                                .flatten()
-                                .map(|v| kiwi_bytes(v, left))
-                                .sum::<usize>()
+                            + entries_bytes(overrides, child_id, left)
+                            + entries_bytes(derived, "", left)
                             + assignment_bytes(own, inherited, refs, left)
                     };
                     // `nest` writes `pk;` in front of every inner key it merges.
@@ -1674,6 +1690,55 @@ mod tests {
                 .stop,
             None
         );
+    }
+
+    #[test]
+    fn a_bounded_expansion_charges_the_name_a_patch_keeps_beside_its_props() {
+        // A 1 MB name override is kept as `Patch.name` and in `props`, then cloned at a nested instance.
+        let name = "n".repeat(1_000_000);
+        let inst = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            (
+                "symbolData",
+                obj(vec![
+                    ("symbolID", guid(1, 1)),
+                    (
+                        "symbolOverrides",
+                        Value::Array(vec![obj(vec![
+                            (
+                                "guidPath",
+                                obj(vec![("guids", Value::Array(vec![guid(5, 1)]))]),
+                            ),
+                            ("name", Value::String(name.clone())),
+                        ])]),
+                    ),
+                ]),
+            ),
+        ]);
+        let nested = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            ("symbolData", obj(vec![("symbolID", guid(2, 2))])),
+        ]);
+        let (page, outer, inner) = (obj(vec![]), obj(vec![]), obj(vec![]));
+        let tree = Tree {
+            nodes: HashMap::from([
+                ("page".into(), &page),
+                ("inst".into(), &inst),
+                ("1:1".into(), &outer),
+                ("2:2".into(), &inner),
+                ("c".into(), &nested),
+            ]),
+            children: HashMap::from([
+                ("page".into(), vec!["inst".into()]),
+                ("1:1".into(), vec!["c".into()]),
+            ]),
+            blobs: Vec::new(),
+        };
+        assert_eq!(
+            bounded(&tree, "page", 1 << 20, 3_000_000).1.stop,
+            Some(Stop::Bytes)
+        );
+        assert_eq!(bounded(&tree, "page", 1 << 20, 8 << 20).1.stop, None);
     }
 
     #[test]

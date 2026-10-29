@@ -735,6 +735,28 @@ fn normalization_matches_whole_string_nfkc_fold_nfkc() {
 }
 
 #[test]
+fn normalized_copies_are_charged_at_their_expanded_size() {
+    // U+FDFA is 3 bytes and normalizes to 33: 1,000 names of 100 keep about 3.6 MB.
+    let name = "\u{FDFA}".repeat(100);
+    let mut nodes = vec![node(0, None, "DOCUMENT", "Document", vec![])];
+    nodes.extend((1..=1000).map(|id| node(id, Some(0), "FRAME", &name, vec![])));
+    let message = obj(vec![("nodeChanges", K::Array(nodes))]);
+    let tree = Tree::new(&message);
+    let index = |bytes| {
+        build(
+            &tree,
+            "0:0",
+            Bounds {
+                bytes,
+                ..bounds(WORK)
+            },
+        )
+    };
+    assert_eq!(index(2_500_000).stop, Some("byte_limit"));
+    assert_eq!(index(8 << 20).stop, None);
+}
+
+#[test]
 fn a_long_combining_run_is_refused_before_normalization() {
     // Past the deadline, any normalization would stop at its first check with Deadline.
     let marks = "a".repeat(100_000) + &"\u{301}".repeat(MAX_MARKS + 1);
