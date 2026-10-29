@@ -804,3 +804,24 @@ fn clear_cache_keeps_the_generation_an_orphaned_worker_still_writes() {
     drop(worker);
     assert_eq!((while_running, kept(&storage)), (1, 0));
 }
+
+#[test]
+fn a_failed_rebuild_recommends_a_rebuild_not_a_refresh() {
+    let d = TestDir::new();
+    let (_, _, dir) = workspace(&d, 1);
+    let conn = connection(&dir);
+    let next = |kind: &str| {
+        let job_id = job(&conn, &sources(&conn)[0], "0:0", "failed", "dead", 1);
+        conn.execute(
+            "UPDATE jobs SET kind = ?2 WHERE job_id = ?1",
+            [&job_id, kind],
+        )
+        .unwrap();
+        report_job(&conn, &dir, &job_id).unwrap().unwrap()["nextSteps"][0]["arguments"]["action"]
+            .clone()
+    };
+    assert_eq!(
+        (next("rebuild"), next("refresh")),
+        (json!("rebuild"), json!("refresh"))
+    );
+}

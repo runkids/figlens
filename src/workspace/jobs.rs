@@ -325,9 +325,15 @@ pub(crate) fn report_job(conn: &Connection, dir: &Path, job_id: &str) -> Result<
             json!([{"tool": "jobs", "arguments": {"action": "status", "jobId": job_id}}])
         }
         "interrupted" | "failed" | "cancelled" => {
-            json!([{"tool": "index", "arguments": {"action": "refresh",
+            // A rebuild again, so an unchanged snapshot is not reused instead of repaired.
+            let action = if kind == "rebuild" {
+                "rebuild"
+            } else {
+                "refresh"
+            };
+            json!([{"tool": "index", "arguments": {"action": action,
             "workspaceId": ws, "sourceId": source, "scope": scope},
-            "why": "a refresh starts the build again as a new attempt; the previous index keeps serving"}])
+            "why": format!("a {action} starts the build again as a new attempt; the previous index keeps serving")}])
         }
         "succeeded" => {
             json!([{"tool": "search", "arguments": {"workspaceId": ws, "node": scope, "query": "<words>"}}])
