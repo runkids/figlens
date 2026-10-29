@@ -157,7 +157,7 @@ skillshare sync && skillshare sync mcp --global
 |  | Ordinary (default) | Advanced: local index (optional) |
 |---|---|---|
 | What it does | Reads the `.fig` on each call and answers `search`, `find`, `inspect` and `export`. | Builds a search index of a chosen scope once, then answers `search` from it, ranked across sources. |
-| What is written | Nothing: no workspace, no database. | A local workspace (SQLite database) in the per-user state directory, or the `--storage` you chose. |
+| What is written | No workspace or index database (`export` writes only the files you ask for). | A local workspace (SQLite database) in the per-user state directory, or the `--storage` you chose. |
 | When to use | One-off questions, scripts, CI. | Repeated searches of one file; several files of a project as one corpus (`--workspace <dir>`); known parent/instance relations in coverage. |
 
 A normal design question never creates an index. You opt in once, explicitly ("create an index for this design"); figlens picks the storage and needs no SQLite or other setup.
@@ -192,7 +192,7 @@ Lifecycle: `refresh` rebuilds only scopes whose `.fig` bytes changed; `rebuild` 
 
 Moved the `.fig`? `index relocate` keeps `workspaceId`, `sourceId` and storage; then `refresh` the affected scopes. There is no auto-discovery and no hash-based merge, and no reset is needed.
 
-Data: the SQLite database holds registered local paths, the selected scopes' layer names and effective text, search postings, known parent/instance relations, hashes, generations and jobs. The original `.fig` stays where it is and is never copied or modified.
+Data: the SQLite database holds registered local paths, the selected scopes' layer names and effective text, search postings, known parent/instance relations, hashes, generations and jobs. The original `.fig` stays unchanged where it is; its raw bytes are not stored in the database.
 
 Pi, OpenCode and OMP use the same index through their own opt-in entry, and the workspace is reused across restarts and hosts. Not implemented: file watching, usages/relationship tools, vectors, events and subscriptions.
 

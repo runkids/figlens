@@ -159,7 +159,7 @@ skillshare sync && skillshare sync mcp --global
 |  | Ordinaire (par défaut) | Avancé : index local (optionnel) |
 |---|---|---|
 | Ce que ça fait | Lit le `.fig` à chaque appel et répond à `search`, `find`, `inspect` et `export`. | Construit une fois un index de recherche d'une portée choisie, puis répond à `search` depuis cet index, classé entre les sources. |
-| Ce qui est écrit | Rien : ni workspace ni base de données. | Un workspace local (base SQLite) dans le répertoire d'état de l'utilisateur, ou sous le `--storage` choisi. |
+| Ce qui est écrit | Ni workspace ni base d'index (`export` n'écrit que les fichiers demandés). | Un workspace local (base SQLite) dans le répertoire d'état de l'utilisateur, ou sous le `--storage` choisi. |
 | Quand l'utiliser | Questions ponctuelles, scripts, CI. | Recherches répétées dans un fichier ; plusieurs fichiers d'un projet comme un seul corpus (`--workspace <dir>`) ; relations parent/instance connues dans la couverture. |
 
 Une question de design ordinaire ne crée jamais d'index. Vous l'activez une fois, explicitement (« crée un index pour ce design ») ; figlens choisit le stockage et n'exige ni SQLite ni autre configuration.
@@ -194,7 +194,7 @@ Cycle de vie : `refresh` reconstruit seulement les portées dont les octets du `
 
 `.fig` déplacé ? `index relocate` garde `workspaceId`, `sourceId` et le stockage ; faites ensuite `refresh` des portées concernées. Pas de découverte automatique ni de fusion par hash, et aucun reset n'est nécessaire.
 
-Données : la base SQLite contient les chemins locaux enregistrés, les noms de calques et le texte effectif des portées choisies, les postings de recherche, les relations parent/instance connues, les hashes, les générations et les jobs. Le `.fig` d'origine reste où il est et n'est jamais copié ni modifié.
+Données : la base SQLite contient les chemins locaux enregistrés, les noms de calques et le texte effectif des portées choisies, les postings de recherche, les relations parent/instance connues, les hashes, les générations et les jobs. Le `.fig` d'origine reste inchangé où il est ; ses octets bruts ne sont pas stockés dans la base.
 
 Pi, OpenCode et OMP utilisent le même index via leur propre entrée opt-in, et le workspace est réutilisé entre redémarrages et hôtes. Non implémenté : surveillance de fichiers, outils d'usages/relations, vecteurs, événements et abonnements.
 

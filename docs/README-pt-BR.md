@@ -159,7 +159,7 @@ skillshare sync && skillshare sync mcp --global
 |  | Comum (padrão) | Avançado: índice local (opcional) |
 |---|---|---|
 | O que faz | Lê o `.fig` a cada chamada e responde `search`, `find`, `inspect` e `export`. | Cria uma vez um índice de busca de um escopo escolhido e responde `search` a partir dele, com ranking entre fontes. |
-| O que é gravado | Nada: sem workspace nem banco de dados. | Um workspace local (banco SQLite) no diretório de estado do usuário, ou no `--storage` escolhido. |
+| O que é gravado | Nenhum workspace nem banco de índice (`export` grava só os arquivos que você pedir). | Um workspace local (banco SQLite) no diretório de estado do usuário, ou no `--storage` escolhido. |
 | Quando usar | Perguntas pontuais, scripts, CI. | Buscas repetidas em um arquivo; vários arquivos de um projeto como um único corpus (`--workspace <dir>`); relações pai/instância conhecidas na cobertura. |
 
 Uma pergunta de design comum nunca cria um índice. Você ativa uma vez, de forma explícita ("crie um índice para este design"); o figlens escolhe o armazenamento e não exige SQLite nem outra configuração.
@@ -194,7 +194,7 @@ Ciclo de vida: `refresh` recria só os escopos cujos bytes do `.fig` mudaram; `r
 
 Moveu o `.fig`? `index relocate` mantém `workspaceId`, `sourceId` e armazenamento; depois faça `refresh` dos escopos afetados. Não há descoberta automática nem fusão por hash, e não é preciso reset.
 
-Dados: o banco SQLite guarda caminhos locais registrados, nomes de camadas e texto efetivo dos escopos escolhidos, postings de busca, relações pai/instância conhecidas, hashes, gerações e jobs. O `.fig` original permanece onde está e nunca é copiado nem modificado.
+Dados: o banco SQLite guarda caminhos locais registrados, nomes de camadas e texto efetivo dos escopos escolhidos, postings de busca, relações pai/instância conhecidas, hashes, gerações e jobs. O `.fig` original permanece inalterado onde está; seus bytes brutos não são guardados no banco.
 
 Pi, OpenCode e OMP usam o mesmo índice por meio de sua própria entrada opt-in, e o workspace é reutilizado entre reinícios e hosts. Não implementado: monitoramento de arquivos, ferramentas de usos/relações, vetores, eventos e assinaturas.
 

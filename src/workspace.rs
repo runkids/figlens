@@ -122,8 +122,8 @@ fn storage_error(path: &Path, error: std::io::Error) -> Box<dyn Error> {
     }
 }
 
-/// `e` with the configured config and state roots named in each storage recovery action, so a
-/// host can ask for access to exactly those paths before running it.
+/// `e` with the config root named in each storage recovery action, so a host can ask for access
+/// to it (recreation writes the location record there) before running it.
 pub fn rooted(storage: &Storage, e: Box<dyn Error>) -> Box<dyn Error> {
     let Some(fig) = e.downcast_ref::<FigError>() else {
         return e;
@@ -131,11 +131,8 @@ pub fn rooted(storage: &Storage, e: Box<dyn Error>) -> Box<dyn Error> {
     let Some(Json::Array(actions)) = fig.recovery() else {
         return e;
     };
-    let state = storage
-        .explicit
-        .as_ref()
-        .map_or(storage.defaults.state.path.clone(), |d| d.join("state"));
-    let roots = json!({"config": {"path": storage.defaults.config.path}, "state": {"path": state}});
+    // Only the config root is known for certain; the failing storage is the action's `path`.
+    let roots = json!({"config": {"path": storage.defaults.config.path}});
     let storage_action = |a: &Json| {
         matches!(
             a["action"].as_str(),

@@ -159,7 +159,7 @@ skillshare sync && skillshare sync mcp --global
 |  | 普通（默认） | 高级：本地索引（可选） |
 |---|---|---|
 | 作用 | 每次调用都读取 `.fig`，回答 `search`、`find`、`inspect` 和 `export`。 | 为选定范围一次性建立搜索索引，之后 `search` 从索引作答，并跨来源统一排序。 |
-| 写入内容 | 无：不创建 workspace，也没有数据库。 | 用户 state 目录或所选 `--storage` 下的本地 workspace（SQLite 数据库）。 |
+| 写入内容 | 不创建 workspace 或索引数据库（`export` 只写入你要求的文件）。 | 用户 state 目录或所选 `--storage` 下的本地 workspace（SQLite 数据库）。 |
 | 适用场景 | 一次性提问、脚本、CI。 | 反复搜索同一文件；把项目的多个文件当作一个语料搜索（`--workspace <dir>`）；在 coverage 中使用已知的父/实例关系。 |
 
 普通的设计问题不会创建索引。你只需明确选择启用一次（“为这个设计创建索引”）；存储位置由 figlens 决定，不需要配置 SQLite 或其他东西。
@@ -194,7 +194,7 @@ MCP：`index` 的 prepare 返回一个 job；轮询 `jobs` 直到 `succeeded`，
 
 移动了 `.fig`？`index relocate` 保留 `workspaceId`、`sourceId` 和存储位置；然后对受影响的范围执行 `refresh`。没有自动发现，也没有基于哈希的自动合并，不需要 reset。
 
-数据：SQLite 数据库保存已注册的本地路径、所选范围的图层名称与有效文本、搜索 postings、已知的父/实例关系、哈希、generation 和 job。原始 `.fig` 留在原处，不会被复制或修改。
+数据：SQLite 数据库保存已注册的本地路径、所选范围的图层名称与有效文本、搜索 postings、已知的父/实例关系、哈希、generation 和 job。原始 `.fig` 留在原处且保持不变；其原始字节不会存入数据库。
 
 Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，workspace 可跨重启和宿主复用。尚未实现：文件监视、usages/关系工具、向量、事件与订阅。
 

@@ -159,7 +159,7 @@ skillshare sync && skillshare sync mcp --global
 |  | Ordinario (por defecto) | Avanzado: índice local (opcional) |
 |---|---|---|
 | Qué hace | Lee el `.fig` en cada llamada y responde `search`, `find`, `inspect` y `export`. | Construye una vez un índice de búsqueda de un ámbito elegido y responde `search` desde él, con ranking entre fuentes. |
-| Qué se escribe | Nada: sin workspace ni base de datos. | Un workspace local (base de datos SQLite) en el directorio de estado del usuario, o en el `--storage` elegido. |
+| Qué se escribe | Ningún workspace ni base de datos de índice (`export` solo escribe los archivos que pidas). | Un workspace local (base de datos SQLite) en el directorio de estado del usuario, o en el `--storage` elegido. |
 | Cuándo usarlo | Preguntas puntuales, scripts, CI. | Búsquedas repetidas en un archivo; varios archivos de un proyecto como un solo corpus (`--workspace <dir>`); relaciones padre/instancia conocidas en la cobertura. |
 
 Una pregunta de diseño normal nunca crea un índice. Lo activas una vez, de forma explícita («crea un índice para este diseño»); figlens elige el almacenamiento y no requiere SQLite ni otra configuración.
@@ -194,7 +194,7 @@ Ciclo de vida: `refresh` reconstruye solo los ámbitos cuyos bytes del `.fig` ca
 
 ¿Moviste el `.fig`? `index relocate` conserva `workspaceId`, `sourceId` y el almacenamiento; después haz `refresh` de los ámbitos afectados. No hay autodescubrimiento ni fusión por hash, y no hace falta reset.
 
-Datos: la base de datos SQLite contiene rutas locales registradas, nombres de capas y texto efectivo de los ámbitos elegidos, postings de búsqueda, relaciones padre/instancia conocidas, hashes, generaciones y jobs. El `.fig` original permanece donde está y nunca se copia ni se modifica.
+Datos: la base de datos SQLite contiene rutas locales registradas, nombres de capas y texto efectivo de los ámbitos elegidos, postings de búsqueda, relaciones padre/instancia conocidas, hashes, generaciones y jobs. El `.fig` original permanece sin cambios donde está; sus bytes sin procesar no se guardan en la base de datos.
 
 Pi, OpenCode y OMP usan el mismo índice mediante su propia entrada opt-in, y el workspace se reutiliza entre reinicios y hosts. No implementado: vigilancia de archivos, herramientas de usos/relaciones, vectores, eventos y suscripciones.
 
