@@ -222,7 +222,7 @@ pub(crate) const V2: &str = "
         state TEXT NOT NULL, stage TEXT, done INTEGER NOT NULL DEFAULT 0, total INTEGER,
         error TEXT, owner TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 1,
         cancel INTEGER NOT NULL DEFAULT 0, gen INTEGER, created_ms INTEGER NOT NULL,
-        heartbeat_ms INTEGER NOT NULL, finished_ms INTEGER) STRICT;
+        heartbeat_ms INTEGER NOT NULL, finished_ms INTEGER, evicted TEXT) STRICT;
     -- One active build per source and scope, whatever its kind: a second request joins it.
     CREATE UNIQUE INDEX jobs_active ON jobs (source_id, scope) WHERE state IN ('queued', 'running');
     PRAGMA user_version = 2;";

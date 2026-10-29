@@ -145,13 +145,19 @@ static RETAINED: Mutex<Vec<(Child, Claim, Option<File>)>> = Mutex::new(Vec::new(
 /// interrupted instead of holding the head of the queue for as long as this process lives.
 static PENDING: Mutex<Vec<(String, i64, Claim)>> = Mutex::new(Vec::new());
 
-fn pre_claim(dir: &Path, job_id: &str, attempt: i64) {
-    // Unclaimed is still a live owner's job; `run` claims it then.
-    if let Ok(claim) = claim(dir, job_id, attempt)
-        && let Ok(mut pending) = PENDING.lock()
-    {
-        pending.push((job_id.to_owned(), attempt, claim));
+/// Commits the admission of attempt `attempt` of `job_id`, claimed first: a job is admitted
+/// only with its claim, so no live owner's job is ever left without one.
+fn admit(tx: rusqlite::Transaction, dir: &Path, job_id: &str, attempt: i64) -> Result<()> {
+    let claim = claim(dir, job_id, attempt)?;
+    if let Err(e) = tx.commit() {
+        claim.done();
+        return Err(sql(e));
     }
+    PENDING
+        .lock()
+        .map_err(|_| "pending claims poisoned")?
+        .push((job_id.to_owned(), attempt, claim));
+    Ok(())
 }
 
 fn take_pending(job_id: &str) -> Option<(i64, Claim)> {
@@ -213,7 +219,8 @@ pub(crate) fn report_job(conn: &Connection, dir: &Path, job_id: &str) -> Result<
     let row = conn
         .query_row(
             "SELECT kind, source_id, scope, state, stage, done, total, error, owner, attempt,
-             cancel, gen, created_ms, heartbeat_ms, finished_ms FROM jobs WHERE job_id = ?1",
+             cancel, gen, created_ms, heartbeat_ms, finished_ms, evicted FROM jobs
+             WHERE job_id = ?1",
             [job_id],
             |r| {
                 Ok((
@@ -230,7 +237,10 @@ pub(crate) fn report_job(conn: &Connection, dir: &Path, job_id: &str) -> Result<
                     r.get::<_, bool>(10)?,
                     r.get::<_, Option<i64>>(11)?,
                     [r.get::<_, i64>(12)?, r.get::<_, i64>(13)?],
-                    r.get::<_, Option<i64>>(14)?,
+                    (
+                        r.get::<_, Option<i64>>(14)?,
+                        r.get::<_, Option<String>>(15)?,
+                    ),
                 ))
             },
         )
@@ -250,7 +260,7 @@ pub(crate) fn report_job(conn: &Connection, dir: &Path, job_id: &str) -> Result<
         cancel,
         gen_id,
         [created, beat],
-        finished,
+        (finished, evicted),
     )) = row
     else {
         return Ok(None);
@@ -279,12 +289,15 @@ pub(crate) fn report_job(conn: &Connection, dir: &Path, job_id: &str) -> Result<
         }
         _ => json!([]),
     };
-    Ok(Some(
-        json!({"jobId": job_id, "kind": kind, "sourceId": source, "scope": scope,
+    let mut report = json!({"jobId": job_id, "kind": kind, "sourceId": source, "scope": scope,
         "state": state, "stage": stage, "progress": {"units": done, "total": total},
         "cancelRequested": cancel, "attempt": attempt, "generation": gen_id, "error": error,
-        "createdMs": created, "heartbeatMs": beat, "finishedMs": finished, "nextSteps": next}),
-    ))
+        "createdMs": created, "heartbeatMs": beat, "finishedMs": finished, "nextSteps": next});
+    // The scopes this job's publication retired under the scope cap, kept with the job.
+    if let Some(evicted) = evicted.and_then(|e| serde_json::from_str::<Json>(&e).ok()) {
+        report["evictedScopes"] = evicted;
+    }
+    Ok(Some(report))
 }
 
 /// The result of submitting a build: the job and whether this process must run it.
@@ -384,8 +397,7 @@ pub(crate) fn submit(
                 params![job_id, me, membership, now_ms()],
             )
             .map_err(sql)?;
-            tx.commit().map_err(sql)?;
-            pre_claim(&dir, &job_id, attempt + 1);
+            admit(tx, &dir, &job_id, attempt + 1)?;
             return Ok(Submitted {
                 job_id,
                 owned,
@@ -463,8 +475,7 @@ pub(crate) fn submit(
         [KEPT],
     )
     .map_err(sql)?;
-    tx.commit().map_err(sql)?;
-    pre_claim(&dir, &job_id, 1);
+    admit(tx, &dir, &job_id, 1)?;
     Ok(Submitted {
         job_id,
         owned: true,
@@ -1134,34 +1145,34 @@ pub(crate) fn publish(
         [&source],
     )
     .map_err(sql)?;
+    let evicted_json = (!evicted.is_empty()).then(|| json!(evicted).to_string());
     tx.execute(
-        "UPDATE jobs SET state = 'succeeded', stage = 'publish', gen = ?2, finished_ms = ?3
-         WHERE job_id = ?1",
-        params![job_id, gen_id, now],
+        "UPDATE jobs SET state = 'succeeded', stage = 'publish', gen = ?2, finished_ms = ?3,
+         evicted = ?4 WHERE job_id = ?1",
+        params![job_id, gen_id, now, evicted_json],
     )
     .map_err(sql)?;
     tx.commit().map_err(sql)?;
     // Retention, outside the publication: one retired generation per source and scope.
-    for scope in evicted.iter().chain([&scope]) {
-        prune(&mut ws.conn, &source, scope)?;
+    // An evicted scope serves nothing, so it keeps no retired generation: retention stays at
+    // one per published scope, however many scopes a source has seen.
+    for scope in &evicted {
+        prune(&mut ws.conn, &source, scope, 0)?;
     }
-    let mut report = report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id))?;
-    if !evicted.is_empty() {
-        report["evictedScopes"] = json!(evicted);
-    }
-    Ok(report)
+    prune(&mut ws.conn, &source, &scope, 1)?;
+    report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id))
 }
 
-/// Deletes retired generations of `source` and `scope` beyond the newest one, and snapshots no
+/// Deletes retired generations of `source` and `scope` beyond the newest `keep`, and snapshots no
 /// generation names. A cursor over a deleted generation reads `cursor_expired`.
-fn prune(conn: &mut Connection, source: &str, scope: &str) -> Result<()> {
+fn prune(conn: &mut Connection, source: &str, scope: &str, keep: i64) -> Result<()> {
     let old: Vec<i64> = conn
         .prepare(
             "SELECT gen FROM generations WHERE source_id = ?1 AND scope = ?2 AND state = 'retired'
-             ORDER BY retired_ms DESC, gen DESC LIMIT -1 OFFSET 1",
+             ORDER BY retired_ms DESC, gen DESC LIMIT -1 OFFSET ?3",
         )
         .and_then(|mut s| {
-            s.query_map([source, scope], |r| r.get(0))?
+            s.query_map(params![source, scope, keep], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()
         })
         .map_err(sql)?;

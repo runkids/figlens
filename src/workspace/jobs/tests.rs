@@ -376,8 +376,20 @@ fn a_run_that_fails_before_it_can_write_leaves_its_job_interrupted() {
         report_job(&conn, &dir, &job_id).unwrap().unwrap()["state"],
         "queued"
     );
-    // What `run` does first; an error before it writes anything then drops the claim.
-    drop(take_pending(&job_id));
+    // Another process holds the workspace exclusively, so the run cannot even open it.
+    let place = storage.place(&select.id().unwrap(), None).unwrap();
+    let held = acquire(&place.roots.state.path, &select, true).unwrap();
+    let ws_id = select.id().unwrap();
+    let reply = run(
+        &storage,
+        &ws_id,
+        &job_id,
+        &AtomicBool::new(false),
+        &mut |_| {},
+    );
+    drop(held);
+    let error = reply.unwrap_err().downcast::<FigError>().unwrap();
+    assert_eq!(error.kind(), ErrorKind::WorkspaceBusy);
     let report = report_job(&conn, &dir, &job_id).unwrap().unwrap();
     assert_eq!(report["state"], "interrupted", "{report}");
     assert_eq!(queue_head(&conn, &dir).unwrap(), None);
@@ -483,10 +495,25 @@ fn publishing_past_the_scope_cap_reports_and_prunes_the_evicted_scope() {
     let report = publish(&storage, &select.id().unwrap(), &job_id, &me, 1, &built).unwrap();
     assert_eq!(report["state"], "succeeded", "{report}");
     assert_eq!(report["evictedScopes"], json!(["1:0"]), "{report}");
-    let kept = "SELECT count(*) FROM generations WHERE scope = ?1 AND state = 'retired'";
+    // Status reads it back from the job, as an MCP caller that never saw the run's reply does.
+    let later = status(&storage, &job_id).unwrap();
+    assert_eq!(later["evictedScopes"], json!(["1:0"]), "{later}");
+    let kept = "SELECT count(*) FROM generations WHERE scope = ?1";
     assert_eq!(
         count(&conn, kept, "1:0"),
-        1,
-        "the evicted scope was not pruned"
+        0,
+        "an evicted scope kept its generations"
     );
+}
+
+#[test]
+fn a_job_that_cannot_be_claimed_is_not_admitted() {
+    let d = TestDir::new();
+    let (storage, select, dir) = workspace(&d, 1);
+    // A file where the claims directory goes.
+    std::fs::write(dir.join("claims"), "").unwrap();
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    let source = sources(&ws.conn)[0].clone();
+    assert!(submit(&mut ws, "refresh", &source, "0:0", None).is_err());
+    assert_eq!(count(&ws.conn, "SELECT count(*) FROM jobs WHERE ?1", 1), 0);
 }
