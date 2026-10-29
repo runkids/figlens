@@ -196,17 +196,17 @@ test('CLI-path writes ask edit where the binary places the workspace; only reset
   assert.deepEqual(asked, [], 'status creates nothing and asks nothing');
   await adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig', scope: '0:0' });
   assert.deepEqual(asked, [['read', '/d.fig'], ['edit', '/state', '/config']]);
-  status = { ...status, paths: { workspace: '/custom/state/workspaces/ws_1' }, storage: { rule: 'remembered', remembered: '/custom' } };
+  status = { ...status, paths: { workspace: '/custom/state/workspaces/ws_1', lock: '/custom/state/workspaces/ws_1.lock' }, storage: { rule: 'remembered', remembered: '/custom' } };
   await adapter.cli(current, 'index', { action: 'reset', file: '/d.fig' });
   await adapter.cli(current, 'index', { action: 'reset', file: '/d.fig' });
-  assert.deepEqual(asked.slice(2), [['figlens_index', 'reset'], ['edit', '/custom/state/workspaces/ws_1']]);
+  assert.deepEqual(asked.slice(2), [['figlens_index', 'reset'], ['edit', '/custom/state/workspaces/ws_1', '/custom/state/workspaces/ws_1.lock']]);
   assert.equal(asked.length, 4, 'the second reset is already granted');
   assert.deepEqual(ran, ['index status', 'index status', 'index prepare', 'index status', 'index reset', 'index status', 'index reset']);
   // A relocation records the new path's alias under the config root.
   const other = await adapter.scope('other');
   other.run = current.run;
   await adapter.cli(other, 'index', { action: 'relocate', file: '/moved.fig', sourceId: 'local:1', workspaceId: 'ws_1' });
-  assert.deepEqual(asked.slice(4), [['read', '/moved.fig'], ['edit', '/custom/state/workspaces/ws_1', '/config']]);
+  assert.deepEqual(asked.slice(4), [['read', '/moved.fig'], ['edit', '/custom/state/workspaces/ws_1', '/custom/state/workspaces/ws_1.lock', '/config']]);
 });
 
 test('CLI-path recreation asks edit on the new storage and the reported config root, though status fails', async t => {
@@ -257,21 +257,26 @@ test('CLI-path prepare and reset run the recovery a failing status names, after 
   };
   const current = await adapter.scope('session');
   const roots = { config: { path: '/config' } };
-  const recovery = [{ action: 'prepare', requires: 'none', path: '/state/workspaces/ws_1', roots },
-    { action: 'reset', requires: 'user_confirmation', path: '/state/workspaces/ws_1', roots }];
+  const lock = '/state/workspaces/ws_1.lock';
+  const recovery = [{ action: 'prepare', requires: 'none', path: '/state/workspaces/ws_1', lock, roots },
+    { action: 'reset', requires: 'user_confirmation', path: '/state/workspaces/ws_1', lock, roots }];
   current.run = async args => {
     ran.push(args.slice(0, 2).join(' '));
     if (args[1] === 'status') throw Object.assign(new Error('exit 1'), { stderr: 'figlens: ws_1.lock is missing\n' + JSON.stringify({ recovery }) });
     return { stdout: '{}' };
   };
-  deny = '/config';
-  await assert.rejects(adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig' }), /denied/);
+  // Denying the config root or the sibling lock the recovery recreates stops it before any write.
+  for (deny of ['/config', lock]) await assert.rejects(adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig' }), /denied/);
   deny = null;
   await adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig' });
   await adapter.cli(current, 'index', { action: 'reset', file: '/d.fig' });
-  assert.deepEqual(asked, [['read', '/d.fig'], ['edit', '/state/workspaces/ws_1', '/config'], ['edit', '/state/workspaces/ws_1', '/config'], ['figlens_index', 'reset']]);
+  const asks = ['edit', '/state/workspaces/ws_1', lock, '/config'];
+  assert.deepEqual(asked, [['read', '/d.fig'], asks, asks, asks, ['figlens_index', 'reset']]);
   await assert.rejects(adapter.cli(current, 'index', { action: 'refresh', file: '/d.fig' }), /lock is missing/);
-  assert.deepEqual(ran, ['index status', 'index status', 'index prepare', 'index status', 'index reset', 'index status']);
+  assert.deepEqual(ran, ['index status', 'index status', 'index status', 'index prepare', 'index status', 'index reset', 'index status']);
+  // An older binary's recovery without the lock path is refused.
+  recovery.forEach(action => delete action.lock);
+  await assert.rejects(adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig' }), /does not report its workspace's lock file/);
 });
 
 test('CLI-path design reads ask read on the requested and canonical path, and builds run without the command timeout', async t => {
@@ -291,7 +296,7 @@ test('CLI-path design reads ask read on the requested and canonical path, and bu
   ctx.permission.assert = async () => {};
   current.run = async (args, timeout) => {
     timeouts.push([args[1], timeout]);
-    return { stdout: JSON.stringify({ paths: { workspace: '/w' }, storage: { rule: 'default' }, roots: { config: { path: '/c' } }, sources: [] }) };
+    return { stdout: JSON.stringify({ paths: { workspace: '/w', lock: '/w.lock' }, storage: { rule: 'default' }, roots: { config: { path: '/c' } }, sources: [] }) };
   };
   await adapter.cli(current, 'index', { action: 'refresh', workspaceId: 'ws_1' });
   assert.deepEqual(timeouts, [['status', undefined], ['refresh', 0]]);
@@ -351,7 +356,7 @@ test('CLI-path workspace search and rebuild ask read on the selected registered 
   const current = await adapter.scope('new session');
   current.run = async args => {
     ran.push(args[1]);
-    return { stdout: JSON.stringify({ paths: { workspace: '/w' }, storage: { rule: 'default' }, roots: { config: { path: '/c' } },
+    return { stdout: JSON.stringify({ paths: { workspace: '/w', lock: '/w.lock' }, storage: { rule: 'default' }, roots: { config: { path: '/c' } },
       sources: [{ sourceId: 's1', path: '/a.fig' }, { sourceId: 's2', path: '/b.fig' }] }) };
   };
   await assert.rejects(adapter.cli(current, 'search', { workspaceId: 'ws_1', sourceId: 's1', node: '0:1', query: 'a' }), /read denied/);
@@ -370,7 +375,7 @@ test('CLI-path reset keeps every selector and scope field, so the CLI refuses a 
     ran.push(args.join(' '));
     if (args.filter(arg => ['--id', '--file', '--workspace'].includes(arg)).length > 1 || (args[1] !== 'status' && args.includes('--source')))
       throw Object.assign(new Error('exit 2'), { stderr: 'usage: figlens index ...' });
-    return { stdout: JSON.stringify({ paths: { workspace: '/state/workspaces/ws_a' }, storage: { rule: 'default' }, roots: { config: { path: '/config' } } }) };
+    return { stdout: JSON.stringify({ paths: { workspace: '/state/workspaces/ws_a', lock: '/state/workspaces/ws_a.lock' }, storage: { rule: 'default' }, roots: { config: { path: '/config' } } }) };
   };
   await assert.rejects(adapter.cli(current, 'index', { action: 'reset', workspaceId: 'ws_a', file: '/b.fig' }), /usage/);
   assert.deepEqual(asked, [], 'conflicting selectors fail before any permission');
