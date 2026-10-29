@@ -74,6 +74,8 @@ When the user asks for related component states, add `--states` to `inspect` or 
 
 When the user asks how two variants differ, inspect the first definition with `--compare-variant <other-id>` (MCP `compareVariant`). Both must belong to the same component set. Read `variantComparison.rootChanges`, descendant `collectionChanges`, `unpairedNodes`, `unknownFields` and its independent truncation before describing differences. These are stored fields/value multisets, not paired descendant changes, alternate instance renderings or pixel fidelity; use returned source IDs for further inspection.
 
+When the person has a `figlens preview` open, a browser-automation tool can ask the page instead: `window.figlens.rankedSearch(query, …)` and exact `window.figlens.usages(id, …)` return the `search` and `usages` replies for the served file, bound to its snapshot; see [the Agent API](https://github.com/runkids/figlens/blob/main/wiki/preview-api.md#calls).
+
 ## Verification evidence
 
 Use design data for structure and values, a design reference for visual relationships, and an implementation screenshot for the browser result. Record the actual viewport and state for both images; distinguish figlens renders from supplied Figma exports and check Known gaps before relying on them. A screenshot at one width or state covers only that case.

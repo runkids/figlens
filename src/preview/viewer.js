@@ -73,6 +73,9 @@ function relQuery(params) {
 // A reply is applied only if its request is still the newest and it describes the snapshot now loaded.
 // Exact identity is the pair: the same bytes under another source are another revision.
 const sameSource = (a, b) => !!a?.snapshotId && a.snapshotId === b?.snapshotId && a.sourceId === b?.sourceId;
+// Every relation kind core reports, checked as this reply's effective relations.
+const relationChoices = reply => [...new Set([...Object.keys(reply.coverage?.layers?.relations?.kinds ?? {}), ...reply.relations])]
+    .map(value => ({value, checked: reply.relations.includes(value)}));
 const acceptReply = (seq, current, replySource, loadedSource) => seq === current && sameSource(replySource, loadedSource);
 // Coverage reasons, codes verbatim (with the relations a code names), without repeats.
 function reasonCodes(reply) {
@@ -115,7 +118,7 @@ function localSearch(roots, query, {types = [], hidden = false} = {}) {
     roots.forEach(n => walk(n, false));
     return {results: found.slice(0, 200).map(([n, off]) => ({name: n.name || n.id, type: n.type, ref: {nodeId: n.id}, hidden: off})), hasMore: found.length > 200};
 }
-if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, acceptReply, reasonCodes, rowModel, groupUsages, localSearch};
+if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, relationChoices, acceptReply, reasonCodes, rowModel, groupUsages, localSearch};
 if (typeof document !== 'undefined') {
     const boot = JSON.parse(document.getElementById('boot').textContent);
     const $ = id => document.getElementById(id);
@@ -1548,12 +1551,12 @@ if (typeof document !== 'undefined') {
         for (const [relation, models] of g.groups) section(`${title} · ${relation ?? 'unspecified'} (${models.length})`, relList('usages', models));
         relUI('usages').list.replaceChildren(...out);
         if (!$('usagesRelations').querySelector('input') && acc.relations) {
-            for (const r of acc.relations) {
+            for (const {value, checked} of relationChoices(acc)) {
                 const label = el('label'), box = el('input');
                 box.type = 'checkbox';
-                box.value = r;
-                box.checked = true;
-                label.append(box, ` ${r}`);
+                box.value = value;
+                box.checked = checked;
+                label.append(box, ` ${value}`);
                 $('usagesRelations').append(label);
             }
         }
@@ -1604,7 +1607,8 @@ if (typeof document !== 'undefined') {
         p.scope = 'the whole file';
         relRun('usages', `usages/${generation}?` + relQuery({
             target: p.target, snapshot: p.snapshot, outgoing: $('usagesDir').value === 'out', hidden: $('usagesHidden').checked,
-            relation: checked.length < boxes.length ? checked : null,
+            // The boxes show what is asked: all checked is not this direction's default set.
+            relation: boxes.length ? checked : null,
         }));
     }
     const tabs = [...document.querySelectorAll('#relTabs [role=tab]')];
@@ -1634,7 +1638,12 @@ if (typeof document !== 'undefined') {
         runUsages(false);
     };
     // Changing a filter reruns the last usages query.
-    for (const id of ['usagesRelations', 'usagesDir', 'usagesHidden']) $(id).onchange = () => rel.usages.target && runUsages(false);
+    for (const id of ['usagesRelations', 'usagesHidden']) $(id).onchange = () => rel.usages.target && runUsages(false);
+    $('usagesDir').onchange = () => {
+        // Each direction has its own default relations: the next reply offers them again.
+        $('usagesRelations').querySelectorAll('label').forEach(l => l.remove());
+        if (rel.usages.target) runUsages(false);
+    };
     for (const name of ['ranked', 'usages']) relUI(name).panel.addEventListener('keydown', e => {
         if (e.key !== 'Escape' || relUI(name).panel.dataset.state !== 'loading') return;
         e.stopPropagation();

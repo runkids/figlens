@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, acceptReply, reasonCodes, rowModel, groupUsages, localSearch} = require('../src/preview/viewer.js');
+const {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, relationChoices, acceptReply, reasonCodes, rowModel, groupUsages, localSearch} = require('../src/preview/viewer.js');
 
 test('prototype missing fields remain unspecified without click or navigation defaults', () => {
   const rows = prototypeRows({state:'recorded', sourceNodeId:'0:1', interactions:[
@@ -165,4 +165,11 @@ test('offline search covers the packaged layers only and hides hidden layers by 
   assert.deepEqual(localSearch(list, 'button', {types:['TEXT']}).results.map(r => r.ref.nodeId), ['1:2']);
   assert.deepEqual(localSearch(list, 'button', {hidden:true}).results.map(r => [r.ref.nodeId, r.hidden]), [['1:1',false],['1:2',false],['1:3',true],['1:4',true]]);
   assert.deepEqual(localSearch(list, '').results, []);
+});
+
+test('usages relation choices list every kind, checked as the reply ran', () => {
+  const kinds = {contains:'ready', instance_of:'ready', uses_style:'ready'};
+  const incoming = relationChoices({relations:['instance_of', 'uses_style'], coverage:{layers:{relations:{kinds}}}});
+  assert.deepEqual(incoming.find(c => c.value === 'contains'), {value:'contains', checked:false});
+  assert.equal(incoming.length, 3);
 });
