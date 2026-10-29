@@ -120,6 +120,28 @@ pub struct Expanded {
 /// stack, so a deeper crafted file fails with an error instead of ending the process.
 pub const MAX_DEPTH: usize = 256;
 
+/// `parse budget exceeded: layer depth` once a node `children` reaches lies more than
+/// `MAX_DEPTH` layers below `root`. It walks without recursion, so run it before a walk that
+/// recurses once per layer.
+pub fn check_depth<'a>(
+    root: &'a str,
+    children: impl Fn(&str) -> Option<&'a Vec<String>>,
+) -> Result<(), crate::FigError> {
+    let mut stack = vec![(root, 0)];
+    while let Some((id, depth)) = stack.pop() {
+        if depth > MAX_DEPTH {
+            return Err(crate::parse::exceeded("layer depth", MAX_DEPTH));
+        }
+        stack.extend(
+            children(id)
+                .into_iter()
+                .flatten()
+                .map(|c| (c.as_str(), depth + 1)),
+        );
+    }
+    Ok(())
+}
+
 /// Expanded nodes plus their child order (keys: instance or expanded ids).
 pub struct Expansion {
     pub nodes: HashMap<String, Expanded>,

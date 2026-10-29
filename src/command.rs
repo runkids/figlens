@@ -363,6 +363,15 @@ impl Command {
                 let page = ancestors.find(|id| plugin_type(tree.nodes[*id]) == "CANVAS");
                 let section =
                     (plugin_type(tree.nodes[&root]) == "SECTION").then_some(root.as_str());
+                // `top_frames` recurses only into the document, pages and sections.
+                figlens::expand::check_depth(&root, |id| {
+                    tree.children.get(id).filter(|_| {
+                        matches!(
+                            plugin_type(tree.nodes[id]).as_str(),
+                            "DOCUMENT" | "CANVAS" | "SECTION"
+                        )
+                    })
+                })?;
                 let mut frames = Vec::new();
                 top_frames(tree, &root, page, section, &mut frames);
                 if json {
@@ -395,6 +404,10 @@ impl Command {
                 root, depth, json, ..
             } => {
                 require_node(tree, &root)?;
+                // Listing recurses once per level; the default depth lists every level.
+                if depth > figlens::expand::MAX_DEPTH {
+                    figlens::expand::check_depth(&root, |id| tree.children.get(id))?;
+                }
                 if json {
                     // A root on a page or section keeps the firstText it has in its parent's listing.
                     let top = parent(tree, &root).is_some_and(|p| {

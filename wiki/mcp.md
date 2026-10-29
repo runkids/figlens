@@ -49,7 +49,7 @@ Run Docker Rust tests/lint and `python3 scripts/ai-context.py check`. Tests cove
 
 | Parameter | Range / default |
 |---|---|
-| `tree.depth` | 0 through `2^53-1` (JSON-safe); omitted means unlimited tree depth |
+| `tree.depth` | 0 through `2^53-1` (JSON-safe); omitted means every level; past 256 levels the call fails with `parse_budget_exceeded` ([layer depth](parsing.md#layer-depth)) |
 | `inspect.depth` | 0–10 / 1 |
 | `find.limit` | 1–200 / 20 |
 | `search.limit` | 1–200 / 20 |

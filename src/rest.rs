@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use serde_json::{Map, Value as Json, json};
 
 use crate::expand::{
-    Expansion, MAX_DEPTH, Mat, Vec2, abs_matrix, expand_instances, expand_instances_within,
+    Expansion, Mat, Vec2, abs_matrix, check_depth, expand_instances, expand_instances_within,
     plugin_type,
 };
 use crate::render::{self, Rect};
@@ -91,25 +91,6 @@ fn resolve_target(
     Ok(doc)
 }
 
-/// Whether a node `Builder::node` visits lies more than `MAX_DEPTH` layers below `root`,
-/// walked without recursion so a crafted depth cannot overflow the stack here.
-fn too_deep(tree: &Tree, ex: &Expansion, root: &str) -> bool {
-    let mut stack = vec![(root, 0)];
-    while let Some((id, depth)) = stack.pop() {
-        if depth > MAX_DEPTH {
-            return true;
-        }
-        let children = tree.children.get(id).or_else(|| ex.children.get(id));
-        stack.extend(
-            children
-                .into_iter()
-                .flatten()
-                .map(|c| (c.as_str(), depth + 1)),
-        );
-    }
-    false
-}
-
 /// Counts each selected node's compact fields without children, `_r` or later bounds:
 /// a lower bound of the selection's JSON, so exceeding it never rejects a reply that would fit.
 struct Budget<'a> {
@@ -153,9 +134,9 @@ fn build(
         None => expand_instances(tree, root),
     };
     // Building, rendering and dropping the result all recurse once per layer.
-    if too_deep(tree, &ex, root) {
-        return Err(crate::parse::exceeded("layer depth", MAX_DEPTH));
-    }
+    check_depth(root, |id| {
+        tree.children.get(id).or_else(|| ex.children.get(id))
+    })?;
     let b = Builder {
         tree,
         ex,

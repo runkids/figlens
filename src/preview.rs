@@ -44,6 +44,12 @@ impl Drop for Workspace {
     }
 }
 
+/// The viewer's layer index from `0:0`, or the layer-depth error before recursing into it.
+fn checked_catalog(tree: &Tree) -> Result<Value> {
+    crate::expand::check_depth("0:0", |id| tree.children.get(id))?;
+    Ok(catalog(tree, "0:0"))
+}
+
 fn catalog(tree: &Tree, id: &str) -> Value {
     let n = tree
         .nodes
@@ -541,7 +547,7 @@ pub fn serve(file: &Path, initial: Option<&str>, address: SocketAddr) -> Result<
             let tree = Tree::new(&message);
             let ctx = Revision {
                 tree: &tree,
-                index: catalog(&tree, "0:0"),
+                index: checked_catalog(&tree)?,
                 file,
                 initial,
                 generation,
@@ -788,7 +794,7 @@ impl Revision<'_> {
 /// Opens a saved revision only once it decodes and its timestamp is stable.
 fn reload(file: &Path, stamp: SystemTime) -> Result<Document> {
     let fresh = Document::open(file)?;
-    catalog(&Tree::new(&fresh.message()?), "0:0");
+    checked_catalog(&Tree::new(&fresh.message()?))?;
     if fs::metadata(file)?.modified()? != stamp {
         return Err("Save in progress; previous view is stale. Retrying.".into());
     }
@@ -807,6 +813,26 @@ mod tests {
             (&set["type"], &set["children"][0]["type"]),
             (&json!("COMPONENT_SET"), &json!("COMPONENT"))
         );
+    }
+
+    #[test]
+    fn a_too_deep_file_fails_the_catalog_instead_of_aborting() {
+        let id = |k: usize| {
+            if k == 0 {
+                "0:0".to_owned()
+            } else {
+                k.to_string()
+            }
+        };
+        let tree = Tree {
+            nodes: std::collections::HashMap::new(),
+            children: (0..=crate::expand::MAX_DEPTH)
+                .map(|k| (id(k), vec![id(k + 1)]))
+                .collect(),
+            blobs: Vec::new(),
+        };
+        let error = checked_catalog(&tree).unwrap_err();
+        assert!(error.to_string().contains("layer depth"), "{error}");
     }
 
     #[test]
