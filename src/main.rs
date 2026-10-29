@@ -62,6 +62,14 @@ usage:
   figlens usages --workspace DIR|--file <file.fig>|--id ws_... <node>|<resource> [--source ID] [--storage DIR] [same options]
                                              the same over one source's prepared index of --scope,
                                              without parsing; a changed source is source_stale
+  figlens diff <old.fig> <new.fig> [--node ID] [--limit N] [--cursor C] [--json]
+                                             what changed between two saved revisions: one line per
+                                             changed top-level frame (added, removed, changed, kind_changed,
+                                             unknown) with counts per facet (text, layout, appearance,
+                                             properties, structure, bindings); --json adds per-node old/new
+                                             field values and edge changes; layers match by exact id and
+                                             type only, a same-name or same-place frame is only a possible
+                                             match; pages of 100 changes (1-500), a cursor rebuilds both
   figlens inspect <file.fig> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]
                                              compact layout/text summary, instances expanded;
                                              depth 1 (0-10), at most 200 nodes, 200 characters per text;
@@ -233,6 +241,7 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                     | "find"
                     | "search"
                     | "usages"
+                    | "diff"
                     | "inspect"
                     | "node"
                     | "nodes"
@@ -324,6 +333,10 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
         Some("usages") if args.get(1).is_some_and(|a| a.starts_with("--")) => {
             let report = workspace_usages(&args[1..])?;
             writeln!(out, "{report}")?;
+            return Ok(());
+        }
+        Some("diff") => {
+            out.push_str(&command::diff_cli(&args[1..])?);
             return Ok(());
         }
         Some("verify") => {

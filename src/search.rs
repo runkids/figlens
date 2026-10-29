@@ -558,6 +558,18 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
 }
 
 fn build_as(tree: &Tree, scope: &str, bounds: Bounds, relations: bool) -> Index {
+    build_with(tree, scope, bounds, relations, None)
+}
+
+/// `build_as` that also records each record's diff facets into `facets`, in record order (the
+/// explicit diff profile; search never asks for them).
+fn build_with(
+    tree: &Tree,
+    scope: &str,
+    bounds: Bounds,
+    relations: bool,
+    mut facets: Option<&mut Vec<diff::Facets>>,
+) -> Index {
     // A full build describes definitions within the caller's bounds: an eighth is kept back
     // from expansion and indexing, and whatever those leave unused is added to it. A text-only
     // build keeps nothing back.
@@ -769,6 +781,13 @@ fn build_as(tree: &Tree, scope: &str, bounds: Bounds, relations: bool) -> Index 
         ) {
             break;
         }
+        let facet = match facets.is_some() {
+            true => match diff::facets(tree, &id, ex.nodes.get(&id), &mut bounds) {
+                Some(f) => Some(f),
+                None => break,
+            },
+            false => None,
+        };
         index.text_bytes += text_len;
         lens[0] += u64::from(record_lens[0]);
         lens[1] += u64::from(record_lens[1]);
@@ -815,6 +834,9 @@ fn build_as(tree: &Tree, scope: &str, bounds: Bounds, relations: bool) -> Index 
             root,
             edges,
         });
+        if let (Some(out), Some(f)) = (facets.as_deref_mut(), facet) {
+            out.push(f);
+        }
         for child in kids.iter().rev() {
             stack.push((
                 child.clone(),
@@ -1800,6 +1822,7 @@ fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json
     Ok((index, source))
 }
 
+pub mod diff;
 pub(crate) mod store;
 pub mod usages;
 

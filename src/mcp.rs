@@ -114,6 +114,8 @@ struct AdmittedCall {
     match_dir: Option<PathBuf>,
     /// The project directory of an index call.
     project: Option<PathBuf>,
+    /// The earlier revision a diff reads beside `source`.
+    old: Option<PathBuf>,
 }
 
 enum Source {
@@ -257,6 +259,11 @@ fn admit_value(req: Value, roots: &[PathBuf]) -> Admission {
             let prepared = contract::prepare(name, &req["params"]["arguments"]);
             let admitted = prepared.and_then(|call| {
                 let source = match call.string("file") {
+                    Some(file) if file.starts_with("gs://") && call.name() == "diff" => {
+                        return Err(contract::Failure::argument(
+                            "diff reads two local .fig files; download the gs:// object first",
+                        ));
+                    }
                     Some(file) if file.starts_with("gs://") && call.name() == "index" => {
                         return Err(contract::Failure::argument(
                             "index registers local .fig files; download the gs:// object first",
@@ -276,7 +283,15 @@ fn admit_value(req: Value, roots: &[PathBuf]) -> Admission {
                 let input = call.string("bundle").map(|path| checked_path(Path::new(path), roots)).transpose()?;
                 let match_dir = call.string("matchDir").map(|path| checked_path(Path::new(path), roots)).transpose()?;
                 let project = call.string("workspace").map(|path| checked_path(Path::new(path), roots)).transpose()?;
-                Ok(AdmittedCall { id:id.clone(), call, source, output, input, match_dir, project })
+                let old = match call.string("old") {
+                    Some(file) if file.starts_with("gs://") => {
+                        return Err(contract::Failure::argument(
+                            "diff reads two local .fig files; download the gs:// object first",
+                        ));
+                    }
+                    file => file.map(|path| checked_path(Path::new(path), roots)).transpose()?,
+                };
+                Ok(AdmittedCall { id:id.clone(), call, source, output, input, match_dir, project, old })
             });
             return match admitted {
                 Ok(call) => Admission::Call(call),
@@ -304,8 +319,12 @@ impl AdmittedCall {
 
     /// The local source a warm tree serves; search reads and hashes its own snapshot instead.
     fn tree_source(&self) -> Option<&Path> {
-        self.local()
-            .filter(|_| !matches!(self.call.name(), "search" | "usages" | "index" | "jobs"))
+        self.local().filter(|_| {
+            !matches!(
+                self.call.name(),
+                "search" | "usages" | "diff" | "index" | "jobs"
+            )
+        })
     }
 
     /// Whether this call reads or changes a workspace rather than a design file.
@@ -363,6 +382,7 @@ impl AdmittedCall {
             .chain(self.input.as_deref())
             .chain(self.match_dir.as_deref())
             .chain(self.project.as_deref())
+            .chain(self.old.as_deref())
         {
             // Recheck current filesystem state, not raw arguments or a permanent authorization lease.
             checked_path(path, roots)?;
@@ -396,6 +416,16 @@ impl AdmittedCall {
                     value,
                     pretty: false,
                 });
+            }
+            if name == "diff" {
+                let (old, new) = (self.old.as_deref().unwrap(), self.local().unwrap());
+                return command::diff_tool(&self.call)
+                    .and_then(|request| figlens::search::diff::diff(old, new, &request))
+                    .map(|value| command::Output::Json {
+                        value,
+                        pretty: false,
+                    })
+                    .map_err(contract::Failure::from_error);
             }
             if matches!(name, "search" | "usages") {
                 let path = match self.source.as_ref().unwrap() {
@@ -912,6 +942,7 @@ mod tests {
                 "find",
                 "search",
                 "usages",
+                "diff",
                 "inspect",
                 "nodes",
                 "variables",
@@ -937,8 +968,8 @@ mod tests {
         assert_eq!(
             with_schema,
             [
-                "find", "search", "usages", "inspect", "bundle", "verify", "export", "index",
-                "jobs"
+                "find", "search", "usages", "diff", "inspect", "bundle", "verify", "export",
+                "index", "jobs"
             ]
         );
     }
@@ -1304,6 +1335,44 @@ mod tests {
         let frames: serde_json::Value =
             serde_json::from_str(reply["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(frames[0]["id"], "0:1", "{reply}");
+    }
+
+    #[test]
+    fn mcp_diff_checks_both_paths_and_pages_the_cli_reply() {
+        let inside = test_support::TestDir::new();
+        let outside = test_support::TestDir::new();
+        let roots = [std::fs::canonicalize(inside.join("")).unwrap()];
+        for dir in [&inside, &outside] {
+            std::fs::copy("examples/first-success/design.fig", dir.join("a.fig")).unwrap();
+        }
+        let call = |old: &Path, new: &Path| {
+            let line = json!({"id":1,"method":"tools/call","params":{"name":"diff","arguments":{"old":old,"file":new}}});
+            rooted_reply(&line.to_string(), &roots)["result"].clone()
+        };
+        let (a, out) = (inside.join("a.fig"), outside.join("a.fig"));
+        let same = call(&a, &a);
+        let value = &same["structuredContent"];
+        assert_eq!(
+            (&value["frames"], &value["coverage"]["complete"]),
+            (&json!([]), &json!(true)),
+            "{same}"
+        );
+        assert_eq!(
+            value["matching"],
+            json!({"basis": "node_id+kind", "lineage": "unverified"})
+        );
+        // The old file is admitted like `file`: outside the roots it is refused before any read.
+        for (old, new) in [(&out, &a), (&a, &out)] {
+            assert_eq!(
+                call(old, new)["_meta"]["figlens"]["code"],
+                "permission_denied"
+            );
+        }
+        let gs = json!({"id":1,"method":"tools/call","params":{"name":"diff","arguments":{"old":"gs://b/o.fig","file":a}}});
+        assert_eq!(
+            rooted_reply(&gs.to_string(), &[])["result"]["_meta"]["figlens"]["code"],
+            "invalid_arguments"
+        );
     }
 
     #[test]

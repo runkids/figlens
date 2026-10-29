@@ -252,6 +252,37 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
         ],
     ),
     (
+        "diff",
+        "What changed between two saved revisions of a design (old, file): exact layer ids and types only, so a renamed or recreated frame is reported as removed plus added, with a labelled possibleMatch (same name, else same rounded size and position) that never claims identity; lineage between the two files is not verified. Each changed top-level frame (layers directly on a page group under the page) has one summary line with counts per facet: text, layout (size, transform, constraints, auto layout), appearance (fills, strokes, effects, opacity, radius, visibility), properties (component property assignments), structure (name, type, parent, order, hidden) and bindings (variable, style, image, main component and prototype edges, old and new compared so removed ones are listed). Nodes carry changed fields with old/new values (each within 512 bytes and 4 KiB per node, 256 KiB per page; larger values say truncated, never unchanged) and edge additions/removals, with swap naming both mains. A side that stopped short reports its missing layers as unknown, never removed. Pages of changes in stable frame order; nextCursor binds both snapshots, the node and the built corpora. Nothing is written.",
+        &[
+            (
+                "old",
+                "string",
+                true,
+                "the earlier saved .fig: a local path",
+            ),
+            ("file", "string", true, "the later saved .fig: a local path"),
+            (
+                "node",
+                "string",
+                false,
+                "stored scope root on both sides; default the document",
+            ),
+            (
+                "limit",
+                "integer",
+                false,
+                "1-500 changed layers per page, default 100",
+            ),
+            (
+                "cursor",
+                "string",
+                false,
+                "nextCursor from the previous page of the same pair and node",
+            ),
+        ],
+    ),
+    (
         "inspect",
         "Compact expanded node summary: bounds, layout, typography, text previews and child counts. A parent without auto-layout has childSpacing \"derived\": gaps between its children are coordinate differences, not an auto-layout rule; constraints may still pin them. For image decisions, images=true adds original dimensions/bytes and source-pixel rectangles before masks, not blur diagnoses. Depth and a 200-node budget bound the summary; image paints have their own 200-item limit. nodes returns full design data.",
         &[
@@ -491,6 +522,17 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
             }),
             ["definition", "results", "coverage", "hasMore", "nextCursor"].as_slice(),
         ),
+        "diff" => (
+            serde_json::json!({
+                "source": {"type": "object", "description": "old and new sourceId and snapshotId, and freshness.reusedPair"},
+                "node": {"type": "string"},
+                "matching": {"type": "object", "description": "basis node_id+kind; lineage unverified"},
+                "coverage": {"type": "object", "description": "complete; old and new stop and scannedRecords; changes (layers listed across pages, added/removed subtrees counted at their top), possibleMatches and reasons (a side's stop, diff_work_limit, unread_fields)"},
+                "frames": {"type": "array", "items": {"type": "object"}, "description": "id, name, page, change when the frame itself changed, summary, possibleMatch {id, basis, identity possible_match}, and this page's nodes: id, kind, name, change, facets, fields {key: {facet, old, new}}, edges {added, removed, swap}, descendants, identity_uncertain with oldKind"},
+                "nextCursor": {"type": ["string", "null"]},
+            }),
+            ["source", "coverage", "frames", "nextCursor"].as_slice(),
+        ),
         "index" => (
             serde_json::json!({
                 "workspaceId": {"type": "string"},
@@ -620,7 +662,8 @@ fn default(tool: &str, key: &str) -> Option<Value> {
         ("inspect", "depth") | ("export", "scale") => Some(json!(1)),
         ("find" | "search", "limit") => Some(json!(20)),
         ("search", "mode") => Some(json!("text")),
-        ("usages", "scope") => Some(json!("0:0")),
+        ("usages", "scope") | ("diff", "node") => Some(json!("0:0")),
+        ("diff", "limit") => Some(json!(100)),
         ("usages", "direction") => Some(json!("in")),
         ("usages", "limit") => Some(json!(50)),
         ("usages", "includeHidden") => Some(json!(false)),
@@ -643,6 +686,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
         ("inspect", "depth") => Some((0, 10)),
         ("tree", "depth") => Some((0, JSON_SAFE.min(usize::MAX as u64))),
         ("find" | "search" | "usages", "limit") => Some((1, 200)),
+        ("diff", "limit") => Some((1, 500)),
         ("export", "quality") => Some((1, 100)),
         ("export", "maxKb") => Some((0, JSON_SAFE.min((usize::MAX / 1024) as u64))),
         ("export", "maxSize") => Some((0, u64::from(u32::MAX))),
@@ -657,7 +701,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
     }
     if matches!(
         key,
-        "file" | "out" | "query" | "compareVariant" | "bundle" | "cursor" | "matchDir"
+        "file" | "old" | "out" | "query" | "compareVariant" | "bundle" | "cursor" | "matchDir"
     ) {
         p["minLength"] = json!(1);
     }

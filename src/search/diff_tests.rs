@@ -1,0 +1,298 @@
+use super::super::tests::{guid, instance, node, obj, path, text};
+use super::*;
+use crate::search::build_as;
+use kiwi_schema::Value as K;
+
+fn fill(r: f64) -> (&'static str, K<'static>) {
+    (
+        "fillPaints",
+        K::Array(vec![obj(vec![
+            ("type", K::Enum("PaintType", "SOLID")),
+            (
+                "color",
+                obj(vec![
+                    ("r", K::Float(r as f32)),
+                    ("g", K::Float(0.0)),
+                    ("b", K::Float(0.0)),
+                    ("a", K::Float(1.0)),
+                ]),
+            ),
+        ])]),
+    )
+}
+
+fn size(x: f32, y: f32) -> (&'static str, K<'static>) {
+    ("size", obj(vec![("x", K::Float(x)), ("y", K::Float(y))]))
+}
+
+fn doc(nodes: Vec<K<'static>>) -> K<'static> {
+    let mut all = vec![
+        node(0, None, "DOCUMENT", "Document", vec![]),
+        node(1, Some(0), "CANVAS", "Page", vec![]),
+    ];
+    all.extend(nodes);
+    obj(vec![("nodeChanges", K::Array(all))])
+}
+
+fn screen(title: &str, red: f64, width: f32) -> Vec<K<'static>> {
+    vec![
+        node(10, Some(1), "FRAME", "Home", vec![size(width, 800.0)]),
+        node(11, Some(10), "TEXT", "Title", vec![text(title)]),
+        node(12, Some(10), "RECTANGLE", "Card", vec![fill(red)]),
+        node(13, Some(10), "RECTANGLE", "Same", vec![fill(0.5)]),
+    ]
+}
+
+fn req(limit: usize, cursor: Option<String>) -> Request {
+    Request {
+        node: "0:0".into(),
+        limit,
+        cursor,
+    }
+}
+
+fn run(old: K<'static>, new: K<'static>) -> Json {
+    let (a, b) = (Tree::new(&old), Tree::new(&new));
+    page(
+        &compare_trees(&a, &b, [WORK, WORK], "0:0"),
+        &req(LIMIT, None),
+        false,
+    )
+    .unwrap()
+}
+
+fn nodes(reply: &Json) -> Vec<(String, String)> {
+    reply["frames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|f| f["nodes"].as_array().unwrap())
+        .map(|n| {
+            (
+                n["id"].as_str().unwrap().to_owned(),
+                n["change"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn changed_text_fill_and_size_are_reported_per_facet_and_unchanged_layers_are_not() {
+    let out = run(
+        doc(screen("Hello", 1.0, 400.0)),
+        doc(screen("Hi", 0.0, 420.0)),
+    );
+    assert_eq!(
+        nodes(&out),
+        [
+            ("0:10".into(), "changed".into()),
+            ("0:11".into(), "changed".into()),
+            ("0:12".into(), "changed".into())
+        ]
+    );
+    let frame = &out["frames"][0];
+    assert_eq!(
+        frame["summary"],
+        "3 changed, text 1, layout 1, appearance 1"
+    );
+    let title = &frame["nodes"][1];
+    assert_eq!(title["facets"], json!(["text"]));
+    assert_eq!(
+        title["fields"]["textData"]["old"]["value"]["characters"],
+        "Hello"
+    );
+    assert_eq!(
+        title["fields"]["textData"]["new"]["value"]["characters"],
+        "Hi"
+    );
+    assert_eq!(
+        frame["nodes"][0]["fields"]["size"]["new"]["value"]["x"],
+        420.0
+    );
+    assert_eq!(out["coverage"]["complete"], true);
+    assert_eq!(
+        run(
+            doc(screen("Same", 1.0, 400.0)),
+            doc(screen("Same", 1.0, 400.0))
+        )["frames"],
+        json!([])
+    );
+}
+
+#[test]
+fn a_removed_subtree_is_one_change_and_a_same_name_frame_is_only_a_possible_match() {
+    let mut new = screen("Hello", 1.0, 400.0);
+    // Same name and children, new ids: never the same frame, only a labelled candidate.
+    new[0] = node(20, Some(1), "FRAME", "Home", vec![size(400.0, 800.0)]);
+    for (i, n) in new.iter_mut().enumerate().skip(1) {
+        *n = node(20 + i as u32, Some(20), "RECTANGLE", "Child", vec![]);
+    }
+    let out = run(doc(screen("Hello", 1.0, 400.0)), doc(new));
+    assert_eq!(
+        nodes(&out),
+        [
+            ("0:10".into(), "removed".into()),
+            ("0:20".into(), "added".into())
+        ]
+    );
+    let (old, added) = (&out["frames"][0], &out["frames"][1]);
+    assert_eq!(old["nodes"][0]["descendants"], 3);
+    assert_eq!(
+        old["possibleMatch"],
+        json!({"id": "0:20", "basis": "name", "identity": "possible_match"})
+    );
+    assert_eq!(added["possibleMatch"]["id"], "0:10");
+    assert_eq!(out["coverage"]["possibleMatches"], 1);
+}
+
+#[test]
+fn a_same_id_with_another_kind_is_identity_uncertain() {
+    let mut new = screen("Hello", 1.0, 400.0);
+    new[2] = node(12, Some(10), "ELLIPSE", "Card", vec![fill(1.0)]);
+    let out = run(doc(screen("Hello", 1.0, 400.0)), doc(new));
+    let n = &out["frames"][0]["nodes"][0];
+    assert_eq!(
+        (&n["change"], &n["identity"], &n["oldKind"]),
+        (
+            &json!("kind_changed"),
+            &json!("identity_uncertain"),
+            &json!("RECTANGLE")
+        )
+    );
+}
+
+fn with_instance(main: u32, overrides: Vec<K<'static>>) -> K<'static> {
+    doc(vec![
+        node(30, Some(1), "SYMBOL", "A", vec![]),
+        node(31, Some(30), "RECTANGLE", "Bg", vec![fill(1.0)]),
+        node(40, Some(1), "SYMBOL", "B", vec![]),
+        node(41, Some(40), "RECTANGLE", "Bg", vec![fill(1.0)]),
+        node(10, Some(1), "FRAME", "Home", vec![]),
+        instance(
+            11,
+            10,
+            "Use",
+            main,
+            vec![("symbolOverrides", K::Array(overrides))],
+        ),
+    ])
+}
+
+#[test]
+fn an_override_equal_to_the_main_value_is_no_change_and_a_swap_names_both_mains() {
+    // The override is JSON, the main's field kiwi: both digest the same effective value.
+    let same = obj(vec![path(&[31]), fill(1.0)]);
+    assert_eq!(
+        run(with_instance(30, vec![]), with_instance(30, vec![same]))["frames"],
+        json!([])
+    );
+    let red = obj(vec![path(&[31]), fill(0.0)]);
+    let out = run(with_instance(30, vec![]), with_instance(30, vec![red]));
+    assert_eq!(nodes(&out), [("I0:11;0:31".into(), "changed".into())]);
+    let swapped = run(with_instance(30, vec![]), with_instance(40, vec![]));
+    let n = &swapped["frames"][0]["nodes"][0];
+    assert_eq!(n["id"], "0:11");
+    assert_eq!(n["edges"]["swap"], json!({"old": "0:30", "new": "0:40"}));
+    assert!(
+        n["edges"]["removed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["target"] == "0:30")
+    );
+}
+
+#[test]
+fn layers_past_a_side_that_stopped_are_unknown_not_removed() {
+    let (a, b) = (
+        doc(screen("Hello", 1.0, 400.0)),
+        doc(screen("Hello", 1.0, 400.0)),
+    );
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let work = (1..400)
+        .find(|w| {
+            build_as(&b, "0:0", super::super::tests::bounds(*w), true)
+                .stop
+                .is_some_and(|_| {
+                    build_as(&b, "0:0", super::super::tests::bounds(*w + 1), true)
+                        .stop
+                        .is_none()
+                })
+        })
+        .unwrap();
+    let pair = compare_trees(&a, &b, [WORK, work], "0:0");
+    let out = page(&pair, &req(LIMIT, None), false).unwrap();
+    assert!(nodes(&out).iter().all(|(_, c)| c == "unknown"), "{out}");
+    assert_eq!(out["coverage"]["complete"], false);
+}
+
+#[test]
+fn pages_walk_every_change_once_and_a_cursor_of_another_pair_is_stale() {
+    let many = |r: f64| {
+        doc((0..7)
+            .map(|i| node(10 + i, Some(1), "RECTANGLE", "R", vec![fill(r)]))
+            .collect())
+    };
+    let (a, b) = (many(1.0), many(0.0));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let pair = compare_trees(&a, &b, [WORK, WORK], "0:0");
+    let (mut seen, mut cursor) = (Vec::new(), None);
+    loop {
+        let out = page(&pair, &req(3, cursor), false).unwrap();
+        seen.extend(nodes(&out));
+        match out["nextCursor"].as_str() {
+            Some(c) => cursor = Some(c.to_owned()),
+            None => break,
+        }
+    }
+    assert_eq!(seen.len(), 7);
+    let first = page(&pair, &req(3, None), false).unwrap();
+    // Another selection of the same revisions binds another cursor.
+    let other = compare_trees(&a, &b, [WORK, WORK], "0:1");
+    let err = page(
+        &other,
+        &req(3, first["nextCursor"].as_str().map(str::to_owned)),
+        false,
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.downcast_ref::<FigError>().map(FigError::kind),
+        Some(ErrorKind::CursorStale)
+    );
+}
+
+#[test]
+fn a_field_too_large_to_read_is_unread_never_unchanged() {
+    let big = |r: f64| {
+        let paint = obj(vec![
+            ("type", K::Enum("PaintType", "SOLID")),
+            ("opacity", K::Float(r as f32)),
+        ]);
+        ("fillPaints", K::Array(vec![paint; VISITS]))
+    };
+    let a = doc(vec![node(
+        10,
+        Some(1),
+        "RECTANGLE",
+        "R",
+        vec![big(1.0), size(1.0, 1.0)],
+    )]);
+    let b = doc(vec![node(
+        10,
+        Some(1),
+        "RECTANGLE",
+        "R",
+        vec![big(0.5), size(2.0, 1.0)],
+    )]);
+    let out = run(a, b);
+    let n = &out["frames"][0]["nodes"][0];
+    assert_eq!(
+        (&n["unread"], &n["facets"]),
+        (&json!(true), &json!(["layout"]))
+    );
+    assert_eq!(
+        out["coverage"]["reasons"],
+        json!([{"reason": "unread_fields", "count": 1}])
+    );
+    let _ = guid(0);
+}
