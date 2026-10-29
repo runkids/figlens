@@ -105,16 +105,20 @@ fn postings(blob: &[u8], total: usize) -> Result<Vec<Posting>> {
 
 /// The records, terms and edges of `index` as generation `gen`, in transactions of `BATCH`
 /// rows; `between` runs after each committed batch with the rows written so far and in total.
+/// `guard` runs first inside every write transaction, the final generation update included,
+/// so a writer that lost its right to write commits nothing.
 pub(crate) fn save(
     conn: &mut Connection,
     gen_id: i64,
     index: &Index,
+    guard: &dyn Fn(&Connection) -> Result<()>,
     between: &mut dyn FnMut(&Connection, usize, usize) -> Result<()>,
 ) -> Result<()> {
     let total = index.records.len() + index.terms.len();
     let mut done = 0;
     for chunk in index.records.chunks(BATCH) {
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        guard(&tx)?;
         {
             let mut record = tx.prepare_cached(
                 "INSERT INTO records (gen, rid, node_id, name, kind, text, norm0, norm1, len0, len1,
@@ -156,7 +160,8 @@ pub(crate) fn save(
     }
     let terms: Vec<(&String, &IndexTerm)> = index.terms.iter().collect();
     for chunk in terms.chunks(BATCH) {
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        guard(&tx)?;
         {
             let mut stmt = tx.prepare_cached(
                 "INSERT INTO terms (gen, term, df, postings) VALUES (?1, ?2, ?3, ?4)",
@@ -185,7 +190,9 @@ pub(crate) fn save(
     let info = json!({"pages": pages, "roots": index.roots, "above": index.above,
         "lens": index.lens, "stop": index.stop, "hiddenContent": index.hidden_content,
         "textBytes": index.text_bytes, "generation": index.generation});
-    conn.execute(
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    guard(&tx)?;
+    tx.execute(
         "UPDATE generations SET info = ?2, records = ?3, complete = ?4, stop = ?5 WHERE gen = ?1",
         params![
             gen_id,
@@ -195,6 +202,7 @@ pub(crate) fn save(
             index.stop
         ],
     )?;
+    tx.commit()?;
     Ok(())
 }
 

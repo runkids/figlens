@@ -95,14 +95,78 @@ pub(crate) fn alive(dir: &Path, token: &str) -> bool {
     {
         return true;
     }
-    let Ok(file) = File::open(dir.join("owners").join(format!("{token}.lock"))) else {
-        return false;
+    // Only a missing owner file proves death; any other failure is unknown, and unknown must
+    // never let a takeover, a cancel or a cleanup proceed.
+    let file = match File::open(dir.join("owners").join(format!("{token}.lock"))) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(_) => return true,
     };
     match file.try_lock_shared() {
         Ok(()) => {
             let _ = file.unlock();
             false
         }
+        Err(_) => true,
+    }
+}
+
+/// Proof that this process is running one attempt of a job: an exclusive lock on
+/// `claims/<jobId>.<attempt>.lock`, held from `run` until that attempt's child is known to
+/// have exited. Without it a job whose terminal state could not be written would read running
+/// for as long as its owner process lives.
+struct Claim {
+    path: PathBuf,
+    _file: File,
+}
+
+/// Claims whose child could not be confirmed stopped, kept with that child: unknown exit is
+/// never released, so nothing takes the job over or deletes what the child may still write.
+static RETAINED: Mutex<Vec<(Child, Claim)>> = Mutex::new(Vec::new());
+
+fn claim_path(dir: &Path, job_id: &str, attempt: i64) -> PathBuf {
+    dir.join("claims").join(format!("{job_id}.{attempt}.lock"))
+}
+
+fn claim(dir: &Path, job_id: &str, attempt: i64) -> Result<Claim> {
+    mkdir(&dir.join("claims"))?;
+    let path = claim_path(dir, job_id, attempt);
+    let file = open_lock(&path, true)?.expect("created");
+    file.try_lock().map_err(|_| {
+        fail(
+            ErrorKind::WorkspaceBusy,
+            "another run holds this job attempt",
+        )
+    })?;
+    Ok(Claim { path, _file: file })
+}
+
+impl Claim {
+    /// The attempt's terminal state is recorded; the claim is no longer needed.
+    fn done(self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+
+    /// The child exited but the terminal state could not be recorded: unlocked with its file
+    /// kept, the job reads interrupted and a refresh retries it while this process lives.
+    fn release(self) {}
+}
+
+/// Whether attempt `attempt` of `job_id`, held by `owner`, may still be running: its owner is
+/// alive and its claim, once taken, is still held. A queued job not claimed yet is its live
+/// owner's to run; anything that cannot be inspected counts as alive.
+pub(crate) fn job_alive(dir: &Path, owner: &str, job_id: &str, attempt: i64) -> bool {
+    if !alive(dir, owner) {
+        return false;
+    }
+    match File::open(claim_path(dir, job_id, attempt)) {
+        Ok(file) => match file.try_lock_shared() {
+            Ok(()) => {
+                let _ = file.unlock();
+                false
+            }
+            Err(_) => true,
+        },
         Err(_) => true,
     }
 }
@@ -135,11 +199,27 @@ pub(crate) fn report_job(conn: &Connection, dir: &Path, job_id: &str) -> Result<
         )
         .optional()
         .map_err(sql)?;
-    let Some((kind, source, scope, state, stage, done, total, error, owner, attempt, cancel, gen_id, [created, beat], finished)) = row else {
+    let Some((
+        kind,
+        source,
+        scope,
+        state,
+        stage,
+        done,
+        total,
+        error,
+        owner,
+        attempt,
+        cancel,
+        gen_id,
+        [created, beat],
+        finished,
+    )) = row
+    else {
         return Ok(None);
     };
     let active = state == "queued" || state == "running";
-    let state = if active && !alive(dir, &owner) {
+    let state = if active && !job_alive(dir, &owner, job_id, attempt) {
         "interrupted".to_owned()
     } else {
         state
@@ -149,17 +229,25 @@ pub(crate) fn report_job(conn: &Connection, dir: &Path, job_id: &str) -> Result<
         .unwrap_or(Json::Null);
     let ws = job_id.split('.').next().unwrap_or_default();
     let next = match state.as_str() {
-        "queued" | "running" => json!([{"tool": "jobs", "arguments": {"action": "status", "jobId": job_id}}]),
-        "interrupted" | "failed" | "cancelled" => json!([{"tool": "index", "arguments": {"action": "refresh",
+        "queued" | "running" => {
+            json!([{"tool": "jobs", "arguments": {"action": "status", "jobId": job_id}}])
+        }
+        "interrupted" | "failed" | "cancelled" => {
+            json!([{"tool": "index", "arguments": {"action": "refresh",
             "workspaceId": ws, "sourceId": source, "scope": scope},
-            "why": "a refresh starts the build again as a new attempt; the previous index keeps serving"}]),
-        "succeeded" => json!([{"tool": "search", "arguments": {"workspaceId": ws, "node": scope, "query": "<words>"}}]),
+            "why": "a refresh starts the build again as a new attempt; the previous index keeps serving"}])
+        }
+        "succeeded" => {
+            json!([{"tool": "search", "arguments": {"workspaceId": ws, "node": scope, "query": "<words>"}}])
+        }
         _ => json!([]),
     };
-    Ok(Some(json!({"jobId": job_id, "kind": kind, "sourceId": source, "scope": scope,
+    Ok(Some(
+        json!({"jobId": job_id, "kind": kind, "sourceId": source, "scope": scope,
         "state": state, "stage": stage, "progress": {"units": done, "total": total},
         "cancelRequested": cancel, "attempt": attempt, "generation": gen_id, "error": error,
-        "createdMs": created, "heartbeatMs": beat, "finishedMs": finished, "nextSteps": next})))
+        "createdMs": created, "heartbeatMs": beat, "finishedMs": finished, "nextSteps": next}),
+    ))
 }
 
 /// The result of submitting a build: the job and whether this process must run it.
@@ -231,23 +319,25 @@ pub(crate) fn submit(
             Some(_) => {
                 return Err(fail(
                     ErrorKind::InvalidArguments,
-                    format!("requestId {request} was used for a different request; use a new requestId"),
+                    format!(
+                        "requestId {request} was used for a different request; use a new requestId"
+                    ),
                 ));
             }
             None => {}
         }
     }
-    let active: Option<(String, String)> = tx
+    let active: Option<(String, String, i64)> = tx
         .query_row(
-            "SELECT job_id, owner FROM jobs WHERE source_id = ?1 AND scope = ?2
+            "SELECT job_id, owner, attempt FROM jobs WHERE source_id = ?1 AND scope = ?2
              AND state IN ('queued', 'running')",
             [source_id, scope],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()
         .map_err(sql)?;
-    if let Some((job_id, holder)) = active {
-        let owned = !alive(&dir, &holder);
+    if let Some((job_id, holder, attempt)) = active {
+        let owned = !job_alive(&dir, &holder, &job_id, attempt);
         if owned {
             // Its owner died: this process takes it over as a new attempt from the start.
             tx.execute(
@@ -274,14 +364,20 @@ pub(crate) fn submit(
     }
     let mut live = Vec::new();
     let mut stmt = tx
-        .prepare("SELECT job_id, owner FROM jobs WHERE state IN ('queued', 'running')")
+        .prepare("SELECT job_id, owner, attempt FROM jobs WHERE state IN ('queued', 'running')")
         .map_err(sql)?;
     for row in stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })
         .map_err(sql)?
     {
-        let (job, holder) = row.map_err(sql)?;
-        if alive(&dir, &holder) {
+        let (job, holder, attempt) = row.map_err(sql)?;
+        if job_alive(&dir, &holder, &job, attempt) {
             live.push(job);
         }
     }
@@ -301,7 +397,18 @@ pub(crate) fn submit(
         "INSERT INTO jobs (job_id, request_id, fingerprint, kind, source_id, membership, scope,
          incarnation, state, owner, created_ms, heartbeat_ms)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'queued', ?9, ?10, ?10)",
-        params![job_id, request_id, print, kind, source_id, membership, scope, incarnation, me, now],
+        params![
+            job_id,
+            request_id,
+            print,
+            kind,
+            source_id,
+            membership,
+            scope,
+            incarnation,
+            me,
+            now
+        ],
     )
     .map_err(sql)?;
     // Keep the newest terminal jobs only.
@@ -328,33 +435,109 @@ fn drop_gen(conn: &Connection, gen_id: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Deletes the unpublished generations job `job_id` started.
-fn drop_building(conn: &mut Connection, job_id: &str) -> Result<()> {
-    let gens: Vec<i64> = conn
-        .prepare("SELECT gen FROM generations WHERE job_id = ?1 AND state = 'building'")
-        .and_then(|mut s| {
-            s.query_map([job_id], |r| r.get(0))?
-                .collect::<rusqlite::Result<_>>()
-        })
-        .map_err(sql)?;
-    for gen_id in gens {
-        let tx = conn.transaction().map_err(sql)?;
+/// Deletes the unpublished generations of job `job_id`, one transaction each, only while its
+/// row still names `holder`'s `attempt`: a stale run never deletes a newer attempt's work.
+fn drop_building(conn: &mut Connection, job_id: &str, holder: &str, attempt: i64) -> Result<()> {
+    loop {
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql)?;
+        let gen_id: Option<i64> = tx
+            .query_row(
+                "SELECT g.gen FROM generations g JOIN jobs j ON j.job_id = g.job_id
+                 WHERE g.job_id = ?1 AND g.state = 'building' AND j.owner = ?2 AND j.attempt = ?3
+                 LIMIT 1",
+                params![job_id, holder, attempt],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(sql)?;
+        let Some(gen_id) = gen_id else {
+            return Ok(());
+        };
         drop_gen(&tx, gen_id).map_err(sql)?;
         tx.commit().map_err(sql)?;
     }
-    Ok(())
 }
 
-/// Ends job `job_id` in a terminal state, if this process still owns it and it is active.
-fn finish(conn: &Connection, job_id: &str, me: &str, state: &str, error: Option<Json>) -> Result<()> {
+/// Ends job `job_id` in a terminal state, if `me`'s `attempt` still owns it and it is active.
+fn finish(
+    conn: &Connection,
+    job_id: &str,
+    me: &str,
+    attempt: i64,
+    state: &str,
+    error: Option<Json>,
+) -> Result<()> {
     conn.execute(
-        "UPDATE jobs SET state = ?3, error = ?4, finished_ms = ?5 WHERE job_id = ?1 AND owner = ?2
-         AND state IN ('queued', 'running')",
-        params![job_id, me, state, error.map(|e| e.to_string()), now_ms()],
+        "UPDATE jobs SET state = ?4, error = ?5, finished_ms = ?6 WHERE job_id = ?1 AND owner = ?2
+         AND attempt = ?3 AND state IN ('queued', 'running')",
+        params![
+            job_id,
+            me,
+            attempt,
+            state,
+            error.map(|e| e.to_string()),
+            now_ms()
+        ],
     )
     .map_err(sql)?;
     Ok(())
 }
+
+/// Stops `child` and reaps it; true only when it is known to have exited. Closing its stdin
+/// stops it even when the kill fails, so the wait ends either way.
+fn stop(child: &mut Child) -> bool {
+    drop(child.stdin.take());
+    let _ = child.kill();
+    child.wait().is_ok()
+}
+
+/// Ends a job whose run failed with `e`, holding the caller's locks throughout: stops and reaps
+/// its child, records `failed`, then drops its unpublished generation. If the child's exit
+/// cannot be confirmed, nothing is recorded or deleted and the claim stays held. If only the
+/// terminal write fails, the claim is released, so the job reads `interrupted` and a refresh
+/// retries it while this process lives.
+fn abandon(
+    conn: &mut Connection,
+    job_id: &str,
+    me: &str,
+    attempt: i64,
+    child: Option<Child>,
+    claim: Claim,
+    e: Box<dyn Error>,
+) -> Box<dyn Error> {
+    if let Some(mut child) = child
+        && !stop(&mut child)
+    {
+        // Unknown exit: nothing is recorded or deleted, and the claim stays held.
+        if let Ok(mut kept) = RETAINED.lock() {
+            kept.push((child, claim));
+        }
+        return e;
+    }
+    let code = e
+        .downcast_ref::<FigError>()
+        .map_or("operation_failed", |f| kind_code(f.kind()));
+    match finish(
+        conn,
+        job_id,
+        me,
+        attempt,
+        "failed",
+        Some(error_json(code, &e)),
+    ) {
+        Ok(()) => {
+            let _ = drop_building(conn, job_id, me, attempt);
+            claim.done();
+        }
+        Err(_) => claim.release(),
+    }
+    e
+}
+
+/// The launch token a worker child writes under: the owner and attempt that started it.
+const LAUNCH: &str = "FIGLENS_INDEX_LAUNCH";
 
 fn error_json(code: &str, message: impl std::fmt::Display) -> Json {
     json!({"code": code, "message": message.to_string()})
@@ -375,17 +558,23 @@ fn cancelled(conn: &Connection, job_id: &str, local: &AtomicBool) -> Result<bool
 
 /// The child process that builds one job. It exits when its stdin closes, which happens when
 /// this process exits or dies on every OS, so the build never outlives its owner.
-fn spawn(dir: &Path, job_id: &str) -> Result<Child> {
+fn spawn(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Child> {
     let exe = std::env::current_exe()?;
     Command::new(exe)
         .arg("__index-worker")
         .arg(dir)
         .arg(job_id)
+        .env(LAUNCH, format!("{me}:{attempt}"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| fail(ErrorKind::OperationFailed, format!("cannot start the index worker: {e}")))
+        .map_err(|e| {
+            fail(
+                ErrorKind::OperationFailed,
+                format!("cannot start the index worker: {e}"),
+            )
+        })
 }
 
 /// Test builds only: `FIGLENS_TEST_HOLD=<stage>:<file>` keeps the worker in `stage` while
@@ -421,40 +610,129 @@ pub fn run(
     let (_, mut ws) = opened(storage, &select, true)?;
     let dir = ws.held.dir.clone();
     let me = owner(&dir)?;
-    let mine: Option<(String, String)> = ws
+    let mine: Option<(String, String, i64)> = ws
         .conn
         .query_row(
-            "SELECT owner, state FROM jobs WHERE job_id = ?1",
+            "SELECT owner, state, attempt FROM jobs WHERE job_id = ?1",
             [job_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()
         .map_err(sql)?;
-    if mine.as_ref().is_none_or(|(o, s)| *o != me || s != "queued") {
+    let Some(attempt) = mine
+        .filter(|(o, s, _)| *o == me && s == "queued")
+        .map(|(.., a)| a)
+    else {
         return report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id));
+    };
+    // This attempt is this process's to end: every exit from here records its terminal state
+    // or, if that write fails, releases its claim once nothing runs for it (see `abandon`).
+    let claim = match claim(&dir, job_id, attempt) {
+        Ok(claim) => claim,
+        // Another run in this process holds this attempt, and ends it.
+        Err(e)
+            if e.downcast_ref::<FigError>()
+                .is_some_and(|f| f.kind() == ErrorKind::WorkspaceBusy) =>
+        {
+            return report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id));
+        }
+        Err(e) => {
+            let error = error_json("operation_failed", &e);
+            finish(&ws.conn, job_id, &me, attempt, "failed", Some(error))?;
+            return Err(e);
+        }
+    };
+    // Held here, not in `build`, so an error keeps it (and the workspace lock) until the child
+    // is stopped and reaped.
+    let build_lock = match open_lock(&dir.join("build.lock"), true) {
+        Ok(lock) => lock.expect("created"),
+        Err(e) => return Err(abandon(&mut ws.conn, job_id, &me, attempt, None, claim, e)),
+    };
+    let mut child = None;
+    let built = match build(
+        &mut ws,
+        &dir,
+        job_id,
+        &me,
+        attempt,
+        &build_lock,
+        cancel,
+        progress,
+        &mut child,
+    ) {
+        Ok(Some(built)) => built,
+        Ok(None) => {
+            claim.done();
+            return report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id));
+        }
+        Err(e) => return Err(abandon(&mut ws.conn, job_id, &me, attempt, child, claim, e)),
+    };
+    // Publication: release the build and workspace locks, then take the location lock shared and
+    // the workspace lock again (the lock order), re-open and re-validate everything, and publish
+    // in one short transaction. The child has exited; the owner and claim locks persist, so
+    // nobody takes the job over meanwhile.
+    drop(build_lock);
+    drop(ws);
+    match publish(storage, ws_id, job_id, &me, attempt, &built) {
+        Ok(report) => {
+            claim.done();
+            Ok(report)
+        }
+        Err(e) => match opened(storage, &select, true) {
+            Ok((_, mut ws)) => Err(abandon(&mut ws.conn, job_id, &me, attempt, None, claim, e)),
+            Err(_) => {
+                claim.release();
+                Err(e)
+            }
+        },
     }
+}
+
+/// Waits for the build lock, then runs attempt `attempt` of job `job_id` in a child until it
+/// exits. Returns the child's result to publish, or `None` once the job ended here
+/// (cancelled or failed). `child` holds the running child, so a caller seeing an error can
+/// stop and reap it.
+#[allow(clippy::too_many_arguments)]
+fn build(
+    ws: &mut Opened,
+    dir: &Path,
+    job_id: &str,
+    me: &str,
+    attempt: i64,
+    build: &File,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(&Json),
+    child: &mut Option<Child>,
+) -> Result<Option<Json>> {
     // Wait for the build lock, holding it only while this job is the oldest live queued job,
     // so no process holds it while waiting for its turn.
-    let build_path = dir.join("build.lock");
-    let build = open_lock(&build_path, true)?.expect("created");
     let mut beat = Instant::now();
     loop {
         if cancelled(&ws.conn, job_id, cancel)? {
-            finish(&ws.conn, job_id, &me, "cancelled", None)?;
-            return report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id));
+            finish(&ws.conn, job_id, me, attempt, "cancelled", None)?;
+            return Ok(None);
         }
         if build.try_lock().is_ok() {
             let mut head = None;
             let mut stmt = ws
                 .conn
-                .prepare("SELECT job_id, owner FROM jobs WHERE state = 'queued' ORDER BY created_ms, job_id")
+                .prepare(
+                    "SELECT job_id, owner, attempt FROM jobs WHERE state = 'queued'
+                     ORDER BY created_ms, job_id",
+                )
                 .map_err(sql)?;
             for row in stmt
-                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
+                })
                 .map_err(sql)?
             {
-                let (job, holder) = row.map_err(sql)?;
-                if alive(&dir, &holder) {
+                let (job, holder, held) = row.map_err(sql)?;
+                if job_alive(dir, &holder, &job, held) {
                     head = Some(job);
                     break;
                 }
@@ -467,7 +745,10 @@ pub fn run(
         }
         if beat.elapsed() > Duration::from_secs(1) {
             ws.conn
-                .execute("UPDATE jobs SET heartbeat_ms = ?2 WHERE job_id = ?1", params![job_id, now_ms()])
+                .execute(
+                    "UPDATE jobs SET heartbeat_ms = ?2 WHERE job_id = ?1",
+                    params![job_id, now_ms()],
+                )
                 .map_err(sql)?;
             beat = Instant::now();
         }
@@ -479,33 +760,41 @@ pub fn run(
             "UPDATE jobs SET state = 'running', stage = 'stage', heartbeat_ms = ?3,
              expected_gen = (SELECT p.gen FROM published p JOIN jobs j ON j.job_id = ?1
                              WHERE p.source_id = j.source_id AND p.scope = j.scope)
-             WHERE job_id = ?1 AND owner = ?2 AND state = 'queued' AND cancel = 0",
-            params![job_id, me, now_ms()],
+             WHERE job_id = ?1 AND owner = ?2 AND attempt = ?4 AND state = 'queued' AND cancel = 0",
+            params![job_id, me, now_ms(), attempt],
         )
         .map_err(sql)?;
     if started == 0 {
-        finish(&ws.conn, job_id, &me, "cancelled", None)?;
-        return report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id));
+        finish(&ws.conn, job_id, me, attempt, "cancelled", None)?;
+        return Ok(None);
     }
-    drop_building(&mut ws.conn, job_id)?;
-    let mut child = spawn(&dir, job_id)?;
+    drop_building(&mut ws.conn, job_id, me, attempt)?;
+    let running = child.insert(spawn(dir, job_id, me, attempt)?);
     let mut out = String::new();
-    let mut stdout = child.stdout.take().expect("piped");
+    let mut stdout = running.stdout.take().expect("piped");
     let reader = std::thread::spawn(move || {
         let _ = stdout.read_to_string(&mut out);
         out
     });
     let mut last = Json::Null;
     let status = loop {
-        if let Some(status) = child.try_wait()? {
+        let running = child.as_mut().expect("spawned");
+        if let Some(status) = running.try_wait()? {
             break Some(status);
         }
         if cancelled(&ws.conn, job_id, cancel)? {
-            let _ = child.kill();
-            let _ = child.wait();
+            // Stopped before the output is joined: the reader ends when the child does. An exit
+            // that cannot be confirmed is no cancel: the child stays with the caller.
+            if !stop(running) {
+                return Err(fail(
+                    ErrorKind::OperationFailed,
+                    "the index worker could not be confirmed stopped",
+                ));
+            }
+            *child = None;
             break None;
         }
-        if let Some(now) = report_job(&ws.conn, &dir, job_id)?
+        if let Some(now) = report_job(&ws.conn, dir, job_id)?
             && (now["stage"] != last["stage"] || now["progress"] != last["progress"])
         {
             progress(&now);
@@ -513,7 +802,10 @@ pub fn run(
         }
         if beat.elapsed() > Duration::from_secs(1) {
             ws.conn
-                .execute("UPDATE jobs SET heartbeat_ms = ?2 WHERE job_id = ?1", params![job_id, now_ms()])
+                .execute(
+                    "UPDATE jobs SET heartbeat_ms = ?2 WHERE job_id = ?1",
+                    params![job_id, now_ms()],
+                )
                 .map_err(sql)?;
             beat = Instant::now();
         }
@@ -527,29 +819,28 @@ pub fn run(
         .unwrap_or(Json::Null);
     match status {
         None => {
-            // The child has exited: nothing computes and nothing more is written for this job.
-            finish(&ws.conn, job_id, &me, "cancelled", None)?;
-            drop_building(&mut ws.conn, job_id)?;
-            return report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id));
+            // Cancelled and reaped: nothing more is written for this attempt.
+            finish(&ws.conn, job_id, me, attempt, "cancelled", None)?;
+            drop_building(&mut ws.conn, job_id, me, attempt)?;
+            return Ok(None);
         }
         Some(s) if !s.success() || built["error"].is_object() || !built["gen"].is_i64() => {
             let error = if built["error"].is_object() {
                 built["error"].clone()
             } else {
-                error_json("operation_failed", format!("the index worker exited with {s}"))
+                error_json(
+                    "operation_failed",
+                    format!("the index worker exited with {s}"),
+                )
             };
-            finish(&ws.conn, job_id, &me, "failed", Some(error))?;
-            drop_building(&mut ws.conn, job_id)?;
-            return report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id));
+            *child = None;
+            finish(&ws.conn, job_id, me, attempt, "failed", Some(error))?;
+            drop_building(&mut ws.conn, job_id, me, attempt)?;
+            return Ok(None);
         }
-        Some(_) => {}
+        Some(_) => *child = None,
     }
-    // Publication: release the build and workspace locks, then take the location lock shared and
-    // the workspace lock again (the lock order), re-open and re-validate everything, and publish
-    // in one short transaction. The owner lock persists, so nobody takes the job over meanwhile.
-    drop(build);
-    drop(ws);
-    publish(storage, ws_id, job_id, &me, &built)
+    Ok(Some(built))
 }
 
 fn unknown_job(job_id: &str) -> Box<dyn Error> {
@@ -573,11 +864,24 @@ fn location_shared(storage: &Storage, id: &str) -> Result<File> {
 /// workspace locks: the database is still the one the location record binds, with the job's
 /// incarnation; this process still owns the running job and no cancel landed; the source keeps
 /// the job's membership; and the published generation is still the one the job replaces.
+/// owner, state, source_id, scope, membership, expected_gen, cancel, incarnation
+type PublishRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<i64>,
+    bool,
+    String,
+);
+
 pub(crate) fn publish(
     storage: &Storage,
     ws_id: &str,
     job_id: &str,
     me: &str,
+    attempt: i64,
     built: &Json,
 ) -> Result<Json> {
     let _location = location_shared(storage, ws_id)?;
@@ -591,7 +895,7 @@ pub(crate) fn publish(
         .conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(sql)?;
-    let job: Option<(String, String, String, String, String, Option<i64>, bool, String)> = tx
+    let job: Option<PublishRow> = tx
         .query_row(
             "SELECT owner, state, source_id, scope, membership, expected_gen, cancel, incarnation
              FROM jobs WHERE job_id = ?1",
@@ -615,6 +919,13 @@ pub(crate) fn publish(
     else {
         return Err(unknown_job(job_id));
     };
+    let current_attempt: i64 = tx
+        .query_row(
+            "SELECT attempt FROM jobs WHERE job_id = ?1",
+            [job_id],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
     let current: Option<String> = tx
         .query_row(
             "SELECT membership FROM sources WHERE source_id = ?1",
@@ -632,26 +943,44 @@ pub(crate) fn publish(
         .optional()
         .map_err(sql)?;
     let refusal = if job_incarnation != incarnation {
-        Some(("workspace_recreated", "the workspace was reset or recreated while the job ran"))
-    } else if holder != me || state != "running" {
+        Some((
+            "workspace_recreated",
+            "the workspace was reset or recreated while the job ran",
+        ))
+    } else if holder != me || current_attempt != attempt || state != "running" {
         Some(("not_owner", "another process took the job over"))
     } else if cancel {
         Some(("cancelled", ""))
     } else if current.as_deref() != Some(membership.as_str()) {
-        Some(("membership_changed", "the source was removed, re-added or relocated while the job ran"))
+        Some((
+            "membership_changed",
+            "the source was removed, re-added or relocated while the job ran",
+        ))
     } else if published != expected {
-        Some(("superseded", "another build published this source and scope first"))
+        Some((
+            "superseded",
+            "another build published this source and scope first",
+        ))
     } else {
         None
     };
     if let Some((code, why)) = refusal {
         drop(tx);
+        // Both are fenced to this attempt, so a taken-over job and its new attempt's
+        // generation are left alone.
         if code == "cancelled" {
-            finish(&ws.conn, job_id, me, "cancelled", None)?;
-        } else if holder == me {
-            finish(&ws.conn, job_id, me, "failed", Some(error_json(code, why)))?;
+            finish(&ws.conn, job_id, me, attempt, "cancelled", None)?;
+        } else {
+            finish(
+                &ws.conn,
+                job_id,
+                me,
+                attempt,
+                "failed",
+                Some(error_json(code, why)),
+            )?;
         }
-        drop_building(&mut ws.conn, job_id)?;
+        drop_building(&mut ws.conn, job_id, me, attempt)?;
         return report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id));
     }
     let now = now_ms();
@@ -659,7 +988,13 @@ pub(crate) fn publish(
         "INSERT INTO snapshots (source_id, snapshot_id, bytes, mtime_ns, verified_ms)
          VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (source_id, snapshot_id) DO UPDATE SET
          bytes = excluded.bytes, mtime_ns = excluded.mtime_ns, verified_ms = excluded.verified_ms",
-        params![source, built["snapshot"].as_str(), built["bytes"].as_i64(), built["mtimeNs"].as_i64(), now],
+        params![
+            source,
+            built["snapshot"].as_str(),
+            built["bytes"].as_i64(),
+            built["mtimeNs"].as_i64(),
+            now
+        ],
     )
     .map_err(sql)?;
     if !unchanged {
@@ -788,16 +1123,16 @@ pub fn cancel(storage: &Storage, job_id: &str) -> Result<Json> {
         return Err(unknown_job(job_id));
     }
     let dir = ws.held.dir.clone();
-    let row: Option<(String, String)> = ws
+    let row: Option<(String, String, i64)> = ws
         .conn
         .query_row(
-            "SELECT state, owner FROM jobs WHERE job_id = ?1",
+            "SELECT state, owner, attempt FROM jobs WHERE job_id = ?1",
             [job_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()
         .map_err(sql)?;
-    let (state, holder) = row.ok_or_else(|| unknown_job(job_id))?;
+    let (state, holder, attempt) = row.ok_or_else(|| unknown_job(job_id))?;
     let out = |report: Json, outcome: &str| {
         let mut report = report;
         report["cancel"] = json!(outcome);
@@ -808,15 +1143,19 @@ pub fn cancel(storage: &Storage, job_id: &str) -> Result<Json> {
         return out(report, "not_active");
     }
     let accepted = Instant::now();
-    if !alive(&dir, &holder) {
-        ws.conn
+    if !job_alive(&dir, &holder, job_id, attempt) {
+        // Fenced to the dead owner's attempt: a takeover since the read is left running.
+        let ended = ws
+            .conn
             .execute(
                 "UPDATE jobs SET state = 'cancelled', cancel = 1, finished_ms = ?2 WHERE job_id = ?1
-                 AND state IN ('queued', 'running')",
-                params![job_id, now_ms()],
+                 AND owner = ?3 AND attempt = ?4 AND state IN ('queued', 'running')",
+                params![job_id, now_ms(), holder, attempt],
             )
             .map_err(sql)?;
-        drop_building(&mut ws.conn, job_id)?;
+        if ended == 1 {
+            drop_building(&mut ws.conn, job_id, &holder, attempt)?;
+        }
     } else {
         ws.conn
             .execute(
@@ -852,7 +1191,7 @@ pub fn worker(dir: &Path, job_id: &str) -> Json {
         let _ = std::io::stdin().lock().read_to_end(&mut sink);
         std::process::exit(3);
     });
-    match work(dir, job_id) {
+    match launch().and_then(|(me, attempt)| work(dir, job_id, &me, attempt)) {
         Ok(out) => out,
         Err(e) => {
             let code = e
@@ -892,7 +1231,46 @@ fn disk(dir: &Path) -> (u64, u64) {
     (size(DB), size("index.sqlite-wal"))
 }
 
-fn work(dir: &Path, job_id: &str) -> Result<Json> {
+/// Ok while job `job_id`'s row still names `me`'s `attempt` running; checked inside each write
+/// transaction, so a stale child commits nothing.
+fn owns_launch(conn: &Connection, job_id: &str, me: &str, attempt: i64) -> Result<()> {
+    let owns = conn
+        .query_row(
+            "SELECT 1 FROM jobs WHERE job_id = ?1 AND owner = ?2 AND attempt = ?3
+             AND state = 'running'",
+            params![job_id, me, attempt],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(sql)?;
+    owns.ok_or_else(|| {
+        fail(
+            ErrorKind::OperationFailed,
+            "another attempt owns this job now",
+        )
+    })
+}
+
+/// The owner and attempt in the `LAUNCH` token `spawn` passed.
+fn launch() -> Result<(String, i64)> {
+    let launch = std::env::var(LAUNCH).map_err(|_| format!("{LAUNCH} is not set"))?;
+    launch
+        .rsplit_once(':')
+        .and_then(|(o, a)| Some((o.to_owned(), a.parse::<i64>().ok()?)))
+        .ok_or_else(|| format!("{LAUNCH} is malformed").into())
+}
+
+/// Builds attempt `attempt` of job `job_id` for owner `me`. Every write is fenced to that
+/// launch, never to whichever attempt the row holds now, so a child outliving a takeover
+/// cannot adopt the new attempt.
+fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
+    let stale = || {
+        fail(
+            ErrorKind::OperationFailed,
+            "another attempt owns this job now",
+        )
+    };
+    let fenced = |changed: usize| if changed == 1 { Ok(()) } else { Err(stale()) };
     let id = job_workspace(job_id)?;
     let lock_path = dir
         .parent()
@@ -915,15 +1293,29 @@ fn work(dir: &Path, job_id: &str) -> Result<Json> {
     ) = conn
         .query_row(
             "SELECT kind, source_id, membership, scope, incarnation, expected_gen FROM jobs
-             WHERE job_id = ?1 AND state = 'running'",
-            [job_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+             WHERE job_id = ?1 AND owner = ?2 AND attempt = ?3 AND state = 'running'",
+            params![job_id, me, attempt],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
         )
-        .map_err(sql)?;
+        .optional()
+        .map_err(sql)?
+        .ok_or_else(stale)?;
     if meta(&conn, "workspace_id").map_err(sql)?.as_deref() != Some(id.as_str())
         || meta(&conn, "incarnation").map_err(sql)?.as_deref() != Some(incarnation.as_str())
     {
-        return Err(fail(ErrorKind::OperationFailed, "the workspace was recreated"));
+        return Err(fail(
+            ErrorKind::OperationFailed,
+            "the workspace was recreated",
+        ));
     }
     let path: String = conn
         .query_row(
@@ -935,11 +1327,14 @@ fn work(dir: &Path, job_id: &str) -> Result<Json> {
         .map_err(sql)?
         .ok_or_else(|| fail(ErrorKind::InvalidArguments, "the source left the workspace"))?;
     let stage = |conn: &Connection, stage: &str| {
-        conn.execute(
-            "UPDATE jobs SET stage = ?2 WHERE job_id = ?1",
-            [job_id, stage],
-        )
-        .map_err(sql)?;
+        fenced(
+            conn.execute(
+                "UPDATE jobs SET stage = ?2 WHERE job_id = ?1 AND owner = ?3 AND attempt = ?4
+                 AND state = 'running'",
+                params![job_id, stage, me, attempt],
+            )
+            .map_err(sql)?,
+        )?;
         hold(stage);
         Ok::<_, Box<dyn Error>>(())
     };
@@ -958,15 +1353,15 @@ fn work(dir: &Path, job_id: &str) -> Result<Json> {
     {
         let same: Option<bool> = conn
             .query_row(
-                "SELECT snapshot_id = ?2 AND versions = ?3 AND complete = 1 FROM generations
-                 WHERE gen = ?1",
-                params![gen_id, snapshot, versions],
+                "SELECT snapshot_id = ?2 AND versions = ?3 AND membership = ?4 AND complete = 1
+                 FROM generations WHERE gen = ?1",
+                params![gen_id, snapshot, versions, membership],
                 |r| r.get(0),
             )
             .optional()
             .map_err(sql)?;
-        // Only a complete generation of the same bytes and versions is reused; a partial one
-        // (a deadline, say) is rebuilt.
+        // Only a complete generation of the same bytes, versions and membership is reused: a
+        // partial one (a deadline, say) or one built before a relocate or re-add is rebuilt.
         if same == Some(true) {
             let mut out = snap;
             out["gen"] = json!(gen_id);
@@ -978,26 +1373,47 @@ fn work(dir: &Path, job_id: &str) -> Result<Json> {
     let label = path.display().to_string();
     let index = search::index_bytes(bytes, &label, &scope, search::deadline())?;
     stage(&conn, "write")?;
-    conn.execute(
-        "INSERT INTO generations (source_id, membership, scope, snapshot_id, versions, job_id,
-         state, created_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'building', ?7)",
-        params![source_id, membership, scope, snapshot, versions, job_id, now_ms()],
-    )
-    .map_err(sql)?;
+    // One statement, so the fence and the insert are atomic.
+    fenced(
+        conn.execute(
+            "INSERT INTO generations (source_id, membership, scope, snapshot_id, versions, job_id,
+             state, created_ms) SELECT ?1, ?2, ?3, ?4, ?5, ?6, 'building', ?7 WHERE EXISTS
+             (SELECT 1 FROM jobs WHERE job_id = ?6 AND owner = ?8 AND attempt = ?9
+              AND state = 'running')",
+            params![
+                source_id,
+                membership,
+                scope,
+                snapshot,
+                versions,
+                job_id,
+                now_ms(),
+                me,
+                attempt
+            ],
+        )
+        .map_err(sql)?,
+    )?;
     let gen_id = conn.last_insert_rowid();
     let mut between = |conn: &Connection, done: usize, total: usize| -> Result<()> {
-        conn.execute(
-            "UPDATE jobs SET done = ?2, total = ?3 WHERE job_id = ?1",
-            params![job_id, done as i64, total as i64],
-        )
-        .map_err(sql)?;
+        // A stale attempt stops here, after at most the one batch it was writing.
+        fenced(
+            conn.execute(
+                "UPDATE jobs SET done = ?2, total = ?3 WHERE job_id = ?1 AND owner = ?4
+                 AND attempt = ?5 AND state = 'running'",
+                params![job_id, done as i64, total as i64, me, attempt],
+            )
+            .map_err(sql)?,
+        )?;
         // Space: a batch adds at most a few MiB, so checking at every boundary keeps the
         // overshoot to one batch.
         let (db, wal) = disk(dir);
         if db + wal > DISK_CAP {
             return Err(fail(
                 ErrorKind::OperationFailed,
-                format!("the workspace database reached its {DISK_CAP}-byte cap; clear_cache, remove sources or index a narrower scope"),
+                format!(
+                    "the workspace database reached its {DISK_CAP}-byte cap; clear_cache, remove sources or index a narrower scope"
+                ),
             ));
         }
         let wait = Instant::now();
@@ -1010,13 +1426,16 @@ fn work(dir: &Path, job_id: &str) -> Result<Json> {
             if wait.elapsed() > LOCK_WAIT {
                 return Err(fail(
                     ErrorKind::WorkspaceBusy,
-                    format!("a reader keeps the write-ahead log above {WAL_CAP} bytes; retry when other searches finish"),
+                    format!(
+                        "a reader keeps the write-ahead log above {WAL_CAP} bytes; retry when other searches finish"
+                    ),
                 ));
             }
             std::thread::sleep(Duration::from_millis(50));
         }
     };
-    search::store::save(&mut conn, gen_id, &index, &mut between)?;
+    let guard = |conn: &Connection| owns_launch(conn, job_id, me, attempt);
+    search::store::save(&mut conn, gen_id, &index, &guard, &mut between)?;
     drop(index);
     stage(&conn, "verify")?;
     // The source is read and hashed again: a save that kept its size and time is caught here.
@@ -1086,7 +1505,10 @@ fn submit_all(
     if plan.is_empty() {
         return Err(fail(
             ErrorKind::InvalidArguments,
-            format!("workspace {} has no indexed scope to {kind}; pass a scope to index one", ws.held.id),
+            format!(
+                "workspace {} has no indexed scope to {kind}; pass a scope to index one",
+                ws.held.id
+            ),
         ));
     }
     if request_id.is_some() && plan.len() > 1 {
@@ -1095,18 +1517,75 @@ fn submit_all(
             "requestId names one job; pass a sourceId and scope with it",
         ));
     }
-    let (mut run, mut reports) = (Vec::new(), Vec::new());
+    let (mut run, mut reports, mut deferred) = (Vec::new(), Vec::new(), Vec::new());
+    let mut because = Json::Null;
+    // A deferred item names the exact call that admits it later, so continuing a large plan
+    // builds only what is left instead of the same first jobs again.
+    let ws_id = ws.held.id.clone();
+    let later = |source: &str, scope: &str| {
+        json!({"sourceId": source, "scope": scope, "nextStep": {"tool": "index",
+            "arguments": {"action": kind, "workspaceId": ws_id, "sourceId": source, "scope": scope},
+            "why": "not admitted with this request; run it after some of its jobs finish"}})
+    };
     for (source, scope) in plan {
-        let job = submit(&mut ws, kind, &source, &scope, request_id)?;
+        if !deferred.is_empty() {
+            deferred.push(later(&source, &scope));
+            continue;
+        }
+        let job = match submit(&mut ws, kind, &source, &scope, request_id) {
+            Ok(job) => job,
+            // Each admitted job is committed and owned by this process, which never lets it
+            // go: the caller gets them to run, and the rest (past MAX_ACTIVE, say) is reported.
+            Err(e) if !reports.is_empty() => {
+                let code = e
+                    .downcast_ref::<FigError>()
+                    .map_or("operation_failed", |f| kind_code(f.kind()));
+                because = error_json(code, e);
+                deferred.push(later(&source, &scope));
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         if job.owned {
             run.push(job.job_id.clone());
         }
-        let mut report = report_job(&ws.conn, &ws.held.dir, &job.job_id)?.unwrap_or(Json::Null);
+        let mut report = match report_job(&ws.conn, &ws.held.dir, &job.job_id) {
+            Ok(report) => report.unwrap_or(Json::Null),
+            Err(e) => return Err(release(&ws, &run, e)),
+        };
         report["joined"] = json!(job.joined);
         reports.push(report);
     }
-    let report = opened_report(storage, &place, &ws, json!({"jobs": reports}))?;
-    Ok(Outcome { report, run })
+    let partial = !deferred.is_empty();
+    let mut jobs =
+        json!({"jobs": reports, "admission": if partial { "partial" } else { "complete" }});
+    if partial {
+        jobs["deferred"] = json!(deferred);
+        jobs["deferredBecause"] = because;
+    }
+    match opened_report(storage, &place, &ws, jobs) {
+        Ok(report) => Ok(Outcome { report, run }),
+        Err(e) => Err(release(&ws, &run, e)),
+    }
+}
+
+/// Ends the jobs `run` this process admitted but will not return to run, as `failed` with
+/// `e`, so none is left queued under a live owner. Returns `e`.
+fn release(ws: &Opened, run: &[String], e: Box<dyn Error>) -> Box<dyn Error> {
+    if let Ok(me) = owner(&ws.held.dir) {
+        let code = e
+            .downcast_ref::<FigError>()
+            .map_or("operation_failed", |f| kind_code(f.kind()));
+        let error = error_json(code, &e).to_string();
+        for job_id in run {
+            let _ = ws.conn.execute(
+                "UPDATE jobs SET state = 'failed', error = ?3, finished_ms = ?4 WHERE job_id = ?1
+                 AND owner = ?2 AND state = 'queued'",
+                params![job_id, me, error, now_ms()],
+            );
+        }
+    }
+    e
 }
 
 /// `index refresh`: rebuilds a source's scopes whose bytes changed; an unchanged complete
@@ -1127,6 +1606,18 @@ pub fn rebuild(storage: &Storage, select: &Select, request_id: Option<&str>) -> 
     submit_all(storage, select, "rebuild", None, None, request_id)
 }
 
+/// `index rebuild` of one source, or one of its scopes: a deferred item's continuation, which
+/// builds it again even when unchanged, as `rebuild` does.
+pub fn rebuild_scope(
+    storage: &Storage,
+    select: &Select,
+    source: Option<&str>,
+    scope: Option<&str>,
+    request_id: Option<&str>,
+) -> Result<Outcome> {
+    submit_all(storage, select, "rebuild", source, scope, request_id)
+}
+
 /// `index clear_cache`: deletes only what a build can recreate and nothing serves: retired
 /// generations and unpublished ones no live job is writing, plus snapshots none names. The
 /// registry, published indexes, jobs and the location stay. figlens writes no cache files yet;
@@ -1139,8 +1630,9 @@ pub fn clear_cache(storage: &Storage, select: &Select) -> Result<Json> {
     let mut stmt = ws
         .conn
         .prepare(
-            "SELECT g.gen, g.source_id, g.state, j.state, j.owner FROM generations g
-             LEFT JOIN jobs j ON j.job_id = g.job_id WHERE g.state IN ('retired', 'building')",
+            "SELECT g.gen, g.source_id, g.state, j.state, j.owner, g.job_id, j.attempt
+             FROM generations g LEFT JOIN jobs j ON j.job_id = g.job_id
+             WHERE g.state IN ('retired', 'building')",
         )
         .map_err(sql)?;
     for row in stmt
@@ -1151,14 +1643,16 @@ pub fn clear_cache(storage: &Storage, select: &Select) -> Result<Json> {
                 r.get::<_, String>(2)?,
                 r.get::<_, Option<String>>(3)?,
                 r.get::<_, Option<String>>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, Option<i64>>(6)?,
             ))
         })
         .map_err(sql)?
     {
-        let (gen_id, source, state, job, holder) = row.map_err(sql)?;
+        let (gen_id, source, state, job, holder, job_id, attempt) = row.map_err(sql)?;
         let writing = state == "building"
             && matches!(job.as_deref(), Some("queued" | "running"))
-            && holder.is_some_and(|h| alive(&dir, &h));
+            && holder.is_some_and(|h| job_alive(&dir, &h, &job_id, attempt.unwrap_or(0)));
         // A removed source's generations belong to nobody visible; they go too.
         let owned = visible.contains(&source) || storage.visible.is_none();
         if !writing && owned {
@@ -1170,7 +1664,11 @@ pub fn clear_cache(storage: &Storage, select: &Select) -> Result<Json> {
     for gen_id in &doomed {
         let tx = ws.conn.transaction().map_err(sql)?;
         records += tx
-            .query_row("SELECT count(*) FROM records WHERE gen = ?1", [gen_id], |r| r.get::<_, i64>(0))
+            .query_row(
+                "SELECT count(*) FROM records WHERE gen = ?1",
+                [gen_id],
+                |r| r.get::<_, i64>(0),
+            )
             .map_err(sql)?;
         drop_gen(&tx, *gen_id).map_err(sql)?;
         tx.commit().map_err(sql)?;
@@ -1189,7 +1687,12 @@ pub fn clear_cache(storage: &Storage, select: &Select) -> Result<Json> {
         .conn
         .query_row("SELECT count(*) FROM published", [], |r| r.get(0))
         .map_err(sql)?;
-    let cache = place.roots.cache.path.join("workspace-cache").join(&ws.held.id);
+    let cache = place
+        .roots
+        .cache
+        .path
+        .join("workspace-cache")
+        .join(&ws.held.id);
     let extra = json!({
         "removed": {"generations": doomed.len(), "records": records},
         "retained": {"publishedGenerations": if storage.visible.is_none() { json!(published) } else { Json::Null },
@@ -1200,3 +1703,6 @@ pub fn clear_cache(storage: &Storage, select: &Select) -> Result<Json> {
     });
     opened_report(storage, &place, &ws, extra)
 }
+
+#[cfg(test)]
+mod tests;
