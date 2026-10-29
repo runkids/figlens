@@ -173,6 +173,7 @@ skillshare sync && skillshare sync mcp --global
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 本機唯讀 viewer；`--out` 會寫出獨立的離線快照 |
 | `compare <file> <nodes.json> <node>` | 與同一 frame 的 REST 匯出做差異比對 |
 | `node <file> <node>` | 單一原始 `.fig` 節點 |
+| `index prepare\|status\|add\|remove\|relocate\|reset` | 使用者 figlens state 目錄中的本機 workspace 登錄，或位於 workspace 之後會記住的 `--storage DIR` 下（階段性里程碑：`search` 尚未使用）；`reset` 只刪除 workspace 資料庫，不刪除設計、匯出檔或記住的位置 |
 | `mcp` | 透過 stdio 的本機 MCP 伺服器 |
 | `update` | 將執行檔換成最新發行版 |
 

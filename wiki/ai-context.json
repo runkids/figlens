@@ -138,6 +138,14 @@
           "path": "wiki/search.md"
         }
       ]
+    },
+    "workspace": {
+      "description": "Changing local workspace roots, identity, ownership, the SQLite registry, locks or index actions.",
+      "sources": [
+        {
+          "path": "wiki/workspace.md"
+        }
+      ]
     }
   },
   "unrouted": {

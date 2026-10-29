@@ -41,6 +41,7 @@ For an explicit implementation plan or a request to carefully reproduce a design
 - Assets the site ships go where the project keeps its assets, following its conventions (see Images and slices).
 - Files for your own checking (bundles and their extracted files, reference images, comparison screenshots, scratch SVGs) go in `.figlens/exports/` at the project root, beside the plans and previews figlens keeps in `.figlens/`. When creating it, add `.figlens/exports/.gitignore` containing `*`: the directory stays out of Git without editing the project's ignore rules, while `.figlens/component-mappings.md` is still committed.
 - Do not write beside the `.fig` or elsewhere in the project unless the user asks.
+- `figlens index` keeps a workspace's source registry in the per-user figlens state directory, or under the `--storage DIR` a prepare was given (later commands find it there without the flag); figlens never puts it in the project or `.figlens/` on its own. It is a partial milestone: `search` does not read it and MCP has no `index` tool yet, so search the `.fig` directly. `index reset` deletes only that workspace database; never use it to clean up a task.
 
 Over MCP, `out` is absolute and must be inside the configured roots; `.figlens/exports/` under the project root is.
 

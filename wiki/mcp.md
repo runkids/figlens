@@ -72,6 +72,8 @@ Tool failures retain `isError: true` and text content; additive `_meta.figlens` 
 | `parse_budget_exceeded` | A named finite parsing budget was crossed; use a smaller copy or report the limit |
 | `output_write_failed` | Bundle packing or export writing failed; create an authorized writable directory and check space/permissions |
 | `permission_denied` | Configured roots forbid the source/output; retain the restriction |
+| `workspace_busy` | CLI `figlens index` only for now: another figlens process holds the workspace; retry after it finishes, without killing it |
+| `index_incompatible` | CLI `figlens index` only for now: the workspace was written by another schema; use that figlens version or reset the workspace |
 | `operation_failed` | Other existing operation error; inspect its diagnostic without assuming a more specific category |
 
 MCP source failures hide raw paths/cloud stderr. Local CLI errors retain their diagnostics; URL-source errors are redacted in both channels. Error categories follow typed provenance in the existing `FigError`, not human-text matching. They are a recoverability aid, not a promise that every possible process failure is caught.

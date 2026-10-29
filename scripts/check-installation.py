@@ -8,6 +8,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import os
 from pathlib import Path
 import runpy
 import shutil
@@ -23,6 +24,35 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def check_index(binary, fixture, cwd, env):
+    """The shipped binary's own SQLite: a custom-storage workspace found again without --storage,
+    then reset and prepared again with a new incarnation; the source is never written."""
+    base = cwd/'index-smoke'
+    base.mkdir()
+    source = base/'design.fig'
+    shutil.copy2(fixture, source)
+    before = sha(source)
+    roots = {f'XDG_{kind}_HOME': str(base/kind.lower()) for kind in ['CONFIG', 'STATE', 'CACHE', 'DATA']}
+    env = dict(env, **roots)
+    index = lambda *args: json.loads(run([binary, 'index', *args], cwd, env))
+    assert index('status', '--file', source)['state'] == 'absent'
+    assert not any(Path(root).exists() for root in roots.values()), 'status of an absent workspace created storage'
+    custom = base/'custom'
+    first = index('prepare', source, '--storage', custom)
+    assert first['initialized'] and first['storage']['rule'] == '--storage', first
+    found = index('status', '--file', source)
+    assert found['storage']['rule'] == 'remembered' and found['incarnation'] == first['incarnation'], found
+    # <custom>/state/workspaces/<id>/index.sqlite; samefile ignores Windows \\?\ prefixes.
+    assert os.path.samefile(Path(found['paths']['database']).parents[2], custom/'state'), found
+    assert index('reset', '--file', source)['state'] == 'reset'
+    again = index('prepare', source)
+    assert again['initialized'] and again['incarnation'] != first['incarnation'], again
+    assert again['storage']['rule'] == 'remembered', again
+    assert sha(source) == before, 'index changed the source .fig'
+    assert not (base/'state').exists(), 'a second database appeared in the default state root'
+    return {'customPrepare': True, 'rediscovered': True, 'resetNewIncarnation': True, 'sourceUnchanged': True}
 
 
 def main():
@@ -104,6 +134,7 @@ def main():
         print(run([sys.executable, ROOT/'scripts/first-success-smoke.py', '--binary', cache, '--example', fixture], consumer, env), end='')
         native_mcp = check_mcp([cache, 'mcp'], consumer, env, fixture, metadata['version'])
         gcs = runpy.run_path(str(ROOT/'scripts/check-gcs-snapshot.py'))['check_gcs'](cache, fixture)
+        index = check_index(cache, fixture, consumer, env)
         # Cold MCP startup must keep extraction/installation output off its protocol stdout.
         mcp_cache = work/'mcp-cache'
         mcp_env = dict(wrapped_env, XDG_CACHE_HOME=str(mcp_cache), LOCALAPPDATA=str(mcp_cache))
@@ -141,7 +172,7 @@ def main():
                           'node': run([node, '--version'], consumer, env).strip(),
                           'npm': run(npm + ['--version'], consumer, env).strip(),
                           'coldInstall': True, 'warmCacheNoDownload': True, 'parallelFirstUse': True,
-                          'nativeMcp': native_mcp, 'wrapperMcp': wrapped_mcp, 'gcsMock': gcs, 'pi': pi, 'hosts': hosts}, indent=2))
+                          'nativeMcp': native_mcp, 'wrapperMcp': wrapped_mcp, 'gcsMock': gcs, 'index': index, 'pi': pi, 'hosts': hosts}, indent=2))
 
 
 if __name__ == '__main__':

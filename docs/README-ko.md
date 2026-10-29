@@ -173,6 +173,7 @@ skillshare sync && skillshare sync mcp --global
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 로컬 읽기 전용 viewer. `--out`은 독립 오프라인 스냅샷 생성 |
 | `compare <file> <nodes.json> <node>` | 같은 frame의 REST 내보내기와 차이 비교 |
 | `node <file> <node>` | 원시 `.fig` 노드 하나 |
+| `index prepare\|status\|add\|remove\|relocate\|reset` | 사용자별 figlens state 디렉터리의 로컬 workspace 레지스트리, 또는 workspace가 이후 기억하는 `--storage DIR` 아래(부분 마일스톤: `search`는 아직 사용하지 않음). `reset`은 workspace 데이터베이스만 삭제하며 디자인, export, 기억된 위치는 삭제하지 않음 |
 | `mcp` | stdio를 사용하는 로컬 MCP 서버 |
 | `update` | 최신 릴리스로 바이너리 교체 |
 

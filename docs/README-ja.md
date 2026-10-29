@@ -173,6 +173,7 @@ skillshare sync && skillshare sync mcp --global
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | ローカルの読み取り専用 viewer。`--out` でスタンドアロンのオフラインスナップショットを書き出し |
 | `compare <file> <nodes.json> <node>` | 同じ frame の REST エクスポートとの差分 |
 | `node <file> <node>` | `.fig` の生ノード 1 つ |
+| `index prepare\|status\|add\|remove\|relocate\|reset` | ユーザーごとの figlens state ディレクトリにあるローカル workspace レジストリ、または workspace が以後記憶する `--storage DIR` の下（途中段階：`search` はまだ使いません）。`reset` は workspace のデータベースだけを削除し、デザイン、export、記憶した場所は削除しません |
 | `mcp` | stdio 経由のローカル MCP サーバー |
 | `update` | バイナリを最新リリースに置き換え |
 
