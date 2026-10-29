@@ -1328,3 +1328,47 @@ fn mcp_whose_reply_stream_closes_stops_its_build_and_exits_though_stdin_stays_op
     std::fs::remove_file(&gate).unwrap();
     assert_eq!(state, "cancelled");
 }
+
+#[test]
+fn mcp_whose_reply_stream_closes_mid_submit_cancels_the_job_it_was_admitting() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let gate = env.gate("submit.hold");
+    let mut child = env
+        .command(&["mcp"], Some(("submit", &gate)))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let lines = child.stdout.take().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut send = |message: Value| {
+        writeln!(stdin, "{message}").unwrap();
+        stdin.flush().unwrap();
+    };
+    send(
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "index",
+        "arguments": {"action": "prepare", "file": fig.to_str().unwrap(), "scope": "0:0"}}}),
+    );
+    let reached = gate.with_extension("hold.reached");
+    wait_for("the submit to admit its job", || reached.exists());
+    // The job row exists but its build is not queued yet when the reply stream dies.
+    drop(lines);
+    send(json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}));
+    std::thread::sleep(Duration::from_millis(200));
+    let early = child.try_wait().unwrap();
+    std::fs::remove_file(&gate).unwrap();
+    wait_for("the server to exit", || child.try_wait().unwrap().is_some());
+    let status = env.json(&["index", "status", "--file", fig.to_str().unwrap()]);
+    let db = PathBuf::from(status["paths"]["database"].as_str().unwrap());
+    let states: Vec<String> = rusqlite::Connection::open(db)
+        .unwrap()
+        .prepare("SELECT state FROM jobs")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!((early, states), (None, vec!["cancelled".to_owned()]));
+}

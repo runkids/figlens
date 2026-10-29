@@ -1142,10 +1142,12 @@ fn a_missing_lock_or_newer_schema_offers_placed_prepare_and_reset_with_the_confi
             })
             .collect::<Vec<_>>()
     };
+    // Recovery names the canonical workspace path (`\\?\D:\…` on Windows).
+    let canonical = std::fs::canonicalize(&dir).unwrap();
     let placed = |action: &str| {
         (
             action.to_owned(),
-            Some(dir.clone()),
+            Some(canonical.clone()),
             Some(f.storage.defaults.config.path.clone()),
         )
     };

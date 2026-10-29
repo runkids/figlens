@@ -552,6 +552,8 @@ pub fn serve_with(
     let (sender, replies) = mpsc::sync_channel::<Value>(WRITER_QUEUE);
     let to_writer = Writer(sender);
     let stop = AtomicBool::new(false);
+    // Set when a reply cannot be written; no lane admits a build after that.
+    let dead = AtomicBool::new(false);
     let pending = Pending::default();
     let builds = std::sync::atomic::AtomicUsize::new(0);
     #[cfg(test)]
@@ -561,7 +563,7 @@ pub fn serve_with(
         let (interactive, interactive_rx) = mpsc::sync_channel::<Admission>(INTERACTIVE_QUEUE);
         let (index, index_rx) = mpsc::sync_channel::<Value>(INDEX_QUEUE);
         let (to_build, build_rx) = mpsc::channel::<command::Runs>();
-        let (stop, pending, builds) = (&stop, &pending, &builds);
+        let (stop, dead, pending, builds) = (&stop, &dead, &pending, &builds);
         // Control and index lanes: each call admitted and run in arrival order.
         for (rx, build) in [(control_rx, None), (index_rx, Some(to_build))] {
             let out = to_writer.clone();
@@ -576,11 +578,16 @@ pub fn serve_with(
                     }
                     // Counted before the call creates its job, so a writer that fails meanwhile
                     // waits for it instead of exiting with the job unowned.
+                    // With `dead` checked after the count (both SeqCst), either the writer sees
+                    // this build or this lane sees the writer died.
                     let counted = build.is_some() && submits(&req);
-                    if counted && builds.fetch_add(1, Ordering::SeqCst) >= BUILD_QUEUE {
-                        builds.fetch_sub(1, Ordering::SeqCst);
-                        out.send(busy(&req["id"]));
-                        continue;
+                    if counted {
+                        let full = builds.fetch_add(1, Ordering::SeqCst) >= BUILD_QUEUE;
+                        if full || dead.load(Ordering::SeqCst) {
+                            builds.fetch_sub(1, Ordering::SeqCst);
+                            out.send(busy(&req["id"]));
+                            continue;
+                        }
                     }
                     let mut queued = false;
                     match admit_value(req, roots) {
@@ -701,6 +708,7 @@ pub fn serve_with(
             if let Err(e) = writeln!(output, "{value}").and_then(|_| output.flush()) {
                 // The client stopped reading, and the reader may wait on an open stdin forever:
                 // stop this server's builds, wait until they cancelled their workers, then end.
+                dead.store(true, Ordering::SeqCst);
                 stop.store(true, Ordering::Relaxed);
                 // Replies still sent meanwhile are dropped, so no lane waits on this queue.
                 let tick = std::time::Duration::from_millis(20);

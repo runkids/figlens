@@ -594,6 +594,7 @@ pub(crate) fn submit(
     )
     .map_err(sql)?;
     admit(tx, &dir, &job_id, 1)?;
+    hold("submit");
     Ok(Submitted {
         job_id,
         owned: true,
@@ -756,7 +757,8 @@ fn spawn(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Child> {
 
 /// Test builds only: `FIGLENS_TEST_HOLD=<stage>:<file>` keeps the worker in `stage` while
 /// `file` exists and creates `<file>.reached` when it gets there, so process tests reach each
-/// stage deterministically. `start` is before the worker locks its worker file.
+/// stage deterministically. `start` is before the worker locks its worker file; `submit` holds
+/// the submitting process once its new job is admitted.
 fn hold(stage: &str) {
     #[cfg(debug_assertions)]
     if let Some((at, file)) = std::env::var("FIGLENS_TEST_HOLD")
