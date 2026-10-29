@@ -574,10 +574,11 @@ pub(crate) fn definitions(
             }
             cur = parent_of(n);
         }
-        let name = kiwi_name(node).to_owned();
+        let name = kiwi_name(node);
         if !bounds.charge(1, 160 + target.len() + name.len() + kind.len()) {
             return None;
         }
+        let name = name.to_owned();
         if let Some(s) = &set {
             sets.push(s.clone());
         }
@@ -597,10 +598,11 @@ pub(crate) fn definitions(
             continue;
         }
         let node = tree.nodes[&s];
-        let name = kiwi_name(node).to_owned();
+        let name = kiwi_name(node);
         if !bounds.charge(1, 160 + s.len() + name.len()) {
             return None;
         }
+        let name = name.to_owned();
         let page = parent_of(node).filter(|p| {
             tree.nodes
                 .get(p)
@@ -1077,28 +1079,32 @@ pub(crate) fn query(
         more = all.len() > req.limit;
         all.truncate(req.limit);
         hits = all;
-        let mut defs = Vec::new();
+        // Each target's definition is read once, and the reply budget is checked as it grows,
+        // so repeated or large definitions never pile up copies past the budget.
+        let mut defs: HashMap<&str, Option<Definition>> = HashMap::new();
+        let mut bytes = 0;
         for (_, e) in &hits {
-            defs.push(match &e.target {
-                Some(t) => graph.definition(t)?,
-                None => None,
-            });
-        }
-        let bytes: usize = hits
-            .iter()
-            .zip(&defs)
-            .map(|((_, e), d)| {
-                let name = d.as_ref().map_or(0, |d| d.name.len());
-                256 + e.target.as_ref().map_or(0, String::len) + e.evidence.len() + name
-            })
-            .sum();
-        if bytes > super::REPLY_BYTES {
-            return Err(budget());
+            let name = match e.target.as_deref() {
+                Some(t) => {
+                    if !defs.contains_key(t) {
+                        let d = graph.definition(t)?;
+                        defs.insert(t, d);
+                    }
+                    defs[t].as_ref().map_or(0, |d| d.name.len())
+                }
+                None => 0,
+            };
+            bytes += 256 + e.target.as_ref().map_or(0, String::len) + e.evidence.len() + name;
+            if bytes > super::REPLY_BYTES {
+                return Err(budget());
+            }
         }
         results = hits
             .iter()
-            .zip(defs)
-            .map(|((_, e), d)| outgoing(e, d.as_ref(), source))
+            .map(|(_, e)| {
+                let d = e.target.as_deref().and_then(|t| defs[t].as_ref());
+                outgoing(e, d, source)
+            })
             .collect();
     } else {
         let mut targets = vec![target.to_owned()];
