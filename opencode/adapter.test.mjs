@@ -199,6 +199,11 @@ test('CLI-path writes ask edit where the binary places the workspace; only reset
   assert.deepEqual(asked.slice(1), [['figlens_index', 'reset'], ['edit', '/custom/state/workspaces/ws_1']]);
   assert.equal(asked.length, 3, 'the second reset is already granted');
   assert.deepEqual(ran, ['index status', 'index status', 'index prepare', 'index status', 'index reset', 'index status', 'index reset']);
+  // A relocation records the new path's alias under the config root.
+  const other = await adapter.scope('other');
+  other.run = current.run;
+  await adapter.cli(other, 'index', { action: 'relocate', file: '/moved.fig', sourceId: 'local:1', workspaceId: 'ws_1' });
+  assert.deepEqual(asked.slice(3), [['edit', '/custom/state/workspaces/ws_1', '/config']]);
 });
 
 test('CLI-path recreation asks edit on the new storage and the reported config root, though status fails', async t => {
@@ -237,6 +242,33 @@ test('CLI-path flat inspect returns its text lines as the MCP flat field', async
   const current = await adapter.scope('session');
   current.run = async () => ({ stdout: '0:1 FRAME "First success" @0,0 320x200\n' });
   assert.deepEqual(await adapter.cli(current, 'inspect', { file: '/d.fig', node: '0:1', flat: true }), { flat: '0:1 FRAME "First success" @0,0 320x200\n' });
+});
+
+test('CLI-path prepare and reset run the recovery a failing status names, after asking for its place', async t => {
+  const { ctx, adapter } = await context(t);
+  const asked = [], ran = [];
+  let deny = null;
+  ctx.permission.assert = async ({ action, resources }) => {
+    asked.push([action, ...resources]);
+    if (resources.includes(deny)) throw Object.assign(new Error('denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  const current = await adapter.scope('session');
+  const roots = { config: { path: '/config' } };
+  const recovery = [{ action: 'prepare', requires: 'none', path: '/state/workspaces/ws_1', roots },
+    { action: 'reset', requires: 'user_confirmation', path: '/state/workspaces/ws_1', roots }];
+  current.run = async args => {
+    ran.push(args.slice(0, 2).join(' '));
+    if (args[1] === 'status') throw Object.assign(new Error('exit 1'), { stderr: 'figlens: ws_1.lock is missing\n' + JSON.stringify({ recovery }) });
+    return { stdout: '{}' };
+  };
+  deny = '/config';
+  await assert.rejects(adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig' }), /denied/);
+  deny = null;
+  await adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig' });
+  await adapter.cli(current, 'index', { action: 'reset', file: '/d.fig' });
+  assert.deepEqual(asked, [['edit', '/state/workspaces/ws_1', '/config'], ['edit', '/state/workspaces/ws_1', '/config'], ['figlens_index', 'reset']]);
+  await assert.rejects(adapter.cli(current, 'index', { action: 'refresh', file: '/d.fig' }), /lock is missing/);
+  assert.deepEqual(ran, ['index status', 'index status', 'index prepare', 'index status', 'index reset', 'index status']);
 });
 
 test('CLI-path reset keeps every selector and scope field, so the CLI refuses a narrower or conflicting reset before any write', async t => {
