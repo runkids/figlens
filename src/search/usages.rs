@@ -15,7 +15,7 @@ use crate::{ErrorKind, FigError, Tree, guid_key, to_json};
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 /// Extraction version: a stored generation built with another one is rebuilt.
-pub(crate) const RELATIONS: &str = "relations-2";
+pub(crate) const RELATIONS: &str = "relations-3";
 /// Relations extracted, in key order; `library_identity` (#93) is not.
 pub(crate) const KINDS: [&str; 7] = [
     "binds_variable",
@@ -176,7 +176,7 @@ pub(crate) fn extract(
     let Some((unverified, unread)) = gaps else {
         return Some(out);
     };
-    let fields = effective(tree, id, e, bounds, unread)?;
+    let fields = effective(tree, id, e, bounds, unread, false)?;
     // REST lists no vector-region fills; usages reads their bindings like top-level fills.
     let regions: Json = fields
         .get("vectorData")
@@ -193,6 +193,24 @@ pub(crate) fn extract(
             .remove("fills")
     {
         bound.insert("vectorRegionFills".into(), list);
+    }
+    // A local text style's font-size and weight bindings apply to the text that has none of its
+    // own, as the REST node output inherits them; only the style's binding maps are read. A
+    // library style (`assetRef`) is external, so none is inherited from it.
+    if let Some(style) = fields
+        .get("styleIdForText")
+        .filter(|_| !(bound.contains_key("fontSize") && bound.contains_key("fontWeight")))
+        .filter(|r| r["assetRef"]["key"].is_null())
+        .and_then(|r| crate::rest::guid(&r["guid"]))
+        .filter(|g| tree.nodes.contains_key(g))
+    {
+        let inherited =
+            crate::rest::bound_variables(&effective(tree, &style, None, bounds, unread, true)?);
+        for f in ["fontSize", "fontWeight"] {
+            if let (Some(v), false) = (inherited.get(f), bound.contains_key(f)) {
+                bound.insert(format!("styleIdForText.{f}"), v.clone());
+            }
+        }
     }
     for (field, aliases) in bound {
         let mut ids = Vec::new();
@@ -215,21 +233,64 @@ pub(crate) fn extract(
             }
         }
     }
-    for key in STYLES {
-        let Some(r) = fields.get(key) else { continue };
-        let (target, state) = match (r["assetRef"]["key"].as_str(), crate::rest::guid(&r["guid"])) {
-            (Some(k), _) => (Some(format!("StyleKey:{k}")), "external"),
-            (None, Some(g)) => {
-                let state = if tree.nodes.contains_key(&g) {
-                    "resolved"
-                } else {
-                    "missing"
-                };
-                (Some(g), state)
-            }
-            (None, None) => continue,
+    let style = |r: &Json| match (r["assetRef"]["key"].as_str(), crate::rest::guid(&r["guid"])) {
+        (Some(k), _) => Some((format!("StyleKey:{k}"), "external")),
+        (None, Some(g)) => {
+            let state = if tree.nodes.contains_key(&g) {
+                "resolved"
+            } else {
+                "missing"
+            };
+            Some((g, state))
+        }
+        (None, None) => None,
+    };
+    // A range row applies where a character uses its styleID; as in `rest::text_overrides`, the
+    // last row of one styleID wins. Looked up in the sorted ids, charged per row first.
+    let text = fields.get("textData");
+    let table = text
+        .and_then(|t| t["styleOverrideTable"].as_array())
+        .map_or(&[][..], Vec::as_slice);
+    let uses = text
+        .and_then(|t| t["characterStyleIDs"].as_array())
+        .map_or(&[][..], Vec::as_slice);
+    if !bounds.charge(table.len(), 16 * table.len()) {
+        return None;
+    }
+    let mut seen = BTreeSet::new();
+    let mut kept: Vec<usize> = (0..table.len())
+        .rev()
+        .filter(|&i| {
+            let sid = table[i]["styleID"].as_u64();
+            seen.insert(sid)
+                && sid.is_some_and(|sid| {
+                    uses.binary_search_by(|u| u.as_u64().cmp(&Some(sid)))
+                        .is_ok()
+                })
+        })
+        .collect();
+    kept.reverse();
+    let rows = kept.into_iter().filter_map(|i| {
+        Some((
+            table[i].get("styleIdForText")?,
+            format!("textData.styleOverrideTable[{i}].styleIdForText"),
+        ))
+    });
+    let top = STYLES
+        .into_iter()
+        .filter_map(|k| Some((fields.get(k)?, k.to_owned())));
+    for (r, evidence) in top.chain(rows) {
+        let Some((target, state)) = style(r) else {
+            continue;
         };
-        if !push(bounds, "uses_style", target, state, "recorded", key.into()) {
+        if !push(
+            bounds,
+            "uses_style",
+            Some(target),
+            state,
+            "recorded",
+            evidence,
+        ) {
             return None;
         }
     }
@@ -349,6 +410,7 @@ fn effective(
     e: Option<&Expanded>,
     bounds: &mut Bounds,
     unread: &mut usize,
+    maps_only: bool,
 ) -> Option<Map<String, Json>> {
     let node = tree.nodes.get(e.map_or(id, |e| e.source.as_str()));
     let mut out = Map::new();
@@ -356,6 +418,7 @@ fn effective(
         .iter()
         .chain(&STYLES)
         .chain(["textData", "vectorData"].iter())
+        .filter(|k| !maps_only || k.ends_with("ConsumptionMap"))
     {
         let own = e.and_then(|e| e.props.get(*key));
         let value = match (own, node.and_then(|n| n.get(key))) {
@@ -416,7 +479,7 @@ fn effective(
         if !bounds.charge(VISITS - left, bytes) {
             return None;
         }
-        let converted = match (own, value) {
+        let mut converted = match (own, value) {
             (Some(v), _) if STYLED.contains(key) => {
                 json!({"styleOverrideTable": v["styleOverrideTable"]})
             }
@@ -425,9 +488,54 @@ fn effective(
             (None, Some(v)) => to_json(v),
             (None, None) => continue,
         };
+        // Only the rows a character uses apply, as `rest::text_overrides` selects them.
+        if *key == "textData"
+            && converted["styleOverrideTable"]
+                .as_array()
+                .is_some_and(|t| t.iter().any(|r| r.get("styleIdForText").is_some()))
+        {
+            use kiwi_schema::Value as K;
+            let uses = match own {
+                Some(v) => match v["characterStyleIDs"].as_array() {
+                    Some(ids) => active(ids.iter().map(Json::as_u64), bounds, unread),
+                    None => Some(json!([])),
+                },
+                None => match node.and_then(|n| n.get("textData")?.get("characterStyleIDs")) {
+                    Some(K::Array(ids)) => active(
+                        ids.iter().map(|i| match i {
+                            K::UInt(u) => Some(u64::from(*u)),
+                            K::UInt64(u) => Some(*u),
+                            _ => None,
+                        }),
+                        bounds,
+                        unread,
+                    ),
+                    _ => Some(json!([])),
+                },
+            }?;
+            converted["characterStyleIDs"] = uses;
+        }
         out.insert((*key).into(), converted);
     }
     Some(out)
+}
+
+/// The sorted style row ids a text's characters use, charged one visit and one set and JSON
+/// entry per character before they are collected; a list past one field's visit cap is left
+/// out and counted, so none of its rows' styles is claimed.
+fn active(
+    ids: impl ExactSizeIterator<Item = Option<u64>>,
+    bounds: &mut Bounds,
+    unread: &mut usize,
+) -> Option<Json> {
+    if ids.len() > VISITS {
+        *unread += 1;
+        return Some(json!([]));
+    }
+    if !bounds.charge(ids.len(), 48 * ids.len()) {
+        return None;
+    }
+    Some(json!(ids.flatten().collect::<BTreeSet<u64>>()))
 }
 
 /// Whether a stored field can yield an edge: a paint list (or text style table) with a bound
@@ -445,8 +553,10 @@ fn linked(v: &kiwi_schema::Value, left: &mut usize) -> Option<bool> {
     };
     for p in items {
         *left = left.checked_sub(1)?;
+        // A text style row links through its own style.
         if p.get("colorVar").is_some_and(alias)
             || matches!(p.get("type"), Some(Value::Enum(_, "IMAGE")))
+            || p.get("styleIdForText").is_some()
         {
             return Some(true);
         }
@@ -474,7 +584,10 @@ fn linked_json(v: &Json, left: &mut usize) -> Option<bool> {
     };
     for p in items {
         *left = left.checked_sub(1)?;
-        if p["colorVar"]["dataType"] == "ALIAS" || p["type"] == "IMAGE" {
+        if p["colorVar"]["dataType"] == "ALIAS"
+            || p["type"] == "IMAGE"
+            || p.get("styleIdForText").is_some()
+        {
             return Some(true);
         }
         for stop in p["stopsVar"].as_array().into_iter().flatten() {

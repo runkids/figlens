@@ -1194,3 +1194,268 @@ fn a_stale_snapshot_recovery_repeats_the_callers_selectors() {
             "relation": "instance_of,uses_style", "includeHidden": true})
     );
 }
+
+#[test]
+fn text_styles_reach_through_used_range_rows_and_lend_their_font_bindings() {
+    let font_size = |var: u32| {
+        (
+            "parameterConsumptionMap",
+            obj(vec![(
+                "entries",
+                K::Array(vec![obj(vec![
+                    ("variableField", K::Enum("VariableField", "FONT_SIZE")),
+                    ("variableData", alias(var)),
+                ])]),
+            )]),
+        )
+    };
+    let style = |id: u32| obj(vec![("guid", guid(id))]);
+    let row = |sid: u64, id: u32| {
+        obj(vec![
+            ("styleID", K::UInt(sid as u32)),
+            ("styleIdForText", style(id)),
+        ])
+    };
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Styles", vec![]),
+            node(2, Some(0), "CANVAS", "Screen", vec![]),
+            node(3, Some(2), "FRAME", "Frame", vec![]),
+            node(10, Some(1), "VARIABLE", "Size", vec![]),
+            node(13, Some(1), "VARIABLE", "Own size", vec![]),
+            node(14, Some(1), "VARIABLE", "Weight", vec![]),
+            node(
+                11,
+                Some(1),
+                "TEXT",
+                "Heading",
+                vec![(
+                    "parameterConsumptionMap",
+                    obj(vec![(
+                        "entries",
+                        K::Array(vec![
+                            obj(vec![
+                                ("variableField", K::Enum("VariableField", "FONT_SIZE")),
+                                ("variableData", alias(10)),
+                            ]),
+                            obj(vec![
+                                ("variableField", K::Enum("VariableField", "FONT_STYLE")),
+                                ("variableData", alias(14)),
+                            ]),
+                        ]),
+                    )]),
+                )],
+            ),
+            // Two rows of one styleID: the last applies.
+            node(
+                7,
+                Some(3),
+                "TEXT",
+                "Repeated",
+                vec![(
+                    "textData",
+                    obj(vec![
+                        ("characterStyleIDs", K::Array(vec![K::UInt(1)])),
+                        ("styleOverrideTable", K::Array(vec![row(1, 11), row(1, 12)])),
+                    ]),
+                )],
+            ),
+            node(12, Some(1), "TEXT", "Body", vec![]),
+            node(
+                4,
+                Some(3),
+                "TEXT",
+                "Title",
+                vec![("styleIdForText", style(11))],
+            ),
+            node(
+                5,
+                Some(3),
+                "TEXT",
+                "Mixed",
+                vec![(
+                    "textData",
+                    obj(vec![
+                        (
+                            "characterStyleIDs",
+                            K::Array(vec![K::UInt(0), K::UInt(1), K::UInt(1)]),
+                        ),
+                        ("styleOverrideTable", K::Array(vec![row(1, 12), row(2, 11)])),
+                    ]),
+                )],
+            ),
+            node(
+                6,
+                Some(3),
+                "TEXT",
+                "Sized",
+                vec![("styleIdForText", style(11)), font_size(13)],
+            ),
+        ]),
+    )]);
+    // The styles and variables lie outside the indexed frame; their uses inside it are listed.
+    let index = build(&Tree::new(&message), "0:3", bounds(WORK));
+    let incoming = |target: &str| {
+        let mut r = req(target);
+        r.scope = "0:3".into();
+        let out = run(&index, &r).unwrap();
+        let evidence: Vec<Json> = out["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["evidence"].clone())
+            .collect();
+        (ids(&out), evidence)
+    };
+    // Only the row a character uses applies; row 1 (styleID 2) is unused.
+    assert_eq!(
+        incoming("0:12"),
+        (
+            vec!["0:5".to_owned(), "0:7".to_owned()],
+            vec![
+                json!("textData.styleOverrideTable[0].styleIdForText"),
+                json!("textData.styleOverrideTable[1].styleIdForText")
+            ]
+        )
+    );
+    assert_eq!(
+        incoming("0:11"),
+        (
+            vec!["0:4".to_owned(), "0:6".to_owned()],
+            vec![json!("styleIdForText"), json!("styleIdForText")]
+        )
+    );
+    // The style's font-size binding reaches the text without one of its own.
+    assert_eq!(
+        incoming("VariableID:0:10"),
+        (
+            vec!["0:4".to_owned()],
+            vec![json!("styleIdForText.fontSize")]
+        )
+    );
+    assert_eq!(incoming("VariableID:0:13").0, ["0:6"]);
+    // The text with its own size still takes the style's weight.
+    assert_eq!(incoming("VariableID:0:14").0, ["0:4", "0:6"]);
+    let outgoing = |id: &str, relation: &str| {
+        let mut r = req(id);
+        r.scope = "0:3".into();
+        r.outgoing = true;
+        r.relations = vec![relation.into()];
+        let out = run(&index, &r).unwrap();
+        out["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                let t = &r["target"];
+                let target = t["ref"]["nodeId"].as_str().or(t["resource"].as_str());
+                (target.unwrap_or("").to_owned(), r["evidence"].clone())
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        outgoing("0:5", "uses_style"),
+        [(
+            "0:12".to_owned(),
+            json!("textData.styleOverrideTable[0].styleIdForText")
+        )]
+    );
+    assert_eq!(
+        outgoing("0:4", "binds_variable"),
+        [
+            (
+                "VariableID:0:10".to_owned(),
+                json!("styleIdForText.fontSize")
+            ),
+            (
+                "VariableID:0:14".to_owned(),
+                json!("styleIdForText.fontWeight")
+            )
+        ]
+    );
+}
+
+#[test]
+fn a_text_too_long_to_select_its_rows_leaves_its_range_styles_partial() {
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(2, Some(1), "TEXT", "Body", vec![]),
+            node(
+                3,
+                Some(1),
+                "TEXT",
+                "Long",
+                vec![(
+                    "textData",
+                    obj(vec![
+                        ("characterStyleIDs", K::Array(vec![K::UInt(1); VISITS + 1])),
+                        (
+                            "styleOverrideTable",
+                            K::Array(vec![obj(vec![
+                                ("styleID", K::UInt(1)),
+                                ("styleIdForText", obj(vec![("guid", guid(2))])),
+                            ])]),
+                        ),
+                    ]),
+                )],
+            ),
+        ]),
+    )]);
+    let index = build(&Tree::new(&message), "0:0", bounds(WORK));
+    let out = run(&index, &req("0:2")).unwrap();
+    assert_eq!(
+        (ids(&out).len(), &out["coverage"]["complete"]),
+        (0, &json!(false))
+    );
+}
+
+#[test]
+fn an_instance_text_override_applies_its_range_style_only_where_characters_use_it() {
+    let text = |ids: Option<Vec<K<'static>>>| {
+        let mut fields = vec![(
+            "styleOverrideTable",
+            K::Array(vec![obj(vec![
+                ("styleID", K::UInt(1)),
+                ("styleIdForText", obj(vec![("guid", guid(12))])),
+            ])]),
+        )];
+        if let Some(ids) = ids {
+            fields.push(("characterStyleIDs", K::Array(ids)));
+        }
+        (
+            "symbolOverrides",
+            K::Array(vec![obj(vec![path(&[21]), ("textData", obj(fields))])]),
+        )
+    };
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Components", vec![]),
+            node(2, Some(0), "CANVAS", "Screen", vec![]),
+            node(3, Some(2), "FRAME", "Frame", vec![]),
+            node(12, Some(1), "TEXT", "Body", vec![]),
+            node(20, Some(1), "SYMBOL", "Chip", vec![]),
+            node(21, Some(20), "TEXT", "Label", vec![]),
+            instance(30, 3, "Used", 20, vec![text(Some(vec![K::UInt(1)]))]),
+            // An override without characterStyleIDs uses no row, as in REST.
+            instance(31, 3, "Unused", 20, vec![text(None)]),
+        ]),
+    )]);
+    let index = build(&Tree::new(&message), "0:3", bounds(WORK));
+    let mut r = req("0:12");
+    r.scope = "0:3".into();
+    let out = run(&index, &r).unwrap();
+    assert_eq!(
+        (ids(&out), &out["results"][0]["evidence"]),
+        (
+            vec!["I0:30;0:21".to_owned()],
+            &json!("textData.styleOverrideTable[0].styleIdForText")
+        )
+    );
+}
