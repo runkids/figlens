@@ -226,18 +226,7 @@ impl Command {
                 let id = normalize_id(&node);
                 require_target_root(tree, &id)?;
                 let format = export_format(&out)?;
-                let (mut scale, mut quality, mut max_kb, mut max_size) = (1.0_f64, 80, None, None);
-                let mut rest = args[2..].iter();
-                while let Some(arg) = rest.next() {
-                    let mut value = || rest.next().ok_or(format!("{arg} needs a number"));
-                    match arg.as_str() {
-                        "--scale" => scale = value()?.trim_end_matches('x').parse()?,
-                        "--quality" => quality = value()?.parse()?,
-                        "--max-kb" => max_kb = Some(value()?.parse::<usize>()?),
-                        "--max-size" => max_size = Some(value()?.parse::<u32>()?),
-                        _ => return Err(USAGE.into()),
-                    }
-                }
+                let (scale, quality, max_kb, max_size) = export_options(&args[2..])?;
                 Self::Export {
                     node,
                     out: out.into(),
@@ -422,12 +411,7 @@ impl Command {
             } => {
                 let id = normalize_id(&node);
                 require_target_root(tree, &id)?;
-                if !(1..=100).contains(&quality) || !scale.is_finite() || scale <= 0.0 {
-                    return Err("--quality takes 1-100 and --scale a positive number".into());
-                }
-                let max_bytes = max_kb
-                    .map(|kb| kb.checked_mul(1024).ok_or("--max-kb is too large"))
-                    .transpose()?;
+                let max_bytes = check_export(scale, quality, max_kb)?;
                 let image = figlens::export::export(
                     tree,
                     fig,
@@ -460,6 +444,40 @@ impl Command {
             }
         })
     }
+}
+
+/// `--scale`, `--quality`, `--max-kb` and `--max-size`, as `(scale, quality, max_kb, max_size)`.
+pub fn export_options(args: &[String]) -> Result<ExportOptions, Box<dyn Error>> {
+    let (mut scale, mut quality, mut max_kb, mut max_size) = (1.0_f64, 80, None, None);
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let mut value = || rest.next().ok_or(format!("{arg} needs a number"));
+        match arg.as_str() {
+            "--scale" => scale = value()?.trim_end_matches('x').parse()?,
+            "--quality" => quality = value()?.parse()?,
+            "--max-kb" => max_kb = Some(value()?.parse::<usize>()?),
+            "--max-size" => max_size = Some(value()?.parse::<u32>()?),
+            _ => return Err(USAGE.into()),
+        }
+    }
+    check_export(scale, quality, max_kb)?;
+    Ok((scale, quality, max_kb, max_size))
+}
+
+type ExportOptions = (f64, u8, Option<usize>, Option<u32>);
+
+/// Rejects out-of-range options; returns `--max-kb` in bytes.
+fn check_export(
+    scale: f64,
+    quality: u8,
+    max_kb: Option<usize>,
+) -> Result<Option<usize>, Box<dyn Error>> {
+    if !(1..=100).contains(&quality) || !scale.is_finite() || scale <= 0.0 {
+        return Err("--quality takes 1-100 and --scale a positive number".into());
+    }
+    Ok(max_kb
+        .map(|kb| kb.checked_mul(1024).ok_or("--max-kb is too large"))
+        .transpose()?)
 }
 
 fn export_format(out: &str) -> Result<figlens::export::Format, Box<dyn Error>> {

@@ -168,6 +168,7 @@ skillshare sync && skillshare sync mcp --global
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]` | 一次解码，并行生成多个 bundle |
 | `verify <bundle>` | 按 manifest 检查 bundle（`.zip` 或解压后的目录）：已验证、缺失和被改动的文件，缺失的素材，需要在项目中确认的字体，以及 `findings`：每项缺失、不支持或未验证的 handoff 输入，附节点、证据和下一步 |
 | `export <file> <node> <out> [--scale N] [--quality 1-100] [--max-kb N] [--max-size N]` | SVG、PNG、JPG、WebP 或 AVIF；`--max-kb` 会降低有损质量直到符合大小 |
+| `export <file> --frames <list> --out-dir <dir> [--format F] [--scale N] ...`, `--frames -` (stdin) | 一次解码导出多个节点（默认 `png`）：写入 `<dir>/<nodeId>.<format>`，每个 id 一行 JSON（带 `nodeId` 的 `export` 输出，或 `{nodeId, error}`） |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 本地只读 viewer；`--out` 写出独立的离线快照 |
 | `compare <file> <nodes.json> <node>` | 与同一 frame 的 REST 导出做差异比较 |
 | `node <file> <node>` | 单个原始 `.fig` 节点 |

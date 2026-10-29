@@ -102,6 +102,8 @@ Release build, Docker Linux aarch64, one run each, OS cache not flushed. On a wa
 
 Historical runs: 24 frames: 28.6 s as separate processes, 8.1 s with `--jobs 1`, 2.9 s with 4; 96 frames: 32.3 s / 12.2 s / 8.5 s with 1 / 4 / 12 jobs, peak memory 1.6 / 1.9 / 2.6 GiB (the decoded `.fig` is about 1.2 GiB of it).
 
+`export --frames` (2026-10-29, Docker aarch64 release): 60 small nodes of a 60 MB Community file, 1.05 s, 661 MB peak; one `export` 0.35 s, 532 MB.
+
 ## Partial semantic metadata (2026-10-26)
 
 Compared clean `eb01fe3` with additive effective layout/property semantics and render diagnostics using fixed release binaries. Authorized Aurora plus held-out DashArt and the public fixture; Docker aarch64, 4 CPU/4 GiB, five first calls, ten warm calls per tool/server, three runs per three-frame bundle mode, 60-second child/request limit, no OS cache eviction. A reversed-order repeat checked initial threshold flags. Warm Aurora nodes consistently grew: 7.44→8.96 ms initially, 7.46→8.77 ms on repeat (+17.7%, +1.32 ms); the MCP envelope grew 183,370→286,574 bytes (+56.3%) with the new fields and provenance. This records an additive cost, not an isolated serialization attribution or speedup. Initial bundle/first-call flags did not persist; no peak rose by both 5% and 16 MiB. Public and held-out medians stayed below the >5% AND >1 ms review threshold.

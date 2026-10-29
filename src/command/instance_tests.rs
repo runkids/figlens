@@ -1423,6 +1423,59 @@ fn nodes_frames_match_single_nodes_calls_and_isolate_missing_ids() {
 }
 
 #[test]
+fn export_frames_match_single_exports_and_isolate_missing_ids() {
+    let f = Fixture::new();
+    let list = f.dir.join("export-frames.txt");
+    let (dir, single) = (f.dir.join("export-batch"), f.dir.join("single.svg"));
+    let ids = ["0:12", "9:9", "I0:2;0:11"];
+    std::fs::write(&list, ids.join("\n")).unwrap();
+    let mut doc = figlens::Document::open(Path::new(&f.file)).unwrap();
+    let message = doc.take_message().unwrap();
+    let tree = Tree::new(&message);
+    let args = |extra: &[&str]| {
+        let mut a = vec!["--frames", list.to_str().unwrap(), "--out-dir"];
+        a.extend_from_slice(&[dir.to_str().unwrap(), "--format", "svg"]);
+        a.extend_from_slice(extra);
+        a.into_iter().map(str::to_owned).collect::<Vec<_>>()
+    };
+    let mut out = Vec::new();
+    crate::export_batch(&tree, Path::new(&f.file), &args(&[]), &mut out).unwrap();
+    let lines: Vec<Value> = String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), ids.len());
+    for (id, mut line) in ids.into_iter().zip(lines) {
+        assert_eq!(line.as_object_mut().unwrap().remove("nodeId").unwrap(), id);
+        match f.cli("export", &[id, single.to_str().unwrap()]) {
+            Ok(_) => {
+                let path = dir.join(format!("{}.svg", id.replace(':', "-")));
+                assert_eq!(line["path"], path.to_str().unwrap());
+                assert_eq!(
+                    std::fs::read(path).unwrap(),
+                    std::fs::read(&single).unwrap()
+                );
+            }
+            Err(e) => assert_eq!(line, json!({ "error": e.to_string() })),
+        }
+    }
+    // Invalid options fail the whole call before anything is written.
+    std::fs::remove_dir_all(&dir).unwrap();
+    let huge = (usize::MAX / 1024 + 1).to_string();
+    for extra in [
+        &["--quality", "0"][..],
+        &["--format", "a/b.png"],
+        &["--max-kb", &huge],
+    ] {
+        let mut out = Vec::new();
+        let result = crate::export_batch(&tree, Path::new(&f.file), &args(extra), &mut out);
+        assert!(result.is_err() && out.is_empty(), "{extra:?}");
+        assert!(!dir.exists(), "{extra:?}");
+    }
+}
+
+#[test]
 fn nodes_ids_take_every_following_argument_and_need_one() {
     let args =
         |a: &[&str]| crate::node_list(&a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
