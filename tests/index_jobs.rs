@@ -907,18 +907,43 @@ fn a_search_past_the_query_envelope_is_a_work_limit_with_narrower_searches_not_a
             "--workspace",
             dir,
             "--scope",
-            "0:0",
+            "0:1",
         ]);
     }
-    let out = env.run(&["search", "--workspace", dir, "first"]);
+    let out = env.run(&[
+        "search",
+        "--workspace",
+        dir,
+        "first",
+        "--node",
+        "0:1",
+        "--type",
+        "text",
+    ]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     let recovery: Value = serde_json::from_str(stderr.lines().last().unwrap()).unwrap();
     let actions = recovery["recovery"].as_array().unwrap();
     assert_eq!(actions.len(), 11, "{stderr}");
     assert!(actions.iter().all(|a| a["action"] == "search_one_source"));
-    let one = actions[0]["arguments"]["sourceId"].as_str().unwrap();
-    let narrowed = env.json(&["search", "--workspace", dir, "first", "--source", one]);
+    let args = &actions[0]["arguments"];
+    assert_eq!(
+        (&args["node"], &args["type"]),
+        (&json!("0:1"), &json!("TEXT"))
+    );
+    let one = args["sourceId"].as_str().unwrap();
+    let narrowed = env.json(&[
+        "search",
+        "--workspace",
+        dir,
+        "first",
+        "--source",
+        one,
+        "--node",
+        "0:1",
+        "--type",
+        "TEXT",
+    ]);
     assert_eq!(narrowed["state"], "ready");
     // Nothing was dropped from the registry.
     let status = env.json(&["index", "status", "--workspace", dir]);

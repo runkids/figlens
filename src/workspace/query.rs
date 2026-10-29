@@ -64,11 +64,7 @@ fn with_fallback(
         return fig.into();
     }
     let mut actions = fig.recovery().cloned().unwrap_or_else(|| json!([]));
-    // Only what the request gave: the default scope is not repeated as if it were chosen.
-    let mut arguments = json!({"file": file, "query": req.query});
-    if req.scope != "0:0" {
-        arguments["node"] = json!(req.scope);
-    }
+    let arguments = selectors(json!({"file": file, "query": req.query}), req);
     if let Some(list) = actions.as_array_mut() {
         list.push(
             json!({"action": "stateless_search", "requires": "none", "tool": "search",
@@ -77,6 +73,27 @@ fn with_fallback(
         );
     }
     fig.with_recovery(actions).into()
+}
+
+/// `arguments` plus the request's scope and filters, only those it gave: a default is not
+/// repeated as if it were chosen. The cursor is left out; it binds the original search.
+fn selectors(mut arguments: Json, req: &Request) -> Json {
+    if req.scope != "0:0" {
+        arguments["node"] = json!(req.scope);
+    }
+    if !req.types.is_empty() {
+        arguments["type"] = json!(req.types.join(","));
+    }
+    if req.include_hidden {
+        arguments["includeHidden"] = json!(true);
+    }
+    if req.include_internal {
+        arguments["includeInternal"] = json!(true);
+    }
+    if req.limit != 20 {
+        arguments["limit"] = json!(req.limit);
+    }
+    arguments
 }
 
 fn search_index(
@@ -399,7 +416,7 @@ fn work_limit(ws_id: &str, req: &Request, rows: &[Row], one_too_big: bool) -> Bo
         .iter()
         .map(|r| {
             json!({"action": "search_one_source", "requires": "none", "tool": "search",
-            "arguments": {"workspaceId": ws_id, "query": req.query, "sourceId": r.id}})
+            "arguments": selectors(json!({"workspaceId": ws_id, "query": req.query, "sourceId": r.id}), req)})
         })
         .collect();
     if one_too_big {

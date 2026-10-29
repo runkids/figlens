@@ -30,7 +30,7 @@ Schema 2 adds `snapshots` (verified size and mtime per content hash), `generatio
 |---|---|
 | `refresh <select> [--source ID] [--scope NODE]` | Builds the chosen published scopes again when their bytes changed |
 | `rebuild <select> [--source ID] [--scope NODE]` | Builds the chosen published scopes again even when unchanged (a corrupt or deferred one included); the previous generations serve until each replacement publishes |
-| `clear_cache <select>` | Deletes retired generations, unpublished ones no live job writes, and unreferenced snapshots; keeps the registry, published indexes, jobs and location |
+| `clear_cache <select>` | Deletes retired generations, unpublished ones no live job or orphaned worker writes, and unreferenced snapshots; keeps the registry, published indexes, jobs and location |
 | `jobs status <jobId>` / `jobs cancel <jobId>` | A job's `workspaceId`, state, stage, progress, attempt, generation and next steps |
 
 The CLI runs owned jobs in the foreground with stderr progress, then exits 1 if any did not succeed. MCP runs them on its build lane and returns at once; see [mcp](mcp.md).
@@ -42,7 +42,7 @@ The CLI runs owned jobs in the foreground with stderr progress, then exits 1 if 
 - Sources outside the caller's visibility (MCP `--root`) are dropped before any row, count or path is read. A reply over a corpus that lost sources this way has `coverage.complete: false`, `totalRecords: null` and reason `authorization_restricted`, naming no source and no count.
 - Each source is `ready`, `pending`, `not_prepared`, `stale` (size or mtime differs from the verified snapshot, or relocated since), `incompatible` or `unreadable`. Only ready sources are searched; the rest are listed with their next step and make coverage partial (`sources_not_ready`). A `not_prepared` source whose scope has no published generation carries `reason: scope_not_indexed`; with nothing ready the reason is `index_pending` while a job runs, else `scope_not_indexed`. When every source is stale the reply is `source_stale` with refresh recovery.
 - Loading reads only the query terms' postings, intersects them, and fetches the shown page's records and their ancestors. Corpus statistics, phrase tiers and ranking cover every survivor of every source before the global top-k; independently ranked pages are never merged.
-- A search that cannot use the workspace (storage unavailable, busy, incompatible) and named a `.fig` the caller may read adds a `stateless_search` recovery with only the arguments the request gave.
+- A search that cannot use the workspace (storage unavailable, busy, incompatible) and named a `.fig` the caller may read adds a `stateless_search` recovery with only the arguments the request gave (node and filters; not the cursor).
 - A cursor binds the generations it paged: `cursor_stale` when one was replaced, `cursor_expired` when one was deleted.
 
 Results equal stateless search of the same scope; only `ref.sourceId` differs after a relocate, by design.
@@ -53,7 +53,7 @@ Hard refusals, checked before the work they bound:
 
 | Limit | Value | When crossed |
 |---|---|---|
-| Ready sources one workspace search reads | 10 | `query_work_limit` before the generation that would cross it loads; recovery lists one search per visible source |
+| Ready sources one workspace search reads | 10 | `query_work_limit` before the generation that would cross it loads; recovery lists one search per visible source, keeping the request's node and filters (not its cursor) |
 | Records of those generations in total | 100,000 (not 10 times a per-source cap) | the same, plus `index_narrower_scope` when one source alone exceeds it |
 | Record text one load copies | 512 MiB | `query_work_limit`, never `index_incompatible` |
 | One scope extraction (build) | `WORK` 10M units | the generation is partial with `work_limit` |

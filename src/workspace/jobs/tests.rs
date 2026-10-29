@@ -778,3 +778,29 @@ fn kind_of(conn: &Connection, job_id: &str) -> String {
     })
     .unwrap()
 }
+
+#[test]
+fn clear_cache_keeps_the_generation_an_orphaned_worker_still_writes() {
+    let d = TestDir::new();
+    let (storage, select, dir) = workspace(&d, 1);
+    let conn = connection(&dir);
+    let job_id = job(&conn, &sources(&conn)[0], "0:0", "running", "dead", 1);
+    let gen_id = building(&conn, &job_id);
+    std::fs::create_dir_all(dir.join("claims")).unwrap();
+    let mut worker = File::create(worker_path(&dir, &job_id, 1)).unwrap();
+    worker.lock().unwrap();
+    std::io::Write::write_all(&mut worker, b"started").unwrap();
+    let kept = |storage: &Storage| {
+        clear_cache(storage, &select).unwrap();
+        connection(&dir)
+            .query_row(
+                "SELECT count(*) FROM generations WHERE gen = ?1",
+                [gen_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    let while_running = kept(&storage);
+    drop(worker);
+    assert_eq!((while_running, kept(&storage)), (1, 0));
+}

@@ -1937,7 +1937,9 @@ pub fn clear_cache(storage: &Storage, select: &Select) -> Result<Json> {
         let (gen_id, source, state, job, holder, job_id, attempt) = row.map_err(sql)?;
         let writing = state == "building"
             && matches!(job.as_deref(), Some("queued" | "running"))
-            && holder.is_some_and(|h| job_alive(&dir, &h, &job_id, attempt.unwrap_or(0)));
+            && (holder.is_some_and(|h| job_alive(&dir, &h, &job_id, attempt.unwrap_or(0)))
+                // A dead owner's worker can still write its batches.
+                || worker_alive(&dir, &job_id, attempt.unwrap_or(0)));
         // A removed source's generations belong to nobody visible; they go too.
         let owned = visible.contains(&source) || storage.visible.is_none();
         if !writing && owned {
