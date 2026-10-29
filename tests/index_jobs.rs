@@ -40,6 +40,8 @@ impl Env {
         command
             .args(args)
             .env("HOME", &self.home)
+            // Windows roots ignore HOME and use %LOCALAPPDATA%, which would be the runner's own.
+            .env("LOCALAPPDATA", &self.home)
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("XDG_STATE_HOME")
             .env_remove("XDG_CACHE_HOME")
@@ -137,6 +139,27 @@ fn ids(reply: &Value) -> Vec<&str> {
         .iter()
         .map(|r| r["ref"]["nodeId"].as_str().unwrap())
         .collect()
+}
+
+#[test]
+fn every_root_and_workspace_path_stays_inside_the_test_home() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let prepared = env.json(&["index", "prepare", fig.to_str().unwrap()]);
+    let mut paths: Vec<&str> = ["config", "state", "cache", "data"]
+        .iter()
+        .map(|k| prepared["roots"][k]["path"].as_str().unwrap())
+        .collect();
+    paths.extend(["workspace", "database", "lock"].map(|k| prepared["paths"][k].as_str().unwrap()));
+    let outside: Vec<_> = paths
+        .into_iter()
+        .filter(|p| !Path::new(p).starts_with(&env.home))
+        .collect();
+    assert!(
+        outside.is_empty(),
+        "{outside:?} outside {}",
+        env.home.display()
+    );
 }
 
 #[test]
