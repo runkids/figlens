@@ -269,9 +269,13 @@ export function createAdapter(ctx, entry = import.meta.url) {
     // operand file is not a selector, except that a prepare without a project directory is found by it.
     const status = ({ action, file, workspace, workspaceId, storage }) => invoke(cliArgs('index', { action: 'status', workspace, workspaceId, storage,
       file: ['add', 'relocate'].includes(action) || (action === 'prepare' && workspace) ? undefined : file }));
-    // Where the binary places this workspace: its directory, or the state root of the storage it chose.
-    const place = ({ paths, roots }) => paths?.workspace ?? roots.state.path;
     const missing = what => new Error(`This figlens binary does not report ${what}; update figlens to use these tools.`);
+    // Where the binary places this workspace: its directory and the sibling lock any exclusive open may recreate,
+    // or the state root of the storage it chose while none exists.
+    const place = ({ paths, roots }) => {
+      if (paths && !paths.lock) throw missing("its workspace's lock file");
+      return paths ? [paths.workspace, paths.lock] : [roots.state.path];
+    };
     // The CLI downloads a gs:// design into its own cache, which this path cannot authorize, so only MCP serves it.
     if (input.file?.startsWith('gs://')) throw new Error('The OpenCode CLI path reads local .fig files only. Enable the figlens MCP server for a gs:// design, or pass a local copy.');
     // A design the CLI reads honours read rules on its requested and canonical paths, as Workflow.source does.
@@ -291,7 +295,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
     if (tool === 'jobs' && input.action === 'cancel') {
       const { workspaceId } = await invoke(cliArgs('jobs', { ...input, action: 'status' }));
       if (!workspaceId) throw missing("a job's workspace");
-      await current.authorize('edit', [place(await status({ workspaceId, storage: input.storage }))]);
+      await current.authorize('edit', place(await status({ workspaceId, storage: input.storage })));
     }
     if (tool === 'index' && input.action !== 'status') {
       const grant = indexGrant(input);
@@ -310,12 +314,10 @@ export function createAdapter(ctx, entry = import.meta.url) {
           return { paths: { workspace: fix.path, lock: fix.lock }, roots: fix.roots };
         });
         if (!found.roots?.config) throw missing('its config root');
-        // An existing workspace's lock sits beside its directory, and a recovery recreates it there.
-        if (found.paths && !found.paths.lock) throw missing("its workspace's lock file");
         if (['refresh', 'rebuild'].includes(input.action)) await readSources(found);
         if (grant) await current.authorize('figlens_index', [grant]);
         // Every write also takes a location lock or record under the config root (a build's publish, relocation's alias).
-        await current.authorize('edit', [place(found), ...found.paths ? [found.paths.lock] : [], found.roots.config.path]);
+        await current.authorize('edit', [...place(found), found.roots.config.path]);
       }
     }
     // inspect --flat prints lines, as the MCP tool's flat field.

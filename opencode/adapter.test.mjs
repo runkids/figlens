@@ -234,9 +234,10 @@ test('CLI-path cancel asks edit on the job workspace, and a denial leaves the jo
   current.run = async args => {
     ran.push(args.slice(0, 2).join(' '));
     return { stdout: JSON.stringify(args[0] === 'jobs' ? { workspaceId: 'ws_1', state: 'running' }
-      : { paths: { workspace: '/state/workspaces/ws_1' }, storage: { rule: 'default' }, roots: {} }) };
+      : { paths: { workspace: '/state/workspaces/ws_1', lock: '/state/workspaces/ws_1.lock' }, storage: { rule: 'default' }, roots: {} }) };
   };
-  await assert.rejects(adapter.cli(current, 'jobs', { action: 'cancel', jobId: 'ws_1.j' }), /denied \/state\/workspaces\/ws_1/);
+  // Cancelling opens the workspace exclusively, which recreates a missing sibling lock.
+  await assert.rejects(adapter.cli(current, 'jobs', { action: 'cancel', jobId: 'ws_1.j' }), /denied \/state\/workspaces\/ws_1,\/state\/workspaces\/ws_1\.lock$/);
   assert.deepEqual(ran, ['jobs status', 'index status']);
 });
 
