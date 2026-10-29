@@ -576,15 +576,24 @@ fn shape(svg: &[u8]) -> Option<Shape> {
         let c = px.demultiply();
         [c.red(), c.green(), c.blue()]
     };
+    // Ink is relative to the most opaque pixel, so a translucent paint covers what it draws.
+    let ink = pixmap
+        .pixels()
+        .iter()
+        .map(|px| px.alpha())
+        .max()
+        .unwrap_or(0)
+        .div_ceil(4)
+        .max(1);
     let mut counts = std::collections::HashMap::new();
-    for px in pixmap.pixels().iter().filter(|px| px.alpha() >= 64) {
+    for px in pixmap.pixels().iter().filter(|px| px.alpha() >= ink) {
         *counts.entry(color(px).map(|c| c >> 4)).or_insert(0) += 1;
     }
     // A shape too thin to cover a pixel keeps an empty mask; its outline still matches.
     let main = counts.into_iter().max_by_key(|e| (e.1, e.0)).map(|e| e.0);
     let (mut mask, mut coverage) = ([0u64; 64], [0u64; 64]);
     for (i, px) in pixmap.pixels().iter().enumerate() {
-        if px.alpha() >= 64 {
+        if px.alpha() >= ink {
             coverage[i / 64] |= 1 << (i % 64);
         }
         let near = main.is_some_and(|main| {
@@ -593,7 +602,7 @@ fn shape(svg: &[u8]) -> Option<Shape> {
                 .zip(main)
                 .all(|(c, m)| c.abs_diff(m << 4 | 8) <= 40)
         });
-        if px.alpha() >= 64 && near {
+        if px.alpha() >= ink && near {
             mask[i / 64] |= 1 << (i % 64);
         }
     }
@@ -827,5 +836,23 @@ mod tests {
         let index = SvgIndex::load(&dir.join("")).unwrap();
         let gradient = r#"<svg xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g"><stop offset="0"/><stop offset="1" stop-color="white"/></linearGradient></defs><path d="M0 0H20V20H0Z" fill="url(#g)"/></svg>"#;
         assert_eq!(index.compare(gradient.as_bytes(), None).0, ["solid.svg"]);
+    }
+
+    #[test]
+    fn svg_index_matches_a_translucent_export_with_the_same_opaque_outline() {
+        let dir = crate::test_support::TestDir::new();
+        let svg = |paint: &str| {
+            format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg"><path {paint} d="M0 0H20V20H0ZM4 4V16H16V4Z"/></svg>"#
+            )
+        };
+        std::fs::write(dir.join("opaque.svg"), svg("")).unwrap();
+        let index = SvgIndex::load(&dir.join("")).unwrap();
+        assert_eq!(
+            index
+                .compare(svg(r#"fill-opacity="0.1""#).as_bytes(), None)
+                .0,
+            ["opaque.svg"]
+        );
     }
 }
