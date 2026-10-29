@@ -58,7 +58,10 @@ const cliSteps = [
   (status, prepared) => prepared?.workspaceId && direct('figlens_jobs', { action: 'status', jobId: prepared.job.jobId }),
   (status, prepared) => direct('figlens_search', { workspaceId: prepared.workspaceId, node: '0:1', query: 'Mapping review' }),
   (status, prepared, job, found) => found?.results?.[0] && direct('figlens_inspect', { file: fixture, node: found.results[0].ref.nodeId }),
+  // An exact instance sublayer id longer than 200 bytes passes the host's schema and reaches the binary.
+  () => direct('figlens_inspect', { file: fixture, node: deepId }),
 ];
+const deepId = `I${Array(60).fill('9:9').join(';')}`;
 let steps = searchSteps;
 // One scripted conversation at a time: each session starts the provider's state again.
 function lane(next) { steps = next; for (const key of Object.keys(scripted)) delete scripted[key]; scripted.results = []; }
@@ -316,7 +319,9 @@ try {
     assert.equal(job.state, 'succeeded');
     assert.equal(found.results[0].ref.nodeId, '0:1');
     assert.equal(node.node.id, '0:1');
-    return { mcp: status.mcp.reason, before: before.state, job: job.state, ref: found.results[0].ref, inspected: node.node.id, tools: scripted.tools.filter(name => /^figlens_/.test(name)) };
+    const deep = scripted.raw[5] ?? '';
+    assert.ok(deep.includes(`node ${deepId}`), `a ${deepId.length}-byte id must reach the binary, not fail the schema: ${deep.slice(0, 500)}`);
+    return { deepIdBytes: deepId.length, mcp: status.mcp.reason, before: before.state, job: job.state, ref: found.results[0].ref, inspected: node.node.id, tools: scripted.tools.filter(name => /^figlens_/.test(name)) };
   });
 } finally {
   provider.close();
