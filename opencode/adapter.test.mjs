@@ -297,13 +297,21 @@ test('CLI-path design reads ask read on the requested and canonical path, and bu
 
 test('CLI-path prepare with an explicit storage asks edit on the state root the binary chose, not the remembered one', async t => {
   const { ctx, adapter } = await context(t);
-  const asked = [];
-  ctx.permission.assert = async ({ action, resources }) => { if (action !== 'read') asked.push([action, ...resources]); };
+  const asked = [], ran = [];
+  // A rule that allows the remembered directory and denies the new one.
+  ctx.permission.assert = async ({ action, resources }) => {
+    if (action !== 'read') asked.push([action, ...resources]);
+    if (resources.includes('/new/state')) throw Object.assign(new Error('denied /new/state'), { _tag: 'Permission.DeclinedError' });
+  };
   const current = await adapter.scope('session');
-  current.run = async () => ({ stdout: JSON.stringify({ paths: null, storage: { rule: '--storage', remembered: '/old' },
-    roots: { state: { path: '/new/state' }, config: { path: '/config' } } }) });
-  await adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig', storage: '/new' });
+  current.run = async args => {
+    ran.push(args[1]);
+    return { stdout: JSON.stringify({ paths: null, storage: { rule: '--storage', remembered: '/old' },
+      roots: { state: { path: '/new/state' }, config: { path: '/config' } } }) };
+  };
+  await assert.rejects(adapter.cli(current, 'index', { action: 'prepare', file: '/d.fig', storage: '/new' }), /denied/);
   assert.deepEqual(asked, [['edit', '/new/state', '/config']]);
+  assert.deepEqual(ran, ['status'], 'nothing was written');
 });
 
 test('CLI-path workspace search and rebuild ask read on the selected registered designs before reading them', async t => {
