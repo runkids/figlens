@@ -951,8 +951,7 @@ fn a_paint_scan_is_charged_even_when_nothing_links() {
         "RECTANGLE",
         None,
         &mut roomy,
-        &mut unverified,
-        &mut unread,
+        Some((&mut unverified, &mut unread)),
     );
     // 600 paints and 1,200 stops were visited and paid for although nothing linked.
     assert_eq!(
@@ -968,8 +967,7 @@ fn a_paint_scan_is_charged_even_when_nothing_links() {
                 "RECTANGLE",
                 None,
                 &mut tight,
-                &mut unverified,
-                &mut unread
+                Some((&mut unverified, &mut unread)),
             )
             .is_none(),
             tight.stop
@@ -985,8 +983,7 @@ fn a_paint_scan_is_charged_even_when_nothing_links() {
             "RECTANGLE",
             None,
             &mut late,
-            &mut unverified,
-            &mut unread
+            Some((&mut unverified, &mut unread)),
         )
         .is_none()
     );

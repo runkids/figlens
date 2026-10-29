@@ -463,7 +463,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "scope": {"type": "object"},
                 "ranking": {"type": "object", "description": "ranking and tokenizer versions, field weights and tie order"},
                 "results": {"type": "array", "items": {"type": "object"}},
-                "coverage": {"type": "object", "description": "complete, scannedRecords, totalRecords (null unless complete), layers.text.state ready|partial, layers.relations (stored contains and instance_of kinds; other kinds relation_unavailable), reasons with counts, excluded hidden/internal matches, knownGaps and work limits"},
+                "coverage": {"type": "object", "description": "complete, scannedRecords, totalRecords (null unless complete), layers.text.state ready|partial, layers.relations (per kind: ready or partial when built; stateless search builds contains, instance_of and variant_of and lists the others not_built, which says nothing about absence; library_identity relation_unavailable), reasons with counts, excluded hidden/internal matches, knownGaps and work limits"},
                 "hasMore": {"type": "boolean"},
                 "nextCursor": {"type": ["string", "null"]},
                 "workspaceId": {"type": "string", "description": "workspace searches only"},

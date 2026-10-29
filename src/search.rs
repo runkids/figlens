@@ -482,6 +482,9 @@ pub struct Index {
     unread_fields: usize,
     text_bytes: usize,
     generation: String,
+    /// Whether every relation kind was extracted; a text-only build (ordinary stateless search)
+    /// holds only `TEXT_ONLY` kinds and never answers usages.
+    relations: bool,
     /// Edge targets and component-set members described for usages; a partial index holds the
     /// ones a query read.
     definitions: BTreeMap<String, usages::Definition>,
@@ -549,7 +552,12 @@ fn transient(text: &str, deadline: Instant) -> Result<usize, Option<Stop>> {
 
 /// Indexes every stored and effective layer under `scope`, in document order, until the
 /// shared bounds run out. Each step is charged before the visit, copy or allocation it pays for.
+#[cfg(test)]
 fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
+    build_as(tree, scope, bounds, true)
+}
+
+fn build_as(tree: &Tree, scope: &str, bounds: Bounds, relations: bool) -> Index {
     // An eighth of the work and bytes is kept from expansion, so a stop there still leaves room to
     // index what was expanded and the stored layers; only a passed deadline ends both. Indexing
     // a 179 MB held-out file took 139k work and 35 MB against its expansion's 7.1M and 394 MB.
@@ -581,6 +589,7 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
         unread_fields: 0,
         text_bytes: 0,
         generation: String::new(),
+        relations: false,
         definitions: BTreeMap::new(),
         reverse: Default::default(),
     };
@@ -716,8 +725,7 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
             &kind,
             ex.nodes.get(&id),
             &mut bounds,
-            &mut index.unverified_links,
-            &mut index.unread_fields,
+            relations.then_some((&mut index.unverified_links, &mut index.unread_fields)),
         ) else {
             break;
         };
@@ -798,7 +806,10 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
         deadline: bounds.deadline,
         stop: None,
     };
-    index.definitions = usages::definitions(tree, &index.records, &mut own).unwrap_or_default();
+    if relations {
+        index.definitions = usages::definitions(tree, &index.records, &mut own).unwrap_or_default();
+    }
+    index.relations = relations;
     bounds.stop = bounds.stop.or(own.stop);
     if index.stop.is_none() {
         index.stop = bounds.stop.or(expansion).map(|stop| match stop {
@@ -1165,8 +1176,9 @@ fn location(index: &Index, rid: u32, source: &Json) -> Json {
     out
 }
 
-/// The relations layer: every kind in `usages::KINDS` is extracted for each indexed record;
-/// `library_identity` (cross-file identity) is not, so the layer is never `ready`.
+/// The relations layer of a full build: every kind in `usages::KINDS` is extracted for each
+/// indexed record (`built` marks what a text-only one skipped); `library_identity`
+/// (cross-file identity) is not, so the layer is never `ready`.
 pub(crate) fn relations(state: &str) -> Json {
     let kinds: serde_json::Map<String, Json> = usages::KINDS
         .iter()
@@ -1175,6 +1187,20 @@ pub(crate) fn relations(state: &str) -> Json {
     json!({"state": if state == "ready" { "partial" } else { state },
         "kinds": kinds, "version": usages::RELATIONS,
         "reasons": [{"code": "relation_unavailable", "relations": ["library_identity"]}]})
+}
+
+/// `layer` as a text-only index has it: the kinds it never extracted are `not_built`, which says
+/// nothing about their absence and leaves text coverage alone.
+fn built(index: &Index, mut layer: Json) -> Json {
+    if !index.relations {
+        for k in usages::KINDS
+            .iter()
+            .filter(|k| !usages::TEXT_ONLY.contains(k))
+        {
+            layer["kinds"][*k] = json!("not_built");
+        }
+    }
+    layer
 }
 
 fn coverage(index: &Index, req: &Request, excluded: [usize; 2]) -> Json {
@@ -1194,7 +1220,7 @@ fn coverage(index: &Index, req: &Request, excluded: [usize; 2]) -> Json {
         "totalRecords": if complete { json!(scanned) } else { Json::Null },
         "indexedTextBytes": index.text_bytes,
         "layers": {"text": {"state": if complete { "ready" } else { "partial" }},
-            "relations": relations(if complete { "ready" } else { "partial" })},
+            "relations": built(index, relations(if complete { "ready" } else { "partial" }))},
         "reasons": reasons,
         "excluded": {"hidden": excluded[0], "internal": excluded[1]},
         "knownGaps": [{"code": "component_property_values_not_indexed"},
@@ -1499,10 +1525,25 @@ pub(crate) fn index_bytes(
     scope: &str,
     deadline: Instant,
 ) -> Result<Index, Box<dyn Error>> {
+    decode_index(bytes, label, scope, deadline, true)
+}
+
+fn decode_index(
+    bytes: Vec<u8>,
+    label: &str,
+    scope: &str,
+    deadline: Instant,
+    relations: bool,
+) -> Result<Index, Box<dyn Error>> {
     let mut doc = Document::from_bytes(&bytes, label)?;
     drop(bytes);
     let message = doc.take_message()?;
-    index_tree(&Tree::new(&message), scope, deadline)
+    let tree = Tree::new(&message);
+    if relations {
+        index_tree(&tree, scope, deadline)
+    } else {
+        profiled(&tree, scope, deadline, false)
+    }
 }
 
 /// The index of `scope` in an already decoded tree, within the bounds every search build uses,
@@ -1512,6 +1553,15 @@ pub(crate) fn index_tree(
     scope: &str,
     deadline: Instant,
 ) -> Result<Index, Box<dyn Error>> {
+    profiled(tree, scope, deadline, true)
+}
+
+fn profiled(
+    tree: &Tree,
+    scope: &str,
+    deadline: Instant,
+    relations: bool,
+) -> Result<Index, Box<dyn Error>> {
     require_scope(tree, scope)?;
     let bounds = Bounds {
         work: WORK,
@@ -1520,7 +1570,7 @@ pub(crate) fn index_tree(
         deadline,
         stop: None,
     };
-    Ok(build(tree, scope, bounds))
+    Ok(build_as(tree, scope, bounds, relations))
 }
 
 /// Searches a built index. `source` is the caller's exact identity of the revision the index
@@ -1540,6 +1590,8 @@ pub(crate) fn usages_index(
     source: Json,
 ) -> Result<Json, Box<dyn Error>> {
     let q = req.validate()?;
+    // A text-only index never stands in for missing relations.
+    assert!(index.relations, "usages over a text-only index");
     let served = usages::Served {
         source: &source,
         gen_id: 0,
@@ -1564,7 +1616,7 @@ fn ms(t: SystemTime) -> u64 {
 /// hashes the bytes again once `REHASH` has passed, since a save can keep the stamp.
 pub fn search(path: &Path, req: &Request) -> Result<Json, Box<dyn Error>> {
     req.validate()?;
-    let (index, source) = loaded(path, &req.scope)?;
+    let (index, source) = loaded(path, &req.scope, false)?;
     search_index(&index, req, source)
 }
 
@@ -1572,12 +1624,14 @@ pub fn search(path: &Path, req: &Request) -> Result<Json, Box<dyn Error>> {
 /// index search uses; nothing is stored.
 pub fn usages(path: &Path, req: &usages::Request) -> Result<Json, Box<dyn Error>> {
     req.validate()?;
-    let (index, source) = loaded(path, &req.scope)?;
+    let (index, source) = loaded(path, &req.scope, true)?;
     usages_index(&index, req, source)
 }
 
 /// The index of `scope` and its source identity, from the process cache while it is fresh.
-fn loaded(path: &Path, scope: &str) -> Result<(Arc<Index>, Json), Box<dyn Error>> {
+/// `relations` asks for a full build: a cached text-only one is replaced by one, once, and a
+/// cached full one also serves text search.
+fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json), Box<dyn Error>> {
     let deadline = Instant::now() + DEADLINE;
     let canonical = std::fs::canonicalize(path)?;
     let source_id = source_id(&canonical);
@@ -1586,6 +1640,7 @@ fn loaded(path: &Path, scope: &str) -> Result<(Arc<Index>, Json), Box<dyn Error>
         cache
             .as_ref()
             .filter(|c| c.path == canonical && c.stamp == now && c.scope == scope)
+            .filter(|c| c.index.relations || !relations)
             .map(|c| (c.snapshot.clone(), c.index.clone(), c.hashed))
     });
     let fresh = |hashed: SystemTime| hashed.elapsed().is_ok_and(|age| age < REHASH);
@@ -1611,7 +1666,7 @@ fn loaded(path: &Path, scope: &str) -> Result<(Arc<Index>, Json), Box<dyn Error>
                 }
                 None => {
                     let label = path.display().to_string();
-                    let index = Arc::new(index_bytes(bytes, &label, scope, deadline)?);
+                    let index = Arc::new(decode_index(bytes, &label, scope, deadline, relations)?);
                     if stamp(&canonical)? != staged {
                         return Err(FigError::new(
                             ErrorKind::SourceUnreadable,

@@ -40,6 +40,8 @@ Other coverage reasons: `members_truncated` (over 200 members), `members_outside
 
 ## Cost
 
+Ordinary stateless search builds a text-only index: `contains`, `instance_of` and `variant_of`, no field relations or definitions, and its coverage lists the other kinds `not_built` (never empty or absent; text coverage is unaffected). The first stateless `usages` call on that cached index rebuilds it once with every relation and replaces the cache entry, which then also serves search with the same results and cursors. Workspace builds and the viewer's `index_tree` always build every relation.
+
 Pages are keyset reads: the workspace reads one `edges_target` range per target from the cursor (named with `INDEXED BY`; without statistics SQLite prefers the primary key and reads every later edge), and children from `records_parent`; a stateless index builds a reverse lookup (target → edge positions, parent → children, id → rid, set → members) on its first usages query and binary-searches the cursor. A page passes over at most `usages::SCAN` (50,000) filtered-out edges, else `query_work_limit`. A component set reads at most 201 targets, each up to `limit` rows. On the 100 MB library, paging 25 pages of one style costs the same per page (last page 0.6 ms stateless, 1.5 ms workspace).
 
 On one private 100 MB component library (11,557 records, scope `0:0`): cold CLI search 210 → 227 ms (+8%) and 193 → 199 MiB; index rebuild 335 → 474 ms (+41%) and database 4.6 → 11.1 MB; warm MCP usages 1.2 ms stateless, 2.4 ms from the workspace; `nodes`/`tree`/`inspect` unchanged. Edge extraction is the cost, mostly style ids and paint fields; plain paints without a bound variable or image are not converted.

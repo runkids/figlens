@@ -1108,3 +1108,37 @@ pub(super) fn stored(index: &Index) -> rusqlite::Connection {
     store::save(&mut conn, 1, index, &|_| Ok(()), &mut |_, _, _| Ok(())).unwrap();
     conn
 }
+
+#[test]
+fn a_text_only_build_ranks_and_pages_like_a_full_one() {
+    let message = message();
+    let tree = Tree::new(&message);
+    let text = build_as(&tree, "0:0", bounds(WORK), false);
+    let full = build(&tree, "0:0", bounds(WORK));
+    let source = json!({"sourceId": "local:test", "snapshotId": "sha256:test"});
+    let mut req = request("label");
+    req.limit = 1;
+    let page = |index: &Index, req: &Request| {
+        reply(index, &req.validate().unwrap(), req, source.clone()).unwrap()
+    };
+    let (a, b) = (page(&text, &req), page(&full, &req));
+    assert_eq!(
+        (&a["results"], &a["coverage"]["complete"]),
+        (&b["results"], &b["coverage"]["complete"])
+    );
+    assert_eq!(
+        (
+            &a["coverage"]["layers"]["relations"]["kinds"]["uses_style"],
+            &b["coverage"]["layers"]["relations"]["kinds"]["uses_style"]
+        ),
+        (&json!("not_built"), &json!("ready"))
+    );
+    // A cursor from the text-only build pages the full one that replaces it, and vice versa.
+    req.cursor = Some(
+        a["nextCursor"]
+            .as_str()
+            .expect("several matches")
+            .to_owned(),
+    );
+    assert_eq!(page(&full, &req)["results"], page(&text, &req)["results"]);
+}

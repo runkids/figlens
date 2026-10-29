@@ -469,6 +469,7 @@ pub(crate) fn load(
         text_bytes: info["textBytes"].as_u64().ok_or_else(bad)? as usize,
         generation: text(&info["generation"])?,
         definitions: BTreeMap::new(),
+        relations: true,
         reverse: Default::default(),
     };
     let mut wanted: Vec<u32> = survivors.into_iter().collect();

@@ -39,6 +39,8 @@ pub(crate) const STATES: [&str; 6] = [
     "recorded",
 ];
 pub(crate) const BASES: [&str; 2] = ["recorded", "resolved"];
+/// The kinds a text-only build (ordinary stateless search) still extracts.
+pub(crate) const TEXT_ONLY: [&str; 3] = ["contains", "instance_of", "variant_of"];
 pub const DEFAULT_LIMIT: usize = 50;
 pub const MAX_LIMIT: usize = 200;
 /// Most component-set members one query lists and follows.
@@ -90,16 +92,15 @@ pub(crate) struct Definition {
 
 /// The edges of one record, `contains` excluded (each record's `parent` is that edge). `None`
 /// when `bounds` ran out first. Prototype links the record inherits from its component
-/// definition are not verified to apply, so they are counted in `unverified`, not kept; a
-/// binding field too large to read is counted in `unread`.
+/// definition are not verified to apply, so they are counted in `gaps.0` (unverified), not
+/// kept; a binding field too large to read is counted in `gaps.1` (unread).
 pub(crate) fn extract(
     tree: &Tree,
     id: &str,
     kind: &str,
     e: Option<&Expanded>,
     bounds: &mut Bounds,
-    unverified: &mut usize,
-    unread: &mut usize,
+    gaps: Option<(&mut usize, &mut usize)>,
 ) -> Option<Vec<Edge>> {
     let mut out: Vec<Edge> = Vec::new();
     let mut push = |bounds: &mut Bounds,
@@ -170,6 +171,11 @@ pub(crate) fn extract(
     {
         return None;
     }
+    // A text-only build (`gaps` is `None`) keeps the structural relations; field-borne ones
+    // need a full build.
+    let Some((unverified, unread)) = gaps else {
+        return Some(out);
+    };
     let fields = effective(tree, id, e, bounds, unread)?;
     for (field, aliases) in crate::rest::bound_variables(&fields) {
         let mut ids = Vec::new();

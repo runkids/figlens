@@ -1565,3 +1565,86 @@ fn a_cancel_completes_when_the_owner_dies_while_its_worker_is_starting() {
         env.json(&["jobs", "cancel", &job])["cancel"] == "accepted"
     });
 }
+
+#[test]
+fn a_text_only_search_cache_upgrades_once_for_usages_and_keeps_search_cursors() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    let mut mcp = Mcp::start(&env, &[]);
+    let search = |mcp: &mut Mcp, cursor: Option<&str>| {
+        let mut args = json!({"file": file, "query": "first", "limit": 1});
+        if let Some(c) = cursor {
+            args["cursor"] = json!(c);
+        }
+        mcp.call("search", args)["structuredContent"].clone()
+    };
+    let cold = search(&mut mcp, None);
+    let kinds = &cold["coverage"]["layers"]["relations"]["kinds"];
+    // Ordinary search builds text and structure only; field relations are not built, not empty.
+    assert_eq!(
+        (
+            &cold["coverage"]["complete"],
+            &kinds["instance_of"],
+            &kinds["binds_variable"]
+        ),
+        (&json!(true), &json!("ready"), &json!("not_built"))
+    );
+    assert_eq!(cold["source"]["freshness"]["reusedIndex"], false);
+    let usages = |mcp: &mut Mcp| {
+        mcp.call(
+            "usages",
+            json!({"file": file, "node": "0:1", "relation": "contains"}),
+        )["structuredContent"]
+            .clone()
+    };
+    // The first usages call rebuilds with every relation, once; the next one reuses it.
+    let first = usages(&mut mcp);
+    assert_eq!(
+        (ids(&first), &first["source"]["freshness"]["reusedIndex"]),
+        (vec!["0:2"], &json!(false))
+    );
+    assert_eq!(usages(&mut mcp)["source"]["freshness"]["reusedIndex"], true);
+    // The full index serves search too, with the same results.
+    let warm = search(&mut mcp, None);
+    assert_eq!(
+        (
+            &warm["results"],
+            &warm["source"]["freshness"]["reusedIndex"]
+        ),
+        (&cold["results"], &json!(true))
+    );
+    assert_eq!(
+        warm["coverage"]["layers"]["relations"]["kinds"]["binds_variable"],
+        "ready"
+    );
+    // A new revision is read again: same content, another snapshot, fresh text-only build.
+    let bytes = std::fs::read(&fig).unwrap();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut out = zip::ZipWriter::new(std::fs::File::create(&fig).unwrap());
+    for i in 0..archive.len() {
+        out.raw_copy_file(archive.by_index(i).unwrap()).unwrap();
+    }
+    out.start_file("revision.txt", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    out.write_all(b"2").unwrap();
+    out.finish().unwrap();
+    let changed = search(&mut mcp, None);
+    assert_ne!(
+        changed["source"]["snapshotId"],
+        cold["source"]["snapshotId"]
+    );
+    assert_eq!(
+        (
+            ids(&changed),
+            &changed["coverage"]["layers"]["relations"]["kinds"]["binds_variable"]
+        ),
+        (ids(&cold), &json!("not_built"))
+    );
+    let after = usages(&mut mcp);
+    assert_eq!(
+        (ids(&after), &after["source"]["snapshotId"]),
+        (vec!["0:2"], &changed["source"]["snapshotId"])
+    );
+    drop(mcp);
+}
