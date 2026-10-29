@@ -593,7 +593,8 @@ fn shape(svg: &[u8]) -> Option<Shape> {
     let main = counts.into_iter().max_by_key(|e| (e.1, e.0)).map(|e| e.0);
     let (mut mask, mut coverage) = ([0u64; 64], [0u64; 64]);
     for (i, px) in pixmap.pixels().iter().enumerate() {
-        if px.alpha() >= ink {
+        // Any opacity counts as coverage, so paths with different opacities all register.
+        if px.alpha() > 0 {
             coverage[i / 64] |= 1 << (i % 64);
         }
         let near = main.is_some_and(|main| {
@@ -844,6 +845,24 @@ mod tests {
         let svg = |paint: &str| {
             format!(
                 r#"<svg xmlns="http://www.w3.org/2000/svg"><path {paint} d="M0 0H20V20H0ZM4 4V16H16V4Z"/></svg>"#
+            )
+        };
+        std::fs::write(dir.join("opaque.svg"), svg("")).unwrap();
+        let index = SvgIndex::load(&dir.join("")).unwrap();
+        assert_eq!(
+            index
+                .compare(svg(r#"fill-opacity="0.1""#).as_bytes(), None)
+                .0,
+            ["opaque.svg"]
+        );
+    }
+
+    #[test]
+    fn svg_index_matches_mixed_opacity_paths_with_the_same_opaque_outlines() {
+        let dir = crate::test_support::TestDir::new();
+        let svg = |paint: &str| {
+            format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0H20V20H0Z"/><path {paint} d="M40 0H60V20H40Z"/></svg>"#
             )
         };
         std::fs::write(dir.join("opaque.svg"), svg("")).unwrap();
