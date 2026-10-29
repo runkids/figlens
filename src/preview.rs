@@ -1186,7 +1186,7 @@ mod tests {
                 (true, &first["source"]["snapshotId"]),
                 "{paged}"
             );
-            assert!(paged["error"]["message"].is_string(), "{paged}");
+            assert_eq!(paged["error"]["kind"], "CursorStale", "{paged}");
         });
     }
 
