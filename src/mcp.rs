@@ -696,6 +696,121 @@ mod tests {
     }
 
     #[test]
+    fn tree_top_frames_lists_screens_in_pages_and_sections_for_frame_lists() {
+        use kiwi_schema::Value;
+        use std::collections::HashMap;
+        let g = |l| {
+            Value::Object(
+                "GUID",
+                HashMap::from([("sessionID", Value::UInt(0)), ("localID", Value::UInt(l))]),
+            )
+        };
+        let node = |l: u32, parent: Option<u32>, kind, extra: Option<&'static str>| {
+            let mut fields = HashMap::from([
+                ("guid", g(l)),
+                ("type", Value::Enum("NodeType", kind)),
+                ("name", Value::String(format!("n{l}"))),
+            ]);
+            if let Some(p) = parent {
+                let position = Value::String(format!("{l:02}"));
+                fields.insert(
+                    "parentIndex",
+                    Value::Object(
+                        "ParentIndex",
+                        HashMap::from([("guid", g(p)), ("position", position)]),
+                    ),
+                );
+            }
+            match extra {
+                Some("newline") => {
+                    fields.insert("name", Value::String("a\n0:9 b".into()));
+                }
+                Some(flag) => {
+                    fields.insert(flag, Value::Bool(true));
+                }
+                None => {}
+            }
+            Value::Object("NodeChange", fields)
+        };
+        let message = Value::Object(
+            "Message",
+            HashMap::from([(
+                "nodeChanges",
+                Value::Array(vec![
+                    node(0, None, "DOCUMENT", None),
+                    node(1, Some(0), "CANVAS", None),
+                    node(2, Some(1), "FRAME", None),
+                    node(3, Some(1), "SECTION", None),
+                    node(4, Some(3), "SYMBOL", None),
+                    node(5, Some(3), "SECTION", None),
+                    node(6, Some(5), "INSTANCE", None),
+                    node(7, Some(1), "FRAME", Some("resizeToFit")),
+                    node(8, Some(7), "FRAME", None),
+                    node(9, Some(1), "TEXT", None),
+                    node(10, Some(2), "FRAME", None),
+                    node(11, Some(0), "CANVAS", Some("internalOnly")),
+                    node(12, Some(11), "FRAME", None),
+                    node(13, Some(3), "FRAME", Some("newline")),
+                    node(14, Some(99), "SECTION", None),
+                    node(15, Some(14), "FRAME", None),
+                ]),
+            )]),
+        );
+        let tree = Tree::new(&message);
+        let run = |args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            command::Command::from_cli("tree", &args, &tree)
+                .unwrap()
+                .execute(&tree, Path::new("unused.fig"))
+                .unwrap()
+        };
+        let text = run(&["--top-frames", "--depth", "0"]).text().unwrap();
+        assert_eq!(
+            text,
+            "0:2 FRAME \"n2\"\n0:4 COMPONENT \"n4\"\n0:6 INSTANCE \"n6\"\n0:13 FRAME \"a\\n0:9 b\"\n"
+        );
+        // An escaped newline in a name does not add an id line.
+        assert_eq!(crate::frame_ids(&text), ["0:2", "0:4", "0:6", "0:13"]);
+        assert_eq!(
+            run(&["--top-frames", "--json"]).json().unwrap(),
+            &serde_json::json!([
+                { "id": "0:2", "type": "FRAME", "name": "n2", "page": "0:1" },
+                { "id": "0:4", "type": "COMPONENT", "name": "n4", "page": "0:1", "section": "0:3" },
+                { "id": "0:6", "type": "INSTANCE", "name": "n6", "page": "0:1", "section": "0:5" },
+                { "id": "0:13", "type": "FRAME", "name": "a\n0:9 b", "page": "0:1", "section": "0:3" },
+            ])
+        );
+        // A section under a parent the file lacks lists its screens without a page.
+        assert_eq!(
+            run(&["0:14", "--top-frames", "--json"]).json().unwrap(),
+            &serde_json::json!([{ "id": "0:15", "type": "FRAME", "name": "n15", "section": "0:14" }])
+        );
+        // A section root keeps its page; a frame root is not a page or section and lists nothing.
+        let section = run(&["0:3", "--top-frames", "--json"])
+            .json()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            (&section[0]["page"], &section[0]["section"]),
+            (&"0:1".into(), &"0:3".into())
+        );
+        assert_eq!(run(&["0:2", "--top-frames"]).text().unwrap(), "");
+        // An internal page lists its screens when it is the root.
+        assert_eq!(
+            run(&["0:11", "--top-frames"]).text().unwrap(),
+            "0:12 FRAME \"n12\"\n"
+        );
+        let file = std::fs::canonicalize("examples/first-success/design.fig").unwrap();
+        let reply = call_tool(
+            &serde_json::json!({"name":"tree","arguments":{"file":file,"topFrames":true,"json":true}}),
+            None,
+        );
+        let frames: serde_json::Value =
+            serde_json::from_str(reply["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(frames[0]["id"], "0:1", "{reply}");
+    }
+
+    #[test]
     fn mcp_ignores_notifications() {
         assert!(mcp_reply(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
     }
