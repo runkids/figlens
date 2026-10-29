@@ -1445,6 +1445,56 @@ fn nodes_frames_match_single_nodes_calls_and_isolate_missing_ids() {
 }
 
 #[test]
+fn nodes_frames_report_a_too_deep_frame_and_continue() {
+    let node = |id: u32, parent: u32| {
+        obj(
+            "NodeChange",
+            vec![
+                ("guid", guid(id)),
+                ("type", K::Enum("NodeType", "FRAME")),
+                ("size", size(10.0, 10.0)),
+                (
+                    "parentIndex",
+                    obj(
+                        "ParentIndex",
+                        vec![("guid", guid(parent)), ("position", K::String("a".into()))],
+                    ),
+                ),
+            ],
+        )
+    };
+    // Frame 0:1 is shallow; frame 0:2 holds one layer more than the limit below it.
+    let last = 2 + figlens::expand::MAX_DEPTH as u32 + 1;
+    let mut changes = vec![
+        obj(
+            "NodeChange",
+            vec![("guid", guid(0)), ("type", K::Enum("NodeType", "CANVAS"))],
+        ),
+        node(1, 0),
+        node(2, 0),
+    ];
+    changes.extend((3..=last).map(|id| node(id, id - 1)));
+    let message = obj("Message", vec![("nodeChanges", K::Array(changes))]);
+    let tree = Tree::new(&message);
+    let mut out = Vec::new();
+    crate::nodes_batch(&tree, &["0:2".into(), "0:1".into()], &mut out).unwrap();
+    let lines: Vec<Value> = String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(
+        (
+            lines[0]["error"]
+                .as_str()
+                .map(|e| e.contains("layer depth")),
+            &lines[1]["document"]["id"]
+        ),
+        (Some(true), &json!("0:1"))
+    );
+}
+
+#[test]
 fn export_frames_match_single_exports_and_isolate_missing_ids() {
     let f = Fixture::new();
     let list = f.dir.join("export-frames.txt");

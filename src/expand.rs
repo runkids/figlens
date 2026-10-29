@@ -115,10 +115,18 @@ pub struct Expanded {
     pub(crate) prototype_source: Option<crate::prototype::Source>,
 }
 
+/// Most layers a scope may hold below its root, stored and expanded together. Measured real
+/// files reach 21 stored levels; a release build aborts near 900 on Windows' 1 MiB main-thread
+/// stack, so a deeper crafted file fails with an error instead of ending the process.
+pub const MAX_DEPTH: usize = 256;
+
 /// Expanded nodes plus their child order (keys: instance or expanded ids).
+#[derive(Default)]
 pub struct Expansion {
     pub nodes: HashMap<String, Expanded>,
     pub children: HashMap<String, Vec<String>>,
+    /// Nesting reached `MAX_DEPTH`, so the expansion is incomplete.
+    pub too_deep: bool,
 }
 
 /// Fields an instance can override or Figma can derive for a nested node.
@@ -675,10 +683,7 @@ fn expand_all(
 ) -> (Expansion, Option<Bounds>, bool) {
     let mut ex = Expander {
         tree,
-        out: Expansion {
-            nodes: HashMap::new(),
-            children: HashMap::new(),
-        },
+        out: Expansion::default(),
         symbols: Vec::new(),
         budget,
         bounds,
@@ -785,6 +790,10 @@ impl Expander<'_, '_> {
         {
             b.stop.get_or_insert(Stop::Depth);
             self.exceeded = true;
+            return false;
+        }
+        if self.depth >= MAX_DEPTH {
+            self.out.too_deep = true;
             return false;
         }
         self.depth += 1;
@@ -1237,10 +1246,7 @@ mod tests {
                 depth: 0,
                 sizes: HashMap::new(),
                 tree: &tree,
-                out: Expansion {
-                    nodes: HashMap::new(),
-                    children: HashMap::new(),
-                },
+                out: Expansion::default(),
                 symbols: Vec::new(),
                 budget: None,
                 exceeded: false,
@@ -1308,10 +1314,7 @@ mod tests {
                 depth: 0,
                 sizes: HashMap::new(),
                 tree: &tree,
-                out: Expansion {
-                    nodes: HashMap::new(),
-                    children: HashMap::new(),
-                },
+                out: Expansion::default(),
                 symbols: Vec::new(),
                 budget: None,
                 exceeded: false,
@@ -1370,6 +1373,33 @@ mod tests {
         };
         let ex = expand_instances(&tree, "inst");
         assert_eq!((ex.nodes.len(), ex.children.get("Iinst;2:2")), (1, None));
+    }
+
+    #[test]
+    fn a_component_chain_past_the_depth_limit_is_marked_too_deep() {
+        // `inst` shows main 1:0; main 1:k holds 2:k, an instance of main 1:k+1.
+        let instance = |k: usize| {
+            obj(vec![
+                ("type", Value::Enum("NodeType", "INSTANCE")),
+                ("symbolData", obj(vec![("symbolID", guid(1, k as u32))])),
+            ])
+        };
+        let mains = vec![obj(vec![]); MAX_DEPTH + 2];
+        let insts: Vec<_> = (0..mains.len()).map(instance).collect();
+        let mut tree = Tree {
+            nodes: HashMap::from([("inst".into(), &insts[0])]),
+            children: HashMap::new(),
+            blobs: Vec::new(),
+        };
+        for (k, main) in mains.iter().enumerate() {
+            tree.nodes.insert(format!("1:{k}"), main);
+            if let Some(next) = insts.get(k + 1) {
+                tree.nodes.insert(format!("2:{k}"), next);
+                tree.children
+                    .insert(format!("1:{k}"), vec![format!("2:{k}")]);
+            }
+        }
+        assert!(expand_instances(&tree, "inst").too_deep);
     }
 
     #[test]
@@ -2126,10 +2156,7 @@ mod tests {
             depth: 0,
             sizes: HashMap::new(),
             tree: &tree,
-            out: Expansion {
-                nodes: HashMap::new(),
-                children: HashMap::new(),
-            },
+            out: Expansion::default(),
             symbols: Vec::new(),
             budget: None,
             exceeded: false,
@@ -2478,10 +2505,7 @@ mod tests {
                 depth: 0,
                 sizes: HashMap::new(),
                 tree: &tree,
-                out: Expansion {
-                    nodes: HashMap::new(),
-                    children: HashMap::new(),
-                },
+                out: Expansion::default(),
                 symbols: Vec::new(),
                 budget: None,
                 exceeded: false,
@@ -2747,10 +2771,7 @@ mod tests {
             depth: 0,
             sizes: HashMap::new(),
             tree: &tree,
-            out: Expansion {
-                nodes: HashMap::new(),
-                children: HashMap::new(),
-            },
+            out: Expansion::default(),
             symbols: Vec::new(),
             budget: None,
             exceeded: false,
