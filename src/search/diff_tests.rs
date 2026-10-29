@@ -689,3 +689,50 @@ fn a_selected_context_past_the_side_budget_is_unknown_not_position_zero() {
         "{reasons:?}"
     );
 }
+
+#[test]
+fn numeric_variants_trim_links_mask_type_and_grids_are_compared() {
+    let link = |url: &str| obj(vec![("url", K::String(url.to_owned()))]);
+    for (key, old, new, facet) in [
+        (
+            "fontVariantNumericFigure",
+            K::Enum("FontVariantNumericFigure", "LINING"),
+            K::Enum("FontVariantNumericFigure", "OLDSTYLE"),
+            "text",
+        ),
+        (
+            "fontVariantNumericSpacing",
+            K::Enum("FontVariantNumericSpacing", "TABULAR"),
+            K::Enum("FontVariantNumericSpacing", "PROPORTIONAL"),
+            "text",
+        ),
+        (
+            "leadingTrim",
+            K::Enum("LeadingTrim", "NONE"),
+            K::Enum("LeadingTrim", "CAP_HEIGHT"),
+            "text",
+        ),
+        (
+            "hyperlink",
+            link("https://a.test"),
+            link("https://b.test"),
+            "text",
+        ),
+        (
+            "maskType",
+            K::Enum("MaskType", "ALPHA"),
+            K::Enum("MaskType", "OUTLINE"),
+            "appearance",
+        ),
+        (
+            "layoutGrids",
+            K::Array(vec![obj(vec![("sectionSize", K::Float(8.0))])]),
+            K::Array(vec![obj(vec![("sectionSize", K::Float(12.0))])]),
+            "layout",
+        ),
+    ] {
+        let one = |v: K<'static>| doc(vec![node(10, Some(1), "TEXT", "Layer", vec![(key, v)])]);
+        let n = &run(one(old), one(new))["frames"][0]["nodes"][0];
+        assert_eq!(n["facets"], json!([facet]), "{key}");
+    }
+}

@@ -41,6 +41,10 @@ const FIELDS: [&[&str]; 4] = [
         "paragraphSpacing",
         "textTruncation",
         "maxLines",
+        "fontVariantNumericFigure",
+        "fontVariantNumericSpacing",
+        "leadingTrim",
+        "hyperlink",
     ],
     &[
         "size",
@@ -62,6 +66,7 @@ const FIELDS: [&[&str]; 4] = [
         "stackPositioning",
         "stackWrap",
         "frameMaskDisabled",
+        "layoutGrids",
     ],
     &[
         "fillPaints",
@@ -78,6 +83,7 @@ const FIELDS: [&[&str]; 4] = [
         "opacity",
         "blendMode",
         "mask",
+        "maskType",
         "visible",
         "cornerRadius",
         "rectangleCornerRadiiIndependent",
