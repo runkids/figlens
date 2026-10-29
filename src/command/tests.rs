@@ -588,7 +588,7 @@ fn cli_and_mcp_success_results_match() {
             "tree",
             vec!["0-1", "--json", "--depth", "0"],
             serde_json::json!({"node": "0-1", "json": true, "depth": 0}),
-            Some("{\"id\":\"0:1\",\"name\":\"Frame\",\"type\":\"FRAME\"}\n"),
+            Some("{\"id\":\"0:1\",\"name\":\"Frame\",\"size\":[16.0,8.0],\"type\":\"FRAME\"}\n"),
         ),
         (
             "nodes",
