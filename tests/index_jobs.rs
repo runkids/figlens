@@ -122,8 +122,22 @@ fn active_job(env: &Env, file: &Path, stage: &str) -> String {
     found
 }
 
-/// Whether a worker of `job` is alive: it holds its `claims/<job>.<attempt>.worker` file
-/// locked until the process exits, on every platform (`ps` does not list arguments on Windows).
+/// Whether a worker process of `job` is alive, from `ps`: independent of the worker-file lock
+/// the product reads, so a lock dropped before the process exits is still caught.
+#[cfg(unix)]
+fn worker_running(_env: &Env, job: &str) -> bool {
+    let out = Command::new("ps")
+        .args(["-eo", "stat=,args="])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).lines().any(|l| {
+        l.contains("__index-worker") && l.contains(job) && !l.trim_start().starts_with('Z')
+    })
+}
+
+/// Whether a worker of `job` is alive: `ps` lists no arguments on Windows, so this reads the
+/// lock a worker holds on its `claims/<job>.<attempt>.worker` file until it exits.
+#[cfg(not(unix))]
 fn worker_running(env: &Env, job: &str) -> bool {
     let prefix = format!("{job}.");
     let mut dirs = vec![env.dir.join("")];
@@ -1099,16 +1113,19 @@ fn every_index_jobs_and_workspace_search_reply_matches_its_declared_output_schem
         conforms(content, &schema(tool), tool).unwrap_or_else(|e| panic!("{arguments}: {e}"));
         content.clone()
     };
-    // Until the job's own reply is terminal: a busy or failed status call is not an end.
+    // Until the job's own reply is terminal. Only an active state or a workspace_busy status
+    // call is waited out; any other reply fails with it as evidence.
     let wait = |mcp: &mut Mcp, job: &str| {
         let start = Instant::now();
         loop {
             let now = mcp.call("jobs", json!({"action": "status", "jobId": job}));
-            if matches!(
-                now["structuredContent"]["state"].as_str(),
-                Some("succeeded" | "failed" | "cancelled")
-            ) {
-                break;
+            let busy =
+                now["isError"] == true && now["_meta"]["figlens"]["code"] == "workspace_busy";
+            match now["structuredContent"]["state"].as_str() {
+                Some("succeeded" | "failed" | "cancelled") if now["isError"] == false => break,
+                Some("queued" | "running") if now["isError"] == false => {}
+                _ if busy => {}
+                _ => panic!("job {job}: unexpected status reply {now}"),
             }
             assert!(
                 start.elapsed() < Duration::from_secs(30),
