@@ -38,8 +38,10 @@ pub(super) fn unaliased(dir: &Path) -> Result<()> {
 }
 
 /// The link count `probe` reads for `name`, probed again (path and all, each probe's handle
-/// closed) within `deadline` while a sidecar may be mid-deletion: it reads as access denied, or
-/// as 0 links once its name is deleted under the probe's open handle. A sidecar still reading 0
+/// closed) within `deadline` while a sidecar may be mid-deletion: on Windows its probe fails as
+/// permission denied (a file pending deletion refuses the read open), or it reads 0 links once
+/// its name is deleted under the probe's open handle. Error 5 alone may also be a real denial,
+/// which the deadline still reports. A sidecar still reading 0
 /// at the deadline answers busy. `index.sqlite`, which SQLite never deletes, is read once.
 pub(super) fn settled(
     name: &str,
@@ -53,7 +55,7 @@ pub(super) fn settled(
             && Instant::now() < deadline
             && match &checked {
                 Ok(count) => *count == 0,
-                Err(_) => sidecar_denied(path),
+                Err(e) => cfg!(windows) && kind_of(&**e) == Some(ErrorKind::PermissionDenied),
             };
         if !again {
             return match checked {
@@ -71,22 +73,8 @@ pub(super) fn settled(
     }
 }
 
-/// Whether sidecar `path` is refused as access denied by the open `links` makes. On Windows a
-/// file pending deletion (SQLite deletes `-shm` on a last close) answers metadata yet refuses
-/// that open until its last handle closes, so it may pass; error 5 alone cannot tell that from
-/// a real denial, hence the caller's deadline. Only a regular file is probed past metadata.
-#[cfg(windows)]
-pub(super) fn sidecar_denied(path: &Path) -> bool {
-    let denied = |e: &std::io::Error| e.raw_os_error() == Some(5);
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) => meta.is_file() && File::open(path).is_err_and(|e| denied(&e)),
-        Err(e) => denied(&e),
-    }
-}
-
-#[cfg(not(windows))]
-pub(super) fn sidecar_denied(_: &Path) -> bool {
-    false
+fn kind_of(error: &(dyn Error + 'static)) -> Option<ErrorKind> {
+    error.downcast_ref::<FigError>().map(|f| f.kind())
 }
 
 /// The hard links of `path`; a file another connection removed since it was listed (SQLite

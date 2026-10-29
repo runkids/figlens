@@ -148,7 +148,9 @@ fn a_sidecar_being_deleted_is_waited_out_not_reported_denied() {
     assert!(std::fs::symlink_metadata(&shm).is_ok());
     let read = File::open(&shm).map(drop);
     assert_eq!(read.map_err(|e| e.raw_os_error()), Err(Some(5)));
-    assert!(sidecar_denied(&shm));
+    // The probe's own failure is what the wait classifies: typed permission denied.
+    let probed = links(&shm).map_err(|e| kind(&*e));
+    assert_eq!(probed, Err(ErrorKind::PermissionDenied));
     let closer = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(200));
         drop(held);
@@ -173,6 +175,27 @@ fn a_sidecar_read_as_no_links_is_probed_again_but_the_database_is_not() {
         (count, calls.get())
     };
     assert_eq!(scripted(vec![0, 1]).0.unwrap(), 1);
+    // A probe that failed as permission denied is retried on Windows by its own error alone;
+    // the next probe's count stands, so a path replaced meanwhile is still refused.
+    for (then, expect) in [(1, 1), (2, 2)] {
+        let mut reads = [None, Some(then)].into_iter();
+        let mut calls = 0;
+        let read = settled(shm, path, soon(), || {
+            calls += 1;
+            reads
+                .next()
+                .unwrap()
+                .ok_or_else(|| fail(ErrorKind::PermissionDenied, "denied"))
+        });
+        if cfg!(windows) {
+            assert_eq!((read.unwrap(), calls), (expect, 2));
+        } else {
+            assert_eq!(
+                (read.map_err(|e| kind(&*e)), calls),
+                (Err(ErrorKind::PermissionDenied), 1)
+            );
+        }
+    }
     // A path replaced by another hard link meanwhile reads its real count, which is refused.
     assert_eq!(scripted(vec![0, 2]).0.unwrap(), 2);
     let (more, calls) = scripted(vec![2]);
