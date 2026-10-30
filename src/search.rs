@@ -128,9 +128,13 @@ impl Prepared {
 
     /// Whether a workspace cursor was issued more than [`CURSOR_LEASE_MS`] before `now_ms`.
     pub(crate) fn cursor_expired(&self, now_ms: i64) -> bool {
-        self.issued
-            .is_some_and(|t| now_ms.saturating_sub(t) > CURSOR_LEASE_MS)
+        self.issued.is_some_and(|t| cursor_lease_ended(t, now_ms))
     }
+}
+
+/// Whether a cursor issued at `issued_ms` is past [`CURSOR_LEASE_MS`] at `now_ms`.
+pub(crate) fn cursor_lease_ended(issued_ms: i64, now_ms: i64) -> bool {
+    now_ms.saturating_sub(issued_ms) > CURSOR_LEASE_MS
 }
 
 impl Request {

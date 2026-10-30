@@ -2214,6 +2214,34 @@ fn a_key_only_library_question_lists_copies_naming_no_namespace_and_is_never_com
 }
 
 #[test]
+fn a_library_cursor_past_its_lease_is_expired_before_it_is_stale() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, _conn, _) = library_workspace(&d, 2);
+    let first = library(&storage, &select, None, &reference("k", None)).unwrap();
+    let cursor = first["nextCursor"].as_str().expect("a second page");
+    // The issue time is the cursor's last field; rewrite it instead of sleeping.
+    let (rest, issued) = cursor.rsplit_once('.').unwrap();
+    let issued: i64 = issued.parse().unwrap();
+    let at = |ms: i64| format!("{rest}.{ms}");
+    let page = |c: &str, hidden: bool| {
+        let request = crate::workspace::library::Request {
+            include_hidden: hidden,
+            cursor: Some(c.to_owned()),
+            ..reference("k", None)
+        };
+        library(&storage, &select, None, &request)
+    };
+    let fresh = at(issued - crate::search::CURSOR_LEASE_MS + 1000);
+    assert!(page(&fresh, false).is_ok());
+    let old = at(issued - crate::search::CURSOR_LEASE_MS - 1000);
+    assert_eq!(kind_of_error(page(&old, false)), ErrorKind::CursorExpired);
+    // The lease is checked before the bindings.
+    assert_eq!(kind_of_error(page(&old, true)), ErrorKind::CursorExpired);
+    assert_eq!(kind_of_error(page(&fresh, true)), ErrorKind::CursorStale);
+}
+
+#[test]
 fn a_cursor_ends_when_the_selected_definition_s_source_is_reindexed_or_collected() {
     use crate::workspace::library::{Request, library};
     let d = TestDir::new();
