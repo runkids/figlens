@@ -131,7 +131,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 誰に�
 
 ## MCP サーバーとエージェント skill
 
-**MCP。** サーバーは stdio 経由でローカル実行され、`workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch`、`export` を公開します。パスは絶対パスで渡します。`--root /path/to/designs`（複数指定可）を追加すると、すべてのファイルパスと出力パスを指定フォルダーに制限できます。figlens の既定ディレクトリ以外にインデックスを保存するには `--storage-root DIR`（複数指定可）が必要です。ラスターエクスポートは `maxSize`（デフォルト 1600 px）に縮小され、インライン画像は小さく保たれます。SVG はメタデータのみを返します。
+**MCP。** サーバーは stdio 経由でローカル実行され、`workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch`、`export`、`models` を公開します。パスは絶対パスで渡します。`--root /path/to/designs`（複数指定可）を追加すると、すべてのファイルパスと出力パスを指定フォルダーに制限できます。figlens の既定ディレクトリ以外にインデックスを保存するには `--storage-root DIR`（複数指定可）が必要です。ラスターエクスポートは `maxSize`（デフォルト 1600 px）に縮小され、インライン画像は小さく保たれます。SVG はメタデータのみを返します。
 
 エージェントは `workflow` で `build`、`audit`、`images`、`plan`、`planning-details`、または明示的に依頼された場合の `yolo` ガイドを取得できます。portable skill と同じソースを使うため、MCP 利用時の skill の別途インストールは任意です。実作業にはエージェント自身のプロジェクト・ブラウザツールとホストの権限を使います。ガイドを読むだけでは処理は実行されません。利用方法はクライアントの対応とモデルの動作に依存します。
 
@@ -202,6 +202,17 @@ MCP：`index` の prepare は job を返します。`succeeded` になるまで 
 
 Pi、OpenCode、OMP は、それぞれのオプトイン用エントリから同じインデックスを使い、workspace は再起動やホストをまたいで再利用されます。未実装：ファイルイベント（watch はファイルをポーリングし、holder の実行中だけ動きます）、ベクトル、プッシュイベント。
 
+<a id="semantic-search"></a>
+
+## 任意のセマンティック検索
+
+実験的機能です。`figlens search <file> <query> --mode semantic|hybrid` はローカルモデルでレイヤーを意味で順位付けします。既定の `--mode text` は変わらず、モデルは不要です。
+
+- **初回設定。** BAAI/bge-m3 のリビジョン `5617a9f61b028005a4858fdac845db406aefb181`（MIT。`config.json`、`pytorch_model.bin`、`tokenizer.json`）は自分でダウンロードしてください。figlens はダウンロードしません。`figlens models configure bge-m3 --model DIR [--runtime FILE]` は SHA-256 でファイルを検証し、`figlens-embed` ランタイムをオフラインで一度起動（`--runtime` がなければ figlens の実行ファイルの隣を探します）して、設定ディレクトリの `models.json` にプロファイルを記録します。`models list|status` で確認でき、`models remove bge-m3` はプロファイルを削除してファイルは残します。
+- **モード。** `semantic` は各レイヤーを名前またはテキストの最良のチャンクで順位付けします。`hybrid` はテキストとセマンティックの順位を統合します（Reciprocal Rank Fusion）。プロファイルがないと `semantic` は `mode_unavailable` で失敗し、`hybrid` はテキスト結果を返して理由を示します。`coverage.layers.semantic` は `ready`、`partial`、`unavailable` を報告し、部分的なページに `nextCursor` はありません。モデルは CPU で動作し（メモリ約 2.5 GiB）、Ctrl-C で停止できます。
+- **制限。** 埋め込み対象はレイヤー名と有効なテキストのみです。`--workspace`/`--id` の検索で `semantic` または `hybrid` を使うと `mode_unavailable` を返します。この機能の固定テストセットでは、同義語・用途クエリの品質基準を満たしませんでした（top-1 誤り率 0.25、基準 0.20）。結果は参考として扱ってください。
+- **MCP。** `models` ツール（`list`、`status`、`configure`、`remove`）と `search` の `mode`。`configure` は figlens の隣の `figlens-embed` だけを実行し、モデルのディレクトリとファイルはサーバーの root 内になければなりません。呼び出しをキャンセルすると、実行中の検索やセットアップが止まります。
+
 <a id="commands"></a>
 
 ## CLI リファレンス
@@ -211,7 +222,8 @@ Pi、OpenCode、OMP は、それぞれのオプトイン用エントリから同
 | `tree <file> [node] [--depth N] [--json]` | ノード ID、REST タイプ（`nodes` と同じ）、名前。インデント付きテキスト、または各ノードのサイズ、非表示状態、オートレイアウトのモードを含むネストした JSON。ページやセクション直下のノードには `firstText`（最初の表示テキスト）も付く |
 | `tree <file> [node] --top-frames [--json]` | 画面だけを 1 行に 1 つ、`--frames -` にそのまま渡せる形で出力。ページまたはそのセクション直下のフレーム、コンポーネント、コンポーネントセット、インスタンス（グループと内部ページは除外）。`--json` はページとセクションの ID と、キャンバスのラベルと画面を見分けるための各画面の最初の表示テキスト（`firstText`）を追加 |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | レイヤー名とテキストの大文字小文字を区別しない検索。パス、サイズ、プレビュー。デフォルト 20 件（1-200） |
-| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | インスタンスのオーバーライド、テキスト/ブーリアンプロパティ、スワップを適用したレイヤー名と全文のランク付き検索。正確なノード参照（`inspect` で使える `I…;…` サブレイヤー ID を含む）、一致理由、UTF-16 範囲、カバレッジ、カーソルによるページ送り。デフォルト 20 件（1-200）。非表示レイヤーと内部ページはそれぞれのフラグが必要。`<file>` の代わりに `--file`/`--workspace`/`--id` を使うと、workspace の準備済みインデックスを読みます（`index` を参照） |
+| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text\|semantic\|hybrid]` | インスタンスのオーバーライド、テキスト/ブーリアンプロパティ、スワップを適用したレイヤー名と全文のランク付き検索。正確なノード参照（`inspect` で使える `I…;…` サブレイヤー ID を含む）、一致理由、UTF-16 範囲、カバレッジ、カーソルによるページ送り。デフォルト 20 件（1-200）。非表示レイヤーと内部ページはそれぞれのフラグが必要。`<file>` の代わりに `--file`/`--workspace`/`--id` を使うと、workspace の準備済みインデックスを読みます（`index` を参照） `--mode semantic\|hybrid` には設定済みのモデルが必要です。[任意のセマンティック検索](#semantic-search)を参照。 |
+| `models list\|status\|configure <profile> --model DIR [--runtime FILE]\|remove <profile>` | セマンティック検索用のローカルテキストモデル（`bge-m3`、実験的）。`configure` は自分でダウンロードしたファイルを検証し、ダウンロードはしません。`remove` はファイルを残します。[任意のセマンティック検索](#semantic-search)を参照。 |
 | `usages <file> <node\|resource> [--scope ID] [--relation R[,R]] [--out] [--snapshot S] [--include-hidden] [--limit N] [--cursor C]` | 保存済みの一つの範囲で、レイヤーまたはリソース（`VariableID:…`、`StyleKey:…`、`image:…`）の正確な関係を返します。ネストしたインスタンスとスワップも含みます。既定ではコンポーネント、セット、変数、スタイル、画像が使われている場所を、`--out` ではレイヤーが指す先を返します。各結果は正確な参照、関係、状態（`resolved`、`missing`、`unresolved` など）、根拠、証拠を持ち、名前は同一性として扱いません。総数は返さず、coverage が完全か部分的かを示します。既定 50 件（1-200）。`<file>` の代わりに `--file`/`--workspace`/`--id` を使うと、workspace で準備済みの `--scope` のインデックスを読みます。`--out` では、キャッシュされたライブラリコピーの使用箇所がその `library` {kind, namespace, key} も示します。 |
 | `usages --file\|--workspace\|--id … --library <kind> --namespace <ns> --key <key> [--definition-source ID --definition-snapshot SNAP --definition-node NODE] [--source ID] [--scope ID] [--include-hidden] [--limit N] [--cursor C]` | ライブラリのコンポーネント、スタイル、変数（`kind`）を使うレイヤーを、各ファイルのキャッシュ済みコピーの記録に基づき、すべてのソースの準備済み `--scope` から返します（`--source` で一つに絞り込み）。定義は `unresolved` のままで（3 つの `--definition-*` で正確な参照を指定すると `selected`、`keyEvidence: unverified`）、coverage は各ソースの状態と部分的な理由を示します。指定値は、それを使うレイヤーに対する `usages --out` の `library` フィールドから取ります |
 | `diff <old.fig> <new.fig> [--node ID] [--limit N] [--cursor C] [--json]` | 保存された二つのリビジョン間の変更：変更のあるトップレベル frame ごとに一行、facet（テキスト、レイアウト、外観、プロパティ、構造、バインディング）ごとの件数。`--json` で新旧のフィールド値と edge の変更も返します。レイヤーは完全一致する id と種類でのみ照合し、同名・同位置の frame はラベル付きの possible match に留まり、途中で止まった側や、読めなかったフィールドだけが違うレイヤーは、削除や変更ではなく unknown と報告します。1 ページ 100 件（1-500） |

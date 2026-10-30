@@ -158,6 +158,14 @@
         }
       ]
     },
+    "semantic": {
+      "description": "Changing semantic or hybrid search, the models command and tool, the model profile or the figlens-embed runtime lookup.",
+      "sources": [
+        {
+          "path": "wiki/semantic.md"
+        }
+      ]
+    },
     "diff": {
       "description": "Changing the diff engine (facets, matching, coverage, pair budgets, paging or its cursor).",
       "sources": [

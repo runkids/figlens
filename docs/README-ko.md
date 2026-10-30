@@ -131,7 +131,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 누구�
 
 ## MCP 서버와 에이전트 skill
 
-**MCP.** 서버는 로컬에서 stdio로 실행되며 `workflow`, `tree`, `find`, `search`, `usages`, `diff`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs`, `changes`, `watch`, `export`를 제공합니다. 절대 경로를 전달하세요. `--root /path/to/designs`(반복 가능)를 추가하면 모든 파일과 출력 경로를 선택한 폴더로 제한합니다. figlens 기본 디렉터리 밖에 인덱스를 저장하려면 `--storage-root DIR`(반복 가능)이 필요합니다. 래스터 내보내기는 `maxSize`(기본 1600px)에 맞게 축소되어 인라인 이미지가 작게 유지되며, SVG는 메타데이터만 반환합니다.
+**MCP.** 서버는 로컬에서 stdio로 실행되며 `workflow`, `tree`, `find`, `search`, `usages`, `diff`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs`, `changes`, `watch`, `export`, `models`를 제공합니다. 절대 경로를 전달하세요. `--root /path/to/designs`(반복 가능)를 추가하면 모든 파일과 출력 경로를 선택한 폴더로 제한합니다. figlens 기본 디렉터리 밖에 인덱스를 저장하려면 `--storage-root DIR`(반복 가능)이 필요합니다. 래스터 내보내기는 `maxSize`(기본 1600px)에 맞게 축소되어 인라인 이미지가 작게 유지되며, SVG는 메타데이터만 반환합니다.
 
 agent는 `workflow`로 `build`, `audit`, `images`, `plan`, `planning-details` 또는 명시적으로 요청된 경우 `yolo` 가이드를 읽을 수 있습니다. portable skill과 같은 소스를 사용하므로 MCP 사용 시 별도 skill 설치는 선택 사항입니다. 실제 작업은 agent의 프로젝트·브라우저 도구와 호스트 권한으로 수행합니다. 가이드를 읽는 것만으로 작업이 실행되지는 않으며, 활용 방식은 클라이언트 지원과 모델 동작에 따라 달라집니다.
 
@@ -202,6 +202,17 @@ MCP: `index` prepare는 job을 반환합니다. `succeeded`가 될 때까지 `jo
 
 Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며, workspace는 재시작과 호스트를 넘어 재사용됩니다. 미구현: 파일 이벤트(watch는 파일을 폴링하며, holder가 실행 중일 때만 동작), 벡터, 푸시 이벤트.
 
+<a id="semantic-search"></a>
+
+## 선택형 시맨틱 검색
+
+실험적 기능입니다. `figlens search <file> <query> --mode semantic|hybrid`는 로컬 모델로 레이어를 의미 기준으로 순위 매깁니다. 기본값 `--mode text`는 그대로이며 모델이 필요 없습니다.
+
+- **최초 1회 설정.** BAAI/bge-m3 리비전 `5617a9f61b028005a4858fdac845db406aefb181`(MIT, `config.json`, `pytorch_model.bin`, `tokenizer.json`)를 직접 내려받으세요. figlens는 내려받지 않습니다. `figlens models configure bge-m3 --model DIR [--runtime FILE]`는 파일을 SHA-256으로 검증하고, `figlens-embed` 런타임을 오프라인으로 한 번 실행(`--runtime`이 없으면 figlens 실행 파일 옆에서 찾음)한 뒤 설정 디렉터리의 `models.json`에 프로파일을 기록합니다. `models list|status`로 확인하고, `models remove bge-m3`는 프로파일을 지우되 파일은 남깁니다.
+- **모드.** `semantic`은 각 레이어를 가장 잘 맞는 이름 또는 텍스트 청크로 순위 매깁니다. `hybrid`는 텍스트와 시맨틱 순위를 합칩니다(Reciprocal Rank Fusion). 프로파일이 없으면 `semantic`은 `mode_unavailable`로 실패하고, `hybrid`는 텍스트 결과와 이유를 반환합니다. `coverage.layers.semantic`은 `ready`, `partial`, `unavailable`을 보고하며, 부분 페이지에는 `nextCursor`가 없습니다. 모델은 CPU에서 실행되며(메모리 약 2.5 GiB) Ctrl-C로 멈춥니다.
+- **제한.** 레이어 이름과 유효 텍스트만 임베딩합니다. `--workspace`/`--id` 검색에서 `semantic` 또는 `hybrid`를 쓰면 `mode_unavailable`을 반환합니다. 이 기능의 고정 테스트 세트에서 모델은 동의어·목적 질의의 품질 기준을 넘지 못했습니다(top-1 오답률 0.25, 기준 0.20). 결과는 참고용으로 보세요.
+- **MCP.** `models` 도구(`list`, `status`, `configure`, `remove`)와 `search`의 `mode`가 있습니다. `configure`는 figlens 옆의 `figlens-embed`만 실행하며, 모델 디렉터리와 파일은 서버 root 안에 있어야 합니다. 호출을 취소하면 실행 중인 검색이나 설정이 멈춥니다.
+
 <a id="commands"></a>
 
 ## CLI 레퍼런스
@@ -211,7 +222,8 @@ Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며
 | `tree <file> [node] [--depth N] [--json]` | 노드 ID, REST 유형(`nodes`와 동일), 이름. 들여쓰기 텍스트, 또는 각 노드의 크기, 숨김 여부, 오토 레이아웃 모드을 담은 중첩 JSON. 페이지나 섹션 바로 아래 노드에는 `firstText`(첫 번째 보이는 텍스트)도 포함 |
 | `tree <file> [node] --top-frames [--json]` | 화면만 한 줄에 하나씩, `--frames -`에 바로 넘길 수 있게 출력. 페이지나 그 섹션 바로 아래의 프레임, 컴포넌트, 컴포넌트 세트, 인스턴스(그룹과 내부 페이지 제외). `--json`은 페이지와 섹션 ID, 그리고 캔버스 라벨과 화면을 구분할 수 있는 각 화면의 첫 번째 보이는 텍스트(`firstText`)를 추가 |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 대소문자 구분 없이 레이어 이름과 텍스트 검색. 경로, 크기, 미리보기. 기본 20개(1-200) |
-| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | 인스턴스 오버라이드, 텍스트/불리언 속성, 스왑을 적용한 레이어 이름과 전체 텍스트의 순위 검색. 정확한 노드 참조(`inspect`에 쓰는 `I…;…` 하위 레이어 ID 포함), 일치 이유, UTF-16 범위, 커버리지, 커서 페이지. 기본 20개(1-200), 숨긴 레이어와 내부 페이지는 해당 플래그 필요. `<file>` 대신 `--file`/`--workspace`/`--id`를 쓰면 workspace의 준비된 인덱스를 읽습니다(`index` 참고) |
+| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text\|semantic\|hybrid]` | 인스턴스 오버라이드, 텍스트/불리언 속성, 스왑을 적용한 레이어 이름과 전체 텍스트의 순위 검색. 정확한 노드 참조(`inspect`에 쓰는 `I…;…` 하위 레이어 ID 포함), 일치 이유, UTF-16 범위, 커버리지, 커서 페이지. 기본 20개(1-200), 숨긴 레이어와 내부 페이지는 해당 플래그 필요. `<file>` 대신 `--file`/`--workspace`/`--id`를 쓰면 workspace의 준비된 인덱스를 읽습니다(`index` 참고) `--mode semantic\|hybrid`에는 설정된 모델이 필요합니다. [선택형 시맨틱 검색](#semantic-search)을 참고하세요. |
+| `models list\|status\|configure <profile> --model DIR [--runtime FILE]\|remove <profile>` | 시맨틱 검색용 로컬 텍스트 모델(`bge-m3`, 실험적). `configure`는 직접 내려받은 파일을 검증하며 내려받지 않습니다. `remove`는 파일을 남깁니다. [선택형 시맨틱 검색](#semantic-search)을 참고하세요. |
 | `usages <file> <node\|resource> [--scope ID] [--relation R[,R]] [--out] [--snapshot S] [--include-hidden] [--limit N] [--cursor C]` | 저장된 한 범위에서 레이어 또는 리소스(`VariableID:…`, `StyleKey:…`, `image:…`)의 정확한 관계를 반환합니다. 중첩 인스턴스와 스왑도 포함합니다. 기본은 컴포넌트, 세트, 변수, 스타일, 이미지가 쓰이는 위치이고 `--out`은 레이어가 가리키는 대상입니다. 각 결과는 정확한 참조, 관계, 상태(`resolved`, `missing`, `unresolved` 등), 근거, 증거를 유지하며 이름은 동일성으로 보지 않습니다. 총합은 없고 coverage가 완전 또는 부분을 알려 줍니다. 기본 50개(1-200). `<file>` 대신 `--file`/`--workspace`/`--id`를 주면 workspace에 준비된 `--scope` 인덱스를 읽습니다. `--out`에서는 캐시된 라이브러리 사본의 사용이 그 `library` {kind, namespace, key}도 알려 줍니다. |
 | `usages --file\|--workspace\|--id … --library <kind> --namespace <ns> --key <key> [--definition-source ID --definition-snapshot SNAP --definition-node NODE] [--source ID] [--scope ID] [--include-hidden] [--limit N] [--cursor C]` | 라이브러리 컴포넌트, 스타일 또는 변수(`kind`)를 쓰는 레이어를, 각 파일의 캐시된 사본이 기록한 대로 모든 소스의 준비된 `--scope`에서 반환합니다(`--source`로 하나로 좁힘). 정의는 `unresolved`로 남고(세 `--definition-*` 플래그로 정확한 참조를 지정하면 `selected`, `keyEvidence: unverified`) coverage는 소스별 상태와 부분인 이유를 알려 줍니다. 지정 값은 그것을 쓰는 레이어에 대한 `usages --out`의 `library` 필드에서 가져옵니다 |
 | `diff <old.fig> <new.fig> [--node ID] [--limit N] [--cursor C] [--json]` | 저장된 두 리비전 사이의 변경: 변경된 최상위 frame마다 한 줄, facet(텍스트, 레이아웃, 외형, 속성, 구조, 바인딩)별 개수. `--json`은 이전/새 필드 값과 edge 변경을 더합니다. 레이어는 정확한 id와 타입으로만 대응하며, 같은 이름·위치의 frame은 라벨이 붙은 possible match일 뿐이고, 중간에 멈춘 쪽이나 읽지 못한 필드만 다른 레이어는 삭제나 변경이 아니라 unknown으로 보고합니다. 페이지당 100개(1-500) |

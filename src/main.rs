@@ -39,17 +39,30 @@ usage:
                                              search stored layer names and text, case-insensitive;
                                              default 20 results (1-200), with paths and truncation flag
   figlens search <file.fig> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C]
-          [--include-hidden] [--include-internal] [--mode text]
+          [--include-hidden] [--include-internal] [--mode text|semantic|hybrid]
                                              ranked search of names and full text in one stored scope
                                              (default: the document), with instance overrides, text and
                                              boolean properties and swaps applied; exact refs, match
                                              reasons, UTF-16 spans, coverage and cursor pages (20, 1-200);
                                              hidden layers and internal pages need their flag
+                                             --mode semantic ranks layers by meaning and hybrid fuses
+                                             text and semantic ranks (RRF), both with a model set up by
+                                             `figlens models configure`; without one semantic fails with
+                                             mode_unavailable and hybrid answers as text; experimental,
+                                             stateless search only (not --workspace/--id)
   figlens search --workspace DIR|--file <file.fig>|--id ws_... <query> [--source ID]... [--storage DIR] [same options]
                                            (put -- before a query that starts with -)
                                              the same search over a workspace's prepared indexes of
                                              --node (default 0:0) across its sources, without parsing;
                                              sources not ready are listed with the step that prepares them
+  figlens models list|status                 the local model profile semantic search uses (bge-m3) and
+                                             whether it is configured
+  figlens models configure bge-m3 --model DIR [--runtime FILE]
+                                             check the BAAI/bge-m3 files you downloaded (pinned revision,
+                                             SHA-256), start the figlens-embed runtime once offline
+                                             (default: next to figlens) and record the profile; never
+                                             downloads
+  figlens models remove bge-m3               forget the profile, keep its files
   figlens usages <file.fig> <node>|<resource> [--scope ID] [--relation R[,R]] [--out]
           [--snapshot S] [--include-hidden] [--limit N] [--cursor C]
                                              exact relations of a node or resource (VariableID:...,

@@ -41,7 +41,7 @@
 | [OMP](#setup-omp) | OMP 18.13.2 | 套件內附的 skill |
 | [CLI](#setup-cli) | 只會執行 shell 指令的 agent、腳本與 CI，或你自己 | `figlens workflow <topic>`，或選用的 [skill](#setup-skill) |
 
-**一般與進階。** 一般使用不需要任何設定：`figlens search design.fig "query"` 只讀取 `.fig`，不會建立任何東西。選用的本機索引只在你要求時建立（`figlens index prepare design.fig --scope 0:0`），之後跨重啟和宿主重複使用。請見[一般搜尋與選用的本機索引](docs/README-zh-TW.md#local-index)。
+**一般與進階。** 一般使用不需要任何設定：`figlens search design.fig "query"` 只讀取 `.fig`，不會建立任何東西。選用的本機索引只在你要求時建立（`figlens index prepare design.fig --scope 0:0`），之後跨重啟和宿主重複使用。請見[一般搜尋與選用的本機索引](docs/README-zh-TW.md#local-index)。 選用且屬實驗性功能：`--mode semantic` 或 `hybrid` 使用你自行設定的本機模型依語意排序，請見[選用的語意搜尋](docs/README-zh-TW.md#semantic-search)。
 
 <a id="setup-mcp"></a>
 
