@@ -196,6 +196,8 @@ MCP: `index` prepare는 job을 반환합니다. `succeeded`가 될 때까지 `jo
 
 `.fig`를 옮겼나요? `index relocate`는 `workspaceId`, `sourceId`, 저장 위치를 유지합니다. 이후 영향받은 범위를 `refresh`하세요. 자동 탐색이나 해시 기반 자동 병합은 없으며 reset은 필요 없습니다.
 
+한 폴더에 디자인이 여러 개인가요? `index add <dir> --workspace DIR`는 그 디렉터리 아래의 `.fig` 파일을 한 번에 최대 10개 등록하고, 디렉터리 밖으로 나가는 링크는 건너뜁니다. 응답에는 `added`, `existing`, `skipped`, `truncated`가 있으며, 반복해도 아무것도 추가되지 않고 각 파일에는 여전히 자체 `prepare --scope`가 필요합니다. 폴더 안에서 옮긴 파일은 `relocate`를 쓰지 않으면 새 소스가 됩니다.
+
 데이터: SQLite 데이터베이스에는 등록된 로컬 경로, 선택한 범위의 레이어 이름과 유효 텍스트, 검색 postings, 정확한 관계(포함, 인스턴스, 변형, 변수/스타일/이미지 바인딩, 프로토타입 대상)와 그 대상 정의, 해시, 세대, job이 들어 있습니다. 원본 `.fig`는 제자리에서 변경되지 않으며, 원시 바이트는 데이터베이스에 저장되지 않습니다.
 
 Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며, workspace는 재시작과 호스트를 넘어 재사용됩니다. 미구현: 파일 이벤트(watch는 파일을 폴링하며, holder가 실행 중일 때만 동작), 벡터, 푸시 이벤트.

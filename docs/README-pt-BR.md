@@ -196,6 +196,8 @@ Ciclo de vida: `refresh` recria só os escopos cujos bytes do `.fig` mudaram; `r
 
 Moveu o `.fig`? `index relocate` mantém `workspaceId`, `sourceId` e armazenamento; depois faça `refresh` dos escopos afetados. Não há descoberta automática nem fusão por hash, e não é preciso reset.
 
+Vários designs em uma pasta? `index add <dir> --workspace DIR` registra de uma vez até 10 arquivos `.fig` desse diretório e ignora links que saem dele; a resposta traz `added`, `existing`, `skipped` e `truncated`, repetir não adiciona nada, e cada arquivo ainda precisa do próprio `prepare --scope`. Um arquivo movido dentro da pasta é uma nova fonte, a menos que você use `relocate`.
+
 Dados: o banco SQLite guarda caminhos locais registrados, nomes de camadas e texto efetivo dos escopos escolhidos, postings de busca, relações exatas (contenção, instâncias, variantes, vínculos de variáveis/estilos/imagens, destinos de protótipo) e as definições a que apontam, hashes, gerações e jobs. O `.fig` original permanece inalterado onde está; seus bytes brutos não são guardados no banco.
 
 Pi, OpenCode e OMP usam o mesmo índice por meio de sua própria entrada opt-in, e o workspace é reutilizado entre reinícios e hosts. Não implementado: eventos de arquivo (um watch consulta o arquivo, e só enquanto um holder roda), vetores e eventos push.

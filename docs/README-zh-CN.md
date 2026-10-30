@@ -196,6 +196,8 @@ MCP：`index` 的 prepare 返回一个 job；轮询 `jobs` 直到 `succeeded`，
 
 移动了 `.fig`？`index relocate` 保留 `workspaceId`、`sourceId` 和存储位置；然后对受影响的范围执行 `refresh`。没有自动发现，也没有基于哈希的自动合并，不需要 reset。
 
+一个文件夹里有多个设计？`index add <dir> --workspace DIR` 一次登记该目录下最多 10 个 `.fig` 文件，并跳过指向目录之外的链接；回复列出 `added`、`existing`、`skipped` 和 `truncated`，重复执行不会新增任何内容，每个文件仍需各自执行 `prepare --scope`。在文件夹内移动的文件会成为新来源，除非使用 `relocate`。
+
 数据：SQLite 数据库保存已注册的本地路径、所选范围的图层名称与有效文本、搜索 postings、精确关系（包含、实例、变体、变量/样式/图片绑定、原型目标）及其指向的定义、哈希、generation 和 job。原始 `.fig` 留在原处且保持不变；其原始字节不会存入数据库。
 
 Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，workspace 可跨重启和宿主复用。尚未实现：文件事件（watch 以轮询读取文件，且只在有 holder 运行时进行）、向量与推送事件。

@@ -196,6 +196,8 @@ MCP：`index` 的 prepare 會回傳一個 job；輪詢 `jobs` 直到 `succeeded`
 
 移動了 `.fig`？`index relocate` 保留 `workspaceId`、`sourceId` 和儲存位置；接著對受影響的範圍執行 `refresh`。沒有自動探索，也沒有以雜湊為基礎的自動合併，不需要 reset。
 
+一個資料夾裡有多個設計？`index add <dir> --workspace DIR` 一次登記該目錄下最多 10 個 `.fig` 檔案，並略過指向目錄之外的連結；回覆列出 `added`、`existing`、`skipped` 和 `truncated`，重複執行不會新增任何內容，每個檔案仍需各自執行 `prepare --scope`。在資料夾內移動的檔案會成為新來源，除非使用 `relocate`。
+
 資料：SQLite 資料庫保存已註冊的本機路徑、所選範圍的圖層名稱與有效文字、搜尋 postings、精確關係（包含、實例、變體、變數/樣式/圖片綁定、原型目標）及其指向的定義、雜湊、generation 和 job。原始 `.fig` 留在原處且保持不變；其原始位元組不會存入資料庫。
 
 Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，workspace 可跨重啟和宿主重複使用。尚未實作：檔案事件（watch 以輪詢讀取檔案，且只在有 holder 執行時進行）、向量與推送事件。

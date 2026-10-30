@@ -194,6 +194,8 @@ Lifecycle: `refresh` rebuilds only scopes whose `.fig` bytes changed; `rebuild` 
 
 Moved the `.fig`? `index relocate` keeps `workspaceId`, `sourceId` and storage; then `refresh` the affected scopes. There is no auto-discovery and no hash-based merge, and no reset is needed.
 
+Several designs in one folder? `index add <dir> --workspace DIR` registers up to 10 `.fig` files under that directory in one step, skipping links that lead out of it; the reply lists `added`, `existing`, `skipped` and `truncated`, a repeat adds nothing, and each file still needs its own `prepare --scope`. A file moved inside the folder is a new source unless you `relocate` it.
+
 Data: the SQLite database holds registered local paths, the selected scopes' layer names and effective text, search postings, exact relations (containment, instances, variants, variable/style/image bindings, prototype targets) and the definitions they point at, hashes, generations and jobs. The original `.fig` stays unchanged where it is; its raw bytes are not stored in the database.
 
 Pi, OpenCode and OMP use the same index through their own opt-in entry, and the workspace is reused across restarts and hosts. Not implemented: file events (a watch polls the file, and only while a holder runs), vectors and push events.

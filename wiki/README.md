@@ -17,7 +17,7 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 | `changes` | Changing change tracking, its revisions, `changes` reads, `watch ack` checkpoints or host stale-context notes | `changes.md`, `stale-context.md` |
 | `subscriptions` | Changing watch subscriptions, their filters, consumer checkpoint bounds or forget | `subscriptions.md` |
 | `watch` | Changing watch leases, the shared watch runner, its detector or the changes monitor | `watch.md` |
-| `workspace` | Changing local workspace roots, identity, ownership, the SQLite registry, locks or index actions | `workspace.md` |
+| `workspace` | Changing local workspace roots, identity, ownership, the SQLite registry, locks or index actions | `workspace.md`, `directory-add.md` |
 | `index` | Changing durable index generations, index jobs (refresh, rebuild, clear_cache, cancel), publication fences or workspace search | `index-jobs.md` |
 | `bundle` | Changing the bundle zip, manifest, context.md, batch bundles, font inventory or `verify` | `bundle.md` |
 | `render` | Changing SVG or raster output: text and glyphs, image fills, effects, export areas, image adjustments | `render.md` |

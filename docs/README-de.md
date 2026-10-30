@@ -196,6 +196,8 @@ Lebenszyklus: `refresh` baut nur Bereiche neu, deren `.fig`-Bytes sich geändert
 
 `.fig` verschoben? `index relocate` behält `workspaceId`, `sourceId` und Speicherort; danach die betroffenen Bereiche mit `refresh` aktualisieren. Es gibt keine automatische Erkennung und kein Hash-basiertes Zusammenführen; ein reset ist nicht nötig.
 
+Mehrere Designs in einem Ordner? `index add <dir> --workspace DIR` registriert bis zu 10 `.fig`-Dateien unter diesem Verzeichnis in einem Schritt und überspringt Links, die aus ihm herausführen; die Antwort nennt `added`, `existing`, `skipped` und `truncated`, eine Wiederholung fügt nichts hinzu, und jede Datei braucht weiterhin ihr eigenes `prepare --scope`. Eine innerhalb des Ordners verschobene Datei ist eine neue Quelle, es sei denn, sie wird mit `relocate` umgezogen.
+
 Daten: Die SQLite-Datenbank enthält registrierte lokale Pfade, Layer-Namen und effektiven Text der gewählten Bereiche, Such-Postings, exakte Beziehungen (Verschachtelung, Instanzen, Varianten, Variablen-/Style-/Bild-Bindungen, Prototyp-Ziele) und die Definitionen, auf die sie zeigen, Hashes, Generationen und Jobs. Die ursprüngliche `.fig` bleibt unverändert, wo sie ist; ihre Rohbytes werden nicht in der Datenbank gespeichert.
 
 Pi, OpenCode und OMP nutzen denselben Index über ihren eigenen Opt-in-Einstieg; der Workspace wird über Neustarts und Hosts hinweg wiederverwendet. Nicht implementiert: Datei-Events (ein Watch fragt die Datei ab, und nur solange ein Holder läuft), Vektoren und Push-Events.
