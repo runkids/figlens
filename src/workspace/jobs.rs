@@ -2565,6 +2565,7 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
             // The comparison publication needs, made while this build still holds the new
             // generation, so its owner never reads it back. A failure here only leaves the
             // comparison to the owner, which reports one it meets itself.
+            hold("plan");
             plan(&mut conn, job_id, gen_id, Some((index, tracked)))
                 .ok()
                 .flatten()

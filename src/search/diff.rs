@@ -2480,12 +2480,16 @@ pub(crate) fn revision_live(
     let bounds = revision_bounds();
     let (mut index, tracked, source) = new;
     // As `store::load` reads a generation back, so both sides compare as two stored ones: every
-    // relation kind (an absent scope's empty build too), and no definitions, terms or prints.
+    // relation kind (an absent scope's empty build too), and no definitions, terms, prints or
+    // library references beside the edges.
     index.relations = true;
     index.library_unread = false;
     index.definitions = BTreeMap::new();
     index.terms = BTreeMap::new();
     index.fingerprints = Vec::new();
+    for r in &mut index.records {
+        r.library = Vec::new();
+    }
     let new = Side {
         signature: format!("{}:{}", index.generation, index.stop.unwrap_or("")),
         source,

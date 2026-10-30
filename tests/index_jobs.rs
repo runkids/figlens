@@ -3000,6 +3000,32 @@ fn a_tracking_change_after_the_worker_compared_is_compared_again_not_published_s
 }
 
 #[test]
+fn a_cancel_while_the_worker_compares_stops_it_and_records_nothing() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let before = t.revisions().len();
+    t.save(true);
+    let gate = env.gate("plan.hold");
+    let mut owner = env.spawn(
+        &["index", "refresh", "--file", &t.file],
+        Some(("plan", &gate)),
+    );
+    // The comparison runs at the end of `write`.
+    let job = active_job(&env, &t.path, "write");
+    wait_for("the worker's comparison", || {
+        PathBuf::from(format!("{}.reached", gate.display())).exists()
+    });
+    let reply = env.json(&["jobs", "cancel", &job]);
+    let gone = !worker_running(&env, &job);
+    assert!(!owner.wait().unwrap().success());
+    std::fs::remove_file(&gate).unwrap();
+    assert_eq!(
+        (reply["state"].clone(), gone, t.revisions().len()),
+        (json!("cancelled"), true, before)
+    );
+}
+
+#[test]
 fn relocating_a_tracked_source_keeps_its_history_and_removing_it_deletes_it() {
     let env = Env::new();
     let t = Tracked::new(&env);

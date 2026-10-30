@@ -2168,11 +2168,24 @@ fn a_main_outside_the_scope_makes_coverage_partial_when_its_property_definitions
 
 /// A workspace schema in memory, with `trees` saved as generations 1, 2, … of scope `0:0`.
 fn saved(trees: &[&Tree], scope: &str) -> rusqlite::Connection {
+    saved_with(trees, scope, crate::search::Library::Skip)
+}
+
+/// `saved`, building with `library` as a stored generation's build does.
+fn saved_with(
+    trees: &[&Tree],
+    scope: &str,
+    library: crate::search::Library,
+) -> rusqlite::Connection {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(&format!(
         "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
          CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
-         added_at_ms INTEGER NOT NULL) STRICT; {} {} {}",
+         added_at_ms INTEGER NOT NULL) STRICT; {} {} {}
+         -- Schema 8's table a stored build writes its fingerprints to.
+         CREATE TABLE fingerprints (
+             gen INTEGER NOT NULL, rid INTEGER NOT NULL, facet TEXT NOT NULL, state TEXT NOT NULL,
+             digest BLOB, PRIMARY KEY (gen, rid, facet)) STRICT, WITHOUT ROWID;",
         crate::workspace::V2,
         crate::workspace::V3,
         crate::workspace::V4
@@ -2186,12 +2199,7 @@ fn saved(trees: &[&Tree], scope: &str) -> rusqlite::Connection {
             rusqlite::params![gen_id, scope],
         )
         .unwrap();
-        let (index, tracked) = tracked(
-            tree,
-            scope,
-            Instant::now() + DEADLINE,
-            crate::search::Library::Skip,
-        );
+        let (index, tracked) = tracked(tree, scope, Instant::now() + DEADLINE, library);
         crate::search::store::save(
             &mut conn,
             gen_id,
@@ -3169,7 +3177,31 @@ fn stored_and_live() -> Vec<(Revision, Revision)> {
     let mut moved = screen("Hi", 0.0, 420.0);
     moved.push(node(14, Some(1), "FRAME", "Other", vec![]));
     moved[3] = node(13, Some(14), "RECTANGLE", "Same", vec![fill(0.5)]);
+    // A library component's copy and a library style a layer uses, which a stored build keeps
+    // as references.
+    let s = |v: &str| K::String(v.into());
+    let library = |style: &str| {
+        let r = obj(vec![("key", s(style)), ("version", s("v1"))]);
+        doc(vec![
+            node(
+                10,
+                Some(1),
+                "SYMBOL",
+                "Button",
+                vec![("componentKey", s("k1")), ("sourceLibraryKey", s("lib"))],
+            ),
+            instance(20, 1, "One", 10, vec![]),
+            node(
+                40,
+                Some(1),
+                "RECTANGLE",
+                "Box",
+                vec![("styleIdForFill", obj(vec![("assetRef", r)]))],
+            ),
+        ])
+    };
     let pairs = [
+        (library("s1"), library("s2"), "0:0"),
         (impacted(1.0, false), impacted(0.5, false), "0:0"),
         (
             doc(vec![
@@ -3197,11 +3229,11 @@ fn stored_and_live() -> Vec<(Revision, Revision)> {
         .into_iter()
         .map(|(old, new, scope)| {
             let (a, b) = (Tree::new(&old), Tree::new(&new));
-            let conn = saved(&[&a, &b], scope);
+            let conn = saved_with(&[&a, &b], scope, crate::search::Library::Stored);
             let old = || (1, side("old"));
             let stored = revision(&conn, old(), (2, side("new")), scope, REVISION_BYTES).unwrap();
             let deadline = Instant::now() + DEADLINE;
-            let (index, kept) = tracked(&b, scope, deadline, crate::search::Library::Skip);
+            let (index, kept) = tracked(&b, scope, deadline, crate::search::Library::Stored);
             let new = (index, kept, side("new"));
             let live = revision_live(&conn, old(), new, scope, REVISION_BYTES).unwrap();
             (stored, live)
