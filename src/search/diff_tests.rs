@@ -1818,6 +1818,45 @@ fn stored_generations_keep_a_variable_s_collection_like_the_live_trees() {
     outside_parity(collected(70), collected(71), "0:1");
 }
 
+/// `screen` on a page that sets an explicit mode of collection 64 for everything below it.
+fn moded_page() -> K<'static> {
+    let mut message = doc(screen("Hi", 0.5, 400.0));
+    let entry = obj(vec![
+        ("variableSetID", obj(vec![("guid", guid(64))])),
+        ("variableModeID", guid(70)),
+    ]);
+    if let K::Object(_, o) = &mut message
+        && let Some(K::Array(nodes)) = o.get_mut("nodeChanges")
+        && let K::Object(_, page) = &mut nodes[1]
+    {
+        page.insert(
+            "variableModeBySetMap",
+            obj(vec![("entries", K::Array(vec![entry]))]),
+        );
+    }
+    message
+}
+
+#[test]
+fn modes_a_frame_inherits_from_above_it_make_its_diff_partial() {
+    let plain = scoped(
+        doc(screen("Hi", 0.5, 400.0)),
+        doc(screen("Hi", 0.5, 400.0)),
+        "0:10",
+    );
+    assert_eq!(plain["coverage"]["complete"], json!(true));
+    let out = scoped(moded_page(), moded_page(), "0:10");
+    assert_eq!(out["coverage"]["reasons"], not_compared(1));
+    // Over the whole page the mode setting is a compared record.
+    let out = scoped(moded_page(), moded_page(), "0:1");
+    assert_eq!(out["coverage"]["complete"], json!(true));
+}
+
+#[test]
+fn stored_generations_keep_inherited_modes_like_the_live_trees() {
+    outside_parity(moded_page(), moded_page(), "0:10");
+}
+
 #[test]
 fn numeric_variants_trim_links_mask_type_and_grids_are_compared() {
     let link = |url: &str| obj(vec![("url", K::String(url.to_owned()))]);

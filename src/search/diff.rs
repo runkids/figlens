@@ -22,7 +22,7 @@ use crate::expand::{Bounds, Expanded, json_bytes, kiwi_bytes};
 use crate::{Document, ErrorKind, FigError, Tree, guid_key, to_json};
 
 /// Bumped whenever a field list, facet or digest stream changes; cursors carry it.
-const VERSION: &str = "diff-v9";
+const VERSION: &str = "diff-v10";
 /// Estimated heap of an expanded size or transform built as JSON (a map of at most six numbers).
 const OWNED_BYTES: usize = 512;
 pub(crate) const FACETS: [&str; 5] = ["text", "layout", "appearance", "properties", "structure"];
@@ -563,6 +563,8 @@ struct Side {
     /// The selected node's own parent and position among its siblings, which the index's
     /// root record leaves out; `Err` when it could not be verified within the side's bounds.
     origin: Result<Option<(String, u32)>, ()>,
+    /// Ancestors above the selected node that set explicit variable modes (`inherited_modes`).
+    inherited: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -752,6 +754,7 @@ fn side(
         stamp: staged,
         present,
         origin: tracked.origin,
+        inherited: tracked.inherited,
     })
 }
 
@@ -775,6 +778,35 @@ fn origin(tree: &Tree, node: &str, bounds: &mut Bounds) -> Result<Option<(String
     }
     let at = siblings.iter().position(|c| c == node).ok_or(())?;
     Ok(Some((parent, at as u32)))
+}
+
+/// Ancestors above `node` that set explicit variable modes, which REST resolution inherits into
+/// it (`rest::context`) while no compared record holds them. Each step is charged before its id
+/// is copied; a chain that cannot be walked within `bounds` or `DEPTH` counts as one more.
+fn inherited_modes(tree: &Tree, node: &str, bounds: &mut Bounds) -> usize {
+    use kiwi_schema::Value as K;
+    let (mut n, mut at) = (0, node.to_owned());
+    for _ in 0..DEPTH {
+        let Some(guid) = tree
+            .nodes
+            .get(&at)
+            .and_then(|x| x.get("parentIndex")?.get("guid"))
+        else {
+            return n;
+        };
+        if !bounds.charge(1, 64) {
+            return n + 1;
+        }
+        let Some(p) = guid_key(guid).filter(|p| tree.nodes.contains_key(p)) else {
+            return n;
+        };
+        let modes = tree.nodes[&p]
+            .get("variableModeBySetMap")
+            .and_then(|m| m.get("entries"));
+        n += usize::from(matches!(modes, Some(K::Array(e)) if !e.is_empty()));
+        at = p;
+    }
+    n + 1
 }
 
 /// A record's structure digest input: name, kind, parent id, order among siblings and hidden.
@@ -1119,7 +1151,7 @@ fn compare(old: Side, new: Side, node: &str, work: usize) -> Pair {
             break;
         }
         match outside_uses(s, ids, &mut c.budget) {
-            Some(n) => outside[i] = n,
+            Some(n) => outside[i] = n + s.inherited,
             None => full = false,
         }
     }
@@ -1881,8 +1913,8 @@ pub(crate) fn save_facets(
     between: &mut dyn FnMut(&rusqlite::Connection, usize, usize) -> super::store::Result<()>,
 ) -> super::store::Result<()> {
     let origin = match &tracked.origin {
-        Ok(o) => json!(o),
-        Err(()) => json!("unknown"),
+        Ok(o) => json!([o, tracked.inherited]),
+        Err(()) => json!(["unknown", tracked.inherited]),
     };
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     guard(&tx)?;
@@ -1928,6 +1960,7 @@ pub(crate) struct Tracked {
     facets: Vec<Facets>,
     present: bool,
     origin: Result<Option<(String, u32)>, ()>,
+    inherited: usize,
 }
 
 /// A full build of `node` that also keeps every record's facets and the node's own parent and
@@ -1941,6 +1974,7 @@ pub(crate) fn tracked(tree: &Tree, node: &str, deadline: Instant) -> (Index, Tra
         stop: None,
     };
     let origin = origin(tree, node, &mut bounds);
+    let inherited = inherited_modes(tree, node, &mut bounds);
     let mut facets = Vec::new();
     let present = tree.nodes.contains_key(node);
     let index = match present {
@@ -1951,6 +1985,7 @@ pub(crate) fn tracked(tree: &Tree, node: &str, deadline: Instant) -> (Index, Tra
         facets,
         present,
         origin,
+        inherited,
     };
     (index, t)
 }
@@ -1978,7 +2013,15 @@ fn stored(conn: &rusqlite::Connection, gen_id: i64, source: Json) -> Result<Side
     if version != facet_version() || origin.len() > 64 + super::store::ID_BYTES {
         return Err(bad());
     }
-    let origin = match serde_json::from_str::<Json>(&origin)? {
+    // `[origin, inherited]`.
+    let (origin, inherited) = match serde_json::from_str::<Json>(&origin)? {
+        Json::Array(mut a) if a.len() == 2 => {
+            let n = a[1].as_u64().ok_or_else(bad)? as usize;
+            (a.swap_remove(0), n)
+        }
+        _ => return Err(bad()),
+    };
+    let origin = match origin {
         Json::Null => Ok(None),
         Json::String(s) if s == "unknown" => Err(()),
         o => Ok(Some((
@@ -2022,6 +2065,7 @@ fn stored(conn: &rusqlite::Connection, gen_id: i64, source: Json) -> Result<Side
         stamp: (SystemTime::UNIX_EPOCH, 0),
         present,
         origin,
+        inherited,
     })
 }
 
@@ -2148,6 +2192,7 @@ fn compare_trees(old: &Tree, new: &Tree, works: [usize; 3], node: &str) -> Pair 
             stop: None,
         };
         let origin = origin(tree, node, &mut bounds);
+        let inherited = inherited_modes(tree, node, &mut bounds);
         let mut facets = Vec::new();
         let present = tree.nodes.contains_key(node);
         let index = match present {
@@ -2163,6 +2208,7 @@ fn compare_trees(old: &Tree, new: &Tree, works: [usize; 3], node: &str) -> Pair 
             path: PathBuf::new(),
             stamp: (SystemTime::UNIX_EPOCH, 0),
             origin,
+            inherited,
         }
     };
     compare(
