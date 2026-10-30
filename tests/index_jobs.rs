@@ -3328,10 +3328,11 @@ fn impact_entry(detail: &Value, id: &str) -> Value {
 #[test]
 fn node_subscriptions_follow_a_component_child_change_to_the_instance_and_its_frame() {
     let env = Env::new();
-    // The Dot child changes; neither chip overrides it. Frame 0:1 and layer 0:12 are unrelated.
+    // The Dot child changes; neither chip overrides it. The Chip main 0:50 holds the change
+    // itself; frame 0:1 and layer 0:12 are unrelated.
     let (counts, detail, _) = follow_through(
         &env,
-        &["0:41", "0:4", "0:1", "0:12"],
+        &["0:41", "0:4", "0:50", "0:1", "0:12"],
         corpus::write_dot_restyled,
     );
     // The instance's own facets are unchanged, while its expanded Dot child's appearance is not:
@@ -3366,7 +3367,7 @@ fn node_subscriptions_follow_a_component_child_change_to_the_instance_and_its_fr
     assert_eq!(
         (counts, impact_entry(&detail, "0:41"), dot, before == after),
         (
-            vec![1, 1, 0, 0],
+            vec![1, 1, 1, 0, 0],
             json!(["effective_unchanged", ["old", "new"]]),
             json!(["changed", ["appearance"], "0:4"]),
             false
