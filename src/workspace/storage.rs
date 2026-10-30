@@ -883,28 +883,11 @@ pub(super) fn leads_to_itself(path: &Path) -> bool {
 }
 
 /// A registered source's bytes, read only from the file at its canonical path, the one its
-/// holders authorized: a link swapped in at it or above it is refused. The size and time are the
-/// opened file's own, so a save racing the read is retried, as `search::stage` does.
-pub(crate) fn staged(
+/// holders authorized: a link swapped in at it or above it is refused.
+pub(super) fn staged(
     path: &Path,
 ) -> std::result::Result<(Vec<u8>, crate::search::Stamp), Box<dyn std::error::Error>> {
-    use crate::search::{SOURCE_BYTES, stamp_of};
-    for _ in 0..3 {
-        let mut file = registered(path)?;
-        let before = stamp_of(&file.metadata()?)?;
-        if before.1 > SOURCE_BYTES {
-            return Err(crate::parse::exceeded("source bytes", SOURCE_BYTES).into());
-        }
-        let mut bytes = Vec::with_capacity(before.1 as usize);
-        (&mut file).take(SOURCE_BYTES + 1).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 == before.1 && stamp_of(&file.metadata()?)? == before {
-            return Ok((bytes, before));
-        }
-    }
-    Err(fail(
-        ErrorKind::SourceUnreadable,
-        "the .fig kept changing while it was read; retry after the save finishes",
-    ))
+    crate::search::stage_with(|| registered(path))
 }
 
 fn linked(path: &Path) -> Box<dyn std::error::Error> {
@@ -918,7 +901,8 @@ fn linked(path: &Path) -> Box<dyn std::error::Error> {
 }
 
 /// Opens `path`, canonical, one component at a time from `/` without following any link, so no
-/// swap at it or above it, before or during the open, can lead the handle elsewhere.
+/// swap at it or above it, before or during the open, can lead the handle elsewhere. The caller
+/// refuses a leaf that is not a regular file.
 #[cfg(unix)]
 pub(super) fn registered(path: &Path) -> std::result::Result<File, Box<dyn std::error::Error>> {
     use std::ffi::CString;
@@ -957,6 +941,9 @@ pub(super) fn registered(path: &Path) -> std::result::Result<File, Box<dyn std::
             _ => return Err(linked(path)),
         }
     }
+    if !path.is_absolute() {
+        return Err(linked(path));
+    }
     let (leaf, dirs) = names.split_last().ok_or_else(|| linked(path))?;
     let mut dir = open(libc::AT_FDCWD, "/".as_ref(), DIR)?;
     for name in dirs {
@@ -968,7 +955,6 @@ pub(super) fn registered(path: &Path) -> std::result::Result<File, Box<dyn std::
         leaf,
         libc::O_RDONLY | libc::O_NONBLOCK,
     )?);
-    crate::search::stamp_of(&file.metadata()?)?;
     Ok(file)
 }
 
@@ -978,6 +964,7 @@ pub(super) fn registered(path: &Path) -> std::result::Result<File, Box<dyn std::
 pub(super) fn registered(path: &Path) -> std::result::Result<File, Box<dyn std::error::Error>> {
     use std::os::windows::{ffi::OsStringExt, io::AsRawHandle};
     use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+    // Checked before opening too, so a device or pipe a link leads to is never opened.
     if !leads_to_itself(path) {
         return Err(linked(path));
     }
@@ -999,7 +986,6 @@ pub(super) fn registered(path: &Path) -> std::result::Result<File, Box<dyn std::
     if PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])) != path {
         return Err(linked(path));
     }
-    crate::search::stamp_of(&file.metadata()?)?;
     Ok(file)
 }
 

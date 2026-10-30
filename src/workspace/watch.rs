@@ -35,7 +35,8 @@ const BACKOFF: Duration = Duration::from_secs(5);
 pub(crate) enum Probe<S> {
     Stamp(S),
     Missing,
-    /// Locked or access denied: transient until `UNREADABLE`.
+    /// Locked or access denied, or now leading elsewhere through a link (never followed):
+    /// transient until `UNREADABLE`.
     Busy,
 }
 

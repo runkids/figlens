@@ -31,7 +31,7 @@ const MAX_OFFSET: usize = 100_000;
 pub(crate) const MAX_SOURCES: usize = 16;
 
 /// Work bounds of one scope extraction, independent of the result limit.
-pub(crate) const SOURCE_BYTES: u64 = 512 * 1024 * 1024;
+const SOURCE_BYTES: u64 = 512 * 1024 * 1024;
 /// Expanding a 179 MB held-out file charged 7.1M; each override value walked counts once.
 const WORK: usize = 10_000_000;
 /// The cancel flag of a search nobody cancels.
@@ -1565,7 +1565,7 @@ pub(crate) fn stamp(path: &Path) -> std::io::Result<Stamp> {
 }
 
 /// The stamp of `meta`, a regular file's.
-pub(crate) fn stamp_of(meta: &std::fs::Metadata) -> std::io::Result<Stamp> {
+fn stamp_of(meta: &std::fs::Metadata) -> std::io::Result<Stamp> {
     if !meta.is_file() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -1577,16 +1577,27 @@ pub(crate) fn stamp_of(meta: &std::fs::Metadata) -> std::io::Result<Stamp> {
 
 /// The source's bytes, read once within `SOURCE_BYTES` while its size and time stayed put.
 pub(crate) fn stage(path: &Path) -> Result<(Vec<u8>, Stamp), Box<dyn Error>> {
+    // Stamped first too: opening a FIFO or device can block indefinitely.
+    stage_with(|| Ok(stamp(path).and_then(|_| std::fs::File::open(path))?))
+}
+
+/// `stage` of the file `open` returns, by that file's own size and time, and again by the one it
+/// returns after the read, so a save replacing the file meanwhile is retried.
+pub(crate) fn stage_with(
+    open: impl Fn() -> Result<std::fs::File, Box<dyn Error>>,
+) -> Result<(Vec<u8>, Stamp), Box<dyn Error>> {
     for _ in 0..3 {
-        let before = stamp(path)?;
+        let mut file = open()?;
+        let before = stamp_of(&file.metadata()?)?;
         if before.1 > SOURCE_BYTES {
             return Err(crate::parse::exceeded("source bytes", SOURCE_BYTES).into());
         }
         let mut bytes = Vec::with_capacity(before.1 as usize);
-        std::fs::File::open(path)?
-            .take(SOURCE_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 == before.1 && stamp(path)? == before {
+        (&mut file).take(SOURCE_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 == before.1
+            && stamp_of(&file.metadata()?)? == before
+            && stamp_of(&open()?.metadata()?)? == before
+        {
             return Ok((bytes, before));
         }
     }
