@@ -474,6 +474,11 @@ impl Place {
 }
 
 impl Storage {
+    /// The config root `models.json` lives in, whether or not it exists yet.
+    pub fn config_root(&self) -> &Path {
+        &self.defaults.config.path
+    }
+
     /// `<config>/models.json`, the configured model profiles (#94); `None` before the first.
     pub fn models(&self) -> Result<Option<Json>> {
         let path = self.defaults.config.path.join("models.json");

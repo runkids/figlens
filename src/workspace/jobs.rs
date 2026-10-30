@@ -930,7 +930,16 @@ fn spawn(dir: &Path, job_id: &str, me: &str, attempt: i64, model: Option<&Path>)
 /// The runtime of the active profile, while it is still the one an embed job was submitted for.
 fn model_exe(storage: &Storage, profile_id: Option<&str>) -> Result<PathBuf> {
     match crate::semantic::profile::active(storage)? {
-        Some(p) if Some(p.id.as_str()) == profile_id => Ok(p.exe),
+        // Checked before it runs: a replaced runtime or model must never be started.
+        Some(p) if Some(p.id.as_str()) == profile_id => {
+            p.unchanged(&AtomicBool::new(false)).map_err(|e| {
+                fail(
+                    ErrorKind::OperationFailed,
+                    format!("{e}; run models configure again"),
+                )
+            })?;
+            Ok(p.exe)
+        }
         _ => Err(fail(
             ErrorKind::OperationFailed,
             "the configured model profile changed since this embed job was submitted; run index embed again",

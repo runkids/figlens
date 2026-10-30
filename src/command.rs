@@ -1121,8 +1121,13 @@ pub fn workspace_search_tool(
         .into_iter()
         .collect();
     let (request, mode) = search_tool(call)?;
-    let value =
-        figlens::workspace::query::search_mode(&storage, &select, &only, &request, mode, cancel)?;
+    // Text search keeps its old behavior: it is not one of the calls a server stop cancels.
+    let value = match mode {
+        Mode::Text => figlens::workspace::query::search(&storage, &select, &only, &request)?,
+        _ => figlens::workspace::query::search_mode(
+            &storage, &select, &only, &request, mode, cancel,
+        )?,
+    };
     Ok(Output::Json {
         value,
         pretty: false,

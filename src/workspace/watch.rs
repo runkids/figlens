@@ -1519,13 +1519,16 @@ enum Done {
 
 /// Refreshes every still-served scope of one source, one at a time: its own jobs run here to
 /// their end; a job another process already runs is awaited, never run or cancelled. A source
-/// counts as verified only when every job ended `succeeded`.
+/// counts as verified only when every job ended `succeeded`. A published scope whose model
+/// layer is missing gets an embed job this runner owns, sent to `models` so the next save
+/// never waits for the model.
 fn refresh(
     storage: &Storage,
     ws_id: &str,
     job: &Refresh,
     cancel: &AtomicBool,
     quit: &AtomicBool,
+    models: &std::sync::mpsc::Sender<String>,
 ) -> Finished {
     let select = Select::Id(ws_id.to_owned());
     let (mut failed, mut last, mut error) = (false, None, None);
@@ -1570,7 +1573,11 @@ fn refresh(
                 await_joined(storage, &id, quit)
             };
             match report {
-                Ok(Some(r)) if r["state"] == "succeeded" => {}
+                Ok(Some(r)) if r["state"] == "succeeded" => {
+                    if let Some(embed) = super::jobs::embed_after(storage, &r) {
+                        let _ = models.send(embed);
+                    }
+                }
                 Ok(Some(r)) => {
                     fail_with(r["error"]["code"].as_str().unwrap_or("failed").to_owned())
                 }
@@ -1651,13 +1658,20 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
     let halt = AtomicBool::new(false);
     let (to_worker, jobs) = std::sync::mpsc::channel::<Work>();
     let (done, finished) = std::sync::mpsc::channel::<Done>();
+    // Embed jobs this runner owns, run apart from refreshes; an exit cancels the running one.
+    let (to_model, models) = std::sync::mpsc::channel::<String>();
     std::thread::scope(|scope| -> Result<()> {
         let (cancel, quit, idle, halt) = (&cancel, &quit, &idle, &halt);
+        scope.spawn(move || {
+            for id in models {
+                let _ = super::jobs::run(storage, ws_id, &id, quit, &mut |_| {});
+            }
+        });
         scope.spawn(move || {
             for work in jobs {
                 let _ = done.send(match work {
                     Work::Refresh(job) => {
-                        Done::Refresh(refresh(storage, ws_id, &job, cancel, quit))
+                        Done::Refresh(refresh(storage, ws_id, &job, cancel, quit, &to_model))
                     }
                     Work::Turn(due) => Done::Turn(Box::new((
                         due.key.clone(),
