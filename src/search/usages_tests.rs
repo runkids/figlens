@@ -2690,6 +2690,17 @@ fn red(r: f32) -> K<'static> {
 /// another place and constraint), used by an instance; each built as a stored generation and
 /// compared from its stored rows.
 fn copy_matches(copy_label: &str, copy_fill: K<'static>) -> &'static str {
+    let s = |v: &str| K::String(v.into());
+    let cached = vec![("componentKey", s("k")), ("sourceLibraryKey", s("ns"))];
+    let mut copy = button(50, 1, 300.0, copy_label, copy_fill, cached);
+    if let K::Object(_, o) = &mut copy[0] {
+        o.insert("horizontalConstraint", K::Enum("ConstraintType", "MAX"));
+    }
+    copy_compares(copy)
+}
+
+/// How the cached copy `copy` (the Button at `0:50`) compares with the library's Button.
+fn copy_compares(mut copy: Vec<K<'static>>) -> &'static str {
     use crate::search::{Library, build_with, fingerprint, store};
     let design = |nodes: Vec<K<'static>>| {
         let mut all = vec![
@@ -2700,12 +2711,6 @@ fn copy_matches(copy_label: &str, copy_fill: K<'static>) -> &'static str {
         obj(vec![("nodeChanges", K::Array(all))])
     };
     let library = design(button(10, 1, 0.0, "Go", red(1.0), vec![]));
-    let s = |v: &str| K::String(v.into());
-    let cached = vec![("componentKey", s("k")), ("sourceLibraryKey", s("ns"))];
-    let mut copy = button(50, 1, 300.0, copy_label, copy_fill, cached);
-    if let K::Object(_, o) = &mut copy[0] {
-        o.insert("horizontalConstraint", K::Enum("ConstraintType", "MAX"));
-    }
     copy.push(instance(60, 1, "Use", 50, vec![]));
     let consumer = design(copy);
     let print = |message: &K<'static>, node: &str| {
@@ -2731,6 +2736,36 @@ fn a_child_text_or_fill_change_under_unchanged_root_fields_is_a_mismatch() {
     assert_eq!(
         [copy_matches("Stop", red(1.0)), copy_matches("Go", red(0.5))],
         ["definition_mismatch"; 2]
+    );
+}
+
+#[test]
+fn a_copy_with_its_children_in_another_order_is_a_mismatch() {
+    let s = |v: &str| K::String(v.into());
+    let cached = vec![("componentKey", s("k")), ("sourceLibraryKey", s("ns"))];
+    let mut copy = button(50, 1, 0.0, "Go", red(1.0), cached);
+    // The label moves after the box.
+    if let K::Object(_, o) = &mut copy[1]
+        && let Some(K::Object(_, at)) = o.get_mut("parentIndex")
+    {
+        at.insert("position", s("0053"));
+    }
+    assert_eq!(copy_compares(copy), "definition_mismatch");
+}
+
+#[test]
+fn a_set_and_one_of_its_variants_are_never_compared() {
+    use crate::search::fingerprint::compare;
+    let print = [("read", Some([1; 32])); 4];
+    assert_eq!(
+        [
+            compare(
+                &("COMPONENT_SET".into(), print),
+                &("COMPONENT".into(), print)
+            ),
+            compare(&("COMPONENT".into(), print), &("COMPONENT".into(), print)),
+        ],
+        ["unknown", "equal"]
     );
 }
 

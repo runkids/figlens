@@ -2324,6 +2324,30 @@ fn each_use_compares_its_cached_copy_with_the_selected_definition() {
 }
 
 #[test]
+fn a_schema_3_workspace_is_refused_read_only_with_a_rebuild_not_misread() {
+    use crate::workspace::library::{Request, library};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let def = component_ref(&conn, &srcs[1].1, srcs[1].2);
+    // As an older figlens left it: no fingerprints table, which a read never adds.
+    conn.execute_batch("DROP TABLE fingerprints; PRAGMA user_version = 3;")
+        .unwrap();
+    let ask = Request {
+        definition: Some(def.clone()),
+        limit: 10,
+        ..reference("k", None)
+    };
+    let err = library(&storage, &select, None, &ask)
+        .unwrap_err()
+        .downcast::<FigError>()
+        .unwrap();
+    assert_eq!(
+        (err.kind(), &err.recovery().unwrap()[0]["action"]),
+        (ErrorKind::IndexIncompatible, &json!("rebuild"))
+    );
+}
+
+#[test]
 fn a_definition_its_build_did_not_fingerprint_compares_no_use_and_asks_to_index_it() {
     use crate::workspace::library::{Request, library};
     let d = TestDir::new();
@@ -2351,7 +2375,24 @@ fn a_definition_its_build_did_not_fingerprint_compares_no_use_and_asks_to_index_
                     "workspaceId": ws, "sourceId": def.source_id, "scope": "0:0"}}]}]),
             &json!(false)
         )
-    ); // A generation built with fingerprints, none for this node: rebuilding would not help.
+    ); // A build its budgets stopped, or one with fingerprints but none for this node, would
+    // not gain one by rebuilding.
+    conn.execute(
+        "UPDATE generations SET stop = 'work_limit' WHERE gen = ?1",
+        [srcs[1].2],
+    )
+    .unwrap();
+    let stopped = library(&storage, &select, None, &ask).unwrap();
+    conn.execute(
+        "UPDATE generations SET stop = NULL WHERE gen = ?1",
+        [srcs[1].2],
+    )
+    .unwrap();
+    // Reported partial by its stop, after which the definition's reason offers no refresh.
+    assert_eq!(
+        stopped["coverage"]["reasons"][1],
+        json!({"code": "definition_not_compared", "count": 2})
+    );
     conn.execute(
         "INSERT INTO fingerprints (gen, rid, facet, state) VALUES (?1, -1, 'text', 'unread')",
         [srcs[1].2],
