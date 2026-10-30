@@ -1754,6 +1754,7 @@ if (typeof document !== 'undefined') {
         $('visualFile').value = '';
         $('visualPreview').hidden = $('visualClear').hidden = $('visualCropFields').hidden = true;
         $('visualCrop').checked = false;
+        $('visualCropFields').disabled = true;
         $('visualCrop').disabled = true;
         $('visualState').textContent = '';
         relAbort('ranked');
@@ -1774,7 +1775,9 @@ if (typeof document !== 'undefined') {
         semanticRefresh();
     }
     $('visualClear').onclick = visualClear;
-    $('visualCrop').onchange = () => $('visualCropFields').hidden = !$('visualCrop').checked;
+    $('visualCrop').onchange = () => {
+        $('visualCropFields').disabled = $('visualCropFields').hidden = !$('visualCrop').checked;
+    };
     $('visualFile').onchange = async () => {
         const file = $('visualFile').files[0];
         visualClear();

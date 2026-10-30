@@ -47,12 +47,12 @@
             <output id="visualState" role="status" aria-live="polite"></output>
             <img id="visualPreview" alt="Current image-search reference" width="256" height="256" hidden>
             <label><input id="visualCrop" type="checkbox" disabled> Crop in image pixels</label>
-            <div id="visualCropFields" hidden>
+            <fieldset id="visualCropFields" disabled hidden>
               <label>X <input id="visualX" type="number" min="0" step="1" value="0"></label>
               <label>Y <input id="visualY" type="number" min="0" step="1" value="0"></label>
               <label>Width <input id="visualW" type="number" min="1" step="1"></label>
               <label>Height <input id="visualH" type="number" min="1" step="1"></label>
-            </div>
+            </fieldset>
           </fieldset>
           <button id="rankedGo" type="submit">Search</button>
         </form>
