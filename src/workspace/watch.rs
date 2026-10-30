@@ -14,7 +14,8 @@ use rusqlite::{TransactionBehavior, params};
 use super::jobs::{chosen, owner, random_hex};
 use super::*;
 
-/// How often the runner stats a watched source.
+/// How often the runner stats a watched source; a pending stamp is stat'ed again sooner, at
+/// the moment it would settle.
 pub(crate) const POLL: Duration = Duration::from_millis(250);
 /// A changed stamp must hold this long before its save counts as finished.
 const STABLE: Duration = Duration::from_millis(300);
@@ -157,7 +158,12 @@ impl<S: Clone + PartialEq> Detector<S> {
             self.seen = Some(stamp);
             return self.request(now);
         }
-        self.wait(now + POLL, self.health())
+        // A pending stamp is probed again exactly when it would settle, not a whole poll late.
+        let next = match &self.pending {
+            Some((_, since, churn)) => (now + POLL).min(*since + STABLE).min(*churn + CHURN),
+            None => now + POLL,
+        };
+        self.wait(next, self.health())
     }
 
     /// The submitted refresh ended; `failed` (the file kept changing, or any job error) makes
@@ -1150,6 +1156,12 @@ struct Watched {
     last_error: Option<String>,
 }
 
+/// How long the runner sleeps: until the earliest source's next probe, at most `POLL`.
+fn pause(now: Instant, next: impl Iterator<Item = Instant>) -> Duration {
+    next.map(|at| at.saturating_duration_since(now))
+        .fold(POLL, Duration::min)
+}
+
 fn state_name(state: State) -> &'static str {
     match state {
         State::Watching => "watching",
@@ -1810,7 +1822,7 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
                         return Ok(());
                     }
                 }
-                std::thread::sleep(POLL);
+                std::thread::sleep(pause(Instant::now(), watched.values().map(|w| w.next)));
             }
         })();
         // No lease is left (or this runner was fenced out): submit nothing more, cancel its own
