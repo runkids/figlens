@@ -1260,4 +1260,69 @@ fn a_publication_evaluates_each_saved_search_once_in_bounded_turns() {
             (0, 1, true)
         )
     );
+    // A failure is noted only at the current publication of a visible source: one met before
+    // a relocation never replaces the newer note, and a missing or hidden one is unknown.
+    let sub: String = conn
+        .query_row(
+            "SELECT id FROM subscriptions WHERE consumer = 'c00'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let (generation, membership): (i64, String) = conn
+        .query_row(
+            "SELECT p.gen, s.membership FROM published p JOIN sources s USING (source_id)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let ranking = crate::search::corpus_ranking().to_string();
+    let noted = |storage: &Storage, membership: &str, reason: &str| {
+        crate::workspace::changes::note(
+            &conn,
+            storage,
+            &sub,
+            (generation, membership, &ranking),
+            &json!({"state": "unavailable", "reason": reason}),
+        )
+        .unwrap()
+    };
+    conn.execute_batch(
+        "UPDATE sources SET membership = 'again'; UPDATE generations SET membership = 'again'",
+    )
+    .unwrap();
+    let newer = noted(&storage, "again", "newer");
+    let older = noted(&storage, &membership, "older");
+    let gone = crate::workspace::changes::note(
+        &conn,
+        &storage,
+        "missing",
+        (generation, "again", &ranking),
+        &json!({"state": "unavailable"}),
+    )
+    .is_err();
+    let elsewhere = std::path::absolute(d.join("elsewhere")).unwrap();
+    let hidden = Storage {
+        visible: Some(vec![elsewhere]),
+        ..storage
+    };
+    let unseen = crate::workspace::changes::note(
+        &conn,
+        &hidden,
+        &sub,
+        (generation, "again", &ranking),
+        &json!({"state": "unavailable", "reason": "unseen"}),
+    )
+    .is_err();
+    let kept: String = conn
+        .query_row(
+            "SELECT eval_failure ->> '$.evaluation.reason' FROM subscriptions WHERE id = ?1",
+            [&sub],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        (newer, older, gone, unseen, kept.as_str()),
+        (true, false, true, true, "newer")
+    );
 }

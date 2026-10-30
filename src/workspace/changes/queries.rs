@@ -532,8 +532,11 @@ pub fn evaluate(storage: &Storage, select: &Select, id: Option<&str>) -> Result<
         // A failure is noted at the publication it read, so changes reports it later.
         Err(why) => (why, read),
     };
-    if let Some((generation, membership)) = at.filter(|_| failed_state(&out)) {
-        note(&tx, id, (generation, &membership, &ranking), &out)?;
+    let mut out = out;
+    if let Some((generation, membership)) = at.filter(|_| failed_state(&out))
+        && !note(&tx, storage, id, (generation, &membership, &ranking), &out)?
+    {
+        out = pending("newer_publication", &ws_id, id);
     }
     tx.commit().map_err(sql)?;
     Ok(json!({"workspaceId": ws_id, "subscriptionId": id, "evaluation": out}))
@@ -544,8 +547,34 @@ const NOTE_BYTES: usize = 4096;
 
 /// Notes on `sub` why it has no evaluation at publication `(generation, membership, ranking)`,
 /// so `changes` reports it after the runner that met it is gone. A note at another publication
-/// is ignored, so a later evaluation needs no cleanup.
-fn note(conn: &Connection, sub: &str, at: (i64, &str, &str), why: &Json) -> Result<()> {
+/// is ignored, so a later evaluation needs no cleanup. Written inside the caller's write only
+/// while `sub` follows a visible source whose scope is published at `at`: a failure met before
+/// a newer publication is refused (false), and a removed or hidden one is unknown as in
+/// `record`, never noted on a hidden source or over a newer note.
+pub(crate) fn note(
+    conn: &Connection,
+    storage: &Storage,
+    sub: &str,
+    at: (i64, &str, &str),
+    why: &Json,
+) -> Result<bool> {
+    let held: Option<(String, String)> = conn
+        .query_row(
+            "SELECT source_id, scope FROM subscriptions WHERE id = ?1 AND kind = 'query'",
+            [sub],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    let Some((source, scope)) = held else {
+        return Err(subscriptions::unknown(sub));
+    };
+    if registry::visible_path(storage, conn, &source)?.is_none() {
+        return Err(subscriptions::unknown(sub));
+    }
+    if publication(conn, &source, &scope)? != Some((at.0, at.1.to_owned())) {
+        return Ok(false);
+    }
     let mut why = why.clone();
     if let Some(m) = why["message"].as_str() {
         why["message"] = json!(m.chars().take(500).collect::<String>());
@@ -562,7 +591,7 @@ fn note(conn: &Connection, sub: &str, at: (i64, &str, &str), why: &Json) -> Resu
         params![sub, text],
     )
     .map_err(sql)?;
-    Ok(())
+    Ok(true)
 }
 
 /// Whether an evaluation outcome is a failure worth noting: not stored, current or pending.
@@ -790,10 +819,16 @@ pub fn evaluate_published(
             Err(why) if why["reason"] == "evaluation_too_large" => too_large(&ws_id, id),
             Err(why) => why.clone(),
         };
-        newer |= out["state"] == "pending";
+        let mut out = out;
+        // Refused once the scope published again: the turn restarts.
         if failed_state(&out) {
-            note(&tx, id, at, &out)?;
+            match note(&tx, storage, id, at, &out) {
+                Ok(true) => {}
+                Ok(false) => out = pending("newer_publication", &ws_id, id),
+                Err(e) => out = failed(e),
+            }
         }
+        newer |= out["state"] == "pending";
         states.push(json!({"subscriptionId": id, "evaluation": out}));
     }
     if cancel.load(Ordering::SeqCst) {

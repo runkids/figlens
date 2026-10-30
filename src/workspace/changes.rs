@@ -23,6 +23,8 @@ const OLDEST: [u8; 16] = [0; 16];
 mod queries;
 pub mod subscriptions;
 
+#[cfg(test)]
+pub(crate) use queries::note;
 pub use queries::{Continuation, evaluate, evaluate_published};
 
 #[derive(Default)]
