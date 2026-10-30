@@ -230,21 +230,20 @@ pub(crate) fn extract(
     }
     // The row paints copied below and by `rest::bound_variables` are charged first; each field
     // was read within `VISITS`, so two fields' estimates fit twice that.
-    fn rows(t: Option<&Json>) -> impl Iterator<Item = &Json> {
-        t.and_then(|t| t["styleOverrideTable"].as_array())
-            .into_iter()
-            .flatten()
-            .filter_map(|s| s.get("fillPaints"))
-    }
+    let table = |k: &str| {
+        let rows = fields
+            .get(k)
+            .and_then(|t| t["styleOverrideTable"].as_array());
+        rows.map_or(&[][..], Vec::as_slice)
+    };
     // The walk stops at what the side has left: running out there stops the side, visits kept.
     let cap = (2 * VISITS).min(bounds.work);
-    let all = || rows(fields.get("vectorData")).chain(rows(fields.get("textData")));
     let mut left = cap;
-    let copies = crate::expand::sum_while(all(), &mut left, json_bytes);
+    let (copies, cut) = row_paints([table("vectorData"), table("textData")], &mut left);
     if !bounds.charge(cap - left, 0) {
         return None;
     }
-    if left == 0 && (cap > 0 || all().next().is_some()) && cap < 2 * VISITS {
+    if (cut || left == 0 && cap > 0) && cap < 2 * VISITS {
         bounds.stop = Some(crate::expand::Stop::Work);
         return None;
     }
@@ -461,6 +460,22 @@ fn node_state(tree: &Tree, target: Option<&str>, kind: &str) -> &'static str {
         Some(Some(n)) if plugin_type(n) == kind => "resolved",
         Some(Some(_)) => "unsupported",
     }
+}
+
+/// Estimated bytes of the fill paints in `tables`' rows, walking at most `left`: a visit for
+/// each row, a blanked inactive one too, then its paints'. True when a row was left unwalked.
+fn row_paints(tables: [&[Json]; 2], left: &mut usize) -> (usize, bool) {
+    let mut bytes = 0;
+    for row in tables.into_iter().flatten() {
+        if *left == 0 {
+            return (bytes, true);
+        }
+        *left -= 1;
+        if let Some(p) = row.get("fillPaints") {
+            bytes += json_bytes(p, left);
+        }
+    }
+    (bytes, false)
 }
 
 /// The record's effective binding fields as JSON: an expanded sublayer's override wins over

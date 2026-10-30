@@ -1878,14 +1878,17 @@ fn a_hidden_use_before_the_visible_ones_is_reported_by_some_page() {
 }
 
 #[test]
-fn a_row_copy_estimate_stops_pulling_rows_once_work_runs_out() {
-    let rows = vec![json!([1, 2]); 1000];
-    let pulled = std::cell::Cell::new(0);
+fn a_row_paint_estimate_pays_for_every_row_even_an_inactive_one() {
+    // Mostly blanked inactive rows, then one with paints: each row is a visit.
+    let mut rows = vec![Json::Null; 1000];
+    rows.push(json!({"fillPaints": [1, 2]}));
     let mut left = 4;
-    let rows = rows.iter().inspect(|_| pulled.set(pulled.get() + 1));
-    crate::expand::sum_while(rows, &mut left, json_bytes);
-    // Two rows walked, a third pulled and left: not the other 997.
-    assert_eq!((left, pulled.get()), (0, 3));
+    assert_eq!(row_paints([&rows, &[]], &mut left), (0, true));
+    assert_eq!(left, 0);
+    // With room for every row, the paints are estimated after them.
+    let mut left = 2 * VISITS;
+    let (bytes, cut) = row_paints([&[], &rows], &mut left);
+    assert_eq!((bytes > 0, cut, 2 * VISITS - left), (true, false, 1001 + 3));
 }
 
 #[test]
