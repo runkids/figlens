@@ -445,3 +445,138 @@ fn a_storage_failure_points_at_restoring_the_storage_not_the_design_roots() {
         "{meta}"
     );
 }
+
+#[test]
+fn usages_library_is_a_workspace_question_apart_from_node_questions() {
+    let ask = |extra: Value| {
+        let mut args = json!({"workspaceId": "ws_0000000000000000",
+            "library": {"kind": "component", "namespace": "lib", "key": "k1"}});
+        args.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        args
+    };
+    let call = check("usages", ask(json!({"sourceId": "s1", "limit": 7})))
+        .unwrap_or_else(|f| panic!("{}", f.metadata()));
+    let request = crate::command::library_tool(&call).unwrap();
+    assert_eq!(
+        (request.kind.as_str(), request.scope.as_str(), request.limit),
+        ("component", "0:0", 7)
+    );
+    // A key alone, and a definition selected by its exact ref.
+    let call = check(
+        "usages",
+        ask(
+            json!({"library": {"kind": "component", "key": "k1", "definition":
+            {"sourceId": "s2", "snapshotId": "sha256:a", "nodeId": "1-2"}}}),
+        ),
+    )
+    .unwrap_or_else(|f| panic!("{}", f.metadata()));
+    let request = crate::command::library_tool(&call).unwrap();
+    let d = request.definition.unwrap();
+    assert_eq!(
+        (request.namespace, d.source_id, d.snapshot_id, d.node_id),
+        (None, "s2".into(), "sha256:a".into(), "1:2".into())
+    );
+    let definition =
+        |d: Value| json!({"library": {"kind": "component", "key": "k1", "definition": d}});
+    for bad in [
+        definition(json!({"sourceId": "s2", "snapshotId": "sha256:a"})),
+        definition(
+            json!({"sourceId": "s2", "snapshotId": "sha256:a", "nodeId": "1:2", "name": "x"}),
+        ),
+        definition(json!({"sourceId": "", "snapshotId": "sha256:a", "nodeId": "1:2"})),
+        json!({"workspaceId": null, "file": "a.fig"}),
+        json!({"node": "0:1"}),
+        json!({"resource": "image:00"}),
+        json!({"snapshotId": "sha256:x"}),
+        json!({"relation": "instance_of"}),
+        json!({"direction": "in"}),
+        json!({"library": {"kind": "frame", "namespace": "lib", "key": "k1"}}),
+        json!({"library": {"kind": "style", "namespace": "", "key": "k1"}}),
+        json!({"library": {"kind": "style", "namespace": "lib"}}),
+        json!({"library": {"kind": "style", "namespace": "lib", "key": "k1", "id": "x"}}),
+        json!({"library": "component/lib/k1"}),
+    ] {
+        let mut args = ask(bad.clone());
+        args.as_object_mut().unwrap().retain(|_, v| !v.is_null());
+        let failure = check("usages", args)
+            .err()
+            .unwrap_or_else(|| panic!("{bad}"));
+        assert_eq!(failure.metadata()["code"], "invalid_arguments", "{bad}");
+    }
+}
+
+#[test]
+fn cli_library_takes_its_reference_and_definition_flags_and_no_node_options() {
+    let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+    let request = crate::command::library_request(&args(&[
+        "--library",
+        "style",
+        "--namespace",
+        "lib",
+        "--key",
+        "k1",
+        "--scope",
+        "1:2",
+        "--limit",
+        "3",
+        "--include-hidden",
+    ]))
+    .unwrap();
+    assert_eq!(
+        (request.kind, request.namespace, request.key, request.scope),
+        (
+            "style".into(),
+            Some("lib".into()),
+            "k1".into(),
+            "1:2".into()
+        )
+    );
+    assert!(request.include_hidden && request.limit == 3);
+    for extra in [
+        &["--out"][..],
+        &["--snapshot", "s"],
+        &["--relation", "uses_style"],
+    ] {
+        let mut list = args(&["--library", "style", "--namespace", "lib", "--key", "k1"]);
+        list.extend(args(extra));
+        let error = crate::command::library_request(&list)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("does not apply to --library"), "{error}");
+    }
+    assert!(
+        crate::command::library_request(&args(&["--library", "style", "--namespace", "lib"]))
+            .is_err()
+    );
+    let selected = crate::command::library_request(&args(&[
+        "--library",
+        "component",
+        "--key",
+        "k1",
+        "--definition-source",
+        "s2",
+        "--definition-snapshot",
+        "sha256:a",
+        "--definition-node",
+        "1-2",
+    ]))
+    .unwrap();
+    assert_eq!(
+        (selected.namespace, selected.definition.map(|d| d.node_id)),
+        (None, Some("1:2".into()))
+    );
+    let error = crate::command::library_request(&args(&[
+        "--library",
+        "component",
+        "--key",
+        "k1",
+        "--definition-node",
+        "1:2",
+    ]))
+    .unwrap_err();
+    assert!(error.to_string().contains("go together"), "{error}");
+    let error = crate::command::usages_request(&args(&["--library", "style"])).unwrap_err();
+    assert!(error.to_string().contains("reads a workspace"), "{error}");
+}

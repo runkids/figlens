@@ -83,6 +83,12 @@ test('a check reads changes only, with the target filters and one revision', () 
   assert.deepEqual(checkInput({ workspaceId: ws, subscriptionId: 'sub', consumer: 'c', owner: 'task' }), { workspaceId: ws, subscriptionId: 'sub', limit: 1 });
 });
 
+test('a disabled evaluation reports the reason it was disabled with', async () => {
+  const reply = { evaluations: [], evaluation: { state: 'disabled', disabled: { reason: 'source_removed' } }, subscription: { state: 'disabled' }, tracking: [] };
+  const result = await check([{ workspaceId: ws, subscriptionId: 'sub' }], async () => reply);
+  assert.deepEqual(result.facts[0].evaluation, { state: 'disabled', reason: 'source_removed' });
+});
+
 test('a failed check keeps the binary message and the recovery its report line names', () => {
   const error = failure('figlens: revisions after this position were deleted by retention\n{"recovery":[{"action":"changes"}]}\n');
   assert.equal(error.message, 'figlens: revisions after this position were deleted by retention');

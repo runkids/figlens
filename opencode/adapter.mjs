@@ -38,6 +38,10 @@ const required = (input, name) => {
   if (typeof input[name] !== 'string' || !input[name]) throw new Error(`${input.action ?? 'This call'} needs ${name}.`);
   return input[name];
 };
+// A library reference and its optional exact definition ref, as the MCP library object carries them.
+const libraryFlags = library => ['--library', required(library, 'kind'), ...flag('--namespace', library.namespace),
+  '--key', required(library, 'key'), ...(library.definition === undefined ? [] : ['--definition-source', required(library.definition, 'sourceId'),
+    '--definition-snapshot', required(library.definition, 'snapshotId'), '--definition-node', required(library.definition, 'nodeId')])];
 
 // The MCP index, jobs, search, usages, diff, changes, watch and inspect arguments as the same CLI command, for the plugin's CLI path.
 export function cliArgs(tool, input) {
@@ -63,6 +67,13 @@ export function cliArgs(tool, input) {
   }
   if (tool === 'usages') {
     const target = corpus();
+    // As MCP: a library question reads a prepared workspace, and its reference replaces node, resource and their edge fields.
+    if (input.library !== undefined) {
+      const extra = ['file', 'node', 'resource', 'snapshotId', 'relation', 'direction'].find(key => input[key] !== undefined);
+      if (extra) throw new Error(`usages with library takes no ${extra}: library replaces node and resource, and snapshotId, relation and direction apply only to them`);
+      return ['usages', ...target, ...libraryFlags(input.library), ...flag('--scope', input.scope), ...flag('--include-hidden', input.includeHidden),
+        ...flag('--limit', input.limit), ...flag('--cursor', input.cursor)];
+    }
     if (!input.node === !input.resource) throw new Error('usages needs node or resource, not both');
     // The CLI tells a resource from a layer by its prefix, so a mislabelled target would silently switch kinds; same messages as the core.
     const resource = /^(VariableID:|StyleKey:|image:)/.test(input.node ?? input.resource);
@@ -80,9 +91,10 @@ export function cliArgs(tool, input) {
   if (tool === 'watch' && input.action === 'start') return ['watch', 'run', '--id', required(input, 'workspaceId'), ...flag('--source', input.sourceId),
     '--scope', required(input, 'scope'), ...storage, ...flag('--request-id', input.requestId)];
   // The CLI refuses a flag the action does not take.
-  if (tool === 'watch') return ['watch', input.action, ...filters(), ...flag('--consumer', input.consumer),
+  const library = input.library === undefined ? [] : libraryFlags(input.library);
+  if (tool === 'watch') return ['watch', input.action, ...filters(), ...flag('--sources', input.sources), ...flag('--consumer', input.consumer),
     ...flag('--subscription', input.subscriptionId), ...(input.action === 'ack' ? ['--cursor', required(input, 'cursor')] : flag('--cursor', input.cursor)),
-    ...flag('--node', input.node), ...flag('--query', input.query), ...flag('--type', input.type), ...flag('--owner', input.owner),
+    ...flag('--node', input.node), ...flag('--query', input.query), ...flag('--type', input.type), ...library, ...flag('--owner', input.owner),
     ...flag('--after', input.after)];
   // Every given selector and scope field reaches the CLI, which refuses conflicting selectors and fields an
   // action does not take, so none is dropped into a broader operation. A file is the operand of prepare, add
@@ -372,27 +384,57 @@ export function createAdapter(ctx, entry = import.meta.url) {
     if (tool === 'diff') await current.authorize('read', await both([input.old]));
     if (input.file && (tool !== 'index' || ['prepare', 'add', 'relocate'].includes(input.action))) await current.authorize('read', await both([input.file]));
     // Workspace search, usages and changes, refresh, rebuild and track read the registered designs' content, which this session may deny.
-    const readSources = async ({ state, sources }) => {
+    // `only` names the sources read; null reads every one.
+    const readSources = async ({ state, sources }, only = input.sourceId ? [input.sourceId] : null) => {
       // A workspace that does not exist yet reads no design; the command then fails as the MCP tool does.
       if (['absent', 'uninitialized'].includes(state)) return;
       if (!Array.isArray(sources)) throw missing("a workspace's sources");
-      const paths = sources.filter(source => !input.sourceId || source.sourceId === input.sourceId).map(source => source.path);
+      const paths = sources.filter(source => !only || only.includes(source.sourceId)).map(source => source.path);
       await current.authorize('read', [...new Set((await Promise.all(paths.map(async file => [file, await realpath(file).catch(() => file)]))).flat())]);
     };
-    if (['search', 'usages', 'changes'].includes(tool) && !input.file) await readSources(await status(input));
+    // A library question also reads its definition's source, whichever sources it queries; a definition source
+    // status does not list (or a row naming it null) asks every source.
+    const withDefinition = ({ sources }, only, definition) => !only || definition === undefined ? only
+      : sources?.some(source => source.sourceId === definition?.sourceId) ? [...only, definition.sourceId] : null;
+    // A subscription's evaluation reads its own source or set, which one read-only `watch list --subscription` names
+    // without any evaluation; one not listed to this caller, or with an unreadable set, is asked on every source. A
+    // caller's sourceId is asked too but never narrows the ask.
+    const subscribed = async found => {
+      const { subscriptions } = await invoke(cliArgs('watch', { action: 'list', workspaceId: input.workspaceId, storage: input.storage,
+        subscriptionId: input.subscriptionId }));
+      const sub = subscriptions?.find(s => s.subscriptionId === input.subscriptionId);
+      const ids = sub?.sources ?? (sub?.sourceId ? [sub.sourceId] : []);
+      // A library row names its definition (null when it has none); a row without the field asks every source.
+      const definition = !sub?.library || sub.definition === null ? undefined : sub.definition ?? {};
+      return withDefinition(found, ids.length ? [...ids, ...(input.sourceId ? [input.sourceId] : [])] : null, definition);
+    };
+    // Only changes and watch evaluate read a subscription's sources; search and usages ignore a subscriptionId.
+    const readSelected = async found => readSources(found, input.subscriptionId ? await subscribed(found) : undefined);
+    if (['search', 'usages', 'changes'].includes(tool) && !input.file) {
+      const found = await status(input);
+      await (tool === 'changes' ? readSelected(found)
+        : readSources(found, tool === 'usages' ? withDefinition(found, input.sourceId ? [input.sourceId] : null, input.library?.definition) : undefined));
+    }
     // Every other watch action writes checkpoints, subscriptions or leases into the workspace database, as a cancel writes its job.
     if (tool === 'watch' && !['list', 'status', 'start'].includes(input.action)) {
       // The binary evaluates the subscription's own source, so a sourceId would only narrow the read asked here.
       if (input.action === 'evaluate' && input.sourceId !== undefined) throw new Error("watch evaluate takes no sourceId: it evaluates the subscription's own source.");
       const found = await status(input);
-      // A saved query runs a workspace search on its source when saved and each time it is evaluated.
-      if ((input.action === 'subscribe' && input.query !== undefined) || input.action === 'evaluate') await readSources(found);
+      // A saved query or library question reads its source when saved and each time it is evaluated. A listed set
+      // (sources without visible) reads exactly those ids; visible, or an id status does not list, asks every one.
+      if (input.action === 'subscribe' && (input.query !== undefined || input.library !== undefined)) {
+        const ids = typeof input.sources === 'string' && input.sources !== 'visible' ? input.sources.split(',').map(id => id.trim()) : null;
+        const only = ids?.every(id => found.sources?.some(source => source.sourceId === id)) ? ids : input.sourceId ? [input.sourceId] : null;
+        await readSources(found, withDefinition(found, only, input.library?.definition));
+      }
+      if (input.action === 'evaluate') await readSelected(found);
       await edit(place(found));
     }
-    // A lease makes the shared runner read its source on every save, so start also asks read on it.
+    // A lease makes the shared runner read its source on every save and evaluate the saved questions over it,
+    // including sets and definitions in other sources, so start asks read on every registered source.
     if (tool === 'watch' && input.action === 'start') {
       const found = await status(input);
-      await readSources(found);
+      await readSources(found, null);
       await edit(place(found));
       await current.authorize('bash', [commandLine(args, holding())]);
       return current.holder.start(args.slice(2), current.signal);

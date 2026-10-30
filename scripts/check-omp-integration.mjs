@@ -19,7 +19,7 @@ const project = path.join(output, 'project 空白');
 await mkdir(path.join(project, 'src'), { recursive: true });
 process.env.PI_CODING_AGENT_DIR = path.join(output, 'agent');
 process.env.FIGLENS_BIN = binary;
-await copyFile(watchOnly ? path.resolve(watchOnly) : new URL('../samples/plugin-research/fixtures/mapping.fig', import.meta.url), path.join(project, 'mapping.fig'));
+await copyFile(watchOnly ? path.resolve(watchOnly) : new URL('../samples/plugin-research/fixtures/mapping-library.fig', import.meta.url), path.join(project, 'mapping.fig'));
 await copyFile(path.join(project, 'mapping.fig'), path.join(project, 'mapping-old.fig'));
 await writeFile(path.join(project, 'src/Button.mjs'), 'export const Button = () => "button";\n');
 const execute = promisify(execFile);
@@ -78,7 +78,12 @@ await check('packaged descriptor, bridge handshake and absolute design path', as
   assert.equal(config.args[0], path.resolve(packageInput, 'omp/mcp.cjs'));
   assert.equal(config.cwd, path.resolve(packageInput));
   const { connectToServer, listTools, callTool, disconnectServer } = await load('mcp/client.ts');
+  // The library question below indexes the project, so its state stays in this run's output.
+  const saved = { XDG_STATE_HOME: process.env.XDG_STATE_HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
+  process.env.XDG_STATE_HOME = path.join(output, 'descriptor-state');
+  process.env.XDG_CONFIG_HOME = path.join(output, 'descriptor-config');
   const connection = await connectToServer('figlens', config);
+  for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
   try {
     assert.ok((await listTools(connection)).some(tool => tool.name === 'find'));
     const relative = await callTool(connection, 'find', { file: 'mapping.fig', query: 'Mapping review' });
@@ -98,8 +103,42 @@ await check('packaged descriptor, bridge handshake and absolute design path', as
     assert.equal(diffed.structuredContent.coverage.complete, true);
     assert.equal(diffed.structuredContent.coverage.changes, 0);
     assert.notEqual(diffed.structuredContent.source.old.sourceId, diffed.structuredContent.source.new.sourceId);
+    // Two copies of the cached library component, registered in one project workspace.
+    await copyFile(path.join(project, 'mapping.fig'), path.join(project, 'library-copy.fig'));
+    const sources = [];
+    let workspaceId;
+    for (const file of ['mapping.fig', 'library-copy.fig']) {
+      const prepared = await callTool(connection, 'index', { action: 'prepare', workspace: project, file: path.join(project, file), scope: '0:0' });
+      assert.equal(prepared.isError, false, JSON.stringify(prepared));
+      let job;
+      for (const end = Date.now() + 30000; Date.now() < end;) {
+        job = await callTool(connection, 'jobs', { action: 'status', jobId: prepared.structuredContent.job.jobId });
+        if (job.isError || !['queued', 'running'].includes(job.structuredContent.state)) break;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      assert.equal(job.structuredContent?.state, 'succeeded', JSON.stringify(job));
+      assert.ok(workspaceId === undefined || workspaceId === prepared.structuredContent.workspaceId, JSON.stringify(prepared));
+      workspaceId = prepared.structuredContent.workspaceId;
+      sources.push(prepared.structuredContent.job.sourceId);
+    }
+    assert.equal(new Set(sources).size, 2, JSON.stringify(sources));
+    // The library reference comes from an instance's own outgoing usages, not from the fixture.
+    const out = await callTool(connection, 'usages', { workspaceId, sourceId: sources[0], node: '0:2', direction: 'out' });
+    const named = out.structuredContent?.results?.find(item => item.library)?.library;
+    assert.deepEqual(named, { kind: 'component', namespace: 'synthetic-library', key: 'synthetic-button', basis: 'cached_copy' }, JSON.stringify(out));
+    const library = { kind: named.kind, namespace: named.namespace, key: named.key };
+    const used = await callTool(connection, 'usages', { workspaceId, library });
+    assert.equal(used.isError, false);
+    assert.deepEqual(used.structuredContent.library, library);
+    // Both instances in each registered copy, named by source.
+    assert.deepEqual(used.structuredContent.results.map(item => [item.ref.sourceId, item.ref.nodeId]).sort(),
+      sources.flatMap(source => ['0:2', '0:3'].map(node => [source, node])).sort(), JSON.stringify(used));
+    assert.deepEqual(used.structuredContent.definition, { state: 'unresolved', reason: 'library_source_unproven' });
+    assert.equal(used.structuredContent.coverage.complete, true);
+    assert.deepEqual(used.structuredContent.coverage.sources.map(source => source.state), ['ready', 'ready']);
     return { descriptorCwd: config.cwd, bridge: config.args[0], absoluteFrame: '0:1', relativePathRejected: true,
-      searchRef: searched.structuredContent.results[0].ref, diffedTwoCopies: diffed.structuredContent.source };
+      searchRef: searched.structuredContent.results[0].ref, diffedTwoCopies: diffed.structuredContent.source,
+      libraryUsages: used.structuredContent.definition };
   } finally { await disconnectServer(connection); }
 });
 await check('first use through the packaged bridge: prepare, poll, search the published index, inspect, with native write approval', async () => {
@@ -320,7 +359,7 @@ if (process.argv.includes('--tui')) await check('native OMP TUI four-field edit 
   await mkdir(path.join(project, 'src'), { recursive: true });
   await mkdir(path.join(native, 'agent-tui'));
   await writeFile(path.join(native, 'agent-tui/config.yml'), 'startup:\n  setupWizard: false\n  checkUpdate: false\n  showSplash: false\n');
-  await copyFile(new URL('../samples/plugin-research/fixtures/mapping.fig', import.meta.url), path.join(project, 'mapping.fig'));
+  await copyFile(new URL('../samples/plugin-research/fixtures/mapping-library.fig', import.meta.url), path.join(project, 'mapping.fig'));
   await writeFile(path.join(project, 'src/Button.mjs'), 'export const Button = () => "button";\n');
   const flow = new Workflow(project, async args => JSON.parse((await execute(binary, args, { cwd: project })).stdout));
   await flow.select('mapping.fig', '0:1');

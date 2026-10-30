@@ -58,10 +58,22 @@ usage:
                                              variant_of, binds_variable, uses_style, uses_image,
                                              prototype_target, contains (asked for); in by default, --out
                                              for what it points at; state, basis and evidence per edge;
+                                             --out names a cached library copy's library {kind,
+                                             namespace, key}, the selector --library takes;
                                              coverage and cursor pages (50, 1-200), never a total
   figlens usages --workspace DIR|--file <file.fig>|--id ws_... <node>|<resource> [--source ID] [--storage DIR] [same options]
                                              the same over one source's prepared index of --scope,
                                              without parsing; a changed source is source_stale
+  figlens usages --workspace DIR|--file <file.fig>|--id ws_... --library KIND [--namespace NS] --key KEY
+          [--definition-source ID --definition-snapshot S --definition-node N]
+          [--source ID] [--storage DIR] [--scope ID] [--include-hidden] [--limit N] [--cursor C]
+                                             layers that use one library component, style or variable
+                                             (KIND), as each source's cached copy records it, across
+                                             every visible source's prepared --scope (--source: one);
+                                             the definition stays unresolved unless --definition-*
+                                             selects one by exact ref (checked, keyEvidence unverified);
+                                             without --namespace only copies naming none, never
+                                             complete; per-source coverage
   figlens diff <old.fig> <new.fig> [--node ID] [--limit N] [--cursor C] [--json]
                                              what changed between two saved revisions: one line per
                                              changed top-level frame (added, removed, changed, kind_changed,
@@ -207,11 +219,21 @@ usage:
                                              are evaluated now, on watch evaluate and by a watch
                                              runner serving the scope; changes reads the
                                              evaluations, never computes one
+          [--sources visible|ID[,ID]]        instead of --source: the saved question reads this fixed
+                                             set (at most 10; visible is resolved now, never widened);
+                                             causes name changed sources, corpus_changed a member's
+                                             relocation, publication or shared statistics; removing a
+                                             member disables it: unsubscribe, then subscribe again
+          [--library KIND [--namespace NS] --key KEY [--definition-source ID --definition-snapshot S
+           --definition-node ID]]            or save a library question: its uses' definitionMatch,
+                                             the definition followed by node id; transitive library
+                                             dependencies are not followed
   figlens watch evaluate <select> --subscription ID
                                              store a query subscription's evaluation of the scope's
                                              current index, unless it is already evaluated
-  figlens watch list <select> [--consumer NAME] [--after ID]
-                                             visible subscriptions and their state, a page at a time
+  figlens watch list <select> [--consumer NAME] [--after ID] [--subscription ID]
+                                             visible subscriptions and their state, a page at a time;
+                                             --subscription reads only that one (empty if unknown)
   figlens watch unsubscribe <select> --subscription ID|--consumer C --owner NAME
                                              remove one subscription, or an owner's temporary ones
   figlens watch forget <select> --consumer NAME [--source ID] [--scope NODE]
@@ -1405,7 +1427,7 @@ fn watch(action: &str, args: &[String]) -> Result<serde_json::Value, Box<dyn Err
     use figlens::workspace::{self, Select, changes::subscriptions as subs};
     let (usage, allowed): (&str, &[&str]) = match action {
         "subscribe" => (
-            "usage: figlens watch subscribe <select> --consumer NAME --source ID [--scope NODE] [--node ID|--query TEXT [--type T[,T]]] [--owner NAME] [--storage DIR]",
+            "usage: figlens watch subscribe <select> --consumer NAME --source ID|--sources visible|ID[,ID] [--scope NODE] [--node ID|--query TEXT [--type T[,T]]|--library KIND [--namespace NS] --key KEY [--definition-source ID --definition-snapshot SNAP --definition-node ID]] [--owner NAME] [--storage DIR]",
             &[
                 "--consumer",
                 "--scope",
@@ -1413,6 +1435,13 @@ fn watch(action: &str, args: &[String]) -> Result<serde_json::Value, Box<dyn Err
                 "--owner",
                 "--query",
                 "--type",
+                "--sources",
+                "--library",
+                "--namespace",
+                "--key",
+                "--definition-source",
+                "--definition-snapshot",
+                "--definition-node",
             ],
         ),
         "evaluate" => (
@@ -1420,8 +1449,8 @@ fn watch(action: &str, args: &[String]) -> Result<serde_json::Value, Box<dyn Err
             &["--subscription"],
         ),
         "list" => (
-            "usage: figlens watch list <select> [--consumer NAME] [--after ID] [--storage DIR]",
-            &["--consumer", "--after"],
+            "usage: figlens watch list <select> [--consumer NAME] [--after ID] [--subscription ID] [--storage DIR]",
+            &["--consumer", "--after", "--subscription"],
         ),
         "unsubscribe" => (
             "usage: figlens watch unsubscribe <select> --subscription ID|--consumer NAME --owner NAME [--storage DIR]",
@@ -1453,6 +1482,14 @@ fn watch(action: &str, args: &[String]) -> Result<serde_json::Value, Box<dyn Err
     let select = Select::from_choice(a.workspace.map(Path::new), a.file.map(Path::new), a.id)?
         .ok_or("choose the workspace with --workspace, --file or --id")?;
     let (source, flag) = (a.source.first().copied(), |k: &str| flags.get(k).copied());
+    // A library question's own flags never silently drop from a saved search.
+    if flag("--library").is_none()
+        && let Some(f) = flags
+            .keys()
+            .find(|f| ["--namespace", "--key"].contains(f) || f.starts_with("--definition-"))
+    {
+        return Err(format!("{f} applies only with --library; {usage}").into());
+    }
     match action {
         "subscribe" => subs::subscribe(
             &storage,
@@ -1469,10 +1506,32 @@ fn watch(action: &str, args: &[String]) -> Result<serde_json::Value, Box<dyn Err
                     .into_iter()
                     .flatten()
                     .collect(),
+                sources: flag("--sources"),
+                library: match flag("--library") {
+                    None => None,
+                    Some(_) => Some(command::library_request(
+                        &a.search
+                            .chunks(2)
+                            .filter(|p| {
+                                p[0].starts_with("--library")
+                                    || ["--namespace", "--key"].contains(&p[0].as_str())
+                                    || p[0].starts_with("--definition-")
+                            })
+                            .flatten()
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                    )?),
+                },
             },
         ),
         "evaluate" => workspace::changes::evaluate(&storage, &select, flag("--subscription")),
-        "list" => subs::list(&storage, &select, flag("--consumer"), flag("--after")),
+        "list" => subs::list(
+            &storage,
+            &select,
+            flag("--consumer"),
+            flag("--after"),
+            flag("--subscription"),
+        ),
         "unsubscribe" => subs::unsubscribe(
             &storage,
             &select,
@@ -1491,23 +1550,36 @@ fn watch(action: &str, args: &[String]) -> Result<serde_json::Value, Box<dyn Err
 }
 
 /// `figlens usages --workspace DIR|--file <file.fig>|--id ws_... <node>|<resource> [--source ID] [options]`:
-/// usages over one source's published index of `--scope`; nothing is built.
+/// usages over one source's published index of `--scope`, or with `--library KIND --namespace NS
+/// --key KEY` every visible source's; nothing is built.
 fn workspace_usages(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
     use figlens::workspace::{self, Select};
     let a = index_args(args, true)?;
-    let [target] = a.positional.as_slice() else {
-        return Err("usage: figlens usages --workspace DIR|--file <file.fig>|--id ws_... <node>|<resource> [--source ID] [--scope ID]".into());
+    let library = a.search.iter().any(|f| f == "--library");
+    let target = match a.positional.as_slice() {
+        [] if library => None,
+        [target] if !library => Some(target),
+        [_] => return Err("--library replaces the node or resource; pass one, not both".into()),
+        _ => return Err("usage: figlens usages --workspace DIR|--file <file.fig>|--id ws_... <node>|<resource>|--library KIND --namespace NS --key KEY [--source ID] [--scope ID]".into()),
     };
     let storage = workspace::storage(a.storage.map(Path::new))?;
     let select = Select::from_choice(a.workspace.map(Path::new), a.file.map(Path::new), a.id)?
         .ok_or("choose the workspace with --workspace, --file or --id")?;
+    let one_source = || {
+        if a.source.len() > 1 {
+            return Err("usages reads one source; pass --source once");
+        }
+        Ok(a.source.first().copied())
+    };
+    let Some(target) = target else {
+        let request = command::library_request(&a.search)?;
+        return workspace::library::library(&storage, &select, one_source()?, &request);
+    };
     let mut usages_args = vec![target.to_string()];
     usages_args.extend(a.search.iter().cloned());
     let request = command::usages_request(&usages_args)?;
-    if a.source.len() > 1 {
-        return Err("usages reads one source; pass --source once".into());
-    }
-    workspace::usages::usages(&storage, &select, a.source.first().copied(), &request)
+    let source = one_source()?;
+    workspace::usages::usages(&storage, &select, source, &request)
 }
 
 /// Reruns the release installer (scripts/install.sh, or install.ps1 on Windows) into this

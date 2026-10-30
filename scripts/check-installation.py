@@ -22,9 +22,11 @@ import threading
 import time
 import traceback
 from installation import environment, run, toolchain
-from mcp_smoke import check_first_use, check_mcp, check_reuse
+from mcp_smoke import check_first_use, check_library, check_mcp, check_reuse
 
 ROOT = Path(__file__).resolve().parent.parent
+# The synthetic mapping fixture the host lanes use; generate it as wiki/integrations.md says.
+MAPPING = ROOT/'samples/plugin-research/fixtures/mapping-library.fig'
 
 
 def sha(path):
@@ -60,6 +62,11 @@ def check_index(binary, fixture, cwd, env):
     assert built['job']['state'] == 'succeeded', built
     searched = json.loads(run([binary, 'search', '--file', source, 'First success'], cwd, env))
     assert searched['state'] == 'ready' and searched['results'][0]['ref']['nodeId'] == '0:1', searched
+    # Wiring only: the fixture records no library reference, so the question is unresolved and has no users.
+    used = json.loads(run([binary, 'usages', '--file', source, '--library', 'component', '--namespace', 'lib', '--key', 'k1'], cwd, env))
+    assert used['library'] == {'kind': 'component', 'namespace': 'lib', 'key': 'k1'} and used['results'] == [], used
+    assert used['definition'] == {'state': 'unresolved', 'reason': 'library_source_unproven'}, used
+    assert used['coverage']['complete'] is True and [s['state'] for s in used['coverage']['sources']] == ['ready'], used
     job = json.loads(run([binary, 'jobs', 'status', built['job']['jobId']], cwd, env))
     assert job['state'] == 'succeeded', job
     # A removed remembered root is recreated by an equivalent spelling: on Windows the ordinary
@@ -71,7 +78,7 @@ def check_index(binary, fixture, cwd, env):
     assert os.path.samefile(Path(recreated['paths']['database']).parents[2], custom/'state'), recreated
     assert sha(source) == before, 'index changed the source .fig'
     assert not (base/'state').exists(), 'a second database appeared in the default state root'
-    return {'customPrepare': True, 'rediscovered': True, 'resetNewIncarnation': True, 'indexedSearch': True,
+    return {'customPrepare': True, 'rediscovered': True, 'resetNewIncarnation': True, 'indexedSearch': True, 'libraryUsages': True,
             'removedRootRecreated': True, 'sourceUnchanged': True}
 
 
@@ -304,6 +311,14 @@ def main():
         # Each entry starts its own first use from clean roots, the way a host would launch it.
         first_use = {'nativeMcp': check_first_use([cache, 'mcp'], work/'first-use-native', fixture, env),
                      'wrapperMcp': check_first_use(wrapper + ['mcp'], work/'first-use-wrapper', fixture, wrapped_env)}
+        # A full host lane needs the fixture anyway, so it fails without one; a CLI-only or
+        # watch-only job (the public design alone) records the skip.
+        if not MAPPING.is_file() and (args.opencode_bin or args.omp_sdk) and not args.host_watch_only:
+            raise SystemExit(f'{MAPPING} is missing; generate it as wiki/integrations.md says')
+        library = lambda command, name, env: (check_library(command, work/name, MAPPING, env) if MAPPING.is_file()
+                                              else 'skipped: no samples/plugin-research/fixtures/mapping-library.fig')
+        first_use['nativeLibrary'] = library([cache, 'mcp'], 'library-native', env)
+        first_use['wrapperLibrary'] = library(wrapper + ['mcp'], 'library-wrapper', wrapped_env)
         # The wrapper, as a second host, reuses the index the native first use enabled.
         first_use['crossHost'] = check_reuse(wrapper + ['mcp'], work/'first-use-native', wrapped_env)
         watch = check_watch(cache, fixture, consumer, env)
@@ -330,6 +345,7 @@ def main():
             config = pi['mcp']
             pi['stdio'] = check_mcp([config['command'], *config['args']], consumer, wrapped_env, fixture, metadata['version'])
             first_use['piMcp'] = check_first_use([config['command'], *config['args']], work/'first-use-pi', fixture, wrapped_env)
+            first_use['piLibrary'] = library([config['command'], *config['args']], 'library-pi', wrapped_env)
         watch_only = [f'--watch-only={fixture}'] if args.host_watch_only else []
         if args.opencode_bin:
             hosts['opencode'] = json.loads(run([node, ROOT/'scripts/check-opencode-integration.mjs',

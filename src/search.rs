@@ -439,6 +439,11 @@ pub(crate) struct Record {
     root: Option<u32>,
     /// Its relations, `contains` excepted (that is `parent`), in relation and sequence order.
     edges: Vec<usages::Edge>,
+    /// Its library references (`usages::LIBRARY`), kept apart so every `edges` reader (usages,
+    /// diff, stored diff) sees what a build without them sees. Kept by stored generations and
+    /// stateless full builds (`Library`); only `usages::Graph::library` reads them, one record
+    /// at a time, and `store::add` never loads them.
+    library: Vec<usages::Edge>,
 }
 
 struct Posting {
@@ -487,6 +492,8 @@ pub struct Index {
     unverified_links: usize,
     /// Binding fields left out for being too large to read.
     unread_fields: usize,
+    /// A stateless full build whose library scan did not fit, so no use names its reference.
+    library_unread: bool,
     text_bytes: usize,
     generation: String,
     /// Whether every relation kind was extracted; a text-only build (ordinary stateless search)
@@ -497,6 +504,9 @@ pub struct Index {
     definitions: BTreeMap<String, usages::Definition>,
     /// Reverse lookups over a whole index, built on its first usages query or impact walk.
     reverse: std::sync::OnceLock<usages::Reverse>,
+    /// Definition and cached-copy fingerprints by record, kept by stored generations only
+    /// (`fingerprint`); never loaded back.
+    fingerprints: Vec<(u32, [fingerprint::Print; 4])>,
 }
 
 impl Index {
@@ -515,11 +525,13 @@ impl Index {
             hidden_content: 0,
             unverified_links: 0,
             unread_fields: 0,
+            library_unread: false,
             text_bytes: 0,
             generation: String::new(),
             relations: false,
             definitions: BTreeMap::new(),
             reverse: Default::default(),
+            fingerprints: Vec::new(),
         }
     }
 
@@ -587,17 +599,42 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
     build_as(tree, scope, bounds, true)
 }
 
+#[cfg(test)]
 fn build_as(tree: &Tree, scope: &str, bounds: Bounds, relations: bool) -> Index {
-    build_with(tree, scope, bounds, relations, None)
+    build_with(tree, scope, bounds, relations, Library::Skip, None)
+}
+
+/// Which library references a full build keeps in `Record.library`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Library {
+    /// None: text-only, viewer and diff builds.
+    Skip,
+    /// A stored generation's: a scan that runs out stops the build, so coverage says so.
+    Stored,
+    /// A stateless full build's, so outgoing usages can name them: a scan that does not fit what
+    /// is left keeps none instead of stopping the build (`Index::library_unread`), and what it
+    /// spent stays charged either way (`named_libraries`).
+    Named,
+}
+
+/// A stateless build's library scan: what it spent stays spent, but running out keeps no
+/// references and leaves `bounds` unstopped so the build goes on with what is left.
+fn named_libraries(tree: &Tree, bounds: &mut Bounds) -> Option<usages::Libraries> {
+    let stop = bounds.stop;
+    let found = usages::libraries(tree, bounds);
+    bounds.stop = stop;
+    found
 }
 
 /// `build_as` that also records each record's diff facets into `facets`, in record order (the
-/// explicit diff profile; search never asks for them).
+/// explicit diff profile; search never asks for them). `library` keeps the internal library
+/// references (`usages::LIBRARY`) of a full build as `Library` says.
 fn build_with(
     tree: &Tree,
     scope: &str,
     bounds: Bounds,
     relations: bool,
+    library: Library,
     mut facets: Option<&mut Vec<diff::Facets>>,
 ) -> Index {
     // A full build describes definitions within the caller's bounds: an eighth is kept back
@@ -628,7 +665,25 @@ fn build_with(
     let expansion = bounds.stop.take_if(|stop| *stop != Stop::Deadline);
     bounds.work += reserve.0;
     bounds.bytes += reserve.1;
+    // Only a full build reads library references; for a stored one a spent budget stops at the
+    // first record, a stateless one keeps none when it runs out and builds on what is left.
+    let (libraries, library_unread) = match (relations, library) {
+        (true, Library::Stored) => (usages::libraries(tree, &mut bounds), false),
+        (true, Library::Named) => {
+            let l = named_libraries(tree, &mut bounds);
+            let unread = l.is_none();
+            (l, unread)
+        }
+        _ => (None, false),
+    };
+    let libraries = libraries.unwrap_or_default();
+    let keep_library = relations && library != Library::Skip && !library_unread;
+    // A stored generation fingerprints its definitions and cached copies with their subtrees.
+    let fingerprint = relations && library == Library::Stored;
+    let mut inputs: Vec<Option<fingerprint::Input>> = Vec::new();
+    let mut defines = Vec::new();
     let mut index = Index::empty();
+    index.library_unread = library_unread;
     // Stored ancestors give the scope its page, navigation root and inherited visibility.
     let mut chain = Vec::new();
     let mut cur = tree.nodes.get(scope).and_then(|n| parent_of(n));
@@ -711,6 +766,7 @@ fn build_with(
             _ => 0,
         };
         let retained = 256
+            + if fingerprint { 64 } else { 0 }
             + id.len()
             + listed
             + name.len()
@@ -762,9 +818,13 @@ fn build_with(
             ex.nodes.get(&id),
             &mut bounds,
             relations.then_some((&mut index.unverified_links, &mut index.unread_fields)),
+            keep_library.then_some(&libraries),
         ) else {
             break;
         };
+        let library: Vec<_> = edges
+            .extract_if(.., |e| e.relation == usages::LIBRARY)
+            .collect();
         edges.sort_by(|a, b| (a.relation, a.seq).cmp(&(b.relation, b.seq)));
         let children = tree.children.get(&id).or_else(|| ex.children.get(&id));
         let kids = children.map_or(&[][..], Vec::as_slice);
@@ -793,20 +853,50 @@ fn build_with(
         ) {
             break;
         }
-        let facet = match facets.is_some() {
+        let unexpanded = hidden && children.is_none() && hides_content(tree, &ex, &id, &kind);
+        let defining = fingerprint
+            && !ex.nodes.contains_key(&id)
+            && fingerprint::applicable(&kind, tree.nodes.get(&id).copied());
+        let inside =
+            fingerprint && (defining || parent.is_some_and(|p| inputs[p as usize].is_some()));
+        // Read once; a record both tracked and fingerprinted keeps a copy that pays what the
+        // read did.
+        let left = bounds.bytes;
+        let read = match facets.is_some() || inside {
             true => match diff::facets(tree, &id, ex.nodes.get(&id), &mut bounds) {
                 Some(f) => Some(f),
                 None => break,
             },
             false => None,
         };
+        let (facet, input) = match (facets.is_some(), inside, read) {
+            (true, true, Some(f)) => {
+                if !bounds.charge(0, left - bounds.bytes) {
+                    break;
+                }
+                (Some(f.clone()), Some(f))
+            }
+            (true, _, f) => (f, None),
+            (false, _, f) => (None, f),
+        };
+        let input = input.map(|facets| fingerprint::Input {
+            facets,
+            hidden: own_hidden,
+            unexpanded,
+        });
         index.text_bytes += text_len;
         lens[0] += u64::from(record_lens[0]);
         lens[1] += u64::from(record_lens[1]);
-        if hidden && children.is_none() && hides_content(tree, &ex, &id, &kind) {
+        if unexpanded {
             index.hidden_content += 1;
         }
         let record = index.records.len() as u32;
+        if fingerprint {
+            if defining {
+                defines.push(record);
+            }
+            inputs.push(input);
+        }
         let (page, root) = if kind == "CANVAS" {
             index.pages.push(Page {
                 id: id.clone(),
@@ -845,6 +935,7 @@ fn build_with(
             page,
             root,
             edges,
+            library,
         });
         if let (Some(out), Some(f)) = (facets.as_deref_mut(), facet) {
             out.push(f);
@@ -869,8 +960,15 @@ fn build_with(
         deadline: bounds.deadline,
         stop: None,
     };
+    let cut = index.stop.is_some() || bounds.stop.is_some();
     if relations {
         index.definitions = usages::definitions(tree, &index.records, &mut own).unwrap_or_default();
+    }
+    if fingerprint {
+        let expansion = expansion.is_some();
+        index.fingerprints =
+            fingerprint::prints(&index.records, &inputs, &defines, cut, expansion, &mut own)
+                .unwrap_or_default();
     }
     index.relations = relations;
     bounds.stop = bounds.stop.or(own.stop);
@@ -1692,7 +1790,7 @@ pub(crate) fn index_bytes(
     scope: &str,
     deadline: Instant,
 ) -> Result<Index, Box<dyn Error>> {
-    decode_index(bytes, label, scope, deadline, true)
+    decode_index(bytes, label, scope, deadline, true, Library::Stored)
 }
 
 /// `index_bytes` of a scope with change tracking on: the same full build, plus the facets and
@@ -1713,7 +1811,7 @@ pub(crate) fn index_bytes_tracked(
     if !deleted_ok || scope.starts_with('I') {
         require_scope(&tree, scope)?;
     }
-    Ok(diff::tracked(&tree, scope, deadline))
+    Ok(diff::tracked(&tree, scope, deadline, Library::Stored))
 }
 
 fn decode_index(
@@ -1722,15 +1820,16 @@ fn decode_index(
     scope: &str,
     deadline: Instant,
     relations: bool,
+    library: Library,
 ) -> Result<Index, Box<dyn Error>> {
     let mut doc = Document::from_bytes(&bytes, label)?;
     drop(bytes);
     let message = doc.take_message()?;
     let tree = Tree::new(&message);
-    if relations {
+    if relations && library == Library::Skip {
         index_tree(&tree, scope, deadline)
     } else {
-        profiled(&tree, scope, deadline, false)
+        profiled(&tree, scope, deadline, relations, library)
     }
 }
 
@@ -1741,7 +1840,7 @@ pub(crate) fn index_tree(
     scope: &str,
     deadline: Instant,
 ) -> Result<Index, Box<dyn Error>> {
-    profiled(tree, scope, deadline, true)
+    profiled(tree, scope, deadline, true, Library::Skip)
 }
 
 fn profiled(
@@ -1749,6 +1848,7 @@ fn profiled(
     scope: &str,
     deadline: Instant,
     relations: bool,
+    library: Library,
 ) -> Result<Index, Box<dyn Error>> {
     require_scope(tree, scope)?;
     let bounds = Bounds {
@@ -1758,7 +1858,7 @@ fn profiled(
         deadline,
         stop: None,
     };
-    Ok(build_as(tree, scope, bounds, relations))
+    Ok(build_with(tree, scope, bounds, relations, library, None))
 }
 
 /// Searches a built index. `source` is the caller's exact identity of the revision the index
@@ -1853,7 +1953,15 @@ fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json
                 }
                 None => {
                     let label = path.display().to_string();
-                    let index = Arc::new(decode_index(bytes, &label, scope, deadline, relations)?);
+                    // A full build also keeps library references when they fit, so a usages
+                    // result can name the one it uses; a text-only build reads none.
+                    let library = match relations {
+                        true => Library::Named,
+                        false => Library::Skip,
+                    };
+                    let index = Arc::new(decode_index(
+                        bytes, &label, scope, deadline, relations, library,
+                    )?);
                     if stamp(&canonical)? != staged {
                         return Err(FigError::new(
                             ErrorKind::SourceUnreadable,
@@ -1899,6 +2007,7 @@ fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json
 }
 
 pub mod diff;
+pub(crate) mod fingerprint;
 pub(crate) mod impact;
 pub(crate) mod store;
 pub mod usages;

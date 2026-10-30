@@ -695,6 +695,9 @@ pub fn search_tool(
 /// the source is read.
 pub fn usages_request(args: &[String]) -> Result<figlens::search::usages::Request, Box<dyn Error>> {
     use figlens::search::usages;
+    if args.iter().any(|a| a == "--library") {
+        return Err("--library reads a workspace: figlens usages --workspace DIR|--file <file.fig>|--id ws_... --library KIND --namespace NS --key KEY".into());
+    }
     let target = args.first().ok_or(USAGE)?;
     let resource = ["VariableID:", "StyleKey:", "image:"]
         .iter()
@@ -734,6 +737,98 @@ pub fn usages_request(args: &[String]) -> Result<figlens::search::usages::Reques
             }
         }
     }
+    request.validate()?;
+    Ok(request)
+}
+
+/// CLI `--library KIND [--namespace NS] --key KEY` and its options, after the workspace
+/// selector; `--definition-source/-snapshot/-node` select a definition, all three or none.
+pub fn library_request(
+    args: &[String],
+) -> Result<figlens::workspace::library::Request, Box<dyn Error>> {
+    let mut request = figlens::workspace::library::Request {
+        kind: String::new(),
+        namespace: None,
+        key: String::new(),
+        definition: None,
+        scope: "0:0".into(),
+        include_hidden: false,
+        limit: figlens::search::usages::DEFAULT_LIMIT,
+        cursor: None,
+    };
+    let mut definition: [Option<String>; 3] = Default::default();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--include-hidden" => request.include_hidden = true,
+            "--out" | "--relation" | "--snapshot" => {
+                return Err(format!("{arg} does not apply to --library").into());
+            }
+            _ => {
+                let value = rest.next().ok_or(format!("{arg} needs a value"))?;
+                match arg.as_str() {
+                    "--library" => request.kind = value.clone(),
+                    "--namespace" => request.namespace = Some(value.clone()),
+                    "--definition-source" => definition[0] = Some(value.clone()),
+                    "--definition-snapshot" => definition[1] = Some(value.clone()),
+                    "--definition-node" => definition[2] = Some(normalize_id(value)),
+                    "--key" => request.key = value.clone(),
+                    "--scope" => request.scope = normalize_id(value),
+                    "--limit" => request.limit = value.parse().unwrap_or(0),
+                    "--cursor" => request.cursor = Some(value.clone()),
+                    _ => return Err(USAGE.into()),
+                }
+            }
+        }
+    }
+    request.definition = match definition {
+        [None, None, None] => None,
+        [Some(source_id), Some(snapshot_id), Some(node_id)] => {
+            Some(figlens::workspace::library::DefinitionRef {
+                source_id,
+                snapshot_id,
+                node_id,
+            })
+        }
+        _ => {
+            return Err(
+                "--definition-source, --definition-snapshot and --definition-node go together"
+                    .into(),
+            );
+        }
+    };
+    request.validate()?;
+    Ok(request)
+}
+
+/// MCP `usages` with `library`, whose shape and exclusions the contract already checked.
+pub fn library_tool(
+    call: &crate::contract::PreparedCall,
+) -> Result<figlens::workspace::library::Request, Box<dyn Error>> {
+    let library = call.argument("library");
+    let field = |v: &serde_json::Value, key: &str| v[key].as_str().map(str::to_owned);
+    let definition = &library["definition"];
+    let request = figlens::workspace::library::Request {
+        kind: field(library, "kind").unwrap(),
+        namespace: field(library, "namespace"),
+        key: field(library, "key").unwrap(),
+        // The schema requires all three of a definition's fields.
+        definition: definition
+            .is_object()
+            .then(|| figlens::workspace::library::DefinitionRef {
+                source_id: field(definition, "sourceId").unwrap(),
+                snapshot_id: field(definition, "snapshotId").unwrap(),
+                node_id: normalize_id(&field(definition, "nodeId").unwrap()),
+            }),
+        // watch subscribe takes no limit and defaults its own scope.
+        scope: normalize_id(call.string("scope").unwrap_or("0:0")),
+        include_hidden: call.argument("includeHidden") == true,
+        limit: call
+            .argument("limit")
+            .as_u64()
+            .map_or(figlens::search::usages::DEFAULT_LIMIT, |l| l as usize),
+        cursor: call.string("cursor").map(str::to_owned),
+    };
     request.validate()?;
     Ok(request)
 }
@@ -847,7 +942,8 @@ pub fn diff_tool(
     })
 }
 
-/// MCP `usages` with `workspaceId`: one source's prepared index, never a build.
+/// MCP `usages` with `workspaceId`: one source's prepared index, or with `library` every visible
+/// source's; never a build.
 pub fn workspace_usages_tool(
     call: &crate::contract::PreparedCall,
     roots: &[PathBuf],
@@ -855,12 +951,21 @@ pub fn workspace_usages_tool(
 ) -> Result<Output, Box<dyn Error>> {
     let storage = tool_storage(call, roots, storage_roots)?;
     let select = figlens::workspace::Select::Id(call.string("workspaceId").unwrap().to_owned());
-    let value = figlens::workspace::usages::usages(
-        &storage,
-        &select,
-        call.string("sourceId"),
-        &usages_tool(call)?,
-    )?;
+    let value = if call.argument("library").is_object() {
+        figlens::workspace::library::library(
+            &storage,
+            &select,
+            call.string("sourceId"),
+            &library_tool(call)?,
+        )?
+    } else {
+        figlens::workspace::usages::usages(
+            &storage,
+            &select,
+            call.string("sourceId"),
+            &usages_tool(call)?,
+        )?
+    };
     Ok(Output::Json {
         value,
         pretty: false,
@@ -971,6 +1076,11 @@ pub fn changes_tool(
             .into_iter()
             .flatten()
             .collect(),
+        sources: call.string("sources"),
+        library: match call.argument("library").is_object() {
+            true => Some(library_tool(call)?),
+            false => None,
+        },
     };
     use changes::subscriptions as subs;
     let needs = |name: &str| -> Result<&str, Box<dyn Error>> {
@@ -997,9 +1107,13 @@ pub fn changes_tool(
             );
         }
         ("watch", Some("evaluate")) => changes::evaluate(&storage, &select, request.subscription)?,
-        ("watch", Some("list")) => {
-            subs::list(&storage, &select, request.consumer, call.string("after"))?
-        }
+        ("watch", Some("list")) => subs::list(
+            &storage,
+            &select,
+            request.consumer,
+            call.string("after"),
+            request.subscription,
+        )?,
         ("watch", Some("unsubscribe")) => subs::unsubscribe(
             &storage,
             &select,

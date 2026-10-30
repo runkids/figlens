@@ -21,6 +21,11 @@ pub struct Subscribe<'a> {
     /// A saved workspace search over the source's scope, with its node types.
     pub query: Option<&'a str>,
     pub types: Vec<String>,
+    /// A saved question's fixed source set in place of `source`: `visible` (resolved once, now)
+    /// or comma-separated sourceIds.
+    pub sources: Option<&'a str>,
+    /// A saved library question (#93) over that set; its scope, limit and cursor are unused.
+    pub library: Option<crate::workspace::library::Request>,
 }
 
 pub(super) struct Sub {
@@ -34,6 +39,10 @@ pub(super) struct Sub {
     owner: Option<String>,
     pub(super) after_seq: i64,
     pub(super) floor: i64,
+    /// A saved question's fixed source set (`source` is then [`SET`]); `None` when unreadable.
+    pub(super) members: Option<Vec<String>>,
+    /// Why an authoritative event disabled it, as stored.
+    pub(super) disabled: Option<String>,
 }
 
 impl Sub {
@@ -45,12 +54,90 @@ impl Sub {
         self.kind == "query"
     }
 
+    pub(super) fn is_set(&self) -> bool {
+        self.source == SET
+    }
+
     /// The saved search of a query subscription.
     pub(super) fn saved(&self) -> Result<Option<queries::Saved>> {
         (self.kind == "query")
-            .then(|| queries::Saved::parse(&self.anchor))
+            .then(|| queries::Saved::parse(&self.anchor, self.members.clone()))
             .transpose()
     }
+}
+
+/// The `source_id` of a saved question over a fixed source set; never a real sourceId.
+pub(crate) const SET: &str = "*";
+
+/// The most a stored set takes; past it, or as anything but an array of at most
+/// `query::QUERY_SOURCES` sourceIds, it is unreadable. A written set never holds a JSON escape
+/// (sourceIds are `local:` and hex), so one makes it unreadable too: SQLite's JSON and serde
+/// disagree on some.
+pub(super) const SET_BYTES: usize = 4096;
+/// The disabled reason an unreadable set reads with: nothing of its members is emitted.
+const UNREADABLE: &str = r#"{"reason":"sources_unreadable"}"#;
+
+/// A stored set as read: `None` when it is unreadable.
+pub(super) fn members(text: Option<String>) -> Option<Vec<String>> {
+    text.filter(|t| t.len() <= SET_BYTES && !t.contains('\\'))
+        .and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok())
+        .filter(|m| m.len() <= query::QUERY_SOURCES)
+}
+
+/// SQL: whether column `col` holds a set [`members`] reads.
+pub(super) fn readable(col: &str) -> String {
+    format!(
+        "CASE WHEN length(CAST({col} AS BLOB)) <= {SET_BYTES} AND instr({col}, char(92)) = 0
+         AND json_valid({col})
+         THEN json_type({col}) = 'array' AND json_array_length({col}) <= {}
+         AND NOT EXISTS (SELECT 1 FROM json_each({col}) WHERE type <> 'text') ELSE 0 END",
+        query::QUERY_SOURCES
+    )
+}
+
+/// Whether the caller sees a set: every member still registered (one removed disabled the set
+/// and left with its data, so it guards nothing), and an unreadable one (`None`) only when the
+/// caller sees every source. [`seen`] is the same rule in SQL.
+pub(super) fn sees_set(
+    storage: &Storage,
+    conn: &Connection,
+    members: Option<&[String]>,
+) -> Result<bool> {
+    // Only the members' rows are read; an unreadable set (null) reads every source.
+    let mut stmt = conn
+        .prepare(
+            "SELECT path FROM sources WHERE ?1 IS NULL
+             OR source_id IN (SELECT value FROM json_each(?1))",
+        )
+        .map_err(sql)?;
+    let rows = stmt
+        .query_map([members.map(|m| json!(m).to_string())], |r| {
+            r.get::<_, String>(0)
+        })
+        .map_err(sql)?;
+    for path in rows {
+        if !storage.sees(Path::new(&path.map_err(sql)?)) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether the caller sees a subscription row of `subscriptions`: its source, or a set as
+/// [`sees_set`] decides. `?N` is the caller's visible sources as JSON. Before schema 8 no row
+/// is a set, and a read never upgrades.
+pub(super) fn seen(n: usize, version: i64) -> String {
+    let one = format!("subscriptions.source_id IN (SELECT value FROM json_each(?{n}))");
+    if version < 8 {
+        return format!("({one})");
+    }
+    format!(
+        "({one} OR (subscriptions.source_id = '{SET}' AND NOT EXISTS (SELECT 1 FROM sources x
+           WHERE x.source_id NOT IN (SELECT value FROM json_each(?{n}))
+           AND CASE WHEN {} THEN x.source_id IN
+             (SELECT value FROM json_each(subscriptions.sources)) ELSE 1 END)))",
+        readable("subscriptions.sources")
+    )
 }
 
 fn name(what: &str, value: Option<&str>) -> Result<String> {
@@ -72,15 +159,32 @@ pub(super) fn unknown(id: &str) -> Box<dyn Error> {
     )
 }
 
-const COLUMNS: &str =
-    "id, consumer, source_id, scope, kind, target, anchor, owner, after_seq, floor";
+/// The columns `row` reads; schema 8 added source sets and `disabled`, which an older
+/// workspace reads as null, never upgrading.
+fn columns(version: i64) -> String {
+    let added = match version >= 8 {
+        true => format!(
+            "CASE WHEN length(CAST(sources AS BLOB)) <= {SET_BYTES} THEN sources END, disabled"
+        ),
+        false => "NULL, NULL".to_owned(),
+    };
+    format!(
+        "id, consumer, source_id, scope, kind, target, anchor, owner, after_seq, floor, {added}"
+    )
+}
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<Sub> {
     let scope: String = r.get(3)?;
+    let source: String = r.get(2)?;
+    let members = members(r.get(10)?);
+    // An unreadable set is disabled as read: nothing of it is evaluated, acked or emitted.
+    let disabled = r
+        .get::<_, Option<String>>(11)?
+        .or_else(|| (source == SET && members.is_none()).then(|| UNREADABLE.to_owned()));
     Ok(Sub {
         id: r.get(0)?,
         consumer: r.get(1)?,
-        source: r.get(2)?,
+        source,
         scope: (!scope.is_empty()).then_some(scope),
         kind: r.get(4)?,
         target: r.get(5)?,
@@ -88,6 +192,8 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Sub> {
         owner: r.get(7)?,
         after_seq: r.get(8)?,
         floor: r.get(9)?,
+        members,
+        disabled,
     })
 }
 
@@ -101,16 +207,26 @@ pub(super) fn visible(storage: &Storage, ws: &Opened, id: &str) -> Result<Sub> {
     let sub = ws
         .conn
         .query_row(
-            &format!("SELECT {COLUMNS} FROM subscriptions WHERE id = ?1"),
+            &format!(
+                "SELECT {} FROM subscriptions WHERE id = ?1",
+                columns(ws.version)
+            ),
             [id],
             row,
         )
         .optional()
         .map_err(sql)?
         .ok_or_else(|| unknown(id))?;
-    match registry::visible_path(storage, &ws.conn, &sub.source)? {
-        Some(_) => Ok(sub),
-        None => Err(unknown(id)),
+    if !sub.is_set() {
+        return match registry::visible_path(storage, &ws.conn, &sub.source)? {
+            Some(_) => Ok(sub),
+            None => Err(unknown(id)),
+        };
+    }
+    // A set is seen only whole: nothing of its evaluations is read otherwise.
+    match sees_set(storage, &ws.conn, sub.members.as_deref())? {
+        true => Ok(sub),
+        false => Err(unknown(id)),
     }
 }
 
@@ -140,10 +256,20 @@ fn target(
     })
 }
 
+fn registered(conn: &Connection, source: &str) -> Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sources WHERE source_id = ?1)",
+        [source],
+        |r| r.get(0),
+    )
+    .map_err(sql)
+}
+
 /// What a subscription follows and whether its target still holds.
 pub(super) fn describe(conn: &Connection, sub: &Sub) -> Result<Json> {
     let scope = sub.scope.as_deref().unwrap_or("");
     let state = match sub.node() {
+        None if sub.disabled.is_some() => "disabled",
         None => "active",
         Some(node) => match target(conn, &sub.source, scope, node)? {
             Ok(kind) if kind == sub.anchor => "active",
@@ -164,9 +290,50 @@ pub(super) fn describe(conn: &Connection, sub: &Sub) -> Result<Json> {
         out["nodeKind"] = json!(sub.anchor);
     }
     if let Some(saved) = sub.saved()? {
-        out["query"] = json!(saved.query);
-        out["types"] = json!(saved.types);
+        match &saved.library {
+            Some(l) => {
+                out["library"] = json!({"kind": l.kind, "namespace": l.namespace, "key": l.key});
+                out["definition"] = match &l.definition {
+                    None => Json::Null,
+                    // A removed definition source is not the reader's to learn, nor its node.
+                    Some(d) if !registered(conn, &d.source_id)? => {
+                        json!({"sourceId": null, "nodeId": null, "baselineSnapshotId": null})
+                    }
+                    Some(d) => json!({"sourceId": d.source_id, "nodeId": d.node_id,
+                        "baselineSnapshotId": d.snapshot_id}),
+                };
+            }
+            None => {
+                out["query"] = json!(saved.query);
+                out["types"] = json!(saved.types);
+            }
+        }
         out["topK"] = json!(queries::TOP_K);
+    }
+    if sub.is_set() {
+        out["sourceId"] = Json::Null;
+        // Only members still registered, which the caller sees: a removed one's id is not
+        // the caller's to learn.
+        out["sources"] = match &sub.members {
+            None => Json::Null,
+            Some(m) => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT value FROM json_each(?1)
+                         WHERE value IN (SELECT source_id FROM sources) ORDER BY key",
+                    )
+                    .map_err(sql)?;
+                let kept = stmt
+                    .query_map([json!(m).to_string()], |r| r.get::<_, String>(0))
+                    .map_err(sql)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(sql)?;
+                json!(kept)
+            }
+        };
+    }
+    if let Some(why) = &sub.disabled {
+        out["disabled"] = serde_json::from_str(why).unwrap_or(Json::Null);
     }
     Ok(out)
 }
@@ -211,23 +378,58 @@ pub(super) fn admit(conn: &Connection, ws: &str, consumer: &str) -> Result<()> {
 /// a hidden source's. A repeated request returns the existing subscription.
 pub fn subscribe(storage: &Storage, select: &Select, req: &Subscribe) -> Result<Json> {
     let consumer = name("consumer", req.consumer)?;
-    let source = req.source.ok_or_else(|| {
-        fail(
-            ErrorKind::InvalidArguments,
-            "pass sourceId: subscriptions follow one source",
-        )
-    })?;
+    let invalid = |m: &str| fail(ErrorKind::InvalidArguments, m);
+    if req.query.is_some() && req.library.is_some() {
+        return Err(invalid("pass query or library, not both"));
+    }
+    if req.sources.is_some() && req.query.is_none() && req.library.is_none() {
+        return Err(invalid(
+            "sources applies to a saved query or library question; follow revisions by sourceId",
+        ));
+    }
+    let source = match (req.source, req.sources) {
+        (Some(_), Some(_)) => return Err(invalid("pass sourceId or sources, not both")),
+        (None, None) => {
+            return Err(invalid(
+                "pass sourceId: subscriptions follow one source, or sources for a saved question",
+            ));
+        }
+        (source, _) => source.unwrap_or(SET),
+    };
+    // A listed set is bounded before any of its names is resolved.
+    if let Some(list) = req.sources.filter(|l| *l != "visible")
+        && (list.len() > SET_BYTES || list.split(',').count() > query::QUERY_SOURCES)
+    {
+        return Err(invalid(&format!(
+            "sources lists at most {} sourceIds in {SET_BYTES} bytes",
+            query::QUERY_SOURCES
+        )));
+    }
     let owner = req.owner.map(|o| name("owner", Some(o))).transpose()?;
     let node = req.node.map(crate::normalize_id);
-    let saved = req.query.map(|q| {
-        let mut types = req.types.clone();
-        types.sort();
-        types.dedup();
-        queries::Saved {
-            query: q.to_owned(),
-            types,
+    if let Some(l) = &req.library {
+        l.validate()?;
+    }
+    let saved = match (req.query, &req.library) {
+        (Some(q), _) => {
+            let mut types = req.types.clone();
+            types.sort();
+            types.dedup();
+            Some(queries::Saved {
+                query: q.to_owned(),
+                types,
+                library: None,
+                members: None,
+            })
         }
-    });
+        (None, Some(l)) => Some(queries::Saved {
+            query: String::new(),
+            types: Vec::new(),
+            library: Some(l.clone()),
+            members: None,
+        }),
+        (None, None) => None,
+    };
     // A saved query searches one published scope, the whole file unless named.
     let scope = match (&saved, req.scope) {
         (Some(_), None) => "0:0".to_owned(),
@@ -236,23 +438,65 @@ pub fn subscribe(storage: &Storage, select: &Select, req: &Subscribe) -> Result<
     if saved.is_some() && node.is_some() {
         return Err(fail(
             ErrorKind::InvalidArguments,
-            "pass query or node, not both",
+            "pass query or library, or node, not both",
         ));
     }
-    if saved.is_none() && !req.types.is_empty() {
+    if req.query.is_none() && !req.types.is_empty() {
         return Err(fail(
             ErrorKind::InvalidArguments,
             "type filters a saved query; pass query with it",
         ));
     }
-    let canonical = saved.as_ref().map(|s| s.canonical(&scope)).transpose()?;
     let (_, ws) = opened(storage, select, true)?;
     // The write lock is taken first, so visibility and the write share one snapshot.
     let tx =
         rusqlite::Transaction::new_unchecked(&ws.conn, rusqlite::TransactionBehavior::Immediate)
             .map_err(sql)?;
-    jobs::chosen(storage, &ws, Some(source))?;
     let ws_id = ws.held.id.clone();
+    // A library question always reads a set, one source's included; the set is fixed here and
+    // never gains a source added later.
+    let members = match (req.sources, &req.library) {
+        (None, None) => {
+            jobs::chosen(storage, &ws, Some(source))?;
+            None
+        }
+        (None, Some(_)) => Some(jobs::chosen(storage, &ws, Some(source))?),
+        (Some("visible"), _) => Some(jobs::chosen(storage, &ws, None)?),
+        (Some(list), _) => {
+            let mut out = Vec::new();
+            for id in list.split(',').map(str::trim) {
+                out.extend(jobs::chosen(storage, &ws, Some(id))?);
+            }
+            Some(out)
+        }
+    };
+    let saved = saved.map(|mut s| {
+        s.members = members.map(|mut m| {
+            m.sort();
+            m.dedup();
+            m
+        });
+        s
+    });
+    let members = saved.as_ref().and_then(|s| s.members.clone());
+    let source = if members.is_some() { SET } else { source };
+    match members.as_ref().map(Vec::len) {
+        Some(0) => return Err(invalid("sources names no visible source")),
+        Some(n) if n > query::QUERY_SOURCES => {
+            return Err(fail(
+                ErrorKind::InvalidArguments,
+                format!(
+                    "sources names {n} sources; a saved question reads at most {}, so pass them as a list",
+                    query::QUERY_SOURCES
+                ),
+            ));
+        }
+        _ => {}
+    }
+    if let Some(saved) = &saved {
+        queries::definition_holds(&tx, saved, &scope)?;
+    }
+    let canonical = saved.as_ref().map(|s| s.canonical(&scope)).transpose()?;
     let (kind, target_id, anchor) = match &node {
         None if let (Some(saved), Some(canonical)) = (&saved, &canonical) => {
             ("query", canonical.clone(), saved.anchor())
@@ -271,17 +515,29 @@ pub fn subscribe(storage: &Storage, select: &Select, req: &Subscribe) -> Result<
         None if scope.is_empty() => ("source", String::new(), String::new()),
         None => ("scope", String::new(), String::new()),
     };
-    let existing: Option<(String, Option<String>)> = tx
+    let existing: Option<(String, Option<String>, Option<String>)> = tx
         .query_row(
-            "SELECT id, owner FROM subscriptions WHERE consumer = ?1 AND source_id = ?2
+            "SELECT id, owner, disabled FROM subscriptions WHERE consumer = ?1 AND source_id = ?2
              AND scope = ?3 AND kind = ?4 AND target = ?5",
             params![consumer, source, scope, kind, target_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()
         .map_err(sql)?;
+    // A disabled subscription never turns back into a fresh baseline, nor its old cursors.
+    if let Some((id, _, Some(_))) = &existing {
+        return Err(FigError::new(
+            ErrorKind::InvalidArguments,
+            format!("subscription {id} is disabled; unsubscribe it, then subscribe again"),
+        )
+        .with_recovery(
+            json!([{"action": "unsubscribe", "requires": "write", "tool": "watch",
+            "arguments": {"action": "unsubscribe", "workspaceId": ws_id, "subscriptionId": id}}]),
+        )
+        .into());
+    }
     // Returning another owner's row would let either owner's cleanup remove the other's follow.
-    if existing.as_ref().is_some_and(|(_, o)| *o != owner) {
+    if existing.as_ref().is_some_and(|(_, o, _)| *o != owner) {
         return Err(fail(
             ErrorKind::InvalidArguments,
             format!(
@@ -289,7 +545,7 @@ pub fn subscribe(storage: &Storage, select: &Select, req: &Subscribe) -> Result<
             ),
         ));
     }
-    let existing = existing.map(|(id, _)| id);
+    let existing = existing.map(|(id, ..)| id);
     let created = existing.is_none();
     let id =
         match existing {
@@ -303,13 +559,14 @@ pub fn subscribe(storage: &Storage, select: &Select, req: &Subscribe) -> Result<
                     .map_err(sql)?;
                 tx.execute(
                 "INSERT INTO subscriptions (id, consumer, source_id, scope, kind, target, anchor,
-                 lifetime, owner, filter_version, after_seq, floor, created_ms, read_ms)
+                 lifetime, owner, filter_version, after_seq, floor, created_ms, read_ms, sources)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                  CASE WHEN ?5 = 'query' THEN 0 ELSE (SELECT IFNULL(MAX(seq), 0) FROM revisions
-                 WHERE source_id = ?3 AND (?4 = '' OR scope = ?4)) END, ?11, ?12, ?12)",
+                 WHERE source_id = ?3 AND (?4 = '' OR scope = ?4)) END, ?11, ?12, ?12, ?13)",
                 params![id, consumer, source, scope, kind, target_id, anchor,
                     if owner.is_some() { "temporary" } else { "durable" }, owner,
-                    FILTER_VERSION, floor(&tx)?, now_ms()],
+                    FILTER_VERSION, floor(&tx)?, now_ms(),
+                    members.as_ref().map(|m| json!(m).to_string())],
             )
             .map_err(sql)?;
                 id
@@ -367,12 +624,14 @@ pub fn subscribe(storage: &Storage, select: &Select, req: &Subscribe) -> Result<
     Ok(reply)
 }
 
-/// The caller's visible subscriptions, one page at a time in id order.
+/// The caller's visible subscriptions, one page at a time in id order; `id` reads only that
+/// one, by its key, under the same visibility rule (empty when it is unknown to this caller).
 pub fn list(
     storage: &Storage,
     select: &Select,
     consumer: Option<&str>,
     after: Option<&str>,
+    id: Option<&str>,
 ) -> Result<Json> {
     let (_, ws) = opened(storage, select, false)?;
     // Schema 6 introduced subscriptions; a read never upgrades.
@@ -384,8 +643,16 @@ pub fn list(
     let sources = jobs::chosen(storage, &ws, None)?;
     let mut stmt = tx
         .prepare(&format!(
-            "SELECT {COLUMNS} FROM subscriptions WHERE (?1 IS NULL OR consumer = ?1)
-             AND id > ?2 AND source_id IN (SELECT value FROM json_each(?3)) ORDER BY id LIMIT ?4"
+            "SELECT {} FROM subscriptions WHERE (?1 IS NULL OR consumer = ?1)
+             AND id > ?2 AND {} AND {} ORDER BY id LIMIT ?4",
+            columns(ws.version),
+            // A plain `id = ?5` so the lookup seeks the key; an optional OR would range-scan.
+            if id.is_some() {
+                "id = ?5"
+            } else {
+                "?5 IS NULL"
+            },
+            seen(3, ws.version)
         ))
         .map_err(sql)?;
     let subs = stmt
@@ -394,7 +661,8 @@ pub fn list(
                 consumer,
                 after.unwrap_or(""),
                 json!(sources).to_string(),
-                LIST_PAGE as i64 + 1
+                LIST_PAGE as i64 + 1,
+                id
             ],
             row,
         )
@@ -431,8 +699,10 @@ pub fn unsubscribe(
         (Some(id), None, None) => {
             let n = tx
                 .execute(
-                    "DELETE FROM subscriptions WHERE id = ?1
-                     AND source_id IN (SELECT value FROM json_each(?2))",
+                    &format!(
+                        "DELETE FROM subscriptions WHERE id = ?1 AND {}",
+                        seen(2, ws.version)
+                    ),
                     params![id, json!(sources).to_string()],
                 )
                 .map_err(sql)?;
@@ -442,10 +712,10 @@ pub fn unsubscribe(
             vec![id.to_owned()]
         }
         (None, Some(consumer), Some(owner)) => tx
-            .prepare(
-                "DELETE FROM subscriptions WHERE consumer = ?1 AND owner = ?2
-                 AND source_id IN (SELECT value FROM json_each(?3)) RETURNING id",
-            )
+            .prepare(&format!(
+                "DELETE FROM subscriptions WHERE consumer = ?1 AND owner = ?2 AND {} RETURNING id",
+                seen(3, ws.version)
+            ))
             .map_err(sql)?
             .query_map(params![consumer, owner, json!(sources).to_string()], |r| {
                 r.get(0)

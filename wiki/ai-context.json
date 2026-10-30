@@ -215,6 +215,7 @@
     "wiki/states.md": "Field reference linked from fig-format.md and wiki/README.md; read when changing related-variant inventory or its limits.",
     "wiki/semantics.md": "Field reference linked from fig-format.md and README.md; read when changing partial semantics or provenance.",
     "wiki/mcp-contract.md": "Field reference linked from mcp.md; read when changing an MCP tool parameter range, default or failure code.",
-    "wiki/preview-api.md": "Field reference linked from preview.md; read when changing window.figlens calls or the preview image and snapshot budgets."
+    "wiki/preview-api.md": "Field reference linked from preview.md; read when changing window.figlens calls or the preview image and snapshot budgets.",
+    "wiki/library-usages.md": "Field reference linked from usages.md; read when changing stored library references or the cross-source library query."
   }
 }

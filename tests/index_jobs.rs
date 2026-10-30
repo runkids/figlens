@@ -567,6 +567,93 @@ fn a_schema_3_workspace_serves_usages_and_empty_changes_without_upgrading() {
 }
 
 #[test]
+fn library_usages_agree_over_the_cli_and_mcp_and_refuse_a_node_target() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let library = [
+        "--library",
+        "component",
+        "--namespace",
+        "lib",
+        "--key",
+        "k1",
+    ];
+    let cli = env.json(&[&["usages", "--file", file][..], &library].concat());
+    assert_eq!(
+        cli["definition"]["reason"], "library_source_unproven",
+        "{cli}"
+    );
+    assert_eq!(cli["library"]["key"], "k1");
+    let mut mcp = Mcp::start(&env, &[]);
+    let reply = mcp.call(
+        "usages",
+        json!({"workspaceId": cli["workspaceId"],
+            "library": {"kind": "component", "namespace": "lib", "key": "k1"}}),
+    );
+    drop(mcp);
+    assert_eq!(reply["isError"], false, "{reply}");
+    // Each call checks the stamp when it runs; everything else agrees.
+    let checked = |mut c: Value| {
+        c["sources"][0]["freshness"]["stampCheckedAtMs"] = Value::Null;
+        c
+    };
+    assert_eq!(
+        checked(reply["structuredContent"]["coverage"].clone()),
+        checked(cli["coverage"].clone())
+    );
+    let both = env.run(&[&["usages", "--file", file, "0:1"][..], &library].concat());
+    assert!(!both.status.success());
+    assert!(String::from_utf8_lossy(&both.stderr).contains("not both"));
+}
+
+#[test]
+fn a_library_question_by_a_relocated_path_is_asked_again_by_workspace() {
+    let env = Env::new();
+    let old = env.fig("a.fig");
+    let prepared = env.json(&["index", "prepare", old.to_str().unwrap(), "--scope", "0:0"]);
+    let new = env.dir.join("moved.fig");
+    std::fs::rename(&old, &new).unwrap();
+    let new = std::fs::canonicalize(new).unwrap();
+    let source = prepared["source"]["sourceId"].as_str().unwrap();
+    let old_s = old.to_str().unwrap();
+    env.json(&[
+        "index",
+        "relocate",
+        source,
+        new.to_str().unwrap(),
+        "--file",
+        old_s,
+    ]);
+    std::fs::copy("examples/first-success/design.fig", &old).unwrap();
+    let asked = env.run(&[
+        "usages",
+        "--file",
+        old_s,
+        "--library",
+        "style",
+        "--namespace",
+        "lib",
+        "--key",
+        "k1",
+        "--source",
+        source,
+    ]);
+    assert!(!asked.status.success());
+    let stderr = String::from_utf8_lossy(&asked.stderr);
+    let recovery: Value = serde_json::from_str(stderr.lines().last().unwrap()).unwrap();
+    let arguments = &recovery["recovery"][0]["arguments"];
+    assert_eq!(
+        arguments["workspaceId"], prepared["workspaceId"],
+        "{stderr}"
+    );
+    assert_eq!(arguments["library"]["key"], "k1");
+    assert_eq!(arguments["sourceId"], source);
+    assert!(arguments.get("file").is_none(), "{stderr}");
+}
+
+#[test]
 fn usages_of_a_scope_not_ready_report_its_state_next_step_and_null_fields() {
     let env = Env::new();
     let fig = env.fig("a.fig");
@@ -1049,6 +1136,248 @@ fn the_old_path_of_a_relocated_source_does_not_serve_it_under_that_name() {
         env.json(&["index", "status", "--file", new_s])["workspaceId"],
         prepared["workspaceId"]
     );
+}
+
+/// A project workspace directory with `fig` prepared into it at scope `0:0`.
+fn prepare_in(env: &Env, fig: &Path, dir: &str) -> Value {
+    env.json(&[
+        "index",
+        "prepare",
+        fig.to_str().unwrap(),
+        "--workspace",
+        dir,
+        "--scope",
+        "0:0",
+    ])
+}
+
+fn project(env: &Env) -> PathBuf {
+    let project = env.dir.join("project");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::canonicalize(project).unwrap()
+}
+
+fn refs(reply: &Value) -> Vec<&Value> {
+    reply["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| &r["ref"])
+        .collect()
+}
+
+/// Changes a file's size, so its stamp no longer equals the verified snapshot.
+fn grow(fig: &Path) {
+    let mut file = std::fs::OpenOptions::new().append(true).open(fig).unwrap();
+    file.write_all(b"x").unwrap();
+}
+
+#[test]
+fn one_node_id_in_two_sources_is_returned_once_per_source_with_its_own_ref() {
+    let env = Env::new();
+    let project = project(&env);
+    let dir = project.to_str().unwrap();
+    for name in ["a.fig", "b.fig"] {
+        prepare_in(&env, &env.fig(name), dir);
+    }
+    let all = env.json(&["search", "--workspace", dir, "first"]);
+    let found = refs(&all);
+    assert_eq!(found.len(), 2, "{all}");
+    assert_eq!(found[0]["nodeId"], found[1]["nodeId"]);
+    assert_ne!(found[0]["sourceId"], found[1]["sourceId"]);
+    for r in &found {
+        let own = all["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["sourceId"] == r["sourceId"])
+            .unwrap();
+        assert_eq!(own["snapshotId"], r["snapshotId"]);
+        let alone = env.json(&[
+            "search",
+            "--workspace",
+            dir,
+            "--source",
+            r["sourceId"].as_str().unwrap(),
+            "first",
+        ]);
+        assert_eq!(refs(&alone), [*r]);
+    }
+}
+
+#[test]
+fn identical_bytes_in_two_sources_keep_their_ids_and_a_hidden_one_never_answers() {
+    let env = Env::new();
+    let (inside, outside) = (env.dir.join("in"), env.dir.join("out"));
+    std::fs::create_dir(&inside).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    let copy = |dir: &Path| {
+        let path = dir.join("design.fig");
+        std::fs::copy("examples/first-success/design.fig", &path).unwrap();
+        std::fs::canonicalize(path).unwrap()
+    };
+    let (seen, hidden) = (copy(&inside), copy(&outside));
+    let project = std::fs::canonicalize(env.dir.join("")).unwrap();
+    let dir = project.to_str().unwrap();
+    let seen_id = prepare_in(&env, &seen, dir)["source"]["sourceId"].clone();
+    let other = prepare_in(&env, &hidden, dir);
+    let hidden_id = other["source"]["sourceId"].clone();
+    assert_ne!(seen_id, hidden_id);
+    let status = env.json(&["index", "status", "--workspace", dir]);
+    let snapshots: Vec<&Value> = status["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| &s["snapshotId"])
+        .collect();
+    assert_eq!(snapshots[0], snapshots[1], "{status}");
+    let root = std::fs::canonicalize(&inside).unwrap();
+    let mut mcp = Mcp::start(&env, &["--root", root.to_str().unwrap()]);
+    let search = mcp.call(
+        "search",
+        json!({"workspaceId": other["workspaceId"], "query": "first"}),
+    );
+    let found = &search["structuredContent"];
+    assert!(!refs(found).is_empty(), "{search}");
+    assert!(refs(found).iter().all(|r| r["sourceId"] == seen_id));
+    assert!(!search.to_string().contains(hidden_id.as_str().unwrap()));
+    assert_eq!(found["coverage"]["totalRecords"], Value::Null);
+    // Without the hidden copy the visible one answers the same.
+    env.json(&[
+        "index",
+        "remove",
+        hidden_id.as_str().unwrap(),
+        "--workspace",
+        dir,
+    ]);
+    let after = mcp.call(
+        "search",
+        json!({"workspaceId": other["workspaceId"], "query": "first"}),
+    );
+    assert_eq!(refs(&after["structuredContent"]), refs(found));
+}
+
+#[test]
+fn a_missing_source_is_not_answered_by_a_same_name_file_registered_elsewhere() {
+    let env = Env::new();
+    let project = project(&env);
+    let dir = project.to_str().unwrap();
+    let old = env.fig("a.fig");
+    let old_id = prepare_in(&env, &old, dir)["source"]["sourceId"].clone();
+    let elsewhere = env.dir.join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::fs::copy("examples/first-success/design.fig", elsewhere.join("a.fig")).unwrap();
+    let new_id = prepare_in(&env, &elsewhere.join("a.fig"), dir)["source"]["sourceId"].clone();
+    assert_ne!(old_id, new_id);
+    std::fs::remove_file(&old).unwrap();
+    let found = env.json(&["search", "--workspace", dir, "first"]);
+    assert_eq!(
+        refs(&found)
+            .iter()
+            .map(|r| &r["sourceId"])
+            .collect::<Vec<_>>(),
+        [&new_id],
+        "{found}"
+    );
+    let gone = found["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["sourceId"] == old_id)
+        .unwrap();
+    assert_eq!(gone["state"], "unreadable");
+    assert_eq!(found["coverage"]["complete"], false);
+}
+
+#[test]
+fn a_source_recreated_at_its_path_with_other_bytes_is_stale_not_served() {
+    let env = Env::new();
+    let project = project(&env);
+    let dir = project.to_str().unwrap();
+    let fig = env.fig("a.fig");
+    prepare_in(&env, &fig, dir);
+    std::fs::remove_file(&fig).unwrap();
+    std::fs::copy("examples/first-success/design.fig", &fig).unwrap();
+    grow(&fig);
+    let out = env.run(&["search", "--workspace", dir, "first"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("changed since it was indexed"));
+}
+
+#[test]
+fn a_changed_source_is_listed_stale_and_left_out_of_a_workspace_search() {
+    let env = Env::new();
+    let project = project(&env);
+    let dir = project.to_str().unwrap();
+    let (a, b) = (env.fig("a.fig"), env.fig("b.fig"));
+    let a_id = prepare_in(&env, &a, dir)["source"]["sourceId"].clone();
+    let b_id = prepare_in(&env, &b, dir)["source"]["sourceId"].clone();
+    grow(&b);
+    let found = env.json(&["search", "--workspace", dir, "first"]);
+    assert_eq!(
+        refs(&found)
+            .iter()
+            .map(|r| &r["sourceId"])
+            .collect::<Vec<_>>(),
+        [&a_id],
+        "{found}"
+    );
+    let stale = found["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["sourceId"] == b_id)
+        .unwrap();
+    assert_eq!(stale["state"], "stale");
+    assert_eq!(found["coverage"]["complete"], false);
+    assert!(
+        found["coverage"]["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["code"] == "sources_not_ready" && r["sourceIds"] == json!([b_id]))
+    );
+}
+
+#[test]
+fn a_cursor_over_two_sources_is_stale_once_one_leaves_the_mcp_roots() {
+    let env = Env::new();
+    let (inside, outside) = (env.dir.join("in"), env.dir.join("out"));
+    std::fs::create_dir(&inside).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    let copy = |dir: &Path| {
+        let path = dir.join("design.fig");
+        std::fs::copy("examples/first-success/design.fig", &path).unwrap();
+        std::fs::canonicalize(path).unwrap()
+    };
+    let (seen, hidden) = (copy(&inside), copy(&outside));
+    let project = std::fs::canonicalize(env.dir.join("")).unwrap();
+    let dir = project.to_str().unwrap();
+    prepare_in(&env, &seen, dir);
+    let ws = prepare_in(&env, &hidden, dir)["workspaceId"].clone();
+    let leak = hidden.parent().unwrap().to_str().unwrap().to_owned();
+    let mut wide = Mcp::start(&env, &["--root", dir]);
+    let first = wide.call(
+        "search",
+        json!({"workspaceId": ws, "query": "first", "limit": 1}),
+    );
+    let cursor = first["structuredContent"]["nextCursor"].clone();
+    assert!(cursor.is_string(), "{first}");
+    let page = wide.call(
+        "search",
+        json!({"workspaceId": ws, "query": "first", "limit": 1, "cursor": cursor}),
+    );
+    assert_eq!(page["isError"], false, "{page}");
+    // The same cursor in a session whose roots no longer reach one of its sources.
+    let root = std::fs::canonicalize(&inside).unwrap();
+    let mut narrow = Mcp::start(&env, &["--root", root.to_str().unwrap()]);
+    let refused = narrow.call(
+        "search",
+        json!({"workspaceId": ws, "query": "first", "limit": 1, "cursor": cursor}),
+    );
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert_eq!(refused["_meta"]["figlens"]["code"], "cursor_stale");
+    assert!(!refused.to_string().contains(&leak));
 }
 
 #[cfg(unix)]
@@ -3632,10 +3961,12 @@ fn a_schema_6_workspace_reads_impact_as_null_and_records_it_once_a_build_upgrade
     let t = Tracked::new(&env);
     t.save(true);
     t.index("refresh");
-    // As schema 6 left it: revisions recorded before impact was.
+    // As schema 6 left it: revisions recorded before impact was, and no fingerprints or
+    // subscription source sets (schema 8).
     t.sql(
         "DROP TABLE revision_impacts; ALTER TABLE revisions DROP COLUMN impact;
-         PRAGMA user_version = 6;",
+         DROP TABLE fingerprints; ALTER TABLE subscriptions DROP COLUMN sources;
+         ALTER TABLE subscriptions DROP COLUMN disabled; PRAGMA user_version = 6;",
     );
     let version = || -> i64 {
         rusqlite::Connection::open(&t.db)
@@ -3671,9 +4002,73 @@ fn a_schema_6_workspace_reads_impact_as_null_and_records_it_once_a_build_upgrade
             vec![json!("change"); 4],
             6,
             vec![Value::Null, Value::Null, json!(true)],
-            7
+            8
         )
     );
+}
+
+#[test]
+fn a_92_generation_refreshed_under_new_relations_is_a_baseline_keeping_history_and_checkpoints() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let id = t.subscribe(&[]);
+    let tail = t.changes(&[])["nextCursor"].as_str().unwrap().to_owned();
+    t.watch("ack", &["--consumer", "bot", "--cursor", &tail]);
+    // As #92 left it: schema 7, generations built by relations-5, no library references,
+    // fingerprints or subscription source sets.
+    t.sql(
+        "DELETE FROM edges WHERE relation = 'uses_library'; DROP TABLE fingerprints;
+         ALTER TABLE subscriptions DROP COLUMN sources;
+         ALTER TABLE subscriptions DROP COLUMN disabled;
+         UPDATE generations SET versions = replace(versions, '\"relations-6\"', '\"relations-5\"');
+         PRAGMA user_version = 7;",
+    );
+    let before = t.revisions();
+    let checkpoints = "SELECT count(*) FROM consumers";
+    let held = t.count(checkpoints);
+    t.changes(&["--consumer", "bot"]);
+    t.watch("list", &[]);
+    let read = t.count("PRAGMA user_version");
+    // The same bytes, so only the extraction changed: a baseline, never a comparison.
+    t.index("refresh");
+    let after = t.revisions();
+    let kinds = |more: &[&str]| t.kinds(&t.changes(more));
+    assert_eq!(
+        (
+            read,
+            &after[..2],
+            after[2].clone(),
+            t.count("PRAGMA user_version"),
+            t.count(checkpoints),
+            kinds(&["--consumer", "bot"]),
+            kinds(&["--subscription", &id]),
+        ),
+        (
+            7,
+            &before[..],
+            json!(["baseline", {"basis": "baseline", "reason": "index_version_changed"}, null, "complete", false, null, 0]),
+            8,
+            held,
+            vec![json!("baseline")],
+            vec![json!("baseline")],
+        )
+    );
+}
+
+#[test]
+fn watch_list_reads_a_schema_7_workspace_without_its_source_set_columns() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let id = t.subscribe(&[]);
+    // As schema 7 left it: no subscription source sets or disabled reasons (schema 8).
+    t.sql(
+        "ALTER TABLE subscriptions DROP COLUMN sources;
+         ALTER TABLE subscriptions DROP COLUMN disabled; PRAGMA user_version = 7;",
+    );
+    let listed = t.watch("list", &[]);
+    assert_eq!(listed["subscriptions"][0]["subscriptionId"], json!(id));
 }
 
 #[test]
@@ -3977,6 +4372,22 @@ fn mcp_saves_a_typed_query_evaluates_it_and_a_confined_caller_cannot_read_it() {
     let elsewhere = std::fs::canonicalize(elsewhere).unwrap();
     let mut confined = Mcp::start(&env, &["--root", elsewhere.to_str().unwrap()]);
     let hidden = confined.call("changes", json!({"workspaceId": ws, "subscriptionId": id}));
+    // list by subscriptionId reads only that row, through MCP and the CLI alike.
+    let list = json!({"action": "list", "workspaceId": ws, "subscriptionId": id});
+    let only = |reply: &Value| -> Vec<Value> {
+        reply["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["subscriptionId"].clone())
+            .collect()
+    };
+    let listed = (
+        only(&mcp.call("watch", list.clone())["structuredContent"]),
+        only(&t.watch("list", &["--subscription", id.as_str().unwrap()])),
+        only(&confined.call("watch", list)["structuredContent"]),
+    );
+    assert_eq!(listed, (vec![id.clone()], vec![id.clone()], vec![]));
     assert_eq!(
         json!([
             subscribed["subscription"]["types"],
@@ -4387,5 +4798,288 @@ fn a_failed_evaluation_stays_reported_by_changes_until_a_later_publication() {
             json!("search_failed")
         ),
         "{evaluated} {read}"
+    );
+}
+
+#[test]
+fn a_tracked_scope_publishes_definition_fingerprints_as_an_untracked_build_does() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let conn = rusqlite::Connection::open(&t.db).unwrap();
+    // The published generation is the tracked build's: it has a facet set.
+    let prints: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM fingerprints f JOIN published p ON p.gen = f.gen
+             JOIN facet_sets s ON s.gen = p.gen",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(prints > 0, "{prints}");
+}
+
+#[test]
+fn a_ranked_set_evaluation_with_a_transiently_stale_member_is_unavailable_not_stored() {
+    let env = Env::new();
+    let project = env.dir.join("project");
+    std::fs::create_dir(&project).unwrap();
+    let dir = std::fs::canonicalize(project).unwrap();
+    let dir = dir.to_str().unwrap();
+    let figs = ["a.fig", "b.fig"].map(|name| env.fig(name));
+    for fig in &figs {
+        env.json(&[
+            "index",
+            "prepare",
+            fig.to_str().unwrap(),
+            "--workspace",
+            dir,
+            "--scope",
+            "0:0",
+        ]);
+    }
+    let status = env.json(&["index", "status", "--workspace", dir]);
+    let db = status["paths"]["database"].as_str().unwrap().to_owned();
+    let b = std::fs::canonicalize(&figs[1]).unwrap();
+    let b_id = status["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["path"] == b.to_str().unwrap())
+        .unwrap()["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // A build still running would stamp the touched time, so each step waits for jobs to finish.
+    let idle = || {
+        wait_for("jobs to finish", || {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.query_row(
+                "SELECT count(*) FROM jobs WHERE state IN ('queued', 'running')",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+                == 0
+        })
+    };
+    idle();
+    // b keeps its bytes but not its modification time: the search stays ready over a alone.
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+    std::fs::File::options()
+        .write(true)
+        .open(&figs[1])
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    let saved = env.json(&[
+        "watch",
+        "subscribe",
+        "--workspace",
+        dir,
+        "--consumer",
+        "bot",
+        "--sources",
+        "visible",
+        "--query",
+        "first",
+    ]);
+    env.json(&[
+        "index",
+        "refresh",
+        "--workspace",
+        dir,
+        "--source",
+        &b_id,
+        "--scope",
+        "0:0",
+    ]);
+    idle();
+    let id = saved["subscription"]["subscriptionId"].as_str().unwrap();
+    let evaluated = env.json(&[
+        "watch",
+        "evaluate",
+        "--workspace",
+        dir,
+        "--subscription",
+        id,
+    ]);
+    assert_eq!(
+        [
+            &saved["evaluation"]["state"],
+            &saved["evaluation"]["reason"],
+            &evaluated["evaluation"]["state"]
+        ],
+        [&json!("unavailable"), &json!("stale"), &json!("evaluated")],
+        "{saved} {evaluated}"
+    );
+}
+
+#[test]
+fn a_library_evaluation_over_a_transiently_stale_source_is_unavailable_not_stored() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    // A build still running would stamp the touched time, so each step waits for jobs to finish.
+    let idle = || {
+        wait_for("jobs to finish", || {
+            let conn = rusqlite::Connection::open(&t.db).unwrap();
+            conn.query_row(
+                "SELECT count(*) FROM jobs WHERE state IN ('queued', 'running')",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+                == 0
+        })
+    };
+    idle();
+    // Same bytes, newer modification time: stale until a refresh reuses its generation.
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+    std::fs::File::options()
+        .write(true)
+        .open(&t.path)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    let library = t.watch(
+        "subscribe",
+        &[
+            "--consumer",
+            "bot",
+            "--sources",
+            "visible",
+            "--library",
+            "component",
+            "--namespace",
+            "ns",
+            "--key",
+            "k",
+        ],
+    );
+    t.index("refresh");
+    idle();
+    let id = library["subscription"]["subscriptionId"].as_str().unwrap();
+    let evaluated = t.watch("evaluate", &["--subscription", id]);
+    assert_eq!(
+        [
+            &library["evaluation"]["state"],
+            &library["evaluation"]["reason"],
+            &evaluated["evaluation"]["state"]
+        ],
+        [&json!("unavailable"), &json!("stale"), &json!("evaluated")],
+        "{library} {evaluated}"
+    );
+}
+
+#[test]
+fn cli_subscribe_refuses_library_flags_without_library() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let refused = ["--namespace", "--key", "--definition-node"].map(|flag| {
+        t.fails(&[
+            "watch",
+            "subscribe",
+            "--file",
+            &t.file,
+            "--consumer",
+            "bot",
+            "--sources",
+            "visible",
+            "--query",
+            "badge",
+            flag,
+            "k",
+        ])
+    });
+    assert!(
+        refused
+            .iter()
+            .all(|e| e.contains("applies only with --library")),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn an_owner_unsubscribe_removes_its_source_set_subscription_and_names_it() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let set = t.watch(
+        "subscribe",
+        &[
+            "--consumer",
+            "bot",
+            "--sources",
+            "visible",
+            "--query",
+            "badge",
+            "--owner",
+            "task",
+        ],
+    )["subscription"]["subscriptionId"]
+        .clone();
+    let dropped = t.watch("unsubscribe", &["--consumer", "bot", "--owner", "task"]);
+    assert_eq!(
+        json!([dropped["removed"], dropped["subscriptionIds"]]),
+        json!([1, [set]])
+    );
+}
+
+#[test]
+fn cli_and_mcp_save_questions_over_a_source_set_and_name_the_source_that_changed() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let polled = t.changes(&[]);
+    let (ws, source) = (
+        polled["workspaceId"].clone(),
+        polled["tracking"][0]["sourceId"].clone(),
+    );
+    let library = t.watch(
+        "subscribe",
+        &[
+            "--consumer",
+            "bot",
+            "--sources",
+            "visible",
+            "--library",
+            "component",
+            "--namespace",
+            "ns",
+            "--key",
+            "k",
+        ],
+    );
+    let mut mcp = Mcp::start(&env, &[]);
+    let saved = mcp.call(
+        "watch",
+        json!({"action": "subscribe", "workspaceId": ws, "consumer": "bot", "sources": "visible",
+            "query": "badge"}),
+    )["structuredContent"]
+        .clone();
+    t.save(true);
+    t.index("refresh");
+    let evaluated = mcp.call(
+        "watch",
+        json!({"action": "evaluate", "workspaceId": ws,
+            "subscriptionId": saved["subscription"]["subscriptionId"]}),
+    )["structuredContent"]
+        .clone();
+    assert_eq!(
+        json!([
+            library["subscription"]["sources"],
+            library["subscription"]["library"],
+            library["evaluation"]["state"],
+            saved["subscription"]["sources"],
+            saved["subscription"]["sourceId"],
+            evaluated["evaluation"]["causes"][0],
+            evaluated["evaluation"]["delta"]["changedSourceIds"],
+        ]),
+        json!([
+            [source],
+            {"kind": "component", "namespace": "ns", "key": "k"},
+            "evaluated",
+            [source],
+            null,
+            "source_changed",
+            [source],
+        ])
     );
 }

@@ -9,26 +9,62 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The supported query envelope: ready sources one workspace search reads together, and the
 /// records of their generations in total. Checked from stored counts before any is loaded.
-const QUERY_SOURCES: usize = 10;
+pub(super) const QUERY_SOURCES: usize = 10;
 const QUERY_RECORDS: usize = 100_000;
 
 /// One registered source as the query found it.
-struct Row {
-    id: String,
-    path: String,
-    membership: String,
-    gen_id: Option<i64>,
-    gen_membership: Option<String>,
-    snapshot: Option<String>,
-    versions: Option<String>,
-    bytes: Option<i64>,
-    mtime_ns: Option<i64>,
-    verified_ms: Option<i64>,
+pub(super) struct Row {
+    pub(super) id: String,
+    pub(super) path: String,
+    pub(super) membership: String,
+    pub(super) gen_id: Option<i64>,
+    pub(super) gen_membership: Option<String>,
+    pub(super) snapshot: Option<String>,
+    pub(super) versions: Option<String>,
+    pub(super) bytes: Option<i64>,
+    pub(super) mtime_ns: Option<i64>,
+    pub(super) verified_ms: Option<i64>,
 }
 
-fn mtime_ns(t: SystemTime) -> i64 {
+pub(super) fn mtime_ns(t: SystemTime) -> i64 {
     t.duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos() as i64)
+}
+
+/// Every registered source with its published generation of `scope` and that snapshot's stamp,
+/// in added order, from one read of `tx`.
+pub(super) fn rows(tx: &rusqlite::Transaction, scope: &str) -> Result<Vec<Row>> {
+    let mut stmt = tx
+        .prepare(
+            "SELECT s.source_id, s.path, s.membership, p.gen, g.membership, g.snapshot_id,
+             g.versions, n.bytes, n.mtime_ns, n.verified_ms
+             FROM sources s
+             LEFT JOIN published p ON p.source_id = s.source_id AND p.scope = ?1
+             LEFT JOIN generations g ON g.gen = p.gen
+             LEFT JOIN snapshots n ON n.source_id = s.source_id AND n.snapshot_id = g.snapshot_id
+             ORDER BY s.added_at_ms, s.source_id",
+        )
+        .map_err(sql)?;
+    let rows = stmt
+        .query_map([scope], |r| {
+            Ok(Row {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                membership: r.get(2)?,
+                gen_id: r.get(3)?,
+                gen_membership: r.get(4)?,
+                snapshot: r.get(5)?,
+                versions: r.get(6)?,
+                bytes: r.get(7)?,
+                mtime_ns: r.get(8)?,
+                verified_ms: r.get(9)?,
+            })
+        })
+        .map_err(sql)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(sql)?;
+    drop(stmt);
+    Ok(rows)
 }
 
 /// Searches `req.scope` across the workspace's visible sources (or the `only` ones), ranked as
@@ -184,36 +220,7 @@ fn searched(
     }
     // One read transaction: every source and generation comes from the same commit.
     let tx = ws.conn.unchecked_transaction().map_err(sql)?;
-    let mut stmt = tx
-        .prepare(
-            "SELECT s.source_id, s.path, s.membership, p.gen, g.membership, g.snapshot_id,
-             g.versions, n.bytes, n.mtime_ns, n.verified_ms
-             FROM sources s
-             LEFT JOIN published p ON p.source_id = s.source_id AND p.scope = ?1
-             LEFT JOIN generations g ON g.gen = p.gen
-             LEFT JOIN snapshots n ON n.source_id = s.source_id AND n.snapshot_id = g.snapshot_id
-             ORDER BY s.added_at_ms, s.source_id",
-        )
-        .map_err(sql)?;
-    let rows = stmt
-        .query_map([&req.scope], |r| {
-            Ok(Row {
-                id: r.get(0)?,
-                path: r.get(1)?,
-                membership: r.get(2)?,
-                gen_id: r.get(3)?,
-                gen_membership: r.get(4)?,
-                snapshot: r.get(5)?,
-                versions: r.get(6)?,
-                bytes: r.get(7)?,
-                mtime_ns: r.get(8)?,
-                verified_ms: r.get(9)?,
-            })
-        })
-        .map_err(sql)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(sql)?;
-    drop(stmt);
+    let rows = rows(&tx, &req.scope)?;
     relocated(
         storage,
         select,

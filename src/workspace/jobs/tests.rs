@@ -1453,6 +1453,8 @@ fn a_publication_evaluates_each_saved_search_once_in_bounded_turns() {
             owner: None,
             query: Some(query),
             types: Vec::new(),
+            sources: None,
+            library: None,
         };
         subscriptions::subscribe(&storage, &select, &req).unwrap();
     };
@@ -1653,6 +1655,1805 @@ fn a_publication_evaluates_each_saved_search_once_in_bounded_turns() {
     assert_eq!(
         (newer, older, gone, unseen, kept.as_str()),
         (true, false, true, true, "newer")
+    );
+}
+
+/// A workspace whose `n` identical sources each have a published build of `0:0` and one visible
+/// record using a library component; the sources' paths, ids and generations.
+fn library_workspace(
+    d: &TestDir,
+    n: usize,
+) -> (Storage, Select, Connection, Vec<(PathBuf, String, i64)>) {
+    let (storage, select, dir) = workspace(d, n);
+    let conn = connection(&dir);
+    let me = owner(&dir).unwrap();
+    let mut out = Vec::new();
+    // In the order the query pages them, which two sources added in different milliseconds can
+    // make differ from source_id order.
+    let ordered: Vec<String> = conn
+        .prepare("SELECT source_id FROM sources ORDER BY added_at_ms, source_id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    for source in ordered {
+        let job_id = job(&conn, &source, "0:0", "running", &me, 1);
+        let built = work(&dir, &job_id, &me, 1).unwrap();
+        publish(&storage, &select.id().unwrap(), &job_id, &me, 1, &built).unwrap();
+        let gen_id = built["gen"].as_i64().unwrap();
+        uses(&conn, gen_id, r#"["component","ns","k"]"#);
+        let path: String = conn
+            .query_row(
+                "SELECT path FROM sources WHERE source_id = ?1",
+                [&source],
+                |r| r.get(0),
+            )
+            .unwrap();
+        out.push((PathBuf::from(path), source, gen_id));
+    }
+    (storage, select, conn, out)
+}
+
+/// Adds a `uses_library` edge with `target` to the first visible record of `gen_id`.
+fn uses(conn: &Connection, gen_id: i64, target: &str) {
+    conn.execute(
+        "INSERT INTO edges (gen, rid, relation, seq, target, state, basis, evidence)
+         SELECT ?1, rid, 'uses_library', (SELECT count(*) FROM edges WHERE gen = ?1 AND
+         rid = r.rid AND relation = 'uses_library'), ?2, 'external', 'cached_copy', '{\"copy\":\"0:9\"}'
+         FROM records r WHERE gen = ?1 AND hidden = 0 ORDER BY rid LIMIT 1",
+        params![gen_id, target],
+    )
+    .unwrap();
+}
+
+fn reference(key: &str, cursor: Option<&Json>) -> crate::workspace::library::Request {
+    crate::workspace::library::Request {
+        kind: "component".into(),
+        namespace: Some("ns".into()),
+        key: key.into(),
+        definition: None,
+        scope: "0:0".into(),
+        include_hidden: false,
+        limit: 1,
+        cursor: cursor.and_then(Json::as_str).map(str::to_owned),
+    }
+}
+
+fn library_ids(out: &Json) -> Vec<String> {
+    out["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["ref"]["sourceId"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn library_uses_page_across_sources_and_never_resolve_the_definition() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    // The same key under another namespace, and a namespace whose join collides, are not uses.
+    uses(&conn, srcs[0].2, r#"["component","other","k"]"#);
+    uses(&conn, srcs[0].2, r#"["component","ns/k",""]"#);
+    let first = library(&storage, &select, None, &reference("k", None)).unwrap();
+    assert_eq!(library_ids(&first), [srcs[0].1.clone()]);
+    // Without a selected definition nothing is compared or reported about one.
+    let text = first.to_string();
+    assert!(!text.contains("definitionMatch") && !text.contains("definition_"));
+    assert_eq!(
+        first["definition"],
+        json!({"state": "unresolved", "reason": "library_source_unproven"})
+    );
+    assert_eq!(
+        (
+            first["hasMore"].clone(),
+            first["coverage"]["complete"].clone()
+        ),
+        (json!(true), json!(true))
+    );
+    let second = library(
+        &storage,
+        &select,
+        None,
+        &reference("k", Some(&first["nextCursor"])),
+    )
+    .unwrap();
+    assert_eq!(library_ids(&second), [srcs[1].1.clone()]);
+    assert_eq!(second["nextCursor"], Json::Null);
+    // The cursor binds the reference: another key cannot continue it.
+    let other = library(
+        &storage,
+        &select,
+        None,
+        &reference("j", Some(&first["nextCursor"])),
+    );
+    assert_eq!(kind_of_error(other), ErrorKind::CursorStale);
+    // One source narrows the reply to its own uses.
+    let one = library(&storage, &select, Some(&srcs[1].1), &reference("k", None)).unwrap();
+    assert_eq!(library_ids(&one), [srcs[1].1.clone()]);
+}
+
+#[test]
+fn a_library_use_says_where_it_is_without_opening_the_file() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 1);
+    // A layer inside a page, unlike the document the helper's use sits on.
+    conn.execute(
+        "UPDATE edges SET rid = (SELECT rid FROM records WHERE gen = ?1 AND hidden = 0
+         AND page IS NOT NULL AND root IS NOT NULL ORDER BY rid LIMIT 1)
+         WHERE gen = ?1 AND relation = 'uses_library'",
+        [srcs[0].2],
+    )
+    .unwrap();
+    let out = library(&storage, &select, None, &reference("k", None)).unwrap();
+    let hit = &out["results"][0];
+    assert_eq!(
+        (
+            hit["hidden"].is_boolean(),
+            hit["page"]["id"].is_string(),
+            hit["scopeRoot"].is_string(),
+            out["coverage"]["sources"][0]["path"]
+                .as_str()
+                .map(PathBuf::from),
+        ),
+        (true, true, true, Some(srcs[0].0.clone()))
+    );
+}
+
+/// Renames the record holding `gen_id`'s library use to `name`.
+fn rename_use(conn: &Connection, gen_id: i64, name: &str) {
+    conn.execute(
+        "UPDATE records SET name = ?2 WHERE gen = ?1 AND rid IN
+         (SELECT rid FROM edges WHERE gen = ?1 AND relation = 'uses_library')",
+        params![gen_id, name],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_first_library_use_too_large_for_a_page_is_refused_by_its_utf8_bytes() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 1);
+    // 1.1M characters, 3.3 MB: within the page counted in characters, over it in bytes.
+    rename_use(&conn, srcs[0].2, &"漢".repeat(1_100_000));
+    let out = library(&storage, &select, None, &reference("k", None));
+    assert_eq!(kind_of_error(out), ErrorKind::ResponseBudget);
+}
+
+#[test]
+fn a_library_use_is_measured_as_it_is_sent_so_both_mcp_copies_fit() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 1);
+    // 2 MB stored, 4 MB once each quote is escaped: past the page as sent.
+    rename_use(&conn, srcs[0].2, &"\"".repeat(2_000_000));
+    let out = library(&storage, &select, None, &reference("k", None));
+    let error = out.unwrap_err();
+    let error = error.downcast_ref::<FigError>().unwrap();
+    let steps: Vec<_> = error
+        .recovery()
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["action"].clone(), s["arguments"]["sourceId"].clone()))
+        .collect();
+    assert_eq!(
+        (error.kind(), steps),
+        (
+            ErrorKind::ResponseBudget,
+            vec![
+                (json!("usages_source"), json!(srcs[0].1)),
+                (json!("inspect_use"), Json::Null)
+            ]
+        )
+    );
+}
+
+/// Replaces `gen_id`'s stored page list with `pages`, a JSON value.
+fn set_pages(conn: &Connection, gen_id: i64, pages: &str) {
+    conn.execute(
+        "UPDATE generations SET info = json_set(info, '$.pages', json(?2)) WHERE gen = ?1",
+        params![gen_id, pages],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_source_without_a_use_never_reads_its_page_list() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 1);
+    conn.execute("DELETE FROM edges WHERE relation = 'uses_library'", [])
+        .unwrap();
+    // A list no reader could parse: reading it at all would fail the question.
+    set_pages(&conn, srcs[0].2, r#""not a list""#);
+    let out = library(&storage, &select, None, &reference("k", None)).unwrap();
+    assert_eq!(library_ids(&out), Vec::<String>::new());
+}
+
+#[test]
+fn a_page_list_too_large_for_the_page_is_refused_before_it_is_read() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 1);
+    let page = format!(r#"["0:1","{}",false]"#, "p".repeat(1024));
+    let pages = format!("[{}]", vec![page; 3200].join(","));
+    set_pages(&conn, srcs[0].2, &pages);
+    let out = library(&storage, &select, None, &reference("k", None));
+    assert_eq!(kind_of_error(out), ErrorKind::ResponseBudget);
+}
+
+#[test]
+fn a_first_use_that_no_longer_fits_beside_its_page_list_is_refused_not_left_without_a_cursor() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 1);
+    // The list fits the page, but leaves less room than the use needs.
+    let page = format!(r#"["0:1","{}",false]"#, "p".repeat(1024));
+    set_pages(
+        &conn,
+        srcs[0].2,
+        &format!("[{}]", vec![page; 2900].join(",")),
+    );
+    rename_use(&conn, srcs[0].2, &"n".repeat(200_000));
+    let out = library(&storage, &select, None, &reference("k", None));
+    assert_eq!(kind_of_error(out), ErrorKind::ResponseBudget);
+}
+
+#[test]
+fn a_library_source_names_its_freshness_or_an_unreadable_file_first() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, _conn, srcs) = library_workspace(&d, 1);
+    let ready = library(&storage, &select, None, &reference("k", None)).unwrap();
+    let freshness = &ready["coverage"]["sources"][0]["freshness"];
+    // A scope never indexed for a file that is gone is unreadable, as search reports it.
+    std::fs::remove_file(&srcs[0].0).unwrap();
+    let request = crate::workspace::library::Request {
+        scope: "0:1".into(),
+        ..reference("k", None)
+    };
+    let gone = library(&storage, &select, None, &request).unwrap();
+    assert_eq!(
+        (
+            freshness["verifiedAtMs"].is_i64(),
+            freshness["stampCheckedAtMs"].is_i64(),
+            gone["coverage"]["sources"][0]["state"].clone(),
+        ),
+        (true, true, json!("unreadable"))
+    );
+}
+
+#[test]
+fn a_library_question_needs_a_scope() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, _conn, _srcs) = library_workspace(&d, 1);
+    let request = crate::workspace::library::Request {
+        scope: String::new(),
+        ..reference("k", None)
+    };
+    let out = library(&storage, &select, None, &request);
+    assert_eq!(kind_of_error(out), ErrorKind::InvalidArguments);
+}
+
+#[test]
+fn a_later_library_use_too_large_for_the_page_starts_the_next_one() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    rename_use(&conn, srcs[1].2, &"a".repeat(3 * 1024 * 1024 - 64));
+    let request = crate::workspace::library::Request {
+        limit: 2,
+        ..reference("k", None)
+    };
+    let first = library(&storage, &select, None, &request).unwrap();
+    assert_eq!(
+        (library_ids(&first), first["nextCursor"].is_string()),
+        (vec![srcs[0].1.clone()], true)
+    );
+}
+
+#[test]
+fn a_use_with_no_namespace_leaves_the_reply_partial_without_being_listed() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 1);
+    conn.execute("DELETE FROM edges WHERE relation = 'uses_library'", [])
+        .unwrap();
+    uses(&conn, srcs[0].2, r#"["component",null,"k"]"#);
+    let out = library(&storage, &select, None, &reference("k", None)).unwrap();
+    assert_eq!(library_ids(&out), Vec::<String>::new());
+    assert_eq!(out["coverage"]["complete"], false);
+    assert_eq!(
+        out["coverage"]["reasons"],
+        json!([{"code": "namespace_unknown", "sourceIds": [srcs[0].1]}])
+    );
+}
+
+#[test]
+fn a_reference_too_long_to_keep_leaves_the_reply_partial() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 1);
+    conn.execute(
+        "UPDATE edges SET target = NULL, state = 'unsupported' WHERE relation = 'uses_library'",
+        [],
+    )
+    .unwrap();
+    let out = library(&storage, &select, None, &reference("k", None)).unwrap();
+    assert_eq!(library_ids(&out), Vec::<String>::new());
+    assert_eq!(
+        out["coverage"]["reasons"],
+        json!([{"code": "index_partial", "sourceIds": [srcs[0].1]}])
+    );
+}
+
+#[test]
+fn a_revoked_root_or_a_new_generation_ends_a_library_cursor() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let first = library(&storage, &select, None, &reference("k", None)).unwrap();
+    let cursor = Some(&first["nextCursor"]);
+    // Identical bytes, but only the first file is under the caller's roots now.
+    let narrow = storage.clone().confined(std::slice::from_ref(&srcs[0].0));
+    let out = library(&narrow, &select, None, &reference("k", None)).unwrap();
+    assert_eq!(library_ids(&out), [srcs[0].1.clone()]);
+    assert_eq!(out["coverage"]["complete"], false);
+    assert_eq!(
+        out["coverage"]["reasons"],
+        json!([{"code": "authorization_restricted"}])
+    );
+    assert_eq!(out["coverage"]["sources"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        kind_of_error(library(&narrow, &select, None, &reference("k", cursor))),
+        ErrorKind::CursorStale
+    );
+    // A changed filter cannot continue it either.
+    let hidden = crate::workspace::library::Request {
+        include_hidden: true,
+        ..reference("k", cursor)
+    };
+    assert_eq!(
+        kind_of_error(library(&storage, &select, None, &hidden)),
+        ErrorKind::CursorStale
+    );
+    // The second source is republished at a new generation with the same rows.
+    conn.execute(
+        "INSERT INTO generations (source_id, membership, scope, snapshot_id, versions, job_id, state,
+         complete, records, info, created_ms) SELECT source_id, membership, scope, snapshot_id,
+         versions, job_id, state, complete, records, info, created_ms FROM generations WHERE gen = ?1",
+        [srcs[1].2],
+    )
+    .unwrap();
+    let new = conn.last_insert_rowid();
+    conn.execute(
+        "UPDATE published SET gen = ?1 WHERE source_id = ?2",
+        params![new, srcs[1].1],
+    )
+    .unwrap();
+    assert_eq!(
+        kind_of_error(library(&storage, &select, None, &reference("k", cursor))),
+        ErrorKind::CursorStale
+    );
+    // Once the paged generation is collected, the same cursor has expired.
+    for table in ["edges", "records", "generations"] {
+        conn.execute(&format!("DELETE FROM {table} WHERE gen = ?1"), [srcs[1].2])
+            .unwrap();
+    }
+    assert_eq!(
+        kind_of_error(library(&storage, &select, None, &reference("k", cursor))),
+        ErrorKind::CursorExpired
+    );
+}
+
+fn kind_of_error(r: Result<Json>) -> ErrorKind {
+    r.unwrap_err().downcast_ref::<FigError>().unwrap().kind()
+}
+
+/// Makes the first visible record of `gen_id` a component and returns its exact ref.
+fn component_ref(
+    conn: &Connection,
+    source: &str,
+    gen_id: i64,
+) -> crate::workspace::library::DefinitionRef {
+    let node_id: String = conn
+        .query_row(
+            "UPDATE records SET kind = 'COMPONENT' WHERE gen = ?1 AND rid = (SELECT min(rid)
+             FROM records WHERE gen = ?1 AND hidden = 0) RETURNING node_id",
+            [gen_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let snapshot_id = conn
+        .query_row(
+            "SELECT snapshot_id FROM generations WHERE gen = ?1",
+            [gen_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    crate::workspace::library::DefinitionRef {
+        source_id: source.into(),
+        snapshot_id,
+        node_id,
+    }
+}
+
+#[test]
+fn a_selected_definition_is_checked_on_its_exact_ref_and_never_resolved() {
+    use crate::workspace::library::{DefinitionRef, Request, library};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let def = component_ref(&conn, &srcs[1].1, srcs[1].2);
+    let ask = |storage: &Storage, source: Option<&str>, kind: &str, def: DefinitionRef| {
+        let req = Request {
+            kind: kind.into(),
+            definition: Some(def),
+            ..reference("k", None)
+        };
+        library(storage, &select, source, &req).unwrap()
+    };
+    let with = |f: fn(&mut DefinitionRef)| {
+        let mut d = def.clone();
+        f(&mut d);
+        d
+    };
+    let selected = ask(&storage, None, "component", def.clone());
+    assert_eq!(
+        selected["definition"],
+        json!({"state": "selected", "basis": "caller_ref", "keyEvidence": "unverified",
+            "ref": {"sourceId": def.source_id, "snapshotId": def.snapshot_id, "nodeId": def.node_id}})
+    );
+    // Narrowed to another source, the definition's own source is still checked.
+    let narrowed = ask(&storage, Some(&srcs[0].1), "component", def.clone());
+    assert_eq!(
+        (library_ids(&narrowed), &narrowed["definition"]["state"]),
+        (vec![srcs[0].1.clone()], &json!("selected"))
+    );
+    // Only the first file is under the caller's roots now: the second is neither named nor read,
+    // and reads as an unknown source, so its existence is not told either.
+    let narrow = storage.clone().confined(std::slice::from_ref(&srcs[0].0));
+    let hidden = ask(&narrow, None, "component", def.clone());
+    let text = hidden.to_string();
+    assert!(!text.contains(&srcs[1].1) && !text.contains(srcs[1].0.to_str().unwrap()));
+    assert!(!text.contains("definitionMatch") && !text.contains("definition_not_compared"));
+    let reasons: Vec<Json> = [
+        ask(&storage, None, "variable", def.clone()),
+        ask(
+            &storage,
+            None,
+            "component",
+            with(|d| d.snapshot_id = "sha256:old".into()),
+        ),
+        ask(
+            &storage,
+            None,
+            "component",
+            with(|d| d.node_id = "9:9".into()),
+        ),
+        ask(
+            &storage,
+            None,
+            "component",
+            with(|d| d.source_id = "src_none".into()),
+        ),
+        hidden,
+    ]
+    .iter()
+    .map(|out| out["definition"].clone())
+    .collect();
+    let unresolved = |r: &str| json!({"state": "unresolved", "reason": r});
+    assert_eq!(
+        reasons,
+        [
+            unresolved("definition_kind_mismatch"),
+            unresolved("definition_snapshot_stale"),
+            unresolved("definition_not_found"),
+            unresolved("definition_not_found"),
+            unresolved("definition_not_found"),
+        ]
+    );
+    // A changed ref cannot continue a cursor paged under another one.
+    let paged = ask(&storage, None, "component", def.clone());
+    let other = Request {
+        definition: Some(with(|d| d.node_id = "9:9".into())),
+        ..reference("k", Some(&paged["nextCursor"]))
+    };
+    assert_eq!(
+        kind_of_error(library(&storage, &select, None, &other)),
+        ErrorKind::CursorStale
+    );
+    // A variable is checked as one; a style adds that its kind is unverified.
+    conn.execute(
+        "UPDATE records SET kind = 'VARIABLE' WHERE gen = ?1 AND node_id = ?2",
+        params![srcs[1].2, def.node_id],
+    )
+    .unwrap();
+    let kinds: Vec<Json> = ["variable", "style"]
+        .iter()
+        .map(|k| ask(&storage, None, k, def.clone())["definition"].clone())
+        .collect();
+    assert_eq!(
+        (&kinds[0]["state"], &kinds[1]["kindEvidence"]),
+        (&json!("selected"), &json!("unverified"))
+    );
+}
+
+#[test]
+fn a_key_only_library_question_lists_copies_naming_no_namespace_and_is_never_complete() {
+    use crate::workspace::library::{Request, library};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    uses(&conn, srcs[1].2, r#"["component",null,"k"]"#);
+    let key_only = Request {
+        namespace: None,
+        limit: 10,
+        ..reference("k", None)
+    };
+    let out = library(&storage, &select, None, &key_only).unwrap();
+    assert_eq!(
+        (
+            library_ids(&out),
+            &out["definition"],
+            &out["coverage"]["complete"],
+            &out["coverage"]["reasons"]
+        ),
+        (
+            vec![srcs[1].1.clone()],
+            &json!({"state": "unresolved", "reason": "namespace_required"}),
+            &json!(false),
+            &json!([{"code": "namespace_required"}])
+        )
+    );
+}
+
+#[test]
+fn a_cursor_ends_when_the_selected_definition_s_source_is_reindexed_or_collected() {
+    use crate::workspace::library::{Request, library};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    // Two uses in the first source, so its page of one has a cursor; the definition is the
+    // second source's, whose uses this narrowed question does not list.
+    uses(&conn, srcs[0].2, r#"["component","ns","k"]"#);
+    let def = component_ref(&conn, &srcs[1].1, srcs[1].2);
+    let ask = |cursor: Option<&Json>| Request {
+        definition: Some(def.clone()),
+        ..reference("k", cursor)
+    };
+    let first = library(&storage, &select, Some(&srcs[0].1), &ask(None)).unwrap();
+    let cursor = Some(&first["nextCursor"]);
+    assert!(
+        library(&storage, &select, Some(&srcs[0].1), &ask(cursor)).is_ok(),
+        "{first}"
+    );
+    // The definition's source is republished at a new generation with the same records.
+    conn.execute(
+        "INSERT INTO generations (source_id, membership, scope, snapshot_id, versions, job_id, state,
+         complete, records, info, created_ms) SELECT source_id, membership, scope, snapshot_id,
+         versions, job_id, state, complete, records, info, created_ms FROM generations WHERE gen = ?1",
+        [srcs[1].2],
+    )
+    .unwrap();
+    let new = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO records SELECT ?1, rid, node_id, name, kind, text, norm0, norm1, len0, len1,
+         parent, source, text_source, hidden, page, root FROM records WHERE gen = ?2",
+        params![new, srcs[1].2],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE published SET gen = ?1 WHERE source_id = ?2",
+        params![new, srcs[1].1],
+    )
+    .unwrap();
+    let again = || library(&storage, &select, Some(&srcs[0].1), &ask(cursor));
+    assert_eq!(kind_of_error(again()), ErrorKind::CursorStale);
+    for table in ["edges", "records", "generations"] {
+        conn.execute(&format!("DELETE FROM {table} WHERE gen = ?1"), [srcs[1].2])
+            .unwrap();
+    }
+    assert_eq!(kind_of_error(again()), ErrorKind::CursorExpired);
+}
+
+/// Sets the fingerprint of `node` in `gen_id` to `digest` on every facet, as a component.
+fn fingerprinted(conn: &Connection, gen_id: i64, node: &str, digest: &[u8]) {
+    conn.execute(
+        "UPDATE records SET kind = 'COMPONENT' WHERE gen = ?1 AND node_id = ?2",
+        params![gen_id, node],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO fingerprints (gen, rid, facet, state, digest)
+         SELECT ?1, rid, f.value, 'read', ?3 FROM records,
+         json_each('[\"text\",\"layout\",\"appearance\",\"properties\"]') f
+         WHERE gen = ?1 AND node_id = ?2",
+        params![gen_id, node, digest],
+    )
+    .unwrap();
+}
+
+fn matches(out: &Json) -> Vec<&Json> {
+    let results = out["results"].as_array().unwrap();
+    results.iter().map(|r| &r["definitionMatch"]).collect()
+}
+
+#[test]
+fn each_use_compares_its_cached_copy_with_the_selected_definition() {
+    use crate::workspace::library::{Request, library};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let def = component_ref(&conn, &srcs[1].1, srcs[1].2);
+    // Each source's use names a cached copy at the definition's node id, fingerprinted alike.
+    conn.execute(
+        "UPDATE edges SET evidence = json_object('copy', ?1) WHERE relation = 'uses_library'",
+        [&def.node_id],
+    )
+    .unwrap();
+    for (_, _, gen_id) in &srcs {
+        fingerprinted(&conn, *gen_id, &def.node_id, &[1; 32]);
+    }
+    let ask = Request {
+        definition: Some(def.clone()),
+        limit: 10,
+        ..reference("k", None)
+    };
+    let same = library(&storage, &select, None, &ask).unwrap();
+    assert_eq!(
+        (matches(&same), &same["coverage"]["complete"]),
+        (vec![&json!("equal"); 2], &json!(true))
+    );
+    // The first source's copy now differs: a finding, not incompleteness.
+    fingerprinted(&conn, srcs[0].2, &def.node_id, &[2; 32]);
+    let differ = library(&storage, &select, None, &ask).unwrap();
+    assert_eq!(
+        (
+            matches(&differ),
+            &differ["coverage"]["reasons"],
+            &differ["coverage"]["complete"]
+        ),
+        (
+            vec![&json!("definition_mismatch"), &json!("equal")],
+            &json!([{"code": "definition_mismatch", "count": 1}]),
+            &json!(true)
+        )
+    );
+}
+
+#[test]
+fn an_oversized_tampered_copy_kind_is_refused_before_it_is_copied() {
+    use crate::workspace::library::{Request, library};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let def = component_ref(&conn, &srcs[1].1, srcs[1].2);
+    conn.execute(
+        "UPDATE edges SET evidence = json_object('copy', ?1) WHERE relation = 'uses_library'",
+        [&def.node_id],
+    )
+    .unwrap();
+    for (_, _, gen_id) in &srcs {
+        fingerprinted(&conn, *gen_id, &def.node_id, &[1; 32]);
+    }
+    conn.execute(
+        "UPDATE records SET kind = ?3 WHERE gen = ?1 AND node_id = ?2",
+        params![srcs[0].2, def.node_id, "C".repeat(1 << 20)],
+    )
+    .unwrap();
+    let ask = Request {
+        definition: Some(def),
+        limit: 10,
+        ..reference("k", None)
+    };
+    let err = library(&storage, &select, None, &ask)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("invalid stored index"), "{err}");
+}
+
+#[test]
+fn a_schema_7_workspace_is_refused_read_only_with_a_rebuild_not_misread() {
+    use crate::workspace::library::{Request, library};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let def = component_ref(&conn, &srcs[1].1, srcs[1].2);
+    // As the release before fingerprints left it: no such table, which a read never adds.
+    conn.execute_batch("DROP TABLE fingerprints; PRAGMA user_version = 7;")
+        .unwrap();
+    let ask = Request {
+        definition: Some(def.clone()),
+        limit: 10,
+        ..reference("k", None)
+    };
+    let err = library(&storage, &select, None, &ask)
+        .unwrap_err()
+        .downcast::<FigError>()
+        .unwrap();
+    assert_eq!(
+        (err.kind(), &err.recovery().unwrap()[0]["action"]),
+        (ErrorKind::IndexIncompatible, &json!("rebuild"))
+    );
+}
+
+#[test]
+fn a_definition_its_build_did_not_fingerprint_compares_no_use_and_asks_to_index_it() {
+    use crate::workspace::library::{Request, library};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let def = component_ref(&conn, &srcs[1].1, srcs[1].2);
+    conn.execute("DELETE FROM fingerprints WHERE gen = ?1", [srcs[1].2])
+        .unwrap();
+    let ask = Request {
+        definition: Some(def.clone()),
+        limit: 10,
+        ..reference("k", None)
+    };
+    let out = library(&storage, &select, None, &ask).unwrap();
+    let ws = select.id().unwrap();
+    assert_eq!(
+        (
+            matches(&out),
+            &out["coverage"]["reasons"],
+            &out["coverage"]["complete"]
+        ),
+        (
+            vec![&json!("unknown"); 2],
+            &json!([{"code": "definition_not_compared", "count": 2,
+                "nextSteps": [{"tool": "index", "arguments": {"action": "refresh",
+                    "workspaceId": ws, "sourceId": def.source_id, "scope": "0:0"}}]}]),
+            &json!(false)
+        )
+    ); // A build its budgets stopped, or one with fingerprints but none for this node, would
+    // not gain one by rebuilding.
+    conn.execute(
+        "UPDATE generations SET stop = 'work_limit' WHERE gen = ?1",
+        [srcs[1].2],
+    )
+    .unwrap();
+    let stopped = library(&storage, &select, None, &ask).unwrap();
+    conn.execute(
+        "UPDATE generations SET stop = NULL WHERE gen = ?1",
+        [srcs[1].2],
+    )
+    .unwrap();
+    // Reported partial by its stop, after which the definition's reason offers no refresh.
+    assert_eq!(
+        stopped["coverage"]["reasons"][1],
+        json!({"code": "definition_not_compared", "count": 2})
+    );
+    conn.execute(
+        "INSERT INTO fingerprints (gen, rid, facet, state) VALUES (?1, -1, 'text', 'unread')",
+        [srcs[1].2],
+    )
+    .unwrap();
+    let out = library(&storage, &select, None, &ask).unwrap();
+    assert_eq!(
+        out["coverage"]["reasons"],
+        json!([{"code": "definition_not_compared", "count": 2}])
+    );
+}
+
+/// Saves `query` (or `library`) over `sources` for `consumer`, replying as subscribe does.
+fn subscribe_set(
+    storage: &Storage,
+    select: &Select,
+    consumer: &str,
+    sources: &str,
+    query: Option<&str>,
+    library: Option<crate::workspace::library::Request>,
+) -> Result<Json> {
+    crate::workspace::changes::subscriptions::subscribe(
+        storage,
+        select,
+        &crate::workspace::changes::subscriptions::Subscribe {
+            consumer: Some(consumer),
+            source: None,
+            scope: None,
+            node: None,
+            owner: None,
+            query,
+            types: Vec::new(),
+            sources: Some(sources),
+            library,
+        },
+    )
+}
+
+/// The newest stored evaluations of `sub`, as changes pages them.
+fn evaluations(storage: &Storage, select: &Select, sub: &str) -> Json {
+    let req = crate::workspace::changes::Request {
+        subscription: Some(sub),
+        limit: Some(50),
+        ..Default::default()
+    };
+    crate::workspace::changes::changes(storage, select, &req).unwrap()
+}
+
+/// One runner turn on `source`'s `0:0`: (searches computed, subscriptions recorded) and their
+/// evaluations.
+fn runner(storage: &Storage, select: &Select, source: &str) -> (u64, Vec<Json>) {
+    let go = std::sync::atomic::AtomicBool::new(false);
+    let t =
+        crate::workspace::changes::evaluate_published(storage, select, source, "0:0", None, &go)
+            .unwrap();
+    let states = t.report["subscriptions"].as_array().unwrap();
+    (
+        t.report["computed"].as_u64().unwrap(),
+        states.iter().map(|s| s["evaluation"].clone()).collect(),
+    )
+}
+
+#[test]
+fn a_saved_search_over_a_source_set_is_fixed_when_subscribed_and_evaluated_by_each_member() {
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let mut ids: Vec<String> = srcs.iter().map(|s| s.1.clone()).collect();
+    ids.sort();
+    let saved = subscribe_set(
+        &storage,
+        &select,
+        "a",
+        "visible",
+        Some("First success"),
+        None,
+    )
+    .unwrap();
+    let sub = saved["subscription"]["subscriptionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The same set named in another order and twice is the same subscription.
+    let listed = format!("{},{},{}", ids[1], ids[0], ids[1]);
+    let again =
+        subscribe_set(&storage, &select, "a", &listed, Some("First success"), None).unwrap();
+    let first = &evaluations(&storage, &select, &sub)["evaluations"][0];
+    let entered = first["delta"]["enteredTopK"].as_array().unwrap();
+    let hit_sources: BTreeSet<&str> = entered
+        .iter()
+        .map(|r| r["sourceId"].as_str().unwrap())
+        .collect();
+    // A source added later is never enrolled.
+    let late = d.join("project").join("late.fig");
+    std::fs::copy(FIXTURE, &late).unwrap();
+    crate::workspace::registry::add(&storage, &select, &late).unwrap();
+    let held =
+        crate::workspace::changes::subscriptions::list(&storage, &select, Some("a"), None, None)
+            .unwrap();
+    assert_eq!(
+        (
+            &saved["subscription"]["sources"],
+            &saved["subscription"]["sourceId"],
+            &saved["evaluation"]["causes"],
+            again["created"].clone(),
+            hit_sources.len(),
+            first["sources"].as_array().unwrap().len(),
+            &held["subscriptions"][0]["sources"],
+        ),
+        (
+            &json!(ids),
+            &Json::Null,
+            &json!(["initial"]),
+            json!(false),
+            2,
+            2,
+            &json!(ids),
+        )
+    );
+    // Relocating one member is a corpus change seen only by that member's runner turn.
+    conn.execute_batch(&format!(
+        "UPDATE sources SET membership = 'moved' WHERE source_id = '{0}';
+         UPDATE generations SET membership = 'moved' WHERE source_id = '{0}'",
+        ids[0]
+    ))
+    .unwrap();
+    let other = runner(&storage, &select, &ids[1]);
+    let moved = runner(&storage, &select, &ids[0]);
+    assert_eq!(
+        (other.0, moved.0, &moved.1[0]["causes"]),
+        (0, 1, &json!(["corpus_changed"]))
+    );
+}
+
+#[test]
+fn a_source_set_names_only_visible_sources_and_never_the_sentinel() {
+    let d = TestDir::new();
+    let (storage, select, _conn, srcs) = library_workspace(&d, 2);
+    let narrow = storage.clone().confined(std::slice::from_ref(&srcs[0].0));
+    let kind = |r: Result<Json>| r.unwrap_err().downcast_ref::<FigError>().unwrap().kind();
+    let hidden = format!("{},{}", srcs[0].1, srcs[1].1);
+    let refused = [
+        subscribe_set(&storage, &select, "a", "*", Some("badge"), None),
+        subscribe_set(&narrow, &select, "a", &hidden, Some("badge"), None),
+    ]
+    .map(kind);
+    // Visible is resolved to what this caller sees now, nothing more.
+    let mine = subscribe_set(&narrow, &select, "a", "visible", Some("badge"), None).unwrap();
+    assert_eq!(
+        (refused, &mine["subscription"]["sources"]),
+        (
+            [ErrorKind::InvalidArguments; 2],
+            &json!([srcs[0].1.clone()])
+        )
+    );
+}
+
+/// Publishes a copy of `gen_id` under snapshot `snapshot`, as a build of new bytes would; its
+/// records, edges and fingerprints are the old ones until a test changes them.
+fn republish(conn: &Connection, gen_id: i64, snapshot: &str) -> i64 {
+    conn.execute(
+        "INSERT INTO snapshots SELECT n.source_id, ?2, n.bytes, n.mtime_ns, n.verified_ms
+         FROM generations g JOIN snapshots n ON n.source_id = g.source_id
+         AND n.snapshot_id = g.snapshot_id WHERE g.gen = ?1",
+        params![gen_id, snapshot],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO generations (source_id, membership, scope, snapshot_id, versions, job_id,
+         state, complete, records, info, created_ms) SELECT source_id, membership, scope, ?2,
+         versions, job_id, state, complete, records, info, created_ms FROM generations WHERE gen = ?1",
+        params![gen_id, snapshot],
+    )
+    .unwrap();
+    let new = conn.last_insert_rowid();
+    for table in ["records", "edges", "fingerprints"] {
+        let columns: Vec<String> = conn
+            .prepare(&format!(
+                "SELECT name FROM pragma_table_info('{table}') WHERE name <> 'gen'"
+            ))
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        let columns = columns.join(", ");
+        conn.execute(
+            &format!("INSERT INTO {table} (gen, {columns}) SELECT ?1, {columns} FROM {table} WHERE gen = ?2"),
+            params![new, gen_id],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "UPDATE published SET gen = ?1 WHERE gen = ?2",
+        params![new, gen_id],
+    )
+    .unwrap();
+    new
+}
+
+/// The library question of key `k` with the definition `def`, as a subscription saves it.
+fn saved_library(
+    def: crate::workspace::library::DefinitionRef,
+) -> crate::workspace::library::Request {
+    crate::workspace::library::Request {
+        definition: Some(def),
+        limit: 50,
+        ..reference("k", None)
+    }
+}
+
+/// A -> B -> C over `srcs` (three sources): A consumes library B's component k, whose definition
+/// itself uses library C's component c, so C's change reaches A only through B. Returns B's
+/// definition.
+fn transitive_chain(
+    conn: &Connection,
+    srcs: &[(PathBuf, String, i64)],
+) -> crate::workspace::library::DefinitionRef {
+    let [(_, _, a_gen), (_, b, b_gen), (_, _, c_gen)] = [0, 1, 2].map(|i| srcs[i].clone());
+    conn.execute(
+        "DELETE FROM edges WHERE relation = 'uses_library' AND gen IN (?1, ?2)",
+        [b_gen, c_gen],
+    )
+    .unwrap();
+    uses(conn, b_gen, r#"["component","ns","c"]"#);
+    let def = component_ref(conn, &b, b_gen);
+    conn.execute(
+        "UPDATE edges SET evidence = json_object('copy', ?1) WHERE gen = ?2",
+        params![def.node_id, a_gen],
+    )
+    .unwrap();
+    fingerprinted(conn, a_gen, &def.node_id, &[1; 32]);
+    fingerprinted(conn, b_gen, &def.node_id, &[1; 32]);
+    def
+}
+
+#[test]
+fn a_saved_library_question_reports_definition_moves_and_never_follows_a_transitive_change() {
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 3);
+    let def = transitive_chain(&conn, &srcs);
+    let [(_, a, a_gen), (_, b, b_gen), (_, c, c_gen)] = [0, 1, 2].map(|i| srcs[i].clone());
+    let saved = subscribe_set(
+        &storage,
+        &select,
+        "a",
+        "visible",
+        None,
+        Some(saved_library(def.clone())),
+    )
+    .unwrap();
+    let sub = saved["subscription"]["subscriptionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let newest = || {
+        let page = evaluations(&storage, &select, &sub);
+        page["evaluations"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()
+            .clone()
+    };
+    let initial = newest();
+    // C's new bytes reach A only through B's copy, which this question never follows.
+    republish(&conn, c_gen, "sha256:c2");
+    let after_c = (runner(&storage, &select, &c).0, newest());
+    // B's definition changes: A's cached copy no longer matches it.
+    let b2 = republish(&conn, b_gen, "sha256:b2");
+    fingerprinted(&conn, b2, &def.node_id, &[2; 32]);
+    runner(&storage, &select, &b);
+    let after_b = newest();
+    // A overrides its use, which never masks the definition mismatch of its cached copy.
+    let a2 = republish(&conn, a_gen, "sha256:a2");
+    conn.execute(
+        "UPDATE records SET name = 'Overridden' WHERE gen = ?1 AND rid = (SELECT rid FROM edges
+         WHERE gen = ?1 AND relation = 'uses_library')",
+        [a2],
+    )
+    .unwrap();
+    runner(&storage, &select, &a);
+    let masked = newest();
+    // A drops the use: it leaves, named in A's old snapshot.
+    let a3 = republish(&conn, a2, "sha256:a3");
+    conn.execute("DELETE FROM edges WHERE gen = ?1", [a3])
+        .unwrap();
+    runner(&storage, &select, &a);
+    let dropped = newest();
+    let node = |e: &Json, k: &str| e["delta"][k].clone();
+    assert_eq!(
+        (
+            &initial["coverage"]["transitive"],
+            &initial["coverage"]["definition"]["state"],
+            initial["delta"]["enteredTopK"][0]["sourceId"].as_str(),
+        ),
+        (&json!("not_followed"), &json!("selected"), Some(a.as_str()))
+    );
+    assert_eq!(
+        (
+            after_c.0,
+            &after_c.1["causes"],
+            node(&after_c.1, "changedSourceIds"),
+            node(&after_c.1, "definitionMatchChanged"),
+            &after_c.1["coverage"]["transitive"],
+            // C holds no use and no definition: what its change feeds was not followed.
+            node(&after_c.1, "notFollowedSourceIds"),
+        ),
+        (
+            1,
+            &json!(["source_changed"]),
+            json!([c]),
+            json!([]),
+            &json!("not_followed"),
+            json!([c]),
+        )
+    );
+    assert_eq!(
+        (
+            node(&after_b, "changedSourceIds"),
+            node(&after_b, "definitionMatchChanged"),
+            node(&after_b, "notFollowedSourceIds"),
+        ),
+        (
+            json!([b]),
+            json!([{"sourceId": a, "nodeId": def.node_id, "from": "equal", "to": "definition_mismatch"}]),
+            json!([]),
+        )
+    );
+    assert_eq!(
+        (
+            node(&masked, "changedSourceIds"),
+            node(&masked, "definitionMatchChanged"),
+            masked["coverage"]["reasons"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("definition_mismatch")),
+            node(&masked, "notFollowedSourceIds"),
+        ),
+        (json!([a]), json!([]), true, json!([]))
+    );
+    assert_eq!(
+        node(&dropped, "leftTopK"),
+        json!([{"sourceId": a, "snapshotId": "sha256:a2", "nodeId": def.node_id}])
+    );
+}
+
+/// The newest stored evaluation of `sub` as `storage` reads it, and the whole reply.
+fn newest(storage: &Storage, select: &Select, sub: &str) -> (Json, String) {
+    let page = evaluations(storage, select, sub);
+    let last = page["evaluations"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    (last, page.to_string())
+}
+
+fn subscription_id(reply: &Json) -> String {
+    reply["subscription"]["subscriptionId"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn a_not_followed_member_outside_a_readers_roots_is_never_shown_to_that_reader() {
+    use crate::workspace::changes::{self, subscriptions};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 3);
+    let def = transitive_chain(&conn, &srcs);
+    let (c, c_gen) = (srcs[2].1.clone(), srcs[2].2);
+    // C is registered, but outside the narrower caller's roots.
+    let narrow = storage
+        .clone()
+        .confined(&[srcs[0].0.clone(), srcs[1].0.clone()]);
+    let ask = || Some(saved_library(def.clone()));
+    let wide =
+        subscription_id(&subscribe_set(&storage, &select, "w", "visible", None, ask()).unwrap());
+    let mine =
+        subscription_id(&subscribe_set(&narrow, &select, "n", "visible", None, ask()).unwrap());
+    republish(&conn, c_gen, "sha256:c2");
+    // Only the set holding C is due; the wider reader is shown C as not followed.
+    let turned = runner(&storage, &select, &c);
+    let shown = newest(&storage, &select, &wide).0["delta"]["notFollowedSourceIds"].clone();
+    let req = changes::Request {
+        subscription: Some(&wide),
+        ..Default::default()
+    };
+    let refused = [
+        changes::changes(&narrow, &select, &req)
+            .unwrap_err()
+            .to_string(),
+        changes::evaluate(&narrow, &select, Some(&wide))
+            .unwrap_err()
+            .to_string(),
+        subscriptions::unsubscribe(&narrow, &select, Some(&wide), None, None)
+            .unwrap_err()
+            .to_string(),
+    ];
+    let listed = subscriptions::list(&narrow, &select, None, None, None).unwrap();
+    let (own, page) = newest(&narrow, &select, &mine);
+    let text = format!("{refused:?}{listed}{page}");
+    assert_eq!(
+        (
+            (turned.0, turned.1.len()),
+            shown,
+            listed["subscriptions"].as_array().unwrap().len(),
+            &own["causes"],
+            &own["coverage"]["transitive"],
+            text.contains(&c),
+        ),
+        (
+            (1, 1),
+            json!([c]),
+            1,
+            &json!(["initial"]),
+            &json!("not_followed"),
+            false
+        )
+    );
+}
+
+#[test]
+fn a_visible_source_outside_the_set_reaches_no_evaluation_and_the_gap_stays_marked() {
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 3);
+    let def = transitive_chain(&conn, &srcs);
+    let (c, c_gen) = (srcs[2].1.clone(), srcs[2].2);
+    let set = format!("{},{}", srcs[0].1, srcs[1].1);
+    let sub = subscription_id(
+        &subscribe_set(&storage, &select, "a", &set, None, Some(saved_library(def))).unwrap(),
+    );
+    republish(&conn, c_gen, "sha256:c2");
+    let turned = runner(&storage, &select, &c).0;
+    let (last, page) = newest(&storage, &select, &sub);
+    assert_eq!(
+        (
+            turned,
+            &last["causes"],
+            &last["coverage"]["transitive"],
+            &last["delta"]["notFollowedSourceIds"],
+            page.contains(&c),
+        ),
+        (
+            0,
+            &json!(["initial"]),
+            &json!("not_followed"),
+            &json!([]),
+            false
+        )
+    );
+}
+
+#[test]
+fn a_missing_not_followed_member_leaves_no_stored_id_for_a_reader_who_never_saw_it() {
+    use crate::workspace::changes::{self, subscriptions};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 3);
+    let def = transitive_chain(&conn, &srcs);
+    let (c_path, c, c_gen) = srcs[2].clone();
+    let rest = storage
+        .clone()
+        .confined(&[srcs[0].0.clone(), srcs[1].0.clone()]);
+    let sub = subscription_id(
+        &subscribe_set(
+            &storage,
+            &select,
+            "a",
+            "visible",
+            None,
+            Some(saved_library(def)),
+        )
+        .unwrap(),
+    );
+    republish(&conn, c_gen, "sha256:c2");
+    runner(&storage, &select, &c);
+    let req = changes::Request {
+        subscription: Some(&sub),
+        ..Default::default()
+    };
+    // Unreadable: C's file is gone but C stays registered, so the set stays whole and hidden.
+    std::fs::remove_file(&c_path).unwrap();
+    let unreadable = (
+        evaluations(&storage, &select, &sub)["evaluation"]["state"].clone(),
+        changes::changes(&rest, &select, &req).is_err(),
+    );
+    // Removed: the set is disabled and drops every evaluation that named C before a reader who
+    // sees the remaining members can read it.
+    crate::workspace::registry::remove(&storage, &select, &c).unwrap();
+    let stored: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM query_evaluations WHERE sub = ?1",
+            [&sub],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let listed = subscriptions::list(&rest, &select, None, None, None).unwrap();
+    let page = changes::changes(&rest, &select, &req).unwrap();
+    let evaluated = changes::evaluate(&rest, &select, Some(&sub)).unwrap();
+    assert_eq!(
+        (
+            unreadable,
+            stored,
+            &page["evaluation"]["state"],
+            &page["subscription"]["disabled"],
+            format!("{listed}{page}{evaluated}").contains(&c),
+        ),
+        (
+            (json!("current_for_index"), true),
+            0,
+            &json!("disabled"),
+            &json!({"reason": "source_removed"}),
+            false
+        )
+    );
+}
+
+#[test]
+fn list_by_subscription_reads_only_that_row_under_the_set_visibility_rule() {
+    use crate::workspace::changes::subscriptions;
+    let d = TestDir::new();
+    let (storage, select, _conn, srcs) = library_workspace(&d, 2);
+    let narrow = storage.clone().confined(std::slice::from_ref(&srcs[0].0));
+    let one = subscription_id(
+        &subscribe_set(&storage, &select, "a", &srcs[0].1, Some("badge"), None).unwrap(),
+    );
+    let set = subscription_id(
+        &subscribe_set(&storage, &select, "a", "visible", Some("badge"), None).unwrap(),
+    );
+    let only = |storage: &Storage, id: &str| {
+        subscriptions::list(storage, &select, None, None, Some(id)).unwrap()["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| (s["subscriptionId"].clone(), s["sources"].clone()))
+            .collect::<Vec<_>>()
+    };
+    let mut ids = vec![srcs[0].1.clone(), srcs[1].1.clone()];
+    ids.sort();
+    assert_eq!(
+        [
+            only(&narrow, &one),
+            only(&storage, &set),
+            only(&narrow, &set),
+            only(&storage, "sub_unknown"),
+        ],
+        [
+            vec![(json!(one), json!([srcs[0].1]))],
+            vec![(json!(set), json!(ids))],
+            vec![],
+            vec![],
+        ]
+    );
+}
+
+#[test]
+fn a_set_is_unknown_to_a_narrower_caller_and_disabled_only_when_a_member_is_removed() {
+    use crate::workspace::changes::{self, subscriptions};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let def = component_ref(&conn, &srcs[1].1, srcs[1].2);
+    let narrow = storage.clone().confined(std::slice::from_ref(&srcs[0].0));
+    // The definition's source is outside the narrower caller's set, which reads as unknown.
+    let hidden_definition = subscribe_set(
+        &narrow,
+        &select,
+        "n",
+        "visible",
+        None,
+        Some(saved_library(def.clone())),
+    )
+    .unwrap_err()
+    .to_string();
+    let saved = subscribe_set(
+        &storage,
+        &select,
+        "a",
+        "visible",
+        None,
+        Some(saved_library(def.clone())),
+    )
+    .unwrap();
+    let sub = saved["subscription"]["subscriptionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // A narrower caller's reads see nothing of it and change nothing.
+    let req = changes::Request {
+        subscription: Some(&sub),
+        ..Default::default()
+    };
+    let unseen = (
+        changes::changes(&narrow, &select, &req).is_err(),
+        subscriptions::list(&narrow, &select, None, None, None).unwrap()["subscriptions"].clone(),
+        changes::evaluate(&narrow, &select, Some(&sub)).is_err(),
+    );
+    let stored = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    let kept = stored("SELECT count(*) FROM query_evaluations")
+        + stored("SELECT count(*) FROM subscriptions WHERE disabled IS NOT NULL");
+    // Removing a member disables the set and deletes its evaluations; no read revives it.
+    crate::workspace::registry::remove(&storage, &select, &srcs[1].1).unwrap();
+    let page = changes::changes(&storage, &select, &req).unwrap();
+    let evaluated = changes::evaluate(&storage, &select, Some(&sub)).unwrap();
+    let left = stored("SELECT count(*) FROM query_evaluations");
+    let removed = subscriptions::unsubscribe(&storage, &select, Some(&sub), None, None).unwrap();
+    assert!(
+        hidden_definition.contains("definition_not_found")
+            && !hidden_definition.contains(&srcs[1].1),
+        "{hidden_definition}"
+    );
+    assert_eq!(
+        (
+            unseen,
+            kept,
+            &page["evaluations"],
+            &page["evaluation"]["state"],
+            &page["subscription"]["disabled"],
+            &evaluated["evaluation"]["state"],
+            left,
+            &removed["removed"],
+        ),
+        (
+            (true, json!([]), true),
+            1,
+            &json!([]),
+            &json!("disabled"),
+            &json!({"reason": "source_removed"}),
+            &json!("disabled"),
+            0,
+            &json!(1),
+        )
+    );
+}
+
+#[test]
+fn a_disabled_set_names_no_removed_member_and_is_seen_by_whoever_sees_every_remaining_one() {
+    use crate::workspace::changes::{self, subscriptions};
+    let d = TestDir::new();
+    let (storage, select, _conn, srcs) = library_workspace(&d, 3);
+    let saved = subscribe_set(&storage, &select, "a", "visible", Some("badge"), None).unwrap();
+    let sub = saved["subscription"]["subscriptionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    crate::workspace::registry::remove(&storage, &select, &srcs[1].1).unwrap();
+    let rest = storage
+        .clone()
+        .confined(&[srcs[0].0.clone(), srcs[2].0.clone()]);
+    let one = storage.clone().confined(std::slice::from_ref(&srcs[0].0));
+    let req = changes::Request {
+        subscription: Some(&sub),
+        ..Default::default()
+    };
+    // A remaining member outside the caller's roots still hides the set.
+    let hidden = (
+        subscriptions::list(&one, &select, None, None, None).unwrap()["subscriptions"].clone(),
+        changes::changes(&one, &select, &req).is_err(),
+        subscriptions::unsubscribe(&one, &select, Some(&sub), None, None).is_err(),
+    );
+    let listed = subscriptions::list(&rest, &select, None, None, None).unwrap();
+    let page = changes::changes(&rest, &select, &req).unwrap();
+    let removed = subscriptions::unsubscribe(&rest, &select, Some(&sub), None, None).unwrap();
+    let mut remaining = vec![srcs[0].1.clone(), srcs[2].1.clone()];
+    remaining.sort();
+    assert_eq!(
+        (
+            hidden,
+            &listed["subscriptions"][0]["sources"],
+            &page["subscription"]["disabled"],
+            format!("{listed}{page}").contains(&srcs[1].1),
+            &removed["removed"],
+        ),
+        (
+            (json!([]), true, true),
+            &json!(remaining),
+            &json!({"reason": "source_removed"}),
+            false,
+            &json!(1),
+        )
+    );
+}
+
+#[test]
+fn a_disabled_library_set_never_names_its_removed_definition_source() {
+    use crate::workspace::changes::{self, subscriptions};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let def = component_ref(&conn, &srcs[1].1, srcs[1].2);
+    let saved = subscribe_set(
+        &storage,
+        &select,
+        "a",
+        "visible",
+        None,
+        Some(saved_library(def)),
+    )
+    .unwrap();
+    let sub = subscription_id(&saved);
+    crate::workspace::registry::remove(&storage, &select, &srcs[1].1).unwrap();
+    let rest = storage.clone().confined(std::slice::from_ref(&srcs[0].0));
+    let req = changes::Request {
+        subscription: Some(&sub),
+        ..Default::default()
+    };
+    let listed = subscriptions::list(&rest, &select, None, None, None).unwrap();
+    let page = changes::changes(&rest, &select, &req).unwrap();
+    let evaluated = changes::evaluate(&rest, &select, Some(&sub)).unwrap();
+    assert_eq!(
+        (
+            &listed["subscriptions"][0]["library"]["key"],
+            format!("{listed}{page}{evaluated}").contains(&srcs[1].1),
+        ),
+        (&json!("k"), false)
+    );
+}
+
+#[test]
+fn an_unreadable_set_reads_as_disabled_and_only_a_caller_seeing_every_source_removes_it() {
+    use crate::workspace::changes::subscriptions;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let narrow = storage.clone().confined(std::slice::from_ref(&srcs[0].0));
+    // Not JSON, not an array, more members than a set holds, more bytes than it takes, and a
+    // lone surrogate SQLite's JSON accepts but serde refuses.
+    let damaged = [
+        "not json".to_owned(),
+        json!({"m": srcs[0].1}).to_string(),
+        json!(vec![srcs[0].1.clone(); 11]).to_string(),
+        json!(["s".repeat(5000)]).to_string(),
+        r#"["\ud800"]"#.to_owned(),
+    ];
+    let subs: Vec<String> = damaged
+        .iter()
+        .enumerate()
+        .map(|(i, stored)| {
+            let saved = subscribe_set(
+                &storage,
+                &select,
+                &format!("c{i}"),
+                "visible",
+                Some("badge"),
+                None,
+            )
+            .unwrap();
+            let sub = saved["subscription"]["subscriptionId"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            conn.execute(
+                "UPDATE subscriptions SET sources = ?2 WHERE id = ?1",
+                params![sub, stored],
+            )
+            .unwrap();
+            sub
+        })
+        .collect();
+    let unseen = (
+        subscriptions::list(&narrow, &select, None, None, None).unwrap()["subscriptions"].clone(),
+        subscriptions::unsubscribe(&narrow, &select, Some(&subs[0]), None, None).is_err(),
+    );
+    let listed: Vec<Json> =
+        subscriptions::list(&storage, &select, None, None, None).unwrap()["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| json!([s["state"], s["sources"], s["disabled"]]))
+            .collect();
+    let removed: Vec<Json> = subs
+        .iter()
+        .map(|s| {
+            subscriptions::unsubscribe(&storage, &select, Some(s), None, None).unwrap()["removed"]
+                .clone()
+        })
+        .collect();
+    assert_eq!(
+        (unseen, listed, removed),
+        (
+            (json!([]), true),
+            vec![json!(["disabled", null, {"reason": "sources_unreadable"}]); 5],
+            vec![json!(1); 5]
+        )
+    );
+}
+
+#[test]
+fn an_unpublished_set_names_each_member_to_refresh_and_never_the_sentinel() {
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let saved = subscribe_set(&storage, &select, "a", "visible", Some("badge"), None).unwrap();
+    let sub = saved["subscription"]["subscriptionId"].as_str().unwrap();
+    conn.execute("DELETE FROM published", []).unwrap();
+    let out = crate::workspace::changes::evaluate(&storage, &select, Some(sub)).unwrap();
+    let steps = out["evaluation"]["nextSteps"].as_array().unwrap();
+    let mut named: Vec<&str> = steps
+        .iter()
+        .map(|s| s["arguments"]["sourceId"].as_str().unwrap())
+        .collect();
+    named.sort();
+    let mut ids: Vec<&str> = srcs.iter().map(|s| s.1.as_str()).collect();
+    ids.sort();
+    assert_eq!(
+        (&out["evaluation"]["reason"], named),
+        (&json!("scope_not_published"), ids)
+    );
+}
+
+#[test]
+fn subscribe_refuses_each_conflicting_or_missing_target_before_opening_the_workspace() {
+    use crate::workspace::changes::subscriptions::{Subscribe, subscribe};
+    let d = TestDir::new();
+    let (storage, select, _) = workspace(&d, 1);
+    let base = || Subscribe {
+        consumer: Some("a"),
+        source: Some("s"),
+        scope: None,
+        node: None,
+        owner: None,
+        query: None,
+        types: Vec::new(),
+        sources: None,
+        library: None,
+    };
+    let cases = [
+        (
+            Subscribe {
+                query: Some("badge"),
+                library: Some(reference("k", None)),
+                ..base()
+            },
+            "pass query or library, not both",
+        ),
+        (
+            Subscribe {
+                source: None,
+                sources: Some("visible"),
+                ..base()
+            },
+            "sources applies to a saved query",
+        ),
+        (
+            Subscribe {
+                sources: Some("visible"),
+                query: Some("badge"),
+                ..base()
+            },
+            "pass sourceId or sources, not both",
+        ),
+        (
+            Subscribe {
+                source: None,
+                ..base()
+            },
+            "pass sourceId",
+        ),
+        (
+            Subscribe {
+                query: Some("badge"),
+                node: Some("1:2"),
+                ..base()
+            },
+            "or node, not both",
+        ),
+        (
+            Subscribe {
+                library: Some(reference("k", None)),
+                node: Some("1:2"),
+                ..base()
+            },
+            "or node, not both",
+        ),
+        (
+            Subscribe {
+                types: vec!["FRAME".into()],
+                ..base()
+            },
+            "type filters a saved query",
+        ),
+    ];
+    for (req, expected) in cases {
+        let err = subscribe(&storage, &select, &req).unwrap_err().to_string();
+        assert!(err.contains(expected), "{expected}: {err}");
+    }
+}
+
+#[test]
+fn a_listed_set_is_bounded_before_any_member_is_resolved() {
+    let d = TestDir::new();
+    let (storage, select, _conn, srcs) = library_workspace(&d, 1);
+    // Eleven names of one visible source, and one name past the byte cap.
+    let refused = [[srcs[0].1.as_str(); 11].join(","), "x".repeat(5000)].map(|list| {
+        subscribe_set(&storage, &select, "a", &list, Some("badge"), None)
+            .unwrap_err()
+            .to_string()
+    });
+    assert!(refused.iter().all(|e| e.contains("at most")), "{refused:?}");
+}
+
+/// One runner turn of `storage` on `source`'s `0:0`: searches computed and whether more is due.
+fn turn(storage: &Storage, select: &Select, source: &str) -> (u64, bool) {
+    let go = std::sync::atomic::AtomicBool::new(false);
+    let t =
+        crate::workspace::changes::evaluate_published(storage, select, source, "0:0", None, &go)
+            .unwrap();
+    (t.report["computed"].as_u64().unwrap(), t.next.is_some())
+}
+
+#[test]
+fn a_non_member_publication_leaves_a_set_untouched() {
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    subscribe_set(&storage, &select, "a", &srcs[0].1, Some("badge"), None).unwrap();
+    republish(&conn, srcs[1].2, "sha256:other");
+    let stored: i64 = conn
+        .query_row("SELECT count(*) FROM query_evaluations", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        (turn(&storage, &select, &srcs[1].1), stored),
+        ((0, false), 1)
+    );
+}
+
+#[test]
+fn a_set_whose_newest_membership_is_oversized_is_due_again_unparsed() {
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    subscribe_set(&storage, &select, "a", "visible", Some("badge"), None).unwrap();
+    let current = turn(&storage, &select, &srcs[0].1);
+    // Still naming this publication, but past what any written evaluation takes.
+    conn.execute(
+        "UPDATE query_evaluations SET membership = json_insert(membership, '$[#]', ?1)",
+        ["x".repeat(1 << 20)],
+    )
+    .unwrap();
+    assert_eq!(
+        (current, turn(&storage, &select, &srcs[0].1).0),
+        ((0, false), 1)
+    );
+}
+
+#[test]
+fn a_runner_that_cannot_see_every_member_never_evaluates_the_set() {
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    subscribe_set(&storage, &select, "a", "visible", Some("badge"), None).unwrap();
+    republish(&conn, srcs[0].2, "sha256:new");
+    let narrow = storage.clone().confined(std::slice::from_ref(&srcs[0].0));
+    let narrower = turn(&narrow, &select, &srcs[0].1);
+    // The same publication is due for a runner that sees the whole set.
+    assert_eq!(
+        (narrower, turn(&storage, &select, &srcs[0].1).0),
+        ((0, false), 1)
+    );
+}
+
+#[test]
+fn a_removed_member_added_again_never_revives_a_disabled_set() {
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let saved = subscribe_set(&storage, &select, "a", "visible", Some("badge"), None).unwrap();
+    let sub = saved["subscription"]["subscriptionId"].as_str().unwrap();
+    crate::workspace::registry::remove(&storage, &select, &srcs[1].1).unwrap();
+    crate::workspace::registry::add(&storage, &select, &srcs[1].0).unwrap();
+    let back: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sources WHERE source_id = ?1",
+            [&srcs[1].1],
+            |r| r.get(0),
+        )
+        .unwrap();
+    republish(&conn, srcs[0].2, "sha256:new");
+    let after = turn(&storage, &select, &srcs[0].1);
+    assert_eq!(
+        (
+            back,
+            after,
+            evaluations(&storage, &select, sub)["evaluation"]["state"].clone()
+        ),
+        (1, (0, false), json!("disabled"))
+    );
+}
+
+#[test]
+fn ack_on_a_disabled_subscription_is_refused() {
+    let d = TestDir::new();
+    let (storage, select, conn, _) = library_workspace(&d, 2);
+    let saved = subscribe_set(&storage, &select, "a", "visible", Some("badge"), None).unwrap();
+    let sub = saved["subscription"]["subscriptionId"].as_str().unwrap();
+    let cursor = evaluations(&storage, &select, sub)["nextCursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    conn.execute(
+        "UPDATE subscriptions SET disabled = '{\"reason\":\"source_removed\"}' WHERE id = ?1",
+        [sub],
+    )
+    .unwrap();
+    let req = crate::workspace::changes::Request {
+        subscription: Some(sub),
+        cursor: Some(&cursor),
+        ..Default::default()
+    };
+    let err = crate::workspace::changes::ack(&storage, &select, &req)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("is disabled"), "{err}");
+}
+
+#[test]
+fn a_subscribe_that_meets_its_disabled_subscription_asks_to_unsubscribe_first() {
+    let d = TestDir::new();
+    let (storage, select, conn, _) = library_workspace(&d, 2);
+    let first = subscribe_set(&storage, &select, "a", "visible", Some("badge"), None).unwrap();
+    let sub = first["subscription"]["subscriptionId"].as_str().unwrap();
+    conn.execute(
+        "UPDATE subscriptions SET disabled = '{\"reason\":\"source_removed\"}' WHERE id = ?1",
+        [sub],
+    )
+    .unwrap();
+    let err = subscribe_set(&storage, &select, "a", "visible", Some("badge"), None)
+        .unwrap_err()
+        .downcast::<FigError>()
+        .unwrap();
+    assert_eq!(
+        (
+            err.kind(),
+            &err.recovery().unwrap()[0]["arguments"]["subscriptionId"]
+        ),
+        (ErrorKind::InvalidArguments, &json!(sub))
     );
 }
 

@@ -162,7 +162,7 @@ export function assess(t, reply) {
   if (tracking.length) fact.tracking = tracking;
   if (truncated) fact.trackingTruncated = true;
   if (subscription !== undefined && subscription !== 'active') fact.subscription = { state: subscription };
-  if (evaluation && evaluation.state !== 'current') fact.evaluation = { state: evaluation.state, reason: evaluation.reason };
+  if (evaluation && evaluation.state !== 'current') fact.evaluation = { state: evaluation.state, reason: evaluation.reason ?? evaluation.disabled?.reason };
   return bound(fact);
 }
 

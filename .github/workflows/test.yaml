@@ -134,6 +134,27 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # The installation lanes have no Docker, so the synthetic library fixture is generated here once
+  # and handed to every OS; it is an original test input, never shipped in the npm package.
+  library-fixture:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - name: Generate the opt-in mapping library fixture
+        run: |
+          mkdir -p samples/plugin-research/fixtures
+          docker compose run --rm dev cargo run --locked --example mapping-fixture -- --library samples/plugin-research/fixtures/mapping-library.fig
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mapping-library-fixture
+          path: samples/plugin-research/fixtures/mapping-library.fig
+          if-no-files-found: error
+          retention-days: 1
+
   candidate:
     needs: candidate-build
     runs-on: ubuntu-latest
@@ -165,7 +186,7 @@ jobs:
           retention-days: 3
 
   installation:
-    needs: candidate
+    needs: [candidate, library-fixture]
     # The margin is for runner start-up: macOS runners have taken over 15 minutes before the first step.
     timeout-minutes: 30
     strategy:
@@ -200,6 +221,11 @@ jobs:
         with:
           name: installation-candidate
           path: dist/candidate/
+      # Without it the library lanes would only record a skip.
+      - uses: actions/download-artifact@v4
+        with:
+          name: mapping-library-fixture
+          path: samples/plugin-research/fixtures/
       - name: Installed CLI, cold cache, stdio MCP and optional real Pi loader
         shell: bash
         env:
@@ -228,7 +254,7 @@ jobs:
           mkdir -p samples/plugin-research/fixtures
           # `|| status=$?` keeps the step's `bash -e` from ending the subshell before it records a failure.
           (status=0
-           docker compose run --rm dev cargo run --locked --example mapping-fixture -- samples/plugin-research/fixtures/mapping.fig \
+           docker compose run --rm dev cargo run --locked --example mapping-fixture -- --library samples/plugin-research/fixtures/mapping-library.fig \
              > "$RUNNER_TEMP/fixture.log" 2>&1 || status=$?
            echo "$status" > "$RUNNER_TEMP/fixture.tmp"; mv "$RUNNER_TEMP/fixture.tmp" "$RUNNER_TEMP/fixture.status") &
       - uses: actions/setup-node@v7

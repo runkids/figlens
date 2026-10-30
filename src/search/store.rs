@@ -13,7 +13,8 @@ use serde_json::{Value as Json, json};
 
 use rusqlite::OptionalExtension;
 
-use super::usages::{self, Definition, Edge, Graph, KINDS, Key, RELATIONS, STATES};
+use super::fingerprint::{self, Print};
+use super::usages::{self, Definition, Edge, Graph, Key, RELATIONS, STATES};
 use super::{
     BYTES, DEPTH, Index, IndexTerm, MAX_MARKS, NEVER, Page, Posting, RANKING, Record, TEXT_BYTES,
     WORK, tokenizer,
@@ -137,13 +138,17 @@ pub(crate) fn save(
 ) -> Result<()> {
     // JSON escaping can grow names past what `load` reads back; refuse before writing anything.
     let info = info_json(index, INFO_BYTES)?;
-    let total = index.records.len() + index.terms.len() + index.definitions.len();
+    let total = index.records.len()
+        + index.terms.len()
+        + index.definitions.len()
+        + index.fingerprints.len();
     let mut done = 0;
     let record_bytes = |r: &Record| {
         let text = r.text.as_ref().map_or(0, String::len);
         let edges: usize = r
             .edges
             .iter()
+            .chain(&r.library)
             .map(|e| 64 + e.target.as_ref().map_or(0, String::len) + e.evidence.len())
             .sum();
         r.id.len()
@@ -188,7 +193,7 @@ pub(crate) fn save(
                     r.page,
                     r.root
                 ])?;
-                for e in &r.edges {
+                for e in r.edges.iter().chain(&r.library) {
                     edge.execute(params![
                         gen_id, rid, e.relation, e.seq, e.target, e.state, e.basis, e.evidence
                     ])?;
@@ -239,6 +244,30 @@ pub(crate) fn save(
             )?;
             for (id, d) in chunk {
                 stmt.execute(params![gen_id, id, d.name, d.kind, d.set, d.page])?;
+            }
+        }
+        tx.commit()?;
+        done += chunk.len();
+        between(conn, done, total)?;
+    }
+    let print_bytes = |_: &(u32, [Print; 4])| 4 * fingerprint::ROW_BYTES;
+    for chunk in batches(&index.fingerprints, print_bytes) {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        guard(&tx)?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO fingerprints (gen, rid, facet, state, digest) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for (rid, print) in chunk {
+                for (facet, (state, digest)) in fingerprint::FACETS.iter().zip(print) {
+                    stmt.execute(params![
+                        gen_id,
+                        rid,
+                        facet,
+                        state,
+                        digest.map(|d| d.to_vec())
+                    ])?;
+                }
             }
         }
         tx.commit()?;
@@ -342,7 +371,7 @@ fn stopped(cancel: &AtomicBool) -> Result<()> {
     Ok(())
 }
 
-fn bad() -> Box<dyn Error> {
+pub(crate) fn bad() -> Box<dyn Error> {
     "invalid stored index; rebuild the index".into()
 }
 
@@ -488,11 +517,13 @@ pub(crate) fn load_with(
         hidden_content: info["hiddenContent"].as_u64().ok_or_else(bad)? as usize,
         unverified_links: info["unverifiedLinks"].as_u64().ok_or_else(bad)? as usize,
         unread_fields: info["unreadFields"].as_u64().ok_or_else(bad)? as usize,
+        library_unread: false,
         text_bytes: info["textBytes"].as_u64().ok_or_else(bad)? as usize,
         generation: text(&info["generation"])?,
         definitions: BTreeMap::new(),
         relations: true,
         reverse: Default::default(),
+        fingerprints: Vec::new(),
     };
     let mut wanted: Vec<u32> = survivors.into_iter().collect();
     if total > 0 {
@@ -536,9 +567,10 @@ pub(crate) fn add_with(
     let mut edges: BTreeMap<u32, Vec<Edge>> = BTreeMap::new();
     let mut stmt = conn.prepare_cached(
         "SELECT rid, relation, seq, target, state, basis, evidence FROM edges
-         WHERE gen = ?1 AND rid IN (SELECT value FROM json_each(?2)) ORDER BY rid, relation, seq",
+         WHERE gen = ?1 AND rid IN (SELECT value FROM json_each(?2)) AND relation <> ?3
+         ORDER BY rid, relation, seq",
     )?;
-    let mut rows = stmt.query(params![gen_id, list])?;
+    let mut rows = stmt.query(params![gen_id, list, usages::LIBRARY])?;
     let mut count = 0usize;
     while let Some(row) = rows.next()? {
         stopped(cancel)?;
@@ -588,6 +620,7 @@ pub(crate) fn add_with(
             page: row.get(13)?,
             root: row.get(14)?,
             edges: edges.remove(&rid).unwrap_or_default(),
+            library: Vec::new(),
         };
         if record.page.is_some_and(|p| p as usize >= index.pages.len())
             || record.root.is_some_and(|p| p as usize >= index.roots.len())
@@ -635,7 +668,7 @@ pub(super) fn charge_query(spent: &mut usize, size: usize) -> Result<()> {
 /// One edge from `row`'s columns `at..at + 6`: relation, seq, target, state, basis, evidence.
 fn edge(row: &rusqlite::Row, at: usize) -> Result<Edge> {
     Ok(Edge {
-        relation: known(&KINDS, text_at(row, at, ID_BYTES)?)?.ok_or_else(bad)?,
+        relation: known(&usages::STORED, text_at(row, at, ID_BYTES)?)?.ok_or_else(bad)?,
         seq: row.get(at + 1)?,
         target: text_at(row, at + 2, ID_BYTES)?,
         state: known(&STATES, text_at(row, at + 3, ID_BYTES)?)?.ok_or_else(bad)?,
@@ -823,6 +856,24 @@ impl Graph for Stored<'_> {
         out.sort_by(|a, b| (a.relation, a.seq).cmp(&(b.relation, b.seq)));
         Ok(out)
     }
+    fn library(&mut self, rid: u32) -> Result<Vec<Edge>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT rid, relation, seq, target, state, basis, evidence FROM edges
+             WHERE gen = ?1 AND rid = ?2 AND relation = ?3 ORDER BY seq",
+        )?;
+        let mut rows = stmt.query(params![self.gen_id, rid, usages::LIBRARY])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            if out.len() >= WORK {
+                return Err(bad());
+            }
+            // Measured in SQLite's buffer and charged before it is copied, as `add` does.
+            let size = 64 + text_len(row, 3)? + text_len(row, 6)?;
+            charge_query(&mut self.spent, size)?;
+            out.push(edge(row, 1)?);
+        }
+        Ok(out)
+    }
     fn load(&mut self, rids: &[u32]) -> Result<()> {
         let mut rids = rids.to_vec();
         // Each round reads one more ancestor level, so paths and parents are readable.
@@ -843,6 +894,50 @@ impl Graph for Stored<'_> {
         }
         Ok(())
     }
+}
+
+/// The kind and fingerprint of stored node `node` in generation `gen_id`, its first record by
+/// rid; `None` when it is no record or was not fingerprinted. Rows are checked as they are read.
+pub(crate) fn print(
+    conn: &Connection,
+    gen_id: i64,
+    node: &str,
+) -> Result<Option<(String, [Print; 4])>> {
+    // Every stored value is measured in SQLite's buffer before it is copied.
+    let mut stmt = conn.prepare_cached(
+        "SELECT rid, kind FROM records INDEXED BY records_node WHERE gen = ?1 AND node_id = ?2
+         ORDER BY rid LIMIT 1",
+    )?;
+    let mut found = stmt.query(params![gen_id, node])?;
+    let Some(row) = found.next()? else {
+        return Ok(None);
+    };
+    let (rid, kind): (i64, String) = (row.get(0)?, need(text_at(row, 1, ID_BYTES)?)?);
+    let mut stmt = conn.prepare_cached(
+        "SELECT facet, state, digest FROM fingerprints WHERE gen = ?1 AND rid = ?2 LIMIT 5",
+    )?;
+    let mut rows = stmt.query(params![gen_id, rid])?;
+    let (mut print, mut seen) = ([("unread", None); 4], 0);
+    while let Some(row) = rows.next()? {
+        let at = fingerprint::FACETS
+            .iter()
+            .position(|f| row.get_ref(0).ok().and_then(|v| v.as_str().ok()) == Some(*f))
+            .ok_or_else(bad)?;
+        let state = known(&fingerprint::STATES, text_at(row, 1, ID_BYTES)?)?.ok_or_else(bad)?;
+        let digest = row.get_ref(2)?.as_blob_or_null()?;
+        let digest = match (state, digest) {
+            ("read", Some(d)) => Some(<[u8; 32]>::try_from(d).map_err(|_| bad())?),
+            (_, None) if state != "read" => None,
+            _ => return Err(bad()),
+        };
+        print[at] = (state, digest);
+        seen |= 1 << at;
+    }
+    Ok(match seen {
+        0 => None,
+        0b1111 => Some((kind, print)),
+        _ => return Err(bad()),
+    })
 }
 
 #[cfg(test)]

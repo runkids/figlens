@@ -64,8 +64,13 @@ fn view(storage: &Storage, ws: &Opened, req: &Request) -> Result<View> {
         Some(id) => Some(subscriptions::visible(storage, ws, id)?),
         None => None,
     };
+    // A set's view is its members, which `visible` found all seen; its filter names the set.
     let source = sub.as_ref().map_or(req.source, |s| Some(s.source.as_str()));
-    let sources = jobs::chosen(storage, ws, source)?;
+    let sources = match sub.as_ref().filter(|s| s.is_set()) {
+        Some(s) => s.members.clone().unwrap_or_default(),
+        None => jobs::chosen(storage, ws, source)?,
+    };
+    let source = source.filter(|s| *s != subscriptions::SET);
     // Named as `index track` names it: `1-2` is `1:2`.
     let scope = match &sub {
         Some(s) => s.scope.clone(),

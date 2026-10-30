@@ -149,6 +149,50 @@ def check_reuse(command, base, env):
     return {'reusedWorkspace': status['workspaceId']}
 
 
+def check_library(command, base, mapping, env):
+    """An agent names a library reference from tool output, then asks where it is used: stateless
+    and indexed outgoing usages of an instance agree on its cached copy's reference, and the
+    library question finds every instance in both registered copies. `mapping` is the synthetic
+    fixture generated with `--library`."""
+    base.mkdir()
+    env = user_roots(base, env)
+    project = base/'project'
+    project.mkdir()
+    design, other = project/'mapping.fig', project/'mapping-copy.fig'
+    shutil.copy2(mapping, design)
+    shutil.copy2(mapping, other)
+    with session(command, base, env) as request:
+        request('initialize', {'protocolVersion': '2025-06-18', 'capabilities': {}, 'clientInfo': {'name': 'figlens-library', 'version': '1'}})
+        def call(name, arguments):
+            reply = request('tools/call', {'name': name, 'arguments': arguments})
+            assert reply['isError'] is False, reply
+            return reply['structuredContent']
+        def named(reply):
+            return next((r['library'] for r in reply['results'] if 'library' in r), None)
+        stateless = named(call('usages', {'file': str(design), 'node': '0:2', 'direction': 'out'}))
+        assert stateless and stateless['namespace'] and stateless['key'], stateless
+        workspace, first = None, None
+        for f in (design, other):
+            job = call('index', {'action': 'prepare', 'workspace': str(project), 'file': str(f), 'scope': '0:0'})
+            assert workspace in (None, job['workspaceId']), job
+            first = first or job['job']['sourceId']
+            workspace, job = job['workspaceId'], job['job']
+            deadline = time.monotonic() + 60
+            while job['state'] not in TERMINAL and time.monotonic() < deadline:
+                time.sleep(0.05)
+                job = call('jobs', {'action': 'status', 'jobId': job['jobId']})
+            assert job['state'] == 'succeeded', job
+        indexed = named(call('usages', {'workspaceId': workspace, 'sourceId': first, 'node': '0:2', 'direction': 'out'}))
+        assert indexed == stateless, (indexed, stateless)
+        asked = {k: stateless[k] for k in ('kind', 'namespace', 'key')}
+        used = call('usages', {'workspaceId': workspace, 'library': asked})
+        refs = sorted((r['ref']['sourceId'], r['ref']['nodeId']) for r in used['results'])
+        sources = sorted({s for s, _ in refs})
+        assert len(sources) == 2 and refs == [(s, n) for s in sources for n in ('0:2', '0:3')], used
+        assert used['coverage']['complete'] is True and used['definition']['state'] == 'unresolved', used
+    return {'named': stateless, 'usedBy': [n for _, n in refs], 'sources': len(sources)}
+
+
 def check_first_use(command, base, fixture, env):
     """First use from a clean per-user state through a real MCP command, as an agent host runs it:
     prepare, poll, search the published index, inspect, a watch lease its input end releases, then
@@ -203,6 +247,12 @@ def check_first_use(command, base, fixture, env):
         assert search(first, workspace) == ('ready', '0:1')
         used = call(first, 'usages', {'workspaceId': workspace, **contains})
         assert used['coverage']['complete'] and used['results'][0]['target']['ref']['nodeId'] == '0:10', used
+        # Wiring only: the fixture records no library reference, so the question is unresolved and has no users.
+        library = {'kind': 'component', 'namespace': 'lib', 'key': 'k1'}
+        answer = call(first, 'usages', {'workspaceId': workspace, 'library': library})
+        assert answer['library'] == library and answer['results'] == [], answer
+        assert answer['definition'] == {'state': 'unresolved', 'reason': 'library_source_unproven'}, answer
+        assert answer['coverage']['complete'] is True and [s['state'] for s in answer['coverage']['sources']] == ['ready'], answer
         # Tracking records a baseline; a consumer that acks it reads nothing new after it.
         for job in call(first, 'index', {'action': 'track', 'workspaceId': workspace, 'scope': '0:0'})['jobs']:
             settle(first, job)

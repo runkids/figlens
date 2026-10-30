@@ -1077,6 +1077,7 @@ fn a_paint_scan_is_charged_even_when_nothing_links() {
         None,
         &mut roomy,
         Some((&mut unverified, &mut unread)),
+        None,
     );
     // 600 paints and 1,200 stops were visited and paid for although nothing linked.
     assert_eq!(
@@ -1093,6 +1094,7 @@ fn a_paint_scan_is_charged_even_when_nothing_links() {
                 None,
                 &mut tight,
                 Some((&mut unverified, &mut unread)),
+                None,
             )
             .is_none(),
             tight.stop
@@ -1109,6 +1111,7 @@ fn a_paint_scan_is_charged_even_when_nothing_links() {
             None,
             &mut late,
             Some((&mut unverified, &mut unread)),
+            None,
         )
         .is_none()
     );
@@ -2192,5 +2195,614 @@ fn an_overlong_image_hash_stays_an_unsupported_edge_and_a_short_one_is_kept() {
             (None, json!("recorded"), false),
             (None, json!("unsupported"), true)
         )
+    );
+}
+
+/// Library copies: mains whose naive `namespace/key` joins collide, a main with no namespace,
+/// one style key under two namespaces, one under one, one with none, and one with no copy; a
+/// variable with one of those keys, and one with no copy.
+fn libraries_design() -> K<'static> {
+    let s = |v: &str| K::String(v.into());
+    let named = |mut extra: Vec<(&'static str, K<'static>)>, ns: Option<&str>| {
+        if let Some(ns) = ns {
+            extra.push(("sourceLibraryKey", s(ns)));
+        }
+        extra
+    };
+    let main = |id, key: &str, ns| {
+        node(
+            id,
+            Some(1),
+            "SYMBOL",
+            "Button",
+            named(vec![("componentKey", s(key))], ns),
+        )
+    };
+    let style = |id, key: &str, ns| {
+        let extra = vec![("styleType", K::Enum("StyleType", "FILL")), ("key", s(key))];
+        node(id, Some(1), "ROUNDED_RECTANGLE", "Brand", named(extra, ns))
+    };
+    let variable = |id, key: &str, ns| {
+        node(
+            id,
+            Some(1),
+            "VARIABLE",
+            "brand",
+            named(vec![("key", s(key))], ns),
+        )
+    };
+    let binds = |id, key: &str| {
+        let r = obj(vec![("key", s(key)), ("version", s("1:2"))]);
+        let alias = obj(vec![
+            ("dataType", K::Enum("VariableDataType", "ALIAS")),
+            ("value", obj(vec![("alias", obj(vec![("assetRef", r)]))])),
+        ]);
+        let paint = obj(vec![
+            ("type", K::Enum("PaintType", "SOLID")),
+            ("colorVar", alias),
+        ]);
+        node(
+            id,
+            Some(2),
+            "RECTANGLE",
+            "Tint",
+            vec![("fillPaints", K::Array(vec![paint]))],
+        )
+    };
+    let uses = |id, key: &str| {
+        let r = obj(vec![("key", s(key)), ("version", s("v1"))]);
+        let extra = vec![("styleIdForFill", obj(vec![("assetRef", r)]))];
+        node(id, Some(2), "RECTANGLE", "Box", extra)
+    };
+    // Two library styles on one record: each relation's edges keep their own sequence.
+    let both = |id| {
+        let r = |k: &str| {
+            obj(vec![(
+                "assetRef",
+                obj(vec![("key", s(k)), ("version", s("v1"))]),
+            )])
+        };
+        let extra = vec![
+            ("styleIdForFill", r("solo")),
+            ("styleIdForStrokeFill", r("bare")),
+        ];
+        node(id, Some(2), "RECTANGLE", "Outlined", extra)
+    };
+    obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Library copies", vec![]),
+            node(2, Some(0), "CANVAS", "Screens", vec![]),
+            main(10, "c", Some("a/Component:b")),
+            main(11, "b/Component:c", Some("a")),
+            main(12, "k", None),
+            instance(20, 2, "One", 10, vec![]),
+            instance(21, 2, "Two", 11, vec![]),
+            instance(22, 2, "Three", 12, vec![]),
+            style(30, "shared", Some("x")),
+            style(31, "shared", Some("y")),
+            style(32, "solo", Some("x")),
+            style(33, "bare", None),
+            uses(40, "shared"),
+            uses(41, "solo"),
+            uses(42, "bare"),
+            uses(43, "absent"),
+            // A variable sharing a style's key keeps its own namespace.
+            variable(34, "solo", Some("v")),
+            binds(44, "solo"),
+            binds(45, "absent"),
+            both(46),
+        ]),
+    )])
+}
+
+fn library_edges(index: &Index) -> Vec<(String, Json, &'static str, &'static str, Json)> {
+    let mut out = Vec::new();
+    for r in &index.records {
+        assert!(r.edges.iter().all(|e| e.relation != LIBRARY));
+        let keys: BTreeSet<_> = r
+            .edges
+            .iter()
+            .chain(&r.library)
+            .map(|e| (e.relation, e.seq))
+            .collect();
+        assert_eq!(keys.len(), r.edges.len() + r.library.len(), "{}", r.id);
+        for e in &r.library {
+            let target = serde_json::from_str(e.target.as_deref().unwrap()).unwrap();
+            let evidence = serde_json::from_str(&e.evidence).unwrap();
+            out.push((r.id.clone(), target, e.state, e.basis, evidence));
+        }
+    }
+    out
+}
+
+#[test]
+fn library_references_keep_namespace_and_key_apart_and_never_borrow_a_namespace() {
+    let message = libraries_design();
+    let tree = Tree::new(&message);
+    let index = crate::search::build_with(
+        &tree,
+        "0:0",
+        bounds(WORK),
+        true,
+        crate::search::Library::Stored,
+        None,
+    );
+    let field = json!({"field": "styleIdForFill", "version": "v1"});
+    let tint = json!({"field": "fills", "version": "1:2"});
+    let unresolved = |key: &str| {
+        (
+            json!(["style", null, key]),
+            "unresolved",
+            "cached_copy",
+            field.clone(),
+        )
+    };
+    let mut edges = library_edges(&index);
+    edges.sort_by(|a, b| a.0.cmp(&b.0));
+    let got: Vec<_> = edges
+        .into_iter()
+        .map(|(id, t, s, b, e)| (id, (t, s, b, e)))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (
+                "0:20".into(),
+                (
+                    json!(["component", "a/Component:b", "c"]),
+                    "external",
+                    "cached_copy",
+                    json!({"copy": "0:10"})
+                )
+            ),
+            (
+                "0:21".into(),
+                (
+                    json!(["component", "a", "b/Component:c"]),
+                    "external",
+                    "cached_copy",
+                    json!({"copy": "0:11"})
+                )
+            ),
+            (
+                "0:22".into(),
+                (
+                    json!(["component", null, "k"]),
+                    "unresolved",
+                    "cached_copy",
+                    json!({"copy": "0:12"})
+                )
+            ),
+            ("0:40".into(), unresolved("shared")),
+            (
+                "0:41".into(),
+                (
+                    json!(["style", "x", "solo"]),
+                    "external",
+                    "cached_copy",
+                    field.clone()
+                )
+            ),
+            ("0:42".into(), unresolved("bare")),
+            ("0:43".into(), unresolved("absent")),
+            (
+                "0:44".into(),
+                (
+                    json!(["variable", "v", "solo"]),
+                    "external",
+                    "cached_copy",
+                    tint.clone()
+                )
+            ),
+            (
+                "0:45".into(),
+                (
+                    json!(["variable", null, "absent"]),
+                    "unresolved",
+                    "cached_copy",
+                    tint
+                )
+            ),
+            (
+                "0:46".into(),
+                (
+                    json!(["style", "x", "solo"]),
+                    "external",
+                    "cached_copy",
+                    field.clone()
+                )
+            ),
+            (
+                "0:46".into(),
+                (
+                    json!(["style", null, "bare"]),
+                    "unresolved",
+                    "cached_copy",
+                    json!({"field": "styleIdForStrokeFill", "version": "v1"})
+                )
+            ),
+        ]
+    );
+}
+
+#[test]
+fn library_references_stay_off_record_edges_and_no_query_lists_them_as_a_relation() {
+    let message = libraries_design();
+    let tree = Tree::new(&message);
+    let stateless = build(&tree, "0:0", bounds(WORK));
+    assert_eq!(library_edges(&stateless), []);
+    let index = crate::search::build_with(
+        &tree,
+        "0:0",
+        bounds(WORK),
+        true,
+        crate::search::Library::Stored,
+        None,
+    );
+    // Every other reader of a record's edges sees exactly what a build without them sees.
+    let same = |a: &Index, b: &Index| {
+        a.records
+            .iter()
+            .map(|r| &r.edges)
+            .eq(b.records.iter().map(|r| &r.edges))
+    };
+    assert!(same(&index, &stateless));
+    let conn = stored(&index);
+    let mut r = req("0:41");
+    r.outgoing = true;
+    let q = r.validate().unwrap();
+    let graph = &mut Stored {
+        conn: &conn,
+        gen_id: 1,
+        index: crate::search::store::load(&conn, 1, &[], &mut 0).unwrap(),
+        spent: 0,
+    };
+    let served = Served {
+        source: &source(),
+        gen_id: 1,
+    };
+    // The stored edge loads back, and the default outgoing relations still leave it out.
+    let out = query(graph, &q, &r, served).unwrap();
+    let relations: Vec<_> = out["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["relation"].clone())
+        .collect();
+    assert_eq!(relations, [json!("contains"), json!("uses_style")]);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM edges WHERE relation = 'uses_library'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        11
+    );
+    let fresh = build(&tree, "0:0", bounds(WORK));
+    assert_eq!(out["coverage"], run(&fresh, &r).unwrap()["coverage"]);
+}
+
+#[test]
+fn a_cached_copy_use_names_its_library_reference_in_memory_and_stored_alike() {
+    let message = libraries_design();
+    let tree = Tree::new(&message);
+    let index = crate::search::build_with(
+        &tree,
+        "0:0",
+        bounds(WORK),
+        true,
+        crate::search::Library::Stored,
+        None,
+    );
+    let conn = stored(&index);
+    let named = |ns: Json, key: &str, kind: &str| {
+        let mut l = json!({"kind": kind, "namespace": ns, "key": key, "basis": "cached_copy"});
+        if ns.is_null() {
+            l["unknownReason"] = json!("namespace_unconfirmed");
+        }
+        l
+    };
+    // A main's own namespace; none recorded; two copies that disagree; a style; a variable.
+    let cases = [
+        (
+            "0:20",
+            "instance_of",
+            named(json!("a/Component:b"), "c", "component"),
+        ),
+        ("0:22", "instance_of", named(Json::Null, "k", "component")),
+        ("0:40", "uses_style", named(Json::Null, "shared", "style")),
+        ("0:41", "uses_style", named(json!("x"), "solo", "style")),
+        (
+            "0:44",
+            "binds_variable",
+            named(json!("v"), "solo", "variable"),
+        ),
+    ];
+    for (node, relation, want) in cases {
+        let mut r = req(node);
+        r.outgoing = true;
+        let q = r.validate().unwrap();
+        let picked = |out: Json| -> Vec<Json> {
+            out["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| (e["relation"].clone(), e.get("library").cloned()))
+                .filter(|(rel, _)| rel != "contains")
+                .map(|(rel, l)| json!([rel, l]))
+                .collect()
+        };
+        let memory = picked(query(&mut Whole(&index), &q, &r, served_at(0)).unwrap());
+        let graph = &mut Stored {
+            conn: &conn,
+            gen_id: 1,
+            index: crate::search::store::load(&conn, 1, &[], &mut 0).unwrap(),
+            spent: 0,
+        };
+        let disk = picked(query(graph, &q, &r, served_at(1)).unwrap());
+        assert_eq!(memory, [json!([relation, want])], "{node}");
+        assert_eq!(disk, memory, "{node}");
+    }
+}
+
+#[test]
+fn a_stateless_library_scan_that_runs_out_of_bytes_keeps_what_it_spent() {
+    let message = libraries_design();
+    let tree = Tree::new(&message);
+    let with = |bytes| {
+        let mut b = bounds(WORK);
+        b.bytes = bytes;
+        let found = crate::search::named_libraries(&tree, &mut b);
+        (found, b)
+    };
+    // The most bytes that still stop the scan, so it stops after reading at least one copy.
+    let fits = (0..1 << 16).find(|&b| with(b).0.is_some()).unwrap();
+    let (found, left) = with(fits - 1);
+    assert_eq!(
+        (
+            found,
+            left.stop,
+            left.work < WORK - tree.nodes.len(),
+            left.bytes < fits - 1
+        ),
+        (None, None, true, true)
+    );
+}
+
+#[test]
+fn a_stateless_library_scan_that_does_not_fit_names_nothing_instead_of_stopping_the_build() {
+    use crate::search::{Library, build_with};
+    let message = libraries_design();
+    let tree = Tree::new(&message);
+    // The scan reads the whole file, the build only the screens page: some budget stops a stored
+    // build at its scan, before any record, yet the stateless one keeps records without it.
+    let kept = (1..20 * tree.nodes.len()).any(|work| {
+        let stored = build_with(&tree, "0:2", bounds(work), true, Library::Stored, None);
+        let named = build_with(&tree, "0:2", bounds(work), true, Library::Named, None);
+        stored.records.is_empty() && !named.records.is_empty() && named.library_unread
+    });
+    assert!(kept);
+    // Such a build says why a cached-copy use names no library.
+    let mut index = build_with(&tree, "0:0", bounds(WORK), true, Library::Named, None);
+    index.library_unread = true;
+    index.records.iter_mut().for_each(|r| r.library.clear());
+    let mut r = req("0:20");
+    r.outgoing = true;
+    let out = run(&index, &r).unwrap();
+    let named = out["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e.get("library").is_some());
+    let codes: Vec<_> = out["coverage"]["reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["code"].clone())
+        .collect();
+    assert_eq!(
+        (named, codes.contains(&json!("library_reference_unread"))),
+        (false, true)
+    );
+}
+
+fn served_at(gen_id: i64) -> Served<'static> {
+    static SOURCE: std::sync::OnceLock<Json> = std::sync::OnceLock::new();
+    Served {
+        source: SOURCE.get_or_init(source),
+        gen_id,
+    }
+}
+
+#[test]
+fn a_library_scan_that_runs_out_stops_the_build() {
+    let message = libraries_design();
+    let tree = Tree::new(&message);
+    let mut tight = bounds(tree.nodes.len() + 1);
+    assert_eq!(libraries(&tree, &mut tight), None);
+    assert_eq!(tight.stop, Some(crate::expand::Stop::Work));
+}
+
+/// A Button component at `base` (label text `base + 1`, a filled box `base + 2`) placed at `x`
+/// under `parent`; `extra` goes on the root, `fill` on the box.
+fn button(
+    base: u32,
+    parent: u32,
+    x: f32,
+    label: &str,
+    fill: K<'static>,
+    extra: Vec<(&'static str, K<'static>)>,
+) -> Vec<K<'static>> {
+    let f = K::Float;
+    let at = obj(vec![
+        ("m00", f(1.0)),
+        ("m01", f(0.0)),
+        ("m02", f(x)),
+        ("m10", f(0.0)),
+        ("m11", f(1.0)),
+        ("m12", f(0.0)),
+    ]);
+    let mut root = vec![
+        ("transform", at),
+        ("size", obj(vec![("x", f(80.0)), ("y", f(32.0))])),
+        ("horizontalConstraint", K::Enum("ConstraintType", "MIN")),
+    ];
+    root.extend(extra);
+    vec![
+        node(base, Some(parent), "SYMBOL", "Button", root),
+        node(
+            base + 1,
+            Some(base),
+            "TEXT",
+            "Label",
+            vec![super::super::tests::text(label)],
+        ),
+        node(
+            base + 2,
+            Some(base),
+            "RECTANGLE",
+            "Box",
+            vec![("fillPaints", K::Array(vec![fill]))],
+        ),
+    ]
+}
+
+fn red(r: f32) -> K<'static> {
+    let f = K::Float;
+    obj(vec![
+        ("type", K::Enum("PaintType", "SOLID")),
+        (
+            "color",
+            obj(vec![
+                ("r", f(r)),
+                ("g", f(0.0)),
+                ("b", f(0.0)),
+                ("a", f(1.0)),
+            ]),
+        ),
+    ])
+}
+
+/// The library's Button at `0:10` and a consumer's cached copy of it at `0:50` (other ids,
+/// another place and constraint), used by an instance; each built as a stored generation and
+/// compared from its stored rows.
+fn copy_matches(copy_label: &str, copy_fill: K<'static>) -> &'static str {
+    let s = |v: &str| K::String(v.into());
+    let cached = vec![("componentKey", s("k")), ("sourceLibraryKey", s("ns"))];
+    let mut copy = button(50, 1, 300.0, copy_label, copy_fill, cached);
+    if let K::Object(_, o) = &mut copy[0] {
+        o.insert("horizontalConstraint", K::Enum("ConstraintType", "MAX"));
+    }
+    copy_compares(copy)
+}
+
+/// How the cached copy `copy` (the Button at `0:50`) compares with the library's Button.
+fn copy_compares(mut copy: Vec<K<'static>>) -> &'static str {
+    use crate::search::{Library, build_with, fingerprint, store};
+    let design = |nodes: Vec<K<'static>>| {
+        let mut all = vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Components", vec![]),
+        ];
+        all.extend(nodes);
+        obj(vec![("nodeChanges", K::Array(all))])
+    };
+    let library = design(button(10, 1, 0.0, "Go", red(1.0), vec![]));
+    copy.push(instance(60, 1, "Use", 50, vec![]));
+    let consumer = design(copy);
+    let print = |message: &K<'static>, node: &str| {
+        let tree = Tree::new(message);
+        let index = build_with(&tree, "0:0", bounds(WORK), true, Library::Stored, None);
+        store::print(&stored(&index), 1, node).unwrap().unwrap()
+    };
+    // The consumer's use names the copy it compares, never the instance itself.
+    let tree = Tree::new(&consumer);
+    let index = build_with(&tree, "0:0", bounds(WORK), true, Library::Stored, None);
+    assert!(index.records.iter().any(|r| r.id == "0:60"
+        && r.library.iter().any(|e| e.evidence == r#"{"copy":"0:50"}"#)));
+    fingerprint::compare(&print(&library, "0:10"), &print(&consumer, "0:50"))
+}
+
+#[test]
+fn a_cached_copy_under_other_ids_and_another_place_equals_its_definition() {
+    assert_eq!(copy_matches("Go", red(1.0)), "equal");
+}
+
+#[test]
+fn a_child_text_or_fill_change_under_unchanged_root_fields_is_a_mismatch() {
+    assert_eq!(
+        [copy_matches("Stop", red(1.0)), copy_matches("Go", red(0.5))],
+        ["definition_mismatch"; 2]
+    );
+}
+
+#[test]
+fn a_copy_with_its_children_in_another_order_is_a_mismatch() {
+    let s = |v: &str| K::String(v.into());
+    let cached = vec![("componentKey", s("k")), ("sourceLibraryKey", s("ns"))];
+    let mut copy = button(50, 1, 0.0, "Go", red(1.0), cached);
+    // The label moves after the box.
+    if let K::Object(_, o) = &mut copy[1]
+        && let Some(K::Object(_, at)) = o.get_mut("parentIndex")
+    {
+        at.insert("position", s("0053"));
+    }
+    assert_eq!(copy_compares(copy), "definition_mismatch");
+}
+
+#[test]
+fn a_set_and_one_of_its_variants_are_never_compared() {
+    use crate::search::fingerprint::compare;
+    let print = [("read", Some([1; 32])); 4];
+    assert_eq!(
+        [
+            compare(
+                &("COMPONENT_SET".into(), print),
+                &("COMPONENT".into(), print)
+            ),
+            compare(&("COMPONENT".into(), print), &("COMPONENT".into(), print)),
+        ],
+        ["unknown", "equal"]
+    );
+}
+
+#[test]
+fn a_fill_bound_to_a_file_local_variable_is_unknown() {
+    let alias = obj(vec![
+        ("dataType", K::Enum("VariableDataType", "ALIAS")),
+        ("value", obj(vec![("alias", obj(vec![("guid", guid(7))]))])),
+    ]);
+    let mut bound = red(1.0);
+    if let K::Object(_, o) = &mut bound {
+        o.insert("colorVar", alias);
+    }
+    assert_eq!(copy_matches("Go", bound), "unknown");
+}
+
+#[test]
+fn a_facet_over_its_read_cap_is_unknown() {
+    // The same label on both sides, but a copy's too long to digest is never called equal.
+    let long = "Go ".repeat(30_000);
+    assert_eq!(copy_matches(&long, red(1.0)), "unknown");
+}
+
+#[test]
+fn a_tracked_stored_build_keeps_the_library_references_and_fingerprints_of_an_untracked_one() {
+    let message = libraries_design();
+    let tree = Tree::new(&message);
+    let stored = crate::search::Library::Stored;
+    let untracked = crate::search::build_with(&tree, "0:0", bounds(WORK), true, stored, None);
+    let deadline = std::time::Instant::now() + crate::search::DEADLINE;
+    let (tracked, _) = crate::search::diff::tracked(&tree, "0:0", deadline, stored);
+    assert_eq!(
+        (
+            library_edges(&tracked),
+            &tracked.fingerprints,
+            untracked.fingerprints.is_empty()
+        ),
+        (library_edges(&untracked), &untracked.fingerprints, false)
     );
 }

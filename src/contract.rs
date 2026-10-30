@@ -174,7 +174,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "usages",
-        "Exact relations of one node or resource in one stored scope, from the same effective index as search (nested instances and swaps included): direction in (default) lists the locations that point at it, out lists what it points at. Relations: instance_of (instance to main component, recorded symbolData or resolved definition/swap), variant_of (component to its set; a COMPONENT_SET node also lists its known members and returns their instances with via), binds_variable (paint, effect and field variable bindings, local or library), uses_style, uses_image (a text range's style comes from the last row of its styleID, as REST nodes give it; its paint images and variables from the first such row with fills, as rendered), prototype_target (recorded transitions; never a claim that a flow is reachable) and contains (asked for explicitly). Every result keeps an exact ref {sourceId, snapshotId, nodeId}, relation, state (resolved, missing, unresolved, unsupported, external, recorded), basis (recorded or resolved), evidence, page, scopeRoot and path; names never establish identity. The definition may lie outside the scope; scope limits only the returned locations. No total is reported; coverage says complete or partial with reasons (work limits, hidden content not expanded, truncated members, library_identity unavailable), and nextCursor pages in a stable order. Give file to read that .fig now (nothing is written), or workspaceId to read a source's prepared index of exactly this scope (never builds). Pass snapshotId from the ref you hold: another current snapshot is source_stale.",
+        "Exact relations of one node or resource in one stored scope, from the same effective index as search (nested instances and swaps included): direction in (default) lists the locations that point at it, out lists what it points at; with out, an instance_of, uses_style or binds_variable result whose cached library copy names it carries library {kind, namespace, key}, the selector the library argument takes. Relations: instance_of (instance to main component, recorded symbolData or resolved definition/swap), variant_of (component to its set; a COMPONENT_SET node also lists its known members and returns their instances with via), binds_variable (paint, effect and field variable bindings, local or library), uses_style, uses_image (a text range's style comes from the last row of its styleID, as REST nodes give it; its paint images and variables from the first such row with fills, as rendered), prototype_target (recorded transitions; never a claim that a flow is reachable) and contains (asked for explicitly). Every result keeps an exact ref {sourceId, snapshotId, nodeId}, relation, state (resolved, missing, unresolved, unsupported, external, recorded), basis (recorded or resolved), evidence, page, scopeRoot and path; names never establish identity. The definition may lie outside the scope; scope limits only the returned locations. No total is reported; coverage says complete or partial with reasons (work limits, hidden content not expanded, truncated members, library_identity unavailable), and nextCursor pages in a stable order. Give file to read that .fig now (nothing is written), or workspaceId to read a source's prepared index of exactly this scope (never builds). Pass snapshotId from the ref you hold: another current snapshot is source_stale. With workspaceId, library {kind, namespace, key} instead of node or resource lists uses_library locations of that library component, style or variable across every visible source's prepared scope (basis cached_copy: the namespace comes from each file's cached copy); the definition stays unresolved (library_source_unproven) unless library.definition selects it by exact ref (selected, keyEvidence unverified), coverage lists each source's state and reasons (source_not_ready, index_partial, namespace_unknown, hidden_excluded, authorization_restricted), and snapshotId, relation and direction do not apply; its results carry ref, name, type, relation, basis, state, evidence, hidden, internal, page and scopeRoot but no path or origin.",
         &[
             (
                 "file",
@@ -192,7 +192,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "sourceId",
                 "string",
                 false,
-                "with workspaceId, the source to read; needed when several have this scope",
+                "with workspaceId, the source to read; needed when several have this scope; with library, narrows to that one consumer source",
             ),
             STORAGE,
             (
@@ -206,6 +206,12 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "string",
                 false,
                 "a resource id instead of a layer: VariableID:..., StyleKey:... or image:<hash>",
+            ),
+            (
+                "library",
+                "object",
+                false,
+                "with workspaceId, a library reference instead of a node or resource: {kind: component, style or variable, namespace, key}, as an out result's library names it; lists the layers in every visible source (or sourceId) whose cached copy records it. Optional definition {sourceId, snapshotId, nodeId} selects the definition by exact ref; without namespace only copies that record none are listed",
             ),
             (
                 "scope",
@@ -223,7 +229,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "direction",
                 "string",
                 false,
-                "in (what points at it) or out (what it points at)",
+                "in (what points at it) or out (what it points at, with library {kind, namespace, key} on a use of a cached library copy)",
             ),
             (
                 "snapshotId",
@@ -476,7 +482,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "changes",
-        "Recorded design changes of the scopes index track follows; never writes or builds. A query subscription's subscriptionId instead pages its stored search evaluations (evaluations, evaluation, tracking; no revision pages); ack them the same way. Its evaluation is current, current_for_index (the file changed or is gone since that index: refresh, then evaluate), pending with an evaluate step, or unavailable (also when its last evaluate at this publication failed, with that reason, until a later publication); a stored evaluation too large or damaged to page fails with a recovery that acks past it. Each revision is one published build of a tracked scope: kind baseline (tracking started, or nothing comparable before it, with a reason) or changes, with coverage, exact summary counts per change kind and facet, and detail complete, truncated or expired. A changes revision's impact says which layers its changes reach: complete, reasons with counts (impact_truncated: layers left out of its detail) and listed, the count per class (direct, effective, effective_unchanged, possible; a class judges the layer's own fields, not its children, which have their own changes) of the layers its detail listed when recorded, never a total (an expired detail no longer keeps them); it is null for a baseline or a revision recorded before impact, never an empty complete one. A node subscription also reads revisions whose changes reach that layer or a layer of that top-level frame, or whose impact is incomplete. Pages run oldest first after cursor, else after the consumer's checkpoint (moved by watch ack), else from the oldest kept. Pass revision to page that revision's changed nodes, then the layers its impact lists, instead; each entry's entry field says which (change or impact). tracking lists each tracked scope's state, lastRevisionId and refreshRequired (the file changed since its last build: refresh the scope to record it; an empty page never proves the file unchanged); monitor is the watch monitor, separate from tracking. A cursor is bound to the filters, the visible sources and the workspace incarnation: any other use is cursor_stale. event_gap means retention deleted revisions before they were read: follow its recovery and treat the scope as possibly changed.",
+        "Recorded design changes of the scopes index track follows; never writes or builds. A query subscription's subscriptionId instead pages its stored search evaluations (evaluations, evaluation, tracking; no revision pages); ack them the same way. Its evaluation is current, current_for_index (the file changed or is gone since that index: refresh, then evaluate), pending with an evaluate step, or unavailable (also when its last evaluate at this publication failed, with that reason, until a later publication); a stored evaluation too large or damaged to page fails with a recovery that acks past it. Each revision is one published build of a tracked scope: kind baseline (tracking started, or nothing comparable before it, with a reason: tracking_started, tracking_changed, previous_changed, previous_untracked, previous_unpublished, facet_version_changed, or index_version_changed when the previous build used other index versions, such as relations before library references) or changes, with coverage, exact summary counts per change kind and facet, and detail complete, truncated or expired. A changes revision's impact says which layers its changes reach: complete, reasons with counts (impact_truncated: layers left out of its detail) and listed, the count per class (direct, effective, effective_unchanged, possible; a class judges the layer's own fields, not its children, which have their own changes) of the layers its detail listed when recorded, never a total (an expired detail no longer keeps them); it is null for a baseline or a revision recorded before impact, never an empty complete one. A node subscription also reads revisions whose changes reach that layer or a layer of that top-level frame, or whose impact is incomplete. Pages run oldest first after cursor, else after the consumer's checkpoint (moved by watch ack), else from the oldest kept. Pass revision to page that revision's changed nodes, then the layers its impact lists, instead; each entry's entry field says which (change or impact). tracking lists each tracked scope's state, lastRevisionId and refreshRequired (the file changed since its last build: refresh the scope to record it; an empty page never proves the file unchanged); monitor is the watch monitor, separate from tracking. A cursor is bound to the filters, the visible sources and the workspace incarnation: any other use is cursor_stale. event_gap means retention deleted revisions before they were read: follow its recovery and treat the scope as possibly changed.",
         &[
             ("workspaceId", "string", true, "ws_... from the index tool"),
             ("sourceId", "string", false, "only this source's revisions"),
@@ -511,7 +517,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "watch",
-        "Watching tracked scopes and change-tracking consumers. start: this server holds a lease on tracked scope of one source (sourceId when the workspace has several) and the workspace's shared runner refreshes it on each save, so changes shows new revisions without an index call; the server renews its leases every 10 s and ends them when it exits, and an unrenewed lease ends after 30 s. A requestId replays this server's live lease and reports an ended one as ended (untracked when its scope was untracked or retracked since), never restarting it, for 1 h after the end among the newest 1024 ended leases; past that it is unknown and starts a new lease. A requestId of a lease another running process holds is refused. stop ends one lease this server holds (leaseId). status lists the workspace's leases and runner, read-only. ack moves consumer's checkpoint for these filters (sourceId, scope), or a subscription's own (subscriptionId), forward to cursor, the nextCursor of the last changes page it handled with the same filters; an older or equal cursor normally leaves it, so a retry is safe. A cursor issued before retention deleted revisions it had not passed is event_gap, writing nothing: follow its recovery. A current recovery cursor before a checkpoint that is behind such a deletion moves the checkpoint back to it, so the kept revisions replay. Replies with advanced, true only when the checkpoint moved forward, and the checkpoint now held, which is authoritative. subscribe follows one source, scope or exact node (node: a layer id that must name one layer kind in the published index, else target_missing or identity_uncertain, never a same-name layer) from its newest visible revision; a repeat returns the same subscription; owner marks it temporary for that task. subscribe with query (and type) saves a workspace search of one source's scope (default 0:0) and stores its first evaluation of the top 50; evaluate stores a newer one after a publication, and a watch lease on that scope makes its runner store it unasked; changes with its subscriptionId reads the stored evaluations (causes such as source_changed only for new file bytes or index_rebuilt; enteredTopK and leftTopK are exact sourceId/snapshotId/nodeId refs in the new and old snapshot, rankChanged positions are null when rankComparable is false, all within the top-50 window, not the whole result set; nodes compare by sourceId, which relocate keeps; total only when the search counted every hit) and reports evaluation pending with an evaluate step, never computing one; an evaluation past 128 KiB is unavailable evaluation_too_large, nothing stored. list pages the visible subscriptions with their state. unsubscribe removes one subscription and its checkpoint (or, with owner, that owner's temporary ones); forget removes a consumer's raw checkpoint views. Neither untracks or deletes history. A consumer holds at most 64 subscriptions and checkpoints, a workspace 4096: past that, workspace_busy names list, unsubscribe and forget; nothing is evicted.",
+        "Watching tracked scopes and change-tracking consumers. start: this server holds a lease on tracked scope of one source (sourceId when the workspace has several) and the workspace's shared runner refreshes it on each save, so changes shows new revisions without an index call; the server renews its leases every 10 s and ends them when it exits, and an unrenewed lease ends after 30 s. A requestId replays this server's live lease and reports an ended one as ended (untracked when its scope was untracked or retracked since), never restarting it, for 1 h after the end among the newest 1024 ended leases; past that it is unknown and starts a new lease. A requestId of a lease another running process holds is refused. stop ends one lease this server holds (leaseId). status lists the workspace's leases and runner, read-only. ack moves consumer's checkpoint for these filters (sourceId, scope), or a subscription's own (subscriptionId), forward to cursor, the nextCursor of the last changes page it handled with the same filters; an older or equal cursor normally leaves it, so a retry is safe. A cursor issued before retention deleted revisions it had not passed is event_gap, writing nothing: follow its recovery. A current recovery cursor before a checkpoint that is behind such a deletion moves the checkpoint back to it, so the kept revisions replay. Replies with advanced, true only when the checkpoint moved forward, and the checkpoint now held, which is authoritative. subscribe follows one source, scope or exact node (node: a layer id that must name one layer kind in the published index, else target_missing or identity_uncertain, never a same-name layer) from its newest visible revision; a repeat returns the same subscription; owner marks it temporary for that task. subscribe with query (and type) saves a workspace search of one source's scope (default 0:0) and stores its first evaluation of the top 50; evaluate stores a newer one after a publication, and a watch lease on that scope makes its runner store it unasked; changes with its subscriptionId reads the stored evaluations (causes such as source_changed only for new file bytes or index_rebuilt; enteredTopK and leftTopK are exact sourceId/snapshotId/nodeId refs in the new and old snapshot, rankChanged the new snapshot's refs with from and to positions, null when rankComparable is false, all within the top-50 window, not the whole result set; nodes compare by sourceId, which relocate keeps; total only when the search counted every hit) and reports evaluation pending with an evaluate step, never computing one; an evaluation past 128 KiB is unavailable evaluation_too_large, nothing stored. sources (instead of sourceId) saves the search, or a library question (library), over a fixed set: visible resolves once to the sources this caller sees now, or a comma-separated list, at most 10, returned sorted in subscription.sources; it never gains a source added later. A member's publication evaluates it (its runner too); causes source_changed names members with new bytes in delta.changedSourceIds, corpus_changed a member's relocation or publication, or for a ranked search of several members their shared statistics; refs carry their sourceId and snapshot. A library question lists up to 50 uses with definitionMatch against the definition, followed by its exact nodeId in its source's current snapshot (delta.definitionMatchChanged); coverage.transitive is not_followed: a definition's own library dependencies are never traversed, and delta.notFollowedSourceIds names changed members that hold no use and are not the definition's source, whose dependent uses may be stale. A caller who cannot see every member reads the subscription as unknown; removing a member source disables it (state disabled, disabled.reason source_removed, evaluations deleted; a damaged stored set reads disabled with sources_unreadable): unsubscribe, then subscribe again. list pages the visible subscriptions with their state (subscriptionId: only that one, empty when unknown to the caller). unsubscribe removes one subscription and its checkpoint (or, with owner, that owner's temporary ones); forget removes a consumer's raw checkpoint views. Neither untracks or deletes history. A consumer holds at most 64 subscriptions and checkpoints, a workspace 4096: past that, workspace_busy names list, unsubscribe and forget; nothing is evicted.",
         &[
             (
                 "action",
@@ -548,7 +554,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "subscriptionId",
                 "string",
                 false,
-                "ack, evaluate or unsubscribe this subscription",
+                "ack, evaluate or unsubscribe this subscription; list reads only it",
             ),
             (
                 "query",
@@ -561,6 +567,18 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "string",
                 false,
                 "subscribe with query: only these node types, comma-separated, as search takes them",
+            ),
+            (
+                "sources",
+                "string",
+                false,
+                "subscribe with query or library, instead of sourceId: a fixed set, visible (the sources you see now) or comma-separated sourceIds, at most 10",
+            ),
+            (
+                "library",
+                "object",
+                false,
+                "subscribe: save this library question over sources (or sourceId) instead of a search: {kind, namespace, key} and optional definition {sourceId, snapshotId, nodeId}, an exact ref to the definition's current published snapshot in one of the sources",
             ),
             (
                 "node",
@@ -622,13 +640,14 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
         ),
         "usages" => (
             serde_json::json!({
-                "definition": {"type": ["object", "null"], "description": "null while a workspace scope is pending or not_prepared; else ref or resource, state (indexed in scope, outside_scope, or the state of the edges that name it: missing, unresolved, external, recorded), name, type, setId and page when known"},
+                "library": {"type": "object", "description": "library queries: the kind, namespace and key asked"},
+                "definition": {"type": ["object", "null"], "description": "library queries: state unresolved with a reason (library_source_unproven when none is selected), or selected with basis caller_ref, the selected ref and keyEvidence unverified; null while a workspace scope is pending or not_prepared; else ref or resource, state (indexed in scope, outside_scope, or the state of the edges that name it: missing, unresolved, external, recorded), name, type, setId and page when known"},
                 "direction": {"type": "string"},
                 "relations": {"type": "array", "items": {"type": "string"}},
                 "scope": {"type": "object"},
                 "members": {"type": "object", "description": "COMPONENT_SET queries: the known member ids and whether they are complete"},
-                "results": {"type": "array", "items": {"type": "object"}, "description": "in: each location's ref, name, type, origin, hidden, page, scopeRoot, path, relation, state, basis, evidence and via (the member a set query matched); out: target ref or resource, its definition and the edge fields"},
-                "coverage": {"type": "object", "description": "complete, layers.relations kinds and version, reasons; never a total count"},
+                "results": {"type": "array", "items": {"type": "object"}, "description": "in: each location's ref, name, type, origin, hidden, page, scopeRoot, path, relation, state, basis, evidence and via (the member a set query matched); library queries: ref, name, type, relation, state, basis, evidence, hidden, internal, page and scopeRoot, no origin or path, plus definitionMatch when a definition is selected: equal (the use's cached copy has the selected definition's fingerprint on every facet; not proof the library published it), definition_mismatch (a facet differs) or unknown (a facet unread or unsupported, such as a field holding a file-local GUID, or no copy to compare); out: target ref or resource, its definition and the edge fields, plus library {kind, namespace (null with unknownReason when no copy records one), key, basis cached_copy} on an instance_of, uses_style or binds_variable use whose cached library copy names it: the selector a library query takes"},
+                "coverage": {"type": "object", "description": "complete, layers.relations kinds and version, reasons; library queries: complete, sources (sourceId, path, state, snapshotId, freshness when ready, nextSteps) and reasons; never a total count"},
                 "hasMore": {"type": "boolean"},
                 "nextCursor": {"type": ["string", "null"]},
                 "source": {"type": "object", "description": "sourceId and snapshotId; stateless calls add freshness"},
@@ -687,7 +706,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
         "changes" => (
             serde_json::json!({
                 "workspaceId": {"type": "string"},
-                "revisions": {"type": "array", "items": {"type": "object"}, "description": "oldest first: revisionId, sourceId, scope, kind (baseline or changes), from (the previous revisionId, null for a baseline or when deleted), snapshotId, coverage (a baseline's reason), summary (changes, kinds, facets, possibleMatches), detail (complete, truncated or expired), detailRows, impact (null, or complete, reasons [{reason, count}], listed per class)"},
+                "revisions": {"type": "array", "items": {"type": "object"}, "description": "oldest first: revisionId, sourceId, scope, kind (baseline or changes), from (the previous revisionId, null for a baseline or when deleted), snapshotId, coverage (a baseline's reason, such as tracking_started or index_version_changed), summary (changes, kinds, facets, possibleMatches), detail (complete, truncated or expired), detailRows, impact (null, or complete, reasons [{reason, count}], listed per class)"},
                 "nextCursor": {"type": ["string", "null"], "description": "pass as cursor for the next page, or to watch ack once handled"},
                 "hasMore": {"type": "boolean"},
                 "tracking": {"type": "array", "items": {"type": "object"}, "description": "each tracked scope of the visible sources: sourceId, scope, state (baseline_pending, active or disabled), lastRevisionId, lastCheckedAtMs (when its last build verified the file), refreshRequired (the file's size or mtime differs from that build's)"},
@@ -697,8 +716,8 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "detail": {"type": "string", "description": "with revision: complete, truncated (rows or impact entries past the cap were not kept) or expired (neither is kept)"},
                 "nodes": {"type": "array", "items": {"type": "object"}, "description": "with revision: its change rows (entry change: frame, id, kind, change, facets, unread, descendants), then its impact's listed layers (entry impact: id, class, sides, facets {changed, unknown, equal}, via {relation, target} or null)"},
                 "subscription": {"type": "object", "description": "with subscriptionId: as watch subscribe describes it"},
-                "evaluations": {"type": "array", "items": {"type": "object"}, "description": "a query subscription's stored evaluations, oldest first: evaluationId, snapshotId, coverage, causes (initial, source_changed, index_rebuilt, coverage_changed, ranking_changed, corpus_changed), total (null unless every hit was counted), topK, delta (from evaluationId, fromSnapshotId, snapshotId; enteredTopK and leftTopK as exact sourceId/snapshotId/nodeId refs in the new and old snapshot; rankChanged within the window, null when rankComparable is false), createdAtMs"},
-                "evaluation": {"type": "object", "description": "a query subscription: state current, current_for_index (the file changed or is unreadable since that index: refresh, then evaluate), pending (with reason and an evaluate step) or unavailable"},
+                "evaluations": {"type": "array", "items": {"type": "object"}, "description": "a query subscription's stored evaluations, oldest first: evaluationId, snapshotId, coverage, causes (initial, source_changed, index_rebuilt, coverage_changed, ranking_changed, corpus_changed), total (null unless every hit was counted), topK, delta (from evaluationId, fromSnapshotId, snapshotId; enteredTopK and leftTopK as exact sourceId/snapshotId/nodeId refs in the new and old snapshot; rankChanged within the window as new-snapshot refs with from and to, null when rankComparable is false; a source set's also sources, fromSources and changedSourceIds, a library question's definitionMatchChanged and notFollowedSourceIds), createdAtMs"},
+                "evaluation": {"type": "object", "description": "a query subscription: state current, current_for_index (the file changed or is unreadable since that index: refresh, then evaluate), pending (with reason and an evaluate step), unavailable, or disabled (a source set: subscription.disabled.reason is source_removed, a member was removed, or sources_unreadable, its stored set is damaged; no evaluations: unsubscribe, then subscribe again)"},
             }),
             ["workspaceId", "nextCursor"].as_slice(),
         ),
@@ -719,8 +738,8 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "advanced": {"type": "boolean", "description": "ack: true only when the visible checkpoint moved forward"},
                 "checkpoint": {"type": ["string", "null"], "description": "ack, subscribe: a cursor at the checkpoint now held; null when retention deleted that revision"},
                 "subscriptionId": {"type": "string", "description": "ack of a subscription"},
-                "subscription": {"type": "object", "description": "subscribe: subscriptionId, consumer, sourceId, scope, kind (source, scope, node or query), node, nodeKind, query, types, topK, state (active, target_missing or identity_uncertain), lifetime (durable or temporary), filterVersion"},
-                "evaluation": {"type": "object", "description": "subscribe with query, evaluate: state evaluated (evaluationId, causes, delta), current, pending (reason, nextSteps) or unavailable (reason such as query_changed, search_failed or evaluation_too_large, nextSteps)"},
+                "subscription": {"type": "object", "description": "subscribe: subscriptionId, consumer, sourceId (null for a set), sources, scope, kind (source, scope, node or query), node, nodeKind, query, types, library, definition, topK, state (active, target_missing, identity_uncertain or disabled), disabled, lifetime (durable or temporary), filterVersion"},
+                "evaluation": {"type": "object", "description": "subscribe with query or library, evaluate: state evaluated (evaluationId, causes, delta), current, pending (reason, nextSteps), unavailable (reason such as query_changed, search_failed or evaluation_too_large, nextSteps) or disabled (nextSteps)"},
                 "created": {"type": "boolean", "description": "subscribe: false when the same subscription already existed"},
                 "initialPosition": {"type": "string", "description": "subscribe: tail (the newest revision it can see), initial_evaluation (a query, before its first evaluation) or existing"},
                 "tracking": {"type": "array", "items": {"type": "object"}, "description": "subscribe: the followed scopes' tracking state"},
@@ -919,7 +938,38 @@ pub fn property(tool: &str, param: &Param) -> Value {
     if tool == "usages" && key == "direction" {
         p["enum"] = json!(["in", "out"]);
     }
+    if (tool == "usages" || tool == "watch") && key == "library" {
+        p["properties"] = json!({
+            "kind": {"type": "string", "enum": figlens::workspace::library::KINDS},
+            "namespace": {"type": "string", "minLength": 1, "description": "the library's sourceLibraryKey, as an outgoing usages result's library names it; omitted, only copies that record none are listed and the answer is never complete"},
+            "key": {"type": "string", "minLength": 1, "description": "the component, style or variable key"},
+            "definition": {"type": "object", "description": "the definition you select, as an exact ref an earlier reply gave: checked visible, ready at that snapshot and of the kind, then reported selected with keyEvidence unverified, never resolved from the key",
+                "properties": {"sourceId": {"type": "string", "minLength": 1}, "snapshotId": {"type": "string", "minLength": 1}, "nodeId": {"type": "string", "minLength": 1}},
+                "required": ["sourceId", "snapshotId", "nodeId"], "additionalProperties": false},
+        });
+        p["required"] = json!(["kind", "key"]);
+        p["additionalProperties"] = json!(false);
+    }
     p
+}
+
+/// `value` against an object schema of string and object fields: every required field present,
+/// no other one, each string non-empty and within its enum.
+fn object_fits(value: &Value, schema: &Value) -> bool {
+    let (Some(fields), Some(props)) = (value.as_object(), schema["properties"].as_object()) else {
+        return false;
+    };
+    let required = schema["required"].as_array().into_iter().flatten();
+    required
+        .filter_map(Value::as_str)
+        .all(|r| fields.contains_key(r))
+        && fields.iter().all(|(name, v)| match props.get(name) {
+            None => false,
+            Some(p) if p["type"] == "object" => object_fits(v, p),
+            Some(p) => v.as_str().is_some_and(|text| {
+                !text.is_empty() && p["enum"].as_array().is_none_or(|e| e.contains(v))
+            }),
+        })
 }
 
 fn integer(value: &Value) -> Option<u64> {
@@ -1004,6 +1054,8 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
                 }
             }
             "boolean" if !value.is_boolean() => return Err(bad()),
+            // Only library (usages, watch) takes an object; its schema lists every field.
+            "object" if !object_fits(value, &schema) => return Err(bad()),
             "string" => {
                 let text = value.as_str().ok_or_else(bad)?;
                 if (schema["minLength"] == 1 && text.is_empty())
@@ -1052,7 +1104,24 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
                 "usages needs file or workspaceId, not both; sourceId and storage apply to workspaceId",
             ));
         }
-        crate::command::usages_tool(&call).map_err(Failure::from_error)?;
+        if object.contains_key("library") {
+            if file {
+                return Err(Failure::argument(
+                    "usages with library reads a workspace: pass workspaceId, not file",
+                ));
+            }
+            if let Some(key) = ["node", "resource", "snapshotId", "relation", "direction"]
+                .into_iter()
+                .find(|key| object.contains_key(*key))
+            {
+                return Err(Failure::argument(format!(
+                    "usages with library takes no {key}: library replaces node and resource, and snapshotId, relation and direction apply only to them"
+                )));
+            }
+            crate::command::library_tool(&call).map_err(Failure::from_error)?;
+        } else {
+            crate::command::usages_tool(&call).map_err(Failure::from_error)?;
+        }
     }
     Ok(call)
 }
@@ -1216,7 +1285,11 @@ impl Failure {
             r[0]["tool"] == "watch"
                 && matches!(r[0]["action"].as_str(), Some("ack" | "unsubscribe"))
         });
-        let next = if storage {
+        // A budget failure that names its own narrower request is fixed by that request.
+        let narrowed = self.kind == ErrorKind::ResponseBudget && self.recovery.is_some() && !stored;
+        let next = if narrowed {
+            "Follow recovery: it names a narrower request or the exact item to read instead."
+        } else if storage {
             "The figlens storage named in the error is missing or denied; ask the user to restore it (never change permissions yourself), then retry; recreate_elsewhere only after the user confirms."
         } else if stored {
             "A stored saved-query evaluation is damaged or too large to page; follow recovery (ack past it, or unsubscribe); the design file is not at fault."

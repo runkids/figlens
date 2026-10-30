@@ -13,7 +13,13 @@ fn guid(id: u32) -> Value<'static> {
     )
 }
 
-fn node(id: u32, parent: Option<u32>, kind: &'static str, name: &str) -> Value<'static> {
+fn node(
+    id: u32,
+    parent: Option<u32>,
+    kind: &'static str,
+    name: &str,
+    library: bool,
+) -> Value<'static> {
     let mut fields = vec![
         ("guid", guid(id)),
         ("type", Value::Enum("NodeType", kind)),
@@ -63,13 +69,26 @@ fn node(id: u32, parent: Option<u32>, kind: &'static str, name: &str) -> Value<'
             object("SymbolData", vec![("symbolID", guid(10))]),
         ));
     }
+    // With `--library` the main is a cached library copy, so a usages result can name its library
+    // reference; without it the output is the original mapping fixture, byte for byte.
+    if library && kind == "SYMBOL" {
+        fields.push(("componentKey", Value::String("synthetic-button".into())));
+        fields.push((
+            "sourceLibraryKey",
+            Value::String("synthetic-library".into()),
+        ));
+    }
     object("NodeChange", fields)
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let output = std::env::args()
-        .nth(1)
-        .ok_or("usage: mapping-fixture <new-output.fig>")?;
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let library = args.first().is_some_and(|a| a == "--library");
+    if library {
+        args.remove(0);
+    }
+    let [output] = <[String; 1]>::try_from(args)
+        .map_err(|_| "usage: mapping-fixture [--library] <new-output.fig>")?;
     let field = |name: &str, type_id, value, is_array| Field {
         name: name.into(),
         type_id,
@@ -141,7 +160,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                 field("size", 2, 5, false),
                 field("transform", 4, 6, false),
                 field("symbolData", 5, 7, false),
-            ],
+            ]
+            .into_iter()
+            .chain(
+                [
+                    field("componentKey", TYPE_STRING, 8, false),
+                    field("sourceLibraryKey", TYPE_STRING, 9, false),
+                ]
+                .into_iter()
+                .filter(|_| library),
+            )
+            .collect(),
         ),
         Def::new(
             "Message".into(),
@@ -154,13 +183,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         vec![(
             "nodeChanges",
             Value::Array(vec![
-                node(0, None, "DOCUMENT", "Mapping fixture"),
-                node(9, Some(0), "CANVAS", "Original synthetic examples"),
-                node(1, Some(9), "FRAME", "Mapping review"),
-                node(2, Some(1), "INSTANCE", "First button"),
-                node(3, Some(1), "INSTANCE", "Second button"),
-                node(10, Some(9), "SYMBOL", "Button"),
-                node(11, Some(10), "RECTANGLE", "Surface"),
+                node(0, None, "DOCUMENT", "Mapping fixture", library),
+                node(9, Some(0), "CANVAS", "Original synthetic examples", library),
+                node(1, Some(9), "FRAME", "Mapping review", library),
+                node(2, Some(1), "INSTANCE", "First button", library),
+                node(3, Some(1), "INSTANCE", "Second button", library),
+                node(10, Some(9), "SYMBOL", "Button", library),
+                node(11, Some(10), "RECTANGLE", "Surface", library),
             ]),
         )],
     );
