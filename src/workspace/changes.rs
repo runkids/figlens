@@ -396,11 +396,12 @@ fn poll(conn: &Connection, v: &View, req: &Request) -> Result<Json> {
     let now = marks.receipt;
     // A node is followed through the layers a change reaches, and the top-level frames holding
     // them on either side, as well as the changed ones, and through any revision whose impact
-    // is incomplete, since it cannot rule the node out.
+    // is incomplete or was recorded before impact was, since it cannot rule the node out.
     let (impact, reached) = match v.impacts {
         true => (
             "r.impact",
-            "OR json_extract(r.impact, '$.complete') IS 0 OR EXISTS
+            "OR (r.kind = 'changes' AND r.impact IS NULL)
+             OR json_extract(r.impact, '$.complete') IS 0 OR EXISTS
              (SELECT 1 FROM revision_impacts i WHERE i.rev = r.id
              AND (i.node = ?5 OR i.old_frame = ?5 OR i.new_frame = ?5))",
         ),

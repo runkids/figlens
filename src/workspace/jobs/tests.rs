@@ -1655,3 +1655,21 @@ fn a_publication_evaluates_each_saved_search_once_in_bounded_turns() {
         (true, false, true, true, "newer")
     );
 }
+
+#[test]
+fn a_submit_never_joins_a_build_that_is_being_cancelled() {
+    let d = TestDir::new();
+    let (storage, select, _) = workspace(&d, 1);
+    queued(&storage, &select, "0:0");
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    // As a closing runner's cancel leaves its own build running until its worker sees it.
+    ws.conn.execute("UPDATE jobs SET cancel = 1", []).unwrap();
+    let source = sources(&ws.conn)[0].clone();
+    let Err(error) = submit(&storage, &mut ws, "refresh", &source, "0:0", None) else {
+        panic!("joined a cancelled build");
+    };
+    assert_eq!(
+        error.downcast_ref::<FigError>().unwrap().kind(),
+        ErrorKind::WorkspaceBusy
+    );
+}

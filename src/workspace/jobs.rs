@@ -493,17 +493,28 @@ pub(crate) fn submit(
             None => {}
         }
     }
-    let active: Option<(String, String, i64, String)> = tx
+    let active: Option<(String, String, i64, String, bool)> = tx
         .query_row(
-            "SELECT job_id, owner, attempt, membership FROM jobs WHERE source_id = ?1 AND scope = ?2
-             AND state IN ('queued', 'running')",
+            "SELECT job_id, owner, attempt, membership, cancel FROM jobs WHERE source_id = ?1
+             AND scope = ?2 AND state IN ('queued', 'running')",
             [source_id, scope],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()
         .map_err(sql)?;
-    if let Some((job_id, holder, attempt, built)) = active {
+    if let Some((job_id, holder, attempt, built, cancelled)) = active {
         let owned = !job_alive(&dir, &holder, &job_id, attempt);
+        // A live build already cancelled (by its caller, or a closing watch runner) only stops;
+        // joining it would end this request cancelled too.
+        if !owned && cancelled {
+            return Err(FigError::new(
+                ErrorKind::WorkspaceBusy,
+                format!("a cancelled build of source {source_id} scope {scope} is still stopping; retry after it ends"),
+            )
+            .with_recovery(json!([{"action": "wait", "requires": "none", "tool": "jobs",
+                "arguments": {"action": "status", "jobId": job_id}}]))
+            .into());
+        }
         // A live build of the source's previous registration cannot publish; joining it would
         // build nothing, and its slot frees once it stops.
         if !owned && built != membership {

@@ -3438,6 +3438,30 @@ fn a_node_subscription_reads_revisions_whose_impact_reaches_that_node_or_is_inco
 }
 
 #[test]
+fn a_node_subscription_reads_a_revision_recorded_before_impact_was() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let source = t.changes(&[])["tracking"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let followed = t.subscribe(&["--node", "0:12"]);
+    // A complete revision naming none of 0:12, as schema 7 keeps one recorded before it: its
+    // impact is unknown, never an empty complete one, so it cannot rule the node out.
+    t.sql(&format!(
+        "INSERT INTO revisions (id, seq, source_id, scope, epoch, gen, from_gen, snapshot_id,
+         kind, coverage, summary, detail, detail_rows, detail_bytes, created_ms, impact)
+         SELECT randomblob(16), seq + 1, source_id, scope, epoch, gen, from_gen, snapshot_id,
+         'changes', '{{\"complete\":true}}', summary, 'complete', 0, 0, created_ms, NULL
+         FROM revisions WHERE source_id = '{source}' ORDER BY seq DESC LIMIT 1"
+    ));
+    let page = t.changes(&["--subscription", &followed]);
+    assert_eq!(page["revisions"].as_array().unwrap().len(), 1, "{page}");
+}
+
+#[test]
 fn a_revision_s_detail_pages_one_entry_at_a_time_across_its_changes_and_impact() {
     let env = Env::new();
     let t = Tracked::new(&env);
