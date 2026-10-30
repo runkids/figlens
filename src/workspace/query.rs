@@ -272,7 +272,9 @@ fn searched(
             Some(crate::search::visual::QueryImage::from_png(bytes, i.crop)?)
         }
         Some((i, input @ Input::Ref { .. })) => {
-            let image = resolved(storage, &tx, &dir, &ws_id, &req.scope, &versions, input)?;
+            let image = resolved(
+                storage, &tx, &dir, &ws_id, version, &req.scope, &versions, input,
+            )?;
             match i.crop {
                 None => Some(image),
                 // A crop is in the stored 256-pixel render's coordinates, the one the viewer shows.
@@ -618,6 +620,7 @@ pub fn reference_image(
             &tx,
             &ws.held.dir,
             &ws.held.id,
+            ws.version,
             scope,
             &search::store::versions(),
             input,
@@ -629,11 +632,13 @@ pub fn reference_image(
 /// search's own scope and filters: the requested scope's ready generation first, then the
 /// source's other published scopes in order, each only while it serves exactly the referenced
 /// snapshot and is fresh; the first that stores the node's render answers.
+#[allow(clippy::too_many_arguments)]
 fn resolved(
     storage: &Storage,
     tx: &rusqlite::Transaction,
     dir: &Path,
     ws_id: &str,
+    version: i64,
     scope: &str,
     versions: &str,
     input: &Input,
@@ -676,6 +681,10 @@ fn resolved(
             continue;
         }
         snapshot = true;
+        // Stored renders came with schema 10.
+        if version < 10 {
+            continue;
+        }
         if let Some(image) = super::visual_search::stored(tx, row.gen_id.expect("ready"), node_id)?
         {
             return Ok(image);
@@ -729,7 +738,10 @@ fn image_rank(
 ) -> Result<(search::Ranked, rank::Decor, bool, Json)> {
     use super::visual_search::{layer_state, vectors, visual_step};
     use crate::search::visual::{self, Hit as VisualHit};
-    let (ws_id, _, _) = ws;
+    let (ws_id, _, version) = ws;
+    // `model_layers` came with schema 9 and the visual tables with 10; an older workspace has
+    // no visual layer to read until its preparation upgrades it.
+    let visual_tables = version >= 10;
     let mut complete = true;
     let mut bounds = crate::expand::Bounds {
         work: search::semantic::LAYER_WORK,
@@ -744,7 +756,10 @@ fn image_rank(
     let mut excluded = [0usize; 2];
     let mut hash_sources = Vec::new();
     for (part, (index, source, gen_id, _)) in loaded.iter_mut().enumerate() {
-        let state = layer_state(tx, *gen_id, visual::VERSION)?;
+        let state = match visual_tables {
+            true => layer_state(tx, *gen_id, visual::VERSION)?,
+            false => None,
+        };
         let label = state.as_deref().unwrap_or("pending");
         hash_sources.push(json!({"sourceId": source["sourceId"], "state": label}));
         if label != "ready" {
@@ -825,7 +840,10 @@ fn image_rank(
             let mut stored: Vec<(rank::Key, Vec<f32>)> = Vec::new();
             let mut sources = Vec::new();
             for (part, (_, source, gen_id, _)) in loaded.iter().enumerate() {
-                let state = layer_state(tx, *gen_id, &p.id)?;
+                let state = match visual_tables {
+                    true => layer_state(tx, *gen_id, &p.id)?,
+                    false => None,
+                };
                 let label = state.as_deref().unwrap_or("pending");
                 sources.push(json!({"sourceId": source["sourceId"], "state": label}));
                 if label != "ready" {
@@ -835,7 +853,14 @@ fn image_rank(
                     continue;
                 }
                 let wanted = units[part].iter().copied().collect();
-                let mut by = vectors(tx, *gen_id, &p.id, p.dim, &wanted)?;
+                let mut by = vectors(tx, *gen_id, &p.id, p.dim, &wanted, &mut bounds, cancel)?;
+                if let Some(stop) = bounds.stop {
+                    // A scan cut short leaves this source's vectors partial: no cursor.
+                    complete = false;
+                    let last = sources.last_mut().expect("pushed above");
+                    last["state"] = json!("partial");
+                    last["stop"] = json!(format!("{stop:?}"));
+                }
                 stored.extend(
                     units[part]
                         .iter()

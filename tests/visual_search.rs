@@ -585,3 +585,35 @@ fn render_evidence_counts_toward_the_reply_budget() {
     let reply = env.search(&["--image", path(&red), "--limit", "5"]);
     assert_eq!(reply["results"][0]["visual"]["diagnostics"], json!(bulk));
 }
+
+/// A workspace from before the visual tables answers an image search with the step that builds
+/// its layer, never a missing-table error; it is read as is, not migrated.
+#[test]
+fn an_older_workspace_names_the_visual_step_instead_of_failing_on_missing_tables() {
+    for (version, drop) in [
+        (
+            8,
+            "DROP TABLE visual_units; DROP TABLE visual_rasters; DROP TABLE model_vectors; DROP TABLE model_refs; DROP TABLE model_layers;",
+        ),
+        (9, "DROP TABLE visual_units; DROP TABLE visual_rasters;"),
+    ] {
+        let env = Env::new();
+        let (_, a) = env.source("a.fig");
+        let red = env.png("red.png", RED);
+        let snapshot = env.search(&["Card"])["results"][0]["ref"]["snapshotId"].clone();
+        env.database()
+            .execute_batch(&format!("{drop} PRAGMA user_version = {version};"))
+            .unwrap();
+        let error = env.search_error(&["--image", path(&red)]);
+        assert_eq!(
+            error["recovery"][0]["arguments"]["action"], "visual",
+            "schema {version}: {error}"
+        );
+        let reference = json!({"sourceId": a, "snapshotId": snapshot, "nodeId": "0:1"}).to_string();
+        let error = env.search_error(&["--image-ref", &reference]);
+        assert_eq!(
+            error["recovery"][0]["arguments"]["action"], "visual",
+            "schema {version}: {error}"
+        );
+    }
+}

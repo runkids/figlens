@@ -197,7 +197,7 @@ pub(super) fn layer_state(
 }
 
 /// The vision vectors stored for generation `gen_id`'s units in `rids` under `profile`, by
-/// record id; units the filters left out are not decoded. Identical rasters share one vector,
+/// record id; units the filters left out are not decoded, and a scan `bounds` stops is partial. Identical rasters share one vector,
 /// keyed by their raster key.
 pub(super) fn vectors(
     tx: &rusqlite::Transaction,
@@ -205,6 +205,8 @@ pub(super) fn vectors(
     profile: &str,
     dim: usize,
     rids: &std::collections::HashSet<u32>,
+    bounds: &mut crate::expand::Bounds,
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<HashMap<u32, Vec<f32>>> {
     let mut stmt = tx
         .prepare(
@@ -221,7 +223,14 @@ pub(super) fn vectors(
     let mut out = HashMap::new();
     while let Some(row) = rows.next().map_err(sql)? {
         let rid: u32 = row.get(0).map_err(sql)?;
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(fail(ErrorKind::Cancelled, "search cancelled"));
+        }
+        // Each kept vector costs its decode, its later scoring and the floats it retains.
         if rids.contains(&rid) {
+            if !bounds.charge(dim, 4 * dim) {
+                break;
+            }
             let vector = crate::semantic::decode(row.get_ref(1).map_err(sql)?.as_blob()?, dim)?;
             out.insert(rid, vector);
         }
