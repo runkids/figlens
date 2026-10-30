@@ -743,6 +743,10 @@ pub(crate) fn definitions(
     // scope binds it, so an unused one answers as such rather than as unknown.
     let mut variables = Vec::new();
     for page in tree.children.get("0:0").into_iter().flatten() {
+        // A page pays its lookup, even one with no children.
+        if !bounds.charge(1, 0) {
+            return None;
+        }
         for id in tree.children.get(page).into_iter().flatten() {
             if !bounds.charge(1, 0) {
                 return None;
