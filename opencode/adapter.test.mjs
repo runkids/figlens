@@ -815,10 +815,10 @@ else if (command === 'watch' && action === 'run') {
   return { ctx, adapter, lines };
 }
 
-test('CLI-path watch start holds a lease for its session after asking read on the design and edit on the workspace', async t => {
+test('CLI-path watch start holds a lease for its session after asking read on every design and edit on the workspace', async t => {
   const { ctx, adapter, lines } = await watching(t);
   const asked = [];
-  ctx.permission.assert = async ({ action, resources }) => { asked.push([action, resources[0]]); };
+  ctx.permission.assert = async ({ action, resources }) => { asked.push([action, action === 'read' ? resources.join(' ') : resources[0]]); };
   const a = await adapter.scope('a');
   const start = { action: 'start', workspaceId: 'ws_1', sourceId: 's1', scope: '0:0', storage: '/s', requestId: 'r' };
   const lease = await adapter.cli(a, 'watch', start);
@@ -828,7 +828,7 @@ test('CLI-path watch start holds a lease for its session after asking read on th
   const before = asked.length;
   await adapter.cli(await adapter.scope('b'), 'watch', { action: 'status', workspaceId: 'ws_1' });
   assert.deepEqual([lease.state, await lines('runs'), asks, asked.slice(before).filter(([action, resource]) => action === 'edit' && resource === '/w')],
-    ['active', ['--id ws_1 --source s1 --scope 0:0 --storage /s --request-id r'], ['read /a.fig', 'edit /w'], []],
+    ['active', ['--id ws_1 --source s1 --scope 0:0 --storage /s --request-id r'], ['read /a.fig /b.fig', 'edit /w'], []],
     'status asks no edit on the workspace');
 });
 
