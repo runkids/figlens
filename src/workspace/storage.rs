@@ -474,6 +474,34 @@ impl Place {
 }
 
 impl Storage {
+    /// `<config>/models.json`, the configured model profiles (#94); `None` before the first.
+    pub fn models(&self) -> Result<Option<Json>> {
+        let path = self.defaults.config.path.join("models.json");
+        Ok(if plain(&path, false)? {
+            Some(read_small(&path)?)
+        } else {
+            None
+        })
+    }
+
+    /// Rewrites `<config>/models.json` from its current record under `models.lock`, so two
+    /// updates never both start from the same old record.
+    pub fn update_models(&self, change: impl FnOnce(Option<Json>) -> Result<Json>) -> Result<()> {
+        let config = &self.defaults.config.path;
+        create_durable(config)?;
+        let path = config.join("models.lock");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|e| storage_error(&path, e))?;
+        lock(&file, &path, true, "model profiles")?;
+        let record = change(self.models()?)?;
+        write_small(&config.join("models.json"), &record)
+    }
+
     pub(super) fn locations(&self) -> PathBuf {
         self.defaults.config.path.join("workspaces")
     }

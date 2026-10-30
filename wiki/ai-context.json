@@ -224,6 +224,14 @@
           "path": "wiki/index-jobs.md"
         }
       ]
+    },
+    "semantic": {
+      "description": "Changing semantic or hybrid search, the models command and tool, the model profile or the figlens-embed runtime lookup.",
+      "sources": [
+        {
+          "path": "wiki/semantic.md"
+        }
+      ]
     }
   },
   "unrouted": {

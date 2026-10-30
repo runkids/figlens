@@ -1,0 +1,19 @@
+# Issue #94 preflight only: not part of the figlens package, never shipped.
+[package]
+name = "semantic-preflight"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+candle-core = "=0.11.0"
+candle-nn = "=0.11.0"
+candle-transformers = "=0.11.0"
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+flate2 = "1.1.10"
+kiwi-schema = { path = "../../vendor/kiwi-schema" }
+model2vec-rs = { version = "=0.3.0", default-features = false, features = ["local-only", "fancy-regex"] }
+serde_json = "1"
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }

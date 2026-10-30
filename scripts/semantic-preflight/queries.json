@@ -1,0 +1,704 @@
+{
+ "queries": [
+  {
+   "category": "en_to_zh",
+   "query": "sign in",
+   "relevant": [
+    "A1"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "log out",
+   "relevant": [
+    "A2"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "forgot password",
+   "relevant": [
+    "A3"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "shopping cart",
+   "relevant": [
+    "A4"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "add to wishlist",
+   "relevant": [
+    "A5"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "checkout",
+   "relevant": [
+    "A6"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "order history",
+   "relevant": [
+    "A7"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "notification settings",
+   "relevant": [
+    "A8"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "dark mode",
+   "relevant": [
+    "A9"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "delete account",
+   "relevant": [
+    "A10"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "deactivate account",
+   "relevant": [
+    "A11"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "upload profile picture",
+   "relevant": [
+    "A12"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "search products",
+   "relevant": [
+    "A13"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "filters",
+   "relevant": [
+    "A14"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "sort by price",
+   "relevant": [
+    "A15"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "free shipping",
+   "relevant": [
+    "A16"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "returns and refunds",
+   "relevant": [
+    "A17"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "contact customer support",
+   "relevant": [
+    "A18"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "privacy policy",
+   "relevant": [
+    "A19"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "terms of service",
+   "relevant": [
+    "A20"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "註冊帳號",
+   "relevant": [
+    "B1"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "驗證電子郵件",
+   "relevant": [
+    "B2"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "雙重驗證",
+   "relevant": [
+    "B3"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "付款方式",
+   "relevant": [
+    "B4"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "新增信用卡",
+   "relevant": [
+    "B5"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "帳單地址",
+   "relevant": [
+    "B6"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "追蹤包裹",
+   "relevant": [
+    "B7"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "取消訂閱",
+   "relevant": [
+    "B8"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "升級付費方案",
+   "relevant": [
+    "B9"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "語言與地區",
+   "relevant": [
+    "B10"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "變更密碼",
+   "relevant": [
+    "B11"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "已儲存的地址",
+   "relevant": [
+    "B12"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "最近瀏覽",
+   "relevant": [
+    "B13"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "撰寫評論",
+   "relevant": [
+    "B14"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "使用優惠碼",
+   "relevant": [
+    "B15"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "缺貨",
+   "relevant": [
+    "B16"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "到貨通知",
+   "relevant": [
+    "B17"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "邀請好友",
+   "relevant": [
+    "B18"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "說明中心",
+   "relevant": [
+    "B19"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "購物車是空的",
+   "relevant": [
+    "B20"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "Wi-Fi 網路設定",
+   "relevant": [
+    "C1"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "用 Apple Pay 結帳",
+   "relevant": [
+    "C2"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "用 LINE 帳號 sign in",
+   "relevant": [
+    "C3"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "掃描 QR code",
+   "relevant": [
+    "C4"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "app version 版本號",
+   "relevant": [
+    "C5"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "download PDF 檔案",
+   "relevant": [
+    "C6"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "訂閱 newsletter",
+   "relevant": [
+    "C7"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "Google Maps 導航",
+   "relevant": [
+    "C8"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "VIP member 專區",
+   "relevant": [
+    "C9"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "OTP 一次性密碼",
+   "relevant": [
+    "C10"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "藍牙 earbuds pairing",
+   "relevant": [
+    "C11"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "USB-C cable 充電",
+   "relevant": [
+    "C12"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "分享到 Instagram",
+   "relevant": [
+    "C13"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "GPS location 權限",
+   "relevant": [
+    "C14"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "AI 推薦商品",
+   "relevant": [
+    "C15"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "cookie 設定",
+   "relevant": [
+    "C16"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "iCloud backup 備份",
+   "relevant": [
+    "C17"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "NFC 支付",
+   "relevant": [
+    "C18"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "SMS 通知",
+   "relevant": [
+    "C19"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "4K 畫質",
+   "relevant": [
+    "C20"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "想不起密碼怎麼辦",
+   "relevant": [
+    "A3"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "商品不滿意想要把錢拿回來",
+   "relevant": [
+    "A17"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "遇到問題要找真人協助",
+   "relevant": [
+    "A18"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "晚上看螢幕比較不刺眼的主題",
+   "relevant": [
+    "A9"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "寄送不用另外付錢",
+   "relevant": [
+    "A16"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "更換個人頭像",
+   "relevant": [
+    "A12"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "縮小商品範圍的選項",
+   "relevant": [
+    "A14"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "完成購買並付款",
+   "relevant": [
+    "A6"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "where is my delivery right now",
+   "relevant": [
+    "B7"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "stop being billed every month",
+   "relevant": [
+    "B8"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "update my login secret",
+   "relevant": [
+    "B11"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "FAQ and support articles",
+   "relevant": [
+    "B19"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "extra security code when logging in",
+   "relevant": [
+    "B3"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "use a discount voucher",
+   "relevant": [
+    "B15"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "items I looked at before",
+   "relevant": [
+    "B13"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "this product is unavailable to buy",
+   "relevant": [
+    "B16"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "refer someone and earn rewards",
+   "relevant": [
+    "B18"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "sign up as a new user",
+   "relevant": [
+    "B1"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "unlock premium features",
+   "relevant": [
+    "B9"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "my stored delivery locations",
+   "relevant": [
+    "B12"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "購物車",
+   "relevant": [
+    "A4"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "刪除帳號",
+   "relevant": [
+    "A10"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "隱私權政策",
+   "relevant": [
+    "A19"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "依價格排序",
+   "relevant": [
+    "A15"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "通知設定",
+   "relevant": [
+    "A8"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "登出",
+   "relevant": [
+    "A2"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "搜尋商品",
+   "relevant": [
+    "A13"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "Payment methods",
+   "relevant": [
+    "B4"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "Billing address",
+   "relevant": [
+    "B6"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "Write a review",
+   "relevant": [
+    "B14"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "Language and region",
+   "relevant": [
+    "B10"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "Verify your email",
+   "relevant": [
+    "B2"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "Back in stock alert",
+   "relevant": [
+    "B17"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "Help center",
+   "relevant": [
+    "B19"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "Wi-Fi 設定",
+   "relevant": [
+    "C1"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "PDF 下載",
+   "relevant": [
+    "C6"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "VIP 會員專區",
+   "relevant": [
+    "C9"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "NFC 感應支付",
+   "relevant": [
+    "C18"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "iCloud 備份",
+   "relevant": [
+    "C17"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "SMS 簡訊通知",
+   "relevant": [
+    "C19"
+   ]
+  }
+ ]
+}

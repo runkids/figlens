@@ -131,7 +131,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可发�
 
 ## MCP server 与 agent skill
 
-**MCP。** server 在本地通过 stdio 运行，提供 `workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch` 和 `export`。请传入绝对路径。加上 `--root /path/to/designs`（可重复）可把所有文件和输出路径限制在指定文件夹内。把索引存放在 figlens 默认目录之外时，需要 `--storage-root DIR`（可重复）。光栅导出会缩小到 `maxSize`（默认 1600 px），让内联图片保持小巧；SVG 只返回 metadata。
+**MCP。** server 在本地通过 stdio 运行，提供 `workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch`、`export` 和 `models`。请传入绝对路径。加上 `--root /path/to/designs`（可重复）可把所有文件和输出路径限制在指定文件夹内。把索引存放在 figlens 默认目录之外时，需要 `--storage-root DIR`（可重复）。光栅导出会缩小到 `maxSize`（默认 1600 px），让内联图片保持小巧；SVG 只返回 metadata。
 
 agent 可通过 `workflow` 读取内建的 `build`、`audit`、`images`、`plan`、`planning-details`，或明确请求时的 `yolo` 指引。它们与 portable skill 共用来源；MCP 用户可自行选择是否另装 skill。实际工作仍由 agent 使用项目及浏览器工具，并遵守 host 权限。读取指引不会执行工作流程；使用方式取决于客户端支持与模型行为。
 
@@ -202,6 +202,17 @@ MCP：`index` 的 prepare 返回一个 job；轮询 `jobs` 直到 `succeeded`，
 
 Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，workspace 可跨重启和宿主复用。尚未实现：文件事件（watch 以轮询读取文件，且只在有 holder 运行时进行）、向量与推送事件。
 
+<a id="semantic-search"></a>
+
+## 可选的语义搜索
+
+实验性功能。`figlens search <file> <query> --mode semantic|hybrid` 用本地模型按语义对图层排序。默认的 `--mode text` 不变，也不需要模型。
+
+- **一次性设置。** 请自行下载 BAAI/bge-m3 的 `5617a9f61b028005a4858fdac845db406aefb181` 修订版（MIT；`config.json`、`pytorch_model.bin`、`tokenizer.json`），figlens 从不下载。`figlens models configure bge-m3 --model DIR [--runtime FILE]` 用 SHA-256 校验文件，离线启动一次 `figlens-embed` 运行时（未给 `--runtime` 时在 figlens 可执行文件旁查找），并把配置记录在配置目录的 `models.json`。`models list|status` 查看，`models remove bge-m3` 忘记该配置但保留文件。
+- **模式。** `semantic` 按每个图层最匹配的名称或文本片段排序。`hybrid` 融合文本与语义两种排名（Reciprocal Rank Fusion）。没有配置时，`semantic` 以 `mode_unavailable` 失败，`hybrid` 返回文本结果并说明原因。`coverage.layers.semantic` 报告 `ready`、`partial` 或 `unavailable`；部分结果的页面没有 `nextCursor`。模型只用 CPU（约 2.5 GiB 内存），Ctrl-C 可停止。
+- **限制。** 只嵌入图层名称和有效文本。使用 `--workspace`/`--id` 搜索时，读取每个来源已存储的模型层，不会嵌入设计文本；该层由 `figlens index embed` 建立（MCP 服务器会在文本构建后排入队列）。没有该层的来源为 `pending`，页面为部分结果。在此功能冻结的测试集上，模型未达到同义词与用途查询的质量门槛（top-1 错误率 0.25，门槛 0.20），请把结果当作线索。
+- **MCP。** `models` 工具（`list`、`status`、`configure`、`remove`）以及 `search` 的 `mode`；`configure` 只运行 figlens 旁的 `figlens-embed`，模型目录和文件必须位于服务器的 root 之内。取消调用会停止正在运行的搜索或设置。
+
 <a id="commands"></a>
 
 ## CLI 参考
@@ -211,7 +222,8 @@ Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，works
 | `tree <file> [node] [--depth N] [--json]` | 节点 id、REST 类型（与 `nodes` 相同）和名称；缩进文本，或附带每个节点尺寸、隐藏状态与 auto layout 模式的嵌套 JSON；页面或 section 下的节点另附 `firstText`（第一段可见文字） |
 | `tree <file> [node] --top-frames [--json]` | 只列出画面，每行一个，可直接传给 `--frames -`：页面或其 section 下的 frame、component、component set 与 instance（跳过 group 与内部页面）；`--json` 附上 page 与 section id，以及每个画面第一段可见文字（`firstText`），可用来区分画布标签与画面 |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 不区分大小写地搜索图层名称和文字；返回路径、尺寸和预览。默认 20 条结果（1-200） |
-| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | 对图层名称和完整文字做排序搜索，已套用 instance override、文字/布尔属性和 swap；返回精确节点引用（包括可用于 `inspect` 的 `I…;…` 子图层 id）、匹配原因、UTF-16 范围、覆盖情况和 cursor 分页。默认 20 条（1-200）；隐藏图层和内部页面需加对应 flag。以 `--file`/`--workspace`/`--id` 取代 `<file>` 时，读取 workspace 已准备的索引（见 `index`） |
+| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text\|semantic\|hybrid]` | 对图层名称和完整文字做排序搜索，已套用 instance override、文字/布尔属性和 swap；返回精确节点引用（包括可用于 `inspect` 的 `I…;…` 子图层 id）、匹配原因、UTF-16 范围、覆盖情况和 cursor 分页。默认 20 条（1-200）；隐藏图层和内部页面需加对应 flag。以 `--file`/`--workspace`/`--id` 取代 `<file>` 时，读取 workspace 已准备的索引（见 `index`） `--mode semantic\|hybrid` 需要已配置的模型，参见[可选的语义搜索](#semantic-search)。 |
+| `models list\|status\|configure <profile> --model DIR [--runtime FILE]\|remove <profile>` | 语义搜索用的本地文本模型（`bge-m3`，实验性）；`configure` 校验你自行下载的文件，从不下载；`remove` 保留文件。参见[可选的语义搜索](#semantic-search)。 |
 | `usages <file> <node\|resource> [--scope ID] [--relation R[,R]] [--out] [--snapshot S] [--include-hidden] [--limit N] [--cursor C]` | 在一个已保存范围内返回图层或资源（`VariableID:…`、`StyleKey:…`、`image:…`）的精确关系，包括嵌套 instance 和 swap：默认返回组件、组件集、变量、样式或图片被使用的位置，`--out` 返回图层指向的目标。每个结果保留精确引用、关系、状态（`resolved`、`missing`、`unresolved` 等）、依据和证据；名称从不算作同一身份。不返回总数，coverage 说明完整或部分。默认 50 条（1-200）。用 `--file`/`--workspace`/`--id` 代替 `<file>` 时读取 workspace 已准备好的 `--scope` 索引。使用 `--out` 时，缓存库副本的使用也会给出其 `library` {kind, namespace, key}。 |
 | `usages --file\|--workspace\|--id … --library <kind> --namespace <ns> --key <key> [--definition-source ID --definition-snapshot SNAP --definition-node NODE] [--source ID] [--scope ID] [--include-hidden] [--limit N] [--cursor C]` | 返回使用某个库组件、样式或变量（`kind`）的图层，依据各文件缓存副本的记录，范围是所有来源已准备好的 `--scope`（`--source` 限定为一个）。定义保持 `unresolved`（以三个 `--definition-*` 按精确引用选定时为 `selected`，`keyEvidence: unverified`）；coverage 列出每个来源的状态和部分的原因。参数取自对使用它的图层执行 `usages --out` 时的 `library` 字段 |
 | `diff <old.fig> <new.fig> [--node ID] [--limit N] [--cursor C] [--json]` | 两个已保存版本之间的变更：每个有变更的顶层 frame 一行，按 facet（文本、布局、外观、属性、结构、绑定）计数；`--json` 另含新旧字段值与 edge 变更。图层只按完全相同的 id 与类型匹配；同名或同位置的 frame 只标为 possible match，中途停止的一侧，或唯一差异是无法读取的字段的图层，报告 unknown，绝不当作删除或变更。每页 100 条（1-500） |
@@ -227,7 +239,7 @@ Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，works
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 本地只读 viewer；`--out` 写出独立的离线快照；结果与复制的 context 会标明页面，live 时也标明已加载文件的路径、source 的 snapshot 与本地 revision（离线时未知，且绝不嵌入路径）；context 也带有参考 scope 的 coverage，未检查时为 `complete: null` |
 | `compare <file> <nodes.json> <node>` | 与同一 frame 的 REST 导出做差异比较 |
 | `node <file> <node>` | 单个原始 `.fig` 节点 |
-| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset\|track\|untrack` | 用户 figlens state 目录中的本地 workspace，或位于 workspace 之后会记住的 `--storage DIR` 下。`prepare <file> --scope NODE` 为该范围建立一次搜索索引；之后 `search --file <file>`（或 `--workspace DIR`）不再解析文件，跨 workspace 的所有来源统一排序作答。`refresh` 重建有变更的文件，`rebuild` 重建全部或单一 `--source`/`--scope`，`clear` 删除未使用的索引；新索引就绪前继续使用旧索引。`reset` 只删除 workspace 数据库，不会删除设计、导出或记住的位置。`track --scope NODE` 从 baseline 构建开始记录该范围的变更；`untrack` 停止记录并保留历史。 |
+| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset\|track\|untrack\|embed` | 用户 figlens state 目录中的本地 workspace，或位于 workspace 之后会记住的 `--storage DIR` 下。`prepare <file> --scope NODE` 为该范围建立一次搜索索引；之后 `search --file <file>`（或 `--workspace DIR`）不再解析文件，跨 workspace 的所有来源统一排序作答。`refresh` 重建有变更的文件，`rebuild` 重建全部或单一 `--source`/`--scope`，`clear` 删除未使用的索引；新索引就绪前继续使用旧索引。`reset` 只删除 workspace 数据库，不会删除设计、导出或记住的位置。`track --scope NODE` 从 baseline 构建开始记录该范围的变更；`untrack` 停止记录并保留历史。 `embed` 用已配置的模型嵌入已发布的范围（占用 CPU 和内存）；仅在需要 workspace 语义搜索时运行。 |
 | `jobs status\|cancel <jobId>` | 查看或取消索引构建；`cancel` 在构建停止后才返回 |
 | `changes --file <file>\|--id ID\|--workspace DIR [--source ID] [--scope NODE] [--consumer NAME\|--subscription ID\|--cursor C] [--revision R] [--limit N]` | 已跟踪范围记录的变更，从最旧开始：每次发布的构建一个修订（baseline 或 changes），含覆盖情况及按变更类型与 facet 的计数；每个 changes 修订都有 `impact` 摘要，说明变更波及的图层（schema 7 之前为 null）；`--revision` 分页列出该修订变更的节点，再列出 impact 列出的图层（`entry` 标明是哪一种）；`tracking` 指出哪些范围需要 `index refresh` 才能记录变更。只读 |
 | `watch ack --file <file>\|--id ID\|--workspace DIR --consumer NAME\|--subscription ID --cursor C [--source ID] [--scope NODE]` | 把 consumer 的检查点移到它以相同筛选条件处理完的最后一页 `changes` 的 `nextCursor`；重复执行是安全的，而且只会前进；唯一例外是当前的 recovery cursor 会把落在删除之后的检查点退回，以重读保留的 revision；在保留策略删除它尚未经过的 revision 之前发出的 cursor 会得到 `event_gap`，不写入任何内容 |

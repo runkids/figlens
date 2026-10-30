@@ -1,0 +1,985 @@
+{
+ "method": "one agent pass per query list, queries only (no corpus access), at most 5 expansions each",
+ "expansions": [
+  {
+   "query": "sign in",
+   "expanded": [
+    "login",
+    "log in",
+    "登入",
+    "登錄",
+    "Sign in"
+   ]
+  },
+  {
+   "query": "log out",
+   "expanded": [
+    "logout",
+    "sign out",
+    "登出",
+    "退出登入",
+    "離開帳號"
+   ]
+  },
+  {
+   "query": "forgot password",
+   "expanded": [
+    "reset password",
+    "forgot your password",
+    "忘記密碼",
+    "重設密碼",
+    "找回密碼"
+   ]
+  },
+  {
+   "query": "shopping cart",
+   "expanded": [
+    "cart",
+    "basket",
+    "購物車",
+    "我的購物車",
+    "View cart"
+   ]
+  },
+  {
+   "query": "add to wishlist",
+   "expanded": [
+    "wishlist",
+    "add to favorites",
+    "加入願望清單",
+    "加入收藏",
+    "收藏"
+   ]
+  },
+  {
+   "query": "checkout",
+   "expanded": [
+    "pay now",
+    "place order",
+    "結帳",
+    "前往結帳",
+    "確認付款"
+   ]
+  },
+  {
+   "query": "order history",
+   "expanded": [
+    "my orders",
+    "past orders",
+    "訂單紀錄",
+    "歷史訂單",
+    "訂單查詢"
+   ]
+  },
+  {
+   "query": "notification settings",
+   "expanded": [
+    "notifications",
+    "notification preferences",
+    "通知設定",
+    "推播通知",
+    "通知"
+   ]
+  },
+  {
+   "query": "dark mode",
+   "expanded": [
+    "night mode",
+    "theme",
+    "深色模式",
+    "夜間模式",
+    "外觀"
+   ]
+  },
+  {
+   "query": "delete account",
+   "expanded": [
+    "remove account",
+    "close account",
+    "刪除帳號",
+    "註銷帳號",
+    "永久刪除帳號"
+   ]
+  },
+  {
+   "query": "deactivate account",
+   "expanded": [
+    "disable account",
+    "停用帳號",
+    "暫停帳號",
+    "關閉帳號",
+    "deactivate"
+   ]
+  },
+  {
+   "query": "upload profile picture",
+   "expanded": [
+    "change avatar",
+    "upload photo",
+    "上傳大頭貼",
+    "上傳頭像",
+    "更換頭像"
+   ]
+  },
+  {
+   "query": "search products",
+   "expanded": [
+    "search",
+    "find products",
+    "搜尋商品",
+    "搜尋",
+    "查詢商品"
+   ]
+  },
+  {
+   "query": "filters",
+   "expanded": [
+    "filter",
+    "refine",
+    "篩選",
+    "篩選條件",
+    "filter by"
+   ]
+  },
+  {
+   "query": "sort by price",
+   "expanded": [
+    "price low to high",
+    "sort",
+    "依價格排序",
+    "價格排序",
+    "排序方式"
+   ]
+  },
+  {
+   "query": "free shipping",
+   "expanded": [
+    "free delivery",
+    "免運",
+    "免運費",
+    "免費配送",
+    "free shipping over"
+   ]
+  },
+  {
+   "query": "returns and refunds",
+   "expanded": [
+    "return policy",
+    "refund",
+    "退貨",
+    "退款",
+    "退換貨"
+   ]
+  },
+  {
+   "query": "contact customer support",
+   "expanded": [
+    "help",
+    "support",
+    "聯絡客服",
+    "客服中心",
+    "聯絡我們"
+   ]
+  },
+  {
+   "query": "privacy policy",
+   "expanded": [
+    "privacy",
+    "隱私權政策",
+    "隱私政策",
+    "隱私權",
+    "privacy notice"
+   ]
+  },
+  {
+   "query": "terms of service",
+   "expanded": [
+    "terms",
+    "terms and conditions",
+    "服務條款",
+    "使用條款",
+    "terms of use"
+   ]
+  },
+  {
+   "query": "註冊帳號",
+   "expanded": [
+    "sign up",
+    "register",
+    "create account",
+    "建立帳號",
+    "註冊"
+   ]
+  },
+  {
+   "query": "驗證電子郵件",
+   "expanded": [
+    "verify email",
+    "email verification",
+    "Verify your email",
+    "驗證信箱",
+    "電子郵件驗證"
+   ]
+  },
+  {
+   "query": "雙重驗證",
+   "expanded": [
+    "two-factor authentication",
+    "2FA",
+    "two-step verification",
+    "雙重認證",
+    "兩步驟驗證"
+   ]
+  },
+  {
+   "query": "付款方式",
+   "expanded": [
+    "payment methods",
+    "payment",
+    "payment method",
+    "付款",
+    "支付方式"
+   ]
+  },
+  {
+   "query": "新增信用卡",
+   "expanded": [
+    "add card",
+    "add credit card",
+    "新增卡片",
+    "信用卡",
+    "新增付款方式"
+   ]
+  },
+  {
+   "query": "帳單地址",
+   "expanded": [
+    "billing address",
+    "invoice address",
+    "帳單",
+    "發票地址"
+   ]
+  },
+  {
+   "query": "追蹤包裹",
+   "expanded": [
+    "track order",
+    "track package",
+    "tracking",
+    "物流追蹤",
+    "包裹追蹤"
+   ]
+  },
+  {
+   "query": "取消訂閱",
+   "expanded": [
+    "unsubscribe",
+    "cancel subscription",
+    "退訂",
+    "取消方案"
+   ]
+  },
+  {
+   "query": "升級付費方案",
+   "expanded": [
+    "upgrade plan",
+    "upgrade",
+    "go premium",
+    "升級方案",
+    "付費方案"
+   ]
+  },
+  {
+   "query": "語言與地區",
+   "expanded": [
+    "language",
+    "region",
+    "語言",
+    "地區"
+   ]
+  },
+  {
+   "query": "變更密碼",
+   "expanded": [
+    "change password",
+    "update password",
+    "修改密碼",
+    "更改密碼",
+    "密碼"
+   ]
+  },
+  {
+   "query": "已儲存的地址",
+   "expanded": [
+    "saved addresses",
+    "addresses",
+    "address book",
+    "收件地址",
+    "地址簿"
+   ]
+  },
+  {
+   "query": "最近瀏覽",
+   "expanded": [
+    "recently viewed",
+    "browsing history",
+    "瀏覽紀錄",
+    "最近看過",
+    "瀏覽記錄"
+   ]
+  },
+  {
+   "query": "撰寫評論",
+   "expanded": [
+    "write a review",
+    "review",
+    "寫評論",
+    "撰寫評價",
+    "評論"
+   ]
+  },
+  {
+   "query": "使用優惠碼",
+   "expanded": [
+    "promo code",
+    "coupon",
+    "discount code",
+    "優惠碼",
+    "輸入優惠碼"
+   ]
+  },
+  {
+   "query": "缺貨",
+   "expanded": [
+    "out of stock",
+    "sold out",
+    "缺貨中",
+    "售完",
+    "無庫存"
+   ]
+  },
+  {
+   "query": "到貨通知",
+   "expanded": [
+    "notify me",
+    "back in stock",
+    "補貨通知",
+    "通知我"
+   ]
+  },
+  {
+   "query": "邀請好友",
+   "expanded": [
+    "invite friends",
+    "refer a friend",
+    "推薦好友",
+    "分享給朋友"
+   ]
+  },
+  {
+   "query": "說明中心",
+   "expanded": [
+    "help center",
+    "FAQ",
+    "support center",
+    "常見問題"
+   ]
+  },
+  {
+   "query": "購物車是空的",
+   "expanded": [
+    "cart is empty",
+    "empty cart",
+    "購物車目前沒有商品",
+    "Your cart is empty"
+   ]
+  },
+  {
+   "query": "Wi-Fi 網路設定",
+   "expanded": [
+    "Wi-Fi settings",
+    "wifi",
+    "Wi-Fi 設定",
+    "無線網路",
+    "網路設定"
+   ]
+  },
+  {
+   "query": "用 Apple Pay 結帳",
+   "expanded": [
+    "Apple Pay",
+    "checkout with Apple Pay",
+    "Apple Pay 結帳",
+    "使用 Apple Pay",
+    "Pay with Apple Pay"
+   ]
+  },
+  {
+   "query": "用 LINE 帳號 sign in",
+   "expanded": [
+    "LINE login",
+    "sign in with LINE",
+    "LINE 登入",
+    "使用 LINE 登入",
+    "LINE 帳號"
+   ]
+  },
+  {
+   "query": "掃描 QR code",
+   "expanded": [
+    "scan QR code",
+    "QR code",
+    "掃描 QR Code",
+    "掃描條碼",
+    "QR 碼"
+   ]
+  },
+  {
+   "query": "app version 版本號",
+   "expanded": [
+    "app version",
+    "version",
+    "版本",
+    "版本號",
+    "App 版本"
+   ]
+  },
+  {
+   "query": "download PDF 檔案",
+   "expanded": [
+    "download PDF",
+    "PDF",
+    "下載 PDF",
+    "下載檔案",
+    "PDF 下載"
+   ]
+  },
+  {
+   "query": "訂閱 newsletter",
+   "expanded": [
+    "subscribe newsletter",
+    "newsletter",
+    "訂閱電子報",
+    "電子報",
+    "Subscribe"
+   ]
+  },
+  {
+   "query": "Google Maps 導航",
+   "expanded": [
+    "Google Maps",
+    "navigation",
+    "導航",
+    "地圖",
+    "Google 地圖"
+   ]
+  },
+  {
+   "query": "VIP member 專區",
+   "expanded": [
+    "VIP member",
+    "VIP",
+    "VIP 會員",
+    "會員專區",
+    "會員"
+   ]
+  },
+  {
+   "query": "OTP 一次性密碼",
+   "expanded": [
+    "OTP",
+    "one-time password",
+    "verification code",
+    "一次性密碼",
+    "驗證碼"
+   ]
+  },
+  {
+   "query": "藍牙 earbuds pairing",
+   "expanded": [
+    "Bluetooth earbuds",
+    "earbuds pairing",
+    "藍牙耳機",
+    "藍牙配對",
+    "耳機配對"
+   ]
+  },
+  {
+   "query": "USB-C cable 充電",
+   "expanded": [
+    "USB-C",
+    "USB-C charging",
+    "charging cable",
+    "USB-C 充電線",
+    "充電線"
+   ]
+  },
+  {
+   "query": "分享到 Instagram",
+   "expanded": [
+    "share to Instagram",
+    "share Instagram",
+    "分享至 IG",
+    "Instagram"
+   ]
+  },
+  {
+   "query": "GPS location 權限",
+   "expanded": [
+    "location permission",
+    "GPS",
+    "location access",
+    "定位權限",
+    "位置權限"
+   ]
+  },
+  {
+   "query": "AI 推薦商品",
+   "expanded": [
+    "AI recommended products",
+    "AI recommendations",
+    "recommended for you",
+    "AI 推薦",
+    "推薦商品"
+   ]
+  },
+  {
+   "query": "cookie 設定",
+   "expanded": [
+    "cookie settings",
+    "cookies",
+    "cookie preferences",
+    "Cookie 設定",
+    "Cookie 偏好設定"
+   ]
+  },
+  {
+   "query": "iCloud backup 備份",
+   "expanded": [
+    "iCloud backup",
+    "backup",
+    "iCloud",
+    "備份",
+    "iCloud 備份"
+   ]
+  },
+  {
+   "query": "NFC 支付",
+   "expanded": [
+    "NFC payment",
+    "NFC",
+    "tap to pay",
+    "感應支付"
+   ]
+  },
+  {
+   "query": "SMS 通知",
+   "expanded": [
+    "SMS notifications",
+    "SMS",
+    "text message",
+    "簡訊通知",
+    "簡訊"
+   ]
+  },
+  {
+   "query": "4K 畫質",
+   "expanded": [
+    "4K quality",
+    "4K",
+    "4K resolution",
+    "畫質"
+   ]
+  },
+  {
+   "query": "想不起密碼怎麼辦",
+   "expanded": [
+    "forgot password",
+    "reset password",
+    "忘記密碼",
+    "重設密碼",
+    "找回密碼"
+   ]
+  },
+  {
+   "query": "商品不滿意想要把錢拿回來",
+   "expanded": [
+    "refund",
+    "return",
+    "request a refund",
+    "退款",
+    "申請退款"
+   ]
+  },
+  {
+   "query": "遇到問題要找真人協助",
+   "expanded": [
+    "contact support",
+    "live chat",
+    "customer service",
+    "聯絡客服",
+    "真人客服"
+   ]
+  },
+  {
+   "query": "晚上看螢幕比較不刺眼的主題",
+   "expanded": [
+    "dark mode",
+    "dark theme",
+    "深色模式",
+    "深色主題",
+    "夜間模式"
+   ]
+  },
+  {
+   "query": "寄送不用另外付錢",
+   "expanded": [
+    "free shipping",
+    "免運費",
+    "免運",
+    "免費配送",
+    "運費"
+   ]
+  },
+  {
+   "query": "更換個人頭像",
+   "expanded": [
+    "change avatar",
+    "profile picture",
+    "更換大頭貼",
+    "個人頭像",
+    "編輯頭像"
+   ]
+  },
+  {
+   "query": "縮小商品範圍的選項",
+   "expanded": [
+    "filters",
+    "filter",
+    "篩選",
+    "篩選條件",
+    "filter results"
+   ]
+  },
+  {
+   "query": "完成購買並付款",
+   "expanded": [
+    "checkout",
+    "pay now",
+    "place order",
+    "結帳",
+    "確認付款"
+   ]
+  },
+  {
+   "query": "where is my delivery right now",
+   "expanded": [
+    "track order",
+    "tracking",
+    "order tracking",
+    "追蹤包裹",
+    "物流追蹤"
+   ]
+  },
+  {
+   "query": "stop being billed every month",
+   "expanded": [
+    "cancel subscription",
+    "unsubscribe",
+    "取消訂閱",
+    "停止訂閱",
+    "管理訂閱"
+   ]
+  },
+  {
+   "query": "update my login secret",
+   "expanded": [
+    "change password",
+    "reset password",
+    "更改密碼",
+    "變更密碼",
+    "密碼設定"
+   ]
+  },
+  {
+   "query": "FAQ and support articles",
+   "expanded": [
+    "help center",
+    "FAQ",
+    "support",
+    "說明中心",
+    "常見問題"
+   ]
+  },
+  {
+   "query": "extra security code when logging in",
+   "expanded": [
+    "two-factor authentication",
+    "2FA",
+    "verification code",
+    "雙重驗證",
+    "驗證碼"
+   ]
+  },
+  {
+   "query": "use a discount voucher",
+   "expanded": [
+    "promo code",
+    "coupon",
+    "discount code",
+    "優惠碼",
+    "折扣碼"
+   ]
+  },
+  {
+   "query": "items I looked at before",
+   "expanded": [
+    "recently viewed",
+    "browsing history",
+    "最近瀏覽",
+    "瀏覽紀錄",
+    "最近看過"
+   ]
+  },
+  {
+   "query": "this product is unavailable to buy",
+   "expanded": [
+    "out of stock",
+    "sold out",
+    "unavailable",
+    "缺貨",
+    "售完"
+   ]
+  },
+  {
+   "query": "refer someone and earn rewards",
+   "expanded": [
+    "invite friends",
+    "refer a friend",
+    "referral",
+    "邀請好友",
+    "推薦獎勵"
+   ]
+  },
+  {
+   "query": "sign up as a new user",
+   "expanded": [
+    "sign up",
+    "register",
+    "create account",
+    "註冊",
+    "註冊帳號"
+   ]
+  },
+  {
+   "query": "unlock premium features",
+   "expanded": [
+    "upgrade",
+    "go premium",
+    "premium",
+    "升級",
+    "升級方案"
+   ]
+  },
+  {
+   "query": "my stored delivery locations",
+   "expanded": [
+    "saved addresses",
+    "delivery address",
+    "shipping address",
+    "已儲存的地址",
+    "收件地址"
+   ]
+  },
+  {
+   "query": "購物車",
+   "expanded": [
+    "cart",
+    "shopping cart",
+    "basket",
+    "Cart"
+   ]
+  },
+  {
+   "query": "刪除帳號",
+   "expanded": [
+    "delete account",
+    "remove account",
+    "永久刪除帳號",
+    "close account"
+   ]
+  },
+  {
+   "query": "隱私權政策",
+   "expanded": [
+    "privacy policy",
+    "privacy",
+    "隱私政策",
+    "隱私權"
+   ]
+  },
+  {
+   "query": "依價格排序",
+   "expanded": [
+    "sort by price",
+    "price low to high",
+    "價格排序",
+    "排序"
+   ]
+  },
+  {
+   "query": "通知設定",
+   "expanded": [
+    "notification settings",
+    "notifications",
+    "通知",
+    "推播通知"
+   ]
+  },
+  {
+   "query": "登出",
+   "expanded": [
+    "logout",
+    "log out",
+    "sign out",
+    "退出登入"
+   ]
+  },
+  {
+   "query": "搜尋商品",
+   "expanded": [
+    "search products",
+    "search",
+    "搜尋",
+    "查詢"
+   ]
+  },
+  {
+   "query": "Payment methods",
+   "expanded": [
+    "payment methods",
+    "payment",
+    "付款方式",
+    "支付方式",
+    "付款"
+   ]
+  },
+  {
+   "query": "Billing address",
+   "expanded": [
+    "billing address",
+    "billing",
+    "帳單地址",
+    "帳單",
+    "發票地址"
+   ]
+  },
+  {
+   "query": "Write a review",
+   "expanded": [
+    "review",
+    "write review",
+    "寫評論",
+    "撰寫評論",
+    "評價"
+   ]
+  },
+  {
+   "query": "Language and region",
+   "expanded": [
+    "language and region",
+    "language",
+    "語言與地區",
+    "語言",
+    "地區"
+   ]
+  },
+  {
+   "query": "Verify your email",
+   "expanded": [
+    "verify email",
+    "email verification",
+    "驗證電子郵件",
+    "驗證信箱",
+    "電子郵件驗證"
+   ]
+  },
+  {
+   "query": "Back in stock alert",
+   "expanded": [
+    "back in stock",
+    "notify me",
+    "到貨通知",
+    "補貨通知",
+    "缺貨通知"
+   ]
+  },
+  {
+   "query": "Help center",
+   "expanded": [
+    "help center",
+    "FAQ",
+    "說明中心",
+    "常見問題",
+    "客服中心"
+   ]
+  },
+  {
+   "query": "Wi-Fi 設定",
+   "expanded": [
+    "Wi-Fi",
+    "wifi settings",
+    "Wi-Fi 網路設定",
+    "無線網路",
+    "網路設定"
+   ]
+  },
+  {
+   "query": "PDF 下載",
+   "expanded": [
+    "download PDF",
+    "PDF",
+    "下載 PDF",
+    "下載檔案"
+   ]
+  },
+  {
+   "query": "VIP 會員專區",
+   "expanded": [
+    "VIP member",
+    "VIP",
+    "VIP member 專區",
+    "會員專區"
+   ]
+  },
+  {
+   "query": "NFC 感應支付",
+   "expanded": [
+    "NFC",
+    "NFC payment",
+    "tap to pay",
+    "NFC 支付",
+    "感應支付"
+   ]
+  },
+  {
+   "query": "iCloud 備份",
+   "expanded": [
+    "iCloud backup",
+    "iCloud",
+    "備份",
+    "backup"
+   ]
+  },
+  {
+   "query": "SMS 簡訊通知",
+   "expanded": [
+    "SMS notifications",
+    "SMS",
+    "SMS 通知",
+    "簡訊通知",
+    "簡訊"
+   ]
+  }
+ ]
+}

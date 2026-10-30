@@ -41,7 +41,7 @@ Put `design.fig` in your project, then choose **one** setup. Each gives your age
 | [OMP](#setup-omp) | OMP 18.13.2 | the package skill |
 | [CLI](#setup-cli) | agents that only run shell commands, scripts and CI, or you | `figlens workflow <topic>`, or the optional [skill](#setup-skill) |
 
-**Ordinary vs advanced.** Ordinary use needs no setup: `figlens search design.fig "query"` reads the `.fig` and creates nothing. An optional local index is created only when you ask for one (`figlens index prepare design.fig --scope 0:0`), then reused across restarts and hosts. See [Ordinary search and the optional local index](docs/README.md#local-index).
+**Ordinary vs advanced.** Ordinary use needs no setup: `figlens search design.fig "query"` reads the `.fig` and creates nothing. An optional local index is created only when you ask for one (`figlens index prepare design.fig --scope 0:0`), then reused across restarts and hosts. See [Ordinary search and the optional local index](docs/README.md#local-index). Optional and experimental: `--mode semantic` or `hybrid` ranks by meaning with a local model you set up yourself; see [Optional semantic search](docs/README.md#semantic-search).
 
 <a id="setup-mcp"></a>
 

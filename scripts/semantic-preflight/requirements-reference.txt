@@ -1,0 +1,8 @@
+# Reference runtime for reference.py only, in a run-owned venv under ignored samples/ (CPU wheels).
+# transformers 4.51.3 is the Qwen3-Embedding card's version and Qwen3 needs 4.51 or later.
+torch==2.6.0
+transformers==4.51.3
+tokenizers==0.21.4
+safetensors==0.8.0
+huggingface_hub==0.36.2
+numpy==2.1.3

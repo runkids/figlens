@@ -425,6 +425,7 @@ fn index_failures_carry_stable_codes_and_their_recovery() {
         (ErrorKind::CursorExpired, "cursor_expired"),
         (ErrorKind::Cancelled, "cancelled"),
         (ErrorKind::QueryWorkLimit, "query_work_limit"),
+        (ErrorKind::ModeUnavailable, "mode_unavailable"),
     ] {
         let recovery = json!([{"action": "refresh", "requires": "none"}]);
         let error = FigError::new(kind, "x").with_recovery(recovery.clone());

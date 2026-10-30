@@ -168,7 +168,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "mode",
                 "string",
                 false,
-                "text, the only mode in this release",
+                "text (default); semantic or hybrid with a configured local model (see models)",
             ),
         ],
     ),
@@ -447,13 +447,13 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "index",
-        "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes; add of a directory registers up to 10 .fig files under it in one step, in path order, never through a link leading out of it, and replies directory {added, existing, skipped, notFig, truncated, nextCursor}; pass nextCursor as cursor to add the next 10; a repeat adds nothing, and a moved file is a new source unless relocated); refresh rebuilds changed scopes and rebuild every indexed scope even when unchanged (sourceId and scope narrow both), while the previous index keeps serving; track starts recording one scope's changes, read with the changes tool, with a baseline build, and untrack stops it, keeping its history; a reply that could not admit every job has admission partial and deferred items, each with the nextStep that builds it later; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
+        "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes; add of a directory registers up to 10 .fig files under it in one step, in path order, never through a link leading out of it, and replies directory {added, existing, skipped, notFig, truncated, nextCursor}; pass nextCursor as cursor to add the next 10; a repeat adds nothing, and a moved file is a new source unless relocated); refresh rebuilds changed scopes and rebuild every indexed scope even when unchanged (sourceId and scope narrow both), while the previous index keeps serving; track starts recording one scope's changes, read with the changes tool, with a baseline build, and untrack stops it, keeping its history; embed runs the configured local model (models tool) over published scopes for semantic search, as jobs beside the text builds (mode_unavailable without a profile), and a text build this server runs queues it after publishing; a reply that could not admit every job has admission partial and deferred items, each with the nextStep that builds it later; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
         &[
             (
                 "action",
                 "string",
                 true,
-                "prepare, status, add, remove, relocate, refresh, rebuild, track, untrack, clear_cache or reset",
+                "prepare, status, add, remove, relocate, refresh, rebuild, track, untrack, embed, clear_cache or reset",
             ),
             (
                 "file",
@@ -508,6 +508,30 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
             ("action", "string", true, "status or cancel"),
             ("jobId", "string", true, "the jobId from an index reply"),
             STORAGE,
+        ],
+    ),
+    (
+        "models",
+        "Local text model profiles for semantic and hybrid search. list shows the documented profiles with model, revision, license and the files each needs; status reports each configured profile ready or unavailable with the reason, or the setup steps when none is configured; configure checks a model directory the user already downloaded against pinned SHA-256 digests, starts the figlens-embed shipped beside figlens once offline and records the profile; remove forgets the profile and keeps its files. Nothing is downloaded and no design text leaves the machine.",
+        &[
+            (
+                "action",
+                "string",
+                true,
+                "list, status, configure or remove",
+            ),
+            (
+                "profile",
+                "string",
+                false,
+                "configure and remove: a profile name from list",
+            ),
+            (
+                "modelDir",
+                "string",
+                false,
+                "configure: the local directory holding the profile's files, inside the server's roots",
+            ),
         ],
     ),
     (
@@ -734,6 +758,15 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "paths": {"type": ["object", "null"], "description": "workspace, database and lock paths (the lock sits beside the workspace directory); null when the workspace does not exist"},
             }),
             ["workspaceId", "state"].as_slice(),
+        ),
+        "models" => (
+            serde_json::json!({
+                "profiles": {"type": "array", "items": {"type": "object"}, "description": "list: name, model, revision, license, files, configured, profileId, dataFlow; status: name, profileId, model, runtime, dim, state ready or unavailable, reason"},
+                "setup": {"type": "array", "items": {"type": "object"}, "description": "status with no profile configured: the steps to configure one"},
+                "configured": {"type": "object", "description": "configure: the recorded profile and its profileId"},
+                "removed": {"type": "boolean"},
+            }),
+            [].as_slice(),
         ),
         "jobs" => (
             serde_json::json!({
@@ -972,12 +1005,16 @@ pub fn property(tool: &str, param: &Param) -> Value {
             "rebuild",
             "track",
             "untrack",
+            "embed",
             "clear_cache",
             "reset"
         ]);
     }
     if tool == "jobs" && key == "action" {
         p["enum"] = json!(["status", "cancel"]);
+    }
+    if tool == "models" && key == "action" {
+        p["enum"] = json!(["list", "status", "configure", "remove"]);
     }
     if tool == "watch" && key == "action" {
         p["enum"] = json!([
@@ -993,7 +1030,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
         ]);
     }
     if tool == "search" && key == "mode" {
-        p["enum"] = json!(["text"]);
+        p["enum"] = json!(["text", "semantic", "hybrid"]);
     }
     if tool == "usages" && key == "direction" {
         p["enum"] = json!(["in", "out"]);
@@ -1224,6 +1261,9 @@ pub fn tools() -> Value {
             // cancel changes a job.
             "jobs" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": false,
                 "openWorldHint": false}),
+            // remove forgets a configured profile.
+            "models" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": true,
+                "openWorldHint": false}),
             "changes" => tool["annotations"] = json!({"readOnlyHint": true, "openWorldHint": false}),
             // unsubscribe and forget delete checkpoints; start makes a new lease each time.
             "watch" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": true,
@@ -1345,6 +1385,10 @@ impl Failure {
             ErrorKind::QueryWorkLimit => (
                 "query_work_limit",
                 "The search would read more indexed data than one query supports; follow recovery to search fewer sources or index a narrower scope. Nothing is wrong with the index.",
+            ),
+            ErrorKind::ModeUnavailable => (
+                "mode_unavailable",
+                "This search mode needs a configured local model; check models status and configure one there, or search with mode text.",
             ),
         };
         // A storage failure is fixed by restoring that storage, not by the design roots.

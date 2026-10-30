@@ -10,12 +10,12 @@ Reads Figma `.fig` files offline: no API rate limits, login or running Figma. Ru
 
 - **Rust runs only in Docker** for development: `docker compose run --rm dev ...`; do not install or use a host Rust toolchain. Users run the native `figlens` binary with no Docker or Rust installed.
 - **Format changes need evidence.** Before changing how nodes are decoded, expanded or emitted, load `fig-format`; claim accuracy only after measuring with the `accuracy` topic, on a file the change was not written against.
-- **Keep the docs true.** When a doc disagrees with the code, trust the code: verify, then fix the stale doc in the same task. When your change alters behaviour that a topic describes, update that topic page in the same change. Put a new lesson in the kernel as a one-line rule and in its topic as the procedure. Run `python3 scripts/ai-context.py check` after any doc change. The procedure is in the `ai-context` topic.
+- **Keep the docs true.** When a doc disagrees with the code, trust the code: verify, then fix the stale doc in the same task. When your change alters behaviour that a topic describes, update that topic page in the same change. Put a new lesson in the kernel as a one-line rule and in its topic as the procedure. Run `python3 scripts/ai-context.py check` after any doc change (see `ai-context`).
 - **Search before you edit, and change as little as possible.** Match the existing style.
 - **Check CLI, MCP, Pi, OpenCode and OMP together.** For every feature or optimization, assess each interface, complete affected behavior/contracts/guidance/tests, and explain why any interface needs no change. A new feature or changed command also updates `--help`, every README locale, a served skill section and its wiki topic; see `review`.
 - **Helper files go in the repo.** Helper scripts go in `scripts/`; private designs, Figma exports and run outputs go in the gitignored `samples/`. The original public fixture below and the reviewed regression baselines in `scripts/corpus/` are the exceptions.
 - **Review before every PR.** Run the `figlens-code-review` passes on the pinned diff and fix verified findings before opening or updating a PR, docs- and wiki-only changes included; see `review`.
-- **Open PRs as drafts.** Drafts skip CI; request `@codex review` on the new draft, fix review findings there, then mark the PR ready to run CI; see `review`.
+- **Open PRs as drafts.** Drafts skip CI; request `@codex review`, fix findings there, then mark ready to run CI; see `review`.
 - **Open issues by the rules.** English, `<scope>: <summary>` titles, one type label plus `area:` labels, no private design details; see `review`.
 - **Own PR follow-up.** Check AI reviews and CI, fix verified findings, then request and check `@codex review` on the updated head; see `review`.
 
@@ -44,6 +44,7 @@ python3 scripts/ai-context.py check     # validate paths, headings, links, orpha
 | `discovery` | Changing find/inspect summaries or `--flat`, `tree --top-frames` or `export --match-dir` |
 | `search` | Changing search indexing, ranking, cursors, coverage or budgets |
 | `visual` | Changing visual units, query-image admission, fingerprints or vision profiles |
+| `semantic` | Semantic/hybrid search, `models`, model runtime |
 | `diff` | Changing diff |
 | `changes` | Tracking, `changes`, `watch ack` or stale notes |
 | `subscriptions` | Changing subscriptions or checkpoints |
@@ -62,7 +63,7 @@ python3 scripts/ai-context.py check     # validate paths, headings, links, orpha
 | `direction` | Deciding what to build next, or revisiting a past decision |
 | `ai-context` | Adding, moving or splitting docs and topics; `check` failures |
 
-Pick the single closest topic. Load a second one only for a task that really crosses two seams.
+Pick the closest topic; load a second only when a task crosses two seams.
 
 When no topic fits, read `wiki/README.md`. To add a topic:
 1. Put the content in `wiki/`.

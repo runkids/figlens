@@ -1,0 +1,836 @@
+{
+ "layers": [
+  {
+   "concept": "A1",
+   "group": "A",
+   "lang": "zh",
+   "text": "登入您的帳號",
+   "frame": "0:100",
+   "node": "0:101"
+  },
+  {
+   "concept": "A2",
+   "group": "A",
+   "lang": "zh",
+   "text": "登出",
+   "frame": "0:102",
+   "node": "0:103"
+  },
+  {
+   "concept": "A3",
+   "group": "A",
+   "lang": "zh",
+   "text": "忘記密碼？",
+   "frame": "0:104",
+   "node": "0:105"
+  },
+  {
+   "concept": "A4",
+   "group": "A",
+   "lang": "zh",
+   "text": "購物車",
+   "frame": "0:106",
+   "node": "0:107"
+  },
+  {
+   "concept": "A5",
+   "group": "A",
+   "lang": "zh",
+   "text": "加入願望清單",
+   "frame": "0:108",
+   "node": "0:109"
+  },
+  {
+   "concept": "A6",
+   "group": "A",
+   "lang": "zh",
+   "text": "結帳",
+   "frame": "0:110",
+   "node": "0:111"
+  },
+  {
+   "concept": "A7",
+   "group": "A",
+   "lang": "zh",
+   "text": "訂單紀錄",
+   "frame": "0:112",
+   "node": "0:113"
+  },
+  {
+   "concept": "A8",
+   "group": "A",
+   "lang": "zh",
+   "text": "通知設定",
+   "frame": "0:114",
+   "node": "0:115"
+  },
+  {
+   "concept": "A9",
+   "group": "A",
+   "lang": "zh",
+   "text": "深色模式",
+   "frame": "0:116",
+   "node": "0:117"
+  },
+  {
+   "concept": "A10",
+   "group": "A",
+   "lang": "zh",
+   "text": "刪除帳號",
+   "frame": "0:118",
+   "node": "0:119"
+  },
+  {
+   "concept": "A11",
+   "group": "A",
+   "lang": "zh",
+   "text": "停用帳號",
+   "frame": "0:120",
+   "node": "0:121"
+  },
+  {
+   "concept": "A12",
+   "group": "A",
+   "lang": "zh",
+   "text": "上傳大頭貼",
+   "frame": "0:122",
+   "node": "0:123"
+  },
+  {
+   "concept": "A13",
+   "group": "A",
+   "lang": "zh",
+   "text": "搜尋商品",
+   "frame": "0:124",
+   "node": "0:125"
+  },
+  {
+   "concept": "A14",
+   "group": "A",
+   "lang": "zh",
+   "text": "篩選條件",
+   "frame": "0:126",
+   "node": "0:127"
+  },
+  {
+   "concept": "A15",
+   "group": "A",
+   "lang": "zh",
+   "text": "依價格排序",
+   "frame": "0:128",
+   "node": "0:129"
+  },
+  {
+   "concept": "A16",
+   "group": "A",
+   "lang": "zh",
+   "text": "免運費",
+   "frame": "0:130",
+   "node": "0:131"
+  },
+  {
+   "concept": "A17",
+   "group": "A",
+   "lang": "zh",
+   "text": "退貨與退款",
+   "frame": "0:132",
+   "node": "0:133"
+  },
+  {
+   "concept": "A18",
+   "group": "A",
+   "lang": "zh",
+   "text": "聯絡客服",
+   "frame": "0:134",
+   "node": "0:135"
+  },
+  {
+   "concept": "A19",
+   "group": "A",
+   "lang": "zh",
+   "text": "隱私權政策",
+   "frame": "0:136",
+   "node": "0:137"
+  },
+  {
+   "concept": "A20",
+   "group": "A",
+   "lang": "zh",
+   "text": "服務條款",
+   "frame": "0:138",
+   "node": "0:139"
+  },
+  {
+   "concept": "B1",
+   "group": "B",
+   "lang": "en",
+   "text": "Create an account",
+   "frame": "0:140",
+   "node": "0:141"
+  },
+  {
+   "concept": "B2",
+   "group": "B",
+   "lang": "en",
+   "text": "Verify your email",
+   "frame": "0:142",
+   "node": "0:143"
+  },
+  {
+   "concept": "B3",
+   "group": "B",
+   "lang": "en",
+   "text": "Two-factor authentication",
+   "frame": "0:144",
+   "node": "0:145"
+  },
+  {
+   "concept": "B4",
+   "group": "B",
+   "lang": "en",
+   "text": "Payment methods",
+   "frame": "0:146",
+   "node": "0:147"
+  },
+  {
+   "concept": "B5",
+   "group": "B",
+   "lang": "en",
+   "text": "Add a new card",
+   "frame": "0:148",
+   "node": "0:149"
+  },
+  {
+   "concept": "B6",
+   "group": "B",
+   "lang": "en",
+   "text": "Billing address",
+   "frame": "0:150",
+   "node": "0:151"
+  },
+  {
+   "concept": "B7",
+   "group": "B",
+   "lang": "en",
+   "text": "Track your package",
+   "frame": "0:152",
+   "node": "0:153"
+  },
+  {
+   "concept": "B8",
+   "group": "B",
+   "lang": "en",
+   "text": "Cancel subscription",
+   "frame": "0:154",
+   "node": "0:155"
+  },
+  {
+   "concept": "B9",
+   "group": "B",
+   "lang": "en",
+   "text": "Upgrade to Pro",
+   "frame": "0:156",
+   "node": "0:157"
+  },
+  {
+   "concept": "B10",
+   "group": "B",
+   "lang": "en",
+   "text": "Language and region",
+   "frame": "0:158",
+   "node": "0:159"
+  },
+  {
+   "concept": "B11",
+   "group": "B",
+   "lang": "en",
+   "text": "Change password",
+   "frame": "0:160",
+   "node": "0:161"
+  },
+  {
+   "concept": "B12",
+   "group": "B",
+   "lang": "en",
+   "text": "Saved addresses",
+   "frame": "0:162",
+   "node": "0:163"
+  },
+  {
+   "concept": "B13",
+   "group": "B",
+   "lang": "en",
+   "text": "Recently viewed",
+   "frame": "0:164",
+   "node": "0:165"
+  },
+  {
+   "concept": "B14",
+   "group": "B",
+   "lang": "en",
+   "text": "Write a review",
+   "frame": "0:166",
+   "node": "0:167"
+  },
+  {
+   "concept": "B15",
+   "group": "B",
+   "lang": "en",
+   "text": "Apply coupon code",
+   "frame": "0:168",
+   "node": "0:169"
+  },
+  {
+   "concept": "B16",
+   "group": "B",
+   "lang": "en",
+   "text": "Out of stock",
+   "frame": "0:170",
+   "node": "0:171"
+  },
+  {
+   "concept": "B17",
+   "group": "B",
+   "lang": "en",
+   "text": "Back in stock alert",
+   "frame": "0:172",
+   "node": "0:173"
+  },
+  {
+   "concept": "B18",
+   "group": "B",
+   "lang": "en",
+   "text": "Invite friends",
+   "frame": "0:174",
+   "node": "0:175"
+  },
+  {
+   "concept": "B19",
+   "group": "B",
+   "lang": "en",
+   "text": "Help center",
+   "frame": "0:176",
+   "node": "0:177"
+  },
+  {
+   "concept": "B20",
+   "group": "B",
+   "lang": "en",
+   "text": "Your cart is empty",
+   "frame": "0:178",
+   "node": "0:179"
+  },
+  {
+   "concept": "C1",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Wi-Fi 設定",
+   "frame": "0:180",
+   "node": "0:181"
+  },
+  {
+   "concept": "C2",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Apple Pay 付款",
+   "frame": "0:182",
+   "node": "0:183"
+  },
+  {
+   "concept": "C3",
+   "group": "C",
+   "lang": "mixed",
+   "text": "LINE 登入",
+   "frame": "0:184",
+   "node": "0:185"
+  },
+  {
+   "concept": "C4",
+   "group": "C",
+   "lang": "mixed",
+   "text": "QR Code 掃描",
+   "frame": "0:186",
+   "node": "0:187"
+  },
+  {
+   "concept": "C5",
+   "group": "C",
+   "lang": "mixed",
+   "text": "App 版本 2.4.1",
+   "frame": "0:188",
+   "node": "0:189"
+  },
+  {
+   "concept": "C6",
+   "group": "C",
+   "lang": "mixed",
+   "text": "PDF 下載",
+   "frame": "0:190",
+   "node": "0:191"
+  },
+  {
+   "concept": "C7",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Email 訂閱電子報",
+   "frame": "0:192",
+   "node": "0:193"
+  },
+  {
+   "concept": "C8",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Google 地圖導航",
+   "frame": "0:194",
+   "node": "0:195"
+  },
+  {
+   "concept": "C9",
+   "group": "C",
+   "lang": "mixed",
+   "text": "VIP 會員專區",
+   "frame": "0:196",
+   "node": "0:197"
+  },
+  {
+   "concept": "C10",
+   "group": "C",
+   "lang": "mixed",
+   "text": "OTP 驗證碼",
+   "frame": "0:198",
+   "node": "0:199"
+  },
+  {
+   "concept": "C11",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Bluetooth 耳機配對",
+   "frame": "0:200",
+   "node": "0:201"
+  },
+  {
+   "concept": "C12",
+   "group": "C",
+   "lang": "mixed",
+   "text": "USB-C 充電線",
+   "frame": "0:202",
+   "node": "0:203"
+  },
+  {
+   "concept": "C13",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Instagram 分享",
+   "frame": "0:204",
+   "node": "0:205"
+  },
+  {
+   "concept": "C14",
+   "group": "C",
+   "lang": "mixed",
+   "text": "GPS 定位權限",
+   "frame": "0:206",
+   "node": "0:207"
+  },
+  {
+   "concept": "C15",
+   "group": "C",
+   "lang": "mixed",
+   "text": "AI 智慧推薦",
+   "frame": "0:208",
+   "node": "0:209"
+  },
+  {
+   "concept": "C16",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Cookie 偏好設定",
+   "frame": "0:210",
+   "node": "0:211"
+  },
+  {
+   "concept": "C17",
+   "group": "C",
+   "lang": "mixed",
+   "text": "iCloud 備份",
+   "frame": "0:212",
+   "node": "0:213"
+  },
+  {
+   "concept": "C18",
+   "group": "C",
+   "lang": "mixed",
+   "text": "NFC 感應支付",
+   "frame": "0:214",
+   "node": "0:215"
+  },
+  {
+   "concept": "C19",
+   "group": "C",
+   "lang": "mixed",
+   "text": "SMS 簡訊通知",
+   "frame": "0:216",
+   "node": "0:217"
+  },
+  {
+   "concept": "C20",
+   "group": "C",
+   "lang": "mixed",
+   "text": "4K 影片畫質",
+   "frame": "0:218",
+   "node": "0:219"
+  },
+  {
+   "concept": "D1",
+   "group": "D",
+   "lang": "either",
+   "text": "登入紀錄",
+   "frame": "0:220",
+   "node": "0:221"
+  },
+  {
+   "concept": "D2",
+   "group": "D",
+   "lang": "either",
+   "text": "Signed-in devices",
+   "frame": "0:222",
+   "node": "0:223"
+  },
+  {
+   "concept": "D3",
+   "group": "D",
+   "lang": "either",
+   "text": "Password strength: weak",
+   "frame": "0:224",
+   "node": "0:225"
+  },
+  {
+   "concept": "D4",
+   "group": "D",
+   "lang": "either",
+   "text": "Shopping guide",
+   "frame": "0:226",
+   "node": "0:227"
+  },
+  {
+   "concept": "D5",
+   "group": "D",
+   "lang": "either",
+   "text": "願望清單是空的",
+   "frame": "0:228",
+   "node": "0:229"
+  },
+  {
+   "concept": "D6",
+   "group": "D",
+   "lang": "either",
+   "text": "Payment failed",
+   "frame": "0:230",
+   "node": "0:231"
+  },
+  {
+   "concept": "D7",
+   "group": "D",
+   "lang": "either",
+   "text": "訂單已出貨",
+   "frame": "0:232",
+   "node": "0:233"
+  },
+  {
+   "concept": "D8",
+   "group": "D",
+   "lang": "either",
+   "text": "Notification sound",
+   "frame": "0:234",
+   "node": "0:235"
+  },
+  {
+   "concept": "D9",
+   "group": "D",
+   "lang": "either",
+   "text": "淺色模式",
+   "frame": "0:236",
+   "node": "0:237"
+  },
+  {
+   "concept": "D10",
+   "group": "D",
+   "lang": "either",
+   "text": "Delete photo",
+   "frame": "0:238",
+   "node": "0:239"
+  },
+  {
+   "concept": "D11",
+   "group": "D",
+   "lang": "either",
+   "text": "暫停通知",
+   "frame": "0:240",
+   "node": "0:241"
+  },
+  {
+   "concept": "D12",
+   "group": "D",
+   "lang": "either",
+   "text": "Profile completeness 80%",
+   "frame": "0:242",
+   "node": "0:243"
+  },
+  {
+   "concept": "D13",
+   "group": "D",
+   "lang": "either",
+   "text": "搜尋紀錄",
+   "frame": "0:244",
+   "node": "0:245"
+  },
+  {
+   "concept": "D14",
+   "group": "D",
+   "lang": "either",
+   "text": "Price alert",
+   "frame": "0:246",
+   "node": "0:247"
+  },
+  {
+   "concept": "D15",
+   "group": "D",
+   "lang": "either",
+   "text": "運費計算",
+   "frame": "0:248",
+   "node": "0:249"
+  },
+  {
+   "concept": "D16",
+   "group": "D",
+   "lang": "either",
+   "text": "Return to home",
+   "frame": "0:250",
+   "node": "0:251"
+  },
+  {
+   "concept": "D17",
+   "group": "D",
+   "lang": "either",
+   "text": "客服營業時間",
+   "frame": "0:252",
+   "node": "0:253"
+  },
+  {
+   "concept": "D18",
+   "group": "D",
+   "lang": "either",
+   "text": "Policy number",
+   "frame": "0:254",
+   "node": "0:255"
+  },
+  {
+   "concept": "D19",
+   "group": "D",
+   "lang": "either",
+   "text": "Email address",
+   "frame": "0:256",
+   "node": "0:257"
+  },
+  {
+   "concept": "D20",
+   "group": "D",
+   "lang": "either",
+   "text": "Region not supported",
+   "frame": "0:258",
+   "node": "0:259"
+  },
+  {
+   "concept": "D21",
+   "group": "D",
+   "lang": "either",
+   "text": "Card expired",
+   "frame": "0:260",
+   "node": "0:261"
+  },
+  {
+   "concept": "D22",
+   "group": "D",
+   "lang": "either",
+   "text": "Invite expired",
+   "frame": "0:262",
+   "node": "0:263"
+  },
+  {
+   "concept": "D23",
+   "group": "D",
+   "lang": "either",
+   "text": "Pro tips",
+   "frame": "0:264",
+   "node": "0:265"
+  },
+  {
+   "concept": "D24",
+   "group": "D",
+   "lang": "either",
+   "text": "Review submitted",
+   "frame": "0:266",
+   "node": "0:267"
+  },
+  {
+   "concept": "F1",
+   "group": "F",
+   "lang": "either",
+   "text": "Hero image",
+   "frame": "0:268",
+   "node": "0:269"
+  },
+  {
+   "concept": "F2",
+   "group": "F",
+   "lang": "either",
+   "text": "Footer",
+   "frame": "0:270",
+   "node": "0:271"
+  },
+  {
+   "concept": "F3",
+   "group": "F",
+   "lang": "either",
+   "text": "版權所有 © 2026",
+   "frame": "0:272",
+   "node": "0:273"
+  },
+  {
+   "concept": "F4",
+   "group": "F",
+   "lang": "either",
+   "text": "Step 1 of 3",
+   "frame": "0:274",
+   "node": "0:275"
+  },
+  {
+   "concept": "F5",
+   "group": "F",
+   "lang": "either",
+   "text": "下一步",
+   "frame": "0:276",
+   "node": "0:277"
+  },
+  {
+   "concept": "F6",
+   "group": "F",
+   "lang": "either",
+   "text": "Back",
+   "frame": "0:278",
+   "node": "0:279"
+  },
+  {
+   "concept": "F7",
+   "group": "F",
+   "lang": "either",
+   "text": "Loading…",
+   "frame": "0:280",
+   "node": "0:281"
+  },
+  {
+   "concept": "F8",
+   "group": "F",
+   "lang": "either",
+   "text": "載入更多",
+   "frame": "0:282",
+   "node": "0:283"
+  },
+  {
+   "concept": "F9",
+   "group": "F",
+   "lang": "either",
+   "text": "Close",
+   "frame": "0:284",
+   "node": "0:285"
+  },
+  {
+   "concept": "F10",
+   "group": "F",
+   "lang": "either",
+   "text": "確定",
+   "frame": "0:286",
+   "node": "0:287"
+  },
+  {
+   "concept": "F11",
+   "group": "F",
+   "lang": "either",
+   "text": "Cancel",
+   "frame": "0:288",
+   "node": "0:289"
+  },
+  {
+   "concept": "F12",
+   "group": "F",
+   "lang": "either",
+   "text": "取消",
+   "frame": "0:290",
+   "node": "0:291"
+  },
+  {
+   "concept": "F13",
+   "group": "F",
+   "lang": "either",
+   "text": "Learn more",
+   "frame": "0:292",
+   "node": "0:293"
+  },
+  {
+   "concept": "F14",
+   "group": "F",
+   "lang": "either",
+   "text": "了解更多",
+   "frame": "0:294",
+   "node": "0:295"
+  },
+  {
+   "concept": "F15",
+   "group": "F",
+   "lang": "either",
+   "text": "Skip",
+   "frame": "0:296",
+   "node": "0:297"
+  },
+  {
+   "concept": "F16",
+   "group": "F",
+   "lang": "either",
+   "text": "略過",
+   "frame": "0:298",
+   "node": "0:299"
+  },
+  {
+   "concept": "F17",
+   "group": "F",
+   "lang": "either",
+   "text": "Done",
+   "frame": "0:300",
+   "node": "0:301"
+  },
+  {
+   "concept": "F18",
+   "group": "F",
+   "lang": "either",
+   "text": "完成",
+   "frame": "0:302",
+   "node": "0:303"
+  },
+  {
+   "concept": "F19",
+   "group": "F",
+   "lang": "either",
+   "text": "Menu",
+   "frame": "0:304",
+   "node": "0:305"
+  },
+  {
+   "concept": "F20",
+   "group": "F",
+   "lang": "either",
+   "text": "選單",
+   "frame": "0:306",
+   "node": "0:307"
+  }
+ ]
+}

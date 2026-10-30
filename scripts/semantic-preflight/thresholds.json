@@ -1,0 +1,27 @@
+{
+ "unit": "concept: a result node maps to its concept by frame or text node id; ranks are over distinct concepts",
+ "k": 10,
+ "gated_mode": "fused (lexical + semantic, Reciprocal Rank Fusion sum(1/(60+rank)))",
+ "semantic_categories": [
+  "en_to_zh",
+  "zh_to_en",
+  "synonym_purpose",
+  "mixed_script"
+ ],
+ "per_semantic_category": {
+  "recall_at_10_min": 0.8,
+  "mrr_min": 0.6,
+  "wrong_top1_max": 0.2
+ },
+ "exact_text": {
+  "fused_recall_at_10_not_below_lexical": true,
+  "fused_mrr_not_below_lexical": true
+ },
+ "also_reported": [
+  "lexical",
+  "lexical_agent_expansion",
+  "semantic",
+  "no_result_rate"
+ ],
+ "note": "Set before the first embedding; not tuned against these results."
+}
