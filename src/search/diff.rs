@@ -1363,18 +1363,35 @@ fn fields(pair: &Pair, c: &Change, left: &mut usize) -> Option<Json> {
     Some(Json::Object(out))
 }
 
-/// The length of `s` as a JSON string, quotes included, as serde_json escapes it: control
-/// characters grow to six bytes, so a name's raw length can understate its reply size sixfold.
-fn escaped(s: &str) -> usize {
-    let grown: usize = s
-        .bytes()
-        .map(|b| match b {
+/// The length of `s` as a JSON string, quotes included, as serde_json escapes it, if it is at
+/// most `room`: control characters grow to six bytes, so a name's raw length can understate its
+/// reply size sixfold. A string whose raw length already passes `room` is refused unscanned,
+/// and the scan stops once the length does, so it reads at most `room` bytes.
+fn escaped_within(s: &str, room: usize) -> Option<usize> {
+    let mut n = s.len() + 2;
+    if n > room {
+        return None;
+    }
+    for b in s.bytes() {
+        n += match b {
             b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0x08 | 0x0c => 1,
             0..=0x1f => 5,
             _ => 0,
-        })
-        .sum();
-    s.len() + grown + 2
+        };
+        if n > room {
+            return None;
+        }
+    }
+    Some(n)
+}
+
+/// `room` less `fixed` and each of `strings` at its escaped length; `None` when they do not fit.
+fn fit(room: usize, fixed: usize, strings: &[&str]) -> Option<usize> {
+    let mut room = room.checked_sub(fixed)?;
+    for s in strings {
+        room -= escaped_within(s, room)?;
+    }
+    Some(room)
 }
 
 fn edge_key(e: &super::usages::Edge) -> (&str, Option<&str>, &str, &str) {
@@ -1410,16 +1427,19 @@ fn edges(pair: &Pair, c: &Change, left: &mut usize, work: &mut usize) -> Option<
     let mut omitted = 0;
     for (name, list, other) in [("removed", a, &sb), ("added", b, &sa)] {
         for e in list.iter().filter(|e| !other.contains(&edge_key(e))) {
-            let cost = 64
-                + escaped(e.relation)
-                + e.target.as_deref().map_or(4, escaped)
-                + escaped(e.state)
-                + escaped(&e.evidence);
-            if cost > *left {
+            // A missing target is written as `null`, four bytes.
+            let target = e.target.as_deref();
+            let strings = [
+                e.relation,
+                target.unwrap_or_default(),
+                e.state,
+                e.evidence.as_str(),
+            ];
+            let Some(rest) = fit(*left, 64 + if target.is_none() { 2 } else { 0 }, &strings) else {
                 omitted += 1;
                 continue;
-            }
-            *left -= cost;
+            };
+            *left = rest;
             out[name].as_array_mut().unwrap().push(
                 json!({"relation": e.relation, "target": e.target, "state": e.state, "evidence": e.evidence}),
             );
@@ -1434,8 +1454,13 @@ fn edges(pair: &Pair, c: &Change, left: &mut usize, work: &mut usize) -> Option<
             .and_then(|e| e.target.clone())
     };
     if main(a) != main(b) {
-        let side = |m: &Option<String>| m.as_deref().map_or(4, escaped);
-        *left = left.checked_sub(32 + side(&main(a)) + side(&main(b)))?;
+        let (old, new) = (main(a), main(b));
+        let nulls = 2 * usize::from(old.is_none()) + 2 * usize::from(new.is_none());
+        let sides = [
+            old.as_deref().unwrap_or_default(),
+            new.as_deref().unwrap_or_default(),
+        ];
+        *left = fit(*left, 32 + nulls, &sides)?;
         out["swap"] = json!({"old": main(a), "new": main(b)});
     }
     Some(out)
@@ -1473,21 +1498,20 @@ fn page_with(
         // Names and frame headers count against the page too; a full page ends early and the
         // cursor resumes at the next change, so none is dropped.
         let f = &pair.frames[c.frame as usize];
-        let header = match (last == Some(c.frame), &f.possible) {
-            (true, _) => 0,
-            (false, p) => {
-                let possible = p
-                    .as_ref()
-                    .map_or(0, |(id, basis)| 64 + escaped(id) + escaped(basis));
-                192 + escaped(&f.id) + escaped(&f.name) + escaped(&f.page) + possible
+        let (mut fixed, mut strings) = (96, vec![r.id.as_str(), &r.kind, &r.name]);
+        if last != Some(c.frame) {
+            fixed += 192;
+            strings.extend([f.id.as_str(), &f.name, &f.page]);
+            if let Some((id, basis)) = &f.possible {
+                fixed += 64;
+                strings.extend([id.as_str(), basis]);
             }
-        };
-        let old_kind = match c.kind {
-            Kind::Retyped => 32 + escaped(&pair.old.index.records[c.old.unwrap() as usize].kind),
-            _ => 0,
-        };
-        let cost = 96 + escaped(&r.id) + escaped(&r.kind) + escaped(&r.name) + header + old_kind;
-        if cost > left {
+        }
+        if c.kind == Kind::Retyped {
+            fixed += 32;
+            strings.push(&pair.old.index.records[c.old.unwrap() as usize].kind);
+        }
+        let Some(rest) = fit(left, fixed, &strings) else {
             if end > start {
                 break;
             }
@@ -1496,8 +1520,8 @@ fn page_with(
                 format!("change {} needs more than {PAGE_VALUES} bytes for its name and frame; inspect it on each side with `figlens inspect`", r.id),
             )
             .into());
-        }
-        left -= cost;
+        };
+        left = rest;
         // A changed record whose edges do not fit this page ends it before it, or fails when it
         // is the first: never listed without them.
         let edge_list = match c.kind == Kind::Changed && c.facets & EDGES != 0 {

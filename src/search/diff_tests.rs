@@ -736,10 +736,11 @@ fn escaped_names_and_edges_count_against_the_page_bytes_at_their_reply_size() {
     // Control characters, quotes and backslashes grow when serialized.
     let odd = |n: usize| "\u{1}\"\\".repeat(n);
     let mixed = format!("{}\n\t\u{8}\u{1f}é\u{7f}", odd(3));
-    assert_eq!(
-        escaped(&mixed),
-        serde_json::to_string(&mixed).unwrap().len()
-    );
+    let exact = serde_json::to_string(&mixed).unwrap().len();
+    assert_eq!(escaped_within(&mixed, exact), Some(exact));
+    // Over the room: refused, whether its raw length or only its escapes pass it.
+    assert_eq!(escaped_within(&mixed, exact - 1), None);
+    assert_eq!(escaped_within(&"x".repeat(1 << 20), 10), None);
     let side = |main: u32| {
         doc(vec![
             node(30, Some(1), "SYMBOL", &odd(40), vec![]),
