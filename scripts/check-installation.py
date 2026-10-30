@@ -77,10 +77,11 @@ def check_index(binary, fixture, cwd, env):
 def check_watch(binary, fixture, cwd, env):
     """Two `watch run` holders share one detached runner. A forced exit of the first holder (its
     PID alone, never a tree kill) leaves the runner and the second's lease; the runner records a
-    save. The runner is then lost: on Windows by terminating a test job object that the first
-    holder ran in and that forbids breakaway, so its runner had to start `in_host_job`; elsewhere
-    by killing the runner's PID. The second holder's renewal starts it again, and its stdin EOF
-    ends the runner. The workspace is removed only once the runner is proven stopped."""
+    save and evaluates a saved search after it. The runner is then lost: on Windows by
+    terminating a test job object that the first holder ran in and that forbids breakaway, so its
+    runner had to start `in_host_job`; elsewhere by killing the runner's PID. The second holder's
+    renewal starts it again, and its stdin EOF ends the runner. The workspace is removed only once
+    the runner is proven stopped."""
     base = Path(tempfile.mkdtemp(prefix='figlens-watch-'))
     source = base/'design.fig'
     shutil.copy2(fixture, source)
@@ -88,6 +89,7 @@ def check_watch(binary, fixture, cwd, env):
     cli = lambda *args: json.loads(run([binary, *args], cwd, env))
     status = lambda: cli('watch', 'status', '--file', source)
     revisions = lambda: sum(r['kind'] == 'changes' for r in cli('changes', '--file', source, '--scope', '0:0')['revisions'])
+    evaluation = lambda: cli('changes', '--file', source, '--subscription', saved)['evaluation']['state']
 
     def wait(what, done, limit=30):
         start = time.monotonic()
@@ -148,6 +150,10 @@ def check_watch(binary, fixture, cwd, env):
     try:
         cli('index', 'prepare', source, '--scope', '0:0')
         cli('index', 'track', '--file', source, '--scope', '0:0')
+        # A saved search the runner must evaluate after the save, with no evaluate call.
+        source_id = cli('changes', '--file', source, '--scope', '0:0')['tracking'][0]['sourceId']
+        saved = cli('watch', 'subscribe', '--file', source, '--consumer', 'check', '--source', source_id,
+                    '--query', 'button')['subscription']['subscriptionId']
         # The first holder starts the runner; the second, outside any test job, joins it.
         first = holder(job)
         lease = line(first)
@@ -166,6 +172,7 @@ def check_watch(binary, fixture, cwd, env):
         changed.write_bytes(source.read_bytes() + bytes(16))
         os.replace(changed, source)
         save_ms = wait('the runner to record a save', lambda: revisions() == 1)
+        evaluated_ms = save_ms + wait('the runner to evaluate the saved search', lambda: evaluation() == 'current')
         if job:
             check(kernel32.TerminateJobObject(job, 1))
         else:
@@ -207,6 +214,7 @@ def check_watch(binary, fixture, cwd, env):
         else:
             print(f'watch: runner not proven stopped; kept {base}', file=sys.stderr)
     return {'placement': placement, 'firstHolderPidKilledRunnerKept': True, 'saveRecordedMs': save_ms,
+            'savedSearchEvaluatedMs': evaluated_ms,
             'runnerLost': 'host job terminated' if job else 'runner PID killed', 'restartGapMs': gap_ms,
             'restartedPlacement': restarted, 'lastEofRunnerExitMs': exit_ms}
 
