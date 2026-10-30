@@ -1400,3 +1400,43 @@ fn search_relocated_recovery_keeps_the_callers_filters() {
             "includeHidden": true, "includeInternal": true, "limit": 7})
     );
 }
+
+#[test]
+fn usages_relocated_recovery_keeps_the_callers_selectors() {
+    let f = Fixture::new();
+    let a = std::fs::canonicalize(f.fig("a.fig")).unwrap();
+    let ws = id_of(&prepare(&f.storage, &a, None).unwrap());
+    let b = f.dir.join("b.fig");
+    std::fs::rename(&a, &b).unwrap();
+    let b = std::fs::canonicalize(b).unwrap();
+    relocate(
+        &f.storage,
+        &Select::Id(ws),
+        &crate::search::source_id(&a),
+        &b,
+    )
+    .unwrap();
+    let req = crate::search::usages::Request {
+        target: "0:2".into(),
+        resource: false,
+        scope: "0:1".into(),
+        relations: vec!["contains".into(), "uses_style".into()],
+        outgoing: true,
+        snapshot: Some("sha256:abc".into()),
+        include_hidden: true,
+        limit: 7,
+        cursor: None,
+    };
+    let select = Select::Locator(Locator::source(&a).unwrap());
+    let e = usages::usages(&f.storage, &select, None, &req).unwrap_err();
+    let recovery = e
+        .downcast_ref::<FigError>()
+        .and_then(FigError::recovery)
+        .unwrap_or_else(|| panic!("{e}"))[0]
+        .clone();
+    assert_eq!(
+        recovery["arguments"],
+        json!({"file": b.to_str().unwrap(), "node": "0:2", "scope": "0:1", "limit": 7, "direction": "out",
+            "relation": "contains,uses_style", "includeHidden": true, "snapshotId": "sha256:abc"})
+    );
+}

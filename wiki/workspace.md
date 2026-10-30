@@ -1,6 +1,6 @@
 # Local workspaces
 
-`src/workspace.rs` is the facade over `storage.rs` (roots, placement, location records, directory, marker and locks), `database.rs` (schema, open, upgrade, registry reads) and `registry.rs` (prepare, status, add, remove, relocate, reset). Durable indexes, jobs and workspace search are in [index](index-jobs.md). CLI `figlens index`, `jobs` and `search --workspace|--file|--id`, and the MCP `index`, `jobs` and `search` (`workspaceId`) tools call it; Pi, OpenCode and OMP reach it only through those. Connecting, listing tools, `find`, `inspect`, stateless `search` and every other command create no storage.
+`src/workspace.rs` is the facade over `storage.rs` (roots, placement, location records, directory, marker and locks), `database.rs` (schema, open, upgrade, registry reads) and `registry.rs` (prepare, status, add, remove, relocate, reset). Durable indexes, jobs and workspace search are in [index](index-jobs.md). CLI `figlens index`, `jobs`, `search` and `usages` with `--workspace|--file|--id`, and the MCP `index`, `jobs`, `search` and `usages` (`workspaceId`) tools call it; Pi, OpenCode and OMP reach it only through those. Connecting, listing tools, `find`, `inspect`, stateless `search` and every other command create no storage.
 
 ## Roots and storage location
 
@@ -34,7 +34,7 @@ A workspace is `<state>/workspaces/<workspaceId>/` holding `workspace.json` (the
 
 - SQLite is `rusqlite` with `bundled`: every release target links SQLite statically, so users install nothing.
 - Writing connections use WAL, `synchronous = FULL` and a 5 s busy timeout. A read-only `status` of an existing workspace may let SQLite create its own `-wal`/`-shm`; an absent workspace gets no file at all.
-- Schema 1 is `meta` (workspace id, locator, incarnation, creation time) and `sources` (`source_id`, unique `path`, `added_at_ms`). Schema 2 adds a per-source `membership`, the `binding` and the index tables ([index](index-jobs.md)); a v1 database is upgraded in place under the exclusive lock. Schema and identity are read before any write pragma; any newer version is `index_incompatible` and stays untouched.
+- Schema 1 is `meta` (workspace id, locator, incarnation, creation time) and `sources` (`source_id`, unique `path`, `added_at_ms`). Schema 2 adds a per-source `membership`, the `binding` and the index tables ([index](index-jobs.md)); a v1 database is upgraded in place under the exclusive lock. Schema 3 recreates `edges` and adds `definitions` ([usages](usages.md)); a v2 database is upgraded the same way, its old generations then read as `index_incompatible` until `rebuild`. Schema and identity are read before any write pragma; any newer version is `index_incompatible` and stays untouched.
 - Every connection holds the lock file shared for its lifetime; `prepare` and `reset` hold it exclusive. Locks are `std::fs::File` advisory locks (flock, `LockFileEx`) taken with `try_lock` until a 5 s deadline, then `workspace_busy`. The lock file is never removed, so every process locks the same file.
 - `incarnation` is `hex(randomblob(16))`, new for every initialization. Later cursors and jobs must bind it so a handle from before a reset never matches the recreated workspace.
 

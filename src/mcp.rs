@@ -305,13 +305,14 @@ impl AdmittedCall {
     /// The local source a warm tree serves; search reads and hashes its own snapshot instead.
     fn tree_source(&self) -> Option<&Path> {
         self.local()
-            .filter(|_| !matches!(self.call.name(), "search" | "index" | "jobs"))
+            .filter(|_| !matches!(self.call.name(), "search" | "usages" | "index" | "jobs"))
     }
 
     /// Whether this call reads or changes a workspace rather than a design file.
     fn workspace(&self) -> bool {
         matches!(self.call.name(), "index" | "jobs")
-            || (self.call.name() == "search" && self.call.string("workspaceId").is_some())
+            || (matches!(self.call.name(), "search" | "usages")
+                && self.call.string("workspaceId").is_some())
     }
 
     /// Runs a workspace call; the jobs an index call submitted for this process come back
@@ -327,6 +328,7 @@ impl AdmittedCall {
             match self.call.name() {
                 "jobs" => command::jobs_tool(&self.call, roots, storage_roots),
                 "search" => command::workspace_search_tool(&self.call, roots, storage_roots),
+                "usages" => command::workspace_usages_tool(&self.call, roots, storage_roots),
                 _ => command::index_tool(
                     &self.call,
                     self.local(),
@@ -395,12 +397,17 @@ impl AdmittedCall {
                     pretty: false,
                 });
             }
-            if name == "search" {
+            if matches!(name, "search" | "usages") {
                 let path = match self.source.as_ref().unwrap() {
                     Source::Local(path) => path.clone(),
                     Source::Remote(file) => figlens::remote::local(file)
                         .map_err(|e| contract::Failure::from_error(contract::source(file, e)))?,
                 };
+                if name == "usages" {
+                    return command::usages_tool(&self.call)
+                        .and_then(|request| command::usages(&path, &request, ""))
+                        .map_err(contract::Failure::from_error);
+                }
                 return command::search_tool(&self.call)
                     .and_then(|request| command::search(&path, &request, ""))
                     .map_err(contract::Failure::from_error);
@@ -904,6 +911,7 @@ mod tests {
                 "tree",
                 "find",
                 "search",
+                "usages",
                 "inspect",
                 "nodes",
                 "variables",
@@ -929,7 +937,8 @@ mod tests {
         assert_eq!(
             with_schema,
             [
-                "find", "search", "inspect", "bundle", "verify", "export", "index", "jobs"
+                "find", "search", "usages", "inspect", "bundle", "verify", "export", "index",
+                "jobs"
             ]
         );
     }

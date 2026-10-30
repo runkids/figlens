@@ -103,6 +103,8 @@ pi install npm:@runkids/figlens
 
 重新啟動 Pi 或執行 `/reload`，然後用一般的話請它做一個畫面。Pi 會找到 frame，透過自動註冊的 MCP 伺服器讀取，並用你的技術堆疊實作。不需要 node ID，不需要全域 CLI。
 
+請它找文案或畫面時，會直接搜尋 `.fig`，不儲存任何東西。需要反覆搜尋時，請 Pi 為某個設計和範圍啟用索引：它會準備一次本機索引（不需要設定指令），完成前回報工作狀態，之後在重新啟動和其他 host 中繼續使用。重設該索引需要你明確要求。詢問某個 component、variable、style 或圖片用在哪裡時，會以同樣方式列出精確的 usages：直接讀 `.fig`，或在啟用索引後讀該索引。 詳情：[本機索引](#local-index)。
+
 - `/figlens plan <request>` 只產生計劃書，不修改應用程式。
 - `/figlens yolo <request>` 規劃、實作、檢查，並清理自己的暫存規劃。
 - `/figlens preview [description]` 開啟本機 viewer。
@@ -123,13 +125,13 @@ npx -y @runkids/figlens preview design.fig                        # 本機 viewe
 npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可寄給任何人的離線 HTML 快照
 ```
 
-可瀏覽頁面與圖層、搜尋、量測，檢視排版、字體、variables 與 CSS，匯出任何圖層，複製實作 prompt，或下載所選項目的 bundle。拖入你實作成果的截圖，即可疊在設計上比對。詳情：[預覽指南](../wiki/preview.md)。
+可瀏覽頁面與圖層、搜尋、排序搜尋與所選項目的精確用處（usages）、量測，檢視排版、字體、variables 與 CSS，匯出任何圖層，複製實作 prompt，或下載所選項目的 bundle。拖入你實作成果的截圖，即可疊在設計上比對。詳情：[預覽指南](../wiki/preview.md)。
 
 <a id="mcp-and-skill"></a>
 
 ## MCP 伺服器與 agent skill
 
-**MCP。** 伺服器透過 stdio 在本機執行，提供 `workflow`、`tree`、`find`、`search`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs` 與 `export`。請傳入絕對路徑。加上 `--root /path/to/designs`（可重複）可將所有檔案與輸出路徑限制在指定的資料夾。將索引存放在 figlens 預設目錄之外時，需要 `--storage-root DIR`（可重複）。點陣圖匯出會縮小到 `maxSize`（預設 1600 px），讓內嵌圖片維持小巧；SVG 只回傳 metadata。
+**MCP。** 伺服器透過 stdio 在本機執行，提供 `workflow`、`tree`、`find`、`search`、`usages`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs` 與 `export`。請傳入絕對路徑。加上 `--root /path/to/designs`（可重複）可將所有檔案與輸出路徑限制在指定的資料夾。將索引存放在 figlens 預設目錄之外時，需要 `--storage-root DIR`（可重複）。點陣圖匯出會縮小到 `maxSize`（預設 1600 px），讓內嵌圖片維持小巧；SVG 只回傳 metadata。
 
 agent 可透過 `workflow` 讀取內建的 `build`、`audit`、`images`、`plan`、`planning-details`，或明確要求時的 `yolo` 指引。它們與 portable skill 共用來源；MCP 使用者可自行選擇是否另裝 skill。實際工作仍由 agent 使用專案與瀏覽器工具，並遵守 host 權限。讀取指引不會執行工作流程；使用方式取決於客戶端支援與模型行為。
 
@@ -160,7 +162,7 @@ skillshare sync && skillshare sync mcp --global
 |---|---|---|
 | 作用 | 每次呼叫都讀取 `.fig`，回答 `search`、`find`、`inspect` 和 `export`。 | 為選定範圍一次建立搜尋索引，之後 `search` 從索引作答，並跨來源統一排序。 |
 | 寫入內容 | 不建立 workspace 或索引資料庫（`export` 只寫入你要求的檔案）。 | 使用者 state 目錄或所選 `--storage` 下的本機 workspace（SQLite 資料庫）。 |
-| 適用情境 | 一次性提問、腳本、CI。 | 反覆搜尋同一檔案；把專案的多個檔案當作一個語料搜尋（`--workspace <dir>`）；在 coverage 中使用已知的父/實例關係。 |
+| 適用情境 | 一次性提問、腳本、CI。 | 反覆搜尋同一檔案；把專案的多個檔案當作一個語料搜尋（`--workspace <dir>`）；查找元件、變數、樣式和圖片的精確使用位置。 |
 
 一般的設計問題不會建立索引。你只需明確選擇啟用一次（「為這個設計建立索引」）；儲存位置由 figlens 決定，不需要設定 SQLite 或其他東西。
 
@@ -194,9 +196,9 @@ MCP：`index` 的 prepare 會回傳一個 job；輪詢 `jobs` 直到 `succeeded`
 
 移動了 `.fig`？`index relocate` 保留 `workspaceId`、`sourceId` 和儲存位置；接著對受影響的範圍執行 `refresh`。沒有自動探索，也沒有以雜湊為基礎的自動合併，不需要 reset。
 
-資料：SQLite 資料庫保存已註冊的本機路徑、所選範圍的圖層名稱與有效文字、搜尋 postings、已知的父/實例關係、雜湊、generation 和 job。原始 `.fig` 留在原處且保持不變；其原始位元組不會存入資料庫。
+資料：SQLite 資料庫保存已註冊的本機路徑、所選範圍的圖層名稱與有效文字、搜尋 postings、精確關係（包含、實例、變體、變數/樣式/圖片綁定、原型目標）及其指向的定義、雜湊、generation 和 job。原始 `.fig` 留在原處且保持不變；其原始位元組不會存入資料庫。
 
-Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，workspace 可跨重啟和宿主重複使用。尚未實作：檔案監看、usages/關係工具、向量、事件與訂閱。
+Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，workspace 可跨重啟和宿主重複使用。尚未實作：檔案監看、向量、事件與訂閱。
 
 <a id="commands"></a>
 
@@ -208,6 +210,7 @@ Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，works
 | `tree <file> [node] --top-frames [--json]` | 只列出畫面，每行一個，可直接傳給 `--frames -`：頁面或其 section 下的 frame、component、component set 與 instance（略過 group 與內部頁面）；`--json` 附上 page 與 section id，以及每個畫面第一段可見文字（`firstText`），可用來區分畫布標籤與畫面 |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 不分大小寫搜尋圖層名稱與文字；路徑、尺寸與預覽。預設 20 筆結果（1-200） |
 | `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | 對圖層名稱與完整文字做排序搜尋，已套用 instance override、文字/布林屬性與 swap；回傳精確節點參照（包括可用於 `inspect` 的 `I…;…` 子圖層 id）、比對原因、UTF-16 範圍、涵蓋狀態與 cursor 分頁。預設 20 筆（1-200）；隱藏圖層與內部頁面需加對應 flag。以 `--file`/`--workspace`/`--id` 取代 `<file>` 時，讀取 workspace 已準備的索引（見 `index`） |
+| `usages <file> <node\|resource> [--scope ID] [--relation R[,R]] [--out] [--snapshot S] [--include-hidden] [--limit N] [--cursor C]` | 在一個已儲存範圍內回傳圖層或資源（`VariableID:…`、`StyleKey:…`、`image:…`）的精確關係，包括巢狀 instance 和 swap：預設回傳元件、元件集、變數、樣式或圖片被使用的位置，`--out` 回傳圖層指向的目標。每筆結果保留精確參照、關係、狀態（`resolved`、`missing`、`unresolved` 等）、依據與證據；名稱從不視為同一身分。不回傳總數，coverage 說明完整或部分。預設 50 筆（1-200）。用 `--file`/`--workspace`/`--id` 代替 `<file>` 時讀取 workspace 已準備好的 `--scope` 索引 |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | 精簡的展開後排版/文字摘要，最多 200 個節點。`--images` 會加上點陣圖尺寸與裁切範圍。`--flat` 改為每個節點一行：相對該節點的位置、尺寸、文字、字型、填色、描邊、圓角、auto-layout |
 | `nodes <file> <node>` | REST nodes 回應中單一節點的物件（`document`、`components`、`componentSets`、`styles`）：展開後的 instance 與 override、auto-layout、文字樣式、填色、效果、綁定的 variables、元件屬性、渲染邊界 |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | 一次解碼讀取多個節點：清單中每個 id 一行 JSON（帶 `nodeId` 的 `nodes` 輸出，或 `{nodeId, error}`） |

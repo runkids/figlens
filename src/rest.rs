@@ -1217,13 +1217,15 @@ pub(crate) fn alias(binding: &Json) -> Option<Json> {
 /// Aliases bound anywhere in a paint list (solid colors and gradient stops), each once.
 fn paint_aliases(list: Option<&Json>) -> Vec<Json> {
     let mut out: Vec<Json> = Vec::new();
+    // A set keeps thousands of distinct aliases linear; `out` keeps first-seen order.
+    let mut seen = std::collections::HashSet::new();
     for p in list.and_then(Json::as_array).into_iter().flatten() {
         let stops = p["stopsVar"].as_array().into_iter().flatten();
         for a in std::iter::once(&p["colorVar"])
             .chain(stops.map(|s| &s["colorVar"]))
             .filter_map(alias)
         {
-            if !out.contains(&a) {
+            if seen.insert(a.to_string()) {
                 out.push(a);
             }
         }
@@ -1274,7 +1276,7 @@ fn prop_value_source(a: &Json) -> Option<(Json, &'static str)> {
 }
 
 /// REST `boundVariables` of a node: paint, effect and field (`variableConsumptionMap`) bindings.
-fn bound_variables(k: &Obj) -> Obj {
+pub(crate) fn bound_variables(k: &Obj) -> Obj {
     let mut out = Obj::new();
     let text_fills: Json = at(k, "textData")["styleOverrideTable"]
         .as_array()
@@ -1758,6 +1760,28 @@ mod tests {
                 &json!("VariableID:gap/1:2"),
                 &json!("VariableID:weight/1:2")
             )
+        );
+    }
+
+    #[test]
+    fn paint_aliases_list_each_color_and_stop_alias_once_in_first_seen_order() {
+        let var = |l: u32| json!({ "dataType": "ALIAS", "value": { "alias": { "guid": { "sessionID": 1, "localID": l } } } });
+        let paints = json!([
+            { "colorVar": var(3), "stopsVar": [{ "colorVar": var(1) }, { "colorVar": var(3) }] },
+            { "colorVar": var(1) },
+            { "stopsVar": [{ "colorVar": var(2) }] },
+        ]);
+        let ids: Vec<Json> = paint_aliases(Some(&paints))
+            .into_iter()
+            .map(|a| a["id"].clone())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                json!("VariableID:1:3"),
+                json!("VariableID:1:1"),
+                json!("VariableID:1:2")
+            ]
         );
     }
 

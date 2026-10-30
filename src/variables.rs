@@ -116,15 +116,24 @@ fn push(ids: &mut Vec<String>, id: Option<String>) {
     }
 }
 
-/// Every `VARIABLE_ALIAS` id under `v`, once each.
-fn aliases(v: &Json, ids: &mut Vec<String>) {
+/// Every `VARIABLE_ALIAS` id under `v`, once each, appended to `ids` in first-seen order.
+pub(crate) fn aliases(v: &Json, ids: &mut Vec<String>) {
+    // A set keeps thousands of distinct aliases linear.
+    let mut seen: std::collections::HashSet<String> = ids.iter().cloned().collect();
+    walk_aliases(v, ids, &mut seen);
+}
+
+fn walk_aliases(v: &Json, ids: &mut Vec<String>, seen: &mut std::collections::HashSet<String>) {
     match v {
-        Json::Array(a) => a.iter().for_each(|x| aliases(x, ids)),
+        Json::Array(a) => a.iter().for_each(|x| walk_aliases(x, ids, seen)),
         Json::Object(o) => {
-            if o.get("type").and_then(Json::as_str) == Some("VARIABLE_ALIAS") {
-                push(ids, o.get("id").and_then(Json::as_str).map(str::to_owned));
+            if o.get("type").and_then(Json::as_str) == Some("VARIABLE_ALIAS")
+                && let Some(id) = o.get("id").and_then(Json::as_str)
+                && seen.insert(id.to_owned())
+            {
+                ids.push(id.to_owned());
             }
-            o.values().for_each(|x| aliases(x, ids));
+            o.values().for_each(|x| walk_aliases(x, ids, seen));
         }
         _ => {}
     }
@@ -250,6 +259,20 @@ mod tests {
         aliases(&doc, &mut ids);
         ids.sort();
         assert_eq!(ids, ["VariableID:6:2", "VariableID:k/1:2"]);
+    }
+
+    #[test]
+    fn aliases_keep_first_seen_order_after_ids_already_collected() {
+        let alias = |id: &str| json!({ "type": "VARIABLE_ALIAS", "id": id });
+        let doc = json!([
+            alias("VariableID:1:3"),
+            alias("VariableID:1:1"),
+            alias("VariableID:1:2"),
+            alias("VariableID:1:3")
+        ]);
+        let mut ids = vec!["VariableID:1:2".to_owned()];
+        aliases(&doc, &mut ids);
+        assert_eq!(ids, ["VariableID:1:2", "VariableID:1:3", "VariableID:1:1"]);
     }
 
     #[test]

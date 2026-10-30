@@ -491,6 +491,82 @@ impl Drop for Mcp {
 }
 
 #[test]
+fn usages_agree_stateless_over_mcp_and_from_a_prepared_scope_and_reject_a_stale_ref() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    let stateless = env.json(&["usages", file, "0:1", "--relation", "contains"]);
+    assert_eq!(ids(&stateless), ["0:2"]);
+    let mut mcp = Mcp::start(&env, &[]);
+    let over_mcp = mcp.call(
+        "usages",
+        json!({"file": file, "node": "0:1", "relation": "contains"}),
+    );
+    drop(mcp);
+    assert_eq!(
+        over_mcp["structuredContent"]["results"],
+        stateless["results"]
+    );
+    // Stateless usages, like search, never create a database.
+    assert!(!env.home.join(".local/state/figlens").exists());
+    let prepared = env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    assert_eq!(prepared["job"]["state"], "succeeded");
+    // Each call is a new process: the published index is reused, never rebuilt.
+    for _ in 0..2 {
+        let indexed = env.json(&["usages", "--file", file, "0:1", "--relation", "contains"]);
+        let plain = |reply: &Value| {
+            let mut results = reply["results"].clone();
+            for r in results.as_array_mut().unwrap() {
+                r["ref"].as_object_mut().unwrap().remove("sourceId");
+            }
+            results
+        };
+        assert_eq!(plain(&indexed), plain(&stateless));
+        assert_eq!(indexed["definition"]["state"], "indexed");
+    }
+    let snapshot = stateless["source"]["snapshotId"].as_str().unwrap();
+    let current = env.run(&["usages", "--file", file, "0:1", "--snapshot", snapshot]);
+    assert!(current.status.success());
+    let stale = env.run(&["usages", "--file", file, "0:1", "--snapshot", "sha256:old"]);
+    assert!(!stale.status.success());
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("now serves"));
+}
+
+#[test]
+fn usages_of_a_scope_not_ready_report_its_state_next_step_and_null_fields() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file]);
+    let idle = env.json(&["usages", "--file", file, "0:1"]);
+    assert_eq!(idle["state"], "not_prepared");
+    assert_eq!(idle["nextSteps"][0]["arguments"]["action"], "refresh");
+    let gate = env.gate("parse.hold");
+    let mut owner = env.spawn(
+        &["index", "prepare", file, "--scope", "0:0"],
+        Some(("parse", &gate)),
+    );
+    let job = active_job(&env, &fig, "parse");
+    let mut mcp = Mcp::start(&env, &[]);
+    let ws = idle["workspaceId"].as_str().unwrap();
+    let reply = mcp.call("usages", json!({"workspaceId": ws, "node": "0:1"}));
+    drop(mcp);
+    assert_eq!(reply["isError"], false, "{reply}");
+    let pending = &reply["structuredContent"];
+    assert_eq!(pending["state"], "pending");
+    assert_eq!(pending["nextSteps"][0]["arguments"]["jobId"], job.as_str());
+    // The fields the output schema requires are present; definition is null until ready.
+    for key in ["definition", "results", "coverage", "hasMore", "nextCursor"] {
+        assert!(pending.get(key).is_some(), "{key}");
+    }
+    assert_eq!(pending["definition"], Value::Null);
+    std::fs::remove_file(&gate).unwrap();
+    assert!(owner.wait().unwrap().success());
+    let ready = env.json(&["usages", "--file", file, "0:1"]);
+    assert_eq!(ready["definition"]["state"], "indexed");
+}
+
+#[test]
 fn mcp_builds_in_the_background_and_answers_status_and_search_meanwhile() {
     let env = Env::new();
     let fig = env.fig("a.fig");
@@ -572,6 +648,9 @@ fn mcp_roots_hide_sources_jobs_and_counts_outside_them() {
         std::fs::canonicalize(path).unwrap()
     };
     let (seen, hidden) = (copy(&inside), copy(&outside));
+    // The hidden directory as it appears inside a JSON reply, with the host's separators.
+    let leak = serde_json::to_string(hidden.parent().unwrap()).unwrap();
+    let leak = leak.trim_matches('"').to_owned();
     let dir = project.to_str().unwrap();
     env.json(&[
         "index",
@@ -616,7 +695,7 @@ fn mcp_roots_hide_sources_jobs_and_counts_outside_them() {
             .len(),
         1
     );
-    assert!(!search.to_string().contains("/out/"));
+    assert!(!search.to_string().contains(&leak));
     let coverage = &search["structuredContent"]["coverage"];
     assert_eq!(coverage["complete"], false, "{search}");
     assert!(
@@ -627,7 +706,29 @@ fn mcp_roots_hide_sources_jobs_and_counts_outside_them() {
     );
     let job = mcp.call("jobs", json!({"action": "status", "jobId": hidden_job}));
     assert_eq!(job["isError"], true);
-    assert!(!job.to_string().contains("/out/"));
+    assert!(!job.to_string().contains(&leak));
+    // Usages read only the visible source; naming the hidden one finds nothing to read.
+    let usages = mcp.call("usages", json!({"workspaceId": ws, "node": "0:1"}));
+    assert_eq!(usages["isError"], false, "{usages}");
+    assert!(!usages.to_string().contains(&leak));
+    let all = env.json(&["index", "status", "--workspace", dir]);
+    // The unrestricted status lists the hidden copy, so the token matches on this host.
+    assert!(all.to_string().contains(&leak));
+    let hidden_id = all["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| Path::new(s["path"].as_str().unwrap()) == hidden)
+        .unwrap()["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let refused = mcp.call(
+        "usages",
+        json!({"workspaceId": ws, "sourceId": hidden_id, "node": "0:1"}),
+    );
+    assert_eq!(refused["isError"], true);
+    assert!(!refused.to_string().contains(&leak));
 }
 
 #[test]
@@ -1468,4 +1569,87 @@ fn a_cancel_completes_when_the_owner_dies_while_its_worker_is_starting() {
     wait_for("the cancel to complete", || {
         env.json(&["jobs", "cancel", &job])["cancel"] == "accepted"
     });
+}
+
+#[test]
+fn a_text_only_search_cache_upgrades_once_for_usages_and_keeps_search_cursors() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    let mut mcp = Mcp::start(&env, &[]);
+    let search = |mcp: &mut Mcp, cursor: Option<&str>| {
+        let mut args = json!({"file": file, "query": "first", "limit": 1});
+        if let Some(c) = cursor {
+            args["cursor"] = json!(c);
+        }
+        mcp.call("search", args)["structuredContent"].clone()
+    };
+    let cold = search(&mut mcp, None);
+    let kinds = &cold["coverage"]["layers"]["relations"]["kinds"];
+    // Ordinary search builds text and structure only; field relations are not built, not empty.
+    assert_eq!(
+        (
+            &cold["coverage"]["complete"],
+            &kinds["instance_of"],
+            &kinds["binds_variable"]
+        ),
+        (&json!(true), &json!("ready"), &json!("not_built"))
+    );
+    assert_eq!(cold["source"]["freshness"]["reusedIndex"], false);
+    let usages = |mcp: &mut Mcp| {
+        mcp.call(
+            "usages",
+            json!({"file": file, "node": "0:1", "relation": "contains"}),
+        )["structuredContent"]
+            .clone()
+    };
+    // The first usages call rebuilds with every relation, once; the next one reuses it.
+    let first = usages(&mut mcp);
+    assert_eq!(
+        (ids(&first), &first["source"]["freshness"]["reusedIndex"]),
+        (vec!["0:2"], &json!(false))
+    );
+    assert_eq!(usages(&mut mcp)["source"]["freshness"]["reusedIndex"], true);
+    // The full index serves search too, with the same results.
+    let warm = search(&mut mcp, None);
+    assert_eq!(
+        (
+            &warm["results"],
+            &warm["source"]["freshness"]["reusedIndex"]
+        ),
+        (&cold["results"], &json!(true))
+    );
+    assert_eq!(
+        warm["coverage"]["layers"]["relations"]["kinds"]["binds_variable"],
+        "ready"
+    );
+    // A new revision is read again: same content, another snapshot, fresh text-only build.
+    let bytes = std::fs::read(&fig).unwrap();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut out = zip::ZipWriter::new(std::fs::File::create(&fig).unwrap());
+    for i in 0..archive.len() {
+        out.raw_copy_file(archive.by_index(i).unwrap()).unwrap();
+    }
+    out.start_file("revision.txt", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    out.write_all(b"2").unwrap();
+    out.finish().unwrap();
+    let changed = search(&mut mcp, None);
+    assert_ne!(
+        changed["source"]["snapshotId"],
+        cold["source"]["snapshotId"]
+    );
+    assert_eq!(
+        (
+            ids(&changed),
+            &changed["coverage"]["layers"]["relations"]["kinds"]["binds_variable"]
+        ),
+        (ids(&cold), &json!("not_built"))
+    );
+    let after = usages(&mut mcp);
+    assert_eq!(
+        (ids(&after), &after["source"]["snapshotId"]),
+        (vec!["0:2"], &changed["source"]["snapshotId"])
+    );
+    drop(mcp);
 }

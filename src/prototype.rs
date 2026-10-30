@@ -81,10 +81,30 @@ fn destination(tree: &Tree, value: Option<&K>, field: String) -> Value {
     result
 }
 
-fn read(tree: &Tree, source: &Source, basis: &str) -> Value {
-    let field = source.field();
+/// `None` when `charge` refuses the projection's reservation.
+fn read(
+    tree: &Tree,
+    source: &Source,
+    basis: &str,
+    charge: &mut dyn FnMut(usize, usize) -> bool,
+) -> Option<Value> {
     let record = source.record(tree);
     let value = record.and_then(|n| n.get("prototypeInteractions"));
+    // Reserved before any evidence is built: the header (ids, field path and the few keys a
+    // caller adds) for every projection, plus the capped entries when there is a list to read.
+    let listed = match value {
+        Some(K::Array(list)) => list.len().min(MAX_INTERACTIONS),
+        _ => 0,
+    };
+    let header = 1024 + 2 * source.node_id.len();
+    let (work, bytes) = match listed {
+        0 => (1, header),
+        n => (1 + n * (1 + MAX_ACTIONS), header + MAX_BYTES),
+    };
+    if !charge(work, bytes) {
+        return None;
+    }
+    let field = source.field();
     let mut result = json!({"sourceNodeId":source.node_id,"sourceField":field,"basis":basis,
         "verification":"not-compared-with-figma","interpretation":"stored-fields-only",
         "state": if !matches!(record,Some(K::Object(..))) { "unsupported" } else if value.is_none() { "absent" } else { "unsupported" },
@@ -94,7 +114,7 @@ fn read(tree: &Tree, source: &Source, basis: &str) -> Value {
         result["reason"] = "instance_inheritance_not_verified".into();
     }
     let Some(K::Array(list)) = value else {
-        return result;
+        return Some(result);
     };
     result["state"] = "recorded".into();
     let mut interactions = Vec::new();
@@ -171,7 +191,7 @@ fn read(tree: &Tree, source: &Source, basis: &str) -> Value {
     }
     result["interactions"] = interactions.into();
     result["truncated"] = truncated.into();
-    result
+    Some(result)
 }
 
 /// A missing instance-local list does not establish inheritance from the main component.
@@ -181,6 +201,18 @@ pub(crate) fn node(
     expanded: Option<&Expanded>,
     kind: &str,
 ) -> Option<Value> {
+    node_with(tree, id, expanded, kind, &mut |_, _| true).unwrap_or(None)
+}
+
+/// `node`, reserving each projection's visits and bytes through `charge` before reading it;
+/// `Err` when `charge` refuses.
+pub(crate) fn node_with(
+    tree: &Tree,
+    id: &str,
+    expanded: Option<&Expanded>,
+    kind: &str,
+    charge: &mut dyn FnMut(usize, usize) -> bool,
+) -> Result<Option<Value>, ()> {
     if let Some(source) = expanded.and_then(|e| e.prototype_source.as_ref()) {
         let mut evidence = read(
             tree,
@@ -190,7 +222,9 @@ pub(crate) fn node(
             } else {
                 "instance-local"
             },
-        );
+            charge,
+        )
+        .ok_or(())?;
         if source.override_index.is_none()
             && let Some(expanded) = expanded.filter(|e| e.source != source.node_id)
         {
@@ -198,16 +232,18 @@ pub(crate) fn node(
             evidence["precedenceState"] = "unsupported".into();
             evidence["reason"] = "swapped_instance_prototype_precedence_not_verified".into();
         }
-        return Some(evidence);
+        return Ok(Some(evidence));
     }
     let source_id = expanded.map_or(id, |e| e.source.as_str());
-    let raw = tree.nodes.get(source_id)?;
+    let Some(raw) = tree.nodes.get(source_id) else {
+        return Ok(None);
+    };
     let source = Source {
         node_id: source_id.into(),
         override_index: None,
     };
     if raw.get("prototypeInteractions").is_some() {
-        return Some(read(
+        return read(
             tree,
             &source,
             if kind == "INSTANCE" && crate::expand::plugin_type(raw) == "COMPONENT" {
@@ -219,14 +255,17 @@ pub(crate) fn node(
             } else {
                 "stored-node"
             },
-        ));
+            charge,
+        )
+        .map(Some)
+        .ok_or(());
     }
     if kind != "INSTANCE" {
-        return None;
+        return Ok(None);
     }
     // A swapped expanded instance already points at the main copied by the expander.
     if crate::expand::plugin_type(raw) == "COMPONENT" {
-        return None;
+        return Ok(None);
     }
     let main = raw
         .get("overriddenSymbolID")
@@ -237,23 +276,26 @@ pub(crate) fn node(
         .and_then(|id| tree.nodes.get(id))
         .filter(|n| crate::expand::plugin_type(n) == "COMPONENT")
     else {
-        let mut evidence = read(tree, &source, "stored-node");
+        let mut evidence = read(tree, &source, "stored-node", charge).ok_or(())?;
         evidence["state"] = "unsupported".into();
         evidence["reason"] = "component_source_unavailable".into();
         evidence["componentId"] = json!(main);
-        return Some(evidence);
+        return Ok(Some(evidence));
     };
     if component.get("prototypeInteractions").is_some() {
-        return Some(read(
+        return read(
             tree,
             &Source {
                 node_id: main.unwrap(),
                 override_index: None,
             },
             "component-definition",
-        ));
+            charge,
+        )
+        .map(Some)
+        .ok_or(());
     }
-    None
+    Ok(None)
 }
 
 pub(crate) fn stored(tree: &Tree, id: &str) -> Option<Value> {

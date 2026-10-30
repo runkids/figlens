@@ -292,6 +292,25 @@ pub(crate) const V2: &str = "
     CREATE UNIQUE INDEX jobs_active ON jobs (source_id, scope) WHERE state IN ('queued', 'running');
     PRAGMA user_version = 2;";
 
+/// Schema 3: relation edges keyed by location, relation and sequence, with their resolution
+/// state and a target index for usages; the definitions they point at; record lookups by node
+/// and parent. Generations built before carry other versions, so they read as incompatible.
+pub(crate) const V3: &str = "
+    DROP INDEX edges_target;
+    DROP TABLE edges;
+    CREATE TABLE edges (
+        gen INTEGER NOT NULL, rid INTEGER NOT NULL, relation TEXT NOT NULL, seq INTEGER NOT NULL,
+        target TEXT, state TEXT NOT NULL, basis TEXT NOT NULL, evidence TEXT NOT NULL,
+        PRIMARY KEY (gen, rid, relation, seq)) STRICT, WITHOUT ROWID;
+    CREATE INDEX edges_target ON edges (gen, target, rid, relation, seq);
+    CREATE TABLE definitions (
+        gen INTEGER NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL,
+        set_id TEXT, page TEXT, PRIMARY KEY (gen, id)) STRICT, WITHOUT ROWID;
+    CREATE INDEX definitions_set ON definitions (gen, set_id);
+    CREATE INDEX records_node ON records (gen, node_id);
+    CREATE INDEX records_parent ON records (gen, parent, rid);
+    PRAGMA user_version = 3;";
+
 /// Upgrades a schema 1 registry to schema 2 in one transaction, keeping every source and the
 /// incarnation. The caller holds the workspace lock exclusively.
 pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
@@ -303,6 +322,9 @@ pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
         .map_err(sql)?;
     if version == 1 {
         tx.execute_batch(V2).map_err(sql)?;
+    }
+    if version <= 2 {
+        tx.execute_batch(V3).map_err(sql)?;
     }
     tx.commit().map_err(sql)
 }
@@ -345,6 +367,7 @@ pub(super) fn initialize(
     )
     .map_err(sql)?;
     tx.execute_batch(V2).map_err(sql)?;
+    tx.execute_batch(V3).map_err(sql)?;
     if let Some(binding) = binding {
         tx.execute(
             "INSERT INTO meta (key, value) VALUES ('binding', ?1)",

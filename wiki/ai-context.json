@@ -144,6 +144,9 @@
       "sources": [
         {
           "path": "wiki/search.md"
+        },
+        {
+          "path": "wiki/usages.md"
         }
       ]
     },
@@ -167,6 +170,7 @@
   "unrouted": {
     "wiki/prototype.md": "Field reference linked from fig-format.md, states.md and preview.md; read when changing prototype projection, provenance or unknown markers.",
     "wiki/states.md": "Field reference linked from fig-format.md and wiki/README.md; read when changing related-variant inventory or its limits.",
-    "wiki/semantics.md": "Field reference linked from fig-format.md and README.md; read when changing partial semantics or provenance."
+    "wiki/semantics.md": "Field reference linked from fig-format.md and README.md; read when changing partial semantics or provenance.",
+    "wiki/preview-api.md": "Field reference linked from preview.md; read when changing window.figlens calls or the preview image and snapshot budgets."
   }
 }

@@ -103,6 +103,8 @@ Installationsanleitungen: [OpenCode V2](../opencode/README.md) · [OMP](../omp/R
 
 Starte Pi neu oder führe `/reload` aus und bitte dann in normalen Worten um einen Bildschirm. Pi findet den Frame, liest ihn über den automatisch registrierten MCP-Server und baut mit deinem Stack. Keine Node-IDs, keine globale CLI.
 
+Eine Frage nach Text oder einem Screen durchsucht die `.fig` direkt und speichert nichts. Für wiederholte Suchen bitte Pi, für ein Design und einen Bereich einen Index zu aktivieren: Es bereitet einmal einen lokalen Index vor (ohne Setup-Befehl), meldet den Job, bis er fertig ist, und nutzt ihn nach Neustarts und in anderen Hosts weiter. Den Index zurückzusetzen erfordert deine ausdrückliche Anweisung. Die Frage, wo eine Komponente, Variable, ein Style oder Bild verwendet wird, listet die exakten Usages auf dieselbe Weise: direkt aus der `.fig` oder, sobald aktiviert, aus diesem Index. Details: [lokaler Index](#local-index).
+
 - `/figlens plan <request>` erstellt nur einen Plan und ändert die Anwendung nicht.
 - `/figlens yolo <request>` plant, baut, prüft und räumt den eigenen temporären Plan auf.
 - `/figlens preview [description]` öffnet den lokalen Viewer.
@@ -123,13 +125,13 @@ npx -y @runkids/figlens preview design.fig                        # lokaler View
 npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # Offline-HTML-Snapshot zum Weitergeben an jeden
 ```
 
-Durchsuche Seiten und Layer, suche, miss, inspiziere Layout, Typografie, Variablen und CSS, exportiere jeden Layer, kopiere einen Implementierungs-Prompt oder lade ein Bundle für die Auswahl herunter. Lege einen Screenshot deines Builds über das Design, um beide zu überlagern. Details: [Preview-Anleitung](../wiki/preview.md).
+Durchsuche Seiten und Layer, suche, nutze die gerankte Suche und exakte Verwendungen der Auswahl, miss, inspiziere Layout, Typografie, Variablen und CSS, exportiere jeden Layer, kopiere einen Implementierungs-Prompt oder lade ein Bundle für die Auswahl herunter. Lege einen Screenshot deines Builds über das Design, um beide zu überlagern. Details: [Preview-Anleitung](../wiki/preview.md).
 
 <a id="mcp-and-skill"></a>
 
 ## MCP-Server und Agent-Skill
 
-**MCP.** Der Server läuft lokal über stdio und stellt `workflow`, `tree`, `find`, `search`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs` und `export` bereit. Übergib absolute Pfade. Mit `--root /path/to/designs` (wiederholbar) beschränkst du jeden Datei- und Ausgabepfad auf ausgewählte Ordner. Index-Speicher außerhalb der Standardverzeichnisse von figlens braucht `--storage-root DIR` (wiederholbar). Raster-Exporte werden auf `maxSize` (Standard 1600 px) verkleinert, damit Inline-Bilder klein bleiben; SVG liefert nur Metadaten.
+**MCP.** Der Server läuft lokal über stdio und stellt `workflow`, `tree`, `find`, `search`, `usages`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs` und `export` bereit. Übergib absolute Pfade. Mit `--root /path/to/designs` (wiederholbar) beschränkst du jeden Datei- und Ausgabepfad auf ausgewählte Ordner. Index-Speicher außerhalb der Standardverzeichnisse von figlens braucht `--storage-root DIR` (wiederholbar). Raster-Exporte werden auf `maxSize` (Standard 1600 px) verkleinert, damit Inline-Bilder klein bleiben; SVG liefert nur Metadaten.
 
 Über `workflow` kann der Agent die integrierten Anleitungen `build`, `audit`, `images`, `plan`, `planning-details` oder das ausdrücklich angeforderte `yolo` lesen. Sie stammen aus denselben Quellen wie der portable Skill; dessen separate Installation ist für MCP optional. Die Umsetzung erfolgt mit den Projekt- und Browser-Werkzeugen des Agents und den Berechtigungen des Hosts. Das Lesen einer Anleitung führt den Workflow nicht aus; Client-Unterstützung und Modellverhalten bestimmen, wie sie genutzt wird.
 
@@ -160,7 +162,7 @@ skillshare sync && skillshare sync mcp --global
 |---|---|---|
 | Was es tut | Liest die `.fig` bei jedem Aufruf und beantwortet `search`, `find`, `inspect` und `export`. | Baut einmal einen Suchindex für einen gewählten Bereich und beantwortet `search` daraus, gerankt über Quellen. |
 | Was geschrieben wird | Kein Workspace und keine Index-Datenbank (`export` schreibt nur die angeforderten Dateien). | Ein lokaler Workspace (SQLite-Datenbank) im Statusverzeichnis des Benutzers oder unter dem gewählten `--storage`. |
-| Wann sinnvoll | Einzelfragen, Skripte, CI. | Wiederholte Suchen in einer Datei; mehrere Dateien eines Projekts als ein Korpus (`--workspace <dir>`); bekannte Parent-/Instanz-Beziehungen in der Coverage. |
+| Wann sinnvoll | Einzelfragen, Skripte, CI. | Wiederholte Suchen in einer Datei; mehrere Dateien eines Projekts als ein Korpus (`--workspace <dir>`); exakte Verwendungen von Komponenten, Variablen, Styles und Bildern. |
 
 Eine normale Designfrage legt nie einen Index an. Sie aktivieren ihn einmal ausdrücklich („Lege einen Index für dieses Design an“); figlens wählt den Speicherort und braucht kein SQLite oder sonstiges Setup.
 
@@ -194,9 +196,9 @@ Lebenszyklus: `refresh` baut nur Bereiche neu, deren `.fig`-Bytes sich geändert
 
 `.fig` verschoben? `index relocate` behält `workspaceId`, `sourceId` und Speicherort; danach die betroffenen Bereiche mit `refresh` aktualisieren. Es gibt keine automatische Erkennung und kein Hash-basiertes Zusammenführen; ein reset ist nicht nötig.
 
-Daten: Die SQLite-Datenbank enthält registrierte lokale Pfade, Layer-Namen und effektiven Text der gewählten Bereiche, Such-Postings, bekannte Parent-/Instanz-Beziehungen, Hashes, Generationen und Jobs. Die ursprüngliche `.fig` bleibt unverändert, wo sie ist; ihre Rohbytes werden nicht in der Datenbank gespeichert.
+Daten: Die SQLite-Datenbank enthält registrierte lokale Pfade, Layer-Namen und effektiven Text der gewählten Bereiche, Such-Postings, exakte Beziehungen (Verschachtelung, Instanzen, Varianten, Variablen-/Style-/Bild-Bindungen, Prototyp-Ziele) und die Definitionen, auf die sie zeigen, Hashes, Generationen und Jobs. Die ursprüngliche `.fig` bleibt unverändert, wo sie ist; ihre Rohbytes werden nicht in der Datenbank gespeichert.
 
-Pi, OpenCode und OMP nutzen denselben Index über ihren eigenen Opt-in-Einstieg; der Workspace wird über Neustarts und Hosts hinweg wiederverwendet. Nicht implementiert: Dateiüberwachung, Usages-/Beziehungs-Tools, Vektoren, Events und Subscriptions.
+Pi, OpenCode und OMP nutzen denselben Index über ihren eigenen Opt-in-Einstieg; der Workspace wird über Neustarts und Hosts hinweg wiederverwendet. Nicht implementiert: Dateiüberwachung, Vektoren, Events und Subscriptions.
 
 <a id="commands"></a>
 
@@ -208,6 +210,7 @@ Pi, OpenCode und OMP nutzen denselben Index über ihren eigenen Opt-in-Einstieg;
 | `tree <file> [node] --top-frames [--json]` | Nur die Screens, einer pro Zeile, direkt nutzbar für `--frames -`: Frames, Komponenten, Komponentensets und Instanzen auf einer Seite oder in ihren Sections (Gruppen und interne Seiten ausgenommen); `--json` ergänzt Seiten- und Section-IDs sowie den ersten sichtbaren Text jedes Screens (`firstText`), der Canvas-Beschriftungen von Screens unterscheidet |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Suche über Layer-Namen und Text ohne Beachtung der Groß-/Kleinschreibung; Pfade, Größen und Vorschauen. Standardmäßig 20 Ergebnisse (1-200) |
 | `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | Gerankte Suche über Layer-Namen und vollständigen Text mit angewendeten Instanz-Overrides, Text-/Boolean-Properties und Swaps; exakte Node-Referenzen (auch `I…;…`-Sublayer-IDs für `inspect`), Treffergründe, UTF-16-Spannen, Abdeckung und Cursor-Seiten. Standardmäßig 20 (1-200); ausgeblendete Layer und interne Seiten brauchen ihr Flag. Mit `--file`/`--workspace`/`--id` statt `<file>` liest es den vorbereiteten Index des Workspaces (siehe `index`) |
+| `usages <file> <node\|resource> [--scope ID] [--relation R[,R]] [--out] [--snapshot S] [--include-hidden] [--limit N] [--cursor C]` | Exakte Beziehungen eines Layers oder einer Ressource (`VariableID:…`, `StyleKey:…`, `image:…`) in einem gespeicherten Bereich, verschachtelte Instanzen und Swaps eingeschlossen: wo eine Komponente, ein Set, eine Variable, ein Style oder ein Bild verwendet wird (Standard) oder worauf ein Layer zeigt (`--out`). Jedes Ergebnis behält seine exakte Referenz, Beziehung, seinen Zustand (`resolved`, `missing`, `unresolved`, …), Basis und Beleg; Namen gelten nie als Identität. Keine Gesamtzahl: Die Coverage sagt vollständig oder partiell. Standard 50 (1-200). Mit `--file`/`--workspace`/`--id` statt `<file>` liest es den vorbereiteten Index von `--scope` des Workspace |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | Kompakte Zusammenfassung des expandierten Layouts/Texts, höchstens 200 Nodes. `--images` ergänzt Bitmap-Abmessungen und Crop-Footprints. `--flat` gibt stattdessen eine Zeile pro Node aus: Position relativ zum Node, Größe, Text, Schrift, Füllung, Kontur, Radius, Auto-Layout |
 | `nodes <file> <node>` | Das Objekt je Node einer REST-nodes-Antwort (`document`, `components`, `componentSets`, `styles`): expandierte Instanzen und Overrides, Auto-Layout, Textstile, Füllungen, Effekte, gebundene Variablen, Komponenten-Eigenschaften, Render-Bounds |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | Ein Decode, viele Nodes: eine JSON-Zeile pro gelisteter ID, die `nodes`-Ausgabe mit ihrer `nodeId` oder `{nodeId, error}` |
