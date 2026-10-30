@@ -13,6 +13,7 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields or variables | `fig-format.md` |
 | `discovery` | Changing find or inspect summaries (fields, limits, truncation, `--flat` lines), `tree --top-frames` screen lists or `export --match-dir` icon matching | `discovery.md` |
 | `search` | Changing search indexing, normalization, ranking, cursors, coverage or its budgets | `search.md`, `usages.md`, `library-usages.md` |
+| `visual` | Changing visual units, query-image admission, fingerprints or vision profiles | `visual-search.md` |
 | `diff` | Changing the diff engine (facets, matching, coverage, pair budgets, paging or its cursor) | `diff.md` |
 | `changes` | Changing change tracking, its revisions, `changes` reads, `watch ack` checkpoints or host stale-context notes | `changes.md`, `stale-context.md` |
 | `subscriptions` | Changing watch subscriptions, their filters, consumer checkpoint bounds or forget | `subscriptions.md` |

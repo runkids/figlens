@@ -11,7 +11,7 @@ homepage = "https://github.com/runkids/figlens"
 readme = "README.md"
 keywords = ["figma", "fig", "design", "design-to-code", "cli"]
 categories = ["command-line-utilities", "parser-implementations", "multimedia::images"]
-include = ["src/**/*", "vendor/kiwi-schema/**/*", "skills/figlens/**/*", "scripts/make-first-success.rs", "scripts/probe-handoff.rs", "scripts/make-mapping-fixture.rs", "scripts/make-corpus.rs", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
+include = ["src/**/*", "vendor/kiwi-schema/**/*", "skills/figlens/**/*", "scripts/make-first-success.rs", "scripts/probe-handoff.rs", "scripts/make-mapping-fixture.rs", "scripts/make-corpus.rs", "scripts/visual-preflight.rs", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
 
 [dependencies]
 caseless = "0.2.2"
@@ -32,6 +32,15 @@ sha2 = "0.11.1"
 unicode-normalization = "0.1.26"
 webp = { version = "0.3.1", default-features = false }
 zip = "9.0.5"
+
+# Native model runtime only; default builds keep model dependencies disabled.
+candle-core = { version = "=0.11.0", optional = true }
+candle-nn = { version = "=0.11.0", optional = true }
+candle-transformers = { version = "=0.11.0", optional = true }
+tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"], optional = true }
+
+[features]
+embed = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers"]
 
 # Opening a registered source without following links.
 [target.'cfg(unix)'.dependencies]
@@ -61,3 +70,8 @@ path = "scripts/make-mapping-fixture.rs"
 [[example]]
 name = "corpus-fixture"
 path = "scripts/make-corpus.rs"
+
+[[example]]
+name = "visual-preflight"
+path = "scripts/visual-preflight.rs"
+required-features = ["embed"]

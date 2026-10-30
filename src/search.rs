@@ -2039,6 +2039,7 @@ pub(crate) mod fingerprint;
 pub(crate) mod impact;
 pub(crate) mod store;
 pub mod usages;
+pub mod visual;
 
 #[cfg(test)]
 mod tests;

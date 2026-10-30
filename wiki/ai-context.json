@@ -158,6 +158,14 @@
         }
       ]
     },
+    "visual": {
+      "description": "Changing visual units, query-image admission, raster fingerprints or the local vision profile.",
+      "sources": [
+        {
+          "path": "wiki/visual-search.md"
+        }
+      ]
+    },
     "diff": {
       "description": "Changing the diff engine (facets, matching, coverage, pair budgets, paging or its cursor).",
       "sources": [
