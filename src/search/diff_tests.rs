@@ -1671,33 +1671,83 @@ fn a_variable_whose_values_were_unread_leaves_its_aliases_unverified() {
     assert_eq!(Json::from(reasons[..2].to_vec()), not_compared(1));
 }
 
+/// An alias to library variable `key`, version 1.
+fn library_alias(key: &str) -> K<'static> {
+    let asset = obj(vec![
+        ("key", K::String(key.to_owned())),
+        ("version", K::String("1".into())),
+    ]);
+    obj(vec![
+        ("dataType", K::Enum("VariableDataType", "ALIAS")),
+        (
+            "value",
+            obj(vec![("alias", obj(vec![("assetRef", asset)]))]),
+        ),
+    ])
+}
+
+/// Work and bytes `facets` spends on variable 61 holding `data` under `key`, and its aliases.
+fn spent(key: &'static str, data: K<'static>) -> (usize, usize, Option<Vec<String>>) {
+    let entry = obj(vec![("modeID", guid(70)), ("variableData", data)]);
+    let values = obj(vec![("entries", K::Array(vec![entry]))]);
+    let message = doc(vec![node(
+        61,
+        Some(1),
+        "VARIABLE",
+        "V",
+        vec![(key, values)],
+    )]);
+    let tree = Tree::new(&message);
+    let mut b = super::super::tests::bounds(WORK);
+    let start = (b.work, b.bytes);
+    let f = facets(&tree, "0:61", None, &mut b).unwrap();
+    (start.0 - b.work, start.1 - b.bytes, f.aliases)
+}
+
 #[test]
 fn alias_ids_are_paid_for_before_they_are_copied() {
     // The same value under another properties key is digested alike but never walked for ids.
-    let spent = |key: &'static str| {
-        let entry = obj(vec![("modeID", guid(70)), ("variableData", alias(62))]);
-        let values = obj(vec![("entries", K::Array(vec![entry]))]);
-        let message = doc(vec![node(
-            61,
-            Some(1),
-            "VARIABLE",
-            "V",
-            vec![(key, values)],
-        )]);
-        let tree = Tree::new(&message);
-        let mut b = super::super::tests::bounds(WORK);
-        let start = (b.work, b.bytes);
-        let f = facets(&tree, "0:61", None, &mut b).unwrap();
-        (start.0 - b.work, start.1 - b.bytes, f.aliases)
-    };
-    let (work, bytes, ids) = spent("variableDataValues");
-    let (other_work, other_bytes, none) = spent("variableScopes");
+    let (work, bytes, ids) = spent("variableDataValues", alias(62));
+    let (other_work, other_bytes, none) = spent("variableScopes", alias(62));
     assert_eq!(ids, Some(vec!["VariableID:0:62".to_owned()]));
     assert_eq!(none, Some(vec![]));
     // A visit per entry, and its bytes beyond the longer key's.
     let longer = "variableDataValues".len() - "variableScopes".len();
     assert_eq!(work, other_work + 1);
     assert!(bytes > other_bytes + longer + "VariableID:0:62".len());
+}
+
+#[test]
+fn a_long_library_alias_key_is_paid_for_by_its_length_and_a_short_side_stops_first() {
+    let key = "k".repeat(FIELD_BYTES / 2);
+    let (_, bytes, ids) = spent("variableDataValues", library_alias(&key));
+    let (_, other_bytes, _) = spent("variableScopes", library_alias(&key));
+    assert_eq!(ids, Some(vec![format!("VariableID:{key}/1")]));
+    assert!(bytes >= other_bytes + key.len());
+    // One byte or one visit short of the capture stops the side before any id is made.
+    let entry = obj(vec![
+        ("modeID", guid(70)),
+        ("variableData", library_alias(&key)),
+    ]);
+    let values = obj(vec![("entries", K::Array(vec![entry]))]);
+    let message = doc(vec![node(
+        61,
+        Some(1),
+        "VARIABLE",
+        "V",
+        vec![("variableDataValues", values)],
+    )]);
+    let tree = Tree::new(&message);
+    let (work, _, _) = spent("variableDataValues", library_alias(&key));
+    for (w, by, stop) in [
+        (work - 1, usize::MAX, crate::expand::Stop::Work),
+        (usize::MAX, bytes - 1, crate::expand::Stop::Bytes),
+    ] {
+        let mut b = super::super::tests::bounds(WORK);
+        (b.work, b.bytes) = (w.min(b.work), by.min(b.bytes));
+        assert!(facets(&tree, "0:61", None, &mut b).is_none());
+        assert_eq!(b.stop, Some(stop));
+    }
 }
 
 #[test]

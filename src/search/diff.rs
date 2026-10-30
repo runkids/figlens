@@ -167,7 +167,7 @@ pub(crate) struct Field {
 /// A record's effective fields in `FIELDS` order; absent fields are not listed.
 pub(crate) struct Facets {
     fields: Vec<Field>,
-    /// The variables a variable's values alias (`variableDataValues`), sorted and deduplicated;
+    /// The variables a variable's values alias (`variableDataValues`), one per aliasing mode;
     /// `None` when that field was unread, so where they lead is unknown.
     aliases: Option<Vec<String>>,
 }
@@ -480,18 +480,32 @@ pub(super) fn facets(
                 kept += len;
             }
             if *key == "variableDataValues" {
-                // Each id is a prefix and parts of the field's own bytes, paid for before it is made.
-                let entries = json["entries"].as_array().map_or(&[][..], Vec::as_slice);
-                if !bounds.charge(entries.len(), len + 32 * entries.len()) {
-                    return None;
+                // A visit per entry, and each id's bytes, measured on the borrowed reference,
+                // before it is made: one copy, counted per use as edges are.
+                let mut ids = Vec::new();
+                for e in json["entries"].as_array().into_iter().flatten() {
+                    if !bounds.charge(1, 0) {
+                        return None;
+                    }
+                    let data = &e["variableData"];
+                    if data["dataType"] != "ALIAS" {
+                        continue;
+                    }
+                    let r = &data["value"]["alias"];
+                    let made = match (
+                        r["assetRef"]["key"].as_str(),
+                        r["assetRef"]["version"].as_str(),
+                    ) {
+                        (Some(k), Some(v)) => "VariableID:/".len() + k.len() + v.len(),
+                        // `VariableID:` and two u64 halves of a guid.
+                        _ => "VariableID::".len() + 40,
+                    };
+                    // Twice: a local guid's own string comes first, and `format!` may round up.
+                    if !bounds.charge(0, std::mem::size_of::<String>() + 2 * made) {
+                        return None;
+                    }
+                    ids.extend(crate::rest::variable_id(r));
                 }
-                let mut ids: Vec<String> = entries
-                    .iter()
-                    .filter_map(|e| crate::rest::alias(&e["variableData"]))
-                    .filter_map(|a| a["id"].as_str().map(str::to_owned))
-                    .collect();
-                ids.sort_unstable();
-                ids.dedup();
                 aliases = Some(ids);
             }
             fields.push(Field {
