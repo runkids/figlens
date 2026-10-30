@@ -7,8 +7,8 @@ use crate::workspace::Storage;
 use crate::{ErrorKind, FigError};
 use serde_json::{Value as Json, json};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, TryLockError};
 
 const RECORD: u64 = 1;
 
@@ -46,7 +46,8 @@ fn fail(kind: ErrorKind, message: impl Into<String>) -> Box<dyn std::error::Erro
     FigError::new(kind, message).into()
 }
 
-fn known(name: &str) -> Result<&'static Known> {
+/// The documented profile called `name`.
+pub fn known(name: &str) -> Result<&'static Known> {
     KNOWN.iter().find(|k| k.name == name).ok_or_else(|| {
         let names: Vec<&str> = KNOWN.iter().map(|k| k.name).collect();
         fail(
@@ -142,19 +143,9 @@ pub fn status(storage: &Storage) -> Result<Json> {
     Ok(json!({"profiles": profiles, "setup": next}))
 }
 
-/// Verifies `model` against the pinned digests, starts `runtime` once for its contract and
+/// Verifies `model` against `k`'s pinned digests, starts `runtime` once for its contract and
 /// records the profile. Replaces an earlier record of the same profile.
 pub fn configure(
-    storage: &Storage,
-    name: &str,
-    model: &Path,
-    runtime: Option<&Path>,
-    cancel: &AtomicBool,
-) -> Result<Json> {
-    configure_known(storage, known(name)?, model, runtime, cancel)
-}
-
-fn configure_known(
     storage: &Storage,
     k: &Known,
     model: &Path,
@@ -216,14 +207,25 @@ pub fn active(storage: &Storage) -> Result<Option<Profile>> {
 /// One warm child per process, reused by every request with the same profile.
 static WARM: Mutex<Option<(String, Runtime)>> = Mutex::new(None);
 
-/// Runs `f` on the warm runtime of `profile`, starting it if needed. A dead child or another
+/// Runs `f` on the warm runtime of `profile`, starting it if needed; concurrent requests take
+/// turns, each still cancellable while it waits. A dead child or another
 /// profile's child is replaced; a child that declares another dimension is refused.
 pub fn with_runtime<T>(
     profile: &Profile,
     cancel: &AtomicBool,
     f: impl FnOnce(&mut Runtime) -> std::result::Result<T, Stop>,
 ) -> std::result::Result<T, Stop> {
-    let mut warm = WARM.lock().unwrap_or_else(|e| e.into_inner());
+    // Another request holds the child; wait for it without ignoring this request's cancel.
+    let mut warm = loop {
+        match WARM.try_lock() {
+            Ok(g) => break g,
+            Err(TryLockError::Poisoned(e)) => break e.into_inner(),
+            Err(TryLockError::WouldBlock) if cancel.load(Ordering::Relaxed) => {
+                return Err(Stop::Cancelled);
+            }
+            Err(TryLockError::WouldBlock) => std::thread::sleep(super::POLL),
+        }
+    };
     let reuse = match warm.as_mut() {
         Some((id, rt)) => *id == profile.id && rt.alive(),
         None => false,
@@ -245,95 +247,4 @@ pub fn with_runtime<T>(
     }
     let (_, rt) = warm.as_mut().expect("started above");
     f(rt)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_support::TestDir;
-    use sha2::{Digest, Sha256};
-
-    fn fixture() -> (TestDir, Storage, PathBuf) {
-        let dir = TestDir::new();
-        let storage =
-            crate::workspace::test_storage(&std::path::absolute(dir.join("home")).unwrap());
-        let model = dir.join("model");
-        std::fs::create_dir(&model).unwrap();
-        std::fs::write(model.join("w"), "weights").unwrap();
-        (dir, storage, model)
-    }
-
-    #[test]
-    fn configure_records_a_verified_profile_and_remove_forgets_it() {
-        let (_dir, storage, model) = fixture();
-        let digest = crate::search::hex(&Sha256::digest("weights"));
-        let files: &'static [(&str, &str)] = Box::leak(Box::new([(
-            "w",
-            Box::leak(digest.into_boxed_str()) as &str,
-        )]));
-        let k = Known {
-            name: "fake",
-            model: "fake",
-            revision: "0",
-            license: "MIT",
-            files,
-        };
-        assert!(
-            status(&storage).unwrap()["setup"]
-                .as_array()
-                .is_some_and(|s| !s.is_empty())
-        );
-        let got = configure_known(
-            &storage,
-            &k,
-            &model,
-            Some(&super::super::tests::fake()),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        let current = active(&storage).unwrap().unwrap();
-        assert_eq!(
-            (got["configured"]["profileId"].as_str(), current.dim),
-            (Some(current.id.as_str()), 8)
-        );
-        assert_eq!(status(&storage).unwrap()["profiles"][0]["state"], "ready");
-        assert_eq!(remove(&storage, "fake").unwrap()["removed"], true);
-        assert!(active(&storage).unwrap().is_none());
-    }
-
-    #[test]
-    fn configure_refuses_files_that_are_not_the_pinned_model() {
-        let (_dir, storage, model) = fixture();
-        let fake = super::super::tests::fake();
-        let err = configure(
-            &storage,
-            "bge-m3",
-            &model,
-            Some(&fake),
-            &AtomicBool::new(false),
-        )
-        .unwrap_err();
-        assert_eq!(
-            err.downcast_ref::<FigError>().map(FigError::kind),
-            Some(ErrorKind::InvalidArguments)
-        );
-        assert!(storage.models().unwrap().is_none());
-    }
-
-    #[test]
-    fn warm_runtime_is_reused_across_requests() {
-        let (_dir, _storage, model) = fixture();
-        let digest = crate::search::hex(&Sha256::digest("weights"));
-        let p = Profile::probe(
-            &super::super::tests::fake(),
-            &model,
-            &[("w", &digest)],
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        let no = AtomicBool::new(false);
-        let pid = |rt: &mut Runtime| Ok(rt.pid());
-        let first = with_runtime(&p, &no, pid).unwrap();
-        assert_eq!(with_runtime(&p, &no, pid).unwrap(), first);
-    }
 }

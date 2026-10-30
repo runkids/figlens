@@ -357,8 +357,6 @@ pub use registry::{
     Outcome, PrepareOptions, add, add_dir, add_remote, list_add, prepare, relocate, remove, reset,
     status,
 };
-#[cfg(test)]
-pub(crate) use storage::test_storage;
 pub use storage::{Locator, Root, Roots, Select, Storage, storage};
 
 pub mod watch;

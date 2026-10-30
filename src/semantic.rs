@@ -8,9 +8,10 @@ use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// The child protocol; a child announcing another one is refused.
@@ -118,9 +119,18 @@ pub fn serve(
             return Ok(());
         }
         let reply = if n > MAX_LINE {
-            // Drain the rest of the oversized line so the next one parses.
-            let mut rest = Vec::new();
-            input.read_until(b'\n', &mut rest)?;
+            // Skip the rest of the oversized line without holding it, so the next one parses.
+            loop {
+                let buf = input.fill_buf()?;
+                match buf.iter().position(|&b| b == b'\n') {
+                    Some(i) => break input.consume(i + 1),
+                    None if buf.is_empty() => break,
+                    None => {
+                        let n = buf.len();
+                        input.consume(n)
+                    }
+                }
+            }
             json!({"id": null, "error": "request too large"})
         } else {
             answer(&line, dim, &mut embed)
@@ -166,11 +176,14 @@ fn answer(
     }
 }
 
-/// One running child. Its stdout is read on a thread so every wait has a deadline and a cancel
-/// check; a timeout or cancel kills the child's process tree and leaves the runtime dead.
+/// One running child. Its stdin is written and its stdout read on threads, so a child that
+/// stops reading or answering never blocks a caller past its deadline or cancel check; a
+/// timeout or cancel kills the child's process tree and leaves the runtime dead.
 pub struct Runtime {
     child: Child,
-    stdin: Option<ChildStdin>,
+    /// Request lines for the writer thread; dropping it closes the child's stdin.
+    requests: Option<SyncSender<Vec<u8>>>,
+    writer: Option<JoinHandle<()>>,
     lines: Receiver<std::io::Result<Vec<u8>>>,
     /// The child's hello line: its protocol, dimension and model contract.
     pub hello: Json,
@@ -231,8 +244,19 @@ impl Runtime {
                 }
             }
         });
+        let mut stdin = child.stdin.take().ok_or("child has no stdin")?;
+        let (requests, queued) = sync_channel::<Vec<u8>>(1);
+        // Ends when the sender drops or a write fails (the child died), closing stdin.
+        let writer = std::thread::spawn(move || {
+            for line in queued {
+                if stdin.write_all(&line).and_then(|_| stdin.flush()).is_err() {
+                    return;
+                }
+            }
+        });
         let mut rt = Runtime {
-            stdin: child.stdin.take(),
+            requests: Some(requests),
+            writer: Some(writer),
             child,
             lines,
             hello: Json::Null,
@@ -275,7 +299,11 @@ impl Runtime {
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
-        self.stdin = None;
+        self.requests = None;
+        // The child is gone, so a write blocked on its stdin fails and the writer ends.
+        if let Some(w) = self.writer.take() {
+            let _ = w.join();
+        }
     }
 
     pub fn pid(&self) -> u32 {
@@ -283,7 +311,7 @@ impl Runtime {
     }
 
     pub fn alive(&mut self) -> bool {
-        self.stdin.is_some() && matches!(self.child.try_wait(), Ok(None))
+        self.requests.is_some() && matches!(self.child.try_wait(), Ok(None))
     }
 
     fn wait(
@@ -329,13 +357,15 @@ impl Runtime {
         check_batch(texts).map_err(|e| Stop::Refused(e.to_string()))?;
         self.next += 1;
         let id = self.next;
-        let req = json!({"id": id, "kind": kind.as_str(), "texts": texts});
-        let sent = match self.stdin.as_mut() {
-            Some(s) => writeln!(s, "{req}").and_then(|_| s.flush()),
+        let mut req = json!({"id": id, "kind": kind.as_str(), "texts": texts}).to_string();
+        req.push('\n');
+        // The writer is idle: every earlier request was answered, or the runtime was killed.
+        let sent = match &self.requests {
+            Some(r) => r.try_send(req.into_bytes()).is_ok(),
             None => return Err(Stop::Failed("runtime stopped".into())),
         };
-        if let Err(e) = sent {
-            return Err(self.dead(&e.to_string()));
+        if !sent {
+            return Err(self.dead("the child stopped reading requests"));
         }
         let line = self.wait(DEADLINE, cancel, MAX_LINE)?;
         let reply: Json =
@@ -370,7 +400,7 @@ impl Runtime {
 
     /// Closes stdin, gives the child `EXIT` to leave, then kills what is left.
     pub fn stop(mut self) {
-        self.stdin = None;
+        self.requests = None;
         let end = Instant::now() + EXIT;
         while Instant::now() < end {
             if !matches!(self.child.try_wait(), Ok(None)) {

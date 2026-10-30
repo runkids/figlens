@@ -134,19 +134,6 @@ pub fn storage(explicit: Option<&Path>) -> Result<Storage> {
     )
 }
 
-/// Storage whose roots sit under `home`, for tests outside this module.
-#[cfg(test)]
-pub(crate) fn test_storage(home: &Path) -> Storage {
-    let home = home.as_os_str().to_owned();
-    resolve(
-        None,
-        &|n| (n == "HOME").then(|| home.clone()),
-        false,
-        &|| None,
-    )
-    .unwrap()
-}
-
 pub(super) fn resolve(
     explicit: Option<&Path>,
     env: &dyn Fn(&str) -> Option<OsString>,

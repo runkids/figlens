@@ -63,6 +63,11 @@ strip = true
 lto = true
 codegen-units = 1
 
+# Runs its own binary as a fake model child, so it has its own main.
+[[test]]
+name = "semantic_child"
+harness = false
+
 [[example]]
 name = "first-success-fixture"
 path = "scripts/make-first-success.rs"
@@ -74,10 +79,6 @@ path = "scripts/probe-handoff.rs"
 [[example]]
 name = "mapping-fixture"
 path = "scripts/make-mapping-fixture.rs"
-
-[[example]]
-name = "fake-embed"
-path = "scripts/fake-embed.rs"
 
 [[example]]
 name = "corpus-fixture"
