@@ -1252,7 +1252,6 @@ fn a_cancelled_configure_reports_cancelled_and_records_nothing() {
         model: "fake",
         revision: "0",
         license: "MIT",
-        modality: "text",
         files,
     };
     let exe = std::env::current_exe().unwrap();
@@ -1289,7 +1288,7 @@ fn index_track_does_not_wait_for_a_running_embed() {
     );
 }
 
-fn cancel_of_a_running_embed_kills_its_worker_and_leaves_the_layer_not_ready() {
+fn cancel_of_a_running_embed_kills_its_worker_and_marks_the_layer_failed() {
     let dir = test_support::TestDir::new();
     let (prepared, _) = indexed(&dir, true);
     let ws = prepared["workspaceId"].as_str().unwrap();
@@ -1316,12 +1315,13 @@ fn cancel_of_a_running_embed_kills_its_worker_and_leaves_the_layer_not_ready() {
     std::fs::remove_file(&hold).unwrap();
     assert!(!owner.wait().unwrap().success());
     std::thread::sleep(Duration::from_millis(300));
+    // The cancel recorded the layers it left building as failed, never as ongoing work.
     assert_eq!(
         count(
             &conn,
-            "SELECT count(*) FROM model_layers WHERE state <> 'building'"
+            "SELECT count(*) > 0 AND count(*) = sum(state = 'failed') FROM model_layers"
         ),
-        0
+        1
     );
 }
 
@@ -1346,10 +1346,11 @@ fn a_newer_publication_fences_out_a_running_embed() {
             .contains("superseded")
     );
     let conn = db(&prepared);
+    // The fenced-out job's terminal write marks any layer it left building failed.
     assert_eq!(
         count(
             &conn,
-            "SELECT count(*) FROM model_layers WHERE state <> 'building'"
+            "SELECT count(*) FROM model_layers WHERE state <> 'failed'"
         ),
         0
     );
@@ -1382,31 +1383,6 @@ fn an_mcp_text_build_queues_and_runs_its_embed_on_the_model_lane() {
     drop(stdin);
     mcp.wait().unwrap();
     assert_eq!(ready(), 1);
-}
-
-/// Configures the fake child as the vision profile.
-fn configured_vision(dir: &test_support::TestDir) {
-    let storage = figlens::workspace::storage(None).unwrap();
-    let (model, files) = model(dir, "vision weights");
-    let files: &'static [(&str, &str)] = Box::leak(
-        files
-            .into_iter()
-            .map(|(n, d)| (n, &*Box::leak(d.into_boxed_str())))
-            .collect(),
-    );
-    let k = profile::Known {
-        name: "fake-vision",
-        modality: "image",
-        model: "fake",
-        revision: "0",
-        license: "MIT",
-        files,
-    };
-    let exe = std::env::current_exe().unwrap();
-    // SAFETY: this harness runs one test at a time on the main thread.
-    unsafe { std::env::set_var("SEMANTIC_CHILD_MODE", "image") };
-    profile::configure(&storage, &k, &model, Some(&exe), &AtomicBool::new(false)).unwrap();
-    unsafe { std::env::remove_var("SEMANTIC_CHILD_MODE") };
 }
 
 const VISUAL_POLICY: &str = figlens::workspace::visual::POLICY;
@@ -1466,6 +1442,8 @@ fn a_vision_visual_job_writes_refs_and_vectors_and_reuses_them_after_a_rebuild()
     let dir = test_support::TestDir::new();
     let (prepared, _) = indexed(&dir, false);
     configured_vision(&dir);
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe { std::env::remove_var("SEMANTIC_CHILD_MODE") };
     let ws = prepared["workspaceId"].as_str().unwrap();
     let log = std::path::absolute(dir.join("visual.log")).unwrap();
     // SAFETY: this harness runs one test at a time on the main thread.
@@ -1511,10 +1489,12 @@ fn a_vision_visual_job_writes_refs_and_vectors_and_reuses_them_after_a_rebuild()
     unsafe { std::env::remove_var("SEMANTIC_EMBED_LOG") };
 }
 
-fn cancel_of_a_running_visual_job_kills_its_worker_and_leaves_the_layer_not_ready() {
+fn cancel_of_a_running_visual_job_kills_its_worker_and_marks_the_layer_failed() {
     let dir = test_support::TestDir::new();
     let (prepared, _) = indexed(&dir, false);
     configured_vision(&dir);
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe { std::env::remove_var("SEMANTIC_CHILD_MODE") };
     let ws = prepared["workspaceId"].as_str().unwrap();
     let pids = std::path::absolute(dir.join("pids")).unwrap();
     std::fs::create_dir_all(&pids).unwrap();
@@ -1539,12 +1519,13 @@ fn cancel_of_a_running_visual_job_kills_its_worker_and_leaves_the_layer_not_read
     std::fs::remove_file(&hold).unwrap();
     assert!(!owner.wait().unwrap().success());
     std::thread::sleep(Duration::from_millis(300));
+    // The cancel recorded the layers it left building as failed, never as ongoing work.
     assert_eq!(
         count(
             &conn,
-            "SELECT count(*) FROM model_layers WHERE state <> 'building'"
+            "SELECT count(*) > 0 AND count(*) = sum(state = 'failed') FROM model_layers"
         ),
-        0
+        1
     );
 }
 
@@ -1569,10 +1550,11 @@ fn a_newer_publication_fences_out_a_running_visual_job() {
             .contains("superseded")
     );
     let conn = db(&prepared);
+    // The fenced-out job's terminal write marks any layer it left building failed.
     assert_eq!(
         count(
             &conn,
-            "SELECT count(*) FROM model_layers WHERE state <> 'building'"
+            "SELECT count(*) FROM model_layers WHERE state <> 'failed'"
         ),
         0
     );
@@ -2099,8 +2081,8 @@ fn main() {
             embed_job_publishes_a_layer_and_later_ones_reuse_its_vectors,
         ),
         (
-            "cancel_of_a_running_embed_kills_its_worker_and_leaves_the_layer_not_ready",
-            cancel_of_a_running_embed_kills_its_worker_and_leaves_the_layer_not_ready,
+            "cancel_of_a_running_embed_kills_its_worker_and_marks_the_layer_failed",
+            cancel_of_a_running_embed_kills_its_worker_and_marks_the_layer_failed,
         ),
         (
             "a_newer_publication_fences_out_a_running_embed",
@@ -2127,8 +2109,8 @@ fn main() {
             a_vision_visual_job_writes_refs_and_vectors_and_reuses_them_after_a_rebuild,
         ),
         (
-            "cancel_of_a_running_visual_job_kills_its_worker_and_leaves_the_layer_not_ready",
-            cancel_of_a_running_visual_job_kills_its_worker_and_leaves_the_layer_not_ready,
+            "cancel_of_a_running_visual_job_kills_its_worker_and_marks_the_layer_failed",
+            cancel_of_a_running_visual_job_kills_its_worker_and_marks_the_layer_failed,
         ),
         (
             "a_newer_publication_fences_out_a_running_visual_job",

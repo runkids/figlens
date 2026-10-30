@@ -1253,11 +1253,13 @@ fn model_layers(
         let state = match built.as_ref().map(|b| b["state"].as_str().unwrap_or("")) {
             None => "pending",
             Some("ready") if cov["state"] == "ready" => "ready",
+            Some("failed") => "failed",
             Some(_) => "partial",
         };
         if state != "ready" {
             let why = match state {
                 "pending" => "this source's model layer is not built for the configured profile",
+                "failed" => "this source's last embed job failed or was cancelled; embed again",
                 _ => "this source's model layer is unfinished; embed again to complete it",
             };
             steps.push(

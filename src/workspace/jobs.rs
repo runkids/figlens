@@ -829,6 +829,8 @@ fn drop_building(conn: &mut Connection, job_id: &str, holder: &str, attempt: i64
 }
 
 /// Ends job `job_id` in a terminal state, if `me`'s `attempt` still owns it and it is active.
+/// A model job's layers it left `building` read `failed` from the same write, never as work
+/// still going on; a later job's success overwrites them.
 fn finish(
     conn: &Connection,
     job_id: &str,
@@ -837,20 +839,32 @@ fn finish(
     state: &str,
     error: Option<Json>,
 ) -> Result<()> {
-    conn.execute(
-        "UPDATE jobs SET state = ?4, error = ?5, finished_ms = ?6 WHERE job_id = ?1 AND owner = ?2
-         AND attempt = ?3 AND state IN ('queued', 'running')",
-        params![
-            job_id,
-            me,
-            attempt,
-            state,
-            error.map(|e| e.to_string()),
-            now_ms()
-        ],
-    )
-    .map_err(sql)?;
-    Ok(())
+    let tx = conn.unchecked_transaction().map_err(sql)?;
+    let kind: Option<String> = tx
+        .query_row(
+            "UPDATE jobs SET state = ?4, error = ?5, finished_ms = ?6 WHERE job_id = ?1
+             AND owner = ?2 AND attempt = ?3 AND state IN ('queued', 'running') RETURNING kind",
+            params![
+                job_id,
+                me,
+                attempt,
+                state,
+                error.map(|e| e.to_string()),
+                now_ms()
+            ],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    if kind.is_some_and(|k| !lane(&k).is_empty()) {
+        tx.execute(
+            "UPDATE model_layers SET state = 'failed', updated_ms = ?2 WHERE job_id = ?1
+             AND state = 'building'",
+            params![job_id, now_ms()],
+        )
+        .map_err(sql)?;
+    }
+    tx.commit().map_err(sql)
 }
 
 /// Stops `child` and reaps it; true only when it is known to have exited. Closing its stdin
