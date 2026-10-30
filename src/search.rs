@@ -147,6 +147,15 @@ pub(crate) fn cursor_lease_ended(issued_ms: i64, now_ms: i64) -> bool {
 impl Request {
     /// Checks the query, filters, limit and cursor syntax; cheap, so callers run it before I/O.
     pub fn validate(&self) -> Result<Prepared, Box<dyn Error>> {
+        self.validate_inner(false)
+    }
+
+    /// Image queries share every filter/cursor budget but may have no accompanying text.
+    pub fn validate_image(&self) -> Result<Prepared, Box<dyn Error>> {
+        self.validate_inner(true)
+    }
+
+    fn validate_inner(&self, image: bool) -> Result<Prepared, Box<dyn Error>> {
         if self.query.chars().count() > MAX_QUERY_CHARS {
             return Err(invalid(format!(
                 "search query takes at most {MAX_QUERY_CHARS} characters"
@@ -160,7 +169,7 @@ impl Request {
                 terms.push(token.term);
             }
         }
-        if terms.is_empty() {
+        if terms.is_empty() && (!image || !self.query.is_empty()) {
             return Err(invalid(
                 "search needs a query with letters, digits, CJK characters or emoji",
             ));
