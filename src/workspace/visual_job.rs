@@ -226,12 +226,10 @@ fn visual_work(
     let state = |conn: &Connection, profile: &str| -> Result<Option<String>> {
         super::visual_search::layer_state(conn, dir, gen_id, profile)
     };
-    // A finished hash layer of this renderer is never written again, so hash search keeps
-    // reading it and a later failure of this job cannot mark it failed.
-    let hash_done = matches!(
-        state(&conn, visual::VERSION)?.as_deref(),
-        Some("ready" | "partial")
-    );
+    // A ready hash layer of this renderer is never written again, so hash search keeps reading
+    // it and a later failure of this job cannot mark it failed. A partial one is resumed: its
+    // current rasters are kept, and missing, failed and other-renderer units render again.
+    let hash_done = state(&conn, visual::VERSION)?.as_deref() == Some("ready");
     if state(&conn, visual::VERSION)?.as_deref() == Some("ready")
         && (!vision || state(&conn, &profile_id)?.as_deref() == Some("ready"))
     {
@@ -451,7 +449,8 @@ fn visual_work(
     let keys: Vec<(u32, [u8; 32])> = stored_units(&conn, gen_id)?
         .into_iter()
         .filter(|u| selection.as_ref().is_none_or(|s| s.contains(&u.0)))
-        .filter_map(|(rid, key, _)| key.map(|k| (rid, k)))
+        // Another renderer's raster left by a render budget stop is stale, never embedded.
+        .filter_map(|(rid, key, current)| key.filter(|_| current).map(|k| (rid, k)))
         .collect();
     let mut unique: Vec<(u32, [u8; 32])> = Vec::new();
     let mut seen = HashSet::new();

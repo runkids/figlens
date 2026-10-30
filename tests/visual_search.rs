@@ -42,16 +42,20 @@ impl Env {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(BIN)
+        self.command(args).output().unwrap()
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(BIN);
+        command
             .args(args)
             .env("HOME", &self.home)
             .env("LOCALAPPDATA", &self.home)
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("XDG_STATE_HOME")
             .env_remove("XDG_CACHE_HOME")
-            .env_remove("XDG_DATA_HOME")
-            .output()
-            .unwrap()
+            .env_remove("XDG_DATA_HOME");
+        command
     }
 
     fn json(&self, args: &[&str]) -> Value {
@@ -690,4 +694,63 @@ fn index_visual_layers_answer_an_export_of_their_own_unit() {
         reply["coverage"]["layers"]["visual"]["hash"]["state"],
         "ready"
     );
+}
+
+/// A partial layer is resumed by an explicit `index visual`: the unit that failed is rendered
+/// again, while the failure alone names no step a rerun could not fix.
+#[test]
+fn rerunning_index_visual_retries_the_units_a_partial_layer_left_out() {
+    let env = Env::new();
+    let (design, a) = env.source("a.fig");
+    let workspace = path(&env.workspace);
+    let visual = [
+        "index",
+        "visual",
+        "--workspace",
+        workspace,
+        "--scope",
+        "0:0",
+    ];
+    let out = env
+        .command(&visual)
+        .env("FIGLENS_TEST_RENDER_FAIL", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The failed unit leaves nothing to rank; the page is partial and names no step, since
+    // retrying the same render is the user's explicit call.
+    let reply = env.search(&["--image", path(&env.png("red.png", RED))]);
+    assert_eq!(
+        (
+            reply["results"].clone(),
+            reply["coverage"]["complete"].clone()
+        ),
+        (json!([]), json!(false))
+    );
+    let steps = reply["nextSteps"].as_array().cloned().unwrap_or_default();
+    assert!(
+        steps.iter().all(|s| s["arguments"]["action"] != "visual"),
+        "{steps:?}"
+    );
+    let state = |env: &Env| -> String {
+        env.database()
+            .query_row(
+                "SELECT state FROM model_layers WHERE profile_id = 'visual-hash-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(state(&env), "partial");
+    env.json(&visual);
+    assert_eq!(state(&env), "ready");
+    let shot = env.dir.join("screen.png");
+    env.json(&["export", path(&design), "0:1", path(&shot)]);
+    let reply = env.search(&["--image", path(&shot)]);
+    assert_eq!(hits(&reply)[0], (a, "0:1".to_owned()));
+    assert_eq!(reply["coverage"]["complete"], true);
 }

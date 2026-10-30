@@ -744,7 +744,7 @@ fn image_rank(
     key: &Json,
     (dir, cancel): (&Path, &AtomicBool),
 ) -> Result<(search::Ranked, rank::Decor, bool, Json)> {
-    use super::visual_search::{layer_state, vectors, visual_step};
+    use super::visual_search::{layer_state, resumable, vectors, visual_step};
     use crate::search::visual::{self, Hit as VisualHit};
     let (ws_id, _, version) = ws;
     // `model_layers` came with schema 9 and the visual tables with 10; an older workspace has
@@ -770,12 +770,11 @@ fn image_rank(
         };
         let label = state.as_deref().unwrap_or("pending");
         hash_sources.push(json!({"sourceId": source["sourceId"], "state": label}));
-        // A partial layer is final for this renderer: `index visual` would leave it as is, so it
-        // keeps the page partial without naming that step again.
+        // A partial layer names `index visual` only while a rerun can still advance it.
         if label != "ready" {
             complete = false;
         }
-        if label != "ready" && label != "partial" {
+        if label != "ready" && (label != "partial" || resumable(tx, *gen_id, visual::VERSION)?) {
             steps.push(visual_step(
                 ws_id,
                 &source["sourceId"],
@@ -861,7 +860,7 @@ fn image_rank(
                 if label != "ready" {
                     complete = false;
                 }
-                if label != "ready" && label != "partial" {
+                if label != "ready" && (label != "partial" || resumable(tx, *gen_id, &p.id)?) {
                     // A vision layer never built (configured after the hash layer) or not
                     // finished: the same index visual call builds it.
                     let step = visual_step(

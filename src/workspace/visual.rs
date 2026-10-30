@@ -141,9 +141,10 @@ pub fn save(conn: &Connection, gen_id: i64, rid: u32, rendered: &RenderedUnit) -
 pub fn failed(conn: &Connection, gen_id: i64, rid: u32, reason: &str) -> Result<()> {
     let reason: String = reason.chars().take(1024).collect();
     conn.execute(
-        "INSERT INTO visual_units (gen, rid, policy, raster_key, report, error) VALUES (?1, ?2, ?3, NULL, '{}', ?4)
-         ON CONFLICT (gen, rid, policy) DO UPDATE SET raster_key = NULL, report = '{}', error = ?4",
-        params![gen_id, rid, POLICY, reason],
+        "INSERT INTO visual_units (gen, rid, policy, raster_key, report, error) VALUES (?1, ?2, ?3, NULL, ?5, ?4)
+         ON CONFLICT (gen, rid, policy) DO UPDATE SET raster_key = NULL, report = ?5, error = ?4",
+        // The renderer that failed, so an upgraded one reads the layer stale and retries it.
+        params![gen_id, rid, POLICY, reason, json!({"renderer": RENDERER}).to_string()],
     )?;
     Ok(())
 }
@@ -170,9 +171,11 @@ pub fn candidates(conn: &Connection, gen_id: i64) -> Result<Vec<Candidate>> {
     let mut stmt = conn.prepare(
         "SELECT u.rid, u.raster_key, r.fingerprint FROM visual_units u
          LEFT JOIN visual_rasters r ON r.raster_key = u.raster_key AND r.policy = u.policy
-         WHERE u.gen = ?1 AND u.policy = ?2 AND u.error IS NULL ORDER BY u.rid",
+         WHERE u.gen = ?1 AND u.policy = ?2 AND u.error IS NULL
+           AND json_extract(u.report, '$.renderer') IS ?3 ORDER BY u.rid",
     )?;
-    let mut rows = stmt.query(params![gen_id, POLICY])?;
+    // Only this renderer's rasters rank; another's are stale until `index visual` renders them.
+    let mut rows = stmt.query(params![gen_id, POLICY, RENDERER])?;
     let mut out = Vec::with_capacity(count as usize);
     while let Some(row) = rows.next()? {
         let key = row.get_ref(1)?.as_blob()?;
