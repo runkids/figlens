@@ -361,6 +361,33 @@ fn render_evidence_reports_missing_paints_and_caps_diagnostics() {
     assert!(truncated);
 }
 
+#[test]
+fn image_only_validation_keeps_filters_budgets_and_text_validation_separate() {
+    let mut request = crate::search::Request {
+        query: String::new(),
+        scope: "0:0".into(),
+        types: vec![],
+        include_hidden: false,
+        include_internal: false,
+        limit: 20,
+        cursor: None,
+    };
+    assert!(request.validate().is_err());
+    assert!(request.validate_image().is_ok());
+    request.limit = 0;
+    assert!(request.validate_image().is_err());
+    request.limit = 20;
+    request.query = "   ".into();
+    assert!(request.validate_image().is_err());
+    request.query = "付款".into();
+    assert_eq!(
+        request.validate_image().unwrap().terms(),
+        request.validate().unwrap().terms()
+    );
+    request.cursor = Some("bad".into());
+    assert!(request.validate_image().is_err());
+}
+
 fn gradient() -> QueryImage {
     let mut p = Pixmap::new(40, 30).unwrap();
     for (i, px) in p.data_mut().chunks_exact_mut(4).enumerate() {

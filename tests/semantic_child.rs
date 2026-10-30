@@ -379,6 +379,214 @@ fn a_pinned_siglip_child_matches_the_in_process_model() {
     assert!(diff < 1e-5, "{diff}");
 }
 
+/// A fake vision profile (this binary in an image mode) in the config root `indexed` set, so
+/// a workspace search embeds query images with it. Returns its profile id.
+fn configured_vision(dir: &test_support::TestDir) -> String {
+    let storage = figlens::workspace::storage(None).unwrap();
+    let (model, files) = model(dir, "vision");
+    let files: &'static [(&str, &str)] = Box::leak(
+        files
+            .into_iter()
+            .map(|(n, d)| (n, &*Box::leak(d.into_boxed_str())))
+            .collect(),
+    );
+    let k = profile::Known {
+        name: "fake-vision",
+        model: "fake",
+        revision: "0",
+        license: "MIT",
+        modality: "image",
+        files,
+    };
+    // Configure starts the child once for its contract; it must answer as a vision child.
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe { std::env::set_var("SEMANTIC_CHILD_MODE", "image") };
+    let exe = std::env::current_exe().unwrap();
+    let out =
+        profile::configure(&storage, &k, &model, Some(&exe), &AtomicBool::new(false)).unwrap();
+    out["configured"]["profileId"].as_str().unwrap().to_owned()
+}
+
+/// Flat-color units of nodes 0:1 and 0:2 in `fig`'s published document generation, a ready
+/// hash layer and, under `profile`, a ready vision layer of the given vectors.
+fn visual_layers(fig: &Path, profile: &str, units: [([u8; 3], Vec<f32>); 2]) {
+    let status = cli(&["index", "status", "--file", fig.to_str().unwrap()]);
+    let conn = rusqlite::Connection::open(status["paths"]["database"].as_str().unwrap()).unwrap();
+    let gen_id: i64 = conn
+        .query_row("SELECT gen FROM published WHERE scope = '0:0'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let policy = figlens::workspace::visual::POLICY;
+    for (node, (rgb, vector)) in ["0:1", "0:2"].into_iter().zip(units) {
+        let rid: u32 = conn
+            .query_row(
+                "SELECT rid FROM records WHERE gen = ?1 AND node_id = ?2",
+                rusqlite::params![gen_id, node],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut p = Pixmap::new(32, 20).unwrap();
+        p.fill(resvg::tiny_skia::Color::from_rgba8(
+            rgb[0], rgb[1], rgb[2], 255,
+        ));
+        let rendered = figlens::search::visual::RenderedUnit {
+            image: QueryImage::from_pixmap(&p, None).unwrap(),
+            diagnostics: Vec::new(),
+            diagnostics_truncated: false,
+            bounds: serde_json::Map::new(),
+        };
+        let key = figlens::workspace::visual::save(&conn, gen_id, rid, &rendered).unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO model_vectors (profile_id, text_hash, vector) VALUES (?1, ?2, ?3)",
+            rusqlite::params![profile, key.to_vec(), semantic::encode(&vector)],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO model_refs (gen, profile_id, policy, text_hash) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![gen_id, profile, policy, key.to_vec()],
+        )
+        .unwrap();
+    }
+    for layer in [figlens::search::visual::VERSION, profile] {
+        conn.execute(
+            "INSERT INTO model_layers (gen, profile_id, policy, state, chunks, texts, embedded, refused, stop, job_id, updated_ms)
+             VALUES (?1, ?2, ?3, 'ready', 2, 2, 2, 0, NULL, NULL, 0)",
+            rusqlite::params![gen_id, layer, policy],
+        )
+        .unwrap();
+    }
+}
+
+/// The fake child answers every image with the unit vector `bag("a")`, which is axis 1.
+fn axis(i: usize) -> Vec<f32> {
+    let mut v = vec![0.0; DIM];
+    v[i] = 1.0;
+    v
+}
+
+/// A query PNG of one flat color.
+fn query_png(dir: &test_support::TestDir, rgb: [u8; 3]) -> PathBuf {
+    let mut p = Pixmap::new(16, 16).unwrap();
+    p.fill(resvg::tiny_skia::Color::from_rgba8(
+        rgb[0], rgb[1], rgb[2], 255,
+    ));
+    let path = std::path::absolute(dir.join("query.png")).unwrap();
+    std::fs::write(&path, p.encode_png().unwrap()).unwrap();
+    path
+}
+
+/// A ready vision layer is the approximate signal: its order wins over the perceptual hash,
+/// which adds only exact copies; the hash ranks alone when the model fails, and then the page
+/// is partial with no continuation.
+fn vision_ranks_when_ready_and_the_hash_takes_over_when_the_model_fails() {
+    let dir = test_support::TestDir::new();
+    let (_, fig) = indexed(&dir, false);
+    let profile = configured_vision(&dir);
+    // Red is nearer the query's color by hash; the vision vectors prefer the blue unit.
+    visual_layers(
+        &fig,
+        &profile,
+        [([255, 0, 0], axis(2)), ([0, 0, 255], axis(1))],
+    );
+    let query = query_png(&dir, [200, 40, 120]);
+    let search = || {
+        cli(&[
+            "search",
+            "--file",
+            fig.to_str().unwrap(),
+            "--image",
+            query.to_str().unwrap(),
+        ])
+    };
+    let reply = search();
+    assert_eq!(
+        reply["query"]["usedModes"],
+        json!(["visual_exact", "visual_embedding"])
+    );
+    assert_eq!(
+        reply["coverage"]["layers"]["visual"]["approximate"],
+        "visual_embedding"
+    );
+    assert_eq!(reply["results"][0]["ref"]["nodeId"], "0:2");
+    assert_eq!(
+        reply["results"][0]["matches"][0],
+        json!({"basis": "visual_embedding", "cosine": 1.0})
+    );
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe { std::env::set_var("SEMANTIC_CHILD_MODE", "image-fail") };
+    let reply = search();
+    assert_eq!(reply["query"]["usedModes"], json!(["visual_hash"]));
+    assert_eq!(
+        reply["coverage"]["layers"]["visual"]["embedding"]["reasons"][0]["code"],
+        "runtime_failed"
+    );
+    assert_eq!(reply["results"][0]["ref"]["nodeId"], "0:1");
+    assert_eq!(
+        (
+            reply["coverage"]["complete"].clone(),
+            reply["nextCursor"].clone()
+        ),
+        (json!(false), serde_json::Value::Null)
+    );
+    unsafe { std::env::remove_var("SEMANTIC_CHILD_MODE") };
+}
+
+/// An MCP image search waiting on a hung vision child ends on `notifications/cancelled`, and
+/// the child is gone.
+#[cfg(target_os = "linux")]
+fn mcp_cancel_stops_an_image_search_and_its_vision_child() {
+    use std::io::{BufRead, BufReader, Write};
+    let dir = test_support::TestDir::new();
+    let (report, fig) = indexed(&dir, false);
+    let profile = configured_vision(&dir);
+    visual_layers(
+        &fig,
+        &profile,
+        [([255, 0, 0], axis(2)), ([0, 0, 255], axis(1))],
+    );
+    let query = query_png(&dir, [200, 40, 120]);
+    let pid_file = std::path::absolute(dir.join("child.pid")).unwrap();
+    let mut mcp = std::process::Command::new(env!("CARGO_BIN_EXE_figlens"))
+        .arg("mcp")
+        .env("SEMANTIC_CHILD_MODE", "image-hang")
+        .env("SEMANTIC_CHILD_PID", &pid_file)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = mcp.stdin.take().unwrap();
+    let call = json!({"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "search",
+        "arguments": {"workspaceId": report["workspaceId"], "image": query}}});
+    writeln!(stdin, "{call}").unwrap();
+    let end = Instant::now() + Duration::from_secs(20);
+    while !pid_file.exists() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let pid = std::fs::read_to_string(&pid_file).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let begun = Instant::now();
+    let note =
+        json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 9}});
+    writeln!(stdin, "{note}").unwrap();
+    let mut line = String::new();
+    BufReader::new(mcp.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert!(line.contains("cancelled"), "{line}");
+    drop(stdin);
+    assert!(mcp.wait().unwrap().success());
+    assert!(
+        begun.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        begun.elapsed()
+    );
+    assert!(
+        all_gone(&[pid.trim().to_owned()]),
+        "vision child {pid} still running"
+    );
+}
+
 fn stop_ends_the_child_when_stdin_closes() {
     let rt = start("ok");
     let begun = Instant::now();
@@ -1044,6 +1252,7 @@ fn a_cancelled_configure_reports_cancelled_and_records_nothing() {
         model: "fake",
         revision: "0",
         license: "MIT",
+        modality: "text",
         files,
     };
     let exe = std::env::current_exe().unwrap();
@@ -1643,7 +1852,7 @@ fn a_schema_8_workspace_reads_its_model_layer_as_pending() {
     let path = prepared["paths"]["database"].as_str().unwrap();
     rusqlite::Connection::open(path)
         .unwrap()
-        .execute_batch("DROP TABLE model_vectors; DROP TABLE model_refs; DROP TABLE model_layers; PRAGMA user_version = 8;")
+        .execute_batch("DROP TABLE visual_units; DROP TABLE visual_rasters; DROP TABLE model_vectors; DROP TABLE model_refs; DROP TABLE model_layers; PRAGMA user_version = 8;")
         .unwrap();
     let got = cli(&[
         "search",
@@ -1750,6 +1959,10 @@ fn main() {
         (
             "cancel_kills_a_hung_vision_child",
             cancel_kills_a_hung_vision_child,
+        ),
+        (
+            "vision_ranks_when_ready_and_the_hash_takes_over_when_the_model_fails",
+            vision_ranks_when_ready_and_the_hash_takes_over_when_the_model_fails,
         ),
         (
             "an_image_model_failure_is_not_a_refusal",
@@ -1934,6 +2147,11 @@ fn main() {
             an_interrupted_visual_job_is_retried_as_visual,
         ),
     ];
+    #[cfg(target_os = "linux")]
+    tests.push((
+        "mcp_cancel_stops_an_image_search_and_its_vision_child",
+        mcp_cancel_stops_an_image_search_and_its_vision_child,
+    ));
     #[cfg(feature = "embed")]
     tests.push((
         "a_pinned_siglip_child_matches_the_in_process_model",

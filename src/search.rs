@@ -44,7 +44,24 @@ const MAX_MARKS: usize = 1024;
 /// Bytes one snippet may copy, its context and matched span together.
 const SNIPPET_BYTES: usize = 2048;
 /// Names, ids and paths one page of results may copy; the MCP reply cap, so CLI and MCP agree.
-const REPLY_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const REPLY_BYTES: usize = 8 * 1024 * 1024;
+
+/// The serialized size of `value`, counted without building the text.
+pub(crate) fn json_bytes(value: &Json) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, value).expect("counting cannot fail");
+    count.0
+}
 const DEADLINE: Duration = Duration::from_secs(15);
 /// Same-stamp reuse lasts at most this long before the bytes are hashed again.
 const REHASH: Duration = Duration::from_secs(60);
@@ -147,6 +164,15 @@ pub(crate) fn cursor_lease_ended(issued_ms: i64, now_ms: i64) -> bool {
 impl Request {
     /// Checks the query, filters, limit and cursor syntax; cheap, so callers run it before I/O.
     pub fn validate(&self) -> Result<Prepared, Box<dyn Error>> {
+        self.validate_inner(false)
+    }
+
+    /// Image queries share every filter/cursor budget but may have no accompanying text.
+    pub fn validate_image(&self) -> Result<Prepared, Box<dyn Error>> {
+        self.validate_inner(true)
+    }
+
+    fn validate_inner(&self, image: bool) -> Result<Prepared, Box<dyn Error>> {
         if self.query.chars().count() > MAX_QUERY_CHARS {
             return Err(invalid(format!(
                 "search query takes at most {MAX_QUERY_CHARS} characters"
@@ -160,7 +186,7 @@ impl Request {
                 terms.push(token.term);
             }
         }
-        if terms.is_empty() {
+        if terms.is_empty() && (!image || !self.query.is_empty()) {
             return Err(invalid(
                 "search needs a query with letters, digits, CJK characters or emoji",
             ));
@@ -1054,7 +1080,7 @@ fn hides_content(tree: &Tree, ex: &Expansion, id: &str, kind: &str) -> bool {
 
 // ---- Retrieval ----
 
-struct Hit {
+pub(crate) struct Hit {
     /// Position of the hit's index in the corpus.
     source: usize,
     record: u32,
@@ -1065,6 +1091,26 @@ struct Hit {
 fn idf(n: usize, df: u32) -> f64 {
     let (n, df) = (n as f64, f64::from(df));
     (1.0 + (n - df + 0.5) / (df + 0.5)).ln()
+}
+
+/// Why `req`'s filters leave a record out; hidden and internal ones are counted as excluded.
+pub(crate) enum Filtered {
+    Type,
+    Hidden,
+    Internal,
+}
+
+/// `req`'s type, hidden and internal filters on loaded record `rid`, in that order; `None` keeps it.
+pub(crate) fn filtered(index: &Index, rid: u32, req: &Request) -> Option<Filtered> {
+    let r = index.record(rid);
+    if !req.types.is_empty() && !req.types.contains(&r.kind) {
+        return Some(Filtered::Type);
+    }
+    if r.hidden && !req.include_hidden {
+        return Some(Filtered::Hidden);
+    }
+    let internal = r.page.is_some_and(|p| index.pages[p as usize].internal);
+    (internal && !req.include_internal).then_some(Filtered::Internal)
 }
 
 /// Ranked page of `req` over every index of `corpus` together: candidates must contain every
@@ -1135,19 +1181,19 @@ fn retrieve(
             if cancel.load(Ordering::Relaxed) {
                 break 'rank;
             }
+            match filtered(index, record, req) {
+                Some(Filtered::Type) => continue,
+                Some(Filtered::Hidden) => {
+                    excluded[0] += 1;
+                    continue;
+                }
+                Some(Filtered::Internal) => {
+                    excluded[1] += 1;
+                    continue;
+                }
+                None => {}
+            }
             let r = index.record(record);
-            if !req.types.is_empty() && !req.types.contains(&r.kind) {
-                continue;
-            }
-            let internal = r.page.is_some_and(|p| index.pages[p as usize].internal);
-            if r.hidden && !req.include_hidden {
-                excluded[0] += 1;
-                continue;
-            }
-            if internal && !req.include_internal {
-                excluded[1] += 1;
-                continue;
-            }
             let [name, text] = &r.norm;
             let tier = if *name == q.phrase {
                 3
@@ -1548,7 +1594,7 @@ fn corpus_coverage(parts: &[Part], req: &Request, excluded: [usize; 2]) -> Json 
 pub(crate) struct Ranked {
     hits: Vec<Hit>,
     more: bool,
-    excluded: [usize; 2],
+    pub(crate) excluded: [usize; 2],
     fingerprint: String,
 }
 

@@ -125,8 +125,26 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
             (
                 "query",
                 "string",
-                true,
-                "words or a phrase; case, width and accents fold, CJK matches by character pairs or a single character; no regex",
+                false,
+                "words or a phrase; case, width and accents fold, CJK matches by character pairs or a single character; no regex. Required unless image or imageRef is given",
+            ),
+            (
+                "image",
+                "string",
+                false,
+                "with workspaceId: a local PNG (at most 8 MiB, 4 MP) inside the server's roots to search by; read for this call only, never stored or sent anywhere. Not with imageRef",
+            ),
+            (
+                "imageRef",
+                "object",
+                false,
+                "with workspaceId: {sourceId, snapshotId, nodeId} of a node in a search result, to search by its stored render; the snapshot must still be the source's current one. Not with image",
+            ),
+            (
+                "crop",
+                "object",
+                false,
+                "{x, y, width, height} in whole pixels of the query image (of the stored 256-pixel render for imageRef)",
             ),
             (
                 "node",
@@ -168,7 +186,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "mode",
                 "string",
                 false,
-                "text (default); semantic or hybrid with a configured local model (see models)",
+                "text (default); semantic or hybrid with a configured local model (see models); with image or imageRef, visual (default without query) or hybrid (default with query: image plus text channels)",
             ),
         ],
     ),
@@ -512,7 +530,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "models",
-        "Local model profiles: bge-m3 (text) for semantic and hybrid search, and siglip-base (image) for visual search, whose image queries are not available yet. list shows the documented profiles with modality, model, revision, license and the files each needs; status reports each configured profile ready or unavailable with the reason, and the setup steps for each modality no profile serves; configure checks a model directory the user already downloaded against pinned SHA-256 digests, starts the figlens-embed shipped beside figlens once offline and records the profile; remove forgets the profile and keeps its files. Nothing is downloaded and no design content leaves the machine.",
+        "Local model profiles: bge-m3 (text) for semantic and hybrid search, and siglip-base (image) for search with image or imageRef. list shows the documented profiles with modality, model, revision, license and the files each needs; status reports each configured profile ready or unavailable with the reason, and the setup steps for each modality no profile serves; configure checks a model directory the user already downloaded against pinned SHA-256 digests, starts the figlens-embed shipped beside figlens once offline and records the profile; remove forgets the profile and keeps its files. Nothing is downloaded and no design content leaves the machine.",
         &[
             (
                 "action",
@@ -927,7 +945,6 @@ fn default(tool: &str, key: &str) -> Option<Value> {
         | ("search", "includeHidden" | "includeInternal") => Some(json!(false)),
         ("inspect", "depth") | ("export", "scale") => Some(json!(1)),
         ("find" | "search", "limit") => Some(json!(20)),
-        ("search", "mode") => Some(json!("text")),
         ("variables", "format") => Some(json!("rest")),
         ("usages", "scope") | ("diff", "node") => Some(json!("0:0")),
         ("diff", "limit") => Some(json!(100)),
@@ -1033,7 +1050,19 @@ pub fn property(tool: &str, param: &Param) -> Value {
         ]);
     }
     if tool == "search" && key == "mode" {
-        p["enum"] = json!(["text", "semantic", "hybrid"]);
+        p["enum"] = json!(["text", "semantic", "hybrid", "visual"]);
+    }
+    if tool == "search" && key == "imageRef" {
+        p["properties"] = json!({"sourceId": {"type": "string", "minLength": 1},
+            "snapshotId": {"type": "string", "minLength": 1}, "nodeId": {"type": "string", "minLength": 1}});
+        p["required"] = json!(["sourceId", "snapshotId", "nodeId"]);
+        p["additionalProperties"] = json!(false);
+    }
+    if tool == "search" && key == "crop" {
+        let pixel = json!({"type": "integer", "minimum": 0, "maximum": u32::MAX});
+        p["properties"] = json!({"x": pixel, "y": pixel, "width": pixel, "height": pixel});
+        p["required"] = json!(["x", "y", "width", "height"]);
+        p["additionalProperties"] = json!(false);
     }
     if tool == "usages" && key == "direction" {
         p["enum"] = json!(["in", "out"]);
@@ -1053,8 +1082,8 @@ pub fn property(tool: &str, param: &Param) -> Value {
     p
 }
 
-/// `value` against an object schema of string and object fields: every required field present,
-/// no other one, each string non-empty and within its enum.
+/// `value` against an object schema of string, integer and object fields: every required field
+/// present, no other one, each string non-empty and within its enum, each integer in range.
 fn object_fits(value: &Value, schema: &Value) -> bool {
     let (Some(fields), Some(props)) = (value.as_object(), schema["properties"].as_object()) else {
         return false;
@@ -1066,6 +1095,10 @@ fn object_fits(value: &Value, schema: &Value) -> bool {
         && fields.iter().all(|(name, v)| match props.get(name) {
             None => false,
             Some(p) if p["type"] == "object" => object_fits(v, p),
+            Some(p) if p["type"] == "integer" => integer(v).is_some_and(|n| {
+                p["minimum"].as_u64().is_none_or(|m| n >= m)
+                    && p["maximum"].as_u64().is_none_or(|m| n <= m)
+            }),
             Some(p) => v.as_str().is_some_and(|text| {
                 !text.is_empty() && p["enum"].as_array().is_none_or(|e| e.contains(v))
             }),
@@ -1154,7 +1187,7 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
                 }
             }
             "boolean" if !value.is_boolean() => return Err(bad()),
-            // Only library (usages, watch) takes an object; its schema lists every field.
+            // Library (usages, watch), imageRef and crop (search) list every field.
             "object" if !object_fits(value, &schema) => return Err(bad()),
             "string" => {
                 let text = value.as_str().ok_or_else(bad)?;
@@ -1203,7 +1236,9 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
                 "search needs file or workspaceId, not both; sourceId and storage apply to workspaceId",
             ));
         }
-        crate::command::search_tool(&call).map_err(Failure::from_error)?;
+        // Only validates: the image path is admitted under the roots before the call runs.
+        crate::command::search_tool(&call, call.string("image").map(std::path::Path::new))
+            .map_err(Failure::from_error)?;
     }
     if tool == "usages" {
         let file = call.string("file").is_some();

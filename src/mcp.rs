@@ -117,6 +117,8 @@ struct AdmittedCall {
     project: Option<PathBuf>,
     /// The earlier revision a diff reads beside `source`.
     old: Option<PathBuf>,
+    /// A search's local query image: read for the call, never written.
+    image: Option<PathBuf>,
     /// Its token in the server's pending calls, removed when the call is dropped; `None` for a
     /// call admitted outside a server.
     live: Option<Live>,
@@ -296,7 +298,13 @@ fn admit_value(req: Value, roots: &[PathBuf]) -> Admission {
                     }
                     file => file.map(|path| checked_path(Path::new(path), roots)).transpose()?,
                 };
-                Ok(AdmittedCall { id:id.clone(), call, source, output, input, match_dir, project, old, live: None })
+                let image = match call.string("image") {
+                    Some(image) if image.contains("://") => {
+                        return Err(contract::Failure::argument("image takes a local PNG path; no URL is read"));
+                    }
+                    image => image.map(|path| checked_path(Path::new(path), roots)).transpose()?,
+                };
+                Ok(AdmittedCall { id:id.clone(), call, source, output, input, match_dir, project, old, image, live: None })
             });
             return match admitted {
                 Ok(call) => Admission::Call(Box::new(call)),
@@ -362,9 +370,13 @@ impl AdmittedCall {
                 "jobs" => command::jobs_tool(&self.call, roots, storage_roots),
                 "models" => command::models_tool(&self.call, roots, self.cancel()),
                 "changes" | "watch" => command::changes_tool(&self.call, roots, storage_roots),
-                "search" => {
-                    command::workspace_search_tool(&self.call, roots, storage_roots, self.cancel())
-                }
+                "search" => command::workspace_search_tool(
+                    &self.call,
+                    roots,
+                    storage_roots,
+                    self.image.as_deref(),
+                    self.cancel(),
+                ),
                 "usages" => command::workspace_usages_tool(&self.call, roots, storage_roots),
                 _ => command::index_tool(
                     &self.call,
@@ -405,6 +417,7 @@ impl AdmittedCall {
             .chain(self.match_dir.as_deref())
             .chain(self.project.as_deref())
             .chain(self.old.as_deref())
+            .chain(self.image.as_deref())
         {
             // Recheck current filesystem state, not raw arguments or a permanent authorization lease.
             checked_path(path, roots)?;
@@ -460,9 +473,15 @@ impl AdmittedCall {
                         .and_then(|request| command::usages(&path, &request, ""))
                         .map_err(contract::Failure::from_error);
                 }
-                return command::search_tool(&self.call)
-                    .and_then(|(request, mode)| {
-                        command::search(&path, &request, mode, "", self.cancel())
+                return command::search_tool(&self.call, self.image.as_deref())
+                    .and_then(|(request, query)| match query {
+                        command::Query::Text(mode) => {
+                            command::search(&path, &request, mode, "", self.cancel())
+                        }
+                        command::Query::Image(_) => Err(command::image_needs_workspace(
+                            self.call.string("file").unwrap_or_default(),
+                            &request.scope,
+                        )),
                     })
                     .map_err(contract::Failure::from_error);
             }

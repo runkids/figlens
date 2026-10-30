@@ -694,6 +694,21 @@ pub(crate) fn workspace_rank(
     ))
 }
 
+impl Decor {
+    /// Each ranked row's semantic evidence, as `decorate` writes it, for another fusion.
+    pub(crate) fn evidence(&self) -> Vec<Option<Json>> {
+        self.rows
+            .iter()
+            .map(|r| r.map(|(field, chunk)| json!({"field": field_name(field), "chunk": chunk, "basis": "semantic"})))
+            .collect()
+    }
+
+    /// Whether every source's model layer was ready for this ranking.
+    pub(crate) fn ready(&self) -> bool {
+        self.ready
+    }
+}
+
 /// Adds the semantic fields to a workspace page rendered from `workspace_rank`'s `Ranked`.
 pub(crate) fn decorate(out: &mut Json, mode: Mode, decor: Decor) {
     for (i, row) in out["results"]

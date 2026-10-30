@@ -585,3 +585,5 @@ pub mod model;
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) mod rank;

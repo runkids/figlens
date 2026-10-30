@@ -85,6 +85,14 @@ Experimental and optional; text search stays the default. `search` with `mode: "
 - Visual search reads layers that `index` `visual` (CLI `figlens index visual <select> --scope NODE`) builds for one published scope: it renders that scope's screens and components, and embeds them when a `siglip-base` profile is configured. Run it only when the user asks for image search, then poll `jobs`; a unit that cannot render is reported on its own (layer `partial`) and text search keeps serving. After a text build republishes that scope, the MCP server and the watch runner render it again; other scopes are never rendered implicitly.
 - A running semantic search or `configure` can be cancelled; it uses the CPU and about 2.5 GiB of memory.
 
+### Image search
+
+Experimental, workspace only. When the user gives a screenshot or points at a result and asks for screens that look like it, call `search` with `workspaceId` and `image` (a local PNG path inside the roots) or `imageRef` (`sourceId`, `snapshotId`, `nodeId` copied from a result), optionally `crop` `{x, y, width, height}`. Add `query` text only when the user also names words; that makes it `hybrid`. Never pass a URL or base64.
+
+- A stateless `file` search, or a source without visual layers, answers with steps: `index` `prepare`, then `index` `visual`. Run them only when the user asks; a search never builds them.
+- Read `query.usedModes` and `coverage.layers.visual`: `visual_hash` alone means no vision model was used (not configured, pending or failed), so say results are by pixel hash. Results are similarity hints, not component identity; the ranking policy is still being validated.
+- `source_stale` on `imageRef`: search again and copy a fresh reference. A partial page has no `nextCursor`.
+
 ### Where it is used
 
 `usages` answers by exact id, never by name: two components called "Button" are two answers, so get the id from `search`, `find` or the user first. It lists linked instances only: a detached copy cannot be linked back, because figlens decodes no detach history from the saved file.
