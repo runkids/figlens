@@ -1936,7 +1936,9 @@ mod tests {
         open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE)
             .unwrap()
             .execute_batch(
-                "DROP TABLE watch_leases; DROP TABLE watch_runner; DROP TABLE watch_monitor;
+                "DROP TABLE query_evaluations; DROP TABLE subscriptions;
+                 ALTER TABLE consumers DROP COLUMN sources;
+                 DROP TABLE watch_leases; DROP TABLE watch_runner; DROP TABLE watch_monitor;
                  PRAGMA user_version = 4;",
             )
             .unwrap();
@@ -1947,6 +1949,7 @@ mod tests {
             cursor: None,
             revision: None,
             limit: None,
+            subscription: None,
         };
         let reply = super::super::changes::changes(&storage, &select, &request).unwrap();
         assert_eq!(reply["tracking"][0]["state"], "active");

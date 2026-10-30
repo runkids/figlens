@@ -581,7 +581,12 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "list: the next of the previous page",
             ),
             STORAGE,
-            ("requestId", "string", false, "start: replays this request's lease"),
+            (
+                "requestId",
+                "string",
+                false,
+                "start: replays this request's lease",
+            ),
             ("leaseId", "string", false, "stop: the lease to end"),
         ],
     ),

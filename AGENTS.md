@@ -40,11 +40,11 @@ python3 scripts/ai-context.py check     # validate paths, headings, links, orpha
 | `performance` | Measuring load time and memory, reading the perf baseline, changing cache or decode cost |
 | `parsing` | Changing untrusted container/schema/value decoding or parsing budgets |
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields or variables |
-| `discovery` | Changing find/inspect summaries, `--flat` lines, `tree --top-frames` or `export --match-dir` |
+| `discovery` | Changing find/inspect summaries or `--flat`, `tree --top-frames` or `export --match-dir` |
 | `search` | Changing search indexing, ranking, cursors, coverage or budgets |
 | `diff` | Changing diff |
-| `subscriptions` | Changing watch subscriptions or checkpoint bounds |
-| `watch` | Changing watch leases or the runner |
+| `subscriptions` | Changing subscriptions or checkpoints |
+| `watch` | Changing leases or the runner |
 | `workspace` | Changing local workspace roots, identity, ownership, the SQLite registry, locks or index actions |
 | `index` | Changing index generations, jobs, publication or workspace search |
 | `bundle` | Changing the bundle zip, manifest, context.md, batch bundles, font inventory or `verify` |
@@ -52,7 +52,7 @@ python3 scripts/ai-context.py check     # validate paths, headings, links, orpha
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison |
 | `pi` | Changing the Pi extension, reviewed component mappings or its npm packaging |
 | `integrations` | Changing OpenCode V2/OMP, shared package, permissions, installed-host acceptance |
-| `accuracy` | Measuring output against Figma's own exports, running `compare`, finding test files, the CI regression corpus |
+| `accuracy` | Measuring output against Figma's exports, `compare`, test files, the CI regression corpus |
 | `release` | Packaging, GitHub releases, Homebrew, npm, installers, `figlens update` |
 | `review` | Delivering features/optimizations across CLI, MCP and Pi; reviews, PR follow-up and opening issues |
 | `direction` | Deciding what to build next, or revisiting a past decision |
