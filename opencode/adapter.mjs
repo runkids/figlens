@@ -371,7 +371,12 @@ export function createAdapter(ctx, entry = import.meta.url) {
     };
     if (['search', 'usages', 'changes'].includes(tool) && !input.file) await readSources(await status(input));
     // Every other watch action writes checkpoints, subscriptions or leases into the workspace database, as a cancel writes its job.
-    if (tool === 'watch' && !['list', 'status', 'start'].includes(input.action)) await edit(place(await status(input)));
+    if (tool === 'watch' && !['list', 'status', 'start'].includes(input.action)) {
+      const found = await status(input);
+      // A saved query runs a workspace search on its source when saved and each time it is evaluated.
+      if ((input.action === 'subscribe' && input.query !== undefined) || input.action === 'evaluate') await readSources(found);
+      await edit(place(found));
+    }
     // A lease makes the shared runner read its source on every save, so start also asks read on it.
     if (tool === 'watch' && input.action === 'start') {
       const found = await status(input);

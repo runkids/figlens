@@ -448,6 +448,26 @@ test('CLI-path design reads ask read on the requested and canonical path, and bu
   assert.deepEqual(timeouts, [['status', undefined], ['refresh', 0]]);
 });
 
+test('CLI-path saved queries ask read on the sources they search, so a denied read runs no subscribe or evaluate', async t => {
+  const { root, ctx, adapter } = await context(t);
+  const asked = [], ran = [];
+  ctx.permission.assert = async ({ action, resources }) => {
+    asked.push([action, ...resources]);
+    if (action === 'read') throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  const design = path.join(root, 'design.fig');
+  await writeFile(design, '');
+  const current = await adapter.scope('session');
+  current.run = async args => {
+    ran.push(args[1]);
+    return { stdout: JSON.stringify({ state: 'ready', paths: { workspace: '/w', lock: '/w.lock' }, storage: { rule: 'default' },
+      roots: { config: { path: '/c' } }, sources: [{ sourceId: 's', path: design }] }) };
+  };
+  await assert.rejects(adapter.cli(current, 'watch', { action: 'subscribe', workspaceId: 'ws_1', consumer: 'c', sourceId: 's', query: 'badge' }), /read denied/);
+  await assert.rejects(adapter.cli(current, 'watch', { action: 'evaluate', workspaceId: 'ws_1', subscriptionId: 'sub_1' }), /read denied/);
+  assert.deepEqual([asked.map(([action]) => action), ran], [['read', 'read'], ['status', 'status']]);
+});
+
 test('CLI-path prepare with an explicit storage asks edit on the state root the binary chose, not the remembered one', async t => {
   const { ctx, adapter } = await context(t);
   const asked = [], ran = [];
