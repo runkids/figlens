@@ -5,7 +5,7 @@
 // releases the rest.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -59,6 +59,9 @@ try {
   await until('every holder to exit', async () => (await holders()).length === 0);
   const ended = (await leases()).find(lease => lease.leaseId === b.leaseId);
   assert.deepEqual([ended.state, ended.reason], ['ended', 'released']);
+  // The workspace goes only once its runner stopped; a failed run keeps it for diagnosis.
+  await until('the runner to stop', async () => (await cli('watch', 'status', '--id', workspaceId)).runner.state === 'stopped');
+  await rm(base, { recursive: true, force: true });
   console.log(JSON.stringify({ platform: process.platform, nativeHolders: held.length, sessionCloseKeptRunner: true, disposeReleased: true }));
 } finally {
   await adapter.dispose();

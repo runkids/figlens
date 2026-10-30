@@ -121,14 +121,16 @@ export function createAdapter(ctx, entry = import.meta.url) {
     const current = owners.get(sessionID);
     if (!current) return;
     current.lifetime.abort();
-    try { await Promise.all([...current.commands].map(stop => stop())); }
-    finally {
+    // A command that fails to stop still lets its session release, close and drop; its error follows.
+    const stops = await Promise.allSettled([...current.commands].map(stop => stop()));
+    try {
       // This session's leases only; the shared runner and other holders' leases are left alone.
       for (const end of await current.holder.stopAll())
         if (end.state !== 'ended') console.error('figlens watch lease not released:', JSON.stringify(end));
-    }
-    await current.viewer.close();
-    owners.delete(sessionID);
+      await current.viewer.close();
+    } finally { owners.delete(sessionID); }
+    const failed = stops.find(stop => stop.status === 'rejected');
+    if (failed) throw failed.reason;
   }
   async function scope(sessionID, signal) {
     lifetime.signal.throwIfAborted();

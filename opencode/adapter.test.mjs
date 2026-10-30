@@ -90,6 +90,19 @@ test('OpenCode gives each session an independent viewer lifetime', async t => {
   assert.equal(b.signal.aborted, true);
 });
 
+test('OpenCode closes a session\'s viewer and owner even when one of its commands fails to stop', async t => {
+  const { adapter } = await context(t);
+  const a = await adapter.scope('a');
+  let viewerClosed = false;
+  const closeViewer = a.viewer.close.bind(a.viewer);
+  a.viewer.close = async () => { viewerClosed = true; await closeViewer(); };
+  a.commands.add(() => Promise.reject(new Error('stop failed')));
+  await assert.rejects(adapter.close('a'), /stop failed/);
+  const again = await adapter.scope('a');
+  assert.deepEqual([viewerClosed, again.viewer === a.viewer, again.signal.aborted], [true, false, false]);
+  await adapter.dispose();
+});
+
 test('selection never exports through symlinked preview or guide directories', async t => {
   const { root, ctx } = await context(t);
   const external = await mkdtemp(path.join(tmpdir(), 'figlens-external-preview-'));
