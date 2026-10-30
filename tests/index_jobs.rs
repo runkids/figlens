@@ -4768,6 +4768,48 @@ fn a_tracked_scope_publishes_definition_fingerprints_as_an_untracked_build_does(
 }
 
 #[test]
+fn a_library_evaluation_over_a_transiently_stale_source_is_unavailable_not_stored() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.changes(&[]);
+    // Same bytes, newer modification time: stale until a refresh reuses its generation.
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+    std::fs::File::options()
+        .write(true)
+        .open(&t.path)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    let library = t.watch(
+        "subscribe",
+        &[
+            "--consumer",
+            "bot",
+            "--sources",
+            "visible",
+            "--library",
+            "component",
+            "--namespace",
+            "ns",
+            "--key",
+            "k",
+        ],
+    );
+    t.index("refresh");
+    let id = library["subscription"]["subscriptionId"].as_str().unwrap();
+    let evaluated = t.watch("evaluate", &["--subscription", id]);
+    assert_eq!(
+        [
+            &library["evaluation"]["state"],
+            &library["evaluation"]["reason"],
+            &evaluated["evaluation"]["state"]
+        ],
+        [&json!("unavailable"), &json!("stale"), &json!("evaluated")],
+        "{library} {evaluated}"
+    );
+}
+
+#[test]
 fn cli_subscribe_refuses_library_flags_without_library() {
     let env = Env::new();
     let t = Tracked::new(&env);

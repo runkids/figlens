@@ -396,12 +396,25 @@ pub(super) fn compute(
     if published(&ws.conn, source, members, scope)? != *read {
         return Ok(Err(pending("newer_publication", &ws.held.id, sub)));
     }
-    // A library reply has no state: its coverage names each source's.
     if saved.library.is_none() && reply["state"] != "ready" {
         return Ok(Err(
             json!({"state": "unavailable", "reason": reply["state"],
             "sources": reply["sources"], "nextSteps": reply["nextSteps"]}),
         ));
+    }
+    // A library reply has no state: a member its coverage names not ready leaves its uses out, so
+    // storing it would keep that window as current after a refresh reuses the generation.
+    if saved.library.is_some() {
+        let sources = &reply["coverage"]["sources"];
+        if let Some(s) = sources
+            .as_array()
+            .and_then(|s| s.iter().find(|s| s["state"] != "ready"))
+        {
+            return Ok(Err(
+                json!({"state": "unavailable", "reason": s["state"], "sources": sources,
+                "nextSteps": s["nextSteps"]}),
+            ));
+        }
     }
     // Exact refs: in a set a node id alone is ambiguous, so each carries its sourceId.
     let refs = reply["results"]
