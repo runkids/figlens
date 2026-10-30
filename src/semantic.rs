@@ -478,10 +478,14 @@ fn sha256_file(path: &Path, cancel: &AtomicBool) -> Result<String> {
 
 /// Checks each `(file, sha256)` in `dir` and returns them sorted. Every name is a fixed
 /// relative path from a pinned profile, so nothing outside `dir` is read.
-pub fn verify_files(dir: &Path, files: &[(&str, &str)]) -> Result<Vec<(String, String)>> {
+pub fn verify_files(
+    dir: &Path,
+    files: &[(&str, &str)],
+    cancel: &AtomicBool,
+) -> Result<Vec<(String, String)>> {
     let mut checked = Vec::new();
     for (name, digest) in files {
-        let got = sha256_file(&dir.join(name), &AtomicBool::new(false))?;
+        let got = sha256_file(&dir.join(name), cancel)?;
         if got != *digest {
             return Err(fail(format!(
                 "{name} in {} is not the pinned file (sha256 {got}, expected {digest})",
@@ -531,7 +535,7 @@ impl Profile {
             std::fs::canonicalize(exe).map_err(|e| fail(format!("{}: {e}", exe.display())))?;
         let model =
             std::fs::canonicalize(model).map_err(|e| fail(format!("{}: {e}", model.display())))?;
-        let files = verify_files(&model, files)?;
+        let files = verify_files(&model, files, cancel)?;
         let exe_sha = sha256_file(&exe, cancel)?;
         let rt = Runtime::start(&exe, &[&model], cancel)?;
         let (dim, contract) = (rt.dim, rt.hello.clone());

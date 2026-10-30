@@ -494,7 +494,12 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
         .transpose()?;
     let path = figlens::remote::local(file).map_err(|e| contract::source(file, e))?;
     if let Some((request, mode)) = search {
-        out.push_str(&command::search(&path, &request, mode, file)?.text()?);
+        // Ctrl-C stops a model run and its child instead of killing figlens around them.
+        if mode != figlens::semantic::Mode::Text {
+            signals::catch();
+        }
+        let interrupted = &signals::INTERRUPTED;
+        out.push_str(&command::search(&path, &request, mode, file, interrupted)?.text()?);
         return Ok(());
     }
     if let Some(request) = usages {
@@ -1280,13 +1285,13 @@ fn models(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
         (Some("list"), [], None) => profile::list(&storage),
         (Some("status"), [], None) => profile::status(&storage),
         (Some("configure"), [name], Some(model)) => {
-            let never = std::sync::atomic::AtomicBool::new(false);
+            signals::catch();
             profile::configure(
                 &storage,
                 profile::known(name)?,
                 &model,
                 runtime.as_deref(),
-                &never,
+                &signals::INTERRUPTED,
             )
         }
         (Some("remove"), [name], None) => profile::remove(&storage, name),

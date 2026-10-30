@@ -45,11 +45,11 @@ fn pinned_files_refuse_a_changed_file() {
     std::fs::write(dir.join("w"), "weights").unwrap();
     let digest = crate::search::hex(&Sha256::digest("weights"));
     assert_eq!(
-        verify_files(&dir.join(""), &[("w", &digest)])
+        verify_files(&dir.join(""), &[("w", &digest)], &AtomicBool::new(false))
             .unwrap()
             .len(),
         1
     );
     std::fs::write(dir.join("w"), "other").unwrap();
-    assert!(verify_files(&dir.join(""), &[("w", &digest)]).is_err());
+    assert!(verify_files(&dir.join(""), &[("w", &digest)], &AtomicBool::new(false)).is_err());
 }

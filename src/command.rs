@@ -1036,6 +1036,7 @@ pub fn workspace_search_tool(
 pub fn models_tool(
     call: &crate::contract::PreparedCall,
     roots: &[PathBuf],
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<Output, Box<dyn Error>> {
     use figlens::semantic::profile;
     let storage = figlens::workspace::storage(None)?;
@@ -1069,8 +1070,7 @@ pub fn models_tool(
                     .into());
                 }
             }
-            let never = std::sync::atomic::AtomicBool::new(false);
-            profile::configure(&storage, known, &dir, None, &never)?
+            profile::configure(&storage, known, &dir, None, cancel)?
         }
         _ => profile::remove(&storage, needs("profile")?)?,
     };
@@ -1281,12 +1281,12 @@ pub fn search(
     request: &figlens::search::Request,
     mode: Mode,
     label: &str,
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<Output, Box<dyn Error>> {
-    let never = std::sync::atomic::AtomicBool::new(false);
     let found = match mode {
         Mode::Text => figlens::search::search(path, request),
         _ => figlens::workspace::storage(None).and_then(|storage| {
-            figlens::search::semantic::search(path, request, mode, &storage, &never)
+            figlens::search::semantic::search(path, request, mode, &storage, cancel)
         }),
     };
     let value = found.map_err(|e| {

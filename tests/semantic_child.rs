@@ -385,6 +385,70 @@ fn a_fifo_model_file_is_refused_without_blocking() {
     assert!(begun.elapsed() < Duration::from_secs(2));
 }
 
+/// `figlens mcp` with a profile whose child hangs embedding, one semantic search in flight,
+/// then `stop` (a cancel notification, or the end of input) and the reply that comes back.
+#[cfg(target_os = "linux")]
+fn mcp_semantic_search_stopped_by(cancel: bool) {
+    use std::io::{BufRead, BufReader, Write};
+    let dir = test_support::TestDir::new();
+    configured(&dir);
+    let pid_file = std::path::absolute(dir.join("child.pid")).unwrap();
+    let mut mcp = std::process::Command::new(env!("CARGO_BIN_EXE_figlens"))
+        .arg("mcp")
+        .env("SEMANTIC_CHILD_MODE", "hang")
+        .env("SEMANTIC_CHILD_PID", &pid_file)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = mcp.stdin.take().unwrap();
+    let call = json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "search",
+        "arguments": {"file": std::path::absolute(FIG).unwrap(), "query": "task", "mode": "semantic"}}});
+    writeln!(stdin, "{call}").unwrap();
+    let end = Instant::now() + Duration::from_secs(20);
+    while !pid_file.exists() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let pid = std::fs::read_to_string(&pid_file).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let begun = Instant::now();
+    if cancel {
+        let note = json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 7}});
+        writeln!(stdin, "{note}").unwrap();
+        let mut line = String::new();
+        BufReader::new(mcp.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(line.contains("cancelled"), "{line}");
+        drop(stdin);
+    } else {
+        drop(stdin);
+    }
+    let status = mcp.wait().unwrap();
+    assert!(status.success() || !cancel, "{status:?}");
+    assert!(
+        begun.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        begun.elapsed()
+    );
+    let gone = || {
+        std::fs::read_to_string(format!("/proc/{}/stat", pid.trim()))
+            .map(|s| s.split_whitespace().nth(2) == Some("Z"))
+            .unwrap_or(true)
+    };
+    assert!(gone(), "model child {pid} still running");
+}
+
+#[cfg(target_os = "linux")]
+fn mcp_cancel_stops_an_in_flight_semantic_search_and_its_child() {
+    mcp_semantic_search_stopped_by(true);
+}
+
+#[cfg(target_os = "linux")]
+fn mcp_end_of_input_stops_an_in_flight_semantic_search_and_its_child() {
+    mcp_semantic_search_stopped_by(false);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     // `__child <mode>` from `start`, or `<model-dir>` alone as a configured profile runs it.
@@ -393,7 +457,11 @@ fn main() {
         return;
     }
     if args.len() == 2 && Path::new(&args[1]).is_dir() {
-        child("ok").unwrap();
+        // Started by figlens as a configured profile: the test chooses its mode and learns its pid.
+        if let Ok(file) = std::env::var("SEMANTIC_CHILD_PID") {
+            std::fs::write(file, std::process::id().to_string()).unwrap();
+        }
+        child(&std::env::var("SEMANTIC_CHILD_MODE").unwrap_or("ok".into())).unwrap();
         return;
     }
     let tests: Vec<(&str, fn())> = vec![
@@ -454,6 +522,16 @@ fn main() {
         (
             "a_fifo_model_file_is_refused_without_blocking",
             a_fifo_model_file_is_refused_without_blocking,
+        ),
+        #[cfg(target_os = "linux")]
+        (
+            "mcp_cancel_stops_an_in_flight_semantic_search_and_its_child",
+            mcp_cancel_stops_an_in_flight_semantic_search_and_its_child,
+        ),
+        #[cfg(target_os = "linux")]
+        (
+            "mcp_end_of_input_stops_an_in_flight_semantic_search_and_its_child",
+            mcp_end_of_input_stops_an_in_flight_semantic_search_and_its_child,
         ),
     ];
     let filter = args.iter().skip(1).find(|a| !a.starts_with('-'));
