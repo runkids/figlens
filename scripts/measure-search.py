@@ -23,29 +23,43 @@ baseline = import_module('measure-baseline')
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def windows_memory(handle):
+    """(WorkingSetSize, PeakWorkingSetSize); an exited process keeps them while its handle is open."""
+    import ctypes
+    counters = (ctypes.c_size_t * 10)()  # PROCESS_MEMORY_COUNTERS_EX; cb and PageFaultCount share slot 0
+    counters[0] = ctypes.sizeof(counters)
+    assert ctypes.windll.kernel32.K32GetProcessMemoryInfo(ctypes.c_void_p(int(handle)), counters, ctypes.sizeof(counters))
+    return counters[2], counters[1]
+
+
 def run(command, cwd, env):
-    """Elapsed ms, the child's own peak RSS (wait4) and stdout."""
+    """Elapsed ms, the child's own peak RSS (wait4, or the peak working set on Windows) and stdout."""
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
         start = time.perf_counter()
         process = subprocess.Popen(list(map(str, command)), cwd=cwd, env=env,
                                    stdout=stdout, stderr=stderr, start_new_session=True)
         deadline = time.monotonic() + 60
         try:
-            while True:
-                pid, status, usage = os.wait4(process.pid, os.WNOHANG)
-                if pid:
-                    break
-                if time.monotonic() >= deadline:
-                    raise TimeoutError('command exceeded 60 seconds')
-                time.sleep(.001)
+            if os.name == 'nt':
+                code = process.wait(timeout=60)
+                peak = windows_memory(process._handle)[1]
+            else:
+                while True:
+                    pid, status, usage = os.wait4(process.pid, os.WNOHANG)
+                    if pid:
+                        break
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError('command exceeded 60 seconds')
+                    time.sleep(.001)
+                code = os.waitstatus_to_exitcode(status)
+                peak = usage.ru_maxrss * (1 if sys.platform == 'darwin' else 1024)
         except BaseException:
             stop_process(process)
             raise
         elapsed = (time.perf_counter() - start) * 1000
         stdout.seek(0)
         stderr.seek(0)
-        assert os.waitstatus_to_exitcode(status) == 0, stderr.read().decode()
-        peak = usage.ru_maxrss * (1 if sys.platform == 'darwin' else 1024)
+        assert code == 0, stderr.read().decode()
         return elapsed, peak, stdout.read().decode()
 
 
