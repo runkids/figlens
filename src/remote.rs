@@ -1,5 +1,6 @@
 //! `gs://` inputs, fetched with the user's `gcloud` login and cached per object generation:
-//! an unchanged object downloads once, a re-uploaded one is fetched again.
+//! an unchanged object downloads once, a re-uploaded one is fetched again. Each download names
+//! the generation it was looked up at (`URI#G`), so the cached bytes are that generation's.
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -12,6 +13,12 @@ pub fn local(input: &str) -> Result<PathBuf, Box<dyn Error>> {
     if !input.starts_with("gs://") {
         return Ok(PathBuf::from(input));
     }
+    Ok(fetch(input)?.0)
+}
+
+/// The cached copy of the `gs://` object `input` and the generation its bytes were downloaded
+/// at: the current one, looked up first, then fetched pinned to it.
+pub fn fetch(input: &str) -> Result<(PathBuf, String), Box<dyn Error>> {
     let generation = gcloud(&[
         "storage",
         "objects",
@@ -19,13 +26,13 @@ pub fn local(input: &str) -> Result<PathBuf, Box<dyn Error>> {
         input,
         "--format=value(generation)",
     ])?;
-    let generation = generation.trim();
+    let generation = generation.trim().to_owned();
     if generation.is_empty() || !generation.bytes().all(|b| b.is_ascii_digit()) {
         return Err(format!("{input}: unexpected generation {generation:?} from gcloud").into());
     }
-    let path = cache_path(&cache_root()?, input, generation);
+    let path = cache_path(&cache_root()?, input, &generation);
     if path.exists() {
-        return Ok(path);
+        return Ok((path, generation));
     }
     let dir = path.parent().ok_or("cache path has no parent")?;
     std::fs::create_dir_all(dir)?;
@@ -34,24 +41,27 @@ pub fn local(input: &str) -> Result<PathBuf, Box<dyn Error>> {
         std::fs::remove_file(entry?.path())?;
     }
     let part = path.with_extension("part");
+    // Pinned: an upload replacing the object meanwhile fails this copy instead of changing it.
     gcloud(&[
         "storage",
         "cp",
-        input,
+        &format!("{input}#{generation}"),
         part.to_str().ok_or("cache path is not UTF-8")?,
     ])?;
     std::fs::rename(&part, &path)?;
-    Ok(path)
+    Ok((path, generation))
 }
 
-/// `<root>/<sha256 of the URL>/<generation>.fig`; hashing keeps object names like `../x` inside the cache.
+/// `<root>/<sha256 of the URL>/<generation>.pinned.fig`; hashing keeps object names like `../x`
+/// inside the cache. Only pinned downloads use the name: older unpinned `<generation>.fig`
+/// copies are never reused as that generation.
 fn cache_path(root: &Path, input: &str, generation: &str) -> PathBuf {
     let hash: String = Sha256::digest(input.as_bytes())
         .iter()
         .take(16)
         .map(|b| format!("{b:02x}"))
         .collect();
-    root.join(hash).join(format!("{generation}.fig"))
+    root.join(hash).join(format!("{generation}.pinned.fig"))
 }
 
 pub(crate) fn cache_root() -> Result<PathBuf, Box<dyn Error>> {
