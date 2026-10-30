@@ -1051,6 +1051,43 @@ fn a_directory_add_over_mcp_stays_inside_its_roots_and_the_cli_dry_run_writes_no
     assert_eq!(status["sources"].as_array().unwrap().len(), 1);
 }
 
+#[test]
+fn an_mcp_directory_add_continues_with_its_cursor_until_none_is_left() {
+    let env = Env::new();
+    let dir = project(&env);
+    let files = dir.join("designs");
+    std::fs::create_dir(&files).unwrap();
+    for n in 0..12 {
+        std::fs::copy(
+            "examples/first-success/design.fig",
+            files.join(format!("d{n:02}.fig")),
+        )
+        .unwrap();
+    }
+    let seed = dir.join("seed.fig");
+    std::fs::copy("examples/first-success/design.fig", &seed).unwrap();
+    let ws = env.json(&[
+        "index",
+        "prepare",
+        seed.to_str().unwrap(),
+        "--workspace",
+        dir.to_str().unwrap(),
+    ]);
+    let mut mcp = Mcp::start(&env, &[]);
+    let mut add = json!({"action": "add", "file": files, "workspaceId": ws["workspaceId"]});
+    let first = mcp.call("index", add.clone());
+    assert_eq!(first["isError"], false, "{first}");
+    let page = &first["structuredContent"]["directory"];
+    assert_eq!(page["added"].as_array().unwrap().len(), 10, "{first}");
+    assert!(page["nextCursor"].is_string(), "{first}");
+    add["cursor"] = page["nextCursor"].clone();
+    let second = mcp.call("index", add);
+    assert_eq!(second["isError"], false, "{second}");
+    let page = &second["structuredContent"]["directory"];
+    assert_eq!(page["added"].as_array().unwrap().len(), 2, "{second}");
+    assert!(page["nextCursor"].is_null(), "{second}");
+}
+
 const OBJECT: &str = "gs://example-bucket/designs/home.fig";
 
 /// A `gcloud` stand-in on the test PATH serving the public fixture as the generation in

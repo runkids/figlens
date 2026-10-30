@@ -196,7 +196,7 @@ Ciclo de vida: `refresh` reconstruye solo los ámbitos cuyos bytes del `.fig` ca
 
 ¿Moviste el `.fig`? `index relocate` conserva `workspaceId`, `sourceId` y el almacenamiento; después haz `refresh` de los ámbitos afectados. No hay autodescubrimiento ni fusión por hash, y no hace falta reset.
 
-¿Varios diseños en una carpeta? `index add <dir> --workspace DIR` registra en un solo paso hasta 10 archivos `.fig` de ese directorio y omite los enlaces que salen de él; la respuesta indica `added`, `existing`, `skipped` y `truncated`, repetirlo no añade nada y cada archivo sigue necesitando su propio `prepare --scope`. Un archivo movido dentro de la carpeta es una fuente nueva, salvo que uses `relocate`.
+¿Varios diseños en una carpeta? `index add <dir> --workspace DIR` registra en un solo paso hasta 10 archivos `.fig` de ese directorio y omite los enlaces que salen de él; la respuesta indica `added`, `existing`, `skipped` y `truncated`, repetirlo no añade nada y cada archivo sigue necesitando su propio `prepare --scope`. Un archivo movido dentro de la carpeta es una fuente nueva, salvo que uses `relocate`. Pasa el `nextCursor` de la respuesta como `--cursor C` (MCP `cursor`) para añadir los 10 siguientes.
 
 Datos: la base de datos SQLite contiene rutas locales registradas, nombres de capas y texto efectivo de los ámbitos elegidos, postings de búsqueda, relaciones exactas (contención, instancias, variantes, enlaces de variables/estilos/imágenes, destinos de prototipo) y las definiciones a las que apuntan, hashes, generaciones y jobs. El `.fig` original permanece sin cambios donde está; sus bytes sin procesar no se guardan en la base de datos.
 

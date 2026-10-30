@@ -196,7 +196,7 @@ Cycle de vie : `refresh` reconstruit seulement les portées dont les octets du `
 
 `.fig` déplacé ? `index relocate` garde `workspaceId`, `sourceId` et le stockage ; faites ensuite `refresh` des portées concernées. Pas de découverte automatique ni de fusion par hash, et aucun reset n'est nécessaire.
 
-Plusieurs designs dans un dossier ? `index add <dir> --workspace DIR` enregistre en une fois jusqu'à 10 fichiers `.fig` de ce répertoire et ignore les liens qui en sortent ; la réponse liste `added`, `existing`, `skipped` et `truncated`, une répétition n'ajoute rien, et chaque fichier a toujours besoin de son propre `prepare --scope`. Un fichier déplacé dans le dossier est une nouvelle source, sauf avec `relocate`.
+Plusieurs designs dans un dossier ? `index add <dir> --workspace DIR` enregistre en une fois jusqu'à 10 fichiers `.fig` de ce répertoire et ignore les liens qui en sortent ; la réponse liste `added`, `existing`, `skipped` et `truncated`, une répétition n'ajoute rien, et chaque fichier a toujours besoin de son propre `prepare --scope`. Un fichier déplacé dans le dossier est une nouvelle source, sauf avec `relocate`. Passez le `nextCursor` de la réponse en `--cursor C` (MCP `cursor`) pour ajouter les 10 suivants.
 
 Données : la base SQLite contient les chemins locaux enregistrés, les noms de calques et le texte effectif des portées choisies, les postings de recherche, les relations exactes (imbrication, instances, variantes, liaisons de variables/styles/images, cibles de prototype) et les définitions qu'elles désignent, les hashes, les générations et les jobs. Le `.fig` d'origine reste inchangé où il est ; ses octets bruts ne sont pas stockés dans la base.
 
