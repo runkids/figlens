@@ -9,7 +9,7 @@ import { Container, Image, Input, Markdown, SelectList, fuzzyFilter, truncateToW
 import { Workflow } from './workflow.mjs';
 import { Viewer } from './viewer.mjs';
 import { buildRequest } from './requests.mjs';
-import { ENTRY, Targets, bounded, changesArgs, check, failure, notice, restore as restoreTargets } from './stale.mjs';
+import { ENTRY, Targets, bounded, changesArgs, check, failure, notice, reader, restore as restoreTargets } from './stale.mjs';
 
 const HELP = [
   "## figlens",
@@ -261,9 +261,12 @@ export default function figlens(pi: ExtensionAPI) {
   let targets = new Targets();
   let note: string | undefined;
   let checks = new AbortController();
-  pi.on('session_shutdown', async () => { checks.abort(); await viewer.close(); });
+  // Readers still running; a shutdown or session change waits for them to exit (each is bounded).
+  const reading = new Set<Promise<unknown>>();
+  const stopChecks = async () => { checks.abort(); await Promise.allSettled([...reading]); };
+  pi.on('session_shutdown', async () => { await stopChecks(); await viewer.close(); });
   const restore = async (_event: unknown, ctx: ExtensionContext) => {
-    checks.abort();
+    await stopChecks();
     checks = new AbortController();
     targets = restoreTargets(ctx.sessionManager.getBranch());
     note = undefined;
@@ -278,8 +281,12 @@ export default function figlens(pi: ExtensionAPI) {
   pi.on('before_agent_start', async (event, ctx) => {
     if (event.messageType === 'custom') return;
     note = targets.list.length ? notice(await check(targets.turn(), async (target, signal) => {
-      // pi.exec buffers a whole reply, so the check reads through a byte-bounded child instead.
-      const execution = await bounded(binary, [...prefix, ...changesArgs(target)], { cwd: ctx.cwd, signal });
+      // pi.exec buffers a whole reply, so the check reads through a byte-bounded child of the native binary instead.
+      const [command, ...first] = reader();
+      const run = bounded(command, [...first, ...changesArgs(target)], { cwd: ctx.cwd, signal });
+      reading.add(run);
+      run.then(() => reading.delete(run), () => reading.delete(run));
+      const execution = await run;
       if (execution.code !== 0) throw failure(execution.stderr);
       return JSON.parse(execution.stdout);
     }, AbortSignal.any([checks.signal, ...(ctx.signal ? [ctx.signal] : [])])), targets.dropped) : undefined;

@@ -3,6 +3,11 @@
 // checkpoint itself stays in the workspace database and only an explicit watch ack moves it.
 
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** Targets checked before one turn; the rest wait for a later turn and are reported as unchecked. */
 export const CHECKED = 4;
@@ -14,6 +19,8 @@ export const DEADLINE = 4000;
 export const OUTPUT = 64 * 1024;
 /** The largest kept selector value, in UTF-8 bytes. */
 export const SELECTOR_BYTES = 512;
+/** The largest kept target, serialized, so a fact can always carry its whole target. */
+export const TARGET_BYTES = 2048;
 /** The largest serialized facts of one note, in UTF-8 bytes; later facts are counted as omitted. */
 export const NOTICE_BYTES = 16 * 1024;
 /** The session entry that keeps a session's targets. */
@@ -26,9 +33,22 @@ const WATCH = /^(?:mcp__)?figlens(?:mcp)?_{1,2}watch$/;
 const text = value => typeof value === 'string' && value.length > 0 ? value : undefined;
 const encoder = new TextEncoder();
 const bytes = value => encoder.encode(typeof value === 'string' ? value : JSON.stringify(value)).length;
+// UTF-8 length of a string without copying it, stopping once past `limit`: a UTF-16 unit is at least one byte.
+const within = (value, limit) => {
+  if (value.length > limit) return false;
+  let n = 0;
+  for (let i = 0; i < value.length && n <= limit; i++) {
+    const unit = value.charCodeAt(i);
+    if (unit < 0x80) n += 1;
+    else if (unit < 0x800) n += 2;
+    else if (unit >= 0xd800 && unit <= 0xdbff && i + 1 < value.length) { n += 4; i++; }
+    else n += 3;
+  }
+  return n <= limit;
+};
 const FIELDS = ['workspaceId', 'subscriptionId', 'consumer', 'owner', 'sourceId', 'scope', 'storage'];
 // A selector becomes a CLI argument and note text: bounded, without control characters.
-const selector = value => typeof value === 'string' && value.length > 0 && bytes(value) <= SELECTOR_BYTES && !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value);
+const selector = value => typeof value === 'string' && value.length > 0 && within(value, SELECTOR_BYTES) && !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value);
 const defined = t => Object.fromEntries(Object.entries(t).filter(([, v]) => v !== undefined));
 // A subscription is one checkpoint whatever its consumer; a raw consumer checkpoint is one per filter.
 const identity = t => JSON.stringify(t.subscriptionId ? [t.workspaceId, t.subscriptionId, t.storage ?? null]
@@ -47,6 +67,7 @@ export class Targets {
     // A restored session file is input too: only the selector fields are kept, each bounded.
     if (FIELDS.some(key => t[key] !== undefined && !selector(t[key]))) { this.dropped++; return false; }
     t = defined(Object.fromEntries(FIELDS.map(key => [key, t[key]])));
+    if (bytes(t) > TARGET_BYTES) { this.dropped++; return false; }
     if (this.list.some(other => identity(other) === identity(t))) return false;
     if (this.list.length >= KEPT) { this.dropped++; return false; }
     this.list.push(t);
@@ -146,31 +167,49 @@ function bound(fact) {
   if (bytes(fact) <= FACT_BYTES) return fact;
   const unread = fact.unread && selector(fact.unread.revisionId ?? fact.unread.evaluationId)
     ? defined({ revisionId: fact.unread.revisionId, evaluationId: fact.unread.evaluationId }) : undefined;
-  // Only the target's identity: three bounded selectors fit the budget whatever they escape to.
-  const { workspaceId, subscriptionId, consumer } = fact.target;
-  return defined({ target: defined({ workspaceId, subscriptionId, consumer: subscriptionId ? undefined : consumer }), unread, unchecked: fact.unchecked === undefined ? undefined : 'the check failed', factTruncated: true });
+  // The whole target, never a shortened one that names a wider checkpoint: TARGET_BYTES keeps it within the budget.
+  return defined({ target: fact.target, unread, unchecked: fact.unchecked === undefined ? undefined : 'the check failed', factTruncated: true });
 }
 
 const STDERR_TAIL = 8 * 1024;
+const STOP_MS = 2000;
+
+/** The command a check runs, as [command, ...args]: FIGLENS_BIN, else a bundled package's version-matched cached
+ * native binary (what its launcher runs, so stopping it stops the reader on every platform), else `figlens`. */
+export function reader(entry = import.meta.url) {
+  if (process.env.FIGLENS_BIN) return [process.env.FIGLENS_BIN];
+  if (!existsSync(fileURLToPath(new URL('../bin/figlens.js', entry)))) return ['figlens'];
+  const require = createRequire(entry);
+  const cache = path.join(process.env.XDG_CACHE_HOME || (process.platform === 'win32' && process.env.LOCALAPPDATA) || path.join(homedir(), '.cache'), 'figlens');
+  const native = require('../target.js').cachedBinary(cache, process.platform, process.arch, require('../package.json').version);
+  if (!existsSync(native)) throw new Error(`figlens's cached binary is missing at ${native}; call a figlens tool once to install it`);
+  return [native];
+}
 
 /** Runs the binary with stdout read up to `limit` bytes and only stderr's last 8 KiB kept (its recovery line is
- * last): past the limit, on abort or a spawn error the child's process group is killed and the run rejects at
- * once, so a reply is never buffered whole and a wrapper's own child is not left running. */
+ * last): past the limit, on abort or a spawn error the child (its process group outside Windows) is killed and the
+ * run rejects once it has exited, so a reply is never buffered whole. */
 export function bounded(command, args, { cwd, signal, limit = OUTPUT }) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(signal.reason);
     const group = process.platform !== 'win32';
     const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: group });
     const stdout = [];
-    let size = 0, stderr = Buffer.alloc(0), settled = false;
+    let size = 0, stderr = Buffer.alloc(0), settled = false, exited = child.exitCode !== null;
+    child.on('exit', () => { exited = true; });
     const done = () => { settled = true; signal?.removeEventListener('abort', abort); };
+    // A failed run rejects only once its child has exited, or says it could not stop it within STOP_MS.
     const fail = error => {
       if (settled) return;
       done();
       try { if (group && child.pid) process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); } catch { /* already gone */ }
       child.stdout.destroy();
       child.stderr.destroy();
-      reject(error);
+      // A new error per run: an abort reason is shared by the whole batch.
+      const stopped = Object.assign(new Error(error?.message ?? 'cancelled', { cause: error }), { pid: child.pid });
+      if (exited || !child.pid) return reject(stopped);
+      const timer = setTimeout(() => reject(Object.assign(new Error(`could not stop the changes reader ${child.pid} within ${STOP_MS} ms`), { pid: child.pid, cause: stopped })), STOP_MS);
+      child.once('exit', () => { clearTimeout(timer); reject(stopped); });
     };
     const abort = () => fail(signal.reason);
     signal?.addEventListener('abort', abort, { once: true });
