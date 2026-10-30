@@ -227,6 +227,10 @@ fn reply_with(
                 terms: q.terms.clone(),
             };
             let (hits, _, excluded) = retrieve(&[index], &first, &wide, cancel);
+            // A cancelled ranking stops early; never answer it as a complete page.
+            if cancel.load(Ordering::SeqCst) {
+                return Err(FigError::new(ErrorKind::Cancelled, "search cancelled").into());
+            }
             (hits, excluded)
         }
         _ => (Vec::new(), [0, 0]),
