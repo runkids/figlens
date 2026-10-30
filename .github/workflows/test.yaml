@@ -83,6 +83,9 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
+      - name: Windows installer swaps its pair as one
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/install-ps1.test.ps1
       - name: Pi viewer process lifecycle
         run: node --test pi/viewer.test.mjs
       - name: OpenCode watch holder process lifecycle

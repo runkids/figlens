@@ -1658,13 +1658,15 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
     let halt = AtomicBool::new(false);
     let (to_worker, jobs) = std::sync::mpsc::channel::<Work>();
     let (done, finished) = std::sync::mpsc::channel::<Done>();
-    // Embed jobs this runner owns, run apart from refreshes; an exit cancels the running one.
+    // Embed jobs this runner owns, run apart from refreshes. Like refreshes they take `cancel`,
+    // never `quit`: an exit cancels only unshared jobs through their rows (`cancel_exclusive`),
+    // so an embed another caller joined still finishes.
     let (to_model, models) = std::sync::mpsc::channel::<String>();
     std::thread::scope(|scope| -> Result<()> {
         let (cancel, quit, idle, halt) = (&cancel, &quit, &idle, &halt);
         scope.spawn(move || {
             for id in models {
-                let _ = super::jobs::run(storage, ws_id, &id, quit, &mut |_| {});
+                let _ = super::jobs::run(storage, ws_id, &id, cancel, &mut |_| {});
             }
         });
         scope.spawn(move || {
