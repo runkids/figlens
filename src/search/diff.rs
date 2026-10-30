@@ -2323,6 +2323,139 @@ pub(crate) struct Revision {
     pub impact: Impact,
 }
 
+/// Every impact reason a revision can carry, so one read back from JSON keeps static names.
+/// A name missing here makes `Revision::from_json` refuse, and its caller compare again.
+const REASONS: [&str; 11] = [
+    "budget_unknown",
+    "comparison_unknown",
+    "depth_limit",
+    "frames_unknown",
+    "hit_limit",
+    "queue_limit",
+    "relation_unverified",
+    "relations_unavailable",
+    "seed_unknown",
+    "seeds_truncated",
+    "source_comparison_partial",
+];
+
+impl Revision {
+    /// The revision as one JSON value, which `from_json` reads back unchanged.
+    pub(crate) fn to_json(&self) -> Json {
+        let rows: Vec<Json> = self
+            .rows
+            .iter()
+            .map(|r| json!([r.frame, r.node, r.kind, r.change, r.facets, r.descendants]))
+            .collect();
+        let hits: Vec<Json> = self
+            .impact
+            .hits
+            .iter()
+            .map(|h| {
+                let (relation, target) = h.via.as_ref().map(|(r, t)| (*r, t.as_str())).unzip();
+                json!([
+                    h.node,
+                    h.class.name(),
+                    h.side,
+                    h.changed,
+                    h.unknown,
+                    h.equal,
+                    relation,
+                    target,
+                    h.frames[0],
+                    h.frames[1]
+                ])
+            })
+            .collect();
+        json!({
+            "coverage": self.coverage, "summary": self.summary, "rows": rows,
+            "truncated": self.truncated,
+            "impact": {"hits": hits, "complete": self.impact.complete, "reasons": self.impact.reasons},
+        })
+    }
+
+    /// The revision `to_json` wrote; `None` for anything else.
+    pub(crate) fn from_json(v: &Json) -> Option<Revision> {
+        use super::impact::{Class, Hit};
+        fn name(list: &[&'static str], v: &Json) -> Option<&'static str> {
+            list.iter().find(|k| v.as_str() == Some(**k)).copied()
+        }
+        let text = |v: &Json| v.as_str().map(str::to_owned);
+        let small = |v: &Json| v.as_u64().and_then(|n| u8::try_from(n).ok());
+        let changes = [
+            Kind::Added,
+            Kind::Removed,
+            Kind::Changed,
+            Kind::Retyped,
+            Kind::Unknown,
+        ]
+        .map(Kind::name);
+        let classes = [
+            Class::Direct,
+            Class::Effective,
+            Class::EffectiveUnchanged,
+            Class::Possible,
+        ];
+        let relations: Vec<&'static str> = super::usages::STORED
+            .into_iter()
+            .chain([super::usages::LIBRARY])
+            .collect();
+        let rows = v["rows"]
+            .as_array()?
+            .iter()
+            .map(|r| {
+                Some(Row {
+                    frame: text(&r[0])?,
+                    node: text(&r[1])?,
+                    kind: text(&r[2])?,
+                    change: name(&changes, &r[3])?,
+                    facets: small(&r[4])?,
+                    descendants: r[5].as_u64().and_then(|n| u32::try_from(n).ok())?,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let hits = v["impact"]["hits"]
+            .as_array()?
+            .iter()
+            .map(|h| {
+                let frame = |v: &Json| match v {
+                    Json::Null => Some(None),
+                    v => text(v).map(Some),
+                };
+                Some(Hit {
+                    node: text(&h[0])?,
+                    class: *classes.iter().find(|c| h[1].as_str() == Some(c.name()))?,
+                    side: small(&h[2])?,
+                    changed: small(&h[3])?,
+                    unknown: small(&h[4])?,
+                    equal: small(&h[5])?,
+                    via: match (&h[6], &h[7]) {
+                        (Json::Null, Json::Null) => None,
+                        (r, t) => Some((name(&relations, r)?, text(t)?)),
+                    },
+                    frames: [frame(&h[8])?, frame(&h[9])?],
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let reasons = v["impact"]["reasons"]
+            .as_object()?
+            .iter()
+            .map(|(k, n)| Some((name(&REASONS, &json!(k))?, n.as_u64()?)))
+            .collect::<Option<std::collections::BTreeMap<_, _>>>()?;
+        Some(Revision {
+            coverage: v["coverage"].clone(),
+            summary: v["summary"].clone(),
+            rows,
+            truncated: v["truncated"].as_bool()?,
+            impact: Impact {
+                hits,
+                complete: v["impact"]["complete"].as_bool()?,
+                reasons,
+            },
+        })
+    }
+}
+
 /// Compares stored generations `old` and `new` of `scope` as a live diff of them would, keeping at most
 /// `bytes` of change rows.
 pub(crate) fn revision(
@@ -2332,15 +2465,48 @@ pub(crate) fn revision(
     scope: &str,
     bytes: usize,
 ) -> Result<Revision, Box<dyn Error>> {
-    // Its own bounds, sized as the pair's: the walk reads the indexes the pair already holds.
-    let bounds = Bounds {
+    revision_with(conn, old, new, scope, bytes, revision_bounds())
+}
+
+/// `revision` of stored generation `old` against the new generation its build just saved,
+/// still in memory: the index and tracked facets it wrote, so they are not read back.
+pub(crate) fn revision_live(
+    conn: &rusqlite::Connection,
+    old: (i64, Json),
+    new: (Index, Tracked, Json),
+    scope: &str,
+    bytes: usize,
+) -> Result<Revision, Box<dyn Error>> {
+    let (index, tracked, source) = new;
+    let new = Side {
+        signature: format!("{}:{}", index.generation, index.stop.unwrap_or("")),
+        source,
+        index,
+        facets: tracked.facets,
+        path: PathBuf::new(),
+        stamp: (SystemTime::UNIX_EPOCH, 0),
+        present: tracked.present,
+        origin: tracked.origin,
+        inherited: tracked.inherited,
+    };
+    revise(
+        stored(conn, old.0, old.1)?,
+        new,
+        scope,
+        bytes,
+        revision_bounds(),
+    )
+}
+
+/// A revision's own bounds, sized as the pair's: the walk reads the indexes the pair already holds.
+fn revision_bounds() -> Bounds {
+    Bounds {
         work: PAIR_WORK,
         bytes: PAIR_BYTES,
         depth: DEPTH,
         deadline: Instant::now() + DEADLINE,
         stop: None,
-    };
-    revision_with(conn, old, new, scope, bytes, bounds)
+    }
 }
 
 /// `revision` with the impact walk's bounds, which also pay for its seeds.
@@ -2350,14 +2516,25 @@ fn revision_with(
     new: (i64, Json),
     scope: &str,
     bytes: usize,
-    mut bounds: Bounds,
+    bounds: Bounds,
 ) -> Result<Revision, Box<dyn Error>> {
-    let pair = compare(
+    revise(
         stored(conn, old.0, old.1)?,
         stored(conn, new.0, new.1)?,
         scope,
-        PAIR_WORK,
-    );
+        bytes,
+        bounds,
+    )
+}
+
+fn revise(
+    old: Side,
+    new: Side,
+    scope: &str,
+    bytes: usize,
+    mut bounds: Bounds,
+) -> Result<Revision, Box<dyn Error>> {
+    let pair = compare(old, new, scope, PAIR_WORK);
     let (mut kinds, mut facets) = ([0u32; 5], vec![0u32; FACETS.len() + 1]);
     let (mut rows, mut used, mut truncated) = (Vec::new(), 0, false);
     let (mut seeds, mut omitted) = (Vec::new(), 0u64);

@@ -3641,3 +3641,59 @@ fn a_search_cursor_past_its_lease_is_expired_not_stale() {
     let old = at(issued - crate::search::CURSOR_LEASE_MS - 1000);
     assert_eq!(kind_of_error(search(Some(&old))), ErrorKind::CursorExpired);
 }
+
+/// What `reported` gives for a worker comparison made at epoch 4 against generation 7, once
+/// the scope's tracking and the job's expected generation read `(state, epoch, expected)`.
+fn reported_at(state: &str, epoch: i64, expected: i64) -> Option<i64> {
+    let d = TestDir::new();
+    let (_, _, dir) = workspace(&d, 1);
+    let conn = connection(&dir);
+    let source = sources(&conn).swap_remove(0);
+    let id = job(&conn, &source, "0:0", "running", "me", 1);
+    conn.execute(
+        "UPDATE jobs SET expected_gen = ?2 WHERE job_id = ?1",
+        params![id, expected],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
+         VALUES (?1, '0:0', ?2, ?3, 'v', 0)",
+        params![source, state, epoch],
+    )
+    .unwrap();
+    let planned = Planned {
+        epoch: 4,
+        from: 7,
+        what: Err("previous_untracked"),
+    };
+    let built = json!({"planned": planned.to_json()});
+    reported(&conn, &id, &built).unwrap().map(|p| p.from)
+}
+
+#[test]
+fn a_worker_comparison_is_used_only_while_its_epoch_and_generation_still_hold() {
+    let got = [
+        reported_at("active", 4, 7),
+        reported_at("active", 5, 7),
+        reported_at("active", 4, 8),
+        reported_at("baseline_pending", 4, 7),
+    ];
+    assert_eq!(got, [Some(7), None, None, None]);
+}
+
+#[test]
+fn a_worker_line_past_its_limit_leaves_the_comparison_to_the_owner() {
+    let planned = Planned {
+        epoch: 1,
+        from: 2,
+        what: Ok(Err("x".repeat(100))),
+    };
+    let mut fits = json!({"gen": 3});
+    report_planned(&mut fits, &planned, 1024);
+    let mut over = json!({"gen": 3});
+    report_planned(&mut over, &planned, 64);
+    assert_eq!(
+        (fits["planned"]["from"].clone(), over),
+        (json!(2), json!({"gen": 3}))
+    );
+}

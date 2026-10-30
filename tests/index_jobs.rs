@@ -2980,6 +2980,26 @@ fn a_tracking_change_after_the_comparison_records_a_baseline_not_a_gap() {
 }
 
 #[test]
+fn a_tracking_change_after_the_worker_compared_is_compared_again_not_published_stale() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    // The worker compares before its verify stage, so this holds it with its comparison made.
+    let gate = env.gate("verify.hold");
+    let mut owner = env.spawn(
+        &["index", "refresh", "--file", &t.file],
+        Some(("verify", &gate)),
+    );
+    let reached = PathBuf::from(format!("{}.reached", gate.display()));
+    wait_for("the worker's comparison", || reached.exists());
+    t.sql("UPDATE tracking SET epoch = epoch + 1");
+    std::fs::remove_file(&gate).unwrap();
+    assert!(owner.wait().unwrap().success());
+    // A stale comparison would record a `tracking_changed` baseline; the owner's own is current.
+    assert_eq!(t.revisions().last().unwrap()[0], json!("changes"));
+}
+
+#[test]
 fn relocating_a_tracked_source_keeps_its_history_and_removing_it_deletes_it() {
     let env = Env::new();
     let t = Tracked::new(&env);
