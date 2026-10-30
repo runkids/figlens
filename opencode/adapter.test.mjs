@@ -547,13 +547,15 @@ test('CLI-path subscription reads ask read on exactly the subscription\'s source
   await adapter.cli(await session('changes'), 'changes', { workspaceId: 'ws_1', subscriptionId: 'one' });
   assert.deepEqual([asked, ran], [[[a, realA], [a, realA]], ['status', 'list', 'evaluate', 'status', 'list', 'changes']]);
   // A set, a source the caller narrows away, an unreadable set and an unseen subscription all ask B: nothing runs.
+  // evaluate refuses any sourceId outright, so the cases that pass one go through changes, where it is a real filter.
+  const read = more => more.sourceId === undefined ? evaluate(more)
+    : session(JSON.stringify(more)).then(s => adapter.cli(s, 'changes', { workspaceId: 'ws_1', ...more }));
   for (const more of [{ subscriptionId: 'set' }, { subscriptionId: 'set', sourceId: 'A' }, { subscriptionId: 'other', sourceId: 'A' },
     { subscriptionId: 'unreadable' }, { subscriptionId: 'unseen', sourceId: 'A' }]) {
     ran = [];
-    await assert.rejects(evaluate(more), /read denied/);
-    // One indexed list read per call, never a page walk.
-    assert.ok(asked.at(-1).includes(b) && !ran.includes('evaluate') && ran.filter(r => r === 'list').length === 1,
-      JSON.stringify([more, asked.at(-1), ran]));
+    await assert.rejects(read(more), /read denied/);
+    // One indexed list read per call, never a page walk, and nothing after it.
+    assert.deepEqual([asked.at(-1).includes(b), ran], [true, ['status', 'list']], JSON.stringify(more));
   }
   assert.deepEqual(asked.at(-1), [a, realA, b, realB], 'an unseen subscription asks every source');
   // search and usages ignore a subscriptionId, so it never narrows their ask: B is asked, and nothing runs.
@@ -564,7 +566,7 @@ test('CLI-path subscription reads ask read on exactly the subscription\'s source
   }
 });
 
-test('CLI-path evaluate refuses any sourceId before asking or running, and otherwise asks read on every source', async t => {
+test('CLI-path evaluate refuses any sourceId before asking or running, and otherwise asks read on every source of an unlisted subscription', async t => {
   const { root, ctx, adapter } = await context(t);
   const designs = ['one.fig', 'two.fig'].map(name => path.join(root, name));
   for (const design of designs) await writeFile(design, '');
@@ -584,13 +586,14 @@ test('CLI-path evaluate refuses any sourceId before asking or running, and other
   for (const sourceId of ['nonexistent', 's1', 's2']) await assert.rejects(evaluate(sourceId), /takes no sourceId/);
   assert.deepEqual([asked, ran], [[], []]);
   denied = designs[1];
+  // This fake lists no subscription, so the lookup finds nothing and every source is asked.
   await assert.rejects(evaluate(undefined), /read denied/);
-  assert.deepEqual(ran, ['status'], 'a denied source ran no evaluate');
+  assert.deepEqual(ran, ['status', 'list'], 'a denied source ran no evaluate');
   [denied, asked, ran] = [undefined, [], []];
   await evaluate(undefined);
   const read = asked.find(([action]) => action === 'read') ?? [];
   assert.ok(designs.every(design => read.includes(design)), JSON.stringify(read));
-  assert.deepEqual(ran, ['status', 'evaluate']);
+  assert.deepEqual(ran, ['status', 'list', 'evaluate']);
 });
 
 test('CLI-path prepare with an explicit storage asks edit on the state root the binary chose, not the remembered one', async t => {
