@@ -372,7 +372,7 @@ fn gradient() -> QueryImage {
 #[test]
 fn a_normalized_image_round_trips_through_rgb_exactly() {
     let rgb = gradient().rgb();
-    assert_eq!(rgb.len(), (SIZE * SIZE * 3) as usize);
+    assert_eq!(rgb.len(), RGB_BYTES);
     // The fingerprint also covers the source aspect, which the raster alone does not carry.
     assert_eq!(QueryImage::from_rgb(&rgb).unwrap().rgb(), rgb);
     assert!(QueryImage::from_rgb(&rgb[1..]).is_err());

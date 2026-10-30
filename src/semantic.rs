@@ -3,7 +3,7 @@
 //! Reciprocal Rank Fusion shared with lexical search. No model is loaded unless a profile is
 //! configured; nothing here downloads, installs or transmits anything.
 
-use crate::search::visual::{QueryImage, SIZE};
+use crate::search::visual::{QueryImage, RGB_BYTES};
 use serde_json::{Value as Json, json};
 use sha2::{Digest, Sha256};
 use std::error::Error;
@@ -27,7 +27,6 @@ pub const MAX_BATCH: usize = 32;
 /// Images one request may carry, each the normalized query raster as RGB bytes: an opaque
 /// `visual::SIZE` square, so its exact length is the whole shape check.
 pub const MAX_IMAGES: usize = 4;
-const IMAGE_BYTES: usize = (SIZE * SIZE * 3) as usize;
 pub const MAX_TEXT_BYTES: usize = 4096;
 pub const MAX_DIM: usize = 4096;
 /// One reply line: every float of a full batch at its longest JSON spelling, plus framing.
@@ -148,19 +147,6 @@ pub fn check_vector(v: &[f32], dim: usize) -> Result<()> {
     Ok(())
 }
 
-/// Lowercase or uppercase hex to bytes; anything else is refused.
-fn unhex(text: &str) -> Option<Vec<u8>> {
-    let digit = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
-    let bytes = text.as_bytes();
-    if !bytes.len().is_multiple_of(2) {
-        return None;
-    }
-    bytes
-        .chunks_exact(2)
-        .map(|p| Some(digit(p[0])? << 4 | digit(p[1])?))
-        .collect()
-}
-
 /// Serves the child side of the protocol on stdin/stdout until stdin closes: `hello` first,
 /// then one reply line per request line. A malformed or oversized request gets an error line
 /// and the child keeps serving; `embed` errors are reported the same way.
@@ -240,16 +226,20 @@ fn answer(
     let run = || -> Result<Vec<Vec<f32>>> {
         let texts = texts.ok_or("texts is an array of strings")?;
         check_batch(&texts)?;
-        let vectors = embed(kind, &texts)?;
-        if vectors.len() != texts.len() {
-            return Err(fail("embedder returned the wrong number of vectors"));
-        }
-        for v in &vectors {
-            check_vector(v, dim)?;
-        }
-        Ok(vectors)
+        checked(embed(kind, &texts)?, texts.len(), dim)
     };
     reply(id, run())
+}
+
+/// An embedder's answer for `n` inputs: one finite, unit `dim`-vector each.
+fn checked(vectors: Vec<Vec<f32>>, n: usize, dim: usize) -> Result<Vec<Vec<f32>>> {
+    if vectors.len() != n {
+        return Err(fail("embedder returned the wrong number of vectors"));
+    }
+    for v in &vectors {
+        check_vector(v, dim)?;
+    }
+    Ok(vectors)
 }
 
 fn reply(id: Json, vectors: Result<Vec<Vec<f32>>>) -> Json {
@@ -284,23 +274,16 @@ fn answer_images(
             .iter()
             .map(|i| {
                 i.as_str()
-                    .filter(|h| h.len() == 2 * IMAGE_BYTES)
-                    .and_then(unhex)
+                    .filter(|h| h.len() == 2 * RGB_BYTES)
+                    .and_then(crate::workspace::changes::unhex)
             })
             .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| fail(format!("each image is {IMAGE_BYTES} RGB bytes in hex")))?;
+            .ok_or_else(|| fail(format!("each image is {RGB_BYTES} RGB bytes in hex")))?;
         let images = bytes
             .iter()
             .map(|b| QueryImage::from_rgb(b))
             .collect::<Result<Vec<_>>>()?;
-        let vectors = embed(&images)?;
-        if vectors.len() != images.len() {
-            return Err(fail("embedder returned the wrong number of vectors"));
-        }
-        for v in &vectors {
-            check_vector(v, dim)?;
-        }
-        Ok(vectors)
+        checked(embed(&images)?, images.len(), dim)
     };
     reply(id, run())
 }

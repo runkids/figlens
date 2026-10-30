@@ -18,6 +18,8 @@ pub const MAX_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_PIXELS: u64 = 4_000_000;
 /// White background, aspect-preserving fit, bilinear sampling; the version pins this policy.
 pub const SIZE: u32 = 256;
+/// Bytes of a normalized raster as `QueryImage::rgb` gives it.
+pub const RGB_BYTES: usize = (SIZE * SIZE * 3) as usize;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Crop {
@@ -425,11 +427,9 @@ impl QueryImage {
     /// Admits exactly the bytes `rgb` gives, as they are: no resampling, crop or metadata. Its
     /// fingerprint describes this raster only, not the source the parent normalized.
     pub fn from_rgb(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-        let side = SIZE as usize;
-        if bytes.len() != side * side * 3 {
+        if bytes.len() != RGB_BYTES {
             return Err(super::invalid(format!(
-                "a normalized image holds {} RGB bytes, got {}",
-                side * side * 3,
+                "a normalized image holds {RGB_BYTES} RGB bytes, got {}",
                 bytes.len()
             )));
         }

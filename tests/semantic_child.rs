@@ -31,13 +31,17 @@ fn child(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", json!({"protocol": semantic::PROTOCOL, "dim": DIM}));
         std::thread::sleep(Duration::from_secs(3600));
     }
-    // A vision child: one unit vector per image; `image-hang` never answers.
+    // A vision child: one vector per image; `image-hang` never answers, `image-nan` and
+    // `image-dim` answer like `nan` and `dim`.
     if mode.starts_with("image") {
         return semantic::serve_images(&hello(), |images| {
             if mode == "image-hang" {
                 std::thread::sleep(Duration::from_secs(3600));
             }
-            Ok(images.iter().map(|_| bag("a", "ok")).collect())
+            Ok(images
+                .iter()
+                .map(|_| bag("a", mode.trim_start_matches("image-")))
+                .collect())
         });
     }
     semantic::serve(&hello(), |_, texts| {
@@ -191,6 +195,17 @@ fn runtime_embeds_images_and_refuses_bad_batches() {
     rt.stop();
 }
 
+fn runtime_refuses_non_finite_or_wrong_dimension_image_vectors() {
+    for mode in ["image-nan", "image-dim"] {
+        let mut rt = start(mode);
+        let got = rt.embed_images(&[image(3)], &AtomicBool::new(false));
+        assert!(
+            matches!(got, Err(Stop::Refused(_) | Stop::Failed(_))),
+            "{mode}: {got:?}"
+        );
+    }
+}
+
 fn a_text_child_refuses_images_and_keeps_serving() {
     let mut rt = start("ok");
     let no = AtomicBool::new(false);
@@ -231,9 +246,20 @@ fn each_search_selects_only_its_own_modality() {
         }
         r
     };
-    let both = json!({"version": 1, "profiles": [record("siglip-base", Some("image")), record("bge-m3", None)]});
+    let both = json!({"version": 1, "profiles": [record("siglip-base", Some("image")), record("bge-m3", None), record("gone", None)]});
     storage.update_models(|_| Ok(both)).unwrap();
     let id = |p: Option<Profile>| p.map(|p| p.id);
+    // Rewritten through a profile change, image records move to their own key: a figlens that
+    // predates them reads "profiles" only, and finds just the text one.
+    profile::remove(&storage, "gone").unwrap();
+    storage
+        .update_models(|record| {
+            let record = record.unwrap();
+            assert_eq!(record["profiles"].as_array().map(Vec::len), Some(1));
+            assert_eq!(record["visualProfiles"][0]["name"], "siglip-base");
+            Ok(record)
+        })
+        .unwrap();
     assert_eq!(
         id(profile::active(&storage).unwrap()),
         Some("bge-m3".into())
@@ -1059,6 +1085,10 @@ fn main() {
         (
             "cancel_kills_a_hung_vision_child",
             cancel_kills_a_hung_vision_child,
+        ),
+        (
+            "runtime_refuses_non_finite_or_wrong_dimension_image_vectors",
+            runtime_refuses_non_finite_or_wrong_dimension_image_vectors,
         ),
         (
             "each_search_selects_only_its_own_modality",

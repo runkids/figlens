@@ -106,7 +106,13 @@ fn parse(record: Json) -> Result<Vec<Json>> {
             ),
         ));
     }
-    Ok(record["profiles"].as_array().cloned().unwrap_or_default())
+    let list = |key: &str| record[key].as_array().cloned().unwrap_or_default();
+    Ok([list("profiles"), list("visualProfiles")].concat())
+}
+
+/// A record's modality; one written before visual profiles existed has none and is text.
+fn modality(r: &Json) -> &str {
+    r["modality"].as_str().unwrap_or("text")
 }
 
 /// Replaces the stored profiles with `change` of the current ones, under the config lock.
@@ -116,7 +122,12 @@ fn save(storage: &Storage, change: impl FnOnce(Vec<Json>) -> Vec<Json>) -> Resul
             None => Vec::new(),
             Some(r) => parse(r)?,
         };
-        Ok(json!({"version": RECORD, "profiles": change(profiles)}))
+        // Image profiles live apart, so a figlens that predates them never reads one as its
+        // text profile; it keeps "profiles" only.
+        let (text, image): (Vec<Json>, Vec<Json>) = change(profiles)
+            .into_iter()
+            .partition(|r| modality(r) == "text");
+        Ok(json!({"version": RECORD, "profiles": text, "visualProfiles": image}))
     })
 }
 
@@ -146,7 +157,7 @@ pub fn list(storage: &Storage) -> Result<Json> {
                 "configured": record.is_some(),
                 "profileId": record.map(|r| r["profileId"].clone()),
                 "dataFlow": format!("local: {} go only to the configured local child; nothing is sent over a network",
-                    if k.modality == "image" { "normalized design and query images" } else { "design text" }),
+                    if k.modality == "image" { "normalized images" } else { "design text" }),
             })
         })
         .collect();
@@ -170,15 +181,17 @@ pub fn status(storage: &Storage) -> Result<Json> {
             } else {
                 ("ready", None)
             };
-            json!({"name": r["name"], "profileId": r["profileId"], "model": r["model"], "runtime": r["runtime"],
-                "dim": r["dim"], "state": state, "reason": reason})
+            json!({"name": r["name"], "modality": modality(&r), "profileId": r["profileId"], "model": r["model"],
+                "runtime": r["runtime"], "dim": r["dim"], "state": state, "reason": reason})
         })
         .collect();
-    let next = if profiles.is_empty() {
-        KNOWN.iter().map(setup).collect()
-    } else {
-        Vec::new()
-    };
+    // Setup for every modality no profile serves, so a missing text profile is named even when
+    // an image one is configured.
+    let next = KNOWN
+        .iter()
+        .filter(|k| !profiles.iter().any(|p| p["modality"] == k.modality))
+        .map(setup)
+        .collect::<Vec<_>>();
     Ok(json!({"profiles": profiles, "setup": next}))
 }
 
@@ -207,6 +220,16 @@ pub fn configure(
     }
     let p = Profile::probe(&runtime, model, k.files, cancel)
         .map_err(|e| fail(ErrorKind::InvalidArguments, format!("{name}: {e}")))?;
+    let served = p.contract["modality"].as_str().unwrap_or("text");
+    if served != k.modality {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            format!(
+                "{name}: the runtime serves {served} models, the profile needs {}",
+                k.modality
+            ),
+        ));
+    }
     let record = json!({"name": k.name, "modality": k.modality, "profileId": p.id, "model": p.model,
         "runtime": p.exe, "dim": p.dim, "contract": p.contract, "stamps": p.stamps});
     let kept = record.clone();
@@ -249,7 +272,7 @@ pub fn active_visual(storage: &Storage) -> Result<Option<Profile>> {
 fn first(storage: &Storage, modality: &str) -> Result<Option<Profile>> {
     let Some(r) = records(storage)?
         .into_iter()
-        .find(|r| r["modality"].as_str().unwrap_or("text") == modality)
+        .find(|r| self::modality(r) == modality)
     else {
         return Ok(None);
     };
