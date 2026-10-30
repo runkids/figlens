@@ -374,19 +374,34 @@ export function createAdapter(ctx, entry = import.meta.url) {
     if (tool === 'diff') await current.authorize('read', await both([input.old]));
     if (input.file && (tool !== 'index' || ['prepare', 'add', 'relocate'].includes(input.action))) await current.authorize('read', await both([input.file]));
     // Workspace search, usages and changes, refresh, rebuild and track read the registered designs' content, which this session may deny.
-    const readSources = async ({ state, sources }) => {
+    // `only` names the sources read; null reads every one.
+    const readSources = async ({ state, sources }, only = input.sourceId ? [input.sourceId] : null) => {
       // A workspace that does not exist yet reads no design; the command then fails as the MCP tool does.
       if (['absent', 'uninitialized'].includes(state)) return;
       if (!Array.isArray(sources)) throw missing("a workspace's sources");
-      const paths = sources.filter(source => !input.sourceId || source.sourceId === input.sourceId).map(source => source.path);
+      const paths = sources.filter(source => !only || only.includes(source.sourceId)).map(source => source.path);
       await current.authorize('read', [...new Set((await Promise.all(paths.map(async file => [file, await realpath(file).catch(() => file)]))).flat())]);
     };
-    if (['search', 'usages', 'changes'].includes(tool) && !input.file) await readSources(await status(input));
+    // A subscription's evaluation reads its own source or set, which the read-only watch list names without any
+    // evaluation; one not listed to this caller, or with an unreadable set, is asked on every source. A caller's
+    // sourceId is asked too but never narrows the ask.
+    const subscribed = async () => {
+      for (let after; ;) {
+        const { subscriptions, next } = await invoke(cliArgs('watch', { action: 'list', workspaceId: input.workspaceId, storage: input.storage, after }));
+        const sub = subscriptions?.find(s => s.subscriptionId === input.subscriptionId);
+        const ids = sub?.sources ?? (sub?.sourceId ? [sub.sourceId] : []);
+        if (sub) return ids.length ? [...ids, ...(input.sourceId ? [input.sourceId] : [])] : null;
+        if (!next) return null;
+        after = next;
+      }
+    };
+    const readSelected = async found => readSources(found, input.subscriptionId ? await subscribed() : undefined);
+    if (['search', 'usages', 'changes'].includes(tool) && !input.file) await readSelected(await status(input));
     // Every other watch action writes checkpoints, subscriptions or leases into the workspace database, as a cancel writes its job.
     if (tool === 'watch' && !['list', 'status', 'start'].includes(input.action)) {
       const found = await status(input);
       // A saved query runs a workspace search on its source when saved and each time it is evaluated.
-      if ((input.action === 'subscribe' && input.query !== undefined) || input.action === 'evaluate') await readSources(found);
+      if ((input.action === 'subscribe' && input.query !== undefined) || input.action === 'evaluate') await readSelected(found);
       await edit(place(found));
     }
     // A lease makes the shared runner read its source on every save, so start also asks read on it.

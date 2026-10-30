@@ -479,7 +479,47 @@ test('CLI-path saved queries ask read on the sources they search, so a denied re
   };
   await assert.rejects(adapter.cli(current, 'watch', { action: 'subscribe', workspaceId: 'ws_1', consumer: 'c', sourceId: 's', query: 'badge' }), /read denied/);
   await assert.rejects(adapter.cli(current, 'watch', { action: 'evaluate', workspaceId: 'ws_1', subscriptionId: 'sub_1' }), /read denied/);
-  assert.deepEqual([asked.map(([action]) => action), ran], [['read', 'read'], ['status', 'status']]);
+  assert.deepEqual([asked.map(([action]) => action), ran], [['read', 'read'], ['status', 'status', 'list']]);
+});
+
+test('CLI-path subscription reads ask read on exactly the subscription\'s sources that watch list names', async t => {
+  const { root, ctx, adapter } = await context(t);
+  const [a, b] = [path.join(root, 'a.fig'), path.join(root, 'b.fig')];
+  await writeFile(a, '');
+  await writeFile(b, '');
+  const [realA, realB] = [await realpath(a), await realpath(b)];
+  const subscriptions = [{ subscriptionId: 'one', sourceId: 'A' }, { subscriptionId: 'set', sourceId: null, sources: ['A', 'B'] },
+    { subscriptionId: 'other', sourceId: 'B' }, { subscriptionId: 'unreadable', sourceId: null, sources: null }];
+  const asked = [];
+  let ran = [];
+  // Read of A is allowed, B denied.
+  ctx.permission.assert = async ({ action, resources }) => {
+    if (action !== 'read') return;
+    asked.push(resources);
+    if (resources.includes(b)) throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  // Each case in its own session, so no earlier grant hides what it asks.
+  const session = async id => Object.assign(await adapter.scope(id), { run });
+  const run = async args => {
+    ran.push(args[0] === 'changes' ? 'changes' : args[1]);
+    // The list pages: the second page holds the rest.
+    if (args[1] === 'list') return { stdout: JSON.stringify(args.includes('--after')
+      ? { subscriptions: subscriptions.slice(1), next: null } : { subscriptions: subscriptions.slice(0, 1), next: 'one' }) };
+    return { stdout: JSON.stringify({ state: 'ready', paths: { workspace: '/w', lock: '/w.lock' }, storage: { rule: 'default' },
+      roots: { config: { path: '/c' } }, sources: [{ sourceId: 'A', path: a }, { sourceId: 'B', path: b }] }) };
+  };
+  const evaluate = async more => adapter.cli(await session(JSON.stringify(more)), 'watch', { action: 'evaluate', workspaceId: 'ws_1', ...more });
+  await evaluate({ subscriptionId: 'one' });
+  await adapter.cli(await session('changes'), 'changes', { workspaceId: 'ws_1', subscriptionId: 'one' });
+  assert.deepEqual([asked, ran], [[[a, realA], [a, realA]], ['status', 'list', 'evaluate', 'status', 'list', 'changes']]);
+  // A set, a source the caller narrows away, an unreadable set and an unseen subscription all ask B: nothing runs.
+  for (const more of [{ subscriptionId: 'set' }, { subscriptionId: 'set', sourceId: 'A' }, { subscriptionId: 'other', sourceId: 'A' },
+    { subscriptionId: 'unreadable' }, { subscriptionId: 'unseen', sourceId: 'A' }]) {
+    ran = [];
+    await assert.rejects(evaluate(more), /read denied/);
+    assert.ok(asked.at(-1).includes(b) && !ran.includes('evaluate'), JSON.stringify([more, asked.at(-1), ran]));
+  }
+  assert.deepEqual(asked.at(-1), [a, realA, b, realB], 'an unseen subscription asks every source');
 });
 
 test('CLI-path prepare with an explicit storage asks edit on the state root the binary chose, not the remembered one', async t => {
