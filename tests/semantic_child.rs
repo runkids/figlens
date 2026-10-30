@@ -1010,6 +1010,52 @@ fn a_workspace_hybrid_without_a_model_pages_without_a_cursor() {
     assert_eq!(got["coverage"]["complete"], false);
 }
 
+fn the_watch_runner_embeds_a_scope_it_refreshed() {
+    use std::io::BufRead;
+    let dir = test_support::TestDir::new();
+    let (prepared, fig) = indexed(&dir, true);
+    cli(&["index", "track", "--file", fig.to_str().unwrap(), "--scope", "0:0"]);
+    let mut holder = figlens(&[
+        "watch",
+        "run",
+        "--file",
+        fig.to_str().unwrap(),
+        "--scope",
+        "0:0",
+    ])
+    .stdin(std::process::Stdio::piped())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null())
+    .spawn()
+    .unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(holder.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert!(line.contains("active"), "{line}");
+    // A save the runner refreshes; its publication then needs a model layer.
+    let next = std::path::absolute(dir.join("next.fig")).unwrap();
+    corpus::write(next.as_os_str(), false).unwrap();
+    std::fs::rename(&next, &fig).unwrap();
+    let conn = db(&prepared);
+    let end = Instant::now() + Duration::from_secs(60);
+    let ready = || {
+        count(
+            &conn,
+            "SELECT count(*) FROM model_layers WHERE state = 'ready'",
+        ) > 0
+    };
+    while !ready() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    drop(holder.stdin.take());
+    holder.wait().unwrap();
+    assert!(
+        ready(),
+        "the runner left the refreshed scope without a model layer"
+    );
+}
+
 fn a_schema_8_workspace_reads_its_model_layer_as_pending() {
     let dir = test_support::TestDir::new();
     let (prepared, fig) = indexed(&dir, true);
@@ -1129,6 +1175,10 @@ fn main() {
         (
             "a_workspace_hybrid_without_a_model_pages_without_a_cursor",
             a_workspace_hybrid_without_a_model_pages_without_a_cursor,
+        ),
+        (
+            "the_watch_runner_embeds_a_scope_it_refreshed",
+            the_watch_runner_embeds_a_scope_it_refreshed,
         ),
         #[cfg(unix)]
         (
