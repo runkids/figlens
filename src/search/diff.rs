@@ -220,6 +220,19 @@ fn unblob(v: &Json, refs: &mut Vec<u64>) -> Json {
     }
 }
 
+/// `value`'s estimated bytes and the visits that took, walking at most `VISITS` or `work`; a
+/// walk that used its whole allowance stopped there.
+fn estimate(value: &Value, work: usize) -> (usize, usize) {
+    let allowance = VISITS.min(work);
+    let mut left = allowance;
+    let bytes = match value {
+        Value::Json(v) => json_bytes(v, &mut left),
+        Value::Owned(v) => json_bytes(v, &mut left),
+        Value::Kiwi(v) => kiwi_bytes(v, &mut left),
+    };
+    (bytes, allowance - left)
+}
+
 /// Whether `v` holds a `to_json` bytes placeholder, whose contents are gone; an `UNCOMPARED`
 /// key's does not count, as `unblob` leaves it out.
 fn placeholder(v: &Json) -> bool {
@@ -306,19 +319,21 @@ pub(super) fn facets(
             if !bounds.charge(0, 0) {
                 return None;
             }
-            let mut left = VISITS;
-            let estimate = match &value {
-                Value::Json(v) => json_bytes(v, &mut left),
-                Value::Owned(v) => json_bytes(v, &mut left),
-                Value::Kiwi(v) => kiwi_bytes(v, &mut left),
-            };
+            let (estimate, walked) = estimate(&value, bounds.work);
+            // Running out of the side's work stops the side, visits kept; only a walk that
+            // reached `VISITS` makes this one field unread.
+            if walked == bounds.work && walked < VISITS {
+                bounds.charge(walked, 0);
+                bounds.charge(1, 0);
+                return None;
+            }
             // Converting and hashing is paid for before it happens: a visit per 64 bytes.
             let cap = match *key {
                 "derivedTextData" => DERIVED_TEXT_BYTES,
                 _ => FIELD_BYTES,
             };
-            let unread = left == 0 || estimate > cap;
-            if !bounds.charge(VISITS - left + if unread { 0 } else { estimate / 64 }, 0) {
+            let unread = walked == VISITS || estimate > cap;
+            if !bounds.charge(walked + if unread { 0 } else { estimate / 64 }, 0) {
                 return None;
             }
             // An override's bytes were already shown as `<N bytes>`; equal lengths prove nothing.

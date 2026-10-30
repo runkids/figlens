@@ -443,6 +443,23 @@ fn a_stored_field_pays_for_its_conversion_before_it_is_converted() {
 }
 
 #[test]
+fn a_field_estimate_walks_no_further_than_the_side_has_work_left() {
+    let big = json!(vec![0; 5000]);
+    // Zero or little work left: the walk stops there, not at `VISITS`.
+    assert_eq!(estimate(&Value::Json(&big), 0).1, 0);
+    assert_eq!(estimate(&Value::Json(&big), 100).1, 100);
+    // A small field takes only its own visits.
+    assert_eq!(estimate(&Value::Json(&json!([1, 2])), 100).1, 3);
+    // Through `facets`, running out of work stops the side; it is not one unread field.
+    let message = doc(vec![node(10, Some(1), "TEXT", "T", vec![text("Hi")])]);
+    let tree = Tree::new(&message);
+    let mut b = super::super::tests::bounds(WORK);
+    b.work = 0;
+    assert!(facets(&tree, "0:10", None, &mut b).is_none());
+    assert_eq!(b.stop, Some(crate::expand::Stop::Work));
+}
+
+#[test]
 fn an_expanded_size_or_transform_pays_before_it_is_built() {
     let message = doc(vec![
         node(30, Some(1), "SYMBOL", "A", vec![]),
