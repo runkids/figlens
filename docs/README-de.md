@@ -129,7 +129,7 @@ Durchsuche Seiten und Layer, suche, miss, inspiziere Layout, Typografie, Variabl
 
 ## MCP-Server und Agent-Skill
 
-**MCP.** Der Server läuft lokal über stdio und stellt `workflow`, `tree`, `find`, `search`, `inspect`, `nodes`, `variables`, `bundle`, `verify` und `export` bereit. Übergib absolute Pfade. Mit `--root /path/to/designs` (wiederholbar) beschränkst du jeden Datei- und Ausgabepfad auf ausgewählte Ordner. Raster-Exporte werden auf `maxSize` (Standard 1600 px) verkleinert, damit Inline-Bilder klein bleiben; SVG liefert nur Metadaten.
+**MCP.** Der Server läuft lokal über stdio und stellt `workflow`, `tree`, `find`, `search`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs` und `export` bereit. Übergib absolute Pfade. Mit `--root /path/to/designs` (wiederholbar) beschränkst du jeden Datei- und Ausgabepfad auf ausgewählte Ordner. Index-Speicher außerhalb der Standardverzeichnisse von figlens braucht `--storage-root DIR` (wiederholbar). Raster-Exporte werden auf `maxSize` (Standard 1600 px) verkleinert, damit Inline-Bilder klein bleiben; SVG liefert nur Metadaten.
 
 Über `workflow` kann der Agent die integrierten Anleitungen `build`, `audit`, `images`, `plan`, `planning-details` oder das ausdrücklich angeforderte `yolo` lesen. Sie stammen aus denselben Quellen wie der portable Skill; dessen separate Installation ist für MCP optional. Die Umsetzung erfolgt mit den Projekt- und Browser-Werkzeugen des Agents und den Berechtigungen des Hosts. Das Lesen einer Anleitung führt den Workflow nicht aus; Client-Unterstützung und Modellverhalten bestimmen, wie sie genutzt wird.
 
@@ -152,6 +152,52 @@ skillshare sync && skillshare sync mcp --global
 
 **Installationshinweise.** Der npm-Launcher lädt beim ersten Aufruf das passende native Binary herunter, prüft es gegen die SHA-256-Prüfsummen des Releases und legt es im Cache ab. Skript-Installationen aktualisierst du mit `figlens update`, Homebrew-Installationen mit `brew upgrade figlens`. Die Binaries decken macOS (Apple Silicon, Intel), Linux (arm64, x86_64, statisch mit musl) und Windows (x86_64) ab.
 
+<a id="local-index"></a>
+
+## Normale Suche und der optionale lokale Index
+
+|  | Normal (Standard) | Fortgeschritten: lokaler Index (optional) |
+|---|---|---|
+| Was es tut | Liest die `.fig` bei jedem Aufruf und beantwortet `search`, `find`, `inspect` und `export`. | Baut einmal einen Suchindex für einen gewählten Bereich und beantwortet `search` daraus, gerankt über Quellen. |
+| Was geschrieben wird | Kein Workspace und keine Index-Datenbank (`export` schreibt nur die angeforderten Dateien). | Ein lokaler Workspace (SQLite-Datenbank) im Statusverzeichnis des Benutzers oder unter dem gewählten `--storage`. |
+| Wann sinnvoll | Einzelfragen, Skripte, CI. | Wiederholte Suchen in einer Datei; mehrere Dateien eines Projekts als ein Korpus (`--workspace <dir>`); bekannte Parent-/Instanz-Beziehungen in der Coverage. |
+
+Eine normale Designfrage legt nie einen Index an. Sie aktivieren ihn einmal ausdrücklich („Lege einen Index für dieses Design an“); figlens wählt den Speicherort und braucht kein SQLite oder sonstiges Setup.
+
+```sh
+# Normal: zustandslos, legt nichts an
+figlens search design.fig "checkout button"
+
+# Fortgeschritten, einmalig: Bereich wählen (Node-ID oder 0:0 für die ganze Datei); der Build läuft im Vordergrund
+figlens index prepare design.fig --scope 0:0
+
+# Indexierte Suche; --node ergänzen, wenn der indexierte Bereich nicht die ganze Datei ist
+figlens search --file design.fig "checkout button" --node 0:0
+
+# Nach Änderung oder neuem Export der .fig: nur Bereiche mit geänderten Bytes neu bauen
+figlens index refresh --file design.fig
+
+# Nach dem Verschieben der .fig: Workspace behalten, dann refresh (workspaceId aus der Ausgabe von prepare)
+figlens index relocate <sourceId> new/design.fig --id <workspaceId>
+figlens index refresh --id <workspaceId>
+```
+
+MCP: `index` prepare liefert einen Job; `jobs` abfragen, bis `succeeded`, dann mit der `workspaceId` aus der Antwort suchen.
+
+```json
+{"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
+{"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "node": "0:0", "query": "checkout button"}}
+```
+
+Lebenszyklus: `refresh` baut nur Bereiche neu, deren `.fig`-Bytes sich geändert haben; `rebuild` baut auch Unveränderte neu; `clear_cache` löscht nur Daten, die ein Build neu erzeugen kann, und behält Registry und veröffentlichte Indizes; `reset` löscht die Datenbank dieses Workspaces (nie die `.fig` oder Exporte) und läuft nur auf ausdrücklichen Wunsch. Neue Quellen, ein größerer Bereich, reset und Neuanlage brauchen jeweils eine eigene ausdrückliche Anfrage.
+
+`.fig` verschoben? `index relocate` behält `workspaceId`, `sourceId` und Speicherort; danach die betroffenen Bereiche mit `refresh` aktualisieren. Es gibt keine automatische Erkennung und kein Hash-basiertes Zusammenführen; ein reset ist nicht nötig.
+
+Daten: Die SQLite-Datenbank enthält registrierte lokale Pfade, Layer-Namen und effektiven Text der gewählten Bereiche, Such-Postings, bekannte Parent-/Instanz-Beziehungen, Hashes, Generationen und Jobs. Die ursprüngliche `.fig` bleibt unverändert, wo sie ist; ihre Rohbytes werden nicht in der Datenbank gespeichert.
+
+Pi, OpenCode und OMP nutzen denselben Index über ihren eigenen Opt-in-Einstieg; der Workspace wird über Neustarts und Hosts hinweg wiederverwendet. Nicht implementiert: Dateiüberwachung, Usages-/Beziehungs-Tools, Vektoren, Events und Subscriptions.
+
 <a id="commands"></a>
 
 ## CLI-Referenz
@@ -161,7 +207,7 @@ skillshare sync && skillshare sync mcp --global
 | `tree <file> [node] [--depth N] [--json]` | Node-IDs, REST-Typen (wie in `nodes`) und Namen; eingerückter Text oder verschachteltes JSON mit Größe, Ausblendung und Auto-Layout-Modus jedes Nodes sowie `firstText` (erster sichtbarer Text) bei Nodes einer Seite oder Section |
 | `tree <file> [node] --top-frames [--json]` | Nur die Screens, einer pro Zeile, direkt nutzbar für `--frames -`: Frames, Komponenten, Komponentensets und Instanzen auf einer Seite oder in ihren Sections (Gruppen und interne Seiten ausgenommen); `--json` ergänzt Seiten- und Section-IDs sowie den ersten sichtbaren Text jedes Screens (`firstText`), der Canvas-Beschriftungen von Screens unterscheidet |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Suche über Layer-Namen und Text ohne Beachtung der Groß-/Kleinschreibung; Pfade, Größen und Vorschauen. Standardmäßig 20 Ergebnisse (1-200) |
-| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | Gerankte Suche über Layer-Namen und vollständigen Text mit angewendeten Instanz-Overrides, Text-/Boolean-Properties und Swaps; exakte Node-Referenzen (auch `I…;…`-Sublayer-IDs für `inspect`), Treffergründe, UTF-16-Spannen, Abdeckung und Cursor-Seiten. Standardmäßig 20 (1-200); ausgeblendete Layer und interne Seiten brauchen ihr Flag |
+| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | Gerankte Suche über Layer-Namen und vollständigen Text mit angewendeten Instanz-Overrides, Text-/Boolean-Properties und Swaps; exakte Node-Referenzen (auch `I…;…`-Sublayer-IDs für `inspect`), Treffergründe, UTF-16-Spannen, Abdeckung und Cursor-Seiten. Standardmäßig 20 (1-200); ausgeblendete Layer und interne Seiten brauchen ihr Flag. Mit `--file`/`--workspace`/`--id` statt `<file>` liest es den vorbereiteten Index des Workspaces (siehe `index`) |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | Kompakte Zusammenfassung des expandierten Layouts/Texts, höchstens 200 Nodes. `--images` ergänzt Bitmap-Abmessungen und Crop-Footprints. `--flat` gibt stattdessen eine Zeile pro Node aus: Position relativ zum Node, Größe, Text, Schrift, Füllung, Kontur, Radius, Auto-Layout |
 | `nodes <file> <node>` | Das Objekt je Node einer REST-nodes-Antwort (`document`, `components`, `componentSets`, `styles`): expandierte Instanzen und Overrides, Auto-Layout, Textstile, Füllungen, Effekte, gebundene Variablen, Komponenten-Eigenschaften, Render-Bounds |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | Ein Decode, viele Nodes: eine JSON-Zeile pro gelisteter ID, die `nodes`-Ausgabe mit ihrer `nodeId` oder `{nodeId, error}` |
@@ -174,7 +220,8 @@ skillshare sync && skillshare sync mcp --global
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Lokaler schreibgeschützter Viewer; `--out` schreibt einen eigenständigen Offline-Snapshot |
 | `compare <file> <nodes.json> <node>` | Diff gegen einen REST-Export desselben Frames |
 | `node <file> <node>` | Ein roher `.fig`-Node |
-| `index prepare\|status\|add\|remove\|relocate\|reset` | Lokale Workspace-Registry im figlens-Statusverzeichnis des Benutzers oder unter einem `--storage DIR`, das sich der Workspace danach merkt (Zwischenstand: `search` nutzt sie noch nicht); `reset` entfernt nur die Workspace-Datenbank, nie Designs, Exporte oder den gemerkten Speicherort |
+| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset` | Lokaler Workspace im figlens-Statusverzeichnis des Benutzers oder unter einem `--storage DIR`, das sich der Workspace danach merkt. `prepare <file> --scope NODE` baut den Suchindex dieses Bereichs einmal; danach antwortet `search --file <file>` (oder `--workspace DIR`) ohne erneutes Parsen, über alle Quellen des Workspaces gerankt. `refresh` baut geänderte Dateien neu, `rebuild` alle oder eine `--source`/`--scope`, `clear` entfernt ungenutzte Indizes; der bisherige Index bleibt nutzbar, bis ein neuer fertig ist. `reset` entfernt nur die Workspace-Datenbank, nie Designs, Exporte oder den gemerkten Ort |
+| `jobs status\|cancel <jobId>` | Status eines Index-Builds anzeigen oder ihn abbrechen; `cancel` kehrt erst zurück, wenn der Build gestoppt ist |
 | `mcp` | Lokaler MCP-Server über stdio |
 | `update` | Ersetzt das Binary durch das neueste Release |
 

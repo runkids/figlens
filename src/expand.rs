@@ -113,6 +113,9 @@ pub struct Expanded {
     /// Effective placement and overridden kiwi fields, applied over `source`'s own.
     pub props: Map<String, Json>,
     pub(crate) prototype_source: Option<crate::prototype::Source>,
+    /// For an INSTANCE: the main component expansion followed, present or not, and whether a
+    /// swap (`swap`) or the copied definition's binding (`definition`) named it.
+    pub(crate) main: Option<(String, &'static str)>,
 }
 
 /// Most layers a scope may hold below its root, stored and expanded together. Measured real
@@ -615,7 +618,7 @@ fn abs_matrix_while(
     Some(m)
 }
 
-fn main_of<'t>(tree: &Tree<'t>, instance: &Value) -> Option<String> {
+pub(crate) fn main_of<'t>(tree: &Tree<'t>, instance: &Value) -> Option<String> {
     instance
         .get("symbolData")?
         .get("symbolID")
@@ -1095,6 +1098,16 @@ impl Expander<'_, '_> {
                     override_index: None,
                 })
             });
+            let main = (kind == Some("INSTANCE"))
+                .then(|| match &o.swap {
+                    Some(swap) => Some((swap.clone(), "swap")),
+                    None => child
+                        .get("symbolData")
+                        .and_then(|s| s.get("symbolID"))
+                        .and_then(guid_key)
+                        .map(|id| (id, "definition")),
+                })
+                .flatten();
             self.out.nodes.insert(
                 id.clone(),
                 Expanded {
@@ -1105,6 +1118,7 @@ impl Expander<'_, '_> {
                     matrix,
                     props,
                     prototype_source,
+                    main,
                 },
             );
             // Inside an expanded instance, hidden nodes keep the node but omit its children.

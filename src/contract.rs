@@ -18,6 +18,18 @@ const NODE: Param = (
     true,
     "a stored node id (12:345 or 12-345), full instance sublayer id (I12:345;67:89) from inspect/nodes, or a Figma URL with ?node-id=",
 );
+const STORAGE: Param = (
+    "storage",
+    "string",
+    false,
+    "absolute custom storage directory, only for a workspace kept outside the default storage; must be under the server's --storage-root",
+);
+const WORKSPACE_ID: Param = (
+    "workspaceId",
+    "string",
+    false,
+    "ws_... from a previous index reply",
+);
 /// CLI and tools share command execution and result formatting.
 pub const TOOLS: &[(&str, &str, &[Param])] = &[
     (
@@ -89,9 +101,27 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "search",
-        "Ranked search of layer names and full text in one stored scope, including instance text overrides, text/boolean properties and nested swaps as REST nodes resolve them. Each result has an exact ref {sourceId, snapshotId, nodeId} (instance sublayer IDs work with inspect/nodes/export), origin stored or instance-effective, textSource, page, scopeRoot (a navigation container, not a screen claim), path, and matches with reasons and UTF-16 spans. coverage says whether the scope was fully indexed (ready) or a work limit stopped it (partial, totalRecords null); hasMore/nextCursor page the same candidates. Hidden layers and internal pages are excluded unless requested. Reads and hashes the source itself; no index is written.",
+        "Ranked search of layer names and full text in one stored scope, including instance text overrides, text/boolean properties and nested swaps as REST nodes resolve them. Each result has an exact ref {sourceId, snapshotId, nodeId} (instance sublayer IDs work with inspect/nodes/export), origin stored or instance-effective, textSource, page, scopeRoot (a navigation container, not a screen claim), path, and matches with reasons and UTF-16 spans. coverage says whether the scope was fully indexed (ready) or a work limit stopped it (partial, totalRecords null); hasMore/nextCursor page the same candidates. Hidden layers and internal pages are excluded unless requested. Give file to read and hash that .fig now (nothing is written), or workspaceId to rank the workspace's prepared indexes of exactly this scope across its sources as one corpus (sourceId narrows it, refs keep each source's sourceId); a workspace search never builds: sources without a ready index are listed in sources with state pending, not_prepared, stale, incompatible or unreadable and the nextSteps index call, and coverage then says partial.",
         &[
-            FILE,
+            (
+                "file",
+                "string",
+                false,
+                "the saved .fig to read now: a local path or gs://bucket/object; give file or workspaceId",
+            ),
+            (
+                "workspaceId",
+                "string",
+                false,
+                "ws_... from the index tool: search its prepared indexes instead of reading a file",
+            ),
+            (
+                "sourceId",
+                "string",
+                false,
+                "with workspaceId, search only this registered source",
+            ),
+            STORAGE,
             (
                 "query",
                 "string",
@@ -275,6 +305,65 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
             ),
         ],
     ),
+    (
+        "index",
+        "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes); refresh rebuilds changed scopes and rebuild every indexed scope even when unchanged (sourceId and scope narrow both), while the previous index keeps serving; a reply that could not admit every job has admission partial and deferred items, each with the nextStep that builds it later; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
+        &[
+            (
+                "action",
+                "string",
+                true,
+                "prepare, status, add, remove, relocate, refresh, rebuild, clear_cache or reset",
+            ),
+            (
+                "file",
+                "string",
+                false,
+                "a local .fig: the source to prepare, add or relocate to; also selects its source-scoped workspace",
+            ),
+            (
+                "workspace",
+                "string",
+                false,
+                "a project directory: selects or prepares that project's workspace",
+            ),
+            WORKSPACE_ID,
+            (
+                "sourceId",
+                "string",
+                false,
+                "a registered source, for remove, relocate, refresh and rebuild",
+            ),
+            (
+                "scope",
+                "string",
+                false,
+                "stored node id to index (prepare), refresh or rebuild; 0:0 is the whole file",
+            ),
+            (
+                "requestId",
+                "string",
+                false,
+                "an idempotency key: repeating a prepare or refresh with it returns the same job",
+            ),
+            STORAGE,
+            (
+                "replaceUnavailable",
+                "boolean",
+                false,
+                "prepare only, after the user confirmed: recreate a workspace whose storage is unavailable, denied or unreadable in storage, knowing only file; the old files stay untouched",
+            ),
+        ],
+    ),
+    (
+        "jobs",
+        "Status or cancellation of an index job. status reports state (queued, running, succeeded, failed, cancelled, interrupted), stage, progress and the error or published generation; cancel stops the build and its worker process before reporting cancelled, and a job already publishing finishes (too_late). Responds while builds and searches run.",
+        &[
+            ("action", "string", true, "status or cancel"),
+            ("jobId", "string", true, "the jobId from an index reply"),
+            STORAGE,
+        ],
+    ),
 ];
 
 /// The MCP outputSchema of the tools whose CLI command prints one JSON object.
@@ -295,19 +384,49 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "scope": {"type": "object"},
                 "ranking": {"type": "object", "description": "ranking and tokenizer versions, field weights and tie order"},
                 "results": {"type": "array", "items": {"type": "object"}},
-                "coverage": {"type": "object", "description": "complete, scannedRecords, totalRecords (null unless complete), layers.text.state ready|partial, reasons with counts, excluded hidden/internal matches, knownGaps and work limits"},
+                "coverage": {"type": "object", "description": "complete, scannedRecords, totalRecords (null unless complete), layers.text.state ready|partial, layers.relations (stored contains and instance_of kinds; other kinds relation_unavailable), reasons with counts, excluded hidden/internal matches, knownGaps and work limits"},
                 "hasMore": {"type": "boolean"},
                 "nextCursor": {"type": ["string", "null"]},
+                "workspaceId": {"type": "string", "description": "workspace searches only"},
+                "state": {"type": "string", "description": "workspace searches: ready, pending or not_prepared"},
+                "sources": {"type": "array", "items": {"type": "object"}, "description": "workspace searches: each visible source's sourceId, state, snapshotId, freshness and active job"},
+                "nextSteps": {"type": "array", "items": {"type": "object"}, "description": "workspace searches: the index or jobs calls that make more sources ready"},
             }),
-            [
-                "query",
-                "source",
-                "results",
-                "coverage",
-                "hasMore",
-                "nextCursor",
-            ]
-            .as_slice(),
+            ["query", "results", "coverage", "hasMore", "nextCursor"].as_slice(),
+        ),
+        "index" => (
+            serde_json::json!({
+                "workspaceId": {"type": "string"},
+                "state": {"type": "string", "description": "initialized, ready, absent or reset"},
+                "schemaVersion": {"type": "integer"},
+                "incarnation": {"type": "string", "description": "changes when the database is recreated; cached results of another incarnation are void"},
+                "sources": {"type": "array", "items": {"type": "object"}, "description": "visible sources: sourceId, path, present and indexed scopes with snapshotId, records, complete and current"},
+                "job": {"type": "object", "description": "the build prepare started or joined: jobId, state, stage, progress"},
+                "jobs": {"type": "array", "items": {"type": "object"}, "description": "refresh and rebuild: one job per admitted source and scope, each with joined"},
+                "admission": {"type": "string", "description": "refresh and rebuild: complete, or partial when some jobs were not admitted"},
+                "deferred": {"type": "array", "items": {"type": "object"}, "description": "partial admission: sourceId, scope and the nextStep index call that builds it later"},
+                "deferredBecause": {"type": ["object", "null"], "description": "partial admission: the error that stopped admission, {code, message}"},
+                "coverage": {"type": "object", "description": "prepare without scope: text and relations not_requested"},
+                "nextSteps": {"type": "array", "items": {"type": "object"}},
+                "storage": {"type": "object"},
+                "paths": {"type": ["object", "null"], "description": "workspace, database and lock paths (the lock sits beside the workspace directory); null when the workspace does not exist"},
+            }),
+            ["workspaceId", "state"].as_slice(),
+        ),
+        "jobs" => (
+            serde_json::json!({
+                "jobId": {"type": "string"},
+                "workspaceId": {"type": "string", "description": "the workspace the job builds in, for index status"},
+                "kind": {"type": "string", "description": "prepare, refresh or rebuild"},
+                "state": {"type": "string", "description": "queued, running, succeeded, failed, cancelled or interrupted (its owner exited)"},
+                "stage": {"type": ["string", "null"], "description": "null until the job starts"},
+                "progress": {"type": "object"},
+                "cancel": {"type": "string", "description": "cancel only: accepted, pending, too_late or not_active"},
+                "error": {"type": ["object", "null"]},
+                "evictedScopes": {"type": "array", "description": "a publish that retired the source's least recently published scope (past 8) names it"},
+                "nextSteps": {"type": "array", "items": {"type": "object"}},
+            }),
+            ["jobId", "state"].as_slice(),
         ),
         "inspect" => (
             serde_json::json!({
@@ -453,6 +572,22 @@ pub fn property(tool: &str, param: &Param) -> Value {
     if tool == "workflow" && key == "topic" {
         p["enum"] = json!(crate::workflow::TOPICS);
     }
+    if tool == "index" && key == "action" {
+        p["enum"] = json!([
+            "prepare",
+            "status",
+            "add",
+            "remove",
+            "relocate",
+            "refresh",
+            "rebuild",
+            "clear_cache",
+            "reset"
+        ]);
+    }
+    if tool == "jobs" && key == "action" {
+        p["enum"] = json!(["status", "cancel"]);
+    }
     if tool == "search" && key == "mode" {
         p["enum"] = json!(["text"]);
     }
@@ -570,6 +705,14 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
         arguments: checked,
     };
     if tool == "search" {
+        let file = call.string("file").is_some();
+        if file == call.string("workspaceId").is_some()
+            || (file && (call.string("sourceId").is_some() || call.string("storage").is_some()))
+        {
+            return Err(Failure::argument(
+                "search needs file or workspaceId, not both; sourceId and storage apply to workspaceId",
+            ));
+        }
         crate::command::search_tool(&call).map_err(Failure::from_error)?;
     }
     Ok(call)
@@ -592,8 +735,15 @@ pub fn tools() -> Value {
         if let Some(schema) = output_schema(name) {
             tool["outputSchema"] = schema;
         }
-        if *name == "workflow" {
-            tool["annotations"] = json!({ "readOnlyHint": true, "openWorldHint": false });
+        match *name {
+            "workflow" => tool["annotations"] = json!({ "readOnlyHint": true, "openWorldHint": false }),
+            // Mixed actions, reset among them.
+            "index" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": true,
+                "idempotentHint": false, "openWorldHint": false}),
+            // cancel changes a job.
+            "jobs" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": false,
+                "openWorldHint": false}),
+            _ => {}
         }
         tool
     }).collect::<Vec<_>>() })
@@ -603,6 +753,8 @@ pub fn tools() -> Value {
 pub struct Failure {
     pub kind: ErrorKind,
     pub text: String,
+    /// Implemented recovery actions that apply, from the core's error.
+    pub recovery: Option<Value>,
 }
 
 impl Failure {
@@ -610,6 +762,7 @@ impl Failure {
         Self {
             kind,
             text: text.into(),
+            recovery: None,
         }
     }
 
@@ -625,7 +778,13 @@ impl Failure {
             ErrorKind::SourceUnreadable | ErrorKind::InvalidData => SOURCE_HELP.to_owned(),
             _ => error.to_string(),
         };
-        Self::new(kind, text)
+        Self {
+            recovery: error
+                .downcast_ref::<FigError>()
+                .and_then(FigError::recovery)
+                .cloned(),
+            ..Self::new(kind, text)
+        }
     }
 
     pub fn metadata(&self) -> Value {
@@ -676,10 +835,45 @@ impl Failure {
             ),
             ErrorKind::StorageUnavailable => (
                 "storage_unavailable",
-                "The workspace storage is missing or offline; reconnect or restore it and retry, without another --storage or a reset.",
+                "The workspace storage is missing or offline; reconnect or restore it and retry, or follow recovery to recreate the workspace elsewhere.",
+            ),
+            ErrorKind::SourceStale => (
+                "source_stale",
+                "The source changed since it was indexed; refresh it with the index tool, then search again.",
+            ),
+            ErrorKind::CursorStale => (
+                "cursor_stale",
+                "A source this cursor paged was reindexed; search again without cursor.",
+            ),
+            ErrorKind::CursorExpired => (
+                "cursor_expired",
+                "The index this cursor paged was deleted; search again without cursor.",
+            ),
+            ErrorKind::Cancelled => (
+                "cancelled",
+                "The operation was cancelled before it finished; nothing was published.",
+            ),
+            ErrorKind::QueryWorkLimit => (
+                "query_work_limit",
+                "The search would read more indexed data than one query supports; follow recovery to search fewer sources or index a narrower scope. Nothing is wrong with the index.",
             ),
         };
-        json!({"code": code, "nextStep": next})
+        // A storage failure is fixed by restoring that storage, not by the design roots.
+        let storage = self
+            .recovery
+            .as_ref()
+            .and_then(|r| r[0]["action"].as_str())
+            .is_some_and(|a| a.starts_with("restore_"));
+        let next = if storage {
+            "The figlens storage named in the error is missing or denied; ask the user to restore it (never change permissions yourself), then retry; recreate_elsewhere only after the user confirms."
+        } else {
+            next
+        };
+        let mut meta = json!({"code": code, "nextStep": next});
+        if let Some(recovery) = &self.recovery {
+            meta["recovery"] = recovery.clone();
+        }
+        meta
     }
 }
 

@@ -41,6 +41,8 @@
 | [OMP](#setup-omp) | OMP 18.13.2 | 同梱の skill |
 | [CLI](#setup-cli) | シェルコマンドだけを実行するエージェント、スクリプト、CI、または自分で使う場合 | `figlens workflow <topic>`、または任意の [skill](#setup-skill) |
 
+**通常と上級。** 通常の利用にセットアップは不要です。`figlens search design.fig "query"` は `.fig` を読むだけで何も作りません。任意のローカルインデックスは依頼したときだけ作成され（`figlens index prepare design.fig --scope 0:0`）、再起動やホストをまたいで再利用されます。[通常の検索と任意のローカルインデックス](docs/README-ja.md#local-index)を参照してください。
+
 <a id="setup-mcp"></a>
 
 ### MCP

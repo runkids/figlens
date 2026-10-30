@@ -45,6 +45,11 @@ usage:
                                              boolean properties and swaps applied; exact refs, match
                                              reasons, UTF-16 spans, coverage and cursor pages (20, 1-200);
                                              hidden layers and internal pages need their flag
+  figlens search --workspace DIR|--file <file.fig>|--id ws_... <query> [--source ID]... [--storage DIR] [same options]
+                                           (put -- before a query that starts with -)
+                                             the same search over a workspace's prepared indexes of
+                                             --node (default 0:0) across its sources, without parsing;
+                                             sources not ready are listed with the step that prepares them
   figlens inspect <file.fig> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]
                                              compact layout/text summary, instances expanded;
                                              depth 1 (0-10), at most 200 nodes, 200 characters per text;
@@ -114,24 +119,35 @@ usage:
   figlens node <file.fig> <node>               print one raw .fig node as JSON
   figlens compare <file.fig> <nodes.json> <node>   diff a frame against a REST nodes.json export
   figlens compare <file.fig> --frames <list.txt>   same for every `node|nodes.json[|variables.json]` line
-  figlens mcp [--root DIR]...                  serve workflow guidance, tree, find, search, inspect, nodes,
-                                             variables, bundle and export as MCP tools; raster export returns an inline image;
-                                             with --root, files and outputs must be under one of the folders
+  figlens mcp [--root DIR]... [--storage-root DIR]...
+                                             serve workflow guidance, tree, find, search, inspect, nodes,
+                                             variables, bundle, export, index and jobs as MCP tools; raster export returns an inline image;
+                                             with --root, files and outputs must be under one of the folders;
+                                             a custom index storage must be under a --storage-root
   figlens workflow <topic>                     print built-in agent guidance, the same text as MCP workflow:
                                              build, audit, images, plan, planning-details or yolo; a
                                              workflow:<topic> link means `figlens workflow <topic>`
   figlens cache [clear]                        show, or clear, the preview render cache
                                              (prints {path,bytes} or {path,freed})
-  figlens index prepare <file.fig> [--workspace DIR] [--storage DIR]
+  figlens index prepare <file.fig> [--workspace DIR] [--storage DIR] [--scope NODE] [--request-id ID]
                                              create or reuse a local workspace and register the file;
-                                             source-scoped, or the --workspace project directory's; prints
-                                             workspaceId, sourceId, incarnation, paths and roots. Partial
-                                             milestone: it keeps the source registry, search does not use it yet
+                                             source-scoped, or the --workspace project directory's; with
+                                             --scope, build and publish that node's search index (0:0 for the
+                                             whole file), progress on stderr; prints workspaceId, sourceId,
+                                             incarnation, job, paths and roots. --replace-unavailable with a new
+                                             --storage recreates an unusable workspace there, old files kept
+  figlens index refresh <select> [--source ID] [--scope NODE] [--request-id ID]
+                                             rebuild the published scopes whose .fig changed
+  figlens index rebuild <select> [--source ID] [--scope NODE] [--request-id ID]
+                                             rebuild published scopes even when unchanged; the old index
+                                             serves until then. A reply with admission partial lists
+                                             deferred items, each with the call that builds it later
+  figlens index clear|clear_cache <select>   delete retired and unfinished indexes; keeps published ones
   figlens index status <select>              state, sources and storage rule; creates nothing
   figlens index add <file.fig> <select>      add a source to a project workspace
   figlens index remove <sourceId> <select>   unregister a source; the .fig is never touched
-  figlens index relocate <sourceId> <new.fig> <select>   keep the sourceId, change its path (project
-                                             workspaces; source-scoped relocate is not available yet)
+  figlens index relocate <sourceId> <new.fig> <select>   keep the sourceId, change its path; a
+                                             source-scoped workspace is then selected by the new path too
   figlens index reset <select>               remove the workspace database once no other figlens process
                                              uses it (else workspace_busy); designs, .figlens/, exports and
                                              other workspaces stay; prepare starts a new incarnation
@@ -142,6 +158,9 @@ usage:
                                              workspace (an error when unavailable), else each XDG_*_HOME/figlens,
                                              else ~/.local/state/figlens etc. (Windows %LOCALAPPDATA%\\figlens\\state).
                                              Config, holding the remembered locations, never moves; reset keeps them
+  figlens jobs status|cancel <jobId> [--storage DIR]
+                                             an index job's state and progress, or stop it; cancel returns
+                                             once the build stopped, and the previous index keeps serving
   figlens update                               install the latest GitHub release over this binary
   figlens --help | --version
 
@@ -181,6 +200,13 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("figlens: {e}");
+            // Structured recovery for agents: only actions that are implemented and apply.
+            if let Some(recovery) = e
+                .downcast_ref::<figlens::FigError>()
+                .and_then(figlens::FigError::recovery)
+            {
+                eprintln!("{}", serde_json::json!({"recovery": recovery}));
+            }
             ExitCode::FAILURE
         }
     }
@@ -242,6 +268,20 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             return Ok(());
         }
         Some("mcp") => return mcp(&args[1..]),
+        Some("__index-worker") => {
+            let (Some(dir), Some(job)) = (args.get(1), args.get(2)) else {
+                return Err(USAGE.into());
+            };
+            // The terminal's Ctrl-C reaches the whole process group; the owner decides.
+            signals::ignore();
+            let report = figlens::workspace::jobs::worker(Path::new(dir), job);
+            writeln!(out, "{report}")?;
+            return if report["error"].is_object() {
+                Err("index worker failed".into())
+            } else {
+                Ok(())
+            };
+        }
         Some("index") => {
             let report = index(&args[1..])?;
             writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
@@ -249,6 +289,23 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             if report["failed"].as_array().is_some_and(|f| !f.is_empty()) {
                 return Err("reset could not remove every database file; see failed".into());
             }
+            if let Some(job) = [&report["job"]]
+                .into_iter()
+                .chain(report["jobs"].as_array().into_iter().flatten())
+                .find(|j| j.is_object() && j["state"] != "succeeded")
+            {
+                return Err(format!("job {} ended {}", job["jobId"], job["state"]).into());
+            }
+            return Ok(());
+        }
+        Some("jobs") => {
+            let report = jobs(&args[1..])?;
+            writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
+            return Ok(());
+        }
+        Some("search") if args.get(1).is_some_and(|a| a.starts_with("--")) => {
+            let report = workspace_search(&args[1..])?;
+            writeln!(out, "{report}")?;
             return Ok(());
         }
         Some("verify") => {
@@ -608,42 +665,89 @@ fn export_batch(
 #[cfg(test)]
 use contract::TOOLS;
 #[cfg(test)]
+use mcp::in_request_order;
+#[cfg(test)]
 use mcp::{call_tool, mcp_reply, serve};
 
 /// Start stdio after canonicalizing configured roots.
 fn mcp(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let mut roots = Vec::new();
+    let (mut roots, mut storage_roots) = (Vec::new(), Vec::new());
     let mut args = args.iter();
     while let Some(arg) = args.next() {
-        let dir = match (arg.as_str(), args.next()) {
-            ("--root", Some(dir)) => dir,
+        let (list, dir) = match (arg.as_str(), args.next()) {
+            ("--root", Some(dir)) => (&mut roots, dir),
+            ("--storage-root", Some(dir)) => (&mut storage_roots, dir),
             _ => return Err(USAGE.into()),
         };
-        roots.push(std::fs::canonicalize(dir).map_err(|e| format!("--root {dir}: {e}"))?);
+        list.push(std::fs::canonicalize(dir).map_err(|e| format!("{arg} {dir}: {e}"))?);
     }
-    mcp::serve(std::io::stdin().lock(), std::io::stdout().lock(), &roots)
+    // The reader thread needs a Send input; stdout stays locked on this thread.
+    mcp::serve_with(
+        std::io::BufReader::new(std::io::stdin()),
+        std::io::stdout().lock(),
+        &roots,
+        &storage_roots,
+    )
 }
 
-/// `figlens index <action> ...`: the local workspace registry.
-fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
-    use figlens::workspace::{self, Select};
-    let usage = || -> Box<dyn Error> {
-        "usage: figlens index prepare|status|add|remove|relocate|reset ...; see `figlens --help`"
-            .into()
-    };
-    let action = args.first().ok_or_else(usage)?.as_str();
-    let (mut positional, mut storage, mut workspace, mut file, mut id) =
-        (Vec::new(), None, None, None, None);
-    let mut rest = args[1..].iter();
+/// Flags of `figlens index`, `jobs` and workspace `search`: each value flag at most once.
+#[derive(Default)]
+struct IndexArgs<'a> {
+    positional: Vec<&'a str>,
+    storage: Option<&'a str>,
+    workspace: Option<&'a str>,
+    file: Option<&'a str>,
+    id: Option<&'a str>,
+    scope: Option<&'a str>,
+    source: Vec<&'a str>,
+    request: Option<&'a str>,
+    replace: bool,
+    /// Search flags passed through to the search request parser.
+    search: Vec<String>,
+}
+
+fn index_args<'a>(args: &'a [String], search: bool) -> Result<IndexArgs<'a>, Box<dyn Error>> {
+    let mut parsed = IndexArgs::default();
+    let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let slot = match arg.as_str() {
-            "--storage" => &mut storage,
-            "--workspace" => &mut workspace,
-            "--file" => &mut file,
-            "--id" => &mut id,
-            flag if flag.starts_with('-') => return Err(usage()),
+            "--storage" => &mut parsed.storage,
+            "--workspace" => &mut parsed.workspace,
+            "--file" => &mut parsed.file,
+            "--id" => &mut parsed.id,
+            "--scope" if !search => &mut parsed.scope,
+            "--request-id" if !search => &mut parsed.request,
+            "--replace-unavailable" if !search => {
+                parsed.replace = true;
+                continue;
+            }
+            "--source" => {
+                let value = rest.next().ok_or("--source needs a value")?;
+                parsed.source.push(value);
+                continue;
+            }
+            // Everything after `--` is the query, even when it starts with `-`.
+            "--" if search => {
+                parsed.positional.extend(rest.by_ref().map(String::as_str));
+                break;
+            }
+            flag if search && flag.starts_with('-') => {
+                parsed.search.push(arg.clone());
+                if !matches!(flag, "--include-hidden" | "--include-internal") {
+                    parsed
+                        .search
+                        .push(rest.next().ok_or(format!("{arg} needs a value"))?.clone());
+                }
+                continue;
+            }
+            flag if flag.starts_with('-') => {
+                return Err(format!(
+                    "unknown flag {flag}; usage: figlens index|jobs|search, see `figlens --help`"
+                )
+                .into());
+            }
             _ => {
-                positional.push(arg.as_str());
+                parsed.positional.push(arg.as_str());
                 continue;
             }
         };
@@ -658,26 +762,246 @@ fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
                 .as_str(),
         );
     }
-    let storage = workspace::storage(storage.map(Path::new))?;
-    let select = Select::from_choice(workspace.map(Path::new), file.map(Path::new), id)?;
+    Ok(parsed)
+}
+
+/// Runs the jobs this process owns to a terminal state in the foreground, printing progress to
+/// stderr, and waits for jobs another live process runs. A joined job whose owner dies is
+/// taken over. Each job report in `report` is replaced by its final state.
+fn finish_jobs(
+    storage: &figlens::workspace::Storage,
+    outcome: figlens::workspace::Outcome,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    use figlens::workspace::{Select, jobs};
+    let mut report = outcome.report;
+    let ws = report["workspaceId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let stop = &signals::INTERRUPTED;
+    signals::catch();
+    let mut progress = |job: &serde_json::Value| {
+        eprintln!(
+            "figlens: job {} {} {}/{}",
+            job["jobId"].as_str().unwrap_or(""),
+            job["stage"].as_str().unwrap_or(""),
+            job["progress"]["units"],
+            job["progress"]["total"]
+        );
+    };
+    let mut fin = |job: &serde_json::Value| -> Result<serde_json::Value, Box<dyn Error>> {
+        let id = job["jobId"].as_str().unwrap_or_default().to_owned();
+        if outcome.run.contains(&id) {
+            return jobs::run(storage, &ws, &id, stop, &mut progress);
+        }
+        loop {
+            let now = jobs::status(storage, &id)?;
+            match now["state"].as_str() {
+                // Another process owns it; an interrupt stops only the waiting.
+                Some("queued" | "running") if stop.load(std::sync::atomic::Ordering::Relaxed) => {
+                    return Ok(now);
+                }
+                Some("queued" | "running") => {
+                    std::thread::sleep(std::time::Duration::from_millis(200))
+                }
+                Some("interrupted") => {
+                    // Retried as the same kind: a rebuild of an unchanged scope must not
+                    // become a refresh that reuses it.
+                    let select = Select::Id(ws.clone());
+                    let (source, scope) = (now["sourceId"].as_str(), now["scope"].as_str());
+                    let again = if now["kind"] == "rebuild" {
+                        jobs::rebuild_scope(storage, &select, source, scope, None)?
+                    } else {
+                        figlens::workspace::refresh(storage, &select, source, scope, None)?
+                    };
+                    // Another process may have taken it over first; then keep waiting.
+                    if let Some(id) = again.run.first() {
+                        return jobs::run(storage, &ws, id, stop, &mut progress);
+                    }
+                }
+                _ => return Ok(now),
+            }
+        }
+    };
+    if report["job"].is_object() {
+        report["job"] = fin(&report["job"])?;
+    }
+    if let Some(list) = report["jobs"].as_array().cloned() {
+        let mut done = Vec::new();
+        for job in &list {
+            done.push(fin(job)?);
+        }
+        report["jobs"] = serde_json::json!(done);
+    }
+    if !outcome.run.is_empty() || report["job"].is_object() || report["jobs"].is_array() {
+        let now = figlens::workspace::status(storage, &Select::Id(ws))?;
+        report["sources"] = now["sources"].clone();
+    }
+    Ok(report)
+}
+
+/// Ctrl-C and SIGTERM while the CLI runs its own index jobs cancel them: each job's owner kills
+/// its worker, waits for it, and records `cancelled`, so the previous index keeps serving.
+mod signals {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    pub static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+    #[cfg(unix)]
+    unsafe extern "C" {
+        fn signal(signum: i32, handler: usize) -> usize;
+    }
+
+    #[cfg(unix)]
+    extern "C" fn interrupted(_: i32) {
+        INTERRUPTED.store(true, Ordering::Relaxed);
+    }
+
+    #[cfg(unix)]
+    pub fn catch() {
+        let handler = interrupted as extern "C" fn(i32) as usize;
+        // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
+        unsafe {
+            signal(2, handler);
+            signal(15, handler);
+        }
+    }
+
+    #[cfg(unix)]
+    pub fn ignore() {
+        // SAFETY: SIG_IGN (1) for SIGINT.
+        unsafe {
+            signal(2, 1);
+        }
+    }
+
+    #[cfg(windows)]
+    unsafe extern "system" fn interrupted(_: u32) -> i32 {
+        INTERRUPTED.store(true, Ordering::Relaxed);
+        1
+    }
+
+    #[cfg(windows)]
+    pub fn catch() {
+        // SAFETY: registers a handler that only stores to an atomic.
+        unsafe {
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(interrupted), 1);
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn ignore() {
+        // SAFETY: a null handler with TRUE makes this process ignore Ctrl-C.
+        unsafe {
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 1);
+        }
+    }
+}
+
+/// `figlens index <action> ...`: workspaces, their sources and their indexes.
+fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
+    use figlens::workspace::{self, PrepareOptions, Select};
+    let usage = || -> Box<dyn Error> {
+        "usage: figlens index prepare|status|add|refresh|remove|relocate|clear|rebuild|reset ...; see `figlens --help`"
+            .into()
+    };
+    let action = args.first().ok_or_else(usage)?.as_str();
+    let a = index_args(&args[1..], false)?;
+    let storage = workspace::storage(a.storage.map(Path::new))?;
+    let select = Select::from_choice(a.workspace.map(Path::new), a.file.map(Path::new), a.id)?;
     let chosen = || {
         select
             .clone()
             .ok_or("choose the workspace with --workspace, --file or --id")
     };
-    match (action, positional.as_slice()) {
-        ("prepare", [path]) if file.is_none() && id.is_none() => {
-            workspace::prepare(&storage, Path::new(path), workspace.map(Path::new))
+    let only_source = || -> Result<Option<&str>, Box<dyn Error>> {
+        match a.source.as_slice() {
+            [] => Ok(None),
+            [one] => Ok(Some(*one)),
+            _ => Err("--source is given twice".into()),
         }
+    };
+    let scoped = a.scope.is_some() || a.request.is_some() || a.replace;
+    let result = match (action, a.positional.as_slice()) {
+        ("prepare", [path]) if a.file.is_none() && a.id.is_none() && a.source.is_empty() => {
+            let scope = a.scope.map(normalize_id);
+            let options = PrepareOptions {
+                scope: scope.as_deref(),
+                request_id: a.request,
+                replace_unavailable: a.replace,
+            };
+            let outcome = workspace::prepare(
+                &storage,
+                Path::new(path),
+                a.workspace.map(Path::new),
+                options,
+            )?;
+            finish_jobs(&storage, outcome)
+        }
+        ("refresh", []) if !a.replace => {
+            let scope = a.scope.map(normalize_id);
+            let outcome = workspace::refresh(
+                &storage,
+                &chosen()?,
+                only_source()?,
+                scope.as_deref(),
+                a.request,
+            )?;
+            finish_jobs(&storage, outcome)
+        }
+        ("rebuild", []) if !a.replace => {
+            let scope = a.scope.map(normalize_id);
+            let outcome = workspace::jobs::rebuild_scope(
+                &storage,
+                &chosen()?,
+                only_source()?,
+                scope.as_deref(),
+                a.request,
+            )?;
+            finish_jobs(&storage, outcome)
+        }
+        _ if scoped || !a.source.is_empty() => Err(usage()),
         ("status", []) => workspace::status(&storage, &chosen()?),
         ("add", [path]) => workspace::add(&storage, &chosen()?, Path::new(path)),
         ("remove", [source]) => workspace::remove(&storage, &chosen()?, source),
         ("relocate", [source, path]) => {
             workspace::relocate(&storage, &chosen()?, source, Path::new(path))
         }
+        ("clear" | "clear_cache", []) => workspace::clear_cache(&storage, &chosen()?),
         ("reset", []) => workspace::reset(&storage, &chosen()?),
         _ => Err(usage()),
+    };
+    result.map_err(|e| workspace::rooted(&storage, e))
+}
+
+/// `figlens jobs status|cancel <jobId> [--storage DIR]`.
+fn jobs(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
+    use figlens::workspace::{self, jobs};
+    let a = index_args(args.get(1..).unwrap_or_default(), false)?;
+    let storage = workspace::storage(a.storage.map(Path::new))?;
+    match (args.first().map(String::as_str), a.positional.as_slice()) {
+        (Some("status"), [id]) => jobs::status(&storage, id),
+        (Some("cancel"), [id]) => jobs::cancel(&storage, id),
+        _ => Err("usage: figlens jobs status|cancel <jobId> [--storage DIR]".into()),
     }
+}
+
+/// `figlens search --workspace DIR|--file <file.fig>|--id ws_... <query> [--source ID]...`:
+/// search the workspace's published indexes; nothing is built.
+fn workspace_search(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
+    use figlens::workspace::{self, Select};
+    let a = index_args(args, true)?;
+    let [query] = a.positional.as_slice() else {
+        return Err("usage: figlens search --workspace DIR|--file <file.fig>|--id ws_... <query> [--source ID]... [--node ID]".into());
+    };
+    let storage = workspace::storage(a.storage.map(Path::new))?;
+    let select = Select::from_choice(a.workspace.map(Path::new), a.file.map(Path::new), a.id)?
+        .ok_or("choose the workspace with --workspace, --file or --id")?;
+    let mut search_args = vec![query.to_string()];
+    search_args.extend(a.search.iter().cloned());
+    let request = command::search_request(&search_args)?;
+    let only: Vec<String> = a.source.iter().map(|s| s.to_string()).collect();
+    workspace::query::search(&storage, &select, &only, &request)
 }
 
 /// Reruns the release installer (scripts/install.sh, or install.ps1 on Windows) into this

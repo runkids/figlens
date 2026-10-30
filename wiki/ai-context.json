@@ -154,6 +154,14 @@
           "path": "wiki/workspace.md"
         }
       ]
+    },
+    "index": {
+      "description": "Changing durable index generations, index jobs (refresh, rebuild, clear_cache, cancel), publication fences or workspace search.",
+      "sources": [
+        {
+          "path": "wiki/index-jobs.md"
+        }
+      ]
     }
   },
   "unrouted": {

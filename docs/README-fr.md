@@ -129,7 +129,7 @@ Parcourez les pages et les calques, recherchez, mesurez, inspectez la mise en pa
 
 ## Serveur MCP et skill pour agent
 
-**MCP.** Le serveur s’exécute en local via stdio et expose `workflow`, `tree`, `find`, `search`, `inspect`, `nodes`, `variables`, `bundle`, `verify` et `export`. Passez des chemins absolus. Ajoutez `--root /path/to/designs` (répétable) pour confiner chaque chemin de fichier et de sortie aux dossiers choisis. Les exports raster sont réduits à `maxSize` (1600 px par défaut) pour que les images inline restent légères ; SVG ne renvoie que des métadonnées.
+**MCP.** Le serveur s’exécute en local via stdio et expose `workflow`, `tree`, `find`, `search`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs` et `export`. Passez des chemins absolus. Ajoutez `--root /path/to/designs` (répétable) pour confiner chaque chemin de fichier et de sortie aux dossiers choisis. Un stockage d'index hors des répertoires par défaut de figlens exige `--storage-root DIR` (répétable). Les exports raster sont réduits à `maxSize` (1600 px par défaut) pour que les images inline restent légères ; SVG ne renvoie que des métadonnées.
 
 Avec `workflow`, l’agent peut lire les guides intégrés `build`, `audit`, `images`, `plan`, `planning-details` ou `yolo` sur demande explicite. Ils partagent les sources du skill portable ; son installation séparée est facultative avec MCP. L’agent réalise le travail avec ses outils de projet et de navigateur et les permissions de l’hôte. Lire un guide n’exécute pas le workflow ; son utilisation dépend du client et du comportement du modèle.
 
@@ -152,6 +152,52 @@ skillshare sync && skillshare sync mcp --global
 
 **Notes d’installation.** Le lanceur npm télécharge le binaire natif correspondant à la première utilisation, le vérifie avec les checksums SHA-256 de la release et le met en cache. Les installations par script se mettent à jour avec `figlens update`, celles de Homebrew avec `brew upgrade figlens`. Les binaires couvrent macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl statique) et Windows (x86_64).
 
+<a id="local-index"></a>
+
+## Recherche ordinaire et index local optionnel
+
+|  | Ordinaire (par défaut) | Avancé : index local (optionnel) |
+|---|---|---|
+| Ce que ça fait | Lit le `.fig` à chaque appel et répond à `search`, `find`, `inspect` et `export`. | Construit une fois un index de recherche d'une portée choisie, puis répond à `search` depuis cet index, classé entre les sources. |
+| Ce qui est écrit | Ni workspace ni base d'index (`export` n'écrit que les fichiers demandés). | Un workspace local (base SQLite) dans le répertoire d'état de l'utilisateur, ou sous le `--storage` choisi. |
+| Quand l'utiliser | Questions ponctuelles, scripts, CI. | Recherches répétées dans un fichier ; plusieurs fichiers d'un projet comme un seul corpus (`--workspace <dir>`) ; relations parent/instance connues dans la couverture. |
+
+Une question de design ordinaire ne crée jamais d'index. Vous l'activez une fois, explicitement (« crée un index pour ce design ») ; figlens choisit le stockage et n'exige ni SQLite ni autre configuration.
+
+```sh
+# Ordinaire : sans état, ne crée rien
+figlens search design.fig "checkout button"
+
+# Avancé, une fois : choisir une portée (un id de nœud, ou 0:0 pour tout le fichier) ; la construction s'exécute au premier plan
+figlens index prepare design.fig --scope 0:0
+
+# Recherche indexée ; ajouter --node si la portée indexée n'est pas tout le fichier
+figlens search --file design.fig "checkout button" --node 0:0
+
+# Après modification ou réexport du .fig : reconstruire seulement les portées dont les octets ont changé
+figlens index refresh --file design.fig
+
+# Après déplacement du .fig : garder le workspace, puis refresh (utiliser le workspaceId affiché par prepare)
+figlens index relocate <sourceId> new/design.fig --id <workspaceId>
+figlens index refresh --id <workspaceId>
+```
+
+MCP : `index` prepare renvoie un job ; interroger `jobs` jusqu'à `succeeded`, puis chercher avec le `workspaceId` de la réponse.
+
+```json
+{"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
+{"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "node": "0:0", "query": "checkout button"}}
+```
+
+Cycle de vie : `refresh` reconstruit seulement les portées dont les octets du `.fig` ont changé ; `rebuild` reconstruit même sans changement ; `clear_cache` supprime seulement ce qu'une construction peut recréer et garde le registre et les index publiés ; `reset` supprime la base de ce workspace (jamais le `.fig` ni les exports) et ne s'exécute que sur demande explicite. De nouvelles sources, une portée plus large, reset et recréation exigent chacun leur propre demande explicite.
+
+`.fig` déplacé ? `index relocate` garde `workspaceId`, `sourceId` et le stockage ; faites ensuite `refresh` des portées concernées. Pas de découverte automatique ni de fusion par hash, et aucun reset n'est nécessaire.
+
+Données : la base SQLite contient les chemins locaux enregistrés, les noms de calques et le texte effectif des portées choisies, les postings de recherche, les relations parent/instance connues, les hashes, les générations et les jobs. Le `.fig` d'origine reste inchangé où il est ; ses octets bruts ne sont pas stockés dans la base.
+
+Pi, OpenCode et OMP utilisent le même index via leur propre entrée opt-in, et le workspace est réutilisé entre redémarrages et hôtes. Non implémenté : surveillance de fichiers, outils d'usages/relations, vecteurs, événements et abonnements.
+
 <a id="commands"></a>
 
 ## Référence de la CLI
@@ -161,7 +207,7 @@ skillshare sync && skillshare sync mcp --global
 | `tree <file> [node] [--depth N] [--json]` | Ids, types REST (comme `nodes`) et noms des nodes ; texte indenté, ou JSON imbriqué avec la taille de chaque node, son masquage et son mode d'auto layout, plus `firstText` (premier texte visible) sur les nodes d'une page ou d'une section |
 | `tree <file> [node] --top-frames [--json]` | Uniquement les écrans, un par ligne, prêts pour `--frames -` : frames, composants, ensembles de composants et instances d'une page ou de ses sections (groupes et pages internes ignorés) ; `--json` ajoute les ids de page et de section et le premier texte visible de chaque écran (`firstText`), qui distingue les libellés du canevas des écrans |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Recherche insensible à la casse dans les noms de calques et le texte ; chemins, tailles et aperçus. 20 résultats par défaut (1-200) |
-| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | Recherche classée dans les noms de calques et le texte complet, avec overrides d’instance, propriétés texte/booléennes et swaps appliqués ; références exactes de nœuds (y compris les ids de sous-calques `I…;…` pour `inspect`), raisons de correspondance, plages UTF-16, couverture et pages par curseur. 20 par défaut (1-200) ; calques masqués et pages internes exigent leur flag |
+| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | Recherche classée dans les noms de calques et le texte complet, avec overrides d’instance, propriétés texte/booléennes et swaps appliqués ; références exactes de nœuds (y compris les ids de sous-calques `I…;…` pour `inspect`), raisons de correspondance, plages UTF-16, couverture et pages par curseur. 20 par défaut (1-200) ; calques masqués et pages internes exigent leur flag. Avec `--file`/`--workspace`/`--id` au lieu de `<file>`, il lit l'index préparé du workspace (voir `index`) |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | Résumé compact de la mise en page/du texte étendus, 200 nodes au plus. `--images` ajoute les dimensions des bitmaps et les emprises de recadrage. `--flat` affiche plutôt une ligne par node : position relative au node, taille, texte, police, remplissage, contour, rayon, auto-layout |
 | `nodes <file> <node>` | L'objet par nœud d'une réponse REST nodes (`document`, `components`, `componentSets`, `styles`) : instances étendues et overrides, auto-layout, styles de texte, fills, effets, variables liées, propriétés de composants, render bounds |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | Un seul décodage, plusieurs nœuds : une ligne JSON par id listé, la sortie de `nodes` avec son `nodeId`, ou `{nodeId, error}` |
@@ -174,7 +220,8 @@ skillshare sync && skillshare sync mcp --global
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Viewer local en lecture seule ; `--out` écrit un snapshot hors ligne autonome |
 | `compare <file> <nodes.json> <node>` | Diff par rapport à un export REST de la même frame |
 | `node <file> <node>` | Un node `.fig` brut |
-| `index prepare\|status\|add\|remove\|relocate\|reset` | Registre local de workspaces dans le répertoire d'état figlens de l'utilisateur, ou sous un `--storage DIR` que le workspace mémorise ensuite (étape partielle : `search` ne l'utilise pas encore) ; `reset` ne supprime que la base de données du workspace, jamais les designs, les exports ni l'emplacement mémorisé |
+| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset` | Workspace local dans le répertoire d'état figlens de l'utilisateur, ou sous un `--storage DIR` que le workspace mémorise ensuite. `prepare <file> --scope NODE` construit une fois l'index de recherche de cette portée ; ensuite `search --file <file>` (ou `--workspace DIR`) répond sans réanalyser, avec un classement commun aux sources du workspace. `refresh` reconstruit les fichiers modifiés, `rebuild` tous ou une `--source`/`--scope`, `clear` supprime les index inutilisés ; l'index précédent sert jusqu'à ce que le nouveau soit prêt. `reset` supprime uniquement la base de données du workspace, jamais les designs, les exports ni l'emplacement mémorisé |
+| `jobs status\|cancel <jobId>` | Afficher ou annuler une construction d'index ; `cancel` rend la main une fois la construction arrêtée |
 | `mcp` | Serveur MCP local via stdio |
 | `update` | Remplace le binaire par la dernière release |
 

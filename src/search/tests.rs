@@ -641,6 +641,11 @@ fn a_budget_stop_reports_partial_coverage_without_a_continuation() {
     assert_eq!(found["nextCursor"], Json::Null);
     let full = run(&request("row"))["coverage"].clone();
     assert_eq!(full["layers"]["text"]["state"], "ready");
+    assert_eq!(full["layers"]["relations"]["kinds"]["instance_of"], "ready");
+    assert_eq!(
+        full["layers"]["relations"]["reasons"][0]["code"],
+        "relation_unavailable"
+    );
     assert_eq!(full["totalRecords"], full["scannedRecords"]);
 }
 
@@ -910,11 +915,192 @@ fn queries_up_to_the_term_limit_retrieve_only_records_with_every_term() {
     let index = build(&tree, "0:0", bounds(WORK));
     for n in [32, 33, MAX_TERMS] {
         let req = request(&words[..n].join(" "));
-        let (hits, ..) = retrieve(&index, &req.validate().unwrap(), &req);
+        let (hits, ..) = retrieve(&[&index], &req.validate().unwrap(), &req);
         let ids: Vec<&str> = hits
             .iter()
             .map(|h| index.records[h.record as usize].id.as_str())
             .collect();
         assert_eq!(ids, ["0:1"], "{n} terms");
     }
+}
+
+/// Instances stored, swapped to a missing main and swapped to a non-component.
+fn swaps() -> K<'static> {
+    obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(20, Some(1), "SYMBOL", "Icon", vec![]),
+            node(40, Some(1), "FRAME", "Not a component", vec![]),
+            node(30, Some(1), "SYMBOL", "Card", vec![]),
+            instance(31, 30, "Default slot", 20, vec![]),
+            instance(32, 30, "Frame slot", 20, vec![]),
+            instance(
+                3,
+                1,
+                "Card copy",
+                30,
+                vec![(
+                    "symbolOverrides",
+                    K::Array(vec![
+                        obj(vec![path(&[31]), ("overriddenSymbolID", guid(99))]),
+                        obj(vec![path(&[32]), ("overriddenSymbolID", guid(40))]),
+                    ]),
+                )],
+            ),
+            instance(33, 1, "Stored", 20, vec![]),
+        ]),
+    )])
+}
+
+#[test]
+fn a_swap_to_a_missing_main_is_unresolved_not_the_definitions_main() {
+    let message = swaps();
+    let tree = Tree::new(&message);
+    let index = build(&tree, "0:0", bounds(WORK));
+    let of = |id: &str| {
+        let r = index.records.iter().find(|r| r.id == id).unwrap();
+        r.instance.clone().unwrap()
+    };
+    let unresolved = |evidence| Instance {
+        target: None,
+        basis: "resolved",
+        evidence,
+    };
+    assert_eq!(of("I0:3;0:31"), unresolved("swap"));
+    assert_eq!(of("I0:3;0:32"), unresolved("swap"));
+    assert_eq!(
+        of("0:33"),
+        Instance {
+            target: Some("0:20".into()),
+            basis: "recorded",
+            evidence: "symbolData",
+        }
+    );
+}
+
+#[test]
+fn one_query_budget_covers_every_load_and_is_checked_before_copying() {
+    let index = build(&Tree::new(&swaps()), "0:0", bounds(WORK));
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(&format!(
+        "CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+         added_at_ms INTEGER NOT NULL) STRICT; {}",
+        crate::workspace::V2
+    ))
+    .unwrap();
+    conn.execute(
+        "INSERT INTO generations (source_id, membership, scope, versions, job_id, state, created_ms)
+         VALUES ('s', 'm', '0:0', 'v', 'j', 'building', 0)",
+        [],
+    )
+    .unwrap();
+    store::save(&mut conn, 1, &index, &|_| Ok(()), &mut |_, _, _| Ok(())).unwrap();
+    let all: Vec<u32> = (0..index.records.len() as u32).collect();
+    let mut one = 0;
+    let mut first = store::load(&conn, 1, &[], &mut one).unwrap();
+    store::add(&conn, 1, &mut first, &all, &mut one).unwrap();
+    // A second load that fits alone, after others spent all but one byte of it.
+    let mut spent = BYTES - one + 1;
+    let second = store::load(&conn, 1, &[], &mut spent)
+        .and_then(|mut i| store::add(&conn, 1, &mut i, &all, &mut spent));
+    let kind = second
+        .unwrap_err()
+        .downcast_ref::<FigError>()
+        .map(FigError::kind);
+    assert_eq!((one > 0, kind), (true, Some(ErrorKind::QueryWorkLimit)));
+}
+
+#[test]
+fn metadata_that_escapes_past_the_read_limit_is_never_published() {
+    let mut index = build(&Tree::new(&swaps()), "0:0", bounds(WORK));
+    // Each U+0001 is one byte in the name and six once JSON-escaped.
+    let name = "\u{1}".repeat(12 * 1024 * 1024);
+    index.above.push(("1:1".into(), name));
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(&format!(
+        "CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+         added_at_ms INTEGER NOT NULL) STRICT; {}",
+        crate::workspace::V2
+    ))
+    .unwrap();
+    conn.execute(
+        "INSERT INTO generations (source_id, membership, scope, versions, job_id, state, created_ms)
+         VALUES ('s', 'm', '0:0', 'v', 'j', 'building', 0)",
+        [],
+    )
+    .unwrap();
+    let e = store::save(&mut conn, 1, &index, &|_| Ok(()), &mut |_, _, _| Ok(())).unwrap_err();
+    let rows: i64 = conn
+        .query_row("SELECT count(*) FROM records", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        (e.downcast_ref::<FigError>().map(FigError::kind), rows),
+        (Some(ErrorKind::ParseBudget), 0)
+    );
+}
+
+#[test]
+fn index_metadata_serializes_as_before_within_its_cap_and_never_holds_more() {
+    let index = build(&Tree::new(&swaps()), "0:0", bounds(WORK));
+    let info = store::info_json(&index, usize::MAX).unwrap();
+    let pages: Vec<Json> = index
+        .pages
+        .iter()
+        .map(|p| json!([p.id, p.name, p.internal]))
+        .collect();
+    let before = json!({"pages": pages, "roots": index.roots, "above": index.above,
+        "lens": index.lens, "stop": index.stop, "hiddenContent": index.hidden_content,
+        "textBytes": index.text_bytes, "generation": index.generation});
+    assert_eq!(info, before.to_string());
+    assert!(store::info_json(&index, info.len()).is_ok());
+    // The write that would pass the cap is refused whole: nothing past it is ever held.
+    let (head, tail) = info.as_bytes().split_at(info.len() / 2);
+    let mut w = store::Capped::new(info.len() - 1);
+    let wrote = [head, tail].map(|part| std::io::Write::write_all(&mut w, part).is_ok());
+    assert_eq!((wrote, w.out.len()), ([true, false], head.len()));
+    let kind = store::info_json(&index, info.len() - 1).unwrap_err();
+    assert_eq!(
+        kind.downcast_ref::<FigError>().map(FigError::kind),
+        Some(ErrorKind::ParseBudget)
+    );
+}
+
+#[test]
+fn contains_and_instance_of_survive_a_stored_generation() {
+    let message = swaps();
+    let tree = Tree::new(&message);
+    let index = build(&tree, "0:0", bounds(WORK));
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(&format!(
+        "CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+         added_at_ms INTEGER NOT NULL) STRICT; {}",
+        crate::workspace::V2
+    ))
+    .unwrap();
+    conn.execute(
+        "INSERT INTO generations (source_id, membership, scope, versions, job_id, state, created_ms)
+         VALUES ('s', 'm', '0:0', 'v', 'j', 'building', 0)",
+        [],
+    )
+    .unwrap();
+    store::save(&mut conn, 1, &index, &|_| Ok(()), &mut |_, _, _| Ok(())).unwrap();
+    let mut spent = 0;
+    let mut loaded = store::load(&conn, 1, &[], &mut spent).unwrap();
+    let all: Vec<u32> = (0..index.records.len() as u32).collect();
+    store::add(&conn, 1, &mut loaded, &all, &mut spent).unwrap();
+    let relations = |i: &Index| -> Vec<(String, Option<u32>, Option<Instance>)> {
+        i.records
+            .iter()
+            .map(|r| (r.id.clone(), r.parent, r.instance.clone()))
+            .collect()
+    };
+    assert_eq!(relations(&loaded), relations(&index));
+    assert!(
+        index
+            .records
+            .iter()
+            .any(|r| r.instance.as_ref().is_some_and(|i| i.target.is_none()))
+    );
 }

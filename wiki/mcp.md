@@ -4,7 +4,7 @@ Use this topic for MCP instructions, tool discovery and built-in workflow guidan
 
 ## Intent and tool selection
 
-`src/mcp.rs` serves stdio JSON-RPC; `src/main.rs` configures roots and starts it. Initialization returns a short intent router: resolve recognizable screens through `find`/`tree` (or `search` for effective instance copy), read compact values with `inspect`, full style/mask/component data with `nodes`, tokens with `variables`, and pixels/assets with `export`. `bundle` writes a scoped handoff, `verify` checks it. Ordinary questions and exports use those tools directly.
+`src/mcp.rs` serves stdio JSON-RPC; `src/main.rs` configures roots and starts it. Initialization returns a short intent router: resolve recognizable screens through `find`/`tree` (or `search` for effective instance copy), read compact values with `inspect`, full style/mask/component data with `nodes`, tokens with `variables`, and pixels/assets with `export`. `bundle` writes a scoped handoff, `verify` checks it. Only if asked for an index: `index` prepare with a scope, `jobs` status, `search` with `workspaceId`. Ordinary questions and exports use those tools directly.
 
 `inspect` and `bundle` accept optional `states: true` (CLI `--states`) for a bounded, source-scoped list of explicitly related component variants. The agent supplies this per-call argument when related states are requested; no MCP configuration change is needed. Inspect adds `states`; bundle adds `design/states.json`, a manifest pointer and a bounded context summary. Independent inventory truncation/coverage must be checked; supported prototype fields retain exact sources and unknown markers, without business inference. Both reuse their selected effective subtree and do not render alternate variants. See [related variants](states.md) for evidence, batch usage and limits.
 
@@ -74,14 +74,20 @@ Tool failures retain `isError: true` and text content; additive `_meta.figlens` 
 | `parse_budget_exceeded` | A named finite parsing budget was crossed; use a smaller copy or report the limit |
 | `output_write_failed` | Bundle packing or export writing failed; create an authorized writable directory and check space/permissions |
 | `permission_denied` | Configured roots forbid the source/output; retain the restriction |
-| `workspace_busy` | CLI `figlens index` only for now: another figlens process holds the workspace; retry after it finishes, without killing it |
-| `storage_unavailable` | CLI `figlens index` only for now: the workspace's storage is missing or offline; reconnect or restore it and retry, without another `--storage` or a reset |
-| `index_incompatible` | CLI `figlens index` only for now: the workspace was written by another schema; use that figlens version or reset the workspace |
+| `workspace_busy` | Another process holds the workspace, or a lane is full; retry once clear, never kill it |
+| `storage_unavailable` | The workspace's storage is missing or offline; follow `_meta.figlens.recovery`: restore it, or with the user's confirmation recreate elsewhere |
+| `index_incompatible` | Another schema or index version; follow the recovery (`rebuild`, or that figlens version) |
+| `query_work_limit` | Over 10 sources or 100k records per search; run a listed narrower one |
+| `source_stale` | Every searched source changed since indexing; run the listed `refresh`, then search again |
+| `cursor_stale` / `cursor_expired` | A paged index was replaced or deleted; search again without the cursor |
+| `cancelled` | The job was cancelled; the previous index still serves |
 | `operation_failed` | Other existing operation error; inspect its diagnostic without assuming a more specific category |
 
 MCP source failures hide raw paths/cloud stderr. Local CLI errors retain their diagnostics; URL-source errors are redacted in both channels. Error categories follow typed provenance in the existing `FigError`, not human-text matching. They are a recoverability aid, not a promise that every possible process failure is caught.
 
 JSON parsing (`-32700`), invalid JSON-RPC envelopes (`-32600`), unknown methods (`-32601`) and a missing/non-string `tools/call` name (`-32602`) remain protocol errors. Business/argument failures inside a named tool call are tool results. Envelope-valid messages without `id` are ignored before preparation/I/O, even with unknown methods or invalid arguments. `id: null` gets a reply. Omitted `jsonrpc` remains accepted; prefer `"jsonrpc":"2.0"`.
+
+Workspace calls (`index`, `jobs`, workspace `search`) skip the document thread. The reader only frames and parses; `jobs` and index `status` go to a control lane, document tools and workspace search to the interactive lane (which keeps the warm document), and build-submitting `index` actions to an index lane feeding a one-at-a-time build lane. The reader answers `ping` and `tools/list` at once, possibly before earlier tool replies; pair replies by id. Lanes queue 64, 64 and 8 calls, the build lane 8 submissions; past that, `workspace_busy` at once. `notifications/cancelled` drops a queued call unanswered; a running call finishes (stop its build with `jobs cancel`). Blocking I/O runs in the executing lane, so status and cancel answer during a build or slow search; stdin EOF or a write error cancels builds before exit. Storage roots (`--storage-root`) and `--root` visibility are in [workspace](workspace.md#mcp-authorization); jobs are in [index](index-jobs.md).
 
 Admission stores checked paths even without roots; execution/cache use them. Reply labels and encoders survive symlinks; missing parents stay missing. Roots reject dangling links/escapes. Cache reuse rechecks policy, readability, mtime and length.
 

@@ -129,7 +129,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 누구�
 
 ## MCP 서버와 에이전트 skill
 
-**MCP.** 서버는 로컬에서 stdio로 실행되며 `workflow`, `tree`, `find`, `search`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `export`를 제공합니다. 절대 경로를 전달하세요. `--root /path/to/designs`(반복 가능)를 추가하면 모든 파일과 출력 경로를 선택한 폴더로 제한합니다. 래스터 내보내기는 `maxSize`(기본 1600px)에 맞게 축소되어 인라인 이미지가 작게 유지되며, SVG는 메타데이터만 반환합니다.
+**MCP.** 서버는 로컬에서 stdio로 실행되며 `workflow`, `tree`, `find`, `search`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs`, `export`를 제공합니다. 절대 경로를 전달하세요. `--root /path/to/designs`(반복 가능)를 추가하면 모든 파일과 출력 경로를 선택한 폴더로 제한합니다. figlens 기본 디렉터리 밖에 인덱스를 저장하려면 `--storage-root DIR`(반복 가능)이 필요합니다. 래스터 내보내기는 `maxSize`(기본 1600px)에 맞게 축소되어 인라인 이미지가 작게 유지되며, SVG는 메타데이터만 반환합니다.
 
 agent는 `workflow`로 `build`, `audit`, `images`, `plan`, `planning-details` 또는 명시적으로 요청된 경우 `yolo` 가이드를 읽을 수 있습니다. portable skill과 같은 소스를 사용하므로 MCP 사용 시 별도 skill 설치는 선택 사항입니다. 실제 작업은 agent의 프로젝트·브라우저 도구와 호스트 권한으로 수행합니다. 가이드를 읽는 것만으로 작업이 실행되지는 않으며, 활용 방식은 클라이언트 지원과 모델 동작에 따라 달라집니다.
 
@@ -152,6 +152,52 @@ skillshare sync && skillshare sync mcp --global
 
 **설치 참고.** npm 런처는 처음 사용할 때 해당 네이티브 바이너리를 내려받고, 릴리스의 SHA-256 체크섬으로 검증한 뒤 캐시합니다. 스크립트로 설치했다면 `figlens update`, Homebrew로 설치했다면 `brew upgrade figlens`로 업데이트하세요. 바이너리는 macOS(Apple silicon, Intel), Linux(arm64, x86_64, 정적 musl), Windows(x86_64)를 지원합니다.
 
+<a id="local-index"></a>
+
+## 일반 검색과 선택형 로컬 인덱스
+
+|  | 일반(기본) | 고급: 로컬 인덱스(선택) |
+|---|---|---|
+| 하는 일 | 호출할 때마다 `.fig`를 읽어 `search`, `find`, `inspect`, `export`에 답합니다. | 선택한 범위의 검색 인덱스를 한 번 만들고, 이후 `search`는 그 인덱스로 소스 전체를 함께 순위 매겨 답합니다. |
+| 기록되는 것 | workspace도 인덱스 데이터베이스도 만들지 않습니다(`export`는 요청한 파일만 씁니다). | 사용자별 state 디렉터리 또는 선택한 `--storage` 아래의 로컬 workspace(SQLite 데이터베이스). |
+| 쓰는 때 | 일회성 질문, 스크립트, CI. | 한 파일을 반복 검색할 때, 프로젝트의 여러 파일을 하나의 코퍼스로 검색할 때(`--workspace <dir>`), coverage에서 알려진 부모/인스턴스 관계를 쓰고 싶을 때. |
+
+일반적인 디자인 질문은 인덱스를 만들지 않습니다. 한 번 명시적으로 켭니다("이 디자인의 인덱스를 만들어 줘"). 저장 위치는 figlens가 고르며 SQLite 등 별도 설정은 필요 없습니다.
+
+```sh
+# 일반: 상태 없음, 아무것도 만들지 않음
+figlens search design.fig "checkout button"
+
+# 고급, 한 번만: 범위(노드 id, 파일 전체는 0:0) 선택; 빌드는 포그라운드로 실행
+figlens index prepare design.fig --scope 0:0
+
+# 인덱스 검색; 인덱스 범위가 파일 전체가 아니면 --node 추가
+figlens search --file design.fig "checkout button" --node 0:0
+
+# .fig를 수정하거나 다시 내보낸 뒤: 바이트가 바뀐 범위만 다시 빌드
+figlens index refresh --file design.fig
+
+# .fig를 옮긴 뒤: workspace를 유지하고 refresh (prepare가 출력한 workspaceId 사용)
+figlens index relocate <sourceId> new/design.fig --id <workspaceId>
+figlens index refresh --id <workspaceId>
+```
+
+MCP: `index` prepare는 job을 반환합니다. `succeeded`가 될 때까지 `jobs`를 조회한 뒤 응답의 `workspaceId`로 검색합니다.
+
+```json
+{"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
+{"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "node": "0:0", "query": "checkout button"}}
+```
+
+수명 주기: `refresh`는 `.fig` 바이트가 바뀐 범위만 다시 빌드하고, `rebuild`는 바뀌지 않았어도 다시 빌드합니다. `clear_cache`는 빌드로 다시 만들 수 있는 데이터만 지우며 레지스트리와 게시된 인덱스는 유지합니다. `reset`은 이 workspace의 데이터베이스를 지우며(`.fig`와 내보내기는 건드리지 않음) 명시적으로 요청했을 때만 실행됩니다. 새 소스, 더 넓은 범위, reset, 재생성은 각각 별도의 명시적 요청이 필요합니다.
+
+`.fig`를 옮겼나요? `index relocate`는 `workspaceId`, `sourceId`, 저장 위치를 유지합니다. 이후 영향받은 범위를 `refresh`하세요. 자동 탐색이나 해시 기반 자동 병합은 없으며 reset은 필요 없습니다.
+
+데이터: SQLite 데이터베이스에는 등록된 로컬 경로, 선택한 범위의 레이어 이름과 유효 텍스트, 검색 postings, 알려진 부모/인스턴스 관계, 해시, 세대, job이 들어 있습니다. 원본 `.fig`는 제자리에서 변경되지 않으며, 원시 바이트는 데이터베이스에 저장되지 않습니다.
+
+Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며, workspace는 재시작과 호스트를 넘어 재사용됩니다. 미구현: 파일 감시, usages/관계 도구, 벡터, 이벤트, 구독.
+
 <a id="commands"></a>
 
 ## CLI 레퍼런스
@@ -161,7 +207,7 @@ skillshare sync && skillshare sync mcp --global
 | `tree <file> [node] [--depth N] [--json]` | 노드 ID, REST 유형(`nodes`와 동일), 이름. 들여쓰기 텍스트, 또는 각 노드의 크기, 숨김 여부, 오토 레이아웃 모드을 담은 중첩 JSON. 페이지나 섹션 바로 아래 노드에는 `firstText`(첫 번째 보이는 텍스트)도 포함 |
 | `tree <file> [node] --top-frames [--json]` | 화면만 한 줄에 하나씩, `--frames -`에 바로 넘길 수 있게 출력. 페이지나 그 섹션 바로 아래의 프레임, 컴포넌트, 컴포넌트 세트, 인스턴스(그룹과 내부 페이지 제외). `--json`은 페이지와 섹션 ID, 그리고 캔버스 라벨과 화면을 구분할 수 있는 각 화면의 첫 번째 보이는 텍스트(`firstText`)를 추가 |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 대소문자 구분 없이 레이어 이름과 텍스트 검색. 경로, 크기, 미리보기. 기본 20개(1-200) |
-| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | 인스턴스 오버라이드, 텍스트/불리언 속성, 스왑을 적용한 레이어 이름과 전체 텍스트의 순위 검색. 정확한 노드 참조(`inspect`에 쓰는 `I…;…` 하위 레이어 ID 포함), 일치 이유, UTF-16 범위, 커버리지, 커서 페이지. 기본 20개(1-200), 숨긴 레이어와 내부 페이지는 해당 플래그 필요 |
+| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | 인스턴스 오버라이드, 텍스트/불리언 속성, 스왑을 적용한 레이어 이름과 전체 텍스트의 순위 검색. 정확한 노드 참조(`inspect`에 쓰는 `I…;…` 하위 레이어 ID 포함), 일치 이유, UTF-16 범위, 커버리지, 커서 페이지. 기본 20개(1-200), 숨긴 레이어와 내부 페이지는 해당 플래그 필요. `<file>` 대신 `--file`/`--workspace`/`--id`를 쓰면 workspace의 준비된 인덱스를 읽습니다(`index` 참고) |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | 펼쳐진 간결한 레이아웃/텍스트 요약, 최대 200노드. `--images`는 비트맵 크기와 크롭 범위를 추가. `--flat`은 대신 노드당 한 줄로 출력(노드 기준 위치, 크기, 텍스트, 폰트, 채우기, 선, 반경, auto-layout) |
 | `nodes <file> <node>` | REST nodes 응답의 노드별 객체(`document`, `components`, `componentSets`, `styles`): 펼쳐진 인스턴스와 재정의, 자동 레이아웃, 텍스트 스타일, 채우기, 효과, 연결 변수, 컴포넌트 속성, 렌더링 경계 |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | 한 번 디코딩해 여러 노드: 목록의 id마다 JSON 한 줄(`nodeId`가 붙은 `nodes` 출력 또는 `{nodeId, error}`) |
@@ -174,7 +220,8 @@ skillshare sync && skillshare sync mcp --global
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 로컬 읽기 전용 viewer. `--out`은 독립 오프라인 스냅샷 생성 |
 | `compare <file> <nodes.json> <node>` | 같은 frame의 REST 내보내기와 차이 비교 |
 | `node <file> <node>` | 원시 `.fig` 노드 하나 |
-| `index prepare\|status\|add\|remove\|relocate\|reset` | 사용자별 figlens state 디렉터리의 로컬 workspace 레지스트리, 또는 workspace가 이후 기억하는 `--storage DIR` 아래(부분 마일스톤: `search`는 아직 사용하지 않음). `reset`은 workspace 데이터베이스만 삭제하며 디자인, export, 기억된 위치는 삭제하지 않음 |
+| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset` | 사용자별 figlens state 디렉터리 또는 workspace가 이후 기억하는 `--storage DIR` 아래의 로컬 workspace. `prepare <file> --scope NODE`로 해당 범위의 검색 인덱스를 한 번 만들면, 이후 `search --file <file>`(또는 `--workspace DIR`)은 다시 파싱하지 않고 workspace의 모든 소스를 함께 순위 매겨 답합니다. `refresh`는 변경된 파일을, `rebuild`는 전부(또는 `--source`/`--scope` 하나)를 다시 만들고, `clear`는 쓰지 않는 인덱스를 지웁니다. 새 인덱스가 준비될 때까지 이전 인덱스가 계속 쓰입니다. `reset`은 workspace 데이터베이스만 지우며 디자인, 내보내기, 기억된 위치는 건드리지 않습니다 |
+| `jobs status\|cancel <jobId>` | 인덱스 빌드 상태 확인 또는 취소. `cancel`은 빌드가 멈춘 뒤에 반환합니다 |
 | `mcp` | stdio를 사용하는 로컬 MCP 서버 |
 | `update` | 최신 릴리스로 바이너리 교체 |
 

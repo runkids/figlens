@@ -129,7 +129,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 誰に�
 
 ## MCP サーバーとエージェント skill
 
-**MCP。** サーバーは stdio 経由でローカル実行され、`workflow`、`tree`、`find`、`search`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`export` を公開します。パスは絶対パスで渡します。`--root /path/to/designs`（複数指定可）を追加すると、すべてのファイルパスと出力パスを指定フォルダーに制限できます。ラスターエクスポートは `maxSize`（デフォルト 1600 px）に縮小され、インライン画像は小さく保たれます。SVG はメタデータのみを返します。
+**MCP。** サーバーは stdio 経由でローカル実行され、`workflow`、`tree`、`find`、`search`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`export` を公開します。パスは絶対パスで渡します。`--root /path/to/designs`（複数指定可）を追加すると、すべてのファイルパスと出力パスを指定フォルダーに制限できます。figlens の既定ディレクトリ以外にインデックスを保存するには `--storage-root DIR`（複数指定可）が必要です。ラスターエクスポートは `maxSize`（デフォルト 1600 px）に縮小され、インライン画像は小さく保たれます。SVG はメタデータのみを返します。
 
 エージェントは `workflow` で `build`、`audit`、`images`、`plan`、`planning-details`、または明示的に依頼された場合の `yolo` ガイドを取得できます。portable skill と同じソースを使うため、MCP 利用時の skill の別途インストールは任意です。実作業にはエージェント自身のプロジェクト・ブラウザツールとホストの権限を使います。ガイドを読むだけでは処理は実行されません。利用方法はクライアントの対応とモデルの動作に依存します。
 
@@ -152,6 +152,52 @@ skillshare sync && skillshare sync mcp --global
 
 **インストールの注意。** npm ランチャーは初回使用時に対応するネイティブバイナリをダウンロードし、リリースの SHA-256 チェックサムで検証してキャッシュします。スクリプトでインストールした場合は `figlens update`、Homebrew の場合は `brew upgrade figlens` で更新します。バイナリは macOS（Apple silicon、Intel）、Linux（arm64、x86_64、静的 musl）、Windows（x86_64）に対応しています。
 
+<a id="local-index"></a>
+
+## 通常の検索と任意のローカルインデックス
+
+|  | 通常（デフォルト） | 上級：ローカルインデックス（任意） |
+|---|---|---|
+| できること | 呼び出しごとに `.fig` を読み、`search`、`find`、`inspect`、`export` に答えます。 | 選んだ範囲の検索インデックスを一度作り、以後の `search` はそこから、ソース横断でランク付けして答えます。 |
+| 書き込まれるもの | workspace もインデックス用データベースも作りません（`export` は指定したファイルだけを書き込みます）。 | ユーザーごとの state ディレクトリ、または選んだ `--storage` の下にあるローカル workspace（SQLite データベース）。 |
+| 使う場面 | 単発の質問、スクリプト、CI。 | 同じファイルを繰り返し検索する場合、プロジェクトの複数ファイルを一つのコーパスとして検索する場合（`--workspace <dir>`）、coverage で既知の親/インスタンス関係を使いたい場合。 |
+
+通常のデザインに関する質問でインデックスが作られることはありません。明示的に一度だけ有効にします（「このデザインのインデックスを作成して」）。保存先は figlens が選び、SQLite などの設定は不要です。
+
+```sh
+# 通常：ステートレスで何も作らない
+figlens search design.fig "checkout button"
+
+# 上級、一度だけ：範囲（ノード ID、またはファイル全体なら 0:0）を指定。ビルドはフォアグラウンドで実行
+figlens index prepare design.fig --scope 0:0
+
+# インデックス検索。インデックス範囲がファイル全体でない場合は --node を付ける
+figlens search --file design.fig "checkout button" --node 0:0
+
+# .fig を編集・再エクスポートしたら、バイトが変わった範囲だけ再構築
+figlens index refresh --file design.fig
+
+# .fig を移動したら：workspace を維持して refresh（prepare が出力した workspaceId を使う）
+figlens index relocate <sourceId> new/design.fig --id <workspaceId>
+figlens index refresh --id <workspaceId>
+```
+
+MCP：`index` の prepare は job を返します。`succeeded` になるまで `jobs` を確認し、返信の `workspaceId` で検索します。
+
+```json
+{"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
+{"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "node": "0:0", "query": "checkout button"}}
+```
+
+ライフサイクル：`refresh` は `.fig` のバイトが変わった範囲だけを再構築し、`rebuild` は変更がなくても再構築します。`clear_cache` はビルドで再作成できるデータだけを削除し、レジストリと公開済みインデックスは残します。`reset` はこの workspace のデータベースを削除し（`.fig` やエクスポートは対象外）、明示的に求めたときだけ実行されます。新しいソース、範囲の拡大、reset、再作成は、それぞれ個別の明示的な依頼が必要です。
+
+`.fig` を移動した場合：`index relocate` は `workspaceId`、`sourceId`、保存先を維持します。その後、影響を受けた範囲を `refresh` します。自動検出やハッシュによる自動統合はなく、reset は不要です。
+
+データ：SQLite データベースには、登録されたローカルパス、選択した範囲のレイヤー名と実効テキスト、検索 postings、既知の親/インスタンス関係、ハッシュ、世代、job が入ります。元の `.fig` はその場所で変更されず、その生バイトはデータベースに保存されません。
+
+Pi、OpenCode、OMP は、それぞれのオプトイン用エントリから同じインデックスを使い、workspace は再起動やホストをまたいで再利用されます。未実装：ファイル監視、usages/関係ツール、ベクトル、イベント、サブスクリプション。
+
 <a id="commands"></a>
 
 ## CLI リファレンス
@@ -161,7 +207,7 @@ skillshare sync && skillshare sync mcp --global
 | `tree <file> [node] [--depth N] [--json]` | ノード ID、REST タイプ（`nodes` と同じ）、名前。インデント付きテキスト、または各ノードのサイズ、非表示状態、オートレイアウトのモードを含むネストした JSON。ページやセクション直下のノードには `firstText`（最初の表示テキスト）も付く |
 | `tree <file> [node] --top-frames [--json]` | 画面だけを 1 行に 1 つ、`--frames -` にそのまま渡せる形で出力。ページまたはそのセクション直下のフレーム、コンポーネント、コンポーネントセット、インスタンス（グループと内部ページは除外）。`--json` はページとセクションの ID と、キャンバスのラベルと画面を見分けるための各画面の最初の表示テキスト（`firstText`）を追加 |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | レイヤー名とテキストの大文字小文字を区別しない検索。パス、サイズ、プレビュー。デフォルト 20 件（1-200） |
-| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | インスタンスのオーバーライド、テキスト/ブーリアンプロパティ、スワップを適用したレイヤー名と全文のランク付き検索。正確なノード参照（`inspect` で使える `I…;…` サブレイヤー ID を含む）、一致理由、UTF-16 範囲、カバレッジ、カーソルによるページ送り。デフォルト 20 件（1-200）。非表示レイヤーと内部ページはそれぞれのフラグが必要 |
+| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | インスタンスのオーバーライド、テキスト/ブーリアンプロパティ、スワップを適用したレイヤー名と全文のランク付き検索。正確なノード参照（`inspect` で使える `I…;…` サブレイヤー ID を含む）、一致理由、UTF-16 範囲、カバレッジ、カーソルによるページ送り。デフォルト 20 件（1-200）。非表示レイヤーと内部ページはそれぞれのフラグが必要。`<file>` の代わりに `--file`/`--workspace`/`--id` を使うと、workspace の準備済みインデックスを読みます（`index` を参照） |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | 展開済みレイアウト/テキストのコンパクトな要約（最大 200 ノード）。`--images` でビットマップの寸法とクロップ範囲を追加。`--flat` は代わりに 1 ノード 1 行で出力（ノード基準の位置、サイズ、テキスト、フォント、塗り、線、角丸、auto-layout） |
 | `nodes <file> <node>` | REST nodes レスポンスのノードごとのオブジェクト（`document`、`components`、`componentSets`、`styles`）：展開済みインスタンスとオーバーライド、auto-layout、テキストスタイル、フィル、エフェクト、バインドされた variables、コンポーネントプロパティ、レンダリング bounds |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | 1 回のデコードで複数ノード：リストの id ごとに 1 行の JSON（`nodeId` 付きの `nodes` 出力、または `{nodeId, error}`） |
@@ -174,7 +220,8 @@ skillshare sync && skillshare sync mcp --global
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | ローカルの読み取り専用 viewer。`--out` でスタンドアロンのオフラインスナップショットを書き出し |
 | `compare <file> <nodes.json> <node>` | 同じ frame の REST エクスポートとの差分 |
 | `node <file> <node>` | `.fig` の生ノード 1 つ |
-| `index prepare\|status\|add\|remove\|relocate\|reset` | ユーザーごとの figlens state ディレクトリにあるローカル workspace レジストリ、または workspace が以後記憶する `--storage DIR` の下（途中段階：`search` はまだ使いません）。`reset` は workspace のデータベースだけを削除し、デザイン、export、記憶した場所は削除しません |
+| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset` | ユーザーごとの figlens state ディレクトリ、または workspace が以後記憶する `--storage DIR` の下にあるローカル workspace。`prepare <file> --scope NODE` でその範囲の検索インデックスを一度だけ作成し、以後 `search --file <file>`（または `--workspace DIR`）は再解析せず、workspace の全ソースをまとめてランク付けして答えます。`refresh` は変更されたファイル、`rebuild` はすべて（または `--source`/`--scope` の一つ）を再作成し、`clear` は使われていないインデックスを削除します。新しいインデックスができるまで以前のものが使われます。`reset` は workspace データベースだけを削除し、デザイン、エクスポート、記憶された場所には触れません |
+| `jobs status\|cancel <jobId>` | インデックス作成の状態表示または取り消し。`cancel` は作成が止まってから戻ります |
 | `mcp` | stdio 経由のローカル MCP サーバー |
 | `update` | バイナリを最新リリースに置き換え |
 

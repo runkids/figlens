@@ -1,4 +1,4 @@
-use crate::{call_tool, run, serve};
+use crate::{call_tool, in_request_order, run, serve};
 use std::io::Write as _;
 
 use crate::test_support::TestDir;
@@ -188,6 +188,8 @@ fn oversized_requests_recover_without_discarding_the_loaded_document() {
         .map(|s| serde_json::from_str(s).unwrap())
         .collect();
     assert_eq!(replies.len(), 4);
+    let ids = [1.into(), serde_json::Value::Null, 3.into(), 4.into()];
+    let replies = in_request_order(&replies, &ids);
     assert_eq!(replies[0]["result"]["isError"], false);
     assert_eq!(replies[1]["error"]["code"], -32600);
     assert_eq!(replies[1]["id"], serde_json::Value::Null);
@@ -288,6 +290,7 @@ fn image_budget_reaches_cli_mcp_and_offline_preview_without_writing_output() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(replies.len(), 3);
+    let replies = in_request_order(&replies, &[1.into(), 2.into(), 3.into()]);
     assert_eq!(replies[0]["result"]["isError"], true);
     assert_eq!(
         replies[0]["result"]["_meta"]["figlens"]["code"],
@@ -542,6 +545,7 @@ fn parse_budget_failure_is_a_tool_error_and_mcp_keeps_serving() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(replies.len(), 3);
+    let replies = in_request_order(&replies, &[1.into(), 2.into(), 3.into()]);
     assert_eq!(replies[0]["result"]["isError"], true);
     assert_eq!(
         replies[0]["result"]["_meta"]["figlens"]["code"],

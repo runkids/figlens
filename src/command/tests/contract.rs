@@ -134,7 +134,7 @@ fn discovery_and_preparation_share_defaults() {
         } else {
             own(
                 name,
-                json!({"file":"a.fig","node":"0:1","query":"Frame","out":"a.png","bundle":"a.zip"}),
+                json!({"file":"a.fig","node":"0:1","query":"Frame","out":"a.png","bundle":"a.zip","action":"status","jobId":"ws_0000000000000000.0"}),
             )
         };
         let call = check(name, args.clone()).unwrap();
@@ -360,7 +360,7 @@ fn every_tool_rejects_missing_required_fields_and_wrong_types_before_io() {
         } else {
             own(
                 name,
-                json!({"file":"absent.fig","node":"0:1","query":"Frame","out":"out.png","bundle":"absent.zip"}),
+                json!({"file":"absent.fig","node":"0:1","query":"Frame","out":"out.png","bundle":"absent.zip","action":"status","jobId":"ws_0000000000000000.0"}),
             )
         };
         assert!(check(name, valid.clone()).is_ok());
@@ -378,4 +378,37 @@ fn every_tool_rejects_missing_required_fields_and_wrong_types_before_io() {
             }
         }
     }
+}
+
+#[test]
+fn index_failures_carry_stable_codes_and_their_recovery() {
+    use figlens::{ErrorKind, FigError};
+    for (kind, code) in [
+        (ErrorKind::SourceStale, "source_stale"),
+        (ErrorKind::CursorStale, "cursor_stale"),
+        (ErrorKind::CursorExpired, "cursor_expired"),
+        (ErrorKind::Cancelled, "cancelled"),
+        (ErrorKind::QueryWorkLimit, "query_work_limit"),
+    ] {
+        let recovery = json!([{"action": "refresh", "requires": "none"}]);
+        let error = FigError::new(kind, "x").with_recovery(recovery.clone());
+        let meta = contract::Failure::from_error(Box::new(error)).metadata();
+        assert_eq!(meta["code"], code);
+        assert_eq!(meta["recovery"], recovery);
+    }
+}
+
+#[test]
+fn a_storage_failure_points_at_restoring_the_storage_not_the_design_roots() {
+    use figlens::{ErrorKind, FigError};
+    let recovery = json!([{"action": "restore_access", "requires": "none"}]);
+    let error = FigError::new(ErrorKind::PermissionDenied, "x").with_recovery(recovery);
+    let meta = contract::Failure::from_error(Box::new(error)).metadata();
+    assert!(
+        meta["nextStep"]
+            .as_str()
+            .unwrap()
+            .contains("figlens storage"),
+        "{meta}"
+    );
 }

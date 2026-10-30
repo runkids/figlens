@@ -182,7 +182,7 @@ for line in sys.stdin:
 
     def test_mcp_audit_cli_uses_bounded_runner(self):
         guide = '# Audit an existing UI\nStatic review is not visual acceptance'
-        tools = [{'name': name} for name in ['find', 'search', 'nodes', 'bundle', 'export']]
+        tools = [{'name': name} for name in ['find', 'search', 'nodes', 'bundle', 'export', 'index', 'jobs']]
         tools.extend([
             {'name': 'inspect', 'inputSchema': {'properties': {'depth': {'maximum': 10}}}},
             {'name': 'workflow', 'inputSchema': {'properties': {'topic': {'enum': ['audit']}}}},

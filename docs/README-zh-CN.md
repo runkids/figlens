@@ -129,7 +129,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可发�
 
 ## MCP server 与 agent skill
 
-**MCP。** server 在本地通过 stdio 运行，提供 `workflow`、`tree`、`find`、`search`、`inspect`、`nodes`、`variables`、`bundle`、`verify` 和 `export`。请传入绝对路径。加上 `--root /path/to/designs`（可重复）可把所有文件和输出路径限制在指定文件夹内。光栅导出会缩小到 `maxSize`（默认 1600 px），让内联图片保持小巧；SVG 只返回 metadata。
+**MCP。** server 在本地通过 stdio 运行，提供 `workflow`、`tree`、`find`、`search`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs` 和 `export`。请传入绝对路径。加上 `--root /path/to/designs`（可重复）可把所有文件和输出路径限制在指定文件夹内。把索引存放在 figlens 默认目录之外时，需要 `--storage-root DIR`（可重复）。光栅导出会缩小到 `maxSize`（默认 1600 px），让内联图片保持小巧；SVG 只返回 metadata。
 
 agent 可通过 `workflow` 读取内建的 `build`、`audit`、`images`、`plan`、`planning-details`，或明确请求时的 `yolo` 指引。它们与 portable skill 共用来源；MCP 用户可自行选择是否另装 skill。实际工作仍由 agent 使用项目及浏览器工具，并遵守 host 权限。读取指引不会执行工作流程；使用方式取决于客户端支持与模型行为。
 
@@ -152,6 +152,52 @@ skillshare sync && skillshare sync mcp --global
 
 **安装说明。** npm launcher 会在首次使用时下载匹配的原生可执行文件，对照 release 的 SHA-256 校验和进行验证并缓存。用安装脚本装的通过 `figlens update` 更新；Homebrew 装的通过 `brew upgrade figlens` 更新。可执行文件覆盖 macOS（Apple silicon、Intel）、Linux（arm64、x86_64、静态 musl）和 Windows（x86_64）。
 
+<a id="local-index"></a>
+
+## 普通搜索与可选的本地索引
+
+|  | 普通（默认） | 高级：本地索引（可选） |
+|---|---|---|
+| 作用 | 每次调用都读取 `.fig`，回答 `search`、`find`、`inspect` 和 `export`。 | 为选定范围一次性建立搜索索引，之后 `search` 从索引作答，并跨来源统一排序。 |
+| 写入内容 | 不创建 workspace 或索引数据库（`export` 只写入你要求的文件）。 | 用户 state 目录或所选 `--storage` 下的本地 workspace（SQLite 数据库）。 |
+| 适用场景 | 一次性提问、脚本、CI。 | 反复搜索同一文件；把项目的多个文件当作一个语料搜索（`--workspace <dir>`）；在 coverage 中使用已知的父/实例关系。 |
+
+普通的设计问题不会创建索引。你只需明确选择启用一次（“为这个设计创建索引”）；存储位置由 figlens 决定，不需要配置 SQLite 或其他东西。
+
+```sh
+# 普通：无状态，不创建任何东西
+figlens search design.fig "checkout button"
+
+# 高级，仅一次：选择范围（节点 id，整个文件用 0:0）；构建在前台运行
+figlens index prepare design.fig --scope 0:0
+
+# 索引搜索；若索引范围不是整个文件，加上 --node
+figlens search --file design.fig "checkout button" --node 0:0
+
+# 编辑或重新导出 .fig 后：只重建字节有变化的范围
+figlens index refresh --file design.fig
+
+# 移动 .fig 后：保留 workspace，再 refresh（使用 prepare 输出的 workspaceId）
+figlens index relocate <sourceId> new/design.fig --id <workspaceId>
+figlens index refresh --id <workspaceId>
+```
+
+MCP：`index` 的 prepare 返回一个 job；轮询 `jobs` 直到 `succeeded`，再用回复中的 `workspaceId` 搜索。
+
+```json
+{"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
+{"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "node": "0:0", "query": "checkout button"}}
+```
+
+生命周期：`refresh` 只重建 `.fig` 字节有变化的范围；`rebuild` 即使没有变化也重建；`clear_cache` 只删除构建可重新生成的数据，保留注册表和已发布的索引；`reset` 删除此 workspace 的数据库（绝不删除 `.fig` 或导出），仅在你明确要求时执行。新增来源、扩大范围、reset 和重新创建，各自都需要单独的明确请求。
+
+移动了 `.fig`？`index relocate` 保留 `workspaceId`、`sourceId` 和存储位置；然后对受影响的范围执行 `refresh`。没有自动发现，也没有基于哈希的自动合并，不需要 reset。
+
+数据：SQLite 数据库保存已注册的本地路径、所选范围的图层名称与有效文本、搜索 postings、已知的父/实例关系、哈希、generation 和 job。原始 `.fig` 留在原处且保持不变；其原始字节不会存入数据库。
+
+Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，workspace 可跨重启和宿主复用。尚未实现：文件监视、usages/关系工具、向量、事件与订阅。
+
 <a id="commands"></a>
 
 ## CLI 参考
@@ -161,7 +207,7 @@ skillshare sync && skillshare sync mcp --global
 | `tree <file> [node] [--depth N] [--json]` | 节点 id、REST 类型（与 `nodes` 相同）和名称；缩进文本，或附带每个节点尺寸、隐藏状态与 auto layout 模式的嵌套 JSON；页面或 section 下的节点另附 `firstText`（第一段可见文字） |
 | `tree <file> [node] --top-frames [--json]` | 只列出画面，每行一个，可直接传给 `--frames -`：页面或其 section 下的 frame、component、component set 与 instance（跳过 group 与内部页面）；`--json` 附上 page 与 section id，以及每个画面第一段可见文字（`firstText`），可用来区分画布标签与画面 |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 不区分大小写地搜索图层名称和文字；返回路径、尺寸和预览。默认 20 条结果（1-200） |
-| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | 对图层名称和完整文字做排序搜索，已套用 instance override、文字/布尔属性和 swap；返回精确节点引用（包括可用于 `inspect` 的 `I…;…` 子图层 id）、匹配原因、UTF-16 范围、覆盖情况和 cursor 分页。默认 20 条（1-200）；隐藏图层和内部页面需加对应 flag |
+| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | 对图层名称和完整文字做排序搜索，已套用 instance override、文字/布尔属性和 swap；返回精确节点引用（包括可用于 `inspect` 的 `I…;…` 子图层 id）、匹配原因、UTF-16 范围、覆盖情况和 cursor 分页。默认 20 条（1-200）；隐藏图层和内部页面需加对应 flag。以 `--file`/`--workspace`/`--id` 取代 `<file>` 时，读取 workspace 已准备的索引（见 `index`） |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | 展开后的精简布局/文字摘要，最多 200 个节点。`--images` 会加上位图尺寸和裁切范围。`--flat` 改为每个节点一行：相对该节点的位置、尺寸、文字、字体、填充、描边、圆角、auto-layout |
 | `nodes <file> <node>` | REST nodes 响应中单个节点的对象（`document`、`components`、`componentSets`、`styles`）：展开的 instance 与覆写、auto-layout、文字样式、填充、效果、绑定变量、组件属性、渲染边界 |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | 一次解码读取多个节点：列表中每个 id 一行 JSON（带 `nodeId` 的 `nodes` 输出，或 `{nodeId, error}`） |
@@ -174,7 +220,8 @@ skillshare sync && skillshare sync mcp --global
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 本地只读 viewer；`--out` 写出独立的离线快照 |
 | `compare <file> <nodes.json> <node>` | 与同一 frame 的 REST 导出做差异比较 |
 | `node <file> <node>` | 单个原始 `.fig` 节点 |
-| `index prepare\|status\|add\|remove\|relocate\|reset` | 用户 figlens state 目录中的本地 workspace 注册表，或位于 workspace 之后会记住的 `--storage DIR` 下（阶段性里程碑：`search` 尚未使用它）；`reset` 只删除 workspace 数据库，不删除设计、导出文件或记住的位置 |
+| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset` | 用户 figlens state 目录中的本地 workspace，或位于 workspace 之后会记住的 `--storage DIR` 下。`prepare <file> --scope NODE` 为该范围建立一次搜索索引；之后 `search --file <file>`（或 `--workspace DIR`）不再解析文件，跨 workspace 的所有来源统一排序作答。`refresh` 重建有变更的文件，`rebuild` 重建全部或单一 `--source`/`--scope`，`clear` 删除未使用的索引；新索引就绪前继续使用旧索引。`reset` 只删除 workspace 数据库，不会删除设计、导出或记住的位置 |
+| `jobs status\|cancel <jobId>` | 查看或取消索引构建；`cancel` 在构建停止后才返回 |
 | `mcp` | 通过 stdio 运行的本地 MCP server |
 | `update` | 用最新 release 替换可执行文件 |
 

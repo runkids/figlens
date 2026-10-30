@@ -51,12 +51,23 @@ pub enum ErrorKind {
     WorkspaceBusy,
     IndexIncompatible,
     StorageUnavailable,
+    /// A source changed on disk since its index was verified.
+    SourceStale,
+    /// A cursor's sources were rebuilt since it was issued.
+    CursorStale,
+    /// A cursor's generation no longer exists.
+    CursorExpired,
+    Cancelled,
+    /// A workspace search would read more indexed data than one query supports.
+    QueryWorkLimit,
 }
 
 #[derive(Debug)]
 pub struct FigError {
     message: String,
     kind: ErrorKind,
+    /// Recovery actions that are implemented and apply to this failure, for agents to run.
+    recovery: Option<serde_json::Value>,
 }
 
 impl FigError {
@@ -64,11 +75,23 @@ impl FigError {
         Self {
             kind,
             message: message.into(),
+            recovery: None,
         }
     }
 
     pub fn kind(&self) -> ErrorKind {
         self.kind
+    }
+
+    /// Attaches the actions that recover from this failure: `[{action, tool?, arguments?,
+    /// requires: none|user_confirmation, ...}]`.
+    pub fn with_recovery(mut self, recovery: serde_json::Value) -> Self {
+        self.recovery = Some(recovery);
+        self
+    }
+
+    pub fn recovery(&self) -> Option<&serde_json::Value> {
+        self.recovery.as_ref()
     }
 }
 

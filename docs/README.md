@@ -129,7 +129,7 @@ Browse pages and layers, search, measure, inspect layout, typography, variables 
 
 ## MCP server and agent skill
 
-**MCP.** The server runs locally over stdio and exposes `workflow`, `tree`, `find`, `search`, `inspect`, `nodes`, `variables`, `bundle`, `verify` and `export`. The agent can read built-in `build`, `audit`, `images`, `plan`, `planning-details` or opt-in `yolo` guidance through `workflow`, then use its own project and browser tools to carry out the authorized task. These guides share the portable skill's source; installing that skill separately is optional for MCP users. Client support and model behavior determine how the guidance is used. Pass absolute paths. Add `--root /path/to/designs` (repeatable) to confine every file and output path to chosen folders. Raster exports are scaled down to `maxSize` (default 1600 px) so inline images stay small; SVG returns metadata only.
+**MCP.** The server runs locally over stdio and exposes `workflow`, `tree`, `find`, `search`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs` and `export`. The agent can read built-in `build`, `audit`, `images`, `plan`, `planning-details` or opt-in `yolo` guidance through `workflow`, then use its own project and browser tools to carry out the authorized task. These guides share the portable skill's source; installing that skill separately is optional for MCP users. Client support and model behavior determine how the guidance is used. Pass absolute paths. Add `--root /path/to/designs` (repeatable) to confine every file and output path to chosen folders. Index storage outside the default figlens directories needs `--storage-root DIR` (repeatable). Raster exports are scaled down to `maxSize` (default 1600 px) so inline images stay small; SVG returns metadata only.
 
 Native Windows with Claude Code: follow its [stdio setup notes](https://code.claude.com/docs/en/mcp#option-3-add-a-local-stdio-server) and the `cmd /c` wrapper for `npx`.
 
@@ -150,6 +150,52 @@ skillshare sync && skillshare sync mcp --global
 
 **Install notes.** The npm launcher downloads the matching native binary on first use, verifies it against the release's SHA-256 checksums and caches it. Script installs update with `figlens update`; Homebrew installs with `brew upgrade figlens`. Binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, static musl) and Windows (x86_64).
 
+<a id="local-index"></a>
+
+## Ordinary search and the optional local index
+
+|  | Ordinary (default) | Advanced: local index (optional) |
+|---|---|---|
+| What it does | Reads the `.fig` on each call and answers `search`, `find`, `inspect` and `export`. | Builds a search index of a chosen scope once, then answers `search` from it, ranked across sources. |
+| What is written | No workspace or index database (`export` writes only the files you ask for). | A local workspace (SQLite database) in the per-user state directory, or the `--storage` you chose. |
+| When to use | One-off questions, scripts, CI. | Repeated searches of one file; several files of a project as one corpus (`--workspace <dir>`); known parent/instance relations in coverage. |
+
+A normal design question never creates an index. You opt in once, explicitly ("create an index for this design"); figlens picks the storage and needs no SQLite or other setup.
+
+```sh
+# Ordinary: stateless, creates nothing
+figlens search design.fig "checkout button"
+
+# Advanced, once: pick a scope (a node id, or 0:0 for the whole file); the build runs in the foreground
+figlens index prepare design.fig --scope 0:0
+
+# Indexed search: pass the scope you prepared as --node
+figlens search --file design.fig "checkout button" --node 0:0
+
+# After you edit or re-export the .fig: rebuild only the scopes whose bytes changed
+figlens index refresh --file design.fig
+
+# After you move the .fig: keep the workspace, then refresh (use the workspaceId printed by prepare)
+figlens index relocate <sourceId> new/design.fig --id <workspaceId>
+figlens index refresh --id <workspaceId>
+```
+
+MCP: `index` prepare returns a job; poll `jobs` until `succeeded`, then search with the `workspaceId` from the reply and `node` set to the prepared scope (without `node`, search reads `0:0`).
+
+```json
+{"tool": "index", "arguments": {"action": "prepare", "file": "/abs/path/design.fig", "scope": "0:0"}}
+{"tool": "jobs", "arguments": {"action": "status", "jobId": "<jobId from the reply>"}}
+{"tool": "search", "arguments": {"workspaceId": "<workspaceId from the reply>", "node": "0:0", "query": "checkout button"}}
+```
+
+Lifecycle: `refresh` rebuilds only scopes whose `.fig` bytes changed; `rebuild` rebuilds even when unchanged; `clear_cache` deletes only data a build can recreate and keeps the registry and published indexes; `reset` deletes this workspace's database (never the `.fig` or exports) and runs only on your explicit request. New sources, a wider scope, reset and recreate each need their own explicit request.
+
+Moved the `.fig`? `index relocate` keeps `workspaceId`, `sourceId` and storage; then `refresh` the affected scopes. There is no auto-discovery and no hash-based merge, and no reset is needed.
+
+Data: the SQLite database holds registered local paths, the selected scopes' layer names and effective text, search postings, known parent/instance relations, hashes, generations and jobs. The original `.fig` stays unchanged where it is; its raw bytes are not stored in the database.
+
+Pi, OpenCode and OMP use the same index through their own opt-in entry, and the workspace is reused across restarts and hosts. Not implemented: file watching, usages/relationship tools, vectors, events and subscriptions.
+
 <a id="commands"></a>
 
 ## CLI reference
@@ -159,7 +205,7 @@ skillshare sync && skillshare sync mcp --global
 | `tree <file> [node] [--depth N] [--json]` | Node ids, REST types (as in `nodes`) and names; indented text, or nested JSON with each node's size, hidden flag and auto-layout mode, plus `firstText` (first visible text) on nodes of a page or section |
 | `tree <file> [node] --top-frames [--json]` | Only the screens, one per line, ready for `--frames -`: frames, components, component sets and instances on a page or in its sections (groups and internal pages skipped); `--json` adds page and section ids and each screen's first visible text (`firstText`), which tells canvas labels from screens |
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | Case-insensitive search over layer names and text; paths, sizes and previews. Default 20 results (1-200) |
-| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | Ranked search of layer names and full text with instance overrides, text/boolean properties and swaps applied; exact node refs (including `I…;…` sublayer ids for `inspect`), match reasons, UTF-16 spans, coverage and cursor pages. Default 20 (1-200); hidden layers and internal pages need their flag |
+| `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | Ranked search of layer names and full text with instance overrides, text/boolean properties and swaps applied; exact node refs (including `I…;…` sublayer ids for `inspect`), match reasons, UTF-16 spans, coverage and cursor pages. Default 20 (1-200); hidden layers and internal pages need their flag. With `--file`/`--workspace`/`--id` instead of `<file>` it reads the workspace's prepared index (see `index`) |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | Compact expanded layout/text summary, at most 200 nodes. `--images` adds bitmap dimensions and crop footprints. `--flat` prints one line per node instead: position relative to the node, size, text, font, fill, stroke, radius, auto-layout |
 | `nodes <file> <node>` | The per-node object of a REST nodes response (`document`, `components`, `componentSets`, `styles`): expanded instances and overrides, auto-layout, text styles, fills, effects, bound variables, component properties, render bounds |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | One decode, many nodes: one JSON line per listed id, the `nodes` output with its `nodeId`, or `{nodeId, error}` |
@@ -172,7 +218,8 @@ skillshare sync && skillshare sync mcp --global
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Local read-only viewer; `--out` writes a standalone offline snapshot |
 | `compare <file> <nodes.json> <node>` | Diff against a REST export of the same frame |
 | `node <file> <node>` | One raw `.fig` node |
-| `index prepare\|status\|add\|remove\|relocate\|reset` | Local workspace registry in the per-user figlens state directory, or under a `--storage DIR` that the workspace then remembers (partial milestone: `search` does not use it yet); `reset` removes only the workspace database, never designs, exports or the remembered location |
+| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset` | Local workspace in the per-user figlens state directory, or under a `--storage DIR` that the workspace then remembers. `prepare <file> --scope NODE` builds that scope's search index once; then `search --file <file>` (or `--workspace DIR`) answers without parsing, ranked across the workspace's sources. `refresh` rebuilds changed files, `rebuild` all or one `--source`/`--scope`, `clear` drops unused indexes; the previous index serves until a new one is ready. `reset` removes only the workspace database, never designs, exports or the remembered location |
+| `jobs status\|cancel <jobId>` | Show or cancel an index build; cancel returns after the build stopped |
 | `mcp` | Local MCP server over stdio |
 | `update` | Replace the binary with the latest release |
 

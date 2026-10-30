@@ -41,6 +41,8 @@ Lege `design.fig` in dein Projekt und wähle dann **ein** Setup. Jedes gibt dein
 | [OMP](#setup-omp) | OMP 18.13.2 | dem mitgelieferten Skill |
 | [CLI](#setup-cli) | Agents, die nur Shell-Befehle ausführen, Skripte und CI, oder dich | `figlens workflow <topic>` oder dem optionalen [Skill](#setup-skill) |
 
+**Normal vs. fortgeschritten.** Die normale Nutzung braucht kein Setup: `figlens search design.fig "query"` liest die `.fig` und legt nichts an. Ein optionaler lokaler Index entsteht nur auf Ihren Wunsch (`figlens index prepare design.fig --scope 0:0`) und wird danach über Neustarts und Hosts hinweg wiederverwendet. Siehe [Normale Suche und der optionale lokale Index](docs/README-de.md#local-index).
+
 <a id="setup-mcp"></a>
 
 ### MCP

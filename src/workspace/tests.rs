@@ -1,6 +1,11 @@
 use super::*;
 use crate::test_support::TestDir;
 
+/// `prepare` of the registry alone, as schema 1 tests call it.
+fn prepare(storage: &Storage, file: &Path, project: Option<&Path>) -> Result<Json> {
+    super::prepare(storage, file, project, PrepareOptions::default()).map(|o| o.report)
+}
+
 struct Fixture {
     dir: TestDir,
     home: PathBuf,
@@ -133,6 +138,155 @@ fn roots_refuse_a_relative_storage_or_missing_home() {
 
 #[cfg(windows)]
 #[test]
+fn a_sidecar_being_deleted_is_waited_out_not_reported_denied() {
+    let dir = TestDir::new();
+    std::fs::write(dir.join("index.sqlite"), b"").unwrap();
+    let shm = dir.join("index.sqlite-shm");
+    std::fs::write(&shm, b"").unwrap();
+    let held = mark_deleted(&shm, false);
+    // Metadata still answers; the open the alias check makes is refused until the holder closes.
+    assert!(std::fs::symlink_metadata(&shm).is_ok());
+    let read = File::open(&shm).map(drop);
+    assert_eq!(read.map_err(|e| e.raw_os_error()), Err(Some(5)));
+    // The probe's own failure is what the wait classifies: typed permission denied.
+    let probed = links(&shm).map_err(|e| kind(&*e));
+    assert_eq!(probed, Err(ErrorKind::PermissionDenied));
+    let closer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        drop(held);
+    });
+    unaliased(&dir.join("")).unwrap();
+    closer.join().unwrap();
+    assert!(!shm.exists());
+}
+
+#[test]
+fn a_sidecar_read_as_no_links_is_probed_again_but_the_database_is_not() {
+    // Generous, so a busy runner never reaches it before the second probe.
+    let soon = || Instant::now() + Duration::from_secs(10);
+    let (shm, path) = ("index.sqlite-shm", Path::new("index.sqlite-shm"));
+    let scripted = |reads: Vec<u64>| {
+        let mut reads = reads.into_iter();
+        let calls = std::cell::Cell::new(0);
+        let count = settled(shm, path, soon(), || {
+            calls.set(calls.get() + 1);
+            Ok(reads.next().unwrap())
+        });
+        (count, calls.get())
+    };
+    assert_eq!(scripted(vec![0, 1]).0.unwrap(), 1);
+    // A probe that failed as permission denied is retried on Windows by its own error alone;
+    // the next probe's count stands, so a path replaced meanwhile is still refused.
+    for (then, expect) in [(1, 1), (2, 2)] {
+        let mut reads = [None, Some(then)].into_iter();
+        let mut calls = 0;
+        let read = settled(shm, path, soon(), || {
+            calls += 1;
+            reads
+                .next()
+                .unwrap()
+                .ok_or_else(|| fail(ErrorKind::PermissionDenied, "denied"))
+        });
+        if cfg!(windows) {
+            assert_eq!((read.unwrap(), calls), (expect, 2));
+        } else {
+            assert_eq!(
+                (read.map_err(|e| kind(&*e)), calls),
+                (Err(ErrorKind::PermissionDenied), 1)
+            );
+        }
+    }
+    // A path replaced by another hard link meanwhile reads its real count, which is refused.
+    assert_eq!(scripted(vec![0, 2]).0.unwrap(), 2);
+    let (more, calls) = scripted(vec![2]);
+    assert_eq!((more.unwrap(), calls), (2, 1));
+    let mut calls = 0;
+    let mut zero = || {
+        calls += 1;
+        Ok(0)
+    };
+    assert_eq!(settled(DB, Path::new(DB), soon(), &mut zero).unwrap(), 0);
+    assert_eq!(calls, 1);
+    let start = Instant::now();
+    let shortly = start + Duration::from_millis(200);
+    let stuck = settled(shm, path, shortly, || Ok(0)).unwrap_err();
+    assert!(start.elapsed() >= Duration::from_millis(200));
+    assert_eq!(kind(&*stuck), ErrorKind::WorkspaceBusy, "{stuck}");
+}
+
+/// Marks `path` deleted through a new handle: `posix` removes its name at once, else the name
+/// stays, pending, until every handle to it closes. Returns that handle, still open.
+#[cfg(windows)]
+fn mark_deleted(path: &Path, posix: bool) -> File {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+        FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FileDispositionInfo,
+        FileDispositionInfoEx, SetFileInformationByHandle,
+    };
+    let handle = OpenOptions::new()
+        .read(true)
+        .access_mode(DELETE | 0x8000_0000)
+        .open(path)
+        .unwrap();
+    let plain = FILE_DISPOSITION_INFO { DeleteFile: true };
+    let ex = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+    };
+    // SAFETY: a valid open handle with DELETE access and a matching info struct and size.
+    let set = unsafe {
+        if posix {
+            SetFileInformationByHandle(
+                handle.as_raw_handle() as _,
+                FileDispositionInfoEx,
+                &ex as *const _ as _,
+                std::mem::size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+            )
+        } else {
+            SetFileInformationByHandle(
+                handle.as_raw_handle() as _,
+                FileDispositionInfo,
+                &plain as *const _ as _,
+                std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+            )
+        }
+    };
+    assert_ne!(set, 0, "{}", std::io::Error::last_os_error());
+    handle
+}
+
+/// Platform behaviour only: an open handle reads 0 links once its name is deleted with POSIX
+/// semantics. The alias check still refuses any count but 1.
+#[cfg(windows)]
+#[test]
+fn a_file_deleted_under_an_open_handle_reports_no_links() {
+    let dir = TestDir::new();
+    let shm = dir.join("index.sqlite-shm");
+    std::fs::write(&shm, b"").unwrap();
+    let probe = File::open(&shm).unwrap();
+    drop(mark_deleted(&shm, true));
+    assert!(!shm.exists());
+    assert_eq!(handle_links(&probe, &shm).unwrap(), 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn a_sidecar_denied_past_the_lock_wait_is_still_reported_denied() {
+    let dir = TestDir::new();
+    std::fs::write(dir.join("index.sqlite"), b"").unwrap();
+    let shm = dir.join("index.sqlite-shm");
+    std::fs::write(&shm, b"").unwrap();
+    let held = mark_deleted(&shm, false);
+    let start = Instant::now();
+    let error = unaliased(&dir.join("")).unwrap_err();
+    assert!(start.elapsed() >= LOCK_WAIT, "{:?}", start.elapsed());
+    assert_eq!(kind(&*error), ErrorKind::PermissionDenied, "{error}");
+    drop(held);
+}
+
+#[cfg(windows)]
+#[test]
 fn windows_known_folder_resolves_to_an_absolute_path() {
     assert!(local_app_data().is_some_and(|p| p.is_absolute()));
 }
@@ -223,7 +377,7 @@ fn reset_waits_for_an_active_reader_then_reports_busy_and_keeps_every_file() {
     let error = reset(&f.storage, &select).unwrap_err();
     assert_eq!(kind(&*error), ErrorKind::WorkspaceBusy);
     assert_eq!(listing(&dir), before);
-    assert_eq!(sources(&reader.conn).unwrap().len(), 1);
+    assert_eq!(sources(&f.storage, &reader).unwrap().len(), 1);
 }
 
 #[test]
@@ -700,7 +854,7 @@ fn a_foreign_or_newer_database_is_refused_untouched() {
     let db = f.workspace(&id).join(DB);
     Connection::open(&db)
         .unwrap()
-        .execute_batch("PRAGMA user_version = 2;")
+        .execute_batch(&format!("PRAGMA user_version = {};", SCHEMA + 1))
         .unwrap();
     let bytes = std::fs::read(&db).unwrap();
     let select = Select::Id(id.clone());
@@ -829,10 +983,420 @@ fn project_sources_are_added_removed_and_relocated_without_touching_files() {
     let solo = Select::Id(id_of(&prepare(&f.storage, &a, None).unwrap()));
     assert!(add(&f.storage, &solo, &b).is_err());
     let own = crate::search::source_id(&std::fs::canonicalize(&a).unwrap());
-    assert!(relocate(&f.storage, &solo, &own, &b).is_err());
+    // Relocating it keeps the workspace: the new path selects it through an alias.
+    relocate(&f.storage, &solo, &own, &b).unwrap();
+    let by_new_path = Select::Locator(Locator::source(&b).unwrap());
+    assert_eq!(
+        status(&f.storage, &by_new_path).unwrap()["workspaceId"],
+        json!(match &solo {
+            Select::Id(id) => id.clone(),
+            _ => unreachable!(),
+        })
+    );
     // Removing its own source leaves a valid, empty workspace that may add the file again.
     assert_eq!(remove(&f.storage, &solo, &own).unwrap()["removed"], true);
     assert_eq!(status(&f.storage, &solo).unwrap()["sources"], json!([]));
     assert_eq!(add(&f.storage, &solo, &a).unwrap()["source"]["added"], true);
     assert!(Select::from_choice(Some(&project), Some(&a), None).is_err());
+}
+
+#[test]
+fn an_unusable_config_root_is_named_as_config_not_storage() {
+    let f = Fixture::new();
+    std::fs::create_dir_all(f.home.join(".config")).unwrap();
+    std::fs::write(f.home.join(".config/figlens"), "not a directory").unwrap();
+    let (_, custom) = f.custom("custom");
+    let error = prepare(&custom, &f.fig("a.fig"), None)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("--storage does not change it"), "{error}");
+}
+
+#[test]
+fn server_storage_roots_judge_where_a_new_storage_path_really_leads() {
+    let f = Fixture::new();
+    let allowed = std::path::absolute(f.dir.join("allowed")).unwrap();
+    let outside = std::path::absolute(f.dir.join("outside")).unwrap();
+    std::fs::create_dir_all(&allowed).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let fig = f.fig("a.fig");
+    let at = |dir: &Path| Fixture::at(&f.home, Some(dir)).allow(std::slice::from_ref(&allowed));
+    let escape = allowed.join("missing/../../outside/store");
+    assert!(prepare(&at(&escape), &fig, None).is_err());
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&outside, allowed.join("link")).unwrap();
+        assert!(prepare(&at(&allowed.join("link/store")), &fig, None).is_err());
+    }
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    prepare(&at(&allowed.join("store")), &fig, None).unwrap();
+    // The remembered root is reused by a server that allows no custom storage.
+    let server = Fixture::at(&f.home, None).allow(&[]);
+    let select = Select::Locator(Locator::source(&fig).unwrap());
+    assert_eq!(
+        status(&server, &select).unwrap()["storage"]["rule"],
+        "remembered"
+    );
+}
+
+#[test]
+fn an_unavailable_storage_offers_recreation_elsewhere_that_keeps_the_old_files() {
+    let f = Fixture::new();
+    let a = f.fig("a.fig");
+    let (old, custom) = f.custom("old");
+    let first = prepare(&custom, &a, None).unwrap();
+    let moved = f.dir.join("offline");
+    std::fs::rename(&old, &moved).unwrap();
+    let error = prepare(&Fixture::at(&f.home, None), &a, None).unwrap_err();
+    let fig = error.downcast_ref::<FigError>().unwrap();
+    assert_eq!(fig.kind(), ErrorKind::StorageUnavailable);
+    let actions: Vec<&Json> = fig.recovery().unwrap().as_array().unwrap().iter().collect();
+    assert_eq!(actions[1]["action"], "recreate_elsewhere");
+    let (new, elsewhere) = f.custom("new");
+    let options = PrepareOptions {
+        replace_unavailable: true,
+        ..PrepareOptions::default()
+    };
+    let recreated = super::prepare(&elsewhere, &a, None, options)
+        .unwrap()
+        .report;
+    assert_ne!(recreated["incarnation"], first["incarnation"]);
+    assert!(new.join("state").is_dir());
+    assert!(moved.join("state/workspaces").read_dir().unwrap().count() > 0);
+    let select = Select::Locator(Locator::source(&a).unwrap());
+    assert_eq!(
+        status(&Fixture::at(&f.home, None), &select).unwrap()["incarnation"],
+        recreated["incarnation"]
+    );
+}
+
+#[test]
+fn a_confined_caller_cannot_reset_a_workspace_holding_sources_it_cannot_see() {
+    let f = Fixture::new();
+    let (inside, outside) = (f.dir.join("in"), f.dir.join("out"));
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let project = std::fs::canonicalize(f.dir.join("")).unwrap();
+    let seen = std::fs::canonicalize(&inside).unwrap().join("a.fig");
+    let hidden = std::fs::canonicalize(&outside).unwrap().join("b.fig");
+    std::fs::write(&seen, "a").unwrap();
+    std::fs::write(&hidden, "b").unwrap();
+    prepare(&f.storage, &seen, Some(&project)).unwrap();
+    prepare(&f.storage, &hidden, Some(&project)).unwrap();
+    let select = Select::Locator(Locator::project(&project).unwrap());
+    let confined = f
+        .storage
+        .clone()
+        .confined(&[std::fs::canonicalize(&inside).unwrap()]);
+    assert_eq!(
+        kind(&*reset(&confined, &select).unwrap_err()),
+        ErrorKind::PermissionDenied
+    );
+    assert_eq!(
+        status(&f.storage, &select).unwrap()["sources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    // A link inside the roots to a file outside them is not visible either.
+    #[cfg(unix)]
+    {
+        let link = std::fs::canonicalize(&inside).unwrap().join("link.fig");
+        std::os::unix::fs::symlink(&hidden, &link).unwrap();
+        assert!(!confined.sees(&link));
+        assert!(confined.sees(&seen));
+    }
+}
+
+#[test]
+fn a_stale_alias_neither_blocks_nor_captures_a_new_prepare_of_its_path() {
+    let f = Fixture::new();
+    let a = std::fs::canonicalize(f.fig("a.fig")).unwrap();
+    let ws = id_of(&prepare(&f.storage, &a, None).unwrap());
+    let b = f.dir.join("b.fig");
+    std::fs::rename(&a, &b).unwrap();
+    let b = std::fs::canonicalize(b).unwrap();
+    let own = crate::search::source_id(&a);
+    relocate(&f.storage, &Select::Id(ws.clone()), &own, &b).unwrap();
+    // Moved back: the alias of b no longer names a workspace holding b.
+    std::fs::rename(&b, &a).unwrap();
+    relocate(&f.storage, &Select::Id(ws.clone()), &own, &a).unwrap();
+    std::fs::rename(&a, &b).unwrap();
+    std::fs::write(&a, "a new design").unwrap();
+    let fresh = prepare(&f.storage, &b, None).unwrap();
+    assert_ne!(id_of(&fresh), ws);
+    // After a reset, the relocated path prepares a workspace again instead of failing.
+    reset(&f.storage, &Select::Id(id_of(&fresh))).unwrap();
+    assert!(prepare(&f.storage, &b, None).is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn server_storage_roots_refuse_parent_steps_that_reenter_a_link_out_of_them() {
+    let f = Fixture::new();
+    let allowed = std::path::absolute(f.dir.join("allowed")).unwrap();
+    let outside = std::path::absolute(f.dir.join("outside")).unwrap();
+    std::fs::create_dir_all(&allowed).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, allowed.join("link")).unwrap();
+    let combined = allowed.join("missing/../link/store");
+    let storage = Fixture::at(&f.home, Some(&combined)).allow(std::slice::from_ref(&allowed));
+    assert_eq!(
+        kind(&*prepare(&storage, &f.fig("a.fig"), None).unwrap_err()),
+        ErrorKind::PermissionDenied
+    );
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+}
+
+#[test]
+fn a_replacement_whose_database_was_never_created_finishes_where_it_was_reserved() {
+    let f = Fixture::new();
+    let a = f.fig("a.fig");
+    let (old, custom) = f.custom("old");
+    prepare(&custom, &a, None).unwrap();
+    std::fs::rename(&old, f.dir.join("offline")).unwrap();
+    let (new, elsewhere) = f.custom("new");
+    let options = || PrepareOptions {
+        replace_unavailable: true,
+        ..PrepareOptions::default()
+    };
+    super::prepare(&elsewhere, &a, None, options()).unwrap();
+    // As if initialization failed after the record named the new storage.
+    let workspaces = new.join("state/workspaces");
+    for dir in std::fs::read_dir(&workspaces).unwrap() {
+        let dir = dir.unwrap().path();
+        if dir.is_dir() {
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+    let retried = super::prepare(&elsewhere, &a, None, options())
+        .unwrap()
+        .report;
+    assert_eq!(retried["initialized"], true);
+    assert_eq!(retried["previous"]["reason"], "storage_unavailable");
+    // Once its database exists there, the same call is refused instead of replacing it.
+    let Err(again) = super::prepare(&elsewhere, &a, None, options()) else {
+        panic!("a second replacement into the same storage was accepted");
+    };
+    assert!(again.to_string().contains("current storage"), "{again}");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_alias_whose_workspace_is_busy_is_kept_and_the_prepare_reports_busy() {
+    let f = Fixture::new();
+    let a = std::fs::canonicalize(f.fig("a.fig")).unwrap();
+    let ws = id_of(&prepare(&f.storage, &a, None).unwrap());
+    let b = f.dir.join("b.fig");
+    std::fs::rename(&a, &b).unwrap();
+    let b = std::fs::canonicalize(b).unwrap();
+    let own = crate::search::source_id(&a);
+    relocate(&f.storage, &Select::Id(ws.clone()), &own, &b).unwrap();
+    let select = Select::Id(ws.clone());
+    let place = f.storage.place(&ws, None).unwrap();
+    let held = acquire(&place.roots.state.path, &select, true).unwrap();
+    let error = prepare(&f.storage, &b, None).unwrap_err();
+    drop(held);
+    assert_eq!(kind(&*error), ErrorKind::WorkspaceBusy);
+    let alias = Locator::Source(b.clone()).id().unwrap();
+    assert_eq!(f.storage.alias(&alias).unwrap(), Some(ws));
+}
+
+#[test]
+fn a_confined_caller_cannot_reset_a_workspace_whose_sources_it_cannot_read() {
+    let f = Fixture::new();
+    let inside = f.dir.join("in");
+    std::fs::create_dir_all(&inside).unwrap();
+    let inside = std::fs::canonicalize(&inside).unwrap();
+    let project = std::fs::canonicalize(f.dir.join("")).unwrap();
+    let seen = inside.join("a.fig");
+    std::fs::write(&seen, "a").unwrap();
+    let id = id_of(&prepare(&f.storage, &seen, Some(&project)).unwrap());
+    let db = f.workspace(&id).join(DB);
+    std::fs::write(&db, "not a database").unwrap();
+    let confined = f.storage.clone().confined(&[inside]);
+    let select = Select::Locator(Locator::project(&project).unwrap());
+    assert_eq!(
+        kind(&*reset(&confined, &select).unwrap_err()),
+        ErrorKind::PermissionDenied
+    );
+    assert!(db.is_file());
+}
+
+#[test]
+fn a_relocate_interrupted_after_its_alias_completes_when_retried() {
+    let f = Fixture::new();
+    let a = std::fs::canonicalize(f.fig("a.fig")).unwrap();
+    let ws = id_of(&prepare(&f.storage, &a, None).unwrap());
+    let b = f.dir.join("b.fig");
+    std::fs::rename(&a, &b).unwrap();
+    let b = std::fs::canonicalize(b).unwrap();
+    let own = crate::search::source_id(&a);
+    let select = Select::Id(ws.clone());
+    relocate(&f.storage, &select, &own, &b).unwrap();
+    // Interrupted after the alias was written, before the source row moved.
+    let (_, opened_ws) = opened(&f.storage, &select, true).unwrap();
+    opened_ws
+        .conn
+        .execute("UPDATE sources SET path = ?1", [a.to_str().unwrap()])
+        .unwrap();
+    drop(opened_ws);
+    relocate(&f.storage, &select, &own, &b).unwrap();
+    assert_eq!(id_of(&prepare(&f.storage, &b, None).unwrap()), ws);
+}
+
+#[test]
+fn a_denied_storage_offers_restore_access_naming_the_path_and_roots() {
+    let f = Fixture::new();
+    let path = f.storage.defaults.state.path.join("workspaces");
+    let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+    let error = rooted(&f.storage, storage_error(&path, denied));
+    let fig = error.downcast_ref::<FigError>().unwrap();
+    let restore = &fig.recovery().unwrap()[0];
+    assert_eq!(
+        (
+            restore["action"].as_str(),
+            restore["path"].as_str(),
+            restore["roots"]["config"]["path"].as_str()
+        ),
+        (
+            Some("restore_access"),
+            path.to_str(),
+            f.storage.defaults.config.path.to_str()
+        )
+    );
+}
+
+#[test]
+fn a_missing_lock_or_newer_schema_offers_placed_prepare_and_reset_with_the_config_root() {
+    let f = Fixture::new();
+    let fig = f.fig("a.fig");
+    let id = id_of(&prepare(&f.storage, &fig, None).unwrap());
+    let dir = f.workspace(&id);
+    let actions = |storage: &Storage, select: &Select| {
+        let error = rooted(storage, status(storage, select).unwrap_err());
+        let fig = error.downcast_ref::<FigError>().unwrap();
+        fig.recovery()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| {
+                (
+                    a["action"].as_str().unwrap().to_owned(),
+                    a["path"].as_str().map(PathBuf::from),
+                    a["roots"]["config"]["path"].as_str().map(PathBuf::from),
+                    a["lock"].as_str().map(PathBuf::from),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    // Status names the sibling lock a repair recreates, so hosts never derive it.
+    let reported = status(&f.storage, &Select::Id(id.clone())).unwrap();
+    let lock = PathBuf::from(reported["paths"]["lock"].as_str().unwrap());
+    assert_eq!(
+        (lock.exists(), lock.file_name().unwrap().to_str().unwrap()),
+        (true, format!("{id}.lock").as_str())
+    );
+    // Recovery names the canonical workspace path (`\\?\D:\…` on Windows).
+    let canonical = std::fs::canonicalize(&dir).unwrap();
+    let placed = |action: &str| {
+        (
+            action.to_owned(),
+            Some(canonical.clone()),
+            Some(f.storage.defaults.config.path.clone()),
+            Some(lock_beside(&canonical)),
+        )
+    };
+    std::fs::remove_file(dir.with_extension("lock")).unwrap();
+    let source = Select::Locator(Locator::source(&fig).unwrap());
+    let missing = actions(&f.storage, &source);
+    let confined = f.storage.clone().confined(&[f.dir.join("")]);
+    let missing_confined = actions(&confined, &source);
+    prepare(&f.storage, &fig, None).unwrap();
+    Connection::open(dir.join(DB))
+        .unwrap()
+        .execute_batch(&format!("PRAGMA user_version = {};", SCHEMA + 1))
+        .unwrap();
+    let newer = actions(&f.storage, &Select::Id(id.clone()));
+    assert_eq!(
+        (missing, missing_confined, newer),
+        (
+            vec![placed("prepare"), placed("reset")],
+            vec![placed("prepare")],
+            vec![
+                ("use_writer_version".to_owned(), None, None, None),
+                placed("reset")
+            ],
+        )
+    );
+}
+
+#[test]
+fn an_unproven_workspace_offers_no_placed_reset() {
+    let f = Fixture::new();
+    let fig = f.fig("a.fig");
+    let id = id_of(&prepare(&f.storage, &fig, None).unwrap());
+    let dir = f.workspace(&id);
+    let select = Select::Id(id.clone());
+    let offered = |storage: &Storage| {
+        let error = rooted(storage, status(storage, &select).unwrap_err());
+        let fig = error.downcast_ref::<FigError>().unwrap();
+        fig.recovery()
+            .and_then(Json::as_array)
+            .is_some_and(|a| a.iter().any(|a| a["action"] == "reset"))
+    };
+    let conn = Connection::open(dir.join(DB)).unwrap();
+    conn.execute(
+        "UPDATE meta SET value = 'ws_other' WHERE key = 'workspace_id'",
+        [],
+    )
+    .unwrap();
+    conn.execute_batch(&format!("PRAGMA user_version = {};", SCHEMA + 1))
+        .unwrap();
+    drop(conn);
+    let foreign_newer = offered(&f.storage);
+    std::fs::remove_file(dir.with_extension("lock")).unwrap();
+    std::fs::remove_file(dir.join(MARKER)).unwrap();
+    let unmarked = offered(&f.storage);
+    assert_eq!((foreign_newer, unmarked), (false, false));
+}
+
+#[test]
+fn search_relocated_recovery_keeps_the_callers_filters() {
+    let f = Fixture::new();
+    let a = std::fs::canonicalize(f.fig("a.fig")).unwrap();
+    let ws = id_of(&prepare(&f.storage, &a, None).unwrap());
+    let b = f.dir.join("b.fig");
+    std::fs::rename(&a, &b).unwrap();
+    let b = std::fs::canonicalize(b).unwrap();
+    relocate(
+        &f.storage,
+        &Select::Id(ws),
+        &crate::search::source_id(&a),
+        &b,
+    )
+    .unwrap();
+    let req = crate::search::Request {
+        query: "card".into(),
+        scope: "0:1".into(),
+        types: vec!["TEXT".into(), "FRAME".into()],
+        include_hidden: true,
+        include_internal: true,
+        limit: 7,
+        cursor: None,
+    };
+    let select = Select::Locator(Locator::source(&a).unwrap());
+    let e = query::search(&f.storage, &select, &[], &req).unwrap_err();
+    let recovery = e
+        .downcast_ref::<FigError>()
+        .and_then(FigError::recovery)
+        .unwrap_or_else(|| panic!("{e}"))[0]
+        .clone();
+    assert_eq!(
+        recovery["arguments"],
+        json!({"file": b.to_str().unwrap(), "query": "card", "node": "0:1", "type": "TEXT,FRAME",
+            "includeHidden": true, "includeInternal": true, "limit": 7})
+    );
 }
