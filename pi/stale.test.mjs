@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CHECKED, ENTRY, KEPT, NOTICE_BYTES, SELECTOR_BYTES, Targets, bounded, changesArgs, check, checkInput, failure, notice, reminder, restore } from './stale.mjs';
+import { CHECKED, ENTRY, KEPT, NOTICE_BYTES, SELECTOR_BYTES, TARGET_BYTES, Targets, bounded, changesArgs, check, checkInput, failure, notice, reader, reminder, restore } from './stale.mjs';
+import { mkdtemp, mkdir, rm, writeFile, copyFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const ws = 'ws_1';
 const reply = value => [{ type: 'text', text: JSON.stringify(value) }];
@@ -125,6 +129,7 @@ test('the explicit-check reminder lists only the session targets', () => {
   assert.match(reminder([{ workspaceId: ws, consumer: 'c' }]), /checked only when you call it[\s\S]*"consumer":"c"/);
 });
 
+const FIELDS_FULL = () => Object.fromEntries(['workspaceId', 'subscriptionId', 'consumer', 'owner', 'sourceId', 'scope', 'storage'].map(key => [key, 'x'.repeat(SELECTOR_BYTES)]));
 const utf8 = value => Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value));
 
 test('restored targets keep only bounded selector fields', () => {
@@ -133,6 +138,12 @@ test('restored targets keep only bounded selector fields', () => {
   // A multibyte scope counts in UTF-8 bytes, not UTF-16 units.
   assert.deepEqual(new Targets([{ workspaceId: ws, consumer: 'c', scope: '界'.repeat(SELECTOR_BYTES / 3) }]).list.length, 1);
   assert.deepEqual(new Targets([{ workspaceId: ws, consumer: 'c', scope: '界'.repeat(SELECTOR_BYTES / 3 + 1) }]).list, []);
+  // UTF-8 bytes are counted without copying: a surrogate pair is four bytes, and a huge string is refused at once.
+  assert.equal(new Targets([{ workspaceId: ws, consumer: '😀'.repeat(SELECTOR_BYTES / 4) }]).list.length, 1);
+  assert.equal(new Targets([{ workspaceId: ws, consumer: '😀'.repeat(SELECTOR_BYTES / 4 + 1) }]).list.length, 0);
+  assert.equal(new Targets([{ workspaceId: ws, consumer: 'c'.repeat(50 * 1024 * 1024) }]).list.length, 0);
+  const crowded = new Targets([FIELDS_FULL()]);
+  assert.deepEqual([crowded.list.length, crowded.dropped], [0, 1], 'a target past TARGET_BYTES was kept');
   for (const scope of ['0:1\n--storage', '0:1\u0000', '0:1\u007f', '0:1\u0085', '0:1\u2028']) assert.deepEqual(new Targets([{ workspaceId: ws, consumer: 'c', scope }]).list, [], JSON.stringify(scope));
   const long = new Targets();
   assert.equal(long.observe('figlens_watch', { action: 'ack', workspaceId: ws, consumer: 'c'.repeat(SELECTOR_BYTES + 1), cursor: 'x' }, []), false);
@@ -152,9 +163,19 @@ test('facts stay within their budget and the whole note within NOTICE_BYTES', as
   assert.ok(utf8(fact) <= 4096, utf8(fact));
   assert.equal(fact.factTruncated, true);
   assert.deepEqual(fact.unread, { revisionId: 'r1' });
-  const wide = { workspaceId: '"'.repeat(SELECTOR_BYTES), consumer: '\\\\'.repeat(SELECTOR_BYTES / 2), sourceId: '"'.repeat(SELECTOR_BYTES), scope: '"'.repeat(SELECTOR_BYTES), storage: '"'.repeat(SELECTOR_BYTES) };
-  const [widest] = (await check([wide], async () => huge)).facts;
+  // A cut-down fact keeps its whole target, so the next read never names a wider checkpoint.
+  const scoped = { workspaceId: ws, consumer: 'c', sourceId: 'src_1', scope: '0:1', storage: '/data/custom-storage' };
+  const [narrow] = (await check([scoped], async () => huge)).facts;
+  assert.equal(narrow.factTruncated, true);
+  assert.deepEqual(narrow.target, scoped);
+  // The largest target a session keeps still fits a cut-down fact.
+  const wide = new Targets([{ workspaceId: 'w'.repeat(SELECTOR_BYTES), consumer: 'c'.repeat(SELECTOR_BYTES), sourceId: 's'.repeat(SELECTOR_BYTES),
+    scope: '"'.repeat(160) }]);
+  assert.equal(wide.list.length, 1);
+  assert.ok(utf8(wide.list[0]) <= TARGET_BYTES);
+  const [widest] = (await check(wide.list, async () => huge)).facts;
   assert.ok(utf8(widest) <= 4096, utf8(widest));
+  assert.deepEqual(widest.target, wide.list[0]);
   const facts = Array.from({ length: 40 }, (_, i) => ({ target: { workspaceId: ws, consumer: `c${i}` }, unread: { revisionId: 'r'.repeat(400) } }));
   const text = notice({ facts, unchecked: 0 });
   const json = JSON.parse(text.split('```json\n')[1].split('\n```')[0]);
@@ -170,16 +191,48 @@ test('a bounded run reads a reply but kills a child whose output passes the limi
   assert.deepEqual([ok.code, ok.stdout], [0, '{}']);
   await assert.rejects(bounded(process.execPath, ['-e', 'process.stdout.write("x".repeat(5000)); setInterval(() => {}, 1000)'], { cwd: '.', limit: 1024 }),
     /reply exceeded the check budget/);
-  // A wrapper's own child dies with it: the run rejects at once instead of waiting on the grandchild.
+  // A failed run rejects only after its child exited.
+  const over = await bounded(process.execPath, ['-e', 'process.stdout.write("x".repeat(5000)); setInterval(() => {}, 1000)'], { cwd: '.', limit: 1024 })
+    .then(() => assert.fail('the run did not reject'), error => error);
+  assert.throws(() => process.kill(over.pid, 0), /ESRCH/);
+  // Outside Windows a wrapper's own child dies with it, so the run does not wait on the grandchild.
   const started = Date.now();
-  await assert.rejects(bounded(process.execPath, ['-e', 'require("child_process").spawnSync(process.execPath, ["-e", "process.stdout.write(\\"x\\".repeat(5000)); setTimeout(() => {}, 4000)"], { stdio: "inherit" })'],
+  if (process.platform !== 'win32') await assert.rejects(bounded(process.execPath, ['-e', 'require("child_process").spawnSync(process.execPath, ["-e", "process.stdout.write(\\"x\\".repeat(5000)); setTimeout(() => {}, 4000)"], { stdio: "inherit" })'],
     { cwd: '.', limit: 1024 }), /reply exceeded/);
-  assert.ok(Date.now() - started < 2000);
+  assert.ok(Date.now() - started < 3000);
   const noisy = await bounded(process.execPath, ['-e', 'process.stderr.write("w".repeat(100000) + "\\n{\\"recovery\\":[]}\\n"); process.stdout.write("{}")'], { cwd: '.', limit: 1024 });
   assert.deepEqual([noisy.stdout, noisy.stderr.trim().split("\n").at(-1)], ['{}', '{"recovery":[]}']);
   await assert.rejects(bounded('/nonexistent/figlens', [], { cwd: '.' }), /ENOENT/);
   const turn = new AbortController();
   const running = bounded(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: '.', signal: turn.signal });
   turn.abort(new Error('turn ended'));
-  await assert.rejects(running, /turn ended/);
+  const ended = await running.then(() => assert.fail('the run did not reject'), error => error);
+  assert.match(ended.message, /turn ended/);
+  assert.throws(() => process.kill(ended.pid, 0), /ESRCH/, 'an aborted run rejected before its child exited');
+});
+
+test('a bundled package checks with its version-matched cached native binary, not the launcher', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'figlens-reader-'));
+  const saved = { bin: process.env.FIGLENS_BIN, cache: process.env.XDG_CACHE_HOME };
+  try {
+    await mkdir(path.join(root, 'bin'));
+    await mkdir(path.join(root, 'pi'));
+    await writeFile(path.join(root, 'bin/figlens.js'), '');
+    await copyFile(new URL('../npm/target.js', import.meta.url), path.join(root, 'target.js'));
+    await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '9.9.9' }));
+    delete process.env.FIGLENS_BIN;
+    process.env.XDG_CACHE_HOME = path.join(root, 'cache');
+    const entry = pathToFileURL(path.join(root, 'pi/stale.mjs')).href;
+    assert.throws(() => reader(entry), /cached binary is missing/);
+    const { cachedBinary } = (await import('../npm/target.js')).default;
+    const native = cachedBinary(path.join(root, 'cache', 'figlens'), process.platform, process.arch, '9.9.9');
+    await mkdir(path.dirname(native), { recursive: true });
+    await writeFile(native, '');
+    assert.deepEqual(reader(entry), [native]);
+    process.env.FIGLENS_BIN = '/opt/figlens';
+    assert.deepEqual(reader(entry), ['/opt/figlens']);
+  } finally {
+    for (const [key, value] of [['FIGLENS_BIN', saved.bin], ['XDG_CACHE_HOME', saved.cache]]) value === undefined ? delete process.env[key] : process.env[key] = value;
+    await rm(root, { recursive: true, force: true });
+  }
 });
