@@ -601,6 +601,48 @@ fn library_usages_agree_over_the_cli_and_mcp_and_refuse_a_node_target() {
 }
 
 #[test]
+fn a_library_question_by_a_relocated_path_is_asked_again_by_workspace() {
+    let env = Env::new();
+    let old = env.fig("a.fig");
+    let prepared = env.json(&["index", "prepare", old.to_str().unwrap(), "--scope", "0:0"]);
+    let new = env.dir.join("moved.fig");
+    std::fs::rename(&old, &new).unwrap();
+    let new = std::fs::canonicalize(new).unwrap();
+    let source = prepared["source"]["sourceId"].as_str().unwrap();
+    let old_s = old.to_str().unwrap();
+    env.json(&[
+        "index",
+        "relocate",
+        source,
+        new.to_str().unwrap(),
+        "--file",
+        old_s,
+    ]);
+    std::fs::copy("examples/first-success/design.fig", &old).unwrap();
+    let asked = env.run(&[
+        "usages",
+        "--file",
+        old_s,
+        "--library",
+        "style",
+        "--namespace",
+        "lib",
+        "--key",
+        "k1",
+    ]);
+    assert!(!asked.status.success());
+    let stderr = String::from_utf8_lossy(&asked.stderr);
+    let recovery: Value = serde_json::from_str(stderr.lines().last().unwrap()).unwrap();
+    let arguments = &recovery["recovery"][0]["arguments"];
+    assert_eq!(
+        arguments["workspaceId"], prepared["workspaceId"],
+        "{stderr}"
+    );
+    assert_eq!(arguments["library"]["key"], "k1");
+    assert!(arguments.get("file").is_none(), "{stderr}");
+}
+
+#[test]
 fn usages_of_a_scope_not_ready_report_its_state_next_step_and_null_fields() {
     let env = Env::new();
     let fig = env.fig("a.fig");

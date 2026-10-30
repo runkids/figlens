@@ -123,13 +123,27 @@ pub fn library(
         .map_err(sql)?
         .collect::<rusqlite::Result<_>>()
         .map_err(sql)?;
-    super::query::relocated(
+    // A file whose source moved no longer names this workspace; a library question reads every
+    // source, so it is asked again by workspaceId, never of the moved file.
+    if super::query::relocated(
         storage,
         select,
         rows.iter().map(|r| r.1.as_str()),
         "usages",
-        req.arguments(),
-    )?;
+        json!({}),
+    )
+    .is_err()
+    {
+        let mut arguments = req.arguments();
+        arguments["workspaceId"] = json!(ws_id);
+        return Err(FigError::new(
+            ErrorKind::InvalidArguments,
+            "that file is no longer this workspace's source: it was relocated; ask by workspaceId",
+        )
+        .with_recovery(json!([{"action": "usages_workspace", "requires": "none",
+            "tool": "usages", "arguments": arguments}]))
+        .into());
+    }
     // Invisible sources are dropped before anything about them is read or named; visibility is
     // decided again on every page, and the cursor binds the sources it saw.
     let total = rows.len();
@@ -278,18 +292,21 @@ pub fn library(
         .map_err(sql)?;
     for (i, s) in sources.iter().enumerate() {
         let Some(gen_id) = s.gen_id else { continue };
-        // A stopped build, or binding fields too large to read, can hide uses; a copy with no
-        // namespace may name this one. Each is an indexed probe, made on every page.
-        let (complete, unread, nameless): (bool, i64, bool) = tx
+        // A stopped build, binding fields too large to read, or a reference too long to keep can
+        // hide uses; a copy with no namespace may name this one. Each is an indexed probe, made
+        // on every page.
+        let (complete, unread, nameless, unkept): (bool, i64, bool, bool) = tx
             .query_row(
                 "SELECT complete AND stop IS NULL, coalesce(json_extract(info, '$.unreadFields'), 0),
-                 EXISTS (SELECT 1 FROM edges INDEXED BY edges_target WHERE gen = ?1 AND target = ?2)
+                 EXISTS (SELECT 1 FROM edges INDEXED BY edges_target WHERE gen = ?1 AND target = ?2),
+                 EXISTS (SELECT 1 FROM edges INDEXED BY edges_target
+                         WHERE gen = ?1 AND target IS NULL AND relation = ?3)
                  FROM generations WHERE gen = ?1",
-                params![gen_id, unknown],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                params![gen_id, unknown, LIBRARY],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .map_err(sql)?;
-        if !complete || unread > 0 {
+        if !complete || unread > 0 || unkept {
             partial.push(s.id.clone());
         }
         if nameless {

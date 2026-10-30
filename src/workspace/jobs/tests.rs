@@ -1787,6 +1787,24 @@ fn a_use_with_no_namespace_leaves_the_reply_partial_without_being_listed() {
 }
 
 #[test]
+fn a_reference_too_long_to_keep_leaves_the_reply_partial() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 1);
+    conn.execute(
+        "UPDATE edges SET target = NULL, state = 'unsupported' WHERE relation = 'uses_library'",
+        [],
+    )
+    .unwrap();
+    let out = library(&storage, &select, None, &reference("k", None)).unwrap();
+    assert_eq!(library_ids(&out), Vec::<String>::new());
+    assert_eq!(
+        out["coverage"]["reasons"],
+        json!([{"code": "index_partial", "sourceIds": [srcs[0].1]}])
+    );
+}
+
+#[test]
 fn a_revoked_root_or_a_new_generation_ends_a_library_cursor() {
     use crate::workspace::library::library;
     let d = TestDir::new();
