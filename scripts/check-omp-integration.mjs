@@ -41,7 +41,7 @@ const ui = {
   notify: message => notices.push(message), setStatus() {},
 };
 runner.initialize({ sendMessage: message => shown.push(message), sendUserMessage: () => { throw new Error('No model dispatch in this probe'); },
-  appendEntry() {}, getActiveTools: () => [], getAllTools: () => [], setActiveTools: async () => {}, getCommands: () => [],
+  appendEntry: (customType, data) => session.appendCustomEntry(customType, data), getActiveTools: () => [], getAllTools: () => [], setActiveTools: async () => {}, getCommands: () => [],
 }, { getModel: () => undefined, isIdle: () => true, abort() {}, hasPendingMessages: () => false,
   shutdown() {}, getContextUsage: () => undefined, compact: async () => {}, getSystemPrompt: () => [] },
 { waitForIdle: async () => {} }, ui, 'tui');
@@ -272,6 +272,24 @@ await check('unverified MCP shortcuts do not dispatch and preserve local state',
   assert.ok(shown.at(-1).content.includes('MCP shortcut unavailable'));
   assert.deepEqual(await readFile(flow.guide), before);
   return { modelCalled: false, existingGuideUnchanged: true };
+});
+await check('stale context: a watch target this session acknowledged gets an explicit-check reminder, kept across a switch', async () => {
+  const turn = async () => (await runner.emitContext([]))?.at(-1);
+  assert.equal(await turn(), undefined, 'a session without a watch target added context');
+  const input = { action: 'ack', workspaceId: 'ws_check', consumer: 'omp', scope: '0:0', cursor: 'c' };
+  for (const isError of [true, false]) await runner.emitToolResult({ type: 'tool_result', toolName: 'mcp__figlens_watch', toolCallId: 'stale',
+    input, content: [{ type: 'text', text: JSON.stringify({ advanced: true }) }], isError, details: undefined });
+  const first = await turn();
+  assert.equal(first.display, false);
+  assert.match(first.content, /checked only when you call it/);
+  assert.match(first.content, /"workspaceId":"ws_check","consumer":"omp","scope":"0:0"/);
+  assert.deepEqual((await runner.emitBeforeAgentStart('next', undefined, []))?.messages ?? [], [], 'a reminder entered the session');
+  await runner.emit({ type: 'session_start' });
+  assert.equal((await turn())?.content, first.content, 'the session branch lost its target');
+  await runner.emitToolResult({ type: 'tool_result', toolName: 'mcp__figlens_watch', toolCallId: 'forget',
+    input: { action: 'forget', workspaceId: 'ws_check', consumer: 'omp', scope: '0:0' }, content: [], isError: false, details: undefined });
+  assert.equal(await turn(), undefined);
+  return { noTargetNoContext: true, failedCallIgnored: true, reminderOnly: true, notPersisted: true, restoredFromSession: true, forgetClears: true };
 });
 await check('real viewer is owned and removed on session switch', async () => {
   const preview = await invoke('figlens_preview', { figlens_preview: 'allow' }, undefined, { file: path.join(project, 'mapping.fig') });

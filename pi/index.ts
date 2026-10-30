@@ -9,6 +9,7 @@ import { Container, Image, Input, Markdown, SelectList, fuzzyFilter, truncateToW
 import { Workflow } from './workflow.mjs';
 import { Viewer } from './viewer.mjs';
 import { buildRequest } from './requests.mjs';
+import { ENTRY, OUTPUT, Targets, changesArgs, check, failure, notice, restore as restoreTargets } from './stale.mjs';
 
 const HELP = [
   "## figlens",
@@ -254,7 +255,41 @@ export default function figlens(pi: ExtensionAPI) {
     const active = (await project(ctx).read()).state.active;
     if (active && ctx.mode === 'tui') ctx.ui.setStatus('figlens', `figlens · ${active.frame}`);
   });
-  pi.on('session_shutdown', async () => { await viewer.close(); });
+  // Watch targets this session subscribed to or acknowledged, kept in the session branch so a resumed session
+  // checks them again. The check runs the same binary as the figlens MCP server registered above, which has no
+  // --root, so it reads with that tool's authority; it never acks, builds or starts a watch.
+  let targets = new Targets();
+  let note: string | undefined;
+  let checks = new AbortController();
+  pi.on('session_shutdown', async () => { checks.abort(); await viewer.close(); });
+  const restore = async (_event: unknown, ctx: ExtensionContext) => {
+    checks.abort();
+    checks = new AbortController();
+    targets = restoreTargets(ctx.sessionManager.getBranch());
+    note = undefined;
+    if (ctx.mode === 'tui') ctx.ui.setStatus('figlens-changes', undefined);
+  };
+  pi.on('session_start', restore);
+  pi.on('session_tree', restore);
+  pi.on('tool_result', async event => {
+    if (targets.observe(event.toolName, event.input, event.content, event.isError)) pi.appendEntry(ENTRY, [...targets.list]);
+  });
+  // Each user prompt checks again; programmatic runs keep the last note.
+  pi.on('before_agent_start', async (event, ctx) => {
+    if (event.messageType === 'custom') return;
+    note = targets.list.length ? notice(await check(targets.turn(), async (target, signal) => {
+      const execution = await pi.exec(binary, [...prefix, ...changesArgs(target)], { cwd: ctx.cwd, signal });
+      if (execution.code !== 0 || execution.killed) throw failure(execution.stderr.slice(0, OUTPUT));
+      if (execution.stdout.length > OUTPUT) throw new Error('the changes reply exceeded the check budget');
+      return JSON.parse(execution.stdout);
+    }, AbortSignal.any([checks.signal, ...(ctx.signal ? [ctx.signal] : [])])), targets.dropped) : undefined;
+    if (ctx.mode === 'tui') ctx.ui.setStatus('figlens-changes', note ? 'figlens · design context may be stale' : undefined);
+  });
+  // The note joins each model call of this run without entering the session, so a processed or revoked
+  // target leaves no copy behind, compaction cannot drop it, and the next prompt replaces it.
+  pi.on('context', async event => note
+    ? { messages: [...event.messages, { role: 'custom', customType: 'figlens', content: note, display: false, timestamp: Date.now() }] }
+    : undefined);
 
   const COMMANDS = {
     open: 'Find a design from a file, screen name, purpose or visible text',

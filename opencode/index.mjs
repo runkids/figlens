@@ -5,6 +5,7 @@ import { createAdapter, indexGrant } from './adapter.mjs';
 import { registerReview } from './review-rpc.mjs';
 import { operationRpc, reviewRpc } from './rpc.mjs';
 import { WorkflowAuthorizationError } from '../pi/workflow.mjs';
+import { Targets, check, checkInput, failure, notice, reminder } from '../pi/stale.mjs';
 
 const string = maxLength => ({ type: 'string', minLength: 1, maxLength });
 const selection = { file: string(4096), frame: string(200) };
@@ -119,9 +120,40 @@ export default Plugin.define({ id: 'figlens', async setup(ctx) {
     const grant = !adapter.cliPath && call.tool === `${adapter.mcpName}_index` && indexGrant(call.input ?? {});
     if (grant) await (await adapter.scope(call.sessionID)).authorize('figlens_index', [grant]);
   }));
+  // Watch targets each session subscribed to or acknowledged, held in memory: after an OpenCode restart a session
+  // is checked again from its next subscribe or ack. On the CLI path the check is adapter.cli's changes, asking the
+  // same read and bash permissions as the agent's own call; an MCP server's --root folders are not visible here,
+  // so through MCP the session is only reminded to call changes itself.
+  const watched = new Map(), notes = new Map();
+  registrations.push(await ctx.tool.hook('execute.after', call => {
+    const targets = watched.get(call.sessionID) ?? new Targets();
+    if (targets.observe(call.tool, call.input, call.result?.content, call.status !== 'completed')) watched.set(call.sessionID, targets);
+  }));
+  registrations.push(await ctx.session.hook('prompt', async input => {
+    notes.delete(input.sessionID);
+    const targets = watched.get(input.sessionID);
+    if (!targets?.list.length) return;
+    let text = reminder(targets.list);
+    if (adapter.cliPath) {
+      // One check at a time, so at most one read permission question is open while the deadline runs; each
+      // scope carries the batch signal, so the deadline also stops its CLI child.
+      text = notice(await check(targets.turn(), async (target, signal) => {
+        try { return await adapter.cli(await adapter.scope(input.sessionID, signal), 'changes', checkInput(target)); }
+        catch (error) { throw error.cause?.stderr ? failure(error.cause.stderr) : error; }
+      }, adapter.signal, { parallel: 1 }), targets.dropped);
+    }
+    if (text) notes.set(input.sessionID, text);
+  }));
+  // The note stays in each model call of that prompt's turn; the next prompt checks again.
+  registrations.push(await ctx.session.hook('context', input => {
+    const text = notes.get(input.sessionID);
+    if (text) input.system.push({ type: 'text', text });
+  }));
   const events = (async () => {
     try {
       for await (const event of ctx.event.subscribe({ types: ['session.deleted'], signal: adapter.signal })) {
+        watched.delete(event.data.sessionID);
+        notes.delete(event.data.sessionID);
         await adapter.close(event.data.sessionID);
       }
     } catch (error) {

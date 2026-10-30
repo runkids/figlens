@@ -30,7 +30,7 @@ test('the existing CLI npm package includes the maintained Pi entry and its adja
     assert.ok(files.includes(`skills/figlens/${file}`));
     assert.equal(readFileSync(path.join(root, 'npm/skills/figlens', file), 'utf8'), readFileSync(path.join(root, 'skills/figlens', file), 'utf8'));
   }
-  for (const file of ['index.ts', 'workflow.mjs', 'viewer.mjs', 'requests.mjs', 'package.json', 'README.md']) {
+  for (const file of ['index.ts', 'workflow.mjs', 'viewer.mjs', 'requests.mjs', 'stale.mjs', 'package.json', 'README.md']) {
     assert.ok(files.includes(`pi/${file}`));
     assert.equal(readFileSync(path.join(root, 'npm/pi', file), 'utf8'), readFileSync(path.join(root, 'pi', file), 'utf8'));
   }
