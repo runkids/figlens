@@ -95,6 +95,28 @@ await check('packaged descriptor, bridge handshake and absolute design path', as
     assert.equal(searched.isError, false);
     assert.equal(searched.structuredContent.results[0].ref.nodeId, '0:1');
     assert.equal(searched.structuredContent.coverage.complete, true);
+    // Optional local models through OMP's bridge: listed and set up, never downloaded; with no profile in this run's
+    // fresh config, semantic is mode_unavailable and hybrid answers with text alone.
+    const tools = await listTools(connection);
+    assert.deepEqual(tools.find(tool => tool.name === 'search')?.inputSchema?.properties?.mode?.enum, ['text', 'semantic', 'hybrid']);
+    assert.ok(tools.some(tool => tool.name === 'models'));
+    const listedModels = await callTool(connection, 'models', { action: 'list' });
+    assert.equal(listedModels.isError, false, JSON.stringify(listedModels).slice(0, 2000));
+    assert.ok(listedModels.structuredContent.profiles.length);
+    const modelStatus = await callTool(connection, 'models', { action: 'status' });
+    assert.ok(modelStatus.isError === false && modelStatus.structuredContent.setup?.length, JSON.stringify(modelStatus).slice(0, 2000));
+    assert.equal(typeof modelStatus.structuredContent.configRoot, 'string');
+    // configure of a folder holding no model fails with a setup error and records nothing.
+    await mkdir(path.join(project, 'no-model'), { recursive: true });
+    const refused = await callTool(connection, 'models', { action: 'configure', profile: 'bge-m3', modelDir: path.join(project, 'no-model') });
+    assert.ok(refused.isError === true && /runtime|not a regular file|missing/i.test(JSON.stringify(refused)), JSON.stringify(refused).slice(0, 2000));
+    assert.deepEqual((await callTool(connection, 'models', { action: 'status' })).structuredContent.profiles, []);
+    const semantic = await callTool(connection, 'search', { file: path.join(project, 'mapping.fig'), query: 'Mapping review', mode: 'semantic' });
+    assert.ok(semantic.isError === true && /mode_unavailable|configured local model/i.test(JSON.stringify(semantic)), JSON.stringify(semantic).slice(0, 2000));
+    const hybrid = await callTool(connection, 'search', { file: path.join(project, 'mapping.fig'), query: 'Mapping review', mode: 'hybrid' });
+    assert.equal(hybrid.isError, false, JSON.stringify(hybrid).slice(0, 2000));
+    assert.deepEqual(hybrid.structuredContent.query.usedModes, ['text']);
+    assert.equal(hybrid.structuredContent.results[0].ref.nodeId, '0:1');
     const inspected = await callTool(connection, 'inspect', { file: path.join(project, 'mapping.fig'), node: searched.structuredContent.results[0].ref.nodeId });
     assert.equal(inspected.structuredContent.node.id, '0:1');
     // Wiring only: two copies of one file are two sources with no changes.
