@@ -1107,16 +1107,23 @@ impl Reverse {
 /// built, when it does not fit; an index whose map is already built costs nothing more.
 pub(crate) fn prepare(index: &Index, bounds: &mut Bounds) -> bool {
     if index.reverse.get().is_none() {
+        // Visits are paid from lengths before each scan, twice: this estimate and the build.
         for r in &index.records {
+            if !bounds.charge(2 * (1 + r.edges.len()), 0) {
+                return false;
+            }
             let targets = r.edges.iter().filter_map(|e| e.target.as_ref());
             let bytes = 64 + r.id.len() + targets.map(|t| 56 + t.len()).sum::<usize>();
-            if !bounds.charge(1 + r.edges.len(), bytes) {
+            if !bounds.charge(0, bytes) {
                 return false;
             }
         }
         for (id, d) in &index.definitions {
+            if !bounds.charge(2, 0) {
+                return false;
+            }
             if let Some(set) = &d.set
-                && !bounds.charge(1, 64 + id.len() + set.len())
+                && !bounds.charge(0, 64 + id.len() + set.len())
             {
                 return false;
             }

@@ -437,3 +437,60 @@ fn a_reloaded_index_whose_reverse_map_does_not_fit_is_not_built() {
         (0, Some(&1), true)
     );
 }
+
+/// A frame filling with `n` paints, each bound to its own variable: one record, `n` edges.
+fn wide(n: u32) -> K<'static> {
+    let paint = |v: u32| {
+        let alias = obj(vec![
+            ("dataType", K::Enum("VariableDataType", "ALIAS")),
+            ("value", obj(vec![("alias", obj(vec![("guid", guid(v))]))])),
+        ]);
+        obj(vec![
+            ("type", K::Enum("PaintType", "SOLID")),
+            ("colorVar", alias),
+        ])
+    };
+    let paints = K::Array((0..n).map(|v| paint(5_000 + v)).collect());
+    node(80, Some(2), "FRAME", "Wide", vec![("fillPaints", paints)])
+}
+
+/// The visits `prepare` pays for `index`: each record and edge, and each definition, twice.
+fn reverse_visits(index: &Index) -> usize {
+    let records: usize = index.records.iter().map(|r| 2 * (1 + r.edges.len())).sum();
+    records + 2 * index.definitions.len()
+}
+
+fn prepared(index: &Index, work: usize) -> (bool, Option<crate::expand::Stop>, bool) {
+    let mut b = bounds(work);
+    let built = crate::search::usages::prepare(index, &mut b);
+    (built, b.stop, index.reverse.get().is_some())
+}
+
+#[test]
+fn a_wide_record_one_visit_short_leaves_the_map_unbuilt() {
+    let r = reloaded(&index(vec![wide(300)]));
+    let at = r.records.iter().position(|r| r.edges.len() >= 300).unwrap();
+    let before: usize = r.records[..at]
+        .iter()
+        .map(|r| 2 * (1 + r.edges.len()))
+        .sum();
+    let short = before + 2 * (1 + r.records[at].edges.len()) - 1;
+    let work = Some(crate::expand::Stop::Work);
+    assert_eq!(prepared(&r, short), (false, work, false));
+}
+
+#[test]
+fn a_plain_definition_one_visit_short_leaves_the_map_unbuilt() {
+    // A fresh build holds the definitions of the components its instances use, none in a set.
+    let i = index(vec![]);
+    assert!(!i.definitions.is_empty() && i.definitions.values().all(|d| d.set.is_none()));
+    let work = Some(crate::expand::Stop::Work);
+    assert_eq!(prepared(&i, reverse_visits(&i) - 1), (false, work, false));
+}
+
+#[test]
+fn the_exact_visits_build_the_map() {
+    let r = reloaded(&index(vec![wide(300)]));
+    let mut b = bounds(reverse_visits(&r));
+    assert!(crate::search::usages::prepare(&r, &mut b) && r.reverse.get().is_some());
+}
