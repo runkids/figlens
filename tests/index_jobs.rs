@@ -1000,6 +1000,49 @@ fn mcp_roots_do_not_serve_a_source_later_replaced_by_a_link_out_of_them() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_directory_add_over_mcp_stays_inside_its_roots_and_the_cli_dry_run_writes_nothing() {
+    let env = Env::new();
+    let dir = project(&env);
+    let (inside, outside) = (dir.join("in"), dir.join("out"));
+    std::fs::create_dir(&inside).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    let (a, secret) = (inside.join("a.fig"), outside.join("secret.fig"));
+    std::fs::copy("examples/first-success/design.fig", &a).unwrap();
+    std::fs::copy("examples/first-success/design.fig", &secret).unwrap();
+    std::os::unix::fs::symlink(&secret, inside.join("link.fig")).unwrap();
+    let (d, i) = (dir.to_str().unwrap(), inside.to_str().unwrap());
+    let skipped = json!([{"path": "link.fig", "reason": "escaping_link"}]);
+    // The CLI lists what a directory add would register, creating nothing.
+    let listed = env.json(&["index", "add", i, "--workspace", d, "--dry-run"]);
+    assert_eq!(listed["directory"]["files"], json!([a]));
+    assert_eq!(listed["directory"]["skipped"], skipped);
+    assert!(!env.home.join(".local/state/figlens").exists());
+    let ws = env.json(&["index", "prepare", a.to_str().unwrap(), "--workspace", d]);
+    let ws = ws["workspaceId"].as_str().unwrap();
+    let mut mcp = Mcp::start(&env, &["--root", i]);
+    // A directory wider than the roots is refused before anything under it is read.
+    let refused = mcp.call(
+        "index",
+        json!({"action": "add", "file": dir, "workspaceId": ws}),
+    );
+    assert_eq!(refused["isError"], true, "{refused}");
+    let added = mcp.call(
+        "index",
+        json!({"action": "add", "file": inside, "workspaceId": ws}),
+    );
+    assert_eq!(added["isError"], false, "{added}");
+    let found = &added["structuredContent"]["directory"];
+    assert_eq!(found["added"], json!([]));
+    assert_eq!(found["existing"][0]["path"], json!(a));
+    assert_eq!(found["skipped"], skipped);
+    assert!(!added.to_string().contains("secret"), "{added}");
+    drop(mcp);
+    let status = env.json(&["index", "status", "--id", ws]);
+    assert_eq!(status["sources"].as_array().unwrap().len(), 1);
+}
+
 #[test]
 fn an_unusable_workspace_lists_stateless_search_of_the_named_file() {
     let env = Env::new();

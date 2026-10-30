@@ -352,7 +352,9 @@ use storage::*;
 
 pub(crate) use database::Opened;
 pub use jobs::{clear_cache, rebuild, refresh};
-pub use registry::{Outcome, PrepareOptions, add, prepare, relocate, remove, reset, status};
+pub use registry::{
+    Outcome, PrepareOptions, add, list_add, prepare, relocate, remove, reset, status,
+};
 pub use storage::{Locator, Root, Roots, Select, Storage, storage};
 
 pub mod watch;

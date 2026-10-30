@@ -178,7 +178,11 @@ usage:
                                              deferred items, each with the call that builds it later
   figlens index clear|clear_cache <select>   delete retired and unfinished indexes; keeps published ones
   figlens index status <select>              state, sources and storage rule; creates nothing
-  figlens index add <file.fig> <select>      add a source to a project workspace
+  figlens index add <file.fig|dir> <select> [--dry-run]
+                                             add a source to a project workspace; a directory adds the
+                                             .fig files under it (at most 10 per call, 4096 entries read),
+                                             skipping links that lead out of it, and reports added,
+                                             existing, skipped and truncated; --dry-run lists them only
   figlens index remove <sourceId> <select>   unregister a source; the .fig is never touched
   figlens index relocate <sourceId> <new.fig> <select>   keep the sourceId, change its path; a
                                              source-scoped workspace is then selected by the new path too
@@ -854,6 +858,8 @@ struct IndexArgs<'a> {
     source: Vec<&'a str>,
     request: Option<&'a str>,
     replace: bool,
+    /// `index add <dir> --dry-run`: list what it would register, writing nothing.
+    dry_run: bool,
     /// Search flags passed through to the search request parser.
     search: Vec<String>,
 }
@@ -871,6 +877,10 @@ fn index_args<'a>(args: &'a [String], search: bool) -> Result<IndexArgs<'a>, Box
             "--request-id" if !search => &mut parsed.request,
             "--replace-unavailable" if !search => {
                 parsed.replace = true;
+                continue;
+            }
+            "--dry-run" if !search => {
+                parsed.dry_run = true;
                 continue;
             }
             "--source" => {
@@ -1220,7 +1230,10 @@ fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
             let scope = normalize_id(a.scope.ok_or_else(usage)?);
             workspace::jobs::untrack(&storage, &chosen()?, only_source()?, &scope)
         }
-        _ if scoped || !a.source.is_empty() => Err(usage()),
+        ("add", [path]) if a.dry_run && !scoped && a.source.is_empty() => {
+            workspace::list_add(&storage, &chosen()?, Path::new(path))
+        }
+        _ if scoped || a.dry_run || !a.source.is_empty() => Err(usage()),
         ("status", []) => workspace::status(&storage, &chosen()?),
         ("add", [path]) => workspace::add(&storage, &chosen()?, Path::new(path)),
         ("remove", [source]) => workspace::remove(&storage, &chosen()?, source),

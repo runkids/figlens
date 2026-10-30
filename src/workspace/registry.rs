@@ -479,8 +479,11 @@ pub(super) fn project_only(ws: &Opened, file: &Path) -> Result<()> {
     }
 }
 
-/// Adds `file` to a project workspace.
+/// Adds `file` to a project workspace, or the `.fig` files under it when it is a directory.
 pub fn add(storage: &Storage, select: &Select, file: &Path) -> Result<Json> {
+    if std::fs::metadata(file).is_ok_and(|m| m.is_dir()) {
+        return add_dir(storage, select, file);
+    }
     let source = readable(file)?;
     let (place, mut ws) = opened(storage, select, true)?;
     outside_storage(&source, storage, &place)?;
@@ -491,6 +494,168 @@ pub fn add(storage: &Storage, select: &Select, file: &Path) -> Result<Json> {
         &place,
         &ws,
         json!({"source": {"sourceId": source_id, "path": source, "added": added}}),
+    )
+}
+
+/// New sources one directory add registers: the sources one workspace search reads together.
+pub(super) const DIR_SOURCES: usize = super::query::QUERY_SOURCES;
+/// Directory entries one directory add visits, links and subdirectories included.
+pub(super) const DIR_ENTRIES: usize = 4096;
+
+/// What a directory add would register under its root, and why every other entry was left.
+struct Listing {
+    root: PathBuf,
+    files: Vec<PathBuf>,
+    skipped: Vec<Json>,
+    not_fig: usize,
+    truncated: Json,
+}
+
+/// The `.fig` files under `dir` that pass the checks a single add makes, in name order. Only
+/// real subdirectories are entered: a link whose target lies outside the root is skipped as
+/// `escaping_link`, and a link to a directory inside it as `linked_directory` (its real path is
+/// listed on its own). Skipped entries are named relative to the root, so a reply never names
+/// where a link leads.
+fn list_dir(storage: &Storage, place: &Place, dir: &Path) -> Result<Listing> {
+    let unreadable = |e: std::io::Error| {
+        fail(
+            ErrorKind::SourceUnreadable,
+            format!("{}: {e}", dir.display()),
+        )
+    };
+    let root = std::fs::canonicalize(dir).map_err(unreadable)?;
+    let mut l = Listing {
+        root: root.clone(),
+        files: Vec::new(),
+        skipped: Vec::new(),
+        not_fig: 0,
+        truncated: Json::Null,
+    };
+    let skip = |l: &mut Listing, path: &Path, reason: &str| {
+        let shown = path.strip_prefix(&root).unwrap_or(path);
+        l.skipped
+            .push(json!({"path": shown.to_string_lossy(), "reason": reason}));
+    };
+    let (mut visited, mut stack) = (0, vec![root.clone()]);
+    'walk: while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if dir == root => return Err(unreadable(e)),
+            Err(_) => {
+                skip(&mut l, &dir, "unreadable");
+                continue;
+            }
+        };
+        // The budget is checked before each entry is read, so a huge directory costs no more.
+        let mut names = Vec::new();
+        let mut out = false;
+        for entry in entries {
+            if visited == DIR_ENTRIES {
+                l.truncated = json!({"reason": "entry_budget", "limit": DIR_ENTRIES});
+                out = true;
+                break;
+            }
+            visited += 1;
+            match entry {
+                Ok(entry) => names.push(entry.path()),
+                Err(_) => skip(&mut l, &dir, "unreadable"),
+            }
+        }
+        names.sort();
+        let mut subdirs = Vec::new();
+        for path in names {
+            // Under a canonical root, an entry whose canonical path differs is a link.
+            let Ok(real) = std::fs::canonicalize(&path) else {
+                skip(&mut l, &path, "unreadable");
+                continue;
+            };
+            if !real.starts_with(&root) {
+                skip(&mut l, &path, "escaping_link");
+                continue;
+            }
+            if std::fs::metadata(&real).is_ok_and(|m| m.is_dir()) {
+                if real == path {
+                    subdirs.push(path);
+                } else {
+                    skip(&mut l, &path, "linked_directory");
+                }
+                continue;
+            }
+            if !real
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("fig"))
+            {
+                l.not_fig += 1;
+                continue;
+            }
+            let reason = match readable(&real) {
+                Err(_) => Some("unreadable"),
+                Ok(_) if real.to_str().is_none() => Some("unreadable"),
+                Ok(_) if outside_storage(&real, storage, place).is_err() => Some("inside_storage"),
+                Ok(_) if !storage.sees(&real) => Some("outside_roots"),
+                // An in-root link to a file already listed registers nothing more.
+                Ok(_) if l.files.contains(&real) => continue,
+                Ok(_) => None,
+            };
+            if let Some(reason) = reason {
+                skip(&mut l, &path, reason);
+            } else if l.files.len() == DIR_SOURCES {
+                l.truncated = json!({"reason": "source_cap", "limit": DIR_SOURCES});
+                break 'walk;
+            } else {
+                l.files.push(real);
+            }
+        }
+        if out {
+            break;
+        }
+        stack.extend(subdirs.into_iter().rev());
+    }
+    Ok(l)
+}
+
+/// What `index add <dir> --dry-run` would register, for a host to authorize first. Reads no
+/// database and creates nothing.
+pub fn list_add(storage: &Storage, select: &Select, dir: &Path) -> Result<Json> {
+    let select = &storage.follow(select)?;
+    let id = select.id()?;
+    let place = storage.place(&id, select.locator())?;
+    let l = list_dir(storage, &place, dir)?;
+    Ok(
+        json!({"workspaceId": id, "directory": {"path": l.root, "files": l.files,
+        "skipped": l.skipped, "notFig": l.not_fig, "truncated": l.truncated}}),
+    )
+}
+
+/// Registers the `.fig` files under `dir` (see [`list_dir`]) in one write transaction: either
+/// all of them or, on an error, none. Already registered paths keep their ids; nothing is
+/// relocated, so a file moved inside the directory is a new source.
+fn add_dir(storage: &Storage, select: &Select, dir: &Path) -> Result<Json> {
+    let (place, mut ws) = opened(storage, select, true)?;
+    if let Locator::Source(_) = ws.held.locator {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            "a source-scoped workspace holds only its own file; prepare with --workspace <dir> to register a directory",
+        ));
+    }
+    let l = list_dir(storage, &place, dir)?;
+    let tx = ws
+        .conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(sql)?;
+    let (mut added, mut existing) = (Vec::new(), Vec::new());
+    for file in &l.files {
+        let (source_id, new) = register_in(&tx, file)?;
+        let list = if new { &mut added } else { &mut existing };
+        list.push(json!({"sourceId": source_id, "path": file}));
+    }
+    tx.commit().map_err(sql)?;
+    opened_report(
+        storage,
+        &place,
+        &ws,
+        json!({"directory": {"path": l.root, "added": added, "existing": existing,
+            "skipped": l.skipped, "notFig": l.not_fig, "truncated": l.truncated}}),
     )
 }
 

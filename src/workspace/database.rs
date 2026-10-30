@@ -588,10 +588,17 @@ pub(super) fn gone(e: &(dyn Error + 'static)) -> bool {
 
 /// The `sourceId` registered for `source`, adding it when new; true when added.
 pub(super) fn register(conn: &mut Connection, source: &Path) -> Result<(String, bool)> {
-    let path = utf8(source)?;
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(sql)?;
+    let registered = register_in(&tx, source)?;
+    tx.commit().map_err(sql)?;
+    Ok(registered)
+}
+
+/// [`register`] inside the caller's write transaction.
+pub(super) fn register_in(tx: &Connection, source: &Path) -> Result<(String, bool)> {
+    let path = utf8(source)?;
     let existing: Option<String> = tx
         .query_row(
             "SELECT source_id FROM sources WHERE path = ?1",
@@ -626,7 +633,6 @@ pub(super) fn register(conn: &mut Connection, source: &Path) -> Result<(String, 
         rusqlite::params![id, path, now_ms()],
     )
     .map_err(sql)?;
-    tx.commit().map_err(sql)?;
     Ok((id, true))
 }
 

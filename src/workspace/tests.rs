@@ -1551,3 +1551,110 @@ fn a_cancelled_search_is_interrupted_in_its_statement_and_reported_cancelled() {
     let plain = query::search(&f.storage, &select, &[], &req).unwrap();
     assert_eq!(normal["results"], plain["results"]);
 }
+
+/// The `path` of each `{sourceId, path}` in a directory add's `list`.
+fn paths(report: &Json, list: &str) -> Vec<PathBuf> {
+    report["directory"][list]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| PathBuf::from(s["path"].as_str().unwrap()))
+        .collect()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_directory_add_registers_only_fig_files_inside_its_root_and_repeats_idempotently() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new();
+    let project = std::path::absolute(f.dir.join("project")).unwrap();
+    let (lib, outside) = (project.join("lib"), f.dir.join("outside"));
+    for dir in [lib.join("sub"), outside.clone()] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    for file in [
+        lib.join("a.fig"),
+        lib.join("sub/b.fig"),
+        outside.join("x.fig"),
+    ] {
+        std::fs::write(file, "design").unwrap();
+    }
+    std::fs::write(lib.join("notes.txt"), "not a design").unwrap();
+    let outside = std::path::absolute(outside).unwrap();
+    symlink(outside.join("x.fig"), lib.join("out.fig")).unwrap();
+    symlink(&outside, lib.join("out-dir")).unwrap();
+    symlink(lib.join("a.fig"), lib.join("sub/again.fig")).unwrap();
+    symlink(lib.join("sub"), lib.join("sub-link")).unwrap();
+    prepare(&f.storage, &f.fig("first.fig"), Some(&project)).unwrap();
+    let select = Select::from_choice(Some(&project), None, None)
+        .unwrap()
+        .unwrap();
+    let real = std::fs::canonicalize(&lib).unwrap();
+    let first = add(&f.storage, &select, &lib).unwrap();
+    assert_eq!(
+        paths(&first, "added"),
+        [real.join("a.fig"), real.join("sub/b.fig")]
+    );
+    assert_eq!(paths(&first, "existing"), Vec::<PathBuf>::new());
+    assert_eq!(
+        first["directory"]["skipped"],
+        json!([{"path": "out-dir", "reason": "escaping_link"},
+            {"path": "out.fig", "reason": "escaping_link"},
+            {"path": "sub-link", "reason": "linked_directory"}])
+    );
+    assert_eq!(first["directory"]["notFig"], 1);
+    assert_eq!(first["directory"]["truncated"], Json::Null);
+    assert!(!first.to_string().contains("outside"), "{first}");
+    assert_eq!(first["sources"].as_array().unwrap().len(), 3);
+    // A repeat registers nothing new and returns the same ids.
+    let again = add(&f.storage, &select, &lib).unwrap();
+    assert_eq!(again["directory"]["added"], json!([]));
+    assert_eq!(again["directory"]["existing"], first["directory"]["added"]);
+    // A file moved inside the directory is a new source; only relocate keeps an id.
+    std::fs::rename(lib.join("sub/b.fig"), lib.join("sub/c.fig")).unwrap();
+    let moved = add(&f.storage, &select, &lib).unwrap();
+    assert_eq!(paths(&moved, "added"), [real.join("sub/c.fig")]);
+    assert_eq!(moved["sources"].as_array().unwrap().len(), 4);
+    // A source-scoped workspace holds only its own file.
+    let solo = Select::Id(id_of(
+        &prepare(&f.storage, &f.fig("solo.fig"), None).unwrap(),
+    ));
+    assert_eq!(
+        kind(&*add(&f.storage, &solo, &lib).unwrap_err()),
+        ErrorKind::InvalidArguments
+    );
+}
+
+#[test]
+fn a_directory_add_stops_at_its_source_cap_and_entry_budget_and_says_so() {
+    let f = Fixture::new();
+    let project = std::path::absolute(f.dir.join("project")).unwrap();
+    let (many, wide) = (project.join("many"), project.join("wide"));
+    std::fs::create_dir_all(&many).unwrap();
+    std::fs::create_dir_all(&wide).unwrap();
+    for i in 0..=registry::DIR_SOURCES {
+        std::fs::write(many.join(format!("{i:02}.fig")), "design").unwrap();
+    }
+    for i in 0..=registry::DIR_ENTRIES {
+        std::fs::write(wide.join(format!("{i:05}.txt")), "").unwrap();
+    }
+    prepare(&f.storage, &f.fig("first.fig"), Some(&project)).unwrap();
+    let select = Select::from_choice(Some(&project), None, None)
+        .unwrap()
+        .unwrap();
+    let capped = add(&f.storage, &select, &many).unwrap();
+    assert_eq!(
+        capped["directory"]["added"].as_array().unwrap().len(),
+        registry::DIR_SOURCES
+    );
+    assert_eq!(
+        capped["directory"]["truncated"],
+        json!({"reason": "source_cap", "limit": registry::DIR_SOURCES})
+    );
+    let budget = add(&f.storage, &select, &wide).unwrap();
+    assert_eq!(
+        budget["directory"]["truncated"],
+        json!({"reason": "entry_budget", "limit": registry::DIR_ENTRIES})
+    );
+    assert_eq!(budget["directory"]["notFig"], registry::DIR_ENTRIES);
+}

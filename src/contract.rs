@@ -423,7 +423,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "index",
-        "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes); refresh rebuilds changed scopes and rebuild every indexed scope even when unchanged (sourceId and scope narrow both), while the previous index keeps serving; track starts recording one scope's changes, read with the changes tool, with a baseline build, and untrack stops it, keeping its history; a reply that could not admit every job has admission partial and deferred items, each with the nextStep that builds it later; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
+        "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes; add of a directory registers up to 10 .fig files under it in one step, never through a link leading out of it, and replies directory {added, existing, skipped, notFig, truncated}; a repeat adds nothing, and a moved file is a new source unless relocated); refresh rebuilds changed scopes and rebuild every indexed scope even when unchanged (sourceId and scope narrow both), while the previous index keeps serving; track starts recording one scope's changes, read with the changes tool, with a baseline build, and untrack stops it, keeping its history; a reply that could not admit every job has admission partial and deferred items, each with the nextStep that builds it later; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
         &[
             (
                 "action",
@@ -435,7 +435,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "file",
                 "string",
                 false,
-                "a local .fig: the source to prepare, add or relocate to; also selects its source-scoped workspace",
+                "a local .fig: the source to prepare, add or relocate to (add also takes a directory under the roots); also selects its source-scoped workspace",
             ),
             (
                 "workspace",
@@ -681,6 +681,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "deferred": {"type": "array", "items": {"type": "object"}, "description": "partial admission: sourceId, scope and the nextStep index call that builds it later"},
                 "deferredBecause": {"type": ["object", "null"], "description": "partial admission: the error that stopped admission, {code, message}"},
                 "coverage": {"type": "object", "description": "prepare without scope: text and relations not_requested"},
+                "directory": {"type": "object", "description": "add of a directory: path, added and existing [{sourceId, path}], skipped [{path relative to it, reason escaping_link, linked_directory, unreadable, inside_storage or outside_roots}], notFig count, truncated null or {reason source_cap or entry_budget, limit}"},
                 "partial": {"type": "boolean", "description": "clear_cache: true when a source left this caller's view meanwhile and kept its data; retry later"},
                 "nextSteps": {"type": "array", "items": {"type": "object"}},
                 "storage": {"type": "object"},
