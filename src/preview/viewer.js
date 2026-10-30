@@ -82,6 +82,18 @@ function reasonCodes(reply) {
     const text = r => typeof r === 'string' ? r : `${r.code}${r.relations?.length ? ` (${r.relations.join(', ')})` : ''}`;
     return [...new Set([...(reply.coverage?.reasons || []), ...(reply.coverage?.layers?.relations?.reasons || [])].map(text))];
 }
+// A load-more page joined to the pages already shown: a page that was incomplete or named a reason keeps
+// saying so, since its results are still on screen. A first page (no cursor) starts over.
+function mergePages(acc, reply, append) {
+    if (!append || !acc) return reply;
+    const union = (a = [], b = []) => [...new Map([...a, ...b].map(r => [JSON.stringify(r), r])).values()];
+    const complete = (a, b) => a === false || b === false ? false : b;
+    const c = acc.coverage || {}, d = reply.coverage || {};
+    const coverage = {...c, ...d, complete: complete(c.complete, d.complete), reasons: union(c.reasons, d.reasons)};
+    const r = c.layers?.relations, t = d.layers?.relations;
+    if (r || t) coverage.layers = {...c.layers, ...d.layers, relations: {...r, ...t, reasons: union(r?.reasons, t?.reasons)}};
+    return {...acc, ...reply, coverage, results: [...acc.results, ...reply.results]};
+}
 // One display row from a search/usages result, a definition or an outgoing edge. Identity is ref.nodeId only.
 function rowModel(row, source) {
     const ref = row.ref || row.target?.ref, resource = row.resource ?? row.target?.resource ?? null;
@@ -118,7 +130,7 @@ function localSearch(roots, query, {types = [], hidden = false} = {}) {
     roots.forEach(n => walk(n, false));
     return {results: found.slice(0, 200).map(([n, off]) => ({name: n.name || n.id, type: n.type, ref: {nodeId: n.id}, hidden: off})), hasMore: found.length > 200};
 }
-if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, relationChoices, acceptReply, reasonCodes, rowModel, groupUsages, localSearch};
+if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, relationChoices, acceptReply, reasonCodes, mergePages, rowModel, groupUsages, localSearch};
 if (typeof document !== 'undefined') {
     const boot = JSON.parse(document.getElementById('boot').textContent);
     const $ = id => document.getElementById(id);
@@ -1505,7 +1517,7 @@ if (typeof document !== 'undefined') {
                 const {kind, message} = reply.error;
                 return relState(name, kind === 'WorkspaceBusy' ? 'busy' : 'error', `${kind ? kind + ': ' : ''}${message}`);
             }
-            p.acc = append && p.acc ? {...p.acc, ...reply, results: [...p.acc.results, ...reply.results]} : reply;
+            p.acc = mergePages(p.acc, reply, append);
             relShow(name);
         } catch (e) {
             if (seq === p.seq) relState(name, 'error', e.message);
