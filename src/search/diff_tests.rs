@@ -784,6 +784,45 @@ fn an_unchanged_long_text_layout_is_read_and_unchanged() {
 }
 
 #[test]
+fn a_re_derived_instance_text_with_font_digest_bytes_is_read_and_unchanged() {
+    let file = |line: f32| {
+        let derived = obj(vec![(
+            "fontMetaData",
+            K::Array(vec![obj(vec![
+                ("fontDigest", K::Bytes(vec![1, 2, 3])),
+                ("fontLineHeight", K::Float(line)),
+            ])]),
+        )]);
+        doc(vec![
+            node(30, Some(1), "SYMBOL", "Card", vec![]),
+            node(31, Some(30), "TEXT", "Label", vec![text("Hi")]),
+            node(10, Some(1), "FRAME", "Home", vec![]),
+            instance(
+                11,
+                10,
+                "Use",
+                30,
+                vec![(
+                    "derivedSymbolData",
+                    K::Array(vec![obj(vec![path(&[31]), ("derivedTextData", derived)])]),
+                )],
+            ),
+        ])
+    };
+    let same = run(file(1.2), file(1.2));
+    assert_eq!(
+        (&same["frames"], &same["coverage"]["complete"]),
+        (&json!([]), &json!(true))
+    );
+    // The rest of the re-derived layout is still compared.
+    let moved = run(file(1.2), file(1.5));
+    assert_eq!(
+        nodes(&moved),
+        vec![("I0:11;0:31".to_owned(), "changed".to_owned())]
+    );
+}
+
+#[test]
 fn emitted_metadata_scopes_code_syntax_and_prototype_settings_are_properties() {
     let one = |key: &'static str, v: &str| {
         doc(vec![node(

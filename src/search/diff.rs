@@ -22,7 +22,7 @@ use crate::expand::{Bounds, Expanded, json_bytes, kiwi_bytes};
 use crate::{Document, ErrorKind, FigError, Tree, guid_key, to_json};
 
 /// Bumped whenever a field list, facet or digest stream changes; cursors carry it.
-const VERSION: &str = "diff-v6";
+const VERSION: &str = "diff-v7";
 /// Estimated heap of an expanded size or transform built as JSON (a map of at most six numbers).
 const OWNED_BYTES: usize = 512;
 pub(crate) const FACETS: [&str; 5] = ["text", "layout", "appearance", "properties", "structure"];
@@ -195,8 +195,12 @@ fn raw_bytes(v: &kiwi_schema::Value, h: &mut Sha256) {
 /// Blob indexes in geometry, glyphs and vector networks: numbers local to one file, so the digest takes
 /// the bytes they name instead.
 const BLOB_KEYS: [&str; 2] = ["commandsBlob", "vectorNetworkBlob"];
+/// Bytes no output reads, left out of the comparison: the digest of the font file a text layout
+/// was measured with (`derivedTextData.fontMetaData[].fontDigest`). A re-derived instance holds
+/// it only as a `<N bytes>` placeholder, which would otherwise make every such text unread.
+const UNCOMPARED: [&str; 1] = ["fontDigest"];
 
-/// `v` without its blob indexes, pushed to `refs` in key order.
+/// `v` without its blob indexes, pushed to `refs` in key order, or its `UNCOMPARED` keys.
 fn unblob(v: &Json, refs: &mut Vec<u64>) -> Json {
     match v {
         Json::Array(a) => Json::Array(a.iter().map(|x| unblob(x, refs)).collect()),
@@ -207,6 +211,7 @@ fn unblob(v: &Json, refs: &mut Vec<u64>) -> Json {
                         refs.push(x.as_u64().unwrap_or(u64::MAX));
                         None
                     }
+                    false if UNCOMPARED.contains(&k.as_str()) => None,
                     false => Some((k.clone(), unblob(x, refs))),
                 })
                 .collect(),
@@ -215,12 +220,15 @@ fn unblob(v: &Json, refs: &mut Vec<u64>) -> Json {
     }
 }
 
-/// Whether `v` holds a `to_json` bytes placeholder, whose contents are gone.
+/// Whether `v` holds a `to_json` bytes placeholder, whose contents are gone; an `UNCOMPARED`
+/// key's does not count, as `unblob` leaves it out.
 fn placeholder(v: &Json) -> bool {
     match v {
         Json::String(s) => s.starts_with('<') && s.ends_with(" bytes>"),
         Json::Array(a) => a.iter().any(placeholder),
-        Json::Object(o) => o.values().any(placeholder),
+        Json::Object(o) => o
+            .iter()
+            .any(|(k, x)| !UNCOMPARED.contains(&k.as_str()) && placeholder(x)),
         _ => false,
     }
 }
