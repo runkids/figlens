@@ -790,8 +790,12 @@ pub fn diff_cli(args: &[String]) -> Result<String, Box<dyn Error>> {
             _ => return Err(USAGE.into()),
         }
     }
-    let local =
-        |file: &String| figlens::remote::local(file).map_err(|e| crate::contract::source(file, e));
+    // Each side is opened first, so a missing or unreadable file is named, not the other one.
+    let local = |file: &String| {
+        figlens::remote::local(file)
+            .and_then(|path| Ok(std::fs::File::open(&path).map(|_| path)?))
+            .map_err(|e| crate::contract::source(file, e))
+    };
     let value = diff::diff(&local(old)?, &local(new)?, &request).map_err(|e| {
         if e.is::<figlens::FigError>() {
             e

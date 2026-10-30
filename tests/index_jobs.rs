@@ -1659,6 +1659,38 @@ fn a_text_only_search_cache_upgrades_once_for_usages_and_keeps_search_cursors() 
 mod corpus;
 
 #[test]
+fn diff_text_lists_a_page_points_at_the_next_and_names_the_missing_side() {
+    let env = Env::new();
+    let [old, new] = [("old.fig", false), ("new.fig", true)].map(|(name, revised)| {
+        let path = env.dir.join(name);
+        corpus::write(path.as_os_str(), revised).unwrap();
+        path.to_str().unwrap().to_owned()
+    });
+    let page = env.run(&["diff", &old, &new, "--limit", "1"]);
+    assert!(page.status.success());
+    let text = String::from_utf8_lossy(&page.stdout);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    assert!(
+        lines[0].contains(" changed: ")
+            || lines[0].contains(" added: ")
+            || lines[0].contains(" removed: "),
+        "{text}"
+    );
+    assert!(lines[1].starts_with("more: --cursor "), "{text}");
+    let same = env.run(&["diff", &old, &old]);
+    assert_eq!(String::from_utf8_lossy(&same.stdout), "no changes\n");
+    let missing = env.dir.join("missing.fig");
+    let gone = env.run(&["diff", &old, missing.to_str().unwrap()]);
+    assert!(!gone.status.success());
+    let stderr = String::from_utf8_lossy(&gone.stderr);
+    assert!(
+        stderr.contains("missing.fig") && !stderr.contains("old.fig"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn diff_of_two_revisions_pages_the_same_changes_over_the_cli_and_mcp() {
     let env = Env::new();
     let [old, new] = [("old.fig", false), ("new.fig", true)].map(|(name, revised)| {

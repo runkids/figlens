@@ -686,14 +686,7 @@ fn by_id(s: &Side) -> HashMap<&str, usize> {
 }
 
 fn edge_keys(s: &Side, r: usize) -> impl Iterator<Item = (&str, Option<&str>, &str, &str)> {
-    s.index.records[r].edges.iter().map(|e| {
-        (
-            e.relation,
-            e.target.as_deref(),
-            e.state,
-            e.evidence.as_str(),
-        )
-    })
+    s.index.records[r].edges.iter().map(edge_key)
 }
 
 /// Whether layer `rid` of `from`, missing on `side`, may be content `side` left unexpanded
