@@ -210,6 +210,15 @@ def check_first_use(command, base, fixture, env):
         assert [revision['kind'] for revision in polled['revisions']] == ['baseline'], polled
         assert call(second, 'watch', {'action': 'ack', 'workspaceId': workspace, 'consumer': 'smoke', 'cursor': polled['nextCursor']})['advanced'] is True
         assert call(first, 'changes', {'workspaceId': workspace, 'consumer': 'smoke'})['revisions'] == []
+        # A saved query stores its first evaluation; evaluate is current until a publication, and changes reads it.
+        source = polled['tracking'][0]['sourceId']
+        saved = call(second, 'watch', {'action': 'subscribe', 'workspaceId': workspace, 'consumer': 'smoke',
+                                       'sourceId': source, 'query': 'First success'})
+        assert saved['evaluation']['state'] == 'evaluated' and saved['evaluation']['causes'] == ['initial'], saved
+        subscription = saved['subscription']['subscriptionId']
+        assert call(first, 'watch', {'action': 'evaluate', 'workspaceId': workspace, 'subscriptionId': subscription})['evaluation']['state'] == 'current'
+        read = call(first, 'changes', {'workspaceId': workspace, 'subscriptionId': subscription})
+        assert len(read['evaluations']) == 1 and read['evaluation']['state'] == 'current', read
         ref = call(first, 'search', {'workspaceId': workspace, 'query': 'First success'})['results'][0]['ref']['nodeId']
         assert call(first, 'inspect', {'file': str(design), 'node': ref})['node']['id'] == ref
         finished = call(first, 'jobs', {'action': 'cancel', 'jobId': jobs[0]['jobId']})

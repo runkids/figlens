@@ -478,19 +478,24 @@ fn tracking(conn: &Connection, v: &View) -> Result<(Json, bool)> {
     let rows = rows
         .into_iter()
         .map(|(mut row, path, bytes, mtime)| {
-            // An empty page never proves the file unchanged: only a build records a change.
-            let stamp = crate::search::stamp(Path::new(&path)).ok();
-            row["refreshRequired"] = json!(stamp.is_none_or(|(at, len)| {
-                Some(len as i64) != bytes
-                    || Some(
-                        at.duration_since(SystemTime::UNIX_EPOCH)
-                            .map_or(0, |d| d.as_nanos() as i64),
-                    ) != mtime
-            }));
+            row["refreshRequired"] = json!(refresh_required(&path, bytes, mtime));
             row
         })
         .collect();
     Ok((rows, truncated))
+}
+
+/// Whether the file at `path` differs from the verified snapshot's size and mtime, or cannot
+/// be read: an empty page never proves the file unchanged, only a build records a change.
+fn refresh_required(path: &str, bytes: Option<i64>, mtime: Option<i64>) -> bool {
+    let stamp = crate::search::stamp(Path::new(path)).ok();
+    stamp.is_none_or(|(at, len)| {
+        Some(len as i64) != bytes
+            || Some(
+                at.duration_since(SystemTime::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos() as i64),
+            ) != mtime
+    })
 }
 
 fn detail(conn: &Connection, v: &View, req: &Request, revision: &str) -> Result<Json> {

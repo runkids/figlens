@@ -3348,14 +3348,91 @@ fn mcp_saves_a_typed_query_evaluates_it_and_a_confined_caller_cannot_read_it() {
     assert_eq!(
         json!([
             subscribed["subscription"]["types"],
-            evaluated["evaluation"]["delta"]["enteredTopK"]
-                .as_array()
-                .unwrap()
-                .len(),
+            evaluated["evaluation"]["delta"]["enteredTopK"][0]["snapshotId"]
+                == evaluated["evaluation"]["delta"]["snapshotId"],
+            evaluated["evaluation"]["delta"]["fromSnapshotId"]
+                != evaluated["evaluation"]["delta"]["snapshotId"],
             hidden["content"][0]["text"]
                 .as_str()
                 .is_some_and(|t| t.contains("no subscription")),
         ]),
-        json!([["RECTANGLE"], 1, true])
+        json!([["RECTANGLE"], true, true, true])
     );
+}
+
+#[test]
+fn a_query_evaluation_is_current_only_for_its_index_once_the_file_changes_or_goes() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, _) = t.query("badge");
+    let fresh = t.changes(&["--subscription", &id])["evaluation"].clone();
+    t.save(true);
+    let saved = t.changes(&["--subscription", &id])["evaluation"].clone();
+    std::fs::remove_file(&t.path).unwrap();
+    let gone = t.changes(&["--subscription", &id])["evaluation"].clone();
+    assert_eq!(
+        json!([
+            fresh["state"],
+            saved["state"],
+            saved["nextSteps"][0]["arguments"]["action"],
+            gone["state"]
+        ]),
+        json!([
+            "current",
+            "current_for_index",
+            "refresh",
+            "current_for_index"
+        ])
+    );
+}
+
+#[test]
+fn a_damaged_stored_evaluation_is_invalid_data_and_a_new_ranking_compares_no_positions() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, _) = t.query("auto layout");
+    t.sql("UPDATE query_evaluations SET ranking = 'older'");
+    t.index("rebuild");
+    let evaluated = t.watch("evaluate", &["--subscription", &id]);
+    // A damaged later row ends the page before it; read first, it fails with an ack past it.
+    t.sql("UPDATE query_evaluations SET delta = '{' WHERE seq = 2");
+    let before = t.changes(&["--subscription", &id]);
+    let cursor = before["nextCursor"].as_str().unwrap();
+    let damaged = t.fails(&[
+        "changes",
+        "--file",
+        &t.file,
+        "--subscription",
+        &id,
+        "--cursor",
+        cursor,
+    ]);
+    assert_eq!(
+        json!([
+            evaluated["evaluation"]["causes"],
+            evaluated["evaluation"]["delta"]["rankChanged"],
+            evaluated["evaluation"]["delta"]["rankComparable"],
+            before["evaluations"].as_array().unwrap().len(),
+            before["hasMore"],
+            damaged.contains("is damaged") && damaged.contains("ack")
+        ]),
+        json!([
+            ["index_rebuilt", "ranking_changed"],
+            null,
+            false,
+            1,
+            true,
+            true
+        ])
+    );
+}
+
+#[test]
+fn a_stored_evaluation_too_large_for_a_page_is_a_budget_error_an_ack_passes() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, _) = t.query("badge");
+    t.sql("UPDATE query_evaluations SET bytes = 1000000");
+    let refused = t.fails(&["changes", "--file", &t.file, "--subscription", &id]);
+    assert!(refused.contains("ack past it"), "{refused}");
 }
