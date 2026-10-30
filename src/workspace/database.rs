@@ -346,9 +346,28 @@ pub(crate) const V4: &str = "
     INSERT INTO meta (key, value) VALUES ('cursor_secret', lower(hex(randomblob(32))));
     PRAGMA user_version = 4;";
 
-/// Schema 5: durable change subscriptions, each its own checkpoint, and the visible sources a
+/// Schema 5: temporary watch leases (#92), each a holder process's interest in one tracked
+/// source and scope; the single runner that keeps them fresh, fenced by `attempt`; and each
+/// watched source's last persisted monitor state. An ended lease keeps its row (with no path)
+/// until the runner's GC, so its requestId replays as ended instead of starting it again.
+pub(crate) const V5: &str = "
+    CREATE TABLE watch_leases (
+        lease_id TEXT PRIMARY KEY, holder TEXT NOT NULL, source_id TEXT NOT NULL,
+        scope TEXT NOT NULL, incarnation TEXT NOT NULL, authorized_path TEXT,
+        request_id TEXT UNIQUE, fingerprint TEXT NOT NULL, renewed_ms INTEGER NOT NULL,
+        expires_ms INTEGER NOT NULL, ended TEXT) STRICT;
+    CREATE INDEX watch_leases_holder ON watch_leases (holder, expires_ms);
+    CREATE TABLE watch_runner (
+        one INTEGER PRIMARY KEY CHECK (one = 1), token TEXT NOT NULL, attempt INTEGER NOT NULL,
+        placement TEXT NOT NULL, started_ms INTEGER NOT NULL, beat_ms INTEGER NOT NULL) STRICT;
+    CREATE TABLE watch_monitor (
+        source_id TEXT PRIMARY KEY, state TEXT NOT NULL, stamp_checked_ms INTEGER,
+        content_verified_ms INTEGER, last_job_id TEXT, last_error TEXT,
+        written_ms INTEGER NOT NULL) STRICT;
+    PRAGMA user_version = 5;";
+
+/// Schema 6: durable change subscriptions, each its own checkpoint, and the visible sources a
 /// raw consumer checkpoint was written under, so `watch forget` removes only rows it may see.
-// shortcut: numbered 5 on this branch, becomes 6 on top of B2's watch schema when that lands.
 pub(crate) const SUBSCRIPTIONS: &str = "
     CREATE TABLE subscriptions (
         id TEXT PRIMARY KEY, consumer TEXT NOT NULL, source_id TEXT NOT NULL,
@@ -369,9 +388,9 @@ pub(crate) const SUBSCRIPTIONS: &str = "
         UNIQUE (sub, seq)) STRICT;
     CREATE INDEX subscriptions_owner ON subscriptions (owner) WHERE owner IS NOT NULL;
     ALTER TABLE consumers ADD COLUMN sources TEXT;
-    PRAGMA user_version = 5;";
+    PRAGMA user_version = 6;";
 
-/// Upgrades schemas 1 to 4 to the current one in one transaction, keeping every source, index,
+/// Upgrades schemas 1 to 5 to the current one in one transaction, keeping every source, index,
 /// job and the incarnation. The caller holds the workspace lock exclusively.
 pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
     let tx = conn
@@ -390,6 +409,9 @@ pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
         tx.execute_batch(V4).map_err(sql)?;
     }
     if version <= 4 {
+        tx.execute_batch(V5).map_err(sql)?;
+    }
+    if version <= 5 {
         tx.execute_batch(SUBSCRIPTIONS).map_err(sql)?;
     }
     tx.commit().map_err(sql)
@@ -435,6 +457,7 @@ pub(super) fn initialize(
     tx.execute_batch(V2).map_err(sql)?;
     tx.execute_batch(V3).map_err(sql)?;
     tx.execute_batch(V4).map_err(sql)?;
+    tx.execute_batch(V5).map_err(sql)?;
     tx.execute_batch(SUBSCRIPTIONS).map_err(sql)?;
     if let Some(binding) = binding {
         tx.execute(

@@ -542,6 +542,10 @@ pub fn remove(storage: &Storage, select: &Select, source_id: &str) -> Result<Jso
             "DELETE FROM consumers WHERE substr(filter, 1, length(?1) + 1) = ?1 || char(31)",
             "DELETE FROM subscriptions WHERE source_id = ?1",
             "DELETE FROM meta WHERE substr(key, 1, length(?1) + 8) = 'pruned' || char(31) || ?1 || char(31)",
+            // Its watch leases end at once, kept until GC so their requestIds replay as ended.
+            "UPDATE watch_leases SET ended = 'source_removed', authorized_path = NULL
+             WHERE source_id = ?1 AND ended IS NULL",
+            "DELETE FROM watch_monitor WHERE source_id = ?1",
         ] {
             tx.execute(q, [source_id]).map_err(sql)?;
         }

@@ -15,9 +15,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{ErrorKind, FigError};
 
-/// The workspace schema this binary writes. Schemas 1 to 4 are upgraded in place, keeping every
+/// The workspace schema this binary writes. Schemas 1 to 5 are upgraded in place, keeping every
 /// registered source and index; any newer version is left untouched.
-pub const SCHEMA: i64 = 5;
+pub const SCHEMA: i64 = 6;
 /// The version of a remembered workspace location record this binary writes; version 1 (no
 /// binding) is still read.
 const LOCATION: i64 = 2;
@@ -354,7 +354,7 @@ pub use jobs::{clear_cache, rebuild, refresh};
 pub use registry::{Outcome, PrepareOptions, add, prepare, relocate, remove, reset, status};
 pub use storage::{Locator, Root, Roots, Select, Storage, storage};
 
-mod watch;
+pub mod watch;
 
 #[cfg(test)]
 pub(crate) use database::{V2, V3, V4};

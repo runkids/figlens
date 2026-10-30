@@ -75,7 +75,7 @@ const QUEUE_WAIT: Duration = if cfg!(test) {
 /// Owner tokens and their held lock files, one per workspace directory this process owns jobs in.
 static OWNERS: Mutex<Vec<(PathBuf, String, File)>> = Mutex::new(Vec::new());
 
-fn random_hex() -> String {
+pub(super) fn random_hex() -> String {
     let mut bytes = [0u8; 16];
     // Not secret: a token only needs to be unique; the clock and a counter seed SHA-256.
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

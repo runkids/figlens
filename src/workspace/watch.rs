@@ -1,10 +1,20 @@
-//! When a watch runner refreshes one source (#92 B2): pure state, no I/O. The runner polls the
-//! source's stamp, feeds each result to `Detector::observe`, and submits a content-verified
-//! refresh when told; the job stages, hashes and compares the bytes, so this never reads them.
-// shortcut: no runner calls it yet; B2's runner lands with B1's tracking tables.
+//! Watching (#92 B2): temporary leases on tracked scopes, and when the shared runner refreshes
+//! one source. `Detector` is pure state with no I/O: the runner polls the source's stamp, feeds
+//! each result to `Detector::observe`, and submits a refresh when told; that job stages, hashes
+//! and compares the bytes, so a same-stamp save is caught there, never read here.
+//!
+//! A lease is one holder process's interest in one source and scope. Its holder (an MCP server
+//! or `watch run`, by its owner token) renews all of its leases in one statement every
+//! `RENEW`; a lease not renewed within `TTL` is over for everyone, and only ever ends.
+// shortcut: no runner calls the detector yet; it lands with the runner in the next B2 commit.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::time::{Duration, Instant};
+
+use rusqlite::{TransactionBehavior, params};
+
+use super::jobs::{chosen, owner, random_hex};
+use super::*;
 
 /// How often the runner stats a watched source.
 pub(crate) const POLL: Duration = Duration::from_millis(250);
@@ -165,9 +175,500 @@ impl<S: Clone + PartialEq> Detector<S> {
     }
 }
 
+/// How often a holder renews its leases, and how long one lasts unrenewed.
+pub const RENEW: Duration = Duration::from_secs(10);
+pub const TTL: Duration = Duration::from_secs(30);
+/// Live leases per workspace, per holder process, and distinct sources they watch.
+const MAX_LEASES: i64 = 64;
+const MAX_HELD: i64 = 16;
+const MAX_SOURCES: i64 = 16;
+
+/// A row that counts: not ended and renewed within `TTL`.
+const LIVE: &str = "ended IS NULL AND expires_ms > ?1";
+
+/// Workspaces this process holds leases in, so one renewal pass and one exit release reach
+/// them all.
+static HELD: std::sync::Mutex<Vec<(Storage, String)>> = std::sync::Mutex::new(Vec::new());
+
+fn remember_held(storage: &Storage, ws_id: &str) {
+    if let Ok(mut held) = HELD.lock()
+        && !held.iter().any(|(_, id)| id == ws_id)
+    {
+        held.push((storage.clone(), ws_id.to_owned()));
+    }
+}
+
+fn lease_json(ws_id: &str, lease: &str, source: &str, scope: &str, expires: i64) -> Json {
+    json!({"workspaceId": ws_id, "leaseId": lease, "sourceId": source, "scope": scope,
+        "state": "active", "renewEveryMs": RENEW.as_millis() as u64, "expiresAtMs": expires})
+}
+
+/// `watch start`: a lease on tracked `scope` of one source for this process, which must renew
+/// it (see `renew`). A `request_id` replays its lease while it lives, and reports it ended
+/// after that; it never starts an ended lease again.
+pub fn start(
+    storage: &Storage,
+    select: &Select,
+    source: Option<&str>,
+    scope: &str,
+    request_id: Option<&str>,
+) -> Result<Json> {
+    let (_, mut ws) = opened(storage, select, true)?;
+    let ws_id = ws.held.id.clone();
+    let holder = owner(&ws.held.dir)?;
+    let sources = chosen(storage, &ws, source)?;
+    let [source_id] = sources.as_slice() else {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            format!("workspace {ws_id} has more than one source; pass the sourceId to watch"),
+        ));
+    };
+    let print = crate::search::hex(&Sha256::digest(
+        json!([ws_id, source_id, scope]).to_string(),
+    ))[..16]
+        .to_owned();
+    let now = now_ms();
+    let incarnation = ws.incarnation.clone();
+    let tx = ws
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(sql)?;
+    if let Some(request) = request_id {
+        let prior: Option<(String, String, String, i64, Option<String>)> = tx
+            .query_row(
+                "SELECT lease_id, fingerprint, holder, expires_ms, ended FROM watch_leases
+                 WHERE request_id = ?1",
+                [request],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()
+            .map_err(sql)?;
+        if let Some((lease, prior_print, prior_holder, expires, ended)) = prior {
+            if prior_print != print {
+                return Err(fail(
+                    ErrorKind::InvalidArguments,
+                    format!("requestId {request} names a different watch"),
+                ));
+            }
+            if ended.is_none() && expires > now && prior_holder == holder {
+                return Ok(lease_json(&ws_id, &lease, source_id, scope, expires));
+            }
+            let why = ended.unwrap_or_else(|| "expired".into());
+            return Ok(
+                json!({"workspaceId": ws_id, "leaseId": lease, "sourceId": source_id,
+                "scope": scope, "state": "ended", "reason": why,
+                "nextStep": {"tool": "watch", "arguments": {"action": "start",
+                    "workspaceId": ws_id, "sourceId": source_id, "scope": scope},
+                    "why": "an ended lease never starts again; start a new one with a new requestId"}}),
+            );
+        }
+    }
+    let tracked: Option<String> = tx
+        .query_row(
+            "SELECT state FROM tracking WHERE source_id = ?1 AND scope = ?2",
+            [source_id, scope],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    if !matches!(tracked.as_deref(), Some("active" | "baseline_pending")) {
+        return Err(FigError::new(
+            ErrorKind::InvalidArguments,
+            format!("source {source_id} scope {scope} is not tracked; track it before watching it"),
+        )
+        .with_recovery(json!([{"action": "track", "requires": "none", "tool": "index",
+            "arguments": {"action": "track", "workspaceId": ws_id, "sourceId": source_id, "scope": scope}}]))
+        .into());
+    }
+    let path: String = tx
+        .query_row(
+            "SELECT path FROM sources WHERE source_id = ?1",
+            [source_id],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    let (all, mine, others): (i64, i64, i64) = tx
+        .query_row(
+            &format!(
+                "SELECT count(*), count(*) FILTER (WHERE holder = ?2),
+                 count(DISTINCT source_id) FILTER (WHERE source_id != ?3)
+                 FROM watch_leases WHERE {LIVE}"
+            ),
+            params![now, holder, source_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(sql)?;
+    if all >= MAX_LEASES || mine >= MAX_HELD || others >= MAX_SOURCES {
+        return Err(fail(
+            ErrorKind::WorkspaceBusy,
+            format!(
+                "workspace {ws_id} is at a watch limit ({MAX_LEASES} leases, {MAX_HELD} per process, {MAX_SOURCES} sources); stop a lease first"
+            ),
+        ));
+    }
+    let lease = random_hex();
+    let expires = now + TTL.as_millis() as i64;
+    tx.execute(
+        "INSERT INTO watch_leases (lease_id, holder, source_id, scope, incarnation,
+         authorized_path, request_id, fingerprint, renewed_ms, expires_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            lease,
+            holder,
+            source_id,
+            scope,
+            incarnation,
+            path,
+            request_id,
+            print,
+            now,
+            expires
+        ],
+    )
+    .map_err(sql)?;
+    tx.commit().map_err(sql)?;
+    remember_held(storage, &ws_id);
+    Ok(lease_json(&ws_id, &lease, source_id, scope, expires))
+}
+
+/// One renewal of every live lease this process holds in workspace `ws_id`, in one statement.
+/// Each lease is re-authorized against this process's own roots: a source it no longer sees
+/// (or that moved) is kept but unauthorized, so the runner stops reading it for this holder.
+/// Returns how many leases it renewed.
+fn renew_one(storage: &Storage, ws_id: &str) -> Result<usize> {
+    let (_, mut ws) = opened(storage, &Select::Id(ws_id.to_owned()), true)?;
+    let holder = owner(&ws.held.dir)?;
+    let now = now_ms();
+    let paths: Vec<(String, String)> = ws
+        .conn
+        .prepare(&format!(
+            "SELECT DISTINCT s.source_id, s.path FROM watch_leases l JOIN sources s
+             ON s.source_id = l.source_id WHERE {LIVE} AND l.holder = ?2"
+        ))
+        .and_then(|mut s| {
+            s.query_map(params![now, holder], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect()
+        })
+        .map_err(sql)?;
+    let seen: Vec<Json> = paths
+        .into_iter()
+        .filter(|(_, path)| storage.sees(Path::new(path)))
+        .map(|(id, path)| json!([id, path]))
+        .collect();
+    let seen = Json::Array(seen).to_string();
+    let tx = ws
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(sql)?;
+    let renewed = tx
+        .execute(
+            &format!(
+                "UPDATE watch_leases SET renewed_ms = ?1, expires_ms = ?3, authorized_path =
+                 (SELECT json_extract(value, '$[1]') FROM json_each(?4)
+                  WHERE json_extract(value, '$[0]') = watch_leases.source_id)
+                 WHERE {LIVE} AND holder = ?2"
+            ),
+            params![now, holder, now + TTL.as_millis() as i64, seen],
+        )
+        .map_err(sql)?;
+    tx.commit().map_err(sql)?;
+    Ok(renewed)
+}
+
+/// Renews this process's leases in every workspace it holds them in; a workspace whose
+/// renewal fails keeps its leases until they expire, which is the safe side.
+pub fn renew() -> Vec<(String, Result<usize>)> {
+    let held = HELD.lock().map(|h| h.clone()).unwrap_or_default();
+    held.iter()
+        .map(|(storage, id)| (id.clone(), renew_one(storage, id)))
+        .collect()
+}
+
+/// `watch stop`: ends one lease this process holds.
+pub fn stop(storage: &Storage, select: &Select, lease_id: &str) -> Result<Json> {
+    let (_, ws) = opened(storage, select, true)?;
+    let holder = owner(&ws.held.dir)?;
+    let ended = ws
+        .conn
+        .execute(
+            "UPDATE watch_leases SET ended = 'stopped', authorized_path = NULL
+             WHERE lease_id = ?1 AND holder = ?2 AND ended IS NULL",
+            params![lease_id, holder],
+        )
+        .map_err(sql)?;
+    if ended == 0 {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            format!("this process holds no live lease {lease_id}"),
+        ));
+    }
+    Ok(
+        json!({"workspaceId": ws.held.id, "leaseId": lease_id, "state": "ended", "reason": "stopped"}),
+    )
+}
+
+/// At this process's exit: ends every lease it holds, in each workspace in one statement.
+/// It never stops a runner; one with no live lease left exits by itself.
+pub fn release() {
+    let held = HELD.lock().map(|h| h.clone()).unwrap_or_default();
+    for (storage, id) in held {
+        if let Ok((_, ws)) = opened(&storage, &Select::Id(id), true)
+            && let Ok(holder) = owner(&ws.held.dir)
+        {
+            let _ = ws.conn.execute(
+                "UPDATE watch_leases SET ended = 'released', authorized_path = NULL
+                 WHERE holder = ?1 AND ended IS NULL",
+                [holder],
+            );
+        }
+    }
+}
+
+/// `watch status`: this workspace's leases on sources the caller sees, read-only.
+pub fn status(storage: &Storage, select: &Select) -> Result<Json> {
+    let (_, ws) = opened(storage, select, false)?;
+    let me = owner(&ws.held.dir).ok();
+    let now = now_ms();
+    let mut leases = Vec::new();
+    if ws.version >= 5 {
+        let mut stmt = ws
+            .conn
+            .prepare(
+                "SELECT l.lease_id, l.holder, l.source_id, l.scope, l.expires_ms, l.ended,
+                 l.authorized_path IS NOT NULL AND l.authorized_path = s.path, s.path
+                 FROM watch_leases l LEFT JOIN sources s ON s.source_id = l.source_id
+                 ORDER BY l.renewed_ms DESC, l.lease_id LIMIT ?1",
+            )
+            .map_err(sql)?;
+        let rows = stmt
+            .query_map([MAX_LEASES * 4], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, Option<bool>>(6)?,
+                    r.get::<_, Option<String>>(7)?,
+                ))
+            })
+            .map_err(sql)?;
+        for row in rows {
+            let (lease, holder, source, scope, expires, ended, authorized, path) =
+                row.map_err(sql)?;
+            if !path.is_some_and(|p| storage.sees(Path::new(&p))) {
+                continue;
+            }
+            let state = match (&ended, expires > now, authorized) {
+                (Some(_), ..) => "ended",
+                (None, false, _) => "expired",
+                (None, true, Some(true)) => "active",
+                (None, true, _) => "unauthorized",
+            };
+            let mut lease = json!({"leaseId": lease, "sourceId": source, "scope": scope,
+                "state": state, "expiresAtMs": expires, "mine": me.as_deref() == Some(&holder)});
+            if let Some(reason) = ended {
+                lease["reason"] = json!(reason);
+            }
+            leases.push(lease);
+        }
+    }
+    Ok(json!({"workspaceId": ws.held.id, "leases": leases}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TestDir;
+    use crate::workspace::{PrepareOptions, prepare, resolve};
+    use std::ffi::OsString;
+
+    /// A prepared workspace with `n` copies of the public fixture, each source's scope `0:1`
+    /// marked tracked; its storage, selector, directory and source ids.
+    fn tracked(dir: &TestDir, n: usize) -> (Storage, Select, PathBuf, Vec<String>) {
+        let home = std::path::absolute(dir.join("home")).unwrap();
+        let home = home.to_str().unwrap().to_owned();
+        let vars = move |name: &str| (name == "HOME").then(|| OsString::from(&home));
+        let storage = resolve(None, &vars, false, &|| None).unwrap();
+        let project = std::path::absolute(dir.join("project")).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        let mut select = None;
+        for i in 0..n {
+            let fig = project.join(format!("{i}.fig"));
+            std::fs::copy("examples/first-success/design.fig", &fig).unwrap();
+            let report =
+                prepare(&storage, &fig, Some(&project), PrepareOptions::default()).unwrap();
+            let id = report.report["workspaceId"].as_str().unwrap().to_owned();
+            select = Some(Select::Id(id));
+        }
+        let select = select.expect("n > 0");
+        let (_, ws) = opened(&storage, &select, true).unwrap();
+        let ids: Vec<String> = ws
+            .conn
+            .prepare("SELECT source_id FROM sources ORDER BY added_at_ms, source_id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        for id in &ids {
+            ws.conn
+                .execute(
+                    "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
+                     VALUES (?1, '0:1', 'active', 1, 'test', 0)",
+                    [id],
+                )
+                .unwrap();
+        }
+        (storage, select, ws.held.dir.clone(), ids)
+    }
+
+    fn rows(dir: &Path, q: &str) -> i64 {
+        let conn = open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        conn.query_row(q, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_request_id_replays_its_live_lease_and_never_restarts_an_ended_one() {
+        let dir = TestDir::new();
+        let (storage, select, _, ids) = tracked(&dir, 1);
+        let first = start(&storage, &select, None, "0:1", Some("r1")).unwrap();
+        let again = start(&storage, &select, None, "0:1", Some("r1")).unwrap();
+        assert_eq!(
+            (again["leaseId"].clone(), again["state"].clone()),
+            (first["leaseId"].clone(), json!("active"))
+        );
+        stop(&storage, &select, first["leaseId"].as_str().unwrap()).unwrap();
+        let ended = start(&storage, &select, Some(&ids[0]), "0:1", Some("r1")).unwrap();
+        assert_eq!(
+            (ended["state"].clone(), ended["reason"].clone()),
+            (json!("ended"), json!("stopped"))
+        );
+    }
+
+    #[test]
+    fn a_request_id_for_another_scope_is_refused() {
+        let dir = TestDir::new();
+        let (storage, select, dir, ids) = tracked(&dir, 1);
+        open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .unwrap()
+            .execute(
+                "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
+                 VALUES (?1, '0:2', 'active', 1, 'test', 0)",
+                [&ids[0]],
+            )
+            .unwrap();
+        start(&storage, &select, None, "0:1", Some("r1")).unwrap();
+        assert!(start(&storage, &select, None, "0:2", Some("r1")).is_err());
+    }
+
+    #[test]
+    fn an_untracked_scope_is_refused_with_the_track_step() {
+        let dir = TestDir::new();
+        let (storage, select, ..) = tracked(&dir, 1);
+        let e = start(&storage, &select, None, "0:9", None).unwrap_err();
+        let fig = e.downcast_ref::<FigError>().unwrap();
+        assert_eq!(fig.recovery().unwrap()[0]["action"], "track");
+    }
+
+    #[test]
+    fn a_holder_stops_only_its_own_lease() {
+        let dir = TestDir::new();
+        let (storage, select, dir, _) = tracked(&dir, 1);
+        let lease = start(&storage, &select, None, "0:1", None).unwrap();
+        open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .unwrap()
+            .execute("UPDATE watch_leases SET holder = 'other'", [])
+            .unwrap();
+        assert!(stop(&storage, &select, lease["leaseId"].as_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn renewal_extends_this_holders_leases_and_skips_ended_ones() {
+        let dir = TestDir::new();
+        let (storage, select, dir, ids) = tracked(&dir, 2);
+        let a = start(&storage, &select, Some(&ids[0]), "0:1", None).unwrap();
+        start(&storage, &select, Some(&ids[1]), "0:1", None).unwrap();
+        stop(&storage, &select, a["leaseId"].as_str().unwrap()).unwrap();
+        open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .unwrap()
+            .execute("UPDATE watch_leases SET expires_ms = expires_ms - 1", [])
+            .unwrap();
+        let ws = select_id(&select);
+        let renewed = renew();
+        assert_eq!(
+            renewed
+                .iter()
+                .find(|(id, _)| *id == ws)
+                .unwrap()
+                .1
+                .as_ref()
+                .unwrap(),
+            &1
+        );
+    }
+
+    #[test]
+    fn a_lease_on_a_source_outside_the_roots_is_unauthorized_at_renewal() {
+        let dir = TestDir::new();
+        let (storage, select, dir, _) = tracked(&dir, 1);
+        start(&storage, &select, None, "0:1", None).unwrap();
+        let elsewhere = std::path::absolute(dir.join("elsewhere")).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let confined = storage
+            .clone()
+            .confined(&[elsewhere.canonicalize().unwrap()]);
+        renew_one(&confined, &select_id(&select)).unwrap();
+        assert_eq!(
+            rows(
+                &dir,
+                "SELECT count(*) FROM watch_leases WHERE authorized_path IS NULL"
+            ),
+            1
+        );
+        let status = status(&storage, &select).unwrap();
+        assert_eq!(status["leases"][0]["state"], "unauthorized");
+    }
+
+    #[test]
+    fn status_writes_nothing() {
+        let dir = TestDir::new();
+        let (storage, select, dir, _) = tracked(&dir, 1);
+        start(&storage, &select, None, "0:1", None).unwrap();
+        let before = std::fs::read(dir.join(DB)).unwrap();
+        let wal = std::fs::metadata(dir.join(format!("{DB}-wal")))
+            .map(|m| m.len())
+            .ok();
+        let report = status(&storage, &select).unwrap();
+        assert_eq!(report["leases"][0]["state"], "active");
+        assert_eq!(std::fs::read(dir.join(DB)).unwrap(), before);
+        // A reader may create the empty `-wal` file; it never adds frames.
+        let after = std::fs::metadata(dir.join(format!("{DB}-wal"))).map_or(0, |m| m.len());
+        assert_eq!(after, wal.unwrap_or(0));
+    }
+
+    #[test]
+    fn removing_a_source_ends_its_leases() {
+        let dir = TestDir::new();
+        let (storage, select, dir, ids) = tracked(&dir, 2);
+        start(&storage, &select, Some(&ids[0]), "0:1", None).unwrap();
+        crate::workspace::remove(&storage, &select, &ids[0]).unwrap();
+        assert_eq!(
+            rows(
+                &dir,
+                "SELECT count(*) FROM watch_leases WHERE ended = 'source_removed'"
+            ),
+            1
+        );
+    }
+
+    fn select_id(select: &Select) -> String {
+        match select {
+            Select::Id(id) => id.clone(),
+            Select::Locator(_) => unreachable!("tests select by id"),
+        }
+    }
 
     /// Feeds `probes` at `POLL` steps from `t0`; returns the times (ms after `t0`) it submitted.
     fn run(d: &mut Detector<u32>, t0: Instant, probes: &[(u64, Option<u32>)]) -> Vec<u64> {
