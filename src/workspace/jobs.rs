@@ -1003,18 +1003,38 @@ fn spawn(
     })
 }
 
-/// The runtime of the active profile, while it is still the one an embed job was submitted for.
-fn model_exe(storage: &Storage, profile_id: Option<&str>) -> Result<PathBuf> {
+/// The runtime of the active profile, while it is still the one an embed job was submitted for;
+/// `None` when `cancelled` turned true while its files were being verified.
+fn model_exe(
+    storage: &Storage,
+    profile_id: Option<&str>,
+    mut cancelled: impl FnMut() -> Result<bool>,
+) -> Result<Option<PathBuf>> {
     match crate::semantic::profile::active(storage)? {
-        // Checked before it runs: a replaced runtime or model must never be started.
+        // Checked before it runs: a replaced runtime or model must never be started. Hashing
+        // gigabytes can take long, so a cancel is polled meanwhile.
         Some(p) if Some(p.id.as_str()) == profile_id => {
-            p.unchanged(&AtomicBool::new(false)).map_err(|e| {
-                fail(
+            let stop = AtomicBool::new(false);
+            let checked = std::thread::scope(|s| -> Result<std::result::Result<(), String>> {
+                let check = s.spawn(|| p.unchanged(&stop).map_err(|e| e.to_string()));
+                while !check.is_finished() {
+                    let now = cancelled();
+                    if !matches!(now, Ok(false)) {
+                        stop.store(true, Ordering::Relaxed);
+                    }
+                    now?;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Ok(check.join().expect("the model check does not panic"))
+            })?;
+            match checked {
+                Ok(()) => Ok(Some(p.exe)),
+                Err(_) if stop.load(Ordering::Relaxed) => Ok(None),
+                Err(e) => Err(fail(
                     ErrorKind::OperationFailed,
                     format!("{e}; run models configure again"),
-                )
-            })?;
-            Ok(p.exe)
+                )),
+            }
         }
         _ => Err(fail(
             ErrorKind::OperationFailed,
@@ -1382,10 +1402,16 @@ fn build(
         ));
     }
     let (model, worker) = match lane {
-        "embed" => (
-            Some(model_exe(storage, profile_id.as_deref())?),
-            "__model-worker",
-        ),
+        "embed" => match model_exe(storage, profile_id.as_deref(), || {
+            cancelled(&ws.conn, job_id, cancel)
+        })? {
+            Some(exe) => (Some(exe), "__model-worker"),
+            None => {
+                finish(&ws.conn, job_id, me, attempt, "cancelled", None)?;
+                drop_building(&mut ws.conn, job_id, me, attempt)?;
+                return Ok(None);
+            }
+        },
         "visual" => (
             vision_exe(storage, profile_id.as_deref())?,
             "__visual-worker",

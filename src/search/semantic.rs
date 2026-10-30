@@ -503,7 +503,19 @@ pub(crate) fn cached_bytes(index: &Index, layer: &Layer) -> usize {
                 + 128 * (r.edges.len() + r.library.len())
         })
         .sum();
-    records + texts + UNIT * layer.units.len() + vectors
+    // The scope metadata a loaded index keeps beside its records.
+    let meta: usize = index
+        .pages
+        .iter()
+        .map(|p| 64 + p.id.len() + p.name.len())
+        .sum::<usize>()
+        + index.roots.iter().map(|r| 24 + r.len()).sum::<usize>()
+        + index
+            .above
+            .iter()
+            .map(|(a, b)| 48 + a.len() + b.len())
+            .sum::<usize>();
+    records + meta + texts + UNIT * layer.units.len() + vectors
 }
 
 /// `coverage.layers.semantic` of one layer.
@@ -820,6 +832,22 @@ mod tests {
             r.norm[0] = long.clone();
         }
         assert!(cached_bytes(&idx, &short) >= 2 * 4000 * idx.records.len());
+    }
+
+    #[test]
+    fn cached_bytes_count_the_scope_ancestors_kept_beside_records() {
+        let mut idx = index("t");
+        let layer = Layer::new(
+            &idx,
+            json!(1),
+            8,
+            &mut bounds(LAYER_WORK, LAYER_BYTES),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let before = cached_bytes(&idx, &layer);
+        idx.above = vec![("1:1".into(), "a".repeat(100_000))];
+        assert!(cached_bytes(&idx, &layer) >= before + 100_000);
     }
 
     #[test]
