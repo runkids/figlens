@@ -2267,6 +2267,8 @@ fn revision_with(
     let (mut kinds, mut facets) = ([0u32; 5], vec![0u32; FACETS.len() + 1]);
     let (mut rows, mut used, mut truncated) = (Vec::new(), 0, false);
     let (mut seeds, mut omitted) = (Vec::new(), 0u64);
+    // Seeded subtree tops by side (0 old, 1 new) and record, with their change.
+    let mut collapsed: HashMap<(usize, usize), Seeded> = HashMap::new();
     for c in &pair.changes {
         kinds[c.kind as usize] += 1;
         for (i, n) in facets.iter_mut().enumerate() {
@@ -2290,14 +2292,24 @@ fn revision_with(
         if bounds.stop.is_some() || !bounds.charge(1, std::mem::size_of::<Seed>() + r.id.len()) {
             omitted += 1;
         } else {
+            let change = match c.kind {
+                Kind::Added => Seeded::Added,
+                Kind::Removed => Seeded::Removed,
+                Kind::Changed => Seeded::Changed,
+                Kind::Retyped | Kind::Unknown => Seeded::Unknown,
+            };
+            if c.descendants > 0 {
+                collapsed.insert(
+                    (
+                        usize::from(c.new.is_some()),
+                        c.new.or(c.old).unwrap() as usize,
+                    ),
+                    change,
+                );
+            }
             seeds.push(Seed {
                 node: r.id.clone(),
-                change: match c.kind {
-                    Kind::Added => Seeded::Added,
-                    Kind::Removed => Seeded::Removed,
-                    Kind::Changed => Seeded::Changed,
-                    Kind::Retyped | Kind::Unknown => Seeded::Unknown,
-                },
+                change,
                 facets: c.facets & !UNREAD,
             });
         }
@@ -2334,6 +2346,47 @@ fn revision_with(
         ids: None,
         orders: None,
     };
+    // A removed or added subtree is one row at its top, yet each layer below it that the other
+    // side lacks was removed or added too: seed those, so a subscription on one reads it.
+    if !collapsed.is_empty() {
+        let records = pair.old.index.records.len() + pair.new.index.records.len();
+        if bounds.stop.is_some() || !bounds.charge(records, records * LOOKUP) {
+            omitted += collapsed.len() as u64;
+        } else {
+            let ids = [by_id(&pair.old), by_id(&pair.new)];
+            for (s, side) in [&pair.old, &pair.new].into_iter().enumerate() {
+                // Parents precede their children, so one pass carries each top down.
+                let mut under: Vec<Option<Seeded>> = vec![None; side.index.records.len()];
+                for (i, r) in side.index.records.iter().enumerate() {
+                    if let Some(&top) = collapsed.get(&(s, i)) {
+                        under[i] = Some(top);
+                        continue;
+                    }
+                    let Some(change) = r
+                        .parent
+                        .filter(|&p| p != 0)
+                        .and_then(|p| under[p as usize])
+                        .filter(|_| !ids[1 - s].contains_key(r.id.as_str()))
+                    else {
+                        continue;
+                    };
+                    under[i] = Some(change);
+                    if bounds.stop.is_some()
+                        || !bounds.charge(1, std::mem::size_of::<Seed>() + r.id.len())
+                    {
+                        omitted += 1;
+                        continue;
+                    }
+                    seeds.push(Seed {
+                        node: r.id.clone(),
+                        change,
+                        facets: 0,
+                    });
+                }
+            }
+            evidence.ids = Some(ids);
+        }
+    }
     let mut impact = super::impact::compute(
         &pair.old.index,
         &pair.new.index,

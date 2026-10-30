@@ -453,6 +453,15 @@ pub fn write_dot_restyled_chip_moved(output: &std::ffi::OsStr) -> Result<(), Box
     })
 }
 
+/// Writes the corpus without the Auto layout frame and the layers inside it, so the change is
+/// one removed subtree reported at its top.
+#[allow(dead_code, reason = "only tests write it")]
+pub fn write_auto_layout_removed(output: &std::ffi::OsStr) -> Result<(), Box<dyn Error>> {
+    write_with(output, |nodes| {
+        nodes.retain(|n| ![1, 11, 12, 13].contains(&local_id(n)));
+    })
+}
+
 fn local_id(n: &V) -> u32 {
     match n.get("guid").and_then(|g| g.get("localID")) {
         Some(Value::UInt(id)) => *id,
