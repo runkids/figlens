@@ -362,7 +362,9 @@ impl AdmittedCall {
                 "jobs" => command::jobs_tool(&self.call, roots, storage_roots),
                 "models" => command::models_tool(&self.call, roots, self.cancel()),
                 "changes" | "watch" => command::changes_tool(&self.call, roots, storage_roots),
-                "search" => command::workspace_search_tool(&self.call, roots, storage_roots),
+                "search" => {
+                    command::workspace_search_tool(&self.call, roots, storage_roots, self.cancel())
+                }
                 "usages" => command::workspace_usages_tool(&self.call, roots, storage_roots),
                 _ => command::index_tool(
                     &self.call,

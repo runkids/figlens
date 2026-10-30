@@ -1326,11 +1326,19 @@ fn workspace_search(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>
     let mut search_args = vec![query.to_string()];
     search_args.extend(a.search.iter().cloned());
     let (request, mode) = command::search_request(&search_args)?;
-    if mode != figlens::semantic::Mode::Text {
-        return Err(command::workspace_mode(mode));
-    }
     let only: Vec<String> = a.source.iter().map(|s| s.to_string()).collect();
-    workspace::query::search(&storage, &select, &only, &request)
+    if mode == figlens::semantic::Mode::Text {
+        return workspace::query::search(&storage, &select, &only, &request);
+    }
+    signals::catch();
+    workspace::query::search_mode(
+        &storage,
+        &select,
+        &only,
+        &request,
+        mode,
+        &signals::INTERRUPTED,
+    )
 }
 
 const WATCH_RUN: &str = "usage: figlens watch run --workspace DIR|--file <file.fig>|--id ws_... --scope NODE [--source ID] [--request-id R] [--storage DIR]";

@@ -555,6 +555,49 @@ fn mcp_end_of_input_stops_an_in_flight_semantic_search_and_its_child() {
     mcp_semantic_search_stopped_by(false);
 }
 
+/// Runs the figlens CLI with every XDG root under `dir`, as configured() set config.
+fn figlens(dir: &test_support::TestDir, args: &[&str]) -> serde_json::Value {
+    let root = std::path::absolute(dir.join("")).unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_figlens"))
+        .args(args)
+        .env("XDG_STATE_HOME", root.join("state"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_CACHE_HOME", root.join("cache"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+fn workspace_semantic_search_says_the_layer_is_pending_and_names_the_embed_step() {
+    let dir = test_support::TestDir::new();
+    configured(&dir);
+    let fig = std::path::absolute(dir.join("a.fig")).unwrap();
+    std::fs::copy(FIG, &fig).unwrap();
+    let fig = fig.to_str().unwrap();
+    figlens(&dir, &["index", "prepare", fig, "--scope", "0:0"]);
+    let semantic = figlens(
+        &dir,
+        &["search", "--file", fig, "task", "--mode", "semantic"],
+    );
+    let layer = &semantic["coverage"]["layers"]["semantic"];
+    assert_eq!(
+        (layer["state"].as_str(), semantic["nextCursor"].is_null()),
+        (Some("pending"), true)
+    );
+    let steps = semantic["nextSteps"].to_string();
+    assert!(steps.contains("\"embed\""), "{steps}");
+    // "card" is also a layer name, so the text channel answers while the layer is pending.
+    let hybrid = figlens(&dir, &["search", "--file", fig, "card", "--mode", "hybrid"]);
+    assert_eq!(hybrid["query"]["usedModes"], json!(["text", "semantic"]));
+    assert!(hybrid["results"].as_array().is_some_and(|r| !r.is_empty()));
+    assert_eq!(hybrid["coverage"]["complete"], false);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     // `__child <mode>` from `start`, or `<model-dir>` alone as a configured profile runs it.
@@ -626,6 +669,10 @@ fn main() {
         (
             "a_changed_model_file_is_refused_before_the_child_starts",
             a_changed_model_file_is_refused_before_the_child_starts,
+        ),
+        (
+            "workspace_semantic_search_says_the_layer_is_pending_and_names_the_embed_step",
+            workspace_semantic_search_says_the_layer_is_pending_and_names_the_embed_step,
         ),
         #[cfg(unix)]
         (

@@ -1012,6 +1012,7 @@ pub fn workspace_search_tool(
     call: &crate::contract::PreparedCall,
     roots: &[PathBuf],
     storage_roots: &[PathBuf],
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<Output, Box<dyn Error>> {
     let storage = tool_storage(call, roots, storage_roots)?;
     let select = figlens::workspace::Select::Id(call.string("workspaceId").unwrap().to_owned());
@@ -1021,10 +1022,8 @@ pub fn workspace_search_tool(
         .into_iter()
         .collect();
     let (request, mode) = search_tool(call)?;
-    if mode != Mode::Text {
-        return Err(workspace_mode(mode));
-    }
-    let value = figlens::workspace::query::search(&storage, &select, &only, &request)?;
+    let value =
+        figlens::workspace::query::search_mode(&storage, &select, &only, &request, mode, cancel)?;
     Ok(Output::Json {
         value,
         pretty: false,
@@ -1262,16 +1261,6 @@ fn index_on(
         },
         runs,
     ))
-}
-
-/// Workspace search reads stored layers only; until a workspace stores its model layer, a
-/// semantic or hybrid request there says so instead of answering with text alone.
-pub fn workspace_mode(mode: Mode) -> Box<dyn Error> {
-    figlens::FigError::new(
-        figlens::ErrorKind::ModeUnavailable,
-        format!("{} search of a workspace needs its stored model layer, which this build does not write yet; search the .fig file with --mode {} or use mode text", mode.as_str(), mode.as_str()),
-    )
-    .into()
 }
 
 /// Search reads and hashes its own snapshot of `path`, so it never needs a loaded tree. Only a
