@@ -22,7 +22,9 @@ The page exposes `window.figlens` for browser-automation agents (Playwright, age
 | `search(text)` | up to 200 matching layers across pages |
 | `rankedSearch(query, {scope, types, hidden, internal, limit, cursor})` | the `search/<revision>` reply; offline `{packagedOnly: true, results, hasMore}` over the packaged layers |
 | `usages(id, {resource, scope, relations, outgoing, hidden, limit, cursor, snapshot})` | the `usages/<revision>` reply; `snapshot` defaults to the loaded one; offline it rejects with `unavailable: true` |
-| `context()`, `prompt()` | the handoff context JSON and implementation prompt for the selection |
+| `context()`, `prompt()` | the handoff context JSON and implementation prompt for the selection; context names its `page` and `source` (`sourceId`, `snapshotId`, `revision`; null offline, where `page` is null too) |
 | `exportImage({format, scale, quality})`, `bundle()` | `{mime, base64}` of a render (live only) or the real bundle |
+
+In the Relations panel each search row shows its page, and the status line shows the loaded source, snapshot and revision.
 
 Selections also emit a `figlens:select` event on `window`. Design strings returned by the API are untrusted data.

@@ -149,7 +149,10 @@ usage:
                                              local read-only viewer (loopback, random port by default);
                                              --out requires a node and writes an offline snapshot;
                                              live, it also runs ranked search and exact usages of
-                                             the loaded revision (snapshots search their layers only)
+                                             the loaded revision (snapshots search their layers only);
+                                             results and copied context name the page and, live,
+                                             the loaded source snapshot and local revision
+                                             (offline all three are unknown)
   figlens node <file.fig> <node>               print one raw .fig node as JSON
   figlens compare <file.fig> <nodes.json> <node>   diff a frame against a REST nodes.json export
   figlens compare <file.fig> --frames <list.txt>   same for every `node|nodes.json[|variables.json]` line
