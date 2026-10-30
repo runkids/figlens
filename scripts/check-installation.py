@@ -20,6 +20,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import traceback
 from installation import environment, run, toolchain
 from mcp_smoke import check_directory, check_first_use, check_library, check_mcp, check_reuse
 
@@ -321,7 +322,9 @@ def main():
         first_use['crossHost'] = check_reuse(wrapper + ['mcp'], work/'first-use-native', wrapped_env)
         watch = check_watch(cache, fixture, consumer, env)
         # The installed OpenCode adapter holds a CLI-path lease with that cached binary itself, on this OS.
-        watch['opencodeHolder'] = json.loads(run([node, ROOT/'scripts/check-opencode-holder.mjs', installed, cache, fixture], consumer, env))
+        # Its waits allow 20 s each, and Windows lists processes slowly: the host checks' budget.
+        watch['opencodeHolder'] = json.loads(run([node, ROOT/'scripts/check-opencode-holder.mjs', installed, cache, fixture],
+                                                 consumer, env, timeout=240))
         # Cold MCP startup must keep extraction/installation output off its protocol stdout.
         mcp_cache = work/'mcp-cache'
         mcp_env = dict(wrapped_env, XDG_CACHE_HOME=str(mcp_cache), LOCALAPPDATA=str(mcp_cache))
@@ -371,4 +374,10 @@ if __name__ == '__main__':
     try:
         main()
     except (AssertionError, OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
-        raise SystemExit(f'Installation smoke failed: {error}')
+        # A failed temporary cleanup (on Windows, a file still open) replaces the error behind it.
+        context = error.__context__
+        cause = ''.join(traceback.format_exception(context)) if context else ''
+        timed = error if isinstance(error, subprocess.TimeoutExpired) else context
+        if isinstance(timed, subprocess.TimeoutExpired):
+            cause += f'{timed.output or ""}\n{timed.stderr or ""}\n'
+        raise SystemExit(f'{cause}Installation smoke failed: {error}')

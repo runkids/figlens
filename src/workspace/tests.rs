@@ -1552,6 +1552,40 @@ fn a_cancelled_search_is_interrupted_in_its_statement_and_reported_cancelled() {
     assert_eq!(normal["results"], plain["results"]);
 }
 
+#[cfg(unix)]
+#[test]
+fn a_registered_source_opens_only_without_following_a_link_at_it_or_above_it() {
+    let dir = TestDir::new();
+    let root = std::fs::canonicalize(dir.join("")).unwrap();
+    let (sub, denied) = (root.join("sub"), root.join("denied"));
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::create_dir_all(&denied).unwrap();
+    let path = sub.join("a.fig");
+    std::fs::write(&path, b"allowed").unwrap();
+    std::fs::write(denied.join("a.fig"), b"denied").unwrap();
+    let read = |p: &Path| {
+        storage::registered(p).map(|mut f| {
+            let mut s = String::new();
+            f.read_to_string(&mut s).unwrap();
+            s
+        })
+    };
+    assert_eq!(read(&path).unwrap(), "allowed");
+    let refused = |p: &Path| {
+        read(p)
+            .unwrap_err()
+            .to_string()
+            .contains("now leads elsewhere through a link")
+    };
+    // The file swapped for a link, then its directory swapped for one.
+    std::fs::rename(&path, root.join("kept")).unwrap();
+    std::os::unix::fs::symlink(denied.join("a.fig"), &path).unwrap();
+    assert!(refused(&path));
+    std::fs::rename(&sub, root.join("sub.kept")).unwrap();
+    std::os::unix::fs::symlink(&denied, &sub).unwrap();
+    assert!(refused(&path));
+}
+
 /// The `path` of each `{sourceId, path}` in a directory add's `list`.
 fn paths(report: &Json, list: &str) -> Vec<PathBuf> {
     report["directory"][list]
