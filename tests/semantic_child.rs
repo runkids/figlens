@@ -386,7 +386,7 @@ fn a_pinned_siglip_child_matches_the_in_process_model() {
 /// a workspace search embeds query images with it. Returns its profile id.
 fn configured_vision(dir: &test_support::TestDir) -> String {
     let storage = figlens::workspace::storage(None).unwrap();
-    let (model, files) = model(dir, "vision");
+    let (model, files) = model_in(dir, "vision-model", "vision");
     let files: &'static [(&str, &str)] = Box::leak(
         files
             .into_iter()
@@ -624,7 +624,16 @@ fn cancel_kills_the_childs_process_group() {
 
 /// A model directory holding one file, and the pinned file list that matches it.
 fn model(dir: &test_support::TestDir, body: &str) -> (PathBuf, Vec<(&'static str, String)>) {
-    let model = std::path::absolute(dir.join("")).unwrap().join("model");
+    model_in(dir, "model", body)
+}
+
+/// `model` in its own folder `name`, so two profiles keep their own pinned files.
+fn model_in(
+    dir: &test_support::TestDir,
+    name: &str,
+    body: &str,
+) -> (PathBuf, Vec<(&'static str, String)>) {
+    let model = std::path::absolute(dir.join("")).unwrap().join(name);
     std::fs::create_dir_all(&model).unwrap();
     std::fs::write(model.join("w"), body).unwrap();
     let digest = Sha256::digest(body)
@@ -739,6 +748,68 @@ fn warm_runtime_is_reused_across_requests() {
     let pid = |rt: &mut Runtime| Ok(rt.pid());
     let first = profile::with_runtime(&p, &no, pid).unwrap();
     assert_eq!(profile::with_runtime(&p, &no, pid).unwrap(), first);
+}
+
+/// A hybrid search alternates text and image requests: each modality keeps its own warm child,
+/// and cancelling an image request kills only the image child.
+fn text_and_image_children_stay_warm_side_by_side() {
+    let dir = test_support::TestDir::new();
+    let storage = configured(&dir);
+    configured_vision(&dir);
+    let text = profile::active(&storage).unwrap().unwrap();
+    let image = profile::active_visual(&storage).unwrap().unwrap();
+    let no = AtomicBool::new(false);
+    let pid = |rt: &mut Runtime| Ok(rt.pid());
+    // The fake child reads its mode when it starts; each start below sets the one it needs.
+    let started = |mode: Option<&str>, p: &Profile| {
+        // SAFETY: this harness runs one test at a time on the main thread.
+        unsafe {
+            match mode {
+                Some(m) => std::env::set_var("SEMANTIC_CHILD_MODE", m),
+                None => std::env::remove_var("SEMANTIC_CHILD_MODE"),
+            }
+        }
+        profile::with_runtime(p, &no, pid).unwrap()
+    };
+    let t = started(None, &text);
+    // The image child answers its contract, then hangs on any batch, so a cancel must end it.
+    let i = started(Some("image-hang"), &image);
+    assert_ne!(t, i);
+    for _ in 0..2 {
+        assert_eq!(
+            started(Some("hang"), &text),
+            t,
+            "the text child was restarted"
+        );
+        assert_eq!(
+            started(Some("hang"), &image),
+            i,
+            "the image child was restarted"
+        );
+    }
+    // An image request cancelled mid-batch ends the image child; the text child serves on.
+    let cancel = AtomicBool::new(false);
+    let images = [QueryImage::from_pixmap(&Pixmap::new(8, 8).unwrap(), None).unwrap()];
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            std::thread::sleep(Duration::from_millis(300));
+            cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let stopped =
+            profile::with_runtime(&image, &cancel, |rt| rt.embed_images(&images, &cancel));
+        assert!(matches!(stopped, Err(Stop::Cancelled)), "{stopped:?}");
+    });
+    assert_eq!(
+        started(Some("hang"), &text),
+        t,
+        "cancelling an image request touched the text child"
+    );
+    assert_ne!(
+        started(Some("image"), &image),
+        i,
+        "the cancelled image child was reused"
+    );
+    unsafe { std::env::remove_var("SEMANTIC_CHILD_MODE") };
 }
 
 /// Configures a fake profile in a fresh config root and returns the storage.
@@ -2079,6 +2150,10 @@ fn main() {
         (
             "cancel_kills_a_hung_vision_child",
             cancel_kills_a_hung_vision_child,
+        ),
+        (
+            "text_and_image_children_stay_warm_side_by_side",
+            text_and_image_children_stay_warm_side_by_side,
         ),
         (
             "vision_ranks_when_ready_and_the_hash_takes_over_when_the_model_fails",
