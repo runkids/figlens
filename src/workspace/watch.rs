@@ -1654,6 +1654,8 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
     // Set on exit: submit nothing more and stop waiting for a job another process runs.
     let quit = AtomicBool::new(false);
     let idle = AtomicBool::new(false);
+    // Set once the model thread ran its last embed, after the worker closed its queue.
+    let models_idle = AtomicBool::new(false);
     // Set to interrupt a saved-query Turn: a save waits, or the runner exits.
     let halt = AtomicBool::new(false);
     let (to_worker, jobs) = std::sync::mpsc::channel::<Work>();
@@ -1664,10 +1666,12 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
     let (to_model, models) = std::sync::mpsc::channel::<String>();
     std::thread::scope(|scope| -> Result<()> {
         let (cancel, quit, idle, halt) = (&cancel, &quit, &idle, &halt);
+        let models_idle = &models_idle;
         scope.spawn(move || {
             for id in models {
                 let _ = super::jobs::run(storage, ws_id, &id, cancel, &mut |_| {});
             }
+            models_idle.store(true, std::sync::atomic::Ordering::SeqCst);
         });
         scope.spawn(move || {
             for work in jobs {
@@ -1843,11 +1847,14 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
         })();
         // No lease is left (or this runner was fenced out): submit nothing more, cancel its own
         // unshared attempt, let a shared one finish, then release the lock.
-        // Repeated until the worker is done, so an attempt it admitted meanwhile is caught too.
+        // Repeated until the worker and the model thread are done, so an attempt either admitted
+        // meanwhile (an embed queued by a last refresh) is caught too.
         quit.store(true, std::sync::atomic::Ordering::SeqCst);
         halt.store(true, std::sync::atomic::Ordering::SeqCst);
         drop(to_worker);
-        while !idle.load(std::sync::atomic::Ordering::SeqCst) {
+        while !idle.load(std::sync::atomic::Ordering::SeqCst)
+            || !models_idle.load(std::sync::atomic::Ordering::SeqCst)
+        {
             let _ = cancel_exclusive(storage, ws_id, &token);
             std::thread::sleep(Duration::from_millis(20));
         }
