@@ -395,7 +395,8 @@ def idle(ws, exe, holders, seconds):
     job = Job() if os.name == 'nt' else None
     processes = []
     try:
-        processes += [ws.hold(job) for _ in range(holders)]
+        for _ in range(holders):
+            processes.append(ws.hold(job))  # owned at once, so a later failure still releases it
         time.sleep(5)
         series, before = [], job.counters() if job else table(exe)
         for _ in range(seconds):
@@ -405,9 +406,11 @@ def idle(ws, exe, holders, seconds):
                            'physReadBytes': None, 'physWriteBytes': None, 'ended': False} if job else step(before, now))
             before = now
     finally:
-        ws.release(*processes)
-        if job:
-            job.close()  # without a kill-on-close limit, closing ends no process
+        try:
+            ws.release(*processes)
+        finally:
+            if job:
+                job.close()  # without a kill-on-close limit, closing ends no process
     return {pid.pid for pid in processes}, idle_cost(series, cpu_exact=True)
 
 
