@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Workflow } from '../pi/workflow.mjs';
 
 const [sdkInput, outputInput, binaryInput, packageInput] = process.argv.slice(2);
-assert.ok(sdkInput && outputInput && binaryInput && packageInput, 'Usage: bun scripts/check-omp-integration.mjs <omp-root> <fresh-output> <binary> <installed-package> [--tui]');
+assert.ok(sdkInput && outputInput && binaryInput && packageInput, 'Usage: bun scripts/check-omp-integration.mjs <omp-root> <fresh-output> <binary> <installed-package> [--tui] [--watch-only=<fig>]');
 const sdk = path.resolve(sdkInput), output = path.resolve(outputInput), binary = path.resolve(binaryInput);
 // --watch-only=<public.fig>: only the bridge's first use (watch lease, track, ack) and stale context, on the distributable design, for every OS.
 const watchOnly = process.argv.find(arg => arg.startsWith('--watch-only='))?.slice('--watch-only='.length);

@@ -12,7 +12,7 @@ import { operationRpc, reviewRpc } from '../opencode/rpc.mjs';
 import { Workflow } from '../pi/workflow.mjs';
 
 const [hostInput, sdkInput, packageInput, binaryInput, outputInput] = process.argv.slice(2);
-assert.ok(outputInput, 'Usage: node scripts/check-opencode-integration.mjs <opencode> <client-root> <installed-package> <binary> <fresh-output> [--tui]');
+assert.ok(outputInput, 'Usage: node scripts/check-opencode-integration.mjs <opencode> <client-root> <installed-package> <binary> <fresh-output> [--tui] [--watch-only=<fig>]');
 const [host, sdk, packaged, binary, output] = [hostInput, sdkInput, packageInput, binaryInput, outputInput].map(value => path.resolve(value));
 // --watch-only=<public.fig>: only the watch and stale-context checks, on the distributable design, for every OS.
 const watchOnly = process.argv.find(arg => arg.startsWith('--watch-only='))?.slice('--watch-only='.length);
@@ -209,7 +209,9 @@ try {
   // The CLI runs its own jobs before replying: each must have succeeded, so the baseline exists.
   const settled = async args => {
     const reply = JSON.parse((await execute(binary, args, { cwd: project, env })).stdout);
-    for (const job of [reply.job ?? [], reply.jobs ?? []].flat()) assert.equal(job.state, 'succeeded', JSON.stringify(job));
+    const jobs = [reply.job ?? [], reply.jobs ?? []].flat();
+    assert.ok(jobs.length > 0, JSON.stringify(reply));
+    for (const job of jobs) assert.equal(job.state, 'succeeded', JSON.stringify(job));
     return reply;
   };
   async function converse(title, next, permissions = allowAll) {

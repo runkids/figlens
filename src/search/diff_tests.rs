@@ -2865,9 +2865,31 @@ fn a_variable_moved_to_another_corner_is_a_change_and_the_same_binding_is_not() 
     );
 }
 
+/// The impact of revision 1 → 2 saved from `old` and `new`.
+fn impact_of(old: K<'static>, new: K<'static>, work: usize) -> super::super::impact::Impact {
+    let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
+    let conn = saved(&[&Tree::new(&old), &Tree::new(&new)], "0:0");
+    let bounds = Bounds {
+        work,
+        bytes: PAIR_BYTES,
+        depth: DEPTH,
+        deadline: Instant::now() + DEADLINE,
+        stop: None,
+    };
+    revision_with(
+        &conn,
+        (1, side("old")),
+        (2, side("new")),
+        "0:0",
+        REVISION_BYTES,
+        bounds,
+    )
+    .unwrap()
+    .impact
+}
+
 #[test]
 fn a_variable_only_change_reaches_the_layer_bound_to_it_and_no_other() {
-    let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
     let screen = |value| {
         let mut d = bound_screen(value);
         let K::Object(_, fields) = &mut d else {
@@ -2879,27 +2901,9 @@ fn a_variable_only_change_reaches_the_layer_bound_to_it_and_no_other() {
         nodes.push(node(13, Some(10), "RECTANGLE", "Unbound", vec![]));
         d
     };
-    let (old, new) = (screen(1.0), screen(2.0));
-    let conn = saved(&[&Tree::new(&old), &Tree::new(&new)], "0:0");
-    let bounds = Bounds {
-        work: WORK,
-        bytes: PAIR_BYTES,
-        depth: DEPTH,
-        deadline: Instant::now() + DEADLINE,
-        stop: None,
-    };
-    let out = revision_with(
-        &conn,
-        (1, side("old")),
-        (2, side("new")),
-        "0:0",
-        REVISION_BYTES,
-        bounds,
-    )
-    .unwrap();
+    let out = impact_of(screen(1.0), screen(2.0), WORK);
     use super::super::impact::Class;
     let hits: Vec<_> = out
-        .impact
         .hits
         .iter()
         .map(|h| {
@@ -2915,7 +2919,7 @@ fn a_variable_only_change_reaches_the_layer_bound_to_it_and_no_other() {
     let via = Some(("binds_variable", "VariableID:0:60".to_owned()));
     let unknown = std::collections::BTreeMap::from([("comparison_unknown", 1)]);
     assert_eq!(
-        (hits, out.impact.reasons),
+        (hits, out.reasons),
         (
             vec![
                 ("0:12", Class::Possible, via, Some("0:10")),
@@ -2928,7 +2932,6 @@ fn a_variable_only_change_reaches_the_layer_bound_to_it_and_no_other() {
 
 #[test]
 fn a_variable_change_reaches_the_layer_bound_through_an_alias_of_it() {
-    let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
     // Variable 61 aliases 60; rectangle 12 binds 61. The alias hop counts once per side.
     let screen = |value| {
         let entry = obj(vec![("modeID", guid(70)), ("variableData", alias(60))]);
@@ -2956,27 +2959,9 @@ fn a_variable_change_reaches_the_layer_bound_through_an_alias_of_it() {
             ),
         ])
     };
-    let (old, new) = (screen(1.0), screen(2.0));
-    let conn = saved(&[&Tree::new(&old), &Tree::new(&new)], "0:0");
-    let bounds = Bounds {
-        work: WORK,
-        bytes: PAIR_BYTES,
-        depth: DEPTH,
-        deadline: Instant::now() + DEADLINE,
-        stop: None,
-    };
-    let out = revision_with(
-        &conn,
-        (1, side("old")),
-        (2, side("new")),
-        "0:0",
-        REVISION_BYTES,
-        bounds,
-    )
-    .unwrap();
+    let out = impact_of(screen(1.0), screen(2.0), WORK);
     use super::super::impact::Class;
     let hits: Vec<_> = out
-        .impact
         .hits
         .iter()
         .map(|h| (h.node.as_str(), h.class, h.via.clone()))
@@ -2984,7 +2969,7 @@ fn a_variable_change_reaches_the_layer_bound_through_an_alias_of_it() {
     let via = |t: &str| Some(("binds_variable", t.to_owned()));
     let unknown = std::collections::BTreeMap::from([("comparison_unknown", 3)]);
     assert_eq!(
-        (hits, out.impact.complete, out.impact.reasons),
+        (hits, out.complete, out.reasons),
         (
             vec![
                 ("0:12", Class::Possible, via("VariableID:0:61")),
@@ -2995,29 +2980,6 @@ fn a_variable_change_reaches_the_layer_bound_through_an_alias_of_it() {
             unknown
         )
     );
-}
-
-/// The impact of revision 1 → 2 saved from `old` and `new`.
-fn impact_of(old: K<'static>, new: K<'static>, work: usize) -> super::super::impact::Impact {
-    let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
-    let conn = saved(&[&Tree::new(&old), &Tree::new(&new)], "0:0");
-    let bounds = Bounds {
-        work,
-        bytes: PAIR_BYTES,
-        depth: DEPTH,
-        deadline: Instant::now() + DEADLINE,
-        stop: None,
-    };
-    revision_with(
-        &conn,
-        (1, side("old")),
-        (2, side("new")),
-        "0:0",
-        REVISION_BYTES,
-        bounds,
-    )
-    .unwrap()
-    .impact
 }
 
 #[test]
@@ -3038,6 +3000,8 @@ fn a_collection_only_change_reaches_its_variables_and_the_layer_bound_to_them() 
             .iter()
             .any(|h| h.via == Some(("binds_variable", "VariableID:0:61".into())))
     );
+    // No layer's change was proven, so the impact never reads complete.
+    assert!(!out.complete && out.reasons.contains_key("comparison_unknown"));
 }
 
 /// Variables 60 and 61 alias each other; rectangle 12 binds 61, and 60 holds `value` too.

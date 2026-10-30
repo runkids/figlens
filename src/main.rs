@@ -981,6 +981,9 @@ mod signals {
     unsafe extern "C" {
         fn signal(signum: i32, handler: usize) -> usize;
         fn write(fd: i32, buf: *const u8, count: usize) -> isize;
+        #[cfg_attr(target_os = "linux", link_name = "__errno_location")]
+        #[cfg_attr(not(target_os = "linux"), link_name = "__error")]
+        fn errno() -> *mut i32;
     }
 
     /// The nonblocking write end of `Waiter`'s socket, once it exists.
@@ -996,8 +999,13 @@ mod signals {
         let fd = WAKE.load(Ordering::SeqCst);
         if fd >= 0 {
             // SAFETY: write(2) is async-signal-safe; nonblocking, so a full buffer drops the byte
-            // instead of blocking the handler, and one byte already wakes the waiter.
-            unsafe { write(fd, [1u8].as_ptr(), 1) };
+            // instead of blocking the handler, and one byte already wakes the waiter. The
+            // interrupted thread's errno is put back, as a handler must.
+            unsafe {
+                let saved = *errno();
+                write(fd, [1u8].as_ptr(), 1);
+                *errno() = saved;
+            }
         }
     }
 
@@ -1045,7 +1053,7 @@ mod signals {
     #[cfg(unix)]
     pub fn catch() {
         let handler = interrupted as extern "C" fn(i32) as usize;
-        // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
+        // SAFETY: the handler only swaps an atomic and writes one byte, both async-signal-safe.
         unsafe {
             signal(2, handler);
             signal(15, handler);
@@ -1102,7 +1110,7 @@ mod signals {
 
     #[cfg(windows)]
     pub fn catch() {
-        // SAFETY: registers a handler that only stores to an atomic.
+        // SAFETY: the handler runs on its own thread, so it may lock and notify.
         unsafe {
             windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(interrupted), 1);
         }
