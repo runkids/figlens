@@ -999,3 +999,56 @@ fn an_active_scope_published_again_after_eviction_records_a_baseline() {
         json!({"basis": "baseline", "reason": "previous_unpublished"})
     );
 }
+
+#[test]
+fn a_revision_at_the_high_water_size_keeps_its_rows_in_pages_cleanup_freed() {
+    let dir = TestDir::new();
+    let (storage, select, _) = workspace(&dir, 1);
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    // The file grows past the cap, then frees it all: its size stays, its pages are reusable.
+    ws.conn
+        .execute_batch(&format!(
+            "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
+             VALUES ('s', '0:0', 'active', 1, 'v', 0);
+             CREATE TABLE filler (b BLOB); INSERT INTO filler VALUES (zeroblob({DISK_CAP}));
+             DELETE FROM filler;"
+        ))
+        .unwrap();
+    assert!(used(&ws.conn) > DISK_CAP);
+    let row = search::diff::Row {
+        frame: "0:0".into(),
+        node: "0:1".into(),
+        kind: "FRAME".into(),
+        change: "changed",
+        facets: 1,
+        descendants: 0,
+    };
+    let planned = Planned {
+        epoch: 1,
+        from: 1,
+        what: Ok(Ok(search::diff::Revision {
+            coverage: json!({"complete": true}),
+            summary: json!({"changes": 1}),
+            rows: vec![row],
+            truncated: false,
+        })),
+    };
+    let tx = ws.conn.transaction().unwrap();
+    tx.execute("INSERT INTO facet_sets VALUES (2, 'v', 1, 'null')", [])
+        .unwrap();
+    record(
+        &tx,
+        "s",
+        "0:0",
+        2,
+        Some(1),
+        &json!({"snapshot": "x"}),
+        Some(planned),
+        0,
+    )
+    .unwrap();
+    let detail: String = tx
+        .query_row("SELECT detail FROM revisions", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(detail, "complete");
+}

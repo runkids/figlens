@@ -361,7 +361,7 @@ pub(crate) const SUBSCRIPTIONS: &str = "
         pruned_seq INTEGER NOT NULL DEFAULT 0,
         UNIQUE (consumer, source_id, scope, kind, target)) STRICT;
     CREATE TABLE query_evaluations (
-        id BLOB PRIMARY KEY,
+        id BLOB PRIMARY KEY CHECK (length(id) = 16),
         sub TEXT NOT NULL REFERENCES subscriptions (id) ON DELETE CASCADE, seq INTEGER NOT NULL,
         gen INTEGER NOT NULL, snapshot_id TEXT NOT NULL, membership TEXT NOT NULL,
         ranking TEXT NOT NULL, coverage TEXT NOT NULL, causes TEXT NOT NULL, refs TEXT NOT NULL,

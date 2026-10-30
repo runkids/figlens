@@ -187,40 +187,42 @@ impl Last {
 
 fn last(conn: &Connection, ws: &str, sub: &str) -> Result<Option<Last>> {
     conn.query_row(
-        "SELECT id, gen, membership, snapshot_id, ranking, coverage,
-         CASE WHEN length(CAST(refs AS BLOB)) <= ?2 THEN refs END FROM query_evaluations
-         WHERE sub = ?1 ORDER BY seq DESC LIMIT 1",
+        // Nothing is copied from a row past ROW_BYTES: each column reads null and it is damaged.
+        "SELECT CASE WHEN f THEN id END, gen, CASE WHEN f THEN membership END,
+         CASE WHEN f THEN snapshot_id END, CASE WHEN f THEN ranking END,
+         CASE WHEN f THEN coverage END, CASE WHEN f THEN refs END
+         FROM (SELECT id, gen, membership, snapshot_id, ranking, coverage, refs,
+           length(CAST(id AS BLOB)) + length(CAST(membership AS BLOB))
+           + length(CAST(snapshot_id AS BLOB)) + length(CAST(ranking AS BLOB))
+           + length(CAST(coverage AS BLOB)) + length(CAST(refs AS BLOB)) <= ?2 AS f
+           FROM query_evaluations WHERE sub = ?1 ORDER BY seq DESC LIMIT 1)",
         params![sub, ROW_BYTES as i64],
         |r| {
             Ok((
-                Last {
-                    id: r.get(0)?,
-                    generation: r.get(1)?,
-                    membership: r.get(2)?,
-                    snapshot: r.get(3)?,
-                    ranking: r.get(4)?,
-                    coverage: r.get(5)?,
-                    refs: Vec::new(),
-                },
-                r.get::<_, Option<String>>(6)?,
+                r.get::<_, i64>(1)?,
+                (r.get(0)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get::<_, Option<String>>(6)?),
             ))
         },
     )
     .optional()
     .map_err(sql)?
-    .map(|(mut l, refs)| {
-        // A damaged row must not read as an empty window, which would enter every result.
-        l.refs = refs
-            .and_then(|r| serde_json::from_str(&r).ok())
-            .ok_or_else(|| {
-                FigError::new(
-                    ErrorKind::InvalidData,
-                    "a stored saved-query evaluation is damaged; unsubscribe and subscribe again",
-                )
-                .with_recovery(json!([{"action": "unsubscribe", "requires": "write", "tool": "watch",
-                    "arguments": {"action": "unsubscribe", "workspaceId": ws, "subscriptionId": sub}}]))
-            })?;
-        Ok(l)
+    .map(|(generation, row)| {
+        // A damaged or oversized row must not read as an empty window, which would enter every
+        // result.
+        let damaged = || {
+            FigError::new(
+                ErrorKind::InvalidData,
+                "a stored saved-query evaluation is damaged; unsubscribe and subscribe again",
+            )
+            .with_recovery(json!([{"action": "unsubscribe", "requires": "write", "tool": "watch",
+                "arguments": {"action": "unsubscribe", "workspaceId": ws, "subscriptionId": sub}}]))
+        };
+        let (Some(id), Some(membership), Some(snapshot), Some(ranking), Some(coverage), Some(refs)) = row
+        else {
+            return Err(damaged().into());
+        };
+        let refs = serde_json::from_str(&refs).map_err(|_| damaged())?;
+        Ok(Last { id, generation, membership, snapshot, ranking, coverage, refs })
     })
     .transpose()
 }
@@ -252,10 +254,9 @@ fn causes(last: Option<&Last>, e: &Eval) -> Vec<&'static str> {
 /// Movement within the top-[`TOP_K`] window: entering or leaving it, or moving inside it, does
 /// not prove a result was added to or removed from the whole result set.
 fn delta(last: Option<&Last>, e: &Eval) -> Json {
-    // A relocation draws a new membership: the old window is another copy's, so no node is
-    // taken as the same across it; every new ref entered and every old one left.
-    let same = last.is_none_or(|l| l.membership == e.membership);
-    let before = last.filter(|_| same).map_or(&[][..], |l| l.refs.as_slice());
+    // One subscription follows one sourceId, which relocate keeps: its nodes compare across a
+    // move; a removed source deletes the subscription with it.
+    let before = last.map_or(&[][..], |l| l.refs.as_slice());
     let pos = |refs: &[String], id: &str| refs.iter().position(|r| r == id);
     // Exact refs: a left result names the old snapshot it ranked in, never the new one.
     let node = |snapshot: &str, id: &String| json!({"sourceId": e.source, "snapshotId": snapshot, "nodeId": id});
@@ -268,12 +269,12 @@ fn delta(last: Option<&Last>, e: &Eval) -> Json {
     let left: Vec<Json> = last.map_or_else(Vec::new, |l| {
         l.refs
             .iter()
-            .filter(|r| !same || pos(&e.refs, r).is_none())
+            .filter(|r| pos(&e.refs, r).is_none())
             .map(|r| node(&l.snapshot, r))
             .collect()
     });
     // Positions under two rankings are not comparable: only membership of the window is.
-    let comparable = same && last.is_none_or(|l| l.ranking == e.ranking);
+    let comparable = last.is_none_or(|l| l.ranking == e.ranking);
     let moved = comparable.then(|| {
         e.refs
             .iter()
@@ -289,7 +290,7 @@ fn delta(last: Option<&Last>, e: &Eval) -> Json {
     json!({"from": last.map(|l| search::hex(&l.id)),
         "fromSnapshotId": last.map(|l| &l.snapshot), "snapshotId": e.snapshot,
         "enteredTopK": entered, "leftTopK": left, "rankChanged": moved,
-        "rankComparable": comparable, "sameSource": same})
+        "rankComparable": comparable})
 }
 
 pub(super) fn pending(reason: &str, ws: &str, sub: &str) -> Json {
@@ -450,19 +451,9 @@ pub(super) fn record(
     )
 }
 
-/// Whether `bytes` more fit under `DISK_CAP`. Pages freed by deleted rows are reused before the
-/// file grows, so they count as room: otherwise an unsubscribe could never unblock a workspace
-/// at its high-water size.
+/// Whether `bytes` more fit under `DISK_CAP`, freed pages counted as room.
 fn room(conn: &Connection, bytes: u64) -> Result<bool> {
-    let used: i64 = conn
-        .query_row(
-            "SELECT (page_count - freelist_count) * page_size
-             FROM pragma_page_count(), pragma_freelist_count(), pragma_page_size()",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(sql)?;
-    Ok(used as u64 + bytes <= jobs::DISK_CAP)
+    Ok(jobs::used_bytes(conn)? + bytes <= jobs::DISK_CAP)
 }
 
 /// `watch evaluate`: recomputes a query subscription's search for its current publication and
@@ -584,8 +575,11 @@ pub(super) fn poll(
     // Sizes first: no row is copied or parsed before the page has room for it.
     let mut stmt = conn
         .prepare(
-            // `bytes` was counted when stored; 160 covers the reply's own keys.
-            "SELECT id, seq, 160 + bytes
+            // Actual stored lengths of every emitted column, not the counter stored beside them;
+            // 160 covers the reply's own keys.
+            "SELECT id, seq, 160 + length(CAST(id AS BLOB)) + length(CAST(snapshot_id AS BLOB))
+             + length(CAST(coverage AS BLOB)) + length(CAST(causes AS BLOB))
+             + length(CAST(delta AS BLOB))
              FROM query_evaluations WHERE sub = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3",
         )
         .map_err(sql)?;
@@ -681,20 +675,21 @@ pub(super) fn poll(
         .optional()
         .map_err(sql)?;
     // Only the publication it was evaluated at is read, never its stored window.
-    let evaluated: Option<(i64, String, String)> = conn
-        .query_row(
-            "SELECT gen, membership, ranking FROM query_evaluations WHERE sub = ?1
-             ORDER BY seq DESC LIMIT 1",
-            [&sub.id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()
-        .map_err(sql)?;
     let ranking = search::corpus_ranking().to_string();
-    let state = match (evaluated, published) {
-        (_, None) => json!({"state": "unavailable", "reason": "scope_not_published"}),
-        (Some(e), Some((generation, membership, path, bytes, mtime)))
-            if e.0 == generation && e.1 == membership && e.2 == ranking =>
+    let state = match published {
+        None => json!({"state": "unavailable", "reason": "scope_not_published"}),
+        // Compared in SQL: nothing of the stored row is copied out.
+        Some((generation, membership, path, bytes, mtime))
+            if conn
+                .query_row(
+                    "SELECT gen = ?2 AND membership = ?3 AND ranking = ?4 FROM query_evaluations
+                     WHERE sub = ?1 ORDER BY seq DESC LIMIT 1",
+                    params![sub.id, generation, membership, ranking],
+                    |r| r.get::<_, bool>(0),
+                )
+                .optional()
+                .map_err(sql)?
+                == Some(true) =>
         {
             let refresh = refresh_required(&path, bytes, mtime);
             let mut out = json!({"state": if refresh { "current_for_index" } else { "current" },
@@ -795,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn a_relocated_source_matches_no_node_across_its_two_copies() {
+    fn a_relocated_source_keeps_its_nodes_across_the_new_membership() {
         let refs = |ids: &[&str]| ids.iter().map(|i| i.to_string()).collect::<Vec<_>>();
         let last = Last {
             id: vec![0; 16],
@@ -832,7 +827,7 @@ mod tests {
                     count(&moved, "rankChanged")
                 )
             ],
-            [(Some(0), Some(0), Some(2)), (Some(2), Some(2), None)]
+            [(Some(0), Some(0), Some(2)), (Some(0), Some(0), Some(2))]
         );
     }
 }

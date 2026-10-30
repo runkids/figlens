@@ -32,6 +32,19 @@ pub const DISK_CAP: u64 = if cfg!(test) {
 } else {
     2 * 1024 * 1024 * 1024
 };
+/// Bytes of the database's pages in use: freed pages are reused before the file grows, so they
+/// are room, else a file at its high-water size could never take a write again after cleanup.
+pub(crate) fn used_bytes(conn: &Connection) -> Result<u64> {
+    let used: i64 = conn
+        .query_row(
+            "SELECT (page_count - freelist_count) * page_size
+             FROM pragma_page_count(), pragma_freelist_count(), pragma_page_size()",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    Ok(used as u64)
+}
 /// Part of `DISK_CAP` no build may use, left for publication, registry and job writes, which
 /// SQLite does not cap.
 const BUILD_HEADROOM: u64 = if cfg!(test) {
@@ -1462,14 +1475,7 @@ fn record(
             .sum::<usize>() as u64
     };
     // Publication writes are not capped by SQLite: rows that would pass the disk cap are left out.
-    let size: u64 = tx
-        .query_row(
-            "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
-            [],
-            |r| r.get::<_, i64>(0),
-        )
-        .map_err(sql)? as u64;
-    if size + row_bytes(&rows) > DISK_CAP {
+    if used_bytes(tx)? + row_bytes(&rows) > DISK_CAP {
         rows.clear();
         truncated = true;
     }

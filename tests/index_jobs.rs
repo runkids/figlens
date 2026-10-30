@@ -3428,11 +3428,64 @@ fn a_damaged_stored_evaluation_is_invalid_data_and_a_new_ranking_compares_no_pos
 }
 
 #[test]
-fn a_stored_evaluation_too_large_for_a_page_is_a_budget_error_an_ack_passes() {
+fn a_query_subscription_follows_a_relocated_source_and_compares_its_same_nodes() {
     let env = Env::new();
     let t = Tracked::new(&env);
     let (id, _) = t.query("badge");
-    t.sql("UPDATE query_evaluations SET bytes = 1000000");
+    let moved = env.dir.join("moved.fig");
+    std::fs::copy(&t.path, &moved).unwrap();
+    let moved = std::fs::canonicalize(moved).unwrap();
+    let moved = moved.to_str().unwrap();
+    let ws = env.json(&["index", "status", "--file", &t.file]);
+    let (wid, source) = (
+        ws["workspaceId"].as_str().unwrap(),
+        ws["sources"][0]["sourceId"].as_str().unwrap(),
+    );
+    env.json(&["index", "relocate", "--id", wid, source, moved]);
+    env.json(&["index", "refresh", "--file", moved, "--scope", "0:0"]);
+    let e =
+        env.json(&["watch", "evaluate", "--id", wid, "--subscription", &id])["evaluation"].clone();
+    assert_eq!(
+        json!([
+            e["state"],
+            e["causes"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("corpus_changed")),
+            e["delta"]["enteredTopK"],
+            e["delta"]["leftTopK"],
+            e["delta"]["rankComparable"]
+        ]),
+        json!(["evaluated", true, [], [], true]),
+        "{e}"
+    );
+}
+
+#[test]
+fn an_understated_stored_size_never_admits_an_oversized_evaluation() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, _) = t.query("badge");
+    t.sql("UPDATE query_evaluations SET bytes = 1, delta = '\"' || zeroblob(300000) || '\"'");
     let refused = t.fails(&["changes", "--file", &t.file, "--subscription", &id]);
-    assert!(refused.contains("ack past it"), "{refused}");
+    assert!(refused.contains("takes more than"), "{refused}");
+}
+
+#[test]
+fn a_last_evaluation_whose_columns_together_pass_the_row_cap_is_damaged_not_read() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, _) = t.query("badge");
+    // Neither column alone passes 128 KiB; together they do.
+    t.sql("UPDATE query_evaluations SET coverage = '\"' || zeroblob(70000) || '\"', refs = '[\"' || zeroblob(70000) || '\"]'");
+    t.index("rebuild");
+    let refused = t.fails(&[
+        "watch",
+        "evaluate",
+        "--file",
+        &t.file,
+        "--subscription",
+        &id,
+    ]);
+    assert!(refused.contains("is damaged"), "{refused}");
 }
