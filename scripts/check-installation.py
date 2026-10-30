@@ -239,7 +239,7 @@ def main():
                 'pi/index.ts', 'pi/workflow.mjs', 'pi/viewer.mjs', 'pi/requests.mjs', 'pi/package.json', 'pi/README.md',
                 '.mcp.json', 'omp/index.ts', 'omp/review.mjs', 'omp/mcp.cjs', 'omp/package.json', 'omp/README.md',
                 'opencode/index.mjs', 'opencode/tui.mjs', 'opencode/adapter.mjs', 'opencode/rpc.mjs',
-                'opencode/review-rpc.mjs', 'opencode/review-ui.mjs', 'opencode/package.json', 'opencode/README.md',
+                'opencode/review-rpc.mjs', 'opencode/review-ui.mjs', 'opencode/watch-holder.mjs', 'opencode/package.json', 'opencode/README.md',
                 'skills/figlens/SKILL.md', 'skills/figlens/references/audit.md', 'skills/figlens/references/planning.md',
                 'skills/figlens/references/planning-details.md', 'skills/figlens/references/yolo.md'}
     with tarfile.open(package) as archive:

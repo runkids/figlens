@@ -123,3 +123,14 @@ test('a child that exits without an end reply is not reported released', async (
   await holder.start([]);
   assert.equal((await holder.stop('l1')).reason, 'release_unconfirmed');
 });
+
+test('cancelling a start before its reply releases and awaits its child, and holds nothing', async () => {
+  let c, ended = false;
+  const holder = createHolder(() => (c = child({ start: () => {}, onStdinEnd: c => { ended = true; c.exit(0); } })));
+  const controller = new AbortController();
+  const starting = holder.start([], controller.signal);
+  await new Promise(resolve => setImmediate(resolve));
+  controller.abort();
+  await assert.rejects(starting, { name: 'AbortError' });
+  assert.deepEqual([ended, c.exitCode, holder.leases], [true, 0, []]);
+});

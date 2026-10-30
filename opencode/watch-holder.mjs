@@ -3,6 +3,8 @@ import { createInterface } from 'node:readline';
 // Holds each `figlens watch run` lease this host started: one owned child per lease, whose first
 // stdout line is the start reply and whose stdin EOF releases it. The runner it starts is detached
 // and shared, so only the child itself is ever signalled, and only when it outlives `exitMs`.
+const STDERR = 64 * 1024;
+
 export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } = {}) {
   const held = new Map();
   const owned = new Set();  // every child's watch, from spawn until it exits
@@ -23,7 +25,8 @@ export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } =
     let done = false;
     exited.then(() => { done = true; while (waiting.length) waiting.shift()(null); });
     if (child.stdout) createInterface({ input: child.stdout }).on('line', line => (waiting.length ? waiting.shift()(line) : next.push(line)));
-    child.stderr?.on('data', chunk => { stderr += chunk; });
+    // Only its start failure is read from stderr, so no more than its head is kept.
+    child.stderr?.on('data', chunk => { if (stderr.length < STDERR) stderr = (stderr + chunk).slice(0, STDERR); });
     const line = () => next.length ? Promise.resolve(next.shift())
       : done ? Promise.resolve(null) : new Promise(resolve => waiting.push(resolve));
     const out = { child, line, exited, stderr: () => stderr };
@@ -53,14 +56,20 @@ export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } =
         recovery: 'its holder process has not exited and may still renew the lease; stop it again, or end that process, then check watch status' };
   }
 
-  async function start(args) {
+  // `signal` cancels a start still waiting for its reply: its child is released and awaited.
+  async function start(args, signal) {
     if (closing) throw new Error('figlens watch holder is shutting down');
+    signal?.throwIfAborted();
     let out;
     try { out = watch(spawnRun(['watch', 'run', ...args])); }
     catch (error) { throw new Error(`figlens watch run could not start: ${error.message}`); }
-    const first = await within(out.line(), firstLineMs);
+    let cancel;
+    const cancelled = new Promise(resolve => { cancel = () => resolve('cancelled'); signal?.addEventListener('abort', cancel, { once: true }); });
+    const first = await Promise.race([within(out.line(), firstLineMs), cancelled]);
+    signal?.removeEventListener('abort', cancel);
     let reply;
     try {
+      if (first === 'cancelled') throw signal.reason;
       if (first === 'timeout') throw new Error('figlens watch run gave no start reply in time');
       if (first === null) {
         const { error, code } = await out.exited;
@@ -70,6 +79,7 @@ export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } =
       }
       reply = JSON.parse(first);
       if (closing && reply.state === 'active') throw new Error('figlens watch holder is shutting down');
+      signal?.throwIfAborted();
     } catch (error) {
       await shutdown(out);
       throw error;
@@ -98,10 +108,14 @@ export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } =
   }
 
   // Releases every lease and stops every child still starting; no start admits a lease afterwards.
+  // Returns each held lease's end reply, so an unconfirmed release is never silent.
   async function stopAll() {
     closing = true;
     const leases = [...held.values()].map(l => l.out);
-    await Promise.all([...[...held.keys()].map(stop), ...[...owned].filter(out => !leases.includes(out)).map(shutdown)]);
+    const starting = Promise.all([...owned].filter(out => !leases.includes(out)).map(shutdown));
+    const ends = await Promise.all([...held.keys()].map(stop));
+    await starting;
+    return ends;
   }
 
   return { start, stop, stopAll, get leases() { return [...held.keys()]; } };

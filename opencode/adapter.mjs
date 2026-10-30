@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readlink, realpath, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -13,6 +13,7 @@ import { buildRequest } from '../pi/requests.mjs';
 
 const execute = promisify(execFile);
 import { HELP } from './rpc.mjs';
+import { createHolder } from './watch-holder.mjs';
 
 // Under Bun-built hosts such as OpenCode, process.execPath is the host binary, which cannot run the Node launcher.
 export function launcherRuntime(versions = process.versions, execPath = process.execPath) {
@@ -62,6 +63,9 @@ export function cliArgs(tool, input) {
   const filters = () => ['--id', required(input, 'workspaceId'), ...flag('--source', input.sourceId), ...flag('--scope', input.scope), ...storage];
   if (tool === 'changes') return ['changes', ...filters(), ...flag('--consumer', input.consumer), ...flag('--subscription', input.subscriptionId),
     ...flag('--cursor', input.cursor), ...flag('--revision', input.revision), ...flag('--limit', input.limit)];
+  // A start is a held `watch run` (see createHolder), which takes the scope and requestId.
+  if (tool === 'watch' && input.action === 'start') return ['watch', 'run', '--id', required(input, 'workspaceId'), ...flag('--source', input.sourceId),
+    '--scope', required(input, 'scope'), ...storage, ...flag('--request-id', input.requestId)];
   // The CLI refuses a flag the action does not take.
   if (tool === 'watch') return ['watch', input.action, ...filters(), ...flag('--consumer', input.consumer),
     ...flag('--subscription', input.subscriptionId), ...(input.action === 'ack' ? ['--cursor', required(input, 'cursor')] : flag('--cursor', input.cursor)),
@@ -106,6 +110,9 @@ export function createAdapter(ctx, entry = import.meta.url) {
     if (!current) return;
     current.lifetime.abort();
     await Promise.all([...current.commands].map(stop => stop()));
+    // This session's leases only; the shared runner and other holders' leases are left alone.
+    for (const end of await current.holder.stopAll())
+      if (end.state !== 'ended') console.error('figlens watch lease not released:', JSON.stringify(end));
     await current.viewer.close();
     owners.delete(sessionID);
   }
@@ -119,7 +126,8 @@ export function createAdapter(ctx, entry = import.meta.url) {
     }
     let current = owners.get(sessionID);
     if (!current) {
-      current = { viewer: new Viewer(command, prefix), lifetime: new AbortController(), commands: new Set() };
+      current = { viewer: new Viewer(command, prefix), lifetime: new AbortController(), commands: new Set(),
+        holder: createHolder(args => spawn(command, [...prefix, ...args], { cwd: root, stdio: 'pipe', windowsHide: true })) };
       owners.set(sessionID, current);
     }
     const combined = AbortSignal.any([lifetime.signal, current.lifetime.signal, ...(signal ? [signal] : [])]);
@@ -278,6 +286,13 @@ export function createAdapter(ctx, entry = import.meta.url) {
     return null;
   };
   async function cli(current, tool, input) {
+    // Only a lease this session's holder started can be stopped here; it releases it through its own child.
+    if (tool === 'watch' && input.action === 'stop') {
+      const leaseId = required(input, 'leaseId');
+      const end = await current.holder.stop(leaseId);
+      if (!end) throw new Error(`${leaseId} is not a lease this session holds; only its own leases can be stopped here. figlens_watch status lists the workspace's leases.`);
+      return end;
+    }
     // Invalid or conflicting arguments fail before any permission prompt.
     const args = cliArgs(tool, input);
     const invoke = async (args, text = false) => {
@@ -333,8 +348,17 @@ export function createAdapter(ctx, entry = import.meta.url) {
       await current.authorize('read', [...new Set((await Promise.all(paths.map(async file => [file, await realpath(file).catch(() => file)]))).flat())]);
     };
     if (['search', 'usages', 'changes'].includes(tool) && !input.file) await readSources(await status(input));
-    // Every watch action but list writes checkpoints or subscriptions into the workspace database, as a cancel writes its job.
-    if (tool === 'watch' && input.action !== 'list') await edit(place(await status(input)));
+    // Every other watch action writes checkpoints, subscriptions or leases into the workspace database, as a cancel writes its job.
+    if (tool === 'watch' && !['list', 'status', 'start'].includes(input.action)) await edit(place(await status(input)));
+    // A lease makes the shared runner read its source on every save, so start also asks read on it.
+    if (tool === 'watch' && input.action === 'start') {
+      const found = await status(input);
+      await readSources(found);
+      await edit(place(found));
+      if (bundled) await current.authorize('edit', [cacheRoot]);
+      await current.authorize('bash', [commandLine(args)]);
+      return current.holder.start(args.slice(2), current.signal);
+    }
     if (tool === 'jobs' && input.action === 'cancel') {
       const { workspaceId } = await invoke(cliArgs('jobs', { ...input, action: 'status' }));
       if (!workspaceId) throw missing("a job's workspace");

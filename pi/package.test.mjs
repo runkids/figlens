@@ -36,7 +36,7 @@ test('the existing CLI npm package includes the maintained Pi entry and its adja
   }
   for (const [directory, names] of Object.entries({
     omp: ['index.ts', 'review.mjs', 'mcp.cjs', 'package.json', 'README.md'],
-    opencode: ['index.mjs', 'tui.mjs', 'adapter.mjs', 'rpc.mjs', 'review-rpc.mjs', 'review-ui.mjs', 'package.json', 'README.md'],
+    opencode: ['index.mjs', 'tui.mjs', 'adapter.mjs', 'rpc.mjs', 'review-rpc.mjs', 'review-ui.mjs', 'watch-holder.mjs', 'package.json', 'README.md'],
   })) {
     for (const file of names) {
       assert.ok(files.includes(`${directory}/${file}`));

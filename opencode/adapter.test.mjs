@@ -190,6 +190,10 @@ test('CLI path runs the MCP index, jobs, search, usages, changes, watch and insp
     ['watch', 'subscribe', '--id', 'ws_1', '--source', 's', '--consumer', 'ci', '--query', 'Pay now', '--type', 'TEXT']);
   assert.deepEqual(cliArgs('watch', { action: 'evaluate', workspaceId: 'ws_1', subscriptionId: 'sub_1' }),
     ['watch', 'evaluate', '--id', 'ws_1', '--subscription', 'sub_1']);
+  assert.deepEqual(cliArgs('watch', { action: 'start', workspaceId: 'ws_1', sourceId: 's', scope: '0:0', storage: '/s', requestId: 'r' }),
+    ['watch', 'run', '--id', 'ws_1', '--source', 's', '--scope', '0:0', '--storage', '/s', '--request-id', 'r']);
+  assert.throws(() => cliArgs('watch', { action: 'start', workspaceId: 'ws_1' }), /needs scope/);
+  assert.deepEqual(cliArgs('watch', { action: 'status', workspaceId: 'ws_1' }), ['watch', 'status', '--id', 'ws_1']);
   assert.deepEqual(cliArgs('watch', { action: 'unsubscribe', workspaceId: 'ws_1', subscriptionId: 'sub_1' }),
     ['watch', 'unsubscribe', '--id', 'ws_1', '--subscription', 'sub_1']);
   assert.deepEqual(cliArgs('changes', { workspaceId: 'ws_1', subscriptionId: 'sub_1' }), ['changes', '--id', 'ws_1', '--subscription', 'sub_1']);
@@ -528,6 +532,74 @@ test('CLI-path track runs until its baseline job finishes, and untrack asks only
   await adapter.cli(current, 'index', { action: 'untrack', workspaceId: 'ws_1', scope: '0:1' });
   assert.deepEqual(timeouts, [['index status', undefined], ['index track', 0], ['index status', undefined], ['index untrack', undefined]]);
   assert.deepEqual(asked, [['read', '/a.fig'], ['edit', '/w', '/w.lock', '/c']]);
+});
+
+// A bundled package whose native CLI answers status and holds `watch run` leases as the real one does.
+async function watching(t) {
+  const { root, ctx } = await context(t);
+  const override = process.env.FIGLENS_BIN;
+  delete process.env.FIGLENS_BIN;
+  t.after(() => {
+    if (override === undefined) delete process.env.FIGLENS_BIN; else process.env.FIGLENS_BIN = override;
+  });
+  await mkdir(path.join(root, 'package/bin'), { recursive: true });
+  await writeFile(path.join(root, 'package/bin/figlens.js'), `require('node:child_process').spawnSync(process.execPath, [require('node:path').join(__dirname, 'native.cjs'), ...process.argv.slice(2)], { stdio: 'inherit' });`);
+  await writeFile(path.join(root, 'package/bin/native.cjs'), `const fs = require('node:fs');
+const say = value => console.log(JSON.stringify(value));
+const [command, action] = process.argv.slice(2);
+if (command === 'index' && action === 'status') say({ paths: { workspace: '/w', lock: '/w.lock' }, roots: { config: { path: '/c' } }, sources: [{ sourceId: 's1', path: '/a.fig' }] });
+else if (command === 'watch' && action === 'status') say({ leases: [], runner: { state: 'stopped' } });
+else if (command === 'watch' && action === 'run') {
+  fs.appendFileSync('runs', process.argv.slice(4).join(' ') + '\\n');
+  const leaseId = 'l' + fs.readFileSync('runs', 'utf8').split('\\n').length;
+  say({ leaseId, state: 'active' });
+  process.stdin.on('end', () => { fs.appendFileSync('released', leaseId + '\\n'); say({ leaseId, state: 'ended', reason: 'released' }); process.exit(0); });
+  process.stdin.resume();
+} else throw new Error('Unexpected command');`);
+  const adapter = createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href);
+  t.after(() => adapter.dispose());
+  const lines = async name => (await readFile(path.join(root, name), 'utf8').catch(() => '')).split('\n').filter(Boolean);
+  return { ctx, adapter, lines };
+}
+
+test('CLI-path watch start holds a lease for its session after asking read on the design and edit on the workspace', async t => {
+  const { ctx, adapter, lines } = await watching(t);
+  const asked = [];
+  ctx.permission.assert = async ({ action, resources }) => { asked.push([action, resources[0]]); };
+  const a = await adapter.scope('a');
+  const start = { action: 'start', workspaceId: 'ws_1', sourceId: 's1', scope: '0:0', storage: '/s', requestId: 'r' };
+  const lease = await adapter.cli(a, 'watch', start);
+  // Besides the bundled launcher's own cache edit.
+  const asks = asked.filter(([action, resource]) => action !== 'bash' && !resource.endsWith('figlens')).map(([action, resource]) => `${action} ${resource}`);
+  // A fresh session, so no earlier grant hides an edit ask.
+  const before = asked.length;
+  await adapter.cli(await adapter.scope('b'), 'watch', { action: 'status', workspaceId: 'ws_1' });
+  assert.deepEqual([lease.state, await lines('runs'), asks, asked.slice(before).filter(([action, resource]) => action === 'edit' && resource === '/w')],
+    ['active', ['--id ws_1 --source s1 --scope 0:0 --storage /s --request-id r'], ['read /a.fig', 'edit /w'], []],
+    'status asks no edit on the workspace');
+});
+
+test('CLI-path watch stop ends only a lease this session started, and closing a session releases its own', async t => {
+  const { adapter, lines } = await watching(t);
+  const [a, b] = [await adapter.scope('a'), await adapter.scope('b')];
+  const start = current => adapter.cli(current, 'watch', { action: 'start', workspaceId: 'ws_1', scope: '0:0' });
+  const first = await start(a);
+  await start(b);
+  await assert.rejects(adapter.cli(b, 'watch', { action: 'stop', leaseId: first.leaseId }), /not a lease this session holds/);
+  const end = await adapter.cli(a, 'watch', { action: 'stop', leaseId: first.leaseId });
+  await start(a);
+  await adapter.close('a');
+  assert.deepEqual([end, await lines('released')], [{ leaseId: 'l2', state: 'ended', reason: 'released' }, ['l2', 'l4']],
+    "b's lease l3 outlives a's close");
+});
+
+test('CLI-path watch start spawns nothing when read on the design is denied', async t => {
+  const { ctx, adapter, lines } = await watching(t);
+  ctx.permission.assert = async ({ action }) => {
+    if (action === 'read') throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  await assert.rejects(adapter.cli(await adapter.scope('a'), 'watch', { action: 'start', workspaceId: 'ws_1', scope: '0:0' }), /read denied/);
+  assert.deepEqual(await lines('runs'), []);
 });
 
 test('every shipped OpenCode module parses, including the entry tests cannot import without the host', async () => {
