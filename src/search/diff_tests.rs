@@ -583,6 +583,38 @@ fn possible_match_probes_are_charged_and_stop_the_pair_when_out_of_work() {
 }
 
 #[test]
+fn a_cursor_binds_the_retained_comparison_not_only_both_sides() {
+    let frames = |first: u32| {
+        (0..300)
+            .map(move |i| node(first + i, Some(1), "FRAME", "A", vec![]))
+            .collect()
+    };
+    let (a, b) = (doc(frames(100)), doc(frames(1000)));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let next = |work| {
+        page(
+            &compare_trees(&a, &b, [WORK, WORK, work], "0:0"),
+            &req(1, None),
+            false,
+        )
+        .unwrap()["nextCursor"]
+            .as_str()
+            .map(str::to_owned)
+    };
+    // Same sides, same changes; only the pair's probes stopped short.
+    let short = next(2 * 600 + 600 * 4 + 100);
+    let full = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
+    let err = page(&full, &req(1, short), false).unwrap_err();
+    assert_eq!(
+        (
+            err.downcast_ref::<FigError>().map(FigError::kind),
+            next(PAIR_WORK)
+        ),
+        (Some(ErrorKind::CursorStale), next(PAIR_WORK))
+    );
+}
+
+#[test]
 fn a_first_change_too_large_for_a_page_is_an_error_not_an_oversized_page() {
     let long = "n".repeat(PAGE_VALUES + 1);
     let one = |red| doc(vec![node(10, Some(1), "RECTANGLE", &long, vec![fill(red)])]);
@@ -670,6 +702,72 @@ fn a_vector_path_is_compared_by_its_blob_bytes_not_its_blob_index() {
         run(file(0, vec![1, 2]), file(1, vec![1, 2]))["frames"],
         json!([])
     );
+}
+
+#[test]
+fn derived_text_layout_is_text_and_its_glyphs_compare_by_blob_bytes() {
+    let file = |line: f64, at: usize, bytes: Vec<u8>| {
+        let mut blobs = vec![obj(vec![("bytes", K::Bytes(vec![9]))]); 2];
+        blobs[at] = obj(vec![("bytes", K::Bytes(bytes))]);
+        let derived = obj(vec![
+            (
+                "fontMetaData",
+                K::Array(vec![obj(vec![("fontLineHeight", K::Float(line as f32))])]),
+            ),
+            (
+                "glyphs",
+                K::Array(vec![obj(vec![("commandsBlob", K::UInt(at as u32))])]),
+            ),
+        ]);
+        let K::Object(name, mut fields) = doc(vec![node(
+            10,
+            Some(1),
+            "TEXT",
+            "Title",
+            vec![text("Hi"), ("derivedTextData", derived)],
+        )]) else {
+            unreachable!()
+        };
+        fields.insert("blobs", K::Array(blobs));
+        K::Object(name, fields)
+    };
+    let facets = |a, b| run(a, b)["frames"][0]["nodes"][0]["facets"].clone();
+    assert_eq!(
+        facets(file(1.2, 0, vec![1]), file(1.5, 0, vec![1])),
+        json!(["text"])
+    );
+    assert_eq!(
+        facets(file(1.2, 0, vec![1]), file(1.2, 0, vec![2])),
+        json!(["text"])
+    );
+    assert_eq!(
+        run(file(1.2, 0, vec![1]), file(1.2, 1, vec![1]))["frames"],
+        json!([])
+    );
+}
+
+#[test]
+fn emitted_metadata_scopes_code_syntax_and_prototype_settings_are_properties() {
+    let one = |key: &'static str, v: &str| {
+        doc(vec![node(
+            10,
+            Some(1),
+            "FRAME",
+            "F",
+            vec![(key, K::String(v.into()))],
+        )])
+    };
+    for key in [
+        "description",
+        "symbolDescription",
+        "styleType",
+        "variableScopes",
+        "codeSyntax",
+        "prototypeInteractions",
+    ] {
+        let n = &run(one(key, "a"), one(key, "b"))["frames"][0]["nodes"][0];
+        assert_eq!(n["facets"], json!(["properties"]), "{key}");
+    }
 }
 
 #[test]

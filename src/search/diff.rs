@@ -22,7 +22,7 @@ use crate::expand::{Bounds, Expanded, json_bytes, kiwi_bytes};
 use crate::{Document, ErrorKind, FigError, Tree, guid_key, to_json};
 
 /// Bumped whenever a field list, facet or digest stream changes; cursors carry it.
-const VERSION: &str = "diff-v5";
+const VERSION: &str = "diff-v6";
 /// Estimated heap of an expanded size or transform built as JSON (a map of at most six numbers).
 const OWNED_BYTES: usize = 512;
 pub(crate) const FACETS: [&str; 5] = ["text", "layout", "appearance", "properties", "structure"];
@@ -47,6 +47,8 @@ const FIELDS: [&[&str]; 4] = [
         "fontVariantNumericSpacing",
         "leadingTrim",
         "hyperlink",
+        // Laid-out lines and glyphs: REST line heights and drawn text read them.
+        "derivedTextData",
     ],
     &[
         "size",
@@ -117,6 +119,14 @@ const FIELDS: [&[&str]; 4] = [
         "variableResolvedType",
         "variableSetID",
         "variableSetModes",
+        "variableScopes",
+        "codeSyntax",
+        // Emitted component, set and style metadata.
+        "description",
+        "symbolDescription",
+        "styleType",
+        // Triggers and transitions; edges hold only their destinations.
+        "prototypeInteractions",
     ],
 ];
 /// Largest value one field may scan; a larger one is `unread`, like a usages binding field.
@@ -180,7 +190,7 @@ fn raw_bytes(v: &kiwi_schema::Value, h: &mut Sha256) {
     }
 }
 
-/// Blob indexes in geometry and vector networks: numbers local to one file, so the digest takes
+/// Blob indexes in geometry, glyphs and vector networks: numbers local to one file, so the digest takes
 /// the bytes they name instead.
 const BLOB_KEYS: [&str; 2] = ["commandsBlob", "vectorNetworkBlob"];
 
@@ -320,7 +330,13 @@ pub(super) fn facets(
             }
             // Converting a stored value, and a geometry field's unblobbed copy, each allocate
             // about its estimate; both are paid for first.
-            let blobbed = ["fillGeometry", "strokeGeometry", "vectorData"].contains(key);
+            let blobbed = [
+                "fillGeometry",
+                "strokeGeometry",
+                "vectorData",
+                "derivedTextData",
+            ]
+            .contains(key);
             let copies = usize::from(matches!(value, Value::Kiwi(_))) + usize::from(blobbed);
             if !bounds.charge(0, copies * estimate) {
                 return None;
@@ -1141,7 +1157,32 @@ fn binding(pair: &Pair) -> String {
             s.source["sourceId"], s.source["snapshotId"], s.signature
         )
     };
-    format!("{VERSION}|{}|{}|{}", s(&pair.old), s(&pair.new), pair.node)
+    // The offset indexes the retained ordered result, which a rebuild that stopped elsewhere
+    // (the pair's own deadline or work) can change while both sides stay the same.
+    let mut result = Sha256::new();
+    for c in &pair.changes {
+        result.update(format!(
+            "{}|{:?}|{:?}|{:?}|{}|{};",
+            c.frame, c.old, c.new, c.kind, c.facets, c.descendants
+        ));
+    }
+    for f in &pair.frames {
+        result.update(format!(
+            "{}|{:?}|{:?}|{:?};",
+            f.id, f.change, f.counts, f.possible
+        ));
+    }
+    result.update(format!(
+        "{}|{}|{:?}|{:?}",
+        pair.possible, pair.unread, pair.stop, pair.outside
+    ));
+    format!(
+        "{VERSION}|{}|{}|{}|{}",
+        s(&pair.old),
+        s(&pair.new),
+        pair.node,
+        hex(&result.finalize())
+    )
 }
 
 fn cursor(pair: &Pair, offset: usize) -> String {
