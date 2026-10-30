@@ -22,7 +22,9 @@ use crate::expand::{Bounds, Expanded, json_bytes, kiwi_bytes};
 use crate::{Document, ErrorKind, FigError, Tree, guid_key, to_json};
 
 /// Bumped whenever a field list, facet or digest stream changes; cursors carry it.
-const VERSION: &str = "diff-v4";
+const VERSION: &str = "diff-v5";
+/// Estimated heap of an expanded size or transform built as JSON (a map of at most six numbers).
+const OWNED_BYTES: usize = 512;
 pub(crate) const FACETS: [&str; 5] = ["text", "layout", "appearance", "properties", "structure"];
 /// Effective kiwi fields per facet; `structure` (name, kind, parent, order, hidden) is the
 /// record's own and bindings are edges, not fields.
@@ -254,6 +256,12 @@ pub(super) fn facets(
                 && node.and_then(|n| n.get(outline)).is_none()
             {
                 continue;
+            }
+            // An expanded size or transform is built here, so its heap is paid for first.
+            let built = matches!((e, *key), (Some(e), "size") if e.size.is_some())
+                || (e.is_some() && *key == "transform");
+            if built && !bounds.charge(0, OWNED_BYTES) {
+                return None;
             }
             let value = match (e, *key) {
                 (Some(e), "size") if e.size.is_some() => {

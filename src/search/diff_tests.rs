@@ -415,7 +415,14 @@ fn an_unread_field_is_charged_its_metadata_like_a_read_one() {
             .iter()
             .map(|f| 64 + f.key.len() + f.value.as_ref().map_or(0, |v| v.to_string().len()))
             .sum();
-        assert_eq!(before - b.bytes, kept + converted, "{id}");
+        // An expanded size and transform are each built after paying their fixed estimate.
+        let e = ex.nodes.get(id);
+        let built = usize::from(e.is_some_and(|e| e.size.is_some())) + usize::from(e.is_some());
+        assert_eq!(
+            before - b.bytes,
+            kept + converted + built * OWNED_BYTES,
+            "{id}"
+        );
     }
 }
 
@@ -428,6 +435,26 @@ fn a_stored_field_pays_for_its_conversion_before_it_is_converted() {
     let mut b = super::super::tests::bounds(WORK);
     b.bytes = 1024;
     assert!(facets(&tree, "0:10", None, &mut b).is_none());
+    assert_eq!(b.stop, Some(crate::expand::Stop::Bytes));
+}
+
+#[test]
+fn an_expanded_size_or_transform_pays_before_it_is_built() {
+    let message = doc(vec![
+        node(30, Some(1), "SYMBOL", "A", vec![]),
+        node(31, Some(30), "RECTANGLE", "Bg", vec![]),
+        node(10, Some(1), "FRAME", "Home", vec![]),
+        instance(11, 10, "Use", 30, vec![]),
+    ]);
+    let tree = Tree::new(&message);
+    let bounds = super::super::tests::bounds;
+    let (ex, _) = crate::expand::expand_instances_bounded(&tree, "0:0", bounds(WORK));
+    let id = "I0:11;0:31";
+    assert!(facets(&tree, id, ex.nodes.get(id), &mut bounds(WORK)).is_some());
+    // Enough for what the record keeps, not for building its expanded transform first.
+    let mut b = bounds(WORK);
+    b.bytes = OWNED_BYTES - 1;
+    assert!(facets(&tree, id, ex.nodes.get(id), &mut b).is_none());
     assert_eq!(b.stop, Some(crate::expand::Stop::Bytes));
 }
 
