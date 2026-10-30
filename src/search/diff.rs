@@ -2040,6 +2040,26 @@ pub(crate) fn revision(
     scope: &str,
     bytes: usize,
 ) -> Result<Revision, Box<dyn Error>> {
+    // Its own bounds, sized as the pair's: the walk reads the indexes the pair already holds.
+    let bounds = Bounds {
+        work: PAIR_WORK,
+        bytes: PAIR_BYTES,
+        depth: DEPTH,
+        deadline: Instant::now() + DEADLINE,
+        stop: None,
+    };
+    revision_with(conn, old, new, scope, bytes, bounds)
+}
+
+/// `revision` with the impact walk's bounds, which also pay for its seeds.
+fn revision_with(
+    conn: &rusqlite::Connection,
+    old: (i64, Json),
+    new: (i64, Json),
+    scope: &str,
+    bytes: usize,
+    mut bounds: Bounds,
+) -> Result<Revision, Box<dyn Error>> {
     let pair = compare(
         stored(conn, old.0, old.1)?,
         stored(conn, new.0, new.1)?,
@@ -2068,16 +2088,21 @@ pub(crate) fn revision(
             continue;
         }
         used += cost;
-        seeds.push(Seed {
-            node: r.id.clone(),
-            change: match c.kind {
-                Kind::Added => Seeded::Added,
-                Kind::Removed => Seeded::Removed,
-                Kind::Changed => Seeded::Changed,
-                Kind::Retyped | Kind::Unknown => Seeded::Unknown,
-            },
-            facets: c.facets & !UNREAD,
-        });
+        // A kept row whose seed copy does not fit stays a row, but its impact is not walked.
+        if bounds.stop.is_some() || !bounds.charge(1, std::mem::size_of::<Seed>() + r.id.len()) {
+            omitted += 1;
+        } else {
+            seeds.push(Seed {
+                node: r.id.clone(),
+                change: match c.kind {
+                    Kind::Added => Seeded::Added,
+                    Kind::Removed => Seeded::Removed,
+                    Kind::Changed => Seeded::Changed,
+                    Kind::Retyped | Kind::Unknown => Seeded::Unknown,
+                },
+                facets: c.facets & !UNREAD,
+            });
+        }
         rows.push(Row {
             frame: frame.clone(),
             node: r.id.clone(),
@@ -2106,14 +2131,6 @@ pub(crate) fn revision(
     .map(Kind::name);
     let facet_names: Vec<&str> = FACETS.iter().copied().chain(["bindings"]).collect();
     let coverage = coverage(&pair);
-    // Its own bounds, sized as the pair's: the walk reads the indexes the pair already holds.
-    let mut bounds = Bounds {
-        work: PAIR_WORK,
-        bytes: PAIR_BYTES,
-        depth: DEPTH,
-        deadline: Instant::now() + DEADLINE,
-        stop: None,
-    };
     let mut evidence = PairEvidence {
         pair: &pair,
         ids: None,
@@ -2126,7 +2143,7 @@ pub(crate) fn revision(
         &mut evidence,
         &mut bounds,
     )?;
-    // A partial comparison or an unkept change may reach layers the walk never saw, even
+    // A partial comparison or an unseeded change may reach layers the walk never saw, even
     // when it found none.
     if coverage["complete"] != true {
         *impact

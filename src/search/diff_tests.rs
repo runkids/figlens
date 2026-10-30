@@ -1914,6 +1914,38 @@ fn a_revision_classifies_what_its_kept_changes_reach() {
 }
 
 #[test]
+fn a_kept_row_whose_seed_does_not_fit_stays_a_row_but_leaves_the_impact_incomplete() {
+    let (a, b) = (impacted(1.0, false), impacted(0.5, false));
+    let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
+    let conn = saved(&[&Tree::new(&a), &Tree::new(&b)], "0:0");
+    // Room for exactly one seed: the second kept row is not copied into one.
+    let bounds = Bounds {
+        work: WORK,
+        bytes: std::mem::size_of::<Seed>() + 4,
+        depth: DEPTH,
+        deadline: Instant::now() + DEADLINE,
+        stop: None,
+    };
+    let r = revision_with(
+        &conn,
+        (1, side("old")),
+        (2, side("new")),
+        "0:0",
+        REVISION_BYTES,
+        bounds,
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            r.rows.len(),
+            r.impact.complete,
+            r.impact.reasons.get("seeds_truncated")
+        ),
+        (2, false, Some(&1))
+    );
+}
+
+#[test]
 fn a_partial_comparison_leaves_its_impact_incomplete_without_changes() {
     let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
     let (a, b) = (styled(12.0), styled(12.0));
