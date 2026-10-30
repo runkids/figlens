@@ -145,6 +145,7 @@ impl Env {
                 diagnostics: diagnostics.to_vec(),
                 diagnostics_truncated: false,
                 bounds: serde_json::Map::new(),
+                pixels: 0,
             };
             figlens::workspace::visual::save(&conn, gen_id, rid, &rendered).unwrap();
         }
