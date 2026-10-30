@@ -875,6 +875,100 @@ fn a_cli_build_with_a_profile_lists_the_embed_instead_of_queueing_it() {
     );
 }
 
+#[path = "../scripts/make-corpus.rs"]
+#[allow(dead_code)]
+mod corpus;
+
+fn semantic_request(query: &str) -> figlens::search::Request {
+    figlens::search::Request {
+        query: query.into(),
+        scope: "0:0".into(),
+        types: Vec::new(),
+        include_hidden: false,
+        include_internal: false,
+        limit: 5,
+        cursor: None,
+    }
+}
+
+fn refs(reply: &serde_json::Value) -> Vec<serde_json::Value> {
+    reply["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["ref"]["nodeId"].clone())
+        .collect()
+}
+
+fn one_process_keeps_two_workspaces_layers_apart() {
+    let dir = test_support::TestDir::new();
+    let (first, _) = indexed(&dir, true);
+    let other = std::path::absolute(dir.join("corpus.fig")).unwrap();
+    corpus::write(other.as_os_str(), false).unwrap();
+    let second = cli(&[
+        "index",
+        "prepare",
+        other.to_str().unwrap(),
+        "--scope",
+        "0:0",
+    ]);
+    for ws in [&first, &second] {
+        cli(&[
+            "index",
+            "embed",
+            "--id",
+            ws["workspaceId"].as_str().unwrap(),
+            "--scope",
+            "0:0",
+        ]);
+    }
+    let storage = figlens::workspace::storage(None).unwrap();
+    let no = AtomicBool::new(false);
+    let search = |ws: &serde_json::Value| {
+        let select = figlens::workspace::Select::Id(ws["workspaceId"].as_str().unwrap().into());
+        figlens::workspace::query::search_mode(
+            &storage,
+            &select,
+            &[],
+            &semantic_request("task"),
+            Mode::Semantic,
+            &no,
+        )
+        .unwrap()
+    };
+    // The first workspace's layer is cached first; the second must rank its own records.
+    search(&first);
+    let got = search(&second);
+    let alone = figlens::search::semantic::search(
+        &other,
+        &semantic_request("task"),
+        Mode::Semantic,
+        &storage,
+        &no,
+    )
+    .unwrap();
+    assert_eq!(refs(&got), refs(&alone));
+}
+
+fn a_schema_8_workspace_reads_its_model_layer_as_pending() {
+    let dir = test_support::TestDir::new();
+    let (prepared, fig) = indexed(&dir, true);
+    let path = prepared["paths"]["database"].as_str().unwrap();
+    rusqlite::Connection::open(path)
+        .unwrap()
+        .execute_batch("DROP TABLE model_vectors; DROP TABLE model_refs; DROP TABLE model_layers; PRAGMA user_version = 8;")
+        .unwrap();
+    let got = cli(&[
+        "search",
+        "--file",
+        fig.to_str().unwrap(),
+        "task",
+        "--mode",
+        "semantic",
+    ]);
+    assert_eq!(got["coverage"]["layers"]["semantic"]["state"], "pending");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if let [_, worker, dir, job] = args.as_slice()
@@ -959,6 +1053,14 @@ fn main() {
         (
             "workspace_semantic_search_pages_a_built_layer",
             workspace_semantic_search_pages_a_built_layer,
+        ),
+        (
+            "one_process_keeps_two_workspaces_layers_apart",
+            one_process_keeps_two_workspaces_layers_apart,
+        ),
+        (
+            "a_schema_8_workspace_reads_its_model_layer_as_pending",
+            a_schema_8_workspace_reads_its_model_layer_as_pending,
         ),
         #[cfg(unix)]
         (
