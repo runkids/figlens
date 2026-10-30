@@ -275,11 +275,21 @@ impl Runtime {
             .stderr(Stdio::null());
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+        // Suspended until it is in its job, so nothing it starts can escape the job.
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(&mut cmd, CREATE_SUSPENDED);
         let mut child = cmd
             .spawn()
             .map_err(|e| fail(format!("cannot start {}: {e}", exe.display())))?;
         #[cfg(windows)]
-        let job = Job::assign(&child)?;
+        let job = match Job::assign(&child) {
+            Ok(job) => job,
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
+        };
         let stdout = child.stdout.take().ok_or("child has no stdout")?;
         let (tx, lines) = sync_channel(1);
         std::thread::spawn(move || {
@@ -456,6 +466,16 @@ impl Runtime {
     }
 }
 
+#[cfg(windows)]
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
+
+#[cfg(windows)]
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    /// Resumes every thread of a process; std gives no thread handle to resume one.
+    fn NtResumeProcess(process: windows_sys::Win32::Foundation::HANDLE) -> i32;
+}
+
 /// A Windows job object that kills its processes when terminated or closed.
 #[cfg(windows)]
 struct Job(windows_sys::Win32::Foundation::HANDLE);
@@ -466,9 +486,8 @@ unsafe impl Send for Job {}
 
 #[cfg(windows)]
 impl Job {
-    /// Puts `child` in a new kill-on-close job. shortcut: a process the child starts before
-    /// this assignment escapes the job; figlens-embed starts none, so start suspended only if a
-    /// runtime ever does.
+    /// Puts the suspended `child` in a new kill-on-close job, then resumes it, so every process
+    /// it starts belongs to the job.
     fn assign(child: &Child) -> Result<Job> {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::System::JobObjects::*;
@@ -488,6 +507,12 @@ impl Job {
             );
             if set == 0 || AssignProcessToJobObject(job.0, child.as_raw_handle()) == 0 {
                 return Err(std::io::Error::last_os_error().into());
+            }
+            let status = NtResumeProcess(child.as_raw_handle());
+            if status < 0 {
+                return Err(fail(format!(
+                    "cannot resume the model runtime (NTSTATUS {status:#x})"
+                )));
             }
             Ok(job)
         }
