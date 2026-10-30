@@ -290,6 +290,69 @@ await check('directory registration through the packaged bridge: prepare one des
     for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : process.env[name] = value;
   }
 });
+await check('saved question through the packaged bridge: a text question over two sources names the one that changed, under write approval', async () => {
+  await load('discovery/omp-plugins.ts');
+  const { loadCapability } = await load('capability/index.ts');
+  const discovered = await loadCapability('mcps', { cwd: project, agentDir: process.env.PI_CODING_AGENT_DIR, providers: ['omp-plugins'],
+    extensionRoots: { explicit: [path.resolve(packageInput)], configured: [], configuredLevel: 'project', mode: 'explicit-only' } });
+  const { connectToServer, listTools, callTool, disconnectServer } = await load('mcp/client.ts');
+  const { MCPTool } = await load('mcp/tool-bridge.ts');
+  const { resolveApproval } = await load('tools/approval.ts');
+  const questions = path.join(project, 'questions');
+  await mkdir(questions);
+  const [a, b] = ['a.fig', 'b.fig'].map(name => path.join(questions, name));
+  for (const file of [a, b]) await copyFile(path.join(project, 'mapping.fig'), file);
+  const saved = { XDG_STATE_HOME: process.env.XDG_STATE_HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
+  process.env.XDG_STATE_HOME = path.join(output, 'question-state');
+  process.env.XDG_CONFIG_HOME = path.join(output, 'question-config');
+  const connection = await connectToServer('figlens', discovered.items.find(item => item.name === 'figlens'));
+  try {
+    const listed = await listTools(connection);
+    const content = async (name, args) => {
+      const reply = await callTool(connection, name, args);
+      assert.equal(reply.isError, false, JSON.stringify(reply).slice(0, 2000));
+      return reply.structuredContent;
+    };
+    const settle = async job => {
+      for (const deadline = Date.now() + 30000; !['succeeded', 'failed', 'cancelled', 'interrupted'].includes(job.state) && Date.now() < deadline;) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+        job = await content('jobs', { action: 'status', jobId: job.jobId });
+      }
+      assert.equal(job.state, 'succeeded', JSON.stringify(job));
+    };
+    const sources = [];
+    let workspaceId;
+    for (const file of [a, b]) {
+      const prepared = await content('index', { action: 'prepare', workspace: questions, file, scope: '0:0' });
+      await settle(prepared.job);
+      workspaceId = prepared.workspaceId;
+      sources.push(prepared.job.sourceId);
+    }
+    const subscribe = { action: 'subscribe', workspaceId, consumer: 'host-question', sources: sources.join(','), query: frameName };
+    const subscribed = await content('watch', subscribe);
+    const subscriptionId = subscribed.subscription.subscriptionId;
+    const first = await content('changes', { workspaceId, subscriptionId });
+    await copyFile(fileURLToPath(new URL('../examples/first-success/design.fig', import.meta.url)), b);
+    for (const job of (await content('index', { action: 'refresh', workspaceId, scope: '0:0' })).jobs) await settle(job);
+    const { evaluation } = await content('watch', { action: 'evaluate', workspaceId, subscriptionId });
+    const frame = refs => refs.filter(ref => ref.nodeId === '0:1').map(ref => ref.sourceId).sort();
+    assert.deepEqual([subscribed.subscription.sources, subscribed.subscription.sourceId], [[...sources].sort(), null], JSON.stringify(subscribed));
+    assert.deepEqual(frame(first.evaluations[0].delta.enteredTopK), [...sources].sort(), JSON.stringify(first).slice(0, 2000));
+    assert.ok(evaluation.causes.includes('source_changed'), JSON.stringify(evaluation));
+    assert.deepEqual(evaluation.delta.changedSourceIds, [sources[1]]);
+    assert.deepEqual([frame(evaluation.delta.leftTopK), frame(evaluation.delta.enteredTopK)], [[sources[1]], []], JSON.stringify(evaluation.delta));
+    // The ref that left is exactly the one that entered first, its old snapshot included.
+    const exact = refs => refs.filter(ref => ref.nodeId === '0:1' && ref.sourceId === sources[1]);
+    assert.deepEqual(exact(evaluation.delta.leftTopK), exact(first.evaluations[0].delta.enteredTopK));
+    // watch is at OMP's write tier: always-ask prompts for the subscribe, the default yolo runs it.
+    const watch = MCPTool.fromTools(connection, listed).find(tool => tool.mcpToolName === 'watch');
+    assert.deepEqual(['always-ask', 'yolo'].map(mode => resolveApproval(watch, subscribe, mode).policy), ['prompt', 'allow']);
+    return { workspaceId, sources: sources.length, changed: evaluation.delta.changedSourceIds, causes: evaluation.causes, approval: watch.approval };
+  } finally {
+    await disconnectServer(connection);
+    for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : process.env[name] = value;
+  }
+});
 await check('native disabled and remote overrides retain priority over the package descriptor', async () => {
   await load('discovery/builtin.ts');
   const { loadCapability, invalidate } = await load('capability/index.ts');

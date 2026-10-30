@@ -106,12 +106,12 @@ const cliSteps = [
       library: { kind: named.kind, namespace: named.namespace, key: named.key } });
   },
 ];
-// A project directory of one page more than an add registers, so nextCursor is followed once;
-// each lane has its own, so its project workspace starts with nothing registered.
-const designs = async name => {
+// A project directory of copies of the fixture; each lane has its own, so its project workspace starts with
+// nothing registered. 11 is one page more than an add registers, so nextCursor is followed once.
+const designs = async (name, count = 11) => {
   const dir = path.join(project, name);
   await mkdir(dir);
-  const files = Array.from({ length: 11 }, (_, n) => path.join(dir, `d${String(n + 1).padStart(2, '0')}.fig`));
+  const files = Array.from({ length: count }, (_, n) => path.join(dir, `d${String(n + 1).padStart(2, '0')}.fig`));
   for (const file of files) await copyFile(fixture, file);
   return { dir, files, canonical: await Promise.all(files.map(file => realpath(file))) };
 };
@@ -125,6 +125,21 @@ const registeredPages = (pages, status, prepared, canonical) => {
   const pairs = sources => sources.map(source => `${source.sourceId} ${source.path}`).sort();
   assert.deepEqual(pairs(status.sources), pairs(listed), JSON.stringify(status.sources));
   return { pages: pages.map(page => page.added.length), sources: status.sources.length };
+};
+// The designer replaces the second member with a design that lacks the review frame.
+const publicDesign = fileURLToPath(new URL('../examples/first-success/design.fig', import.meta.url));
+// Subscribe, first page and later evaluation of the question: both members' exact frame refs, then only the replaced one's leaving.
+const answered = (sources, subscribed, first, evaluation) => {
+  const frame = refs => refs.filter(ref => ref.nodeId === '0:1').map(ref => ref.sourceId).sort();
+  assert.deepEqual([subscribed?.subscription?.sources, subscribed?.subscription?.sourceId], [[...sources].sort(), null], JSON.stringify(subscribed));
+  assert.deepEqual(frame(first?.evaluations?.[0]?.delta?.enteredTopK ?? []), [...sources].sort(), JSON.stringify(first).slice(0, 2000));
+  assert.ok(evaluation?.causes?.includes('source_changed'), JSON.stringify(evaluation));
+  assert.deepEqual(evaluation.delta.changedSourceIds, [sources[1]]);
+  assert.deepEqual([frame(evaluation.delta.leftTopK), frame(evaluation.delta.enteredTopK)], [[sources[1]], []], JSON.stringify(evaluation.delta));
+  // The ref that left is exactly the one that entered first, its old snapshot included.
+  const exact = refs => refs.filter(ref => ref.nodeId === '0:1' && ref.sourceId === sources[1]);
+  assert.deepEqual(exact(evaluation.delta.leftTopK), exact(first.evaluations[0].delta.enteredTopK));
+  return { sources: sources.length, changed: evaluation.delta.changedSourceIds, causes: evaluation.causes };
 };
 // What the fixture's cached copy records; the lanes read it from tool output and compare.
 const LIBRARY = { kind: 'component', namespace: 'synthetic-library', key: 'synthetic-button', basis: 'cached_copy' };
@@ -323,6 +338,36 @@ try {
     assert.equal(flow?.job, 'succeeded', JSON.stringify(scripted.raw).slice(0, 2000));
     return { ...registeredPages(flow.pages, flow.status, flow.prepared, canonical), resetDenied: true, provider: 'scripted loopback, not a model' };
   });
+  await check('session saves a text question over two sources through managed MCP, and its evaluation names the one that changed', async () => {
+    const { dir, files, canonical } = await designs('questions-mcp', 2);
+    const [, asked] = await converse('Follow the mapping review frame in both designs.', [() => catalog(['index', 'jobs', 'watch', 'changes']),
+      paths => ['index', 'jobs', 'watch', 'changes'].every(name => tool(paths, name)) && `
+        const sources = [];
+        let workspaceId;
+        for (const file of ${JSON.stringify(files)}) {
+          const prepared = await ${tool(paths, 'index')}({ action: 'prepare', workspace: ${JSON.stringify(dir)}, file, scope: '0:0' });
+          let job = prepared.job, polls = 0;
+          while (!${JSON.stringify(terminal)}.includes(job.state) && polls++ < 5000) job = await ${tool(paths, 'jobs')}({ action: 'status', jobId: job.jobId });
+          workspaceId = prepared.workspaceId;
+          sources.push(prepared.job.sourceId);
+        }
+        const subscribed = await ${tool(paths, 'watch')}({ action: 'subscribe', workspaceId, consumer: 'host-question', sources: sources.join(','), query: 'Mapping review' });
+        const first = await ${tool(paths, 'changes')}({ workspaceId, subscriptionId: subscribed.subscription.subscriptionId });
+        return { workspaceId, sources, subscribed, first };`]);
+    assert.ok(asked?.subscribed, JSON.stringify(scripted.raw).slice(0, 2000));
+    await copyFile(publicDesign, files[1]);
+    const ids = { workspaceId: asked.workspaceId, subscriptionId: asked.subscribed.subscription.subscriptionId };
+    const [, evaluated] = await converse('Anything new in the review frame?', [() => catalog(['index', 'jobs', 'watch']),
+      paths => ['index', 'jobs', 'watch'].every(name => tool(paths, name)) && `
+        for (let job of (await ${tool(paths, 'index')}({ action: 'refresh', workspaceId: ${JSON.stringify(ids.workspaceId)}, scope: '0:0' })).jobs) {
+          let polls = 0;
+          while (!${JSON.stringify(terminal)}.includes(job.state) && polls++ < 5000) job = await ${tool(paths, 'jobs')}({ action: 'status', jobId: job.jobId });
+        }
+        return await ${tool(paths, 'watch')}({ action: 'evaluate', ...${JSON.stringify(ids)} });`],
+      // Managed MCP asks nothing per watch action: a read deny on the replaced member does not stop the evaluate.
+      [...allowAll, { action: 'read', resource: canonical[1], effect: 'deny' }]);
+    return { ...answered(asked.sources, asked.subscribed, asked.first, evaluated?.evaluation), readDeniedMember: 2, provider: 'scripted loopback, not a model' };
+  });
   await check('through managed MCP a consumer acknowledged in Code Mode gets an explicit-check reminder before each later prompt', async () => {
     const { workspaceId } = await settled(['index', 'prepare', fixture, '--scope', '0:0']);
     await settled(['index', 'track', '--id', workspaceId, '--scope', '0:0']);
@@ -500,6 +545,27 @@ try {
       prepared => direct('figlens_index', { action: 'status', workspaceId: prepared.workspaceId })]);
     assert.deepEqual(repeat?.directory?.added, [], (scripted.raw[1] ?? '').slice(0, 500));
     return { ...registeredPages([repeat.directory, second?.directory], status, again, canonical), deniedPage: 2 };
+  });
+  await check('with a disabled MCP override the CLI path saves a text question over two sources, and a read deny on one member refuses evaluate', async () => {
+    const { dir, files, canonical } = await designs('questions-cli', 2);
+    const [a, b, subscribed, first] = await converse('Follow the mapping review frame in both designs.', [
+      () => direct('figlens_index', { action: 'prepare', workspace: dir, file: files[0], scope: '0:0' }),
+      () => direct('figlens_index', { action: 'prepare', workspace: dir, file: files[1], scope: '0:0' }),
+      (a, b) => b?.workspaceId && direct('figlens_watch', { action: 'subscribe', workspaceId: b.workspaceId, consumer: 'host-question',
+        sources: `${a.job.sourceId},${b.job.sourceId}`, query: 'Mapping review' }),
+      (a, b, saved) => saved?.subscription && direct('figlens_changes', { workspaceId: b.workspaceId, subscriptionId: saved.subscription.subscriptionId })]);
+    assert.ok(first?.evaluations, JSON.stringify(scripted.raw).slice(0, 2000));
+    const sources = [a.job.sourceId, b.job.sourceId];
+    const ids = { workspaceId: b.workspaceId, subscriptionId: subscribed.subscription.subscriptionId };
+    await copyFile(publicDesign, files[1]);
+    const [refreshed] = await converse('Refresh the designs.', [() => direct('figlens_index', { action: 'refresh', workspaceId: ids.workspaceId, scope: '0:0' })]);
+    assert.ok(refreshed?.jobs?.every(job => job.state === 'succeeded'), (scripted.raw[0] ?? '').slice(0, 500));
+    // evaluate reads every member: a read deny on the replaced one refuses it before the binary runs.
+    const evaluate = [() => direct('figlens_watch', { action: 'evaluate', ...ids })];
+    await converse('Anything new in the review frame?', evaluate, [...allowAll, { action: 'read', resource: canonical[1], effect: 'deny' }]);
+    assert.match(scripted.raw[0] ?? '', /permission|denied|rule/i, (scripted.raw[0] ?? '').slice(0, 500));
+    const [evaluated] = await converse('Anything new in the review frame?', evaluate);
+    return { ...answered(sources, subscribed, first, evaluated?.evaluation), deniedMember: 2 };
   });
   await check('with a disabled MCP override figlens_watch holds a lease per session that records a save, and only its session, deletion or a reload ends it', async () => {
     const cli = args => JSON.parse(execFileSync(binary, args, { cwd: project, env, encoding: 'utf8' }));
