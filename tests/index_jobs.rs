@@ -1481,6 +1481,144 @@ fn identical_bytes_in_two_sources_keep_their_ids_and_a_hidden_one_never_answers(
     assert_eq!(refs(&after["structuredContent"]), refs(found));
 }
 
+/// The mapping fixture's library copy (component `synthetic-button` of `synthetic-library`), as
+/// `cargo test` builds the example next to the test binary.
+fn library_fig(dir: &Path) -> PathBuf {
+    let example = Path::new(BIN)
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join(format!("mapping-fixture{}", std::env::consts::EXE_SUFFIX));
+    let path = dir.join("library.fig");
+    let made = Command::new(example)
+        .arg("--library")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{made:?}");
+    std::fs::canonicalize(path).unwrap()
+}
+
+/// Identical library bytes as two sources of one workspace, in `in/` and `out/`.
+fn two_library_sources(env: &Env) -> (String, Value, Value, Value) {
+    let project = std::fs::canonicalize(env.dir.join("")).unwrap();
+    let dir = project.to_str().unwrap().to_owned();
+    let [first, second] = ["in", "out"].map(|name| {
+        let sub = env.dir.join(name);
+        std::fs::create_dir(&sub).unwrap();
+        prepare_in(env, &library_fig(&sub), &dir)
+    });
+    (
+        dir,
+        second["workspaceId"].clone(),
+        first["source"]["sourceId"].clone(),
+        second["source"]["sourceId"].clone(),
+    )
+}
+
+const LIBRARY: [&str; 6] = [
+    "--library",
+    "component",
+    "--namespace",
+    "synthetic-library",
+    "--key",
+    "synthetic-button",
+];
+
+fn owners(reply: &Value) -> Vec<(Value, Value)> {
+    refs(reply)
+        .iter()
+        .map(|r| (r["sourceId"].clone(), r["nodeId"].clone()))
+        .collect()
+}
+
+#[test]
+fn identical_library_bytes_in_two_sources_are_answered_each_under_its_own_source_id() {
+    let env = Env::new();
+    let (dir, _, first, second) = two_library_sources(&env);
+    let ask = |extra: &[&str]| {
+        env.json(&[&["usages", "--workspace", &dir][..], &LIBRARY, extra].concat())
+    };
+    let both = owners(&ask(&[]));
+    let of = |id: &Value| -> Vec<_> { both.iter().filter(|(s, _)| s == id).cloned().collect() };
+    assert_eq!((of(&first).len(), of(&second).len()), (2, 2), "{both:?}");
+    assert_eq!(
+        of(&first).iter().map(|(_, n)| n).collect::<Vec<_>>(),
+        of(&second).iter().map(|(_, n)| n).collect::<Vec<_>>()
+    );
+    for id in [&first, &second] {
+        let alone = ask(&["--source", id.as_str().unwrap()]);
+        assert_eq!(owners(&alone), of(id), "{alone}");
+    }
+}
+
+#[test]
+fn a_hidden_source_of_identical_library_bytes_is_neither_answered_nor_counted() {
+    let env = Env::new();
+    let (_, workspace, seen, hidden) = two_library_sources(&env);
+    let root = std::fs::canonicalize(env.dir.join("in")).unwrap();
+    let mut mcp = Mcp::start(&env, &["--root", root.to_str().unwrap()]);
+    let reply = mcp.call(
+        "usages",
+        json!({"workspaceId": workspace, "library": {"kind": "component",
+            "namespace": "synthetic-library", "key": "synthetic-button"}}),
+    );
+    drop(mcp);
+    let found = &reply["structuredContent"];
+    assert!(owners(found).iter().all(|(s, _)| *s == seen), "{reply}");
+    assert_eq!(found["coverage"]["sources"].as_array().unwrap().len(), 1);
+    assert!(
+        found["coverage"]["reasons"]
+            .to_string()
+            .contains("authorization_restricted")
+    );
+    assert!(!reply.to_string().contains(hidden.as_str().unwrap()));
+}
+
+#[test]
+fn a_definition_chosen_before_its_source_was_rebuilt_is_stale_not_matched() {
+    let env = Env::new();
+    let project = project(&env);
+    let dir = project.to_str().unwrap();
+    let fig = library_fig(&env.dir.join(""));
+    let prepared = prepare_in(&env, &fig, dir);
+    let (source, snapshot) = (
+        prepared["source"]["sourceId"].as_str().unwrap().to_owned(),
+        env.json(&["index", "status", "--workspace", dir])["sources"][0]["indexed"][0]["snapshotId"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+    );
+    let definition = [
+        "--definition-source",
+        &source,
+        "--definition-snapshot",
+        &snapshot,
+    ];
+    let ask = || {
+        env.json(
+            &[
+                &["usages", "--workspace", dir][..],
+                &LIBRARY,
+                &definition,
+                &["--definition-node", "0:10"],
+            ]
+            .concat(),
+        )
+    };
+    assert_eq!(ask()["definition"]["state"], "selected");
+    // The same path now holds other bytes, indexed again under a new snapshot.
+    std::fs::remove_file(&fig).unwrap();
+    std::fs::copy("examples/first-success/design.fig", &fig).unwrap();
+    env.json(&["index", "refresh", "--workspace", dir, "--scope", "0:0"]);
+    let rebuilt = ask();
+    assert_eq!(
+        rebuilt["definition"],
+        json!({"state": "unresolved", "reason": "definition_snapshot_stale"}),
+        "{rebuilt}"
+    );
+}
+
 #[test]
 fn a_missing_source_is_not_answered_by_a_same_name_file_registered_elsewhere() {
     let env = Env::new();
