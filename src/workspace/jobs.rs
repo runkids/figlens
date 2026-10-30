@@ -1008,34 +1008,10 @@ fn spawn(
 fn model_exe(
     storage: &Storage,
     profile_id: Option<&str>,
-    mut cancelled: impl FnMut() -> Result<bool>,
+    cancelled: impl FnMut() -> Result<bool>,
 ) -> Result<Option<PathBuf>> {
     match crate::semantic::profile::active(storage)? {
-        // Checked before it runs: a replaced runtime or model must never be started. Hashing
-        // gigabytes can take long, so a cancel is polled meanwhile.
-        Some(p) if Some(p.id.as_str()) == profile_id => {
-            let stop = AtomicBool::new(false);
-            let checked = std::thread::scope(|s| -> Result<std::result::Result<(), String>> {
-                let check = s.spawn(|| p.unchanged(&stop).map_err(|e| e.to_string()));
-                while !check.is_finished() {
-                    let now = cancelled();
-                    if !matches!(now, Ok(false)) {
-                        stop.store(true, Ordering::Relaxed);
-                    }
-                    now?;
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-                Ok(check.join().expect("the model check does not panic"))
-            })?;
-            match checked {
-                Ok(()) => Ok(Some(p.exe)),
-                Err(_) if stop.load(Ordering::Relaxed) => Ok(None),
-                Err(e) => Err(fail(
-                    ErrorKind::OperationFailed,
-                    format!("{e}; run models configure again"),
-                )),
-            }
-        }
+        Some(p) if Some(p.id.as_str()) == profile_id => verified_exe(p, cancelled),
         _ => Err(fail(
             ErrorKind::OperationFailed,
             "the configured model profile changed since this embed job was submitted; run index embed again",
@@ -1044,25 +1020,47 @@ fn model_exe(
 }
 
 /// The runtime of the active vision profile, while it is still the one a visual job was
-/// submitted for; `None` for a hash-only job, which renders in this executable's worker.
-fn vision_exe(storage: &Storage, profile_id: Option<&str>) -> Result<Option<PathBuf>> {
-    if profile_id == Some(search::visual::VERSION) {
-        return Ok(None);
-    }
+/// submitted for; `None` once cancelled. A hash-only job takes no runtime and never calls it.
+fn vision_exe(
+    storage: &Storage,
+    profile_id: Option<&str>,
+    cancelled: impl FnMut() -> Result<bool>,
+) -> Result<Option<PathBuf>> {
     match crate::semantic::profile::active_visual(storage)? {
-        // Checked before it runs: a replaced runtime or model must never be started.
-        Some(p) if Some(p.id.as_str()) == profile_id => {
-            p.unchanged(&AtomicBool::new(false)).map_err(|e| {
-                fail(
-                    ErrorKind::OperationFailed,
-                    format!("{e}; run models configure again"),
-                )
-            })?;
-            Ok(Some(p.exe))
-        }
+        Some(p) if Some(p.id.as_str()) == profile_id => verified_exe(p, cancelled),
         _ => Err(fail(
             ErrorKind::OperationFailed,
             "the configured vision profile changed since this visual job was submitted; run index visual again",
+        )),
+    }
+}
+
+/// `p`'s runtime once its files are checked unchanged, or `None` when `cancelled` said so first.
+/// Checked before it runs: a replaced runtime or model must never be started. Hashing
+/// gigabytes can take long, so a cancel is polled meanwhile.
+fn verified_exe(
+    p: crate::semantic::Profile,
+    mut cancelled: impl FnMut() -> Result<bool>,
+) -> Result<Option<PathBuf>> {
+    let stop = AtomicBool::new(false);
+    let checked = std::thread::scope(|s| -> Result<std::result::Result<(), String>> {
+        let check = s.spawn(|| p.unchanged(&stop).map_err(|e| e.to_string()));
+        while !check.is_finished() {
+            let now = cancelled();
+            if !matches!(now, Ok(false)) {
+                stop.store(true, Ordering::Relaxed);
+            }
+            now?;
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        Ok(check.join().expect("the model check does not panic"))
+    })?;
+    match checked {
+        Ok(()) => Ok(Some(p.exe)),
+        Err(_) if stop.load(Ordering::Relaxed) => Ok(None),
+        Err(e) => Err(fail(
+            ErrorKind::OperationFailed,
+            format!("{e}; run models configure again"),
         )),
     }
 }
@@ -1401,22 +1399,27 @@ fn build(
             "the job's source is no longer inside the visible roots",
         ));
     }
-    let (model, worker) = match lane {
-        "embed" => match model_exe(storage, profile_id.as_deref(), || {
-            cancelled(&ws.conn, job_id, cancel)
-        })? {
-            Some(exe) => (Some(exe), "__model-worker"),
-            None => {
-                finish(&ws.conn, job_id, me, attempt, "cancelled", None)?;
-                drop_building(&mut ws.conn, job_id, me, attempt)?;
-                return Ok(None);
-            }
-        },
+    // The model a worker runs, checked unchanged first; `None` once a cancel stopped the check.
+    // A hash-only visual job renders in this executable's worker and checks no model.
+    let polled = || cancelled(&ws.conn, job_id, cancel);
+    let (checked, worker) = match lane {
+        "embed" => (
+            model_exe(storage, profile_id.as_deref(), polled)?.map(Some),
+            "__model-worker",
+        ),
+        "visual" if profile_id.as_deref() == Some(search::visual::VERSION) => {
+            (Some(None), "__visual-worker")
+        }
         "visual" => (
-            vision_exe(storage, profile_id.as_deref())?,
+            vision_exe(storage, profile_id.as_deref(), polled)?.map(Some),
             "__visual-worker",
         ),
-        _ => (None, "__index-worker"),
+        _ => (Some(None), "__index-worker"),
+    };
+    let Some(model) = checked else {
+        finish(&ws.conn, job_id, me, attempt, "cancelled", None)?;
+        drop_building(&mut ws.conn, job_id, me, attempt)?;
+        return Ok(None);
     };
     let running = child.insert(spawn(dir, job_id, me, attempt, model.as_deref(), worker)?);
     let (reader, eof) = output(running);

@@ -3762,3 +3762,26 @@ fn a_schema_8_upgrade_reaches_10_with_separate_visual_and_text_job_slots() {
         )
         .unwrap();
 }
+
+/// The pre-launch model check of embed and vision jobs stops at a cancel instead of hashing on:
+/// this test binary, hundreds of megabytes in a debug build, stands in for the runtime.
+#[test]
+fn a_cancel_stops_the_pre_launch_model_check() {
+    let p = crate::semantic::Profile {
+        id: "p".into(),
+        exe: std::env::current_exe().unwrap(),
+        model: std::env::temp_dir(),
+        dim: 4,
+        contract: serde_json::json!({}),
+        stamps: serde_json::json!({"runtime": "not this binary", "files": []}),
+    };
+    let mut polls = 0;
+    let checked = verified_exe(p.clone(), || {
+        polls += 1;
+        Ok(true)
+    });
+    assert_eq!(checked.unwrap(), None);
+    assert_eq!(polls, 1);
+    // Uncancelled, the same check runs to its verdict: a changed runtime is refused.
+    assert!(verified_exe(p, || Ok(false)).is_err());
+}
