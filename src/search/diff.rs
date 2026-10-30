@@ -156,6 +156,7 @@ pub const LIMIT: usize = 100;
 pub const MAX_LIMIT: usize = 500;
 
 /// One effective field of one record.
+#[derive(Clone)]
 pub(crate) struct Field {
     pub(crate) key: &'static str,
     pub(crate) facet: u8,
@@ -169,6 +170,7 @@ pub(crate) struct Field {
 }
 
 /// A record's effective fields in `FIELDS` order; absent fields are not listed.
+#[derive(Clone)]
 pub(crate) struct Facets {
     pub(crate) fields: Vec<Field>,
     /// The variables a variable's values alias (`variableDataValues`), one per aliasing mode,

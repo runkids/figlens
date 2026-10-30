@@ -853,30 +853,37 @@ fn build_with(
         ) {
             break;
         }
-        let facet = match facets.is_some() {
-            true => match diff::facets(tree, &id, ex.nodes.get(&id), &mut bounds) {
-                Some(f) => Some(f),
-                None => break,
-            },
-            false => None,
-        };
         let unexpanded = hidden && children.is_none() && hides_content(tree, &ex, &id, &kind);
         let defining = fingerprint
             && !ex.nodes.contains_key(&id)
             && fingerprint::applicable(&kind, tree.nodes.get(&id).copied());
         let inside =
             fingerprint && (defining || parent.is_some_and(|p| inputs[p as usize].is_some()));
-        let input = match inside {
+        // Read once; a record both tracked and fingerprinted keeps a copy that pays what the
+        // read did.
+        let left = bounds.bytes;
+        let read = match facets.is_some() || inside {
             true => match diff::facets(tree, &id, ex.nodes.get(&id), &mut bounds) {
-                Some(facets) => Some(fingerprint::Input {
-                    facets,
-                    hidden: own_hidden,
-                    unexpanded,
-                }),
+                Some(f) => Some(f),
                 None => break,
             },
             false => None,
         };
+        let (facet, input) = match (facets.is_some(), inside, read) {
+            (true, true, Some(f)) => {
+                if !bounds.charge(0, left - bounds.bytes) {
+                    break;
+                }
+                (Some(f.clone()), Some(f))
+            }
+            (true, _, f) => (f, None),
+            (false, _, f) => (None, f),
+        };
+        let input = input.map(|facets| fingerprint::Input {
+            facets,
+            hidden: own_hidden,
+            unexpanded,
+        });
         index.text_bytes += text_len;
         lens[0] += u64::from(record_lens[0]);
         lens[1] += u64::from(record_lens[1]);
