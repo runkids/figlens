@@ -903,6 +903,20 @@ test('CLI-path track runs until its baseline job finishes, and untrack asks only
   assert.deepEqual(asked, [['read', '/a.fig'], ['edit', '/w', '/w.lock', '/c']]);
 });
 
+test('CLI-path embed reads the sources it sends to the local model, asks edit like a build and runs until its jobs finish', async t => {
+  const { ctx, adapter } = await context(t);
+  const asked = [], timeouts = [];
+  ctx.permission.assert = async ({ action, resources }) => { asked.push([action, ...resources]); };
+  const current = await adapter.scope('session');
+  current.run = async (args, timeout) => {
+    timeouts.push([args.join(' '), timeout]);
+    return { stdout: JSON.stringify({ paths: { workspace: '/w', lock: '/w.lock' }, roots: { config: { path: '/c' } }, sources: [{ sourceId: 's', path: '/a.fig' }] }) };
+  };
+  await adapter.cli(current, 'index', { action: 'embed', workspaceId: 'ws_1', sourceId: 's', scope: '0:1' });
+  assert.deepEqual(timeouts, [['index status --id ws_1', undefined], ['index embed --id ws_1 --source s --scope 0:1', 0]]);
+  assert.deepEqual(asked, [['read', '/a.fig'], ['edit', '/w', '/w.lock', '/c']]);
+});
+
 // A bundled package whose native CLI answers status and holds `watch run` leases as the real one does.
 async function watching(t) {
   const { root, ctx, own } = await context(t);
