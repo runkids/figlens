@@ -167,10 +167,13 @@
       ]
     },
     "changes": {
-      "description": "Changing change tracking, its revisions, changes reads or watch ack checkpoints.",
+      "description": "Changing change tracking, its revisions, changes reads, watch ack checkpoints or host stale-context notes.",
       "sources": [
         {
           "path": "wiki/changes.md"
+        },
+        {
+          "path": "wiki/stale-context.md"
         }
       ]
     },

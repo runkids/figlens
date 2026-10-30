@@ -9,7 +9,7 @@ import { Container, Image, Input, Markdown, SelectList, fuzzyFilter, truncateToW
 import { Workflow } from './workflow.mjs';
 import { Viewer } from './viewer.mjs';
 import { buildRequest } from './requests.mjs';
-import { ENTRY, OUTPUT, Targets, changesArgs, check, failure, notice, restore as restoreTargets } from './stale.mjs';
+import { ENTRY, Targets, bounded, changesArgs, check, failure, notice, restore as restoreTargets } from './stale.mjs';
 
 const HELP = [
   "## figlens",
@@ -278,9 +278,9 @@ export default function figlens(pi: ExtensionAPI) {
   pi.on('before_agent_start', async (event, ctx) => {
     if (event.messageType === 'custom') return;
     note = targets.list.length ? notice(await check(targets.turn(), async (target, signal) => {
-      const execution = await pi.exec(binary, [...prefix, ...changesArgs(target)], { cwd: ctx.cwd, signal });
-      if (execution.code !== 0 || execution.killed) throw failure(execution.stderr.slice(0, OUTPUT));
-      if (execution.stdout.length > OUTPUT) throw new Error('the changes reply exceeded the check budget');
+      // pi.exec buffers a whole reply, so the check reads through a byte-bounded child instead.
+      const execution = await bounded(binary, [...prefix, ...changesArgs(target)], { cwd: ctx.cwd, signal });
+      if (execution.code !== 0) throw failure(execution.stderr);
       return JSON.parse(execution.stdout);
     }, AbortSignal.any([checks.signal, ...(ctx.signal ? [ctx.signal] : [])])), targets.dropped) : undefined;
     if (ctx.mode === 'tui') ctx.ui.setStatus('figlens-changes', note ? 'figlens · design context may be stale' : undefined);
