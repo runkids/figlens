@@ -1098,8 +1098,9 @@ fn a_revision_at_the_high_water_size_keeps_its_rows_in_pages_cleanup_freed() {
 }
 
 #[test]
-fn a_publication_evaluates_each_saved_search_once_for_every_subscription_saving_it() {
+fn a_publication_evaluates_each_saved_search_once_in_bounded_turns() {
     use crate::workspace::changes::{evaluate_published, subscriptions};
+    use std::sync::atomic::AtomicBool;
     let d = TestDir::new();
     let (storage, select, dir) = workspace(&d, 1);
     let me = owner(&dir).unwrap();
@@ -1124,56 +1125,139 @@ fn a_publication_evaluates_each_saved_search_once_for_every_subscription_saving_
             query: Some(query),
             types: Vec::new(),
         };
-        subscriptions::subscribe(&storage, &select, &req).unwrap()["evaluation"]["state"].clone()
+        subscriptions::subscribe(&storage, &select, &req).unwrap();
     };
-    // Two spellings of one search by two consumers, and another search.
-    let initial = [
-        save("a", "First success"),
-        save("b", "first  SUCCESS"),
-        save("a", "badge"),
-    ];
-    // Only a write runs the hook: reading changes computes nothing.
-    let evaluations = || {
-        conn.query_row("SELECT COUNT(*) FROM query_evaluations", [], |r| {
-            r.get::<_, i64>(0)
-        })
-        .unwrap()
-    };
-    let before = evaluations();
-    build(2);
-    // A publication alone evaluates nothing: only the hook (or watch evaluate) writes one.
-    assert_eq!(evaluations(), before);
-    let out = evaluate_published(&storage, &select, &source, "0:0").unwrap();
-    let states: Vec<_> = out["subscriptions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|s| s["evaluation"]["state"].clone())
-        .collect();
-    assert_eq!(
+    // One more subscriber of badge than a write records, two spellings of one search by two
+    // consumers, and one other search.
+    let many: Vec<String> = (0..33).map(|i| format!("c{i:02}")).collect();
+    for c in &many {
+        save(c, "badge");
+    }
+    save("a", "First success");
+    save("b", "first  SUCCESS");
+    save("a", "card");
+    let (go, stop) = (AtomicBool::new(false), AtomicBool::new(true));
+    let turn = |from, cancel| {
+        let t = evaluate_published(&storage, &select, &source, "0:0", from, cancel).unwrap();
+        let n = t.report["subscriptions"].as_array().unwrap().len();
         (
-            initial.to_vec(),
-            before,
-            out["computed"].clone(),
-            states.len(),
-            states.iter().all(|s| s != "pending")
-        ),
-        (vec![json!("evaluated"); 3], 3, json!(2), 3, true),
-        "{out}"
-    );
-    // A damaged saved search fails only its own subscriptions.
+            (t.report["computed"].as_u64().unwrap(), n, t.next.is_some()),
+            t.next,
+        )
+    };
+    // Turns from `from` until nothing is due, at most ten.
+    let drain = |mut from| {
+        let mut seen = Vec::new();
+        while seen.len() < 10 {
+            let (got, next) = turn(from, &go);
+            seen.push(got);
+            if next.is_none() {
+                break;
+            }
+            from = next;
+        }
+        seen
+    };
+    // Every subscription is current after subscribe: nothing is due until a publication.
+    let (idle, _) = turn(None, &go);
+    // Same bytes publish no new generation here, so the evaluations are made stale instead, as
+    // a publication they were not evaluated at leaves them.
+    let stale = |ranking: &str| {
+        conn.execute("UPDATE query_evaluations SET ranking = ?1", [ranking])
+            .unwrap();
+    };
+    stale("older");
+    let (cancelled, from) = turn(None, &stop);
+    let (badge, from) = turn(from, &go);
+    // A relocation between turns: the kept badge search belongs to another publication, so
+    // the work restarts at the first search, which is badge again.
+    conn.execute_batch(
+        "UPDATE sources SET membership = 'moved'; UPDATE generations SET membership = 'moved'",
+    )
+    .unwrap();
+    let rest = drain(from);
+    let again = turn(None, &go).0;
+    // A damaged search is noted once per publication, not rerun by every later discovery.
     conn.execute(
-        "UPDATE subscriptions SET anchor = '{' WHERE anchor LIKE '%badge%'",
+        "UPDATE subscriptions SET anchor = '{' WHERE anchor LIKE '%card%'",
         [],
     )
     .unwrap();
-    build(3);
-    let out = evaluate_published(&storage, &select, &source, "0:0").unwrap();
-    let failed = out["subscriptions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|s| s["evaluation"]["state"] == "failed")
-        .count();
-    assert_eq!((out["computed"].clone(), failed), (json!(1), 1), "{out}");
+    stale("oldest");
+    let damaged = drain(None);
+    let after = turn(None, &go).0;
+    let note: String = conn
+        .query_row(
+            "SELECT eval_failure ->> '$.evaluation.state' FROM subscriptions WHERE anchor = '{'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    // Searches in canonical order: badge in two writes from one search, card, first success.
+    let order = vec![
+        (1, 32, true),
+        (0, 1, true),
+        (1, 1, true),
+        (1, 2, true),
+        (0, 0, false),
+    ];
+    assert_eq!(
+        (
+            idle,
+            cancelled,
+            badge,
+            rest,
+            again,
+            damaged,
+            after,
+            note.as_str()
+        ),
+        (
+            (0, 0, false),
+            (0, 0, true),
+            (1, 32, true),
+            order.clone(),
+            (0, 0, false),
+            order,
+            (0, 0, false),
+            "failed"
+        )
+    );
+    // Behind another writer: a turn fails busy at once, and one cancelled while it waits
+    // writes nothing; its continuation then records the rest without searching again.
+    use std::sync::atomic::Ordering;
+    stale("held");
+    let (_, from) = turn(None, &go);
+    let holder = connection(&dir);
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let started = std::time::Instant::now();
+    let busy = evaluate_published(&storage, &select, &source, "0:0", from.clone(), &go)
+        .err()
+        .and_then(|e| e.downcast_ref::<FigError>().map(FigError::kind));
+    let waited = started.elapsed();
+    let flag = AtomicBool::new(false);
+    let held = std::thread::scope(|s| {
+        let turn = s.spawn(|| {
+            evaluate_published(&storage, &select, &source, "0:0", from.clone(), &flag).unwrap()
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        flag.store(true, Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        holder.execute_batch("COMMIT").unwrap();
+        let t = turn.join().unwrap();
+        (
+            t.report["subscriptions"].as_array().unwrap().len(),
+            t.next.is_some(),
+        )
+    });
+    let resumed = turn(from, &go).0;
+    assert_eq!(
+        (busy, waited < LOCK_WAIT, held, resumed),
+        (
+            Some(ErrorKind::WorkspaceBusy),
+            true,
+            (0, true),
+            (0, 1, true)
+        )
+    );
 }

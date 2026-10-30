@@ -382,6 +382,7 @@ pub(crate) const SUBSCRIPTIONS: &str = "
         filter_version INTEGER NOT NULL, after_seq INTEGER NOT NULL, floor INTEGER NOT NULL,
         created_ms INTEGER NOT NULL, read_ms INTEGER NOT NULL,
         pruned_seq INTEGER NOT NULL DEFAULT 0,
+        eval_failure TEXT,
         UNIQUE (consumer, source_id, scope, kind, target)) STRICT;
     CREATE TABLE query_evaluations (
         id BLOB PRIMARY KEY CHECK (length(id) = 16),
@@ -391,6 +392,7 @@ pub(crate) const SUBSCRIPTIONS: &str = "
         total INTEGER, delta TEXT NOT NULL, bytes INTEGER NOT NULL, created_ms INTEGER NOT NULL,
         UNIQUE (sub, seq)) STRICT;
     CREATE INDEX subscriptions_owner ON subscriptions (owner) WHERE owner IS NOT NULL;
+    CREATE INDEX subscriptions_query ON subscriptions (source_id, scope, kind, target, id);
     ALTER TABLE consumers ADD COLUMN sources TEXT;
     PRAGMA user_version = 6;";
 

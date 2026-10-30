@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::search;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The ranked window an evaluation keeps; changes past it are counted, never listed.
 pub(super) const TOP_K: usize = 50;
@@ -60,6 +61,7 @@ impl Saved {
 }
 
 /// One evaluation before it is published: what it read and what it found.
+#[derive(Clone)]
 pub(super) struct Eval {
     source: String,
     generation: i64,
@@ -89,9 +91,13 @@ fn publication(conn: &Connection, source: &str, scope: &str) -> Result<Option<(i
     .map_err(sql)
 }
 
+/// An evaluation, or the reply that says why there is none now and what makes it ready.
+type Outcome = std::result::Result<Eval, Json>;
+
 /// The saved search, run with the workspace search's own validation, ranking and budgets over
-/// `source`'s published `scope`, outside any write. `Err(reply)` says why there is nothing to
-/// evaluate now (not published, stale, unreadable) and what makes it ready.
+/// `source`'s published `scope`, outside any write, with the publication it read. `Err(reply)`
+/// says why there is nothing to evaluate now (not published, stale, unreadable). `cancel`
+/// interrupts the search; it then fails with `Cancelled`.
 pub(super) fn compute(
     storage: &Storage,
     select: &Select,
@@ -99,19 +105,25 @@ pub(super) fn compute(
     source: &str,
     scope: &str,
     saved: &Saved,
-) -> Result<std::result::Result<Eval, Json>> {
+    cancel: Option<&AtomicBool>,
+) -> Result<(Option<(i64, String)>, Outcome)> {
     let (_, ws) = opened(storage, select, false)?;
     // Publications only move forward, so the same one before and after the search is the one
     // it read.
-    let Some((generation, membership)) = publication(&ws.conn, source, scope)? else {
-        return Ok(Err(
-            json!({"state": "unavailable", "reason": "scope_not_published",
+    let read = publication(&ws.conn, source, scope)?;
+    let Some((generation, membership)) = read.clone() else {
+        return Ok((
+            None,
+            Err(
+                json!({"state": "unavailable", "reason": "scope_not_published",
             "nextSteps": [{"tool": "index", "arguments": {"action": "refresh",
                 "workspaceId": ws.held.id, "sourceId": source, "scope": scope}}]}),
+            ),
         ));
     };
     let canonical = saved.canonical(scope)?;
-    let reply = match query::search(storage, select, &[source.to_owned()], &saved.request(scope)) {
+    let only = [source.to_owned()];
+    let reply = match query::search_with(storage, select, &only, &saved.request(scope), cancel) {
         Ok(reply) => reply,
         Err(e) => {
             // A stale, unreadable or too large index: nothing to evaluate until its recovery runs.
@@ -126,19 +138,21 @@ pub(super) fn compute(
             }) else {
                 return Err(e);
             };
-            return Ok(Err(
-                json!({"state": "unavailable", "reason": "search_failed",
-                "message": f.to_string(), "nextSteps": f.recovery()}),
+            return Ok((
+                read,
+                Err(json!({"state": "unavailable", "reason": "search_failed",
+                "message": f.to_string(), "nextSteps": f.recovery()})),
             ));
         }
     };
-    if publication(&ws.conn, source, scope)? != Some((generation, membership.clone())) {
-        return Ok(Err(pending("newer_publication", &ws.held.id, sub)));
+    if publication(&ws.conn, source, scope)? != read {
+        return Ok((read, Err(pending("newer_publication", &ws.held.id, sub))));
     }
     if reply["state"] != "ready" {
-        return Ok(Err(
-            json!({"state": "unavailable", "reason": reply["state"],
-            "sources": reply["sources"], "nextSteps": reply["nextSteps"]}),
+        return Ok((
+            read,
+            Err(json!({"state": "unavailable", "reason": reply["state"],
+            "sources": reply["sources"], "nextSteps": reply["nextSteps"]})),
         ));
     }
     let refs = reply["results"]
@@ -150,21 +164,24 @@ pub(super) fn compute(
         })
         .unwrap_or_default();
     let coverage = &reply["coverage"];
-    Ok(Ok(Eval {
-        source: source.to_owned(),
-        generation,
-        membership,
-        snapshot: reply["sources"][0]["snapshotId"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned(),
-        ranking: reply["ranking"].to_string(),
-        coverage: json!({"complete": coverage["complete"], "text": coverage["layers"]["text"]["state"],
+    Ok((
+        read,
+        Ok(Eval {
+            source: source.to_owned(),
+            generation,
+            membership,
+            snapshot: reply["sources"][0]["snapshotId"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            ranking: reply["ranking"].to_string(),
+            coverage: json!({"complete": coverage["complete"], "text": coverage["layers"]["text"]["state"],
             "reasons": coverage["reasons"].as_array().map(|r| r.iter().map(|c| c["code"].clone()).collect::<Vec<_>>())}),
-        refs,
-        more: reply["hasMore"] == true,
-        canonical,
-    }))
+            refs,
+            more: reply["hasMore"] == true,
+            canonical,
+        }),
+    ))
 }
 
 /// The newest stored evaluation of a subscription, as published.
@@ -391,11 +408,7 @@ pub(super) fn record(
         )
         .map_err(sql)?;
     if bytes as usize > ROW_BYTES {
-        return Ok(
-            json!({"state": "unavailable", "reason": "evaluation_too_large",
-            "message": format!("this evaluation's window takes more than {ROW_BYTES} bytes; subscribe to a narrower query, type or scope"),
-            "nextSteps": [{"tool": "watch", "arguments": {"action": "unsubscribe", "workspaceId": ws, "subscriptionId": sub}}]}),
-        );
+        return Ok(too_large(ws, sub));
     }
     if held_bytes - doomed.1 + bytes > BYTES || !room(tx, (bytes - doomed.1).max(0) as u64)? {
         return Err(FigError::new(
@@ -451,6 +464,34 @@ pub(super) fn record(
     )
 }
 
+fn too_large(ws: &str, sub: &str) -> Json {
+    json!({"state": "unavailable", "reason": "evaluation_too_large",
+        "message": format!("this evaluation's window takes more than {ROW_BYTES} bytes; subscribe to a narrower query, type or scope"),
+        "nextSteps": [{"tool": "watch", "arguments": {"action": "unsubscribe", "workspaceId": ws, "subscriptionId": sub}}]})
+}
+
+/// `outcome` as a runner turn may keep it: an evaluation past `ROW_BYTES`, which could never
+/// be stored, is kept only as its small failure.
+fn kept(ws: &str, outcome: Outcome) -> Outcome {
+    match outcome {
+        Ok(e) => {
+            let bytes = json!(e.refs).to_string().len()
+                + e.coverage.to_string().len()
+                + e.ranking.len()
+                + e.snapshot.len()
+                + e.membership.len()
+                + e.canonical.len()
+                + e.source.len();
+            if bytes > ROW_BYTES {
+                Err(too_large(ws, ""))
+            } else {
+                Ok(e)
+            }
+        }
+        why => why,
+    }
+}
+
 /// Whether `bytes` more fit under `DISK_CAP`, freed pages counted as room.
 fn room(conn: &Connection, bytes: u64) -> Result<bool> {
     Ok(jobs::used_bytes(conn)? + bytes <= jobs::DISK_CAP)
@@ -477,107 +518,310 @@ pub fn evaluate(storage: &Storage, select: &Select, id: Option<&str>) -> Result<
         let scope = sub.scope.clone().unwrap_or_else(|| "0:0".into());
         (sub.source, scope, saved, ws.held.id.clone())
     };
-    let e = match compute(storage, select, id, &source, &scope, &saved)? {
-        Ok(e) => e,
-        Err(why) => {
-            return Ok(json!({"workspaceId": ws_id, "subscriptionId": id, "evaluation": why}));
-        }
-    };
+    let ranking = search::corpus_ranking().to_string();
+    let (read, computed) = compute(storage, select, id, &source, &scope, &saved, None)?;
     let (_, ws) = opened(storage, select, true)?;
     let tx =
         rusqlite::Transaction::new_unchecked(&ws.conn, rusqlite::TransactionBehavior::Immediate)
             .map_err(sql)?;
-    let out = record(&tx, storage, &ws_id, id, &e)?;
+    let (out, at) = match computed {
+        Ok(e) => (
+            record(&tx, storage, &ws_id, id, &e)?,
+            Some((e.generation, e.membership)),
+        ),
+        // A failure is noted at the publication it read, so changes reports it later.
+        Err(why) => (why, read),
+    };
+    if let Some((generation, membership)) = at.filter(|_| failed_state(&out)) {
+        note(&tx, id, (generation, &membership, &ranking), &out)?;
+    }
     tx.commit().map_err(sql)?;
     Ok(json!({"workspaceId": ws_id, "subscriptionId": id, "evaluation": out}))
 }
 
-/// The runner's hook after `source`'s `scope` published: every query subscription on it is
-/// evaluated, each distinct search computed once and recorded for every subscription saving it.
-/// `computed` counts the searches that finished; one that did not leaves its subscriptions on
-/// their last evaluation, and a subscription that fails is reported failed, not the whole run.
+/// The most a noted evaluation failure takes.
+const NOTE_BYTES: usize = 4096;
+
+/// Notes on `sub` why it has no evaluation at publication `(generation, membership, ranking)`,
+/// so `changes` reports it after the runner that met it is gone. A note at another publication
+/// is ignored, so a later evaluation needs no cleanup.
+fn note(conn: &Connection, sub: &str, at: (i64, &str, &str), why: &Json) -> Result<()> {
+    let mut why = why.clone();
+    if let Some(m) = why["message"].as_str() {
+        why["message"] = json!(m.chars().take(500).collect::<String>());
+    }
+    let mut text =
+        json!({"gen": at.0, "membership": at.1, "ranking": at.2, "evaluation": why}).to_string();
+    if text.len() > NOTE_BYTES {
+        text = json!({"gen": at.0, "membership": at.1, "ranking": at.2,
+            "evaluation": {"state": why["state"], "reason": why["reason"]}})
+        .to_string();
+    }
+    conn.execute(
+        "UPDATE subscriptions SET eval_failure = ?2 WHERE id = ?1",
+        params![sub, text],
+    )
+    .map_err(sql)?;
+    Ok(())
+}
+
+/// Whether an evaluation outcome is a failure worth noting: not stored, current or pending.
+fn failed_state(why: &Json) -> bool {
+    !matches!(
+        why["state"].as_str(),
+        Some("evaluated" | "current" | "pending")
+    )
+}
+
+/// Subscriptions one runner turn's write records.
+const FANOUT: usize = 32;
+/// The most a stored target, anchor or subscription id takes; past it the row is damaged.
+const SAVED_BYTES: i64 = 16 * 1024;
+/// How long a turn's write waits for another writer before it fails busy.
+const ADMIT: Duration = Duration::from_millis(250);
+
+/// Where the runner is in one publication's saved-query work; `Default` starts from the first
+/// search. The runner keeps it between turns; it is never stored.
+#[derive(Clone, Default)]
+pub struct Continuation {
+    /// The publication (generation, membership, ranking) it belongs to. At another one the
+    /// work restarts from the first search, so none is skipped.
+    at: Option<(i64, String, String)>,
+    /// The search being recorded, or the last one finished.
+    target: String,
+    /// The last subscription of `target` recorded.
+    after: String,
+    /// `target`'s search outcome, kept while its subscriptions are recorded so no later turn
+    /// runs that search again.
+    outcome: Option<Outcome>,
+}
+
+/// One bounded turn of the runner's saved-query work on a published scope.
+pub struct Turn {
+    /// What to pass to the next turn; `None` once nothing is due at this publication.
+    pub next: Option<Continuation>,
+    pub report: Json,
+}
+
+/// Subscriptions on `source`'s `scope` with neither a latest evaluation nor a noted failure at
+/// publication `(?4 gen, ?5 membership, ?6 ranking)`: the work a publication leaves.
+const STALE: &str = "s.kind = 'query' AND s.source_id = ?1 AND s.scope = ?2
+    AND NOT EXISTS (SELECT 1 FROM query_evaluations e WHERE e.sub = s.id
+        AND e.seq = (SELECT MAX(seq) FROM query_evaluations WHERE sub = s.id)
+        AND e.gen = ?4 AND e.membership = ?5 AND e.ranking = ?6)
+    AND NOT IFNULL(CASE WHEN json_valid(s.eval_failure) THEN s.eval_failure ->> 'gen' = ?4
+        AND s.eval_failure ->> 'membership' = ?5 AND s.eval_failure ->> 'ranking' = ?6 END, 0)";
+
+/// The runner's hook on `source`'s published `scope`, one bounded turn at a time: at most one
+/// saved search, computed outside any write, and one write recording its outcome for at most
+/// `FANOUT` of its due subscriptions. A subscription is due until an evaluation or a noted
+/// failure is at the current publication, so each search runs once per publication and a
+/// failure waits for the next one or `watch evaluate`. Pass `None` to discover due work, then
+/// each `Turn::next`. `cancel` interrupts the search in progress; a cancelled turn writes
+/// nothing and returns its continuation, which resumes without rerunning a kept search.
 pub fn evaluate_published(
     storage: &Storage,
     select: &Select,
     source: &str,
     scope: &str,
-) -> Result<Json> {
-    let (ws_id, groups) = {
-        let (_, ws) = opened(storage, select, false)?;
-        let mut stmt = ws
-            .conn
-            .prepare(
-                "SELECT target, id, anchor FROM subscriptions
-                 WHERE kind = 'query' AND source_id = ?1 AND scope = ?2 ORDER BY target, id",
-            )
-            .map_err(sql)?;
-        let rows = stmt
-            .query_map([source, scope], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(sql)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(sql)?;
-        // One group per saved search: its first subscription's anchor is the search it runs.
-        let mut groups: Vec<(String, String, Vec<String>)> = Vec::new();
-        for (target, id, anchor) in rows {
-            match groups.last_mut() {
-                Some((t, _, ids)) if *t == target => ids.push(id),
-                _ => groups.push((target, anchor, vec![id])),
-            }
-        }
-        (ws.held.id.clone(), groups)
+    from: Option<Continuation>,
+    cancel: &AtomicBool,
+) -> Result<Turn> {
+    let (_, ws) = opened(storage, select, false)?;
+    let ws_id = ws.held.id.clone();
+    let turn = |next, computed, states| Turn {
+        next,
+        report: json!({"workspaceId": ws_id, "computed": computed, "subscriptions": states}),
     };
-    // One subscription's failure is its own state: the runner keeps evaluating the others.
-    let failed =
-        |e: Box<dyn std::error::Error>| json!({"state": "failed", "message": e.to_string()});
-    let (mut computed, mut states) = (0, Vec::new());
-    for (_, anchor, ids) in groups {
-        let e = match Saved::parse(&anchor)
-            .and_then(|saved| compute(storage, select, &ids[0], source, scope, &saved))
-        {
-            Ok(Ok(e)) => e,
-            outcome => {
-                let why = outcome
-                    .map(|r| r.err().unwrap_or_default())
-                    .unwrap_or_else(failed);
-                for id in &ids {
-                    // A pending step names the subscription it is for.
-                    let why = match why["state"] == "pending" {
-                        true => pending(why["reason"].as_str().unwrap_or_default(), &ws_id, id),
-                        false => why.clone(),
-                    };
-                    states.push(json!({"subscriptionId": id, "evaluation": why}));
-                }
-                continue;
-            }
-        };
-        computed += 1;
-        let (_, ws) = opened(storage, select, true)?;
-        let tx = rusqlite::Transaction::new_unchecked(
-            &ws.conn,
-            rusqlite::TransactionBehavior::Immediate,
+    // Nothing of a hidden or removed source is loaded, not even its subscriptions.
+    let published = match registry::visible_path(storage, &ws.conn, source)? {
+        Some(_) => publication(&ws.conn, source, scope)?,
+        None => None,
+    };
+    let Some((generation, membership)) = published.clone() else {
+        return Ok(turn(None, 0, Vec::new()));
+    };
+    let ranking = search::corpus_ranking().to_string();
+    let at = (generation, membership.clone(), ranking.clone());
+    let mut c = from
+        .filter(|c| c.at.as_ref() == Some(&at))
+        .unwrap_or_default();
+    c.at = Some(at);
+    // Due subscriptions of search `target` after `after`, at most `limit`, each id checked
+    // against its cap before it is copied.
+    let due = |conn: &Connection, target: &str, after: &str, limit: usize| -> Result<Vec<String>> {
+        conn.prepare(&format!(
+            "SELECT CASE WHEN length(CAST(s.id AS BLOB)) <= ?7 THEN s.id END
+             FROM subscriptions s WHERE {STALE} AND s.target = ?3 AND s.id > ?8
+             ORDER BY s.id LIMIT ?9"
+        ))
+        .map_err(sql)?
+        .query_map(
+            params![
+                source,
+                scope,
+                target,
+                generation,
+                membership,
+                ranking,
+                SAVED_BYTES,
+                after,
+                limit as i64
+            ],
+            |r| r.get::<_, Option<String>>(0),
         )
-        .map_err(sql)?;
-        for id in &ids {
-            // A savepoint per subscription: a failed record leaves none of its writes behind.
-            tx.execute_batch("SAVEPOINT one").map_err(sql)?;
-            let out = record(&tx, storage, &ws_id, id, &e);
-            tx.execute_batch(if out.is_ok() {
-                "RELEASE one"
-            } else {
-                "ROLLBACK TO one; RELEASE one"
-            })
-            .map_err(sql)?;
-            states.push(json!({"subscriptionId": id, "evaluation": out.unwrap_or_else(failed)}));
-        }
-        tx.commit().map_err(sql)?;
+        .map_err(sql)?
+        .map(|id| id.map_err(sql)?.ok_or_else(damaged))
+        .collect()
+    };
+    if c.outcome.is_some() && due(&ws.conn, &c.target, &c.after, 1)?.is_empty() {
+        c.outcome = None;
     }
-    Ok(json!({"workspaceId": ws_id, "computed": computed, "subscriptions": states}))
+    let mut computed = 0;
+    if c.outcome.is_none() {
+        let next_target = |after: &str| {
+            ws.conn
+                .query_row(
+                    &format!(
+                        "SELECT CASE WHEN length(CAST(s.target AS BLOB)) <= ?7 THEN s.target END
+                         FROM subscriptions s WHERE {STALE} AND s.target > ?3
+                         ORDER BY s.target LIMIT 1"
+                    ),
+                    params![
+                        source,
+                        scope,
+                        after,
+                        generation,
+                        membership,
+                        ranking,
+                        SAVED_BYTES
+                    ],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .optional()
+                .map_err(sql)
+        };
+        // The next due search after the last one finished, then any due before it, such as
+        // one subscribed since.
+        let mut found = next_target(&c.target)?;
+        if found.is_none() && !c.target.is_empty() {
+            found = next_target("")?;
+        }
+        let Some(target) = found else {
+            return Ok(turn(None, 0, Vec::new()));
+        };
+        let target = target.ok_or_else(damaged)?;
+        // The anchor of the search's oldest due subscription stands for all of them.
+        let anchor: Option<String> = ws
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT CASE WHEN length(CAST(s.anchor AS BLOB)) <= ?7 THEN s.anchor END
+                     FROM subscriptions s WHERE {STALE} AND s.target = ?3 ORDER BY s.id LIMIT 1"
+                ),
+                params![
+                    source,
+                    scope,
+                    target,
+                    generation,
+                    membership,
+                    ranking,
+                    SAVED_BYTES
+                ],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(sql)?
+            .flatten();
+        let outcome = anchor
+            .ok_or_else(damaged)
+            .and_then(|a| Saved::parse(&a))
+            .and_then(|saved| compute(storage, select, "", source, scope, &saved, Some(cancel)));
+        let outcome = match outcome {
+            // Cancelled, whatever stopped it: nothing is noted and the turn resumes as it was.
+            _ if cancel.load(Ordering::SeqCst) => return Ok(turn(Some(c), 0, Vec::new())),
+            Ok((read, _)) if read != published => {
+                return Ok(turn(Some(Continuation::default()), 0, Vec::new()));
+            }
+            Ok((_, Err(why))) if why["state"] == "pending" => {
+                return Ok(turn(Some(Continuation::default()), 0, Vec::new()));
+            }
+            Ok((_, outcome)) => kept(&ws_id, outcome),
+            Err(e) => Err(failed(e)),
+        };
+        computed = 1;
+        c.target = target;
+        c.after = String::new();
+        c.outcome = Some(outcome);
+    }
+    if cancel.load(Ordering::SeqCst) {
+        return Ok(turn(Some(c), computed, Vec::new()));
+    }
+    drop(ws);
+    let (_, ws) = opened(storage, select, true)?;
+    // Behind another SQLite writer the turn fails busy after `ADMIT` and the runner retries it
+    // later, instead of waiting out `LOCK_WAIT` for the write lock.
+    ws.conn.busy_timeout(ADMIT).map_err(sql)?;
+    let tx =
+        rusqlite::Transaction::new_unchecked(&ws.conn, rusqlite::TransactionBehavior::Immediate)
+            .map_err(sql)?;
+    let ids = due(&tx, &c.target, &c.after, FANOUT)?;
+    let at = (generation, membership.as_str(), ranking.as_str());
+    let (mut states, mut newer) = (Vec::new(), false);
+    for id in &ids {
+        // Cancelled once the write began: dropping `tx` rolls back every record of this turn.
+        if cancel.load(Ordering::SeqCst) {
+            return Ok(turn(Some(c), computed, Vec::new()));
+        }
+        let out = match c.outcome.as_ref().expect("searched") {
+            Ok(e) => {
+                // A savepoint per subscription: a failed record leaves none of its writes.
+                tx.execute_batch("SAVEPOINT one").map_err(sql)?;
+                let out = record(&tx, storage, &ws_id, id, e);
+                tx.execute_batch(if out.is_ok() {
+                    "RELEASE one"
+                } else {
+                    "ROLLBACK TO one; RELEASE one"
+                })
+                .map_err(sql)?;
+                out.unwrap_or_else(failed)
+            }
+            // Each subscription's own recovery names it.
+            Err(why) if why["reason"] == "evaluation_too_large" => too_large(&ws_id, id),
+            Err(why) => why.clone(),
+        };
+        newer |= out["state"] == "pending";
+        if failed_state(&out) {
+            note(&tx, id, at, &out)?;
+        }
+        states.push(json!({"subscriptionId": id, "evaluation": out}));
+    }
+    if cancel.load(Ordering::SeqCst) {
+        return Ok(turn(Some(c), computed, Vec::new()));
+    }
+    tx.commit().map_err(sql)?;
+    if newer {
+        return Ok(turn(Some(Continuation::default()), computed, states));
+    }
+    match ids.last() {
+        Some(last) if ids.len() == FANOUT => c.after = last.clone(),
+        _ => c.outcome = None,
+    }
+    Ok(turn(Some(c), computed, states))
+}
+
+/// A saved-query row past its size cap, which only a damaged database holds.
+fn damaged() -> Box<dyn Error> {
+    fail(
+        ErrorKind::InvalidData,
+        format!(
+            "a saved-query subscription row takes more than {SAVED_BYTES} bytes; list query subscriptions and unsubscribe the damaged one"
+        ),
+    )
+}
+
+fn failed(e: Box<dyn Error>) -> Json {
+    json!({"state": "failed", "message": e.to_string()})
 }
 
 /// The receipt of a query subscription's cursors: it changes whenever evaluations it kept were
@@ -790,7 +1034,19 @@ pub(super) fn poll(
             }
             out
         }
-        _ => pending("not_evaluated", &v.workspace, &sub.id),
+        // Not evaluated at this publication: a failure noted at it says why, else it is due.
+        Some((generation, membership, ..)) => conn
+            .query_row(
+                "SELECT CASE WHEN length(CAST(eval_failure AS BLOB)) <= ?5 AND json_valid(eval_failure)
+                 THEN CASE WHEN eval_failure ->> 'gen' = ?2 AND eval_failure ->> 'membership' = ?3
+                 AND eval_failure ->> 'ranking' = ?4 THEN eval_failure -> 'evaluation' END END
+                 FROM subscriptions WHERE id = ?1",
+                params![sub.id, generation, membership, ranking, NOTE_BYTES as i64],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .map_err(sql)?
+            .and_then(|why| serde_json::from_str(&why).ok())
+            .unwrap_or_else(|| pending("not_evaluated", &v.workspace, &sub.id)),
     };
     let (tracked, truncated) = tracking(conn, v)?;
     Ok(json!({
@@ -850,6 +1106,29 @@ pub(super) fn held(conn: &Connection, v: &View, sub: &str, at: i64) -> Result<Js
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_turn_keeps_a_window_too_large_to_store_only_as_its_failure() {
+        let eval = |id: &str| Eval {
+            source: "s".into(),
+            generation: 1,
+            membership: "m".into(),
+            snapshot: "n".into(),
+            ranking: "r".into(),
+            coverage: json!({"complete": true}),
+            refs: vec![id.repeat(4096); TOP_K],
+            more: false,
+            canonical: "c".into(),
+        };
+        let reason = |o: Outcome| o.err().map(|why| why["reason"].clone());
+        assert_eq!(
+            (
+                reason(kept("ws", Ok(eval("x")))),
+                reason(kept("ws", Ok(eval(""))))
+            ),
+            (Some(json!("evaluation_too_large")), None)
+        );
+    }
 
     #[test]
     fn pages_freed_by_deleted_evaluations_are_room_under_the_disk_cap() {

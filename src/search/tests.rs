@@ -915,7 +915,7 @@ fn queries_up_to_the_term_limit_retrieve_only_records_with_every_term() {
     let index = build(&tree, "0:0", bounds(WORK));
     for n in [32, 33, MAX_TERMS] {
         let req = request(&words[..n].join(" "));
-        let (hits, ..) = retrieve(&[&index], &req.validate().unwrap(), &req);
+        let (hits, ..) = retrieve(&[&index], &req.validate().unwrap(), &req, &NEVER);
         let ids: Vec<&str> = hits
             .iter()
             .map(|h| index.records[h.record as usize].id.as_str())
@@ -986,6 +986,30 @@ fn a_swap_to_a_missing_main_keeps_its_id_as_missing_not_the_definitions_main() {
             "recorded",
             "symbolData".into()
         )
+    );
+}
+
+#[test]
+fn a_set_cancel_flag_stops_loading_and_ranking_at_their_next_step() {
+    let index = build(&Tree::new(&swaps()), "0:0", bounds(WORK));
+    let conn = stored(&index);
+    let all: Vec<u32> = (0..index.records.len() as u32).collect();
+    let set = AtomicBool::new(true);
+    let kind = |r: Result<(), Box<dyn Error>>| {
+        r.unwrap_err()
+            .downcast_ref::<FigError>()
+            .map(FigError::kind)
+    };
+    let load = kind(store::load_with(&conn, 1, &["card".into()], &mut 0, &set).map(drop));
+    let mut partial = store::load(&conn, 1, &[], &mut 0).unwrap();
+    let add = kind(store::add_with(&conn, 1, &mut partial, &all, &mut 0, &set));
+    let req = request("card");
+    let q = req.validate().unwrap();
+    let ranked = |cancel| retrieve(&[&index], &q, &req, cancel).0.len();
+    let cancelled = Some(ErrorKind::Cancelled);
+    assert_eq!(
+        (load, add, ranked(&set), ranked(&NEVER) > 0),
+        (cancelled, cancelled, 0, true)
     );
 }
 

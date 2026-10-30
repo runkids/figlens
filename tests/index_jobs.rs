@@ -3794,3 +3794,28 @@ fn a_tracked_scope_deleted_from_the_file_records_its_removal() {
         )
     );
 }
+
+#[test]
+fn a_failed_evaluation_stays_reported_by_changes_until_a_later_publication() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, _) = t.query("badge");
+    // Not evaluated at this publication, and its search fails: the file is gone.
+    t.sql("UPDATE query_evaluations SET ranking = 'older'");
+    std::fs::remove_file(&t.path).unwrap();
+    let evaluated = t.watch("evaluate", &["--subscription", &id])["evaluation"].clone();
+    let read = t.changes(&["--subscription", &id])["evaluation"].clone();
+    assert_eq!(
+        (
+            evaluated["reason"].clone(),
+            read["state"].clone(),
+            read["reason"].clone()
+        ),
+        (
+            json!("search_failed"),
+            json!("unavailable"),
+            json!("search_failed")
+        ),
+        "{evaluated} {read}"
+    );
+}

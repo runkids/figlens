@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -33,6 +34,8 @@ pub(crate) const MAX_SOURCES: usize = 16;
 const SOURCE_BYTES: u64 = 512 * 1024 * 1024;
 /// Expanding a 179 MB held-out file charged 7.1M; each override value walked counts once.
 const WORK: usize = 10_000_000;
+/// The cancel flag of a search nobody cancels.
+pub(crate) static NEVER: AtomicBool = AtomicBool::new(false);
 const BYTES: usize = 512 * 1024 * 1024;
 const TEXT_BYTES: usize = 64 * 1024 * 1024;
 const DEPTH: usize = 256;
@@ -944,7 +947,12 @@ fn idf(n: usize, df: u32) -> f64 {
 /// then corpus order and document order. Record counts, document frequencies and field lengths
 /// are summed over the whole corpus before any record is scored, so one source's hits are never
 /// ranked alone and merged afterwards; one index ranks exactly as it always did.
-fn retrieve(corpus: &[&Index], q: &Prepared, req: &Request) -> (Vec<Hit>, bool, [usize; 2]) {
+fn retrieve(
+    corpus: &[&Index],
+    q: &Prepared,
+    req: &Request,
+    cancel: &AtomicBool,
+) -> (Vec<Hit>, bool, [usize; 2]) {
     let n: usize = corpus.iter().map(|i| i.total).sum();
     let lens = corpus
         .iter()
@@ -963,7 +971,7 @@ fn retrieve(corpus: &[&Index], q: &Prepared, req: &Request) -> (Vec<Hit>, bool, 
         .collect();
     let mut excluded = [0usize; 2];
     let mut hits: Vec<Hit> = Vec::new();
-    for (source, index) in corpus.iter().enumerate() {
+    'rank: for (source, index) in corpus.iter().enumerate() {
         let mut lists: Vec<(&IndexTerm, u32)> = Vec::new();
         for (term, &df) in q.terms.iter().zip(&df) {
             match index.terms.get(term) {
@@ -981,6 +989,10 @@ fn retrieve(corpus: &[&Index], q: &Prepared, req: &Request) -> (Vec<Hit>, bool, 
         for (i, (term, df)) in lists.iter().enumerate() {
             let idf = idf(n, *df);
             for p in &term.postings {
+                // A cancelled ranking stops whole; its caller reports `Cancelled`.
+                if cancel.load(Ordering::Relaxed) {
+                    break 'rank;
+                }
                 if i > 0 && !acc.contains_key(&p.record) {
                     continue;
                 }
@@ -995,6 +1007,9 @@ fn retrieve(corpus: &[&Index], q: &Prepared, req: &Request) -> (Vec<Hit>, bool, 
             acc.retain(|_, (_, last)| *last == i);
         }
         for (record, (score, _)) in acc {
+            if cancel.load(Ordering::Relaxed) {
+                break 'rank;
+            }
             let r = index.record(record);
             if !req.types.is_empty() && !req.types.contains(&r.kind) {
                 continue;
@@ -1322,7 +1337,7 @@ fn reply(index: &Index, q: &Prepared, req: &Request, source: Json) -> Result<Jso
             "search cursor belongs to another query, filter set, source, snapshot or index generation; search again without cursor",
         ));
     }
-    let (hits, more, excluded) = retrieve(&[index], q, req);
+    let (hits, more, excluded) = retrieve(&[index], q, req, &NEVER);
     let over = || -> Box<dyn Error> {
         FigError::new(
             ErrorKind::ResponseBudget,
@@ -1433,6 +1448,7 @@ pub(crate) fn corpus_rank(
     q: &Prepared,
     req: &Request,
     key: &Json,
+    cancel: &AtomicBool,
 ) -> Result<Ranked, Box<dyn Error>> {
     let corpus: Vec<&Index> = parts.iter().map(|p| p.index).collect();
     let n: usize = corpus.iter().map(|i| i.total).sum();
@@ -1475,7 +1491,10 @@ pub(crate) fn corpus_rank(
             "search cursor belongs to another query, filter set or workspace search; search again without cursor",
         ));
     }
-    let (hits, more, excluded) = retrieve(&corpus, q, req);
+    let (hits, more, excluded) = retrieve(&corpus, q, req, cancel);
+    if cancel.load(Ordering::SeqCst) {
+        return Err(FigError::new(ErrorKind::Cancelled, "search cancelled").into());
+    }
     Ok(Ranked {
         hits,
         more,
