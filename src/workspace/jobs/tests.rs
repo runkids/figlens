@@ -2351,5 +2351,15 @@ fn a_definition_its_build_did_not_fingerprint_compares_no_use_and_asks_to_index_
                     "workspaceId": ws, "sourceId": def.source_id, "scope": "0:0"}}]}]),
             &json!(false)
         )
+    ); // A generation built with fingerprints, none for this node: rebuilding would not help.
+    conn.execute(
+        "INSERT INTO fingerprints (gen, rid, facet, state) VALUES (?1, -1, 'text', 'unread')",
+        [srcs[1].2],
+    )
+    .unwrap();
+    let out = library(&storage, &select, None, &ask).unwrap();
+    assert_eq!(
+        out["coverage"]["reasons"],
+        json!([{"code": "definition_not_compared", "count": 2}])
     );
 }

@@ -612,12 +612,20 @@ pub fn library(
             reasons.push(json!({"code": code, "sourceIds": ids}));
         }
     }
-    if let (Some(None), Some(d)) = (&baseline, &req.definition) {
-        reasons.push(
-            json!({"code": "definition_not_compared", "count": uncompared,
-            "nextSteps": [{"tool": "index", "arguments": {"action": "refresh",
-                "workspaceId": ws_id, "sourceId": d.source_id, "scope": req.scope}}]}),
-        );
+    if let (Some(None), Some(d), Some(gen_id)) = (&baseline, &req.definition, definition_gen) {
+        let mut reason = json!({"code": "definition_not_compared", "count": uncompared});
+        // Only a generation built before fingerprints gains one by rebuilding; in a newer one
+        // the selected node is not a kind that takes one.
+        let built: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM fingerprints WHERE gen = ?1)",
+            params![gen_id],
+            |r| r.get(0),
+        )?;
+        if !built {
+            reason["nextSteps"] = json!([{"tool": "index", "arguments": {"action": "refresh",
+                "workspaceId": ws_id, "sourceId": d.source_id, "scope": req.scope}}]);
+        }
+        reasons.push(reason);
     }
     if mismatched > 0 {
         reasons.push(json!({"code": "definition_mismatch", "count": mismatched}));
