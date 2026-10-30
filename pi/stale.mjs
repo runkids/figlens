@@ -87,10 +87,12 @@ export class Targets {
     let ends;
     if (action === 'unsubscribe' && input.subscriptionId) ends = t => t.subscriptionId === input.subscriptionId;
     else if (action === 'unsubscribe') {
-      // An ack records a subscription by id alone, so the reply's removed ids end it too.
+      // The reply's removed ids end exactly those, including one an ack recorded by id alone, and nothing a hidden
+      // source kept; only a reply without them falls back to the subscribed consumer and owner.
       const ids = reply()?.subscriptionIds;
       const removed = new Set(Array.isArray(ids) ? ids.filter(text) : []);
-      ends = t => t.subscriptionId && (removed.has(t.subscriptionId) || (t.consumer === input.consumer && t.owner === input.owner));
+      ends = Array.isArray(ids) ? t => removed.has(t.subscriptionId)
+        : t => t.subscriptionId && t.consumer === input.consumer && t.owner === input.owner;
     }
     // forget without a source or scope removes every view of that consumer, as the binary does.
     if (action === 'forget') ends = t => !t.subscriptionId && t.consumer === input.consumer
