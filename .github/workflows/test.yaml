@@ -224,7 +224,7 @@ jobs:
           mkdir -p samples/plugin-research/fixtures
           # `|| status=$?` keeps the step's `bash -e` from ending the subshell before it records a failure.
           (status=0
-           docker compose run --rm dev cargo run --locked --example mapping-fixture -- samples/plugin-research/fixtures/mapping.fig \
+           docker compose run --rm dev cargo run --locked --example mapping-fixture -- --library samples/plugin-research/fixtures/mapping-library.fig \
              > "$RUNNER_TEMP/fixture.log" 2>&1 || status=$?
            echo "$status" > "$RUNNER_TEMP/fixture.tmp"; mv "$RUNNER_TEMP/fixture.tmp" "$RUNNER_TEMP/fixture.status") &
       - uses: actions/setup-node@v7

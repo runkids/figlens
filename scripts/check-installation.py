@@ -25,7 +25,7 @@ from mcp_smoke import check_first_use, check_library, check_mcp, check_reuse
 
 ROOT = Path(__file__).resolve().parent.parent
 # The synthetic mapping fixture the host lanes use; generate it as wiki/integrations.md says.
-MAPPING = ROOT/'samples/plugin-research/fixtures/mapping.fig'
+MAPPING = ROOT/'samples/plugin-research/fixtures/mapping-library.fig'
 
 
 def sha(path):
@@ -312,7 +312,7 @@ def main():
         if not MAPPING.is_file() and (args.opencode_bin or args.omp_sdk):
             raise SystemExit(f'{MAPPING} is missing; generate it as wiki/integrations.md says')
         library = lambda command, name, env: (check_library(command, work/name, MAPPING, env) if MAPPING.is_file()
-                                              else 'skipped: no samples/plugin-research/fixtures/mapping.fig')
+                                              else 'skipped: no samples/plugin-research/fixtures/mapping-library.fig')
         first_use['nativeLibrary'] = library([cache, 'mcp'], 'library-native', env)
         first_use['wrapperLibrary'] = library(wrapper + ['mcp'], 'library-wrapper', wrapped_env)
         # The wrapper, as a second host, reuses the index the native first use enabled.

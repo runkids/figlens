@@ -152,11 +152,15 @@ def check_reuse(command, base, env):
 def check_library(command, base, mapping, env):
     """An agent names a library reference from tool output, then asks where it is used: stateless
     and indexed outgoing usages of an instance agree on its cached copy's reference, and the
-    library question finds every instance. `mapping` is the synthetic mapping fixture."""
+    library question finds every instance in both registered copies. `mapping` is the synthetic
+    fixture generated with `--library`."""
     base.mkdir()
     env = user_roots(base, env)
-    design = base/'mapping.fig'
+    project = base/'project'
+    project.mkdir()
+    design, other = project/'mapping.fig', project/'mapping-copy.fig'
     shutil.copy2(mapping, design)
+    shutil.copy2(mapping, other)
     with session(command, base, env) as request:
         request('initialize', {'protocolVersion': '2025-06-18', 'capabilities': {}, 'clientInfo': {'name': 'figlens-library', 'version': '1'}})
         def call(name, arguments):
@@ -167,20 +171,26 @@ def check_library(command, base, mapping, env):
             return next((r['library'] for r in reply['results'] if 'library' in r), None)
         stateless = named(call('usages', {'file': str(design), 'node': '0:2', 'direction': 'out'}))
         assert stateless and stateless['namespace'] and stateless['key'], stateless
-        job = call('index', {'action': 'prepare', 'file': str(design), 'scope': '0:0'})
-        workspace, job = job['workspaceId'], job['job']
-        deadline = time.monotonic() + 60
-        while job['state'] not in TERMINAL and time.monotonic() < deadline:
-            time.sleep(0.05)
-            job = call('jobs', {'action': 'status', 'jobId': job['jobId']})
-        assert job['state'] == 'succeeded', job
-        indexed = named(call('usages', {'workspaceId': workspace, 'node': '0:2', 'direction': 'out'}))
+        workspace, first = None, None
+        for f in (design, other):
+            job = call('index', {'action': 'prepare', 'workspace': str(project), 'file': str(f), 'scope': '0:0'})
+            assert workspace in (None, job['workspaceId']), job
+            first = first or job['job']['sourceId']
+            workspace, job = job['workspaceId'], job['job']
+            deadline = time.monotonic() + 60
+            while job['state'] not in TERMINAL and time.monotonic() < deadline:
+                time.sleep(0.05)
+                job = call('jobs', {'action': 'status', 'jobId': job['jobId']})
+            assert job['state'] == 'succeeded', job
+        indexed = named(call('usages', {'workspaceId': workspace, 'sourceId': first, 'node': '0:2', 'direction': 'out'}))
         assert indexed == stateless, (indexed, stateless)
         asked = {k: stateless[k] for k in ('kind', 'namespace', 'key')}
         used = call('usages', {'workspaceId': workspace, 'library': asked})
-        assert [r['ref']['nodeId'] for r in used['results']] == ['0:2', '0:3'], used
+        refs = sorted((r['ref']['sourceId'], r['ref']['nodeId']) for r in used['results'])
+        sources = sorted({s for s, _ in refs})
+        assert len(sources) == 2 and refs == [(s, n) for s in sources for n in ('0:2', '0:3')], used
         assert used['coverage']['complete'] is True and used['definition']['state'] == 'unresolved', used
-    return {'named': stateless, 'usedBy': ['0:2', '0:3']}
+    return {'named': stateless, 'usedBy': [n for _, n in refs], 'sources': len(sources)}
 
 
 def check_first_use(command, base, fixture, env):

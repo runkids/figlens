@@ -9,11 +9,11 @@ How the installed-host lanes check each host entry from one extracted npm candid
 - OMP: `--omp-sdk <@oh-my-pi/pi-coding-agent-root> --bun <binary>` runs `check-omp-integration.mjs`: real loader/approval wrapper, descriptor/bridge MCP (including `search`, `inspect` of its exact ref and `diff` of two copies, a library `usages` after an `index` job, and first use: no state from connecting, prepare, job polling, workspace search, inspect, workspace `usages`, `track`, a `changes` baseline and its `watch ack` at the `write` tier, a `watch` `start` the bridge's disconnect ends `released`, and OMP's own approval decisions for a reset), override priority, cancellation, native TUI review and viewer switch cleanup.
 - Both profiles use `FIGLENS_BIN` pointing to the verified candidate binary. The same candidate's default wrapper cold path is checked separately by CLI/Pi tests; do not label a native override run as a cold adapter download.
 
-The mapping case is original synthetic input generated at test time, not a Figma export or accuracy oracle; its Button main is a cached library copy (`synthetic-library`/`synthetic-button`), so each lane names the library reference from an outgoing `usages` result and asks it (`check_library` for native, wrapper and Pi MCP):
+The mapping case is original synthetic input generated at test time, not a Figma export or accuracy oracle; with `--library` its Button main is a cached library copy (`synthetic-library`/`synthetic-button`; default output unchanged), so each lane names the library reference from an outgoing `usages` result and asks it (`check_library` for native, wrapper and Pi MCP):
 
 ```sh
 mkdir -p samples/plugin-research/fixtures
-docker compose run --rm dev cargo run --locked --example mapping-fixture -- samples/plugin-research/fixtures/mapping.fig
+docker compose run --rm dev cargo run --locked --example mapping-fixture -- --library samples/plugin-research/fixtures/mapping-library.fig
 ```
 
 The generator refuses an existing output. CI's `host-installation` job starts it in the background while the host SDKs install, and never uploads the result. Public `examples/first-success/design.fig` remains the only distributable design fixture. Writer mocks, native synthetic parsing, real installed host/UI, image transport, actual model results and platform results are separate evidence. No-model acceptance never calls providers or reads user credentials/global plugins. Model plan/YOLO acceptance requires separate usage authorization; keep it untested until authorized. Local macOS acceptance does not prove Linux/Windows native TUI support or future CI success.

@@ -18,7 +18,7 @@ await mkdir(output);
 const project = path.join(output, 'project'), config = path.join(output, 'config');
 await mkdir(path.join(project, 'src'), { recursive: true });
 await mkdir(config);
-await copyFile(new URL('../samples/plugin-research/fixtures/mapping.fig', import.meta.url), path.join(project, 'mapping.fig'));
+await copyFile(new URL('../samples/plugin-research/fixtures/mapping-library.fig', import.meta.url), path.join(project, 'mapping.fig'));
 await copyFile(path.join(project, 'mapping.fig'), path.join(project, 'mapping-old.fig'));
 await writeFile(path.join(project, 'src/Button.mjs'), 'export const Button = () => "button";\n');
 // Scripted loopback provider: each turn returns a fixed Code Mode `execute` call (find the figlens

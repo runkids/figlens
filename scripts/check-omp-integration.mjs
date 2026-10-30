@@ -15,7 +15,7 @@ const project = path.join(output, 'project 空白');
 await mkdir(path.join(project, 'src'), { recursive: true });
 process.env.PI_CODING_AGENT_DIR = path.join(output, 'agent');
 process.env.FIGLENS_BIN = binary;
-await copyFile(new URL('../samples/plugin-research/fixtures/mapping.fig', import.meta.url), path.join(project, 'mapping.fig'));
+await copyFile(new URL('../samples/plugin-research/fixtures/mapping-library.fig', import.meta.url), path.join(project, 'mapping.fig'));
 await copyFile(path.join(project, 'mapping.fig'), path.join(project, 'mapping-old.fig'));
 await writeFile(path.join(project, 'src/Button.mjs'), 'export const Button = () => "button";\n');
 const execute = promisify(execFile);
@@ -313,7 +313,7 @@ if (process.argv.includes('--tui')) await check('native OMP TUI four-field edit 
   await mkdir(path.join(project, 'src'), { recursive: true });
   await mkdir(path.join(native, 'agent-tui'));
   await writeFile(path.join(native, 'agent-tui/config.yml'), 'startup:\n  setupWizard: false\n  checkUpdate: false\n  showSplash: false\n');
-  await copyFile(new URL('../samples/plugin-research/fixtures/mapping.fig', import.meta.url), path.join(project, 'mapping.fig'));
+  await copyFile(new URL('../samples/plugin-research/fixtures/mapping-library.fig', import.meta.url), path.join(project, 'mapping.fig'));
   await writeFile(path.join(project, 'src/Button.mjs'), 'export const Button = () => "button";\n');
   const flow = new Workflow(project, async args => JSON.parse((await execute(binary, args, { cwd: project })).stdout));
   await flow.select('mapping.fig', '0:1');
