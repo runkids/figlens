@@ -462,6 +462,37 @@ test('CLI-path design reads ask read on the requested and canonical path, and bu
   assert.deepEqual(timeouts, [['status', undefined], ['refresh', 0]]);
 });
 
+test('CLI-path directory add asks read on the directory and on every file the binary lists, before any write', async t => {
+  const { root, ctx, adapter } = await context(t);
+  await mkdir(path.join(root, 'lib'));
+  const real = await realpath(root);
+  const listed = [path.join(real, 'lib', 'a.fig'), path.join(real, 'lib', 'sub', 'b.fig')];
+  const asked = [], ran = [];
+  let deny = listed[1];
+  ctx.permission.assert = async ({ action, resources }) => {
+    asked.push([action, ...resources]);
+    if (resources.includes(deny)) throw Object.assign(new Error('denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  const run = async args => {
+    ran.push(args.join(' '));
+    if (args.includes('--dry-run')) return { stdout: JSON.stringify({ directory: { files: listed, skipped: [] } }) };
+    return { stdout: JSON.stringify(args[1] === 'status' ? { paths: { workspace: '/w', lock: '/w.lock' }, roots: { config: { path: '/c' } } } : {}) };
+  };
+  const input = { action: 'add', file: 'lib', workspaceId: 'ws_1' };
+  const current = await adapter.scope('session');
+  current.run = run;
+  await assert.rejects(adapter.cli(current, 'index', input), /denied/);
+  assert.deepEqual(asked, [['read', ...new Set([path.join(current.flow.root, 'lib'), path.join(real, 'lib')])], ['read', ...listed]]);
+  assert.deepEqual(ran, ['index add lib --id ws_1 --dry-run'], 'nothing registers past a denied file');
+  deny = null;
+  const other = await adapter.scope('other');
+  other.run = run;
+  ran.length = 0;
+  await adapter.cli(other, 'index', input);
+  assert.deepEqual(asked.slice(-2), [['read', ...listed], ['edit', '/w', '/w.lock', '/c']]);
+  assert.deepEqual(ran, ['index add lib --id ws_1 --dry-run', 'index status --id ws_1', 'index add lib --id ws_1']);
+});
+
 test('CLI-path saved queries ask read on the sources they search, so a denied read runs no subscribe or evaluate', async t => {
   const { root, ctx, adapter } = await context(t);
   const asked = [], ran = [];

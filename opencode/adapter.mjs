@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readlink, realpath, rm } from 'node:fs/promises';
+import { mkdir, readFile, readlink, realpath, rm, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { homedir, tmpdir } from 'node:os';
@@ -373,6 +373,12 @@ export function createAdapter(ctx, entry = import.meta.url) {
     // diff reads two designs: each is asked on its own, both before the command runs.
     if (tool === 'diff') await current.authorize('read', await both([input.old]));
     if (input.file && (tool !== 'index' || ['prepare', 'add', 'relocate'].includes(input.action))) await current.authorize('read', await both([input.file]));
+    // A directory add reads every .fig the binary lists under it, so each is asked before anything registers.
+    if (tool === 'index' && input.action === 'add' && (await stat(path.resolve(current.flow.root, input.file)).catch(() => null))?.isDirectory()) {
+      const { directory } = await invoke([...args, '--dry-run']);
+      if (!Array.isArray(directory?.files)) throw missing("a directory's files");
+      if (directory.files.length) await current.authorize('read', directory.files);
+    }
     // Workspace search, usages and changes, refresh, rebuild and track read the registered designs' content, which this session may deny.
     // `only` names the sources read; null reads every one.
     const readSources = async ({ state, sources }, only = input.sourceId ? [input.sourceId] : null) => {
