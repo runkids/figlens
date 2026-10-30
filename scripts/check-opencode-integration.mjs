@@ -20,12 +20,14 @@ await mkdir(path.join(project, 'src'), { recursive: true });
 await mkdir(config);
 await copyFile(new URL('../samples/plugin-research/fixtures/mapping-library.fig', import.meta.url), path.join(project, 'mapping.fig'));
 await copyFile(path.join(project, 'mapping.fig'), path.join(project, 'mapping-old.fig'));
+// A second registered copy of the cached library component, for the cross-source library question.
+await copyFile(path.join(project, 'mapping.fig'), path.join(project, 'library-copy.fig'));
 await writeFile(path.join(project, 'src/Button.mjs'), 'export const Button = () => "button";\n');
 // Scripted loopback provider: each turn returns a fixed Code Mode `execute` call (find the figlens
 // paths, search, inspect the returned ref, then diff two copies of the file), so the real session loop runs the managed MCP
 // tools. Deterministic routing evidence, not a model.
 const scripted = { results: [], tools: null };
-const fixture = path.join(project, 'mapping.fig');
+const fixture = path.join(project, 'mapping.fig'), copy = path.join(project, 'library-copy.fig');
 // A step without its prerequisite ends the turn, so a missing tool fails the check instead of retrying.
 const tool = (paths, name) => Array.isArray(paths) && paths.find(item => item.endsWith(`.${name}`) || item.endsWith(`["${name}"]`));
 const catalog = names => `return ${JSON.stringify(names)}.flatMap(query => search({ query, namespace: 'figlensmcp' }).items.map(item => item.path));`;
@@ -46,11 +48,20 @@ const firstUseCode = paths => ['index', 'jobs', 'search', 'inspect', 'usages'].e
   const found = await ${tool(paths, 'search')}({ workspaceId: prepared.workspaceId, query: 'Mapping review' });
   const node = found.results?.[0] && await ${tool(paths, 'inspect')}({ file: ${JSON.stringify(fixture)}, node: found.results[0].ref.nodeId });
   const used = await ${tool(paths, 'usages')}({ workspaceId: prepared.workspaceId, node: '0:10' });
-  // The library reference comes from an instance's own outgoing usages, not from the fixture.
-  const out = await ${tool(paths, 'usages')}({ workspaceId: prepared.workspaceId, node: '0:2', direction: 'out' });
+  // Both copies in one project workspace; the library reference comes from the first one's own
+  // outgoing usages, not from the fixture, and is asked across both.
+  const registered = [];
+  for (const file of ${JSON.stringify([fixture, copy])}) {
+    const p = await ${tool(paths, 'index')}({ action: 'prepare', workspace: ${JSON.stringify(project)}, file, scope: '0:0' });
+    let j = p.job, n = 0;
+    while (!${JSON.stringify(terminal)}.includes(j.state) && n++ < 5000) j = await ${tool(paths, 'jobs')}({ action: 'status', jobId: j.jobId });
+    registered.push({ workspaceId: p.workspaceId, sourceId: p.job.sourceId, job: j.state });
+  }
+  const [a] = registered;
+  const out = await ${tool(paths, 'usages')}({ workspaceId: a.workspaceId, sourceId: a.sourceId, node: '0:2', direction: 'out' });
   const named = out.results?.find(item => item.library)?.library;
-  const library = named && await ${tool(paths, 'usages')}({ workspaceId: prepared.workspaceId, library: { kind: named.kind, namespace: named.namespace, key: named.key } });
-  return { library: { named, results: library?.results?.map(item => item.ref.nodeId), definition: library?.definition, complete: library?.coverage?.complete }, usedBy: used.results?.map(item => item.relation + ' ' + item.ref.nodeId), usedSource: used.results?.[0]?.ref.sourceId === found.results?.[0]?.ref.sourceId, before: before.state, workspaceId: prepared.workspaceId, dispatched: prepared.job.state, job: job.state, polls,
+  const library = named && await ${tool(paths, 'usages')}({ workspaceId: a.workspaceId, library: { kind: named.kind, namespace: named.namespace, key: named.key } });
+  return { library: { named, registered, refs: library?.results?.map(item => [item.ref.sourceId, item.ref.nodeId]), definition: library?.definition, complete: library?.coverage?.complete }, usedBy: used.results?.map(item => item.relation + ' ' + item.ref.nodeId), usedSource: used.results?.[0]?.ref.sourceId === found.results?.[0]?.ref.sourceId, before: before.state, workspaceId: prepared.workspaceId, dispatched: prepared.job.state, job: job.state, polls,
     ref: found.results?.[0]?.ref, sources: found.sources, complete: found.coverage?.complete, inspected: node?.node?.id };`;
 const firstUseSteps = [() => catalog(['index', 'jobs', 'search', 'inspect', 'usages']), firstUseCode];
 const resetSteps = [() => catalog(['index']), paths => tool(paths, 'index') && `
@@ -80,17 +91,26 @@ const cliSteps = [
   (status, prepared) => direct('figlens_changes', { workspaceId: prepared.workspaceId, consumer: 'smoke' }),
   // Two copies of one file, each read-checked before the binary compares them.
   () => direct('figlens_diff', { old: path.join(project, 'mapping-old.fig'), file: fixture }),
-  // The library reference comes from the instance's outgoing usages, then names the question.
-  (status, prepared) => direct('figlens_usages', { workspaceId: prepared.workspaceId, node: '0:2', scope: '0:1', direction: 'out' }),
+  // Both copies in one project workspace; the library reference comes from the first one's
+  // outgoing usages, then names the question across both.
+  () => direct('figlens_index', { action: 'prepare', workspace: project, file: fixture, scope: '0:0' }),
+  () => direct('figlens_index', { action: 'prepare', workspace: project, file: copy, scope: '0:0' }),
+  (status, prepared, ...rest) => rest[13]?.workspaceId && direct('figlens_usages', { workspaceId: rest[13].workspaceId,
+    sourceId: rest[13].job.sourceId, node: '0:2', direction: 'out' }),
   (status, prepared, ...rest) => {
-    const named = rest[13]?.results?.find(item => item.library)?.library;
-    return named && direct('figlens_usages', { workspaceId: prepared.workspaceId, scope: '0:1',
+    const named = rest[15]?.results?.find(item => item.library)?.library;
+    return named && direct('figlens_usages', { workspaceId: rest[13].workspaceId,
       library: { kind: named.kind, namespace: named.namespace, key: named.key } });
   },
 ];
 // What the fixture's cached copy records; the lanes read it from tool output and compare.
 const LIBRARY = { kind: 'component', namespace: 'synthetic-library', key: 'synthetic-button', basis: 'cached_copy' };
 const deepId = `I${Array(60).fill('9:9').join(';')}`;
+// Both instances in each of two distinct sources, sorted as the assertions sort the refs.
+const bothCopies = sources => {
+  assert.equal(new Set(sources).size, 2, JSON.stringify(sources));
+  return sources.flatMap(source => ['0:2', '0:3'].map(node => [source, node])).sort();
+};
 let steps = searchSteps;
 // One scripted conversation at a time: each session starts the provider's state again.
 function lane(next) { steps = next; for (const key of Object.keys(scripted)) delete scripted[key]; scripted.results = []; }
@@ -239,8 +259,12 @@ try {
     // The Button component's instances, from the same published index and source as the search.
     assert.deepEqual(flow.usedBy, ['instance_of 0:2', 'instance_of 0:3'], JSON.stringify(flow));
     assert.equal(flow.usedSource, true);
-    // The Button main is a cached library copy: its reference, read from tool output, finds both instances.
-    assert.deepEqual(flow.library, { named: LIBRARY, results: ['0:2', '0:3'], definition: { state: 'unresolved', reason: 'library_source_unproven' }, complete: true }, JSON.stringify(flow));
+    // The Button main is a cached library copy: its reference, read from tool output, finds both
+    // instances in each of the two registered copies.
+    const { registered, refs, ...asked } = flow.library ?? {};
+    assert.deepEqual(asked, { named: LIBRARY, definition: { state: 'unresolved', reason: 'library_source_unproven' }, complete: true }, JSON.stringify(flow));
+    assert.deepEqual(registered?.map(item => [item.workspaceId, item.job]), [[registered[0].workspaceId, 'succeeded'], [registered[0].workspaceId, 'succeeded']], JSON.stringify(flow));
+    assert.deepEqual(refs?.sort(), bothCopies(registered.map(item => item.sourceId)), JSON.stringify(flow));
     return { ...flow, sources: undefined, paths: paths.filter(item => /index|jobs|search|inspect|usages/.test(item)), provider: 'scripted loopback, not a model' };
   });
   await check('MCP reset asks the figlens_index permission: a deny rule keeps the database, an allow resets it', async () => {
@@ -369,11 +393,13 @@ try {
     assert.deepEqual(after?.revisions, [], (scripted.raw[13] ?? '').slice(0, 500));
     const diffed = value(scripted.raw[14] ?? '');
     assert.deepEqual([diffed?.coverage?.complete, diffed?.coverage?.changes], [true, 0], (scripted.raw[14] ?? '').slice(0, 500));
-    const named = value(scripted.raw[15] ?? '')?.results?.find(item => item.library)?.library;
-    assert.deepEqual(named, LIBRARY, (scripted.raw[15] ?? '').slice(0, 500));
-    const library = value(scripted.raw[16] ?? '');
-    assert.deepEqual([library?.results?.map(item => item.ref.nodeId), library?.definition, library?.coverage?.complete],
-      [['0:2', '0:3'], { state: 'unresolved', reason: 'library_source_unproven' }, true], (scripted.raw[16] ?? '').slice(0, 500));
+    const [a, b] = [15, 16].map(index => value(scripted.raw[index] ?? ''));
+    assert.deepEqual([a?.job?.state, b?.job?.state, b?.workspaceId], ['succeeded', 'succeeded', a?.workspaceId], (scripted.raw[16] ?? '').slice(0, 500));
+    const named = value(scripted.raw[17] ?? '')?.results?.find(item => item.library)?.library;
+    assert.deepEqual(named, LIBRARY, (scripted.raw[17] ?? '').slice(0, 500));
+    const library = value(scripted.raw[18] ?? '');
+    assert.deepEqual([library?.results?.map(item => [item.ref.sourceId, item.ref.nodeId]).sort(), library?.definition, library?.coverage?.complete],
+      [bothCopies([a.job.sourceId, b.job.sourceId]), { state: 'unresolved', reason: 'library_source_unproven' }, true], (scripted.raw[18] ?? '').slice(0, 500));
     return { pages: [first.results[0].ref.nodeId, second.results[0].ref.nodeId], refused: 'unknown relation', library: library.definition.reason, trackedBaselineAcked: true, diffedCopies: diffed.coverage.changes, usedBy: used.results.map(item => item.ref.nodeId), deepIdBytes: deepId.length, mcp: status.mcp.reason, before: before.state, job: job.state, ref: found.results[0].ref, inspected: node.node.id, tools: scripted.tools.filter(name => /^figlens_/.test(name)) };
   });
   await check('with a disabled MCP override figlens_watch holds a lease per session that records a save, and only its session, deletion or a reload ends it', async () => {
