@@ -1818,6 +1818,165 @@ fn stored_generations_keep_a_variable_s_collection_like_the_live_trees() {
     outside_parity(collected(70), collected(71), "0:1");
 }
 
+/// `screen` on a page that sets an explicit mode of collection 64 for everything below it.
+fn moded_page() -> K<'static> {
+    let mut message = doc(screen("Hi", 0.5, 400.0));
+    let entry = obj(vec![
+        ("variableSetID", obj(vec![("guid", guid(64))])),
+        ("variableModeID", guid(70)),
+    ]);
+    if let K::Object(_, o) = &mut message
+        && let Some(K::Array(nodes)) = o.get_mut("nodeChanges")
+        && let K::Object(_, page) = &mut nodes[1]
+    {
+        page.insert(
+            "variableModeBySetMap",
+            obj(vec![("entries", K::Array(vec![entry]))]),
+        );
+    }
+    message
+}
+
+#[test]
+fn an_ancestor_walk_it_cannot_finish_counts_as_one_mode_not_compared() {
+    // Frames 100.. chained under page 1; the last of `frames` has `frames + 1` ancestors.
+    let chain = |frames: u32| {
+        let mut nodes = vec![node(100, Some(1), "FRAME", "F", vec![])];
+        nodes.extend((101..100 + frames).map(|id| node(id, Some(id - 1), "FRAME", "F", vec![])));
+        doc(nodes)
+    };
+    let count = |message: &K<'static>, last: u32, work: usize| {
+        let mut b = super::super::tests::bounds(work);
+        inherited_modes(&Tree::new(message), &format!("0:{last}"), &mut b)
+    };
+    let depth = DEPTH as u32;
+    assert_eq!(
+        (
+            count(&chain(depth - 1), 98 + depth, WORK),
+            count(&chain(depth), 99 + depth, WORK),
+            count(&chain(1), 100, 0),
+        ),
+        (0, 1, 1)
+    );
+}
+
+#[test]
+fn modes_a_frame_inherits_from_above_it_make_its_diff_partial() {
+    let plain = scoped(
+        doc(screen("Hi", 0.5, 400.0)),
+        doc(screen("Hi", 0.5, 400.0)),
+        "0:10",
+    );
+    assert_eq!(plain["coverage"]["complete"], json!(true));
+    let out = scoped(moded_page(), moded_page(), "0:10");
+    assert_eq!(out["coverage"]["reasons"], not_compared(1));
+    // Over the whole page the mode setting is a compared record.
+    let out = scoped(moded_page(), moded_page(), "0:1");
+    assert_eq!(out["coverage"]["complete"], json!(true));
+}
+
+/// Page 1 holds color variable 61 (red in mode 70, blue in 71), its collection 64, a component
+/// 20 whose card is filled from it and an instance 30 of it, whose copy REST resolves again in
+/// the modes in effect; the document above the page selects `mode` of collection 64.
+fn document_moded(mode: u32) -> K<'static> {
+    let color = |r: f32, b: f32| {
+        obj(vec![
+            ("dataType", K::Enum("VariableDataType", "COLOR")),
+            (
+                "value",
+                obj(vec![(
+                    "colorValue",
+                    obj(vec![
+                        ("r", K::Float(r)),
+                        ("g", K::Float(0.0)),
+                        ("b", K::Float(b)),
+                        ("a", K::Float(1.0)),
+                    ]),
+                )]),
+            ),
+        ])
+    };
+    let entry = |m: u32, data| obj(vec![("modeID", guid(m)), ("variableData", data)]);
+    let mode_of = |id: u32, at: &str| {
+        obj(vec![
+            ("id", guid(id)),
+            ("sortPosition", K::String(at.to_owned())),
+        ])
+    };
+    let paint = obj(vec![
+        ("type", K::Enum("PaintType", "SOLID")),
+        ("colorVar", alias(61)),
+    ]);
+    let mut message = doc(vec![
+        node(
+            64,
+            Some(1),
+            "VARIABLE_SET",
+            "Theme",
+            vec![(
+                "variableSetModes",
+                K::Array(vec![mode_of(70, "a"), mode_of(71, "b")]),
+            )],
+        ),
+        node(
+            61,
+            Some(1),
+            "VARIABLE",
+            "Brand",
+            vec![
+                (
+                    "variableDataValues",
+                    obj(vec![(
+                        "entries",
+                        K::Array(vec![entry(70, color(1.0, 0.0)), entry(71, color(0.0, 1.0))]),
+                    )]),
+                ),
+                ("variableSetID", obj(vec![("guid", guid(64))])),
+            ],
+        ),
+        node(20, Some(1), "SYMBOL", "Chip", vec![]),
+        node(
+            21,
+            Some(20),
+            "RECTANGLE",
+            "Card",
+            vec![("fillPaints", K::Array(vec![paint]))],
+        ),
+        instance(30, 1, "Use", 20, vec![]),
+    ]);
+    let selected = obj(vec![
+        ("variableSetID", obj(vec![("guid", guid(64))])),
+        ("variableModeID", guid(mode)),
+    ]);
+    if let K::Object(_, o) = &mut message
+        && let Some(K::Array(nodes)) = o.get_mut("nodeChanges")
+        && let K::Object(_, document) = &mut nodes[0]
+    {
+        document.insert(
+            "variableModeBySetMap",
+            obj(vec![("entries", K::Array(vec![selected]))]),
+        );
+    }
+    message
+}
+
+#[test]
+fn a_document_mode_switch_changes_a_page_s_rest_fills_and_leaves_its_diff_partial() {
+    let (red, blue) = (document_moded(70), document_moded(71));
+    let rest = |m: &K<'static>| crate::rest::resolve_nodes(&Tree::new(m), "0:1").unwrap();
+    assert_ne!(rest(&red), rest(&blue));
+    let out = scoped(red, blue, "0:1");
+    assert_eq!(
+        (nodes(&out), &out["coverage"]["reasons"]),
+        (vec![], &not_compared(1))
+    );
+}
+
+#[test]
+fn stored_generations_keep_inherited_modes_like_the_live_trees() {
+    outside_parity(moded_page(), moded_page(), "0:10");
+}
+
 #[test]
 fn numeric_variants_trim_links_mask_type_and_grids_are_compared() {
     let link = |url: &str| obj(vec![("url", K::String(url.to_owned()))]);
@@ -2133,6 +2292,21 @@ fn tampered_or_other_layout_facets_are_refused_not_compared() {
     let conn = saved(&[&tree], "0:0");
     conn.execute("UPDATE facet_sets SET facet_version = 'diff-v0:0'", [])
         .unwrap();
+    assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
+    // Facets stored by diff-v9, before collections and inherited modes were kept, are never
+    // read as knowing none: same fields, older version.
+    let conn = saved(&[&tree], "0:0");
+    let v9 = facet_version().replacen(VERSION, "diff-v9", 1);
+    conn.execute("UPDATE facet_sets SET facet_version = ?1", [v9])
+        .unwrap();
+    assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
+    // An inherited-mode count past the walk's bound is refused, not added.
+    let conn = saved(&[&tree], "0:0");
+    conn.execute(
+        "UPDATE facet_sets SET origin = '[null, 18446744073709551615]'",
+        [],
+    )
+    .unwrap();
     assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
 }
 

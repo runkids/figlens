@@ -3064,6 +3064,62 @@ fn a_retried_track_request_after_untrack_replays_its_job_and_never_tracks_again(
 }
 
 #[test]
+fn a_track_request_of_an_already_tracked_scope_keeps_its_id_and_replays_after_untrack() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let with = |action: &str, id: &str| {
+        env.run(&[
+            "index",
+            action,
+            "--file",
+            &t.file,
+            "--scope",
+            "0:0",
+            "--request-id",
+            id,
+        ])
+    };
+    // Fifty earlier ones that started no job: recording another retires the oldest.
+    let db = rusqlite::Connection::open(&t.db).unwrap();
+    for i in 0..50 {
+        db.execute(
+            "INSERT INTO requests VALUES (?1, 'f', '')",
+            [format!("r{i}")],
+        )
+        .unwrap();
+    }
+    let noop: Value = serde_json::from_slice(&with("track", "z").stdout).unwrap();
+    let kept: (i64, bool, bool) = db
+        .query_row(
+            "SELECT COUNT(*), SUM(request_id = 'r0'), SUM(request_id = 'z') FROM requests
+             WHERE job_id = ''",
+            [],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get::<_, i64>(1)? == 1,
+                    r.get::<_, i64>(2)? == 1,
+                ))
+            },
+        )
+        .unwrap();
+    drop(db);
+    t.index("untrack");
+    let retried: Value = serde_json::from_slice(&with("track", "z").stdout).unwrap();
+    let reused = with("rebuild", "z");
+    let state = |r: &Value| (r["tracking"][0]["state"].clone(), r["jobs"].clone());
+    assert_eq!(
+        (kept, state(&noop), state(&retried), reused.status.success()),
+        (
+            (50, false, true),
+            (json!("active"), json!([])),
+            (json!("disabled"), json!([])),
+            false
+        )
+    );
+}
+
+#[test]
 fn a_tracked_scope_deleted_from_the_file_records_its_removal() {
     let env = Env::new();
     let t = Tracked::new(&env);
