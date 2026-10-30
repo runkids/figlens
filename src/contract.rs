@@ -174,7 +174,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "usages",
-        "Exact relations of one node or resource in one stored scope, from the same effective index as search (nested instances and swaps included): direction in (default) lists the locations that point at it, out lists what it points at. Relations: instance_of (instance to main component, recorded symbolData or resolved definition/swap), variant_of (component to its set; a COMPONENT_SET node also lists its known members and returns their instances with via), binds_variable (paint, effect and field variable bindings, local or library), uses_style, uses_image (a text range's style comes from the last row of its styleID, as REST nodes give it; its paint images and variables from the first such row with fills, as rendered), prototype_target (recorded transitions; never a claim that a flow is reachable) and contains (asked for explicitly). Every result keeps an exact ref {sourceId, snapshotId, nodeId}, relation, state (resolved, missing, unresolved, unsupported, external, recorded), basis (recorded or resolved), evidence, page, scopeRoot and path; names never establish identity. The definition may lie outside the scope; scope limits only the returned locations. No total is reported; coverage says complete or partial with reasons (work limits, hidden content not expanded, truncated members, library_identity unavailable), and nextCursor pages in a stable order. Give file to read that .fig now (nothing is written), or workspaceId to read a source's prepared index of exactly this scope (never builds). Pass snapshotId from the ref you hold: another current snapshot is source_stale.",
+        "Exact relations of one node or resource in one stored scope, from the same effective index as search (nested instances and swaps included): direction in (default) lists the locations that point at it, out lists what it points at. Relations: instance_of (instance to main component, recorded symbolData or resolved definition/swap), variant_of (component to its set; a COMPONENT_SET node also lists its known members and returns their instances with via), binds_variable (paint, effect and field variable bindings, local or library), uses_style, uses_image (a text range's style comes from the last row of its styleID, as REST nodes give it; its paint images and variables from the first such row with fills, as rendered), prototype_target (recorded transitions; never a claim that a flow is reachable) and contains (asked for explicitly). Every result keeps an exact ref {sourceId, snapshotId, nodeId}, relation, state (resolved, missing, unresolved, unsupported, external, recorded), basis (recorded or resolved), evidence, page, scopeRoot and path; names never establish identity. The definition may lie outside the scope; scope limits only the returned locations. No total is reported; coverage says complete or partial with reasons (work limits, hidden content not expanded, truncated members, library_identity unavailable), and nextCursor pages in a stable order. Give file to read that .fig now (nothing is written), or workspaceId to read a source's prepared index of exactly this scope (never builds). Pass snapshotId from the ref you hold: another current snapshot is source_stale. With workspaceId, library {kind, namespace, key} instead of node or resource lists uses_library locations of that library component, style or variable across every visible source's prepared scope (basis cached_copy: the namespace comes from each file's cached copy); the definition stays unresolved (library_source_unproven), coverage lists each source's state and reasons (source_not_ready, index_partial, namespace_unknown, hidden_excluded, authorization_restricted), and snapshotId, relation and direction do not apply.",
         &[
             (
                 "file",
@@ -192,7 +192,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "sourceId",
                 "string",
                 false,
-                "with workspaceId, the source to read; needed when several have this scope",
+                "with workspaceId, the source to read; needed when several have this scope; with library, narrows to that one consumer source",
             ),
             STORAGE,
             (
@@ -206,6 +206,12 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "string",
                 false,
                 "a resource id instead of a layer: VariableID:..., StyleKey:... or image:<hash>",
+            ),
+            (
+                "library",
+                "object",
+                false,
+                "with workspaceId, a library reference instead of a node or resource: {kind: component, style or variable, namespace, key}; lists the layers in every visible source (or sourceId) whose cached copy records it",
             ),
             (
                 "scope",
@@ -622,13 +628,14 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
         ),
         "usages" => (
             serde_json::json!({
-                "definition": {"type": ["object", "null"], "description": "null while a workspace scope is pending or not_prepared; else ref or resource, state (indexed in scope, outside_scope, or the state of the edges that name it: missing, unresolved, external, recorded), name, type, setId and page when known"},
+                "library": {"type": "object", "description": "library queries: the kind, namespace and key asked"},
+                "definition": {"type": ["object", "null"], "description": "library queries: always state unresolved, reason library_source_unproven; null while a workspace scope is pending or not_prepared; else ref or resource, state (indexed in scope, outside_scope, or the state of the edges that name it: missing, unresolved, external, recorded), name, type, setId and page when known"},
                 "direction": {"type": "string"},
                 "relations": {"type": "array", "items": {"type": "string"}},
                 "scope": {"type": "object"},
                 "members": {"type": "object", "description": "COMPONENT_SET queries: the known member ids and whether they are complete"},
                 "results": {"type": "array", "items": {"type": "object"}, "description": "in: each location's ref, name, type, origin, hidden, page, scopeRoot, path, relation, state, basis, evidence and via (the member a set query matched); out: target ref or resource, its definition and the edge fields"},
-                "coverage": {"type": "object", "description": "complete, layers.relations kinds and version, reasons; never a total count"},
+                "coverage": {"type": "object", "description": "complete, layers.relations kinds and version, reasons; library queries: complete, sources (sourceId, state, snapshotId, nextSteps) and reasons; never a total count"},
                 "hasMore": {"type": "boolean"},
                 "nextCursor": {"type": ["string", "null"]},
                 "source": {"type": "object", "description": "sourceId and snapshotId; stateless calls add freshness"},
@@ -918,6 +925,15 @@ pub fn property(tool: &str, param: &Param) -> Value {
     if tool == "usages" && key == "direction" {
         p["enum"] = json!(["in", "out"]);
     }
+    if tool == "usages" && key == "library" {
+        p["properties"] = json!({
+            "kind": {"type": "string", "enum": figlens::workspace::library::KINDS},
+            "namespace": {"type": "string", "minLength": 1, "description": "the library's sourceLibraryKey"},
+            "key": {"type": "string", "minLength": 1, "description": "the component, style or variable key"},
+        });
+        p["required"] = json!(["kind", "namespace", "key"]);
+        p["additionalProperties"] = json!(false);
+    }
     p
 }
 
@@ -1003,6 +1019,26 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
                 }
             }
             "boolean" if !value.is_boolean() => return Err(bad()),
+            // Only usages' library takes an object; its schema lists every field.
+            "object" => {
+                let fields = value.as_object().ok_or_else(bad)?;
+                let props = schema["properties"].as_object().unwrap();
+                if fields.len() != props.len()
+                    || props.iter().any(|(name, p)| {
+                        !fields
+                            .get(name)
+                            .and_then(Value::as_str)
+                            .is_some_and(|text| {
+                                !text.is_empty()
+                                    && p["enum"]
+                                        .as_array()
+                                        .is_none_or(|e| e.contains(&fields[name]))
+                            })
+                    })
+                {
+                    return Err(bad());
+                }
+            }
             "string" => {
                 let text = value.as_str().ok_or_else(bad)?;
                 if (schema["minLength"] == 1 && text.is_empty())
@@ -1051,7 +1087,24 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
                 "usages needs file or workspaceId, not both; sourceId and storage apply to workspaceId",
             ));
         }
-        crate::command::usages_tool(&call).map_err(Failure::from_error)?;
+        if object.contains_key("library") {
+            if file {
+                return Err(Failure::argument(
+                    "usages with library reads a workspace: pass workspaceId, not file",
+                ));
+            }
+            if let Some(key) = ["node", "resource", "snapshotId", "relation", "direction"]
+                .into_iter()
+                .find(|key| object.contains_key(*key))
+            {
+                return Err(Failure::argument(format!(
+                    "usages with library takes no {key}: library replaces node and resource, and snapshotId, relation and direction apply only to them"
+                )));
+            }
+            crate::command::library_tool(&call).map_err(Failure::from_error)?;
+        } else {
+            crate::command::usages_tool(&call).map_err(Failure::from_error)?;
+        }
     }
     Ok(call)
 }

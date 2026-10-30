@@ -567,6 +567,40 @@ fn a_schema_3_workspace_serves_usages_and_empty_changes_without_upgrading() {
 }
 
 #[test]
+fn library_usages_agree_over_the_cli_and_mcp_and_refuse_a_node_target() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let library = [
+        "--library",
+        "component",
+        "--namespace",
+        "lib",
+        "--key",
+        "k1",
+    ];
+    let cli = env.json(&[&["usages", "--file", file][..], &library].concat());
+    assert_eq!(
+        cli["definition"]["reason"], "library_source_unproven",
+        "{cli}"
+    );
+    assert_eq!(cli["library"]["key"], "k1");
+    let mut mcp = Mcp::start(&env, &[]);
+    let reply = mcp.call(
+        "usages",
+        json!({"workspaceId": cli["workspaceId"],
+            "library": {"kind": "component", "namespace": "lib", "key": "k1"}}),
+    );
+    drop(mcp);
+    assert_eq!(reply["isError"], false, "{reply}");
+    assert_eq!(reply["structuredContent"]["coverage"], cli["coverage"]);
+    let both = env.run(&[&["usages", "--file", file, "0:1"][..], &library].concat());
+    assert!(!both.status.success());
+    assert!(String::from_utf8_lossy(&both.stderr).contains("not both"));
+}
+
+#[test]
 fn usages_of_a_scope_not_ready_report_its_state_next_step_and_null_fields() {
     let env = Env::new();
     let fig = env.fig("a.fig");

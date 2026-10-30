@@ -695,6 +695,9 @@ pub fn search_tool(
 /// the source is read.
 pub fn usages_request(args: &[String]) -> Result<figlens::search::usages::Request, Box<dyn Error>> {
     use figlens::search::usages;
+    if args.iter().any(|a| a == "--library") {
+        return Err("--library reads a workspace: figlens usages --workspace DIR|--file <file.fig>|--id ws_... --library KIND --namespace NS --key KEY".into());
+    }
     let target = args.first().ok_or(USAGE)?;
     let resource = ["VariableID:", "StyleKey:", "image:"]
         .iter()
@@ -734,6 +737,62 @@ pub fn usages_request(args: &[String]) -> Result<figlens::search::usages::Reques
             }
         }
     }
+    request.validate()?;
+    Ok(request)
+}
+
+/// CLI `--library KIND --namespace NS --key KEY` and its options, after the workspace selector.
+pub fn library_request(
+    args: &[String],
+) -> Result<figlens::workspace::library::Request, Box<dyn Error>> {
+    let mut request = figlens::workspace::library::Request {
+        kind: String::new(),
+        namespace: String::new(),
+        key: String::new(),
+        scope: "0:0".into(),
+        include_hidden: false,
+        limit: figlens::search::usages::DEFAULT_LIMIT,
+        cursor: None,
+    };
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--include-hidden" => request.include_hidden = true,
+            "--out" | "--relation" | "--snapshot" => {
+                return Err(format!("{arg} does not apply to --library").into());
+            }
+            _ => {
+                let value = rest.next().ok_or(format!("{arg} needs a value"))?;
+                match arg.as_str() {
+                    "--library" => request.kind = value.clone(),
+                    "--namespace" => request.namespace = value.clone(),
+                    "--key" => request.key = value.clone(),
+                    "--scope" => request.scope = normalize_id(value),
+                    "--limit" => request.limit = value.parse().unwrap_or(0),
+                    "--cursor" => request.cursor = Some(value.clone()),
+                    _ => return Err(USAGE.into()),
+                }
+            }
+        }
+    }
+    request.validate()?;
+    Ok(request)
+}
+
+/// MCP `usages` with `library`, whose shape and exclusions the contract already checked.
+pub fn library_tool(
+    call: &crate::contract::PreparedCall,
+) -> Result<figlens::workspace::library::Request, Box<dyn Error>> {
+    let field = |key: &str| call.argument("library")[key].as_str().unwrap().to_owned();
+    let request = figlens::workspace::library::Request {
+        kind: field("kind"),
+        namespace: field("namespace"),
+        key: field("key"),
+        scope: normalize_id(call.string("scope").unwrap()),
+        include_hidden: call.argument("includeHidden") == true,
+        limit: call.argument("limit").as_u64().unwrap() as usize,
+        cursor: call.string("cursor").map(str::to_owned),
+    };
     request.validate()?;
     Ok(request)
 }
@@ -847,7 +906,8 @@ pub fn diff_tool(
     })
 }
 
-/// MCP `usages` with `workspaceId`: one source's prepared index, never a build.
+/// MCP `usages` with `workspaceId`: one source's prepared index, or with `library` every visible
+/// source's; never a build.
 pub fn workspace_usages_tool(
     call: &crate::contract::PreparedCall,
     roots: &[PathBuf],
@@ -855,12 +915,21 @@ pub fn workspace_usages_tool(
 ) -> Result<Output, Box<dyn Error>> {
     let storage = tool_storage(call, roots, storage_roots)?;
     let select = figlens::workspace::Select::Id(call.string("workspaceId").unwrap().to_owned());
-    let value = figlens::workspace::usages::usages(
-        &storage,
-        &select,
-        call.string("sourceId"),
-        &usages_tool(call)?,
-    )?;
+    let value = if call.argument("library").is_object() {
+        figlens::workspace::library::library(
+            &storage,
+            &select,
+            call.string("sourceId"),
+            &library_tool(call)?,
+        )?
+    } else {
+        figlens::workspace::usages::usages(
+            &storage,
+            &select,
+            call.string("sourceId"),
+            &usages_tool(call)?,
+        )?
+    };
     Ok(Output::Json {
         value,
         pretty: false,
