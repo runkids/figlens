@@ -86,6 +86,11 @@ class MeasureNativeTest(unittest.TestCase):
         series[30] = series[90] = {**second, 'cpuMs': 250}
         self.assertEqual(native.idle_cost(series, cpu_exact=True)['pollingCpuMsPer60s'], 484)
 
+    def test_polling_passes_only_on_the_full_idle_upper_bound(self):
+        self.assertEqual([native.polling({'cpuExact': True, 'cpuMsPer60s': 250, 'pollingCpuMsPer60s': 100})['status'],
+                          native.polling({'cpuExact': True, 'cpuMsPer60s': 400, 'pollingCpuMsPer60s': 100})['status']],
+                         ['pass', 'estimate'])
+
     def test_a_reaped_worker_counts_once(self):
         row = lambda ppid, cpu, child: {'ppid': ppid, 'cpuMs': cpu, 'childCpuMs': child, 'readBytes': 0,
                                         'writeBytes': 0, 'physReadBytes': 0, 'physWriteBytes': 0}

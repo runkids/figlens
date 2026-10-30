@@ -338,6 +338,15 @@ def settle(exe, limit=30):
     return True
 
 
+def polling(cost):
+    """Polling-only CPU passes only when full idle CPU, an upper bound on it, is within the limit.
+    The per-minute exclusion is an estimate: it does not prove which seconds were verifications."""
+    if cost['cpuExact'] and cost['cpuMsPer60s'] <= LIMITS['pollingCpuMsPer60s']:
+        return {**within(cost['cpuMsPer60s'], LIMITS['pollingCpuMsPer60s']), 'basis': 'full idle CPU as upper bound'}
+    return {'value': cost['pollingCpuMsPer60s'], 'limit': LIMITS['pollingCpuMsPer60s'], 'status': 'estimate',
+            'basis': 'costliest second per started minute left out; not proven to be the verification'}
+
+
 def windowed(series, size=60):
     """The largest sum over `size` consecutive one-second samples."""
     return max(sum(series[i:i + size]) for i in range(len(series) - size + 1))
@@ -539,7 +548,7 @@ def watch(binary, design, revised, records, n, seconds, parent):
         'cancel': {'attempts': cancels, 'outcomes': Counter(x['outcome'] for x in cancels),
                    **verdict('cancel', valid)},
         'idleOneHolder': {**one, 'cpu': within(one['cpuMsPer60s'], LIMITS['idleCpuMsPer60s'], one['cpuExact']),
-                          'polling': within(one['pollingCpuMsPer60s'], LIMITS['pollingCpuMsPer60s'], one['cpuExact']), **io(one)},
+                          'polling': polling(one), **io(one)},
         'idleEightHolders': {**eight, 'cpu': within(eight['cpuMsPer60s'], LIMITS['idle8HoldersCpuMsPer60s'], eight['cpuExact']), **io(eight)},
         **tree.roles(holders),
         'disk': {'sourceBytes': size, **tree.disk, 'database': within(tree.disk['databaseBytes'], LIMITS['databaseBytes']),
