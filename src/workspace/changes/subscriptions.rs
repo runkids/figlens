@@ -253,6 +253,15 @@ fn target(
     })
 }
 
+fn registered(conn: &Connection, source: &str) -> Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sources WHERE source_id = ?1)",
+        [source],
+        |r| r.get(0),
+    )
+    .map_err(sql)
+}
+
 /// What a subscription follows and whether its target still holds.
 pub(super) fn describe(conn: &Connection, sub: &Sub) -> Result<Json> {
     let scope = sub.scope.as_deref().unwrap_or("");
@@ -281,10 +290,15 @@ pub(super) fn describe(conn: &Connection, sub: &Sub) -> Result<Json> {
         match &saved.library {
             Some(l) => {
                 out["library"] = json!({"kind": l.kind, "namespace": l.namespace, "key": l.key});
-                out["definition"] = l.definition.as_ref().map_or(Json::Null, |d| {
-                    json!({"sourceId": d.source_id, "nodeId": d.node_id,
-                        "baselineSnapshotId": d.snapshot_id})
-                });
+                out["definition"] = match &l.definition {
+                    None => Json::Null,
+                    // A removed definition source is not the reader's to learn, nor its node.
+                    Some(d) if !registered(conn, &d.source_id)? => {
+                        json!({"sourceId": null, "nodeId": null, "baselineSnapshotId": null})
+                    }
+                    Some(d) => json!({"sourceId": d.source_id, "nodeId": d.node_id,
+                        "baselineSnapshotId": d.snapshot_id}),
+                };
             }
             None => {
                 out["query"] = json!(saved.query);

@@ -3079,6 +3079,40 @@ fn a_disabled_set_names_no_removed_member_and_is_seen_by_whoever_sees_every_rema
 }
 
 #[test]
+fn a_disabled_library_set_never_names_its_removed_definition_source() {
+    use crate::workspace::changes::{self, subscriptions};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let def = component_ref(&conn, &srcs[1].1, srcs[1].2);
+    let saved = subscribe_set(
+        &storage,
+        &select,
+        "a",
+        "visible",
+        None,
+        Some(saved_library(def)),
+    )
+    .unwrap();
+    let sub = subscription_id(&saved);
+    crate::workspace::registry::remove(&storage, &select, &srcs[1].1).unwrap();
+    let rest = storage.clone().confined(std::slice::from_ref(&srcs[0].0));
+    let req = changes::Request {
+        subscription: Some(&sub),
+        ..Default::default()
+    };
+    let listed = subscriptions::list(&rest, &select, None, None, None).unwrap();
+    let page = changes::changes(&rest, &select, &req).unwrap();
+    let evaluated = changes::evaluate(&rest, &select, Some(&sub)).unwrap();
+    assert_eq!(
+        (
+            &listed["subscriptions"][0]["library"]["key"],
+            format!("{listed}{page}{evaluated}").contains(&srcs[1].1),
+        ),
+        (&json!("k"), false)
+    );
+}
+
+#[test]
 fn an_unreadable_set_reads_as_disabled_and_only_a_caller_seeing_every_source_removes_it() {
     use crate::workspace::changes::subscriptions;
     let d = TestDir::new();
