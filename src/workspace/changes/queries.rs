@@ -492,6 +492,94 @@ pub fn evaluate(storage: &Storage, select: &Select, id: Option<&str>) -> Result<
     Ok(json!({"workspaceId": ws_id, "subscriptionId": id, "evaluation": out}))
 }
 
+/// The runner's hook after `source`'s `scope` published: every query subscription on it is
+/// evaluated, each distinct search computed once and recorded for every subscription saving it.
+/// `computed` counts the searches that finished; one that did not leaves its subscriptions on
+/// their last evaluation, and a subscription that fails is reported failed, not the whole run.
+pub fn evaluate_published(
+    storage: &Storage,
+    select: &Select,
+    source: &str,
+    scope: &str,
+) -> Result<Json> {
+    let (ws_id, groups) = {
+        let (_, ws) = opened(storage, select, false)?;
+        let mut stmt = ws
+            .conn
+            .prepare(
+                "SELECT target, id, anchor FROM subscriptions
+                 WHERE kind = 'query' AND source_id = ?1 AND scope = ?2 ORDER BY target, id",
+            )
+            .map_err(sql)?;
+        let rows = stmt
+            .query_map([source, scope], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(sql)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql)?;
+        // One group per saved search: its first subscription's anchor is the search it runs.
+        let mut groups: Vec<(String, String, Vec<String>)> = Vec::new();
+        for (target, id, anchor) in rows {
+            match groups.last_mut() {
+                Some((t, _, ids)) if *t == target => ids.push(id),
+                _ => groups.push((target, anchor, vec![id])),
+            }
+        }
+        (ws.held.id.clone(), groups)
+    };
+    // One subscription's failure is its own state: the runner keeps evaluating the others.
+    let failed =
+        |e: Box<dyn std::error::Error>| json!({"state": "failed", "message": e.to_string()});
+    let (mut computed, mut states) = (0, Vec::new());
+    for (_, anchor, ids) in groups {
+        let e = match Saved::parse(&anchor)
+            .and_then(|saved| compute(storage, select, &ids[0], source, scope, &saved))
+        {
+            Ok(Ok(e)) => e,
+            outcome => {
+                let why = outcome
+                    .map(|r| r.err().unwrap_or_default())
+                    .unwrap_or_else(failed);
+                for id in &ids {
+                    // A pending step names the subscription it is for.
+                    let why = match why["state"] == "pending" {
+                        true => pending(why["reason"].as_str().unwrap_or_default(), &ws_id, id),
+                        false => why.clone(),
+                    };
+                    states.push(json!({"subscriptionId": id, "evaluation": why}));
+                }
+                continue;
+            }
+        };
+        computed += 1;
+        let (_, ws) = opened(storage, select, true)?;
+        let tx = rusqlite::Transaction::new_unchecked(
+            &ws.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .map_err(sql)?;
+        for id in &ids {
+            // A savepoint per subscription: a failed record leaves none of its writes behind.
+            tx.execute_batch("SAVEPOINT one").map_err(sql)?;
+            let out = record(&tx, storage, &ws_id, id, &e);
+            tx.execute_batch(if out.is_ok() {
+                "RELEASE one"
+            } else {
+                "ROLLBACK TO one; RELEASE one"
+            })
+            .map_err(sql)?;
+            states.push(json!({"subscriptionId": id, "evaluation": out.unwrap_or_else(failed)}));
+        }
+        tx.commit().map_err(sql)?;
+    }
+    Ok(json!({"workspaceId": ws_id, "computed": computed, "subscriptions": states}))
+}
+
 /// The receipt of a query subscription's cursors: it changes whenever evaluations it kept were
 /// deleted, so a cursor issued before that is known to have missed them.
 fn receipt(v: &View, pruned: i64) -> Result<[u8; 16]> {

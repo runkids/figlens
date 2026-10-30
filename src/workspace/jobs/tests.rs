@@ -1052,3 +1052,84 @@ fn a_revision_at_the_high_water_size_keeps_its_rows_in_pages_cleanup_freed() {
         .unwrap();
     assert_eq!(detail, "complete");
 }
+
+#[test]
+fn a_publication_evaluates_each_saved_search_once_for_every_subscription_saving_it() {
+    use crate::workspace::changes::{evaluate_published, subscriptions};
+    let d = TestDir::new();
+    let (storage, select, dir) = workspace(&d, 1);
+    let me = owner(&dir).unwrap();
+    let conn = connection(&dir);
+    let source = sources(&conn)[0].clone();
+    let build = |attempt| {
+        // The fixture's own prepare job holds the scope; each build here is a fresh one.
+        conn.execute("DELETE FROM jobs", []).unwrap();
+        let job_id = job(&conn, &source, "0:0", "running", &me, attempt);
+        let built = work(&dir, &job_id, &me, attempt).unwrap();
+        let ws_id = job_id.split('.').next().unwrap();
+        publish(&storage, ws_id, &job_id, &me, attempt, &built).unwrap();
+    };
+    build(1);
+    let save = |consumer, query| {
+        let req = subscriptions::Subscribe {
+            consumer: Some(consumer),
+            source: Some(&source),
+            scope: None,
+            node: None,
+            owner: None,
+            query: Some(query),
+            types: Vec::new(),
+        };
+        subscriptions::subscribe(&storage, &select, &req).unwrap()["evaluation"]["state"].clone()
+    };
+    // Two spellings of one search by two consumers, and another search.
+    let initial = [
+        save("a", "First success"),
+        save("b", "first  SUCCESS"),
+        save("a", "badge"),
+    ];
+    // Only a write runs the hook: reading changes computes nothing.
+    let evaluations = || {
+        conn.query_row("SELECT COUNT(*) FROM query_evaluations", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap()
+    };
+    let before = evaluations();
+    build(2);
+    // A publication alone evaluates nothing: only the hook (or watch evaluate) writes one.
+    assert_eq!(evaluations(), before);
+    let out = evaluate_published(&storage, &select, &source, "0:0").unwrap();
+    let states: Vec<_> = out["subscriptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["evaluation"]["state"].clone())
+        .collect();
+    assert_eq!(
+        (
+            initial.to_vec(),
+            before,
+            out["computed"].clone(),
+            states.len(),
+            states.iter().all(|s| s != "pending")
+        ),
+        (vec![json!("evaluated"); 3], 3, json!(2), 3, true),
+        "{out}"
+    );
+    // A damaged saved search fails only its own subscriptions.
+    conn.execute(
+        "UPDATE subscriptions SET anchor = '{' WHERE anchor LIKE '%badge%'",
+        [],
+    )
+    .unwrap();
+    build(3);
+    let out = evaluate_published(&storage, &select, &source, "0:0").unwrap();
+    let failed = out["subscriptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["evaluation"]["state"] == "failed")
+        .count();
+    assert_eq!((out["computed"].clone(), failed), (json!(1), 1), "{out}");
+}
