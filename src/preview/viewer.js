@@ -1569,6 +1569,8 @@ if (typeof document !== 'undefined') {
         let text = n ? `${n} shown${acc.hasMore ? ', more available' : ''}.` : `No matches in ${p.scope}.`;
         if (!n && partial) text += ' Coverage is partial, so absence is not established.';
         if (codes.length) text += ` ${partial ? 'Partial coverage' : 'Coverage notes'}: ${codes.join(', ')}.`;
+        const layer = acc.coverage?.layers?.semantic?.state;
+        if (layer && layer !== 'ready') text += ` Semantic layer: ${layer}.`;
         const s = sourceRef(acc.source, generation);
         if (s) text += ` File ${s.path}, source ${s.sourceId}, snapshot ${s.snapshotId}, revision ${s.revision}.`;
         relState(name, partial ? 'partial' : n ? 'ok' : 'empty', text);
@@ -1666,21 +1668,29 @@ if (typeof document !== 'undefined') {
     }
     // Semantic readiness of the scope a ranked search would use, polled while the viewer's own build runs;
     // only the newest request of the current revision is shown.
-    let semanticSeq = 0, semanticTimer;
-    const rankedScope = () => $('rankedSelection').checked && selected && !selected.id.startsWith('I') ? selected.id : '0:0';
+    // The scope the Enable button names, kept so a click builds exactly what it says.
+    let semanticSeq = 0, semanticTimer, shownScope = null;
+    // Selection-only search needs a stored selected layer; it never widens to the whole file.
+    const rankedScope = () => !$('rankedSelection').checked ? '0:0' : selected && !selected.id.startsWith('I') ? selected.id : null;
     async function semanticRefresh() {
         clearTimeout(semanticTimer);
-        const on = !boot.snapshot && $('rankedMode').value !== 'text';
+        const on = !boot.snapshot && $('rankedMode').value !== 'text', scope = rankedScope();
+        const seq = ++semanticSeq, revision = generation;
         $('semanticPanel').hidden = !on;
         if (!on) return;
-        const seq = ++semanticSeq, revision = generation;
+        if (!scope) {
+            $('semanticState').textContent = 'Select a stored layer to search within it, or clear “Current selection only”.';
+            $('semanticEnable').hidden = true;
+            return;
+        }
         try {
-            const s = await (await api(`semantic/${revision}?` + relQuery({scope: rankedScope()}))).json();
+            const s = await (await api(`semantic/${revision}?` + relQuery({scope}))).json();
             if (seq !== semanticSeq || revision !== generation) return;
             const v = semanticSummary(s, loadedSource?.snapshotId);
             $('semanticState').textContent = v.text;
             $('semanticEnable').hidden = !v.enable;
-            const scope = rankedScope(), what = scope === '0:0' ? 'the whole file' : `layer ${scope}`;
+            shownScope = scope;
+            const what = scope === '0:0' ? 'the whole file' : `layer ${scope}`;
             $('semanticEnable').textContent = `Enable index of ${what}`;
             if (v.enable) $('semanticState').textContent += ` Enable index stores a local figlens index of ${what} of ${loadedSource?.path ?? 'this file'}; with a local model it also builds the model layer here. Nothing is downloaded or sent anywhere, and a save stops the build.`;
             if (v.running) semanticTimer = setTimeout(semanticRefresh, 1000);
@@ -1688,11 +1698,14 @@ if (typeof document !== 'undefined') {
     }
     $('rankedMode').onchange = semanticRefresh;
     $('rankedSelection').addEventListener('change', semanticRefresh);
+    addEventListener('figlens:select', () => $('rankedSelection').checked && semanticRefresh());
     // The one action that creates a workspace: the button names the scope and the line above it the file.
     $('semanticEnable').onclick = async () => {
-        const scope = rankedScope(), revision = generation;
+        const scope = shownScope, revision = generation;
+        if (!scope) return;
         try {
             const r = await (await api(`enable/${revision}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({scope})})).json();
+            if (revision !== generation) return;
             if (r.error) $('semanticState').textContent = `${r.error.kind ? r.error.kind + ': ' : ''}${r.error.message}`;
             else semanticRefresh();
         } catch (e) { $('semanticState').textContent = e.message; }

@@ -159,10 +159,13 @@ usage:
                                              plus findings: one entry per missing, unsupported or
                                              unverified handoff input with node ids, evidence and action
   figlens preview <file.fig> [node] [--out preview.html] [--port N] [--bind IP]
-                                             local read-only viewer (loopback, random port by default);
+                                             local viewer that never writes the design (loopback,
+                                             random port by default);
                                              --out requires a node and writes an offline snapshot;
                                              live, it also runs ranked search and exact usages of
                                              the loaded revision (snapshots search their layers only);
+                                             its Semantic/Hybrid mode searches a local index that its
+                                             Enable index button builds (with a local model, see models);
                                              results and copied context name the page and, live,
                                              the loaded file path, source snapshot and local
                                              revision (offline all are unknown; no path is
@@ -549,10 +552,13 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             )?;
             return Ok(());
         }
-        return figlens::preview::serve(
+        // Ctrl+C or SIGTERM stops the viewer's model queries and owned build before it exits.
+        signals::catch();
+        return figlens::preview::serve_until(
             &path,
             node.as_deref(),
             std::net::SocketAddr::new(bind, port),
+            &signals::INTERRUPTED,
         );
     }
     let mut doc = Document::open(&path).map_err(|e| contract::source(file, e))?;

@@ -57,6 +57,7 @@ fn live_original_image_route_obeys_the_image_budget() {
         source: Value::Null,
         indexes: Mutex::default(),
         indexing: &semantic::Indexing::default(),
+        cancel: std::sync::atomic::AtomicBool::new(false),
     };
     let error = revision.respond("asset/1/0:1/a1b2").unwrap_err();
     assert!(
@@ -93,6 +94,7 @@ fn served_tree<T>(tree: &Tree, check: impl FnOnce(&Revision) -> T) -> T {
         source,
         indexes: Mutex::default(),
         indexing: &semantic::Indexing::default(),
+        cancel: std::sync::atomic::AtomicBool::new(false),
     };
     check(&revision)
 }

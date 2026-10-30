@@ -1,4 +1,5 @@
-//! Read-only local viewer and self-contained snapshots. No filesystem routes are exposed.
+//! Local viewer, which never writes the design, and self-contained snapshots. No filesystem
+//! routes are exposed.
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
@@ -572,7 +573,25 @@ fn reply(mut stream: TcpStream, result: Result<(&str, Vec<u8>)>, area: Option<&s
 }
 
 pub fn serve(file: &Path, initial: Option<&str>, address: SocketAddr) -> Result<()> {
+    serve_until(
+        file,
+        initial,
+        address,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+}
+
+/// `serve` until `stop` is set (by a signal handler): it then cancels in-flight model queries
+/// and the build it owns, waits for them and their workers, and returns.
+pub fn serve_until(
+    file: &Path,
+    initial: Option<&str>,
+    address: SocketAddr,
+    stop: &std::sync::atomic::AtomicBool,
+) -> Result<()> {
     let listener = TcpListener::bind(address)?;
+    // Polled, so a stop is seen while idle; accepted sockets are blocking again.
+    listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
     let host = if address.ip().is_unspecified() {
         if address.is_ipv4() {
@@ -593,7 +612,7 @@ pub fn serve(file: &Path, initial: Option<&str>, address: SocketAddr) -> Result<
         })
         .collect::<String>();
     eprintln!(
-        "Preview: http://{authority}/{token}/\nRead-only local service. Press Ctrl+C to stop."
+        "Preview: http://{authority}/{token}/\nLocal service; the design file is never written. Press Ctrl+C to stop."
     );
     let (mut document, mut version, mut source) = staged(file)?;
     let mut generation = 1u64;
@@ -603,7 +622,7 @@ pub fn serve(file: &Path, initial: Option<&str>, address: SocketAddr) -> Result<
     let indexing = semantic::Indexing::default();
     loop {
         // Decode once per revision; the revision's workers share the tree and finish before a reload.
-        let (fresh, stamp, identity) = {
+        let next = {
             let message = document.take_message()?;
             let tree = Tree::new(&message);
             let ctx = Revision {
@@ -622,10 +641,11 @@ pub fn serve(file: &Path, initial: Option<&str>, address: SocketAddr) -> Result<
                 source: source.clone(),
                 indexes: Mutex::default(),
                 indexing: &indexing,
+                cancel: std::sync::atomic::AtomicBool::new(false),
             };
             let (jobs, queue) = mpsc::channel::<TcpStream>();
             let queue = Mutex::new(queue);
-            std::thread::scope(|scope| -> Result<Staged> {
+            std::thread::scope(|scope| -> Result<Option<Staged>> {
                 for _ in 0..workers {
                     // Rendering recurses through the node tree: give workers the CLI's 8 MiB stack.
                     std::thread::Builder::new()
@@ -639,18 +659,39 @@ pub fn serve(file: &Path, initial: Option<&str>, address: SocketAddr) -> Result<
                 }
                 // Owned here so the queue closes, and the workers stop, when this revision ends.
                 let jobs = jobs;
+                // Ending this revision cancels its model queries and the owned build before the
+                // workers are joined, so neither holds the reload or the shutdown.
+                let end = || {
+                    ctx.cancel.store(true, Ordering::SeqCst);
+                    indexing.stop();
+                };
                 loop {
                     let stream = match pending.take() {
                         Some(stream) => stream,
-                        None => listener.accept()?.0,
+                        None => match listener.accept() {
+                            Ok((stream, _)) => {
+                                stream.set_nonblocking(false)?;
+                                stream
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                if stop.load(Ordering::SeqCst) {
+                                    end();
+                                    return Ok(None);
+                                }
+                                std::thread::sleep(Duration::from_millis(20));
+                                continue;
+                            }
+                            Err(e) => return Err(e.into()),
+                        },
                     };
                     if let Ok(stamp) = fs::metadata(file).and_then(|m| m.modified())
                         && stamp != version
                     {
                         match reload(file, stamp) {
                             Ok(fresh) => {
+                                end();
                                 pending = Some(stream);
-                                return Ok(fresh);
+                                return Ok(Some(fresh));
                             }
                             Err(e) => {
                                 reply(stream, Err(e), None);
@@ -662,8 +703,9 @@ pub fn serve(file: &Path, initial: Option<&str>, address: SocketAddr) -> Result<
                 }
             })?
         };
-        // A build of the old bytes must not publish under the new revision: stop it first.
-        indexing.stop();
+        let Some((fresh, stamp, identity)) = next else {
+            return Ok(());
+        };
         document = fresh;
         version = stamp;
         source = identity;
@@ -697,8 +739,10 @@ struct Revision<'r> {
     source: Value,
     /// Search indexes of this revision's scopes, most recently used last.
     indexes: Mutex<Vec<(String, Built)>>,
-    /// The index build the user enabled, owned across revisions until a save stops it.
+    /// The index build the user enabled; the serve loop stops it when this revision ends.
     indexing: &'r semantic::Indexing,
+    /// Set when this revision ends (a save or a stop): its semantic queries then stop.
+    cancel: std::sync::atomic::AtomicBool,
 }
 
 /// One scope's index, built once by the first request and shared by those that wait on it.

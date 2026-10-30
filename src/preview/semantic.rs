@@ -10,12 +10,18 @@ use std::sync::atomic::AtomicBool;
 pub(super) struct Indexing(Mutex<Option<Owned>>);
 
 struct Owned {
-    generation: u64,
     scope: String,
     cancel: Arc<AtomicBool>,
     /// The latest job report, or the error that ended the run.
     state: Arc<Mutex<Value>>,
     thread: std::thread::JoinHandle<()>,
+}
+
+impl Drop for Indexing {
+    /// However the viewer ends, the build it owns ends with it.
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 impl Indexing {
@@ -100,9 +106,8 @@ impl Revision<'_> {
         mode: crate::semantic::Mode,
     ) -> Result<Value> {
         let storage = workspace::storage(None)?;
-        let never = AtomicBool::new(false);
         let mut out =
-            workspace::query::search_mode(&storage, &self.select()?, &[], req, mode, &never)?;
+            workspace::query::search_mode(&storage, &self.select()?, &[], req, mode, &self.cancel)?;
         let current = match out["sources"].as_array().map(Vec::as_slice) {
             Some([one]) => {
                 one["state"] == "ready"
@@ -134,13 +139,10 @@ impl Revision<'_> {
         let models = crate::semantic::profile::status(&storage)?;
         let index = workspace::status(&storage, &self.select()?)?;
         let owned = self.indexing.0.lock().map_err(|_| "indexing poisoned")?;
-        let job = owned
-            .as_ref()
-            .filter(|o| o.generation == self.generation && o.scope == scope)
-            .map(|o| {
-                let report = o.state.lock().map_or(Value::Null, |s| s.clone());
-                json!({"running": !o.thread.is_finished(), "report": report})
-            });
+        let job = owned.as_ref().filter(|o| o.scope == scope).map(|o| {
+            let report = o.state.lock().map_or(Value::Null, |s| s.clone());
+            json!({"running": !o.thread.is_finished(), "report": report})
+        });
         Ok(
             json!({"scope": scope, "models": {"profiles": models["profiles"], "setup": models["setup"]},
             "index": index, "job": job}),
@@ -157,7 +159,7 @@ impl Revision<'_> {
             .and_then(
                 |o| match (o.len(), o.get("scope").and_then(Value::as_str)) {
                     (1, Some(scope)) => self.enable(revision, scope),
-                    _ => self.indexed_scope(revision, None).map(|_| Value::Null),
+                    _ => Err("takes exactly one scope".into()),
                 },
             )
             .unwrap_or_else(|e| refusal(&*e, &self.source));
@@ -170,7 +172,7 @@ impl Revision<'_> {
         if let Some(o) = owned.as_ref()
             && !o.thread.is_finished()
         {
-            if o.generation == self.generation && o.scope == scope {
+            if o.scope == scope {
                 return Ok(json!({"started": false, "scope": scope}));
             }
             return Err(FigError::new(
@@ -196,7 +198,6 @@ impl Revision<'_> {
                 }
             })?;
         *owned = Some(Owned {
-            generation: self.generation,
             scope: scope.clone(),
             cancel,
             state,

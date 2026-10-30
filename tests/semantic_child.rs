@@ -969,6 +969,112 @@ fn a_schema_8_workspace_reads_its_model_layer_as_pending() {
     assert_eq!(got["coverage"]["layers"]["semantic"]["state"], "pending");
 }
 
+/// `figlens preview` of a design whose model layer is built, with the fake profile's child now
+/// hanging, and one viewer semantic search in flight in a thread. Returns the viewer, its
+/// `(authority, token)`, the model children's pids, the design and the search thread.
+#[cfg(target_os = "linux")]
+fn preview_with_a_hung_query(
+    dir: &test_support::TestDir,
+) -> (
+    std::process::Child,
+    (String, String),
+    Vec<String>,
+    PathBuf,
+    std::thread::JoinHandle<String>,
+) {
+    use std::io::BufRead;
+    let (prepared, fig) = indexed(dir, true);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    cli(&["index", "embed", "--id", ws, "--scope", "0:0"]);
+    let pids = std::path::absolute(dir.join("pids")).unwrap();
+    std::fs::create_dir_all(&pids).unwrap();
+    let mut viewer = figlens(&["preview", fig.to_str().unwrap(), "--port", "0"])
+        .env("SEMANTIC_CHILD_MODE", "hang")
+        .env("SEMANTIC_CHILD_PIDS", &pids)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = std::io::BufReader::new(viewer.stderr.take().unwrap());
+    let mut line = String::new();
+    stderr.read_line(&mut line).unwrap();
+    std::thread::spawn(move || std::io::copy(&mut stderr, &mut std::io::sink()));
+    let url = line.trim().strip_prefix("Preview: http://").unwrap();
+    let (authority, token) = url.trim_end_matches('/').split_once('/').unwrap();
+    let at = (authority.to_owned(), token.to_owned());
+    let query = at.clone();
+    let search =
+        std::thread::spawn(move || viewer_get(&query, "search/1?q=task&mode=semantic&scope=0:0"));
+    let children = children(&pids, 1);
+    assert_eq!(children.len(), 1, "the query never started its model child");
+    (viewer, at, children, fig, search)
+}
+
+#[cfg(target_os = "linux")]
+fn viewer_get((authority, token): &(String, String), route: &str) -> String {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(authority).unwrap();
+    // A viewer that never answers fails the test instead of hanging it.
+    stream
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    write!(
+        stream,
+        "GET /{token}/{route} HTTP/1.1\r\nHost: {authority}\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+
+#[cfg(target_os = "linux")]
+fn a_save_stops_the_viewers_hung_semantic_query_and_serves_the_new_revision() {
+    let dir = test_support::TestDir::new();
+    let (mut viewer, at, children, fig, search) = preview_with_a_hung_query(&dir);
+    let file = std::fs::File::options().write(true).open(&fig).unwrap();
+    file.set_modified(std::time::SystemTime::now() + Duration::from_secs(5))
+        .unwrap();
+    let begun = Instant::now();
+    let revision = viewer_get(&at, "revision");
+    assert!(revision.contains("\"generation\":2"), "{revision}");
+    assert!(
+        begun.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        begun.elapsed()
+    );
+    assert!(search.join().unwrap().contains("error"));
+    assert!(
+        all_gone(&children),
+        "model child {children:?} still running"
+    );
+    let _ = viewer.kill();
+    let _ = viewer.wait();
+}
+
+#[cfg(target_os = "linux")]
+fn a_signal_stops_the_viewers_hung_semantic_query_before_it_exits() {
+    let dir = test_support::TestDir::new();
+    let (mut viewer, _, children, _, search) = preview_with_a_hung_query(&dir);
+    let begun = Instant::now();
+    let sent = std::process::Command::new("kill")
+        .args(["-TERM", &viewer.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+    let status = viewer.wait().unwrap();
+    assert!(status.success(), "{status:?}");
+    assert!(
+        begun.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        begun.elapsed()
+    );
+    let _ = search.join();
+    assert!(
+        all_gone(&children),
+        "model child {children:?} still running"
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if let [_, worker, dir, job] = args.as_slice()
@@ -1076,6 +1182,16 @@ fn main() {
         (
             "mcp_end_of_input_stops_an_in_flight_semantic_search_and_its_child",
             mcp_end_of_input_stops_an_in_flight_semantic_search_and_its_child,
+        ),
+        #[cfg(target_os = "linux")]
+        (
+            "a_save_stops_the_viewers_hung_semantic_query_and_serves_the_new_revision",
+            a_save_stops_the_viewers_hung_semantic_query_and_serves_the_new_revision,
+        ),
+        #[cfg(target_os = "linux")]
+        (
+            "a_signal_stops_the_viewers_hung_semantic_query_before_it_exits",
+            a_signal_stops_the_viewers_hung_semantic_query_before_it_exits,
         ),
         #[cfg(target_os = "linux")]
         (

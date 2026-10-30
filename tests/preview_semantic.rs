@@ -61,6 +61,9 @@ impl Viewer {
 
     fn get(&self, route: &str) -> Value {
         let mut stream = TcpStream::connect(&self.authority).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
         write!(
             stream,
             "GET /{}/{route} HTTP/1.1\r\nHost: {}\r\n\r\n",
@@ -76,6 +79,9 @@ impl Viewer {
     /// The page's Enable index: a same-origin JSON POST.
     fn enable(&self, revision: u64, body: &str) -> Value {
         let mut stream = TcpStream::connect(&self.authority).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
         write!(
             stream,
             "POST /{}/enable/{revision} HTTP/1.1\r\nHost: {a}\r\nOrigin: http://{a}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
@@ -181,6 +187,12 @@ fn enable_indexes_only_the_chosen_scope_and_modes_follow_the_profile() {
         viewer.get("revision")["source"],
         "{hybrid}"
     );
+    assert!(
+        hybrid["coverage"]["layers"]["semantic"]["reasons"]
+            .to_string()
+            .contains("no_profile"),
+        "{hybrid}"
+    );
     assert!(!viewer.get("search/1?q=x&mode=vector")["error"].is_null());
 }
 
@@ -230,6 +242,54 @@ fn a_save_cancels_the_build_the_viewer_owns_before_the_new_revision_serves() {
     assert!(
         !jobs.contains("\"running\"") && !jobs.contains("\"queued\""),
         "{status}"
+    );
+    std::fs::remove_file(&hold).unwrap();
+}
+
+#[cfg(all(unix, debug_assertions))]
+#[test]
+fn a_signal_cancels_the_build_the_viewer_owns_before_it_exits() {
+    let root = dir("signal");
+    let hold = root.join("hold");
+    std::fs::write(&hold, "").unwrap();
+    let held = PathBuf::from(format!("parse:{}", hold.display()));
+    let mut viewer = Viewer::start(&root, &[("FIGLENS_TEST_HOLD", &held)]);
+    assert_eq!(viewer.enable(1, r#"{"scope":"0:0"}"#)["started"], true);
+    let reached = PathBuf::from(format!("{}.reached", hold.display()));
+    let start = Instant::now();
+    while !reached.exists() {
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "the build never reached parse"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let begun = Instant::now();
+    let sent = Command::new("kill")
+        .args(["-TERM", &viewer.child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+    let status = viewer.child.wait().unwrap();
+    assert!(status.success(), "{status:?}");
+    assert!(
+        begun.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        begun.elapsed()
+    );
+    let report = Command::new(env!("CARGO_BIN_EXE_figlens"))
+        .args(["index", "status", "--file", viewer.design.to_str().unwrap()])
+        .envs([
+            ("HOME", root.join("home")),
+            ("XDG_STATE_HOME", root.join("state")),
+            ("XDG_CONFIG_HOME", root.join("config")),
+        ])
+        .output()
+        .unwrap();
+    let report = String::from_utf8_lossy(&report.stdout);
+    assert!(
+        !report.contains("\"running\"") && !report.contains("\"queued\""),
+        "{report}"
     );
     std::fs::remove_file(&hold).unwrap();
 }
