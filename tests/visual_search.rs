@@ -386,30 +386,44 @@ fn a_missing_visual_layer_names_its_step_and_a_partial_page_cannot_continue() {
     );
 }
 
-/// A partial layer (a render budget or unit cap reached) keeps the page partial, but names no
-/// `index visual` step, which would leave it unchanged.
+/// A partial layer keeps the page partial. Left by render errors or the unit cap it names no
+/// `index visual` step, which could not change it; stopped by its render budget it names one.
 #[test]
-fn a_partial_visual_layer_is_partial_without_a_step_that_cannot_change_it() {
+fn a_partial_visual_layer_names_index_visual_only_when_a_rerun_can_advance_it() {
     let (env, _, _) = two();
+    let visual_steps = |env: &Env| {
+        let reply = env.search(&["--image", path(&env.png("red.png", RED))]);
+        assert_eq!(
+            (
+                reply["coverage"]["complete"].clone(),
+                reply["nextCursor"].clone()
+            ),
+            (json!(false), Value::Null)
+        );
+        assert_eq!(
+            reply["coverage"]["layers"]["visual"]["hash"]["sources"][0]["state"],
+            "partial"
+        );
+        let steps = reply["nextSteps"].as_array().cloned().unwrap_or_default();
+        steps
+            .iter()
+            .filter(|s| s["arguments"]["action"] == "visual")
+            .count()
+    };
     env.database()
-        .execute("UPDATE model_layers SET state = 'partial'", [])
+        .execute(
+            "UPDATE model_layers SET state = 'partial', stop = 'visual_capacity'",
+            [],
+        )
         .unwrap();
-    let reply = env.search(&["--image", path(&env.png("red.png", RED))]);
+    assert_eq!(visual_steps(&env), 0);
+    env.database()
+        .execute("UPDATE model_layers SET stop = 'render_budget'", [])
+        .unwrap();
     assert_eq!(
-        (
-            reply["coverage"]["complete"].clone(),
-            reply["nextCursor"].clone()
-        ),
-        (json!(false), Value::Null)
-    );
-    let steps = reply["nextSteps"].as_array().cloned().unwrap_or_default();
-    assert!(
-        steps.iter().all(|s| s["arguments"]["action"] != "visual"),
-        "{steps:?}"
-    );
-    assert_eq!(
-        reply["coverage"]["layers"]["visual"]["hash"]["sources"][0]["state"],
-        "partial"
+        visual_steps(&env),
+        2,
+        "one step per source a rerun can advance"
     );
 }
 

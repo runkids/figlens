@@ -94,6 +94,17 @@ fn stored_units(conn: &Connection, gen_id: i64) -> Result<Vec<Stored>> {
     .map_err(sql)
 }
 
+/// The rasters a vision job embeds: this renderer's, of this job's selection (the whole stored
+/// layer when it was already finished). Another renderer's raster, left by a render budget
+/// stop, is stale and never embedded; a render error has none.
+fn embeddable(stored: Vec<Stored>, selection: Option<&HashSet<u32>>) -> Vec<(u32, [u8; 32])> {
+    stored
+        .into_iter()
+        .filter(|u| selection.is_none_or(|s| s.contains(&u.0)))
+        .filter_map(|(rid, key, current)| key.filter(|_| current).map(|k| (rid, k)))
+        .collect()
+}
+
 /// Renders attempt `attempt` of visual job `job_id` for owner `me`. Every batch commits its
 /// units and the layer's `building` progress in one transaction, only while the fence holds.
 /// The hash layer is published `ready` or `partial` once rendering ends; a vision job then
@@ -228,7 +239,8 @@ fn visual_work(
     };
     // A ready hash layer of this renderer is never written again, so hash search keeps reading
     // it and a later failure of this job cannot mark it failed. A partial one is resumed: its
-    // current rasters are kept, and missing, failed and other-renderer units render again.
+    // current rasters are kept, and missing, failed and other-renderer units render again (a
+    // resume that fails leaves it failed, still ranking its current rasters).
     let hash_done = state(&conn, visual::VERSION)?.as_deref() == Some("ready");
     if state(&conn, visual::VERSION)?.as_deref() == Some("ready")
         && (!vision || state(&conn, &profile_id)?.as_deref() == Some("ready"))
@@ -359,6 +371,15 @@ fn visual_work(
         };
         // Rasters this generation already stored from this renderer are kept, never rendered again.
         let (_, _, kept) = tally(&conn)?;
+        // A resume renders what was never rendered before retrying this renderer's failures, so
+        // a unit that keeps failing cannot spend the budget a new unit needs.
+        let root = units.first().map(|u| u.0);
+        let failed: HashSet<u32> = stored_units(&conn, gen_id)?
+            .into_iter()
+            .filter(|(_, key, current)| key.is_none() && *current)
+            .map(|u| u.0)
+            .collect();
+        units.sort_by_key(|(rid, _)| failed.contains(rid));
         stage(&conn, "render")?;
         // One job-wide budget across units, charged before each render.
         let (began, mut pixels, mut rendered_now) = (std::time::Instant::now(), 0u64, 0);
@@ -380,7 +401,7 @@ fn visual_work(
                 if stop == Some("render_budget") {
                     break;
                 }
-                let render = render(&tree, &bytes, id, *rid == units[0].0);
+                let render = render(&tree, &bytes, id, Some(*rid) == root);
                 if let Ok(r) = &render {
                     pixels += r.pixels;
                 }
@@ -446,12 +467,7 @@ fn visual_work(
             fail("the configured vision profile changed since this visual job was submitted")
         })?;
     // Only this job's selection (the whole stored layer when it was already finished).
-    let keys: Vec<(u32, [u8; 32])> = stored_units(&conn, gen_id)?
-        .into_iter()
-        .filter(|u| selection.as_ref().is_none_or(|s| s.contains(&u.0)))
-        // Another renderer's raster left by a render budget stop is stale, never embedded.
-        .filter_map(|(rid, key, current)| key.filter(|_| current).map(|k| (rid, k)))
-        .collect();
+    let keys = embeddable(stored_units(&conn, gen_id)?, selection.as_ref());
     let mut unique: Vec<(u32, [u8; 32])> = Vec::new();
     let mut seen = HashSet::new();
     for (rid, key) in &keys {
@@ -563,6 +579,19 @@ mod tests {
         .map(|u| u.rid)
         .collect();
         assert_eq!(kept, [0, 3]);
+    }
+
+    #[test]
+    fn only_this_renderers_rasters_of_the_selection_are_embedded() {
+        let stored = vec![
+            (1, Some([1; 32]), true),
+            (2, Some([2; 32]), false),
+            (3, None, true),
+            (4, Some([4; 32]), true),
+        ];
+        let selection: HashSet<u32> = [1, 2, 3].into_iter().collect();
+        assert_eq!(embeddable(stored.clone(), Some(&selection)), [(1, [1; 32])]);
+        assert_eq!(embeddable(stored, None), [(1, [1; 32]), (4, [4; 32])]);
     }
 
     #[test]

@@ -292,6 +292,19 @@ mod tests {
     use crate::search::visual::RenderedUnit;
     use std::sync::atomic::AtomicBool;
 
+    /// A flat 8 by 8 unit render.
+    fn rendered() -> RenderedUnit {
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(8, 8).unwrap();
+        pixmap.fill(resvg::tiny_skia::Color::from_rgba8(9, 9, 9, 255));
+        RenderedUnit {
+            image: QueryImage::from_pixmap(&pixmap, None).unwrap(),
+            diagnostics: vec![],
+            diagnostics_truncated: false,
+            bounds: serde_json::Map::new(),
+            pixels: 0,
+        }
+    }
+
     /// The schema 9 and 10 tables over the part of `jobs` they change.
     fn db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -309,15 +322,7 @@ mod tests {
     #[test]
     fn a_layer_reads_stale_after_another_renderer_and_failed_when_its_build_is_gone() {
         let conn = db();
-        let mut pixmap = resvg::tiny_skia::Pixmap::new(8, 8).unwrap();
-        pixmap.fill(resvg::tiny_skia::Color::from_rgba8(9, 9, 9, 255));
-        let rendered = RenderedUnit {
-            image: QueryImage::from_pixmap(&pixmap, None).unwrap(),
-            diagnostics: vec![],
-            diagnostics_truncated: false,
-            bounds: serde_json::Map::new(),
-            pixels: 0,
-        };
+        let rendered = rendered();
         super::super::visual::save(&conn, 7, 1, &rendered).unwrap();
         let set = |state: &str| {
             conn.execute(
@@ -348,15 +353,7 @@ mod tests {
     fn units_of_another_renderer_read_stale_and_stay_out_of_ranking_and_vectors() {
         let mut conn = db();
         super::super::visual::failed(&conn, 7, 1, "unsupported node").unwrap();
-        let mut pixmap = resvg::tiny_skia::Pixmap::new(8, 8).unwrap();
-        pixmap.fill(resvg::tiny_skia::Color::from_rgba8(9, 9, 9, 255));
-        let rendered = RenderedUnit {
-            image: QueryImage::from_pixmap(&pixmap, None).unwrap(),
-            diagnostics: vec![],
-            diagnostics_truncated: false,
-            bounds: serde_json::Map::new(),
-            pixels: 0,
-        };
+        let rendered = rendered();
         let key = super::super::visual::save(&conn, 8, 2, &rendered).unwrap();
         conn.execute(
             "INSERT INTO model_vectors VALUES ('p', ?1, ?2)",
