@@ -34,8 +34,7 @@ fn child(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
     // A vision child: one vector per image; `image-hang` never answers, `image-fail` reports a
     // model error, and `image-nan` and `image-dim` answer like `nan` and `dim`.
     if mode.starts_with("image") {
-        let hello = json!({"protocol": semantic::PROTOCOL, "dim": DIM, "model": "fake", "modality": "image"});
-        return semantic::serve_images(&hello, |images| {
+        return semantic::serve_images(&image_hello(), |images| {
             if mode == "image-hang" {
                 std::thread::sleep(Duration::from_secs(3600));
             }
@@ -58,6 +57,10 @@ fn child(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 fn hello() -> serde_json::Value {
     json!({"protocol": semantic::PROTOCOL, "dim": DIM, "model": "fake"})
+}
+
+fn image_hello() -> serde_json::Value {
+    json!({"protocol": semantic::PROTOCOL, "dim": DIM, "model": "fake", "modality": "image"})
 }
 
 /// The deterministic bag-of-characters vector of `t`.
@@ -100,6 +103,36 @@ fn model_worker(dir: &str, job: &str) -> bool {
             Ok(texts.iter().map(|t| bag(t, "ok")).collect())
         });
         Ok((hello(), embed))
+    });
+    println!("{report}");
+    !report["error"].is_object()
+}
+
+/// `__visual-worker <dir> <jobId>`, as a configured vision profile's runtime runs a visual
+/// job: the library worker with a fake image embedder, logging and recording pids like
+/// `model_worker`.
+fn visual_worker(dir: &str, job: &str) -> bool {
+    if let Ok(pids) = std::env::var("SEMANTIC_CHILD_PIDS") {
+        std::fs::write(Path::new(&pids).join(std::process::id().to_string()), "").unwrap();
+    }
+    let log = |line: String| {
+        if let Ok(file) = std::env::var("SEMANTIC_EMBED_LOG") {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(file)
+                .unwrap();
+            writeln!(f, "{line}").unwrap();
+        }
+    };
+    let report = figlens::workspace::visual_job::run_visual_worker(Path::new(dir), job, |_| {
+        log("load".into());
+        let embed: figlens::workspace::visual_job::EmbedImages = Box::new(move |images| {
+            log(format!("batch {}", images.len()));
+            Ok(images.iter().map(|_| bag("a", "ok")).collect())
+        });
+        Ok((image_hello(), embed))
     });
     println!("{report}");
     !report["error"].is_object()
@@ -1215,6 +1248,7 @@ fn a_cancelled_configure_reports_cancelled_and_records_nothing() {
     );
     let k = profile::Known {
         name: "fake",
+        modality: "text",
         model: "fake",
         revision: "0",
         license: "MIT",
@@ -1348,6 +1382,290 @@ fn an_mcp_text_build_queues_and_runs_its_embed_on_the_model_lane() {
     drop(stdin);
     mcp.wait().unwrap();
     assert_eq!(ready(), 1);
+}
+
+/// Configures the fake child as the vision profile.
+fn configured_vision(dir: &test_support::TestDir) {
+    let storage = figlens::workspace::storage(None).unwrap();
+    let (model, files) = model(dir, "vision weights");
+    let files: &'static [(&str, &str)] = Box::leak(
+        files
+            .into_iter()
+            .map(|(n, d)| (n, &*Box::leak(d.into_boxed_str())))
+            .collect(),
+    );
+    let k = profile::Known {
+        name: "fake-vision",
+        modality: "image",
+        model: "fake",
+        revision: "0",
+        license: "MIT",
+        files,
+    };
+    let exe = std::env::current_exe().unwrap();
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe { std::env::set_var("SEMANTIC_CHILD_MODE", "image") };
+    profile::configure(&storage, &k, &model, Some(&exe), &AtomicBool::new(false)).unwrap();
+    unsafe { std::env::remove_var("SEMANTIC_CHILD_MODE") };
+}
+
+const VISUAL_POLICY: &str = figlens::workspace::visual::POLICY;
+
+/// `index visual` of scope `0:0` started in the background, held at `stage`; returns the CLI
+/// process and the hold file to remove.
+fn held_visual(
+    dir: &test_support::TestDir,
+    ws: &str,
+    stage: &str,
+) -> (std::process::Child, PathBuf) {
+    let hold = std::path::absolute(dir.join("hold")).unwrap();
+    std::fs::write(&hold, "").unwrap();
+    let child = figlens(&["index", "visual", "--id", ws, "--scope", "0:0"])
+        .env("FIGLENS_TEST_HOLD", format!("{stage}:{}", hold.display()))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let reached = hold.with_extension("reached");
+    let end = Instant::now() + Duration::from_secs(60);
+    while !reached.exists() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(reached.exists(), "the visual worker never reached {stage}");
+    (child, hold)
+}
+
+fn a_hash_only_visual_job_publishes_a_ready_hash_layer() {
+    let dir = test_support::TestDir::new();
+    let (prepared, _) = indexed(&dir, false);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    let done = cli(&["index", "visual", "--id", ws, "--scope", "0:0"]);
+    let job = &done["jobs"][0];
+    assert_eq!(
+        (job["kind"].as_str(), job["state"].as_str()),
+        (Some("visual"), Some("succeeded"))
+    );
+    let conn = db(&prepared);
+    let units = count(
+        &conn,
+        "SELECT count(*) FROM visual_units WHERE raster_key IS NOT NULL",
+    );
+    assert!(units > 0);
+    let layer: (String, i64, i64) = conn
+        .query_row(
+            "SELECT state, chunks, embedded FROM model_layers WHERE profile_id = 'visual-hash-1' AND policy = ?1",
+            [VISUAL_POLICY],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(layer, ("ready".to_owned(), units, units));
+    assert!(count(&conn, "SELECT count(*) FROM visual_rasters") > 0);
+}
+
+fn a_vision_visual_job_writes_refs_and_vectors_and_reuses_them_after_a_rebuild() {
+    let dir = test_support::TestDir::new();
+    let (prepared, _) = indexed(&dir, false);
+    configured_vision(&dir);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    let log = std::path::absolute(dir.join("visual.log")).unwrap();
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe { std::env::set_var("SEMANTIC_EMBED_LOG", &log) };
+    let first = cli(&["index", "visual", "--id", ws, "--scope", "0:0"]);
+    assert_eq!(first["jobs"][0]["state"], "succeeded");
+    let conn = db(&prepared);
+    let rasters = count(
+        &conn,
+        "SELECT count(DISTINCT raster_key) FROM visual_units WHERE raster_key IS NOT NULL",
+    );
+    assert!(rasters > 0);
+    let refs = format!("SELECT count(*) FROM model_refs WHERE policy = '{VISUAL_POLICY}'");
+    assert_eq!(
+        [
+            count(&conn, &refs),
+            count(&conn, "SELECT count(*) FROM model_vectors"),
+            count(
+                &conn,
+                &format!(
+                    "SELECT count(*) FROM model_layers WHERE policy = '{VISUAL_POLICY}' AND state = 'ready'"
+                )
+            ),
+        ],
+        [rasters, rasters, 2]
+    );
+    let loaded = std::fs::read_to_string(&log).unwrap();
+    assert!(loaded.starts_with("load"), "{loaded}");
+    // A rebuild publishes a new generation of the same pixels: its layer references the
+    // stored vectors and never loads the model.
+    let rebuilt = cli(&["index", "rebuild", "--id", ws]);
+    let steps = rebuilt["jobs"][0]["nextSteps"].to_string();
+    assert!(steps.contains("\"visual\""), "{steps}");
+    let second = cli(&["index", "visual", "--id", ws, "--scope", "0:0"]);
+    assert_eq!(second["jobs"][0]["state"], "succeeded");
+    assert_ne!(
+        second["jobs"][0]["generation"],
+        first["jobs"][0]["generation"]
+    );
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), loaded);
+    assert_eq!(count(&conn, &refs), 2 * rasters);
+    // SAFETY: as above.
+    unsafe { std::env::remove_var("SEMANTIC_EMBED_LOG") };
+}
+
+fn cancel_of_a_running_visual_job_kills_its_worker_and_leaves_the_layer_not_ready() {
+    let dir = test_support::TestDir::new();
+    let (prepared, _) = indexed(&dir, false);
+    configured_vision(&dir);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    let pids = std::path::absolute(dir.join("pids")).unwrap();
+    std::fs::create_dir_all(&pids).unwrap();
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe { std::env::set_var("SEMANTIC_CHILD_PIDS", &pids) };
+    let (mut owner, hold) = held_visual(&dir, ws, "embed");
+    unsafe { std::env::remove_var("SEMANTIC_CHILD_PIDS") };
+    let conn = db(&prepared);
+    let job: String = conn
+        .query_row("SELECT job_id FROM jobs WHERE kind = 'visual'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let cancelled = cli(&["jobs", "cancel", &job]);
+    assert_eq!(
+        (cancelled["cancel"].as_str(), cancelled["state"].as_str()),
+        (Some("accepted"), Some("cancelled"))
+    );
+    #[cfg(target_os = "linux")]
+    assert!(all_gone(&children(&pids, 1)));
+    // Released after the cancel: a worker still running would now write its layers.
+    std::fs::remove_file(&hold).unwrap();
+    assert!(!owner.wait().unwrap().success());
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT count(*) FROM model_layers WHERE state <> 'building'"
+        ),
+        0
+    );
+}
+
+fn a_newer_publication_fences_out_a_running_visual_job() {
+    let dir = test_support::TestDir::new();
+    let (prepared, _) = indexed(&dir, false);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    let (owner, hold) = held_visual(&dir, ws, "render");
+    // The text build runs and publishes while the visual job holds its render.
+    let rebuilt = cli(&["index", "rebuild", "--id", ws]);
+    assert_eq!(rebuilt["jobs"][0]["state"], "succeeded");
+    std::fs::remove_file(&hold).unwrap();
+    let out = owner.wait_with_output().unwrap();
+    assert!(!out.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let job = &report["jobs"][0];
+    assert_eq!(job["state"], "failed");
+    assert!(
+        job["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("superseded")
+    );
+    let conn = db(&prepared);
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT count(*) FROM model_layers WHERE state <> 'building'"
+        ),
+        0
+    );
+}
+
+fn a_render_error_is_unit_coverage_and_the_visual_job_succeeds_partial() {
+    let dir = test_support::TestDir::new();
+    let (prepared, _) = indexed(&dir, false);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    let out = figlens(&["index", "visual", "--id", ws, "--scope", "0:0"])
+        .env("FIGLENS_TEST_RENDER_FAIL", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["jobs"][0]["state"], "succeeded");
+    let conn = db(&prepared);
+    let layer: (String, i64) = conn
+        .query_row(
+            "SELECT state, refused FROM model_layers WHERE profile_id = 'visual-hash-1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(layer, ("partial".to_owned(), 1));
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT count(*) FROM visual_units WHERE error IS NOT NULL"
+        ),
+        1
+    );
+}
+
+fn index_visual_without_a_published_scope_names_the_refresh_step() {
+    let dir = test_support::TestDir::new();
+    let (prepared, _) = indexed(&dir, false);
+    let storage = figlens::workspace::storage(None).unwrap();
+    let select = figlens::workspace::Select::Id(prepared["workspaceId"].as_str().unwrap().into());
+    let err = figlens::workspace::jobs::visual(&storage, &select, None, Some("0:1"), None)
+        .err()
+        .unwrap();
+    let err = err.downcast_ref::<figlens::FigError>().unwrap();
+    let step = &err.recovery().unwrap()[0];
+    assert_eq!(
+        (
+            step["arguments"]["action"].as_str(),
+            step["arguments"]["scope"].as_str()
+        ),
+        (Some("refresh"), Some("0:1"))
+    );
+}
+
+fn an_interrupted_visual_job_is_retried_as_visual() {
+    let dir = test_support::TestDir::new();
+    let (prepared, _) = indexed(&dir, false);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    let (mut owner, hold) = held_visual(&dir, ws, "render");
+    // A second caller joins the live job, then its owner dies.
+    let joiner = figlens(&["index", "visual", "--id", ws, "--scope", "0:0"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let conn = db(&prepared);
+    let end = Instant::now() + Duration::from_secs(60);
+    while count(
+        &conn,
+        "SELECT count(*) FROM jobs WHERE kind = 'visual' AND shared = 1",
+    ) == 0
+        && Instant::now() < end
+    {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    std::fs::remove_file(&hold).unwrap();
+    let out = joiner.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let job = &report["jobs"][0];
+    assert_eq!(
+        (
+            job["kind"].as_str(),
+            job["state"].as_str(),
+            job["attempt"].as_i64()
+        ),
+        (Some("visual"), Some("succeeded"), Some(2))
+    );
 }
 
 fn index_embed_without_a_profile_is_mode_unavailable() {
@@ -1755,6 +2073,11 @@ fn main() {
     {
         std::process::exit(if model_worker(dir, job) { 0 } else { 1 });
     }
+    if let [_, worker, dir, job] = args.as_slice()
+        && worker == "__visual-worker"
+    {
+        std::process::exit(if visual_worker(dir, job) { 0 } else { 1 });
+    }
     // `__child <mode>` from `start`, or `<model-dir>` alone as a configured profile runs it.
     if args.get(1).map(String::as_str) == Some("__child") {
         child(&args[2]).unwrap();
@@ -1952,6 +2275,34 @@ fn main() {
         (
             "a_cli_build_with_a_profile_lists_the_embed_instead_of_queueing_it",
             a_cli_build_with_a_profile_lists_the_embed_instead_of_queueing_it,
+        ),
+        (
+            "a_hash_only_visual_job_publishes_a_ready_hash_layer",
+            a_hash_only_visual_job_publishes_a_ready_hash_layer,
+        ),
+        (
+            "a_vision_visual_job_writes_refs_and_vectors_and_reuses_them_after_a_rebuild",
+            a_vision_visual_job_writes_refs_and_vectors_and_reuses_them_after_a_rebuild,
+        ),
+        (
+            "cancel_of_a_running_visual_job_kills_its_worker_and_leaves_the_layer_not_ready",
+            cancel_of_a_running_visual_job_kills_its_worker_and_leaves_the_layer_not_ready,
+        ),
+        (
+            "a_newer_publication_fences_out_a_running_visual_job",
+            a_newer_publication_fences_out_a_running_visual_job,
+        ),
+        (
+            "a_render_error_is_unit_coverage_and_the_visual_job_succeeds_partial",
+            a_render_error_is_unit_coverage_and_the_visual_job_succeeds_partial,
+        ),
+        (
+            "index_visual_without_a_published_scope_names_the_refresh_step",
+            index_visual_without_a_published_scope_names_the_refresh_step,
+        ),
+        (
+            "an_interrupted_visual_job_is_retried_as_visual",
+            an_interrupted_visual_job_is_retried_as_visual,
         ),
     ];
     #[cfg(target_os = "linux")]
