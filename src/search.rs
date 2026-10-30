@@ -44,7 +44,24 @@ const MAX_MARKS: usize = 1024;
 /// Bytes one snippet may copy, its context and matched span together.
 const SNIPPET_BYTES: usize = 2048;
 /// Names, ids and paths one page of results may copy; the MCP reply cap, so CLI and MCP agree.
-const REPLY_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const REPLY_BYTES: usize = 8 * 1024 * 1024;
+
+/// The serialized size of `value`, counted without building the text.
+pub(crate) fn json_bytes(value: &Json) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, value).expect("counting cannot fail");
+    count.0
+}
 const DEADLINE: Duration = Duration::from_secs(15);
 /// Same-stamp reuse lasts at most this long before the bytes are hashed again.
 const REHASH: Duration = Duration::from_secs(60);

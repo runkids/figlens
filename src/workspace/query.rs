@@ -552,9 +552,11 @@ fn searched(
         for (name, layer) in layers.as_object().into_iter().flatten() {
             out["coverage"]["layers"][name] = layer.clone();
         }
+        // The render evidence counts toward the same reply budget as the page it joins.
+        let mut bytes = search::json_bytes(&out);
         let rows = out["results"].as_array_mut().into_iter().flatten();
         for (row, (part, rid)) in rows.zip(&shown) {
-            row["visual"] = match super::visual::unit(&tx, loaded[*part].2, *rid)? {
+            let visual = match super::visual::unit(&tx, loaded[*part].2, *rid)? {
                 // A hybrid row found by its text alone has no render of its own.
                 None => json!({"state": "absent"}),
                 Some(unit) => json!({
@@ -562,6 +564,15 @@ fn searched(
                     "bounds": unit.report["bounds"], "diagnostics": unit.report["diagnostics"],
                     "diagnosticsTruncated": unit.report["diagnosticsTruncated"], "error": unit.error}),
             };
+            bytes += search::json_bytes(&visual);
+            if bytes > search::REPLY_BYTES {
+                return Err(FigError::new(
+                    ErrorKind::ResponseBudget,
+                    format!("search results with their render evidence would copy more than {} bytes; lower limit", search::REPLY_BYTES),
+                )
+                .into());
+            }
+            row["visual"] = visual;
         }
     }
     let left_out: Vec<&Json> = states.iter().filter(|s| s["state"] != "ready").collect();

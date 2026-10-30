@@ -113,6 +113,17 @@ impl Env {
     /// Stores a flat-color unit for each node of `source`'s published generation of `scope` and
     /// marks its hash layer ready, as the visual preparation leaves it.
     fn layer(&self, source: &str, scope: &str, units: &[(&str, [u8; 3])]) {
+        self.layer_with(source, scope, units, &[]);
+    }
+
+    /// `layer` whose every unit reports `diagnostics`.
+    fn layer_with(
+        &self,
+        source: &str,
+        scope: &str,
+        units: &[(&str, [u8; 3])],
+        diagnostics: &[Value],
+    ) {
         let conn = self.database();
         let gen_id: i64 = conn
             .query_row(
@@ -131,7 +142,7 @@ impl Env {
                 .unwrap();
             let rendered = RenderedUnit {
                 image: flat(*rgb),
-                diagnostics: Vec::new(),
+                diagnostics: diagnostics.to_vec(),
                 diagnostics_truncated: false,
                 bounds: serde_json::Map::new(),
             };
@@ -531,4 +542,46 @@ fn mcp_image_search_stays_inside_its_roots() {
     );
     drop(stdin);
     mcp.wait().unwrap();
+}
+
+/// Render evidence counts toward the search reply budget: a page whose rows carry it in bulk is
+/// refused as too large, and a smaller limit answers.
+#[test]
+fn render_evidence_counts_toward_the_reply_budget() {
+    let env = Env::new();
+    let nodes: Vec<String> = {
+        let (_, a) = env.source("a.fig");
+        let conn = env.database();
+        let mut stmt = conn
+            .prepare("SELECT node_id FROM records r JOIN published p ON p.gen = r.gen WHERE p.source_id = ?1")
+            .unwrap();
+        let ids = stmt
+            .query_map([&a], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        drop(stmt);
+        ids
+    };
+    // About 240 KiB of evidence per unit; five sources' units together pass 8 MiB.
+    let bulk = vec![json!({"feature": "x".repeat(240_000)})];
+    let units: Vec<(&str, [u8; 3])> = nodes.iter().map(|n| (n.as_str(), RED)).collect();
+    let mut ids = vec![env.json(&["index", "status", "--workspace", path(&env.workspace)])["sources"][0]["sourceId"].as_str().unwrap().to_owned()];
+    for name in ["b.fig", "c.fig", "d.fig", "e.fig"] {
+        ids.push(env.source(name).1);
+    }
+    for id in &ids {
+        env.layer_with(id, "0:0", &units, &bulk);
+    }
+    let red = env.png("red.png", RED);
+    let error = env.search_error(&["--image", path(&red), "--limit", "200"]);
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("render evidence"),
+        "{error}"
+    );
+    let reply = env.search(&["--image", path(&red), "--limit", "5"]);
+    assert_eq!(reply["results"][0]["visual"]["diagnostics"], json!(bulk));
 }
