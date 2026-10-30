@@ -86,6 +86,8 @@ jobs:
         timeout-minutes: 10
         run: node --test --test-timeout=120000 opencode/watch-holder.test.mjs && node --test --test-timeout=120000 --test-name-pattern="CLI-path watch" opencode/adapter.test.mjs
       - name: Test
+        # Independent of the lifecycle steps, so one run reports every Windows failure.
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           rustup toolchain install 1.97.1 --profile minimal

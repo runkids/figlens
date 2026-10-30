@@ -15,7 +15,8 @@ async function context(t) {
   const own = adapter => (owned.push(adapter), adapter);
   t.after(async () => {
     await Promise.all(owned.map(adapter => adapter.dispose()));
-    await rm(root, { recursive: true, force: true });
+    // Windows can hold a just-closed image busy a moment; rm retries only EBUSY-like errors.
+    await rm(root, { recursive: true, force: true, maxRetries: 5 });
   });
   const writes = [];
   const ctx = { location: { directory: root },
