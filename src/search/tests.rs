@@ -1050,7 +1050,7 @@ fn metadata_that_escapes_past_the_read_limit_is_never_published() {
         "CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
          added_at_ms INTEGER NOT NULL) STRICT; {} {}",
         crate::workspace::V2,
-        crate::workspace::V10
+        crate::workspace::V11
     ))
     .unwrap();
     conn.execute(
@@ -1131,7 +1131,7 @@ pub(super) fn stored(index: &Index) -> rusqlite::Connection {
         crate::workspace::V2,
         crate::workspace::V3,
         crate::workspace::V8,
-        crate::workspace::V10
+        crate::workspace::V11
     ))
     .unwrap();
     conn.execute(

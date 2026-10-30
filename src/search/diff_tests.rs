@@ -2176,7 +2176,7 @@ fn saved(trees: &[&Tree], scope: &str) -> rusqlite::Connection {
         crate::workspace::V2,
         crate::workspace::V3,
         crate::workspace::V4,
-        crate::workspace::V10
+        crate::workspace::V11
     ))
     .unwrap();
     for (i, tree) in trees.iter().enumerate() {

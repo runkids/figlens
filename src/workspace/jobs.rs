@@ -351,10 +351,11 @@ pub(crate) fn report_job(conn: &Connection, dir: &Path, job_id: &str) -> Result<
         }
         "interrupted" | "failed" | "cancelled" => {
             // A rebuild again, so an unchanged snapshot is not reused instead of repaired; an
-            // embed again, so no text build is repeated for a model layer.
+            // embed or visual again, so no text build is repeated for a model layer.
             let action = match kind.as_str() {
                 "rebuild" => "rebuild",
                 "embed" => "embed",
+                "visual" => "visual",
                 _ => "refresh",
             };
             json!([{"tool": "index", "arguments": {"action": action,
@@ -363,6 +364,9 @@ pub(crate) fn report_job(conn: &Connection, dir: &Path, job_id: &str) -> Result<
         }
         "succeeded" if kind == "embed" => {
             json!([{"tool": "search", "arguments": {"workspaceId": ws, "node": scope, "query": "<words>", "mode": "semantic"}}])
+        }
+        "succeeded" if kind == "visual" => {
+            json!([{"tool": "search", "arguments": {"workspaceId": ws, "node": scope, "image": "<png path>"}}])
         }
         "succeeded" => {
             json!([{"tool": "search", "arguments": {"workspaceId": ws, "node": scope, "query": "<words>"}}])
@@ -410,6 +414,23 @@ fn share(tx: &Connection, job_id: &str) -> Result<()> {
         .map_err(sql)?;
     }
     Ok(())
+}
+
+/// The lane of a job kind: `embed` and `visual` jobs prepare a published generation beside the
+/// text builds, each kind on its own; every text build (`''`) shares one.
+fn lane(kind: &str) -> &str {
+    match kind {
+        "embed" | "visual" => kind,
+        _ => "",
+    }
+}
+
+/// How a model job's generation becomes its inputs.
+fn policy(kind: &str) -> &'static str {
+    match kind {
+        "visual" => super::visual::POLICY,
+        _ => super::model::POLICY,
+    }
 }
 
 /// The job and fingerprint `request` was first used for, if any.
@@ -517,10 +538,13 @@ fn submit_fenced(
     {
         return Err(Unfenced.into());
     }
-    // An embed job embeds the scope's published generation under the active profile: both are
-    // in its key, so an embed of an older generation or profile is never joined or replayed.
-    let embed = kind == "embed";
-    let (gen_key, profile_key) = if embed {
+    // An embed or visual job prepares the scope's published generation under its profile (a
+    // visual job without a vision profile: the hash sentinel): both are in its key, so a job of
+    // an older generation or profile is never joined or replayed. It has its own active slot.
+    let lane = lane(kind);
+    let (gen_key, profile_key) = if lane.is_empty() {
+        (None, None)
+    } else {
         let gen_id: i64 = tx
             .query_row(
                 "SELECT gen FROM published WHERE source_id = ?1 AND scope = ?2",
@@ -529,19 +553,28 @@ fn submit_fenced(
             )
             .optional()
             .map_err(sql)?
-            .ok_or_else(|| {
-                fail(
+            .ok_or_else(|| -> Box<dyn Error> {
+                FigError::new(
                     ErrorKind::InvalidArguments,
-                    format!("scope {scope} of source {source_id} has no published index to embed; prepare or refresh it first"),
+                    format!("scope {scope} of source {source_id} has no published index to {kind}; build it with index refresh first"),
                 )
+                .with_recovery(json!([{"action": "refresh", "requires": "none", "tool": "index",
+                    "arguments": {"action": "refresh", "workspaceId": id, "sourceId": source_id, "scope": scope}}]))
+                .into()
             })?;
-        let profile = crate::semantic::profile::active(storage)?.ok_or_else(no_profile)?;
-        (Some(gen_id), Some(profile.id))
-    } else {
-        (None, None)
+        let profile = match kind {
+            "embed" => {
+                crate::semantic::profile::active(storage)?
+                    .ok_or_else(no_profile)?
+                    .id
+            }
+            _ => crate::semantic::profile::active_visual(storage)?
+                .map_or_else(|| search::visual::VERSION.to_owned(), |p| p.id),
+        };
+        (Some(gen_id), Some(profile))
     };
     let key = match (gen_key, &profile_key) {
-        (Some(g), Some(p)) => format!("{scope}\n{g}\n{p}\n{}", super::model::POLICY),
+        (Some(g), Some(p)) => format!("{scope}\n{g}\n{p}\n{}", policy(kind)),
         _ => scope.to_owned(),
     };
     let print = fingerprint(op, &id, source_id, &membership, &key);
@@ -563,9 +596,9 @@ fn submit_fenced(
     let active: Option<(String, String, i64, String, bool)> = tx
         .query_row(
             "SELECT job_id, owner, attempt, membership, cancel FROM jobs WHERE source_id = ?1
-             AND scope = ?2 AND state IN ('queued', 'running') AND (kind = 'embed') = ?3
-             AND (?3 = 0 OR (expected_gen = ?4 AND profile_id = ?5))",
-            params![source_id, scope, embed, gen_key, profile_key],
+             AND scope = ?2 AND state IN ('queued', 'running') AND (CASE WHEN kind IN ('embed', 'visual') THEN kind ELSE '' END) = ?3
+             AND (?3 = '' OR (expected_gen = ?4 AND profile_id = ?5))",
+            params![source_id, scope, lane, gen_key, profile_key],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()
@@ -692,19 +725,19 @@ fn submit_fenced(
         .with_recovery(json!([wait]))
         .into());
     }
-    if embed {
-        // An embed of an older generation or another profile is obsolete: its fence would
+    if !lane.is_empty() {
+        // A model job of an older generation or another profile is obsolete: its fence would
         // refuse its writes anyway, so it stops now instead of at its next batch.
         tx.execute(
-            "UPDATE jobs SET cancel = 1 WHERE kind = 'embed' AND source_id = ?1 AND scope = ?2
+            "UPDATE jobs SET cancel = 1 WHERE kind = ?5 AND source_id = ?1 AND scope = ?2
              AND state IN ('queued', 'running') AND NOT (expected_gen = ?3 AND profile_id = ?4)",
-            params![source_id, scope, gen_key, profile_key],
+            params![source_id, scope, gen_key, profile_key, kind],
         )
         .map_err(sql)?;
     }
     let job_id = format!("{id}.{}", random_hex());
     let now = now_ms();
-    // Text jobs set `expected_gen` when they start; an embed names its generation here.
+    // Text jobs set `expected_gen` when they start; a model job names its generation here.
     tx.execute(
         "INSERT INTO jobs (job_id, request_id, fingerprint, kind, source_id, membership, scope,
          incarnation, state, owner, created_ms, heartbeat_ms, seq, expected_gen, profile_id)
@@ -761,11 +794,13 @@ fn drop_gen(conn: &Connection, gen_id: i64) -> rusqlite::Result<()> {
         "fingerprints",
         "model_refs",
         "model_layers",
+        "visual_units",
         "generations",
     ] {
         conn.execute(&format!("DELETE FROM {table} WHERE gen = ?1"), [gen_id])?;
     }
-    super::model::collect(conn)
+    super::model::collect(conn)?;
+    super::visual::collect(conn)
 }
 
 /// Deletes the unpublished generations of job `job_id`, one transaction each, only while its
@@ -891,9 +926,17 @@ fn cancelled(conn: &Connection, job_id: &str, local: &AtomicBool) -> Result<bool
 
 /// The child process that builds one job. Its stdin closes when this process exits or dies,
 /// which asks it to stop; a stopped child can outlive its owner, so it holds the worker lock.
-/// `model` is the profile's runtime for an embed job: it runs `__model-worker` itself, as the
-/// root of its own process tree, so stopping it ends whatever the model started too.
-fn spawn(dir: &Path, job_id: &str, me: &str, attempt: i64, model: Option<&Path>) -> Result<Child> {
+/// `model` is the profile's runtime for an embed or vision job: it runs `worker` itself, as the
+/// root of its own process tree, so stopping it ends whatever the model started too; without
+/// one this executable runs `worker`.
+fn spawn(
+    dir: &Path,
+    job_id: &str,
+    me: &str,
+    attempt: i64,
+    model: Option<&Path>,
+    worker: &str,
+) -> Result<Child> {
     let exe = match model {
         Some(exe) => exe.to_owned(),
         None => std::env::current_exe()?,
@@ -903,16 +946,13 @@ fn spawn(dir: &Path, job_id: &str, me: &str, attempt: i64, model: Option<&Path>)
     let path = worker_path(dir, job_id, attempt);
     File::create(&path).map_err(|e| storage_error(&path, e))?;
     let mut cmd = Command::new(exe);
-    cmd.arg(match model {
-        Some(_) => "__model-worker",
-        None => "__index-worker",
-    })
-    .arg(dir)
-    .arg(job_id)
-    .env(LAUNCH, format!("{me}:{attempt}"))
-    .stdin(Stdio::piped())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::null());
+    cmd.arg(worker)
+        .arg(dir)
+        .arg(job_id)
+        .env(LAUNCH, format!("{me}:{attempt}"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
     let child = match model {
         Some(_) => crate::semantic::spawn_owned(&mut cmd),
         None => cmd.spawn().map_err(Into::into),
@@ -941,6 +981,30 @@ fn model_exe(storage: &Storage, profile_id: Option<&str>) -> Result<PathBuf> {
         _ => Err(fail(
             ErrorKind::OperationFailed,
             "the configured model profile changed since this embed job was submitted; run index embed again",
+        )),
+    }
+}
+
+/// The runtime of the active vision profile, while it is still the one a visual job was
+/// submitted for; `None` for a hash-only job, which renders in this executable's worker.
+fn vision_exe(storage: &Storage, profile_id: Option<&str>) -> Result<Option<PathBuf>> {
+    if profile_id == Some(search::visual::VERSION) {
+        return Ok(None);
+    }
+    match crate::semantic::profile::active_visual(storage)? {
+        // Checked before it runs: a replaced runtime or model must never be started.
+        Some(p) if Some(p.id.as_str()) == profile_id => {
+            p.unchanged(&AtomicBool::new(false)).map_err(|e| {
+                fail(
+                    ErrorKind::OperationFailed,
+                    format!("{e}; run models configure again"),
+                )
+            })?;
+            Ok(Some(p.exe))
+        }
+        _ => Err(fail(
+            ErrorKind::OperationFailed,
+            "the configured vision profile changed since this visual job was submitted; run index visual again",
         )),
     }
 }
@@ -983,16 +1047,16 @@ pub fn run(
     let (_, mut ws) = opened(storage, &select, true)?;
     let dir = ws.held.dir.clone();
     let me = owner(&dir)?;
-    let mine: Option<(String, String, i64, bool)> = ws
+    let mine: Option<(String, String, i64, String)> = ws
         .conn
         .query_row(
-            "SELECT owner, state, attempt, kind = 'embed' FROM jobs WHERE job_id = ?1",
+            "SELECT owner, state, attempt, kind FROM jobs WHERE job_id = ?1",
             [job_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()
         .map_err(sql)?;
-    let embed = mine.as_ref().is_some_and(|m| m.3);
+    let lane = mine.as_ref().map_or("", |m| lane(&m.3)).to_owned();
     let Some(attempt) = mine
         .filter(|(o, s, ..)| *o == me && s == "queued")
         .map(|(_, _, a, _)| a)
@@ -1030,9 +1094,12 @@ pub fn run(
         }
     };
     // Held here, not in `build`, so an error keeps it (and the workspace lock) until the child
-    // is stopped and reaped. Embed jobs take turns on their own lock, so a text build never
-    // waits for a model job.
-    let lock_name = if embed { "embed.lock" } else { "build.lock" };
+    // is stopped and reaped. Embed and visual jobs take turns on their own locks, so a text
+    // build never waits for a model job.
+    let lock_name = match lane.as_str() {
+        "" => "build.lock".to_owned(),
+        lane => format!("{lane}.lock"),
+    };
     let build_lock = match open_lock(&dir.join(lock_name), true) {
         Ok(lock) => lock.expect("created"),
         Err(e) => {
@@ -1069,7 +1136,7 @@ pub fn run(
             return Err(abandon(&mut ws.conn, job_id, &me, attempt, held, e));
         }
     };
-    if embed {
+    if !lane.is_empty() {
         drop(build_lock);
         // The worker recorded its layer and the job's success in one fenced write; a job it
         // left running ended without that.
@@ -1112,16 +1179,17 @@ pub fn run(
 /// Whether `job_id` is the first live queued job in admission order. `seq` is assigned under
 /// the submit transaction, at admission and again at takeover, so each owner's jobs are in the
 /// order it runs them and no two owners can wait on each other.
-/// Embed jobs (`embed`) queue apart from text builds, on their own lock.
-fn my_turn(conn: &Connection, dir: &Path, job_id: &str, embed: bool) -> Result<bool> {
+/// Embed and visual jobs (`lane`) each queue apart from text builds, on their own lock.
+fn my_turn(conn: &Connection, dir: &Path, job_id: &str, lane: &str) -> Result<bool> {
     let mut stmt = conn
         .prepare(
             "SELECT job_id, owner, attempt FROM jobs WHERE state = 'queued'
-             AND (kind = 'embed') = ?1 ORDER BY seq, rowid",
+             AND (CASE WHEN kind IN ('embed', 'visual') THEN kind ELSE '' END) = ?1
+             ORDER BY seq, rowid",
         )
         .map_err(sql)?;
     for row in stmt
-        .query_map([embed], |r| {
+        .query_map([lane], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -1220,7 +1288,7 @@ fn build(
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .map_err(sql)?;
-    let embed = kind == "embed";
+    let lane = lane(&kind);
     // Wait for the build lock, holding it only while this job is the oldest live queued job,
     // so no process holds it while waiting for its turn.
     let (waited, mut beat) = (Instant::now(), Instant::now());
@@ -1236,7 +1304,7 @@ fn build(
             ));
         }
         if build.try_lock().is_ok() {
-            if my_turn(&ws.conn, dir, job_id, embed)? {
+            if my_turn(&ws.conn, dir, job_id, lane)? {
                 break;
             }
             let _ = build.unlock();
@@ -1256,7 +1324,7 @@ fn build(
         .conn
         .execute(
             "UPDATE jobs SET state = 'running', stage = 'stage', heartbeat_ms = ?3,
-             expected_gen = CASE WHEN kind = 'embed' THEN expected_gen ELSE
+             expected_gen = CASE WHEN kind IN ('embed', 'visual') THEN expected_gen ELSE
                             (SELECT p.gen FROM published p JOIN jobs j ON j.job_id = ?1
                              WHERE p.source_id = j.source_id AND p.scope = j.scope) END
              WHERE job_id = ?1 AND owner = ?2 AND attempt = ?4 AND state = 'queued' AND cancel = 0",
@@ -1275,11 +1343,18 @@ fn build(
             "the job's source is no longer inside the visible roots",
         ));
     }
-    let model = match embed {
-        true => Some(model_exe(storage, profile_id.as_deref())?),
-        false => None,
+    let (model, worker) = match lane {
+        "embed" => (
+            Some(model_exe(storage, profile_id.as_deref())?),
+            "__model-worker",
+        ),
+        "visual" => (
+            vision_exe(storage, profile_id.as_deref())?,
+            "__visual-worker",
+        ),
+        _ => (None, "__index-worker"),
     };
-    let running = child.insert(spawn(dir, job_id, me, attempt, model.as_deref())?);
+    let running = child.insert(spawn(dir, job_id, me, attempt, model.as_deref(), worker)?);
     let (reader, eof) = output(running);
     let mut last = Json::Null;
     let status = wait_worker(child, &eof, || {
@@ -1320,7 +1395,7 @@ fn build(
             return Ok(None);
         }
         // A model worker that met its fence after a cancel landed was cancelled.
-        Some(s) if embed && !s.success() && cancelled(&ws.conn, job_id, cancel)? => {
+        Some(s) if !lane.is_empty() && !s.success() && cancelled(&ws.conn, job_id, cancel)? => {
             *child = None;
             finish(&ws.conn, job_id, me, attempt, "cancelled", None)?;
             return Ok(None);
@@ -2166,6 +2241,28 @@ pub(crate) fn kind_code(kind: ErrorKind) -> &'static str {
     }
 }
 
+/// Reclaims the WAL after a writer's batch, so it passes `WAL_CAP` by about one batch at most;
+/// a reader that keeps it from resetting fails the writer after `LOCK_WAIT`.
+pub(super) fn reclaim_wal(conn: &Connection, dir: &Path) -> Result<()> {
+    let wait = Instant::now();
+    loop {
+        let _ = conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
+        let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+        if wal_bytes(dir) <= WAL_CAP {
+            return Ok(());
+        }
+        if wait.elapsed() > LOCK_WAIT {
+            return Err(fail(
+                ErrorKind::WorkspaceBusy,
+                format!(
+                    "a reader keeps the write-ahead log above {WAL_CAP} bytes; retry when other searches finish"
+                ),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Database plus WAL bytes of the workspace at `dir`.
 fn wal_bytes(dir: &Path) -> u64 {
     std::fs::metadata(dir.join("index.sqlite-wal")).map_or(0, |m| m.len())
@@ -2412,25 +2509,7 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
             )
             .map_err(sql)?,
         )?;
-        // The WAL: reclaimed after every batch, so it passes `WAL_CAP` by about one batch at
-        // most; a reader that keeps it from resetting fails the build after `LOCK_WAIT`.
-        let wait = Instant::now();
-        loop {
-            let _ = conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
-            let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
-            if wal_bytes(dir) <= WAL_CAP {
-                return Ok(());
-            }
-            if wait.elapsed() > LOCK_WAIT {
-                return Err(fail(
-                    ErrorKind::WorkspaceBusy,
-                    format!(
-                        "a reader keeps the write-ahead log above {WAL_CAP} bytes; retry when other searches finish"
-                    ),
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        reclaim_wal(conn, dir)
     };
     let guard = |conn: &Connection| owns_launch(conn, job_id, me, attempt);
     search::store::save(&mut conn, gen_id, &index, &guard, &mut between)
@@ -2696,7 +2775,7 @@ pub fn embed(
 /// Whether succeeded text job `report`'s generation has no ready model layer under the active
 /// profile; `None` without a profile, or when the layer cannot be read.
 fn layer_missing(storage: &Storage, report: &Json) -> Option<bool> {
-    if report["state"] != "succeeded" || report["kind"] == "embed" {
+    if report["state"] != "succeeded" || !lane(report["kind"].as_str()?).is_empty() {
         return None;
     }
     let profile = crate::semantic::profile::active(storage).ok()??;
@@ -2726,6 +2805,92 @@ pub fn embed_step(storage: &Storage, report: &Json) -> Option<Json> {
         json!({"tool": "index", "arguments": {"action": "embed", "workspaceId": report["workspaceId"],
             "sourceId": report["sourceId"], "scope": report["scope"]},
             "why": "a model profile is configured and this index has no ready semantic layer; embedding runs the local model and may take minutes"})
+    })
+}
+
+/// `index visual`: renders the published generation of exactly `scope` (its screens and
+/// components, and the scope root when it is below the page) and, with a vision profile
+/// configured, embeds those rasters, as a job beside the text builds. Never widens to the whole
+/// file: the scope is required. Text search keeps serving; nothing is downloaded.
+pub fn visual(
+    storage: &Storage,
+    select: &Select,
+    source: Option<&str>,
+    scope: Option<&str>,
+    request_id: Option<&str>,
+) -> Result<Outcome> {
+    let scope = scope.ok_or_else(|| {
+        fail(
+            ErrorKind::InvalidArguments,
+            "index visual needs scope: the published scope to render (0:0 is the whole file)",
+        )
+    })?;
+    submit_all(
+        storage,
+        select,
+        "visual",
+        source,
+        Some(scope),
+        request_id,
+        None,
+        None,
+    )
+}
+
+/// Whether succeeded text job `report`'s scope had a visual layer before (on the generation
+/// it replaced) and its new generation has no ready one. Only an explicitly requested layer is
+/// kept up to date: a scope never rendered is never rendered implicitly.
+fn visual_missing(storage: &Storage, report: &Json) -> Option<bool> {
+    if report["state"] != "succeeded" || !lane(report["kind"].as_str()?).is_empty() {
+        return None;
+    }
+    let select = Select::Id(report["workspaceId"].as_str()?.to_owned());
+    let (_, ws) = opened(storage, &select, false).ok()?;
+    if ws.version < 10 {
+        return None;
+    }
+    let gen_id = report["generation"].as_i64()?;
+    let (before, ready): (bool, bool) = ws
+        .conn
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM model_layers l JOIN generations g ON g.gen = l.gen
+              WHERE g.source_id = ?1 AND g.scope = ?2 AND l.gen <> ?3 AND l.profile_id = ?4
+              AND l.policy = ?5),
+             EXISTS (SELECT 1 FROM model_layers WHERE gen = ?3 AND profile_id = ?4
+              AND policy = ?5 AND state = 'ready')",
+            params![
+                report["sourceId"].as_str()?,
+                report["scope"].as_str()?,
+                gen_id,
+                search::visual::VERSION,
+                super::visual::POLICY
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok()?;
+    Some(before && !ready)
+}
+
+/// For an owner that keeps running after text job `report` succeeded: submits the visual job
+/// of the generation it published when the scope's earlier generation had a visual layer,
+/// returning the job this process must run. Never fails the text job.
+pub fn visual_after(storage: &Storage, report: &Json) -> Option<String> {
+    if visual_missing(storage, report) != Some(true) {
+        return None;
+    }
+    let select = Select::Id(report["workspaceId"].as_str()?.to_owned());
+    let (source, scope) = (report["sourceId"].as_str(), report["scope"].as_str());
+    let done = visual(storage, &select, source, scope, None).ok()?;
+    done.run.into_iter().next()
+}
+
+/// The `index visual` call that renders succeeded text job `report`'s new generation, for a
+/// caller that ends without running model jobs, so none is left queued for a dead owner.
+pub fn visual_step(storage: &Storage, report: &Json) -> Option<Json> {
+    visual_missing(storage, report)?.then(|| {
+        json!({"tool": "index", "arguments": {"action": "visual", "workspaceId": report["workspaceId"],
+            "sourceId": report["sourceId"], "scope": report["scope"]},
+            "why": "this scope had a visual layer and its new index has no ready one; rendering may take minutes"})
     })
 }
 
@@ -2875,7 +3040,7 @@ fn set_tracking(
                      ON t.source_id = j.source_id AND t.scope = j.scope
                      AND t.state = 'baseline_pending'
                      WHERE j.source_id = ?1 AND j.scope = ?2 AND j.state = 'running'
-                     AND j.kind <> 'embed' AND NOT (j.kind = 'rebuild' AND (j.stage IN ('stage', 'hash')
+                     AND j.kind NOT IN ('embed', 'visual') AND NOT (j.kind = 'rebuild' AND (j.stage IN ('stage', 'hash')
                      OR IFNULL(j.seq > t.enabled_seq, 0)))",
                     [source_id, scope],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),

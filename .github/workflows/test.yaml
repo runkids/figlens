@@ -42,7 +42,7 @@ jobs:
 
       # The same toolchain as local development (compose.yaml `dev`).
       - name: Format, lint and test
-        run: docker compose run --rm dev sh -c 'cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --locked'
+        run: docker compose run --rm dev sh -c 'cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo clippy --locked --features embed --bin figlens-embed -- -D warnings && cargo test --locked'
 
       # Owned synthetic corpus against recorded baselines; exit 2 means setup, 1 means regression.
       - name: Design-corpus regression lane
@@ -83,6 +83,9 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
+      - name: Windows installer swaps its pair as one
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/install-ps1.test.ps1
       - name: Pi viewer process lifecycle
         run: node --test pi/viewer.test.mjs
       - name: OpenCode watch holder process lifecycle

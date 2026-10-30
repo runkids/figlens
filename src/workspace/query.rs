@@ -637,18 +637,9 @@ fn model_layers(
         deadline: std::time::Instant::now() + Duration::from_secs(15),
         stop: None,
     };
-    // Only this corpus stays cached: past corpora are dropped, and the layers kept are charged
-    // to this query's budget first, so warming sources one by one cannot exceed it together.
+    // Only this corpus stays cached: past corpora are dropped.
     let wanted: Vec<String> = loaded.iter().map(|l| layer_key(incarnation, l.2)).collect();
     cache.retain(|c| c.1 == p.id && c.3.stop.is_none() && wanted.contains(&c.0));
-    for c in cache.iter() {
-        if !bounds.charge(0, search::semantic::cached_bytes(&c.2, &c.3)) {
-            return Err(fail(
-                ErrorKind::QueryWorkLimit,
-                "the semantic layers of these sources exceed one search's memory budget; search fewer sources",
-            ));
-        }
-    }
     let mut sources = Vec::new();
     let mut ready = true;
     for (_, source, gen_id, _) in loaded {
@@ -671,7 +662,7 @@ fn model_layers(
                 let mut index = search::store::load_with(tx, *gen_id, &[], spent, cancel)?;
                 let all: Vec<u32> = (0..records.max(0) as u32).collect();
                 search::store::add_with(tx, *gen_id, &mut index, &all, spent, cancel)?;
-                if version >= 10 {
+                if version >= 11 {
                     search::store::add_properties(tx, *gen_id, &mut index, spent, cancel)?;
                 }
                 let layer = search::semantic::Layer::new(
@@ -729,6 +720,20 @@ fn model_layers(
         cov["sourceId"] = source["sourceId"].clone();
         cov["job"] = built.map_or(Json::Null, |b| b["jobId"].clone());
         sources.push(cov);
+    }
+    // One rule for a cold and a warm corpus alike: everything kept for it, generations, texts
+    // and vectors read, fits one search's budget, so an identical request never flips between
+    // passing and failing.
+    let kept: usize = cache
+        .iter()
+        .map(|c| search::semantic::cached_bytes(&c.2, &c.3))
+        .sum();
+    if kept > search::semantic::LAYER_BYTES {
+        cache.clear();
+        return Err(fail(
+            ErrorKind::QueryWorkLimit,
+            "the semantic layers of these sources exceed one search's memory budget; search fewer sources",
+        ));
     }
     Ok(
         json!({"state": if ready { "ready" } else if sources.iter().any(|s| s["state"] != "pending") { "partial" } else { "pending" },

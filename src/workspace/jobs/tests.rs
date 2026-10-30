@@ -426,7 +426,7 @@ fn jobs_submitted_in_one_millisecond_build_in_submission_order() {
     )
     .unwrap();
     assert!(
-        !my_turn(&conn, &dir, &second, false).unwrap(),
+        !my_turn(&conn, &dir, &second, "").unwrap(),
         "{first} goes first"
     );
 }
@@ -612,7 +612,7 @@ fn a_taken_over_job_queues_behind_another_owner_s_job_so_no_two_owners_wait_on_e
     };
     assert!(a2.owned);
     // B runs its job first; A waits for it, then runs its own in the order it admitted them.
-    assert!(my_turn(&conn, &dir, &b1, false).unwrap());
+    assert!(my_turn(&conn, &dir, &b1, "").unwrap());
 }
 
 #[test]
@@ -3640,4 +3640,94 @@ fn a_search_cursor_past_its_lease_is_expired_not_stale() {
     assert!(search(Some(&at(issued - crate::search::CURSOR_LEASE_MS + 1000))).is_ok());
     let old = at(issued - crate::search::CURSOR_LEASE_MS - 1000);
     assert_eq!(kind_of_error(search(Some(&old))), ErrorKind::CursorExpired);
+}
+
+#[test]
+fn generation_collection_preserves_shared_visual_rasters_until_the_last_reference() {
+    let d = TestDir::new();
+    let (_, _, dir) = workspace(&d, 1);
+    let mut conn = connection(&dir);
+    let source = sources(&conn).remove(0);
+    let job_id = job(&conn, &source, "0:1", "running", "holder", 1);
+    let first = building(&conn, &job_id);
+    let second = building(&conn, &job_id);
+    let bytes = std::fs::read(FIXTURE).unwrap();
+    let document = crate::Document::from_bytes(&bytes, "visual cleanup fixture").unwrap();
+    let value = document.message().unwrap();
+    let tree = crate::Tree::new(&value);
+    let rendered = crate::search::visual::render_unit(&tree, &bytes, "0:1").unwrap();
+    super::super::visual::save(&conn, first, 0, &rendered).unwrap();
+    super::super::visual::save(&conn, second, 0, &rendered).unwrap();
+    let tx = conn.transaction().unwrap();
+    drop_gen(&tx, first).unwrap();
+    tx.commit().unwrap();
+    assert!(
+        super::super::visual::image(&conn, second, 0)
+            .unwrap()
+            .is_some()
+    );
+    let tx = conn.transaction().unwrap();
+    drop_gen(&tx, second).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT count(*) FROM visual_rasters WHERE policy = ?1",
+            super::super::visual::POLICY
+        ),
+        0
+    );
+    assert_eq!(sources(&conn), [source]);
+    assert_eq!(std::fs::read(FIXTURE).unwrap(), bytes);
+}
+
+#[test]
+fn a_schema_9_upgrade_keeps_model_rows_sources_and_incarnation() {
+    let d = TestDir::new();
+    let (storage, select, dir) = workspace(&d, 1);
+    let conn = connection(&dir);
+    let source = sources(&conn).remove(0);
+    let job_id = job(&conn, &source, "0:1", "running", "holder", 1);
+    let gen_id = building(&conn, &job_id);
+    super::super::model::save(
+        &conn,
+        gen_id,
+        "profile",
+        super::super::model::POLICY,
+        &[([1; 32], vec![1, 2, 3, 4])],
+    )
+    .unwrap();
+    let incarnation = meta(&conn, "incarnation").unwrap();
+    conn.execute_batch(
+        "DROP TABLE visual_units; DROP TABLE visual_rasters; DROP INDEX jobs_visual;
+         ALTER TABLE records DROP COLUMN props;
+         PRAGMA user_version = 9;",
+    )
+    .unwrap();
+    drop(conn);
+    let (_, ws) = opened(&storage, &select, true).unwrap();
+    assert_eq!(ws.version, SCHEMA);
+    assert_eq!(meta(&ws.conn, "incarnation").unwrap(), incarnation);
+    assert_eq!(sources(&ws.conn), [source]);
+    assert_eq!(
+        count(
+            &ws.conn,
+            "SELECT count(*) FROM model_vectors WHERE profile_id = ?1",
+            "profile"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &ws.conn,
+            "SELECT count(*) FROM generations WHERE gen = ?1",
+            gen_id
+        ),
+        1
+    );
+    assert!(
+        super::super::visual::units(&ws.conn, gen_id)
+            .unwrap()
+            .is_empty()
+    );
 }

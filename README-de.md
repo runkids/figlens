@@ -74,6 +74,42 @@ codex mcp add figlens -- npx -y @runkids/figlens mcp
 
 Ohne Node.js installierst du das eigenständige Binary ([CLI](#setup-cli)) und verwendest `"command": "figlens", "args": ["mcp"]`. Starte eine neue Session und prüfe, ob die figlens-Tools aufgelistet sind (`/mcp` in Claude Code). Eine separate Skill-Installation ist nicht nötig. Mit `--root <dir>` nach `mcp` begrenzt du, welche Ordner figlens lesen und schreiben darf.
 
+<a id="mcp-args"></a>
+
+#### MCP-Startargumente
+
+Füge diese Optionen in den `args` deines Clients nach `mcp` ein. Dies sind die einzigen MCP-Startoptionen; beide sind optional und wiederholbar.
+
+| Option | Bedeutung |
+|---|---|
+| `--root DIR` | Erlaubt Design-Lesezugriffe und Exporte in `DIR` und Unterordnern. Ohne diese Option setzt figlens keine Pfadgrenze; Betriebssystemrechte gelten weiterhin. Weder wird der aktuelle Projektordner vorausgesetzt noch der Rechner durchsucht. |
+| `--storage-root DIR` | Erlaubt ausdrücklich gewählten benutzerdefinierten Index-Speicher in `DIR` und Unterordnern. Ändert nicht den Standardspeicherort. |
+
+Verwende absolute Pfade zu vorhandenen Verzeichnissen. Jede Option und jeder Pfad ist ein eigener Array-Eintrag; wiederhole die Option für mehrere Ordner. `--root` ist eine Pfadgrenze, kein Administratorzugriff, und beschränkt nur figlens MCP, nicht andere Agent-Werkzeuge.
+
+Beispiel mit zwei Design-/Ausgabeordnern und zwei erlaubten Speicherwurzeln:
+
+```json
+{
+  "mcpServers": {
+    "figlens": {
+      "command": "npx",
+      "args": [
+        "-y", "@runkids/figlens", "mcp",
+        "--root", "/absolute/designs",
+        "--root", "/absolute/project",
+        "--storage-root", "/absolute/storage-a",
+        "--storage-root", "/absolute/storage-b"
+      ]
+    }
+  }
+}
+```
+
+`figlens mcp --storage` gibt es nicht. Wähle den tatsächlichen Ort mit dem Argument `storage` des Tools `index` (absoluter Pfad innerhalb einer erlaubten Speicherwurzel) oder per CLI: `figlens index prepare design.fig --storage /absolute/storage-a`. Nach `prepare` merkt sich figlens den Ort dieses Workspace und verwendet ihn über Neustarts und Hosts hinweg ohne erneutes `storage` oder `--storage-root`. Ohne eigene Auswahl gelten die benutzerspezifischen Standardverzeichnisse; kein Speicher-Flag nötig.
+
+Mehrere Speicherwurzeln erweitern nur die erlaubten Orte: Jedes `storage` wählt weiterhin einen Ort. Indizes werden nicht verteilt, synchronisiert oder gesichert. Eine bestehende Workspace-Datenbank lässt sich nicht durch die Angabe einer anderen Wurzel verschieben; figlens verweigert den widersprüchlichen Ort.
+
 <a id="setup-pi"></a>
 
 ### Pi

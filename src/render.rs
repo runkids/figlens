@@ -28,6 +28,19 @@ impl Prepared {
         Ok(Self { document, images })
     }
 
+    /// Read paints from the same immutable bytes that supplied the decoded tree.
+    pub fn from_snapshot(tree: &Tree, bytes: &[u8], id: &str) -> Result<Self, Box<dyn Error>> {
+        let document = crate::rest::resolve_render_nodes(tree, id)?;
+        let mut refs = Vec::new();
+        collect_refs(&document["document"], &mut refs);
+        let images = if refs.is_empty() {
+            HashMap::new()
+        } else {
+            read_images(crate::open_zip_bytes(bytes)?, refs)?
+        };
+        Ok(Self { document, images })
+    }
+
     pub fn node(&self) -> &Json {
         &self.document["document"]
     }
@@ -61,13 +74,19 @@ pub(crate) fn images(
     fig: &Path,
     document: &Json,
 ) -> Result<HashMap<String, Vec<u8>>, Box<dyn Error>> {
-    let mut images = HashMap::new();
     let mut refs = Vec::new();
     collect_refs(document, &mut refs);
     if refs.is_empty() {
-        return Ok(images);
+        return Ok(HashMap::new());
     }
-    let mut zip = crate::open_zip(fig)?;
+    read_images(crate::open_zip(fig)?, refs)
+}
+
+fn read_images<R: std::io::Read + std::io::Seek>(
+    mut zip: zip::ZipArchive<R>,
+    refs: Vec<String>,
+) -> Result<HashMap<String, Vec<u8>>, Box<dyn Error>> {
+    let mut images = HashMap::new();
     let mut remaining = crate::parse::IMAGE_TOTAL_BYTES;
     for r in refs {
         if let Ok(f) = zip.by_name(&format!("images/{r}")) {
@@ -2088,9 +2107,30 @@ pub fn base64(b: &[u8]) -> String {
     out
 }
 
+/// Losslessly optimize delivery PNGs, keeping the original encoding when it is not smaller.
+pub fn encode_png(p: &resvg::tiny_skia::Pixmap) -> Result<Vec<u8>, String> {
+    let original = p.encode_png().map_err(|e| e.to_string())?;
+    // Bound added optimization work to 4,194,304 pixels; larger rasters keep their encoding.
+    if p.data().len() > 16 * 1024 * 1024 {
+        return Ok(original);
+    }
+    let options = oxipng::Options {
+        optimize_alpha: false,
+        max_decompressed_size: Some(p.data().len() + p.height() as usize),
+        ..oxipng::Options::from_preset(0)
+    };
+    let optimized = oxipng::optimize_from_memory(&original, &options)
+        .map_err(|e| format!("PNG optimization failed: {e}"))?;
+    Ok(if optimized.len() < original.len() {
+        optimized
+    } else {
+        original
+    })
+}
+
 /// Rasterizes an SVG document to PNG bytes.
 pub fn png(svg: &str) -> Result<Vec<u8>, String> {
-    pixmap(svg)?.encode_png().map_err(|e| e.to_string())
+    encode_png(&pixmap(svg)?)
 }
 
 /// Rasterizes an SVG document to premultiplied RGBA pixels.

@@ -27,7 +27,7 @@ Schema 2 adds `snapshots` (verified size and mtime per content hash), `generatio
 
 - Generation (records, terms, edges, definitions, fingerprints, facets): `refresh` reuses a complete one with the same snapshot sha256, `store::versions()` and membership; `rebuild` never does.
 - Overrides, main definitions and variable modes are in the file bytes, so the hash covers them; no generation depends on another file. `versions()` carries `fingerprint::VERSION`; `diff::facet_version()` is not in it (bump `RELATIONS` with it; revisions compare it).
-- Any byte change parses and builds the whole file: no node-level incremental decoding; only embed vectors are cached, by chunk text.
+- Any byte change rebuilds the whole file, not individual nodes. Vectors cache by chunk text; [source rasters](visual-search.md) by content.
 - Preview renders: path hash + crate version + mtime + length (no content hash). `gs://` downloads: URI hash + object generation. MCP parsed tree: path + mtime + length.
 
 ## Actions
@@ -37,7 +37,7 @@ Schema 2 adds `snapshots` (verified size and mtime per content hash), `generatio
 | `refresh <select> [--source ID] [--scope NODE]` | Builds the chosen published scopes again when their bytes changed |
 | `rebuild <select> [--source ID] [--scope NODE]` | Builds the chosen published scopes again even when unchanged (a corrupt or deferred one included); the previous generations serve until each replacement publishes |
 | `clear_cache <select>` | Deletes retired generations, unpublished ones no live job or orphaned worker writes, and unreferenced snapshots; keeps the registry, published indexes, jobs and location. Each deletion reauthorizes its source: one moved out of a confined caller's view meanwhile keeps its data, and the reply has `partial: true` |
-| `embed <select> [--source ID] [--scope NODE]` | One `embed` job per published scope stores its model layer; see [semantic](semantic.md#workspace-layer) |
+| `embed`, `visual` | Model jobs on a published generation: [semantic](semantic.md#workspace-layer), [visual](visual-search.md#visual-jobs) |
 | `jobs status <jobId>` / `jobs cancel <jobId>` | A job's `workspaceId`, state, stage, progress, attempt, generation and next steps |
 
 The CLI runs owned jobs in the foreground with stderr progress, then exits 1 if any did not succeed. MCP runs them on its build lane and returns at once; see [mcp](mcp.md).

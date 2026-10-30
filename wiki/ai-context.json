@@ -166,11 +166,11 @@
         }
       ]
     },
-    "semantic": {
-      "description": "Changing semantic or hybrid search, the models command and tool, the model profile or the figlens-embed runtime lookup.",
+    "visual": {
+      "description": "Changing visual units, query-image admission, raster fingerprints or the local vision profile.",
       "sources": [
         {
-          "path": "wiki/semantic.md"
+          "path": "wiki/visual-search.md"
         }
       ]
     },
@@ -222,6 +222,14 @@
       "sources": [
         {
           "path": "wiki/index-jobs.md"
+        }
+      ]
+    },
+    "semantic": {
+      "description": "Changing semantic or hybrid search, the models command and tool, the model profile or the figlens-embed runtime lookup.",
+      "sources": [
+        {
+          "path": "wiki/semantic.md"
         }
       ]
     }

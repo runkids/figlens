@@ -29,7 +29,7 @@ test('concurrent first use keeps the verified binary while an MCP process is usi
       },
     };
     const spawnSync = (command, _args, options) => {
-      if (command === 'tar' || command.endsWith('\\tar.exe')) fs.writeFileSync(path.join(options.cwd, 'figlens.exe'), 'verified binary');
+      if (command === 'tar' || command.endsWith('\\tar.exe')) for (const member of _args.slice(2)) fs.writeFileSync(path.join(options.cwd, member), 'verified binary');
       else {
         assert.equal(command, binary);
         assert.equal(fs.readFileSync(binary, 'utf8'), 'verified binary');
@@ -42,7 +42,7 @@ test('concurrent first use keeps the verified binary while an MCP process is usi
       require(name) {
         if (name === 'node:fs') return localFs;
         if (name === 'node:child_process') return { spawnSync };
-        if (name === '../target.js') return { asset: () => ({ archive: 'test.zip', binary: 'figlens.exe' }), cachedBinary: (cache, platform, arch, version) => path.join(cache, 'npm', version, 'figlens.exe') };
+        if (name === '../target.js') return { asset: () => ({ archive: 'test.zip', binary: 'figlens.exe', companion: 'figlens-embed.exe' }), cachedBinary: (cache, platform, arch, version) => path.join(cache, 'npm', version, 'figlens.exe') };
         if (name === '../package.json') return { version };
         return require(name);
       },
@@ -131,6 +131,20 @@ test('cold install then warm start reuses the valid binary without downloads', {
   assert.deepEqual(again.exits, [0]);
   assert.equal(again.downloads, 0);
   assert.equal(again.executions, 1);
+});
+
+test('a cache holding the binary but not the runtime gets the runtime and keeps its binary', { timeout: 5000 }, async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'figlens-installer-repair-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const dir = path.join(root, 'figlens/npm/0.3.1');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'figlens.exe'), 'verified binary');
+  const fixed = installer(root);
+  await fixed.done;
+  assert.deepEqual(fixed.exits, [0]);
+  assert.equal(fixed.downloads, 2);
+  assert.equal(fs.readFileSync(path.join(dir, 'figlens-embed.exe'), 'utf8'), 'verified binary');
+  assert.deepEqual(fs.readdirSync(path.dirname(dir)), ['0.3.1']);
 });
 
 for (const failure of ['checksum', 'http', 'extract', 'missing-tar']) {

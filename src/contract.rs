@@ -407,7 +407,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "export",
-        "Export a node to SVG, PNG, JPG, WebP or AVIF. Create the output directory first. Returns metadata and, for raster formats, an inline image. PNG suits inline references. For website assets, follow the target project's existing image pipeline; otherwise start with WebP for bitmaps, sized for display dimensions and DPR using scale/maxSize and quality/maxKb. SVG embeds original images and can be large; keep it for vector artwork. When inlining or optimizing SVG, keep its root transform and unique ids (SVGO: prefixIds, not cleanupIds). The export covers what the node draws; bounds: layout exports the layout box, and warnings report when the two differ. scale, quality and maxSize affect raster formats only; maxSize defaults to 1600. Check returned dimensions/bytes and isError; read content on failure.",
+        "Export a node to SVG, PNG, JPG, WebP or AVIF. Create the output directory first. Returns metadata and, for raster formats, an inline image. PNG suits inline references: up to 4,194,304 pixels it is losslessly optimized with exact decoded RGBA, keeping original encoded bytes unless smaller; larger PNGs keep regular encoding. For website assets, follow the target project's existing image pipeline; otherwise start with WebP for bitmaps, sized for display dimensions and DPR using scale/maxSize and quality/maxKb. SVG embeds original images and can be large; keep it for vector artwork. When inlining or optimizing SVG, keep its root transform and unique ids (SVGO: prefixIds, not cleanupIds). The export covers what the node draws; bounds: layout exports the layout box, and warnings report when the two differ. scale, quality and maxSize affect raster formats only; maxSize defaults to 1600. Check returned dimensions/bytes and isError; read content on failure.",
         &[
             FILE,
             NODE,
@@ -447,13 +447,13 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "index",
-        "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes; add of a directory registers up to 10 .fig files under it in one step, in path order, never through a link leading out of it, and replies directory {added, existing, skipped, notFig, truncated, nextCursor}; pass nextCursor as cursor to add the next 10; a repeat adds nothing, and a moved file is a new source unless relocated); refresh rebuilds changed scopes and rebuild every indexed scope even when unchanged (sourceId and scope narrow both), while the previous index keeps serving; track starts recording one scope's changes, read with the changes tool, with a baseline build, and untrack stops it, keeping its history; embed runs the configured local model (models tool) over published scopes for semantic search, as jobs beside the text builds (mode_unavailable without a profile), and a text build this server runs queues it after publishing; a reply that could not admit every job has admission partial and deferred items, each with the nextStep that builds it later; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
+        "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes; add of a directory registers up to 10 .fig files under it in one step, in path order, never through a link leading out of it, and replies directory {added, existing, skipped, notFig, truncated, nextCursor}; pass nextCursor as cursor to add the next 10; a repeat adds nothing, and a moved file is a new source unless relocated); refresh rebuilds changed scopes and rebuild every indexed scope even when unchanged (sourceId and scope narrow both), while the previous index keeps serving; track starts recording one scope's changes, read with the changes tool, with a baseline build, and untrack stops it, keeping its history; embed runs the configured local model (models tool) over published scopes for semantic search, as jobs beside the text builds (mode_unavailable without a profile), and a text build this server runs queues it after publishing; visual (scope required, never widened to the whole file) renders that published scope's screens and components, and the scope node below a page, for image search, and embeds them when a vision profile is configured (hash-only otherwise), as a job on the same model lane; a scope that had a visual layer is rendered again after a text build this server runs republishes it, and no other scope is rendered implicitly; a reply that could not admit every job has admission partial and deferred items, each with the nextStep that builds it later; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
         &[
             (
                 "action",
                 "string",
                 true,
-                "prepare, status, add, remove, relocate, refresh, rebuild, track, untrack, embed, clear_cache or reset",
+                "prepare, status, add, remove, relocate, refresh, rebuild, track, untrack, embed, visual, clear_cache or reset",
             ),
             (
                 "file",
@@ -472,19 +472,19 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "sourceId",
                 "string",
                 false,
-                "a registered source, for remove, relocate, refresh, rebuild, track, untrack and embed",
+                "a registered source, for remove, relocate, refresh, rebuild, track, untrack, embed and visual",
             ),
             (
                 "scope",
                 "string",
                 false,
-                "stored node id to index (prepare), refresh, rebuild, track, untrack or embed; 0:0 is the whole file",
+                "stored node id to index (prepare), refresh, rebuild, track, untrack, embed or visual (required); 0:0 is the whole file",
             ),
             (
                 "requestId",
                 "string",
                 false,
-                "an idempotency key: repeating a prepare, refresh, rebuild, track or embed of one source and scope with it returns the same job; one first used for another request (track is its own) is refused",
+                "an idempotency key: repeating a prepare, refresh, rebuild, track, embed or visual of one source and scope with it returns the same job; one first used for another request (track is its own) is refused",
             ),
             STORAGE,
             (
@@ -512,7 +512,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "models",
-        "Local text model profiles for semantic and hybrid search. list shows the documented profiles with model, revision, license and the files each needs; status reports each configured profile ready or unavailable with the reason, or the setup steps when none is configured; configure checks a model directory the user already downloaded against pinned SHA-256 digests, starts the figlens-embed shipped beside figlens once offline and records the profile; remove forgets the profile and keeps its files. Nothing is downloaded and no design text leaves the machine.",
+        "Local model profiles: bge-m3 (text) for semantic and hybrid search, and siglip-base (image) for visual search, whose image queries are not available yet. list shows the documented profiles with modality, model, revision, license and the files each needs; status reports each configured profile ready or unavailable with the reason, and the setup steps for each modality no profile serves; configure checks a model directory the user already downloaded against pinned SHA-256 digests, starts the figlens-embed shipped beside figlens once offline and records the profile; remove forgets the profile and keeps its files. Nothing is downloaded and no design content leaves the machine.",
         &[
             (
                 "action",
@@ -746,7 +746,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "incarnation": {"type": "string", "description": "changes when the database is recreated; cached results of another incarnation are void"},
                 "sources": {"type": "array", "items": {"type": "object"}, "description": "visible sources: sourceId, path, present and indexed scopes with snapshotId, records, complete and current; a gs:// source adds remote {uri, generation its download was pinned to}, not proof the object is unchanged"},
                 "job": {"type": "object", "description": "the build prepare started or joined: jobId, state, stage, progress"},
-                "jobs": {"type": "array", "items": {"type": "object"}, "description": "refresh, rebuild and track: one job per admitted source and scope, each with joined"},
+                "jobs": {"type": "array", "items": {"type": "object"}, "description": "refresh, rebuild, track, embed and visual: one job per admitted source and scope, each with joined"},
                 "admission": {"type": "string", "description": "refresh and rebuild: complete, or partial when some jobs were not admitted"},
                 "deferred": {"type": "array", "items": {"type": "object"}, "description": "partial admission: sourceId, scope and the nextStep index call that builds it later"},
                 "deferredBecause": {"type": ["object", "null"], "description": "partial admission: the error that stopped admission, {code, message}"},
@@ -761,8 +761,8 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
         ),
         "models" => (
             serde_json::json!({
-                "profiles": {"type": "array", "items": {"type": "object"}, "description": "list: name, model, revision, license, files, configured, profileId, dataFlow; status: name, profileId, model, runtime, dim, state ready or unavailable, code (runtime_missing, runtime_changed or model_missing), reason and recovery (models configure with the same files)"},
-                "setup": {"type": "array", "items": {"type": "object"}, "description": "status with no profile configured: the steps to configure one"},
+                "profiles": {"type": "array", "items": {"type": "object"}, "description": "list: name, modality, model, revision, license, files, configured, profileId, dataFlow; status: name, modality, profileId, model, runtime, dim, state ready or unavailable, code (runtime_missing, runtime_changed or model_missing), reason and recovery (models configure with the same files)"},
+                "setup": {"type": "array", "items": {"type": "object"}, "description": "status: the steps to configure a profile for each modality (text, image) no configured profile serves"},
                 "configRoot": {"type": "string", "description": "status: the config directory models.json lives in (ask write access to it before configure)"},
                 "defaultRuntime": {"type": "object", "description": "status: {path, available} of the figlens-embed beside this figlens; available means the file exists, not that a model is ready"},
                 "configured": {"type": "object", "description": "configure: the recorded profile and its profileId"},
@@ -774,7 +774,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
             serde_json::json!({
                 "jobId": {"type": "string"},
                 "workspaceId": {"type": "string", "description": "the workspace the job builds in, for index status"},
-                "kind": {"type": "string", "description": "prepare, refresh, rebuild, track or embed (the model layer of a published scope)"},
+                "kind": {"type": "string", "description": "prepare, refresh, rebuild, track, embed (the model layer of a published scope) or visual (its rendered and, with a vision profile, embedded units)"},
                 "state": {"type": "string", "description": "queued, running, succeeded, failed, cancelled or interrupted (its owner exited)"},
                 "stage": {"type": ["string", "null"], "description": "null until the job starts"},
                 "progress": {"type": "object"},
@@ -1008,6 +1008,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
             "track",
             "untrack",
             "embed",
+            "visual",
             "clear_cache",
             "reset"
         ]);
