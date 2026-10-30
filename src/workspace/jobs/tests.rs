@@ -2794,10 +2794,124 @@ fn a_set_is_unknown_to_a_narrower_caller_and_disabled_only_when_a_member_is_remo
             1,
             &json!([]),
             &json!("disabled"),
-            &json!({"reason": "source_removed", "sourceId": srcs[1].1}),
+            &json!({"reason": "source_removed"}),
             &json!("disabled"),
             0,
             &json!(1),
+        )
+    );
+}
+
+#[test]
+fn a_disabled_set_names_no_removed_member_and_is_seen_by_whoever_sees_every_remaining_one() {
+    use crate::workspace::changes::{self, subscriptions};
+    let d = TestDir::new();
+    let (storage, select, _conn, srcs) = library_workspace(&d, 3);
+    let saved = subscribe_set(&storage, &select, "a", "visible", Some("badge"), None).unwrap();
+    let sub = saved["subscription"]["subscriptionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    crate::workspace::registry::remove(&storage, &select, &srcs[1].1).unwrap();
+    let rest = storage
+        .clone()
+        .confined(&[srcs[0].0.clone(), srcs[2].0.clone()]);
+    let one = storage.clone().confined(std::slice::from_ref(&srcs[0].0));
+    let req = changes::Request {
+        subscription: Some(&sub),
+        ..Default::default()
+    };
+    // A remaining member outside the caller's roots still hides the set.
+    let hidden = (
+        subscriptions::list(&one, &select, None, None).unwrap()["subscriptions"].clone(),
+        changes::changes(&one, &select, &req).is_err(),
+        subscriptions::unsubscribe(&one, &select, Some(&sub), None, None).is_err(),
+    );
+    let listed = subscriptions::list(&rest, &select, None, None).unwrap();
+    let page = changes::changes(&rest, &select, &req).unwrap();
+    let removed = subscriptions::unsubscribe(&rest, &select, Some(&sub), None, None).unwrap();
+    let mut remaining = vec![srcs[0].1.clone(), srcs[2].1.clone()];
+    remaining.sort();
+    assert_eq!(
+        (
+            hidden,
+            &listed["subscriptions"][0]["sources"],
+            &page["subscription"]["disabled"],
+            format!("{listed}{page}").contains(&srcs[1].1),
+            &removed["removed"],
+        ),
+        (
+            (json!([]), true, true),
+            &json!(remaining),
+            &json!({"reason": "source_removed"}),
+            false,
+            &json!(1),
+        )
+    );
+}
+
+#[test]
+fn an_unreadable_set_reads_as_disabled_and_only_a_caller_seeing_every_source_removes_it() {
+    use crate::workspace::changes::subscriptions;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let narrow = storage.clone().confined(std::slice::from_ref(&srcs[0].0));
+    // Not JSON, not an array, more members than a set holds, more bytes than it takes.
+    let damaged = [
+        "not json".to_owned(),
+        json!({"m": srcs[0].1}).to_string(),
+        json!(vec![srcs[0].1.clone(); 11]).to_string(),
+        json!(["s".repeat(5000)]).to_string(),
+    ];
+    let subs: Vec<String> = damaged
+        .iter()
+        .enumerate()
+        .map(|(i, stored)| {
+            let saved = subscribe_set(
+                &storage,
+                &select,
+                &format!("c{i}"),
+                "visible",
+                Some("badge"),
+                None,
+            )
+            .unwrap();
+            let sub = saved["subscription"]["subscriptionId"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            conn.execute(
+                "UPDATE subscriptions SET sources = ?2 WHERE id = ?1",
+                params![sub, stored],
+            )
+            .unwrap();
+            sub
+        })
+        .collect();
+    let unseen = (
+        subscriptions::list(&narrow, &select, None, None).unwrap()["subscriptions"].clone(),
+        subscriptions::unsubscribe(&narrow, &select, Some(&subs[0]), None, None).is_err(),
+    );
+    let listed: Vec<Json> =
+        subscriptions::list(&storage, &select, None, None).unwrap()["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| json!([s["state"], s["sources"], s["disabled"]]))
+            .collect();
+    let removed: Vec<Json> = subs
+        .iter()
+        .map(|s| {
+            subscriptions::unsubscribe(&storage, &select, Some(s), None, None).unwrap()["removed"]
+                .clone()
+        })
+        .collect();
+    assert_eq!(
+        (unseen, listed, removed),
+        (
+            (json!([]), true),
+            vec![json!(["disabled", null, {"reason": "sources_unreadable"}]); 4],
+            vec![json!(1); 4]
         )
     );
 }

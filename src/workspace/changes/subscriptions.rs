@@ -69,21 +69,66 @@ impl Sub {
 /// The `source_id` of a saved question over a fixed source set; never a real sourceId.
 pub(super) const SET: &str = "*";
 
-/// Whether the caller sees a subscription row of `subscriptions`: its source, or every member of
-/// its set that still exists (a removed member's data is gone with it). `?N` is the caller's
-/// visible sources as JSON; an unreadable set is never seen. Before schema 8 no row is a set,
-/// and a read never upgrades.
+/// The most a stored set takes; past it, or as anything but an array of at most
+/// `query::QUERY_SOURCES` sourceIds, it is unreadable.
+const SET_BYTES: usize = 4096;
+/// The disabled reason an unreadable set reads with: nothing of its members is emitted.
+const UNREADABLE: &str = r#"{"reason":"sources_unreadable"}"#;
+
+/// A stored set as read: `None` when it is unreadable.
+pub(super) fn members(text: Option<String>) -> Option<Vec<String>> {
+    text.filter(|t| t.len() <= SET_BYTES)
+        .and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok())
+        .filter(|m| m.len() <= query::QUERY_SOURCES)
+}
+
+/// SQL: whether column `col` holds a set [`members`] reads.
+fn readable(col: &str) -> String {
+    format!(
+        "CASE WHEN length(CAST({col} AS BLOB)) <= {SET_BYTES} AND json_valid({col})
+         THEN json_type({col}) = 'array' AND json_array_length({col}) <= {}
+         AND NOT EXISTS (SELECT 1 FROM json_each({col}) WHERE type <> 'text') ELSE 0 END",
+        query::QUERY_SOURCES
+    )
+}
+
+/// Whether the caller sees a set: every member still registered (one removed disabled the set
+/// and left with its data, so it guards nothing), and an unreadable one (`None`) only when the
+/// caller sees every source. [`seen`] is the same rule in SQL.
+pub(super) fn sees_set(
+    storage: &Storage,
+    conn: &Connection,
+    members: Option<&[String]>,
+) -> Result<bool> {
+    let mut stmt = conn
+        .prepare("SELECT source_id, path FROM sources")
+        .map_err(sql)?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .map_err(sql)?;
+    for row in rows {
+        let (id, path) = row.map_err(sql)?;
+        if members.is_none_or(|m| m.contains(&id)) && !storage.sees(Path::new(&path)) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether the caller sees a subscription row of `subscriptions`: its source, or a set as
+/// [`sees_set`] decides. `?N` is the caller's visible sources as JSON. Before schema 8 no row
+/// is a set, and a read never upgrades.
 pub(super) fn seen(n: usize, version: i64) -> String {
     let one = format!("subscriptions.source_id IN (SELECT value FROM json_each(?{n}))");
     if version < 8 {
         return format!("({one})");
     }
     format!(
-        "({one}
-         OR CASE WHEN subscriptions.source_id = '*' AND json_valid(subscriptions.sources)
-         THEN NOT EXISTS (SELECT 1 FROM json_each(subscriptions.sources) m
-           JOIN sources x ON x.source_id = m.value
-           WHERE m.value NOT IN (SELECT value FROM json_each(?{n}))) ELSE 0 END)"
+        "({one} OR (subscriptions.source_id = '*' AND NOT EXISTS (SELECT 1 FROM sources x
+           WHERE x.source_id NOT IN (SELECT value FROM json_each(?{n}))
+           AND CASE WHEN {} THEN x.source_id IN
+             (SELECT value FROM json_each(subscriptions.sources)) ELSE 1 END)))",
+        readable("subscriptions.sources")
     )
 }
 
@@ -110,8 +155,10 @@ pub(super) fn unknown(id: &str) -> Box<dyn Error> {
 /// workspace reads as null, never upgrading.
 fn columns(version: i64) -> String {
     let added = match version >= 8 {
-        true => "sources, disabled",
-        false => "NULL, NULL",
+        true => format!(
+            "CASE WHEN length(CAST(sources AS BLOB)) <= {SET_BYTES} THEN sources END, disabled"
+        ),
+        false => "NULL, NULL".to_owned(),
     };
     format!(
         "id, consumer, source_id, scope, kind, target, anchor, owner, after_seq, floor, {added}"
@@ -120,11 +167,16 @@ fn columns(version: i64) -> String {
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<Sub> {
     let scope: String = r.get(3)?;
-    let members: Option<String> = r.get(10)?;
+    let source: String = r.get(2)?;
+    let members = members(r.get(10)?);
+    // An unreadable set is disabled as read: nothing of it is evaluated, acked or emitted.
+    let disabled = r
+        .get::<_, Option<String>>(11)?
+        .or_else(|| (source == SET && members.is_none()).then(|| UNREADABLE.to_owned()));
     Ok(Sub {
         id: r.get(0)?,
         consumer: r.get(1)?,
-        source: r.get(2)?,
+        source,
         scope: (!scope.is_empty()).then_some(scope),
         kind: r.get(4)?,
         target: r.get(5)?,
@@ -132,8 +184,8 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Sub> {
         owner: r.get(7)?,
         after_seq: r.get(8)?,
         floor: r.get(9)?,
-        members: members.and_then(|m| serde_json::from_str(&m).ok()),
-        disabled: r.get(11)?,
+        members,
+        disabled,
     })
 }
 
@@ -163,28 +215,11 @@ pub(super) fn visible(storage: &Storage, ws: &Opened, id: &str) -> Result<Sub> {
             None => Err(unknown(id)),
         };
     }
-    // A set is seen only whole: one member outside this caller's roots hides it, with nothing
-    // of its evaluations read. A member removed since disabled it and left with its data.
-    let Some(members) = &sub.members else {
-        return Err(unknown(id));
-    };
-    for member in members {
-        let exists = ws
-            .conn
-            .query_row(
-                "SELECT 1 FROM sources WHERE source_id = ?1",
-                [member],
-                |_| Ok(()),
-            )
-            .optional()
-            .map_err(sql)?
-            .is_some();
-        let hidden = registry::visible_path(storage, &ws.conn, member)?.is_none();
-        if hidden && (exists || sub.disabled.is_none()) {
-            return Err(unknown(id));
-        }
+    // A set is seen only whole: nothing of its evaluations is read otherwise.
+    match sees_set(storage, &ws.conn, sub.members.as_deref())? {
+        true => Ok(sub),
+        false => Err(unknown(id)),
     }
-    Ok(sub)
 }
 
 /// The node's kind in the source's published generations, or why it cannot be followed: never
@@ -255,7 +290,27 @@ pub(super) fn describe(conn: &Connection, sub: &Sub) -> Result<Json> {
     }
     if sub.is_set() {
         out["sourceId"] = Json::Null;
-        out["sources"] = json!(sub.members);
+        // Only members still registered, which the caller sees: a removed one's id is not
+        // the caller's to learn.
+        out["sources"] = match &sub.members {
+            None => Json::Null,
+            Some(m) => {
+                let mut kept = Vec::new();
+                for id in m {
+                    if conn
+                        .query_row("SELECT 1 FROM sources WHERE source_id = ?1", [id], |_| {
+                            Ok(())
+                        })
+                        .optional()
+                        .map_err(sql)?
+                        .is_some()
+                    {
+                        kept.push(id);
+                    }
+                }
+                json!(kept)
+            }
+        };
     }
     if let Some(why) = &sub.disabled {
         out["disabled"] = serde_json::from_str(why).unwrap_or(Json::Null);

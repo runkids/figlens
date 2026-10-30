@@ -542,9 +542,10 @@ pub fn remove(storage: &Storage, select: &Select, source_id: &str) -> Result<Jso
             "DELETE FROM tracking WHERE source_id = ?1",
             "DELETE FROM consumers WHERE substr(filter, 1, length(?1) + 1) = ?1 || char(31)",
             "DELETE FROM subscriptions WHERE source_id = ?1",
-            // A saved question over a set is disabled, never narrowed, and keeps no evaluation.
-            "UPDATE subscriptions SET disabled = json_object('reason', 'source_removed',
-             'sourceId', ?1), eval_failure = NULL WHERE source_id = '*' AND disabled IS NULL
+            // A saved question over a set is disabled, never narrowed, and keeps no evaluation;
+            // its reason names no member, which a caller seeing the rest may never have seen.
+            "UPDATE subscriptions SET disabled = json_object('reason', 'source_removed'),
+             eval_failure = NULL WHERE source_id = '*' AND disabled IS NULL
              AND json_valid(sources) AND EXISTS (SELECT 1 FROM json_each(sources) WHERE value = ?1)",
             "DELETE FROM query_evaluations WHERE sub IN (SELECT id FROM subscriptions
              WHERE source_id = '*' AND json_valid(sources)

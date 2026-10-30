@@ -234,20 +234,17 @@ fn published(
     }
 }
 
-/// Whether the caller sees every member of `members` (or `source` alone).
+/// Whether the caller sees `source`, or the set `members` as `subscriptions::sees_set` rules.
 fn sees_all(
     storage: &Storage,
     conn: &Connection,
     source: &str,
     members: Option<&[String]>,
 ) -> Result<bool> {
-    let one = [source.to_owned()];
-    for s in members.unwrap_or(&one) {
-        if registry::visible_path(storage, conn, s)?.is_none() {
-            return Ok(false);
-        }
+    match members {
+        Some(m) => subscriptions::sees_set(storage, conn, Some(m)),
+        None => Ok(registry::visible_path(storage, conn, source)?.is_some()),
     }
-    Ok(true)
 }
 
 /// One evaluation before it is published: what it read and what it found.
@@ -964,8 +961,7 @@ fn holding(conn: &Connection, sub: &str, filtered: bool) -> Result<Option<Held>>
              WHERE id = ?1 AND kind = 'query' AND (NOT ?3 OR filter_version = ?2)",
             params![sub, subscriptions::FILTER_VERSION, filtered],
             |r| {
-                let members: Option<String> = r.get(3)?;
-                let members = members.and_then(|m| serde_json::from_str(&m).ok());
+                let members = subscriptions::members(r.get(3)?);
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, members, r.get(4)?))
             },
         )
@@ -1177,7 +1173,7 @@ pub fn evaluate_published(
             .map_err(sql)?;
         let saved = match anchor {
             Some((Some(a), m, set)) => {
-                let members = m.and_then(|m| serde_json::from_str::<Vec<String>>(&m).ok());
+                let members = subscriptions::members(m);
                 match set && members.is_none() {
                     true => Err(damaged()),
                     false => Saved::parse(&a, members),
