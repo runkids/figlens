@@ -68,6 +68,8 @@ const cliSteps = [
     cursor: rest[5].nextCursor, snapshotId: rest[5].source.snapshotId }),
   // The binary's own refusal reaches the agent unchanged.
   (status, prepared) => direct('figlens_usages', { workspaceId: prepared.workspaceId, node: '0:10', scope: '0:1', relation: 'nope' }),
+  // Two copies of one file, each read-checked before the binary compares them.
+  () => direct('figlens_diff', { old: path.join(project, 'mapping-old.fig'), file: fixture }),
 ];
 const deepId = `I${Array(60).fill('9:9').join(';')}`;
 let steps = searchSteps;
@@ -163,8 +165,8 @@ try {
     assert.equal(status.mcp.status.status, 'connected');
     for (const tool of ['figlens_preview', 'figlens_bindings', 'figlens_propose_bindings']) assert.ok(status.mcp.tools.includes(tool), tool);
     for (const tool of ['figlensmcp_search', 'figlensmcp_inspect', 'figlensmcp_diff']) assert.ok(status.mcp.catalog.includes(tool), tool);
-    // The managed server serves index, jobs, search, usages and inspect; the plugin adds no second copy.
-    for (const tool of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages']) assert.ok(!status.mcp.tools.includes(tool), tool);
+    // The managed server serves index, jobs, search, usages, diff and inspect; the plugin adds no second copy.
+    for (const tool of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages', 'figlens_diff']) assert.ok(!status.mcp.tools.includes(tool), tool);
     const skills = await client.skill.list({ location });
     assert.ok(JSON.stringify(skills).includes('figlens'));
     return { mcp: status.mcp, catalogAfterConnectedMs: Date.now() - connected, skills: skills.data.map(skill => skill.name) };
@@ -322,7 +324,7 @@ try {
     await client.location.reload();
     const status = await rpc.run({ sessionID: session.id, action: 'status' }, options);
     assert.equal(status.mcp.managed, false, JSON.stringify(status.mcp));
-    for (const name of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages']) assert.ok(status.mcp.tools.includes(name), name);
+    for (const name of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages', 'figlens_diff']) assert.ok(status.mcp.tools.includes(name), name);
     await execute(binary, ['index', 'reset', '--file', fixture], { cwd: project, env }).catch(() => {});
     const [before, prepared, job, found, node] = await converse('Enable an index for the mapping review frame (0:1) of mapping.fig, then find it.', cliSteps);
     assert.ok(node, JSON.stringify(scripted.raw).slice(0, 2000));
@@ -339,7 +341,9 @@ try {
     assert.deepEqual([first?.results?.map(item => item.ref.nodeId), first?.hasMore], [['0:2'], true], (scripted.raw[7] ?? '').slice(0, 500));
     assert.deepEqual([second?.results?.map(item => item.ref.nodeId), second?.hasMore], [['0:3'], false], (scripted.raw[8] ?? '').slice(0, 500));
     assert.match(JSON.parse(scripted.raw[9] ?? '{}').error?.message ?? '', /unknown relation "nope"/, (scripted.raw[9] ?? '').slice(0, 500));
-    return { pages: [first.results[0].ref.nodeId, second.results[0].ref.nodeId], refused: 'unknown relation', usedBy: used.results.map(item => item.ref.nodeId), deepIdBytes: deepId.length, mcp: status.mcp.reason, before: before.state, job: job.state, ref: found.results[0].ref, inspected: node.node.id, tools: scripted.tools.filter(name => /^figlens_/.test(name)) };
+    const diffed = value(scripted.raw[10] ?? '');
+    assert.deepEqual([diffed?.coverage?.complete, diffed?.coverage?.changes], [true, 0], (scripted.raw[10] ?? '').slice(0, 500));
+    return { pages: [first.results[0].ref.nodeId, second.results[0].ref.nodeId], refused: 'unknown relation', diffedCopies: diffed.coverage.changes, usedBy: used.results.map(item => item.ref.nodeId), deepIdBytes: deepId.length, mcp: status.mcp.reason, before: before.state, job: job.state, ref: found.results[0].ref, inspected: node.node.id, tools: scripted.tools.filter(name => /^figlens_/.test(name)) };
   });
 } finally {
   provider.close();

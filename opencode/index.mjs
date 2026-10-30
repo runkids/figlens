@@ -13,7 +13,7 @@ const texts = maxItems => ({ type: 'array', items: string(2000), maxItems });
 const bool = { type: 'boolean' }, path = string(4096), id = string(200);
 // An exact instance sublayer id has up to expand::MAX_DEPTH (256) segments of at most 23 bytes, as src/search/store.rs bounds it.
 const node = string((256 + 1) * 23);
-// The figlens MCP index, jobs, search, usages and inspect tools, run as the same CLI commands.
+// The figlens MCP index, jobs, search, usages, diff and inspect tools, run as the same CLI commands.
 const CLI_TOOLS = [
   ['index', 'Local workspace indexes for search, as the figlens MCP index tool. prepare registers file (or a project workspace) and with scope builds exactly that stored scope (0:0 is the whole file), returning workspaceId and the finished job; status reports sources and storage; add, remove, relocate, refresh, rebuild and clear_cache manage sources and indexes; reset deletes this workspace database only after the user asked for it. Errors carry recovery steps; recreation (replaceUnavailable) needs the user\'s confirmation.',
     { action: { enum: ['prepare', 'status', 'add', 'remove', 'relocate', 'refresh', 'rebuild', 'clear_cache', 'reset'] },
@@ -27,6 +27,8 @@ const CLI_TOOLS = [
   ['usages', 'Exact relations of one node or resource in one stored scope, as the figlens MCP usages tool: give file to read a .fig now, or workspaceId to read its prepared index of scope. direction in (default) lists what points at it, out what it points at. Results carry exact refs, coverage and a snapshotId; a changed source is source_stale.',
     { file: path, workspaceId: id, sourceId: id, storage: path, node, resource: node, scope: node, relation: string(200),
       direction: { enum: ['in', 'out'] }, snapshotId: id, includeHidden: bool, limit: { type: 'integer', minimum: 1, maximum: 200 }, cursor: string(4096) }],
+  ['diff', 'What changed between two saved revisions of a design (old, file), as the figlens MCP diff tool: layers match by exact id and type only, unknown means a side stopped or left that layer unexpanded, not removed. Page with nextCursor for the same pair and node.',
+    { old: path, file: path, node, limit: { type: 'integer', minimum: 1, maximum: 500 }, cursor: string(4096) }, ['old', 'file']],
   ['inspect', 'Compact expanded node summary of a .fig node or exact instance sublayer, as the figlens MCP inspect tool.',
     { file: path, node, depth: { type: 'integer', minimum: 0, maximum: 10 }, images: bool, states: bool, flat: bool, compareVariant: node }, ['file', 'node']],
 ];
