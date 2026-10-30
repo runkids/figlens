@@ -252,7 +252,8 @@ const FIELD_META: usize = std::mem::size_of::<Field>();
 /// Bytes a kept value of serialized length `len` holds as JSON, which is larger than its text.
 /// It is at most `FIELD_VALUE` long, so its walk is short.
 fn held_value(v: &Json, len: usize) -> usize {
-    json_bytes(v, &mut usize::MAX.clone()).max(len)
+    let mut left = usize::MAX;
+    json_bytes(v, &mut left).max(len)
 }
 
 /// Hashes what is written and counts it, keeping nothing. A visit per started 64 bytes of the
@@ -1297,6 +1298,17 @@ fn offset(pair: &Pair, cursor: &str) -> Result<usize, Box<dyn Error>> {
     }
 }
 
+/// The facet names set in `facets`.
+fn facet_names(facets: u8) -> Vec<&'static str> {
+    FACETS
+        .iter()
+        .chain(["bindings"].iter())
+        .enumerate()
+        .filter(|(i, _)| facets & (1 << i) != 0)
+        .map(|(_, n)| *n)
+        .collect()
+}
+
 fn summary(counts: &[u32; 8]) -> String {
     let mut parts = vec![format!("{} listed", counts[7])];
     for (i, name) in FACETS
@@ -1313,6 +1325,9 @@ fn summary(counts: &[u32; 8]) -> String {
 
 /// Page bytes one listed field takes besides its key and values: its facet and markers.
 const FIELD_ENVELOPE: usize = 96;
+/// Page bytes a changed record's edges take besides their entries: the lists, the omitted count
+/// and a swap marker.
+const EDGE_ENVELOPE: usize = 96;
 
 /// Changed fields with old and new values, within `left` page value bytes; `None` when even
 /// their keys and markers do not fit.
@@ -1460,8 +1475,14 @@ fn edges(pair: &Pair, c: &Change, left: &mut usize, work: &mut usize) -> Option<
             old.as_deref().unwrap_or_default(),
             new.as_deref().unwrap_or_default(),
         ];
-        *left = fit(*left, 32 + nulls, &sides)?;
-        out["swap"] = json!({"old": main(a), "new": main(b)});
+        // Ids that do not fit are marked; the page reserved `EDGE_ENVELOPE` for the marker.
+        out["swap"] = match fit(*left, 32 + nulls, &sides) {
+            Some(rest) => {
+                *left = rest;
+                json!({"old": old, "new": new})
+            }
+            None => json!({"truncated": true}),
+        };
     }
     Some(out)
 }
@@ -1499,16 +1520,31 @@ fn page_with(
         // cursor resumes at the next change, so none is dropped.
         let f = &pair.frames[c.frame as usize];
         let (mut fixed, mut strings) = (96, vec![r.id.as_str(), &r.kind, &r.name]);
-        if last != Some(c.frame) {
+        let names = facet_names(c.facets);
+        if c.kind == Kind::Changed {
+            fixed += 32;
+            strings.extend(&names);
+        }
+        if c.facets & UNREAD != 0 {
+            fixed += 16;
+        }
+        if c.kind == Kind::Changed && c.facets & EDGES != 0 {
+            fixed += EDGE_ENVELOPE;
+        }
+        if c.descendants > 0 {
+            fixed += 32;
+        }
+        let line = (last != Some(c.frame)).then(|| summary(&f.counts));
+        if let Some(line) = &line {
             fixed += 192;
-            strings.extend([f.id.as_str(), &f.name, &f.page]);
+            strings.extend([f.id.as_str(), &f.name, &f.page, line]);
             if let Some((id, basis)) = &f.possible {
                 fixed += 64;
                 strings.extend([id.as_str(), basis]);
             }
         }
         if c.kind == Kind::Retyped {
-            fixed += 32;
+            fixed += 64;
             strings.push(&pair.old.index.records[c.old.unwrap() as usize].kind);
         }
         let Some(rest) = fit(left, fixed, &strings) else {
@@ -1522,6 +1558,22 @@ fn page_with(
             .into());
         };
         left = rest;
+        // Its fields' keys and markers are paid before its edges can spend the page; values that
+        // do not fit are marked truncated.
+        let field_list = match c.kind == Kind::Changed || c.facets & UNREAD != 0 {
+            true => match fields(pair, c, &mut left) {
+                Some(f) => Some(f),
+                None if end > start => break,
+                None => {
+                    return Err(FigError::new(
+                        ErrorKind::ResponseBudget,
+                        format!("the changed fields of {} need more than {PAGE_VALUES} bytes; inspect it on each side with `figlens inspect`", r.id),
+                    )
+                    .into())
+                }
+            },
+            false => None,
+        };
         // A changed record whose edges do not fit this page ends it before it, or fails when it
         // is the first: never listed without them.
         let edge_list = match c.kind == Kind::Changed && c.facets & EDGES != 0 {
@@ -1538,21 +1590,6 @@ fn page_with(
             },
             false => None,
         };
-        // So do its fields' keys and markers; values that do not fit are marked truncated.
-        let field_list = match c.kind == Kind::Changed || c.facets & UNREAD != 0 {
-            true => match fields(pair, c, &mut left) {
-                Some(f) => Some(f),
-                None if end > start => break,
-                None => {
-                    return Err(FigError::new(
-                        ErrorKind::ResponseBudget,
-                        format!("the changed fields of {} need more than {PAGE_VALUES} bytes; inspect it on each side with `figlens inspect`", r.id),
-                    )
-                    .into())
-                }
-            },
-            false => None,
-        };
         end += 1;
         let mut node = json!({"id": r.id, "kind": r.kind, "name": r.name, "change": c.kind.name()});
         if c.kind == Kind::Retyped {
@@ -1560,13 +1597,6 @@ fn page_with(
             node["oldKind"] = json!(pair.old.index.records[c.old.unwrap() as usize].kind);
         }
         if c.kind == Kind::Changed {
-            let names: Vec<_> = FACETS
-                .iter()
-                .chain(["bindings"].iter())
-                .enumerate()
-                .filter(|(i, _)| c.facets & (1 << i) != 0)
-                .map(|(_, n)| *n)
-                .collect();
             node["facets"] = json!(names);
             if c.facets & UNREAD != 0 {
                 node["unread"] = json!(true);
@@ -1583,7 +1613,8 @@ fn page_with(
             node["descendants"] = json!(c.descendants);
         }
         if last != Some(c.frame) {
-            let mut frame = json!({"id": f.id, "name": f.name, "page": f.page, "summary": summary(&f.counts), "nodes": []});
+            let mut frame =
+                json!({"id": f.id, "name": f.name, "page": f.page, "summary": line, "nodes": []});
             if let Some(k) = f.change {
                 frame["change"] = json!(k.name());
             }

@@ -760,6 +760,38 @@ fn escaped_names_and_edges_count_against_the_page_bytes_at_their_reply_size() {
 }
 
 #[test]
+fn a_page_of_edges_fields_and_swaps_serializes_within_its_bytes_at_every_budget() {
+    // A frame painting 40 other images has 80 differing uses_image edges, and its opacity
+    // differs: edges never crowd out the fields' markers, at any budget that lists the frame.
+    let side = |first: u8, v: f32| {
+        let image = |h: u8| {
+            obj(vec![
+                ("type", K::Enum("PaintType", "IMAGE")),
+                ("image", obj(vec![("hash", K::Bytes(vec![h]))])),
+            ])
+        };
+        let paints = K::Array((first..first + 40).map(image).collect());
+        let fields = vec![("opacity", K::Float(v)), ("fillPaints", paints)];
+        doc(vec![node(10, Some(1), "FRAME", "Home", fields)])
+    };
+    let (a, b) = (side(0, 1.0), side(100, 0.5));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let pair = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
+    let at = |bytes| page_with(&pair, &req(LIMIT, None), false, [bytes, PAGE_WORK]);
+    let first = (1..PAGE_VALUES).find(|b| at(*b).is_ok()).unwrap();
+    // The least budget lists the fields while most edges are only counted.
+    let least = at(first).unwrap();
+    assert!(least["frames"][0]["nodes"][0]["edges"]["truncated"].as_u64() > Some(40));
+    for bytes in first..first + 600 {
+        let page = at(bytes).unwrap();
+        let size = serde_json::to_string(&page["frames"]).unwrap().len();
+        assert!(size <= bytes, "{size} > {bytes}");
+        let node = &page["frames"][0]["nodes"][0];
+        assert!(node["fields"]["opacity"].is_object(), "{bytes}");
+    }
+}
+
+#[test]
 fn edges_past_the_page_work_end_the_page_or_fail_the_first_change() {
     let side = |main: u32| {
         doc(vec![
