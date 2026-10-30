@@ -333,7 +333,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "variables",
-        "The variables a frame binds (collections, modes, aliases); without a node, every local variable.",
+        "The variables a frame binds (collections, modes, aliases); without a node, every local variable. Opt-in format dtcg writes DTCG 2025.10 tokens: requires explicit collection and mode IDs plus out, takes no node, fails without publishing on any diagnostic. No workspace/index needed.",
         &[
             FILE,
             (
@@ -341,6 +341,30 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "string",
                 false,
                 "the node, including full instance sublayer IDs; omit for every local variable",
+            ),
+            (
+                "format",
+                "string",
+                false,
+                "rest (default) preserves variables JSON; dtcg exports one collection/mode",
+            ),
+            (
+                "collection",
+                "string",
+                false,
+                "exact collection ID from variables; required only for dtcg",
+            ),
+            (
+                "mode",
+                "string",
+                false,
+                "exact modeId in that collection; required only for dtcg, no default or cross-collection mapping",
+            ),
+            (
+                "out",
+                "string",
+                false,
+                "DTCG token file, preferably .tokens.json; required only for dtcg; create its parent directory first; never overwrites the source design",
             ),
         ],
     ),
@@ -618,6 +642,22 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
 
 /// The MCP outputSchema of the tools whose CLI command prints one JSON object.
 pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
+    if tool == "variables" {
+        return Some(json!({
+            "type": "object",
+            "properties": {
+                "variables": {"type":"array"}, "collections": {"type":"array"},
+                "missingVariables": {"type":"array"},
+                "path": {"type":"string"}, "collectionId": {"type":"string"},
+                "modeId": {"type":"string"}, "tokenCount": {"type":"integer"},
+                "diagnostics": {"type":"array"}
+            },
+            "oneOf": [
+                {"required":["variables","collections","missingVariables"]},
+                {"required":["path","collectionId","modeId","tokenCount","diagnostics"]}
+            ]
+        }));
+    }
     let (properties, required) = match tool {
         "find" => (
             serde_json::json!({
@@ -853,6 +893,7 @@ fn default(tool: &str, key: &str) -> Option<Value> {
         ("inspect", "depth") | ("export", "scale") => Some(json!(1)),
         ("find" | "search", "limit") => Some(json!(20)),
         ("search", "mode") => Some(json!("text")),
+        ("variables", "format") => Some(json!("rest")),
         ("usages", "scope") | ("diff", "node") => Some(json!("0:0")),
         ("diff", "limit") => Some(json!(100)),
         ("usages", "direction") => Some(json!("in")),
@@ -892,7 +933,16 @@ pub fn property(tool: &str, param: &Param) -> Value {
     }
     if matches!(
         key,
-        "file" | "old" | "out" | "query" | "compareVariant" | "bundle" | "cursor" | "matchDir"
+        "file"
+            | "old"
+            | "out"
+            | "query"
+            | "compareVariant"
+            | "bundle"
+            | "cursor"
+            | "matchDir"
+            | "collection"
+            | "mode"
     ) {
         p["minLength"] = json!(1);
     }
@@ -904,6 +954,9 @@ pub fn property(tool: &str, param: &Param) -> Value {
     }
     if tool == "export" && key == "bounds" {
         p["enum"] = json!(["render", "layout"]);
+    }
+    if tool == "variables" && key == "format" {
+        p["enum"] = json!(["rest", "dtcg"]);
     }
     if tool == "workflow" && key == "topic" {
         p["enum"] = json!(crate::workflow::TOPICS);
@@ -1091,6 +1144,16 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
         name,
         arguments: checked,
     };
+    if tool == "variables" {
+        crate::command::Command::variables(
+            call.string("node").map(str::to_owned),
+            call.string("format"),
+            call.string("collection").map(str::to_owned),
+            call.string("mode").map(str::to_owned),
+            call.string("out").map(Into::into),
+        )
+        .map_err(|error| Failure::argument(error.to_string()))?;
+    }
     if tool == "search" {
         let file = call.string("file").is_some();
         if file == call.string("workspaceId").is_some()
@@ -1152,6 +1215,9 @@ pub fn tools() -> Value {
         }
         match *name {
             "workflow" => tool["annotations"] = json!({ "readOnlyHint": true, "openWorldHint": false }),
+            // This tool can publish a token file; hosts must not grant it a read-only tier.
+            "variables" => tool["annotations"] = json!({"readOnlyHint": false,
+                "destructiveHint": true, "openWorldHint": false}),
             // Mixed actions, reset among them.
             "index" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": true,
                 "idempotentHint": false, "openWorldHint": false}),
