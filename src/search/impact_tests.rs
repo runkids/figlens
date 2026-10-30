@@ -1,7 +1,7 @@
-use super::super::tests::{bounds, instance, node, obj};
+use super::super::tests::{bounds, guid, instance, node, obj};
 use super::*;
 use crate::Tree;
-use crate::search::{Index, WORK, build};
+use crate::search::{Index, WORK, build, build_as};
 use kiwi_schema::Value as K;
 use std::collections::HashMap;
 
@@ -325,4 +325,81 @@ fn a_changed_component_set_reaches_its_members_and_their_instances() {
     );
     let possible = Some(Class::Possible);
     assert_eq!(classes(&out, &["0:51", "0:55"]), [possible, possible]);
+}
+
+fn fill_style(target: u32) -> (&'static str, K<'static>) {
+    ("styleIdForFill", obj(vec![("guid", guid(target))]))
+}
+
+#[test]
+fn a_later_proven_edge_supersedes_an_earlier_unproven_one() {
+    // In the old generation only, the instance also uses the changed layer as a fill style.
+    let old = index(vec![instance(45, 2, "Styled", 20, vec![fill_style(22)])]);
+    let new = index(vec![instance(45, 2, "Styled", 20, vec![])]);
+    let mut e = fixed(&[("0:45", "0:22", C)]);
+    let out = run(&old, &new, &[seed("0:22", Change::Changed)], &mut e, WORK);
+    assert_eq!(classes(&out, &["0:45"]), [Some(Class::Effective)]);
+}
+
+#[test]
+fn a_hop_beyond_a_one_generation_layer_stays_unproven() {
+    let old = index(vec![
+        instance(43, 2, "Old", 20, vec![]),
+        node(46, Some(2), "FRAME", "Styled by old", vec![fill_style(43)]),
+    ]);
+    let new = index(vec![]);
+    let mut e = fixed(&[("0:46", "0:22", C)]);
+    let out = run(&old, &new, &[seed("0:22", Change::Changed)], &mut e, WORK);
+    assert_eq!(classes(&out, &["0:46"]), [Some(Class::Possible)]);
+}
+
+#[test]
+fn a_facet_keeps_only_its_strongest_verdict() {
+    let i = index(vec![]);
+    let mut e = fixed(&[("0:40", "0:33", E), ("0:40", "0:32", C)]);
+    let seeds = [seed("0:33", Change::Changed), seed("0:32", Change::Changed)];
+    let out = run(&i, &i, &seeds, &mut e, WORK);
+    let hit = class(&out, "0:40").unwrap();
+    assert_eq!((hit.changed, hit.equal), (1, 0));
+}
+
+#[test]
+fn a_node_that_is_also_a_confirmed_row_stays_direct() {
+    let i = index(vec![]);
+    let seeds = [seed("0:22", Change::Unknown), seed("0:22", Change::Changed)];
+    let out = run(&i, &i, &seeds, &mut fixed(&[]), WORK);
+    assert_eq!(classes(&out, &["0:22"]), [Some(Class::Direct)]);
+}
+
+#[test]
+fn an_unread_facet_is_never_asked_about() {
+    let i = index(vec![]);
+    let mut e = per_facet(&[("0:31", "0:22", UNREAD, E)]);
+    let mut unread = seed("0:22", Change::Changed);
+    unread.facets = UNREAD;
+    let out = run(&i, &i, &[unread], &mut e, WORK);
+    assert_eq!(classes(&out, &["0:31"]), [Some(Class::Possible)]);
+}
+
+#[test]
+fn an_index_without_relations_is_not_walked() {
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![node(0, None, "DOCUMENT", "Document", vec![])]),
+    )]);
+    let text = build_as(&Tree::new(&message), "0:0", bounds(WORK), false);
+    let out = run(
+        &text,
+        &text,
+        &[seed("0:0", Change::Changed)],
+        &mut fixed(&[]),
+        WORK,
+    );
+    assert_eq!(
+        (
+            out.complete,
+            out.reasons.keys().copied().collect::<Vec<_>>()
+        ),
+        (false, vec!["relations_unavailable"])
+    );
 }

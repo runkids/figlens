@@ -3,10 +3,13 @@
 //! `Evidence`, whether a reached layer's effective value really differs in one facet. Nothing
 //! here compares fields, so a dependency alone never proves a change and an override alone
 //! never proves none.
-// The host owner wires it into the tracked publication; until then only its tests call it.
-#![cfg_attr(not(test), allow(dead_code))]
+#![cfg_attr(
+    not(test),
+    expect(dead_code, reason = "change publication, the next #92 step, calls it")
+)]
 
 use super::Index;
+use super::diff::UNREAD;
 use super::usages::{pointing_at, rid_in};
 use crate::expand::Bounds;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -166,8 +169,9 @@ fn bits(facets: u8) -> Vec<u8> {
 }
 
 /// The layers `seeds` reach through `old` and `new`, classified by `evidence`, within `bounds`.
-/// Both indexes must be relations builds, whose reverse maps their build prepaid. A bound or
-/// cap that runs out stops the walk and leaves it incomplete; it is never an error.
+/// Both indexes must be relations builds, whose reverse maps their build prepaid; any other
+/// is not walked and reads `relations_unavailable`. A bound or cap that runs out stops the
+/// walk and leaves it incomplete; it is never an error.
 pub(crate) fn compute(
     old: &Index,
     new: &Index,
@@ -175,6 +179,12 @@ pub(crate) fn compute(
     evidence: &mut dyn Evidence,
     bounds: &mut Bounds,
 ) -> Result<Impact> {
+    if !old.relations || !new.relations {
+        return Ok(Impact {
+            reasons: BTreeMap::from([("relations_unavailable", 1)]),
+            ..Impact::default()
+        });
+    }
     let mut run = Run {
         graphs: [old, new],
         evidence,
@@ -245,7 +255,8 @@ impl Run<'_> {
         paid
     }
 
-    /// Merges one path's verdict for `facets` into `node`'s hit; false once the walk stopped.
+    /// Merges one path's verdict for `facets` into `node`'s hit; false once the walk stopped,
+    /// with nothing changed.
     fn hit(
         &mut self,
         node: &str,
@@ -254,49 +265,49 @@ impl Run<'_> {
         side: u8,
         via: Option<(&'static str, &str)>,
     ) -> bool {
-        if !self.hits.contains_key(node) {
-            if self.hits.len() == HITS {
-                self.stopped = Some("hit_limit");
-                return false;
-            }
-            if !self.pay(1, 2 * cost(node)) {
-                return false;
-            }
-            let hit = Hit {
-                node: node.to_owned(),
-                class,
-                side: 0,
-                changed: 0,
-                unknown: 0,
-                equal: 0,
-                via: None,
-            };
-            self.hits.insert(node.to_owned(), hit);
+        let old = self.hits.get(node);
+        if old.is_none() && self.hits.len() == HITS {
+            self.stopped = Some("hit_limit");
+            return false;
         }
-        let hit = &self.hits[node];
-        let (mut changed, mut unknown, mut equal) = (hit.changed, hit.unknown, hit.equal);
+        let was = old.map(|h| h.class);
+        let (mut changed, mut unknown, mut equal) =
+            old.map_or((0, 0, 0), |h| (h.changed, h.unknown, h.equal));
         match class {
             Class::Direct | Class::Effective => changed |= facets,
             Class::Possible => unknown |= facets,
             Class::EffectiveUnchanged => equal |= facets,
         }
-        let strongest = if hit.class == Class::Direct {
+        // Each facet keeps only its strongest verdict: changed, then unknown, then equal.
+        unknown &= !changed;
+        equal &= !(changed | unknown);
+        let strongest = if was == Some(Class::Direct) || class == Class::Direct {
             Class::Direct
         } else if changed != 0 {
             Class::Effective
-        } else if unknown != 0 || hit.class == Class::Possible || class == Class::Possible {
+        } else if unknown != 0 || was == Some(Class::Possible) || class == Class::Possible {
             Class::Possible
         } else {
             Class::EffectiveUnchanged
         };
-        let replace =
-            via.filter(|_| hit.via.is_none() || strongest != hit.class && strongest == class);
-        if let Some((_, target)) = replace
-            && !self.pay(0, cost(target))
-        {
+        let replace = via.filter(|_| {
+            strongest != Class::Direct
+                && (old.is_none_or(|h| h.via.is_none())
+                    || was != Some(strongest) && strongest == class)
+        });
+        let key = if old.is_none() { 2 * cost(node) } else { 0 };
+        if !self.pay(1, key + replace.map_or(0, |(_, t)| cost(t))) {
             return false;
         }
-        let hit = self.hits.get_mut(node).expect("inserted above");
+        let hit = self.hits.entry(node.to_owned()).or_insert_with(|| Hit {
+            node: node.to_owned(),
+            class,
+            side: 0,
+            changed: 0,
+            unknown: 0,
+            equal: 0,
+            via: None,
+        });
         (hit.changed, hit.unknown, hit.equal) = (changed, unknown, equal);
         hit.side |= side;
         hit.class = strongest;
@@ -339,21 +350,20 @@ impl Run<'_> {
 
     /// `node` and its ancestors' ids in `index`, nearest first; None once the walk stopped. A
     /// target that is no layer (a variable, a style key) is pointed at only by its own id.
-    fn lineage(&mut self, index: &Index, node: &str) -> Option<Vec<String>> {
-        if !self.pay(1, cost(node)) {
+    fn lineage<'i>(&mut self, index: &'i Index, node: &'i str) -> Option<Vec<&'i str>> {
+        if !self.pay(1, ENTRY) {
             return None;
         }
-        let mut out = vec![node.to_owned()];
+        let mut out = vec![node];
         let mut at = rid_in(index, node);
         while let Some(rid) = at {
             let Some(parent) = index.record(rid).parent else {
                 break;
             };
-            let id = &index.record(parent).id;
-            if !self.pay(1, cost(id)) {
+            if !self.pay(1, ENTRY) {
                 return None;
             }
-            out.push(id.clone());
+            out.push(&index.record(parent).id);
             at = Some(parent);
         }
         Some(out)
@@ -361,7 +371,8 @@ impl Run<'_> {
 
     /// Asks the diff about one proven dependency; None once the walk stopped.
     fn verdict(&mut self, probe: &Probe) -> Result<Option<Class>> {
-        if probe.facet == PRESENCE {
+        // An unread field proves nothing either way, so it is never asked about.
+        if probe.facet == PRESENCE || probe.facet == UNREAD {
             self.reason("comparison_unknown");
             return Ok(Some(Class::Possible));
         }
@@ -390,9 +401,10 @@ impl Run<'_> {
             self.reason("depth_limit");
             return Ok(true);
         }
-        // Recipients already classified for this step, so another anchor or generation adds
-        // nothing.
-        let mut done = BTreeSet::new();
+        // Recipients proven for this step, and those reached so far only by an edge that does
+        // not resolve in every generation: a later proven edge supersedes those.
+        let mut proven = BTreeSet::new();
+        let mut unproven: BTreeMap<String, (&'static str, String, u8)> = BTreeMap::new();
         for (at, bit) in [(0, OLD), (1, NEW)] {
             if step.side & bit == 0 {
                 continue;
@@ -401,7 +413,7 @@ impl Run<'_> {
             let Some(anchors) = self.lineage(index, &step.target) else {
                 return Ok(false);
             };
-            for anchor in &anchors {
+            for anchor in anchors {
                 for &(rid, i) in pointing_at(index, anchor) {
                     if !self.pay(1, 0) {
                         return Ok(false);
@@ -410,7 +422,7 @@ impl Run<'_> {
                     let e = &r.edges[i as usize];
                     if !DEPENDS.contains(&e.relation)
                         || r.id == step.target
-                        || done.contains(r.id.as_str())
+                        || proven.contains(r.id.as_str())
                     {
                         continue;
                     }
@@ -432,34 +444,53 @@ impl Run<'_> {
                             resolved &= x.state == "resolved";
                         }
                     }
+                    if side != step.side || !resolved {
+                        if !unproven.contains_key(&r.id) {
+                            if self.hits.len() + unproven.len() >= HITS {
+                                self.stopped = Some("hit_limit");
+                                return Ok(false);
+                            }
+                            if !self.pay(1, cost(&r.id) + cost(anchor)) {
+                                return Ok(false);
+                            }
+                            unproven.insert(r.id.clone(), (e.relation, anchor.to_owned(), side));
+                        }
+                        continue;
+                    }
                     if !self.pay(1, cost(&r.id)) {
                         return Ok(false);
                     }
-                    done.insert(r.id.clone());
-                    let class = if side != step.side || !resolved {
-                        self.reason("relation_unverified");
-                        Class::Possible
-                    } else {
-                        let probe = Probe {
-                            recipient: &r.id,
-                            through: anchor,
-                            seed: &step.seed,
-                            facet: step.facet,
-                        };
-                        match self.verdict(&probe)? {
-                            Some(class) => class,
-                            None => return Ok(false),
-                        }
+                    proven.insert(r.id.clone());
+                    unproven.remove(&r.id);
+                    let probe = Probe {
+                        recipient: &r.id,
+                        through: anchor,
+                        seed: &step.seed,
+                        facet: step.facet,
+                    };
+                    let Some(class) = self.verdict(&probe)? else {
+                        return Ok(false);
                     };
                     if !self.hit(&r.id, class, step.facet, side, Some((e.relation, anchor))) {
                         return Ok(false);
                     }
                     if class != Class::EffectiveUnchanged
-                        && !self.push(&r.id, &step.seed, step.facet, side, step.depth + 1)
+                        && !self.push(&r.id, &step.seed, step.facet, step.side, step.depth + 1)
                     {
                         return Ok(false);
                     }
                 }
+            }
+        }
+        for (id, (relation, anchor, side)) in &unproven {
+            self.reason("relation_unverified");
+            let via = Some((*relation, anchor.as_str()));
+            // The change's own generations go on, so a later hop present in only one of them
+            // is still unproven.
+            if !self.hit(id, Class::Possible, step.facet, *side, via)
+                || !self.push(id, &step.seed, step.facet, step.side, step.depth + 1)
+            {
+                return Ok(false);
             }
         }
         Ok(true)

@@ -492,7 +492,7 @@ pub struct Index {
     /// Edge targets and component-set members described for usages; a partial index holds the
     /// ones a query read.
     definitions: BTreeMap<String, usages::Definition>,
-    /// Reverse lookups over a whole index, built on its first usages query.
+    /// Reverse lookups over a whole index, built on its first usages query or impact walk.
     reverse: std::sync::OnceLock<usages::Reverse>,
 }
 
