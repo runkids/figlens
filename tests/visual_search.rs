@@ -1,0 +1,447 @@
+//! Image search through the CLI over real workspaces (#95). The visual layers are written here
+//! the way the preparation stores them (`workspace::visual::save` plus a ready hash-layer row),
+//! from flat colors rather than renders, so ranking, filters, references and cursors are checked
+//! through the shipped binary without a model.
+
+#[path = "../src/test_support.rs"]
+#[allow(dead_code)]
+mod test_support;
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use figlens::search::visual::{QueryImage, RenderedUnit};
+use resvg::tiny_skia::{Color, Pixmap};
+use serde_json::{Value, json};
+use test_support::TestDir;
+
+const BIN: &str = env!("CARGO_BIN_EXE_figlens");
+const RED: [u8; 3] = [255, 0, 0];
+const BLUE: [u8; 3] = [0, 0, 255];
+const GREEN: [u8; 3] = [0, 160, 0];
+const NEAR_RED: [u8; 3] = [250, 6, 0];
+
+struct Env {
+    dir: TestDir,
+    home: PathBuf,
+    workspace: PathBuf,
+}
+
+impl Env {
+    fn new() -> Self {
+        let dir = TestDir::new();
+        let root = std::fs::canonicalize(dir.join("")).unwrap();
+        let (home, workspace) = (root.join("home"), root.join("project"));
+        std::fs::create_dir(&home).unwrap();
+        std::fs::create_dir(&workspace).unwrap();
+        Self {
+            dir,
+            home,
+            workspace,
+        }
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        Command::new(BIN)
+            .args(args)
+            .env("HOME", &self.home)
+            .env("LOCALAPPDATA", &self.home)
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("XDG_CACHE_HOME")
+            .env_remove("XDG_DATA_HOME")
+            .output()
+            .unwrap()
+    }
+
+    fn json(&self, args: &[&str]) -> Value {
+        let out = self.run(args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap()
+    }
+
+    /// What a failing command prints: its message line and, when it has one, its recovery.
+    fn error(&self, args: &[&str]) -> Value {
+        let out = self.run(args);
+        assert!(!out.status.success(), "{args:?} succeeded");
+        let text = String::from_utf8_lossy(&out.stderr);
+        let mut lines = text.lines();
+        let message = lines.next().unwrap_or_default().to_owned();
+        let recovery = lines.next().map_or(Value::Null, |l| {
+            serde_json::from_str::<Value>(l).unwrap()["recovery"].clone()
+        });
+        json!({"message": message, "recovery": recovery})
+    }
+
+    /// A copy of the public design, prepared into the project workspace at the document scope.
+    fn source(&self, name: &str) -> (PathBuf, String) {
+        let path = self.dir.join(name);
+        std::fs::copy("examples/first-success/design.fig", &path).unwrap();
+        let path = std::fs::canonicalize(path).unwrap();
+        let id = self.prepare(&path, "0:0");
+        (path, id)
+    }
+
+    fn prepare(&self, path: &Path, scope: &str) -> String {
+        let workspace = self.workspace.to_str().unwrap();
+        let out = self.json(&[
+            "index",
+            "prepare",
+            path.to_str().unwrap(),
+            "--workspace",
+            workspace,
+            "--scope",
+            scope,
+        ]);
+        out["source"]["sourceId"].as_str().unwrap().to_owned()
+    }
+
+    fn database(&self) -> rusqlite::Connection {
+        let status = self.json(&[
+            "index",
+            "status",
+            "--workspace",
+            self.workspace.to_str().unwrap(),
+        ]);
+        rusqlite::Connection::open(status["paths"]["database"].as_str().unwrap()).unwrap()
+    }
+
+    /// Stores a flat-color unit for each node of `source`'s published generation of `scope` and
+    /// marks its hash layer ready, as the visual preparation leaves it.
+    fn layer(&self, source: &str, scope: &str, units: &[(&str, [u8; 3])]) {
+        let conn = self.database();
+        let gen_id: i64 = conn
+            .query_row(
+                "SELECT gen FROM published WHERE source_id = ?1 AND scope = ?2",
+                [source, scope],
+                |r| r.get(0),
+            )
+            .unwrap();
+        for (node, rgb) in units {
+            let rid: u32 = conn
+                .query_row(
+                    "SELECT rid FROM records WHERE gen = ?1 AND node_id = ?2",
+                    rusqlite::params![gen_id, node],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let rendered = RenderedUnit {
+                image: flat(*rgb),
+                diagnostics: Vec::new(),
+                diagnostics_truncated: false,
+                bounds: serde_json::Map::new(),
+            };
+            figlens::workspace::visual::save(&conn, gen_id, rid, &rendered).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO model_layers (gen, profile_id, policy, state, chunks, texts, embedded, refused, stop, job_id, updated_ms)
+             VALUES (?1, ?2, ?3, 'ready', ?4, ?4, ?4, 0, NULL, NULL, 0)",
+            rusqlite::params![gen_id, figlens::search::visual::VERSION, figlens::workspace::visual::POLICY, units.len() as i64],
+        )
+        .unwrap();
+    }
+
+    /// A query PNG of one flat color, written beside the designs.
+    fn png(&self, name: &str, rgb: [u8; 3]) -> PathBuf {
+        let path = self.dir.join(name);
+        let mut p = Pixmap::new(32, 20).unwrap();
+        p.fill(Color::from_rgba8(rgb[0], rgb[1], rgb[2], 255));
+        std::fs::write(&path, p.encode_png().unwrap()).unwrap();
+        std::fs::canonicalize(path).unwrap()
+    }
+
+    fn search(&self, extra: &[&str]) -> Value {
+        let mut args = vec!["search", "--workspace", self.workspace.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        self.json(&args)
+    }
+
+    fn search_error(&self, extra: &[&str]) -> Value {
+        let mut args = vec!["search", "--workspace", self.workspace.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        self.error(&args)
+    }
+}
+
+fn flat(rgb: [u8; 3]) -> QueryImage {
+    let mut p = Pixmap::new(32, 20).unwrap();
+    p.fill(Color::from_rgba8(rgb[0], rgb[1], rgb[2], 255));
+    QueryImage::from_pixmap(&p, None).unwrap()
+}
+
+fn hits(reply: &Value) -> Vec<(String, String)> {
+    reply["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["ref"]["sourceId"].as_str().unwrap().to_owned(),
+                r["ref"]["nodeId"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn path(p: &Path) -> &str {
+    p.to_str().unwrap()
+}
+
+/// Two sources with the same node ids: one ranking across both, each hit kept with its source.
+fn two() -> (Env, String, String) {
+    let env = Env::new();
+    let (_, a) = env.source("a.fig");
+    let (_, b) = env.source("b.fig");
+    env.layer(&a, "0:0", &[("0:1", RED), ("0:2", BLUE)]);
+    env.layer(&b, "0:0", &[("0:1", GREEN), ("0:2", NEAR_RED)]);
+    (env, a, b)
+}
+
+#[test]
+fn an_image_ranks_every_source_once_with_exact_pixels_first() {
+    let (env, a, b) = two();
+    let query = env.png("red.png", RED);
+    let reply = env.search(&["--image", path(&query)]);
+    let found = hits(&reply);
+    assert_eq!(
+        &found[..2],
+        [(a.clone(), "0:1".into()), (b.clone(), "0:2".into())]
+    );
+    assert_eq!(found.len(), 4, "every unit of both sources is ranked once");
+    assert_eq!(
+        reply["results"][0]["matches"][0]["basis"],
+        "normalized_pixels"
+    );
+    assert_eq!(
+        reply["results"][1]["matches"][0]["basis"],
+        "perceptual_hash"
+    );
+    assert!(
+        reply["results"][0]["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m.get("span").is_none())
+    );
+    assert_eq!(reply["query"]["mode"], "visual");
+    assert_eq!(reply["query"]["usedModes"], json!(["visual_hash"]));
+    assert_eq!(
+        reply["query"]["image"],
+        json!({"kind": "path", "crop": null}),
+        "the path is not echoed"
+    );
+    assert_eq!(
+        reply["coverage"]["layers"]["visual"]["embedding"]["state"],
+        "not_configured"
+    );
+    assert_eq!(
+        reply["coverage"]["layers"]["visual"]["approximate"],
+        "visual_hash"
+    );
+    assert_eq!(reply["coverage"]["complete"], true);
+    let visual = &reply["results"][0]["visual"];
+    assert_eq!(
+        (visual["state"].as_str(), visual["error"].clone()),
+        (Some("rendered"), Value::Null)
+    );
+    assert!(visual["diagnostics"].is_array() && visual["bounds"].is_object());
+}
+
+#[test]
+fn a_reference_searches_by_a_stored_render_whatever_the_source_filter() {
+    let (env, a, b) = two();
+    let snapshot =
+        env.search(&["--image", path(&env.png("q.png", BLUE))])["results"][0]["ref"]["snapshotId"]
+            .clone();
+    let reference = json!({"sourceId": a, "snapshotId": snapshot, "nodeId": "0:2"}).to_string();
+    // Narrowed to b, the reference still reads a's render: b's nearest to blue ranks first.
+    let reply = env.search(&["--image-ref", &reference, "--source", &b]);
+    assert!(hits(&reply).iter().all(|(s, _)| *s == b));
+    assert_eq!(reply["query"]["image"]["kind"], "ref");
+    let stale = json!({"sourceId": a, "snapshotId": "sha256:0", "nodeId": "0:2"}).to_string();
+    assert!(
+        env.search_error(&["--image-ref", &stale])["message"]
+            .as_str()
+            .unwrap()
+            .contains("serves it now")
+    );
+    let unknown =
+        json!({"sourceId": "local:nope", "snapshotId": snapshot, "nodeId": "0:2"}).to_string();
+    assert!(
+        env.search_error(&["--image-ref", &unknown])["message"]
+            .as_str()
+            .unwrap()
+            .contains("does not serve to this caller")
+    );
+    // A node that is no visual unit names the step that builds the layer.
+    let text = json!({"sourceId": a, "snapshotId": snapshot, "nodeId": "0:0"}).to_string();
+    let error = env.search_error(&["--image-ref", &text]);
+    assert_eq!(error["recovery"][0]["arguments"]["action"], "visual");
+}
+
+/// A reference resolves apart from the searched scope: here its node's render is stored only in
+/// the source's other prepared scope, and the search of the document scope still reads it.
+#[test]
+fn a_reference_reads_its_render_from_another_prepared_scope_of_its_source() {
+    let env = Env::new();
+    let (design, a) = env.source("a.fig");
+    env.prepare(&design, "0:2");
+    env.layer(&a, "0:0", &[("0:1", RED)]);
+    env.layer(&a, "0:2", &[("0:2", BLUE)]);
+    let red = env.png("q.png", RED);
+    let snapshot = env.search(&["--image", path(&red)])["results"][0]["ref"]["snapshotId"].clone();
+    let reference = json!({"sourceId": a, "snapshotId": snapshot, "nodeId": "0:2"}).to_string();
+    let reply = env.search(&["--image-ref", &reference]);
+    assert_eq!(hits(&reply), [(a, "0:1".to_owned())]);
+    assert_eq!(
+        reply["results"][0]["matches"][0]["basis"], "perceptual_hash",
+        "blue is no exact copy of red"
+    );
+}
+
+#[test]
+fn filters_apply_before_ranking_and_cursors_bind_the_image() {
+    let (env, _, _) = two();
+    let red = env.png("red.png", RED);
+    // Every unit is a FRAME: a TEXT filter leaves nothing to rank.
+    assert_eq!(
+        env.search(&["--image", path(&red), "--type", "TEXT"])["results"],
+        json!([])
+    );
+    let first = env.search(&["--image", path(&red), "--limit", "1"]);
+    let cursor = first["nextCursor"].as_str().unwrap().to_owned();
+    let second = env.search(&["--image", path(&red), "--limit", "1", "--cursor", &cursor]);
+    assert_eq!(
+        hits(&second)[0],
+        hits(&env.search(&["--image", path(&red), "--limit", "2"]))[1]
+    );
+    let blue = env.png("blue.png", BLUE);
+    for other in [
+        vec!["--image", path(&blue)],
+        vec!["--image", path(&red), "--crop", "0,0,4,4"],
+    ] {
+        let mut args = other.clone();
+        args.extend(["--limit", "1", "--cursor", &cursor]);
+        let message = env.search_error(&args)["message"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(
+            message.contains("cursor belongs to another query image"),
+            "{other:?}: {message}"
+        );
+    }
+}
+
+#[test]
+fn a_missing_visual_layer_names_its_step_and_a_partial_page_cannot_continue() {
+    let env = Env::new();
+    let (_, a) = env.source("a.fig");
+    let red = env.png("red.png", RED);
+    let error = env.search_error(&["--image", path(&red)]);
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("no searched source has a visual layer")
+    );
+    assert_eq!(error["recovery"][0]["arguments"]["action"], "visual");
+    let (_, b) = env.source("b.fig");
+    env.layer(&b, "0:0", &[("0:1", RED), ("0:2", BLUE)]);
+    let reply = env.search(&["--image", path(&red), "--limit", "1"]);
+    assert_eq!(hits(&reply)[0].0, b);
+    assert_eq!(
+        (
+            reply["coverage"]["complete"].clone(),
+            reply["nextCursor"].clone()
+        ),
+        (json!(false), Value::Null)
+    );
+    assert!(
+        reply["nextSteps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["arguments"]["action"] == "visual" && s["arguments"]["sourceId"] == a)
+    );
+}
+
+#[test]
+fn image_searches_refuse_incompatible_modes_and_inputs() {
+    let (env, a, _) = two();
+    let red = env.png("red.png", RED);
+    let reference = json!({"sourceId": a, "snapshotId": "sha256:0", "nodeId": "0:1"}).to_string();
+    for extra in [
+        vec!["Card", "--image", path(&red), "--mode", "visual"],
+        vec!["Card", "--image", path(&red), "--mode", "semantic"],
+        vec!["Card", "--mode", "visual"],
+        vec!["Card", "--crop", "0,0,2,2"],
+        vec!["--image", path(&red), "--image-ref", &reference],
+        vec!["--image", path(&red), "--crop", "0,0,0,2"],
+    ] {
+        env.search_error(&extra);
+    }
+    // A single .fig has no visual layer, and a search never makes one.
+    let file = env.dir.join("a.fig");
+    let error = env.error(&["search", path(&file), "--image", path(&red)]);
+    assert_eq!(
+        error["recovery"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["arguments"]["action"].clone())
+            .collect::<Vec<_>>(),
+        [json!("prepare"), json!("visual")]
+    );
+}
+
+#[test]
+fn hybrid_ranks_the_query_text_with_the_image_and_keeps_lexical_spans_lexical() {
+    let (env, a, _) = two();
+    let blue = env.png("blue.png", BLUE);
+    let reply = env.search(&["Card", "--image", path(&blue)]);
+    assert_eq!(reply["query"]["mode"], "hybrid");
+    assert_eq!(reply["query"]["usedModes"], json!(["text", "visual_hash"]));
+    // a's Card frame is both the lexical match and the exact blue render.
+    assert_eq!(hits(&reply)[0], (a, "0:2".to_owned()));
+    let bases: Vec<&str> = reply["results"][0]["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["basis"].as_str().unwrap())
+        .collect();
+    assert!(
+        bases.contains(&"lexical") && bases.contains(&"normalized_pixels"),
+        "{bases:?}"
+    );
+    // Hybrid with an image and no text uses the visual channels alone.
+    assert_eq!(
+        env.search(&["--image", path(&blue), "--mode", "hybrid"])["query"]["usedModes"],
+        json!(["visual_hash"])
+    );
+}
+
+#[test]
+fn a_query_image_is_never_stored_and_text_search_is_unchanged() {
+    let (env, _, _) = two();
+    let count = |env: &Env| -> i64 {
+        env.database()
+            .query_row("SELECT count(*) FROM visual_rasters", [], |r| r.get(0))
+            .unwrap()
+    };
+    let before = count(&env);
+    env.search(&["--image", path(&env.png("purple.png", [120, 0, 200]))]);
+    assert_eq!(count(&env), before);
+    let text = env.search(&["Card"]);
+    assert_eq!(text["query"]["mode"], "text");
+    assert!(
+        text["query"].get("image").is_none() && text["coverage"]["layers"].get("visual").is_none()
+    );
+    assert!(
+        text["ranking"].get("fusion").is_none() && text["ranking"]["version"] != "visual-rrf-1"
+    );
+}

@@ -272,7 +272,7 @@ fn searched(
             Some(crate::search::visual::QueryImage::from_png(bytes, i.crop)?)
         }
         Some((i, input @ Input::Ref { .. })) => {
-            let image = resolved(&tx, &dir, &ws_id, &rows, &req.scope, &versions, input)?;
+            let image = resolved(storage, &tx, &dir, &ws_id, &req.scope, &versions, input)?;
             match i.crop {
                 None => Some(image),
                 // A crop is in the stored 256-pixel render's coordinates, the one the viewer shows.
@@ -527,6 +527,11 @@ fn searched(
             rids.dedup();
         }
     }
+    // An image search reports each shown row's own render, read for those rows only.
+    let shown: Vec<(usize, u32)> = match drawn {
+        Some(_) => ranked.shown().collect(),
+        None => Vec::new(),
+    };
     let mut out = search::corpus_page(&parts(&loaded), &q, req, ranked, now)?;
     match (decor, downgrade) {
         (Some(decor), _) => search::semantic::decorate(&mut out, mode, decor),
@@ -546,6 +551,17 @@ fn searched(
         out["query"]["image"] = image.describe();
         for (name, layer) in layers.as_object().into_iter().flatten() {
             out["coverage"]["layers"][name] = layer.clone();
+        }
+        let rows = out["results"].as_array_mut().into_iter().flatten();
+        for (row, (part, rid)) in rows.zip(&shown) {
+            row["visual"] = match super::visual::unit(&tx, loaded[*part].2, *rid)? {
+                // A hybrid row found by its text alone has no render of its own.
+                None => json!({"state": "absent"}),
+                Some(unit) => json!({
+                    "state": if unit.error.is_some() { "failed" } else { "rendered" },
+                    "bounds": unit.report["bounds"], "diagnostics": unit.report["diagnostics"],
+                    "diagnosticsTruncated": unit.report["diagnosticsTruncated"], "error": unit.error}),
+            };
         }
     }
     let left_out: Vec<&Json> = states.iter().filter(|s| s["state"] != "ready").collect();
@@ -586,15 +602,11 @@ pub fn reference_image(
     let handle = ws.conn.get_interrupt_handle();
     interruptible(handle, cancel, || {
         let tx = ws.conn.unchecked_transaction().map_err(sql)?;
-        let rows: Vec<Row> = rows(&tx, scope)?
-            .into_iter()
-            .filter(|r| storage.sees(Path::new(&r.path)))
-            .collect();
         resolved(
+            storage,
             &tx,
             &ws.held.dir,
             &ws.held.id,
-            &rows,
             scope,
             &search::store::versions(),
             input,
@@ -602,46 +614,86 @@ pub fn reference_image(
     })
 }
 
-/// `reference_image` over the visible `rows` of an open read transaction.
+/// `reference_image` in an open read transaction. The reference is resolved apart from the
+/// search's own scope and filters: the requested scope's ready generation first, then the
+/// source's other published scopes in order, each only while it serves exactly the referenced
+/// snapshot and is fresh; the first that stores the node's render answers.
 fn resolved(
+    storage: &Storage,
     tx: &rusqlite::Transaction,
     dir: &Path,
     ws_id: &str,
-    rows: &[Row],
     scope: &str,
     versions: &str,
     input: &Input,
 ) -> Result<crate::search::visual::QueryImage> {
-    let Input::Ref { source_id, .. } = input else {
+    let Input::Ref {
+        source_id,
+        snapshot_id,
+        node_id,
+    } = input
+    else {
         return Err(fail(
             ErrorKind::InvalidArguments,
             "only an image reference names a stored render",
         ));
     };
-    let row = rows.iter().find(|r| r.id == *source_id).ok_or_else(|| {
-        fail(
+    let mut scopes = vec![scope.to_owned()];
+    let mut stmt = tx
+        .prepare("SELECT scope FROM published WHERE source_id = ?1 AND scope <> ?2 ORDER BY scope LIMIT 64")
+        .map_err(sql)?;
+    let others = stmt
+        .query_map(rusqlite::params![source_id, scope], |r| {
+            r.get::<_, String>(0)
+        })
+        .map_err(sql)?;
+    for other in others {
+        scopes.push(other.map_err(sql)?);
+    }
+    let (mut served, mut snapshot) = (false, false);
+    for s in &scopes {
+        let Some(row) = rows(tx, s)?.into_iter().find(|r| r.id == *source_id) else {
+            continue;
+        };
+        if !storage.sees(Path::new(&row.path)) {
+            break;
+        }
+        served = true;
+        if row.check(tx, dir, s, versions, true)?.state.label() != "ready"
+            || row.snapshot.as_deref() != Some(snapshot_id.as_str())
+        {
+            continue;
+        }
+        snapshot = true;
+        if let Some(image) = super::visual_search::stored(tx, row.gen_id.expect("ready"), node_id)?
+        {
+            return Ok(image);
+        }
+    }
+    if !served {
+        return Err(fail(
             ErrorKind::InvalidArguments,
-            format!("imageRef names source {source_id}, which this workspace does not serve to this caller"),
-        )
-    })?;
-    let checked = row.check(tx, dir, scope, versions, true)?;
-    if checked.state.label() != "ready" {
+            format!(
+                "imageRef names source {source_id}, which this workspace does not serve to this caller"
+            ),
+        ));
+    }
+    if !snapshot {
         return Err(FigError::new(
             ErrorKind::SourceStale,
-            format!("imageRef source {source_id} has no ready index of this scope; refresh it, then take the reference from new results"),
+            format!("imageRef names snapshot {snapshot_id}, but no ready index of source {source_id} serves it now; search again and take the reference from the new results"),
         )
         .with_recovery(json!([{"action": "refresh", "requires": "none", "tool": "index",
             "arguments": {"action": "refresh", "workspaceId": ws_id, "sourceId": source_id, "scope": scope}}]))
         .into());
     }
-    super::visual_search::referenced(
-        tx,
-        ws_id,
-        row.gen_id.expect("ready"),
-        row.snapshot.as_deref(),
-        input,
-        scope,
+    Err(FigError::new(
+        ErrorKind::InvalidArguments,
+        format!("node {node_id} of source {source_id} has no stored visual raster in any ready scope: it is not a visual unit, or the visual layer is not built"),
     )
+    .with_recovery(json!([{"action": "index_visual", "requires": "none", "tool": "index",
+        "arguments": {"action": "visual", "workspaceId": ws_id, "sourceId": source_id, "scope": scope}}]))
+    .into())
 }
 
 /// The channels of an image search over `loaded`, each ranked across every source, fused once.
