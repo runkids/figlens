@@ -1172,6 +1172,9 @@ fn result(pair: &Pair) -> String {
         h.update(n(t.len() as u64));
         h.update(t);
     };
+    // Each list is prefixed with its domain and count, so its rows cannot run into the next.
+    h.update(b"changes");
+    h.update(n(pair.changes.len() as u64));
     for c in &pair.changes {
         h.update(n(c.frame.into()));
         h.update(n(c.old.map_or(u64::MAX, u64::from)));
@@ -1179,6 +1182,8 @@ fn result(pair: &Pair) -> String {
         h.update([c.kind as u8, c.facets]);
         h.update(n(c.descendants.into()));
     }
+    h.update(b"frames");
+    h.update(n(pair.frames.len() as u64));
     for f in &pair.frames {
         text(&mut h, &f.id);
         h.update([f.change.map_or(u8::MAX, |k| k as u8)]);
