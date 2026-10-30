@@ -238,6 +238,54 @@ def check_directory(command, base, fixture, env):
     return {'workspaceId': workspace, 'pages': [len(p['added']) for p in pages], 'sources': len(status['sources'])}
 
 
+def check_question(command, base, mapping, other, env):
+    """A saved text question over a fixed set of two sources: subscribe reads both sources' exact refs,
+    `changes` returns that first evaluation, and after one member's design is replaced and refreshed,
+    `evaluate` names only that member and the ref that left with it. `other` lacks the frame."""
+    base.mkdir()
+    env = user_roots(base, env)
+    project = base/'project'
+    project.mkdir()
+    a, b = project/'a.fig', project/'b.fig'
+    shutil.copy2(mapping, a)
+    shutil.copy2(mapping, b)
+    with session(command, base, env) as request:
+        request('initialize', {'protocolVersion': '2025-06-18', 'capabilities': {}, 'clientInfo': {'name': 'figlens-question', 'version': '1'}})
+        def call(name, arguments):
+            reply = request('tools/call', {'name': name, 'arguments': arguments})
+            assert reply['isError'] is False, reply
+            return reply['structuredContent']
+        def settle(job):
+            deadline = time.monotonic() + 60
+            while job['state'] not in TERMINAL and time.monotonic() < deadline:
+                time.sleep(0.05)
+                job = call('jobs', {'action': 'status', 'jobId': job['jobId']})
+            assert job['state'] == 'succeeded', job
+        sources = []
+        for f in (a, b):
+            prepared = call('index', {'action': 'prepare', 'workspace': str(project), 'file': str(f), 'scope': '0:0'})
+            settle(prepared['job'])
+            workspace = prepared['workspaceId']
+            sources.append(prepared['job']['sourceId'])
+        saved = call('watch', {'action': 'subscribe', 'workspaceId': workspace, 'consumer': 'host-question',
+                               'sources': ','.join(sources), 'query': 'Mapping review'})
+        subscription = saved['subscription']['subscriptionId']
+        first = call('changes', {'workspaceId': workspace, 'subscriptionId': subscription})
+        shutil.copy2(other, b)
+        for job in call('index', {'action': 'refresh', 'workspaceId': workspace, 'scope': '0:0'})['jobs']:
+            settle(job)
+        evaluated = call('watch', {'action': 'evaluate', 'workspaceId': workspace, 'subscriptionId': subscription})['evaluation']
+    frame = lambda refs: sorted(r['sourceId'] for r in refs if r['nodeId'] == '0:1')
+    assert saved['subscription']['sources'] == sorted(sources) and saved['subscription']['sourceId'] is None, saved
+    assert first['evaluations'] and frame(first['evaluations'][0]['delta']['enteredTopK']) == sorted(sources), first
+    assert 'source_changed' in evaluated['causes'] and evaluated['delta']['changedSourceIds'] == [sources[1]], evaluated
+    assert frame(evaluated['delta']['leftTopK']) == [sources[1]] and frame(evaluated['delta']['enteredTopK']) == [], evaluated
+    # The ref that left is exactly the one that entered first, its old snapshot included.
+    exact = lambda refs: [r for r in refs if r['nodeId'] == '0:1' and r['sourceId'] == sources[1]]
+    assert exact(evaluated['delta']['leftTopK']) == exact(first['evaluations'][0]['delta']['enteredTopK']), evaluated
+    return {'workspaceId': workspace, 'sources': len(sources), 'changed': evaluated['delta']['changedSourceIds'], 'causes': evaluated['causes']}
+
+
 def check_first_use(command, base, fixture, env):
     """First use from a clean per-user state through a real MCP command, as an agent host runs it:
     prepare, poll, search the published index, inspect, a watch lease its input end releases, then
