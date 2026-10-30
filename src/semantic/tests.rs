@@ -22,7 +22,7 @@ fn nearest_orders_by_similarity_then_key() {
 
 #[test]
 fn stored_vectors_round_trip_and_refuse_bad_bytes() {
-    let v = vec![0.5f32, -0.25];
+    let v = vec![0.6f32, -0.8];
     assert_eq!(decode(&encode(&v), 2).unwrap(), v);
     assert!(decode(&encode(&v), 3).is_err());
     assert!(decode(&encode(&[f32::NAN, 0.0]), 2).is_err());
@@ -31,14 +31,12 @@ fn stored_vectors_round_trip_and_refuse_bad_bytes() {
 #[test]
 fn chunks_cover_long_text_to_its_end() {
     let long = "字".repeat(CHUNK_CHARS * 2 + 1);
-    let got = chunks("text", &long);
+    let got: Vec<&str> = chunks(&long).collect();
     assert_eq!(
-        got.iter()
-            .map(|c| c.text.chars().count())
-            .collect::<Vec<_>>(),
+        got.iter().map(|c| c.chars().count()).collect::<Vec<_>>(),
         [CHUNK_CHARS, CHUNK_CHARS, 1]
     );
-    assert!(chunks("name", "  ").is_empty());
+    assert!(chunks("  ").next().is_none());
 }
 
 #[test]

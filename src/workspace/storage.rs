@@ -484,10 +484,22 @@ impl Storage {
         })
     }
 
-    /// Replaces `<config>/models.json`. A concurrent writer fails on its `.part`, never tears it.
-    pub fn set_models(&self, record: &Json) -> Result<()> {
-        create_durable(&self.defaults.config.path)?;
-        write_small(&self.defaults.config.path.join("models.json"), record)
+    /// Rewrites `<config>/models.json` from its current record under `models.lock`, so two
+    /// updates never both start from the same old record.
+    pub fn update_models(&self, change: impl FnOnce(Option<Json>) -> Result<Json>) -> Result<()> {
+        let config = &self.defaults.config.path;
+        create_durable(config)?;
+        let path = config.join("models.lock");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|e| storage_error(&path, e))?;
+        lock(&file, &path, true, "model profiles")?;
+        let record = change(self.models()?)?;
+        write_small(&config.join("models.json"), &record)
     }
 
     pub(super) fn locations(&self) -> PathBuf {

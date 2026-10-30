@@ -1,6 +1,6 @@
 //! Semantic and hybrid search over one stored scope (#94). The model layer embeds each
-//! record's name and effective text, chunked without truncation, once per index generation
-//! and profile; identical chunk texts share one vector. Retrieval is an exact scan, and
+//! record's name and effective text, chunked without truncation, once per source snapshot,
+//! scope and profile; identical chunk texts share one vector. Retrieval is an exact scan, and
 //! hybrid fuses the lexical and semantic rankings with `semantic::FUSION`. Semantic matches
 //! name their field and chunk, never a text span.
 
@@ -14,65 +14,96 @@ pub const MAX_TEXTS: usize = 50_000;
 /// Embedding time one request may spend; an unfinished layer resumes on the next request.
 const BUILD: Duration = Duration::from_secs(30);
 const SEMANTIC_RANKING: &str = "semantic-exact-1";
+/// What the layer embeds; property values and scope summaries are not model inputs yet.
+const INPUTS: [&str; 2] = ["name", "text"];
+/// Bytes one chunk mapping keeps beside its text.
+const UNIT: usize = 24;
+/// Extraction budget of one layer: work (one per chunk), bytes and time.
+const LAYER_WORK: usize = 1_000_000;
+const LAYER_BYTES: usize = 512 * 1024 * 1024;
+
+fn field_name(field: u8) -> &'static str {
+    if field == NAME { "name" } else { "text" }
+}
 
 /// One index's model layer under one profile.
 struct Layer {
-    generation: String,
-    profile: String,
+    /// The source snapshot, scope and profile it embeds.
+    key: Json,
     /// `(record, field, chunk, text)` for every chunk, in record order.
     units: Vec<(u32, u8, u32, usize)>,
     texts: Vec<String>,
     /// One per text: `None` until embedded, then the vector (empty when the child refused it).
     vectors: Vec<Option<Vec<f32>>>,
-    /// Chunks left out because the layer reached `MAX_TEXTS`.
+    /// Chunks left out because the layer reached `MAX_TEXTS` texts or `model::MAX_SCAN` chunks.
     over: usize,
+    /// The bound extraction stopped at, leaving later records out.
+    stop: Option<&'static str>,
 }
 
 impl Layer {
-    fn new(index: &Index, profile: &str) -> Layer {
-        let mut slot: HashMap<String, usize> = HashMap::new();
+    /// Extracts the chunks of every record, charging each copy and mapping to `bounds` before
+    /// it is made and checking `cancel` per chunk; a spent bound leaves the layer partial.
+    fn new(
+        index: &Index,
+        key: Json,
+        dim: usize,
+        mut bounds: Bounds,
+        cancel: &AtomicBool,
+    ) -> Result<Layer, Stop> {
+        let mut slot: HashMap<&str, usize> = HashMap::new();
         let mut layer = Layer {
-            generation: index.generation.clone(),
-            profile: profile.to_owned(),
+            key,
             units: Vec::new(),
             texts: Vec::new(),
             vectors: Vec::new(),
             over: 0,
+            stop: None,
         };
-        for (rid, r) in index.records.iter().enumerate() {
+        let rids: Vec<u32> = if index.rids.is_empty() {
+            (0..index.records.len() as u32).collect()
+        } else {
+            index.rids.clone()
+        };
+        'records: for rid in rids {
+            let r = index.record(rid);
             for (field, text) in [(NAME, Some(r.name.as_str())), (TEXT, r.text.as_deref())] {
-                let field_name = if field == NAME { "name" } else { "text" };
-                for c in model::chunks(field_name, text.unwrap_or_default()) {
+                for (i, chunk) in model::chunks(text.unwrap_or_default()).enumerate() {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err(Stop::Cancelled);
+                    }
+                    let known = slot.get(chunk).copied();
+                    // A new text costs its copy, its slot and the vector it will hold.
+                    let cost = UNIT + known.map_or(2 * chunk.len() + 4 * dim, |_| 0);
+                    if !bounds.charge(1, cost) {
+                        break 'records;
+                    }
                     let next = layer.texts.len();
-                    let at = match slot.get(&c.text) {
-                        Some(&at) => at,
-                        None if next == MAX_TEXTS => {
-                            layer.over += 1;
-                            continue;
-                        }
+                    let at = match known {
+                        _ if layer.units.len() == model::MAX_SCAN => None,
+                        Some(at) => Some(at),
+                        None if next == MAX_TEXTS => None,
                         None => {
-                            slot.insert(c.text.clone(), next);
-                            layer.texts.push(c.text);
-                            next
+                            slot.insert(chunk, next);
+                            layer.texts.push(chunk.to_owned());
+                            Some(next)
                         }
                     };
-                    layer.units.push((rid as u32, field, c.index, at));
+                    match at {
+                        Some(at) => layer.units.push((rid, field, i as u32, at)),
+                        None => layer.over += 1,
+                    }
                 }
             }
         }
+        layer.stop = bounds.stop.map(|stop| match stop {
+            crate::expand::Stop::Work => "work_limit",
+            crate::expand::Stop::Bytes => "byte_limit",
+            crate::expand::Stop::Depth => "depth_limit",
+            crate::expand::Stop::Deadline => "deadline",
+        });
         layer.vectors = vec![None; layer.texts.len()];
-        layer
-    }
-
-    fn embedded(&self) -> usize {
-        self.vectors.iter().filter(|v| v.is_some()).count()
-    }
-
-    fn refused(&self) -> usize {
-        self.vectors
-            .iter()
-            .filter(|v| v.as_ref().is_some_and(Vec::is_empty))
-            .count()
+        Ok(layer)
     }
 
     /// Embeds missing texts until done, `BUILD` passes or `cancel`. A refused batch is retried
@@ -116,7 +147,7 @@ impl Layer {
 /// A record's best chunk: `(record, field, chunk)`.
 type Best = (u32, u8, u32);
 
-/// The last layer built in this process; a new generation or profile replaces it.
+/// The last layer built in this process; another snapshot, scope or profile replaces it.
 static LAYER: Mutex<Option<Layer>> = Mutex::new(None);
 
 fn unavailable(message: impl Into<String>) -> Box<dyn Error> {
@@ -128,8 +159,13 @@ fn unavailable(message: impl Into<String>) -> Box<dyn Error> {
         .into()
 }
 
+/// The semantic layer's coverage when it cannot answer.
+fn down(code: &str, message: Option<String>) -> Json {
+    json!({"state": "unavailable", "reasons": [{"code": code, "message": message}]})
+}
+
 /// Searches `scope` of the `.fig` at `path` in `mode`. Text mode is exactly `search::search`.
-/// Semantic mode needs a configured profile; hybrid falls back to text and says why.
+/// Semantic mode needs a usable profile; hybrid falls back to text and says why.
 pub fn search(
     path: &Path,
     req: &Request,
@@ -141,17 +177,19 @@ pub fn search(
         return super::search(path, req);
     }
     let q = req.validate()?;
-    let profile = match profile::active(storage)? {
-        Some(p) => Some(p),
-        None if mode == Mode::Semantic => {
+    let profile = match (profile::active(storage), mode) {
+        (Ok(Some(p)), _) => Ok(p),
+        (Ok(None), Mode::Semantic) => {
             return Err(unavailable(
                 "semantic search needs a configured local model; run models status for setup",
             ));
         }
-        None => None,
+        (Err(e), Mode::Semantic) => return Err(e),
+        (Ok(None), _) => Err(down("no_profile", None)),
+        (Err(e), _) => Err(down("profile_unreadable", Some(e.to_string()))),
     };
     let (index, source) = loaded(path, &req.scope, false)?;
-    reply_with(&index, &q, req, mode, profile.as_ref(), source, cancel)
+    reply_with(&index, &q, req, mode, profile, source, cancel)
 }
 
 fn reply_with(
@@ -159,56 +197,41 @@ fn reply_with(
     q: &Prepared,
     req: &Request,
     mode: Mode,
-    profile: Option<&Profile>,
+    profile: Result<Profile, Json>,
     source: Json,
     cancel: &AtomicBool,
 ) -> Result<Json, Box<dyn Error>> {
-    let fingerprint = short_hash(
-        json!([
-            req.fingerprint(q, &source, index),
-            mode.as_str(),
-            profile.map(|p| &p.id),
-            model::FUSION,
-            SEMANTIC_RANKING,
-            CANDIDATES
-        ])
-        .to_string(),
-    );
-    if q.gens.is_some() || q.fingerprint.as_ref().is_some_and(|fp| *fp != fingerprint) {
-        return Err(invalid(
-            "search cursor belongs to another query, mode, profile, filter set, source, snapshot or index generation; search again without cursor",
-        ));
-    }
-    // Lexical candidates: the same ranking as text mode, from its first page.
-    let wide = Request {
-        limit: CANDIDATES,
-        cursor: None,
-        ..req.clone()
+    let (lexical, excluded) = match mode {
+        Mode::Hybrid => {
+            // Lexical candidates: the same ranking as text mode, from its first page.
+            let wide = Request {
+                limit: CANDIDATES,
+                cursor: None,
+                ..req.clone()
+            };
+            let first = Prepared {
+                offset: 0,
+                fingerprint: None,
+                gens: None,
+                issued: None,
+                phrase: q.phrase.clone(),
+                terms: q.terms.clone(),
+            };
+            let (hits, _, excluded) = retrieve(&[index], &first, &wide, cancel);
+            (hits, excluded)
+        }
+        _ => (Vec::new(), [0, 0]),
     };
-    let first = Prepared {
-        offset: 0,
-        fingerprint: None,
-        gens: None,
-        issued: None,
-        phrase: q.phrase.clone(),
-        terms: q.terms.clone(),
-    };
-    let (lexical, _, excluded) = match mode {
-        Mode::Hybrid => retrieve(&[index], &first, &wide, cancel),
-        _ => (Vec::new(), false, [0, 0]),
-    };
-    let mut layer_json = json!({"state": "unavailable", "reason": "no_profile"});
-    let mut semantic: Vec<Best> = Vec::new();
     let mut used = Vec::new();
     if mode == Mode::Hybrid {
         used.push("text");
     }
-    if let Some(p) = profile {
-        match ranked(index, req, p, cancel) {
-            Ok((ranked, layer)) => {
-                semantic = ranked;
-                layer_json = layer;
+    let profile_id = profile.as_ref().ok().map(|p| p.id.clone());
+    let (semantic, layer_json) = match profile {
+        Ok(p) => match ranked(index, req, &p, &source, cancel) {
+            Ok(found) => {
                 used.push("semantic");
+                found
             }
             Err(Stop::Cancelled) => {
                 return Err(FigError::new(ErrorKind::Cancelled, "search cancelled").into());
@@ -216,10 +239,33 @@ fn reply_with(
             Err(e) if mode == Mode::Semantic => {
                 return Err(FigError::new(ErrorKind::OperationFailed, e.to_string()).into());
             }
-            Err(e) => {
-                layer_json = json!({"state": "unavailable", "reason": "runtime_failed", "message": e.to_string()})
-            }
-        }
+            Err(e) => (Vec::new(), down("runtime_failed", Some(e.to_string()))),
+        },
+        Err(layer) => (Vec::new(), layer),
+    };
+    // A page of an unfinished layer or a downgraded hybrid is not replayable: the next call can
+    // rank differently, so it gets no cursor.
+    let ready = layer_json["state"] == "ready";
+    let fingerprint = short_hash(
+        json!([
+            req.fingerprint(q, &source, index),
+            req.query,
+            mode.as_str(),
+            profile_id,
+            model::FUSION,
+            SEMANTIC_RANKING,
+            CANDIDATES
+        ])
+        .to_string(),
+    );
+    if q.gens.is_some()
+        || q.fingerprint
+            .as_ref()
+            .is_some_and(|fp| *fp != fingerprint || !ready)
+    {
+        return Err(invalid(
+            "search cursor belongs to another query, mode, profile, filter set, source, snapshot, index generation or model layer state; search again without cursor",
+        ));
     }
     let lexical_ids: Vec<u32> = lexical.iter().map(|h| h.record).collect();
     let semantic_ids: Vec<u32> = semantic.iter().map(|s| s.0).collect();
@@ -248,13 +294,15 @@ fn reply_with(
         )
         .into());
     }
+    let lexical_by: HashMap<u32, &Hit> = lexical.iter().map(|h| (h.record, h)).collect();
+    let semantic_by: HashMap<u32, Best> = semantic.iter().map(|s| (s.0, *s)).collect();
     let results: Vec<Json> = page
         .iter()
         .enumerate()
         .map(|(i, &rid)| {
             let rank = q.offset + i + 1;
             let mut matches = Vec::new();
-            let mut out = match lexical.iter().find(|h| h.record == rid) {
+            let mut out = match lexical_by.get(&rid) {
                 Some(hit) => {
                     let mut out = result(index, hit, rank, q, &source);
                     for m in out["matches"].as_array_mut().into_iter().flatten() {
@@ -269,8 +317,9 @@ fn reply_with(
                     out
                 }
             };
-            if let Some(&(_, field, chunk)) = semantic.iter().find(|s| s.0 == rid) {
-                matches.push(json!({"field": if field == NAME { "name" } else { "text" }, "chunk": chunk, "basis": "semantic"}));
+            if let Some(&(_, field, chunk)) = semantic_by.get(&rid) {
+                matches
+                    .push(json!({"field": field_name(field), "chunk": chunk, "basis": "semantic"}));
             }
             out["matches"] = json!(matches);
             out
@@ -278,7 +327,7 @@ fn reply_with(
         .collect();
     let mut coverage = coverage(index, req, excluded);
     coverage["layers"]["semantic"] = layer_json;
-    if coverage["layers"]["semantic"]["state"] != "ready" {
+    if !ready {
         coverage["complete"] = json!(false);
     }
     let scope = index.scope();
@@ -287,14 +336,15 @@ fn reply_with(
             "usedModes": used, "terms": q.terms},
         "source": source,
         "scope": {"nodeId": req.scope, "name": scope.map(|r| r.name.as_str())},
-        "profileId": profile.map(|p| &p.id),
+        "profileId": profile_id,
         "ranking": {"version": if mode == Mode::Hybrid { model::FUSION } else { SEMANTIC_RANKING },
             "channels": {"text": if mode == Mode::Hybrid { json!(RANKING) } else { Json::Null }, "semantic": SEMANTIC_RANKING},
             "candidatesPerChannel": CANDIDATES},
         "results": results,
         "coverage": coverage,
         "hasMore": more,
-        "nextCursor": (more && q.offset + req.limit <= MAX_OFFSET).then(|| format!("s1.{fingerprint}.{}", q.offset + req.limit)),
+        "nextCursor": (ready && more && q.offset + req.limit <= MAX_OFFSET)
+            .then(|| format!("s1.{fingerprint}.{}", q.offset + req.limit)),
     }))
 }
 
@@ -304,14 +354,26 @@ fn ranked(
     index: &Index,
     req: &Request,
     profile: &Profile,
+    source: &Json,
     cancel: &AtomicBool,
 ) -> Result<(Vec<Best>, Json), Stop> {
+    let key = json!([
+        source["sourceId"],
+        source["snapshotId"],
+        req.scope,
+        profile.id
+    ]);
     let mut guard = model::lock(&LAYER, cancel)?;
-    if !guard
-        .as_ref()
-        .is_some_and(|l| l.generation == index.generation && l.profile == profile.id)
-    {
-        *guard = Some(Layer::new(index, &profile.id));
+    if !guard.as_ref().is_some_and(|l| l.key == key) {
+        *guard = None;
+        let bounds = Bounds {
+            work: LAYER_WORK,
+            bytes: LAYER_BYTES,
+            depth: 0,
+            deadline: Instant::now() + DEADLINE,
+            stop: None,
+        };
+        *guard = Some(Layer::new(index, key, profile.dim, bounds, cancel)?);
     }
     let layer = guard.as_mut().expect("set above");
     layer.fill(profile, cancel)?;
@@ -319,26 +381,31 @@ fn ranked(
         rt.embed(Kind::Query, std::slice::from_ref(&req.query), cancel)
     })?
     .remove(0);
-    let vectors = layer.vectors.iter().enumerate().filter_map(|(i, v)| {
-        v.as_ref()
-            .filter(|v| !v.is_empty())
-            .map(|v| (i, v.as_slice()))
-    });
-    let scores: HashMap<usize, f32> = model::nearest(&query, vectors, layer.texts.len())
-        .map_err(|e| Stop::Failed(e.to_string()))?
-        .into_iter()
+    // One dot product per unique text; a refused or missing text scores nothing.
+    let scores: Vec<Option<f32>> = layer
+        .vectors
+        .iter()
+        .map(|v| {
+            v.as_ref()
+                .filter(|v| !v.is_empty())
+                .map(|v| query.iter().zip(v).map(|(a, b)| a * b).sum())
+        })
         .collect();
     let mut best: BTreeMap<u32, (f32, u8, u32)> = BTreeMap::new();
+    let mut excluded = [0usize; 2];
     for &(rid, field, chunk, text) in &layer.units {
-        let Some(&score) = scores.get(&text) else {
-            continue;
-        };
+        let Some(score) = scores[text] else { continue };
         let r = index.record(rid);
         let internal = r.page.is_some_and(|p| index.pages[p as usize].internal);
-        if (!req.types.is_empty() && !req.types.contains(&r.kind))
-            || (r.hidden && !req.include_hidden)
-            || (internal && !req.include_internal)
-        {
+        if !req.types.is_empty() && !req.types.contains(&r.kind) {
+            continue;
+        }
+        if r.hidden && !req.include_hidden {
+            excluded[0] += 1;
+            continue;
+        }
+        if internal && !req.include_internal {
+            excluded[1] += 1;
             continue;
         }
         let e = best.entry(rid).or_insert((f32::NEG_INFINITY, field, chunk));
@@ -349,8 +416,14 @@ fn ranked(
     let mut order: Vec<(u32, (f32, u8, u32))> = best.into_iter().collect();
     order.sort_by(|a, b| b.1.0.total_cmp(&a.1.0).then(a.0.cmp(&b.0)));
     order.truncate(CANDIDATES);
-    let (embedded, refused) = (layer.embedded(), layer.refused());
-    let complete = embedded == layer.texts.len() && refused == 0 && layer.over == 0;
+    let embedded = layer.vectors.iter().filter(|v| v.is_some()).count();
+    let refused = layer
+        .vectors
+        .iter()
+        .filter(|v| v.as_ref().is_some_and(Vec::is_empty))
+        .count();
+    let complete =
+        embedded == layer.texts.len() && refused == 0 && layer.over == 0 && layer.stop.is_none();
     let mut reasons = Vec::new();
     if embedded < layer.texts.len() {
         reasons.push(json!({"code": "semantic_layer_building", "counts": {"embeddedTexts": embedded, "texts": layer.texts.len()}}));
@@ -359,10 +432,19 @@ fn ranked(
         reasons.push(json!({"code": "chunk_refused", "counts": {"texts": refused}}));
     }
     if layer.over > 0 {
-        reasons.push(json!({"code": "semantic_capacity", "counts": {"chunks": layer.over, "maxTexts": MAX_TEXTS}}));
+        reasons.push(
+            json!({"code": "semantic_capacity", "counts": {"chunks": layer.over,
+            "maxTexts": MAX_TEXTS, "maxChunks": model::MAX_SCAN}}),
+        );
+    }
+    if let Some(code) = layer.stop {
+        reasons.push(json!({"code": code, "counts": {"chunks": layer.units.len()},
+            "limits": {"work": LAYER_WORK, "bytes": LAYER_BYTES, "deadlineMs": DEADLINE.as_millis() as u64}}));
     }
     let json = json!({"state": if complete { "ready" } else { "partial" }, "profileId": profile.id,
-        "chunks": layer.units.len(), "texts": layer.texts.len(), "embeddedTexts": embedded, "reasons": reasons});
+        "inputs": INPUTS, "chunks": layer.units.len(), "texts": layer.texts.len(),
+        "embeddedTexts": embedded, "excluded": {"hidden": excluded[0], "internal": excluded[1]},
+        "reasons": reasons});
     Ok((
         order
             .into_iter()
@@ -370,4 +452,63 @@ fn ranked(
             .collect(),
         json,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn index(text: &str) -> Index {
+        let bytes = std::fs::read("examples/first-success/design.fig").unwrap();
+        let deadline = Instant::now() + DEADLINE;
+        let mut index = index_bytes(bytes, "first-success", "0:0", deadline).unwrap();
+        for r in &mut index.records {
+            r.text = Some(text.to_owned());
+        }
+        index
+    }
+
+    fn bounds(work: usize, bytes: usize) -> Bounds {
+        Bounds {
+            work,
+            bytes,
+            depth: 0,
+            deadline: Instant::now() + DEADLINE,
+            stop: None,
+        }
+    }
+
+    #[test]
+    fn a_long_shared_field_is_chunked_once_and_stops_at_its_bound() {
+        let long = "字".repeat(model::CHUNK_CHARS * 3);
+        let idx = index(&long);
+        let no = AtomicBool::new(false);
+        let all = Layer::new(&idx, json!(1), 8, bounds(LAYER_WORK, LAYER_BYTES), &no).unwrap();
+        // Every record shares the same three text chunks; only names differ.
+        assert!(all.stop.is_none());
+        assert!(
+            all.texts
+                .iter()
+                .filter(|t| t.chars().count() == model::CHUNK_CHARS)
+                .count()
+                == 1
+        );
+        let cut = Layer::new(&idx, json!(1), 8, bounds(2, LAYER_BYTES), &no).unwrap();
+        assert_eq!((cut.stop, cut.units.len()), (Some("work_limit"), 2));
+        let tiny = Layer::new(&idx, json!(1), 8, bounds(LAYER_WORK, 16), &no).unwrap();
+        assert_eq!((tiny.stop, tiny.texts.len()), (Some("byte_limit"), 0));
+    }
+
+    #[test]
+    fn extraction_stops_when_cancelled() {
+        let idx = index("text");
+        let got = Layer::new(
+            &idx,
+            json!(1),
+            8,
+            bounds(LAYER_WORK, LAYER_BYTES),
+            &AtomicBool::new(true),
+        );
+        assert!(matches!(got, Err(Stop::Cancelled)));
+    }
 }

@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// The child protocol; a child announcing another one is refused.
@@ -137,6 +136,10 @@ pub fn check_vector(v: &[f32], dim: usize) -> Result<()> {
     if v.iter().any(|x| !x.is_finite()) {
         return Err(fail("vector holds a non-finite value"));
     }
+    // Ranking reads dot products as cosine, so every vector must be unit length.
+    if (v.iter().map(|x| x * x).sum::<f32>() - 1.0).abs() > 1e-3 {
+        return Err(fail("vector is not L2-normalized"));
+    }
     Ok(())
 }
 
@@ -162,7 +165,8 @@ pub fn serve(
         if n == 0 {
             return Ok(());
         }
-        let reply = if n > MAX_LINE {
+        // A line of exactly MAX_LINE + 1 bytes already ended with its newline.
+        let reply = if n > MAX_LINE && line.last() != Some(&b'\n') {
             // Skip the rest of the oversized line without holding it, so the next one parses.
             loop {
                 let buf = input.fill_buf()?;
@@ -227,7 +231,6 @@ pub struct Runtime {
     child: Child,
     /// Request lines for the writer thread; dropping it closes the child's stdin.
     requests: Option<SyncSender<Vec<u8>>>,
-    writer: Option<JoinHandle<()>>,
     lines: Receiver<std::io::Result<Vec<u8>>>,
     /// The child's hello line: its protocol, dimension and model contract.
     pub hello: Json,
@@ -291,7 +294,7 @@ impl Runtime {
         let mut stdin = child.stdin.take().ok_or("child has no stdin")?;
         let (requests, queued) = sync_channel::<Vec<u8>>(1);
         // Ends when the sender drops or a write fails (the child died), closing stdin.
-        let writer = std::thread::spawn(move || {
+        std::thread::spawn(move || {
             for line in queued {
                 if stdin.write_all(&line).and_then(|_| stdin.flush()).is_err() {
                     return;
@@ -300,7 +303,6 @@ impl Runtime {
         });
         let mut rt = Runtime {
             requests: Some(requests),
-            writer: Some(writer),
             child,
             lines,
             hello: Json::Null,
@@ -343,11 +345,9 @@ impl Runtime {
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
+        // The writer ends once the pipe closes. It is not joined: a descendant that inherited
+        // the pipe could keep a blocked write alive, and the caller must not wait on that.
         self.requests = None;
-        // The child is gone, so a write blocked on its stdin fails and the writer ends.
-        if let Some(w) = self.writer.take() {
-            let _ = w.join();
-        }
     }
 
     pub fn pid(&self) -> u32 {
@@ -412,7 +412,7 @@ impl Runtime {
             return Err(self.dead("the child stopped reading requests"));
         }
         let line = self.wait(DEADLINE, cancel, MAX_LINE)?;
-        let reply: Json =
+        let mut reply: Json =
             serde_json::from_slice(&line).map_err(|_| self.dead("reply is not JSON"))?;
         if reply["id"] != id {
             return Err(self.dead("reply answers another request"));
@@ -420,16 +420,7 @@ impl Runtime {
         if let Some(e) = reply["error"].as_str() {
             return Err(Stop::Refused(e.to_owned()));
         }
-        let parsed: Option<Vec<Vec<f32>>> = reply["vectors"].as_array().and_then(|rows| {
-            rows.iter()
-                .map(|r| {
-                    r.as_array()?
-                        .iter()
-                        .map(|x| x.as_f64().map(|x| x as f32))
-                        .collect()
-                })
-                .collect()
-        });
+        let parsed: Option<Vec<Vec<f32>>> = serde_json::from_value(reply["vectors"].take()).ok();
         let vectors = match parsed {
             Some(v) if v.len() == texts.len() => v,
             _ => return Err(self.dead("reply holds no vector per text")),
@@ -464,12 +455,15 @@ impl Drop for Runtime {
     }
 }
 
-fn sha256_file(path: &Path) -> Result<String> {
+fn sha256_file(path: &Path, cancel: &AtomicBool) -> Result<String> {
     let mut file =
         std::fs::File::open(path).map_err(|e| fail(format!("{}: {e}", path.display())))?;
     let mut hash = Sha256::new();
     let mut buf = vec![0; 1 << 20];
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Stop::Cancelled.into());
+        }
         match file.read(&mut buf)? {
             0 => break,
             n => hash.update(&buf[..n]),
@@ -483,7 +477,7 @@ fn sha256_file(path: &Path) -> Result<String> {
 pub fn verify_files(dir: &Path, files: &[(&str, &str)]) -> Result<Vec<(String, String)>> {
     let mut checked = Vec::new();
     for (name, digest) in files {
-        let got = sha256_file(&dir.join(name))?;
+        let got = sha256_file(&dir.join(name), &AtomicBool::new(false))?;
         if got != *digest {
             return Err(fail(format!(
                 "{name} in {} is not the pinned file (sha256 {got}, expected {digest})",
@@ -507,6 +501,9 @@ pub struct Profile {
     /// The child's hello: model contract (pooling, normalization, instruction, token limit) and
     /// runtime version, as the child declared it.
     pub contract: Json,
+    /// What `unchanged` checks before each start: the executable's and each pinned model
+    /// file's SHA-256 at configure.
+    pub stamps: Json,
 }
 
 /// `profileId`: SHA-256 over the protocol and vector format, the executable's digest, every
@@ -531,7 +528,7 @@ impl Profile {
         let model =
             std::fs::canonicalize(model).map_err(|e| fail(format!("{}: {e}", model.display())))?;
         let files = verify_files(&model, files)?;
-        let exe_sha = sha256_file(&exe)?;
+        let exe_sha = sha256_file(&exe, cancel)?;
         let rt = Runtime::start(&exe, &[&model], cancel)?;
         let (dim, contract) = (rt.dim, rt.hello.clone());
         rt.stop();
@@ -541,7 +538,34 @@ impl Profile {
             model,
             dim,
             contract,
+            stamps: json!({"runtime": exe_sha, "files": files}),
         })
+    }
+
+    /// Refuses a profile whose executable or model files changed since configure, hashing each
+    /// again before a child loads them; a loaded child is not rechecked per query.
+    pub fn unchanged(&self, cancel: &AtomicBool) -> Result<()> {
+        if sha256_file(&self.exe, cancel)? != self.stamps["runtime"] {
+            return Err(fail(format!(
+                "{} changed since models configure",
+                self.exe.display()
+            )));
+        }
+        let files = self.stamps["files"]
+            .as_array()
+            .ok_or("profile record has no file digests")?;
+        for file in files {
+            let (Some(name), Some(digest)) = (file[0].as_str(), file[1].as_str()) else {
+                return Err(fail("profile record has a malformed file digest"));
+            };
+            if sha256_file(&self.model.join(name), cancel)? != digest {
+                return Err(fail(format!(
+                    "{name} in {} changed since models configure",
+                    self.model.display()
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -598,28 +622,22 @@ pub fn fuse<K: Ord + Copy>(lists: &[&[K]]) -> Vec<(K, f64)> {
     fused
 }
 
-/// One model input: which field of a record it came from and which chunk of that field.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Chunk {
-    pub field: &'static str,
-    pub index: u32,
-    pub text: String,
-}
-
 /// Splits `text` into consecutive chunks of at most `CHUNK_CHARS` characters, so a long field
-/// is covered to its end, never truncated. Blank text gives no chunk.
-pub fn chunks(field: &'static str, text: &str) -> Vec<Chunk> {
-    let text = text.trim();
-    let chars: Vec<char> = text.chars().collect();
-    chars
-        .chunks(CHUNK_CHARS)
-        .enumerate()
-        .map(|(i, c)| Chunk {
-            field,
-            index: i as u32,
-            text: c.iter().collect(),
-        })
-        .collect()
+/// is covered to its end, never truncated, without copying it. Blank text gives no chunk.
+pub fn chunks(text: &str) -> impl Iterator<Item = &str> {
+    let mut rest = text.trim();
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let end = rest
+            .char_indices()
+            .nth(CHUNK_CHARS)
+            .map_or(rest.len(), |(i, _)| i);
+        let (head, tail) = rest.split_at(end);
+        rest = tail;
+        Some(head)
+    })
 }
 
 pub mod profile;

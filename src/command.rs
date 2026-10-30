@@ -1258,7 +1258,6 @@ fn index_on(
     ))
 }
 
-/// Search reads and hashes its own snapshot of `path`, so it never needs a loaded tree.
 /// Workspace search reads stored layers only; until a workspace stores its model layer, a
 /// semantic or hybrid request there says so instead of answering with text alone.
 pub fn workspace_mode(mode: Mode) -> Box<dyn Error> {
@@ -1269,22 +1268,28 @@ pub fn workspace_mode(mode: Mode) -> Box<dyn Error> {
     .into()
 }
 
+/// Search reads and hashes its own snapshot of `path`, so it never needs a loaded tree. Only a
+/// semantic or hybrid search reads the model profiles, so text search needs no config root.
 pub fn search(
     path: &Path,
     request: &figlens::search::Request,
     mode: Mode,
     label: &str,
 ) -> Result<Output, Box<dyn Error>> {
-    let storage = figlens::workspace::storage(None)?;
     let never = std::sync::atomic::AtomicBool::new(false);
-    let value =
-        figlens::search::semantic::search(path, request, mode, &storage, &never).map_err(|e| {
-            if e.is::<figlens::FigError>() {
-                e
-            } else {
-                crate::contract::source(label, e)
-            }
-        })?;
+    let found = match mode {
+        Mode::Text => figlens::search::search(path, request),
+        _ => figlens::workspace::storage(None).and_then(|storage| {
+            figlens::search::semantic::search(path, request, mode, &storage, &never)
+        }),
+    };
+    let value = found.map_err(|e| {
+        if e.is::<figlens::FigError>() {
+            e
+        } else {
+            crate::contract::source(label, e)
+        }
+    })?;
     Ok(Output::Json {
         value,
         pretty: false,

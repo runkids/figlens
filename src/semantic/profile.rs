@@ -64,9 +64,13 @@ pub fn default_runtime() -> Result<PathBuf> {
 }
 
 fn records(storage: &Storage) -> Result<Vec<Json>> {
-    let Some(record) = storage.models()? else {
-        return Ok(Vec::new());
-    };
+    match storage.models()? {
+        Some(record) => parse(record),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn parse(record: Json) -> Result<Vec<Json>> {
     if record["version"] != RECORD {
         return Err(fail(
             ErrorKind::IndexIncompatible,
@@ -79,8 +83,15 @@ fn records(storage: &Storage) -> Result<Vec<Json>> {
     Ok(record["profiles"].as_array().cloned().unwrap_or_default())
 }
 
-fn save(storage: &Storage, profiles: Vec<Json>) -> Result<()> {
-    storage.set_models(&json!({"version": RECORD, "profiles": profiles}))
+/// Replaces the stored profiles with `change` of the current ones, under the config lock.
+fn save(storage: &Storage, change: impl FnOnce(Vec<Json>) -> Vec<Json>) -> Result<()> {
+    storage.update_models(|record| {
+        let profiles = match record {
+            None => Vec::new(),
+            Some(r) => parse(r)?,
+        };
+        Ok(json!({"version": RECORD, "profiles": change(profiles)}))
+    })
 }
 
 fn setup(k: &Known) -> Json {
@@ -115,7 +126,7 @@ pub fn list(storage: &Storage) -> Result<Json> {
 }
 
 /// Readiness of each configured profile, checked without loading the model: its files and
-/// runtime must still exist. A configured profile whose files changed is caught at use.
+/// runtime must still exist. A runtime or model file that changed is refused when the child next starts.
 pub fn status(storage: &Storage) -> Result<Json> {
     let profiles: Vec<Json> = records(storage)?
         .into_iter()
@@ -169,23 +180,29 @@ pub fn configure(
     let p = Profile::probe(&runtime, model, k.files, cancel)
         .map_err(|e| fail(ErrorKind::InvalidArguments, format!("{name}: {e}")))?;
     let record = json!({"name": k.name, "profileId": p.id, "model": p.model, "runtime": p.exe,
-        "dim": p.dim, "contract": p.contract});
-    let mut profiles: Vec<Json> = records(storage)?
-        .into_iter()
-        .filter(|r| r["name"] != k.name)
-        .collect();
-    profiles.push(record.clone());
-    save(storage, profiles)?;
+        "dim": p.dim, "contract": p.contract, "stamps": p.stamps});
+    let kept = record.clone();
+    save(storage, |profiles| {
+        let mut profiles: Vec<Json> = profiles
+            .into_iter()
+            .filter(|r| r["name"] != k.name)
+            .collect();
+        profiles.push(kept);
+        profiles
+    })?;
     Ok(json!({"configured": record, "dataFlow": "local only; no download, no network"}))
 }
 
 /// Forgets a profile; its model files are left where they are.
 pub fn remove(storage: &Storage, name: &str) -> Result<Json> {
-    let all = records(storage)?;
-    let kept: Vec<Json> = all.iter().filter(|r| r["name"] != name).cloned().collect();
-    let removed = kept.len() != all.len();
-    if removed {
-        save(storage, kept)?;
+    let mut removed = false;
+    if records(storage)?.iter().any(|r| r["name"] == name) {
+        save(storage, |profiles| {
+            let before = profiles.len();
+            let kept: Vec<Json> = profiles.into_iter().filter(|r| r["name"] != name).collect();
+            removed = kept.len() != before;
+            kept
+        })?;
     }
     Ok(json!({"name": name, "removed": removed, "modelFilesKept": true}))
 }
@@ -201,6 +218,7 @@ pub fn active(storage: &Storage) -> Result<Option<Profile>> {
         model: PathBuf::from(r["model"].as_str().unwrap_or_default()),
         dim: r["dim"].as_u64().unwrap_or(0) as usize,
         contract: r["contract"].clone(),
+        stamps: r["stamps"].clone(),
     }))
 }
 
@@ -223,6 +241,9 @@ pub fn with_runtime<T>(
     };
     if !reuse {
         *warm = None;
+        profile
+            .unchanged(cancel)
+            .map_err(|e| Stop::Failed(format!("{e}; run models configure again")))?;
         let rt = Runtime::start(&profile.exe, &[&profile.model], cancel).map_err(|e| match e
             .downcast::<Stop>()
         {

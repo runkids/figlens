@@ -3,6 +3,10 @@
 //! `nan`, `dim`, `hang` (never answers), `deaf` (never reads a request) and
 //! `grandchild=<file>` (starts a sleeper and writes its pid).
 
+#[path = "../src/test_support.rs"]
+#[allow(dead_code)]
+mod test_support;
+
 use figlens::semantic::profile;
 use figlens::semantic::{self, Kind, MAX_BATCH, MAX_TEXT_BYTES, Mode, Profile, Runtime, Stop};
 use serde_json::json;
@@ -56,28 +60,6 @@ fn start(mode: &str) -> Runtime {
 
 fn texts(t: &[&str]) -> Vec<String> {
     t.iter().map(|s| s.to_string()).collect()
-}
-
-/// A scratch directory under ignored `samples/`, removed when dropped.
-struct Dir(PathBuf);
-
-impl Dir {
-    fn new(name: &str) -> Self {
-        let dir = std::path::absolute(format!(
-            "samples/semantic-child-{}-{name}",
-            std::process::id()
-        ))
-        .unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Self(dir)
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
 }
 
 fn after(ms: u64) -> Arc<AtomicBool> {
@@ -142,8 +124,8 @@ fn stop_ends_the_child_when_stdin_closes() {
 
 #[cfg(target_os = "linux")]
 fn cancel_kills_the_childs_process_group() {
-    let dir = Dir::new("group");
-    let file = dir.0.join("pid");
+    let dir = test_support::TestDir::new();
+    let file = std::path::absolute(dir.join("")).unwrap().join("pid");
     let mut rt = start(&format!("grandchild={}", file.display()));
     let pid: i32 = std::fs::read_to_string(&file).unwrap().parse().unwrap();
     let got = rt.embed(Kind::Query, &texts(&["a"]), &AtomicBool::new(true));
@@ -162,8 +144,8 @@ fn cancel_kills_the_childs_process_group() {
 }
 
 /// A model directory holding one file, and the pinned file list that matches it.
-fn model(dir: &Dir, body: &str) -> (PathBuf, Vec<(&'static str, String)>) {
-    let model = dir.0.join("model");
+fn model(dir: &test_support::TestDir, body: &str) -> (PathBuf, Vec<(&'static str, String)>) {
+    let model = std::path::absolute(dir.join("")).unwrap().join("model");
     std::fs::create_dir_all(&model).unwrap();
     std::fs::write(model.join("w"), body).unwrap();
     let digest = Sha256::digest(body)
@@ -173,7 +155,7 @@ fn model(dir: &Dir, body: &str) -> (PathBuf, Vec<(&'static str, String)>) {
     (model, vec![("w", digest)])
 }
 
-fn probe(dir: &Dir, body: &str) -> Profile {
+fn probe(dir: &test_support::TestDir, body: &str) -> Profile {
     let (model, files) = model(dir, body);
     let files: Vec<(&str, &str)> = files.iter().map(|(n, d)| (*n, d.as_str())).collect();
     let exe = std::env::current_exe().unwrap();
@@ -181,7 +163,7 @@ fn probe(dir: &Dir, body: &str) -> Profile {
 }
 
 fn profile_id_changes_with_any_model_file() {
-    let dir = Dir::new("fingerprint");
+    let dir = test_support::TestDir::new();
     let a = probe(&dir, "one");
     assert_eq!((a.dim, &a.contract["model"]), (DIM, &json!("fake")));
     assert_eq!(probe(&dir, "one").id, a.id);
@@ -189,9 +171,14 @@ fn profile_id_changes_with_any_model_file() {
 }
 
 fn configure_records_a_verified_profile_and_remove_forgets_it() {
-    let dir = Dir::new("configure");
+    let dir = test_support::TestDir::new();
     // SAFETY: this harness runs one test at a time on the main thread.
-    unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.0.join("config")) };
+    unsafe {
+        std::env::set_var(
+            "XDG_CONFIG_HOME",
+            std::path::absolute(dir.join("")).unwrap().join("config"),
+        )
+    };
     let storage = figlens::workspace::storage(None).unwrap();
     let (model, files) = model(&dir, "weights");
     let files: &'static [(&str, &str)] = Box::leak(
@@ -230,9 +217,14 @@ fn configure_records_a_verified_profile_and_remove_forgets_it() {
 }
 
 fn configure_refuses_files_that_are_not_the_pinned_model() {
-    let dir = Dir::new("pinned");
+    let dir = test_support::TestDir::new();
     // SAFETY: this harness runs one test at a time on the main thread.
-    unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.0.join("config")) };
+    unsafe {
+        std::env::set_var(
+            "XDG_CONFIG_HOME",
+            std::path::absolute(dir.join("")).unwrap().join("config"),
+        )
+    };
     let storage = figlens::workspace::storage(None).unwrap();
     let (model, _) = model(&dir, "not the model");
     let exe = std::env::current_exe().unwrap();
@@ -247,7 +239,7 @@ fn configure_refuses_files_that_are_not_the_pinned_model() {
 }
 
 fn warm_runtime_is_reused_across_requests() {
-    let dir = Dir::new("warm");
+    let dir = test_support::TestDir::new();
     let p = probe(&dir, "weights");
     let no = AtomicBool::new(false);
     let pid = |rt: &mut Runtime| Ok(rt.pid());
@@ -256,9 +248,14 @@ fn warm_runtime_is_reused_across_requests() {
 }
 
 /// Configures a fake profile in a fresh config root and returns the storage.
-fn configured(dir: &Dir) -> figlens::workspace::Storage {
+fn configured(dir: &test_support::TestDir) -> figlens::workspace::Storage {
     // SAFETY: this harness runs one test at a time on the main thread.
-    unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.0.join("config")) };
+    unsafe {
+        std::env::set_var(
+            "XDG_CONFIG_HOME",
+            std::path::absolute(dir.join("")).unwrap().join("config"),
+        )
+    };
     let storage = figlens::workspace::storage(None).unwrap();
     let (model, files) = model(dir, "weights");
     let files: &'static [(&str, &str)] = Box::leak(
@@ -294,7 +291,7 @@ fn request(query: &str, limit: usize, cursor: Option<String>) -> figlens::search
 const FIG: &str = "examples/first-success/design.fig";
 
 fn semantic_search_pages_by_meaning_without_text_spans() {
-    let dir = Dir::new("search");
+    let dir = test_support::TestDir::new();
     let storage = configured(&dir);
     let no = AtomicBool::new(false);
     let search = |req| {
@@ -319,7 +316,7 @@ fn semantic_search_pages_by_meaning_without_text_spans() {
 }
 
 fn without_a_profile_hybrid_says_why_and_semantic_refuses() {
-    let dir = Dir::new("noprofile");
+    let dir = test_support::TestDir::new();
     let storage = configured(&dir);
     profile::remove(&storage, "fake").unwrap();
     let no = AtomicBool::new(false);
@@ -334,7 +331,7 @@ fn without_a_profile_hybrid_says_why_and_semantic_refuses() {
     .unwrap();
     assert_eq!(hybrid["query"]["usedModes"], json!(["text"]));
     assert_eq!(
-        hybrid["coverage"]["layers"]["semantic"]["reason"],
+        hybrid["coverage"]["layers"]["semantic"]["reasons"][0]["code"],
         "no_profile"
     );
     let err = figlens::search::semantic::search(
@@ -349,6 +346,25 @@ fn without_a_profile_hybrid_says_why_and_semantic_refuses() {
         .downcast_ref::<figlens::FigError>()
         .map(figlens::FigError::kind);
     assert_eq!(kind, Some(figlens::ErrorKind::ModeUnavailable));
+}
+
+fn a_changed_model_file_is_refused_before_the_child_starts() {
+    let dir = test_support::TestDir::new();
+    // Its own weights, so no warm child of an earlier test shares its profile id.
+    let p = probe(&dir, "weights to change");
+    std::fs::write(
+        std::path::absolute(dir.join(""))
+            .unwrap()
+            .join("model")
+            .join("w"),
+        "other weights",
+    )
+    .unwrap();
+    let got = profile::with_runtime(&p, &AtomicBool::new(false), |rt| Ok(rt.pid()));
+    assert!(
+        matches!(&got, Err(Stop::Failed(m)) if m.contains("changed since models configure")),
+        "{got:?}"
+    );
 }
 
 fn main() {
@@ -411,6 +427,10 @@ fn main() {
         (
             "without_a_profile_hybrid_says_why_and_semantic_refuses",
             without_a_profile_hybrid_says_why_and_semantic_refuses,
+        ),
+        (
+            "a_changed_model_file_is_refused_before_the_child_starts",
+            a_changed_model_file_is_refused_before_the_child_starts,
         ),
     ];
     let filter = args.iter().skip(1).find(|a| !a.starts_with('-'));
