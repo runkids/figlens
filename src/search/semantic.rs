@@ -372,9 +372,12 @@ fn ranked(
     source: &Json,
     cancel: &AtomicBool,
 ) -> Result<(Vec<Best>, Json), Stop> {
+    // The generation tells apart two partial builds of one snapshot (a deadline stop is not
+    // cached), whose record ids differ.
     let key = json!([
         source["sourceId"],
         source["snapshotId"],
+        index.generation,
         req.scope,
         profile.id
     ]);
