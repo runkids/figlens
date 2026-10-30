@@ -1338,6 +1338,10 @@ fn watch(action: &str, args: &[String]) -> Result<serde_json::Value, Box<dyn Err
     if !a.positional.is_empty() || a.source.len() > 1 {
         return Err(usage.into());
     }
+    // evaluate runs on the subscription's own source; a --source it would ignore is refused.
+    if action == "evaluate" && !a.source.is_empty() {
+        return Err(format!("unknown flag --source; {usage}").into());
+    }
     let mut flags = std::collections::HashMap::new();
     for pair in a.search.chunks(2) {
         if !allowed.contains(&pair[0].as_str()) || pair.len() < 2 {

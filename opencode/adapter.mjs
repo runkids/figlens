@@ -372,6 +372,8 @@ export function createAdapter(ctx, entry = import.meta.url) {
     if (['search', 'usages', 'changes'].includes(tool) && !input.file) await readSources(await status(input));
     // Every other watch action writes checkpoints, subscriptions or leases into the workspace database, as a cancel writes its job.
     if (tool === 'watch' && !['list', 'status', 'start'].includes(input.action)) {
+      // The binary evaluates the subscription's own source, so a sourceId would only narrow the read asked here.
+      if (input.action === 'evaluate' && input.sourceId !== undefined) throw new Error("watch evaluate takes no sourceId: it evaluates the subscription's own source.");
       const found = await status(input);
       // A saved query runs a workspace search on its source when saved and each time it is evaluated.
       if ((input.action === 'subscribe' && input.query !== undefined) || input.action === 'evaluate') await readSources(found);
