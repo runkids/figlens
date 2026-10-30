@@ -2022,6 +2022,12 @@ fn older_schema_workspaces_read_without_migrating_and_upgrade_keeping_their_data
             "partial"
         );
         names_rebuild_not_embed(&again);
+        // A refresh that keeps the unchanged generation proposes no embed it cannot finish.
+        let refreshed = cli(&["index", "refresh", "--id", ws, "--scope", "0:0"]);
+        assert!(
+            !refreshed["nextSteps"].to_string().contains("\"embed\""),
+            "{refreshed}"
+        );
         // The rebuild indexes the properties; one embed then completes the layer.
         cli(&["index", "rebuild", "--id", ws, "--scope", "0:0"]);
         cli(&["index", "embed", "--id", ws, "--scope", "0:0"]);

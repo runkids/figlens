@@ -713,6 +713,15 @@ fn build_with(
     let keep_library = relations && library != Library::Skip && !library_unread;
     // Model inputs: only builds that may embed (stored and stateless full ones) pay for them.
     let model_inputs = relations && library != Library::Skip;
+    // Model property inputs spend a share of their own: a large design system can leave some
+    // instances' properties unindexed (reported as such) but never cuts the text index short.
+    let mut prop_bounds = Bounds {
+        work: WORK / 8,
+        bytes: BYTES / 8,
+        depth: DEPTH,
+        deadline: bounds.deadline,
+        stop: None,
+    };
     let mut defs = semantic::Defs::new();
     // A stored generation fingerprints its definitions and cached copies with their subtrees.
     let fingerprint = relations && library == Library::Stored;
@@ -835,12 +844,10 @@ fn build_with(
         let props = match (model_inputs, kind == "INSTANCE") {
             (false, _) => None,
             (true, false) => Some(Vec::new()),
-            (true, true) => {
-                match semantic::properties(tree, &id, ex.nodes.get(&id), &mut defs, &mut bounds) {
-                    Some(props) => Some(props),
-                    None => break,
-                }
+            (true, true) if prop_bounds.stop.is_none() => {
+                semantic::properties(tree, &id, ex.nodes.get(&id), &mut defs, &mut prop_bounds)
             }
+            (true, true) => None,
         };
         let mut norm = [String::new(), String::new()];
         let mut record_lens = [0u32; 2];

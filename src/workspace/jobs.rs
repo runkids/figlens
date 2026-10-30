@@ -2809,7 +2809,13 @@ fn layer_missing(storage: &Storage, report: &Json) -> Option<bool> {
     let select = Select::Id(report["workspaceId"].as_str()?.to_owned());
     let (_, ws) = opened(storage, &select, false).ok()?;
     let layer = super::model::layer(&ws.conn, report["generation"].as_i64()?, &profile.id).ok()?;
-    Some(layer.is_none_or(|l| l["state"] != "ready"))
+    // A layer that stopped for property inputs the generation never indexed needs a rebuild,
+    // which another embed cannot give it: it is not proposed again.
+    Some(
+        layer.is_none_or(|l| {
+            l["state"] != "ready" && l["stop"] != crate::search::semantic::NOT_INDEXED
+        }),
+    )
 }
 
 /// For an owner that keeps running after text job `report` succeeded: submits the embed of the

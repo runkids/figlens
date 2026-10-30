@@ -552,12 +552,17 @@ fn model_layer(conn: &Connection, v: &View, gen_id: Option<i64>) -> Result<Json>
         Ok(None) => (None, Some("no_profile")),
         Err(_) => (None, Some("profile_unreadable")),
     };
+    let mut stop = None;
     let state = match (profile, gen_id) {
         (None, _) => "unavailable",
         (Some(id), Some(gen_id)) if v.layers => {
             match super::model::layer(conn, gen_id, id).map_err(sql)? {
                 Some(l) if l["state"] == "ready" => "ready",
-                Some(_) => "partial",
+                Some(l) => {
+                    // Why it stopped, as search reports it (properties_not_indexed: rebuild).
+                    stop = l["stop"].as_str().map(str::to_owned);
+                    "partial"
+                }
                 None => "pending",
             }
         }
@@ -565,7 +570,7 @@ fn model_layer(conn: &Connection, v: &View, gen_id: Option<i64>) -> Result<Json>
     };
     let mut out = json!({"state": state, "profileId": profile,
         "policy": super::model::POLICY, "generation": gen_id});
-    if let Some(code) = reason {
+    if let Some(code) = reason.map(str::to_owned).or(stop) {
         out["reason"] = json!(code);
     }
     Ok(out)

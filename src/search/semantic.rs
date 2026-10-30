@@ -247,7 +247,10 @@ impl Layer {
                     _ => open[n - 1].1.as_deref().unwrap_or_default(),
                 };
                 let line = match (p.kind.as_str(), above, p.name.as_str()) {
-                    ("DOCUMENT", ..) | (_, _, "") => above.to_owned(),
+                    ("DOCUMENT", ..) | (_, _, "") if bounds.charge(0, above.len()) => {
+                        above.to_owned()
+                    }
+                    ("DOCUMENT", ..) | (_, _, "") => break 'records,
                     (_, "", name) if bounds.charge(0, name.len()) => name.to_owned(),
                     (_, above, name) if bounds.charge(0, above.len() + 3 + name.len()) => {
                         format!("{above} / {name}")
