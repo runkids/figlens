@@ -196,7 +196,7 @@ MCP：`index` 的 prepare 會回傳一個 job；輪詢 `jobs` 直到 `succeeded`
 
 移動了 `.fig`？`index relocate` 保留 `workspaceId`、`sourceId` 和儲存位置；接著對受影響的範圍執行 `refresh`。沒有自動探索，也沒有以雜湊為基礎的自動合併，不需要 reset。
 
-一個資料夾裡有多個設計？`index add <dir> --workspace DIR` 一次登記該目錄下最多 10 個 `.fig` 檔案，並略過指向目錄之外的連結；回覆列出 `added`、`existing`、`skipped` 和 `truncated`，重複執行不會新增任何內容，每個檔案仍需各自執行 `prepare --scope`。在資料夾內移動的檔案會成為新來源，除非使用 `relocate`。 將回覆中的 `nextCursor` 作為 `--cursor C`（MCP 為 `cursor`）傳入，即可繼續登記接下來的 10 個。
+一個資料夾裡有多個設計？`index add <dir> --workspace DIR` 一次登記該目錄下最多 10 個 `.fig` 檔案，並略過指向目錄之外的連結；回覆列出 `added`、`existing`、`skipped` 和 `truncated`，重複執行不會新增任何內容，每個檔案仍需各自執行 `prepare --scope`。在資料夾內移動的檔案會成為新來源，除非使用 `relocate`。 將回覆中的 `nextCursor` 作為 `--cursor C`（MCP 為 `cursor`）傳入，即可繼續登記接下來的 10 個。分頁的搜尋與 library 游標有效一小時，過期後會回傳 `cursor_expired`，請重新搜尋。
 
 資料：SQLite 資料庫保存已註冊的本機路徑、所選範圍的圖層名稱與有效文字、搜尋 postings、精確關係（包含、實例、變體、變數/樣式/圖片綁定、原型目標）及其指向的定義、雜湊、generation 和 job。原始 `.fig` 留在原處且保持不變；其原始位元組不會存入資料庫。
 
@@ -247,6 +247,6 @@ Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，works
 
 比較同一 component set 的兩個 variants：`inspect <file> <variantA> --compare-variant <variantB>`（MCP `compareVariant`）。`variantComparison` 列出原始欄位及值集合差異，保留來源與未知標記；子節點不猜配對。詳見[比較限制](../wiki/states.md#compare-two-variants)。
 
-node 引數可接受 `12:345`、`12-345`，或帶有 `?node-id=` 的 Figma URL。`<file>` 也可以是 `gs://bucket/object`，會用你的 `gcloud` 登入下載並快取。固定 object 交接、所需存取權限與更新限制，請參閱 [GCS 快照操作說明](../wiki/gcs.md)。每次 CLI 呼叫都會解碼檔案；MCP 只重用最後讀取且未變更的本機檔案，遠端輸入仍會重新解析。執行 `figlens --help` 或 `figlens inspect --help`（也可用 `-h`）查看完整 CLI 用法。
+node 引數可接受 `12:345`、`12-345`，或帶有 `?node-id=` 的 Figma URL。`<file>` 也可以是 `gs://bucket/object`，會用你的 `gcloud` 登入下載並快取。固定 object 交接、所需存取權限與更新限制，請參閱 [GCS 快照操作說明](../wiki/gcs.md)。每次 CLI 呼叫都會解碼檔案；MCP 只重用最後讀取且未變更的本機檔案，遠端輸入仍會重新解析。執行 `figlens --help` 或 `figlens inspect --help`（也可用 `-h`）查看完整 CLI 用法。`index add gs://bucket/object` 會登錄該 generation 的固定副本並回報 `remote {uri, generation}`；只有 add 會執行 gcloud。
 
 `inspect` 包含已記錄的文字尺寸調整、截斷、最大行數與裝飾。沒有 auto-layout 的父層會帶 `childSpacing: "derived"`：子層之間的間距是座標差，不是 auto-layout 規則；`constraints` 仍可能固定它們。`handoffDiagnostics` 會列出已儲存但尚未輸出的語意、數量、範例及[涵蓋限制](../wiki/semantics.md#known-handoff-gaps)。輸出會保護來源，完整寫入後才替換目標。MCP 請求行上限為 1 MiB，完整回應上限為 8 MiB，超限會明確回報錯誤；CLI 仍可輸出完整 JSON。

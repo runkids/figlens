@@ -21,6 +21,8 @@ Checked before the work they bound; the reply's `truncated` names the one that s
 
 The cap counts existing sources too, so a repeat lists the same files whatever the registry holds.
 
+Past the 4096-entry budget, the entries read follow the OS's order, so the pages and manifest of such a directory are not guaranteed stable. A mismatch fails closed, and the reply says `truncated` `entry_budget`.
+
 ## Continuation
 
 `nextCursor` is `d1.<root digest>.<hex of the page's last canonical file>`, or `null` on the last page. `--cursor C` (MCP `cursor`) registers the next page after that file, so a file added or removed before it never shifts the page. A cursor of another root is `cursor_stale`. Every page walks again from the root, so continuation reaches only the files within the first 4096 entries: a wider flat directory still ends at `entry_budget` and is not fully registrable this way.

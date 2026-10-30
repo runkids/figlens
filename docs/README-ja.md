@@ -196,7 +196,7 @@ MCP：`index` の prepare は job を返します。`succeeded` になるまで 
 
 `.fig` を移動した場合：`index relocate` は `workspaceId`、`sourceId`、保存先を維持します。その後、影響を受けた範囲を `refresh` します。自動検出やハッシュによる自動統合はなく、reset は不要です。
 
-1 つのフォルダーに複数のデザインがある場合：`index add <dir> --workspace DIR` はそのディレクトリ以下の `.fig` を一度に最大 10 個登録し、ディレクトリの外へ出るリンクはスキップします。応答には `added`、`existing`、`skipped`、`truncated` が含まれ、繰り返しても何も追加されません。各ファイルには引き続き個別の `prepare --scope` が必要です。フォルダー内で移動したファイルは、`relocate` を使わない限り新しいソースになります。 応答の `nextCursor` を `--cursor C`（MCP では `cursor`）に渡すと、次の 10 個を追加します。
+1 つのフォルダーに複数のデザインがある場合：`index add <dir> --workspace DIR` はそのディレクトリ以下の `.fig` を一度に最大 10 個登録し、ディレクトリの外へ出るリンクはスキップします。応答には `added`、`existing`、`skipped`、`truncated` が含まれ、繰り返しても何も追加されません。各ファイルには引き続き個別の `prepare --scope` が必要です。フォルダー内で移動したファイルは、`relocate` を使わない限り新しいソースになります。 応答の `nextCursor` を `--cursor C`（MCP では `cursor`）に渡すと、次の 10 個を追加します。ページ送りの検索とライブラリのカーソルは 1 時間有効で、過ぎると `cursor_expired` を返すので、検索し直してください。
 
 データ：SQLite データベースには、登録されたローカルパス、選択した範囲のレイヤー名と実効テキスト、検索 postings、正確な関係（包含、インスタンス、バリアント、変数/スタイル/画像の参照、プロトタイプの遷移先）とその参照先の定義、ハッシュ、世代、job が入ります。元の `.fig` はその場所で変更されず、その生バイトはデータベースに保存されません。
 
@@ -247,6 +247,6 @@ Pi、OpenCode、OMP は、それぞれのオプトイン用エントリから同
 
 同じ component set の 2 つの variants は `inspect <file> <variantA> --compare-variant <variantB>`（MCP `compareVariant`）で比較できます。`variantComparison` は保存フィールドと値集合の差、ソース ID、不明点を返します。子ノードの対応関係は推測しません。[比較の制限](../wiki/states.md#compare-two-variants)を参照してください。
 
-node 引数には `12:345`、`12-345`、または `?node-id=` 付きの Figma URL を指定できます。`<file>` には `gs://bucket/object` も指定でき、`gcloud` ログインでダウンロードしてキャッシュします。固定オブジェクトでの受け渡し、必要なアクセス権、更新の制限は [GCS スナップショットガイド](../wiki/gcs.md)を参照してください。CLI は呼び出しごとにファイルをデコードします。MCP が再利用するのは最後に読み取った変更のないローカルファイルだけです。リモート入力は毎回解析し直します。CLI の全使用法は `figlens --help` または `figlens inspect --help`（`-h` も可）で確認できます。
+node 引数には `12:345`、`12-345`、または `?node-id=` 付きの Figma URL を指定できます。`<file>` には `gs://bucket/object` も指定でき、`gcloud` ログインでダウンロードしてキャッシュします。固定オブジェクトでの受け渡し、必要なアクセス権、更新の制限は [GCS スナップショットガイド](../wiki/gcs.md)を参照してください。CLI は呼び出しごとにファイルをデコードします。MCP が再利用するのは最後に読み取った変更のないローカルファイルだけです。リモート入力は毎回解析し直します。CLI の全使用法は `figlens --help` または `figlens inspect --help`（`-h` も可）で確認できます。`index add gs://bucket/object` はその世代のピン留めしたコピーを登録し、`remote {uri, generation}` を返します。gcloud を実行するのは add だけです。
 
 `inspect` は記録済みのテキストのリサイズ、切り詰め、最大行数、装飾を含みます。auto-layout のない親には `childSpacing: "derived"` が付きます。子要素の間隔は座標の差で、auto-layout のルールではありません。`constraints` で固定されている場合もあります。`handoffDiagnostics` は保存済みでも未出力の意味情報を件数、例、[対象範囲の制限](../wiki/semantics.md#known-handoff-gaps)とともに示します。出力は元ファイルを保護し、書き込み完了後に保存先を置き換えます。MCP のリクエスト行は 1 MiB、完全な応答は 8 MiB が上限で、超過時は明示的なエラーを返します。CLI では引き続き完全な JSON を出力できます。
