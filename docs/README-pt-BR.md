@@ -131,7 +131,7 @@ Navegue por páginas e camadas, busque, use a busca ranqueada e os usos exatos d
 
 ## Servidor MCP e skill para agents
 
-**MCP.** O servidor roda localmente por stdio e expõe `workflow`, `tree`, `find`, `search`, `usages`, `diff`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs`, `changes`, `watch`, `export` e `models`. Use caminhos absolutos. Adicione `--root /path/to/designs` (repetível) para confinar todo arquivo e caminho de saída às pastas escolhidas. Armazenar índices fora dos diretórios padrão do figlens exige `--storage-root DIR` (repetível). Exportações raster são reduzidas a `maxSize` (padrão 1600 px) para manter as imagens inline pequenas; SVG retorna apenas metadados.
+**MCP.** O servidor roda localmente por stdio e expõe `workflow`, `tree`, `find`, `search`, `usages`, `diff`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs`, `changes`, `watch`, `export` e `models`. Use caminhos absolutos. Adicione `--root /path/to/designs` (repetível) para confinar todo arquivo e caminho de saída às pastas escolhidas. Armazenamento personalizado solicitado explicitamente exige `--storage-root DIR` (repetível); locais lembrados são reutilizados sem essa opção. Veja os [argumentos de inicialização e o exemplo com várias raízes](../README-pt-BR.md#mcp-args). Exportações raster são reduzidas a `maxSize` (padrão 1600 px) para manter as imagens inline pequenas; SVG retorna apenas metadados.
 
 Com `workflow`, o agent pode ler os guias integrados `build`, `audit`, `images`, `plan`, `planning-details` ou `yolo` quando solicitado explicitamente. Eles compartilham as fontes do skill portátil; sua instalação separada é opcional para MCP. O agent executa o trabalho com suas ferramentas de projeto e navegador e as permissões do host. Ler um guia não executa o fluxo; seu uso depende do cliente e do comportamento do modelo.
 
@@ -152,7 +152,7 @@ skillshare mcp add figlens --global --target claude --target codex --target curs
 skillshare sync && skillshare sync mcp --global
 ```
 
-**Notas de instalação.** O launcher npm baixa o binário nativo correspondente no primeiro uso, verifica-o contra os checksums SHA-256 da release e o armazena em cache. Instalações por script são atualizadas com `figlens update`; as do Homebrew, com `brew upgrade figlens`. Os binários cobrem macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl estático) e Windows (x86_64).
+**Notas de instalação.** O launcher npm baixa o binário nativo correspondente no primeiro uso, verifica-o contra os checksums SHA-256 da release e o armazena em cache. Instalações por script são atualizadas com `figlens update`; as do Homebrew, com `brew upgrade figlens`. Os binários cobrem macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl estático) e Windows (x86_64). Todo caminho de instalação também coloca `figlens-embed`, o runtime da [busca semântica opcional](#semantic-search), ao lado de `figlens`; ele não carrega nenhum modelo até você configurar um.
 
 <a id="local-index"></a>
 
@@ -230,7 +230,7 @@ Experimental. `figlens search <file> <query> --mode semantic|hybrid` ordena as c
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | Resumo compacto de layout/texto expandido, no máximo 200 nós. `--images` adiciona dimensões de bitmap e áreas de recorte. `--flat` imprime uma linha por nó: posição relativa ao nó, tamanho, texto, fonte, preenchimento, traço, raio, auto-layout |
 | `nodes <file> <node>` | O objeto por nó de uma resposta REST de nodes (`document`, `components`, `componentSets`, `styles`): instâncias e overrides expandidos, auto-layout, estilos de texto, preenchimentos, efeitos, variáveis vinculadas, propriedades de componentes, limites de renderização |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | Uma decodificação, muitos nós: uma linha JSON por id listado, a saída de `nodes` com seu `nodeId`, ou `{nodeId, error}` |
-| `variables <file> [node]` | Variáveis vinculadas a um frame; sem nó, todas as variáveis locais |
+| `variables <file> [node]`<br>`variables <file.fig> --format dtcg --collection ID --mode ID --out FILE` | Padrão: variáveis vinculadas/locais no formato REST, sem alterações. Exportação DTCG 2025.10: IDs exatos de coleção e modo, sem nó; apenas cores e números sem unidade. Crie primeiro o diretório de saída; qualquer diagnóstico cancela toda a exportação sem alterar o arquivo de saída. |
 | `bundle <file> <node> <out.zip> [--states]` | Um bundle de design de um frame; imprime `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]`, `--frames -` (stdin) | Vários bundles a partir de uma decodificação, em paralelo |
 | `verify <bundle>` | Confere um bundle (`.zip` ou diretório extraído) com o manifesto: arquivos verificados, ausentes e alterados, assets ausentes, as fontes a confirmar no projeto e `findings`: cada entrada de handoff ausente, não suportada ou não verificada, com nós, evidência e próxima ação |

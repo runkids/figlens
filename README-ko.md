@@ -74,6 +74,42 @@ codex mcp add figlens -- npx -y @runkids/figlens mcp
 
 Node.js가 없다면 독립 바이너리([CLI](#setup-cli))를 설치하고 `"command": "figlens", "args": ["mcp"]`를 사용하세요. 새 세션을 열고 figlens 도구가 목록에 나타나는지 확인하세요(Claude Code에서는 `/mcp`). skill을 따로 설치할 필요는 없습니다. `mcp` 뒤에 `--root <dir>`를 붙이면 figlens가 읽고 쓸 수 있는 폴더를 제한할 수 있습니다.
 
+<a id="mcp-args"></a>
+
+#### MCP 시작 인수
+
+클라이언트의 `args`에서 `mcp` 뒤에 지정하세요. MCP 시작 옵션은 이 두 가지뿐이며, 모두 선택 사항이고 반복할 수 있습니다.
+
+| 옵션 | 의미 |
+|---|---|
+| `--root DIR` | `DIR` 및 하위 폴더에서 디자인 읽기와 내보내기를 허용합니다. 생략하면 figlens의 추가 경로 제한 없이 OS 권한이 적용됩니다. 현재 프로젝트로 제한되지 않으며 컴퓨터를 자동 검색하지도 않습니다. |
+| `--storage-root DIR` | `DIR` 및 하위 폴더에서 명시적으로 요청한 사용자 지정 인덱스 저장소를 허용합니다. 기본 저장 위치를 선택하거나 변경하지 않습니다. |
+
+기존 디렉터리의 절대 경로를 사용하세요. 각 옵션과 경로는 별도 배열 항목입니다. 여러 폴더에는 옵션을 반복하세요. `--root`는 경로 경계이지 관리자 권한이 아니며, figlens MCP만 제한하고 agent의 다른 도구는 제한하지 않습니다.
+
+디자인/출력 루트 두 개와 허용된 저장소 루트 두 개의 예:
+
+```json
+{
+  "mcpServers": {
+    "figlens": {
+      "command": "npx",
+      "args": [
+        "-y", "@runkids/figlens", "mcp",
+        "--root", "/absolute/designs",
+        "--root", "/absolute/project",
+        "--storage-root", "/absolute/storage-a",
+        "--storage-root", "/absolute/storage-b"
+      ]
+    }
+  }
+}
+```
+
+`figlens mcp --storage` 옵션은 없습니다. 실제 위치는 `index` tool의 `storage` 인수(허용된 저장소 루트 내 절대 경로) 또는 CLI `figlens index prepare design.fig --storage /absolute/storage-a`로 선택합니다. `prepare` 후에는 workspace 위치를 기억하므로 재시작이나 호스트 변경 후에도 `storage`나 `--storage-root` 없이 재사용합니다. 사용자 지정 위치가 없으면 사용자별 기본 디렉터리를 사용하며 저장소 플래그는 필요 없습니다.
+
+여러 저장소 루트는 허용 위치만 늘립니다. 각 `storage`는 여전히 한 위치를 선택하며 인덱스를 분산, 동기화 또는 백업하지 않습니다. 다른 루트를 지정하는 것만으로 기존 workspace 데이터베이스를 옮길 수 없으며, figlens는 충돌하는 위치를 거부합니다.
+
 <a id="setup-pi"></a>
 
 ### Pi

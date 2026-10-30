@@ -131,7 +131,7 @@ Parcourez les pages et les calques, recherchez, lancez la recherche classée et 
 
 ## Serveur MCP et skill pour agent
 
-**MCP.** Le serveur s’exécute en local via stdio et expose `workflow`, `tree`, `find`, `search`, `usages`, `diff`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs`, `changes`, `watch`, `export` et `models`. Passez des chemins absolus. Ajoutez `--root /path/to/designs` (répétable) pour confiner chaque chemin de fichier et de sortie aux dossiers choisis. Un stockage d'index hors des répertoires par défaut de figlens exige `--storage-root DIR` (répétable). Les exports raster sont réduits à `maxSize` (1600 px par défaut) pour que les images inline restent légères ; SVG ne renvoie que des métadonnées.
+**MCP.** Le serveur s’exécute en local via stdio et expose `workflow`, `tree`, `find`, `search`, `usages`, `diff`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs`, `changes`, `watch`, `export` et `models`. Passez des chemins absolus. Ajoutez `--root /path/to/designs` (répétable) pour confiner chaque chemin de fichier et de sortie aux dossiers choisis. Un stockage personnalisé explicitement demandé exige `--storage-root DIR` (répétable) ; les emplacements mémorisés sont réutilisés sans cette option. Voir les [arguments de démarrage et l’exemple de configuration avec plusieurs racines](../README-fr.md#mcp-args). Les exports raster sont réduits à `maxSize` (1600 px par défaut) pour que les images inline restent légères ; SVG ne renvoie que des métadonnées.
 
 Avec `workflow`, l’agent peut lire les guides intégrés `build`, `audit`, `images`, `plan`, `planning-details` ou `yolo` sur demande explicite. Ils partagent les sources du skill portable ; son installation séparée est facultative avec MCP. L’agent réalise le travail avec ses outils de projet et de navigateur et les permissions de l’hôte. Lire un guide n’exécute pas le workflow ; son utilisation dépend du client et du comportement du modèle.
 
@@ -152,7 +152,7 @@ skillshare mcp add figlens --global --target claude --target codex --target curs
 skillshare sync && skillshare sync mcp --global
 ```
 
-**Notes d’installation.** Le lanceur npm télécharge le binaire natif correspondant à la première utilisation, le vérifie avec les checksums SHA-256 de la release et le met en cache. Les installations par script se mettent à jour avec `figlens update`, celles de Homebrew avec `brew upgrade figlens`. Les binaires couvrent macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl statique) et Windows (x86_64).
+**Notes d’installation.** Le lanceur npm télécharge le binaire natif correspondant à la première utilisation, le vérifie avec les checksums SHA-256 de la release et le met en cache. Les installations par script se mettent à jour avec `figlens update`, celles de Homebrew avec `brew upgrade figlens`. Les binaires couvrent macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl statique) et Windows (x86_64). Chaque méthode d’installation place aussi `figlens-embed`, le runtime de la [recherche sémantique optionnelle](#semantic-search), à côté de `figlens` ; il ne charge aucun modèle tant que vous n’en configurez pas.
 
 <a id="local-index"></a>
 
@@ -230,7 +230,7 @@ Expérimental. `figlens search <file> <query> --mode semantic|hybrid` classe les
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | Résumé compact de la mise en page/du texte étendus, 200 nodes au plus. `--images` ajoute les dimensions des bitmaps et les emprises de recadrage. `--flat` affiche plutôt une ligne par node : position relative au node, taille, texte, police, remplissage, contour, rayon, auto-layout |
 | `nodes <file> <node>` | L'objet par nœud d'une réponse REST nodes (`document`, `components`, `componentSets`, `styles`) : instances étendues et overrides, auto-layout, styles de texte, fills, effets, variables liées, propriétés de composants, render bounds |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | Un seul décodage, plusieurs nœuds : une ligne JSON par id listé, la sortie de `nodes` avec son `nodeId`, ou `{nodeId, error}` |
-| `variables <file> [node]` | Les variables liées d’une frame ; sans node, toutes les variables locales |
+| `variables <file> [node]`<br>`variables <file.fig> --format dtcg --collection ID --mode ID --out FILE` | Par défaut : variables liées/locales au format REST inchangé. Export DTCG 2025.10 : IDs exacts de collection et de mode, sans nœud ; couleurs et nombres sans unité uniquement. Créez d’abord le dossier de sortie ; tout diagnostic fait échouer l’export entier sans modifier le fichier de sortie. |
 | `bundle <file> <node> <out.zip> [--states]` | Un bundle de design pour une frame ; affiche `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]`, `--frames -` (stdin) | Plusieurs bundles depuis un seul décodage, en parallèle |
 | `verify <bundle>` | Vérifie un bundle (`.zip` ou dossier extrait) par rapport à son manifeste : fichiers vérifiés, manquants et modifiés, assets manquants, polices à confirmer dans le projet, et `findings` : chaque entrée de handoff manquante, non prise en charge ou non vérifiée, avec ses nœuds, preuves et prochaine action |

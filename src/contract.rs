@@ -333,7 +333,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "variables",
-        "The variables a frame binds (collections, modes, aliases); without a node, every local variable.",
+        "The variables a frame binds (collections, modes, aliases); without a node, every local variable. Opt-in format dtcg writes DTCG 2025.10 tokens: requires explicit collection and mode IDs plus out, takes no node, fails without publishing on any diagnostic. No workspace/index needed.",
         &[
             FILE,
             (
@@ -341,6 +341,30 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "string",
                 false,
                 "the node, including full instance sublayer IDs; omit for every local variable",
+            ),
+            (
+                "format",
+                "string",
+                false,
+                "rest (default) preserves variables JSON; dtcg exports one collection/mode",
+            ),
+            (
+                "collection",
+                "string",
+                false,
+                "exact collection ID from variables; required only for dtcg",
+            ),
+            (
+                "mode",
+                "string",
+                false,
+                "exact modeId in that collection; required only for dtcg, no default or cross-collection mapping",
+            ),
+            (
+                "out",
+                "string",
+                false,
+                "DTCG token file, preferably .tokens.json; required only for dtcg; create its parent directory first; never overwrites the source design",
             ),
         ],
     ),
@@ -448,19 +472,19 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "sourceId",
                 "string",
                 false,
-                "a registered source, for remove, relocate, refresh, rebuild, track and untrack",
+                "a registered source, for remove, relocate, refresh, rebuild, track, untrack and embed",
             ),
             (
                 "scope",
                 "string",
                 false,
-                "stored node id to index (prepare), refresh, rebuild, track or untrack; 0:0 is the whole file",
+                "stored node id to index (prepare), refresh, rebuild, track, untrack or embed; 0:0 is the whole file",
             ),
             (
                 "requestId",
                 "string",
                 false,
-                "an idempotency key: repeating a prepare, refresh, rebuild or track of one source and scope with it returns the same job; one first used for another request (track is its own) is refused",
+                "an idempotency key: repeating a prepare, refresh, rebuild, track or embed of one source and scope with it returns the same job; one first used for another request (track is its own) is refused",
             ),
             STORAGE,
             (
@@ -642,6 +666,22 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
 
 /// The MCP outputSchema of the tools whose CLI command prints one JSON object.
 pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
+    if tool == "variables" {
+        return Some(json!({
+            "type": "object",
+            "properties": {
+                "variables": {"type":"array"}, "collections": {"type":"array"},
+                "missingVariables": {"type":"array"},
+                "path": {"type":"string"}, "collectionId": {"type":"string"},
+                "modeId": {"type":"string"}, "tokenCount": {"type":"integer"},
+                "diagnostics": {"type":"array"}
+            },
+            "oneOf": [
+                {"required":["variables","collections","missingVariables"]},
+                {"required":["path","collectionId","modeId","tokenCount","diagnostics"]}
+            ]
+        }));
+    }
     let (properties, required) = match tool {
         "find" => (
             serde_json::json!({
@@ -721,8 +761,10 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
         ),
         "models" => (
             serde_json::json!({
-                "profiles": {"type": "array", "items": {"type": "object"}, "description": "list: name, model, revision, license, files, configured, profileId, dataFlow; status: name, profileId, model, runtime, dim, state ready or unavailable, reason"},
+                "profiles": {"type": "array", "items": {"type": "object"}, "description": "list: name, model, revision, license, files, configured, profileId, dataFlow; status: name, profileId, model, runtime, dim, state ready or unavailable, code (runtime_missing, runtime_changed or model_missing), reason and recovery (models configure with the same files)"},
                 "setup": {"type": "array", "items": {"type": "object"}, "description": "status with no profile configured: the steps to configure one"},
+                "configRoot": {"type": "string", "description": "status: the config directory models.json lives in (ask write access to it before configure)"},
+                "defaultRuntime": {"type": "object", "description": "status: {path, available} of the figlens-embed beside this figlens; available means the file exists, not that a model is ready"},
                 "configured": {"type": "object", "description": "configure: the recorded profile and its profileId"},
                 "removed": {"type": "boolean"},
             }),
@@ -886,6 +928,7 @@ fn default(tool: &str, key: &str) -> Option<Value> {
         ("inspect", "depth") | ("export", "scale") => Some(json!(1)),
         ("find" | "search", "limit") => Some(json!(20)),
         ("search", "mode") => Some(json!("text")),
+        ("variables", "format") => Some(json!("rest")),
         ("usages", "scope") | ("diff", "node") => Some(json!("0:0")),
         ("diff", "limit") => Some(json!(100)),
         ("usages", "direction") => Some(json!("in")),
@@ -925,7 +968,16 @@ pub fn property(tool: &str, param: &Param) -> Value {
     }
     if matches!(
         key,
-        "file" | "old" | "out" | "query" | "compareVariant" | "bundle" | "cursor" | "matchDir"
+        "file"
+            | "old"
+            | "out"
+            | "query"
+            | "compareVariant"
+            | "bundle"
+            | "cursor"
+            | "matchDir"
+            | "collection"
+            | "mode"
     ) {
         p["minLength"] = json!(1);
     }
@@ -937,6 +989,9 @@ pub fn property(tool: &str, param: &Param) -> Value {
     }
     if tool == "export" && key == "bounds" {
         p["enum"] = json!(["render", "layout"]);
+    }
+    if tool == "variables" && key == "format" {
+        p["enum"] = json!(["rest", "dtcg"]);
     }
     if tool == "workflow" && key == "topic" {
         p["enum"] = json!(crate::workflow::TOPICS);
@@ -1128,6 +1183,16 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
         name,
         arguments: checked,
     };
+    if tool == "variables" {
+        crate::command::Command::variables(
+            call.string("node").map(str::to_owned),
+            call.string("format"),
+            call.string("collection").map(str::to_owned),
+            call.string("mode").map(str::to_owned),
+            call.string("out").map(Into::into),
+        )
+        .map_err(|error| Failure::argument(error.to_string()))?;
+    }
     if tool == "search" {
         let file = call.string("file").is_some();
         if file == call.string("workspaceId").is_some()
@@ -1189,6 +1254,9 @@ pub fn tools() -> Value {
         }
         match *name {
             "workflow" => tool["annotations"] = json!({ "readOnlyHint": true, "openWorldHint": false }),
+            // This tool can publish a token file; hosts must not grant it a read-only tier.
+            "variables" => tool["annotations"] = json!({"readOnlyHint": false,
+                "destructiveHint": true, "openWorldHint": false}),
             // Mixed actions, reset among them.
             "index" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": true,
                 "idempotentHint": false, "openWorldHint": false}),

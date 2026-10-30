@@ -120,6 +120,11 @@ usage:
                                              nodeId, or {nodeId,error}
   figlens variables <file.fig> [node]          print the variables a frame binds (design/variables.json);
                                              without a node, every local variable
+  figlens variables <file.fig> --format dtcg --collection ID --mode ID --out FILE
+                                             write DTCG 2025.10 color/number/alias tokens for exact IDs
+                                             from variables; no node, workspace or index needed;
+                                             any diagnostic fails without publishing partial tokens;
+                                             prints {path,collectionId,modeId,tokenCount,diagnostics}
   figlens bundle <file.fig> <node> <out.zip> [--states]
                                              write a design bundle for a frame: nodes, variables,
                                              image/SVG assets, reference render and context.md, in one zip;
@@ -175,8 +180,9 @@ usage:
   figlens compare <file.fig> <nodes.json> <node>   diff a frame against a REST nodes.json export
   figlens compare <file.fig> --frames <list.txt>   same for every `node|nodes.json[|variables.json]` line
   figlens mcp [--root DIR]... [--storage-root DIR]...
-                                             serve workflow guidance, tree, find, search, inspect, nodes,
-                                             variables, bundle, export, index and jobs as MCP tools; raster export returns an inline image;
+                                             serve workflow guidance, tree, find, search, usages, diff, inspect,
+                                             nodes, variables, bundle, export, index, jobs, models, changes and
+                                             watch as MCP tools; raster export returns an inline image;
                                              with --root, files and outputs must be under one of the folders;
                                              a custom index storage must be under a --storage-root
   figlens workflow <topic>                     print built-in agent guidance, the same text as MCP workflow:
@@ -318,7 +324,11 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("figlens: {e}");
+            if let Some(error) = e.downcast_ref::<figlens::tokens::ConversionError>() {
+                eprintln!("{}", error.report);
+            } else {
+                eprintln!("figlens: {e}");
+            }
             // Structured recovery for agents: only actions that are implemented and apply.
             if let Some(recovery) = e
                 .downcast_ref::<figlens::FigError>()
@@ -1020,13 +1030,15 @@ fn finish_jobs(
                 }
                 Some("interrupted") => {
                     // Retried as the same kind: a rebuild of an unchanged scope must not
-                    // become a refresh that reuses it.
+                    // become a refresh that reuses it, nor an embed a text refresh.
                     let select = Select::Id(ws.clone());
                     let (source, scope) = (now["sourceId"].as_str(), now["scope"].as_str());
-                    let again = if now["kind"] == "rebuild" {
-                        jobs::rebuild_scope(storage, &select, source, scope, None)?
-                    } else {
-                        figlens::workspace::refresh(storage, &select, source, scope, None)?
+                    let again = match now["kind"].as_str() {
+                        Some("rebuild") => {
+                            jobs::rebuild_scope(storage, &select, source, scope, None)?
+                        }
+                        Some("embed") => jobs::embed(storage, &select, source, scope, None)?,
+                        _ => figlens::workspace::refresh(storage, &select, source, scope, None)?,
                     };
                     // Another process may have taken it over first; then keep waiting.
                     if let Some(id) = again.run.first() {

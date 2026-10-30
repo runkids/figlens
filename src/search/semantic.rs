@@ -161,6 +161,13 @@ fn unavailable(message: impl Into<String>) -> Box<dyn Error> {
         .into()
 }
 
+/// A model runtime that cannot run, with the status call that names its recovery.
+fn runtime_failed(message: String) -> FigError {
+    FigError::new(ErrorKind::OperationFailed, message)
+        .with_recovery(json!([{"action": "models_status", "tool": "models",
+            "arguments": {"action": "status"}, "requires": "none"}]))
+}
+
 /// The semantic layer's coverage when it cannot answer.
 fn down(code: &str, message: Option<String>) -> Json {
     json!({"state": "unavailable", "reasons": [{"code": code, "message": message}]})
@@ -232,14 +239,16 @@ fn reply_with(
     let (semantic, layer_json) = match profile {
         Ok(p) => match ranked(index, req, &p, &source, cancel) {
             Ok(found) => {
-                used.push("semantic");
+                if found.1["embeddedTexts"].as_u64().unwrap_or(0) > 0 {
+                    used.push("semantic");
+                }
                 found
             }
             Err(Stop::Cancelled) => {
                 return Err(FigError::new(ErrorKind::Cancelled, "search cancelled").into());
             }
             Err(e) if mode == Mode::Semantic => {
-                return Err(FigError::new(ErrorKind::OperationFailed, e.to_string()).into());
+                return Err(runtime_failed(e.to_string()).into());
             }
             Err(e) => (Vec::new(), down("runtime_failed", Some(e.to_string()))),
         },
@@ -446,6 +455,18 @@ pub(crate) fn score(
     (order, excluded)
 }
 
+/// Estimated bytes a cached full generation and its layer keep: records, texts, chunk
+/// mappings and the vectors read so far.
+pub(crate) fn cached_bytes(index: &Index, layer: &Layer) -> usize {
+    let vectors: usize = layer
+        .vectors
+        .iter()
+        .map(|v| v.as_ref().map_or(0, |v| 24 + 4 * v.len()))
+        .sum();
+    let texts: usize = layer.texts.iter().map(|t| 24 + t.len()).sum();
+    index.records.len() * 256 + 2 * index.text_bytes + texts + UNIT * layer.units.len() + vectors
+}
+
 /// `coverage.layers.semantic` of one layer.
 pub(crate) fn layer_coverage(layer: &Layer, profile_id: &str, excluded: [usize; 2]) -> Json {
     let embedded = layer.vectors.iter().filter(|v| v.is_some()).count();
@@ -548,11 +569,14 @@ pub(crate) fn workspace_rank(
         })
         .map_err(|e| match e {
             Stop::Cancelled => FigError::new(ErrorKind::Cancelled, "search cancelled"),
-            e => FigError::new(ErrorKind::OperationFailed, e.to_string()),
+            e => runtime_failed(e.to_string()),
         })?
         .remove(0),
     };
-    used.push("semantic");
+    // Semantic was used only if some vector could be compared.
+    if any {
+        used.push("semantic");
+    }
     let mut semantic: Vec<((usize, u32), f32, u8, u32)> = Vec::new();
     let mut excluded = [0usize; 2];
     for (part, side) in sides.iter().enumerate() {

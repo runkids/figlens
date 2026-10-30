@@ -73,6 +73,9 @@ fn model_worker(dir: &str, job: &str) -> bool {
         log("load".into());
         let embed: figlens::workspace::model::Embed = Box::new(move |texts: &[String]| {
             log(format!("batch {}", texts.len()));
+            if std::env::var_os("SEMANTIC_EMBED_FAIL").is_some() {
+                return Err("transient runtime failure".into());
+            }
             Ok(texts.iter().map(|t| bag(t, "ok")).collect())
         });
         Ok((hello(), embed))
@@ -227,10 +230,24 @@ fn configure_records_a_verified_profile_and_remove_forgets_it() {
         license: "MIT",
         files,
     };
+    let empty = profile::status(&storage).unwrap();
+    assert!(empty["setup"].as_array().is_some_and(|s| !s.is_empty()));
+    let shipped = profile::default_runtime().unwrap();
+    assert_eq!(
+        (&empty["configRoot"], &empty["defaultRuntime"]),
+        (
+            &json!(storage.config_root()),
+            &json!({"path": shipped, "available": shipped.is_file()})
+        )
+    );
     assert!(
-        profile::status(&storage).unwrap()["setup"]
-            .as_array()
-            .is_some_and(|s| !s.is_empty())
+        storage
+            .config_root()
+            .starts_with(std::path::absolute(dir.join("")).unwrap().join("config"))
+    );
+    assert!(
+        !storage.config_root().join("models.json").exists(),
+        "status wrote the record"
     );
     let exe = std::env::current_exe().unwrap();
     let got =
@@ -642,7 +659,8 @@ fn workspace_semantic_search_says_the_layer_is_pending_and_names_the_embed_step(
     assert!(steps.contains("\"embed\""), "{steps}");
     // "card" is also a layer name, so the text channel answers while the layer is pending.
     let hybrid = cli(&["search", "--file", fig, "card", "--mode", "hybrid"]);
-    assert_eq!(hybrid["query"]["usedModes"], json!(["text", "semantic"]));
+    // No vector exists yet, so only the text channel answered.
+    assert_eq!(hybrid["query"]["usedModes"], json!(["text"]));
     assert!(hybrid["results"].as_array().is_some_and(|r| !r.is_empty()));
     assert_eq!(hybrid["coverage"]["complete"], false);
 }
@@ -674,6 +692,30 @@ fn held_embed(dir: &test_support::TestDir, ws: &str) -> (std::process::Child, Pa
     }
     assert!(reached.exists(), "the embed worker never reached its hold");
     (child, hold)
+}
+
+fn a_transient_model_error_fails_the_embed_without_refusing_texts() {
+    let dir = test_support::TestDir::new();
+    let (prepared, _) = indexed(&dir, true);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe { std::env::set_var("SEMANTIC_EMBED_FAIL", "1") };
+    let out = figlens(&["index", "embed", "--id", ws, "--scope", "0:0"])
+        .output()
+        .unwrap();
+    unsafe { std::env::remove_var("SEMANTIC_EMBED_FAIL") };
+    assert!(String::from_utf8_lossy(&out.stdout).contains("failed") || !out.status.success());
+    let conn = db(&prepared);
+    assert_eq!(count(&conn, "SELECT count(*) FROM model_vectors"), 0);
+    let again = cli(&["index", "embed", "--id", ws, "--scope", "0:0"]);
+    assert_eq!(again["jobs"][0]["state"], "succeeded");
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT count(*) FROM model_layers WHERE state = 'ready' AND refused = 0"
+        ),
+        1
+    );
 }
 
 fn workspace_semantic_search_pages_a_built_layer() {
@@ -747,6 +789,64 @@ fn embed_job_publishes_a_layer_and_later_ones_reuse_its_vectors() {
     assert_eq!(count(&conn, "SELECT count(*) FROM model_vectors"), 0);
     // SAFETY: as above.
     unsafe { std::env::remove_var("SEMANTIC_EMBED_LOG") };
+}
+
+fn a_cancelled_configure_reports_cancelled_and_records_nothing() {
+    let dir = test_support::TestDir::new();
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe {
+        std::env::set_var(
+            "XDG_CONFIG_HOME",
+            std::path::absolute(dir.join("config")).unwrap(),
+        )
+    };
+    let storage = figlens::workspace::storage(None).unwrap();
+    let (model, files) = model(&dir, "weights");
+    let files: &'static [(&str, &str)] = Box::leak(
+        files
+            .into_iter()
+            .map(|(n, d)| (n, &*Box::leak(d.into_boxed_str())))
+            .collect(),
+    );
+    let k = profile::Known {
+        name: "fake",
+        model: "fake",
+        revision: "0",
+        license: "MIT",
+        files,
+    };
+    let exe = std::env::current_exe().unwrap();
+    let err =
+        profile::configure(&storage, &k, &model, Some(&exe), &AtomicBool::new(true)).unwrap_err();
+    let kind = err
+        .downcast_ref::<figlens::FigError>()
+        .map(figlens::FigError::kind);
+    assert_eq!(kind, Some(figlens::ErrorKind::Cancelled));
+    assert!(storage.models().unwrap().is_none());
+}
+
+fn index_track_does_not_wait_for_a_running_embed() {
+    let dir = test_support::TestDir::new();
+    let (prepared, fig) = indexed(&dir, true);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    let (mut owner, hold) = held_embed(&dir, ws);
+    let tracked = figlens(&[
+        "index",
+        "track",
+        "--file",
+        fig.to_str().unwrap(),
+        "--scope",
+        "0:0",
+    ])
+    .output()
+    .unwrap();
+    std::fs::remove_file(&hold).unwrap();
+    owner.wait().unwrap();
+    assert!(
+        tracked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&tracked.stderr)
+    );
 }
 
 fn cancel_of_a_running_embed_kills_its_worker_and_leaves_the_layer_not_ready() {
@@ -950,6 +1050,78 @@ fn one_process_keeps_two_workspaces_layers_apart() {
     assert_eq!(refs(&got), refs(&alone));
 }
 
+fn a_workspace_hybrid_without_a_model_pages_without_a_cursor() {
+    let dir = test_support::TestDir::new();
+    indexed(&dir, false);
+    let other = std::path::absolute(dir.join("corpus.fig")).unwrap();
+    corpus::write(other.as_os_str(), false).unwrap();
+    let other = other.to_str().unwrap();
+    cli(&["index", "prepare", other, "--scope", "0:0"]);
+    // Three layers say "chip": a text page of one would have more.
+    let got = cli(&[
+        "search", "--file", other, "chip", "--mode", "hybrid", "--limit", "1",
+    ]);
+    assert_eq!(got["query"]["usedModes"], json!(["text"]));
+    assert_eq!(
+        (got["hasMore"].as_bool(), got["nextCursor"].is_null()),
+        (Some(true), true)
+    );
+    assert_eq!(got["coverage"]["complete"], false);
+}
+
+fn the_watch_runner_embeds_a_scope_it_refreshed() {
+    use std::io::BufRead;
+    let dir = test_support::TestDir::new();
+    let (prepared, fig) = indexed(&dir, true);
+    cli(&[
+        "index",
+        "track",
+        "--file",
+        fig.to_str().unwrap(),
+        "--scope",
+        "0:0",
+    ]);
+    let mut holder = figlens(&[
+        "watch",
+        "run",
+        "--file",
+        fig.to_str().unwrap(),
+        "--scope",
+        "0:0",
+    ])
+    .stdin(std::process::Stdio::piped())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null())
+    .spawn()
+    .unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(holder.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert!(line.contains("active"), "{line}");
+    // A save the runner refreshes; its publication then needs a model layer.
+    let next = std::path::absolute(dir.join("next.fig")).unwrap();
+    corpus::write(next.as_os_str(), false).unwrap();
+    std::fs::rename(&next, &fig).unwrap();
+    let conn = db(&prepared);
+    let end = Instant::now() + Duration::from_secs(60);
+    let ready = || {
+        count(
+            &conn,
+            "SELECT count(*) FROM model_layers WHERE state = 'ready'",
+        ) > 0
+    };
+    while !ready() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    drop(holder.stdin.take());
+    holder.wait().unwrap();
+    assert!(
+        ready(),
+        "the runner left the refreshed scope without a model layer"
+    );
+}
+
 fn a_schema_8_workspace_reads_its_model_layer_as_pending() {
     let dir = test_support::TestDir::new();
     let (prepared, fig) = indexed(&dir, true);
@@ -1075,6 +1247,58 @@ fn a_signal_stops_the_viewers_hung_semantic_query_before_it_exits() {
     );
 }
 
+fn status_names_a_changed_or_missing_runtime_and_how_to_configure_again() {
+    let dir = test_support::TestDir::new();
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe {
+        std::env::set_var(
+            "XDG_CONFIG_HOME",
+            std::path::absolute(dir.join("config")).unwrap(),
+        )
+    };
+    let storage = figlens::workspace::storage(None).unwrap();
+    let (model, files) = model(&dir, "weights");
+    let files: &'static [(&str, &str)] = Box::leak(
+        files
+            .into_iter()
+            .map(|(n, d)| (n, &*Box::leak(d.into_boxed_str())))
+            .collect(),
+    );
+    let k = profile::Known {
+        name: "fake",
+        model: "fake",
+        revision: "0",
+        license: "MIT",
+        files,
+    };
+    let runtime =
+        std::path::absolute(dir.join(&format!("runtime{}", std::env::consts::EXE_SUFFIX))).unwrap();
+    std::fs::copy(std::env::current_exe().unwrap(), &runtime).unwrap();
+    profile::configure(
+        &storage,
+        &k,
+        &model,
+        Some(&runtime),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let code = || profile::status(&storage).unwrap()["profiles"][0].clone();
+    assert_eq!(code()["state"], "ready");
+    // An upgrade replaces the runtime.
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&runtime)
+        .unwrap()
+        .write_all(b"\0")
+        .unwrap();
+    let changed = code();
+    assert_eq!(changed["code"], "runtime_changed");
+    assert_eq!(changed["recovery"][0]["arguments"]["action"], "configure");
+    std::fs::remove_file(&runtime).unwrap();
+    assert_eq!(code()["code"], "runtime_missing");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if let [_, worker, dir, job] = args.as_slice()
@@ -1161,12 +1385,36 @@ fn main() {
             workspace_semantic_search_pages_a_built_layer,
         ),
         (
+            "a_transient_model_error_fails_the_embed_without_refusing_texts",
+            a_transient_model_error_fails_the_embed_without_refusing_texts,
+        ),
+        (
             "one_process_keeps_two_workspaces_layers_apart",
             one_process_keeps_two_workspaces_layers_apart,
         ),
         (
             "a_schema_8_workspace_reads_its_model_layer_as_pending",
             a_schema_8_workspace_reads_its_model_layer_as_pending,
+        ),
+        (
+            "a_workspace_hybrid_without_a_model_pages_without_a_cursor",
+            a_workspace_hybrid_without_a_model_pages_without_a_cursor,
+        ),
+        (
+            "the_watch_runner_embeds_a_scope_it_refreshed",
+            the_watch_runner_embeds_a_scope_it_refreshed,
+        ),
+        (
+            "index_track_does_not_wait_for_a_running_embed",
+            index_track_does_not_wait_for_a_running_embed,
+        ),
+        (
+            "a_cancelled_configure_reports_cancelled_and_records_nothing",
+            a_cancelled_configure_reports_cancelled_and_records_nothing,
+        ),
+        (
+            "status_names_a_changed_or_missing_runtime_and_how_to_configure_again",
+            status_names_a_changed_or_missing_runtime_and_how_to_configure_again,
         ),
         #[cfg(unix)]
         (

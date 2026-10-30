@@ -59,7 +59,9 @@ pub fn known(name: &str) -> Result<&'static Known> {
 
 /// The runtime figlens ships beside itself.
 pub fn default_runtime() -> Result<PathBuf> {
+    // Through links (macOS reports the invoked path), to the directory figlens really lives in.
     let exe = std::env::current_exe()?;
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
     Ok(exe.with_file_name(format!("figlens-embed{}", std::env::consts::EXE_SUFFIX)))
 }
 
@@ -127,6 +129,7 @@ pub fn list(storage: &Storage) -> Result<Json> {
 
 /// Readiness of each configured profile, checked without loading the model: its files and
 /// runtime must still exist. A runtime or model file that changed is refused when the child next starts.
+/// Also names the config root and the shipped runtime, even with no profile; nothing is written.
 pub fn status(storage: &Storage) -> Result<Json> {
     let profiles: Vec<Json> = records(storage)?
         .into_iter()
@@ -135,15 +138,29 @@ pub fn status(storage: &Storage) -> Result<Json> {
             let runtime = Path::new(r["runtime"].as_str().unwrap_or_default()).to_path_buf();
             let files = KNOWN.iter().find(|k| r["name"] == k.name).map_or(&[][..], |k| k.files);
             let missing: Vec<&str> = files.iter().map(|f| f.0).filter(|f| !model.join(f).is_file()).collect();
-            let (state, reason) = if !runtime.is_file() {
-                ("unavailable", Some(format!("runtime {} is missing", runtime.display())))
+            // The runtime is hashed again (an upgrade replaces it); model weights are not.
+            let changed = runtime.is_file()
+                && super::sha256_file(&runtime, &AtomicBool::new(false)).ok().as_ref()
+                    != r["stamps"]["runtime"].as_str().map(str::to_owned).as_ref();
+            let (state, code, reason) = if !runtime.is_file() {
+                ("unavailable", Some("runtime_missing"), Some(format!("runtime {} is missing", runtime.display())))
+            } else if changed {
+                ("unavailable", Some("runtime_changed"), Some(format!("runtime {} changed since configure (an upgrade replaces it)", runtime.display())))
             } else if !missing.is_empty() {
-                ("unavailable", Some(format!("{} missing from {}", missing.join(", "), model.display())))
+                ("unavailable", Some("model_missing"), Some(format!("{} missing from {}", missing.join(", "), model.display())))
             } else {
-                ("ready", None)
+                ("ready", None, None)
             };
+            // Configuring again with the same files and the shipped runtime makes it usable;
+            // its vectors stay apart under the new profile id.
+            let recovery = code.map(|_| {
+                json!([{"action": "configure", "tool": "models", "requires": "user_confirmation",
+                    "arguments": {"action": "configure", "profile": r["name"], "modelDir": r["model"]},
+                    "cli": format!("figlens models configure {} --model {}", r["name"].as_str().unwrap_or_default(), model.display()),
+                    "note": "uses the figlens-embed shipped beside figlens; reinstall figlens with its paired runtime if that is missing"}])
+            });
             json!({"name": r["name"], "profileId": r["profileId"], "model": r["model"], "runtime": r["runtime"],
-                "dim": r["dim"], "state": state, "reason": reason})
+                "dim": r["dim"], "state": state, "code": code, "reason": reason, "recovery": recovery})
         })
         .collect();
     let next = if profiles.is_empty() {
@@ -151,7 +168,12 @@ pub fn status(storage: &Storage) -> Result<Json> {
     } else {
         Vec::new()
     };
-    Ok(json!({"profiles": profiles, "setup": next}))
+    // Where configure and remove write, and the runtime they start, for hosts asking permission first.
+    let runtime = default_runtime()?;
+    Ok(
+        json!({"profiles": profiles, "setup": next, "configRoot": storage.config_root(),
+        "defaultRuntime": {"path": runtime, "available": runtime.is_file()}}),
+    )
 }
 
 /// Verifies `model` against `k`'s pinned digests, starts `runtime` once for its contract and
@@ -172,13 +194,42 @@ pub fn configure(
         return Err(fail(
             ErrorKind::InvalidArguments,
             format!(
-                "no model runtime at {}; install the figlens-embed that ships with figlens, or pass --runtime",
+                "no model runtime at {}; install figlens with the figlens-embed it ships beside it, then configure again",
                 runtime.display()
             ),
         ));
     }
-    let p = Profile::probe(&runtime, model, k.files, cancel)
-        .map_err(|e| fail(ErrorKind::InvalidArguments, format!("{name}: {e}")))?;
+    // Named before anything is hashed, so the user knows which file to fetch where.
+    let missing: Vec<&str> = k
+        .files
+        .iter()
+        .map(|f| f.0)
+        .filter(|f| !model.join(f).is_file())
+        .collect();
+    if !missing.is_empty() {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            format!(
+                "{}: {} is missing {}; download {} revision {} ({}) into it, then configure again; nothing was recorded",
+                name,
+                model.display(),
+                missing.join(", "),
+                k.model,
+                k.revision,
+                k.license
+            ),
+        ));
+    }
+    let p = Profile::probe(&runtime, model, k.files, cancel).map_err(|e| {
+        match e.downcast::<Stop>() {
+            Ok(stop) if matches!(*stop, Stop::Cancelled) => fail(
+                ErrorKind::Cancelled,
+                "models configure cancelled; nothing was recorded",
+            ),
+            Ok(stop) => fail(ErrorKind::InvalidArguments, format!("{name}: {stop}")),
+            Err(e) => fail(ErrorKind::InvalidArguments, format!("{name}: {e}")),
+        }
+    })?;
     let record = json!({"name": k.name, "profileId": p.id, "model": p.model, "runtime": p.exe,
         "dim": p.dim, "contract": p.contract, "stamps": p.stamps});
     let kept = record.clone();
@@ -243,7 +294,11 @@ pub fn with_runtime<T>(
         *warm = None;
         profile
             .unchanged(cancel)
-            .map_err(|e| Stop::Failed(format!("{e}; run models configure again")))?;
+            .map_err(|e| match e.downcast::<Stop>() {
+                Ok(stop) if matches!(*stop, Stop::Cancelled) => Stop::Cancelled,
+                Ok(stop) => Stop::Failed(format!("{stop}; run models configure again")),
+                Err(e) => Stop::Failed(format!("{e}; run models configure again")),
+            })?;
         let rt = Runtime::start(&profile.exe, &[&profile.model], cancel).map_err(|e| match e
             .downcast::<Stop>()
         {

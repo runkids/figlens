@@ -37,6 +37,10 @@ docker compose run --rm dev cargo run --release -- export samples/design.fig 12:
 docker compose run --rm dev cargo run --release -- export samples/design.fig 12:345 samples/12-345.webp --scale 2 --quality 80 --max-kb 150
 ```
 
+## DTCG token export
+
+Opt-in `variables --format dtcg --collection ID --mode ID --out FILE` reuses this extraction without changing REST output or requiring a workspace. Conversion rules, diagnostics, identity extensions, bounds and consumer evidence are in the [tokens topic](tokens.md).
+
 ## Verified format rules (checked against the plugin)
 
 Rules marked pending have local evidence; others are sweep-backed.

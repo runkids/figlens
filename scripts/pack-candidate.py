@@ -37,11 +37,11 @@ def main():
         assert digest(artifact.read_bytes()) == expected, name
         if name.endswith('.zip'):
             with zipfile.ZipFile(artifact) as archive:
-                binary = archive.read('figlens.exe')
+                binary, companion = archive.read('figlens.exe'), archive.read('figlens-embed.exe')
         else:
             with tarfile.open(artifact) as archive:
-                binary = archive.extractfile('figlens').read()
-        archives[name] = {'sha256': expected, 'binarySha256': digest(binary)}
+                binary, companion = (archive.extractfile(n).read() for n in ['figlens', 'figlens-embed'])
+        archives[name] = {'sha256': expected, 'binarySha256': digest(binary), 'companionSha256': digest(companion)}
     assert archives, 'No candidate archives'
     with tempfile.TemporaryDirectory(prefix='figlens-pack-') as work:
         node, npm = toolchain()
