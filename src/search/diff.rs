@@ -255,9 +255,10 @@ fn held_value(v: &Json, len: usize) -> usize {
     json_bytes(v, &mut usize::MAX.clone()).max(len)
 }
 
-/// Hashes what is written and counts it, keeping nothing. A visit per 64 bytes is charged to
-/// `bounds` before each chunk is hashed, since escaping can make the stream longer than its
-/// estimate; a chunk it cannot pay for fails the write.
+/// Hashes what is written and counts it, keeping nothing. A visit per started 64 bytes of the
+/// whole stream is charged to `bounds` before each chunk is hashed, since escaping can make the
+/// stream longer than its estimate; a chunk it cannot pay for fails the write. Charging the
+/// stream's total, not each chunk, keeps small writes from paying more than one large one.
 struct Digesting<'b> {
     hash: Sha256,
     len: usize,
@@ -266,7 +267,7 @@ struct Digesting<'b> {
 
 impl std::io::Write for Digesting<'_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let visits = (self.len + buf.len()) / 64 - self.len / 64;
+        let visits = (self.len + buf.len()).div_ceil(64) - self.len.div_ceil(64);
         if !self.bounds.charge(visits, 0) {
             return Err(std::io::ErrorKind::OutOfMemory.into());
         }

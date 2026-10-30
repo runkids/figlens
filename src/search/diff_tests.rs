@@ -473,6 +473,28 @@ fn a_field_estimate_walks_no_further_than_the_side_has_work_left() {
 }
 
 #[test]
+fn a_digest_stream_pays_before_hashing_and_split_writes_pay_as_one() {
+    use std::io::Write;
+    let digest = |work: usize, chunks: &[&[u8]]| {
+        let mut b = super::super::tests::bounds(work);
+        let mut w = Digesting {
+            hash: Sha256::new(),
+            len: 0,
+            bounds: &mut b,
+        };
+        let ok = chunks.iter().all(|c| w.write(c).is_ok());
+        let len = w.len;
+        (ok, len, b.work)
+    };
+    // No work left: not one byte is hashed.
+    assert_eq!(digest(0, &[b"x"]), (false, 0, 0));
+    // 130 bytes are three started units, written whole or in pieces.
+    let whole = digest(10, &[&[0; 130]]);
+    assert_eq!(whole, (true, 130, 7));
+    assert_eq!(digest(10, &[&[0; 1], &[0; 63], &[0; 1], &[0; 65]]), whole);
+}
+
+#[test]
 fn an_escaped_field_pays_for_its_stream_before_hashing_past_the_side_s_work() {
     // 8,192 control characters estimate at about 130 visits but stream as about 49 KiB.
     let escaped = text(&"\u{1}".repeat(8192));
