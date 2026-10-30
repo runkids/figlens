@@ -220,8 +220,16 @@ pub fn configure(
             ),
         ));
     }
-    let p = Profile::probe(&runtime, model, k.files, cancel)
-        .map_err(|e| fail(ErrorKind::InvalidArguments, format!("{name}: {e}")))?;
+    let p = Profile::probe(&runtime, model, k.files, cancel).map_err(|e| {
+        match e.downcast::<Stop>() {
+            Ok(stop) if matches!(*stop, Stop::Cancelled) => fail(
+                ErrorKind::Cancelled,
+                "models configure cancelled; nothing was recorded",
+            ),
+            Ok(stop) => fail(ErrorKind::InvalidArguments, format!("{name}: {stop}")),
+            Err(e) => fail(ErrorKind::InvalidArguments, format!("{name}: {e}")),
+        }
+    })?;
     let record = json!({"name": k.name, "profileId": p.id, "model": p.model, "runtime": p.exe,
         "dim": p.dim, "contract": p.contract, "stamps": p.stamps});
     let kept = record.clone();

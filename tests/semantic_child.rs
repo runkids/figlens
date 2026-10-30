@@ -791,6 +791,40 @@ fn embed_job_publishes_a_layer_and_later_ones_reuse_its_vectors() {
     unsafe { std::env::remove_var("SEMANTIC_EMBED_LOG") };
 }
 
+fn a_cancelled_configure_reports_cancelled_and_records_nothing() {
+    let dir = test_support::TestDir::new();
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe {
+        std::env::set_var(
+            "XDG_CONFIG_HOME",
+            std::path::absolute(dir.join("config")).unwrap(),
+        )
+    };
+    let storage = figlens::workspace::storage(None).unwrap();
+    let (model, files) = model(&dir, "weights");
+    let files: &'static [(&str, &str)] = Box::leak(
+        files
+            .into_iter()
+            .map(|(n, d)| (n, &*Box::leak(d.into_boxed_str())))
+            .collect(),
+    );
+    let k = profile::Known {
+        name: "fake",
+        model: "fake",
+        revision: "0",
+        license: "MIT",
+        files,
+    };
+    let exe = std::env::current_exe().unwrap();
+    let err =
+        profile::configure(&storage, &k, &model, Some(&exe), &AtomicBool::new(true)).unwrap_err();
+    let kind = err
+        .downcast_ref::<figlens::FigError>()
+        .map(figlens::FigError::kind);
+    assert_eq!(kind, Some(figlens::ErrorKind::Cancelled));
+    assert!(storage.models().unwrap().is_none());
+}
+
 fn index_track_does_not_wait_for_a_running_embed() {
     let dir = test_support::TestDir::new();
     let (prepared, fig) = indexed(&dir, true);
@@ -1267,6 +1301,10 @@ fn main() {
         (
             "index_track_does_not_wait_for_a_running_embed",
             index_track_does_not_wait_for_a_running_embed,
+        ),
+        (
+            "a_cancelled_configure_reports_cancelled_and_records_nothing",
+            a_cancelled_configure_reports_cancelled_and_records_nothing,
         ),
         (
             "status_names_a_changed_or_missing_runtime_and_how_to_configure_again",

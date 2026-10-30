@@ -2166,6 +2166,28 @@ pub(crate) fn kind_code(kind: ErrorKind) -> &'static str {
     }
 }
 
+/// Reclaims the WAL after a writer's batch, so it passes `WAL_CAP` by about one batch at most;
+/// a reader that keeps it from resetting fails the writer after `LOCK_WAIT`.
+pub(super) fn reclaim_wal(conn: &Connection, dir: &Path) -> Result<()> {
+    let wait = Instant::now();
+    loop {
+        let _ = conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
+        let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+        if wal_bytes(dir) <= WAL_CAP {
+            return Ok(());
+        }
+        if wait.elapsed() > LOCK_WAIT {
+            return Err(fail(
+                ErrorKind::WorkspaceBusy,
+                format!(
+                    "a reader keeps the write-ahead log above {WAL_CAP} bytes; retry when other searches finish"
+                ),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Database plus WAL bytes of the workspace at `dir`.
 fn wal_bytes(dir: &Path) -> u64 {
     std::fs::metadata(dir.join("index.sqlite-wal")).map_or(0, |m| m.len())
@@ -2412,25 +2434,7 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
             )
             .map_err(sql)?,
         )?;
-        // The WAL: reclaimed after every batch, so it passes `WAL_CAP` by about one batch at
-        // most; a reader that keeps it from resetting fails the build after `LOCK_WAIT`.
-        let wait = Instant::now();
-        loop {
-            let _ = conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
-            let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
-            if wal_bytes(dir) <= WAL_CAP {
-                return Ok(());
-            }
-            if wait.elapsed() > LOCK_WAIT {
-                return Err(fail(
-                    ErrorKind::WorkspaceBusy,
-                    format!(
-                        "a reader keeps the write-ahead log above {WAL_CAP} bytes; retry when other searches finish"
-                    ),
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        reclaim_wal(conn, dir)
     };
     let guard = |conn: &Connection| owns_launch(conn, job_id, me, attempt);
     search::store::save(&mut conn, gen_id, &index, &guard, &mut between)
