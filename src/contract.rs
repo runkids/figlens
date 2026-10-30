@@ -527,7 +527,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "source": {"type": "object", "description": "old and new sourceId and snapshotId, and freshness.reusedPair"},
                 "node": {"type": "string"},
                 "matching": {"type": "object", "description": "basis node_id+kind; lineage unverified"},
-                "coverage": {"type": "object", "description": "complete; old and new stop and scannedRecords; changes (layers listed across pages, added/removed subtrees counted at their top), possibleMatches and reasons (a side's stop, diff_work_limit, unread_fields)"},
+                "coverage": {"type": "object", "description": "complete; old and new stop and scannedRecords; changes (layers listed across pages, added/removed subtrees counted at their top), possibleMatches and reasons (a side's stop, diff_work_limit, unread_fields, definition_not_compared for styles, variables and main components outside the compared records)"},
                 "frames": {"type": "array", "items": {"type": "object"}, "description": "id, name, page, change when the frame itself changed, summary, possibleMatch {id, basis, identity possible_match}, and this page's nodes: id, kind, name, change, facets, fields {key: {facet, old, new}}, edges {added, removed, swap}, descendants, identity_uncertain with oldKind"},
                 "nextCursor": {"type": ["string", "null"]},
             }),

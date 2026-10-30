@@ -995,8 +995,9 @@ fn compare(old: Side, new: Side, node: &str, work: usize) -> Pair {
     }
 }
 
-/// Style and variable uses on `s` whose definition is not one of its records: its values may
-/// change while every compared record stays the same. Each record and edge is charged before
+/// Style, variable and main component uses on `s` whose definition is not one of its records:
+/// its values, or a main's property definitions, may change while every compared record stays
+/// the same. Each record and edge is charged before
 /// it is read.
 fn outside_uses(s: &Side, ids: &HashMap<&str, usize>, budget: &mut Bounds) -> Option<usize> {
     let mut n = 0;
@@ -1008,7 +1009,8 @@ fn outside_uses(s: &Side, ids: &HashMap<&str, usize>, budget: &mut Bounds) -> Op
             if !budget.charge(1, 0) {
                 return None;
             }
-            if let ("uses_style" | "binds_variable", Some(t)) = (e.relation, e.target.as_deref())
+            if let ("uses_style" | "binds_variable" | "instance_of", Some(t)) =
+                (e.relation, e.target.as_deref())
                 && !matches!(e.state, "missing" | "unresolved")
             {
                 n += usize::from(!ids.contains_key(t.strip_prefix("VariableID:").unwrap_or(t)));

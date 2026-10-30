@@ -986,3 +986,46 @@ fn renaming_a_component_property_definition_is_a_properties_change() {
         )
     );
 }
+
+#[test]
+fn a_main_outside_the_scope_makes_coverage_partial_when_its_property_definitions_change() {
+    // Only the instance is in scope; its main's Boolean definition is renamed and its default
+    // flipped, which changes the instance's emitted componentProperties.
+    let used = |name: &str, default: bool| {
+        doc(vec![
+            node(
+                20,
+                Some(1),
+                "COMPONENT",
+                "Button",
+                vec![(
+                    "componentPropDefs",
+                    K::Array(vec![obj(vec![
+                        ("id", guid(70)),
+                        ("name", K::String(name.to_owned())),
+                        ("type", K::Enum("ComponentPropType", "BOOL")),
+                        ("initialValue", obj(vec![("boolValue", K::Bool(default))])),
+                    ])]),
+                )],
+            ),
+            node(10, Some(1), "FRAME", "Home", vec![]),
+            instance(11, 10, "Button", 20, vec![]),
+        ])
+    };
+    let out = scoped(used("Show icon", true), used("Has icon", false), "0:10");
+    assert_eq!(
+        (
+            &out["coverage"]["complete"],
+            nodes(&out),
+            &out["coverage"]["reasons"]
+        ),
+        (
+            &json!(false),
+            vec![],
+            &json!([
+                {"reason": "definition_not_compared", "side": "old", "count": 1},
+                {"reason": "definition_not_compared", "side": "new", "count": 1},
+            ])
+        )
+    );
+}
