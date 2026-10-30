@@ -466,8 +466,8 @@ pub(crate) fn score(
     Ok((order, excluded))
 }
 
-/// Estimated bytes a cached full generation and its layer keep: records, texts, chunk
-/// mappings and the vectors read so far.
+/// Estimated bytes a cached full generation and its layer keep: every record's strings,
+/// texts, chunk mappings and the vectors read so far.
 pub(crate) fn cached_bytes(index: &Index, layer: &Layer) -> usize {
     let vectors: usize = layer
         .vectors
@@ -475,7 +475,20 @@ pub(crate) fn cached_bytes(index: &Index, layer: &Layer) -> usize {
         .map(|v| v.as_ref().map_or(0, |v| 24 + 4 * v.len()))
         .sum();
     let texts: usize = layer.texts.iter().map(|t| 24 + t.len()).sum();
-    index.records.len() * 256 + 2 * index.text_bytes + texts + UNIT * layer.units.len() + vectors
+    // Every string a loaded record keeps, its normalized copies included, plus a fixed share.
+    let records: usize = index
+        .records
+        .iter()
+        .map(|r| {
+            256 + r.id.len()
+                + r.name.len()
+                + r.kind.len()
+                + r.text.as_ref().map_or(0, String::len)
+                + r.norm[0].len()
+                + r.norm[1].len()
+        })
+        .sum();
+    records + texts + UNIT * layer.units.len() + vectors
 }
 
 /// `coverage.layers.semantic` of one layer.
@@ -758,6 +771,25 @@ mod tests {
         assert_eq!((cut.stop, cut.units.len()), (Some("work_limit"), 2));
         let tiny = Layer::new(&idx, json!(1), 8, &mut bounds(LAYER_WORK, 16), &no).unwrap();
         assert_eq!((tiny.stop, tiny.texts.len()), (Some("byte_limit"), 0));
+    }
+
+    #[test]
+    fn cached_bytes_count_long_names_and_their_normalized_copies() {
+        let mut idx = index("t");
+        let short = Layer::new(
+            &idx,
+            json!(1),
+            8,
+            &mut bounds(LAYER_WORK, LAYER_BYTES),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let long = "n".repeat(4000);
+        for r in &mut idx.records {
+            r.name = long.clone();
+            r.norm[0] = long.clone();
+        }
+        assert!(cached_bytes(&idx, &short) >= 2 * 4000 * idx.records.len());
     }
 
     #[test]
