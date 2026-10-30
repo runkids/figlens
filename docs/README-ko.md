@@ -198,7 +198,7 @@ MCP: `index` prepare는 job을 반환합니다. `succeeded`가 될 때까지 `jo
 
 데이터: SQLite 데이터베이스에는 등록된 로컬 경로, 선택한 범위의 레이어 이름과 유효 텍스트, 검색 postings, 정확한 관계(포함, 인스턴스, 변형, 변수/스타일/이미지 바인딩, 프로토타입 대상)와 그 대상 정의, 해시, 세대, job이 들어 있습니다. 원본 `.fig`는 제자리에서 변경되지 않으며, 원시 바이트는 데이터베이스에 저장되지 않습니다.
 
-Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며, workspace는 재시작과 호스트를 넘어 재사용됩니다. 미구현: 파일 감시, 벡터, 이벤트, 구독.
+Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며, workspace는 재시작과 호스트를 넘어 재사용됩니다. 미구현: 파일 이벤트(watch는 파일을 폴링하며, holder가 실행 중일 때만 동작), 벡터, 푸시 이벤트.
 
 <a id="commands"></a>
 
@@ -228,9 +228,11 @@ Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며
 | `jobs status\|cancel <jobId>` | 인덱스 빌드 상태 확인 또는 취소. `cancel`은 빌드가 멈춘 뒤에 반환합니다 |
 | `changes --file <file>\|--id ID\|--workspace DIR [--source ID] [--scope NODE] [--consumer NAME\|--subscription ID\|--cursor C] [--revision R] [--limit N]` | 추적 중인 스코프에 기록된 변경을 오래된 순으로 반환합니다. 게시된 빌드마다 리비전 하나(baseline 또는 changes)와 커버리지, 변경 종류·facet별 개수를 포함합니다. `--revision`은 그 리비전의 변경된 노드를 페이지로 나눕니다. `tracking`은 변경을 기록하려면 `index refresh`가 필요한 스코프를 알려 줍니다. 읽기 전용 |
 | `watch ack --file <file>\|--id ID\|--workspace DIR --consumer NAME\|--subscription ID --cursor C [--source ID] [--scope NODE]` | 같은 필터로 처리한 마지막 `changes` 페이지의 `nextCursor`로 consumer의 체크포인트를 옮깁니다. 반복해도 안전하며 앞으로만 움직입니다. 다만 삭제 뒤에 남은 체크포인트는 현재 복구 커서가 되돌려 보존된 리비전을 다시 읽게 합니다. 아직 지나지 않은 리비전을 보존 정책이 삭제하기 전에 발급된 커서는 `event_gap`이며 아무것도 쓰지 않습니다 |
+| `watch run --file <file>\|--id ID\|--workspace DIR --scope NODE [--source ID] [--request-id R]` | 추적 중인 scope의 lease를 포그라운드에서 유지합니다. workspace의 공유 runner가 저장할 때마다 갱신하므로(250 ms마다 폴링, 60 s마다 내용 확인) `index refresh` 없이 `changes`에 새 revision이 나옵니다. lease를 출력한 뒤 stdin이 닫히거나 Ctrl-C, SIGTERM을 받거나 scope 추적이 해제되면 종료 줄을 한 줄 출력합니다. MCP `watch` `start`와 `stop`은 서버가 실행되는 동안 lease를 유지하고, 갱신되지 않은 lease는 30 s 후 끝나며 runner는 마지막 lease 뒤에 종료됩니다 |
+| `watch status --file <file>\|--id ID\|--workspace DIR` | workspace의 lease(`active`, `unauthorized`, `untracked`, `expired`, `ended`)와 runner(`running`, `stopping`, `stopped`, `unknown`, 배치 포함). 쓰지 않습니다 |
 | `watch subscribe --file <file>\|--id ID\|--workspace DIR --consumer NAME --source ID [--scope NODE] [--node ID] [--owner NAME]` | 소스, 스코프 또는 정확한 레이어(`--node`)를 최신 리비전부터 전용 체크포인트로 따라갑니다. `changes --subscription`으로 읽고 `watch ack --subscription`으로 확인합니다. 없거나 모호한 레이어는 `target_missing` 또는 `identity_uncertain`이며 같은 이름의 레이어로 대신하지 않습니다. `--owner`를 주면 그 작업 동안만 쓰는 임시 구독이 됩니다 |
 | `watch subscribe --file <file>\|--id ID\|--workspace DIR --consumer NAME --source ID --query TEXT [--type T[,T]] [--scope NODE]` | 한 소스의 scope에 대한 검색을 저장합니다. 상위 50개를 바로 평가하며, `changes --subscription`은 저장된 평가를 읽기만 하고 계산하지 않습니다 |
-| `watch evaluate --file <file>\|--id ID\|--workspace DIR --subscription ID` | 쿼리 구독을 scope의 현재 인덱스로 평가해 저장합니다. 이미 평가되었으면 아무것도 하지 않습니다 |
+| `watch evaluate --file <file>\|--id ID\|--workspace DIR --subscription ID` | 쿼리 구독을 scope의 현재 인덱스로 평가해 저장합니다. 이미 평가되었으면 아무것도 하지 않습니다. scope를 watch 중이면 게시할 때마다 자동으로 합니다 |
 | `watch list --file <file>\|--id ID\|--workspace DIR [--consumer NAME] [--after ID]` | 보이는 구독과 상태를 페이지 단위로 나열합니다 |
 | `watch unsubscribe --file <file>\|--id ID\|--workspace DIR --subscription ID\|--consumer C --owner NAME` | 구독 하나와 그 체크포인트, 또는 owner의 임시 구독을 삭제합니다. 트래킹과 기록은 남습니다 |
 | `watch forget --file <file>\|--id ID\|--workspace DIR --consumer NAME [--source ID] [--scope NODE]` | consumer의 원시 체크포인트를 삭제합니다. consumer당 구독과 체크포인트는 최대 64개, 워크스페이스 전체 4096개이며 자동으로 밀려나지 않습니다 |

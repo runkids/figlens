@@ -202,8 +202,9 @@ usage:
                                              revision, with its own checkpoint (read with changes
                                              --subscription); --owner makes it temporary for that task
           [--query TEXT [--type T[,T]]]      or a saved search of the scope (default 0:0): its top 50
-                                             are evaluated now and on watch evaluate; changes reads
-                                             the evaluations, never computes one
+                                             are evaluated now, on watch evaluate and by a watch
+                                             runner serving the scope; changes reads the
+                                             evaluations, never computes one
   figlens watch evaluate <select> --subscription ID
                                              store a query subscription's evaluation of the scope's
                                              current index, unless it is already evaluated
