@@ -4514,7 +4514,8 @@ fn a_schema_6_workspace_reads_impact_as_null_and_records_it_once_a_build_upgrade
         "DROP TABLE revision_impacts; ALTER TABLE revisions DROP COLUMN impact;
          DROP TABLE fingerprints; ALTER TABLE subscriptions DROP COLUMN sources;
          ALTER TABLE subscriptions DROP COLUMN disabled; DROP INDEX sources_remote;
-         ALTER TABLE sources DROP COLUMN remote; ALTER TABLE sources DROP COLUMN generation; PRAGMA user_version = 6;",
+         ALTER TABLE sources DROP COLUMN remote; ALTER TABLE sources DROP COLUMN generation; DROP TABLE model_vectors; DROP TABLE model_refs; DROP TABLE model_layers;
+         PRAGMA user_version = 6;",
     );
     let version = || -> i64 {
         rusqlite::Connection::open(&t.db)
@@ -4550,7 +4551,7 @@ fn a_schema_6_workspace_reads_impact_as_null_and_records_it_once_a_build_upgrade
             vec![json!("change"); 4],
             6,
             vec![Value::Null, Value::Null, json!(true)],
-            8
+            figlens::workspace::SCHEMA
         )
     );
 }
@@ -4572,6 +4573,7 @@ fn a_92_generation_refreshed_under_new_relations_is_a_baseline_keeping_history_a
          ALTER TABLE subscriptions DROP COLUMN disabled; DROP INDEX sources_remote;
          ALTER TABLE sources DROP COLUMN remote; ALTER TABLE sources DROP COLUMN generation;
          UPDATE generations SET versions = replace(versions, '\"relations-6\"', '\"relations-5\"');
+         DROP TABLE model_vectors; DROP TABLE model_refs; DROP TABLE model_layers;
          PRAGMA user_version = 7;",
     );
     let before = t.revisions();
@@ -4598,7 +4600,7 @@ fn a_92_generation_refreshed_under_new_relations_is_a_baseline_keeping_history_a
             7,
             &before[..],
             json!(["baseline", {"basis": "baseline", "reason": "index_version_changed"}, null, "complete", false, null, 0]),
-            8,
+            figlens::workspace::SCHEMA,
             held,
             vec![json!("baseline")],
             vec![json!("baseline")],
@@ -4615,7 +4617,8 @@ fn watch_list_reads_a_schema_7_workspace_without_its_source_set_columns() {
     t.sql(
         "ALTER TABLE subscriptions DROP COLUMN sources;
          ALTER TABLE subscriptions DROP COLUMN disabled; DROP INDEX sources_remote;
-         ALTER TABLE sources DROP COLUMN remote; ALTER TABLE sources DROP COLUMN generation; PRAGMA user_version = 7;",
+         ALTER TABLE sources DROP COLUMN remote; ALTER TABLE sources DROP COLUMN generation; DROP TABLE model_vectors; DROP TABLE model_refs; DROP TABLE model_layers;
+         PRAGMA user_version = 7;",
     );
     let listed = t.watch("list", &[]);
     assert_eq!(listed["subscriptions"][0]["subscriptionId"], json!(id));

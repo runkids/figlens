@@ -714,11 +714,13 @@ fn drop_gen(conn: &Connection, gen_id: i64) -> rusqlite::Result<()> {
         "facets",
         "facet_sets",
         "fingerprints",
+        "model_refs",
+        "model_layers",
         "generations",
     ] {
         conn.execute(&format!("DELETE FROM {table} WHERE gen = ?1"), [gen_id])?;
     }
-    Ok(())
+    super::model::collect(conn)
 }
 
 /// Deletes the unpublished generations of job `job_id`, one transaction each, only while its
