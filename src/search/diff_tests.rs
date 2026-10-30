@@ -1871,6 +1871,86 @@ fn a_probe_pays_for_its_lookups_before_building_them() {
 }
 
 #[test]
+fn a_reached_layer_names_its_top_level_frame_on_each_side_even_when_moved() {
+    let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
+    // As `impacted(0.5, false)`, with the instance moved to another top-level frame.
+    let moved = doc(vec![
+        node(30, Some(1), "SYMBOL", "Main", vec![fill(0.5)]),
+        node(10, Some(1), "FRAME", "Home", vec![fill(0.5)]),
+        node(20, Some(1), "FRAME", "Away", vec![]),
+        instance(12, 20, "Fixed", 30, vec![fill(0.2)]),
+        node(13, Some(10), "TEXT", "Label", vec![]),
+    ]);
+    let at = |new: &K| {
+        let conn = saved(&[&Tree::new(&impacted(1.0, false)), &Tree::new(new)], "0:0");
+        let r = revision(
+            &conn,
+            (1, side("old")),
+            (2, side("new")),
+            "0:0",
+            REVISION_BYTES,
+        )
+        .unwrap();
+        let frames = r
+            .impact
+            .hits
+            .iter()
+            .find(|h| h.node == "0:12")
+            .map(|h| h.frames.clone());
+        (frames, r.impact.reasons.contains_key("frames_unknown"))
+    };
+    let frame = |id: &str| Some(id.to_owned());
+    assert_eq!(
+        [at(&impacted(0.5, false)), at(&moved)],
+        [
+            (Some([frame("0:10"), frame("0:10")]), false),
+            (Some([frame("0:10"), frame("0:20")]), false)
+        ]
+    );
+}
+
+#[test]
+fn a_reached_layer_no_side_holds_is_never_placed_complete() {
+    let (a, b) = (impacted(1.0, false), impacted(0.5, false));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let pair = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
+    let mut evidence = PairEvidence {
+        pair: &pair,
+        ids: None,
+        orders: None,
+    };
+    let mut impact = super::super::impact::Impact {
+        hits: vec![super::super::impact::Hit {
+            node: "0:99".into(),
+            class: super::super::impact::Class::Possible,
+            side: 3,
+            changed: 0,
+            unknown: 0,
+            equal: 0,
+            via: None,
+            frames: [None, None],
+        }],
+        complete: true,
+        reasons: Default::default(),
+    };
+    let mut bounds = Bounds {
+        work: WORK,
+        bytes: BYTES,
+        depth: DEPTH,
+        deadline: Instant::now() + DEADLINE,
+        stop: None,
+    };
+    place(&mut evidence, &mut impact, &mut bounds);
+    assert_eq!(
+        (
+            impact.hits[0].frames.clone(),
+            impact.reasons.get("frames_unknown")
+        ),
+        ([None, None], Some(&1))
+    );
+}
+
+#[test]
 fn a_revision_classifies_what_its_kept_changes_reach() {
     let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
     let saved_pair = |plain| {

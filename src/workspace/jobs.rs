@@ -1544,14 +1544,17 @@ fn record(
     let (mut kept, mut by, mut hit_bytes) = (0, BTreeMap::new(), 0);
     for h in &reached {
         let via = h.via.as_ref().map(|(r, t)| (*r, t.as_str()));
-        let copy = 64 + h.node.len() + via.map_or(0, |(r, t)| r.len() + t.len());
+        let framed: usize = h.frames.iter().flatten().map(String::len).sum();
+        let copy = 64 + h.node.len() + via.map_or(0, |(r, t)| r.len() + t.len()) + framed;
         let fits = (copy <= left).then(|| {
             let verdicts = [h.changed, h.unknown, h.equal];
             search::impact::entry(&h.node, h.class.name(), h.side, verdicts, via)
         });
-        let Some(n) = fits.and_then(|e| search::impact::serialized(&e, left)) else {
+        // Its stored frames are kept beside the entry, so they count as well.
+        let Some(n) = fits.and_then(|e| search::impact::serialized(&e, left - framed)) else {
             break;
         };
+        let n = n + framed;
         left -= n;
         kept += 1;
         *by.entry(h.class.name()).or_insert(0) += 1;
@@ -1626,7 +1629,8 @@ fn record(
     let mut insert = tx
         .prepare_cached(
             "INSERT INTO revision_impacts (rev, ord, node, class, side, changed, unknown, equal,
-             relation, target) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             relation, target, old_frame, new_frame)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         )
         .map_err(sql)?;
     for (ord, h) in hits.iter().enumerate() {
@@ -1642,7 +1646,9 @@ fn record(
                 h.unknown,
                 h.equal,
                 relation,
-                target
+                target,
+                h.frames[0],
+                h.frames[1]
             ])
             .map_err(sql)?;
     }

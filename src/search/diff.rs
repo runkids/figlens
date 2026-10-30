@@ -741,6 +741,47 @@ fn orders(index: &Index) -> Vec<u32> {
         .collect()
 }
 
+/// Sets each hit's top-level frame (or page) on the sides it was reached in, so a frame filter
+/// finds a layer only its impact names. The id maps the probes did not build and each copy are
+/// paid first; a hit it cannot place counts as `frames_unknown`, never as a complete impact.
+fn place(evidence: &mut PairEvidence, impact: &mut super::impact::Impact, bounds: &mut Bounds) {
+    let pair = evidence.pair;
+    let records = pair.old.index.records.len() + pair.new.index.records.len();
+    if evidence.ids.is_none() && bounds.charge(records, records * LOOKUP) {
+        evidence.ids = Some([by_id(&pair.old), by_id(&pair.new)]);
+    }
+    let mut unplaced = 0;
+    for h in &mut impact.hits {
+        let mut placed = true;
+        for (i, side) in [&pair.old, &pair.new].into_iter().enumerate() {
+            if h.side & (1 << i) == 0 {
+                continue;
+            }
+            let at = evidence
+                .ids
+                .as_ref()
+                .and_then(|ids| ids[i].get(h.node.as_str()));
+            let frame = at.map(|&r| frame_of(&side.index, &side.index.records[r]));
+            match frame {
+                Some(f) if bounds.charge(1, f.len()) => h.frames[i] = Some(f.to_owned()),
+                _ => placed = false,
+            }
+        }
+        unplaced += u64::from(!placed);
+    }
+    if unplaced > 0 {
+        *impact.reasons.entry("frames_unknown").or_default() += unplaced;
+    }
+}
+
+/// The top-level frame holding `r`, or its page for a layer directly on one.
+fn frame_of<'a>(index: &'a Index, r: &super::Record) -> &'a str {
+    match r.root {
+        Some(root) => index.roots[root as usize].as_str(),
+        None => r.page.map_or("", |p| index.pages[p as usize].id.as_str()),
+    }
+}
+
 fn by_id(s: &Side) -> HashMap<&str, usize> {
     s.index
         .records
@@ -930,18 +971,10 @@ impl Collect {
         let index = &side.index;
         let r = &index.records[rid];
         let page = r.page.map_or("", |p| index.pages[p as usize].id.as_str());
-        let (id, name) = match r.root {
-            Some(root) => {
-                let id = index.roots[root as usize].as_str();
-                (
-                    id,
-                    ids.get(id).map_or("", |&i| index.records[i].name.as_str()),
-                )
-            }
-            None => (
-                page,
-                r.page.map_or("", |p| index.pages[p as usize].name.as_str()),
-            ),
+        let id = frame_of(index, r);
+        let name = match r.root {
+            Some(_) => ids.get(id).map_or("", |&i| index.records[i].name.as_str()),
+            None => r.page.map_or("", |p| index.pages[p as usize].name.as_str()),
         };
         if !self.at.contains_key(id) {
             if !self
@@ -2147,6 +2180,7 @@ fn revision_with(
     if omitted > 0 {
         *impact.reasons.entry("seeds_truncated").or_default() += omitted;
     }
+    place(&mut evidence, &mut impact, &mut bounds);
     impact.complete = impact.reasons.is_empty();
     Ok(Revision {
         coverage,

@@ -1156,16 +1156,16 @@ fn hit(node: &str, class: search::impact::Class) -> search::impact::Hit {
         unknown: 2,
         equal: 4,
         via: Some(("instance_of", "0:9".into())),
+        frames: [Some("0:0".into()), Some("0:5".into())],
     }
 }
 
-/// A hit's entry exactly as a detail page serializes it.
+/// A hit's entry exactly as a detail page serializes it, and the frames stored beside it.
 fn entry_bytes(h: &search::impact::Hit) -> usize {
     let via = h.via.as_ref().map(|(r, t)| (*r, t.as_str()));
     let verdicts = [h.changed, h.unknown, h.equal];
-    search::impact::entry(&h.node, h.class.name(), h.side, verdicts, via)
-        .to_string()
-        .len()
+    let entry = search::impact::entry(&h.node, h.class.name(), h.side, verdicts, via);
+    entry.to_string().len() + h.frames.iter().flatten().map(String::len).sum::<usize>()
 }
 
 /// The stored impact summary, listed classes, detail and detail bytes of generation `gen_id`.
@@ -1178,7 +1178,10 @@ fn impact_of(conn: &Connection, gen_id: i64) -> (Json, Vec<String>, String, i64)
         )
         .unwrap();
     let classes = conn
-        .prepare("SELECT class FROM revision_impacts WHERE rev = ?1 ORDER BY ord")
+        .prepare(
+            "SELECT class || ' ' || old_frame || ' ' || new_frame FROM revision_impacts
+             WHERE rev = ?1 ORDER BY ord",
+        )
         .unwrap()
         .query_map([id], |r| r.get(0))
         .unwrap()
@@ -1209,15 +1212,17 @@ fn a_revision_lists_each_class_it_reached_charged_at_its_escaped_size() {
     let entries: usize = hits.iter().map(entry_bytes).sum();
     recorded(&tx, "s", 2, impacted(&[], hits));
     let (impact, classes, detail, bytes) = impact_of(&tx, 2);
-    // The change row's estimate, each entry as a detail page serializes it, and the summary.
+    // The change row's estimate, each entry as a detail page serializes it with its stored
+    // frames, and the summary.
     let row = 64 + "0:0".len() + "0:1".len() + "FRAME".len();
     assert_eq!(
         (impact.clone(), classes, detail, bytes),
         (
             json!({"complete": true, "reasons": [],
                 "listed": {"direct": 1, "effective": 1, "effective_unchanged": 1, "possible": 1}}),
+            // Each with its old and new frame, in that order.
             ["direct", "effective", "effective_unchanged", "possible"]
-                .map(String::from)
+                .map(|c| format!("{c} 0:0 0:5"))
                 .to_vec(),
             "complete".into(),
             (row + entries + impact.to_string().len()) as i64

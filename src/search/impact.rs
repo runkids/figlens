@@ -116,6 +116,8 @@ pub(crate) struct Hit {
     pub equal: u8,
     /// The relation and target that first reached it with its current class.
     pub via: Option<(&'static str, String)>,
+    /// Its top-level frame (or page) on the old and new side, as the caller placed it.
+    pub frames: [Option<String>; 2],
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -374,6 +376,7 @@ impl Run<'_> {
                 unknown: 0,
                 equal: 0,
                 via: None,
+                frames: [None, None],
             };
             self.hits.insert(node.to_owned(), hit);
         }

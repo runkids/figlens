@@ -396,6 +396,27 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 /// Writes the corpus, or its `revise`d revision, to a new file at `output`.
 pub fn write(output: &std::ffi::OsStr, revised: bool) -> Result<(), Box<dyn Error>> {
+    write_with(output, if revised { revise } else { |_| {} })
+}
+
+/// Writes the corpus with only the Chip component's fill changed, for impact tests: both chip
+/// instances, inside the Components frame, keep fills of their own.
+#[allow(dead_code, reason = "only tests write it")]
+pub fn write_restyled(output: &std::ffi::OsStr) -> Result<(), Box<dyn Error>> {
+    write_with(output, |nodes| {
+        for n in nodes.iter_mut() {
+            let chip = matches!(
+                n.get("guid").and_then(|g| g.get("localID")),
+                Some(Value::UInt(50))
+            );
+            if let (true, Value::Object(_, fields)) = (chip, n) {
+                fields.insert("fillPaints", solid([200, 0, 0]));
+            }
+        }
+    })
+}
+
+fn write_with(output: &std::ffi::OsStr, edit: fn(&mut Vec<V>)) -> Result<(), Box<dyn Error>> {
     // Definition order gives each user type its index.
     const DEFS: [&str; 20] = [
         "GUID",
@@ -580,9 +601,7 @@ pub fn write(output: &std::ffi::OsStr, revised: bool) -> Result<(), Box<dyn Erro
     );
     let schema = Schema::new(defs);
     let mut nodes = nodes();
-    if revised {
-        revise(&mut nodes);
-    }
+    edit(&mut nodes);
     let message = obj("Message", vec![("nodeChanges", Value::Array(nodes))]);
     let mut canvas = b"fig-kiwi".to_vec();
     canvas.extend(106u32.to_le_bytes());

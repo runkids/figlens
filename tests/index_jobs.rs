@@ -3228,6 +3228,52 @@ fn a_node_subscription_reads_a_revision_whose_comparison_was_incomplete() {
 }
 
 #[test]
+fn a_frame_subscription_reads_a_complete_revision_that_reaches_it_only_through_impact() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let frame = t.subscribe(&["--node", "0:4"]);
+    // Only the Chip component, outside the Components frame, changes its fill; both chips in
+    // the frame keep fills of their own.
+    let next = env.dir.join("next.fig");
+    corpus::write_restyled(next.as_os_str()).unwrap();
+    std::fs::rename(&next, &t.path).unwrap();
+    t.index("refresh");
+    let page = t.changes(&["--subscription", &frame]);
+    let revision = &page["revisions"][0];
+    let id = revision["revisionId"].as_str().unwrap();
+    let detail = t.changes(&["--revision", id, "--limit", "500"]);
+    let entries = detail["nodes"].as_array().unwrap();
+    let in_frame = entries
+        .iter()
+        .filter(|n| n["entry"] == "change" && n["frame"] == "0:4")
+        .count();
+    let mut chips: Vec<(Value, Value)> = entries
+        .iter()
+        .filter(|n| n["entry"] == "impact" && ["0:41", "0:42"].contains(&n["id"].as_str().unwrap()))
+        .map(|n| (n["id"].clone(), n["class"].clone()))
+        .collect();
+    chips.sort_by_key(|c| c.0.to_string());
+    assert_eq!(
+        (
+            page["revisions"].as_array().unwrap().len(),
+            revision["impact"]["complete"].clone(),
+            in_frame,
+            chips
+        ),
+        (
+            1,
+            json!(true),
+            0,
+            vec![
+                (json!("0:41"), json!("effective_unchanged")),
+                (json!("0:42"), json!("effective_unchanged"))
+            ]
+        ),
+        "{detail}"
+    );
+}
+
+#[test]
 fn a_node_subscription_reads_revisions_whose_impact_reaches_that_node_or_is_incomplete() {
     let env = Env::new();
     let t = Tracked::new(&env);
@@ -3246,8 +3292,29 @@ fn a_node_subscription_reads_revisions_whose_impact_reaches_that_node_or_is_inco
          from_gen, snapshot_id, kind, '{{\"complete\":true}}', summary, 'complete', 0, 0,
          created_ms, impact FROM revisions WHERE source_id = '{source}' ORDER BY seq DESC LIMIT 1;
          INSERT INTO revision_impacts VALUES (x'000102030405060708090a0b0c0d0e0f', 0, '0:12',
-         'effective', 3, 1, 0, 0, 'instance_of', '0:11');"
+         'effective', 3, 1, 0, 0, 'instance_of', '0:11', NULL, NULL);"
     ));
+    // And a complete one whose only hit is a child of each followed frame: moved, it is held
+    // by one frame before and another after.
+    let framed = t.subscribe(&["--node", "0:11"]);
+    let moved = t.subscribe(&["--node", "0:14"]);
+    t.sql(&format!(
+        "INSERT INTO revisions (id, seq, source_id, scope, epoch, gen, from_gen, snapshot_id,
+         kind, coverage, summary, detail, detail_rows, detail_bytes, created_ms, impact)
+         SELECT randomblob(16), seq + 1, source_id, scope, epoch, gen, from_gen,
+         snapshot_id, kind, '{{\"complete\":true}}', summary, 'complete', 0, 0, created_ms,
+         '{{\"complete\":true,\"reasons\":[],\"listed\":{{\"effective\":1}}}}'
+         FROM revisions WHERE source_id = '{source}' ORDER BY seq DESC LIMIT 1;
+         INSERT INTO revision_impacts SELECT id, 0, '0:99', 'effective', 3, 1, 0, 0,
+         'instance_of', '0:30', '0:11', '0:14' FROM revisions ORDER BY seq DESC LIMIT 1;"
+    ));
+    let count = |sub: &str| {
+        t.changes(&["--subscription", sub])["revisions"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    assert_eq!((count(&framed), count(&moved)), (1, 1));
     // And a complete one reaching nothing it names, whose impact could not rule it out.
     t.sql(&format!(
         "INSERT INTO revisions (id, seq, source_id, scope, epoch, gen, from_gen, snapshot_id,

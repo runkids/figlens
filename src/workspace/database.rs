@@ -405,7 +405,7 @@ pub(crate) const IMPACTS: &str = "
     CREATE TABLE revision_impacts (
         rev BLOB NOT NULL, ord INTEGER NOT NULL, node TEXT NOT NULL, class TEXT NOT NULL,
         side INTEGER NOT NULL, changed INTEGER NOT NULL, unknown INTEGER NOT NULL,
-        equal INTEGER NOT NULL, relation TEXT, target TEXT,
+        equal INTEGER NOT NULL, relation TEXT, target TEXT, old_frame TEXT, new_frame TEXT,
         PRIMARY KEY (rev, ord)) STRICT, WITHOUT ROWID;
     PRAGMA user_version = 7;";
 
