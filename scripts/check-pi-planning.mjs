@@ -23,7 +23,14 @@ assert.deepEqual(loaded.errors, []);
 const extension = loaded.extensions[0];
 assert.equal(extension.commands.has('plan'), false, 'leave the global /plan command to the host');
 assert.equal(extension.commands.has('yolo'), false, 'no global /yolo command');
-assert.equal(extension.handlers.has('before_agent_start'), false, 'no automatic scope injection');
+// The one before-prompt handler is the stale-context check: with no watch target it adds no scope or context.
+const run = async (event, payload) => {
+  let out;
+  for (const handler of extension.handlers.get(event) || []) out = await handler(payload, { cwd: root, mode: 'print' }) ?? out;
+  return out;
+};
+assert.equal(await run('before_agent_start', { type: 'before_agent_start', prompt: 'p', messageType: 'user' }), undefined, 'no automatic scope injection');
+assert.equal(await run('context', { type: 'context', messages: [] }), undefined, 'no context without a watch target');
 const skillPath = fileURLToPath(new URL('../skills/figlens/SKILL.md', pathToFileURL(extensionPath)));
 const planningPath = path.join(path.dirname(skillPath), 'references/planning.md');
 const planning = await readFile(planningPath, 'utf8');
