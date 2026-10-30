@@ -712,16 +712,10 @@ fn build_with(
     let libraries = libraries.unwrap_or_default();
     let keep_library = relations && library != Library::Skip && !library_unread;
     // Model inputs: only builds that may embed (stored and stateless full ones) pay for them.
-    let model_inputs = relations && library != Library::Skip;
-    // Model property inputs spend a share of their own: a large design system can leave some
-    // instances' properties unindexed (reported as such) but never cuts the text index short.
-    let mut prop_bounds = Bounds {
-        work: WORK / 8,
-        bytes: BYTES / 8,
-        depth: DEPTH,
-        deadline: bounds.deadline,
-        stop: None,
-    };
+    // Stored builds keep the model's property inputs, and so does a stateless semantic text
+    // build that asks as one (`Library::Stored` with no relations reads no library); usages and
+    // text search never pay for them. They share the build's bounds: a stop is a partial index.
+    let model_inputs = library == Library::Stored;
     let mut defs = semantic::Defs::new();
     // A stored generation fingerprints its definitions and cached copies with their subtrees.
     let fingerprint = relations && library == Library::Stored;
@@ -844,10 +838,12 @@ fn build_with(
         let props = match (model_inputs, kind == "INSTANCE") {
             (false, _) => None,
             (true, false) => Some(Vec::new()),
-            (true, true) if prop_bounds.stop.is_none() => {
-                semantic::properties(tree, &id, ex.nodes.get(&id), &mut defs, &mut prop_bounds)
+            (true, true) => {
+                match semantic::properties(tree, &id, ex.nodes.get(&id), &mut defs, &mut bounds) {
+                    Some(props) => Some(props),
+                    None => break,
+                }
             }
-            (true, true) => None,
         };
         let mut norm = [String::new(), String::new()];
         let mut record_lens = [0u32; 2];
@@ -1776,9 +1772,14 @@ struct Cached {
 
 impl Cached {
     /// The index that answers `relations` (usages) or text search, if this entry holds one.
-    fn pick(&self, relations: bool) -> Option<Arc<Index>> {
+    fn pick(&self, relations: bool, inputs: bool) -> Option<Arc<Index>> {
         if relations {
             self.full.clone()
+        } else if inputs {
+            // Records of a build that kept property inputs hold them, even an empty list.
+            self.text
+                .clone()
+                .filter(|i| i.records.first().is_none_or(|r| r.props.is_some()))
         } else {
             self.text.clone()
         }
@@ -1788,10 +1789,12 @@ impl Cached {
     /// both, so the entry never holds two copies of one corpus.
     fn keep(&mut self, index: Arc<Index>) {
         let shares = |a: &Index, b: &Index| a.generation == b.generation && a.stop == b.stop;
+        // A text build that kept property inputs is never swapped for a full one without them.
+        let inputs = |i: &Index| i.records.first().is_some_and(|r| r.props.is_some());
         if index.relations {
             // A stopped full build may hold less text than a text-only one would.
             let serves = match &self.text {
-                Some(t) => shares(t, &index),
+                Some(t) => shares(t, &index) && !inputs(t),
                 None => index.stop.is_none(),
             };
             if serves {
@@ -1799,7 +1802,10 @@ impl Cached {
             }
             self.full = Some(index);
         } else {
-            let full = self.full.as_ref().filter(|f| shares(f, &index));
+            let full = self
+                .full
+                .as_ref()
+                .filter(|f| shares(f, &index) && !inputs(&index));
             self.text = Some(full.cloned().unwrap_or(index));
         }
     }
@@ -1969,7 +1975,7 @@ fn ms(t: SystemTime) -> u64 {
 /// hashes the bytes again once `REHASH` has passed, since a save can keep the stamp.
 pub fn search(path: &Path, req: &Request) -> Result<Json, Box<dyn Error>> {
     req.validate()?;
-    let (index, source) = loaded(path, &req.scope, false)?;
+    let (index, source) = loaded(path, &req.scope, false, false)?;
     search_index(&index, req, source)
 }
 
@@ -1977,14 +1983,20 @@ pub fn search(path: &Path, req: &Request) -> Result<Json, Box<dyn Error>> {
 /// index search uses; nothing is stored.
 pub fn usages(path: &Path, req: &usages::Request) -> Result<Json, Box<dyn Error>> {
     req.validate()?;
-    let (index, source) = loaded(path, &req.scope, true)?;
+    let (index, source) = loaded(path, &req.scope, true, false)?;
     usages_index(&index, req, source)
 }
 
 /// The index of `scope` and its source identity, from the process cache while it is fresh.
 /// `relations` asks for a full build: a cached text-only one is replaced by one, once, and a
-/// cached full one also serves text search.
-fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json), Box<dyn Error>> {
+/// cached full one also serves text search. `inputs` (semantic search) asks for a text build
+/// that also kept the model's property inputs; it replaces a text one and serves text search.
+pub(crate) fn loaded(
+    path: &Path,
+    scope: &str,
+    relations: bool,
+    inputs: bool,
+) -> Result<(Arc<Index>, Json), Box<dyn Error>> {
     let deadline = Instant::now() + DEADLINE;
     let canonical = std::fs::canonicalize(path)?;
     let source_id = source_id(&canonical);
@@ -1993,7 +2005,7 @@ fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json
         cache
             .as_ref()
             .filter(|c| c.path == canonical && c.stamp == now && c.scope == scope)
-            .and_then(|c| Some((c.snapshot.clone(), c.pick(relations)?, c.hashed)))
+            .and_then(|c| Some((c.snapshot.clone(), c.pick(relations, inputs)?, c.hashed)))
     });
     let fresh = |hashed: SystemTime| hashed.elapsed().is_ok_and(|age| age < REHASH);
     let (snapshot, index, hashed, reused) = match cached {
@@ -2020,9 +2032,10 @@ fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json
                     let label = path.display().to_string();
                     // A full build also keeps library references when they fit, so a usages
                     // result can name the one it uses; a text-only build reads none.
-                    let library = match relations {
-                        true => Library::Named,
-                        false => Library::Skip,
+                    let library = match (relations, inputs) {
+                        (true, _) => Library::Named,
+                        (false, true) => Library::Stored,
+                        (false, false) => Library::Skip,
                     };
                     let index = Arc::new(decode_index(
                         bytes, &label, scope, deadline, relations, library,

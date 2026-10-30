@@ -424,7 +424,7 @@ pub fn search(
         (Err(e), _) => Err(down("profile_unreadable", Some(e.to_string()))),
     };
     // A full build: only it keeps the component properties the layer embeds.
-    let (index, source) = loaded(path, &req.scope, true)?;
+    let (index, source) = loaded(path, &req.scope, false, true)?;
     reply_with(&index, &q, req, mode, profile, source, cancel)
 }
 

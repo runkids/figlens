@@ -1228,11 +1228,11 @@ fn a_full_build_that_stops_earlier_never_takes_text_search_from_the_text_build()
     let source = json!({"sourceId": "local:test", "snapshotId": "sha256:test"});
     let mut req = request("label");
     req.limit = 5;
-    let first = search_index(&cached.pick(false).unwrap(), &req, source.clone()).unwrap();
+    let first = search_index(&cached.pick(false, false).unwrap(), &req, source.clone()).unwrap();
     cached.keep(full.clone());
     // Usages reads its own partial build and says so; search keeps the text build and cursor.
     let partial = usages_index(
-        &cached.pick(true).unwrap(),
+        &cached.pick(true, false).unwrap(),
         &usages::Request {
             target: "0:1".into(),
             resource: false,
@@ -1248,14 +1248,14 @@ fn a_full_build_that_stops_earlier_never_takes_text_search_from_the_text_build()
     )
     .unwrap();
     assert_eq!(partial["coverage"]["complete"], false);
-    let after = cached.pick(false).unwrap();
+    let after = cached.pick(false, false).unwrap();
     assert!(Arc::ptr_eq(&after, &text));
     assert_eq!(search_index(&after, &req, source.clone()).unwrap(), first);
     req.cursor = Some(first["nextCursor"].as_str().unwrap().to_owned());
     assert!(search_index(&after, &req, source.clone()).is_ok());
     // A later text build of the same revision keeps the full one for usages.
     cached.keep(Arc::new(build_as(&tree, "0:0", bounds(work), false)));
-    assert!(Arc::ptr_eq(&cached.pick(true).unwrap(), &full));
+    assert!(Arc::ptr_eq(&cached.pick(true, false).unwrap(), &full));
     // With room for both, one full build serves both and no second copy is held.
     let whole = Arc::new(build_as(&tree, "0:0", bounds(WORK), true));
     let mut roomy = Cached {
@@ -1265,7 +1265,25 @@ fn a_full_build_that_stops_earlier_never_takes_text_search_from_the_text_build()
     };
     roomy.keep(Arc::new(build_as(&tree, "0:0", bounds(WORK), false)));
     roomy.keep(whole.clone());
-    assert!(Arc::ptr_eq(&roomy.pick(false).unwrap(), &whole));
+    assert!(Arc::ptr_eq(&roomy.pick(false, false).unwrap(), &whole));
+    // Semantic search asks for property inputs: the full build has none, so it is not picked;
+    // a text build that kept them serves text search too and survives a later full build.
+    assert!(roomy.pick(false, true).is_none());
+    let inputs = Arc::new(build_with(
+        &tree,
+        "0:0",
+        bounds(WORK),
+        false,
+        Library::Stored,
+        None,
+    ));
+    assert!(inputs.records.iter().all(|r| r.props.is_some()));
+    assert!(text.records.iter().all(|r| r.props.is_none()));
+    roomy.keep(inputs.clone());
+    assert!(Arc::ptr_eq(&roomy.pick(false, true).unwrap(), &inputs));
+    roomy.keep(whole.clone());
+    assert!(Arc::ptr_eq(&roomy.pick(false, false).unwrap(), &inputs));
+    assert!(Arc::ptr_eq(&roomy.pick(true, false).unwrap(), &whole));
 }
 
 #[test]

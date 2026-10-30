@@ -1938,9 +1938,14 @@ fn an_instance_property_override_is_stored_and_found_with_its_field() {
 
 /// A rebuild step for scope `0:0` among `reply`'s next steps, and no embed step.
 fn names_rebuild_not_embed(reply: &serde_json::Value) {
-    let steps = reply["nextSteps"].to_string();
+    let actions: Vec<&serde_json::Value> = reply["nextSteps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|s| &s["arguments"]["action"])
+        .collect();
     assert!(
-        steps.contains("\"rebuild\"") && !steps.contains("\"embed\""),
+        actions.contains(&&json!("rebuild")) && !actions.contains(&&json!("embed")),
         "{reply}"
     );
 }
@@ -2024,10 +2029,12 @@ fn older_schema_workspaces_read_without_migrating_and_upgrade_keeping_their_data
         names_rebuild_not_embed(&again);
         // A refresh that keeps the unchanged generation proposes no embed it cannot finish.
         let refreshed = cli(&["index", "refresh", "--id", ws, "--scope", "0:0"]);
-        assert!(
-            !refreshed["nextSteps"].to_string().contains("\"embed\""),
-            "{refreshed}"
-        );
+        let proposes_embed = refreshed["nextSteps"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|s| s["arguments"]["action"] == "embed");
+        assert!(!proposes_embed, "{refreshed}");
         // The rebuild indexes the properties; one embed then completes the layer.
         cli(&["index", "rebuild", "--id", ws, "--scope", "0:0"]);
         cli(&["index", "embed", "--id", ws, "--scope", "0:0"]);
