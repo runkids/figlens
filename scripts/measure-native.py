@@ -11,6 +11,7 @@ else runs it. RSS is sampled every 100 ms, so a shorter spike can be missed; eac
 peak is used where it is exact (Linux VmHWM, Windows PeakWorkingSetSize).
 """
 import argparse
+from collections import Counter
 import ctypes
 import hashlib
 from importlib import import_module
@@ -31,7 +32,7 @@ import time
 import urllib.parse
 import urllib.request
 import zipfile
-from installation import environment, stop_process
+from installation import environment, run, stop_process
 
 search = import_module('measure-search')
 summarize = import_module('measure-baseline').summarize
@@ -199,7 +200,9 @@ class Tree:
 
 
 def gone(pid):
-    """A callable that reads True once process `pid` has exited."""
+    """A callable that reads True once process `pid` (None: no process) has exited."""
+    if pid is None:
+        return lambda: True
     if os.name == 'nt':
         handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
         return (lambda: True) if not handle else (lambda: kernel32.WaitForSingleObject(wintypes.HANDLE(handle), 0) == 0)
@@ -267,8 +270,7 @@ class Workspace:
         shutil.copy2(fixture, self.source)
 
     def cli(self, *args):
-        return json.loads(subprocess.run([self.binary, *map(str, args)], cwd=self.base, env=self.env,
-                                         capture_output=True, text=True, encoding='utf-8', check=True, timeout=120).stdout)
+        return json.loads(run([self.binary, *args], self.base, self.env, timeout=120))
 
     def timed(self, *args):
         elapsed, _, out = search.run([self.binary, *args], self.base, self.env)
@@ -286,6 +288,14 @@ class Workspace:
         lease = json.loads(holder.stdout.readline())
         assert lease['state'] == 'active', lease
         return holder
+
+    def release(self, *holders):
+        """End the leases, then wait for the runner too; False if a candidate process outlived 30 s."""
+        for holder in holders:
+            holder.stdin.close()
+        for holder in holders:
+            holder.wait(timeout=30)
+        return settle(os.path.realpath(self.binary))
 
 
 def changes(ws):
@@ -306,11 +316,7 @@ def idle(ws, exe, holders, seconds):
             series.append(tuple(map(delta, ['cpuMs', 'readBytes', 'writeBytes', 'physReadBytes', 'physWriteBytes'])))
             before = now
     finally:
-        for holder in processes:
-            holder.stdin.close()
-        for holder in processes:
-            holder.wait(timeout=30)
-        settle(exe)
+        ws.release(*processes)
     return {pid.pid for pid in processes}, idle_cost(series)
 
 
@@ -332,16 +338,13 @@ def watch(binary, design, revised, n, seconds, parent):
                 time.sleep(1.5)  # let the previous turn finish and the detector settle
                 ws.save(copies[i % 2])
                 start = time.monotonic()
-                while changes(ws) == seen and time.monotonic() - start < 30:
+                while (now := changes(ws)) == seen and time.monotonic() - start < 30:
                     time.sleep(0.02)
                 ms = (time.monotonic() - start) * 1000
-                now = changes(ws)
                 saves.append({'i': i, 'ms': round(ms, 1), 'recorded': now > seen})
                 seen = now
         finally:
-            holder.stdin.close()
-            holder.wait(timeout=30)
-            settle(exe)
+            ws.release(holder)
         pids, one = idle(ws, exe, 1, seconds)
         holders |= pids
         pids, eight = idle(ws, exe, 8, seconds)
@@ -353,13 +356,13 @@ def watch(binary, design, revised, n, seconds, parent):
             holders.add(holder.pid)
             conn = sqlite3.connect(f'file:{db}?mode=ro', uri=True)
             state = lambda job: conn.execute('SELECT state FROM jobs WHERE job_id = ?', (job,)).fetchone()[0]
-            jobs = conn.execute('SELECT count(*) FROM jobs').fetchone()[0]
+            jobs = conn.execute('SELECT coalesce(max(seq), 0) FROM jobs').fetchone()[0]
             ws.save(copies[i % 2])
             start, job, runner, worker = time.monotonic(), None, None, None
             # This save's job, run by the holder's runner in a worker child; then the worker's CPU must grow.
             while time.monotonic() - start < 30 and worker is None:
-                row = conn.execute('SELECT job_id, state FROM jobs ORDER BY seq DESC LIMIT 1').fetchone()
-                if row and conn.execute('SELECT count(*) FROM jobs').fetchone()[0] > jobs:
+                row = conn.execute('SELECT job_id, state FROM jobs WHERE seq > ? ORDER BY seq DESC LIMIT 1', (jobs,)).fetchone()
+                if row:
                     job = row[0]
                     if row[1] not in ('queued', 'running'):
                         break
@@ -367,14 +370,14 @@ def watch(binary, design, revised, n, seconds, parent):
                     runners, workers = roles(rows, {holder.pid})
                     runner = next(iter(runners), runner)
                     worker = next(((p, rows[p]['cpuMs']) for p in workers), None)
-                time.sleep(0.005)
+                time.sleep(0.02)
             in_flight, cpu = False, None
             if worker:
                 time.sleep(0.1)
                 again = table(exe).get(worker[0])
                 cpu = again and again['cpuMs'] - worker[1]
                 in_flight = bool(again) and cpu > 0 and state(job) == 'running'
-            exits = {'worker': gone(worker[0]) if worker else (lambda: True), 'runner': gone(runner) if runner else (lambda: True)}
+            exits = {'worker': gone(worker and worker[0]), 'runner': gone(runner)}
             t0, done = time.monotonic(), {}
             holder.stdin.close()  # the last lease ends: the runner must cancel the job nobody joined
             while time.monotonic() - t0 < 30 and len(done) < 3:
@@ -384,21 +387,17 @@ def watch(binary, design, revised, n, seconds, parent):
                     if k not in done and check():
                         done[k] = (time.monotonic() - t0) * 1000
                 time.sleep(0.002)
-            holder.wait(timeout=30)
-            settled = settle(exe)
+            settled = ws.release(holder)
             final = state(job) if job else None
             conn.close()
             cancels.append({'i': i, 'outcome': classify(in_flight, job, final, len(done) < 3), 'job': final,
                             'workerSeen': bool(worker), 'workerCpuMsIn100ms': cpu, 'runnerSeen': bool(runner),
                             'settled': settled, **{f'{k}EndMs': round(v, 1) for k, v in done.items()}})
     valid = [x for x in cancels if x['outcome'] == 'cancelled_in_flight']
-    outcomes = {}
-    for x in cancels:
-        outcomes[x['outcome']] = outcomes.get(x['outcome'], 0) + 1
     io = lambda cost: {'read': within(cost['readBytesPer60s'], 3 * size + MiB), 'write': within(cost['writeBytesPer60s'], size + 2 * MiB)}
     return {
         'save': {'attempts': saves, **verdict('save', [x['ms'] for x in saves if x['recorded']])},
-        'cancel': {'attempts': cancels, 'outcomes': outcomes,
+        'cancel': {'attempts': cancels, 'outcomes': Counter(x['outcome'] for x in cancels),
                    **verdict('cancel', [max(x['jobEndMs'], x['workerEndMs'], x['runnerEndMs']) for x in valid])},
         'idleOneHolder': {**one, 'cpu': within(one['cpuMsPer60s'], LIMITS['idleCpuMsPer60s']),
                           'polling': within(one['pollingCpuMsPer60s'], LIMITS['pollingCpuMsPer60s']), **io(one)},
@@ -418,6 +417,7 @@ def builds(binary, design, n, parent):
         for _ in range(n):
             ws = Workspace(binary, design, parent)
             prepare.append(ws.timed('index', 'prepare', ws.source, '--scope', AREA)[0])
+            shutil.rmtree(ws.base)
         ws = Workspace(binary, design, parent)
         ws.cli('index', 'prepare', ws.source, '--scope', '0:0')
         for _ in range(n):
@@ -459,8 +459,7 @@ def viewer(binary, design, n, parent):
 def workload(binary, design, revised, screens):
     """What the source holds, as figlens counts it, plus the generator's fixed shape."""
     def coverage(node):
-        reply = json.loads(subprocess.run([binary, 'search', design, 'checkout', '--node', node], capture_output=True,
-                                          text=True, encoding='utf-8', check=True, timeout=120).stdout)
+        reply = json.loads(run([binary, 'search', design, 'checkout', '--node', node], None, None, timeout=120))
         return {'records': reply['coverage']['scannedRecords'], 'textBytes': reply['coverage']['indexedTextBytes']}
     return {'bytes': design.stat().st_size, 'revisedBytes': revised.stat().st_size, 'screens': screens,
             'whole': coverage('0:0'), 'firstScope': coverage(AREA),
@@ -475,15 +474,16 @@ def candidate(artifacts, out):
     name = f'figlens-{metadata["version"]}-{TARGETS[sys.platform]}' + ('.zip' if os.name == 'nt' else '.tar.gz')
     data = (artifacts/name).read_bytes()
     assert hashlib.sha256(data).hexdigest() == metadata['archives'][name]['sha256'], 'candidate archive hash differs'
-    binary = out/('figlens.exe' if os.name == 'nt' else 'figlens')
     if os.name == 'nt':
         with zipfile.ZipFile(artifacts/name) as archive:
-            binary.write_bytes(archive.read('figlens.exe'))
+            data = archive.read('figlens.exe')
     else:
         with tarfile.open(artifacts/name) as archive:
-            binary.write_bytes(archive.extractfile('figlens').read())
-        binary.chmod(0o755)
-    assert hashlib.sha256(binary.read_bytes()).hexdigest() == metadata['archives'][name]['binarySha256']
+            data = archive.extractfile('figlens').read()
+    assert hashlib.sha256(data).hexdigest() == metadata['archives'][name]['binarySha256']
+    binary = out/('figlens.exe' if os.name == 'nt' else 'figlens')
+    binary.write_bytes(data)
+    binary.chmod(0o755)
     return binary, {'commit': metadata['commit'], 'archive': name, 'sha256': metadata['archives'][name]['sha256']}
 
 
