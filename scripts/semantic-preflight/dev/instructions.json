@@ -17,5 +17,19 @@
   }
  ],
  "format": "Instruct: {task}\\nQuery:{query} (card get_detailed_instruct); documents carry no instruction",
- "rule": "Pick the candidate passing the most per-category semantic gates of thresholds.json on this dev set (4 categories x 3 metrics); ties by mean semantic MRR, then i0. The pick is committed before the one frozen run."
+ "rule": "Pick the candidate passing the most per-category semantic gates of thresholds.json on this dev set (4 categories x 3 metrics); ties by mean semantic MRR, then i0. The pick is committed before the one frozen run.",
+ "chosen": {
+  "id": "i1",
+  "devGatesPassed": {
+   "i0": 11,
+   "i1": 12,
+   "i2": 11
+  },
+  "devMeanSemanticMrr": {
+   "i0": 0.909,
+   "i1": 0.938,
+   "i2": 0.896
+  },
+  "run": "qwen3-embedding-0.6b@97b0c61, equal-length batches of 16, RAYON_NUM_THREADS=8; reports in ignored samples/issue-94/dev-i*.json"
+ }
 }

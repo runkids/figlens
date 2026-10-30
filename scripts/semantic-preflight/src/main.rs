@@ -93,9 +93,14 @@ enum Model {
     Static(StaticModel),
     /// A BERT encoder with mean pooling over the attention mask and the model's own input contract.
     Bert(Box<BertModel>, Box<tokenizers::Tokenizer>, Contract),
-    /// A Qwen3 decoder with last-token pooling, one text per forward pass: candle's CPU attention
-    /// is causal only, so a padded batch would let real tokens attend to padding.
+    /// A Qwen3 decoder with last-token pooling, batching only texts of equal token length: candle's
+    /// CPU attention is causal only, so a padded batch would let real tokens attend to padding.
     Qwen3(Box<qwen3::Model>, Box<tokenizers::Tokenizer>, Contract),
+}
+
+/// Equal-length texts per Qwen3 forward pass; `PREFLIGHT_BATCH=1` is the one-text-per-pass baseline.
+fn qwen3_batch() -> usize {
+    std::env::var("PREFLIGHT_BATCH").ok().and_then(|b| b.parse().ok()).filter(|&b| b > 0).unwrap_or(16)
 }
 
 /// The query and passage prefixes and the token limit a BERT or Qwen3 model card specifies, from
@@ -134,19 +139,34 @@ impl Model {
             }
             Model::Qwen3(m, tokenizer, contract) => {
                 let prefix = if query { &contract.query } else { &contract.passage };
-                texts.iter().map(|t| {
+                let mut ids = Vec::with_capacity(texts.len());
+                for t in texts {
                     let enc = tokenizer.encode(format!("{prefix}{t}"), true).map_err(|e| e.to_string())?;
-                    let ids = enc.get_ids();
-                    if ids.len() > contract.tokens {
+                    if enc.get_ids().len() > contract.tokens {
                         return Err(format!("a text with its prefix is longer than {} tokens", contract.tokens).into());
                     }
-                    // A clone of the never-run model has an empty KV cache (its reset is private) and
-                    // shares the weight tensors, so no weight is copied.
-                    let hidden = (**m).clone().forward(&Tensor::new(ids, &Device::Cpu)?.unsqueeze(0)?, 0)?;
-                    // The tokenizer appends <|endoftext|>; its hidden state is the embedding.
-                    let last = hidden.get(0)?.get(ids.len() - 1)?;
-                    Ok(last.broadcast_div(&last.sqr()?.sum_all()?.sqrt()?)?.to_vec1()?)
-                }).collect()
+                    ids.push(enc.get_ids().to_vec());
+                }
+                // Texts of one token length share a forward pass: with no padding, causal
+                // attention over each row is exactly the single-text pass.
+                let mut order: Vec<usize> = (0..ids.len()).collect();
+                order.sort_by_key(|&i| ids[i].len());
+                let mut out = vec![Vec::new(); ids.len()];
+                for group in order.chunk_by(|&a, &b| ids[a].len() == ids[b].len()) {
+                    for batch in group.chunks(qwen3_batch()) {
+                        let rows: Vec<Tensor> = batch.iter().map(|&i| Tensor::new(ids[i].as_slice(), &Device::Cpu)).collect::<std::result::Result<_, _>>()?;
+                        // A clone of the never-run model has an empty KV cache (its reset is private) and
+                        // shares the weight tensors, so no weight is copied.
+                        let hidden = (**m).clone().forward(&Tensor::stack(&rows, 0)?, 0)?;
+                        // The tokenizer appends <|endoftext|>; its hidden state is the embedding.
+                        let last = hidden.narrow(1, ids[batch[0]].len() - 1, 1)?.squeeze(1)?;
+                        let norm = last.sqr()?.sum_keepdim(1)?.sqrt()?;
+                        for (v, &i) in last.broadcast_div(&norm)?.to_vec2::<f32>()?.into_iter().zip(batch) {
+                            out[i] = v;
+                        }
+                    }
+                }
+                Ok(out)
             }
         }
     }

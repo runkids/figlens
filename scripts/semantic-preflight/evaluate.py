@@ -7,7 +7,10 @@ import json, os, queue, signal, subprocess, sys, threading, time
 from collections import defaultdict
 
 HERE = 'scripts/semantic-preflight'
-FIG = 'samples/issue-94/design.fig'
+# PREFLIGHT_SET=dev reads the instruction dev split in dev/ against its own generated design.
+SET = os.environ.get('PREFLIGHT_SET', '')
+DATA = f'{HERE}/{SET}' if SET else HERE
+FIG = f'samples/issue-94/{SET or "design"}.fig'
 FIGLENS = 'target/release/figlens'
 PREFLIGHT = f'{HERE}/target/release/semantic-preflight'
 MODEL, WARM, REPORT = sys.argv[1], int(sys.argv[2]), sys.argv[3]
@@ -15,9 +18,10 @@ RERANKER = sys.argv[4] if len(sys.argv) > 4 else None
 RERANK_N = (10, 20)
 K, TOP, RRF = 10, 50, 60
 
-load = lambda name: json.load(open(f'{HERE}/{name}'))
-corpus, queries, thresholds = load('corpus.json'), load('queries.json')['queries'], load('thresholds.json')
-expansions = {e['query']: e['expanded'] for e in load('expansions.json')['expansions']}
+load = lambda name: json.load(open(f'{DATA}/{name}'))
+corpus, queries, thresholds = load('corpus.json'), load('queries.json')['queries'], json.load(open(f'{HERE}/thresholds.json'))
+# The dev split has no agent expansions: it only picks the query instruction.
+expansions = {e['query']: e['expanded'] for e in load('expansions.json')['expansions']} if not SET else None
 concept = {}
 for layer in corpus['layers']:
     concept[layer['frame']] = concept[layer['node']] = layer['concept']
@@ -86,7 +90,7 @@ sums, has_contract = verified(MODEL)
 LIMIT = json.load(open(f'{MODEL}/figlens-preflight.json'))['maxTokens'] if has_contract else None
 rerank_sums = verified(RERANKER)[0] if RERANKER else None
 # Semantic rankings and timings: one process, peak RSS from wait4.
-out, rss = peak([PREFLIGHT, 'rank', MODEL, f'{HERE}/corpus.json', f'{HERE}/queries.json', str(WARM)])
+out, rss = peak([PREFLIGHT, 'rank', MODEL, f'{DATA}/corpus.json', f'{DATA}/queries.json', str(WARM)])
 sem = json.loads(out)
 semantic = {r['query']: [x['concept'] for x in r['ranked']] for r in sem.pop('rankings')}
 
@@ -96,9 +100,10 @@ for q in queries:
     t = time.perf_counter()
     base = lexical(q['query'])
     lex_ms.append((time.perf_counter() - t) * 1000)
-    expanded = [lexical(e) for e in expansions[q['query']]]
-    for mode, ranked in (('lexical', base), ('lexical_agent_expansion', fuse(base, *expanded)),
-                         ('semantic', semantic[q['query']]), ('fused', fuse(base, semantic[q['query']]))):
+    runs = [('lexical', base), ('semantic', semantic[q['query']]), ('fused', fuse(base, semantic[q['query']]))]
+    if expansions:
+        runs.append(('lexical_agent_expansion', fuse(base, *[lexical(e) for e in expansions[q['query']]])))
+    for mode, ranked in runs:
         modes[mode].append({'category': q['category'], 'relevant': q['relevant'], 'ranked': ranked})
 
 rerank = None
@@ -213,9 +218,9 @@ def q(xs):
 
 
 report = {
-    'model': MODEL, 'modelSha256': sums, 'evaluation': 'synthetic preflight: 104 concepts, concept-level ranks; not node-level product fusion or capacity', 'semantic': {**sem, 'processPeakRssMiB': rss}, 'lexicalProcessMs': q(lex_ms),
+    'model': MODEL, 'modelSha256': sums, 'evaluation': f'synthetic preflight{" dev split" if SET else ""}: {len(corpus["layers"])} concepts, concept-level ranks; not node-level product fusion or capacity', 'semantic': {**sem, 'processPeakRssMiB': rss}, 'lexicalProcessMs': q(lex_ms),
     'metrics': table, 'gates': gates, 'gatesPass': all(all(g.values()) for g in gates.values()),
-    'rerank': rerank, 'child': [child_run('eof'), child_run('sigterm')], 'cpus': os.cpu_count(),
+    'rerank': rerank, 'child': [] if SET else [child_run('eof'), child_run('sigterm')], 'cpus': os.cpu_count(),
     'loadavg': open('/proc/loadavg').read().split()[:3],
 }
 json.dump(report, open(REPORT, 'w'), ensure_ascii=False, indent=1)
