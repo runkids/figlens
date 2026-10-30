@@ -1101,8 +1101,29 @@ impl Reverse {
     }
 }
 
-/// The `(rid, edge)` positions pointing at `target`, from the reverse map a relations build
-/// prepaid.
+/// Builds `index`'s reverse map for `pointing_at` and `rid_in`, first paying `bounds` what a
+/// relations build estimates for it (a loaded index never paid that); false, with nothing
+/// built, when it does not fit. An index whose map is already built costs nothing more.
+pub(crate) fn prepare(index: &Index, bounds: &mut Bounds) -> bool {
+    if index.reverse.get().is_none() {
+        for r in &index.records {
+            let targets = r.edges.iter().filter_map(|e| e.target.as_ref());
+            let bytes = 64 + r.id.len() + targets.map(|t| 56 + t.len()).sum::<usize>();
+            if !bounds.charge(1 + r.edges.len(), bytes) {
+                return false;
+            }
+        }
+        for (id, d) in &index.definitions {
+            if d.set.is_some() && !bounds.charge(1, 64 + id.len()) {
+                return false;
+            }
+        }
+    }
+    Reverse::of(index);
+    true
+}
+
+/// The `(rid, edge)` positions pointing at `target`, from the reverse map `prepare` built.
 pub(crate) fn pointing_at<'a>(index: &'a Index, target: &str) -> &'a [(u32, u32)] {
     Reverse::of(index)
         .by_target
@@ -1110,7 +1131,7 @@ pub(crate) fn pointing_at<'a>(index: &'a Index, target: &str) -> &'a [(u32, u32)
         .map_or(&[], Vec::as_slice)
 }
 
-/// The rid of `node` in `index`, from the same prepaid map.
+/// The rid of `node` in `index`, from the same map.
 pub(crate) fn rid_in(index: &Index, node: &str) -> Option<u32> {
     Reverse::of(index).rids.get(node).copied()
 }

@@ -10,7 +10,7 @@
 
 use super::Index;
 use super::diff::UNREAD;
-use super::usages::{pointing_at, rid_in};
+use super::usages::{pointing_at, prepare, rid_in};
 use crate::expand::Bounds;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
@@ -169,8 +169,8 @@ fn bits(facets: u8) -> Vec<u8> {
 }
 
 /// The layers `seeds` reach through `old` and `new`, classified by `evidence`, within `bounds`.
-/// Both indexes must be relations builds, whose reverse maps their build prepaid; any other
-/// is not walked and reads `relations_unavailable`. A bound or cap that runs out stops the
+/// Both indexes must carry relations; any other is not walked and reads
+/// `relations_unavailable`. Their reverse maps are paid from `bounds` before they are built. A bound or cap that runs out stops the
 /// walk and leaves it incomplete; it is never an error.
 pub(crate) fn compute(
     old: &Index,
@@ -182,6 +182,12 @@ pub(crate) fn compute(
     if !old.relations || !new.relations {
         return Ok(Impact {
             reasons: BTreeMap::from([("relations_unavailable", 1)]),
+            ..Impact::default()
+        });
+    }
+    if !prepare(old, bounds) || !prepare(new, bounds) {
+        return Ok(Impact {
+            reasons: BTreeMap::from([("budget_unknown", seeds.len() as u64)]),
             ..Impact::default()
         });
     }
@@ -295,19 +301,24 @@ impl Run<'_> {
                 && (old.is_none_or(|h| h.via.is_none())
                     || was != Some(strongest) && strongest == class)
         });
-        let key = if old.is_none() { 2 * cost(node) } else { 0 };
+        let new = old.is_none();
+        let key = if new { 2 * cost(node) } else { 0 };
         if !self.pay(1, key + replace.map_or(0, |(_, t)| cost(t))) {
             return false;
         }
-        let hit = self.hits.entry(node.to_owned()).or_insert_with(|| Hit {
-            node: node.to_owned(),
-            class,
-            side: 0,
-            changed: 0,
-            unknown: 0,
-            equal: 0,
-            via: None,
-        });
+        if new {
+            let hit = Hit {
+                node: node.to_owned(),
+                class,
+                side: 0,
+                changed: 0,
+                unknown: 0,
+                equal: 0,
+                via: None,
+            };
+            self.hits.insert(node.to_owned(), hit);
+        }
+        let hit = self.hits.get_mut(node).expect("present or inserted above");
         (hit.changed, hit.unknown, hit.equal) = (changed, unknown, equal);
         hit.side |= side;
         hit.class = strongest;
@@ -329,15 +340,28 @@ impl Run<'_> {
             self.stopped = Some("queue_limit");
             return false;
         }
-        let keys = match seen {
-            Some(_) => 0,
-            None => cost(target) + cost(seed),
+        // Only the keys this push inserts are copied, besides the queued step's own.
+        let by_seed = self.walked.contains_key(target);
+        let keys = match (by_seed, seen.is_some()) {
+            (false, _) => cost(target) + cost(seed),
+            (true, false) => cost(seed),
+            (true, true) => 0,
         };
         if !self.pay(1, keys + cost(target) + cost(seed)) {
             return false;
         }
-        let by_seed = self.walked.entry(target.to_owned()).or_default();
-        *by_seed.entry(seed.to_owned()).or_default() |= want;
+        match self.walked.get_mut(target) {
+            Some(m) => match m.get_mut(seed) {
+                Some(bits) => *bits |= want,
+                None => {
+                    m.insert(seed.to_owned(), want);
+                }
+            },
+            None => {
+                let m = BTreeMap::from([(seed.to_owned(), want)]);
+                self.walked.insert(target.to_owned(), m);
+            }
+        }
         self.queue.push_back(Step {
             target: target.to_owned(),
             seed: seed.to_owned(),

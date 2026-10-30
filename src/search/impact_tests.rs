@@ -1,4 +1,4 @@
-use super::super::tests::{bounds, guid, instance, node, obj};
+use super::super::tests::{bounds, guid, instance, node, obj, stored};
 use super::*;
 use crate::Tree;
 use crate::search::{Index, WORK, build, build_as};
@@ -401,5 +401,39 @@ fn an_index_without_relations_is_not_walked() {
             out.reasons.keys().copied().collect::<Vec<_>>()
         ),
         (false, vec!["relations_unavailable"])
+    );
+}
+
+/// `index` saved to and fully reloaded from a workspace database, as the diff reads it.
+fn reloaded(index: &Index) -> Index {
+    let conn = stored(index);
+    let mut spent = 0;
+    let mut loaded = crate::search::store::load(&conn, 1, &[], &mut spent).unwrap();
+    let all: Vec<u32> = (0..loaded.total as u32).collect();
+    crate::search::store::add(&conn, 1, &mut loaded, &all, &mut spent).unwrap();
+    loaded
+}
+
+#[test]
+fn a_reloaded_index_reaches_the_same_layers() {
+    let i = index(vec![]);
+    let r = reloaded(&i);
+    let ids = |out: Impact| out.hits.into_iter().map(|h| h.node).collect::<Vec<_>>();
+    let seeds = [seed("0:22", Change::Changed)];
+    let live = run(&i, &i, &seeds, &mut fixed(&[]), WORK);
+    assert_eq!(ids(run(&r, &r, &seeds, &mut fixed(&[]), WORK)), ids(live));
+}
+
+#[test]
+fn a_reloaded_index_whose_reverse_map_does_not_fit_is_not_built() {
+    let r = reloaded(&index(vec![]));
+    let out = run(&r, &r, &[seed("0:22", Change::Changed)], &mut fixed(&[]), 3);
+    assert_eq!(
+        (
+            out.hits.len(),
+            out.reasons.get("budget_unknown"),
+            r.reverse.get().is_none()
+        ),
+        (0, Some(&1), true)
     );
 }
