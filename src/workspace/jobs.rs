@@ -1997,6 +1997,7 @@ pub(crate) fn kind_code(kind: ErrorKind) -> &'static str {
         ErrorKind::EventGap => "event_gap",
         ErrorKind::Cancelled => "cancelled",
         ErrorKind::QueryWorkLimit => "query_work_limit",
+        ErrorKind::ModeUnavailable => "mode_unavailable",
     }
 }
 

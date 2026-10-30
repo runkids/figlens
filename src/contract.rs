@@ -168,7 +168,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "mode",
                 "string",
                 false,
-                "text, the only mode in this release",
+                "text (default); semantic or hybrid with a configured local model (see models)",
             ),
         ],
     ),
@@ -940,7 +940,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
         ]);
     }
     if tool == "search" && key == "mode" {
-        p["enum"] = json!(["text"]);
+        p["enum"] = json!(["text", "semantic", "hybrid"]);
     }
     if tool == "usages" && key == "direction" {
         p["enum"] = json!(["in", "out"]);
@@ -1279,6 +1279,10 @@ impl Failure {
             ErrorKind::QueryWorkLimit => (
                 "query_work_limit",
                 "The search would read more indexed data than one query supports; follow recovery to search fewer sources or index a narrower scope. Nothing is wrong with the index.",
+            ),
+            ErrorKind::ModeUnavailable => (
+                "mode_unavailable",
+                "This search mode needs a configured local model; check models status and configure one there, or search with mode text.",
             ),
         };
         // A storage failure is fixed by restoring that storage, not by the design roots.

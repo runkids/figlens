@@ -445,7 +445,7 @@ impl AdmittedCall {
                         .map_err(contract::Failure::from_error);
                 }
                 return command::search_tool(&self.call)
-                    .and_then(|request| command::search(&path, &request, ""))
+                    .and_then(|(request, mode)| command::search(&path, &request, mode, ""))
                     .map_err(contract::Failure::from_error);
             }
             let run = |tree: &Tree, path: &Path| {

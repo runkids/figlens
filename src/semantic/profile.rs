@@ -7,8 +7,8 @@ use crate::workspace::Storage;
 use crate::{ErrorKind, FigError};
 use serde_json::{Value as Json, json};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, TryLockError};
+use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 
 const RECORD: u64 = 1;
 
@@ -216,16 +216,7 @@ pub fn with_runtime<T>(
     f: impl FnOnce(&mut Runtime) -> std::result::Result<T, Stop>,
 ) -> std::result::Result<T, Stop> {
     // Another request holds the child; wait for it without ignoring this request's cancel.
-    let mut warm = loop {
-        match WARM.try_lock() {
-            Ok(g) => break g,
-            Err(TryLockError::Poisoned(e)) => break e.into_inner(),
-            Err(TryLockError::WouldBlock) if cancel.load(Ordering::Relaxed) => {
-                return Err(Stop::Cancelled);
-            }
-            Err(TryLockError::WouldBlock) => std::thread::sleep(super::POLL),
-        }
-    };
+    let mut warm = super::lock(&WARM, cancel)?;
     let reuse = match warm.as_mut() {
         Some((id, rt)) => *id == profile.id && rt.alive(),
         None => false,

@@ -2037,6 +2037,7 @@ fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json
 pub mod diff;
 pub(crate) mod fingerprint;
 pub(crate) mod impact;
+pub mod semantic;
 pub(crate) mod store;
 pub mod usages;
 

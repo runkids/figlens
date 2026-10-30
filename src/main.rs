@@ -440,6 +440,11 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             writeln!(out, "{}", watch(&args[1], &args[2..])?)?;
             return Ok(());
         }
+        Some("models") => {
+            let report = models(&args[1..])?;
+            writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
+            return Ok(());
+        }
         Some("jobs") => {
             let report = jobs(&args[1..])?;
             writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
@@ -488,8 +493,8 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
         .then(|| command::usages_request(&args[2..]))
         .transpose()?;
     let path = figlens::remote::local(file).map_err(|e| contract::source(file, e))?;
-    if let Some(request) = search {
-        out.push_str(&command::search(&path, &request, file)?.text()?);
+    if let Some((request, mode)) = search {
+        out.push_str(&command::search(&path, &request, mode, file)?.text()?);
         return Ok(());
     }
     if let Some(request) = usages {
@@ -1254,6 +1259,41 @@ fn jobs(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
     }
 }
 
+const MODELS: &str = "usage: figlens models list|status | configure <profile> --model DIR [--runtime FILE] | remove <profile>";
+
+/// `figlens models ...`: the local text model profiles semantic search uses. Nothing is
+/// downloaded; `configure` checks files the user already has.
+fn models(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
+    use figlens::semantic::profile;
+    let storage = figlens::workspace::storage(None)?;
+    let (mut model, mut runtime, mut rest) = (None, None, Vec::new());
+    let mut it = args.iter().skip(1);
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--model" => model = Some(PathBuf::from(it.next().ok_or(MODELS)?)),
+            "--runtime" => runtime = Some(PathBuf::from(it.next().ok_or(MODELS)?)),
+            _ if arg.starts_with("--") => return Err(MODELS.into()),
+            _ => rest.push(arg.as_str()),
+        }
+    }
+    match (args.first().map(String::as_str), rest.as_slice(), model) {
+        (Some("list"), [], None) => profile::list(&storage),
+        (Some("status"), [], None) => profile::status(&storage),
+        (Some("configure"), [name], Some(model)) => {
+            let never = std::sync::atomic::AtomicBool::new(false);
+            profile::configure(
+                &storage,
+                profile::known(name)?,
+                &model,
+                runtime.as_deref(),
+                &never,
+            )
+        }
+        (Some("remove"), [name], None) => profile::remove(&storage, name),
+        _ => Err(MODELS.into()),
+    }
+}
+
 /// `figlens search --workspace DIR|--file <file.fig>|--id ws_... <query> [--source ID]...`:
 /// search the workspace's published indexes; nothing is built.
 fn workspace_search(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
@@ -1267,7 +1307,10 @@ fn workspace_search(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>
         .ok_or("choose the workspace with --workspace, --file or --id")?;
     let mut search_args = vec![query.to_string()];
     search_args.extend(a.search.iter().cloned());
-    let request = command::search_request(&search_args)?;
+    let (request, mode) = command::search_request(&search_args)?;
+    if mode != figlens::semantic::Mode::Text {
+        return Err(command::workspace_mode(mode));
+    }
     let only: Vec<String> = a.source.iter().map(|s| s.to_string()).collect();
     workspace::query::search(&storage, &select, &only, &request)
 }

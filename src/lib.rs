@@ -63,6 +63,8 @@ pub enum ErrorKind {
     Cancelled,
     /// A workspace search would read more indexed data than one query supports.
     QueryWorkLimit,
+    /// The requested search mode has no usable model profile or layer.
+    ModeUnavailable,
 }
 
 #[derive(Debug)]

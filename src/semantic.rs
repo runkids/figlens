@@ -49,6 +49,50 @@ fn fail(message: impl Into<String>) -> Box<dyn Error> {
     message.into().into()
 }
 
+/// The search mode a caller asks for; `visual` is reserved for #95.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Text,
+    Semantic,
+    Hybrid,
+}
+
+impl Mode {
+    pub fn parse(mode: &str) -> Option<Mode> {
+        match mode {
+            "text" => Some(Mode::Text),
+            "semantic" => Some(Mode::Semantic),
+            "hybrid" => Some(Mode::Hybrid),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Text => "text",
+            Mode::Semantic => "semantic",
+            Mode::Hybrid => "hybrid",
+        }
+    }
+}
+
+/// Locks `m`, giving up when `cancel` is set while another request holds it.
+pub(crate) fn lock<'a, T>(
+    m: &'a std::sync::Mutex<T>,
+    cancel: &AtomicBool,
+) -> std::result::Result<std::sync::MutexGuard<'a, T>, Stop> {
+    loop {
+        match m.try_lock() {
+            Ok(g) => return Ok(g),
+            Err(std::sync::TryLockError::Poisoned(e)) => return Ok(e.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) if cancel.load(Ordering::Relaxed) => {
+                return Err(Stop::Cancelled);
+            }
+            Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(POLL),
+        }
+    }
+}
+
 /// What a request embeds: the profile applies its query instruction only to queries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {

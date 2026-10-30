@@ -8,6 +8,7 @@ use std::sync::Arc;
 use figlens::expand::plugin_type;
 use figlens::export::SvgIndex;
 use figlens::rest::resolve_nodes;
+use figlens::semantic::Mode;
 use figlens::variables::variables;
 use figlens::{Tree, normalize_id, to_json};
 use serde_json::{Value, json};
@@ -618,15 +619,14 @@ fn check_export(
         .transpose()?)
 }
 
-fn search_mode(mode: &str) -> Result<(), Box<dyn Error>> {
-    if mode == "text" {
-        return Ok(());
-    }
-    Err(figlens::FigError::new(
-        figlens::ErrorKind::InvalidArguments,
-        format!("search mode {mode:?} is unavailable; this release searches text only"),
-    )
-    .into())
+fn search_mode(mode: &str) -> Result<Mode, Box<dyn Error>> {
+    Mode::parse(mode).ok_or_else(|| {
+        figlens::FigError::new(
+            figlens::ErrorKind::InvalidArguments,
+            format!("search mode takes text, semantic or hybrid, not {mode:?}"),
+        )
+        .into()
+    })
 }
 
 pub fn search_types(value: &str) -> impl Iterator<Item = String> + '_ {
@@ -637,7 +637,8 @@ pub fn search_types(value: &str) -> impl Iterator<Item = String> + '_ {
 }
 
 /// CLI search arguments, checked before the source is downloaded or read.
-pub fn search_request(args: &[String]) -> Result<figlens::search::Request, Box<dyn Error>> {
+pub fn search_request(args: &[String]) -> Result<(figlens::search::Request, Mode), Box<dyn Error>> {
+    let mut mode = Mode::Text;
     let mut request = figlens::search::Request {
         query: args.first().cloned().ok_or(USAGE)?,
         scope: "0:0".into(),
@@ -659,21 +660,21 @@ pub fn search_request(args: &[String]) -> Result<figlens::search::Request, Box<d
                     "--type" => request.types.extend(search_types(value)),
                     "--limit" => request.limit = value.parse().unwrap_or(0),
                     "--cursor" => request.cursor = Some(value.clone()),
-                    "--mode" => search_mode(value)?,
+                    "--mode" => mode = search_mode(value)?,
                     _ => return Err(USAGE.into()),
                 }
             }
         }
     }
     request.validate()?;
-    Ok(request)
+    Ok((request, mode))
 }
 
 /// The same request from schema-checked MCP arguments.
 pub fn search_tool(
     call: &crate::contract::PreparedCall,
-) -> Result<figlens::search::Request, Box<dyn Error>> {
-    search_mode(call.string("mode").unwrap())?;
+) -> Result<(figlens::search::Request, Mode), Box<dyn Error>> {
+    let mode = search_mode(call.string("mode").unwrap())?;
     let request = figlens::search::Request {
         query: call.string("query").ok_or(USAGE)?.to_owned(),
         scope: normalize_id(call.string("node").unwrap()),
@@ -689,7 +690,7 @@ pub fn search_tool(
         cursor: call.string("cursor").map(str::to_owned),
     };
     request.validate()?;
-    Ok(request)
+    Ok((request, mode))
 }
 
 /// CLI usages arguments after the source: the node or resource, then options; checked before
@@ -1019,7 +1020,11 @@ pub fn workspace_search_tool(
         .map(str::to_owned)
         .into_iter()
         .collect();
-    let value = figlens::workspace::query::search(&storage, &select, &only, &search_tool(call)?)?;
+    let (request, mode) = search_tool(call)?;
+    if mode != Mode::Text {
+        return Err(workspace_mode(mode));
+    }
+    let value = figlens::workspace::query::search(&storage, &select, &only, &request)?;
     Ok(Output::Json {
         value,
         pretty: false,
@@ -1211,18 +1216,32 @@ fn index_on(
 }
 
 /// Search reads and hashes its own snapshot of `path`, so it never needs a loaded tree.
+/// Workspace search reads stored layers only; until a workspace stores its model layer, a
+/// semantic or hybrid request there says so instead of answering with text alone.
+pub fn workspace_mode(mode: Mode) -> Box<dyn Error> {
+    figlens::FigError::new(
+        figlens::ErrorKind::ModeUnavailable,
+        format!("{} search of a workspace needs its stored model layer, which this build does not write yet; search the .fig file with --mode {} or use mode text", mode.as_str(), mode.as_str()),
+    )
+    .into()
+}
+
 pub fn search(
     path: &Path,
     request: &figlens::search::Request,
+    mode: Mode,
     label: &str,
 ) -> Result<Output, Box<dyn Error>> {
-    let value = figlens::search::search(path, request).map_err(|e| {
-        if e.is::<figlens::FigError>() {
-            e
-        } else {
-            crate::contract::source(label, e)
-        }
-    })?;
+    let storage = figlens::workspace::storage(None)?;
+    let never = std::sync::atomic::AtomicBool::new(false);
+    let value =
+        figlens::search::semantic::search(path, request, mode, &storage, &never).map_err(|e| {
+            if e.is::<figlens::FigError>() {
+                e
+            } else {
+                crate::contract::source(label, e)
+            }
+        })?;
     Ok(Output::Json {
         value,
         pretty: false,

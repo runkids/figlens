@@ -4,7 +4,7 @@
 //! `grandchild=<file>` (starts a sleeper and writes its pid).
 
 use figlens::semantic::profile;
-use figlens::semantic::{self, Kind, MAX_BATCH, MAX_TEXT_BYTES, Profile, Runtime, Stop};
+use figlens::semantic::{self, Kind, MAX_BATCH, MAX_TEXT_BYTES, Mode, Profile, Runtime, Stop};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -255,6 +255,102 @@ fn warm_runtime_is_reused_across_requests() {
     assert_eq!(profile::with_runtime(&p, &no, pid).unwrap(), first);
 }
 
+/// Configures a fake profile in a fresh config root and returns the storage.
+fn configured(dir: &Dir) -> figlens::workspace::Storage {
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.0.join("config")) };
+    let storage = figlens::workspace::storage(None).unwrap();
+    let (model, files) = model(dir, "weights");
+    let files: &'static [(&str, &str)] = Box::leak(
+        files
+            .into_iter()
+            .map(|(n, d)| (n, &*Box::leak(d.into_boxed_str())))
+            .collect(),
+    );
+    let k = profile::Known {
+        name: "fake",
+        model: "fake",
+        revision: "0",
+        license: "MIT",
+        files,
+    };
+    let exe = std::env::current_exe().unwrap();
+    profile::configure(&storage, &k, &model, Some(&exe), &AtomicBool::new(false)).unwrap();
+    storage
+}
+
+fn request(query: &str, limit: usize, cursor: Option<String>) -> figlens::search::Request {
+    figlens::search::Request {
+        query: query.into(),
+        scope: "0:0".into(),
+        types: Vec::new(),
+        include_hidden: false,
+        include_internal: false,
+        limit,
+        cursor,
+    }
+}
+
+const FIG: &str = "examples/first-success/design.fig";
+
+fn semantic_search_pages_by_meaning_without_text_spans() {
+    let dir = Dir::new("search");
+    let storage = configured(&dir);
+    let no = AtomicBool::new(false);
+    let search = |req| {
+        figlens::search::semantic::search(Path::new(FIG), &req, Mode::Semantic, &storage, &no)
+            .unwrap()
+    };
+    let first = search(request("task", 1, None));
+    assert_eq!(first["query"]["usedModes"], json!(["semantic"]));
+    assert_eq!(first["coverage"]["layers"]["semantic"]["state"], "ready");
+    let m = &first["results"][0]["matches"][0];
+    assert_eq!(
+        (m["basis"].as_str(), m.get("spans"), m.get("snippet")),
+        (Some("semantic"), None, None)
+    );
+    let next = search(request(
+        "task",
+        1,
+        first["nextCursor"].as_str().map(str::to_owned),
+    ));
+    assert_eq!(next["results"][0]["rank"], 2);
+    assert_ne!(next["results"][0]["ref"], first["results"][0]["ref"]);
+}
+
+fn without_a_profile_hybrid_says_why_and_semantic_refuses() {
+    let dir = Dir::new("noprofile");
+    let storage = configured(&dir);
+    profile::remove(&storage, "fake").unwrap();
+    let no = AtomicBool::new(false);
+    let path = Path::new(FIG);
+    let hybrid = figlens::search::semantic::search(
+        path,
+        &request("task", 5, None),
+        Mode::Hybrid,
+        &storage,
+        &no,
+    )
+    .unwrap();
+    assert_eq!(hybrid["query"]["usedModes"], json!(["text"]));
+    assert_eq!(
+        hybrid["coverage"]["layers"]["semantic"]["reason"],
+        "no_profile"
+    );
+    let err = figlens::search::semantic::search(
+        path,
+        &request("task", 5, None),
+        Mode::Semantic,
+        &storage,
+        &no,
+    )
+    .unwrap_err();
+    let kind = err
+        .downcast_ref::<figlens::FigError>()
+        .map(figlens::FigError::kind);
+    assert_eq!(kind, Some(figlens::ErrorKind::ModeUnavailable));
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     // `__child <mode>` from `start`, or `<model-dir>` alone as a configured profile runs it.
@@ -307,6 +403,14 @@ fn main() {
         (
             "warm_runtime_is_reused_across_requests",
             warm_runtime_is_reused_across_requests,
+        ),
+        (
+            "semantic_search_pages_by_meaning_without_text_spans",
+            semantic_search_pages_by_meaning_without_text_spans,
+        ),
+        (
+            "without_a_profile_hybrid_says_why_and_semantic_refuses",
+            without_a_profile_hybrid_says_why_and_semantic_refuses,
         ),
     ];
     let filter = args.iter().skip(1).find(|a| !a.starts_with('-'));
