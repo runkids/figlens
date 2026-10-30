@@ -151,11 +151,16 @@
       ]
     },
     "diff": {
-      "description": "Changing the diff engine (facets, matching, coverage, pair budgets, paging or its cursor) or tracked change revisions.",
+      "description": "Changing the diff engine (facets, matching, coverage, pair budgets, paging or its cursor).",
       "sources": [
         {
           "path": "wiki/diff.md"
-        },
+        }
+      ]
+    },
+    "changes": {
+      "description": "Changing change tracking, its revisions, changes reads or watch ack checkpoints.",
+      "sources": [
         {
           "path": "wiki/changes.md"
         }

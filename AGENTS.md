@@ -35,22 +35,23 @@ python3 scripts/ai-context.py check     # validate paths, headings, links, orpha
 
 | Topic | Use when |
 |---|---|
-| `mcp` | Changing MCP instructions, tool discovery or built-in workflow guidance |
+| `mcp` | Changing MCP instructions, tool discovery or workflow guidance |
 | `gcs` | Changing the `gs://` snapshot handoff, its download cache or refresh |
-| `performance` | Measuring load time and memory, reading the perf baseline, changing cache or decode cost |
+| `performance` | Measuring load time and memory, the perf baseline, cache or decode cost |
 | `parsing` | Changing untrusted container/schema/value decoding or parsing budgets |
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields or variables |
 | `discovery` | Changing find/inspect summaries or `--flat`, `tree --top-frames` or `export --match-dir` |
 | `search` | Changing search indexing, ranking, cursors, coverage or budgets |
 | `diff` | Changing diff |
+| `changes` | Changing change tracking, `changes` or `watch ack` |
 | `subscriptions` | Changing subscriptions or checkpoints |
 | `watch` | Changing leases or the runner |
-| `workspace` | Changing local workspace roots, identity, ownership, the SQLite registry, locks or index actions |
+| `workspace` | Changing workspace roots, identity, ownership, registry, locks or index actions |
 | `index` | Changing index generations, jobs, publication or workspace search |
-| `bundle` | Changing the bundle zip, manifest, context.md, batch bundles, font inventory or `verify` |
+| `bundle` | Changing the bundle zip, manifest, context.md, batches, fonts or `verify` |
 | `render` | Changing SVG or raster output: text, glyphs, image fills/adjustments, effects, export areas |
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison |
-| `pi` | Changing the Pi extension, reviewed component mappings or its npm packaging |
+| `pi` | Changing the Pi extension, component mappings or npm packaging |
 | `integrations` | Changing OpenCode V2/OMP, shared package, permissions, installed-host acceptance |
 | `accuracy` | Measuring output against Figma's exports, `compare`, test files, the CI regression corpus |
 | `release` | Packaging, GitHub releases, Homebrew, npm, installers, `figlens update` |
@@ -70,22 +71,22 @@ If a topic goes over budget, split it rather than raising the cap. Skills are wo
 
 ## Verification
 
-Pi viewer startup must wait for a successful catalog response, not just a printed URL; see `pi`.
+Pi viewer startup waits for a successful catalog response, not a printed URL; see `pi`.
 Verify each host's independent entry from the same extracted npm candidate; dispatch is not model completion; see `integrations`.
 Validate host reference-output directories before export, including symlinked parents; see `integrations`.
 Cancel owned CLI process trees and await exit before reference cleanup; see `integrations`.
 Check parsing budgets before Kiwi recursion or declared-length expansion; see `parsing`.
 Gate readers on the schema that added their feature, not `SCHEMA`; see `workspace`.
 Run `expand::check_depth` before any walk that recurses once per layer; see `parsing`.
-Bound declared and actual original-image bytes per image and per scope before retaining them; see `parsing`.
-Publish bundle/export/snapshot files through `output::write` to protect sources and existing outputs; see `parsing`.
+Bound declared and actual original-image bytes per image and scope before keeping them; see `parsing`.
+Write bundle/export/snapshot files via `output::write`, protecting sources and outputs; see `parsing`.
 Apply MCP budgets before request admission and to complete serialized replies; see `mcp`.
-Generated test fixtures use `src/test_support.rs` for atomic directory ownership and scoped cleanup; see `fig-format`.
+Test fixtures use `src/test_support.rs` for atomic ownership and scoped cleanup; see `fig-format`.
 Stroke checks read `render::stroke_weights`, not `strokeWeight`, which per-side strokes can leave 0; see `render`.
 Charge search and bounded-expansion visits, copies and allocations to `expand::Bounds` first; see `search`.
-Keep OpenCode's managed MCP key apart from the plugin's `figlens_*` tool names, or OpenCode drops the server; see `integrations`.
+Keep OpenCode's managed MCP key apart from the plugin's `figlens_*` tools, or OpenCode drops the server; see `integrations`.
 Image-fill changes must test shifted sprites exported from a clipping frame; see `render`.
-Background blur backdrops reference blur-free copies within the per-export budget, or nested blurs grow exponentially; see `render`.
+Blur backdrops reference blur-free copies within the per-export budget, or nested blurs explode; see `render`.
 Reproduce a browser SVG misdraw with the consumer's optimizer and inlining before changing export coordinates or ids; see `render`.
 Cancel a job only after its worker exits; publish via fence; see `index`.
 
