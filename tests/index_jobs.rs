@@ -1087,6 +1087,248 @@ fn the_old_path_of_a_relocated_source_does_not_serve_it_under_that_name() {
     );
 }
 
+/// A project workspace directory with `fig` prepared into it at scope `0:0`.
+fn prepare_in(env: &Env, fig: &Path, dir: &str) -> Value {
+    env.json(&[
+        "index",
+        "prepare",
+        fig.to_str().unwrap(),
+        "--workspace",
+        dir,
+        "--scope",
+        "0:0",
+    ])
+}
+
+fn project(env: &Env) -> PathBuf {
+    let project = env.dir.join("project");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::canonicalize(project).unwrap()
+}
+
+fn refs(reply: &Value) -> Vec<&Value> {
+    reply["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| &r["ref"])
+        .collect()
+}
+
+/// Changes a file's size, so its stamp no longer equals the verified snapshot.
+fn grow(fig: &Path) {
+    let mut file = std::fs::OpenOptions::new().append(true).open(fig).unwrap();
+    file.write_all(b"x").unwrap();
+}
+
+#[test]
+fn one_node_id_in_two_sources_is_returned_once_per_source_with_its_own_ref() {
+    let env = Env::new();
+    let project = project(&env);
+    let dir = project.to_str().unwrap();
+    for name in ["a.fig", "b.fig"] {
+        prepare_in(&env, &env.fig(name), dir);
+    }
+    let all = env.json(&["search", "--workspace", dir, "first"]);
+    let found = refs(&all);
+    assert_eq!(found.len(), 2, "{all}");
+    assert_eq!(found[0]["nodeId"], found[1]["nodeId"]);
+    assert_ne!(found[0]["sourceId"], found[1]["sourceId"]);
+    for r in &found {
+        let own = all["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["sourceId"] == r["sourceId"])
+            .unwrap();
+        assert_eq!(own["snapshotId"], r["snapshotId"]);
+        let alone = env.json(&[
+            "search",
+            "--workspace",
+            dir,
+            "--source",
+            r["sourceId"].as_str().unwrap(),
+            "first",
+        ]);
+        assert_eq!(refs(&alone), [*r]);
+    }
+}
+
+#[test]
+fn identical_bytes_in_two_sources_keep_their_ids_and_a_hidden_one_never_answers() {
+    let env = Env::new();
+    let (inside, outside) = (env.dir.join("in"), env.dir.join("out"));
+    std::fs::create_dir(&inside).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    let copy = |dir: &Path| {
+        let path = dir.join("design.fig");
+        std::fs::copy("examples/first-success/design.fig", &path).unwrap();
+        std::fs::canonicalize(path).unwrap()
+    };
+    let (seen, hidden) = (copy(&inside), copy(&outside));
+    let project = std::fs::canonicalize(env.dir.join("")).unwrap();
+    let dir = project.to_str().unwrap();
+    let seen_id = prepare_in(&env, &seen, dir)["source"]["sourceId"].clone();
+    let other = prepare_in(&env, &hidden, dir);
+    let hidden_id = other["source"]["sourceId"].clone();
+    assert_ne!(seen_id, hidden_id);
+    let status = env.json(&["index", "status", "--workspace", dir]);
+    let snapshots: Vec<&Value> = status["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| &s["snapshotId"])
+        .collect();
+    assert_eq!(snapshots[0], snapshots[1], "{status}");
+    let root = std::fs::canonicalize(&inside).unwrap();
+    let mut mcp = Mcp::start(&env, &["--root", root.to_str().unwrap()]);
+    let search = mcp.call(
+        "search",
+        json!({"workspaceId": other["workspaceId"], "query": "first"}),
+    );
+    let found = &search["structuredContent"];
+    assert!(!refs(found).is_empty(), "{search}");
+    assert!(refs(found).iter().all(|r| r["sourceId"] == seen_id));
+    assert!(!search.to_string().contains(hidden_id.as_str().unwrap()));
+    assert_eq!(found["coverage"]["totalRecords"], Value::Null);
+    // Without the hidden copy the visible one answers the same.
+    env.json(&[
+        "index",
+        "remove",
+        hidden_id.as_str().unwrap(),
+        "--workspace",
+        dir,
+    ]);
+    let after = mcp.call(
+        "search",
+        json!({"workspaceId": other["workspaceId"], "query": "first"}),
+    );
+    assert_eq!(refs(&after["structuredContent"]), refs(found));
+}
+
+#[test]
+fn a_missing_source_is_not_answered_by_a_same_name_file_registered_elsewhere() {
+    let env = Env::new();
+    let project = project(&env);
+    let dir = project.to_str().unwrap();
+    let old = env.fig("a.fig");
+    let old_id = prepare_in(&env, &old, dir)["source"]["sourceId"].clone();
+    let elsewhere = env.dir.join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::fs::copy("examples/first-success/design.fig", elsewhere.join("a.fig")).unwrap();
+    let new_id = prepare_in(&env, &elsewhere.join("a.fig"), dir)["source"]["sourceId"].clone();
+    assert_ne!(old_id, new_id);
+    std::fs::remove_file(&old).unwrap();
+    let found = env.json(&["search", "--workspace", dir, "first"]);
+    assert_eq!(
+        refs(&found)
+            .iter()
+            .map(|r| &r["sourceId"])
+            .collect::<Vec<_>>(),
+        [&new_id],
+        "{found}"
+    );
+    let gone = found["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["sourceId"] == old_id)
+        .unwrap();
+    assert_eq!(gone["state"], "unreadable");
+    assert_eq!(found["coverage"]["complete"], false);
+}
+
+#[test]
+fn a_source_recreated_at_its_path_with_other_bytes_is_stale_not_served() {
+    let env = Env::new();
+    let project = project(&env);
+    let dir = project.to_str().unwrap();
+    let fig = env.fig("a.fig");
+    prepare_in(&env, &fig, dir);
+    std::fs::remove_file(&fig).unwrap();
+    std::fs::copy("examples/first-success/design.fig", &fig).unwrap();
+    grow(&fig);
+    let out = env.run(&["search", "--workspace", dir, "first"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("changed since it was indexed"));
+}
+
+#[test]
+fn a_changed_source_is_listed_stale_and_left_out_of_a_workspace_search() {
+    let env = Env::new();
+    let project = project(&env);
+    let dir = project.to_str().unwrap();
+    let (a, b) = (env.fig("a.fig"), env.fig("b.fig"));
+    let a_id = prepare_in(&env, &a, dir)["source"]["sourceId"].clone();
+    let b_id = prepare_in(&env, &b, dir)["source"]["sourceId"].clone();
+    grow(&b);
+    let found = env.json(&["search", "--workspace", dir, "first"]);
+    assert_eq!(
+        refs(&found)
+            .iter()
+            .map(|r| &r["sourceId"])
+            .collect::<Vec<_>>(),
+        [&a_id],
+        "{found}"
+    );
+    let stale = found["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["sourceId"] == b_id)
+        .unwrap();
+    assert_eq!(stale["state"], "stale");
+    assert_eq!(found["coverage"]["complete"], false);
+    assert!(
+        found["coverage"]["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["code"] == "sources_not_ready" && r["sourceIds"] == json!([b_id]))
+    );
+}
+
+#[test]
+fn a_cursor_over_two_sources_is_stale_once_one_leaves_the_mcp_roots() {
+    let env = Env::new();
+    let (inside, outside) = (env.dir.join("in"), env.dir.join("out"));
+    std::fs::create_dir(&inside).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    let copy = |dir: &Path| {
+        let path = dir.join("design.fig");
+        std::fs::copy("examples/first-success/design.fig", &path).unwrap();
+        std::fs::canonicalize(path).unwrap()
+    };
+    let (seen, hidden) = (copy(&inside), copy(&outside));
+    let project = std::fs::canonicalize(env.dir.join("")).unwrap();
+    let dir = project.to_str().unwrap();
+    prepare_in(&env, &seen, dir);
+    let ws = prepare_in(&env, &hidden, dir)["workspaceId"].clone();
+    let leak = hidden.parent().unwrap().to_str().unwrap().to_owned();
+    let mut wide = Mcp::start(&env, &["--root", dir]);
+    let first = wide.call(
+        "search",
+        json!({"workspaceId": ws, "query": "first", "limit": 1}),
+    );
+    let cursor = first["structuredContent"]["nextCursor"].clone();
+    assert!(cursor.is_string(), "{first}");
+    let page = wide.call(
+        "search",
+        json!({"workspaceId": ws, "query": "first", "limit": 1, "cursor": cursor}),
+    );
+    assert_eq!(page["isError"], false, "{page}");
+    // The same cursor in a session whose roots no longer reach one of its sources.
+    let root = std::fs::canonicalize(&inside).unwrap();
+    let mut narrow = Mcp::start(&env, &["--root", root.to_str().unwrap()]);
+    let refused = narrow.call(
+        "search",
+        json!({"workspaceId": ws, "query": "first", "limit": 1, "cursor": cursor}),
+    );
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert_eq!(refused["_meta"]["figlens"]["code"], "cursor_stale");
+    assert!(!refused.to_string().contains(&leak));
+}
+
 #[cfg(unix)]
 #[test]
 fn ctrl_c_cancels_the_cli_owned_build_and_waits_for_its_worker() {
