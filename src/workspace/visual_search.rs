@@ -156,32 +156,12 @@ pub(super) fn visual_step(ws_id: &str, source_id: &Json, scope: &str, why: &str)
         "sourceId": source_id, "scope": scope}, "why": why})
 }
 
-/// The stored raster of the referenced node in generation `gen_id` of its source, uncropped.
-/// The reference must name the snapshot that generation indexed; a node without a stored unit
-/// raster names the step that builds it.
-pub(super) fn referenced(
+/// The stored raster of node `node_id` in generation `gen_id`, uncropped, if it is a unit there.
+pub(super) fn stored(
     tx: &rusqlite::Transaction,
-    ws_id: &str,
     gen_id: i64,
-    snapshot: Option<&str>,
-    input: &Input,
-    scope: &str,
-) -> Result<QueryImage> {
-    let Input::Ref {
-        source_id,
-        snapshot_id,
-        node_id,
-    } = input
-    else {
-        unreachable!("only references are resolved here");
-    };
-    if snapshot != Some(snapshot_id.as_str()) {
-        return Err(FigError::new(
-            ErrorKind::SourceStale,
-            format!("imageRef names snapshot {snapshot_id}, but source {source_id} now serves another; search again and take the reference from the new results"),
-        )
-        .into());
-    }
+    node_id: &str,
+) -> Result<Option<QueryImage>> {
     let rid: Option<u32> = tx
         .query_row(
             "SELECT rid FROM records WHERE gen = ?1 AND node_id = ?2",
@@ -190,20 +170,10 @@ pub(super) fn referenced(
         )
         .optional()
         .map_err(sql)?;
-    let image = match rid {
-        Some(rid) => super::visual::image(tx, gen_id, rid)?,
-        None => None,
-    };
-    image.ok_or_else(|| {
-        FigError::new(
-            ErrorKind::InvalidArguments,
-            format!("node {node_id} of source {source_id} has no stored visual raster: it is not a visual unit of this scope, or the visual layer is not built"),
-        )
-        .with_recovery(json!([{"action": "index_visual", "requires": "none",
-            "tool": "index", "arguments": {"action": "visual", "workspaceId": ws_id,
-            "sourceId": source_id, "scope": scope}}]))
-        .into()
-    })
+    match rid {
+        Some(rid) => super::visual::image(tx, gen_id, rid),
+        None => Ok(None),
+    }
 }
 
 /// The state a generation's visual layer under `profile` was published in: the hash layer is

@@ -212,44 +212,60 @@ pub fn units(conn: &Connection, gen_id: i64) -> Result<Vec<Unit>> {
     let mut rows = stmt.query(params![gen_id, POLICY])?;
     let mut out = Vec::with_capacity(count as usize);
     while let Some(row) = rows.next()? {
-        let report = row.get_ref(2)?.as_str()?;
-        if report.len() > MAX_REPORT {
-            return Err(super::fail(
-                crate::ErrorKind::IndexIncompatible,
-                "stored visual evidence exceeds its budget; rebuild this layer",
-            ));
-        }
-        let fingerprint = match row.get_ref(1)? {
-            rusqlite::types::ValueRef::Null => None,
-            value => Some(Fingerprint::decode(value.as_blob()?)?),
-        };
-        let error = match row.get_ref(3)? {
-            rusqlite::types::ValueRef::Null => None,
-            value => {
-                let error = value.as_str()?;
-                if error.len() > 4096 {
-                    return Err(super::fail(
-                        crate::ErrorKind::IndexIncompatible,
-                        "stored visual error exceeds its budget; rebuild this layer",
-                    ));
-                }
-                Some(error.to_owned())
-            }
-        };
-        if fingerprint.is_none() && error.is_none() {
-            return Err(super::fail(
-                crate::ErrorKind::IndexIncompatible,
-                "visual raster is missing; rebuild this layer",
-            ));
-        }
-        out.push(Unit {
-            rid: row.get(0)?,
-            fingerprint,
-            report: serde_json::from_str(report)?,
-            error,
-        });
+        out.push(read(row)?);
     }
     Ok(out)
+}
+
+/// One unit of generation `gen_id`: what a shown visual search result reports about its render.
+pub fn unit(conn: &Connection, gen_id: i64, rid: u32) -> Result<Option<Unit>> {
+    let mut stmt = conn.prepare(
+        "SELECT u.rid, r.fingerprint, u.report, u.error FROM visual_units u
+         LEFT JOIN visual_rasters r ON r.raster_key = u.raster_key AND r.policy = u.policy
+         WHERE u.gen = ?1 AND u.rid = ?2 AND u.policy = ?3",
+    )?;
+    let mut rows = stmt.query(params![gen_id, rid, POLICY])?;
+    rows.next()?.map(read).transpose()
+}
+
+/// A `units`/`unit` row: its evidence checked against its budget as a borrowed SQLite value.
+fn read(row: &rusqlite::Row) -> Result<Unit> {
+    let report = row.get_ref(2)?.as_str()?;
+    if report.len() > MAX_REPORT {
+        return Err(super::fail(
+            crate::ErrorKind::IndexIncompatible,
+            "stored visual evidence exceeds its budget; rebuild this layer",
+        ));
+    }
+    let fingerprint = match row.get_ref(1)? {
+        rusqlite::types::ValueRef::Null => None,
+        value => Some(Fingerprint::decode(value.as_blob()?)?),
+    };
+    let error = match row.get_ref(3)? {
+        rusqlite::types::ValueRef::Null => None,
+        value => {
+            let error = value.as_str()?;
+            if error.len() > 4096 {
+                return Err(super::fail(
+                    crate::ErrorKind::IndexIncompatible,
+                    "stored visual error exceeds its budget; rebuild this layer",
+                ));
+            }
+            Some(error.to_owned())
+        }
+    };
+    if fingerprint.is_none() && error.is_none() {
+        return Err(super::fail(
+            crate::ErrorKind::IndexIncompatible,
+            "visual raster is missing; rebuild this layer",
+        ));
+    }
+    Ok(Unit {
+        rid: row.get(0)?,
+        fingerprint,
+        report: serde_json::from_str(report)?,
+        error,
+    })
 }
 
 /// Reads one selected source thumbnail for crop/selected-node queries. Input bytes passed to
