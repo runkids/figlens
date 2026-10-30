@@ -246,6 +246,15 @@ fn placeholder(v: &Json) -> bool {
     }
 }
 
+/// Bytes a kept field's record takes besides its key and value.
+const FIELD_META: usize = std::mem::size_of::<Field>();
+
+/// Bytes a kept value of serialized length `len` holds as JSON, which is larger than its text.
+/// It is at most `FIELD_VALUE` long, so its walk is short.
+fn held_value(v: &Json, len: usize) -> usize {
+    json_bytes(v, &mut usize::MAX.clone()).max(len)
+}
+
 /// Hashes what is written and counts it, keeping nothing. A visit per 64 bytes is charged to
 /// `bounds` before each chunk is hashed, since escaping can make the stream longer than its
 /// estimate; a chunk it cannot pay for fails the write.
@@ -353,7 +362,7 @@ pub(super) fn facets(
                 };
             // A field kept unread retains its metadata, charged as a read one's is.
             if unread || gone {
-                if !bounds.charge(0, 64 + key.len()) {
+                if !bounds.charge(0, FIELD_META + key.len()) {
                     return None;
                 }
                 fields.push(Field {
@@ -422,7 +431,7 @@ pub(super) fn facets(
                 blobs.extend(b);
             }
             if large {
-                if !bounds.charge(0, 64 + key.len()) {
+                if !bounds.charge(0, FIELD_META + key.len()) {
                     return None;
                 }
                 fields.push(Field {
@@ -453,7 +462,8 @@ pub(super) fn facets(
             // Bytes and an array of bytes hash alike: their length, then each byte.
             blobs.into_iter().for_each(|b| raw_bytes(b, &mut hash));
             let fits = len <= FIELD_VALUE && kept + len <= RECORD_VALUES;
-            if !bounds.charge(0, 64 + key.len() + if fits { len } else { 0 }) {
+            let held = FIELD_META + key.len() + if fits { held_value(json, len) } else { 0 };
+            if !bounds.charge(0, held) {
                 return None;
             }
             if fits {
@@ -1300,24 +1310,35 @@ fn summary(counts: &[u32; 8]) -> String {
     parts.join(", ")
 }
 
-/// Changed fields with old and new values, within `left` page value bytes.
-fn fields(pair: &Pair, c: &Change, left: &mut usize) -> Json {
+/// Page bytes one listed field takes besides its key and values: its facet and markers.
+const FIELD_ENVELOPE: usize = 96;
+
+/// Changed fields with old and new values, within `left` page value bytes; `None` when even
+/// their keys and markers do not fit.
+fn fields(pair: &Pair, c: &Change, left: &mut usize) -> Option<Json> {
     let (Some(o), Some(n)) = (c.old, c.new) else {
-        return Json::Null;
+        return Some(Json::Null);
     };
     let (a, b) = (
         &pair.old.facets[o as usize].fields,
         &pair.new.facets[n as usize].fields,
     );
+    let differing: Vec<_> = FIELDS
+        .iter()
+        .flat_map(|k| k.iter())
+        .map(|key| {
+            let x = a.iter().find(|f| f.key == *key);
+            (key, x, b.iter().find(|f| f.key == *key))
+        })
+        .filter(|(_, x, y)| x.map(|f| f.digest) != y.map(|f| f.digest))
+        .collect();
+    let envelope: usize = differing
+        .iter()
+        .map(|(k, ..)| FIELD_ENVELOPE + k.len())
+        .sum();
+    *left = left.checked_sub(envelope)?;
     let mut out = Map::new();
-    for key in FIELDS.iter().flat_map(|k| k.iter()) {
-        let (x, y) = (
-            a.iter().find(|f| f.key == *key),
-            b.iter().find(|f| f.key == *key),
-        );
-        if x.map(|f| f.digest) == y.map(|f| f.digest) {
-            continue;
-        }
+    for (key, x, y) in differing {
         let mut value = |f: Option<&Field>| match f {
             None => json!({"present": false}),
             Some(Field { digest: None, .. }) => json!({"unread": true}),
@@ -1338,7 +1359,7 @@ fn fields(pair: &Pair, c: &Change, left: &mut usize) -> Json {
             json!({"facet": facet, "old": value(x), "new": value(y)}),
         );
     }
-    Json::Object(out)
+    Some(Json::Object(out))
 }
 
 fn edge_key(e: &super::usages::Edge) -> (&str, Option<&str>, &str, &str) {
@@ -1467,6 +1488,21 @@ fn page_with(
             },
             false => None,
         };
+        // So do its fields' keys and markers; values that do not fit are marked truncated.
+        let field_list = match c.kind == Kind::Changed || c.facets & UNREAD != 0 {
+            true => match fields(pair, c, &mut left) {
+                Some(f) => Some(f),
+                None if end > start => break,
+                None => {
+                    return Err(FigError::new(
+                        ErrorKind::ResponseBudget,
+                        format!("the changed fields of {} need more than {PAGE_VALUES} bytes; inspect it on each side with `figlens inspect`", r.id),
+                    )
+                    .into())
+                }
+            },
+            false => None,
+        };
         end += 1;
         let mut node = json!({"id": r.id, "kind": r.kind, "name": r.name, "change": c.kind.name()});
         if c.kind == Kind::Retyped {
@@ -1485,13 +1521,13 @@ fn page_with(
             if c.facets & UNREAD != 0 {
                 node["unread"] = json!(true);
             }
-            node["fields"] = fields(pair, c, &mut left);
+            node["fields"] = field_list.unwrap_or_default();
             if let Some(e) = edge_list {
                 node["edges"] = e;
             }
         } else if c.facets & UNREAD != 0 {
             node["unread"] = json!(true);
-            node["fields"] = fields(pair, c, &mut left);
+            node["fields"] = field_list.unwrap_or_default();
         }
         if c.descendants > 0 {
             node["descendants"] = json!(c.descendants);

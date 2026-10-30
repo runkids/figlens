@@ -404,7 +404,7 @@ fn an_unread_field_is_charged_its_metadata_like_a_read_one() {
         let before = b.bytes;
         let f = facets(&tree, id, ex.nodes.get(id), &mut b).unwrap();
         assert!(f.fields.iter().any(|f| f.digest.is_none()), "{id}");
-        // Each field pays its metadata, and a kept value its serialized length; the malformed
+        // Each field pays its metadata, and a kept value its size as JSON; the malformed
         // blob is found only after its stored geometry was converted and copied, which it pays.
         let converted = tree
             .nodes
@@ -414,7 +414,10 @@ fn an_unread_field_is_charged_its_metadata_like_a_read_one() {
         let kept: usize = f
             .fields
             .iter()
-            .map(|f| 64 + f.key.len() + f.value.as_ref().map_or(0, |v| v.to_string().len()))
+            .map(|f| {
+                let value = f.value.as_ref();
+                FIELD_META + f.key.len() + value.map_or(0, |v| held_value(v, v.to_string().len()))
+            })
             .sum();
         // An expanded size and transform are each built after paying their fixed estimate.
         let e = ex.nodes.get(id);
@@ -669,6 +672,41 @@ fn a_first_change_too_large_for_a_page_is_an_error_not_an_oversized_page() {
         e.downcast_ref::<FigError>().unwrap().kind(),
         ErrorKind::ResponseBudget
     );
+}
+
+#[test]
+fn listed_fields_keys_and_markers_count_against_the_page_bytes() {
+    // Many fields differ by small values, so their keys and markers outweigh the values.
+    const KEYS: [&str; 12] = [
+        "stackSpacing",
+        "stackHorizontalPadding",
+        "stackVerticalPadding",
+        "stackPaddingRight",
+        "stackPaddingBottom",
+        "strokeWeight",
+        "borderTopWeight",
+        "borderRightWeight",
+        "borderBottomWeight",
+        "borderLeftWeight",
+        "opacity",
+        "paragraphSpacing",
+    ];
+    let side = |v: f32| {
+        let fields = || KEYS.iter().map(|k| (*k, K::Float(v))).collect::<Vec<_>>();
+        doc(vec![
+            node(10, Some(1), "FRAME", "Home", vec![]),
+            node(11, Some(10), "RECTANGLE", "One", fields()),
+            node(12, Some(10), "RECTANGLE", "Two", fields()),
+        ])
+    };
+    let (a, b) = (side(1.0), side(0.5));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let pair = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
+    let at = |bytes| page_with(&pair, &req(LIMIT, None), false, [bytes, PAGE_WORK]);
+    // The fewest bytes that list a change carry what the reply holds, markers included.
+    let bytes = (1..PAGE_VALUES).find(|b| at(*b).is_ok()).unwrap();
+    let page = at(bytes).unwrap();
+    assert!(serde_json::to_string(&page["frames"]).unwrap().len() <= bytes);
 }
 
 #[test]
