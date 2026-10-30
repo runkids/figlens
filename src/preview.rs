@@ -458,7 +458,7 @@ const IDLE: &str = "idle connection";
 const MAX_LINE: usize = 6 * search::store::ID_BYTES + 4096;
 
 /// Routes that change state take POST, never GET, so no prefetch, cache or link can trigger them.
-const POSTS: [&str; 1] = ["enable/"];
+const POSTS: [&str; 4] = ["enable/", "image/", "image-ref/", "cancel/"];
 /// The largest POST body: a small JSON object.
 const POST_BYTES: usize = 4096;
 
@@ -485,7 +485,8 @@ fn request(stream: &TcpStream, authority: &str, token: &str) -> Result<(String, 
         return Err("only HTTP/1.1 GET or POST supported".into());
     }
     let post = parts[0] == "POST";
-    let (mut origin, mut json, mut length, mut same_origin) = (false, false, None, true);
+    let (mut origin, mut json, mut png, mut length, mut same_origin) =
+        (false, false, false, None, true);
     let mut host = false;
     let (mut cross_site, mut navigate, mut document) = (false, false, false);
     let mut total = 0;
@@ -514,6 +515,7 @@ fn request(stream: &TcpStream, authority: &str, token: &str) -> Result<(String, 
                 origin = true;
             }
             json |= key.eq_ignore_ascii_case("content-type") && value.trim() == "application/json";
+            png |= key.eq_ignore_ascii_case("content-type") && value.trim() == "image/png";
             same_origin &=
                 !key.eq_ignore_ascii_case("sec-fetch-site") || value.trim() == "same-origin";
             if key.eq_ignore_ascii_case("content-length") {
@@ -542,9 +544,14 @@ fn request(stream: &TcpStream, authority: &str, token: &str) -> Result<(String, 
     if !post {
         return Ok((route.to_owned(), None));
     }
-    // A state change comes only from this page: its own origin, as JSON, with a small declared body.
-    let length = length.filter(|n| *n <= POST_BYTES);
-    let (true, true, true, Some(length)) = (origin, same_origin, json, length) else {
+    // A body comes only from this page; uploads have their own PNG cap, JSON stays small.
+    let (mime, cap) = if route.starts_with("image/") {
+        (png, search::visual::MAX_BYTES)
+    } else {
+        (json, POST_BYTES)
+    };
+    let length = length.filter(|n| *n <= cap);
+    let (true, true, true, Some(length)) = (origin, same_origin, mime, length) else {
         return Err("post rejected".into());
     };
     let mut body = vec![0; length];
@@ -640,6 +647,7 @@ pub fn serve_until(
                 bundles: AtomicUsize::new(0),
                 source: source.clone(),
                 indexes: Mutex::default(),
+                queries: cancel::Requests::default(),
                 indexing: &indexing,
                 cancel: std::sync::atomic::AtomicBool::new(false),
             };
@@ -663,6 +671,7 @@ pub fn serve_until(
                 // workers are joined, so neither holds the reload or the shutdown.
                 let end = || {
                     ctx.cancel.store(true, Ordering::SeqCst);
+                    ctx.queries.stop();
                     indexing.stop();
                 };
                 loop {
@@ -739,6 +748,7 @@ struct Revision<'r> {
     source: Value,
     /// Search indexes of this revision's scopes, most recently used last.
     indexes: Mutex<Vec<(String, Built)>>,
+    queries: cancel::Requests,
     /// The index build the user enabled; the serve loop stops it when this revision ends.
     indexing: &'r semantic::Indexing,
     /// Set when this revision ends (a save or a stop): its semantic queries then stop.
@@ -769,6 +779,9 @@ impl Revision<'_> {
         }
         let key = route.as_ref().ok().map(|(route, _)| route.clone());
         let result = route.and_then(|(route, body)| match body {
+            Some(body) if route.starts_with("image/") || route.starts_with("image-ref/") => {
+                self.visual_post(&route, body)
+            }
             Some(body) => self.post(&route, &body),
             None => self.respond(&route),
         });
@@ -823,6 +836,9 @@ impl Revision<'_> {
         }
         if let Some(rest) = route.strip_prefix("usages/") {
             return Ok(("application/json", self.relations(true, rest)?));
+        }
+        if let Some(rest) = route.strip_prefix("visual-thumb/") {
+            return self.visual_thumbnail(rest);
         }
         // Semantic readiness; refusals are JSON, as search's are.
         if let Some(rest) = route.strip_prefix("semantic/") {
@@ -949,7 +965,15 @@ impl Revision<'_> {
             ]
         } else {
             &[
-                "q", "scope", "type", "hidden", "internal", "limit", "cursor", "mode",
+                "q",
+                "scope",
+                "type",
+                "hidden",
+                "internal",
+                "limit",
+                "cursor",
+                "mode",
+                "requestId",
             ]
         };
         if let Some((key, _)) = params.iter().find(|(k, _)| !known.contains(&k.as_str())) {
@@ -1016,7 +1040,12 @@ impl Revision<'_> {
                         search::search_index(&*self.index(&req.scope)?, &req, self.source.clone())
                     }
                     // Semantic and hybrid read this file's enabled workspace index, never this tree.
-                    Some(mode) => self.indexed_search(&req, mode),
+                    Some(mode) => {
+                        let call = self
+                            .queries
+                            .begin(one("requestId").as_deref(), &self.cancel)?;
+                        self.indexed_search(&req, mode, &call.cancel)
+                    }
                     None => Err("mode takes text, semantic or hybrid".into()),
                 }
             }
@@ -1155,6 +1184,8 @@ fn staged(file: &Path) -> Result<Staged> {
     Ok((document, modified, source))
 }
 
+mod cancel;
 mod semantic;
 #[cfg(test)]
 mod tests;
+mod visual;

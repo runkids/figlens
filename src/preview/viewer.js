@@ -96,25 +96,29 @@ const acceptReply = (seq, current, replySource, loadedSource) => seq === current
 function reasonCodes(reply) {
     const text = r => typeof r === 'string' ? r : `${r.code}${r.relations?.length ? ` (${r.relations.join(', ')})` : ''}`;
     const layers = reply.coverage?.layers;
-    return [...new Set([...(reply.coverage?.reasons || []), ...(layers?.relations?.reasons || []), ...(layers?.semantic?.reasons || [])].map(text))];
+    const sourceReasons = layer => (layer?.sources || []).flatMap(source => source.reasons || []);
+    return [...new Set([...(reply.coverage?.reasons || []), ...(layers?.relations?.reasons || []),
+        ...(layers?.semantic?.reasons || []), ...sourceReasons(layers?.semantic),
+        ...(layers?.visual?.hash?.reasons || []), ...sourceReasons(layers?.visual?.hash),
+        ...(layers?.visual?.embedding?.reasons || []), ...sourceReasons(layers?.visual?.embedding)].map(text))];
 }
 // The semantic panel line for a `semantic/<revision>` reply: the viewer's build of the scope while it runs,
 // else whether this revision has a current index of it and whether a local model is ready. Enable is offered
 // when there is no current index, or a ready model may still need its layer built; never while one runs.
-function semanticSummary(s, snapshotId) {
+function semanticSummary(s, snapshotId, visual = false) {
     if (s.error) return {text: s.error.message, enable: false, running: false};
     const job = s.job?.report, running = s.job?.running === true;
     if (running) {
         const p = job?.progress, done = p?.total ? ` ${p.units}/${p.total}` : '';
-        return {text: `Indexing ${s.scope}: ${job?.kind === 'embed' ? 'model layer' : 'text'} ${job?.stage || job?.state || 'starting'}${done}.`, enable: false, running};
+        return {text: `Indexing ${s.scope}: ${job?.kind === 'visual' ? 'visual layer' : job?.kind === 'embed' ? 'model layer' : 'text'} ${job?.stage || job?.state || 'starting'}${done}.`, enable: false, running};
     }
     const indexed = (s.index?.sources || []).flatMap(x => x.indexed || []).some(i => i.scope === s.scope && i.current && i.snapshotId === snapshotId);
-    const profiles = s.models?.profiles || [], ready = profiles.find(p => p.state === 'ready');
+    const profiles = (s.models?.profiles || []).filter(p => (p.modality || 'text') === (visual ? 'image' : 'text')), ready = profiles.find(p => p.state === 'ready');
     const model = ready ? `Local model ${ready.name} ready.`
         : profiles.length ? `Local model ${profiles[0].name} unavailable: ${profiles[0].reason}.`
-        : 'No local model configured: set one up through your agent’s figlens models tool; hybrid falls back to text.';
+        : visual ? 'No visual model configured: image hash matching works without one; configure a local image profile for broader similarity.' : 'No local model configured: set one up through your agent’s figlens models tool; hybrid falls back to text.';
     const ended = job?.error ? ` Last build failed: ${job.error.message}` : ['failed', 'cancelled', 'interrupted'].includes(job?.state) ? ` Last build ${job.state}.` : '';
-    return {text: `${indexed ? `Index of ${s.scope} ready.` : `No index of ${s.scope} for this revision.`} ${model}${ended}`, enable: !indexed || !!ready, running};
+    return {text: `${indexed ? `Index of ${s.scope} ready.` : `No index of ${s.scope} for this revision.`} ${model}${ended}`, enable: visual || !indexed || !!ready, running};
 }
 // A load-more page joined to the pages already shown: a page that was incomplete or named a reason keeps
 // saying so, since its results are still on screen. A first page (no cursor) starts over.
@@ -128,6 +132,15 @@ function mergePages(acc, reply, append) {
     if (r || t) coverage.layers = {...c.layers, ...d.layers, relations: {...r, ...t, reasons: union(r?.reasons, t?.reasons)}};
     return {...acc, ...reply, coverage, results: [...acc.results, ...reply.results]};
 }
+function matchReasons(row) {
+    return [...new Set((row.matches || []).map(m => {
+        if (m.basis === 'normalized_pixels') return 'Same normalized pixels';
+        if (m.basis === 'perceptual_hash') return `Perceptual hash: distance ${m.distance?.hamming ?? 'unknown'}`;
+        if (m.basis === 'visual_embedding') return `Visual model: cosine ${Number.isFinite(m.cosine) ? m.cosine.toFixed(3) : 'unknown'}`;
+        if (m.basis === 'semantic') return `Semantic ${m.field ?? 'unknown field'}, chunk ${m.chunk ?? 'unknown'}`;
+        return m.basis === 'lexical' ? `Text match: ${m.field ?? 'text'}` : m.basis;
+    }).filter(Boolean))].join('; ');
+}
 // One display row from a search/usages result, a definition or an outgoing edge. Identity is ref.nodeId only.
 function rowModel(row, source) {
     const ref = row.ref || row.target?.ref, resource = row.resource ?? row.target?.resource ?? null;
@@ -137,7 +150,7 @@ function rowModel(row, source) {
         viewSourceId: source?.sourceId ?? ref?.sourceId,
         name: row.name ?? row.definition?.name ?? ref?.nodeId ?? resource ?? '(no target)',
         type: row.type ?? row.definition?.type ?? null, relation: row.relation ?? null, state: row.state ?? null,
-        basis: row.basis ?? null, via: row.via ?? null, hidden: row.hidden === true,
+        basis: row.basis ?? (matchReasons(row) || null), via: row.via ?? null, hidden: row.hidden === true,
         origin: row.origin ?? null, scopeRoot: row.scopeRoot ?? null, page: row.page?.name ?? null,
         path: (row.path || []).map(p => p.name || p.id).join(' / '),
     };
@@ -166,7 +179,22 @@ function localSearch(roots, query, {types = [], hidden = false} = {}) {
     roots.forEach(n => walk(n, false));
     return {results: found.slice(0, 200).map(([n, off]) => ({name: n.name || n.id, type: n.type, ref: {nodeId: n.id}, hidden: off})), hasMore: found.length > 200};
 }
-if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, freshRow, relationChoices, acceptReply, reasonCodes, semanticSummary, mergePages, rowModel, groupUsages, localSearch, sourceRef, pageOf, scopeCoverage};
+// Read the PNG dimensions before the browser decodes a local image.
+function pngDimensions(bytes, size) {
+    const b = new Uint8Array(bytes), signature = [137, 80, 78, 71, 13, 10, 26, 10];
+    if (size > 8 * 1024 * 1024 || b.length < 24 || signature.some((n, i) => b[i] !== n)
+        || String.fromCharCode(...b.slice(12, 16)) !== 'IHDR') throw new Error('Choose a PNG of at most 8 MiB.');
+    const d = new DataView(bytes), width = d.getUint32(16), height = d.getUint32(20);
+    if (!width || !height || width * height > 4000000) throw new Error('Reference image must contain at most 4 MP.');
+    return {width, height};
+}
+function imageCrop(values, width, height) {
+    const [x, y, w, h] = values.map(Number);
+    if (values.some(v => String(v).trim() === '') || ![x, y, w, h].every(Number.isSafeInteger) || x < 0 || y < 0 || w < 1 || h < 1 || x + w > width || y + h > height)
+        throw new Error('Crop must be a positive rectangle inside the reference image.');
+    return [x, y, w, h].join(',');
+}
+if (typeof module !== 'undefined') module.exports = {pngDimensions, imageCrop, matchReasons, flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, freshRow, relationChoices, acceptReply, reasonCodes, semanticSummary, mergePages, rowModel, groupUsages, localSearch, sourceRef, pageOf, scopeCoverage};
 if (typeof document !== 'undefined') {
     const boot = JSON.parse(document.getElementById('boot').textContent);
     const $ = id => document.getElementById(id);
@@ -1525,6 +1553,7 @@ if (typeof document !== 'undefined') {
         rel[name].ctl?.abort();
         rel[name].seq++;
     }
+
     // A new saved revision: results may name other layers, so both panels are cleared and marked stale.
     function relReset() {
         for (const name of ['ranked', 'usages']) {
@@ -1533,23 +1562,27 @@ if (typeof document !== 'undefined') {
             u.list.replaceChildren();
             u.more.hidden = true;
             if (p.ran) relState(name, 'stale', 'Saved design changed — results cleared; rerun.');
-            Object.assign(p, {ran: false, acc: null, target: null});
+            Object.assign(p, {ran: false, acc: null, target: null, init: null});
         }
+        if (visualInput?.nodeId) visualClear();
         if (!boot.snapshot) relTypes();
     }
     function relTypes() {
         const types = [...new Set((boot.snapshot ? nodes : flat(catalog)).map(n => n.type).filter(Boolean))].sort();
         $('rankedTypes').replaceChildren(...types.map(t => Object.assign(el('option', t), {value: t})));
     }
-    async function relRun(name, base, cursor) {
+    async function relRun(name, base, cursor, init) {
         const p = rel[name], u = relUI(name), append = !!cursor;
         relAbort(name);
         const ctl = p.ctl = new AbortController(), seq = p.seq;
         Object.assign(p, {base, ran: true});
+        if (!append) p.init = init;
         relState(name, 'loading', 'Loading…');
         u.more.hidden = true;
         try {
-            const reply = await (await api(base + (cursor ? '&' + relQuery({cursor}) : ''), {signal: ctl.signal})).json();
+            const route = base + (cursor ? '&' + relQuery({cursor}) : '');
+            const reply = name === 'ranked' ? await queryReply(route, p.init, ctl.signal)
+                : await relGet(route, {signal: ctl.signal});
             if (!acceptReply(seq, p.seq, reply.source, loadedSource)) {
                 if (seq === p.seq) relState(name, 'stale', 'Saved design changed — reply dropped; rerun.');
                 return;
@@ -1575,6 +1608,8 @@ if (typeof document !== 'undefined') {
         if (codes.length) text += ` ${partial ? 'Partial coverage' : 'Coverage notes'}: ${codes.join(', ')}.`;
         const layer = acc.coverage?.layers?.semantic?.state;
         if (layer && layer !== 'ready') text += ` Semantic layer: ${layer}.`;
+        const visual = acc.coverage?.layers?.visual;
+        if (visual) text += ` Visual hash: ${visual.hash?.state ?? 'unknown'}; image model: ${visual.embedding?.state ?? 'unknown'}; approximate signal: ${visual.approximate ?? 'none'}.`;
         const s = sourceRef(acc.source, generation);
         if (s) text += ` File ${s.path}, source ${s.sourceId}, snapshot ${s.snapshotId}, revision ${s.revision}.`;
         relState(name, partial ? 'partial' : n ? 'ok' : 'empty', text);
@@ -1649,7 +1684,7 @@ if (typeof document !== 'undefined') {
     }
     function runRanked(more) {
         const p = rel.ranked, q = $('rankedQuery').value.trim();
-        if (!q) return relState('ranked', 'idle', 'Enter a query.');
+        if (!q && !visualInput) return relState('ranked', 'idle', 'Enter a query or choose a reference image.');
         const types = [...$('rankedTypes').selectedOptions].map(o => o.value), hidden = $('rankedHidden').checked;
         if (boot.snapshot) {
             relAbort('ranked');
@@ -1667,13 +1702,87 @@ if (typeof document !== 'undefined') {
         if (scoped && selected.id.startsWith('I')) return relState('ranked', 'idle', 'Search scopes are stored layers: select the instance that holds this layer, or search the whole file.');
         p.scope = scoped ? `selection “${selected.name || selected.id}”` : 'the whole file';
         const mode = $('rankedMode').value;
-        relRun('ranked', `search/${generation}?` + relQuery({q, scope: scoped ? selected.id : null, type: types, hidden, internal: $('rankedInternal').checked, mode: mode === 'text' ? null : mode}));
+        const fields = {q, scope: scoped ? selected.id : null, type: types, hidden, internal: $('rankedInternal').checked, mode: mode === 'text' ? null : mode};
+        if (visualInput) {
+            if (!['visual', 'hybrid'].includes(mode)) return relState('ranked', 'error', 'Use Visual/Hybrid for an image, or clear the reference.');
+            if (mode === 'visual' && q) return relState('ranked', 'error', 'Use Hybrid to combine an image with text.');
+            try {
+                if ($('visualCrop').checked) fields.crop = imageCrop(['visualX','visualY','visualW','visualH'].map(id => $(id).value), visualInput.width, visualInput.height);
+            } catch (e) { return relState('ranked', 'error', e.message); }
+            const ref = !!visualInput.nodeId;
+            relRun('ranked', `${ref ? 'image-ref' : 'image'}/${generation}?` + relQuery(fields), null,
+                {method: 'POST', headers: {'Content-Type': ref ? 'application/json' : 'image/png'},
+                 body: ref ? JSON.stringify({nodeId: visualInput.nodeId}) : visualInput.file});
+        } else {
+            if (mode === 'visual') return relState('ranked', 'idle', 'Choose a reference image or selected stored layer.');
+            relRun('ranked', `search/${generation}?` + relQuery(fields));
+        }
         if (mode !== 'text') semanticRefresh();
     }
+    let visualInput = null, visualSeq = 0, visualURL = null, visualCtl = null;
+    function visualClear() {
+        visualSeq++;
+        visualCtl?.abort();
+        if (visualURL) URL.revokeObjectURL(visualURL);
+        visualURL = visualInput = null;
+        $('visualFile').value = '';
+        $('visualPreview').hidden = $('visualClear').hidden = $('visualCropFields').hidden = true;
+        $('visualCrop').checked = false;
+        $('visualCrop').disabled = true;
+        $('visualState').textContent = '';
+        relAbort('ranked');
+        rel.ranked.init = null;
+        $('rankedMore').hidden = true;
+    }
+    function showVisual(input, blob, text) {
+        visualInput = input;
+        visualURL = URL.createObjectURL(blob);
+        $('visualPreview').src = visualURL;
+        $('visualPreview').hidden = $('visualClear').hidden = false;
+        $('visualState').textContent = `${text} ${input.width} × ${input.height} pixels. Similarity does not prove component identity.`;
+        $('visualCrop').disabled = false;
+        $('visualW').value = input.width;
+        $('visualH').value = input.height;
+        $('visualX').value = $('visualY').value = 0;
+        $('rankedMode').value = $('rankedQuery').value.trim() ? 'hybrid' : 'visual';
+        semanticRefresh();
+    }
+    $('visualClear').onclick = visualClear;
+    $('visualCrop').onchange = () => $('visualCropFields').hidden = !$('visualCrop').checked;
+    $('visualFile').onchange = async () => {
+        const file = $('visualFile').files[0];
+        visualClear();
+        if (!file) return;
+        const seq = visualSeq;
+        try {
+            const dimensions = pngDimensions(await file.slice(0, 24).arrayBuffer(), file.size);
+            if (seq !== visualSeq) return;
+            showVisual({...dimensions, file}, file, 'Local PNG: sent only to this running local viewer when you search; never saved.');
+        } catch (e) { if (seq === visualSeq) $('visualState').textContent = e.message; }
+    };
+    $('visualSelected').onclick = async () => {
+        const nodeId = selected?.id, scope = rankedScope(), revision = generation;
+        visualClear();
+        $('rankedMode').value = $('rankedQuery').value.trim() ? 'hybrid' : 'visual';
+        semanticRefresh();
+        if (!nodeId || nodeId.startsWith('I')) { $('visualState').textContent = 'Select a stored visual unit first.'; return; }
+        if (!scope) { $('visualState').textContent = 'Select a stored search scope first.'; return; }
+        const seq = visualSeq, ctl = visualCtl = new AbortController();
+        try {
+            const response = await api(`visual-thumb/${revision}/${nodeId}?` + relQuery({scope}), {signal: ctl.signal});
+            if (!response.headers.get('Content-Type')?.startsWith('image/png')) {
+                const out = await response.json();
+                throw new Error(out.error?.message || 'Visual index is not ready for this selected layer.');
+            }
+            const blob = await response.blob();
+            if (seq !== visualSeq || revision !== generation) return;
+            showVisual({nodeId, width: 256, height: 256}, blob, 'Selected layer: crop uses this cached 256 × 256 preview, bound to the loaded revision.');
+        } catch (e) { if (seq === visualSeq) $('visualState').textContent = e.message; }
+    };
     // Semantic readiness of the scope a ranked search would use, polled while the viewer's own build runs;
     // only the newest request of the current revision is shown.
     // The scope the Enable button names, kept so a click builds exactly what it says.
-    let semanticSeq = 0, semanticTimer, shownScope = null;
+    let semanticSeq = 0, semanticTimer, shownScope = null, shownVisual = false;
     // Selection-only search needs a stored selected layer; it never widens to the whole file.
     const rankedScope = () => !$('rankedSelection').checked ? '0:0' : selected && !selected.id.startsWith('I') ? selected.id : null;
     async function semanticRefresh() {
@@ -1690,13 +1799,15 @@ if (typeof document !== 'undefined') {
         try {
             const s = await (await api(`semantic/${revision}?` + relQuery({scope}))).json();
             if (seq !== semanticSeq || revision !== generation) return;
-            const v = semanticSummary(s, loadedSource?.snapshotId);
+            const visual = $('rankedMode').value === 'visual' || !!visualInput;
+            const v = semanticSummary(s, loadedSource?.snapshotId, visual);
             $('semanticState').textContent = v.text;
             $('semanticEnable').hidden = !v.enable;
             shownScope = scope;
+            shownVisual = visual;
             const what = scope === '0:0' ? 'the whole file' : `layer ${scope}`;
-            $('semanticEnable').textContent = `Enable index of ${what}`;
-            if (v.enable) $('semanticState').textContent += ` Enable index stores a local figlens index of ${what} of ${loadedSource?.path ?? 'this file'}; with a local model it also builds the model layer here. Nothing is downloaded or sent anywhere, and a save stops the build.`;
+            $('semanticEnable').textContent = `Enable ${visual ? 'visual ' : ''}index of ${what}`;
+            if (v.enable) $('semanticState').textContent += ` Enable index stores a local figlens index of ${what} of ${loadedSource?.path ?? 'this file'}; ${visual ? 'visual indexing also stores source thumbnails and, with an image model, image vectors' : 'with a local text model it also builds the model layer here'}. Nothing is downloaded or sent anywhere, and a save stops the build.`;
             if (v.running) semanticTimer = setTimeout(semanticRefresh, 1000);
         } catch (e) { if (seq === semanticSeq) $('semanticState').textContent = e.message; }
     }
@@ -1705,10 +1816,10 @@ if (typeof document !== 'undefined') {
     addEventListener('figlens:select', () => $('rankedSelection').checked && semanticRefresh());
     // The one action that creates a workspace: the button names the scope and the line above it the file.
     $('semanticEnable').onclick = async () => {
-        const scope = shownScope, revision = generation;
+        const scope = shownScope, revision = generation, visual = shownVisual;
         if (!scope) return;
         try {
-            const r = await (await api(`enable/${revision}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({scope})})).json();
+            const r = await (await api(`enable/${revision}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({scope, ...(visual ? {visual: true} : {})})})).json();
             if (revision !== generation) return;
             if (r.error) $('semanticState').textContent = `${r.error.kind ? r.error.kind + ': ' : ''}${r.error.message}`;
             else semanticRefresh();
@@ -1768,10 +1879,23 @@ if (typeof document !== 'undefined') {
     if (boot.snapshot) {
         $('rankedNote').hidden = false;
         $('rankedInternal').disabled = $('rankedSelection').disabled = $('rankedMode').disabled = true;
+        $('visualControls').disabled = true;
+        $('visualState').textContent = 'Image and model layers are unavailable in offline snapshots.';
         relState('usages', 'unavailable', 'Unavailable in offline snapshots');
         for (const id of ['usagesGo', 'usagesDir', 'usagesHidden']) $(id).disabled = true;
     }
-    const relGet = async route => (await api(route)).json();
+    const relGet = async (route, init) => (await api(route, init)).json();
+    async function queryReply(route, init, signal) {
+        const revision = route.split('/')[1].split('?')[0];
+        const requestId = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+        const cancel = () => { api(`cancel/${revision}`, {method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({requestId})}).catch(() => {}); };
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+        signal?.addEventListener('abort', cancel, {once:true});
+        try { return await relGet(route + '&' + relQuery({requestId}), {...init, signal}); }
+        finally { signal?.removeEventListener('abort', cancel); }
+    }
+
     // Agent API: the same operations as the UI, for browser-automation agents (Playwright, agent-browser,
     // Claude in Chrome). It runs in the page, so it adds no service routes and keeps the read-only boundary.
     const toBase64 = bytes => {
@@ -1857,9 +1981,18 @@ if (typeof document !== 'undefined') {
             return source.filter(n => `${n.name || ''} ${n.text || n.characters || ''}`.toLowerCase().includes(q))
                 .slice(0, 200).map(n => ({id: n.id, name: n.name, type: n.type}));
         },
-        async rankedSearch(query, {scope, types, hidden, internal, limit, cursor, mode} = {}) {
+        async rankedSearch(query, {scope, types, hidden, internal, limit, cursor, mode, signal} = {}) {
             if (boot.snapshot) return {packagedOnly: true, ...localSearch(nodes.slice(0, 1), query, {types, hidden})};
-            return relGet(`search/${generation}?` + relQuery({q: query, scope, type: types, hidden, internal, limit, cursor, mode}));
+            return queryReply(`search/${generation}?` + relQuery({q: query, scope, type: types, hidden, internal, limit, cursor, mode}), undefined, signal);
+        },
+        async imageSearch(input, {query = '', scope, types, hidden, internal, limit, cursor, mode, crop, signal} = {}) {
+            if (boot.snapshot) throw Object.assign(new Error('Image search is unavailable in offline snapshots'), {unavailable: true});
+            const reference = input && typeof input.nodeId === 'string', revision = generation;
+            if (!reference && !(input instanceof Blob)) throw new Error('imageSearch takes a PNG Blob or {nodeId} of this revision');
+            const body = reference ? JSON.stringify({nodeId: input.nodeId}) : input;
+            if (!reference) pngDimensions(await input.slice(0, 24).arrayBuffer(), input.size);
+            return queryReply(`${reference ? 'image-ref' : 'image'}/${revision}?` + relQuery({q:query,scope,type:types,hidden,internal,limit,cursor,mode,crop:crop?.join(',')}),
+                {method:'POST', headers:{'Content-Type':reference?'application/json':'image/png'}, body}, signal);
         },
         async usages(id, {resource, scope, relations, outgoing, hidden, limit, cursor, snapshot} = {}) {
             if (boot.snapshot) throw Object.assign(new Error('Unavailable in offline snapshots'), {unavailable: true});

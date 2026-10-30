@@ -121,10 +121,14 @@ impl Revision<'_> {
         &self,
         req: &search::Request,
         mode: crate::semantic::Mode,
+        cancel: &AtomicBool,
     ) -> Result<Value> {
         let storage = workspace::storage(None)?;
-        let mut out =
-            workspace::query::search_mode(&storage, &self.select()?, &[], req, mode, &self.cancel)?;
+        let out = workspace::query::search_mode(&storage, &self.select()?, &[], req, mode, cancel)?;
+        self.indexed_reply(out)
+    }
+
+    pub(super) fn indexed_reply(&self, mut out: Value) -> Result<Value> {
         // The file at this path with exactly these bytes. A relocated workspace keeps the source
         // id it registered, which its refs keep for workspace consumers; `source` names this
         // revision only to accept the reply.
@@ -139,7 +143,7 @@ impl Revision<'_> {
         if !current {
             return Err(FigError::new(
                 crate::ErrorKind::ModeUnavailable,
-                "this revision has no ready index of the scope; enable it for semantic search",
+                "this revision has no ready index of the scope; enable indexing for this revision",
             )
             .into());
         }
@@ -173,6 +177,23 @@ impl Revision<'_> {
     /// this viewer's build of `scope` (rejoining it while it runs). The only route that creates
     /// a workspace.
     pub(super) fn post(&self, route: &str, body: &[u8]) -> Result<(&'static str, Vec<u8>)> {
+        if let Some(revision) = route.strip_prefix("cancel/") {
+            let result = (|| -> Result<Value> {
+                if revision.parse::<u64>()? != self.generation {
+                    return Err(STALE.into());
+                }
+                let object: serde_json::Map<String, Value> = serde_json::from_slice(body)?;
+                let (1, Some(id)) = (
+                    object.len(),
+                    object.get("requestId").and_then(Value::as_str),
+                ) else {
+                    return Err("takes exactly one requestId".into());
+                };
+                Ok(json!({"accepted": self.queries.cancel(id)?}))
+            })()
+            .unwrap_or_else(|e| refusal(&*e, &self.source));
+            return Ok(("application/json", result.to_string().into_bytes()));
+        }
         let revision = route.strip_prefix("enable/").ok_or("unknown route")?;
         let reply = serde_json::from_slice::<serde_json::Map<String, Value>>(body)
             .map_err(|_| "takes a JSON object".into())

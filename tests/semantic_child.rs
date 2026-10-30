@@ -1364,8 +1364,12 @@ fn preview_with_a_hung_query(
     let (authority, token) = url.trim_end_matches('/').split_once('/').unwrap();
     let at = (authority.to_owned(), token.to_owned());
     let query = at.clone();
-    let search =
-        std::thread::spawn(move || viewer_get(&query, "search/1?q=task&mode=semantic&scope=0:0"));
+    let search = std::thread::spawn(move || {
+        viewer_get(
+            &query,
+            "search/1?q=task&mode=semantic&scope=0:0&requestId=held",
+        )
+    });
     let children = children(&pids, 1);
     assert_eq!(children.len(), 1, "the query never started its model child");
     (viewer, at, children, fig, search)
@@ -1435,6 +1439,44 @@ fn a_signal_stops_the_viewers_hung_semantic_query_before_it_exits() {
         all_gone(&children),
         "model child {children:?} still running"
     );
+}
+
+#[cfg(target_os = "linux")]
+fn a_viewer_cancel_stops_its_model_request_without_ending_the_revision() {
+    use std::io::{Read, Write};
+    let dir = test_support::TestDir::new();
+    let (mut viewer, at, children, _, search) = preview_with_a_hung_query(&dir);
+    let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (authority, token) = &at;
+        let mut stream = std::net::TcpStream::connect(authority).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let body = r#"{"requestId":"held"}"#;
+        let begun = Instant::now();
+        write!(stream, "POST /{token}/cancel/1 HTTP/1.1\r\nHost: {authority}\r\nOrigin: http://{authority}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.contains("\"accepted\":true"), "{response}");
+        assert!(search.join().unwrap().contains("Cancelled"));
+        assert!(
+            all_gone(&children),
+            "model child {children:?} still running"
+        );
+        assert!(
+            begun.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            begun.elapsed()
+        );
+        assert!(viewer_get(&at, "revision").contains("\"generation\":1"));
+        assert!(viewer_get(&at, "search/1?q=task").contains("results"));
+    }));
+    // Stop even a failed assertion's in-flight request before its fixture owner cleans up.
+    let _ = std::process::Command::new("kill")
+        .args(["-TERM", &viewer.id().to_string()])
+        .status();
+    let _ = viewer.wait();
+    assert!(checked.is_ok(), "viewer cancellation regression");
 }
 
 fn main() {
@@ -1631,6 +1673,11 @@ fn main() {
             a_cli_build_with_a_profile_lists_the_embed_instead_of_queueing_it,
         ),
     ];
+    #[cfg(target_os = "linux")]
+    tests.push((
+        "a_viewer_cancel_stops_its_model_request_without_ending_the_revision",
+        a_viewer_cancel_stops_its_model_request_without_ending_the_revision,
+    ));
     #[cfg(feature = "embed")]
     tests.push((
         "a_pinned_siglip_child_matches_the_in_process_model",

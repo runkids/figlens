@@ -39,7 +39,21 @@
           <label><input id="rankedHidden" type="checkbox"> Include hidden</label>
           <label><input id="rankedInternal" type="checkbox"> Include internal</label>
           <label><input id="rankedSelection" type="checkbox"> Current selection only (default: whole file)</label>
-          <label>Mode <select id="rankedMode"><option value="text">Text</option><option value="semantic">Semantic (local model)</option><option value="hybrid">Hybrid</option></select></label>
+          <label>Mode <select id="rankedMode"><option value="text">Text</option><option value="semantic">Semantic (local model)</option><option value="visual">Visual (image)</option><option value="hybrid">Hybrid</option></select></label>
+          <fieldset id="visualControls"><legend>Reference image (optional)</legend>
+            <label>PNG, up to 8 MiB / 4 MP <input id="visualFile" type="file" accept="image/png"></label>
+            <button id="visualSelected" type="button">Use selected stored layer</button>
+            <button id="visualClear" type="button" hidden>Clear reference</button>
+            <output id="visualState" role="status" aria-live="polite"></output>
+            <img id="visualPreview" alt="Current image-search reference" width="256" height="256" hidden>
+            <label><input id="visualCrop" type="checkbox" disabled> Crop in image pixels</label>
+            <div id="visualCropFields" hidden>
+              <label>X <input id="visualX" type="number" min="0" step="1" value="0"></label>
+              <label>Y <input id="visualY" type="number" min="0" step="1" value="0"></label>
+              <label>Width <input id="visualW" type="number" min="1" step="1"></label>
+              <label>Height <input id="visualH" type="number" min="1" step="1"></label>
+            </div>
+          </fieldset>
           <button id="rankedGo" type="submit">Search</button>
         </form>
         <div id="semanticPanel" hidden><output id="semanticState" role="status" aria-live="polite"></output> <button id="semanticEnable" type="button" hidden>Enable index</button></div>

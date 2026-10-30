@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, freshRow, relationChoices, acceptReply, reasonCodes, semanticSummary, mergePages, rowModel, groupUsages, localSearch, sourceRef, pageOf, scopeCoverage} = require('../src/preview/viewer.js');
+const {pngDimensions, imageCrop, matchReasons, flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, freshRow, relationChoices, acceptReply, reasonCodes, semanticSummary, mergePages, rowModel, groupUsages, localSearch, sourceRef, pageOf, scopeCoverage} = require('../src/preview/viewer.js');
 
 test('prototype missing fields remain unspecified without click or navigation defaults', () => {
   const rows = prototypeRows({state:'recorded', sourceNodeId:'0:1', interactions:[
@@ -242,4 +242,37 @@ test('a relocated workspace row keeps its registered ref and stays fresh under t
   assert.equal(freshRow({...loaded, snapshotId: 'sha256:b'}, row), false);
   // Text rows, whose refs name the loaded source, are judged as before.
   assert.equal(freshRow(loaded, rowModel({ref: {nodeId: '0:1', sourceId: 'local:viewer', snapshotId: 'sha256:a'}}, loaded)), true);
+});
+
+test('image header admission rejects excessive bytes/pixels before decode', () => {
+  const bytes = new ArrayBuffer(24), b = new Uint8Array(bytes), d = new DataView(bytes);
+  b.set([137,80,78,71,13,10,26,10]); b.set([73,72,68,82],12); d.setUint32(16, 2000); d.setUint32(20, 2000);
+  assert.deepEqual(pngDimensions(bytes, 100), {width:2000, height:2000});
+  assert.throws(() => pngDimensions(bytes, 8*1024*1024+1));
+  d.setUint32(20,2001); assert.throws(() => pngDimensions(bytes,100));
+  d.setUint32(16,0); assert.throws(() => pngDimensions(bytes,100));
+  assert.throws(() => pngDimensions(new ArrayBuffer(12),12));
+});
+test('image crops use whole in-bounds pixels, not percentages or design coordinates', () => {
+  assert.equal(imageCrop(['0','3','256','200'],256,256),'0,3,256,200');
+  for (const values of [['0','0','257','1'],['-1','0','1','1'],['0','0','1.5','1'],['','0','1','1'],['0','0','0','1']]) assert.throws(() => imageCrop(values,256,256));
+});
+test('image match reasons retain distinct evidence and never claim component identity', () => {
+  const row = {matches:[{basis:'normalized_pixels'},{basis:'perceptual_hash',distance:{hamming:3}},{basis:'visual_embedding',cosine:.98765},{basis:'semantic',field:'scope',chunk:2}]};
+  const text = matchReasons(row);
+  assert.match(text,/Same normalized pixels/); assert.match(text,/distance 3/);
+  assert.match(text,/cosine 0.988/); assert.match(text,/Semantic scope, chunk 2/);
+  assert.doesNotMatch(text,/probability|component identity/);
+});
+test('visual and per-source semantic coverage reasons remain visible', () => {
+  const reply = {coverage: {layers: {
+    semantic: {sources: [{reasons: [{code: 'chunk_refused'}]}]},
+    visual: {
+      hash: {sources: [{reasons: [{code: 'render_failed'}]}]},
+      embedding: {reasons: [{code: 'no_visual_profile'}]},
+    },
+  }}};
+  assert.deepEqual(reasonCodes(reply), ['chunk_refused','render_failed','no_visual_profile']);
+  const summary=semanticSummary({scope:'0:0',models:{profiles:[{name:'text',state:'ready',modality:'text'}]},index:{sources:[]}},'s',true);
+  assert.equal(summary.enable,true); assert.match(summary.text,/No visual model/);
 });

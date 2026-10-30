@@ -56,6 +56,7 @@ fn live_original_image_route_obeys_the_image_budget() {
         bundles: AtomicUsize::new(0),
         source: Value::Null,
         indexes: Mutex::default(),
+        queries: cancel::Requests::default(),
         indexing: &semantic::Indexing::default(),
         cancel: std::sync::atomic::AtomicBool::new(false),
     };
@@ -93,6 +94,7 @@ fn served_tree<T>(tree: &Tree, check: impl FnOnce(&Revision) -> T) -> T {
         bundles: AtomicUsize::new(0),
         source,
         indexes: Mutex::default(),
+        queries: cancel::Requests::default(),
         indexing: &semantic::Indexing::default(),
         cancel: std::sync::atomic::AtomicBool::new(false),
     };
@@ -588,4 +590,56 @@ fn routes_only_accept_exact_instance_ids() {
         assert!(!valid_id(id));
     }
     assert!(!valid_id(&"1".repeat(search::store::ID_BYTES + 1)));
+}
+
+#[test]
+fn image_posts_have_a_separate_mime_and_declared_byte_cap() {
+    let origin = "Origin: http://127.0.0.1:1234\r\n";
+    let png = format!("{origin}Content-Type: image/png\r\n");
+    let json = format!("{origin}Content-Type: application/json\r\n");
+    assert_eq!(
+        post("image/1?mode=visual", &png, "PNG").unwrap().1,
+        Some(b"PNG".to_vec())
+    );
+    assert!(post("image/1", &json, "{}").is_err());
+    assert!(post("enable/1", &png, "PNG").is_err());
+    assert!(post("image-ref/1", &png, "PNG").is_err());
+    assert!(post("image-ref/1", &json, r#"{"nodeId":"0:1"}"#).is_ok());
+    assert!(post("image/1", "Content-Type: image/png\r\n", "PNG").is_err());
+    assert!(
+        post(
+            "image/1",
+            &format!("{png}Sec-Fetch-Site: cross-site\r\n"),
+            "PNG"
+        )
+        .is_err()
+    );
+    assert!(parse("GET /secret/image/1 HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n").is_err());
+    let over = search::visual::MAX_BYTES + 1;
+    assert!(parse_with_body(&format!("POST /secret/image/1 HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n{png}Content-Length: {over}\r\n\r\n")).is_err());
+    assert!(parse_with_body(&format!("POST /secret/image/1 HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n{png}Content-Length: 20\r\n\r\nPNG")).is_err());
+}
+
+#[test]
+fn cancellation_names_one_running_call_and_revision_end_stops_the_rest() {
+    let calls = cancel::Requests::default();
+    let ended = std::sync::atomic::AtomicBool::new(false);
+    let first = calls.begin(Some("first"), &ended).unwrap();
+    let second = calls.begin(Some("second"), &ended).unwrap();
+    assert!(calls.begin(Some("first"), &ended).is_err());
+    assert!(calls.cancel("first").unwrap());
+    assert!(first.cancel.load(Ordering::SeqCst));
+    assert!(!second.cancel.load(Ordering::SeqCst));
+    assert!(!calls.cancel("missing").unwrap());
+    assert!(
+        calls.begin(Some("missing"), &ended).is_err(),
+        "an early cancel must stop a queued call"
+    );
+    assert!(calls.cancel("bad/id").is_err());
+    drop(first);
+    assert!(!calls.cancel("first").unwrap());
+    ended.store(true, Ordering::SeqCst);
+    calls.stop();
+    assert!(second.cancel.load(Ordering::SeqCst));
+    assert!(calls.begin(Some("late"), &ended).is_err());
 }
