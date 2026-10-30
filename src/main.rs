@@ -55,14 +55,15 @@ usage:
                                              the same search over a workspace's prepared indexes of
                                              --node (default 0:0) across its sources, without parsing;
                                              sources not ready are listed with the step that prepares them
-  figlens models list|status                 the local model profile semantic search uses (bge-m3) and
-                                             whether it is configured
-  figlens models configure bge-m3 --model DIR [--runtime FILE]
-                                             check the BAAI/bge-m3 files you downloaded (pinned revision,
+  figlens models list|status                 the local model profiles: bge-m3 for semantic search,
+                                             siglip-base for visual search (image queries not yet
+                                             available); whether each is configured
+  figlens models configure <profile> --model DIR [--runtime FILE]
+                                             check the profile's files you downloaded (pinned revision,
                                              SHA-256), start the figlens-embed runtime once offline
                                              (default: next to figlens) and record the profile; never
                                              downloads
-  figlens models remove bge-m3               forget the profile, keep its files
+  figlens models remove <profile>            forget the profile, keep its files
   figlens usages <file.fig> <node>|<resource> [--scope ID] [--relation R[,R]] [--out]
           [--snapshot S] [--include-hidden] [--limit N] [--cursor C]
                                              exact relations of a node or resource (VariableID:...,
@@ -1309,7 +1310,7 @@ fn jobs(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
 
 const MODELS: &str = "usage: figlens models list|status | configure <profile> --model DIR [--runtime FILE] | remove <profile>";
 
-/// `figlens models ...`: the local text model profiles semantic search uses. Nothing is
+/// `figlens models ...`: the local model profiles semantic and visual search use. Nothing is
 /// downloaded; `configure` checks files the user already has.
 fn models(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
     use figlens::semantic::profile;

@@ -53,3 +53,49 @@ fn pinned_files_refuse_a_changed_file() {
     std::fs::write(dir.join("w"), "other").unwrap();
     assert!(verify_files(&dir.join(""), &[("w", &digest)], &AtomicBool::new(false)).is_err());
 }
+
+fn sample() -> QueryImage {
+    let mut p = resvg::tiny_skia::Pixmap::new(40, 30).unwrap();
+    for (i, px) in p.data_mut().chunks_exact_mut(4).enumerate() {
+        px.copy_from_slice(&[(i * 7) as u8, (i * 3) as u8, (i * 11) as u8, 255]);
+    }
+    QueryImage::from_pixmap(&p, None).unwrap()
+}
+
+fn ask(body: Json, embed: &mut impl FnMut(&[QueryImage]) -> Result<Vec<Vec<f32>>>) -> Json {
+    answer_images(body.to_string().as_bytes(), 2, embed)
+}
+
+#[test]
+fn a_vision_child_checks_every_image_before_embedding_any() {
+    let mut calls = 0;
+    let mut embed = |images: &[QueryImage]| {
+        calls += 1;
+        Ok(vec![vec![1.0, 0.0]; images.len()])
+    };
+    let good = crate::search::hex(&sample().rgb());
+    let refused = [
+        json!({"id": 1, "kind": "query", "images": [good]}),
+        json!({"id": 1, "kind": "image", "images": []}),
+        json!({"id": 1, "kind": "image", "images": vec![good.clone(); MAX_IMAGES + 1]}),
+        json!({"id": 1, "kind": "image", "images": [&good[2..]]}),
+        json!({"id": 1, "kind": "image", "images": [format!("zz{}", &good[2..])]}),
+        json!({"id": 1, "kind": "image", "texts": ["a"]}),
+    ];
+    for body in refused {
+        let reply = ask(body.clone(), &mut embed);
+        assert!(
+            reply["error"].is_string() && reply["refused"] == true,
+            "{body}: {reply}"
+        );
+    }
+    let ok = ask(
+        json!({"id": 2, "kind": "image", "images": [good]}),
+        &mut embed,
+    );
+    assert_eq!(
+        (ok["id"].clone(), ok["vectors"].as_array().map(Vec::len)),
+        (json!(2), Some(1))
+    );
+    assert_eq!(calls, 1);
+}

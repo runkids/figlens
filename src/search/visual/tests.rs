@@ -360,3 +360,39 @@ fn render_evidence_reports_missing_paints_and_caps_diagnostics() {
     assert_eq!(items.len(), crate::search::MAX_LIMIT);
     assert!(truncated);
 }
+
+fn gradient() -> QueryImage {
+    let mut p = Pixmap::new(40, 30).unwrap();
+    for (i, px) in p.data_mut().chunks_exact_mut(4).enumerate() {
+        px.copy_from_slice(&[(i * 7) as u8, (i * 3) as u8, (i * 11) as u8, 255]);
+    }
+    QueryImage::from_pixmap(&p, None).unwrap()
+}
+
+#[test]
+fn a_normalized_image_round_trips_through_rgb_exactly() {
+    let rgb = gradient().rgb();
+    assert_eq!(rgb.len(), RGB_BYTES);
+    // The fingerprint also covers the source aspect, which the raster alone does not carry.
+    assert_eq!(QueryImage::from_rgb(&rgb).unwrap().rgb(), rgb);
+    assert!(QueryImage::from_rgb(&rgb[1..]).is_err());
+}
+
+/// The vision child embeds exactly the model input the parent's raster gives, alone or batched.
+#[cfg(feature = "embed")]
+#[test]
+fn the_child_raster_gives_the_parents_model_input() {
+    let blank = || QueryImage::from_pixmap(&Pixmap::new(9, 3).unwrap(), None).unwrap();
+    let wire = |i: &QueryImage| QueryImage::from_rgb(&i.rgb()).unwrap();
+    let parent = model::pixels(&[gradient(), blank()]).unwrap();
+    assert_eq!(
+        model::pixels(&[wire(&gradient()), wire(&blank())]).unwrap(),
+        parent
+    );
+    let singles = [
+        model::pixels(&[wire(&gradient())]).unwrap(),
+        model::pixels(&[wire(&blank())]).unwrap(),
+    ]
+    .concat();
+    assert_eq!(singles, parent);
+}

@@ -209,6 +209,7 @@ Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，works
 实验性功能。`figlens search <file> <query> --mode semantic|hybrid` 用本地模型按语义对图层排序。默认的 `--mode text` 不变，也不需要模型。
 
 - **一次性设置。** 请自行下载 BAAI/bge-m3 的 `5617a9f61b028005a4858fdac845db406aefb181` 修订版（MIT；`config.json`、`pytorch_model.bin`、`tokenizer.json`），figlens 从不下载。`figlens models configure bge-m3 --model DIR [--runtime FILE]` 用 SHA-256 校验文件，离线启动一次 `figlens-embed` 运行时（未给 `--runtime` 时在 figlens 可执行文件旁查找），并把配置记录在配置目录的 `models.json`。`models list|status` 查看，`models remove bge-m3` 忘记该配置但保留文件。
+- **视觉 profile。** `figlens models configure siglip-base --model DIR` 以同样方式校验 google/siglip-base-patch16-224 的修订版 `7fd15f0689c79d79e38b1c2e2e2370a7bf2761ed`（Apache-2.0；`config.json`, `preprocessor_config.json`, `model.safetensors`），并把它登记为视觉搜索使用的图像模型。图片查询尚不可用。
 - **模式。** `semantic` 按每个图层最匹配的名称或文本片段排序。`hybrid` 融合文本与语义两种排名（Reciprocal Rank Fusion）。没有配置时，`semantic` 以 `mode_unavailable` 失败，`hybrid` 返回文本结果并说明原因。`coverage.layers.semantic` 报告 `ready`、`partial` 或 `unavailable`；部分结果的页面没有 `nextCursor`。模型只用 CPU（约 2.5 GiB 内存），Ctrl-C 可停止。
 - **限制。** 只嵌入图层名称和有效文本。使用 `--workspace`/`--id` 搜索时，读取每个来源已存储的模型层，不会嵌入设计文本；该层由 `figlens index embed` 建立（MCP 服务器会在文本构建后排入队列）。没有该层的来源为 `pending`，页面为部分结果。在此功能冻结的测试集上，模型未达到同义词与用途查询的质量门槛（top-1 错误率 0.25，门槛 0.20），请把结果当作线索。
 - **MCP。** `models` 工具（`list`、`status`、`configure`、`remove`）以及 `search` 的 `mode`；`configure` 只运行 figlens 旁的 `figlens-embed`，模型目录和文件必须位于服务器的 root 之内。取消调用会停止正在运行的搜索或设置。

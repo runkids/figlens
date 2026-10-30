@@ -512,7 +512,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "models",
-        "Local text model profiles for semantic and hybrid search. list shows the documented profiles with model, revision, license and the files each needs; status reports each configured profile ready or unavailable with the reason, or the setup steps when none is configured; configure checks a model directory the user already downloaded against pinned SHA-256 digests, starts the figlens-embed shipped beside figlens once offline and records the profile; remove forgets the profile and keeps its files. Nothing is downloaded and no design text leaves the machine.",
+        "Local model profiles: bge-m3 (text) for semantic and hybrid search, and siglip-base (image) for visual search, whose image queries are not available yet. list shows the documented profiles with modality, model, revision, license and the files each needs; status reports each configured profile ready or unavailable with the reason, and the setup steps for each modality no profile serves; configure checks a model directory the user already downloaded against pinned SHA-256 digests, starts the figlens-embed shipped beside figlens once offline and records the profile; remove forgets the profile and keeps its files. Nothing is downloaded and no design content leaves the machine.",
         &[
             (
                 "action",
@@ -761,8 +761,8 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
         ),
         "models" => (
             serde_json::json!({
-                "profiles": {"type": "array", "items": {"type": "object"}, "description": "list: name, model, revision, license, files, configured, profileId, dataFlow; status: name, profileId, model, runtime, dim, state ready or unavailable, code (runtime_missing, runtime_changed or model_missing), reason and recovery (models configure with the same files)"},
-                "setup": {"type": "array", "items": {"type": "object"}, "description": "status with no profile configured: the steps to configure one"},
+                "profiles": {"type": "array", "items": {"type": "object"}, "description": "list: name, modality, model, revision, license, files, configured, profileId, dataFlow; status: name, modality, profileId, model, runtime, dim, state ready or unavailable, code (runtime_missing, runtime_changed or model_missing), reason and recovery (models configure with the same files)"},
+                "setup": {"type": "array", "items": {"type": "object"}, "description": "status: the steps to configure a profile for each modality (text, image) no configured profile serves"},
                 "configRoot": {"type": "string", "description": "status: the config directory models.json lives in (ask write access to it before configure)"},
                 "defaultRuntime": {"type": "object", "description": "status: {path, available} of the figlens-embed beside this figlens; available means the file exists, not that a model is ready"},
                 "configured": {"type": "object", "description": "configure: the recorded profile and its profileId"},
