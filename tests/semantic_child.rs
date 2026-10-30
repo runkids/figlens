@@ -1006,6 +1006,7 @@ fn a_cancelled_configure_reports_cancelled_and_records_nothing() {
     );
     let k = profile::Known {
         name: "fake",
+        modality: "text",
         model: "fake",
         revision: "0",
         license: "MIT",
