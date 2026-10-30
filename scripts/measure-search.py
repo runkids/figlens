@@ -5,7 +5,7 @@ workspace builds, peak RSS.
 Reports counts and timings, never names or text from the design, plus the caller's own
 `--query`/`--node` values as metadata: treat a report on a private file as private and keep
 it under the ignored `samples/`. Run it inside `docker compose run --rm dev` so MCP RSS
-comes from Linux /proc.
+comes from Linux /proc; elsewhere `mcpMemory` is null (`measure-native.py` samples it).
 """
 import argparse
 import json
@@ -89,6 +89,7 @@ def measure_usages(binary, fixture, node, targets, cold, warm, builds, work, env
             shapes[target] = usage_shape(json.loads(cli('cliUsages', [binary, 'usages', fixture, target, '--scope', node])))
     memory = {}
     with session([binary, 'mcp'], work, env, timeout=60) as request:
+        memory['pid'] = request.pid
         request('initialize', {'protocolVersion': '2025-06-18'})
         request('notifications/initialized', {})
         def call(arguments):
@@ -165,6 +166,7 @@ def measure(binary, fixture, node, queries, cold, warm, targets=(), builds=0):
             samples['mcpFirstSearch'] = [(time.perf_counter() - start) * 1000]
             assert not first['source']['freshness']['reusedIndex']
             after_first = baseline.memory(request.pid)
+            mcp_pids = [request.pid]
             for i in range(warm):
                 query = queries[i % len(queries)]
                 start = time.perf_counter()
@@ -179,11 +181,12 @@ def measure(binary, fixture, node, queries, cold, warm, targets=(), builds=0):
         'node': node, 'queries': queries, 'fixtureBytes': Path(fixture).stat().st_size,
         'timings': {k: baseline.summarize(v) for k, v in samples.items()},
         'cliPeakRssBytes': {k: max(v) for k, v in peaks.items()},
+        'mcpPids': mcp_pids + ([usages[1]['pid']] if usages else []),
         'mcpMemory': {'afterFirst': after_first, 'afterWarm': after_warm},
         'container': baseline.container_memory(),
         'shapes': shapes,
         'usages': usages and {'targets': len(targets), 'shapes': list(usages[0].values()), 'mcpMemory': usages[1]},
-        'costBoundaries': 'CLI includes spawn and up to 1 ms wait4 polling; cliSearch is a cold process: stage, SHA-256, decode, scope expansion, indexing and retrieval. MCP first call is the same in a server; warm calls reuse the index (stamp check, open check, retrieval, serialization, IPC). Usages: cliUsages is a cold stateless process like cliSearch; mcpWarmUsages reuse the process index; cliIndexPrepare/Rebuild wait for a whole build and their RSS includes the waited worker; mcpWorkspaceUsages read the published generation from SQLite. The MCP server spawns no children, so its RSS is the process tree.',
+        'costBoundaries': 'CLI includes spawn and up to 1 ms wait4 polling; cliSearch is a cold process: stage, SHA-256, decode, scope expansion, indexing and retrieval. MCP first call is the same in a server; warm calls reuse the index (stamp check, open check, retrieval, serialization, IPC). Usages: cliUsages is a cold stateless process like cliSearch; mcpWarmUsages reuse the process index; cliIndexPrepare/Rebuild wait for a whole build and their RSS includes the waited worker (on Windows, the peak working set of the CLI process alone, without wait4 polling); mcpWorkspaceUsages read the published generation from SQLite. The MCP server spawns no children, so its RSS is the process tree.',
     }
 
 

@@ -26,11 +26,12 @@ class MeasureNativeTest(unittest.TestCase):
             child.kill()
             child.wait()
 
-    def test_a_detached_runner_and_its_worker_are_told_from_cli_children(self):
-        me = os.getpid()
-        # 4e9 stands for a reparenting init; in a container this test may itself be PID 1.
-        rows = {10: {'ppid': me}, 11: {'ppid': 4_000_000_000}, 12: {'ppid': 11}, 13: {'ppid': me}, 14: {'ppid': 13}, 15: {'ppid': 10}}
-        self.assertEqual(native.roles(rows, {10}), ({11, 15}, {12}))
+    def test_runner_and_worker_are_told_from_launcher_and_cli_children(self):
+        me, gone = os.getpid(), 4_000_000_000  # a parent no longer listed; in a container this test may be PID 1
+        rows = {10: {'ppid': me}, 20: {'ppid': 10}, 21: {'ppid': 20}, 22: {'ppid': 21},  # holder, launcher, runner, worker
+                11: {'ppid': me}, 31: {'ppid': gone}, 32: {'ppid': 31},  # holder; a runner whose launcher exited
+                13: {'ppid': me}, 14: {'ppid': 13}}  # CLI call and its build worker
+        self.assertEqual(native.roles(rows, {10, 11}), ({21, 31}, {22, 32}))
 
     def test_idle_cost_separates_verification_seconds_from_polling(self):
         series = [(2, 10, 5, None, 0)] * 130

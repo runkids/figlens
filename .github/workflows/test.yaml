@@ -409,7 +409,7 @@ jobs:
         shell: bash
         run: |
           python -B -m unittest discover -s scripts -p measure_native_test.py
-          python -B scripts/measure-native.py --artifacts dist/candidate \
+          python -B scripts/measure-native.py --artifacts dist/candidate --commit "$(git rev-parse HEAD)" \
             --design samples/native-perf/design.fig --revised samples/native-perf/design-revised.fig > native-perf.json
       - uses: actions/upload-artifact@v4
         with:

@@ -146,11 +146,12 @@ else:
 
 
 def roles(rows, holders):
-    """(runners, workers) among `rows`: a runner was started by a holder, and may already be
-    detached from it (macOS reparents it at once); a worker was started by a runner. The
-    harness's own direct children are holders and CLI calls."""
-    runners = {p for p, r in rows.items() if p not in holders and r['ppid'] != os.getpid()
-               and (r['ppid'] in holders or r['ppid'] not in rows)}
+    """(runners, workers) among `rows`. A holder starts a short-lived `__watch-launch`, which
+    starts the detached runner (macOS reparents it at once, Windows keeps the launcher's pid);
+    a runner starts the workers. The harness's own direct children are holders and CLI calls."""
+    launchers = {p for p, r in rows.items() if r['ppid'] in holders}
+    runners = {p for p, r in rows.items() if p not in holders | launchers and r['ppid'] != os.getpid()
+               and (r['ppid'] in launchers or r['ppid'] not in rows)}
     return runners, {p for p, r in rows.items() if r['ppid'] in runners}
 
 
@@ -193,10 +194,12 @@ class Tree:
         return {'runners': len(runners), 'runnerPeakRss': within(peak(runners), LIMITS['runnerPeakRssBytes']),
                 'workers': len(workers), 'workerPeakRss': within(peak(workers), LIMITS['workerPeakRssBytes'])}
 
-    def result(self, limit):
+    def result(self, limit, pids=None):
+        """The limit applies to the tree, or with `pids` to the largest of those processes."""
+        peak = self.peak if pids is None else max((self.procs[p]['peak'] for p in pids if p in self.procs), default=None)
         return {'treePeakSampledBytes': self.peak, 'samples': self.samples,
                 'largestProcessPeakBytes': max((r['peak'] for r in self.procs.values()), default=None),
-                'treePeakRss': within(self.peak, LIMITS[limit])}
+                'limited': 'tree' if pids is None else 'process', 'peakRss': within(peak, LIMITS[limit])}
 
 
 def gone(pid):
@@ -311,8 +314,9 @@ def idle(ws, exe, holders, seconds):
         for _ in range(seconds):
             time.sleep(1)
             now = table(exe)
+            # A process started this second counts from zero; one that ended within it is missed.
             delta = lambda k: None if any(r.get(k) is None for r in now.values()) else \
-                sum(r[k] - before[p][k] for p, r in now.items() if p in before)
+                sum(r[k] - before.get(p, {}).get(k, 0) for p, r in now.items())
             series.append(tuple(map(delta, ['cpuMs', 'readBytes', 'writeBytes', 'physReadBytes', 'physWriteBytes'])))
             before = now
     finally:
@@ -357,7 +361,7 @@ def watch(binary, design, revised, n, seconds, parent):
             conn = sqlite3.connect(f'file:{db}?mode=ro', uri=True)
             state = lambda job: conn.execute('SELECT state FROM jobs WHERE job_id = ?', (job,)).fetchone()[0]
             jobs = conn.execute('SELECT coalesce(max(seq), 0) FROM jobs').fetchone()[0]
-            ws.save(copies[i % 2])
+            ws.save(copies[(n + i) % 2])  # the save loop left copies[(n - 1) % 2]
             start, job, runner, worker = time.monotonic(), None, None, None
             # This save's job, run by the holder's runner in a worker child; then the worker's CPU must grow.
             while time.monotonic() - start < 30 and worker is None:
@@ -386,19 +390,22 @@ def watch(binary, design, revised, n, seconds, parent):
                 for k, check in exits.items():
                     if k not in done and check():
                         done[k] = (time.monotonic() - t0) * 1000
-                time.sleep(0.002)
+                time.sleep(0.01)
             settled = ws.release(holder)
             final = state(job) if job else None
             conn.close()
-            cancels.append({'i': i, 'outcome': classify(in_flight, job, final, len(done) < 3), 'job': final,
+            cancels.append({'i': i, 'outcome': classify(in_flight, job, final, len(done) < 3), 'job': final, 'inFlight': in_flight,
                             'workerSeen': bool(worker), 'workerCpuMsIn100ms': cpu, 'runnerSeen': bool(runner),
                             'settled': settled, **{f'{k}EndMs': round(v, 1) for k, v in done.items()}})
-    valid = [x for x in cancels if x['outcome'] == 'cancelled_in_flight']
+    # A timed-out cancel of a job proven in flight counts as 30 s, a lower bound.
+    valid = [max(x['jobEndMs'], x['workerEndMs'], x['runnerEndMs']) if x['outcome'] == 'cancelled_in_flight' else 30000
+             for x in cancels if x['outcome'] == 'cancelled_in_flight' or (x['outcome'] == 'timed_out' and x['inFlight'])]
     io = lambda cost: {'read': within(cost['readBytesPer60s'], 3 * size + MiB), 'write': within(cost['writeBytesPer60s'], size + 2 * MiB)}
     return {
-        'save': {'attempts': saves, **verdict('save', [x['ms'] for x in saves if x['recorded']])},
+        # An unrecorded save counts as its 30 s wait, a lower bound, so it fails the gate instead of thinning N.
+        'save': {'attempts': saves, **verdict('save', [x['ms'] if x['recorded'] else 30000 for x in saves])},
         'cancel': {'attempts': cancels, 'outcomes': Counter(x['outcome'] for x in cancels),
-                   **verdict('cancel', [max(x['jobEndMs'], x['workerEndMs'], x['runnerEndMs']) for x in valid])},
+                   **verdict('cancel', valid)},
         'idleOneHolder': {**one, 'cpu': within(one['cpuMsPer60s'], LIMITS['idleCpuMsPer60s']),
                           'polling': within(one['pollingCpuMsPer60s'], LIMITS['pollingCpuMsPer60s']), **io(one)},
         'idleEightHolders': {**eight, 'cpu': within(eight['cpuMsPer60s'], LIMITS['idle8HoldersCpuMsPer60s']), **io(eight)},
@@ -419,6 +426,7 @@ def builds(binary, design, n, parent):
             prepare.append(ws.timed('index', 'prepare', ws.source, '--scope', AREA)[0])
             shutil.rmtree(ws.base)
         ws = Workspace(binary, design, parent)
+        tree.state = ws.base/'state'  # whole-source rebuilds are where the database and WAL peak
         ws.cli('index', 'prepare', ws.source, '--scope', '0:0')
         for _ in range(n):
             build.append(ws.timed('index', 'rebuild', '--file', ws.source, '--scope', '0:0')[0])
@@ -429,7 +437,9 @@ def builds(binary, design, n, parent):
         assert reply['results'], 'indexed search returned nothing'
         cold.append(elapsed)
     return {'prepare': verdict('prepare', prepare), 'build': verdict('build', build),
-            'indexedColdSearch': verdict('indexedColdSearch', cold), 'tree': tree.result('buildTreePeakRssBytes')}
+            'indexedColdSearch': verdict('indexedColdSearch', cold), 'tree': tree.result('buildTreePeakRssBytes'),
+            'disk': {**tree.disk, 'database': within(tree.disk['databaseBytes'], LIMITS['databaseBytes']),
+                     'wal': within(tree.disk['walBytes'], LIMITS['walBytes'])}}
 
 
 def viewer(binary, design, n, parent):
@@ -456,16 +466,25 @@ def viewer(binary, design, n, parent):
             'viewerWarmUsages': verdict('viewerWarmUsages', warm), 'tree': tree.result('viewerTreePeakRssBytes')}
 
 
-def workload(binary, design, revised, screens):
-    """What the source holds, as figlens counts it, plus the generator's fixed shape."""
+def workload(binary, design, revised, parent):
+    """What the source holds, as figlens reports it: records and text bytes from search coverage;
+    stored nodes, depth, the widest fan-out and instances from `tree` (instance children expanded
+    from their component are records but not tree nodes). Nothing in it is rendered."""
+    ws = Workspace(binary, design, parent)
     def coverage(node):
-        reply = json.loads(run([binary, 'search', design, 'checkout', '--node', node], None, None, timeout=120))
-        return {'records': reply['coverage']['scannedRecords'], 'textBytes': reply['coverage']['indexedTextBytes']}
-    return {'bytes': design.stat().st_size, 'revisedBytes': revised.stat().st_size, 'screens': screens,
-            'whole': coverage('0:0'), 'firstScope': coverage(AREA),
-            # mapping-fixture --scale: document > canvas > area > screen > section > group > instance > surface.
-            'maxDepth': 7, 'componentInstances': 2 + 4 * screens, 'firstScopeComponentInstances': 4 * min(screens, 800),
-            'renderedPixels': 0}
+        reply = ws.cli('search', ws.source, 'checkout', '--node', node)['coverage']
+        return {'records': reply['scannedRecords'], 'textBytes': reply['indexedTextBytes']}
+    def walk(node, depth=0):
+        yield depth, len(node.get('children') or []), node['type']
+        for child in node.get('children') or []:
+            yield from walk(child, depth + 1)
+    nodes = list(walk(ws.cli('tree', ws.source, '0:0', '--depth', '64', '--json')))
+    facts = {'bytes': design.stat().st_size, 'revisedBytes': revised.stat().st_size,
+             'whole': coverage('0:0'), 'firstScope': coverage(AREA), 'storedNodes': len(nodes),
+             'maxDepth': max(d for d, _, _ in nodes), 'maxFanout': max(f for _, f, _ in nodes),
+             'instances': sum(t == 'INSTANCE' for _, _, t in nodes), 'renderedPixels': 0}
+    shutil.rmtree(ws.base)
+    return facts
 
 
 def candidate(artifacts, out):
@@ -492,22 +511,25 @@ def main():
     parser.add_argument('--artifacts', required=True, type=Path, help='candidate directory with candidate.json')
     parser.add_argument('--design', required=True, type=Path, help='mapping-fixture --scale output')
     parser.add_argument('--revised', required=True, type=Path, help='the same with --revised')
-    parser.add_argument('--screens', type=int, default=8000, help='the --scale the design was made with')
+    parser.add_argument('--commit', required=True, help='the checkout the candidate must be built from')
     parser.add_argument('--warm', type=int, default=100)
     parser.add_argument('--cold', type=int, default=20)
     parser.add_argument('--idle-seconds', type=int, default=130, help='over two 60 s content verifications')
     args = parser.parse_args()
     design, revised = args.design.resolve(), args.revised.resolve()
     (Path(__file__).resolve().parent.parent/'samples').mkdir(exist_ok=True)  # measure-search works under it
-    with tempfile.TemporaryDirectory(prefix='figlens-native-') as temp:
+    # A runner that outlived its attempt may still hold files on Windows; the report matters more.
+    with tempfile.TemporaryDirectory(prefix='figlens-native-', ignore_cleanup_errors=True) as temp:
         binary, provenance = candidate(args.artifacts.resolve(), Path(temp))
+        assert provenance['commit'] == args.commit, 'candidate is from another commit'
         with Tree(os.path.realpath(binary)) as tree:
             # Cold stateless CLI and warm MCP search/usages of the area scope, stateless and workspace.
             cost = search.measure(binary, design, AREA, ['checkout', 'button'], args.cold, args.warm, ['0:10'], 1)
         timings = cost['timings']
+        assert all(s['results'] for s in cost['usages']['shapes']), 'usages are empty'
         report = {
             'candidate': provenance, 'os': f'{platform.system()} {platform.release()} {platform.machine()}',
-            'cpus': os.cpu_count(), 'workload': workload(binary, design, revised, args.screens),
+            'cpus': os.cpu_count(), 'workload': workload(binary, design, revised, Path(temp)),
             'gates': GATES, 'limits': LIMITS,
             'searchShapes': list(cost['shapes'].values()), 'usageShapes': cost['usages']['shapes'],
             'timings': {k: {'n': len(v['samplesMs']), 'medianMs': v['medianMs'], 'p95Ms': v['p95Ms']} for k, v in timings.items()},
@@ -515,11 +537,13 @@ def main():
             'warmUsages': verdict('warmUsages', timings['mcpWorkspaceUsages']['samplesMs']),
             'warmStatelessUsages': verdict('warmUsages', timings['mcpWarmUsages']['samplesMs']),
             'cliPeakRssBytes': cost['cliPeakRssBytes'], 'usagePages': cost['usages']['mcpMemory']['pages'],
-            'mcpTree': tree.result('mcpTreePeakRssBytes'),
+            # The MCP server spawns no children, so its own peak is its tree's.
+            'mcpTree': tree.result('mcpTreePeakRssBytes', cost['mcpPids']),
             'builds': builds(binary, design, args.cold, Path(temp)),
             'viewer': viewer(binary, design, args.warm, Path(temp)),
             'watch': watch(binary, design, revised, args.cold, args.idle_seconds, Path(temp)),
-            'costBoundaries': 'Cold = a new process with the OS file cache warm. ' + cost['costBoundaries'],
+            'costBoundaries': 'Cold = a new process with the OS file cache warm. A sampler lists every process 10 times a second '
+                              'during all timings, as the cost of RSS evidence. ' + cost['costBoundaries'],
         }
     print(json.dumps(report, indent=2))
 
