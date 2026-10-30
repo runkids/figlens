@@ -428,7 +428,8 @@ fn ask(
     let mut uses = tx
         .prepare(
             "SELECT e.rid, e.seq, e.state, e.evidence, r.node_id, r.name, r.kind, r.hidden,
-             length(CAST(e.evidence AS BLOB)) + length(CAST(r.node_id AS BLOB))
+             length(CAST(e.state AS BLOB)) + length(CAST(e.evidence AS BLOB))
+             + length(CAST(r.node_id AS BLOB))
              + length(CAST(r.name AS BLOB)) + length(CAST(r.kind AS BLOB)), r.page, r.root
              FROM edges e INDEXED BY edges_target JOIN records r ON r.gen = e.gen AND r.rid = e.rid
              WHERE e.gen = ?1 AND e.target = ?2 AND e.relation = ?3 AND (e.rid, e.seq) > (?4, ?5)
@@ -717,21 +718,27 @@ fn selected(
     if s.snapshot.as_deref() != Some(d.snapshot_id.as_str()) {
         return Ok((unresolved("definition_snapshot_stale"), Some(gen_id)));
     }
-    let kind: Option<String> = tx
+    // The kind is compared in SQLite's buffer, never copied: a stored one may be any size.
+    let fits: Option<bool> = tx
         .query_row(
             "SELECT kind FROM records INDEXED BY records_node WHERE gen = ?1 AND node_id = ?2
              ORDER BY rid LIMIT 1",
             params![gen_id, d.node_id],
-            |r| r.get(0),
+            |r| {
+                let k = r.get_ref(0)?.as_str().unwrap_or("");
+                Ok(match req.kind.as_str() {
+                    "component" => matches!(k, "COMPONENT" | "COMPONENT_SET"),
+                    "variable" => k == "VARIABLE",
+                    // A record does not keep whether its node is a style, so that is left
+                    // unverified.
+                    _ => true,
+                })
+            },
         )
         .optional()
         .map_err(sql)?;
-    let fits = match (req.kind.as_str(), kind.as_deref()) {
-        (_, None) => return Ok((unresolved("definition_not_found"), Some(gen_id))),
-        ("component", Some(k)) => matches!(k, "COMPONENT" | "COMPONENT_SET"),
-        ("variable", Some(k)) => k == "VARIABLE",
-        // A record does not keep whether its node is a style, so that is left unverified.
-        _ => true,
+    let Some(fits) = fits else {
+        return Ok((unresolved("definition_not_found"), Some(gen_id)));
     };
     if !fits {
         return Ok((unresolved("definition_kind_mismatch"), Some(gen_id)));

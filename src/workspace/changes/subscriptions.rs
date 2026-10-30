@@ -71,7 +71,7 @@ pub(crate) const SET: &str = "*";
 
 /// The most a stored set takes; past it, or as anything but an array of at most
 /// `query::QUERY_SOURCES` sourceIds, it is unreadable. A written set never holds a JSON escape
-/// (sourceIds are hex), so one makes it unreadable too: SQLite's JSON and serde disagree on some.
+/// (sourceIds are `local:` and hex), so one makes it unreadable too: SQLite's JSON and serde disagree on some.
 const SET_BYTES: usize = 4096;
 /// The disabled reason an unreadable set reads with: nothing of its members is emitted.
 const UNREADABLE: &str = r#"{"reason":"sources_unreadable"}"#;

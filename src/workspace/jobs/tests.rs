@@ -2326,6 +2326,34 @@ fn each_use_compares_its_cached_copy_with_the_selected_definition() {
 }
 
 #[test]
+fn an_oversized_tampered_copy_kind_is_refused_before_it_is_copied() {
+    use crate::workspace::library::{Request, library};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let def = component_ref(&conn, &srcs[1].1, srcs[1].2);
+    conn.execute(
+        "UPDATE edges SET evidence = json_object('copy', ?1) WHERE relation = 'uses_library'",
+        [&def.node_id],
+    )
+    .unwrap();
+    for (_, _, gen_id) in &srcs {
+        fingerprinted(&conn, *gen_id, &def.node_id, &[1; 32]);
+    }
+    conn.execute(
+        "UPDATE records SET kind = ?3 WHERE gen = ?1 AND node_id = ?2",
+        params![srcs[0].2, def.node_id, "C".repeat(1 << 20)],
+    )
+    .unwrap();
+    let ask = Request {
+        definition: Some(def),
+        limit: 10,
+        ..reference("k", None)
+    };
+    let err = library(&storage, &select, None, &ask).unwrap_err().to_string();
+    assert!(err.contains("invalid stored index"), "{err}");
+}
+
+#[test]
 fn a_schema_7_workspace_is_refused_read_only_with_a_rebuild_not_misread() {
     use crate::workspace::library::{Request, library};
     let d = TestDir::new();

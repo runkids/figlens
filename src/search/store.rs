@@ -903,17 +903,16 @@ pub(crate) fn print(
     gen_id: i64,
     node: &str,
 ) -> Result<Option<(String, [Print; 4])>> {
-    let found: Option<(i64, String)> = conn
-        .query_row(
-            "SELECT rid, kind FROM records INDEXED BY records_node WHERE gen = ?1 AND node_id = ?2
-             ORDER BY rid LIMIT 1",
-            params![gen_id, node],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    let Some((rid, kind)) = found else {
+    // Every stored value is measured in SQLite's buffer before it is copied.
+    let mut stmt = conn.prepare_cached(
+        "SELECT rid, kind FROM records INDEXED BY records_node WHERE gen = ?1 AND node_id = ?2
+         ORDER BY rid LIMIT 1",
+    )?;
+    let mut found = stmt.query(params![gen_id, node])?;
+    let Some(row) = found.next()? else {
         return Ok(None);
     };
+    let (rid, kind): (i64, String) = (row.get(0)?, need(text_at(row, 1, ID_BYTES)?)?);
     let mut stmt = conn.prepare_cached(
         "SELECT facet, state, digest FROM fingerprints WHERE gen = ?1 AND rid = ?2 LIMIT 5",
     )?;
@@ -924,10 +923,10 @@ pub(crate) fn print(
             .iter()
             .position(|f| row.get_ref(0).ok().and_then(|v| v.as_str().ok()) == Some(*f))
             .ok_or_else(bad)?;
-        let state = known(&fingerprint::STATES, row.get(1)?)?.ok_or_else(bad)?;
-        let digest: Option<Vec<u8>> = row.get(2)?;
+        let state = known(&fingerprint::STATES, text_at(row, 1, ID_BYTES)?)?.ok_or_else(bad)?;
+        let digest = row.get_ref(2)?.as_blob_or_null()?;
         let digest = match (state, digest) {
-            ("read", Some(d)) => Some(<[u8; 32]>::try_from(d.as_slice()).map_err(|_| bad())?),
+            ("read", Some(d)) => Some(<[u8; 32]>::try_from(d).map_err(|_| bad())?),
             (_, None) if state != "read" => None,
             _ => return Err(bad()),
         };
