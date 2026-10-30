@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdir, readFile, readlink, realpath, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { homedir, tmpdir } from 'node:os';
@@ -21,6 +21,47 @@ export function launcherRuntime(versions = process.versions, execPath = process.
 
 const MANAGED_MCP = 'figlensmcp';
 
+const flag = (name, value) => value === undefined || value === false ? [] : value === true ? [name] : [name, String(value)];
+const required = (input, name) => {
+  if (typeof input[name] !== 'string' || !input[name]) throw new Error(`${input.action ?? 'This call'} needs ${name}.`);
+  return input[name];
+};
+
+// The MCP index, jobs, search and inspect arguments as the same CLI command, for the plugin's CLI path.
+export function cliArgs(tool, input) {
+  const storage = flag('--storage', input.storage);
+  if (tool === 'jobs') return ['jobs', input.action, required(input, 'jobId'), ...storage];
+  if (tool === 'inspect') return ['inspect', required(input, 'file'), required(input, 'node'), ...flag('--depth', input.depth),
+    ...flag('--images', input.images), ...flag('--states', input.states), ...flag('--flat', input.flat), ...flag('--compare-variant', input.compareVariant)];
+  if (tool === 'search') {
+    // As the MCP search tool: one corpus, and source narrowing never silently disappears.
+    if (!input.file === !input.workspaceId || (input.file && (input.sourceId || input.storage)))
+      throw new Error('search needs file or workspaceId, not both; sourceId and storage apply to workspaceId');
+    const target = input.file ? [input.file] : ['--id', required(input, 'workspaceId'), ...flag('--source', input.sourceId), ...storage];
+    const flags = [...flag('--node', input.node), ...flag('--type', input.type), ...flag('--limit', input.limit),
+      ...flag('--cursor', input.cursor), ...flag('--include-hidden', input.includeHidden),
+      ...flag('--include-internal', input.includeInternal), ...flag('--mode', input.mode)];
+    // Workspace search reads everything after -- as the query, so a query may start with '-'.
+    return input.file ? ['search', ...target, required(input, 'query'), ...flags] : ['search', ...target, ...flags, '--', required(input, 'query')];
+  }
+  // Every given selector and scope field reaches the CLI, which refuses conflicting selectors and fields an
+  // action does not take, so none is dropped into a broader operation. A file is the operand of prepare, add
+  // and relocate, else it selects the workspace; a sourceId is the operand of remove and relocate.
+  const { action } = input;
+  const operands = ['prepare', 'add'].includes(action) ? [required(input, 'file')]
+    : action === 'remove' ? [required(input, 'sourceId')]
+    : action === 'relocate' ? [required(input, 'sourceId'), required(input, 'file')] : [];
+  return ['index', action, ...operands, ...flag('--workspace', input.workspace), ...flag('--id', input.workspaceId),
+    ...(['prepare', 'add', 'relocate'].includes(action) ? [] : flag('--file', input.file)),
+    ...(['remove', 'relocate'].includes(action) ? [] : flag('--source', input.sourceId)), ...storage,
+    ...flag('--scope', input.scope), ...flag('--request-id', input.requestId), ...flag('--replace-unavailable', input.replaceUnavailable)];
+}
+
+// Index actions that delete a database or start a new one elsewhere; each needs its own host permission.
+export function indexGrant(input) {
+  return input.action === 'reset' ? 'reset' : input.replaceUnavailable === true ? 'replace_unavailable' : null;
+}
+
 export function createAdapter(ctx, entry = import.meta.url) {
   const wrapper = fileURLToPath(new URL('../bin/figlens.js', entry));
   const bundled = !process.env.FIGLENS_BIN && existsSync(wrapper);
@@ -30,7 +71,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
   const commandLine = args => [command, ...prefix, ...args].map(value => `'${value.replaceAll("'", "'\\''")}'`).join(' ');
   const owners = new Map();
   const lifetime = new AbortController();
-  let managedMcp = false;
+  let managedMcp = false, cliPath = false;
   // OpenCode drops an MCP server whose name matches this plugin's own figlens_* tool namespace, so
   // the managed default uses another key; a user server under either key stays the one in use.
   let mcpName = MANAGED_MCP;
@@ -67,11 +108,12 @@ export function createAdapter(ctx, entry = import.meta.url) {
       combined.throwIfAborted();
       for (const resource of remaining) admitted.add(JSON.stringify([action, resource]));
     }
-    async function run(args) {
+    // A foreground index build runs until its jobs finish, so it gets no timeout of its own.
+    async function run(args, timeout = 120000) {
       const argv = [...prefix, ...args];
       if (bundled) await authorize('edit', [cacheRoot]);
       await authorize('bash', [commandLine(args)]);
-      const signal = AbortSignal.any([combined, AbortSignal.timeout(120000)]);
+      const signal = timeout ? AbortSignal.any([combined, AbortSignal.timeout(timeout)]) : combined;
       const execution = execute(command, argv, { cwd: root, detached: process.platform !== 'win32', maxBuffer: 64 * 1024 * 1024 });
       let stopping;
       const abort = () => {
@@ -98,8 +140,11 @@ export function createAdapter(ctx, entry = import.meta.url) {
   }
   function configureMcp(editor) {
     mcpName = [MANAGED_MCP, 'figlens'].find(name => editor.get(name)) ?? MANAGED_MCP;
-    managedMcp = !editor.get(mcpName);
+    const config = editor.get(mcpName);
+    managedMcp = !config;
     if (managedMcp) editor.set(mcpName, mcpConfig);
+    // Only a disabled user server, or one OpenCode drops for its figlens name, leaves the search flow without MCP tools.
+    cliPath = !managedMcp && (config.enabled === false || config.disabled === true || mcpName === 'figlens');
   }
   async function mcpStatus() {
     const { data } = await ctx.mcp.list();
@@ -202,9 +247,104 @@ export function createAdapter(ctx, entry = import.meta.url) {
     } else throw new Error(`Unknown figlens command: ${kind}. ${HELP}`);
     await ctx.session.synthetic({ sessionID, text: typeof data === 'string' ? data : JSON.stringify(data, null, 2), resume: false });
   }
+  // The JSON report a failed CLI command prints after its message, if any.
+  const report = error => {
+    for (const line of (error.cause?.stderr ?? '').trim().split('\n').reverse()) {
+      try { return JSON.parse(line); } catch { /* the message line */ }
+    }
+    return null;
+  };
+  async function cli(current, tool, input) {
+    const invoke = async (args, text = false) => {
+      const build = args[0] === 'index' && ['prepare', 'refresh', 'rebuild'].includes(args[1]);
+      try { const { stdout } = await current.run(args, build ? 0 : undefined); return text ? { flat: stdout } : JSON.parse(stdout); }
+      catch (error) {
+        // The CLI explains a failure on stderr; a partial reset or failed job also prints its report.
+        const text = [error.stderr, error.stdout].map(value => value?.trim()).filter(Boolean).join('\n');
+        if (current.signal.aborted || !text) throw error;
+        throw new Error(text, { cause: error });
+      }
+    };
+    // Status takes only the selectors, so conflicting ones fail here, before any permission or write. An
+    // operand file is not a selector, except that a prepare without a project directory is found by it.
+    const status = ({ action, file, workspace, workspaceId, storage }) => invoke(cliArgs('index', { action: 'status', workspace, workspaceId, storage,
+      file: ['add', 'relocate'].includes(action) || (action === 'prepare' && workspace) ? undefined : file }));
+    const missing = what => new Error(`This figlens binary does not report ${what}; update figlens to use these tools.`);
+    // Where the binary places this workspace: its directory and the sibling lock any exclusive open may recreate,
+    // or the state root of the storage it chose while none exists.
+    const place = ({ paths, roots }) => {
+      if (paths && !paths.lock) throw missing("its workspace's lock file");
+      return paths ? [paths.workspace, paths.lock] : [roots.state.path];
+    };
+    // The binary canonicalizes a root before writing under it, so an edit also covers the target of any link on the
+    // way; a path that does not exist yet resolves through its nearest existing parent. The walk starts from the
+    // unnormalized path, so a `..` after a link resolves as the binary resolves it, not textually.
+    const destination = async file => {
+      try { return await realpath(file); }
+      catch (error) {
+        // Only a missing entry climbs; a file in the way (ENOTDIR), a loop or a denied directory fails closed.
+        if (error.code !== 'ENOENT' || path.dirname(file) === file) throw error;
+        // A dangling link is written through, as output::destination follows it.
+        const link = await readlink(file).catch(() => null);
+        if (link) return destination(path.isAbsolute(link) ? link : `${path.dirname(file)}${path.sep}${link}`);
+        return path.join(await destination(path.dirname(file)), path.basename(file));
+      }
+    };
+    // Each path as requested and as its canonical destination.
+    const both = async files => [...new Set((await Promise.all(files.map(async file =>
+      [path.resolve(current.flow.root, file), await destination(path.isAbsolute(file) ? file : `${current.flow.root}${path.sep}${file}`)]))).flat())];
+    const edit = async files => current.authorize('edit', await both(files));
+    // The CLI downloads a gs:// design into its own cache, which this path cannot authorize, so only MCP serves it.
+    if (input.file?.startsWith('gs://')) throw new Error('The OpenCode CLI path reads local .fig files only. Enable the figlens MCP server for a gs:// design, or pass a local copy.');
+    // A design the CLI reads honours read rules on its requested and canonical paths, as Workflow.source does; the
+    // CLI gets the path unnormalized, so a `..` after a link reads where the link leads.
+    if (input.file && (tool !== 'index' || ['prepare', 'add', 'relocate'].includes(input.action))) await current.authorize('read', await both([input.file]));
+    // Workspace search, refresh and rebuild read the registered designs' content, which this session may deny.
+    const readSources = async ({ state, sources }) => {
+      // A workspace that does not exist yet reads no design; the command then fails as the MCP tool does.
+      if (['absent', 'uninitialized'].includes(state)) return;
+      if (!Array.isArray(sources)) throw missing("a workspace's sources");
+      const paths = sources.filter(source => !input.sourceId || source.sourceId === input.sourceId).map(source => source.path);
+      await current.authorize('read', [...new Set((await Promise.all(paths.map(async file => [file, await realpath(file).catch(() => file)]))).flat())]);
+    };
+    if (tool === 'search' && !input.file) await readSources(await status(input));
+    if (tool === 'jobs' && input.action === 'cancel') {
+      const { workspaceId } = await invoke(cliArgs('jobs', { ...input, action: 'status' }));
+      if (!workspaceId) throw missing("a job's workspace");
+      await edit(place(await status({ workspaceId, storage: input.storage })));
+    }
+    if (tool === 'index' && input.action !== 'status') {
+      const grant = indexGrant(input);
+      if (grant === 'replace_unavailable') {
+        // The old place is unreachable, so status fails; its recovery still names the config root holding the location record.
+        const roots = await status(input).then(found => found.roots,
+          error => report(error)?.recovery?.find(action => action.roots)?.roots ?? Promise.reject(error));
+        if (!roots?.config) throw missing('its config root');
+        await current.authorize('figlens_index', [grant]);
+        // The binary writes under DIR/state, which may itself be a link.
+        // The state child joins the raw storage, so a `..` after a link resolves as the binary resolves it.
+        await edit([required(input, 'storage'), `${input.storage}${path.sep}state`, roots.config.path]);
+      } else {
+        // A lost lock or newer schema fails status; the binary's own prepare or reset recovery names the place.
+        const found = await status(input).catch(error => {
+          const fix = report(error)?.recovery?.find(action => action.action === input.action && action.path && action.roots?.config);
+          if (!fix) throw error;
+          return { paths: { workspace: fix.path, lock: fix.lock }, roots: fix.roots };
+        });
+        if (!found.roots?.config) throw missing('its config root');
+        if (['refresh', 'rebuild'].includes(input.action)) await readSources(found);
+        if (grant) await current.authorize('figlens_index', [grant]);
+        // Every write also takes a location lock or record under the config root (a build's publish, relocation's alias).
+        await edit([...place(found), found.roots.config.path]);
+      }
+    }
+    // inspect --flat prints lines, as the MCP tool's flat field.
+    return invoke(cliArgs(tool, input), tool === 'inspect' && input.flat === true);
+  }
   async function dispose() {
     lifetime.abort();
     await Promise.all([...owners.keys()].map(close));
   }
-  return { command, prefix, scope, preview, operation, commandHandler, configureMcp, mcpStatus, close, dispose, signal: lifetime.signal };
+  return { command, prefix, scope, preview, operation, commandHandler, configureMcp, mcpStatus, cli, close, dispose, signal: lifetime.signal,
+    get cliPath() { return cliPath; }, get mcpName() { return mcpName; } };
 }

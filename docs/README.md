@@ -103,6 +103,8 @@ Installation guides: [OpenCode V2](../opencode/README.md) · [OMP](../omp/README
 
 Restart Pi or `/reload`, then ask for a screen in plain words. Pi finds the frame, reads it over the auto-registered MCP server and builds with your stack. No node IDs, no global CLI.
 
+Asking to find copy or a screen in a design searches the `.fig` directly and stores nothing. For repeated searches, ask Pi to enable an index for a design and scope: it prepares a local index once (no setup command), reports the job until it is ready and reuses it across restarts and hosts. Resetting that index needs your explicit request. Details: [local index](#local-index).
+
 - `/figlens plan <request>` writes a plan only; it does not edit the application.
 - `/figlens yolo <request>` plans, builds, checks and cleans up its own temporary plan.
 - `/figlens preview [description]` opens the local viewer.

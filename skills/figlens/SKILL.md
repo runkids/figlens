@@ -33,6 +33,44 @@ For an explicit request to plan, implement, self-check and clean up the temporar
 
 For an explicit implementation plan or a request to carefully reproduce a design, read [the planning workflow](references/planning.md). Scale it to the requested region, component, state, page or pages. Plan-only requests end with the plan; an already authorized build continues into implementation. Pi and a ready OpenCode integration offer `/figlens plan <request>` as a plan-only shortcut, without open or a saved selection. Keep ordinary design questions and asset exports on the direct path below.
 
+To find copy or a screen, or to enable or use a local search index, follow [Search and local index](#search-and-local-index).
+
+## Search and local index
+
+Finding something in a design needs no index. Decide by what the user asked:
+
+| The user asks | Do | Creates |
+|---|---|---|
+| Find copy, a layer or a screen, once or many times | `search` with `file` (CLI `search <file.fig> <query>`), then `inspect` the exact `ref.nodeId`; when an index may already be enabled for it, check first as below | nothing |
+| To enable, create or keep an index for a design or a project, for a scope | the opt-in steps below | one workspace in figlens storage |
+
+An earlier session, restart or other host may have enabled an index. A read-only `index` `status` finds it by the selector it was prepared with: `{"action": "status", "file": "<absolute .fig>"}` for one design, `{"action": "status", "workspace": "<project dir>"}` or the known `workspaceId` for a project. `file` never finds a project's workspace, and nothing scans for one.
+
+- Absent or `uninitialized`: search the file as in the first row; do not prepare.
+- `initialized`: reuse it within what it covers. Take the `sourceId` whose `path` is the design asked about and a prepared `scope` from its `indexed` entries; when no source has that path, search the file instead of adding it. Then search with `workspaceId`, `node` set to that scope and, when the workspace has several sources, `sourceId`; search the whole workspace only when the user asks. A node outside the prepared scopes is a file search, not a reason to widen the index.
+- `storage_unavailable` or `permission_denied`: follow the failure rules below; when the `.fig` is readable, answer with a file search and say the index was unavailable.
+
+Do not prepare an index because a search was slow, repeated or partial; offer it instead, since it stores data the user did not ask for. Connecting, listing tools, `find` and stateless search never create a database.
+
+Opt-in steps:
+
+1. Scope: the node the user chose (`0:0` is the whole file). Ask only when you cannot tell.
+2. Call `index` with `{"action": "prepare", "file": "<absolute .fig>", "scope": "<node>"}` (CLI `index prepare <file.fig> --scope <node>`). figlens picks the storage (the per-user state directory, or the `--storage` an earlier prepare remembered); there is no setup command or database path to choose. For a project of several designs, also pass `workspace` with the project directory; later calls select it by `workspace` or `workspaceId`, not `file`.
+3. The reply's job is dispatched, not done. Poll `jobs` with `{"action": "status", "jobId": "<jobId>"}` until `succeeded`; tell the user while it is `queued` or `running`, report `failed`, `cancelled` or `interrupted` as such, and `jobs` `cancel` it when the user asks.
+4. Call `search` with `{"workspaceId": "<workspaceId>", "node": "<scope>", "query": "<words>"}` (add `sourceId` in a project of several designs), not also `file` (CLI `search --id <workspaceId> --node <scope> -- <query>`). Without `node`, search covers `0:0`, which a frame or page index does not; never widen the scope to fix that. Open each result with `inspect` on `ref.nodeId` in the `.fig` whose source matches `ref.sourceId` (paths are in `status` `sources`); node IDs repeat across designs.
+
+Later searches, restarts and other hosts reuse that workspace. A reply with `coverage.complete: false`, or sources `pending`, `not_prepared`, `stale` or `incompatible`, is partial: say so and run the `nextSteps` it lists rather than guessing.
+
+Maintenance `index` actions (each takes the selector above: `file` for one design, `workspace` or `workspaceId` for a project; `remove` and `relocate` also take `sourceId`), and what authorizes each:
+
+- `refresh` rebuilds stale sources within the enabled scope; it needs no new opt-in.
+- `rebuild` builds again from the sources (all, or one `sourceId`/`scope`); run it when the user asks or a reply lists it.
+- `clear_cache` drops unused indexes and keeps the published one.
+- `add`, `remove`, `relocate` (a moved `.fig` keeps its IDs; refresh after it) and widening the scope change what the workspace covers: run them on the user's request.
+- `reset` deletes that workspace database, never designs or exports, and `prepare` with `replaceUnavailable: true` and a new `storage` starts an empty workspace elsewhere: run them only when the user explicitly asked. A search, a cleanup, a yolo run or a host's automatic approval never authorizes them.
+
+When an `index` call fails, follow its message and `recovery`, never work around it. `workspace_busy`: retry once after the other figlens process finishes or, over MCP, a pending reply arrives. `source_stale`, `cursor_stale`, `cursor_expired`: refresh or search again as told. `query_work_limit`: run the listed narrower searches; the index is fine. `storage_unavailable` or `permission_denied`: ask the user to reconnect, restore or grant access; never change permissions yourself. Run `recreate_elsewhere` (`--replace-unavailable` with a new `--storage`; over MCP the directory must be under a server `--storage-root`, else use the CLI) only after the user confirms it, since the new workspace knows only the file you give it. Never get past a failure with another `--storage` alone, `index reset` or deleting figlens files. If the `.fig` itself is still readable, answer with stateless search (`figlens search <file.fig> <query>`, or the MCP `search` tool with `file`) and say the persistent workspace was unavailable; do not report its sources or paths.
+
 ## Where outputs go
 
 `export`, `bundle` and `preview --out` write only where you point them. Choose by purpose:
@@ -41,8 +79,7 @@ For an explicit implementation plan or a request to carefully reproduce a design
 - Assets the site ships go where the project keeps its assets, following its conventions (see Images and slices).
 - Files for your own checking (bundles and their extracted files, reference images, comparison screenshots, scratch SVGs) go in `.figlens/exports/` at the project root, beside the plans and previews figlens keeps in `.figlens/`. When creating it, add `.figlens/exports/.gitignore` containing `*`: the directory stays out of Git without editing the project's ignore rules, while `.figlens/component-mappings.md` is still committed.
 - Do not write beside the `.fig` or elsewhere in the project unless the user asks.
-- `figlens index` keeps a workspace's registry and search indexes in the per-user figlens state directory, or under the `--storage DIR` a prepare was given (later commands find it there without the flag); figlens never puts it in the project or `.figlens/` on its own. A design question, even a repeated one, searches the `.fig` directly and creates nothing. Only when the user asks to create or enable an index for a design, prepare it with the scope to search (`index prepare <file.fig> --scope <node>`, MCP `index` `prepare` with `scope`; `0:0` is the whole file), then search with `--file`/`--workspace` and `--node <scope>` (MCP `search` with `workspaceId` and `node` set to that scope; without it the search asks for `0:0`) and reuse that workspace. A new source or a wider scope needs its own request. Over MCP the build runs in the background: poll `jobs` `status` until it succeeds. A source listed as `stale` or `not_prepared` names the `refresh` that fixes it; run it for scopes the user already authorized rather than guessing. `index reset` deletes only that workspace database; never use it to clean up a task.
-- When an `index` call fails, follow its message and `recovery`, never work around it. `workspace_busy`: retry once after the other figlens process finishes or, over MCP, a pending reply arrives. `source_stale`, `cursor_stale`, `cursor_expired`: refresh or search again as told. `query_work_limit`: run the listed narrower searches; the index is fine. `storage_unavailable` or `permission_denied`: ask the user to reconnect, restore or grant access; never change permissions yourself. Run `recreate_elsewhere` (`--replace-unavailable` with a new `--storage`; over MCP the directory must be under a server `--storage-root`, else use the CLI) only after the user confirms it, since the new workspace knows only the file you give it. Never get past a failure with another `--storage` alone, `index reset` or deleting figlens files. If the `.fig` itself is still readable, answer with stateless search (`figlens search <file.fig> <query>`, or the MCP `search` tool with `file`) and say the persistent workspace was unavailable; do not report its sources or paths.
+- The search index is not a project output: figlens keeps it in the per-user figlens state directory, or under the `--storage DIR` an earlier prepare remembered, never in the project or `.figlens/` on its own (see [Search and local index](#search-and-local-index)).
 
 Over MCP, `out` is absolute and must be inside the configured roots; `.figlens/exports/` under the project root is.
 

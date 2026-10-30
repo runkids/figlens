@@ -10,7 +10,7 @@ pub const TOPICS: &[&str] = &[
     "yolo",
 ];
 
-pub const INSTRUCTIONS: &str = "Read local Figma .fig snapshots with figlens. Resolve the requested screen from names or visible text using find/tree, or search for copy inside instance overrides, properties and swaps; ask about recognizable choices only when materially ambiguous, and resolve node IDs yourself. Use inspect for compact layout/text, nodes for full styles/masks/component data, variables for tokens, export for reference pixels or assets, and verify to check a bundle against its manifest, list its font faces and read its handoff preflight findings. For implementation, call workflow(topic=build); for comparing existing UI with a design or correcting layout differences, call workflow(topic=audit); for implementation planning or careful reproduction, also load plan; for website image preparation, load images. Load planning-details only for page/multi-page scope or unresolved dependencies. Load yolo only when the user explicitly requests autonomous implementation and temporary-plan cleanup. A plan-only request ends with a plan, and so does a request to plan the whole scope before implementing: detail every slice, then wait for approval; an authorized build continues through implementation, visual checks and corrections using the project's existing architecture. Simple questions and exports use the design tools directly. Ordinary design questions search the file directly and create nothing. Only when the user asks to create or enable an index for a design, index prepare its file with the scope to search (figlens picks the storage; no setup step), poll jobs status until succeeded, reporting queued, running or failed jobs as such, then search with workspaceId and node set to that scope, and reuse that workspace afterwards. Run index reset or replaceUnavailable only on the user's explicit request. Workflow reads return guidance, not executed work; host tools and permissions govern project edits, browser checks and cleanup. Check isError and content on failed calls. Native Dev Mode annotations and font files are unavailable; report material gaps rather than guessing.";
+pub const INSTRUCTIONS: &str = "Read local Figma .fig snapshots with figlens. Resolve the requested screen from names or visible text using find/tree, or search for copy inside instance overrides, properties and swaps; ask about recognizable choices only when materially ambiguous, and resolve node IDs yourself. Use inspect for compact layout/text, nodes for full styles/masks/component data, variables for tokens, export for reference pixels or assets, and verify to check a bundle against its manifest, list its font faces and read its handoff preflight findings. For implementation, call workflow(topic=build); for comparing existing UI with a design or correcting layout differences, call workflow(topic=audit); for implementation planning or careful reproduction, also load plan; for website image preparation, load images. Load planning-details only for page/multi-page scope or unresolved dependencies. Load yolo only when the user explicitly requests autonomous implementation and temporary-plan cleanup. A plan-only request ends with a plan, and so does a request to plan the whole scope before implementing: detail every slice, then wait for approval; an authorized build continues through implementation, visual checks and corrections using the project's existing architecture. Simple questions and exports use the design tools directly. Ordinary design questions search the file directly and create nothing. Only when the user asks to create or enable an index for a design, index prepare its file with the scope to search (figlens picks the storage; no setup step), poll jobs status until succeeded, reporting queued, running or failed jobs as such, then search with workspaceId and node set to that scope, and reuse that workspace afterwards. Run index reset or replaceUnavailable only on the user's explicit request. To reuse an earlier index (a project's is found by workspace or workspaceId, not file), narrow a multi-design workspace or recover one, read Search and local index in workflow(topic=build). Workflow reads return guidance, not executed work; host tools and permissions govern project edits, browser checks and cleanup. Check isError and content on failed calls. Native Dev Mode annotations and font files are unavailable; report material gaps rather than guessing.";
 
 const MCP_PREAMBLE: &str = "Use this guidance in the current agent context and within the user's authorized scope. It does not execute work or grant permissions. Use the configured figlens MCP tools with absolute file/output paths; CLI examples describe equivalent tool arguments. Project inspection/edits, directory creation, bundle extraction and browser checks require the host's own tools. Retrieve another topic only for missing guidance needed now: images covers image delivery; build covers design reading and project reuse. Links beginning workflow: name another topic of this tool, with an optional section anchor; no local skill installation is needed.\n\n";
 const CLI_PREAMBLE: &str = "Use this guidance in the current agent context and within the user's authorized scope. It does not execute work or grant permissions. Run the figlens commands shown; MCP argument names map to the same CLI arguments. Project inspection/edits, directory creation, bundle extraction and browser checks require the host's own tools. Retrieve another topic only for missing guidance needed now: images covers image delivery; build covers design reading and project reuse. A link beginning workflow: names another topic: run `figlens workflow <topic>`; no local skill installation is needed.\n\n";
@@ -27,6 +27,7 @@ pub fn read_cli(topic: &str) -> Result<String, String> {
 fn compose(topic: &str, preamble: &str) -> Result<String, String> {
     let headings: &[&str] = match topic {
         "build" => &[
+            "Search and local index",
             "Where outputs go",
             "Building a frame",
             "Verification evidence",
@@ -35,7 +36,12 @@ fn compose(topic: &str, preamble: &str) -> Result<String, String> {
             "Reading the output",
             "Known gaps",
         ],
-        "audit" => &["Where outputs go", "Verification evidence", "Known gaps"],
+        "audit" => &[
+            "Search and local index",
+            "Where outputs go",
+            "Verification evidence",
+            "Known gaps",
+        ],
         "images" => &["Where outputs go", "Images and slices", "Known gaps"],
         "plan" | "planning-details" | "yolo" => &[],
         _ => {
@@ -82,6 +88,11 @@ fn compose(topic: &str, preamble: &str) -> Result<String, String> {
         );
         text = text.replace(&format!("({file}"), &format!("(workflow:{topic}"));
     }
+    // Images serves the storage rule without this section, so its link names the topic that has it.
+    text = text.replace(
+        "(#search-and-local-index",
+        "(workflow:build#search-and-local-index",
+    );
     Ok(text)
 }
 
@@ -125,6 +136,37 @@ mod tests {
     }
 
     #[test]
+    fn build_and_audit_serve_the_skill_search_and_index_decision() {
+        let section = SKILL
+            .replace("\r\n", "\n")
+            .split_once("## Search and local index\n")
+            .unwrap()
+            .1
+            .split("\n## ")
+            .next()
+            .unwrap()
+            .to_owned();
+        assert!(section.contains("needs no index"));
+        assert!(section.contains("\"node\": \"<scope>\""));
+        assert!(section.contains("never authorizes them"));
+        for topic in ["images", "yolo"] {
+            assert!(
+                read(topic)
+                    .unwrap()
+                    .contains("](workflow:build#search-and-local-index)")
+            );
+        }
+        for topic in ["audit", "build"] {
+            assert!(
+                read(topic)
+                    .unwrap()
+                    .replace("\r\n", "\n")
+                    .contains(&section)
+            );
+        }
+    }
+
+    #[test]
     fn build_reports_missing_dependencies_without_blocking_implementation() {
         let build = read("build").unwrap();
         assert!(build.contains("## Font and asset preflight"));
@@ -154,6 +196,7 @@ mod tests {
         // A whole-scope plan must not shrink to slice 1 and then start implementing.
         assert!(plan.contains("give every slice all four fields and stop with the complete plan"));
         assert!(INSTRUCTIONS.contains("detail every slice, then wait for approval"));
+        assert!(INSTRUCTIONS.contains("Search and local index in workflow(topic=build)"));
         assert!(plan.contains("(workflow:planning-details#save-and-resume-proportionately)"));
         let details = read("planning-details").unwrap();
         assert!(
