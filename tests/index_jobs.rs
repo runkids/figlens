@@ -439,8 +439,12 @@ struct Mcp {
 
 impl Mcp {
     fn start(env: &Env, args: &[&str]) -> Self {
+        Self::held(env, args, None)
+    }
+
+    fn held(env: &Env, args: &[&str], hold: Option<(&str, &Path)>) -> Self {
         let mut child = env
-            .command(&[&["mcp"], args].concat(), None)
+            .command(&[&["mcp"], args].concat(), hold)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -3060,4 +3064,86 @@ fn forget_removes_a_checkpoint_view_whose_source_was_removed_since() {
     env.json(&["index", "remove", "--id", &id, &source]);
     let forgotten = env.json(&["watch", "forget", "--id", &id, "--consumer", "bot"]);
     assert_eq!(forgotten["removed"], json!(1), "{forgotten}");
+}
+
+#[test]
+fn a_node_subscription_reads_a_revision_whose_comparison_was_incomplete() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let source = t.changes(&[])["tracking"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let untouched = t.subscribe(&["--node", "0:12"]);
+    // A partial comparison whose retained rows name only other layers: detail is complete, the
+    // comparison is not, so the layer may have changed unseen.
+    t.sql(&format!(
+        "INSERT INTO revisions (id, seq, source_id, scope, epoch, gen, from_gen, snapshot_id,
+         kind, coverage, summary, detail, detail_rows, detail_bytes, created_ms)
+         SELECT randomblob(16), seq + 100, source_id, scope, epoch, gen, from_gen, snapshot_id,
+         kind, '{{\"complete\":false}}', summary, 'complete', 0, 0, created_ms
+         FROM revisions WHERE source_id = '{source}' ORDER BY seq DESC LIMIT 1"
+    ));
+    let page = t.changes(&["--subscription", &untouched]);
+    assert_eq!(page["revisions"].as_array().unwrap().len(), 1, "{page}");
+}
+
+#[test]
+fn a_subscribe_reply_describes_its_source_as_authorized_though_it_is_relocated_meanwhile() {
+    let env = Env::new();
+    let (inside, outside) = (env.dir.join("in"), env.dir.join("out"));
+    std::fs::create_dir(&inside).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    corpus::write(inside.join("a.fig").as_os_str(), false).unwrap();
+    let file = std::fs::canonicalize(inside.join("a.fig")).unwrap();
+    let file = file.to_str().unwrap();
+    env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    env.json(&["index", "track", "--file", file, "--scope", "0:0"]);
+    let status = env.json(&["index", "status", "--file", file]);
+    let (ws, source) = (
+        status["workspaceId"].clone(),
+        status["sources"][0]["sourceId"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+    );
+    let moved = std::fs::canonicalize(&outside).unwrap().join("a.fig");
+    let root = std::fs::canonicalize(&inside).unwrap();
+    let gate = env.gate("subscribe.hold");
+    let mut mcp = Mcp::held(
+        &env,
+        &["--root", root.to_str().unwrap()],
+        Some(("subscribe", &gate)),
+    );
+    mcp.send(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "watch",
+        "arguments": {"action": "subscribe", "workspaceId": ws, "consumer": "bot", "sourceId": source}}}));
+    let reached = PathBuf::from(format!("{}.reached", gate.display()));
+    wait_for("subscribe to write its row", || reached.exists());
+    // The move out of the root waits for the subscribe's write and gives up while it is held.
+    std::fs::rename(file, &moved).unwrap();
+    let relocate = env.run(&[
+        "index",
+        "relocate",
+        &source,
+        moved.to_str().unwrap(),
+        "--file",
+        file,
+    ]);
+    std::fs::remove_file(&gate).unwrap();
+    let reply = loop {
+        let reply = mcp.read();
+        if reply["id"] == 1 {
+            break reply["result"]["structuredContent"].clone();
+        }
+    };
+    assert_eq!(
+        (
+            relocate.status.success(),
+            reply["subscription"]["state"].clone(),
+            reply["tracking"][0]["sourceId"].clone(),
+        ),
+        (false, json!("active"), json!(source))
+    );
 }

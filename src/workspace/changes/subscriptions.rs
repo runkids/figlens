@@ -266,7 +266,9 @@ pub fn subscribe(storage: &Storage, select: &Select, req: &Subscribe) -> Result<
                 id
             }
         };
-    tx.commit().map_err(sql)?;
+    // The reply is read inside the write, so it describes only what this caller was
+    // authorized to see when it subscribed.
+    jobs::hold("subscribe");
     let v = view(
         storage,
         &ws,
@@ -276,15 +278,15 @@ pub fn subscribe(storage: &Storage, select: &Select, req: &Subscribe) -> Result<
         },
     )?;
     let sub = v.sub.as_ref().ok_or_else(|| unknown(&id))?;
-    let marks = marks(&ws.conn, &v, Some(sub.floor))?;
-    let (tracked, _) = tracking(&ws.conn, &v)?;
-    Ok(
-        json!({"workspaceId": v.workspace, "subscription": describe(&ws.conn, sub)?,
+    let marks = marks(&tx, &v, Some(sub.floor))?;
+    let (tracked, _) = tracking(&tx, &v)?;
+    let reply = json!({"workspaceId": v.workspace, "subscription": describe(&tx, sub)?,
         "created": created,
         // An existing subscription resumes at its own checkpoint, not the tail.
         "initialPosition": if created { "tail" } else { "existing" }, "tracking": tracked,
-        "checkpoint": held_cursor(&ws.conn, &v, sub.after_seq, &marks.receipt)?}),
-    )
+        "checkpoint": held_cursor(&tx, &v, sub.after_seq, &marks.receipt)?});
+    tx.commit().map_err(sql)?;
+    Ok(reply)
 }
 
 /// The caller's visible subscriptions, one page at a time in id order.

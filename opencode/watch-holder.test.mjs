@@ -7,9 +7,9 @@ import { createHolder } from './watch-holder.mjs';
 // A stand-in for one `figlens watch run` child: `script` drives it as the real one would.
 function child(script) {
   const c = new EventEmitter();
-  Object.assign(c, { stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), exitCode: null, killed: false });
-  c.exit = code => { if (c.exitCode === null) { c.exitCode = code; c.stdout.end(); c.emit('exit', code); } };
-  c.kill = () => { c.killed = true; c.exit(null); };
+  Object.assign(c, { stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), exitCode: null, signals: [] });
+  c.exit = code => { if (c.exitCode === null) { c.exitCode = code; c.stdout.end(); c.emit('exit', code); setImmediate(() => c.emit('close', code)); } };
+  c.kill = signal => { c.signals.push(signal); if (!script.ignores?.includes(signal)) c.exit(null); };
   c.say = value => c.stdout.write(`${JSON.stringify(value)}\n`);
   c.stdin.on('finish', () => script.onStdinEnd?.(c));
   queueMicrotask(() => script.start(c));
@@ -26,8 +26,8 @@ test('a started lease is held until stop closes stdin, which ends it released', 
   const reply = await holder.start(['--id', 'ws_1', '--scope', '0:0']);
   const held = holder.leases;
   const end = await holder.stop('l1');
-  assert.deepEqual([spawned.args, reply.state, held, end.reason, holder.leases, spawned.c.killed],
-    [['watch', 'run', '--id', 'ws_1', '--scope', '0:0'], 'active', ['l1'], 'released', [], false]);
+  assert.deepEqual([spawned.args, reply.state, held, end.reason, holder.leases, spawned.c.signals],
+    [['watch', 'run', '--id', 'ws_1', '--scope', '0:0'], 'active', ['l1'], 'released', [], []]);
 });
 
 test('a lease ended elsewhere is dropped and stop reports nothing held', async () => {
@@ -55,7 +55,7 @@ test('no start reply in time closes stdin and kills only a child that will not e
   let c;
   const holder = createHolder(() => (c = child({ start: () => {} })), { firstLineMs: 10, exitMs: 10 });
   await assert.rejects(holder.start([]), /no start reply in time/);
-  assert.deepEqual([c.stdin.writableEnded, c.killed], [true, true]);
+  assert.deepEqual([c.stdin.writableEnded, c.signals], [true, ['SIGTERM']]);
 });
 
 test('stopAll releases every held lease', async () => {
@@ -68,4 +68,40 @@ test('stopAll releases every held lease', async () => {
   await holder.start([]);
   await holder.stopAll();
   assert.deepEqual(holder.leases, []);
+});
+
+test('a malformed start reply stops the child it spawned', async () => {
+  let c;
+  const holder = createHolder(() => (c = child({ start: c => c.stdout.write('not json\n'), onStdinEnd: c => c.exit(1) })));
+  await assert.rejects(holder.start([]), SyntaxError);
+  assert.deepEqual([c.exitCode, holder.leases], [1, []]);
+});
+
+test('a spawn that only emits error is refused, not left pending', async () => {
+  const holder = createHolder(() => child({ start: c => c.emit('error', new Error('ENOENT')) }), { exitMs: 10 });
+  await assert.rejects(holder.start([]), /could not start: ENOENT/);
+});
+
+test('cleanup while a start awaits its reply stops that child and admits no lease', async () => {
+  let c;
+  const holder = createHolder(() => (c = child({ start: () => {}, onStdinEnd: c => c.exit(0) })));
+  const starting = holder.start([]);
+  await new Promise(resolve => setImmediate(resolve));
+  await holder.stopAll();
+  await assert.rejects(starting);
+  assert.deepEqual([c.exitCode, holder.leases], [0, []]);
+});
+
+test('a child ignoring stdin and SIGTERM is killed and its release reported unconfirmed', async () => {
+  let c;
+  const holder = createHolder(() => (c = child({ start: c => c.say(active), ignores: ['SIGTERM'] })), { exitMs: 10 });
+  await holder.start([]);
+  const end = await holder.stop('l1');
+  assert.deepEqual([c.signals, end.state, end.reason], [['SIGTERM', 'SIGKILL'], 'unknown', 'release_unconfirmed']);
+});
+
+test('a child that exits without an end reply is not reported released', async () => {
+  const holder = createHolder(() => child({ start: c => c.say(active), onStdinEnd: c => c.exit(0) }), { exitMs: 10 });
+  await holder.start([]);
+  assert.equal((await holder.stop('l1')).reason, 'release_unconfirmed');
 });

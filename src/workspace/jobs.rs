@@ -767,7 +767,7 @@ fn spawn(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Child> {
 /// `file` exists and creates `<file>.reached` when it gets there, so process tests reach each
 /// stage deterministically. `start` is before the worker locks its worker file; `submit` holds
 /// the submitting process once its new job is admitted.
-fn hold(stage: &str) {
+pub(super) fn hold(stage: &str) {
     #[cfg(debug_assertions)]
     if let Some((at, file)) = std::env::var("FIGLENS_TEST_HOLD")
         .ok()

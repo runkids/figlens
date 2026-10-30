@@ -2,71 +2,99 @@ import { createInterface } from 'node:readline';
 
 // Holds each `figlens watch run` lease this host started: one owned child per lease, whose first
 // stdout line is the start reply and whose stdin EOF releases it. The runner it starts is detached
-// and shared, so only the child itself is ever killed, and only when it outlives `exitMs`.
+// and shared, so only the child itself is ever signalled, and only when it outlives `exitMs`.
 export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } = {}) {
   const held = new Map();
+  const owned = new Set();  // every child's watch, from spawn until it exits
+  let closing = false;
 
   function watch(child) {
-    const lines = createInterface({ input: child.stdout });
     const next = [];
     const waiting = [];
-    lines.on('line', line => (waiting.length ? waiting.shift()(line) : next.push(line)));
     let stderr = '';
-    child.stderr?.on('data', chunk => { stderr += chunk; });
     const exited = new Promise(resolve => {
-      if (child.exitCode !== null && child.exitCode !== undefined) resolve(child.exitCode);
-      else child.once('exit', code => resolve(code));
+      child.once('error', error => resolve({ error }));
+      // close, not exit: stdout is drained by then, so an end line is never lost.
+      child.once('close', code => resolve({ code }));
     });
+    let done = false;
+    exited.then(() => { done = true; while (waiting.length) waiting.shift()(null); });
+    if (child.stdout) createInterface({ input: child.stdout }).on('line', line => (waiting.length ? waiting.shift()(line) : next.push(line)));
+    child.stderr?.on('data', chunk => { stderr += chunk; });
     const line = () => next.length ? Promise.resolve(next.shift())
-      : new Promise(resolve => { waiting.push(resolve); exited.then(() => setImmediate(() => resolve(next.shift() ?? null))); });
-    return { line, exited, stderr: () => stderr };
+      : done ? Promise.resolve(null) : new Promise(resolve => waiting.push(resolve));
+    const out = { child, line, exited, stderr: () => stderr };
+    owned.add(out);
+    exited.then(() => owned.delete(out));
+    return out;
   }
 
-  async function ended(child, exited) {
-    const timer = new Promise(resolve => { const t = setTimeout(resolve, exitMs, 'timeout'); t.unref?.(); });
-    if (await Promise.race([exited, timer]) === 'timeout') {
-      child.kill();
-      await exited;
+  const within = (promise, ms) => Promise.race([promise, new Promise(resolve => { const t = setTimeout(resolve, ms, 'timeout'); t.unref?.(); })]);
+
+  // Closes stdin, then signals only this child, each step bounded. True once it exited.
+  async function shutdown(out) {
+    try { out.child.stdin?.end(); } catch {}
+    for (const signal of [null, 'SIGTERM', 'SIGKILL']) {
+      if (signal) try { out.child.kill(signal); } catch {}
+      if (await within(out.exited, exitMs) !== 'timeout') return true;
     }
+    return false;
+  }
+
+  function unconfirmed(leaseId, exited) {
+    return { leaseId, state: 'unknown', reason: exited ? 'release_unconfirmed' : 'holder_not_exited',
+      recovery: 'the lease lapses within its 30 s TTL; check watch status before starting it again' };
   }
 
   async function start(args) {
-    const child = spawnRun(['watch', 'run', ...args]);
-    const out = watch(child);
-    const timer = new Promise(resolve => { const t = setTimeout(resolve, firstLineMs, 'timeout'); t.unref?.(); });
-    const first = await Promise.race([out.line(), timer]);
-    if (first === 'timeout' || first === null) {
-      child.stdin.end();
-      await ended(child, out.exited);
-      const message = out.stderr().split('\n').find(line => line.startsWith('figlens: '));
-      throw new Error(first === 'timeout' ? 'figlens watch run gave no start reply in time'
-        : (message ?? `figlens watch run exited ${await out.exited}`).replace(/^figlens: /, ''));
+    if (closing) throw new Error('figlens watch holder is shutting down');
+    let out;
+    try { out = watch(spawnRun(['watch', 'run', ...args])); }
+    catch (error) { throw new Error(`figlens watch run could not start: ${error.message}`); }
+    const first = await within(out.line(), firstLineMs);
+    let reply;
+    try {
+      if (first === 'timeout') throw new Error('figlens watch run gave no start reply in time');
+      if (first === null) {
+        const { error, code } = await out.exited;
+        const message = out.stderr().split('\n').find(line => line.startsWith('figlens: '));
+        throw new Error(error ? `figlens watch run could not start: ${error.message}`
+          : (message ?? `figlens watch run exited ${code}`).replace(/^figlens: /, ''));
+      }
+      reply = JSON.parse(first);
+      if (closing && reply.state === 'active') throw new Error('figlens watch holder is shutting down');
+    } catch (error) {
+      await shutdown(out);
+      throw error;
     }
-    const reply = JSON.parse(first);
     if (reply.state !== 'active') {
-      await ended(child, out.exited);
+      await shutdown(out);
       return reply;
     }
     // Ended elsewhere (stopped, untracked, removed, expired): its end line, then exit.
-    const end = out.line().then(line => line && JSON.parse(line));
-    const lease = { child, exited: out.exited, end };
+    const end = out.line().then(line => { try { return line && JSON.parse(line); } catch { return null; } });
+    const lease = { out, end };
     held.set(reply.leaseId, lease);
     out.exited.then(() => { if (held.get(reply.leaseId) === lease) held.delete(reply.leaseId); });
     return reply;
   }
 
-  // The end reply of a lease this host holds, after its child released it and exited.
+  // The end reply of a lease this host holds, once its child released it; unconfirmed when the
+  // child exited without saying so or had to be signalled.
   async function stop(leaseId) {
     const lease = held.get(leaseId);
     if (!lease) return null;
     held.delete(leaseId);
-    lease.child.stdin.end();
-    await ended(lease.child, lease.exited);
-    return (await lease.end) ?? { leaseId, state: 'ended', reason: 'released' };
+    const exited = await shutdown(lease.out);
+    const end = exited ? await within(lease.end, exitMs) : null;
+    return end && end !== 'timeout' ? end : unconfirmed(leaseId, exited);
   }
 
+  // Releases every lease and stops every child still starting; no start admits a lease afterwards.
   async function stopAll() {
-    await Promise.all([...held.keys()].map(stop));
+    closing = true;
+    const leases = [...held.values()].map(l => l.out);
+    await Promise.all([...held.keys()].map(stop), ...[...owned].filter(out => !leases.includes(out)).map(shutdown));
   }
 
   return { start, stop, stopAll, get leases() { return [...held.keys()]; } };

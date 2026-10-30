@@ -366,7 +366,8 @@ fn poll(conn: &Connection, v: &View, req: &Request) -> Result<Json> {
              AND p.scope = r.scope AND p.gen = r.from_gen AND p.seq < r.seq)
              FROM revisions r WHERE r.seq > ?1 AND r.source_id IN (SELECT value FROM json_each(?2))
              AND (?3 IS NULL OR r.scope = ?3)
-             AND (?5 IS NULL OR r.kind = 'baseline' OR r.detail <> 'complete' OR EXISTS
+             AND (?5 IS NULL OR r.kind = 'baseline' OR r.detail <> 'complete'
+             OR json_extract(r.coverage, '$.complete') IS NOT 1 OR EXISTS
              (SELECT 1 FROM revision_changes c WHERE c.rev = r.id AND (c.node = ?5 OR c.frame = ?5)))
              ORDER BY r.seq LIMIT ?4",
         )
