@@ -1829,6 +1829,40 @@ fn a_library_use_is_measured_as_it_is_sent_so_both_mcp_copies_fit() {
     assert_eq!(kind_of_error(out), ErrorKind::ResponseBudget);
 }
 
+/// Replaces `gen_id`'s stored page list with `pages`, a JSON value.
+fn set_pages(conn: &Connection, gen_id: i64, pages: &str) {
+    conn.execute(
+        "UPDATE generations SET info = json_set(info, '$.pages', json(?2)) WHERE gen = ?1",
+        params![gen_id, pages],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_source_without_a_use_never_reads_its_page_list() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 1);
+    conn.execute("DELETE FROM edges WHERE relation = 'uses_library'", [])
+        .unwrap();
+    // A list no reader could parse: reading it at all would fail the question.
+    set_pages(&conn, srcs[0].2, r#""not a list""#);
+    let out = library(&storage, &select, None, &reference("k", None)).unwrap();
+    assert_eq!(library_ids(&out), Vec::<String>::new());
+}
+
+#[test]
+fn a_page_list_too_large_for_the_page_is_refused_before_it_is_read() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 1);
+    let page = format!(r#"["0:1","{}",false]"#, "p".repeat(1024));
+    let pages = format!("[{}]", vec![page; 3200].join(","));
+    set_pages(&conn, srcs[0].2, &pages);
+    let out = library(&storage, &select, None, &reference("k", None));
+    assert_eq!(kind_of_error(out), ErrorKind::ResponseBudget);
+}
+
 #[test]
 fn a_library_question_needs_a_scope() {
     use crate::workspace::library::library;

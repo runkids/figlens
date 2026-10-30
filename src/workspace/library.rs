@@ -357,7 +357,33 @@ pub fn library(
                 }
                 continue;
             }
+            let too_large = || {
+                FigError::new(
+                    ErrorKind::ResponseBudget,
+                    format!(
+                        "one library use exceeds the {PAGE_BYTES}-byte page; narrow scope or sourceId"
+                    ),
+                )
+            };
             if places.is_none() {
+                // The lists' UTF-8 bytes are charged to the page before they are copied or parsed.
+                let need: i64 = tx
+                    .query_row(
+                        "SELECT coalesce(length(CAST(json_extract(info, '$.pages') AS BLOB)), 0)
+                         + coalesce(length(CAST(json_extract(info, '$.roots') AS BLOB)), 0)
+                         FROM generations WHERE gen = ?1",
+                        [gen_id],
+                        |r| r.get(0),
+                    )
+                    .map_err(sql)?;
+                if copied + need as usize > PAGE_BYTES {
+                    if results.is_empty() {
+                        return Err(too_large().into());
+                    }
+                    more = true;
+                    break;
+                }
+                copied += need as usize;
                 let (pages, roots): (Option<String>, Option<String>) = tx
                     .query_row(
                         "SELECT json_extract(info, '$.pages'), json_extract(info, '$.roots')
@@ -387,14 +413,6 @@ pub fn library(
             let root = match at(10)? {
                 Some(r) => Some(roots.get(r).ok_or_else(store::bad)?),
                 None => None,
-            };
-            let too_large = || {
-                FigError::new(
-                    ErrorKind::ResponseBudget,
-                    format!(
-                        "one library use exceeds the {PAGE_BYTES}-byte page; narrow scope or sourceId"
-                    ),
-                )
             };
             // Raw bytes first, so an oversized row is never copied; then its serialized size.
             let raw = row.get::<_, i64>(8).map_err(sql)? as usize
