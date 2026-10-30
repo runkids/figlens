@@ -446,6 +446,8 @@ def landed(rows, seen, saved, records):
 def idle(ws, exe, holders, seconds):
     """`holders` leases on the unchanged source for `seconds`, after 5 s to settle. On Windows the
     holders run in a `Job`, whose cumulative accounting includes processes that ended."""
+    # A save the last phase left unbuilt would make the new runner build it: build it first.
+    ws.cli('index', 'refresh', '--file', ws.source, '--scope', '0:0')
     job = Job() if os.name == 'nt' else None
     processes = []
     try:
