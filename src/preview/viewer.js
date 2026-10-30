@@ -670,7 +670,10 @@ if (typeof document !== 'undefined') {
         section.append(head, fields, list);
         return section;
     }
+    // The Relations row whose open moved focus to the Layers tree; any later selection forgets it.
+    let relReturn = null;
     function select(n, focus = false, keep = false, group = [n]) {
+        relReturn = null;
         selected = n;
         selection = keep ? group : [n];
         const chosen = new Set(selection.map(s => s.id));
@@ -1596,17 +1599,18 @@ if (typeof document !== 'undefined') {
         if (!sameSource(source, m)) throw new Error('Refused: stale reference — rerun search.');
     }
     // Opening moves focus to the layer, as other results do; Escape there returns to the row that opened it.
-    let relReturn = null;
     async function relOpen(name, m, row) {
         try {
             await relFresh(m);
             await selectById(m.nodeId, true);
+            if (!$('tree').contains(document.activeElement)) return;
             relReturn = row;
             status(`Opened ${m.name || m.nodeId}; Escape in Layers returns to the results.`);
         } catch (e) { relUI(name).status.textContent = e.message; }
     }
     $('tree').addEventListener('keydown', e => {
-        if (e.key !== 'Escape' || !relReturn?.isConnected) return;
+        // A row in a hidden tab or collapsed panel cannot take focus: leave Escape alone.
+        if (e.key !== 'Escape' || !relReturn?.offsetParent) return;
         e.preventDefault();
         relReturn.focus();
         relReturn = null;
