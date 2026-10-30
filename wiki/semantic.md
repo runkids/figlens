@@ -30,10 +30,12 @@ Code: `src/workspace/query.rs` (`search_mode`, `model_layers`), `src/workspace/m
 
 Code: `src/preview/semantic.rs`, `src/preview/viewer.js` (`semanticSummary`), tests in `tests/preview_semantic.rs`.
 
-- The live viewer's ranked search has a Mode select (Text, Semantic, Hybrid; disabled in snapshots). Text keeps the in-memory index: opening a design and searching its text create no workspace and start no model.
+- The live viewer's ranked search has a Mode select (Text, Semantic, Visual, Hybrid; disabled in snapshots). Text keeps the in-memory index: opening a design and searching its text create no workspace and start no model.
 - `semantic/<revision>?scope=ID` is read-only: `models status` profiles and setup, `index status` of the file's source-scoped workspace (a missing one stays missing) and the viewer's own build of that scope.
 - `POST enable/<revision>` with `{"scope": ID}` is the explicit Enable index button, which names the scope (the line beside it the file): a JSON POST (same-origin `Origin`, `Sec-Fetch-Site` same-origin when sent, `application/json`, declared body ≤ 4 KiB), so no prefetch, cache or link can create a workspace. The scope must be a stored layer of the current revision, never widened. A viewer thread owns the jobs: the prepare's text build, then, with an active profile, `index embed` of that scope; one build at a time, rejoined while it runs, polled each second for stage and progress. A revision's end (a save, or Ctrl+C/SIGTERM, which `serve_until` observes while polling `accept`) cancels that revision's in-flight model queries and the owned build and awaits them and their workers before the new revision serves or the process exits; `Indexing` also stops on drop. `tests/semantic_child.rs` holds a hung fake-model query through a save and a SIGTERM; `tests/preview_semantic.rs` holds the build through both.
 - `search/<revision>?…&mode=semantic|hybrid` runs workspace `search_mode` and is served only while the workspace's one source is `ready` with this revision's path and `snapshotId` (refs keep the workspace's registered `sourceId`, which a relocation keeps, for workspace consumers; the reply's `source` names the loaded revision, and rows are fresh while it does: `freshRow`), else `mode_unavailable` naming Enable; the reply's `coverage.layers.semantic` reasons are listed verbatim (a hybrid fallback says `no_profile`). Model setup stays in each host's `models` tool: the page takes no paths, model folders or URLs.
+
+Image queries use the fixed POST routes in [preview search](preview-search.md), with an optional visual-index build; they do not use the text-query GET route.
 
 ## Models
 

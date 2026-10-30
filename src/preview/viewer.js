@@ -1574,6 +1574,7 @@ if (typeof document !== 'undefined') {
     }
     async function relRun(name, base, cursor, init) {
         const p = rel[name], u = relUI(name), append = !!cursor;
+        const replaced = name === 'ranked' && u.panel.dataset.state === 'loading';
         relAbort(name);
         const ctl = p.ctl = new AbortController(), seq = p.seq;
         Object.assign(p, {base, ran: true});
@@ -1582,8 +1583,14 @@ if (typeof document !== 'undefined') {
         u.more.hidden = true;
         try {
             const route = base + (cursor ? '&' + relQuery({cursor}) : '');
-            const reply = name === 'ranked' ? await queryReply(route, p.init, ctl.signal)
+            let reply = name === 'ranked' ? await queryReply(route, p.init, ctl.signal)
                 : await relGet(route, {signal: ctl.signal});
+            // The cancelled call can still be unwinding its child; retry its replacement once.
+            if (replaced && reply.error?.kind === 'WorkspaceBusy') {
+                await new Promise(resolve => setTimeout(resolve, 500));
+                if (ctl.signal.aborted || seq !== p.seq) return;
+                reply = await queryReply(route, p.init, ctl.signal);
+            }
             if (!acceptReply(seq, p.seq, reply.source, loadedSource)) {
                 if (seq === p.seq) relState(name, 'stale', 'Saved design changed — reply dropped; rerun.');
                 return;
@@ -1610,7 +1617,10 @@ if (typeof document !== 'undefined') {
         const layer = acc.coverage?.layers?.semantic?.state;
         if (layer && layer !== 'ready') text += ` Semantic layer: ${layer}.`;
         const visual = acc.coverage?.layers?.visual;
-        if (visual) text += ` Visual hash: ${visual.hash?.state ?? 'unknown'}; image model: ${visual.embedding?.state ?? 'unknown'}; approximate signal: ${visual.approximate ?? 'none'}.`;
+        if (visual) {
+            text += ` Visual hash: ${visual.hash?.state ?? 'unknown'}; image model: ${visual.embedding?.state ?? 'unknown'}; approximate signal: ${visual.approximate ?? 'none'}.`;
+            if (visual.approximate === 'visual_hash') text += ' Matched by pixel hash; image-model similarity was not used.';
+        }
         const s = sourceRef(acc.source, generation);
         if (s) text += ` File ${s.path}, source ${s.sourceId}, snapshot ${s.snapshotId}, revision ${s.revision}.`;
         relState(name, partial ? 'partial' : n ? 'ok' : 'empty', text);
@@ -1913,7 +1923,7 @@ if (typeof document !== 'undefined') {
     }
 
     // Agent API: the same operations as the UI, for browser-automation agents (Playwright, agent-browser,
-    // Claude in Chrome). It runs in the page, so it adds no service routes and keeps the read-only boundary.
+    // Claude in Chrome). It runs in the page, uses the same fixed routes and never writes the design.
     const toBase64 = bytes => {
         let out = '';
         for (let i = 0; i < bytes.length; i += 0x8000) out += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
