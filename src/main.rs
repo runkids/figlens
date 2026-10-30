@@ -1197,6 +1197,10 @@ fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
     };
     let scoped = a.scope.is_some() || a.request.is_some() || a.replace;
     let result = match (action, a.positional.as_slice()) {
+        // Add-only flags are refused before any other action can run and write.
+        _ if action != "add" && (a.dry_run || a.manifest.is_some() || a.cursor.is_some()) => {
+            Err(usage())
+        }
         ("prepare", [path]) if a.file.is_none() && a.id.is_none() && a.source.is_empty() => {
             let scope = a.scope.map(normalize_id);
             let options = PrepareOptions {
