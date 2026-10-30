@@ -144,6 +144,7 @@ pub(crate) fn save(
         let edges: usize = r
             .edges
             .iter()
+            .chain(&r.library)
             .map(|e| 64 + e.target.as_ref().map_or(0, String::len) + e.evidence.len())
             .sum();
         r.id.len()
@@ -188,7 +189,7 @@ pub(crate) fn save(
                     r.page,
                     r.root
                 ])?;
-                for e in &r.edges {
+                for e in r.edges.iter().chain(&r.library) {
                     edge.execute(params![
                         gen_id, rid, e.relation, e.seq, e.target, e.state, e.basis, e.evidence
                     ])?;
@@ -536,9 +537,10 @@ pub(crate) fn add_with(
     let mut edges: BTreeMap<u32, Vec<Edge>> = BTreeMap::new();
     let mut stmt = conn.prepare_cached(
         "SELECT rid, relation, seq, target, state, basis, evidence FROM edges
-         WHERE gen = ?1 AND rid IN (SELECT value FROM json_each(?2)) ORDER BY rid, relation, seq",
+         WHERE gen = ?1 AND rid IN (SELECT value FROM json_each(?2)) AND relation <> ?3
+         ORDER BY rid, relation, seq",
     )?;
-    let mut rows = stmt.query(params![gen_id, list])?;
+    let mut rows = stmt.query(params![gen_id, list, usages::LIBRARY])?;
     let mut count = 0usize;
     while let Some(row) = rows.next()? {
         stopped(cancel)?;
@@ -588,6 +590,7 @@ pub(crate) fn add_with(
             page: row.get(13)?,
             root: row.get(14)?,
             edges: edges.remove(&rid).unwrap_or_default(),
+            library: Vec::new(),
         };
         if record.page.is_some_and(|p| p as usize >= index.pages.len())
             || record.root.is_some_and(|p| p as usize >= index.roots.len())

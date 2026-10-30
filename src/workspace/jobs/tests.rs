@@ -1655,3 +1655,169 @@ fn a_publication_evaluates_each_saved_search_once_in_bounded_turns() {
         (true, false, true, true, "newer")
     );
 }
+
+/// A workspace whose `n` identical sources each have a published build of `0:0` and one visible
+/// record using a library component; the sources' paths, ids and generations.
+fn library_workspace(
+    d: &TestDir,
+    n: usize,
+) -> (Storage, Select, Connection, Vec<(PathBuf, String, i64)>) {
+    let (storage, select, dir) = workspace(d, n);
+    let conn = connection(&dir);
+    let me = owner(&dir).unwrap();
+    let mut out = Vec::new();
+    for source in sources(&conn) {
+        let job_id = job(&conn, &source, "0:0", "running", &me, 1);
+        let built = work(&dir, &job_id, &me, 1).unwrap();
+        publish(&storage, &select.id().unwrap(), &job_id, &me, 1, &built).unwrap();
+        let gen_id = built["gen"].as_i64().unwrap();
+        uses(&conn, gen_id, r#"["component","ns","k"]"#);
+        let path: String = conn
+            .query_row(
+                "SELECT path FROM sources WHERE source_id = ?1",
+                [&source],
+                |r| r.get(0),
+            )
+            .unwrap();
+        out.push((PathBuf::from(path), source, gen_id));
+    }
+    (storage, select, conn, out)
+}
+
+/// Adds a `uses_library` edge with `target` to the first visible record of `gen_id`.
+fn uses(conn: &Connection, gen_id: i64, target: &str) {
+    conn.execute(
+        "INSERT INTO edges (gen, rid, relation, seq, target, state, basis, evidence)
+         SELECT ?1, rid, 'uses_library', (SELECT count(*) FROM edges WHERE gen = ?1 AND
+         rid = r.rid AND relation = 'uses_library'), ?2, 'external', 'cached_copy', '{\"copy\":\"0:9\"}'
+         FROM records r WHERE gen = ?1 AND hidden = 0 ORDER BY rid LIMIT 1",
+        params![gen_id, target],
+    )
+    .unwrap();
+}
+
+fn reference(key: &str, cursor: Option<&Json>) -> crate::workspace::library::Request {
+    crate::workspace::library::Request {
+        kind: "component".into(),
+        namespace: "ns".into(),
+        key: key.into(),
+        scope: "0:0".into(),
+        include_hidden: false,
+        limit: 1,
+        cursor: cursor.and_then(Json::as_str).map(str::to_owned),
+    }
+}
+
+fn library_ids(out: &Json) -> Vec<String> {
+    out["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["ref"]["sourceId"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn library_uses_page_across_sources_and_never_resolve_the_definition() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    // The same key under another namespace, and a namespace whose join collides, are not uses.
+    uses(&conn, srcs[0].2, r#"["component","other","k"]"#);
+    uses(&conn, srcs[0].2, r#"["component","ns/k",""]"#);
+    let first = library(&storage, &select, None, &reference("k", None)).unwrap();
+    assert_eq!(library_ids(&first), [srcs[0].1.clone()]);
+    assert_eq!(
+        first["definition"],
+        json!({"state": "unresolved", "reason": "library_source_unproven"})
+    );
+    assert_eq!(
+        (
+            first["hasMore"].clone(),
+            first["coverage"]["complete"].clone()
+        ),
+        (json!(true), json!(true))
+    );
+    let second = library(
+        &storage,
+        &select,
+        None,
+        &reference("k", Some(&first["nextCursor"])),
+    )
+    .unwrap();
+    assert_eq!(library_ids(&second), [srcs[1].1.clone()]);
+    assert_eq!(second["nextCursor"], Json::Null);
+    // The cursor binds the reference: another key cannot continue it.
+    let other = library(
+        &storage,
+        &select,
+        None,
+        &reference("j", Some(&first["nextCursor"])),
+    );
+    assert_eq!(kind_of_error(other), ErrorKind::CursorStale);
+    // One source narrows the reply to its own uses.
+    let one = library(&storage, &select, Some(&srcs[1].1), &reference("k", None)).unwrap();
+    assert_eq!(library_ids(&one), [srcs[1].1.clone()]);
+}
+
+#[test]
+fn a_use_with_no_namespace_leaves_the_reply_partial_without_being_listed() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 1);
+    conn.execute("DELETE FROM edges WHERE relation = 'uses_library'", [])
+        .unwrap();
+    uses(&conn, srcs[0].2, r#"["component",null,"k"]"#);
+    let out = library(&storage, &select, None, &reference("k", None)).unwrap();
+    assert_eq!(library_ids(&out), Vec::<String>::new());
+    assert_eq!(out["coverage"]["complete"], false);
+    assert_eq!(
+        out["coverage"]["reasons"],
+        json!([{"code": "namespace_unknown", "sourceIds": [srcs[0].1]}])
+    );
+}
+
+#[test]
+fn a_revoked_root_or_a_new_generation_ends_a_library_cursor() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let first = library(&storage, &select, None, &reference("k", None)).unwrap();
+    let cursor = Some(&first["nextCursor"]);
+    // Identical bytes, but only the first file is under the caller's roots now.
+    let narrow = storage.clone().confined(std::slice::from_ref(&srcs[0].0));
+    let out = library(&narrow, &select, None, &reference("k", None)).unwrap();
+    assert_eq!(library_ids(&out), [srcs[0].1.clone()]);
+    assert_eq!(out["coverage"]["complete"], false);
+    assert_eq!(
+        out["coverage"]["reasons"],
+        json!([{"code": "authorization_restricted"}])
+    );
+    assert_eq!(out["coverage"]["sources"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        kind_of_error(library(&narrow, &select, None, &reference("k", cursor))),
+        ErrorKind::CursorStale
+    );
+    // The second source is republished at a new generation with the same rows.
+    conn.execute(
+        "INSERT INTO generations (source_id, membership, scope, snapshot_id, versions, job_id, state,
+         complete, records, info, created_ms) SELECT source_id, membership, scope, snapshot_id,
+         versions, job_id, state, complete, records, info, created_ms FROM generations WHERE gen = ?1",
+        [srcs[1].2],
+    )
+    .unwrap();
+    let new = conn.last_insert_rowid();
+    conn.execute(
+        "UPDATE published SET gen = ?1 WHERE source_id = ?2",
+        params![new, srcs[1].1],
+    )
+    .unwrap();
+    assert_eq!(
+        kind_of_error(library(&storage, &select, None, &reference("k", cursor))),
+        ErrorKind::CursorStale
+    );
+}
+
+fn kind_of_error(r: Result<Json>) -> ErrorKind {
+    r.unwrap_err().downcast_ref::<FigError>().unwrap().kind()
+}

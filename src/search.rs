@@ -439,6 +439,9 @@ pub(crate) struct Record {
     root: Option<u32>,
     /// Its relations, `contains` excepted (that is `parent`), in relation and sequence order.
     edges: Vec<usages::Edge>,
+    /// Its library references (`usages::LIBRARY`), kept apart so every `edges` reader (usages,
+    /// diff, stored diff) sees what a build without them sees. Stored, never loaded back.
+    library: Vec<usages::Edge>,
 }
 
 struct Posting {
@@ -774,6 +777,9 @@ fn build_with(
         ) else {
             break;
         };
+        let library: Vec<_> = edges
+            .extract_if(.., |e| e.relation == usages::LIBRARY)
+            .collect();
         edges.sort_by(|a, b| (a.relation, a.seq).cmp(&(b.relation, b.seq)));
         let children = tree.children.get(&id).or_else(|| ex.children.get(&id));
         let kids = children.map_or(&[][..], Vec::as_slice);
@@ -854,6 +860,7 @@ fn build_with(
             page,
             root,
             edges,
+            library,
         });
         if let (Some(out), Some(f)) = (facets.as_deref_mut(), facet) {
             out.push(f);

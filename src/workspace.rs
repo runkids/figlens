@@ -341,6 +341,7 @@ fn now_ms() -> i64 {
 pub mod changes;
 mod database;
 pub mod jobs;
+pub mod library;
 pub mod query;
 mod registry;
 mod storage;

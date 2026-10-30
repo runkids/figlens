@@ -2199,7 +2199,8 @@ fn an_overlong_image_hash_stays_an_unsupported_edge_and_a_short_one_is_kept() {
 }
 
 /// Library copies: mains whose naive `namespace/key` joins collide, a main with no namespace,
-/// one style key under two namespaces, one under one, one with none, and one with no copy.
+/// one style key under two namespaces, one under one, one with none, and one with no copy; a
+/// variable with one of those keys, and one with no copy.
 fn libraries_design() -> K<'static> {
     let s = |v: &str| K::String(v.into());
     let named = |mut extra: Vec<(&'static str, K<'static>)>, ns: Option<&str>| {
@@ -2220,6 +2221,33 @@ fn libraries_design() -> K<'static> {
     let style = |id, key: &str, ns| {
         let extra = vec![("styleType", K::Enum("StyleType", "FILL")), ("key", s(key))];
         node(id, Some(1), "ROUNDED_RECTANGLE", "Brand", named(extra, ns))
+    };
+    let variable = |id, key: &str, ns| {
+        node(
+            id,
+            Some(1),
+            "VARIABLE",
+            "brand",
+            named(vec![("key", s(key))], ns),
+        )
+    };
+    let binds = |id, key: &str| {
+        let r = obj(vec![("key", s(key)), ("version", s("1:2"))]);
+        let alias = obj(vec![
+            ("dataType", K::Enum("VariableDataType", "ALIAS")),
+            ("value", obj(vec![("alias", obj(vec![("assetRef", r)]))])),
+        ]);
+        let paint = obj(vec![
+            ("type", K::Enum("PaintType", "SOLID")),
+            ("colorVar", alias),
+        ]);
+        node(
+            id,
+            Some(2),
+            "RECTANGLE",
+            "Tint",
+            vec![("fillPaints", K::Array(vec![paint]))],
+        )
     };
     let uses = |id, key: &str| {
         let r = obj(vec![("key", s(key)), ("version", s("v1"))]);
@@ -2246,6 +2274,10 @@ fn libraries_design() -> K<'static> {
             uses(41, "solo"),
             uses(42, "bare"),
             uses(43, "absent"),
+            // A variable sharing a style's key keeps its own namespace.
+            variable(34, "solo", Some("v")),
+            binds(44, "solo"),
+            binds(45, "absent"),
         ]),
     )])
 }
@@ -2253,7 +2285,8 @@ fn libraries_design() -> K<'static> {
 fn library_edges(index: &Index) -> Vec<(String, Json, &'static str, &'static str, Json)> {
     let mut out = Vec::new();
     for r in &index.records {
-        for e in r.edges.iter().filter(|e| e.relation == LIBRARY) {
+        assert!(r.edges.iter().all(|e| e.relation != LIBRARY));
+        for e in &r.library {
             let target = serde_json::from_str(e.target.as_deref().unwrap()).unwrap();
             let evidence = serde_json::from_str(&e.evidence).unwrap();
             out.push((r.id.clone(), target, e.state, e.basis, evidence));
@@ -2268,6 +2301,7 @@ fn library_references_keep_namespace_and_key_apart_and_never_borrow_a_namespace(
     let tree = Tree::new(&message);
     let index = crate::search::build_with(&tree, "0:0", bounds(WORK), true, true, None);
     let field = json!({"field": "styleIdForFill", "version": "v1"});
+    let tint = json!({"field": "fills", "version": "1:2"});
     let unresolved = |key: &str| {
         (
             json!(["style", null, key]),
@@ -2324,6 +2358,24 @@ fn library_references_keep_namespace_and_key_apart_and_never_borrow_a_namespace(
             ),
             ("0:42".into(), unresolved("bare")),
             ("0:43".into(), unresolved("absent")),
+            (
+                "0:44".into(),
+                (
+                    json!(["variable", "v", "solo"]),
+                    "external",
+                    "cached_copy",
+                    tint.clone()
+                )
+            ),
+            (
+                "0:45".into(),
+                (
+                    json!(["variable", null, "absent"]),
+                    "unresolved",
+                    "cached_copy",
+                    tint
+                )
+            ),
         ]
     );
 }
@@ -2335,6 +2387,14 @@ fn only_a_stored_generation_extracts_library_references_and_no_query_lists_them(
     let stateless = build(&tree, "0:0", bounds(WORK));
     assert_eq!(library_edges(&stateless), []);
     let index = crate::search::build_with(&tree, "0:0", bounds(WORK), true, true, None);
+    // Every other reader of a record's edges sees exactly what a build without them sees.
+    let same = |a: &Index, b: &Index| {
+        a.records
+            .iter()
+            .map(|r| &r.edges)
+            .eq(b.records.iter().map(|r| &r.edges))
+    };
+    assert!(same(&index, &stateless));
     let conn = stored(&index);
     let mut r = req("0:41");
     r.outgoing = true;
@@ -2365,7 +2425,7 @@ fn only_a_stored_generation_extracts_library_references_and_no_query_lists_them(
             |row| row.get::<_, i64>(0)
         )
         .unwrap(),
-        7
+        9
     );
     let fresh = build(&tree, "0:0", bounds(WORK));
     assert_eq!(out["coverage"], run(&fresh, &r).unwrap()["coverage"]);
