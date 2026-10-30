@@ -973,7 +973,22 @@ pub fn changes_tool(
             .collect(),
     };
     use changes::subscriptions as subs;
+    let needs = |name: &str| -> Result<&str, Box<dyn Error>> {
+        call.string(name).ok_or_else(|| {
+            format!("watch {} needs {name}", call.string("action").unwrap_or("")).into()
+        })
+    };
+    use figlens::workspace::watch;
     let value = match (call.name(), call.string("action")) {
+        ("watch", Some("start")) => watch::start(
+            &storage,
+            &select,
+            call.string("sourceId"),
+            needs("scope")?,
+            call.string("requestId"),
+        )?,
+        ("watch", Some("stop")) => watch::stop(&storage, &select, needs("leaseId")?)?,
+        ("watch", Some("status")) => watch::status(&storage, &select)?,
         ("watch", Some("subscribe")) => subs::subscribe(&storage, &select, &subscribe)?,
         ("watch", Some("evaluate")) => changes::evaluate(&storage, &select, request.subscription)?,
         ("watch", Some("list")) => {

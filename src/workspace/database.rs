@@ -350,20 +350,24 @@ pub(crate) const V4: &str = "
 /// source and scope; the single runner that keeps them fresh, fenced by `attempt`; and each
 /// watched source's last persisted monitor state. An ended lease keeps its row (with no path)
 /// until the runner's GC, so its requestId replays as ended instead of starting it again.
+/// `jobs.shared` marks an attempt another caller joined (or replayed, or took over), so the
+/// runner cancels only attempts nobody else waits for.
 pub(crate) const V5: &str = "
     CREATE TABLE watch_leases (
         lease_id TEXT PRIMARY KEY, holder TEXT NOT NULL, source_id TEXT NOT NULL,
-        scope TEXT NOT NULL, incarnation TEXT NOT NULL, authorized_path TEXT,
+        scope TEXT NOT NULL, incarnation TEXT NOT NULL, epoch INTEGER NOT NULL, authorized_path TEXT,
         request_id TEXT UNIQUE, fingerprint TEXT NOT NULL, renewed_ms INTEGER NOT NULL,
         expires_ms INTEGER NOT NULL, ended TEXT) STRICT;
     CREATE INDEX watch_leases_holder ON watch_leases (holder, expires_ms);
     CREATE TABLE watch_runner (
         one INTEGER PRIMARY KEY CHECK (one = 1), token TEXT NOT NULL, attempt INTEGER NOT NULL,
-        placement TEXT NOT NULL, started_ms INTEGER NOT NULL, beat_ms INTEGER NOT NULL) STRICT;
+        placement TEXT NOT NULL, started_ms INTEGER NOT NULL, beat_ms INTEGER NOT NULL,
+        closing INTEGER NOT NULL DEFAULT 0) STRICT;
     CREATE TABLE watch_monitor (
         source_id TEXT PRIMARY KEY, state TEXT NOT NULL, stamp_checked_ms INTEGER,
         content_verified_ms INTEGER, last_job_id TEXT, last_error TEXT,
         written_ms INTEGER NOT NULL) STRICT;
+    ALTER TABLE jobs ADD COLUMN shared INTEGER NOT NULL DEFAULT 0;
     PRAGMA user_version = 5;";
 
 /// Schema 6: durable change subscriptions, each its own checkpoint, and the visible sources a

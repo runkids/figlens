@@ -10,12 +10,16 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import queue
 import runpy
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
+import time
 from installation import environment, run, toolchain
 from mcp_smoke import check_first_use, check_mcp, check_reuse
 
@@ -69,6 +73,142 @@ def check_index(binary, fixture, cwd, env):
     return {'customPrepare': True, 'rediscovered': True, 'resetNewIncarnation': True, 'indexedSearch': True,
             'removedRootRecreated': True, 'sourceUnchanged': True}
 
+
+def check_watch(binary, fixture, cwd, env):
+    """Two `watch run` holders share one detached runner. A forced exit of the first holder (its
+    PID alone, never a tree kill) leaves the runner and the second's lease; the runner records a
+    save. The runner is then lost: on Windows by terminating a test job object that the first
+    holder ran in and that forbids breakaway, so its runner had to start `in_host_job`; elsewhere
+    by killing the runner's PID. The second holder's renewal starts it again, and its stdin EOF
+    ends the runner. The workspace is removed only once the runner is proven stopped."""
+    base = Path(tempfile.mkdtemp(prefix='figlens-watch-'))
+    source = base/'design.fig'
+    shutil.copy2(fixture, source)
+    env = dict(env, **{f'XDG_{kind}_HOME': str(base/kind.lower()) for kind in ['CONFIG', 'STATE', 'CACHE', 'DATA']})
+    cli = lambda *args: json.loads(run([binary, *args], cwd, env))
+    status = lambda: cli('watch', 'status', '--file', source)
+    revisions = lambda: sum(r['kind'] == 'changes' for r in cli('changes', '--file', source, '--scope', '0:0')['revisions'])
+
+    def wait(what, done, limit=30):
+        start = time.monotonic()
+        while not done():
+            assert time.monotonic() - start < limit, f'watch: timed out waiting for {what}'
+            time.sleep(0.1)
+        return round((time.monotonic() - start) * 1000)
+
+    def holder(job=None):
+        # Suspended until it is in the job, so the runner it starts is placed from inside it.
+        process = subprocess.Popen([str(binary), 'watch', 'run', '--file', str(source), '--scope', '0:0'], cwd=cwd,
+                                   env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                   text=True, encoding='utf-8', creationflags=0x4 if job else 0)  # CREATE_SUSPENDED
+        holders.append(process)
+        if job:
+            # Popen keeps the process handle only in _handle; NtResumeProcess resumes all its threads.
+            check(kernel32.AssignProcessToJobObject(job, int(process._handle)))
+            assert resume(int(process._handle)) == 0, 'watch: resume failed'
+        process.lines = queue.Queue()
+        threading.Thread(target=lambda: [process.lines.put(l) for l in process.stdout] + [process.lines.put(None)],
+                         daemon=True).start()
+        return process
+
+    def line(process):
+        try:
+            text = process.lines.get(timeout=30)
+        except queue.Empty as error:
+            raise TimeoutError('watch: a holder wrote no line within 30 seconds') from error
+        assert text is not None, f'watch: holder exited {process.poll()} before its line'
+        return json.loads(text)
+
+    def runner_pid(workspace):
+        # The OS process list, read with the caller's environment (the consumer one has no PATH).
+        listed = [line.split()[0] for line in subprocess.run(['ps', '-axo', 'pid=,command='], capture_output=True,
+                  text=True, check=True, timeout=60).stdout.splitlines() if '__watch-runner' in line and workspace in line]
+        assert len(listed) == 1, f'watch: expected one runner for {workspace}, found {listed}'
+        return int(listed[0])
+
+    if os.name == 'nt':
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        resume = ctypes.WinDLL('ntdll').NtResumeProcess
+        resume.argtypes, resume.restype = [wintypes.HANDLE], ctypes.c_long  # NTSTATUS
+        def check(ok):
+            if not ok:
+                raise ctypes.WinError(ctypes.get_last_error())
+        # A job without JOB_OBJECT_LIMIT_BREAKAWAY_OK: a child cannot break away from it.
+        job = kernel32.CreateJobObjectW(None, None)
+        check(job)
+    else:
+        job = None
+    holders, stopped = [], False
+    try:
+        cli('index', 'prepare', source, '--scope', '0:0')
+        cli('index', 'track', '--file', source, '--scope', '0:0')
+        # The first holder starts the runner; the second, outside any test job, joins it.
+        first = holder(job)
+        lease = line(first)
+        assert lease['state'] == 'active' and lease['runner']['state'] == 'running', lease
+        last = holder()
+        assert line(last)['state'] == 'active'
+        runner = status()['runner']
+        placement = runner['placement']
+        assert placement == ('in_host_job' if job else 'independent'), runner
+        first.kill()
+        first.wait(timeout=30)
+        after = status()
+        assert after['runner']['state'] == 'running' and after['runner']['attempt'] == runner['attempt'], after
+        assert sorted(l['state'] for l in after['leases']) == ['active', 'active'], after
+        changed = base/'next.fig'
+        changed.write_bytes(source.read_bytes() + bytes(16))
+        os.replace(changed, source)
+        save_ms = wait('the runner to record a save', lambda: revisions() == 1)
+        if job:
+            check(kernel32.TerminateJobObject(job, 1))
+        else:
+            os.kill(runner_pid(lease['workspaceId']), signal.SIGKILL)
+        lost = time.monotonic()
+        wait('a renewal to start the runner again', lambda: status()['runner'].get('attempt', 0) > runner['attempt']
+             and status()['runner']['state'] == 'running')
+        gap_ms = round((time.monotonic() - lost) * 1000)
+        restarted = status()['runner']['placement']
+        # The killed holder renewed for the last time before its kill: its lease lapses within the 30 s TTL.
+        wait("the killed holder's lease to expire", lambda: sorted(l['state'] for l in status()['leases']) == ['active', 'expired'], limit=40)
+        last.stdin.close()
+        ended = line(last)
+        assert last.wait(timeout=30) == 0 and ended == {'leaseId': ended['leaseId'], 'state': 'ended', 'reason': 'released'}, ended
+        exit_ms = wait('the runner to exit after the last lease', lambda: status()['runner']['state'] == 'stopped', limit=10)
+        stopped = True
+    finally:
+        # End this check's leases, then wait out any lease a killed holder left (TTL 30 s): a runner
+        # releases runner.lock only after draining its own jobs, so `stopped` proves both.
+        for process in holders:
+            if process.poll() is None:
+                process.stdin.close()
+                try:
+                    process.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=30)
+        if job:
+            kernel32.TerminateJobObject(job, 1)
+            kernel32.CloseHandle(job)
+        if not stopped:
+            try:
+                wait('the runner to stop before cleanup', lambda: status()['runner']['state'] == 'stopped', limit=45)
+                stopped = True
+            except Exception as error:
+                print(f'watch: {error}', file=sys.stderr)
+        if stopped:
+            shutil.rmtree(base)
+        else:
+            print(f'watch: runner not proven stopped; kept {base}', file=sys.stderr)
+    return {'placement': placement, 'firstHolderPidKilledRunnerKept': True, 'saveRecordedMs': save_ms,
+            'runnerLost': 'host job terminated' if job else 'runner PID killed', 'restartGapMs': gap_ms,
+            'restartedPlacement': restarted, 'lastEofRunnerExitMs': exit_ms}
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -155,6 +295,7 @@ def main():
                      'wrapperMcp': check_first_use(wrapper + ['mcp'], work/'first-use-wrapper', fixture, wrapped_env)}
         # The wrapper, as a second host, reuses the index the native first use enabled.
         first_use['crossHost'] = check_reuse(wrapper + ['mcp'], work/'first-use-native', wrapped_env)
+        watch = check_watch(cache, fixture, consumer, env)
         # Cold MCP startup must keep extraction/installation output off its protocol stdout.
         mcp_cache = work/'mcp-cache'
         mcp_env = dict(wrapped_env, XDG_CACHE_HOME=str(mcp_cache), LOCALAPPDATA=str(mcp_cache))
@@ -193,7 +334,7 @@ def main():
                           'node': run([node, '--version'], consumer, env).strip(),
                           'npm': run(npm + ['--version'], consumer, env).strip(),
                           'coldInstall': True, 'warmCacheNoDownload': True, 'parallelFirstUse': True,
-                          'nativeMcp': native_mcp, 'wrapperMcp': wrapped_mcp, 'gcsMock': gcs, 'index': index, 'firstUse': first_use, 'pi': pi, 'hosts': hosts}, indent=2))
+                          'nativeMcp': native_mcp, 'wrapperMcp': wrapped_mcp, 'gcsMock': gcs, 'index': index, 'firstUse': first_use, 'watch': watch, 'pi': pi, 'hosts': hosts}, indent=2))
 
 
 if __name__ == '__main__':

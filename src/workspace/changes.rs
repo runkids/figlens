@@ -80,7 +80,7 @@ fn view(storage: &Storage, ws: &Opened, req: &Request) -> Result<View> {
         scope.as_deref().unwrap_or(""),
         crate::search::hex(&Sha256::digest(sources.join("\u{1f}")))
     );
-    // Schema 4 first records changes; a read never upgrades.
+    // Schema 4 introduced change tracking; a later schema still reads it without migrating.
     let key = match ws.version >= 4 {
         true => Some(
             ws.conn
@@ -316,9 +316,16 @@ pub fn changes(storage: &Storage, select: &Select, req: &Request) -> Result<Json
             ErrorKind::InvalidArguments,
             "a query subscription records evaluations, not revisions; read it without revision",
         )),
-        (None, Some(sub)) if sub.is_query() => queries::poll(&tx, &v, sub, req),
         (Some(revision), _) => detail(&tx, &v, req, revision),
-        (None, _) => poll(&tx, &v, req),
+        (None, sub) => {
+            let mut reply = match sub {
+                Some(sub) if sub.is_query() => queries::poll(&tx, &v, sub, req)?,
+                _ => poll(&tx, &v, req)?,
+            };
+            reply["monitor"] =
+                super::watch::monitor(&tx, &ws.held.dir, &v.sources, v.scope.as_deref())?;
+            Ok(reply)
+        }
     }
 }
 
@@ -427,8 +434,6 @@ fn poll(conn: &Connection, v: &View, req: &Request) -> Result<Json> {
         "hasMore": has_more,
         "tracking": tracked,
         "trackingTruncated": truncated,
-        // The watch monitor (B2) runs apart from tracking: recording happens on each build.
-        "monitor": {"state": "inactive"},
     });
     if let Some(sub) = &v.sub {
         reply["subscription"] = subscriptions::describe(conn, sub)?;

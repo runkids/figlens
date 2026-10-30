@@ -44,6 +44,7 @@ python3 scripts/ai-context.py check     # validate paths, headings, links, orpha
 | `search` | Changing search indexing, ranking, cursors, coverage or budgets |
 | `diff` | Changing diff |
 | `subscriptions` | Changing watch subscriptions or checkpoint bounds |
+| `watch` | Changing watch leases or the runner |
 | `workspace` | Changing local workspace roots, identity, ownership, the SQLite registry, locks or index actions |
 | `index` | Changing index generations, jobs, publication or workspace search |
 | `bundle` | Changing the bundle zip, manifest, context.md, batch bundles, font inventory or `verify` |

@@ -15,6 +15,7 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 | `search` | Changing search indexing, normalization, ranking, cursors, coverage or its budgets | `search.md`, `usages.md` |
 | `diff` | Changing the diff engine (facets, matching, coverage, pair budgets, paging or its cursor) or tracked change revisions | `diff.md`, `changes.md` |
 | `subscriptions` | Changing watch subscriptions, their filters, consumer checkpoint bounds or forget | `subscriptions.md` |
+| `watch` | Changing watch leases, the shared watch runner, its detector or the changes monitor | `watch.md` |
 | `workspace` | Changing local workspace roots, identity, ownership, the SQLite registry, locks or index actions | `workspace.md` |
 | `index` | Changing durable index generations, index jobs (refresh, rebuild, clear_cache, cancel), publication fences or workspace search | `index-jobs.md` |
 | `bundle` | Changing the bundle zip, manifest, context.md, batch bundles, font inventory or `verify` | `bundle.md` |

@@ -161,6 +161,14 @@
         }
       ]
     },
+    "watch": {
+      "description": "Changing watch leases, the shared watch runner, its detector or the changes monitor.",
+      "sources": [
+        {
+          "path": "wiki/watch.md"
+        }
+      ]
+    },
     "workspace": {
       "description": "Changing local workspace roots, identity, ownership, the SQLite registry, locks or index actions.",
       "sources": [

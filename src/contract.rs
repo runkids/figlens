@@ -511,13 +511,13 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "watch",
-        "Change-tracking consumers. ack moves consumer's checkpoint for these filters (sourceId, scope), or a subscription's own (subscriptionId), forward to cursor, the nextCursor of the last changes page it handled with the same filters; an older or equal cursor normally leaves it, so a retry is safe. A cursor issued before retention deleted revisions it had not passed is event_gap, writing nothing: follow its recovery. A current recovery cursor before a checkpoint that is behind such a deletion moves the checkpoint back to it, so the kept revisions replay. Replies with advanced, true only when the checkpoint moved forward, and the checkpoint now held, which is authoritative. subscribe follows one source, scope or exact node (node: a layer id that must name one layer kind in the published index, else target_missing or identity_uncertain, never a same-name layer) from its newest visible revision; a repeat returns the same subscription; owner marks it temporary for that task. subscribe with query (and type) saves a workspace search of one source's scope (default 0:0) and stores its first evaluation of the top 50; evaluate stores a newer one after a publication; changes with its subscriptionId reads the stored evaluations (causes such as source_changed only for new file bytes or index_rebuilt; enteredTopK and leftTopK are exact sourceId/snapshotId/nodeId refs in the new and old snapshot, rankChanged positions are null when rankComparable is false, all within the top-50 window, not the whole result set; nodes compare by sourceId, which relocate keeps; total only when the search counted every hit) and reports evaluation pending with an evaluate step, never computing one; an evaluation past 128 KiB is unavailable evaluation_too_large, nothing stored. list pages the visible subscriptions with their state. unsubscribe removes one subscription and its checkpoint (or, with owner, that owner's temporary ones); forget removes a consumer's raw checkpoint views. Neither untracks or deletes history. A consumer holds at most 64 subscriptions and checkpoints, a workspace 4096: past that, workspace_busy names list, unsubscribe and forget; nothing is evicted.",
+        "Watching tracked scopes and change-tracking consumers. start: this server holds a lease on tracked scope of one source (sourceId when the workspace has several) and the workspace's shared runner refreshes it on each save, so changes shows new revisions without an index call; the server renews its leases every 10 s and ends them when it exits, and an unrenewed lease ends after 30 s. A requestId replays this server's live lease and reports an ended one as ended (untracked when its scope was untracked or retracked since), never restarting it, for 1 h after the end among the newest 1024 ended leases; past that it is unknown and starts a new lease. A requestId of a lease another running process holds is refused. stop ends one lease this server holds (leaseId). status lists the workspace's leases and runner, read-only. ack moves consumer's checkpoint for these filters (sourceId, scope), or a subscription's own (subscriptionId), forward to cursor, the nextCursor of the last changes page it handled with the same filters; an older or equal cursor normally leaves it, so a retry is safe. A cursor issued before retention deleted revisions it had not passed is event_gap, writing nothing: follow its recovery. A current recovery cursor before a checkpoint that is behind such a deletion moves the checkpoint back to it, so the kept revisions replay. Replies with advanced, true only when the checkpoint moved forward, and the checkpoint now held, which is authoritative. subscribe follows one source, scope or exact node (node: a layer id that must name one layer kind in the published index, else target_missing or identity_uncertain, never a same-name layer) from its newest visible revision; a repeat returns the same subscription; owner marks it temporary for that task. subscribe with query (and type) saves a workspace search of one source's scope (default 0:0) and stores its first evaluation of the top 50; evaluate stores a newer one after a publication; changes with its subscriptionId reads the stored evaluations (causes such as source_changed only for new file bytes or index_rebuilt; enteredTopK and leftTopK are exact sourceId/snapshotId/nodeId refs in the new and old snapshot, rankChanged positions are null when rankComparable is false, all within the top-50 window, not the whole result set; nodes compare by sourceId, which relocate keeps; total only when the search counted every hit) and reports evaluation pending with an evaluate step, never computing one; an evaluation past 128 KiB is unavailable evaluation_too_large, nothing stored. list pages the visible subscriptions with their state. unsubscribe removes one subscription and its checkpoint (or, with owner, that owner's temporary ones); forget removes a consumer's raw checkpoint views. Neither untracks or deletes history. A consumer holds at most 64 subscriptions and checkpoints, a workspace 4096: past that, workspace_busy names list, unsubscribe and forget; nothing is evicted.",
         &[
             (
                 "action",
                 "string",
                 true,
-                "ack, subscribe, evaluate, list, unsubscribe or forget",
+                "start, stop, status, ack, subscribe, evaluate, list, unsubscribe or forget",
             ),
             ("workspaceId", "string", true, "ws_... from the index tool"),
             (
@@ -536,13 +536,13 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "sourceId",
                 "string",
                 false,
-                "ack: the sourceId filter of that changes call; subscribe: the source to follow; forget: only its views",
+                "start: the source to watch; ack: the sourceId filter of that changes call; subscribe: the source to follow; forget: only its views",
             ),
             (
                 "scope",
                 "string",
                 false,
-                "ack: the scope filter of that changes call; subscribe: only this scope; forget: only its views",
+                "start: the tracked scope to watch; ack: the scope filter of that changes call; subscribe: only this scope; forget: only its views",
             ),
             (
                 "subscriptionId",
@@ -581,6 +581,8 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "list: the next of the previous page",
             ),
             STORAGE,
+            ("requestId", "string", false, "start: replays this request's lease"),
+            ("leaseId", "string", false, "stop: the lease to end"),
         ],
     ),
 ];
@@ -684,7 +686,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "hasMore": {"type": "boolean"},
                 "tracking": {"type": "array", "items": {"type": "object"}, "description": "each tracked scope of the visible sources: sourceId, scope, state (baseline_pending, active or disabled), lastRevisionId, lastCheckedAtMs (when its last build verified the file), refreshRequired (the file's size or mtime differs from that build's)"},
                 "trackingTruncated": {"type": "boolean", "description": "true when more tracked scopes exist than tracking lists"},
-                "monitor": {"type": "object", "description": "the watch monitor's state, separate from tracking"},
+                "monitor": {"type": "object", "description": "the watch monitor's state, separate from tracking: inactive when no lease covers the view, partial when some tracked scope of the view has none, else watching or the first problem (unauthorized, source_busy, source_missing, source_unreadable, stale)"},
                 "revisionId": {"type": "string", "description": "with revision"},
                 "detail": {"type": "string", "description": "with revision: complete, truncated (rows past the cap were not kept) or expired"},
                 "nodes": {"type": "array", "items": {"type": "object"}, "description": "with revision: frame, id, kind, change, facets, unread, descendants"},
@@ -697,6 +699,16 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
         "watch" => (
             serde_json::json!({
                 "workspaceId": {"type": "string"},
+                "leaseId": {"type": "string", "description": "start, stop: the lease"},
+                "sourceId": {"type": "string", "description": "start: the leased source"},
+                "scope": {"type": "string", "description": "start: the leased scope"},
+                "state": {"type": "string", "description": "start, stop: active, or ended with a reason"},
+                "reason": {"type": "string", "description": "start, stop: why an ended lease ended (stopped, released, expired, start_failed, reset, source_removed)"},
+                "expiresAtMs": {"type": "integer", "description": "start: when the lease ends unless renewed"},
+                "renewEveryMs": {"type": "integer", "description": "start: how often the holder renews; MCP renews for you"},
+                "runner": {"type": "object", "description": "start, status: the workspace's runner: state running, stopping, stopped or unknown; placement independent, or in_host_job when a Windows job object kept it inside the host and it ends with that job"},
+                "leases": {"type": "array", "items": {"type": "object"}, "description": "status: leaseId, sourceId, scope, state (active, unauthorized, untracked, expired or ended, with reason), expiresAtMs, mine; live leases first, then the newest ended ones"},
+                "truncated": {"type": "boolean", "description": "status: true when older ended leases are left out"},
                 "consumer": {"type": "string"},
                 "advanced": {"type": "boolean", "description": "ack: true only when the visible checkpoint moved forward"},
                 "checkpoint": {"type": ["string", "null"], "description": "ack, subscribe: a cursor at the checkpoint now held; null when retention deleted that revision"},
@@ -883,6 +895,9 @@ pub fn property(tool: &str, param: &Param) -> Value {
     }
     if tool == "watch" && key == "action" {
         p["enum"] = json!([
+            "start",
+            "stop",
+            "status",
             "ack",
             "subscribe",
             "evaluate",
@@ -1061,9 +1076,9 @@ pub fn tools() -> Value {
             "jobs" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": false,
                 "openWorldHint": false}),
             "changes" => tool["annotations"] = json!({"readOnlyHint": true, "openWorldHint": false}),
-            // unsubscribe and forget delete checkpoints; ack and subscribe are retry-safe.
+            // unsubscribe and forget delete checkpoints; start makes a new lease each time.
             "watch" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": true,
-                "idempotentHint": true, "openWorldHint": false}),
+                "idempotentHint": false, "openWorldHint": false}),
             _ => {}
         }
         tool

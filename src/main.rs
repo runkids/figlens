@@ -211,6 +211,11 @@ usage:
                                              remove one subscription, or an owner's temporary ones
   figlens watch forget <select> --consumer NAME [--source ID] [--scope NODE]
                                              remove a consumer's raw checkpoints; neither untracks
+  figlens watch run <select> --scope NODE [--source ID] [--request-id R]
+                                             hold a lease on a tracked scope while this runs: a shared
+                                             background runner refreshes it on each save; prints the
+                                             lease, then its end line on stdin EOF or Ctrl-C
+  figlens watch status <select>              the workspace's leases and runner; never writes
   figlens update                               install the latest GitHub release over this binary
   figlens --help | --version
 
@@ -336,6 +341,22 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                 Ok(())
             };
         }
+        Some("__watch-launch") => {
+            let rest: Vec<std::ffi::OsString> = args[1..].iter().map(Into::into).collect();
+            writeln!(out, "{}", figlens::workspace::watch::launch(&rest)?)?;
+            return Ok(());
+        }
+        Some("__watch-runner") => {
+            let (id, storage) = match &args[1..] {
+                [id] => (id, None),
+                [id, flag, dir] if flag == "--storage" => (id, Some(Path::new(dir))),
+                _ => return Err(USAGE.into()),
+            };
+            // Its holders, not a terminal's Ctrl-C, decide when it ends.
+            signals::ignore();
+            let storage = figlens::workspace::storage(storage)?;
+            return figlens::workspace::watch::serve(&storage, id);
+        }
         Some("index") => {
             let report = index(&args[1..])?;
             writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
@@ -354,6 +375,13 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
         }
         Some("changes") => {
             writeln!(out, "{}", changes(&args[1..], false)?)?;
+            return Ok(());
+        }
+        Some("watch") if args.get(1).is_some_and(|a| a == "run") => {
+            return watch_run(&args[2..]);
+        }
+        Some("watch") if args.get(1).is_some_and(|a| a == "status") => {
+            writeln!(out, "{}", watch_status(&args[2..])?)?;
             return Ok(());
         }
         Some("watch") if args.get(1).is_some_and(|a| a == "ack") => {
@@ -1098,6 +1126,102 @@ fn workspace_search(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>
     let request = command::search_request(&search_args)?;
     let only: Vec<String> = a.source.iter().map(|s| s.to_string()).collect();
     workspace::query::search(&storage, &select, &only, &request)
+}
+
+const WATCH_RUN: &str = "usage: figlens watch run --workspace DIR|--file <file.fig>|--id ws_... --scope NODE [--source ID] [--request-id R] [--storage DIR]";
+
+/// The workspace a `watch` command names, with its storage.
+fn watch_select(
+    a: &IndexArgs,
+) -> Result<(figlens::workspace::Storage, figlens::workspace::Select), Box<dyn Error>> {
+    use figlens::workspace::{self, Select};
+    let storage = workspace::storage(a.storage.map(Path::new))?;
+    let select = Select::from_choice(a.workspace.map(Path::new), a.file.map(Path::new), a.id)?
+        .ok_or("choose the workspace with --workspace, --file or --id")?;
+    Ok((storage, select))
+}
+
+/// `watch run`: holds one lease in the foreground, renewing it, until Ctrl-C, SIGTERM or the
+/// end of stdin; then releases it. Prints the lease, then the release, as they happen.
+fn watch_run(args: &[String]) -> Result<(), Box<dyn Error>> {
+    use figlens::workspace::watch;
+    use std::sync::atomic::Ordering;
+    let a = index_args(args, false)?;
+    let (Some(scope), true) = (a.scope, a.positional.is_empty() && a.source.len() <= 1) else {
+        return Err(WATCH_RUN.into());
+    };
+    let (storage, select) = watch_select(&a)?;
+    signals::catch();
+    let lease = watch::start(
+        &storage,
+        &select,
+        a.source.first().copied(),
+        scope,
+        a.request,
+    )?;
+    let mut out = std::io::stdout();
+    if let Err(e) = writeln!(out, "{lease}").and_then(|()| out.flush()) {
+        // Nobody reads this lease: end it now rather than leave it to expire.
+        watch::release();
+        return Err(e.into());
+    }
+    if lease["state"] != "active" {
+        return Err(format!("lease {} ended ({})", lease["leaseId"], lease["reason"]).into());
+    }
+    // The end of stdin is the portable way a host stops it; a signal is the other.
+    std::thread::spawn(|| {
+        let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+        signals::INTERRUPTED.store(true, Ordering::Relaxed);
+    });
+    let tick = std::time::Duration::from_millis(100);
+    let mut renew_at = std::time::Instant::now() + watch::RENEW;
+    while !signals::INTERRUPTED.load(Ordering::Relaxed) {
+        if std::time::Instant::now() >= renew_at {
+            renew_at = std::time::Instant::now() + watch::RENEW;
+            // A failed renewal keeps the lease until it expires; the next one retries.
+            let _ = watch::renew();
+            if !watch::holding() {
+                // Ended elsewhere (stopped, source removed, untracked or the workspace reset).
+                let reason = watch::status(&storage, &select)
+                    .ok()
+                    .and_then(|s| {
+                        s["leases"]
+                            .as_array()?
+                            .iter()
+                            .find(|l| l["leaseId"] == lease["leaseId"])
+                            .cloned()
+                    })
+                    // An expired row has no reason; its state says why.
+                    .map_or("workspace_gone".into(), |l| {
+                        l.get("reason").unwrap_or(&l["state"]).clone()
+                    });
+                writeln!(
+                    out,
+                    "{}",
+                    serde_json::json!({"leaseId": lease["leaseId"], "state": "ended", "reason": reason})
+                )?;
+                return Ok(());
+            }
+        }
+        std::thread::sleep(tick);
+    }
+    watch::release();
+    writeln!(
+        out,
+        "{}",
+        serde_json::json!({"leaseId": lease["leaseId"], "state": "ended", "reason": "released"})
+    )?;
+    Ok(())
+}
+
+/// `watch status`: the workspace's leases, runner and monitors, read-only.
+fn watch_status(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
+    let a = index_args(args, false)?;
+    if !a.positional.is_empty() || a.scope.is_some() || !a.source.is_empty() {
+        return Err("usage: figlens watch status --workspace DIR|--file <file.fig>|--id ws_... [--storage DIR]".into());
+    }
+    let (storage, select) = watch_select(&a)?;
+    figlens::workspace::watch::status(&storage, &select)
 }
 
 /// `figlens changes <select> [filters] [--consumer C] [--cursor X] [--revision R] [--limit N]`,

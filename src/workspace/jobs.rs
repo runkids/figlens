@@ -63,7 +63,7 @@ pub const WAL_CAP: u64 = if cfg!(test) {
 /// How often an owner checks for a cancel request while its child builds.
 const POLL: Duration = Duration::from_millis(100);
 /// How long `jobs cancel` waits for the owner to report the job stopped.
-const CANCEL_WAIT: Duration = Duration::from_secs(2);
+pub(super) const CANCEL_WAIT: Duration = Duration::from_secs(2);
 /// Longest a queued job waits for its turn to build; past it, it fails `workspace_busy` and a
 /// refresh retries it.
 const QUEUE_WAIT: Duration = if cfg!(test) {
@@ -88,6 +88,16 @@ pub(super) fn random_hex() -> String {
     );
     bytes.copy_from_slice(&Sha256::digest(seed)[..16]);
     crate::search::hex(&bytes)
+}
+
+/// This process's owner token for `dir` when it already has one; never creates or removes a
+/// file, so read-only callers can tell their own rows.
+pub(crate) fn registered_owner(dir: &Path) -> Option<String> {
+    let owners = OWNERS.lock().ok()?;
+    owners
+        .iter()
+        .find(|(d, ..)| d == dir)
+        .map(|(_, token, _)| token.clone())
 }
 
 /// This process's owner token for the workspace at `dir`, holding `owners/<token>.lock`
@@ -380,6 +390,22 @@ fn fingerprint(kind: &str, ws: &str, source: &str, membership: &str, scope: &str
         .to_owned()
 }
 
+/// Marks an active job as one another caller waits for, in the caller's join transaction, so a
+/// watch runner never cancels it as its own (schema 5; earlier schemas have no runner).
+fn share(tx: &Connection, job_id: &str) -> Result<()> {
+    let version: i64 = tx
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(sql)?;
+    if version >= 5 {
+        tx.execute(
+            "UPDATE jobs SET shared = 1 WHERE job_id = ?1 AND state IN ('queued', 'running')",
+            [job_id],
+        )
+        .map_err(sql)?;
+    }
+    Ok(())
+}
+
 /// Records `request_id` for a job it joined or took over, so a retry replays that job.
 fn remember(tx: &Connection, request_id: Option<&str>, print: &str, job_id: &str) -> Result<()> {
     if let Some(request) = request_id {
@@ -437,6 +463,7 @@ pub(crate) fn submit(
             .map_err(sql)?;
         match found {
             Some((job_id, fp)) if fp == print => {
+                share(&tx, &job_id)?;
                 tx.commit().map_err(sql)?;
                 return Ok(Submitted {
                     job_id,
@@ -487,6 +514,8 @@ pub(crate) fn submit(
                 params![job_id, me, membership, now_ms(), kind],
             )
             .map_err(sql)?;
+            // The dead owner's waiters still wait for it, so a takeover counts as shared.
+            share(&tx, &job_id)?;
             remember(&tx, request_id, &print, &job_id)?;
             admit(tx, &dir, &job_id, attempt + 1)?;
             return Ok(Submitted {
@@ -524,6 +553,7 @@ pub(crate) fn submit(
             .map_err(sql)?;
         }
         remember(&tx, request_id, &print, &job_id)?;
+        share(&tx, &job_id)?;
         tx.commit().map_err(sql)?;
         return Ok(Submitted {
             job_id,
@@ -2094,7 +2124,9 @@ pub(super) fn chosen(storage: &Storage, ws: &Opened, only: Option<&str>) -> Resu
         .map_err(sql)?;
     let ids: Vec<String> = all
         .into_iter()
-        .filter(|(id, path)| storage.sees(Path::new(path)) && only.is_none_or(|o| o == id))
+        // The id test first: an explicit source resolves only its own path, which a caller in a
+        // write transaction would otherwise do for every source.
+        .filter(|(id, path)| only.is_none_or(|o| o == id) && storage.sees(Path::new(path)))
         .map(|(id, _)| id)
         .collect();
     if let Some(only) = only

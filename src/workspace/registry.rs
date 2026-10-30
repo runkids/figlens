@@ -703,6 +703,17 @@ pub fn reset(storage: &Storage, select: &Select) -> Result<Json> {
                 [],
             )
             .map_err(sql)?;
+        // Watch leases end too, so the runner (which holds a shared lock) exits before the
+        // exclusive lock below gives up; their holders forget the workspace at next renewal.
+        if ws.version >= 5 {
+            ws.conn
+                .execute(
+                    "UPDATE watch_leases SET ended = 'reset', authorized_path = NULL
+                     WHERE ended IS NULL",
+                    [],
+                )
+                .map_err(sql)?;
+        }
     }
     let Some(held) = acquire(&place.roots.state.path, select, true)? else {
         return Ok(report(

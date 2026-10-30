@@ -6,9 +6,7 @@
 //! A lease is one holder process's interest in one source and scope. Its holder (an MCP server
 //! or `watch run`, by its owner token) renews all of its leases in one statement every
 //! `RENEW`; a lease not renewed within `TTL` is over for everyone, and only ever ends.
-// shortcut: no runner calls the detector yet; it lands with the runner in the next B2 commit.
-#![cfg_attr(not(test), allow(dead_code))]
-
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use rusqlite::{TransactionBehavior, params};
@@ -185,6 +183,11 @@ const MAX_SOURCES: i64 = 16;
 
 /// A row that counts: not ended and renewed within `TTL`.
 const LIVE: &str = "ended IS NULL AND expires_ms > ?1";
+/// A lease of the scope's current tracking epoch (an untrack or retrack starts a new one), on
+/// an unaliased `watch_leases`.
+const VALID: &str = "EXISTS (SELECT 1 FROM tracking t WHERE t.source_id = watch_leases.source_id
+    AND t.scope = watch_leases.scope AND t.epoch = watch_leases.epoch
+    AND t.state IN ('active', 'baseline_pending'))";
 
 /// Workspaces this process holds leases in, so one renewal pass and one exit release reach
 /// them all.
@@ -196,6 +199,42 @@ fn remember_held(storage: &Storage, ws_id: &str) {
     {
         held.push((storage.clone(), ws_id.to_owned()));
     }
+    wake();
+}
+
+/// MCP servers' renewal threads (one per server; tests run several in one process), parked
+/// until this process holds a lease.
+static RENEWERS: std::sync::Mutex<Vec<std::thread::Thread>> = std::sync::Mutex::new(Vec::new());
+
+/// Wakes the renewal threads, to start renewing or to see that they should stop.
+pub fn wake() {
+    if let Ok(threads) = RENEWERS.lock() {
+        threads.iter().for_each(std::thread::Thread::unpark);
+    }
+}
+
+/// The MCP server's renewal loop: renews every `RENEW` while this process holds leases and
+/// parks, touching no database, until `stop` (after `wake`). Nothing runs before a start.
+pub fn renew_until(stop: &std::sync::atomic::AtomicBool) {
+    use std::sync::atomic::Ordering;
+    let me = std::thread::current();
+    if let Ok(mut threads) = RENEWERS.lock() {
+        threads.push(me.clone());
+    }
+    while !stop.load(Ordering::SeqCst) {
+        if HELD.lock().map_or(true, |h| h.is_empty()) {
+            std::thread::park();
+            continue;
+        }
+        std::thread::park_timeout(RENEW);
+        if !stop.load(Ordering::SeqCst) {
+            // A failed renewal keeps the lease until it expires; the next one retries.
+            let _ = renew();
+        }
+    }
+    if let Ok(mut threads) = RENEWERS.lock() {
+        threads.retain(|t| t.id() != me.id());
+    }
 }
 
 fn lease_json(ws_id: &str, lease: &str, source: &str, scope: &str, expires: i64) -> Json {
@@ -204,8 +243,8 @@ fn lease_json(ws_id: &str, lease: &str, source: &str, scope: &str, expires: i64)
 }
 
 /// `watch start`: a lease on tracked `scope` of one source for this process, which must renew
-/// it (see `renew`). A `request_id` replays its lease while it lives, and reports it ended
-/// after that; it never starts an ended lease again.
+/// it (see `renew`), and the workspace's runner when none runs. A `request_id` replays its
+/// lease while it lives, and reports it ended after that; it never starts an ended lease again.
 pub fn start(
     storage: &Storage,
     select: &Select,
@@ -213,15 +252,72 @@ pub fn start(
     scope: &str,
     request_id: Option<&str>,
 ) -> Result<Json> {
-    let (_, mut ws) = opened(storage, select, true)?;
+    let scope = &crate::normalize_id(scope);
+    let (mut reply, dir, created) = lease(storage, select, source, scope, request_id)?;
+    if reply["state"] == "active" {
+        let ws_id = reply["workspaceId"].as_str().unwrap_or_default().to_owned();
+        match ensure_runner(storage, &ws_id, &dir) {
+            Ok(runner) => reply["runner"] = runner,
+            // The caller gets no leaseId to stop, so the lease this call made ends here; a
+            // replayed one stays with its earlier start.
+            Err(e) if created => {
+                if let Some(id) = reply["leaseId"].as_str() {
+                    let _ = end(storage, &ws_id, id, "start_failed");
+                }
+                return Err(e);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(reply)
+}
+
+/// Ends one lease of this process with `reason`.
+fn end(storage: &Storage, ws_id: &str, lease_id: &str, reason: &str) -> Result<usize> {
+    let (_, ws) = opened(storage, &Select::Id(ws_id.to_owned()), true)?;
+    let holder = owner(&ws.held.dir)?;
+    ws.conn
+        .execute(
+            "UPDATE watch_leases SET ended = ?3, authorized_path = NULL
+             WHERE lease_id = ?1 AND holder = ?2 AND ended IS NULL",
+            params![lease_id, holder, reason],
+        )
+        .map_err(sql)
+}
+
+/// `start`'s lease, in one transaction, the workspace directory, and whether this call created
+/// it (rather than replaying a requestId).
+fn lease(
+    storage: &Storage,
+    select: &Select,
+    source: Option<&str>,
+    scope: &str,
+    request_id: Option<&str>,
+) -> Result<(Json, PathBuf, bool)> {
+    let (_, ws) = opened(storage, select, true)?;
+    let dir = ws.held.dir.clone();
     let ws_id = ws.held.id.clone();
     let holder = owner(&ws.held.dir)?;
+    // The source is chosen and its path authorized under the write lock, so a relocation
+    // commits before or after this lease, never between the check and `authorized_path`.
+    let tx = rusqlite::Transaction::new_unchecked(&ws.conn, TransactionBehavior::Immediate)
+        .map_err(sql)?;
     let sources = chosen(storage, &ws, source)?;
-    let [source_id] = sources.as_slice() else {
-        return Err(fail(
-            ErrorKind::InvalidArguments,
-            format!("workspace {ws_id} has more than one source; pass the sourceId to watch"),
-        ));
+    super::jobs::hold("watch_admit");
+    let source_id = match sources.as_slice() {
+        [one] => one,
+        [] => {
+            return Err(fail(
+                ErrorKind::InvalidArguments,
+                format!("workspace {ws_id} has no source this process can see"),
+            ));
+        }
+        _ => {
+            return Err(fail(
+                ErrorKind::InvalidArguments,
+                format!("workspace {ws_id} has more than one source; pass the sourceId to watch"),
+            ));
+        }
     };
     let print = crate::search::hex(&Sha256::digest(
         json!([ws_id, source_id, scope]).to_string(),
@@ -229,10 +325,6 @@ pub fn start(
         .to_owned();
     let now = now_ms();
     let incarnation = ws.incarnation.clone();
-    let tx = ws
-        .conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(sql)?;
     if let Some(request) = request_id {
         let prior: Option<(String, String, String, i64, Option<String>)> = tx
             .query_row(
@@ -250,28 +342,64 @@ pub fn start(
                     format!("requestId {request} names a different watch"),
                 ));
             }
-            if ended.is_none() && expires > now && prior_holder == holder {
-                return Ok(lease_json(&ws_id, &lease, source_id, scope, expires));
+            let live = ended.is_none() && expires > now;
+            if live && prior_holder != holder {
+                return Err(fail(
+                    ErrorKind::InvalidArguments,
+                    format!(
+                        "requestId {request} names lease {lease}, which another running process holds; start with a new requestId"
+                    ),
+                ));
             }
-            let why = ended.unwrap_or_else(|| "expired".into());
-            return Ok(
-                json!({"workspaceId": ws_id, "leaseId": lease, "sourceId": source_id,
+            let valid: bool = tx
+                .query_row(
+                    &format!("SELECT {VALID} FROM watch_leases WHERE lease_id = ?1"),
+                    [&lease],
+                    |r| r.get(0),
+                )
+                .map_err(sql)?;
+            if live && valid {
+                return Ok((
+                    lease_json(&ws_id, &lease, source_id, scope, expires),
+                    dir,
+                    false,
+                ));
+            }
+            let why = match ended {
+                Some(why) => why,
+                None if !live => "expired".into(),
+                None => {
+                    // Untracked or retracked since: it never serves again, so it ends here.
+                    tx.execute(
+                        "UPDATE watch_leases SET ended = 'untracked', authorized_path = NULL
+                         WHERE lease_id = ?1",
+                        [&lease],
+                    )
+                    .map_err(sql)?;
+                    tx.commit().map_err(sql)?;
+                    "untracked".into()
+                }
+            };
+            let ended = json!({"workspaceId": ws_id, "leaseId": lease, "sourceId": source_id,
                 "scope": scope, "state": "ended", "reason": why,
                 "nextStep": {"tool": "watch", "arguments": {"action": "start",
                     "workspaceId": ws_id, "sourceId": source_id, "scope": scope},
-                    "why": "an ended lease never starts again; start a new one with a new requestId"}}),
-            );
+                    "why": "an ended lease never starts again; start a new one with a new requestId"}});
+            return Ok((ended, dir, false));
         }
     }
-    let tracked: Option<String> = tx
+    let tracked: Option<(String, i64)> = tx
         .query_row(
-            "SELECT state FROM tracking WHERE source_id = ?1 AND scope = ?2",
+            "SELECT state, epoch FROM tracking WHERE source_id = ?1 AND scope = ?2",
             [source_id, scope],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()
         .map_err(sql)?;
-    if !matches!(tracked.as_deref(), Some("active" | "baseline_pending")) {
+    let Some(("active" | "baseline_pending", epoch)) = tracked
+        .as_ref()
+        .map(|(state, epoch)| (state.as_str(), *epoch))
+    else {
         return Err(FigError::new(
             ErrorKind::InvalidArguments,
             format!("source {source_id} scope {scope} is not tracked; track it before watching it"),
@@ -279,7 +407,7 @@ pub fn start(
         .with_recovery(json!([{"action": "track", "requires": "none", "tool": "index",
             "arguments": {"action": "track", "workspaceId": ws_id, "sourceId": source_id, "scope": scope}}]))
         .into());
-    }
+    };
     let path: String = tx
         .query_row(
             "SELECT path FROM sources WHERE source_id = ?1",
@@ -310,8 +438,8 @@ pub fn start(
     let expires = now + TTL.as_millis() as i64;
     tx.execute(
         "INSERT INTO watch_leases (lease_id, holder, source_id, scope, incarnation,
-         authorized_path, request_id, fingerprint, renewed_ms, expires_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+         authorized_path, request_id, fingerprint, renewed_ms, expires_ms, epoch)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             lease,
             holder,
@@ -322,20 +450,25 @@ pub fn start(
             request_id,
             print,
             now,
-            expires
+            expires,
+            epoch
         ],
     )
     .map_err(sql)?;
     tx.commit().map_err(sql)?;
     remember_held(storage, &ws_id);
-    Ok(lease_json(&ws_id, &lease, source_id, scope, expires))
+    Ok((
+        lease_json(&ws_id, &lease, source_id, scope, expires),
+        dir,
+        true,
+    ))
 }
 
 /// One renewal of every live lease this process holds in workspace `ws_id`, in one statement.
 /// Each lease is re-authorized against this process's own roots: a source it no longer sees
 /// (or that moved) is kept but unauthorized, so the runner stops reading it for this holder.
 /// Returns how many leases it renewed.
-fn renew_one(storage: &Storage, ws_id: &str) -> Result<usize> {
+fn renew_one(storage: &Storage, ws_id: &str) -> Result<(usize, PathBuf)> {
     let (_, mut ws) = opened(storage, &Select::Id(ws_id.to_owned()), true)?;
     let holder = owner(&ws.held.dir)?;
     let now = now_ms();
@@ -350,6 +483,7 @@ fn renew_one(storage: &Storage, ws_id: &str) -> Result<usize> {
                 .collect()
         })
         .map_err(sql)?;
+    let checked = json!(paths.iter().map(|(id, _)| id).collect::<Vec<_>>()).to_string();
     let seen: Vec<Json> = paths
         .into_iter()
         .filter(|(_, path)| storage.sees(Path::new(path)))
@@ -360,55 +494,93 @@ fn renew_one(storage: &Storage, ws_id: &str) -> Result<usize> {
         .conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(sql)?;
+    // An untrack or retrack since the start: the lease never serves again, so it ends.
+    tx.execute(
+        &format!(
+            "UPDATE watch_leases SET ended = 'untracked', authorized_path = NULL
+             WHERE {LIVE} AND holder = ?2 AND NOT {VALID}"
+        ),
+        params![now, holder],
+    )
+    .map_err(sql)?;
     let renewed = tx
         .execute(
             &format!(
                 "UPDATE watch_leases SET renewed_ms = ?1, expires_ms = ?3, authorized_path =
-                 (SELECT json_extract(value, '$[1]') FROM json_each(?4)
+                 CASE WHEN source_id IN (SELECT value FROM json_each(?5))
+                 THEN (SELECT json_extract(value, '$[1]') FROM json_each(?4)
                   WHERE json_extract(value, '$[0]') = watch_leases.source_id)
+                 ELSE authorized_path END
                  WHERE {LIVE} AND holder = ?2"
             ),
-            params![now, holder, now + TTL.as_millis() as i64, seen],
+            // A lease started since the read above keeps the authorization its start checked.
+            params![now, holder, now + TTL.as_millis() as i64, seen, checked],
         )
         .map_err(sql)?;
     tx.commit().map_err(sql)?;
-    Ok(renewed)
+    Ok((renewed, ws.held.dir.clone()))
 }
 
-/// Renews this process's leases in every workspace it holds them in; a workspace whose
-/// renewal fails keeps its leases until they expire, which is the safe side.
+/// Renews this process's leases in every workspace it holds them in, and starts that
+/// workspace's runner again when it is gone while they live (one that ended with a host's
+/// job object, say). A workspace whose renewal fails keeps its leases until they expire,
+/// which is the safe side. Returns each workspace's renewed count.
 pub fn renew() -> Vec<(String, Result<usize>)> {
     let held = HELD.lock().map(|h| h.clone()).unwrap_or_default();
-    held.iter()
-        .map(|(storage, id)| (id.clone(), renew_one(storage, id)))
-        .collect()
+    // Every workspace renews before any runner start, which can wait for a stopping runner,
+    // so one slow workspace never lets another's leases expire.
+    let renewals: Vec<_> = held.iter().map(|(s, id)| renew_one(s, id)).collect();
+    let renewed: Vec<(String, Result<usize>)> = held
+        .iter()
+        .zip(renewals)
+        .map(|((storage, id), renewal)| {
+            let renewed = renewal.and_then(|(n, dir)| {
+                if n > 0 {
+                    ensure_runner(storage, id, &dir)?;
+                }
+                Ok(n)
+            });
+            (id.clone(), renewed)
+        })
+        .collect();
+    // A workspace with no lease of this process left (all ended, or it was reset or removed)
+    // is forgotten, so the renewal thread parks again; a busy one is retried.
+    let done = |id: &str| {
+        renewed.iter().any(|(r, n)| {
+            r == id
+                && n.as_ref()
+                    .map_or_else(|e| super::database::gone(&**e), |n| *n == 0)
+        })
+    };
+    if let Ok(mut held) = HELD.lock() {
+        held.retain(|(_, id)| !done(id));
+    }
+    renewed
+}
+
+/// Whether this process still holds a lease in any workspace (as of its last renewal).
+pub fn holding() -> bool {
+    HELD.lock().is_ok_and(|h| !h.is_empty())
 }
 
 /// `watch stop`: ends one lease this process holds.
 pub fn stop(storage: &Storage, select: &Select, lease_id: &str) -> Result<Json> {
-    let (_, ws) = opened(storage, select, true)?;
-    let holder = owner(&ws.held.dir)?;
-    let ended = ws
-        .conn
-        .execute(
-            "UPDATE watch_leases SET ended = 'stopped', authorized_path = NULL
-             WHERE lease_id = ?1 AND holder = ?2 AND ended IS NULL",
-            params![lease_id, holder],
-        )
-        .map_err(sql)?;
-    if ended == 0 {
+    let ws_id = {
+        let (_, ws) = opened(storage, select, false)?;
+        ws.held.id.clone()
+    };
+    if end(storage, &ws_id, lease_id, "stopped")? == 0 {
         return Err(fail(
             ErrorKind::InvalidArguments,
             format!("this process holds no live lease {lease_id}"),
         ));
     }
-    Ok(
-        json!({"workspaceId": ws.held.id, "leaseId": lease_id, "state": "ended", "reason": "stopped"}),
-    )
+    Ok(json!({"workspaceId": ws_id, "leaseId": lease_id, "state": "ended", "reason": "stopped"}))
 }
 
 /// At this process's exit: ends every lease it holds, in each workspace in one statement.
-/// It never stops a runner; one with no live lease left exits by itself.
+/// It never stops a runner; one with no live lease left exits by itself, and when this
+/// process held the last ones it waits up to `CANCEL_WAIT` for that exit.
 pub fn release() {
     let held = HELD.lock().map(|h| h.clone()).unwrap_or_default();
     for (storage, id) in held {
@@ -420,6 +592,19 @@ pub fn release() {
                  WHERE holder = ?1 AND ended IS NULL",
                 [holder],
             );
+            let live = ws.conn.query_row(
+                &format!("SELECT count(*) FROM watch_leases WHERE {LIVE} AND {VALID}"),
+                [now_ms()],
+                |r| r.get::<_, i64>(0),
+            );
+            if live.is_ok_and(|n| n == 0) {
+                let start = Instant::now();
+                while runner_alive(&ws.held.dir) == Some(true)
+                    && start.elapsed() < super::jobs::CANCEL_WAIT
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
         }
     }
 }
@@ -427,21 +612,43 @@ pub fn release() {
 /// `watch status`: this workspace's leases on sources the caller sees, read-only.
 pub fn status(storage: &Storage, select: &Select) -> Result<Json> {
     let (_, ws) = opened(storage, select, false)?;
-    let me = owner(&ws.held.dir).ok();
+    let me = super::jobs::registered_owner(&ws.held.dir);
     let now = now_ms();
     let mut leases = Vec::new();
+    let mut truncated = false;
+    // One read snapshot: the visible sources and their lease rows come from the same commit.
+    let _snapshot = ws.conn.unchecked_transaction().map_err(sql)?;
     if ws.version >= 5 {
+        // Visible sources first, then the bound: live leases (at most MAX_LEASES) come before
+        // retained ended ones, so a hidden source's history never pushes a visible row out.
+        let seen: Vec<String> = ws
+            .conn
+            .prepare("SELECT source_id, path FROM sources")
+            .and_then(|mut s| {
+                s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .map_err(sql)?
+            .into_iter()
+            .filter(|(_, path)| storage.sees(Path::new(path)))
+            .map(|(id, _)| id)
+            .collect();
+        super::jobs::hold("watch_status");
         let mut stmt = ws
             .conn
             .prepare(
                 "SELECT l.lease_id, l.holder, l.source_id, l.scope, l.expires_ms, l.ended,
-                 l.authorized_path IS NOT NULL AND l.authorized_path = s.path, s.path
+                 CASE WHEN t.epoch IS NOT l.epoch OR t.state = 'disabled' THEN 0
+                 ELSE l.authorized_path IS NOT NULL AND l.authorized_path = s.path END,
+                 t.epoch IS l.epoch AND t.state != 'disabled'
                  FROM watch_leases l LEFT JOIN sources s ON s.source_id = l.source_id
-                 ORDER BY l.renewed_ms DESC, l.lease_id LIMIT ?1",
+                 LEFT JOIN tracking t ON t.source_id = l.source_id AND t.scope = l.scope
+                 WHERE l.source_id IN (SELECT value FROM json_each(?1))
+                 ORDER BY l.ended IS NOT NULL, l.renewed_ms DESC, l.lease_id LIMIT ?2",
             )
             .map_err(sql)?;
         let rows = stmt
-            .query_map([MAX_LEASES * 4], |r| {
+            .query_map(params![json!(seen).to_string(), MAX_LEASES * 4 + 1], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
@@ -450,20 +657,23 @@ pub fn status(storage: &Storage, select: &Select) -> Result<Json> {
                     r.get::<_, i64>(4)?,
                     r.get::<_, Option<String>>(5)?,
                     r.get::<_, Option<bool>>(6)?,
-                    r.get::<_, Option<String>>(7)?,
+                    r.get::<_, Option<bool>>(7)?.unwrap_or(false),
                 ))
             })
             .map_err(sql)?;
         for row in rows {
-            let (lease, holder, source, scope, expires, ended, authorized, path) =
+            let (lease, holder, source, scope, expires, ended, authorized, tracked) =
                 row.map_err(sql)?;
-            if !path.is_some_and(|p| storage.sees(Path::new(&p))) {
-                continue;
+            if leases.len() as i64 == MAX_LEASES * 4 {
+                truncated = true;
+                break;
             }
             let state = match (&ended, expires > now, authorized) {
                 (Some(_), ..) => "ended",
                 (None, false, _) => "expired",
                 (None, true, Some(true)) => "active",
+                // Untracked (or retracked) since it started: it never counts again.
+                (None, true, _) if !tracked => "untracked",
                 (None, true, _) => "unauthorized",
             };
             let mut lease = json!({"leaseId": lease, "sourceId": source, "scope": scope,
@@ -474,7 +684,915 @@ pub fn status(storage: &Storage, select: &Select) -> Result<Json> {
             leases.push(lease);
         }
     }
-    Ok(json!({"workspaceId": ws.held.id, "leases": leases}))
+    let runner = match runner_alive(&ws.held.dir) {
+        Some(true) if ws.version >= 5 && closing(&ws.conn)? => "stopping",
+        Some(true) => "running",
+        Some(false) => "stopped",
+        None => "unknown",
+    };
+    let mut runner = json!({"state": runner});
+    if ws.version >= 5
+        && let Some((attempt, placement, beat)) = ws
+            .conn
+            .query_row(
+                "SELECT attempt, placement, beat_ms FROM watch_runner WHERE one = 1",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sql)?
+    {
+        runner["attempt"] = json!(attempt);
+        runner["placement"] = json!(placement);
+        runner["beatMs"] = json!(beat);
+    }
+    let mut reply = json!({"workspaceId": ws.held.id, "runner": runner, "leases": leases});
+    if truncated {
+        reply["truncated"] = json!(true);
+    }
+    Ok(reply)
+}
+
+/// The watch monitor of `sources` (and `scope`, when one is named) for a `changes` reply,
+/// apart from tracking: `watching` needs a running runner, a live lease that authorizes the
+/// source's current path, and a monitor row the runner wrote within three persist intervals.
+/// The first state that is not `watching`, in source order, is reported; `inactive` when no
+/// live lease covers them, with the cadence only when one does. An empty page with any other state never proves the disk unchanged.
+pub(super) fn monitor(
+    conn: &Connection,
+    dir: &Path,
+    sources: &[String],
+    scope: Option<&str>,
+) -> Result<Json> {
+    let mut out = json!({"state": "inactive"});
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(sql)?;
+    if version < 5 || sources.is_empty() {
+        return Ok(out);
+    }
+    let now = now_ms();
+    let alive = runner_alive(dir);
+    let beat: Option<i64> = conn
+        .query_row("SELECT beat_ms FROM watch_runner WHERE one = 1", [], |r| {
+            r.get(0)
+        })
+        .optional()
+        .map_err(sql)?;
+    let (mut states, mut stamp, mut verified) = (Vec::new(), None::<i64>, None::<i64>);
+    let mut uncovered = false;
+    for source in sources {
+        let tracked: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM tracking WHERE source_id = ?1 AND (?2 IS NULL OR scope = ?2)
+                 AND state IN ('active', 'baseline_pending')",
+                params![source, scope],
+                |r| r.get(0),
+            )
+            .map_err(sql)?;
+        let (live, authorized): (i64, i64) = conn
+            .query_row(
+                &format!(
+                    "SELECT count(DISTINCT l.scope),
+                     count(DISTINCT l.scope) FILTER (WHERE l.authorized_path = s.path)
+                     FROM {SERVED_FROM} WHERE l.ended IS NULL AND l.expires_ms > ?1
+                     AND t.epoch = l.epoch AND t.state = 'active'
+                     AND l.source_id = ?2 AND (?3 IS NULL OR l.scope = ?3)"
+                ),
+                params![now, source, scope],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(sql)?;
+        // A tracked scope of the view that no lease serves: the view is not all watched.
+        uncovered |= live < tracked;
+        if live == 0 {
+            continue;
+        }
+        if authorized == 0 {
+            states.push("unauthorized".to_owned());
+            continue;
+        }
+        let row: Option<(String, Option<i64>, Option<i64>, i64)> = conn
+            .query_row(
+                "SELECT state, stamp_checked_ms, content_verified_ms, written_ms
+                 FROM watch_monitor WHERE source_id = ?1",
+                [source],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()
+            .map_err(sql)?;
+        let fresh = |at: i64| now - at < 3 * PERSIST.as_millis() as i64;
+        let state = match (alive, &row) {
+            (Some(true), Some((state, .., written))) if fresh(*written) => state.clone(),
+            // A runner writes a newly served source's first row at its next persist.
+            (Some(true), None) if beat.is_some_and(fresh) => "watching".to_owned(),
+            _ => "stale".to_owned(),
+        };
+        if let Some((_, s, v, _)) = row {
+            stamp = match (stamp, s) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            verified = match (verified, v) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+        }
+        states.push(state);
+    }
+    if !states.is_empty() {
+        let first = match states.iter().find(|s| *s != "watching") {
+            Some(state) => state.as_str(),
+            None if uncovered => "partial",
+            None => "watching",
+        };
+        out = json!({"state": first, "pollEveryMs": POLL.as_millis() as u64,
+            "contentVerifyEveryMs": VERIFY.as_millis() as u64,
+            "persistEveryMs": PERSIST.as_millis() as u64});
+        out["stampCheckedAtMs"] = json!(stamp);
+        out["contentVerifiedAtMs"] = json!(verified);
+    }
+    Ok(out)
+}
+
+// ---- Runner ----
+
+/// Leases the runner serves (`l` joined to sources `s` and tracking `t`): live, of this
+/// incarnation, authorizing the source's current path, and of the scope's current tracking
+/// epoch while it is active. A lease from before an untrack never counts again, and nothing is
+/// refreshed while the baseline is pending. `?1` is now, `?2` the incarnation.
+const SERVED: &str = "l.ended IS NULL AND l.expires_ms > ?1 AND l.incarnation = ?2
+    AND l.authorized_path = s.path AND t.state = 'active' AND t.epoch = l.epoch";
+const SERVED_FROM: &str = "watch_leases l JOIN sources s ON s.source_id = l.source_id
+    JOIN tracking t ON t.source_id = l.source_id AND t.scope = l.scope";
+
+/// The runner persists monitor rows, beats and collects garbage this often.
+const PERSIST: Duration = Duration::from_secs(10);
+/// It re-reads the served lease union every poll, so it stops within one poll of the last
+/// lease's end.
+const UNION: Duration = POLL;
+/// Ended and expired lease rows stay this long, so their requestIds still replay as ended.
+const KEEP_ENDED_MS: i64 = 3_600_000;
+/// And at most this many, newest first, so a start/stop loop cannot grow the table; past
+/// either bound a requestId is unknown and starts a new lease (as a job's does once collected).
+const KEEP_ENDED_ROWS: i64 = 1024;
+/// The runner records how it was started, so status never claims an independence it lacks.
+const PLACEMENT: &str = "FIGLENS_WATCH_PLACEMENT";
+
+fn runner_lock(dir: &Path) -> PathBuf {
+    dir.join("watch").join("runner.lock")
+}
+
+/// Whether a runner holds `runner.lock`: `Some(true)` held, `Some(false)` free or missing,
+/// `None` unknown. Read-only, like `jobs::alive`; unknown must never start a second runner.
+fn runner_alive(dir: &Path) -> Option<bool> {
+    let file = match File::open(runner_lock(dir)) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(false),
+        Err(_) => return None,
+    };
+    match file.try_lock_shared() {
+        Ok(()) => {
+            let _ = file.unlock();
+            Some(false)
+        }
+        Err(TryLockError::WouldBlock) => Some(true),
+        Err(_) => None,
+    }
+}
+
+/// The hidden runner's arguments: the workspace id and, when the caller had one, its explicit
+/// storage directory.
+fn runner_args(storage: &Storage, ws_id: &str) -> Vec<std::ffi::OsString> {
+    let mut args = vec![ws_id.into()];
+    if let Some(dir) = &storage.explicit {
+        args.extend(["--storage".into(), dir.clone().into_os_string()]);
+    }
+    args
+}
+
+/// How long a runner may take to say `ready`, and a start waits for a stopping one to exit.
+const READY: Duration = Duration::from_secs(10);
+
+/// `READY`, or in debug builds `FIGLENS_TEST_WATCH_READY_MS`, so process tests reach a timeout.
+fn ready_limit() -> Duration {
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var("FIGLENS_TEST_WATCH_READY_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        return Duration::from_millis(ms);
+    }
+    READY
+}
+
+/// Debug builds only: `FIGLENS_TEST_WATCH=<fault>` makes the launcher fail (`launch_fails`) or
+/// the runner never say ready (`runner_silent`), so process tests cover a failed start.
+fn fault(name: &str) -> bool {
+    #[cfg(debug_assertions)]
+    if let Ok(v) = std::env::var("FIGLENS_TEST_WATCH") {
+        let (at, file) = v
+            .split_once(':')
+            .map_or((v.as_str(), None), |(a, f)| (a, Some(f)));
+        if at == name && file.is_none_or(|f| Path::new(f).exists()) {
+            return true;
+        }
+    }
+    let _ = name;
+    false
+}
+
+/// Whether the runner holding `runner.lock` has decided to exit (it no longer serves leases).
+fn closing(conn: &Connection) -> Result<bool> {
+    Ok(conn
+        .query_row("SELECT closing FROM watch_runner WHERE one = 1", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .optional()
+        .map_err(sql)?
+        == Some(1))
+}
+
+/// A child's first stdout line, at most 64 bytes, within `limit`; on timeout the child is
+/// killed and awaited, and `None` returned.
+fn first_line(child: &mut std::process::Child, limit: Duration) -> Option<String> {
+    use std::io::Read as _;
+    let out = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = std::io::BufRead::read_line(&mut std::io::BufReader::new(out.take(64)), &mut line);
+        let _ = tx.send(line);
+    });
+    match rx.recv_timeout(limit) {
+        Ok(line) => Some(line.trim().to_owned()),
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            None
+        }
+    }
+}
+
+/// Starts the workspace's runner unless one serves it, through a launcher that exits once the
+/// runner is ready, so the runner is never this process's descendant and a host that kills
+/// this process's tree leaves it running. A runner that is stopping is waited for (up to
+/// `READY`) and then replaced; an unknown lock state is reported, never called running.
+/// Returns the runner's state and placement. Called outside any database transaction.
+pub fn ensure_runner(storage: &Storage, ws_id: &str, dir: &Path) -> Result<Json> {
+    let deadline = Instant::now() + ready_limit();
+    loop {
+        match runner_alive(dir) {
+            None => return Ok(json!({"state": "unknown"})),
+            Some(true) => {
+                let (_, ws) = opened(storage, &Select::Id(ws_id.to_owned()), false)?;
+                if !closing(&ws.conn)? {
+                    return Ok(json!({"state": "running"}));
+                }
+                // It decided to exit before this lease was there; start the next once it has.
+                super::jobs::hold("watch_start_closing");
+                if Instant::now() >= deadline {
+                    return Ok(json!({"state": "stopping"}));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+            Some(false) => {}
+        }
+        let exe = std::env::current_exe()?;
+        let mut launcher = std::process::Command::new(exe)
+            .arg("__watch-launch")
+            .args(runner_args(storage, ws_id))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| {
+                fail(
+                    ErrorKind::OperationFailed,
+                    format!("cannot start the watch runner: {e}"),
+                )
+            })?;
+        let line = first_line(&mut launcher, ready_limit() + Duration::from_secs(1));
+        let ok = launcher.wait().is_ok_and(|s| s.success());
+        match (
+            ok,
+            line.as_deref()
+                .map(|l| l.split_whitespace().collect::<Vec<_>>()),
+        ) {
+            (true, Some(words)) if words.len() == 2 && words[0] == "ready" => {
+                return Ok(json!({"state": "running", "placement": words[1]}));
+            }
+            // Another start took the lock first: look again (it may be one that is stopping).
+            (true, Some(words)) if words == ["busy"] && Instant::now() < deadline => {}
+            (_, line) => {
+                return Err(fail(
+                    ErrorKind::OperationFailed,
+                    format!(
+                        "the watch runner did not start: {}",
+                        line.map_or("no reply in time".to_owned(), |w| w.join(" "))
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+/// The hidden `__watch-launch` child: starts the detached runner, prints its first line
+/// (`ready <placement>` or `busy`) and exits. On Windows the runner leaves the caller's job
+/// object when the job allows it; when the job forbids that, the runner starts inside it and
+/// says so (`in_host_job`): it then ends with that job, and a holder's next renewal starts
+/// another while leases live. A runner silent past `READY` is killed.
+pub fn launch(args: &[std::ffi::OsString]) -> Result<String> {
+    if fault("launch_fails") {
+        return Err(fail(
+            ErrorKind::OperationFailed,
+            "test fault: the launcher failed".to_owned(),
+        ));
+    }
+    let exe = std::env::current_exe()?;
+    let command = |placement: &str| {
+        let mut c = std::process::Command::new(&exe);
+        c.arg("__watch-runner")
+            .args(args)
+            .env(PLACEMENT, placement)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        c
+    };
+    #[cfg(unix)]
+    let spawned = {
+        use std::os::unix::process::CommandExt as _;
+        command("independent").process_group(0).spawn()
+    };
+    #[cfg(windows)]
+    let spawned = {
+        use std::os::windows::process::CommandExt as _;
+        const DETACHED: u32 = 0x0000_0008 | 0x0000_0200; // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        const BREAKAWAY: u32 = 0x0100_0000; // CREATE_BREAKAWAY_FROM_JOB
+        match command("independent")
+            .creation_flags(DETACHED | BREAKAWAY)
+            .spawn()
+        {
+            // The caller's job forbids breakaway: say so instead of claiming independence.
+            Err(e) if e.raw_os_error() == Some(5) => {
+                command("in_host_job").creation_flags(DETACHED).spawn()
+            }
+            other => other,
+        }
+    };
+    let mut runner = spawned.map_err(|e| {
+        fail(
+            ErrorKind::OperationFailed,
+            format!("cannot start the watch runner: {e}"),
+        )
+    })?;
+    first_line(&mut runner, ready_limit()).ok_or_else(|| {
+        fail(
+            ErrorKind::OperationFailed,
+            "the watch runner did not report ready in time".to_owned(),
+        )
+    })
+}
+
+/// One refresh the runner's worker thread runs, and its outcome.
+struct Refresh {
+    source: String,
+    path: PathBuf,
+    scopes: Vec<String>,
+}
+
+struct Finished {
+    source: String,
+    path: PathBuf,
+    failed: bool,
+    job: Option<String>,
+    error: Option<String>,
+}
+
+/// One watched source in the runner.
+struct Watched {
+    path: PathBuf,
+    scopes: Vec<String>,
+    detector: Detector<crate::search::Stamp>,
+    next: Instant,
+    state: State,
+    stamp_checked_ms: Option<i64>,
+    content_verified_ms: Option<i64>,
+    last_job: Option<String>,
+    last_error: Option<String>,
+}
+
+fn state_name(state: State) -> &'static str {
+    match state {
+        State::Watching => "watching",
+        State::SourceBusy => "source_busy",
+        State::SourceMissing => "source_missing",
+        State::SourceUnreadable => "source_unreadable",
+    }
+}
+
+/// Served (source, scope, path) of this incarnation's leases, or `None` when this runner was
+/// fenced out (another attempt took over, or the workspace was reset).
+/// `ws` is the runner's one read connection, held open (with the workspace's shared lock, so
+/// the database cannot be replaced under it) but with no transaction between reads.
+fn union(ws: &Opened, token: &str, attempt: i64) -> Result<Option<Vec<(String, String, String)>>> {
+    if fault("union_fails") {
+        return Err(fail(
+            ErrorKind::OperationFailed,
+            "test fault: the union read failed".to_owned(),
+        ));
+    }
+    let ours: Option<(String, i64)> = ws
+        .conn
+        .query_row(
+            "SELECT token, attempt FROM watch_runner WHERE one = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    if ours != Some((token.to_owned(), attempt)) {
+        return Ok(None);
+    }
+    let rows = ws
+        .conn
+        .prepare_cached(&format!(
+            "SELECT DISTINCT l.source_id, l.scope, s.path FROM {SERVED_FROM}
+             WHERE {SERVED} ORDER BY l.source_id, l.scope"
+        ))
+        .and_then(|mut s| {
+            s.query_map(params![now_ms(), ws.incarnation], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
+            .collect()
+        })
+        .map_err(sql)?;
+    Ok(Some(rows))
+}
+
+/// Live leases of this incarnation, on the runner's read connection.
+fn live_leases(ws: &Opened) -> Result<i64> {
+    ws.conn
+        .prepare_cached(&format!(
+            "SELECT count(*) FROM watch_leases WHERE {LIVE} AND {VALID} AND incarnation = ?2"
+        ))
+        .and_then(|mut s| s.query_row(params![now_ms(), ws.incarnation], |r| r.get(0)))
+        .map_err(sql)
+}
+
+/// Marks this runner `closing` when no live lease of this incarnation is left, in one
+/// IMMEDIATE transaction, so a start that commits a lease after it sees a stopping runner and
+/// waits for the next; a start that committed first keeps this runner. `None` when fenced.
+fn close(storage: &Storage, ws_id: &str, token: &str, attempt: i64) -> Result<Option<bool>> {
+    let (_, mut ws) = opened(storage, &Select::Id(ws_id.to_owned()), true)?;
+    let incarnation = ws.incarnation.clone();
+    let tx = ws
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(sql)?;
+    let ours: Option<(String, i64)> = tx
+        .query_row(
+            "SELECT token, attempt FROM watch_runner WHERE one = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    if ours != Some((token.to_owned(), attempt)) {
+        return Ok(None);
+    }
+    let live: i64 = tx
+        .query_row(
+            &format!(
+                "SELECT count(*) FROM watch_leases WHERE {LIVE} AND {VALID} AND incarnation = ?2"
+            ),
+            params![now_ms(), incarnation],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    if live > 0 {
+        return Ok(Some(false));
+    }
+    tx.execute("UPDATE watch_runner SET closing = 1 WHERE one = 1", [])
+        .map_err(sql)?;
+    tx.commit().map_err(sql)?;
+    Ok(Some(true))
+}
+
+/// Cancels this runner's own attempts that nobody else joined, in one IMMEDIATE transaction
+/// that a join's (which marks `shared`) is ordered against; their `run` sees the cancel and
+/// stops the worker. Shared attempts are left to finish for the hosts that wait on them.
+fn cancel_exclusive(storage: &Storage, ws_id: &str, token: &str) -> Result<usize> {
+    let (_, mut ws) = opened(storage, &Select::Id(ws_id.to_owned()), true)?;
+    let tx = ws
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(sql)?;
+    let n = tx
+        .execute(
+            "UPDATE jobs SET cancel = 1 WHERE owner = ?1 AND shared = 0 AND cancel = 0
+             AND state IN ('queued', 'running')",
+            [token],
+        )
+        .map_err(sql)?;
+    tx.commit().map_err(sql)?;
+    Ok(n)
+}
+
+/// Writes every watched source's monitor row, beats and collects ended leases, fenced by this
+/// runner's token and attempt. Returns false when fenced out.
+fn persist(
+    storage: &Storage,
+    ws_id: &str,
+    token: &str,
+    attempt: i64,
+    watched: &std::collections::BTreeMap<String, Watched>,
+) -> Result<bool> {
+    let (_, mut ws) = opened(storage, &Select::Id(ws_id.to_owned()), true)?;
+    let now = now_ms();
+    let tx = ws
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(sql)?;
+    let beat = tx
+        .execute(
+            "UPDATE watch_runner SET beat_ms = ?3 WHERE one = 1 AND token = ?1 AND attempt = ?2",
+            params![token, attempt, now],
+        )
+        .map_err(sql)?;
+    if beat == 0 {
+        return Ok(false);
+    }
+    for (source, w) in watched {
+        tx.execute(
+            "INSERT INTO watch_monitor (source_id, state, stamp_checked_ms, content_verified_ms,
+             last_job_id, last_error, written_ms) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
+             WHERE EXISTS (SELECT 1 FROM sources WHERE source_id = ?1)
+             ON CONFLICT (source_id) DO UPDATE SET state = ?2, stamp_checked_ms = ?3,
+             content_verified_ms = ?4, last_job_id = ?5, last_error = ?6, written_ms = ?7",
+            params![
+                source,
+                state_name(w.state),
+                w.stamp_checked_ms,
+                w.content_verified_ms,
+                w.last_job,
+                w.last_error,
+                now
+            ],
+        )
+        .map_err(sql)?;
+    }
+    tx.execute(
+        "DELETE FROM watch_leases WHERE (ended IS NOT NULL OR expires_ms <= ?1)
+         AND renewed_ms < ?2",
+        params![now, now - KEEP_ENDED_MS],
+    )
+    .map_err(sql)?;
+    tx.execute(
+        "DELETE FROM watch_leases WHERE lease_id IN (SELECT lease_id FROM watch_leases
+         WHERE ended IS NOT NULL OR expires_ms <= ?1 ORDER BY renewed_ms DESC LIMIT -1 OFFSET ?2)",
+        params![now, KEEP_ENDED_ROWS],
+    )
+    .map_err(sql)?;
+    tx.commit().map_err(sql)?;
+    // The runner's open reader means no connection close checkpoints the WAL; a passive one
+    // here (it never waits for readers) keeps it to about one persist interval of writes.
+    let _ = ws
+        .conn
+        .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
+    Ok(true)
+}
+
+/// Whether a lease still wants `scope` of `source` at `path`, read right before a submit, so
+/// an untrack, relocation or lease end since the last union read submits nothing.
+fn served(storage: &Storage, ws_id: &str, source: &str, scope: &str, path: &Path) -> Result<bool> {
+    let (_, ws) = opened(storage, &Select::Id(ws_id.to_owned()), false)?;
+    let n: i64 = ws
+        .conn
+        .query_row(
+            &format!(
+                "SELECT count(*) FROM {SERVED_FROM}
+                 WHERE {SERVED} AND l.source_id = ?3 AND l.scope = ?4 AND s.path = ?5"
+            ),
+            params![
+                now_ms(),
+                ws.incarnation,
+                source,
+                scope,
+                path.to_string_lossy()
+            ],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    Ok(n > 0)
+}
+
+/// Waits for a job another process runs to end, never running or cancelling it, and returns
+/// its final report; `None` when `quit` was set first.
+fn await_joined(storage: &Storage, id: &str, quit: &AtomicBool) -> Result<Option<Json>> {
+    loop {
+        let now = super::jobs::status(storage, id)?;
+        if !matches!(now["state"].as_str(), Some("queued" | "running")) {
+            return Ok(Some(now));
+        }
+        if quit.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(None);
+        }
+        std::thread::sleep(POLL);
+    }
+}
+
+/// Refreshes every still-served scope of one source, one at a time: its own jobs run here to
+/// their end; a job another process already runs is awaited, never run or cancelled. A source
+/// counts as verified only when every job ended `succeeded`.
+fn refresh(
+    storage: &Storage,
+    ws_id: &str,
+    job: &Refresh,
+    cancel: &AtomicBool,
+    quit: &AtomicBool,
+) -> Finished {
+    let select = Select::Id(ws_id.to_owned());
+    let (mut failed, mut last, mut error) = (false, None, None);
+    let mut fail_with = |e: String| {
+        failed = true;
+        error = Some(e);
+    };
+    for scope in &job.scopes {
+        if quit.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        match served(storage, ws_id, &job.source, scope, &job.path) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(e) => {
+                fail_with(e.to_string());
+                continue;
+            }
+        }
+        let outcome =
+            match super::jobs::refresh(storage, &select, Some(&job.source), Some(scope), None) {
+                Ok(outcome) => outcome,
+                Err(e) => {
+                    fail_with(e.to_string());
+                    continue;
+                }
+            };
+        let ids: Vec<String> = match outcome.report["jobs"].as_array() {
+            Some(jobs) => jobs
+                .iter()
+                .filter_map(|j| j["jobId"].as_str().map(str::to_owned))
+                .collect(),
+            None => outcome.report["job"]["jobId"]
+                .as_str()
+                .map(str::to_owned)
+                .into_iter()
+                .collect(),
+        };
+        for id in ids {
+            last = Some(id.clone());
+            let report = if outcome.run.contains(&id) {
+                super::jobs::run(storage, ws_id, &id, cancel, &mut |_| {}).map(Some)
+            } else {
+                await_joined(storage, &id, quit)
+            };
+            match report {
+                Ok(Some(r)) if r["state"] == "succeeded" => {}
+                Ok(Some(r)) => {
+                    fail_with(r["error"]["code"].as_str().unwrap_or("failed").to_owned())
+                }
+                Ok(None) => fail_with("runner_stopping".to_owned()),
+                Err(e) => fail_with(e.to_string()),
+            }
+        }
+    }
+    Finished {
+        source: job.source.clone(),
+        path: job.path.clone(),
+        // No job at all (every scope stopped being served) verifies nothing.
+        failed: failed || last.is_none(),
+        job: last,
+        error,
+    }
+}
+
+/// The hidden `__watch-runner` process: holds `runner.lock`, takes the next attempt, prints
+/// `ready <placement>` (or `busy` when another runner holds the lock) and then polls every
+/// leased source until no live lease is left, refreshing one source at a time. It then cancels
+/// its unshared attempt and finishes a shared one, so a host that joined it gets its result.
+pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
+    use std::io::Write as _;
+    let dir = {
+        let (_, ws) = opened(storage, &Select::Id(ws_id.to_owned()), true)?;
+        ws.held.dir.clone()
+    };
+    mkdir(&dir.join("watch"))?;
+    let lock_path = runner_lock(&dir);
+    let lock = open_lock(&lock_path, true)?.expect("created");
+    if lock.try_lock().is_err() {
+        println!("busy");
+        return Ok(());
+    }
+    let token = owner(&dir)?;
+    let placement = std::env::var(PLACEMENT).unwrap_or_else(|_| "independent".into());
+    let attempt: i64 = {
+        let (_, mut ws) = opened(storage, &Select::Id(ws_id.to_owned()), true)?;
+        let now = now_ms();
+        let tx = ws
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql)?;
+        tx.execute(
+            "INSERT INTO watch_runner (one, token, attempt, placement, started_ms, beat_ms)
+             VALUES (1, ?1, 1, ?2, ?3, ?3) ON CONFLICT (one) DO UPDATE SET token = ?1,
+             attempt = attempt + 1, placement = ?2, started_ms = ?3, beat_ms = ?3, closing = 0",
+            params![token, placement, now],
+        )
+        .map_err(sql)?;
+        let attempt = tx
+            .query_row("SELECT attempt FROM watch_runner WHERE one = 1", [], |r| {
+                r.get(0)
+            })
+            .map_err(sql)?;
+        tx.commit().map_err(sql)?;
+        attempt
+    };
+    if fault("runner_silent") {
+        std::thread::sleep(Duration::from_secs(60));
+        return Ok(());
+    }
+    {
+        let mut out = std::io::stdout().lock();
+        let _ = writeln!(out, "ready {placement}");
+        let _ = out.flush();
+    }
+    // One read connection for the union reads. Holding it keeps the workspace's shared lock,
+    // so a reset first ends every lease (see `registry::reset`) and waits for this exit.
+    let (_, reader) = opened(storage, &Select::Id(ws_id.to_owned()), false)?;
+    // Never set: an exit cancels only unshared attempts, through the job row.
+    let cancel = AtomicBool::new(false);
+    // Set on exit: submit nothing more and stop waiting for a job another process runs.
+    let quit = AtomicBool::new(false);
+    let idle = AtomicBool::new(false);
+    let (to_worker, jobs) = std::sync::mpsc::channel::<Refresh>();
+    let (done, finished) = std::sync::mpsc::channel::<Finished>();
+    std::thread::scope(|scope| -> Result<()> {
+        let (cancel, quit, idle) = (&cancel, &quit, &idle);
+        scope.spawn(move || {
+            for job in jobs {
+                let _ = done.send(refresh(storage, ws_id, &job, cancel, quit));
+            }
+            idle.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let mut watched = std::collections::BTreeMap::<String, Watched>::new();
+        let (mut read_at, mut persist_at) = (Instant::now(), Instant::now() + PERSIST);
+        let mut busy = false;
+        // Sources whose refresh waits for the worker, served in arrival order so a source that
+        // keeps changing cannot take every turn.
+        let mut waiting = std::collections::VecDeque::<String>::new();
+        // Any end, an error included, runs the shutdown below.
+        let result = (|| -> Result<()> {
+            loop {
+                let now = Instant::now();
+                if now >= read_at {
+                    read_at = now + UNION;
+                    let Some(rows) = union(&reader, &token, attempt)? else {
+                        return Ok(());
+                    };
+                    // No lease served: exit unless a live one (say, on a pending baseline) remains;
+                    // the reader checks first so such a lease costs no write transaction per poll.
+                    if rows.is_empty() && live_leases(&reader)? == 0 {
+                        match close(storage, ws_id, &token, attempt)? {
+                            Some(false) => {}
+                            Some(true) => {
+                                // Test builds: hold between the closing commit and the lock's release.
+                                super::jobs::hold("watch_closing");
+                                return Ok(());
+                            }
+                            None => return Ok(()),
+                        }
+                    }
+                    let mut wanted =
+                        std::collections::BTreeMap::<String, (String, Vec<String>)>::new();
+                    for (source, scope, path) in rows {
+                        wanted
+                            .entry(source)
+                            .or_insert((path, Vec::new()))
+                            .1
+                            .push(scope);
+                    }
+                    watched.retain(|source, w| {
+                        wanted
+                            .get(source)
+                            .is_some_and(|(path, _)| Path::new(path) == w.path)
+                    });
+                    waiting.retain(|source| wanted.contains_key(source));
+                    for (source, (path, scopes)) in wanted {
+                        watched
+                            .entry(source)
+                            .or_insert_with(|| Watched {
+                                path: PathBuf::from(path),
+                                scopes: Vec::new(),
+                                detector: Detector::new(now),
+                                next: now,
+                                state: State::Watching,
+                                stamp_checked_ms: None,
+                                content_verified_ms: None,
+                                last_job: None,
+                                last_error: None,
+                            })
+                            .scopes = scopes;
+                    }
+                }
+                while let Ok(f) = finished.try_recv() {
+                    busy = false;
+                    // A source relocated meanwhile is watched anew: this result is not its own.
+                    if let Some(w) = watched.get_mut(&f.source).filter(|w| w.path == f.path) {
+                        if !f.failed {
+                            w.content_verified_ms = Some(now_ms());
+                        }
+                        w.last_job = f.job;
+                        w.last_error = f.error;
+                        let step = w.detector.finished(Instant::now(), f.failed);
+                        // A failing source (an unparseable save, say) retries every BACKOFF, not
+                        // every poll; a new save is still seen within that.
+                        w.next = if f.failed {
+                            Instant::now() + BACKOFF
+                        } else {
+                            step.next
+                        };
+                        if step.submit && !waiting.contains(&f.source) {
+                            waiting.push_back(f.source);
+                        }
+                    }
+                }
+                while !busy && let Some(source) = waiting.pop_front() {
+                    if let Some(w) = watched.get(&source) {
+                        busy = true;
+                        let _ = to_worker.send(Refresh {
+                            source,
+                            path: w.path.clone(),
+                            scopes: w.scopes.clone(),
+                        });
+                    }
+                }
+                for (source, w) in watched.iter_mut() {
+                    let now = Instant::now();
+                    if now < w.next {
+                        continue;
+                    }
+                    let probe = match crate::search::stamp(&w.path) {
+                        Ok(stamp) => Probe::Stamp(stamp),
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Probe::Missing,
+                        Err(_) => Probe::Busy,
+                    };
+                    w.stamp_checked_ms = Some(now_ms());
+                    let step = w.detector.observe(now, probe);
+                    w.state = step.state;
+                    w.next = step.next;
+                    // One refresh at a time; the detector coalesces a change seen meanwhile.
+                    if step.submit && !busy {
+                        busy = true;
+                        let _ = to_worker.send(Refresh {
+                            source: source.clone(),
+                            path: w.path.clone(),
+                            scopes: w.scopes.clone(),
+                        });
+                    } else if step.submit && !waiting.contains(source) {
+                        waiting.push_back(source.clone());
+                    }
+                }
+                if Instant::now() >= persist_at {
+                    persist_at = Instant::now() + PERSIST;
+                    if !persist(storage, ws_id, &token, attempt, &watched)? {
+                        return Ok(());
+                    }
+                }
+                std::thread::sleep(POLL);
+            }
+        })();
+        // No lease is left (or this runner was fenced out): submit nothing more, cancel its own
+        // unshared attempt, let a shared one finish, then release the lock.
+        // Repeated until the worker is done, so an attempt it admitted meanwhile is caught too.
+        quit.store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(to_worker);
+        while !idle.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = cancel_exclusive(storage, ws_id, &token);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = persist(storage, ws_id, &token, attempt, &watched);
+        result
+    })?;
+    drop(lock);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -533,14 +1651,16 @@ mod tests {
     fn a_request_id_replays_its_live_lease_and_never_restarts_an_ended_one() {
         let dir = TestDir::new();
         let (storage, select, _, ids) = tracked(&dir, 1);
-        let first = start(&storage, &select, None, "0:1", Some("r1")).unwrap();
-        let again = start(&storage, &select, None, "0:1", Some("r1")).unwrap();
+        let first = lease(&storage, &select, None, "0:1", Some("r1")).unwrap().0;
+        let again = lease(&storage, &select, None, "0:1", Some("r1")).unwrap().0;
         assert_eq!(
             (again["leaseId"].clone(), again["state"].clone()),
             (first["leaseId"].clone(), json!("active"))
         );
         stop(&storage, &select, first["leaseId"].as_str().unwrap()).unwrap();
-        let ended = start(&storage, &select, Some(&ids[0]), "0:1", Some("r1")).unwrap();
+        let ended = lease(&storage, &select, Some(&ids[0]), "0:1", Some("r1"))
+            .unwrap()
+            .0;
         assert_eq!(
             (ended["state"].clone(), ended["reason"].clone()),
             (json!("ended"), json!("stopped"))
@@ -559,15 +1679,15 @@ mod tests {
                 [&ids[0]],
             )
             .unwrap();
-        start(&storage, &select, None, "0:1", Some("r1")).unwrap();
-        assert!(start(&storage, &select, None, "0:2", Some("r1")).is_err());
+        lease(&storage, &select, None, "0:1", Some("r1")).unwrap();
+        assert!(lease(&storage, &select, None, "0:2", Some("r1")).is_err());
     }
 
     #[test]
     fn an_untracked_scope_is_refused_with_the_track_step() {
         let dir = TestDir::new();
         let (storage, select, ..) = tracked(&dir, 1);
-        let e = start(&storage, &select, None, "0:9", None).unwrap_err();
+        let e = lease(&storage, &select, None, "0:9", None).unwrap_err();
         let fig = e.downcast_ref::<FigError>().unwrap();
         assert_eq!(fig.recovery().unwrap()[0]["action"], "track");
     }
@@ -576,7 +1696,7 @@ mod tests {
     fn a_holder_stops_only_its_own_lease() {
         let dir = TestDir::new();
         let (storage, select, dir, _) = tracked(&dir, 1);
-        let lease = start(&storage, &select, None, "0:1", None).unwrap();
+        let lease = lease(&storage, &select, None, "0:1", None).unwrap().0;
         open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE)
             .unwrap()
             .execute("UPDATE watch_leases SET holder = 'other'", [])
@@ -588,24 +1708,31 @@ mod tests {
     fn renewal_extends_this_holders_leases_and_skips_ended_ones() {
         let dir = TestDir::new();
         let (storage, select, dir, ids) = tracked(&dir, 2);
-        let a = start(&storage, &select, Some(&ids[0]), "0:1", None).unwrap();
-        start(&storage, &select, Some(&ids[1]), "0:1", None).unwrap();
+        let a = lease(&storage, &select, Some(&ids[0]), "0:1", None)
+            .unwrap()
+            .0;
+        lease(&storage, &select, Some(&ids[1]), "0:1", None).unwrap();
         stop(&storage, &select, a["leaseId"].as_str().unwrap()).unwrap();
         open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE)
             .unwrap()
             .execute("UPDATE watch_leases SET expires_ms = expires_ms - 1", [])
             .unwrap();
-        let ws = select_id(&select);
-        let renewed = renew();
-        assert_eq!(
-            renewed
-                .iter()
-                .find(|(id, _)| *id == ws)
-                .unwrap()
-                .1
-                .as_ref()
-                .unwrap(),
-            &1
+        assert_eq!(renew_one(&storage, &select_id(&select)).unwrap().0, 1);
+    }
+
+    #[test]
+    fn a_start_where_no_source_is_in_view_says_so() {
+        let dir = TestDir::new();
+        let (storage, select, dir, _) = tracked(&dir, 1);
+        let elsewhere = std::path::absolute(dir.join("elsewhere")).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let confined = storage.confined(&[elsewhere.canonicalize().unwrap()]);
+        let refused = lease(&confined, &select, None, "0:1", None).unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("no source this process can see"),
+            "{refused}"
         );
     }
 
@@ -613,7 +1740,7 @@ mod tests {
     fn a_lease_on_a_source_outside_the_roots_is_unauthorized_at_renewal() {
         let dir = TestDir::new();
         let (storage, select, dir, _) = tracked(&dir, 1);
-        start(&storage, &select, None, "0:1", None).unwrap();
+        lease(&storage, &select, None, "0:1", None).unwrap();
         let elsewhere = std::path::absolute(dir.join("elsewhere")).unwrap();
         std::fs::create_dir_all(&elsewhere).unwrap();
         let confined = storage
@@ -635,7 +1762,7 @@ mod tests {
     fn status_writes_nothing() {
         let dir = TestDir::new();
         let (storage, select, dir, _) = tracked(&dir, 1);
-        start(&storage, &select, None, "0:1", None).unwrap();
+        lease(&storage, &select, None, "0:1", None).unwrap();
         let before = std::fs::read(dir.join(DB)).unwrap();
         let wal = std::fs::metadata(dir.join(format!("{DB}-wal")))
             .map(|m| m.len())
@@ -649,10 +1776,149 @@ mod tests {
     }
 
     #[test]
+    fn status_keeps_a_visible_live_lease_past_a_hidden_sources_ended_history() {
+        let dir = TestDir::new();
+        let (storage, select, dir, ids) = tracked(&dir, 2);
+        let a = lease(&storage, &select, Some(&ids[0]), "0:1", None)
+            .unwrap()
+            .0;
+        // A hidden source's newer ended leases, more than the bound, within the retention.
+        open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .unwrap()
+            .execute(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+                 INSERT INTO watch_leases (lease_id, holder, source_id, scope, incarnation, epoch,
+                 fingerprint, renewed_ms, expires_ms, ended)
+                 SELECT 'old' || i, holder, ?1, scope, incarnation, epoch, fingerprint,
+                 renewed_ms + i, expires_ms, 'stopped' FROM watch_leases, n",
+                params![ids[1], MAX_LEASES * 4],
+            )
+            .unwrap();
+        let path: String = open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap()
+            .query_row(
+                "SELECT path FROM sources WHERE source_id = ?1",
+                [&ids[0]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let confined = storage.clone().confined(&[PathBuf::from(path)]);
+        let report = status(&confined, &select).unwrap();
+        assert_eq!(
+            (report["leases"].clone(), report.get("truncated")),
+            (
+                json!([{"leaseId": a["leaseId"], "sourceId": ids[0], "scope": "0:1",
+                "state": "active", "expiresAtMs": a["expiresAtMs"], "mine": true}]),
+                None
+            )
+        );
+        let full = status(&storage, &select).unwrap();
+        assert_eq!(
+            (
+                full["leases"][0]["leaseId"].clone(),
+                full["leases"].as_array().unwrap().len(),
+                full["truncated"].clone()
+            ),
+            (a["leaseId"].clone(), (MAX_LEASES * 4) as usize, json!(true))
+        );
+    }
+
+    #[test]
+    fn a_replay_after_a_retrack_ends_the_old_lease_and_a_new_request_id_starts_one() {
+        let dir = TestDir::new();
+        let (storage, select, dir, _) = tracked(&dir, 1);
+        let first = lease(&storage, &select, None, "0:1", Some("r1")).unwrap().0;
+        open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .unwrap()
+            .execute("UPDATE tracking SET epoch = epoch + 1", [])
+            .unwrap();
+        let again = lease(&storage, &select, None, "0:1", Some("r1")).unwrap().0;
+        assert_eq!(
+            (again["state"].clone(), again["reason"].clone()),
+            (json!("ended"), json!("untracked"))
+        );
+        let fresh = lease(&storage, &select, None, "0:1", Some("r2")).unwrap().0;
+        assert_eq!(fresh["state"], "active");
+        assert_ne!(fresh["leaseId"], first["leaseId"]);
+    }
+
+    #[test]
+    fn a_renewal_ends_an_old_epoch_lease_instead_of_renewing_it() {
+        let dir = TestDir::new();
+        let (storage, select, dir, _) = tracked(&dir, 1);
+        lease(&storage, &select, None, "0:1", None).unwrap();
+        open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .unwrap()
+            .execute("UPDATE tracking SET epoch = epoch + 1", [])
+            .unwrap();
+        assert_eq!(renew_one(&storage, &select_id(&select)).unwrap().0, 0);
+        assert_eq!(
+            rows(
+                &dir,
+                "SELECT count(*) FROM watch_leases WHERE ended = 'untracked'"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn a_request_id_of_another_live_holders_lease_is_refused_and_leaves_it_active() {
+        let dir = TestDir::new();
+        let (storage, select, dir, _) = tracked(&dir, 1);
+        lease(&storage, &select, None, "0:1", Some("r1")).unwrap();
+        open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .unwrap()
+            .execute("UPDATE watch_leases SET holder = 'another'", [])
+            .unwrap();
+        let refused = lease(&storage, &select, None, "0:1", Some("r1")).unwrap_err();
+        assert!(
+            refused.to_string().contains("another running process"),
+            "{refused}"
+        );
+        assert_eq!(
+            rows(
+                &dir,
+                "SELECT count(*) FROM watch_leases WHERE ended IS NULL"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn collection_bounds_ended_rows_and_a_collected_request_id_starts_a_new_lease() {
+        let dir = TestDir::new();
+        let (storage, select, dir, _) = tracked(&dir, 1);
+        let first = lease(&storage, &select, None, "0:1", Some("r1")).unwrap().0;
+        let ws_id = first["workspaceId"].as_str().unwrap();
+        stop(&storage, &select, first["leaseId"].as_str().unwrap()).unwrap();
+        let db = open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE).unwrap();
+        db.execute_batch(&format!(
+            "UPDATE watch_leases SET renewed_ms = renewed_ms - {KEEP_ENDED_MS} - 1;
+             WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < {extra})
+             INSERT INTO watch_leases (lease_id, holder, source_id, scope, incarnation, epoch,
+             fingerprint, renewed_ms, expires_ms, ended)
+             SELECT 'old' || i, holder, source_id, scope, incarnation, epoch, fingerprint,
+             renewed_ms + {KEEP_ENDED_MS} + i, expires_ms, 'stopped' FROM watch_leases, n;
+             INSERT INTO watch_runner (one, token, attempt, placement, started_ms, beat_ms)
+             VALUES (1, 'gc', 1, 'independent', 0, 0);",
+            extra = KEEP_ENDED_ROWS + 8
+        ))
+        .unwrap();
+        assert!(persist(&storage, ws_id, "gc", 1, &std::collections::BTreeMap::new()).unwrap());
+        assert_eq!(
+            rows(&dir, "SELECT count(*) FROM watch_leases"),
+            KEEP_ENDED_ROWS
+        );
+        let again = lease(&storage, &select, None, "0:1", Some("r1")).unwrap().0;
+        assert_eq!(again["state"], "active");
+        assert_ne!(again["leaseId"], first["leaseId"]);
+    }
+
+    #[test]
     fn removing_a_source_ends_its_leases() {
         let dir = TestDir::new();
         let (storage, select, dir, ids) = tracked(&dir, 2);
-        start(&storage, &select, Some(&ids[0]), "0:1", None).unwrap();
+        lease(&storage, &select, Some(&ids[0]), "0:1", None).unwrap();
         crate::workspace::remove(&storage, &select, &ids[0]).unwrap();
         assert_eq!(
             rows(
@@ -661,6 +1927,117 @@ mod tests {
             ),
             1
         );
+    }
+
+    #[test]
+    fn a_schema_4_workspace_reads_its_history_and_watch_status_without_migrating() {
+        let dir = TestDir::new();
+        let (storage, select, dir, _) = tracked(&dir, 1);
+        open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .unwrap()
+            .execute_batch(
+                "DROP TABLE watch_leases; DROP TABLE watch_runner; DROP TABLE watch_monitor;
+                 PRAGMA user_version = 4;",
+            )
+            .unwrap();
+        let request = super::super::changes::Request {
+            source: None,
+            scope: Some("0:1"),
+            consumer: None,
+            cursor: None,
+            revision: None,
+            limit: None,
+        };
+        let reply = super::super::changes::changes(&storage, &select, &request).unwrap();
+        assert_eq!(reply["tracking"][0]["state"], "active");
+        assert_eq!(status(&storage, &select).unwrap()["leases"], json!([]));
+        assert_eq!(rows(&dir, "PRAGMA user_version"), 4);
+    }
+
+    fn runner_row(storage: &Storage, select: &Select) -> (String, i64) {
+        let ws_id = select_id(select);
+        let (_, ws) = opened(storage, select, true).unwrap();
+        ws.conn
+            .execute(
+                "INSERT INTO watch_runner (one, token, attempt, placement, started_ms, beat_ms)
+                 VALUES (1, 't', 1, 'independent', 0, 0)",
+                [],
+            )
+            .unwrap();
+        (ws_id, 1)
+    }
+
+    #[test]
+    fn untracking_ends_a_lease_for_the_runner_and_retracking_never_revives_it() {
+        let dir = TestDir::new();
+        let (storage, select, dir, _) = tracked(&dir, 1);
+        lease(&storage, &select, None, "0:1", None).unwrap();
+        let (_, attempt) = runner_row(&storage, &select);
+        let served = || {
+            let (_, ws) = opened(&storage, &select, false).unwrap();
+            union(&ws, "t", attempt).unwrap().unwrap().len()
+        };
+        assert_eq!(served(), 1);
+        let db = open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE).unwrap();
+        db.execute("UPDATE tracking SET state = 'baseline_pending'", [])
+            .unwrap();
+        assert_eq!(
+            served(),
+            0,
+            "nothing is refreshed while the baseline is pending"
+        );
+        // Untrack, then track and baseline again: a new epoch.
+        db.execute(
+            "UPDATE tracking SET state = 'active', epoch = epoch + 2",
+            [],
+        )
+        .unwrap();
+        assert_eq!(served(), 0);
+        assert_eq!(
+            status(&storage, &select).unwrap()["leases"][0]["state"],
+            "untracked"
+        );
+    }
+
+    #[test]
+    fn a_runner_closes_only_with_no_live_lease_and_only_while_it_is_the_runner() {
+        let dir = TestDir::new();
+        let (storage, select, dir, _) = tracked(&dir, 1);
+        let (ws_id, attempt) = runner_row(&storage, &select);
+        let lease = lease(&storage, &select, None, "0:1", None).unwrap().0;
+        assert_eq!(close(&storage, &ws_id, "t", attempt).unwrap(), Some(false));
+        stop(&storage, &select, lease["leaseId"].as_str().unwrap()).unwrap();
+        assert_eq!(close(&storage, &ws_id, "other", attempt).unwrap(), None);
+        assert_eq!(close(&storage, &ws_id, "t", attempt).unwrap(), Some(true));
+        assert_eq!(rows(&dir, "SELECT closing FROM watch_runner"), 1);
+    }
+
+    #[test]
+    fn a_runner_cancels_only_attempts_nobody_joined_replayed_or_took_over() {
+        let dir = TestDir::new();
+        let (storage, select, dir, _) = tracked(&dir, 1);
+        let ws_id = select_id(&select);
+        let me = owner(&dir).unwrap();
+        let refresh =
+            |request| super::super::jobs::refresh(&storage, &select, None, Some("0:1"), request);
+        let shared = || rows(&dir, "SELECT max(shared) FROM jobs WHERE state = 'queued'");
+        refresh(None).unwrap();
+        assert_eq!(shared(), 0);
+        refresh(None).unwrap();
+        assert_eq!(shared(), 1, "a join without a requestId");
+        assert_eq!(cancel_exclusive(&storage, &ws_id, &me).unwrap(), 0);
+        let db = open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE).unwrap();
+        db.execute("DELETE FROM jobs", []).unwrap();
+        refresh(Some("r")).unwrap();
+        refresh(Some("r")).unwrap();
+        assert_eq!(shared(), 1, "a requestId replay");
+        db.execute("UPDATE jobs SET shared = 0, owner = 'gone'", [])
+            .unwrap();
+        refresh(None).unwrap();
+        assert_eq!(shared(), 1, "a takeover from a dead owner");
+        db.execute("DELETE FROM jobs", []).unwrap();
+        refresh(None).unwrap();
+        assert_eq!(cancel_exclusive(&storage, &ws_id, &me).unwrap(), 1);
     }
 
     fn select_id(select: &Select) -> String {

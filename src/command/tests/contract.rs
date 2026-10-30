@@ -358,6 +358,29 @@ fn protocol_failures_are_not_business_failures() {
 }
 
 #[test]
+fn watch_start_and_stop_name_their_missing_argument() {
+    for (args, missing) in [
+        (
+            r#"{"action":"start","workspaceId":"ws_0000000000000000"}"#,
+            "watch start needs scope",
+        ),
+        (
+            r#"{"action":"stop","workspaceId":"ws_0000000000000000"}"#,
+            "watch stop needs leaseId",
+        ),
+    ] {
+        let reply = mcp_reply(&format!(
+            r#"{{"id":1,"method":"tools/call","params":{{"name":"watch","arguments":{args}}}}}"#
+        ))
+        .unwrap();
+        let text = reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(text.contains(missing), "{missing}: {reply}");
+    }
+}
+
+#[test]
 fn every_tool_rejects_missing_required_fields_and_wrong_types_before_io() {
     for (name, _, params) in TOOLS {
         let valid = if *name == "workflow" {

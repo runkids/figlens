@@ -650,6 +650,9 @@ pub fn serve_with(
                 }
             });
         }
+        // Watch leases this server holds: parked until a start, then renewed every `RENEW`
+        // until input ends.
+        scope.spawn(move || figlens::workspace::watch::renew_until(stop));
         // Build lane: this server's jobs, one at a time; they stop when input ends or a reply
         // cannot be written.
         scope.spawn(move || {
@@ -738,7 +741,8 @@ pub fn serve_with(
                     _ => {}
                 }
             }
-            stop.store(true, Ordering::Relaxed);
+            stop.store(true, Ordering::SeqCst);
+            figlens::workspace::watch::wake();
         });
         drop(to_writer);
         // Writer: every reply, already bounded, in completion order.
@@ -755,6 +759,7 @@ pub fn serve_with(
                         std::thread::sleep(tick);
                     }
                 }
+                figlens::workspace::watch::release();
                 // Not eprintln!: a closed stderr would panic and leave the reader's join hanging.
                 use std::io::Write as _;
                 let _ = writeln!(
@@ -765,7 +770,10 @@ pub fn serve_with(
             }
         }
         Ok(())
-    })
+    })?;
+    // Input ended: this server's leases end now, not when they would expire.
+    figlens::workspace::watch::release();
+    Ok(())
 }
 
 /// Keep Document/message/Tree lexical ownership; carry admitted calls, never raw lines.
