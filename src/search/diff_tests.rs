@@ -1754,3 +1754,44 @@ fn a_main_outside_the_scope_makes_coverage_partial_when_its_property_definitions
         )
     );
 }
+
+#[test]
+fn a_variable_moved_to_another_corner_is_a_change_and_the_same_binding_is_not() {
+    let corner = |field: &'static str| {
+        let alias = obj(vec![
+            ("dataType", K::Enum("VariableDataType", "ALIAS")),
+            ("value", obj(vec![("alias", obj(vec![("guid", guid(20))]))])),
+        ]);
+        doc(vec![
+            node(20, Some(1), "VARIABLE", "Radius", vec![]),
+            node(10, Some(1), "FRAME", "Home", vec![size(400.0, 800.0)]),
+            node(
+                12,
+                Some(10),
+                "RECTANGLE",
+                "Card",
+                vec![(
+                    "parameterConsumptionMap",
+                    obj(vec![(
+                        "entries",
+                        K::Array(vec![obj(vec![
+                            ("variableField", K::Enum("VariableField", field)),
+                            ("variableData", alias),
+                        ])]),
+                    )]),
+                )],
+            ),
+        ])
+    };
+    let (top, bottom) = (
+        "RECTANGLE_TOP_LEFT_CORNER_RADIUS",
+        "RECTANGLE_BOTTOM_RIGHT_CORNER_RADIUS",
+    );
+    assert_eq!(
+        (
+            nodes(&run(corner(top), corner(bottom))),
+            nodes(&run(corner(top), corner(top)))
+        ),
+        (vec![("0:12".into(), "changed".into())], vec![])
+    );
+}

@@ -15,7 +15,7 @@ use crate::{ErrorKind, FigError, Tree, guid_key, to_json};
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 /// Extraction version: a stored generation built with another one is rebuilt.
-pub(crate) const RELATIONS: &str = "relations-4";
+pub(crate) const RELATIONS: &str = "relations-5";
 /// Relations extracted, in key order; `library_identity` (#93) is not.
 pub(crate) const KINDS: [&str; 7] = [
     "binds_variable",
@@ -306,6 +306,12 @@ pub(crate) fn extract(
             if let (Some(v), false) = (inherited.get(f), bound.contains_key(f)) {
                 bound.insert(format!("styleIdForText.{f}"), v.clone());
             }
+        }
+    }
+    // Each corner's binding keeps its own path, so a variable moved to another corner differs.
+    if let Some(Json::Object(corners)) = bound.remove("rectangleCornerRadii") {
+        for (corner, a) in corners {
+            bound.insert(format!("rectangleCornerRadii.{corner}"), a);
         }
     }
     for (field, aliases) in bound {
