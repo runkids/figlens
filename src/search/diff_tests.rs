@@ -3131,3 +3131,10 @@ fn each_side_s_aliases_are_scanned_once_however_many_variables_ask() {
         "{scan} {later:?}"
     );
 }
+
+#[test]
+fn a_variable_aliased_by_an_unbound_one_leaves_the_impact_incomplete() {
+    let out = impact_of(fan(1, 1.0), fan(1, 2.0), WORK);
+    let ids: Vec<_> = out.hits.iter().map(|h| h.node.as_str()).collect();
+    assert_eq!((ids, out.complete), (vec!["0:100", "0:60"], false));
+}
