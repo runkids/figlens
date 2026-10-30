@@ -174,12 +174,18 @@ await check('first use through the packaged bridge: prepare, poll, search the pu
     connected = false;
     const ended = async () => JSON.parse((await execute(binary, ['watch', 'status', '--id', prepared.workspaceId], { cwd: project })).stdout)
       .leases.filter(item => item.leaseId === lease.leaseId).map(item => [item.state, item.reason]);
+    // OMP signals the server on POSIX, which ends its leases released. On Windows it kills the bridge with
+    // TerminateProcess, so the native server is released only if it reads stdin's end first; otherwise
+    // the lease lapses as a crash's does. The report names which one happened.
+    const crashExpiry = process.platform === 'win32';
     let released = await ended();
-    for (const deadline = Date.now() + 10000; released[0]?.[0] !== 'ended' && Date.now() < deadline; released = await ended())
+    for (const deadline = Date.now() + (crashExpiry ? 40000 : 10000); !['ended', 'expired'].includes(released[0]?.[0]) && Date.now() < deadline; released = await ended())
       await new Promise(resolve => setTimeout(resolve, 100));
-    assert.deepEqual(released, [['ended', 'released']]);
+    if (crashExpiry && released[0]?.[0] === 'expired') assert.equal(released.length, 1);
+    else assert.deepEqual(released, [['ended', 'released']]);
+    const disconnectEnded = released[0][0] === 'expired' ? 'expired (Windows kill, crash fallback)' : 'released';
     return { workspaceId: prepared.workspaceId, dispatched: prepared.job.state, job: job.state, polls, ref: found.results[0].ref,
-      inspected: inspected.node.id, usedBy: used.results.map(item => item.ref.nodeId), approvalTier: index.approval, usagesTier: usages.approval, trackedBaselineAcked: true, watchLeaseReleasedOnDisconnect: true, resetDecisions: decisions };
+      inspected: inspected.node.id, usedBy: used.results.map(item => item.ref.nodeId), approvalTier: index.approval, usagesTier: usages.approval, trackedBaselineAcked: true, watchLeaseOnDisconnect: disconnectEnded, resetDecisions: decisions };
   } finally {
     if (connected) await disconnectServer(connection);
     for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : process.env[name] = value;

@@ -206,6 +206,12 @@ try {
       toolResults: scripted.results.length, provider: 'scripted loopback, not a model' };
   });
   const allowAll = [{ action: '*', resource: '*', effect: 'allow' }];
+  // The CLI runs its own jobs before replying: each must have succeeded, so the baseline exists.
+  const settled = async args => {
+    const reply = JSON.parse((await execute(binary, args, { cwd: project, env })).stdout);
+    for (const job of [reply.job ?? [], reply.jobs ?? []].flat()) assert.equal(job.state, 'succeeded', JSON.stringify(job));
+    return reply;
+  };
   async function converse(title, next, permissions = allowAll) {
     lane(next);
     const conversation = await client.session.create({ location, title, permissions });
@@ -237,8 +243,8 @@ try {
     return { ...flow, sources: undefined, paths: paths.filter(item => /index|jobs|search|inspect|usages/.test(item)), provider: 'scripted loopback, not a model' };
   });
   await check('through managed MCP a consumer acknowledged in Code Mode gets an explicit-check reminder before each later prompt', async () => {
-    const { workspaceId } = JSON.parse((await execute(binary, ['index', 'prepare', fixture, '--scope', '0:0'], { cwd: project, env })).stdout);
-    await execute(binary, ['index', 'track', '--id', workspaceId, '--scope', '0:0'], { cwd: project, env });
+    const { workspaceId } = await settled(['index', 'prepare', fixture, '--scope', '0:0']);
+    await settled(['index', 'track', '--id', workspaceId, '--scope', '0:0']);
     const follow = { workspaceId, consumer: 'mcp-stale', scope: '0:0' };
     const reminders = () => (scripted.system ?? []).filter(text => text.includes('figlens does not check these watch targets in the background here'));
     const [, acked] = await converse('Follow the whole design.', [() => catalog(['changes', 'watch']),
@@ -357,8 +363,8 @@ try {
   await client.location.reload();
   // The skipped CLI-path flow tracks the review frame that the watch checks follow.
   if (watchOnly) {
-    const { workspaceId } = JSON.parse((await execute(binary, ['index', 'prepare', fixture, '--scope', '0:1'], { cwd: project, env })).stdout);
-    await execute(binary, ['index', 'track', '--id', workspaceId, '--scope', '0:1'], { cwd: project, env });
+    const { workspaceId } = await settled(['index', 'prepare', fixture, '--scope', '0:1']);
+    await settled(['index', 'track', '--id', workspaceId, '--scope', '0:1']);
   }
   await check('with a disabled MCP override the CLI path prepares, polls, searches, inspects and follows changes through plugin tools', async () => {
     const status = await rpc.run({ sessionID: session.id, action: 'status' }, options);
