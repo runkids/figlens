@@ -360,6 +360,7 @@ if __name__ == '__main__':
         # A failed temporary cleanup (on Windows, a file still open) replaces the error behind it.
         context = error.__context__
         cause = ''.join(traceback.format_exception(context)) if context else ''
-        if isinstance(context, subprocess.TimeoutExpired):
-            cause += f'{context.output or ""}\n{context.stderr or ""}\n'
+        timed = error if isinstance(error, subprocess.TimeoutExpired) else context
+        if isinstance(timed, subprocess.TimeoutExpired):
+            cause += f'{timed.output or ""}\n{timed.stderr or ""}\n'
         raise SystemExit(f'{cause}Installation smoke failed: {error}')
