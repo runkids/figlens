@@ -59,7 +59,9 @@ class MeasureNativeTest(unittest.TestCase):
 
     def test_a_failed_second_holder_still_releases_the_first(self):
         class Workspace:
-            held, released = [], []
+            held, released, source = [], [], 'design.fig'
+            def cli(self, *_):
+                return {}
             def hold(self, _job):
                 if self.held:
                     raise OSError('second holder failed')
