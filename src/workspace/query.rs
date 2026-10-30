@@ -834,7 +834,7 @@ fn image_rank(
         "hash": {"state": if !any_hash { "pending" } else if hash_sources.iter().all(|s| s["state"] == "ready") { "ready" } else { "partial" },
             "sources": hash_sources}}});
     // Vision: the active image profile's stored vectors of the same units; the query image is
-    // embedded only when some source has a ready layer to compare it with.
+    // embedded only when every searched source is ready, so its scores can contribute.
     let vision = match profile::active_visual(storage) {
         Ok(None) => {
             layers["visual"]["embedding"] = json!({"state": "not_configured",
@@ -900,7 +900,10 @@ fn image_rank(
             };
             layers["visual"]["embedding"] =
                 json!({"state": state, "profileId": p.id, "sources": sources});
-            if stored.is_empty() {
+            if state != "ready" {
+                // An incomplete corpus uses hashes only; do not infer scores discarded below.
+                None
+            } else if stored.is_empty() {
                 // Nothing to compare after the filters: only the hash ranking can run.
                 layers["visual"]["embedding"]["reasons"] = json!([{"code": "no_filtered_units"}]);
                 None

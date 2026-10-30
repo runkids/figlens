@@ -541,6 +541,53 @@ fn vision_ranks_when_ready_and_the_hash_takes_over_when_the_model_fails() {
     unsafe { std::env::remove_var("SEMANTIC_CHILD_MODE") };
 }
 
+/// A partial layer's stored vectors cannot contribute to the workspace ranking, so its hash
+/// fallback must not start a vision child just to discard the inference.
+fn a_partial_vision_layer_uses_hashes_without_starting_the_model() {
+    let dir = test_support::TestDir::new();
+    let (prepared, fig) = indexed(&dir, false);
+    let profile = configured_vision(&dir);
+    visual_layers(
+        &fig,
+        &profile,
+        [([255, 0, 0], axis(2)), ([0, 0, 255], axis(1))],
+    );
+    rusqlite::Connection::open(prepared["paths"]["database"].as_str().unwrap())
+        .unwrap()
+        .execute(
+            "UPDATE model_layers SET state = 'partial' WHERE profile_id = ?1",
+            [&profile],
+        )
+        .unwrap();
+    let query = query_png(&dir, [200, 40, 120]);
+    let pid = std::path::absolute(dir.join("unneeded-vision.pid")).unwrap();
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe {
+        std::env::set_var("SEMANTIC_CHILD_MODE", "image");
+        std::env::set_var("SEMANTIC_CHILD_PID", &pid);
+    }
+    let reply = cli(&[
+        "search",
+        "--file",
+        fig.to_str().unwrap(),
+        "--image",
+        query.to_str().unwrap(),
+    ]);
+    unsafe {
+        std::env::remove_var("SEMANTIC_CHILD_MODE");
+        std::env::remove_var("SEMANTIC_CHILD_PID");
+    }
+    assert_eq!(reply["query"]["usedModes"], json!(["visual_hash"]));
+    assert_eq!(
+        reply["coverage"]["layers"]["visual"]["embedding"]["state"],
+        "partial"
+    );
+    assert!(
+        !pid.exists(),
+        "hash fallback started a vision model it cannot use"
+    );
+}
+
 /// An MCP image search waiting on a hung vision child ends on `notifications/cancelled`, and
 /// the child is gone.
 #[cfg(target_os = "linux")]
@@ -2680,6 +2727,10 @@ fn main() {
         (
             "text_and_image_children_stay_warm_side_by_side",
             text_and_image_children_stay_warm_side_by_side,
+        ),
+        (
+            "a_partial_vision_layer_uses_hashes_without_starting_the_model",
+            a_partial_vision_layer_uses_hashes_without_starting_the_model,
         ),
         (
             "vision_ranks_when_ready_and_the_hash_takes_over_when_the_model_fails",
