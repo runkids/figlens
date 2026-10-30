@@ -528,7 +528,8 @@ fn detail(conn: &Connection, v: &View, req: &Request, revision: &str) -> Result<
 }
 
 /// Moves `consumer`'s checkpoint for these filters forward to `cursor`; an older or equal
-/// cursor never moves it, and one that missed a deletion is `event_gap`, writing nothing.
+/// cursor normally leaves it, and one that missed a deletion is `event_gap`, writing nothing.
+/// A current cursor before a checkpoint behind an unaccepted deletion moves it back instead.
 /// Replies with the checkpoint now held.
 pub fn ack(storage: &Storage, select: &Select, req: &Request) -> Result<Json> {
     let consumer = req

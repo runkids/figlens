@@ -227,7 +227,7 @@ Pi、OpenCode、OMP は、それぞれのオプトイン用エントリから同
 | `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset\|track\|untrack` | ユーザーごとの figlens state ディレクトリ、または workspace が以後記憶する `--storage DIR` の下にあるローカル workspace。`prepare <file> --scope NODE` でその範囲の検索インデックスを一度だけ作成し、以後 `search --file <file>`（または `--workspace DIR`）は再解析せず、workspace の全ソースをまとめてランク付けして答えます。`refresh` は変更されたファイル、`rebuild` はすべて（または `--source`/`--scope` の一つ）を再作成し、`clear` は使われていないインデックスを削除します。新しいインデックスができるまで以前のものが使われます。`reset` は workspace データベースだけを削除し、デザイン、エクスポート、記憶された場所には触れません。`track --scope NODE` は baseline ビルドからそのスコープの変更を記録し、`untrack` は履歴を残したまま停止します。 |
 | `jobs status\|cancel <jobId>` | インデックス作成の状態表示または取り消し。`cancel` は作成が止まってから戻ります |
 | `changes --file <file>\|--id ID\|--workspace DIR [--source ID] [--scope NODE] [--consumer NAME\|--cursor C] [--revision R] [--limit N]` | 追跡中のスコープで記録された変更を古い順に返します。公開されたビルドごとに 1 リビジョン（baseline または changes）で、カバレッジと変更種別・ファセットごとの件数を含みます。`--revision` でそのリビジョンの変更ノードをページングします。`tracking` は変更を記録するために `index refresh` が必要なスコープを示します。読み取りのみ |
-| `watch ack --file <file>\|--id ID\|--workspace DIR --consumer NAME --cursor C [--source ID] [--scope NODE]` | 同じフィルターで処理した最後の `changes` ページの `nextCursor` まで、コンシューマーのチェックポイントを進めます。繰り返しても安全です。まだ通過していないリビジョンを保持期間の削除より前に発行したカーソルは `event_gap` になり、何も書き込みません |
+| `watch ack --file <file>\|--id ID\|--workspace DIR --consumer NAME --cursor C [--source ID] [--scope NODE]` | 同じフィルターで処理した最後の `changes` ページの `nextCursor` まで、コンシューマーのチェックポイントを進めます。繰り返しても安全で、通常は前にしか進みません。ただし削除の後ろに残ったチェックポイントは、現在のリカバリーカーソルで戻され、保持されたリビジョンを読み直します。まだ通過していないリビジョンを保持期間の削除より前に発行したカーソルは `event_gap` になり、何も書き込みません |
 | `mcp` | stdio 経由のローカル MCP サーバー |
 | `update` | バイナリを最新リリースに置き換え |
 

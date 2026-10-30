@@ -505,7 +505,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "watch",
-        "Change-tracking consumers. ack moves consumer's checkpoint for these filters (sourceId, scope) forward to cursor, the nextCursor of the last changes page it handled with the same filters; an older or equal cursor never moves it, so a retry is safe, and a cursor issued before retention deleted revisions behind it is event_gap, writing nothing: follow its recovery. Replies with advanced and the checkpoint held.",
+        "Change-tracking consumers. ack moves consumer's checkpoint for these filters (sourceId, scope) forward to cursor, the nextCursor of the last changes page it handled with the same filters; an older or equal cursor normally leaves it, so a retry is safe. A cursor issued before retention deleted revisions it had not passed is event_gap, writing nothing: follow its recovery. A current recovery cursor before a checkpoint that is behind such a deletion moves the checkpoint back to it, so the kept revisions replay. Replies with advanced, true only when the checkpoint moved forward, and the checkpoint now held, which is authoritative.",
         &[
             ("action", "string", true, "ack"),
             ("workspaceId", "string", true, "ws_... from the index tool"),
