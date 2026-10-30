@@ -525,10 +525,13 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
     let usages = (command == "usages")
         .then(|| command::usages_request(&args[2..]))
         .transpose()?;
+    if let Some((request, command::Query::Image(_))) = &search {
+        return Err(command::image_needs_workspace(file, &request.scope));
+    }
     let path = figlens::remote::local(file).map_err(|e| contract::source(file, e))?;
     if let Some((request, query)) = search {
         let command::Query::Text(mode) = query else {
-            return Err(command::image_needs_workspace(file, &request.scope));
+            unreachable!("refused above")
         };
         // Ctrl-C stops a model run and its child instead of killing figlens around them.
         if mode != figlens::semantic::Mode::Text {

@@ -810,7 +810,8 @@ fn image_rank(
                 if state.is_none() {
                     continue;
                 }
-                let mut by = vectors(tx, *gen_id, &p.id, p.dim)?;
+                let wanted = units[part].iter().copied().collect();
+                let mut by = vectors(tx, *gen_id, &p.id, p.dim, &wanted)?;
                 stored.extend(
                     units[part]
                         .iter()
@@ -827,6 +828,8 @@ fn image_rank(
             layers["visual"]["embedding"] =
                 json!({"state": state, "profileId": p.id, "sources": sources});
             if stored.is_empty() {
+                // Nothing to compare after the filters: only the hash ranking can run.
+                layers["visual"]["embedding"]["reasons"] = json!([{"code": "no_filtered_units"}]);
                 None
             } else {
                 match profile::with_runtime(&p, cancel, |rt| {
@@ -874,11 +877,13 @@ fn image_rank(
     }
     let mut text = None;
     let mut semantic = None;
+    let mut semantic_profile = None;
     // The query text's channels, in hybrid with text; an image alone has no text to rank.
     if mode == ImageMode::Hybrid && !req.query.is_empty() {
         text = Some(rank::text(&parts(loaded), q, req, key, cancel)?);
         match profile::active(storage) {
             Ok(Some(p)) => {
+                semantic_profile = Some(p.id.clone());
                 let mut cache = crate::semantic::lock(&LAYERS, cancel)
                     .map_err(|_| fail(ErrorKind::Cancelled, "search cancelled"))?;
                 let layer =
@@ -966,7 +971,13 @@ fn image_rank(
         exact,
         vision,
     };
-    let (ranked, decor) = rank::rank(q, req, key, channels, complete)?;
+    // The cursor also binds the profiles whose vectors ranked this page.
+    let key = json!([
+        key,
+        layers["visual"]["embedding"]["profileId"],
+        semantic_profile
+    ]);
+    let (ranked, decor) = rank::rank(q, req, &key, channels, complete)?;
     Ok((ranked, decor, complete, layers))
 }
 

@@ -97,6 +97,10 @@ pub fn crop(text: &str) -> Result<Crop> {
     let [x, y, width, height] = n[..] else {
         return Err(invalid("crop takes x,y,width,height in whole pixels"));
     };
+    positive(x, y, width, height)
+}
+
+fn positive(x: u32, y: u32, width: u32, height: u32) -> Result<Crop> {
     if width == 0 || height == 0 {
         return Err(invalid("crop width and height must be positive"));
     }
@@ -118,7 +122,7 @@ pub fn crop_value(value: &Json) -> Result<Crop> {
         n("width"),
         n("height"),
     ) {
-        (Some(4), Some(x), Some(y), Some(w), Some(h)) => crop(&format!("{x},{y},{w},{h}")),
+        (Some(4), Some(x), Some(y), Some(w), Some(h)) => positive(x, y, w, h),
         _ => Err(invalid(
             "crop takes exactly x, y, width and height in whole pixels",
         )),
@@ -192,13 +196,15 @@ pub(super) fn layer_state(
     .map_err(sql)
 }
 
-/// The vision vectors stored for generation `gen_id`'s units under `profile`, by record id.
-/// Identical rasters share one vector, keyed by their raster key.
+/// The vision vectors stored for generation `gen_id`'s units in `rids` under `profile`, by
+/// record id; units the filters left out are not decoded. Identical rasters share one vector,
+/// keyed by their raster key.
 pub(super) fn vectors(
     tx: &rusqlite::Transaction,
     gen_id: i64,
     profile: &str,
     dim: usize,
+    rids: &std::collections::HashSet<u32>,
 ) -> Result<HashMap<u32, Vec<f32>>> {
     let mut stmt = tx
         .prepare(
@@ -214,8 +220,11 @@ pub(super) fn vectors(
         .map_err(sql)?;
     let mut out = HashMap::new();
     while let Some(row) = rows.next().map_err(sql)? {
-        let vector = crate::semantic::decode(row.get_ref(1).map_err(sql)?.as_blob()?, dim)?;
-        out.insert(row.get(0).map_err(sql)?, vector);
+        let rid: u32 = row.get(0).map_err(sql)?;
+        if rids.contains(&rid) {
+            let vector = crate::semantic::decode(row.get_ref(1).map_err(sql)?.as_blob()?, dim)?;
+            out.insert(rid, vector);
+        }
     }
     Ok(out)
 }

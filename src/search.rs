@@ -1076,11 +1076,6 @@ fn idf(n: usize, df: u32) -> f64 {
     (1.0 + (n - df + 0.5) / (df + 0.5)).ln()
 }
 
-/// Ranked page of `req` over every index of `corpus` together: candidates must contain every
-/// query term; exact name, name phrase and text phrase matches lead, then field-weighted BM25,
-/// then corpus order and document order. Record counts, document frequencies and field lengths
-/// are summed over the whole corpus before any record is scored, so one source's hits are never
-/// ranked alone and merged afterwards; one index ranks exactly as it always did.
 /// Why `req`'s filters leave a record out; hidden and internal ones are counted as excluded.
 pub(crate) enum Filtered {
     Type,
@@ -1101,6 +1096,11 @@ pub(crate) fn filtered(index: &Index, rid: u32, req: &Request) -> Option<Filtere
     (internal && !req.include_internal).then_some(Filtered::Internal)
 }
 
+/// Ranked page of `req` over every index of `corpus` together: candidates must contain every
+/// query term; exact name, name phrase and text phrase matches lead, then field-weighted BM25,
+/// then corpus order and document order. Record counts, document frequencies and field lengths
+/// are summed over the whole corpus before any record is scored, so one source's hits are never
+/// ranked alone and merged afterwards; one index ranks exactly as it always did.
 fn retrieve(
     corpus: &[&Index],
     q: &Prepared,
