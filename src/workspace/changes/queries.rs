@@ -1063,19 +1063,23 @@ pub struct Turn {
 /// publication `(?4 gen, ?5 membership, ?6 ranking)`: the work a publication leaves. A set is
 /// due when one of its members is `source` and neither its latest evaluation nor its note holds
 /// that member at this publication, and only while every member is among the runner's visible
-/// sources `?10`; a disabled or unreadable one never is. A set's text holds a member verbatim
-/// unless it has an escape, so the `instr` pre-filter skips non-member sets before any JSON is
-/// parsed and drops none that holds `?1`.
+/// sources `?10`; a disabled or unreadable one never is. A readable set's text holds a member
+/// verbatim (it has no escape), so the `instr` pre-filter skips non-member sets before any JSON
+/// is parsed and drops none that holds `?1`. Every stored text is measured before it is
+/// searched or parsed; one past what is ever written reads as no match.
 fn due_sql() -> String {
+    let (set, row, note) = (subscriptions::SET_BYTES, ROW_BYTES, NOTE_BYTES);
     format!(
         "s.kind = 'query' AND s.source_id IN (?1, '{SET}') AND s.scope = ?2
     AND s.disabled IS NULL
-    AND (s.source_id = ?1 OR instr(s.sources, ?1) > 0 OR instr(s.sources, '\\') > 0)
+    AND (s.source_id = ?1 OR (length(CAST(s.sources AS BLOB)) <= {set}
+      AND instr(s.sources, ?1) > 0))
     AND CASE WHEN s.source_id = ?1 THEN
       NOT EXISTS (SELECT 1 FROM query_evaluations e WHERE e.sub = s.id
         AND e.seq = (SELECT MAX(seq) FROM query_evaluations WHERE sub = s.id)
         AND e.gen = ?4 AND e.membership = ?5 AND e.ranking = ?6)
-      AND NOT IFNULL(CASE WHEN json_valid(s.eval_failure) THEN s.eval_failure ->> 'gen' = ?4
+      AND NOT IFNULL(CASE WHEN length(CAST(s.eval_failure AS BLOB)) <= {note}
+        AND json_valid(s.eval_failure) THEN s.eval_failure ->> 'gen' = ?4
         AND s.eval_failure ->> 'membership' = ?5 AND s.eval_failure ->> 'ranking' = ?6 END, 0)
     WHEN {} THEN
       EXISTS (SELECT 1 FROM json_each(s.sources) WHERE value = ?1)
@@ -1083,10 +1087,12 @@ fn due_sql() -> String {
         WHERE value NOT IN (SELECT value FROM json_each(?10)))
       AND NOT EXISTS (SELECT 1 FROM query_evaluations e WHERE e.sub = s.id
         AND e.seq = (SELECT MAX(seq) FROM query_evaluations WHERE sub = s.id)
-        AND e.ranking = ?6 AND CASE WHEN json_valid(e.membership) THEN EXISTS
+        AND e.ranking = ?6 AND CASE WHEN length(CAST(e.membership AS BLOB)) <= {row}
+          AND json_valid(e.membership) THEN EXISTS
           (SELECT 1 FROM json_each(e.membership) m WHERE m.value ->> 0 = ?1
            AND m.value ->> 1 = ?4 AND m.value ->> 2 = ?5) ELSE 0 END)
-      AND NOT IFNULL(CASE WHEN json_valid(s.eval_failure) THEN
+      AND NOT IFNULL(CASE WHEN length(CAST(s.eval_failure AS BLOB)) <= {note}
+        AND json_valid(s.eval_failure) THEN
         CASE WHEN json_valid(s.eval_failure ->> 'membership') THEN
           s.eval_failure ->> 'ranking' = ?6 AND EXISTS (SELECT 1
           FROM json_each(s.eval_failure ->> 'membership') m WHERE m.value ->> 0 = ?1

@@ -3268,6 +3268,24 @@ fn a_non_member_publication_leaves_a_set_untouched() {
 }
 
 #[test]
+fn a_set_whose_newest_membership_is_oversized_is_due_again_unparsed() {
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    subscribe_set(&storage, &select, "a", "visible", Some("badge"), None).unwrap();
+    let current = turn(&storage, &select, &srcs[0].1);
+    // Still naming this publication, but past what any written evaluation takes.
+    conn.execute(
+        "UPDATE query_evaluations SET membership = json_insert(membership, '$[#]', ?1)",
+        ["x".repeat(1 << 20)],
+    )
+    .unwrap();
+    assert_eq!(
+        (current, turn(&storage, &select, &srcs[0].1).0),
+        ((0, false), 1)
+    );
+}
+
+#[test]
 fn a_runner_that_cannot_see_every_member_never_evaluates_the_set() {
     let d = TestDir::new();
     let (storage, select, conn, srcs) = library_workspace(&d, 2);
