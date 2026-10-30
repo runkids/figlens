@@ -1876,3 +1876,46 @@ fn a_hidden_use_before_the_visible_ones_is_reported_by_some_page() {
         }
     }
 }
+
+#[test]
+fn a_row_copy_estimate_stops_pulling_rows_once_work_runs_out() {
+    let rows = vec![json!([1, 2]); 1000];
+    let pulled = std::cell::Cell::new(0);
+    let mut left = 4;
+    let (_, cut) = rows_bytes(
+        rows.iter().inspect(|_| pulled.set(pulled.get() + 1)),
+        &mut left,
+    );
+    assert_eq!((cut, pulled.get()), (true, 3));
+}
+
+#[test]
+fn a_field_estimate_with_little_work_left_spends_it_and_stops_the_side() {
+    // The image paint links at once, so only the size estimate walks the 5,000 values.
+    let mut paints = vec![obj(vec![("type", K::Enum("PaintType", "IMAGE"))])];
+    paints.extend(vec![K::Float(0.0); 5000]);
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(
+                2,
+                Some(1),
+                "RECTANGLE",
+                "R",
+                vec![("fillPaints", K::Array(paints))],
+            ),
+        ]),
+    )]);
+    let tree = Tree::new(&message);
+    for work in [1, 100] {
+        let mut b = bounds(work);
+        let mut unread = 0;
+        assert!(effective(&tree, "0:2", None, &mut b, &mut unread, false).is_none());
+        assert_eq!(
+            (b.work, b.stop, unread),
+            (0, Some(crate::expand::Stop::Work), 0)
+        );
+    }
+}

@@ -236,12 +236,21 @@ pub(crate) fn extract(
             .flatten()
             .filter_map(|s| s.get("fillPaints"))
     }
-    let mut left = 2 * VISITS;
-    let copies: usize = rows(fields.get("vectorData"))
-        .chain(rows(fields.get("textData")))
-        .map(|p| json_bytes(p, &mut left))
-        .sum();
-    if !bounds.charge(2 * VISITS - left, copies) {
+    // The walk stops at what the side has left: running out there stops the side, visits kept.
+    let cap = (2 * VISITS).min(bounds.work);
+    let mut left = cap;
+    let (copies, cut) = rows_bytes(
+        rows(fields.get("vectorData")).chain(rows(fields.get("textData"))),
+        &mut left,
+    );
+    if !bounds.charge(cap - left, 0) {
+        return None;
+    }
+    if (cut || left == 0 && cap > 0) && cap < 2 * VISITS {
+        bounds.stop = Some(crate::expand::Stop::Work);
+        return None;
+    }
+    if !bounds.charge(0, copies) {
         return None;
     }
     // REST lists no vector-region fills; usages reads their bindings like top-level fills.
@@ -458,6 +467,18 @@ fn node_state(tree: &Tree, target: Option<&str>, kind: &str) -> &'static str {
 
 /// The record's effective binding fields as JSON: an expanded sublayer's override wins over
 /// its source's own field. Each is charged at its estimated size before it is converted.
+/// Estimated bytes of `rows`, walking at most `left`; true when a row was left unwalked.
+fn rows_bytes<'a>(rows: impl Iterator<Item = &'a Json>, left: &mut usize) -> (usize, bool) {
+    let mut bytes = 0;
+    for row in rows {
+        if *left == 0 {
+            return (bytes, true);
+        }
+        bytes += json_bytes(row, left);
+    }
+    (bytes, false)
+}
+
 fn effective(
     tree: &Tree,
     id: &str,
@@ -515,22 +536,27 @@ fn effective(
                 continue;
             }
         }
-        let mut left = VISITS;
+        let cap = VISITS.min(bounds.work);
+        let mut left = cap;
         let bytes = match (own, value) {
             (Some(v), _) => json_bytes(v, &mut left),
             (None, Some(v)) => kiwi_bytes(v, &mut left),
             (None, None) => continue,
         };
-        // One field past the per-value cap is left out and counted, not the rest of the index;
-        // the visits that found it too large are still charged.
+        // The visits made are charged either way. One field past the per-value cap is left out
+        // and counted, not the rest of the index; running out of the side's work stops it.
+        if !bounds.charge(cap - left, 0) {
+            return None;
+        }
         if left == 0 {
-            if !bounds.charge(VISITS, 0) {
+            if cap < VISITS {
+                bounds.stop = Some(crate::expand::Stop::Work);
                 return None;
             }
             *unread += 1;
             continue;
         }
-        if !bounds.charge(VISITS - left, bytes) {
+        if !bounds.charge(0, bytes) {
             return None;
         }
         let mut converted = match (own, value) {
