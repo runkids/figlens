@@ -2,10 +2,44 @@
  "model": "BAAI/bge-m3",
  "revision": "5617a9f61b028005a4858fdac845db406aefb181",
  "license": "mit (card front matter)",
- "weights": {"pytorch_model.bin": "b5e0ce3470abf5ef3831aa1bd5553b486803e83251590ab7ff35a117cf6aad38", "tokenizer.json": "21106b6d7dab2952c1d496fb21d5dc9db75c28ed361a05f5020bbba27810dd08"},
+ "weights": {
+  "pytorch_model.bin": "b5e0ce3470abf5ef3831aa1bd5553b486803e83251590ab7ff35a117cf6aad38",
+  "tokenizer.json": "21106b6d7dab2952c1d496fb21d5dc9db75c28ed361a05f5020bbba27810dd08"
+ },
  "conversion": "model.safetensors written from pytorch_model.bin by torch.load(weights_only=True) + safetensors save_file; every tensor torch.equal to the .bin",
  "recipe": "dense only: XLM-RoBERTa last hidden state, CLS token (1_Pooling pooling_mode_cls_token), then 2_Normalize; no query or passage instruction (README: 'no longer requires adding instructions to the queries'); tokenizer.json with its own special tokens; padded batches under the attention mask",
- "contract": {"queryPrefix": "", "passagePrefix": "", "maxTokens": 512, "pooling": "cls"},
+ "contract": {
+  "queryPrefix": "",
+  "passagePrefix": "",
+  "maxTokens": 512,
+  "pooling": "cls"
+ },
  "maxTokensNote": "the preflight's 1-512 cap under the card's 8192 max_seq_length; longer texts are refused, never truncated",
- "plan": "Registered before any embedding with this model: reference.py parity (batch and one by one, incl. padding), then ONE run of the unchanged frozen suite. No sparse/ColBERT heads, no reranker, no other candidate."
+ "plan": "Registered before any embedding with this model: reference.py parity (batch and one by one, incl. padding), then ONE run of the unchanged frozen suite. No sparse/ColBERT heads, no reranker, no other candidate.",
+ "parity": {
+  "pass": true,
+  "candleBatchVsReference": {
+   "maxAbs": 7.08e-07,
+   "cosineMin": 0.999999881
+  },
+  "candleBatchVsSingle": "bitwise equal",
+  "tokenIds": "match",
+  "passagePath": "5000 scores maxAbs 1.04e-6, top1 100/100 same",
+  "conversion": "391 tensors torch.equal"
+ },
+ "frozenRun": {
+  "gatesPass": false,
+  "failed": "synonym_purpose wrongTop1 0.25 > 0.20 (5 of 20; R@10 1.0, MRR 0.845)",
+  "passed": "en_to_zh 1.0/0.908/0.15, zh_to_en 1.0/0.956/0.05, mixed_script 1.0/1.0/0, exact_text = lexical",
+  "cost": "diagnostic (concurrent Docker build): 104 texts in 2.45 s, warm query p50 61 ms p95 76 ms, load 0.64 s, 4611 MiB peak RSS, 8 threads",
+  "child": "EOF stop did not exit within 10 s (preflight child); SIGTERM 22 ms",
+  "synonymMisses": [
+   "遇到問題要找真人協助 -> Help center (聯絡客服 rank 2)",
+   "晚上看螢幕比較不刺眼的主題 -> Recently viewed (深色模式 rank 7)",
+   "縮小商品範圍的選項 -> 搜尋商品 (篩選條件 rank 4)",
+   "where is my delivery right now -> 訂單已出貨 (Track your package rank 2)",
+   "extra security code when logging in -> Change password (Two-factor authentication rank 2)"
+  ],
+  "note": "The single frozen run; labels and gates unchanged."
+ }
 }
