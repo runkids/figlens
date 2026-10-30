@@ -243,12 +243,12 @@ test('CLI path runs the MCP index, jobs, search, usages, diff, changes, watch, i
   assert.deepEqual(cliArgs('inspect', { file: '/d.fig', node: '1:2', compareVariant: '1:3' }), ['inspect', '/d.fig', '1:2', '--compare-variant', '1:3']);
   for (const input of [{ file: '/a.fig', workspaceId: 'ws_p', sourceId: 'b', query: 'Pay' }, { file: '/a.fig', storage: '/s', query: 'Pay' }, { query: 'Pay' }])
     assert.throws(() => cliArgs('search', input), /file or workspaceId, not both/);
-  // An image search: the query text is optional, the reference and crop become flags, and hybrid needs an image.
+  // An image search: the query text is optional, the reference and crop become flags, and visual needs an image.
   assert.deepEqual(cliArgs('search', { workspaceId: 'ws_1', image: '/q.png', crop: { x: 1, y: 2, width: 3, height: 4 } }),
     ['search', '--id', 'ws_1', '--image', '/q.png', '--crop', '1,2,3,4', '--', '']);
   assert.deepEqual(cliArgs('search', { workspaceId: 'ws_1', imageRef: { sourceId: 's', snapshotId: 'sha256:x', nodeId: '1:2' }, query: 'Pay', mode: 'hybrid' }),
     ['search', '--id', 'ws_1', '--mode', 'hybrid', '--image-ref', '{"sourceId":"s","snapshotId":"sha256:x","nodeId":"1:2"}', '--', 'Pay']);
-  assert.throws(() => cliArgs('search', { workspaceId: 'ws_1', query: 'Pay', mode: 'hybrid' }), /hybrid here takes image or imageRef/);
+  assert.throws(() => cliArgs('search', { workspaceId: 'ws_1', query: 'Pay', mode: 'visual' }), /visual takes image or imageRef/);
   assert.throws(() => cliArgs('search', { workspaceId: 'ws_1', query: 'Pay', crop: { x: 0, y: 0, width: 1, height: 1 } }), /crop applies to a query image/);
   assert.throws(() => cliArgs('search', { workspaceId: 'ws_1' }), /needs query/);
   assert.throws(() => cliArgs('index', { action: 'remove', workspaceId: 'ws_1' }), /needs sourceId/);

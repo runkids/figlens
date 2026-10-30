@@ -69,8 +69,7 @@ export function cliArgs(tool, input) {
       ...flag('--cursor', input.cursor), ...flag('--include-hidden', input.includeHidden),
       ...flag('--include-internal', input.includeInternal), ...flag('--mode', input.mode)];
     const image = input.image !== undefined || input.imageRef !== undefined;
-    // This path runs no text model: hybrid fuses an image's channels with the query text's, never text alone.
-    if (input.mode === 'hybrid' && !image) throw new Error('mode hybrid here takes image or imageRef; text search uses mode text');
+    if (input.mode === 'visual' && !image) throw new Error('mode visual takes image or imageRef');
     if (input.crop !== undefined && !image) throw new Error('crop applies to a query image; give image or imageRef');
     flags.push(...flag('--image', input.image),
       ...flag('--image-ref', input.imageRef && JSON.stringify(input.imageRef)),

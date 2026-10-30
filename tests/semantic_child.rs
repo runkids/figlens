@@ -1218,6 +1218,7 @@ fn a_cancelled_configure_reports_cancelled_and_records_nothing() {
         model: "fake",
         revision: "0",
         license: "MIT",
+        modality: "text",
         files,
     };
     let exe = std::env::current_exe().unwrap();
