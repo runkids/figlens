@@ -376,6 +376,15 @@ pub fn subscribe(storage: &Storage, select: &Select, req: &Subscribe) -> Result<
         }
         (source, _) => source.unwrap_or(SET),
     };
+    // A listed set is bounded before any of its names is resolved.
+    if let Some(list) = req.sources.filter(|l| *l != "visible")
+        && (list.len() > SET_BYTES || list.split(',').count() > query::QUERY_SOURCES)
+    {
+        return Err(invalid(&format!(
+            "sources lists at most {} sourceIds in {SET_BYTES} bytes",
+            query::QUERY_SOURCES
+        )));
+    }
     let owner = req.owner.map(|o| name("owner", Some(o))).transpose()?;
     let node = req.node.map(crate::normalize_id);
     if let Some(l) = &req.library {
