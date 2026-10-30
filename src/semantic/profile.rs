@@ -59,7 +59,9 @@ pub fn known(name: &str) -> Result<&'static Known> {
 
 /// The runtime figlens ships beside itself.
 pub fn default_runtime() -> Result<PathBuf> {
+    // Through links (macOS reports the invoked path), to the directory figlens really lives in.
     let exe = std::env::current_exe()?;
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
     Ok(exe.with_file_name(format!("figlens-embed{}", std::env::consts::EXE_SUFFIX)))
 }
 
@@ -208,7 +210,8 @@ pub fn configure(
         return Err(fail(
             ErrorKind::InvalidArguments,
             format!(
-                "{} is missing {}; download {} revision {} ({}) into it, then configure again; nothing was recorded",
+                "{}: {} is missing {}; download {} revision {} ({}) into it, then configure again; nothing was recorded",
+                name,
                 model.display(),
                 missing.join(", "),
                 k.model,

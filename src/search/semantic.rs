@@ -239,7 +239,9 @@ fn reply_with(
     let (semantic, layer_json) = match profile {
         Ok(p) => match ranked(index, req, &p, &source, cancel) {
             Ok(found) => {
-                used.push("semantic");
+                if found.1["embeddedTexts"].as_u64().unwrap_or(0) > 0 {
+                    used.push("semantic");
+                }
                 found
             }
             Err(Stop::Cancelled) => {
@@ -571,7 +573,10 @@ pub(crate) fn workspace_rank(
         })?
         .remove(0),
     };
-    used.push("semantic");
+    // Semantic was used only if some vector could be compared.
+    if any {
+        used.push("semantic");
+    }
     let mut semantic: Vec<((usize, u32), f32, u8, u32)> = Vec::new();
     let mut excluded = [0usize; 2];
     for (part, side) in sides.iter().enumerate() {

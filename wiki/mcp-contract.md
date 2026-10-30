@@ -39,6 +39,7 @@ Tool failures retain `isError: true` and text content; additive `_meta.figlens` 
 | `storage_unavailable` | The workspace's storage is missing or offline; follow `_meta.figlens.recovery`: restore it, or with the user's confirmation recreate elsewhere |
 | `index_incompatible` | Another schema or index version; follow the recovery (`rebuild`, or that figlens version) |
 | `query_work_limit` | Over 10 sources or 100k records per search; run a listed narrower one |
+| `mode_unavailable` | `semantic` search or `index` `embed` with no usable model profile; follow recovery to `models` status |
 | `source_stale` | Every searched source changed since indexing; run the listed `refresh`, then search again |
 | `cursor_stale`/`cursor_expired` | Paged data was replaced or deleted, a workspace search cursor's one-hour lease ended, or a `changes` cursor was issued for another view; restart paging, for `changes` and `watch` without the cursor |
 | `event_gap` | Retention deleted `changes` revisions before they were read (or before a `watch` `ack` cursor accepted them); follow its recovery (from the oldest kept) and treat the scope as possibly changed |

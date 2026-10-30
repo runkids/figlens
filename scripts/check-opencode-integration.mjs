@@ -541,7 +541,8 @@ try {
       () => direct('figlens_search', { file: fixture, query: 'Mapping review', mode: 'hybrid' })]);
     assert.ok(listed?.profiles?.length, JSON.stringify(scripted.raw).slice(0, 2000));
     assert.ok(status?.setup?.length && typeof status.configRoot === 'string', (scripted.raw[1] ?? '').slice(0, 500));
-    assert.match(scripted.raw[2] ?? '', /runtime|not a regular file|missing/i, (scripted.raw[2] ?? '').slice(0, 500));
+    assert.match(scripted.raw[2] ?? '', / is missing /, (scripted.raw[2] ?? '').slice(0, 500));
+    assert.doesNotMatch(scripted.raw[2] ?? '', /no model runtime/, (scripted.raw[2] ?? '').slice(0, 500));
     assert.deepEqual(after?.profiles, [], (scripted.raw[3] ?? '').slice(0, 500));
     assert.match(scripted.raw[4] ?? '', /mode_unavailable|configured local model/i, (scripted.raw[4] ?? '').slice(0, 500));
     assert.deepEqual(hybrid?.query?.usedModes, ['text'], (scripted.raw[5] ?? '').slice(0, 500));

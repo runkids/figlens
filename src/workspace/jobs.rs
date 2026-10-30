@@ -2875,7 +2875,7 @@ fn set_tracking(
                      ON t.source_id = j.source_id AND t.scope = j.scope
                      AND t.state = 'baseline_pending'
                      WHERE j.source_id = ?1 AND j.scope = ?2 AND j.state = 'running'
-                     AND NOT (j.kind = 'rebuild' AND (j.stage IN ('stage', 'hash')
+                     AND j.kind <> 'embed' AND NOT (j.kind = 'rebuild' AND (j.stage IN ('stage', 'hash')
                      OR IFNULL(j.seq > t.enabled_seq, 0)))",
                     [source_id, scope],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),

@@ -101,7 +101,7 @@ def check_mcp(command, cwd, env, fixture, version):
         empty = Path(cwd) / 'no-model'
         empty.mkdir(exist_ok=True)
         refused = request('tools/call', {'name': 'models', 'arguments': {'action': 'configure', 'profile': 'bge-m3', 'modelDir': str(empty)}})
-        assert refused['isError'] is True and re.search(r'runtime|not a regular file|missing', json.dumps(refused)), refused
+        assert refused['isError'] is True and ' is missing ' in json.dumps(refused) and 'no model runtime' not in json.dumps(refused), refused
         after = request('tools/call', {'name': 'models', 'arguments': {'action': 'status'}})
         assert after['structuredContent']['profiles'] == [], after
         semantic = request('tools/call', {'name': 'search', 'arguments': {'file': str(fixture), 'query': 'First success', 'mode': 'semantic'}})

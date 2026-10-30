@@ -472,19 +472,19 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "sourceId",
                 "string",
                 false,
-                "a registered source, for remove, relocate, refresh, rebuild, track and untrack",
+                "a registered source, for remove, relocate, refresh, rebuild, track, untrack and embed",
             ),
             (
                 "scope",
                 "string",
                 false,
-                "stored node id to index (prepare), refresh, rebuild, track or untrack; 0:0 is the whole file",
+                "stored node id to index (prepare), refresh, rebuild, track, untrack or embed; 0:0 is the whole file",
             ),
             (
                 "requestId",
                 "string",
                 false,
-                "an idempotency key: repeating a prepare, refresh, rebuild or track of one source and scope with it returns the same job; one first used for another request (track is its own) is refused",
+                "an idempotency key: repeating a prepare, refresh, rebuild, track or embed of one source and scope with it returns the same job; one first used for another request (track is its own) is refused",
             ),
             STORAGE,
             (

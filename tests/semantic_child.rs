@@ -659,7 +659,8 @@ fn workspace_semantic_search_says_the_layer_is_pending_and_names_the_embed_step(
     assert!(steps.contains("\"embed\""), "{steps}");
     // "card" is also a layer name, so the text channel answers while the layer is pending.
     let hybrid = cli(&["search", "--file", fig, "card", "--mode", "hybrid"]);
-    assert_eq!(hybrid["query"]["usedModes"], json!(["text", "semantic"]));
+    // No vector exists yet, so only the text channel answered.
+    assert_eq!(hybrid["query"]["usedModes"], json!(["text"]));
     assert!(hybrid["results"].as_array().is_some_and(|r| !r.is_empty()));
     assert_eq!(hybrid["coverage"]["complete"], false);
 }
@@ -788,6 +789,30 @@ fn embed_job_publishes_a_layer_and_later_ones_reuse_its_vectors() {
     assert_eq!(count(&conn, "SELECT count(*) FROM model_vectors"), 0);
     // SAFETY: as above.
     unsafe { std::env::remove_var("SEMANTIC_EMBED_LOG") };
+}
+
+fn index_track_does_not_wait_for_a_running_embed() {
+    let dir = test_support::TestDir::new();
+    let (prepared, fig) = indexed(&dir, true);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    let (mut owner, hold) = held_embed(&dir, ws);
+    let tracked = figlens(&[
+        "index",
+        "track",
+        "--file",
+        fig.to_str().unwrap(),
+        "--scope",
+        "0:0",
+    ])
+    .output()
+    .unwrap();
+    std::fs::remove_file(&hold).unwrap();
+    owner.wait().unwrap();
+    assert!(
+        tracked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&tracked.stderr)
+    );
 }
 
 fn cancel_of_a_running_embed_kills_its_worker_and_leaves_the_layer_not_ready() {
@@ -1238,6 +1263,10 @@ fn main() {
         (
             "the_watch_runner_embeds_a_scope_it_refreshed",
             the_watch_runner_embeds_a_scope_it_refreshed,
+        ),
+        (
+            "index_track_does_not_wait_for_a_running_embed",
+            index_track_does_not_wait_for_a_running_embed,
         ),
         (
             "status_names_a_changed_or_missing_runtime_and_how_to_configure_again",
