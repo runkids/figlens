@@ -19,32 +19,32 @@ const INPUTS: [&str; 2] = ["name", "text"];
 /// Bytes one chunk mapping keeps beside its text.
 const UNIT: usize = 24;
 /// Extraction budget of one layer: work (one per chunk), bytes and time.
-const LAYER_WORK: usize = 1_000_000;
-const LAYER_BYTES: usize = 512 * 1024 * 1024;
+pub(crate) const LAYER_WORK: usize = 1_000_000;
+pub(crate) const LAYER_BYTES: usize = 512 * 1024 * 1024;
 
 fn field_name(field: u8) -> &'static str {
     if field == NAME { "name" } else { "text" }
 }
 
-/// One index's model layer under one profile.
-struct Layer {
+/// One index's model layer under one profile: its chunks and unique texts, then their vectors.
+pub(crate) struct Layer {
     /// The source snapshot, scope and profile it embeds.
-    key: Json,
+    pub(crate) key: Json,
     /// `(record, field, chunk, text)` for every chunk, in record order.
-    units: Vec<(u32, u8, u32, usize)>,
-    texts: Vec<String>,
+    pub(crate) units: Vec<(u32, u8, u32, usize)>,
+    pub(crate) texts: Vec<String>,
     /// One per text: `None` until embedded, then the vector (empty when the child refused it).
-    vectors: Vec<Option<Vec<f32>>>,
+    pub(crate) vectors: Vec<Option<Vec<f32>>>,
     /// Chunks left out because the layer reached `MAX_TEXTS` texts or `model::MAX_SCAN` chunks.
-    over: usize,
+    pub(crate) over: usize,
     /// The bound extraction stopped at, leaving later records out.
-    stop: Option<&'static str>,
+    pub(crate) stop: Option<&'static str>,
 }
 
 impl Layer {
     /// Extracts the chunks of every record, charging each copy and mapping to `bounds` before
     /// it is made and checking `cancel` per chunk; a spent bound leaves the layer partial.
-    fn new(
+    pub(crate) fn new(
         index: &Index,
         key: Json,
         dim: usize,
