@@ -80,8 +80,8 @@ fn check_preserves_reader_job_policy_and_regular_file_guard() {
     row.bytes = Some(stamp.1 as i64);
     row.mtime_ns = Some(mtime_ns(stamp.0));
     let mut conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch("CREATE TABLE jobs (job_id TEXT, source_id TEXT, scope TEXT, state TEXT, owner TEXT, attempt INTEGER);
-        INSERT INTO jobs VALUES ('job', 'source', '0:0', 'running', 'dead', 1);").unwrap();
+    conn.execute_batch("CREATE TABLE jobs (job_id TEXT, source_id TEXT, scope TEXT, state TEXT, owner TEXT, attempt INTEGER, kind TEXT);
+        INSERT INTO jobs VALUES ('job', 'source', '0:0', 'running', 'dead', 1, 'refresh');").unwrap();
     let tx = conn.transaction().unwrap();
     let checked = row
         .check(&tx, &dir.join("workspace"), "0:0", "versions", true)

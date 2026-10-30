@@ -240,6 +240,64 @@ fn a_refresh_builds_again_when_the_source_membership_changed() {
     assert_ne!(out["gen"], old, "{out}");
 }
 
+/// A stand-in worker running `script`, with its output read as `build` reads it.
+#[cfg(unix)]
+fn stand_in(script: &str) -> (Option<Child>, std::thread::JoinHandle<String>, Receiver<()>) {
+    let mut child = Command::new("sh")
+        .args(["-c", script])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (reader, eof) = output(&mut child);
+    (Some(child), reader, eof)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_worker_is_seen_exiting_when_its_output_ends_not_a_poll_later() {
+    let (mut child, reader, eof) = stand_in("echo done");
+    let started = Instant::now();
+    let status = wait_worker(&mut child, &eof, || Ok(false)).unwrap();
+    assert!(status.unwrap().success());
+    assert!(started.elapsed() < POLL, "{:?}", started.elapsed());
+    assert_eq!(reader.join().unwrap(), "done\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_worker_that_closes_its_output_early_is_waited_for_without_spinning() {
+    let (mut child, reader, eof) = stand_in("exec >&-; sleep 0.5");
+    let mut ticks = 0;
+    let status = wait_worker(&mut child, &eof, || {
+        ticks += 1;
+        Ok(false)
+    })
+    .unwrap();
+    assert!(status.unwrap().success());
+    // One wake, at most one POLL of 5 ms steps, then whole POLLs: about 25 checks in 0.5 s.
+    assert!(ticks <= 30, "{ticks} checks");
+    assert_eq!(reader.join().unwrap(), "");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_cancelled_wait_stops_and_reaps_its_worker() {
+    let (mut child, reader, eof) = stand_in("exec sleep 30");
+    let pid = child.as_ref().unwrap().id().to_string();
+    assert!(
+        wait_worker(&mut child, &eof, || Ok(true))
+            .unwrap()
+            .is_none()
+    );
+    assert!(child.is_none());
+    let exists = Command::new("kill")
+        .args(["-0", &pid])
+        .stderr(Stdio::null())
+        .status();
+    assert!(!exists.unwrap().success());
+    assert_eq!(reader.join().unwrap(), "");
+}
+
 #[cfg(unix)]
 #[test]
 fn a_failed_run_reaps_its_child_before_it_records_and_cleans_up() {
@@ -368,7 +426,7 @@ fn jobs_submitted_in_one_millisecond_build_in_submission_order() {
     )
     .unwrap();
     assert!(
-        !my_turn(&conn, &dir, &second).unwrap(),
+        !my_turn(&conn, &dir, &second, false).unwrap(),
         "{first} goes first"
     );
 }
@@ -554,7 +612,7 @@ fn a_taken_over_job_queues_behind_another_owner_s_job_so_no_two_owners_wait_on_e
     };
     assert!(a2.owned);
     // B runs its job first; A waits for it, then runs its own in the order it admitted them.
-    assert!(my_turn(&conn, &dir, &b1).unwrap());
+    assert!(my_turn(&conn, &dir, &b1, false).unwrap());
 }
 
 #[test]

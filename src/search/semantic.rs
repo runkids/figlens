@@ -19,32 +19,32 @@ const INPUTS: [&str; 2] = ["name", "text"];
 /// Bytes one chunk mapping keeps beside its text.
 const UNIT: usize = 24;
 /// Extraction budget of one layer: work (one per chunk), bytes and time.
-const LAYER_WORK: usize = 1_000_000;
-const LAYER_BYTES: usize = 512 * 1024 * 1024;
+pub(crate) const LAYER_WORK: usize = 1_000_000;
+pub(crate) const LAYER_BYTES: usize = 512 * 1024 * 1024;
 
 fn field_name(field: u8) -> &'static str {
     if field == NAME { "name" } else { "text" }
 }
 
-/// One index's model layer under one profile.
-struct Layer {
+/// One index's model layer under one profile: its chunks and unique texts, then their vectors.
+pub(crate) struct Layer {
     /// The source snapshot, scope and profile it embeds.
-    key: Json,
+    pub(crate) key: Json,
     /// `(record, field, chunk, text)` for every chunk, in record order.
-    units: Vec<(u32, u8, u32, usize)>,
-    texts: Vec<String>,
+    pub(crate) units: Vec<(u32, u8, u32, usize)>,
+    pub(crate) texts: Vec<String>,
     /// One per text: `None` until embedded, then the vector (empty when the child refused it).
-    vectors: Vec<Option<Vec<f32>>>,
+    pub(crate) vectors: Vec<Option<Vec<f32>>>,
     /// Chunks left out because the layer reached `MAX_TEXTS` texts or `model::MAX_SCAN` chunks.
-    over: usize,
+    pub(crate) over: usize,
     /// The bound extraction stopped at, leaving later records out.
-    stop: Option<&'static str>,
+    pub(crate) stop: Option<&'static str>,
 }
 
 impl Layer {
     /// Extracts the chunks of every record, charging each copy and mapping to `bounds` before
     /// it is made and checking `cancel` per chunk; a spent bound leaves the layer partial.
-    fn new(
+    pub(crate) fn new(
         index: &Index,
         key: Json,
         dim: usize,
@@ -146,6 +146,8 @@ impl Layer {
 
 /// A record's best chunk: `(record, field, chunk)`.
 type Best = (u32, u8, u32);
+/// A record, its best chunk's similarity, field and chunk.
+pub(crate) type Scored = (u32, f32, u8, u32);
 
 /// The last layer built in this process; another snapshot, scope or profile replaces it.
 static LAYER: Mutex<Option<Layer>> = Mutex::new(None);
@@ -381,6 +383,23 @@ fn ranked(
         rt.embed(Kind::Query, std::slice::from_ref(&req.query), cancel)
     })?
     .remove(0);
+    let (order, excluded) = score(index, layer, &query, req);
+    let order: Vec<Best> = order
+        .into_iter()
+        .take(CANDIDATES)
+        .map(|(rid, _, field, chunk)| (rid, field, chunk))
+        .collect();
+    Ok((order, layer_coverage(layer, &profile.id, excluded)))
+}
+
+/// Every record of `index` that passes the filters, by its best chunk's similarity to `query`
+/// (ties in record order), with that chunk, and the records the filters left out.
+pub(crate) fn score(
+    index: &Index,
+    layer: &Layer,
+    query: &[f32],
+    req: &Request,
+) -> (Vec<Scored>, [usize; 2]) {
     // One dot product per unique text; a refused or missing text scores nothing.
     let scores: Vec<Option<f32>> = layer
         .vectors
@@ -413,9 +432,16 @@ fn ranked(
             *e = (score, field, chunk);
         }
     }
-    let mut order: Vec<(u32, (f32, u8, u32))> = best.into_iter().collect();
-    order.sort_by(|a, b| b.1.0.total_cmp(&a.1.0).then(a.0.cmp(&b.0)));
-    order.truncate(CANDIDATES);
+    let mut order: Vec<Scored> = best
+        .into_iter()
+        .map(|(rid, (score, field, chunk))| (rid, score, field, chunk))
+        .collect();
+    order.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    (order, excluded)
+}
+
+/// `coverage.layers.semantic` of one layer.
+pub(crate) fn layer_coverage(layer: &Layer, profile_id: &str, excluded: [usize; 2]) -> Json {
     let embedded = layer.vectors.iter().filter(|v| v.is_some()).count();
     let refused = layer
         .vectors
@@ -441,17 +467,200 @@ fn ranked(
         reasons.push(json!({"code": code, "counts": {"chunks": layer.units.len()},
             "limits": {"work": LAYER_WORK, "bytes": LAYER_BYTES, "deadlineMs": DEADLINE.as_millis() as u64}}));
     }
-    let json = json!({"state": if complete { "ready" } else { "partial" }, "profileId": profile.id,
+    json!({"state": if complete { "ready" } else { "partial" }, "profileId": profile_id,
         "inputs": INPUTS, "chunks": layer.units.len(), "texts": layer.texts.len(),
         "embeddedTexts": embedded, "excluded": {"hidden": excluded[0], "internal": excluded[1]},
-        "reasons": reasons});
-    Ok((
-        order
+        "reasons": reasons})
+}
+
+/// What a workspace semantic page adds to the text reply `corpus_page` renders.
+pub(crate) struct Decor {
+    /// The semantic match of each page row, in page order.
+    rows: Vec<Option<(u8, u32)>>,
+    lexical: Vec<bool>,
+    used: Vec<&'static str>,
+    profile_id: Option<String>,
+    layer: Json,
+    ready: bool,
+}
+
+/// One workspace source's semantic side: its fully loaded generation and model layer.
+pub(crate) struct Side<'a> {
+    pub index: &'a Index,
+    pub layer: &'a Layer,
+}
+
+/// Ranks a workspace page in `mode`: the semantic ranking over every source's layer (one vector
+/// space, filters applied first, ties by source then record) and, in hybrid, the lexical
+/// candidates of `parts` fused by RRF. The returned `Ranked` pages `parts` like a text search,
+/// so the caller loads and renders it as one; `decorate` then adds the semantic fields.
+/// `sides[i]` belongs to `parts[i]`; `layer` is the sources' combined coverage.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn workspace_rank(
+    parts: &[Part],
+    sides: &[Side],
+    mode: Mode,
+    profile: &Profile,
+    layer: Json,
+    q: &Prepared,
+    req: &Request,
+    key: &Json,
+    cancel: &AtomicBool,
+) -> Result<(Ranked, Decor), Box<dyn Error>> {
+    let ready = layer["state"] == "ready";
+    let mut used = Vec::new();
+    let lexical: Vec<Hit> = if mode == Mode::Hybrid {
+        used.push("text");
+        let wide = Request {
+            limit: CANDIDATES,
+            cursor: None,
+            ..req.clone()
+        };
+        let first = Prepared {
+            offset: 0,
+            fingerprint: None,
+            gens: None,
+            issued: None,
+            phrase: q.phrase.clone(),
+            terms: q.terms.clone(),
+        };
+        corpus_rank(parts, &first, &wide, key, cancel)?.hits
+    } else {
+        Vec::new()
+    };
+    let query = profile::with_runtime(profile, cancel, |rt| {
+        rt.embed(Kind::Query, std::slice::from_ref(&req.query), cancel)
+    })
+    .map_err(|e| match e {
+        Stop::Cancelled => FigError::new(ErrorKind::Cancelled, "search cancelled"),
+        e => FigError::new(ErrorKind::OperationFailed, e.to_string()),
+    })?
+    .remove(0);
+    used.push("semantic");
+    let mut semantic: Vec<((usize, u32), f32, u8, u32)> = Vec::new();
+    let mut excluded = [0usize; 2];
+    for (part, side) in sides.iter().enumerate() {
+        let (order, out) = score(side.index, side.layer, &query, req);
+        excluded = [excluded[0] + out[0], excluded[1] + out[1]];
+        semantic.extend(
+            order
+                .into_iter()
+                .map(|(rid, s, f, c)| ((part, rid), s, f, c)),
+        );
+    }
+    semantic.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    semantic.truncate(CANDIDATES);
+    let fingerprint = short_hash(
+        json!([
+            key,
+            req.query,
+            q.phrase,
+            q.terms,
+            req.scope,
+            req.types,
+            req.include_hidden,
+            req.include_internal,
+            req.limit,
+            mode.as_str(),
+            profile.id,
+            model::FUSION,
+            SEMANTIC_RANKING,
+            CANDIDATES,
+            crate::workspace::model::POLICY
+        ])
+        .to_string(),
+    );
+    if q.fingerprint
+        .as_ref()
+        .is_some_and(|fp| *fp != fingerprint || !ready)
+    {
+        return Err(invalid(
+            "search cursor belongs to another query, mode, profile, filter set, workspace search or model layer state; search again without cursor",
+        ));
+    }
+    let lexical_keys: Vec<(usize, u32)> = lexical.iter().map(|h| (h.source, h.record)).collect();
+    let semantic_keys: Vec<(usize, u32)> = semantic.iter().map(|s| s.0).collect();
+    let order: Vec<(usize, u32)> = match mode {
+        Mode::Hybrid => model::fuse(&[&lexical_keys, &semantic_keys])
             .into_iter()
-            .map(|(rid, (_, field, chunk))| (rid, field, chunk))
+            .map(|f| f.0)
             .collect(),
-        json,
+        _ => semantic_keys,
+    };
+    let more = order.len() > q.offset + req.limit;
+    let lexical_by: HashMap<(usize, u32), &Hit> =
+        lexical.iter().map(|h| ((h.source, h.record), h)).collect();
+    let semantic_by: HashMap<(usize, u32), (u8, u32)> =
+        semantic.iter().map(|s| (s.0, (s.2, s.3))).collect();
+    let page: Vec<(usize, u32)> = order.into_iter().skip(q.offset).take(req.limit).collect();
+    let hits = page
+        .iter()
+        .map(|k| match lexical_by.get(k) {
+            Some(h) => Hit {
+                source: h.source,
+                record: h.record,
+                tier: h.tier,
+                score: h.score,
+            },
+            None => Hit {
+                source: k.0,
+                record: k.1,
+                tier: 0,
+                score: 0.0,
+            },
+        })
+        .collect();
+    let decor = Decor {
+        rows: page.iter().map(|k| semantic_by.get(k).copied()).collect(),
+        lexical: page.iter().map(|k| lexical_by.contains_key(k)).collect(),
+        used,
+        profile_id: Some(profile.id.clone()),
+        layer,
+        ready,
+    };
+    Ok((
+        Ranked {
+            hits,
+            more,
+            excluded,
+            fingerprint,
+        },
+        decor,
     ))
+}
+
+/// Adds the semantic fields to a workspace page rendered from `workspace_rank`'s `Ranked`.
+pub(crate) fn decorate(out: &mut Json, mode: Mode, decor: Decor) {
+    for (i, row) in out["results"]
+        .as_array_mut()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let mut matches: Vec<Json> = Vec::new();
+        if decor.lexical.get(i).copied().unwrap_or(false) {
+            for m in row["matches"].as_array_mut().into_iter().flatten() {
+                m["basis"] = json!("lexical");
+                matches.push(m.take());
+            }
+        }
+        if let Some(Some((field, chunk))) = decor.rows.get(i) {
+            matches.push(json!({"field": field_name(*field), "chunk": chunk, "basis": "semantic"}));
+        }
+        row["matches"] = json!(matches);
+    }
+    out["query"]["mode"] = json!(mode.as_str());
+    out["query"]["requestedMode"] = json!(mode.as_str());
+    out["query"]["usedModes"] = json!(decor.used);
+    out["profileId"] = json!(decor.profile_id);
+    out["ranking"] = json!({"version": if mode == Mode::Hybrid { model::FUSION } else { SEMANTIC_RANKING },
+        "channels": {"text": if mode == Mode::Hybrid { corpus_ranking() } else { Json::Null }, "semantic": SEMANTIC_RANKING},
+        "candidatesPerChannel": CANDIDATES});
+    out["coverage"]["layers"]["semantic"] = decor.layer;
+    if !decor.ready {
+        out["coverage"]["complete"] = json!(false);
+        out["nextCursor"] = Json::Null;
+    }
 }
 
 #[cfg(test)]

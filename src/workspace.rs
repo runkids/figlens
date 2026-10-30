@@ -15,9 +15,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{ErrorKind, FigError};
 
-/// The workspace schema this binary writes. Schemas 1 to 7 are upgraded in place, keeping every
+/// The workspace schema this binary writes. Schemas 1 to 8 are upgraded in place, keeping every
 /// registered source and index; any newer version is left untouched.
-pub const SCHEMA: i64 = 8;
+pub const SCHEMA: i64 = 9;
 /// The version of a remembered workspace location record this binary writes; version 1 (no
 /// binding) is still read.
 const LOCATION: i64 = 2;
@@ -342,6 +342,7 @@ pub mod changes;
 mod database;
 pub mod jobs;
 pub mod library;
+pub mod model;
 pub mod query;
 mod readiness;
 mod registry;

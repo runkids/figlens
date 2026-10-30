@@ -27,25 +27,58 @@ fn child(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", json!({"protocol": semantic::PROTOCOL, "dim": DIM}));
         std::thread::sleep(Duration::from_secs(3600));
     }
-    let hello = json!({"protocol": semantic::PROTOCOL, "dim": DIM, "model": "fake"});
-    semantic::serve(&hello, |_, texts| {
+    semantic::serve(&hello(), |_, texts| {
         if mode == "hang" {
             std::thread::sleep(Duration::from_secs(3600));
         }
-        Ok(texts
-            .iter()
-            .map(|t| {
-                let mut v = vec![0f32; if mode == "dim" { DIM + 1 } else { DIM }];
-                for c in t.chars() {
-                    v[c as usize % DIM] += 1.0;
-                }
-                let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-                v.iter_mut()
-                    .for_each(|x| *x = if mode == "nan" { f32::NAN } else { *x / n });
-                v
-            })
-            .collect())
+        Ok(texts.iter().map(|t| bag(t, mode)).collect())
     })
+}
+
+fn hello() -> serde_json::Value {
+    json!({"protocol": semantic::PROTOCOL, "dim": DIM, "model": "fake"})
+}
+
+/// The deterministic bag-of-characters vector of `t`.
+fn bag(t: &str, mode: &str) -> Vec<f32> {
+    let mut v = vec![0f32; if mode == "dim" { DIM + 1 } else { DIM }];
+    for c in t.chars() {
+        v[c as usize % DIM] += 1.0;
+    }
+    let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    v.iter_mut()
+        .for_each(|x| *x = if mode == "nan" { f32::NAN } else { *x / n });
+    v
+}
+
+/// `__model-worker <dir> <jobId>`, as a configured profile's runtime runs an embed job: the
+/// library worker with the fake embedder. `SEMANTIC_EMBED_LOG` gets one line per model load and
+/// per batch; `SEMANTIC_CHILD_PIDS` gets this process's pid.
+fn model_worker(dir: &str, job: &str) -> bool {
+    if let Ok(pids) = std::env::var("SEMANTIC_CHILD_PIDS") {
+        std::fs::write(Path::new(&pids).join(std::process::id().to_string()), "").unwrap();
+    }
+    let log = |line: String| {
+        if let Ok(file) = std::env::var("SEMANTIC_EMBED_LOG") {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(file)
+                .unwrap();
+            writeln!(f, "{line}").unwrap();
+        }
+    };
+    let report = figlens::workspace::model::run_embed_worker(Path::new(dir), job, |_| {
+        log("load".into());
+        let embed: figlens::workspace::model::Embed = Box::new(move |texts: &[String]| {
+            log(format!("batch {}", texts.len()));
+            Ok(texts.iter().map(|t| bag(t, "ok")).collect())
+        });
+        Ok((hello(), embed))
+    });
+    println!("{report}");
+    !report["error"].is_object()
 }
 
 fn start(mode: &str) -> Runtime {
@@ -555,8 +588,300 @@ fn mcp_end_of_input_stops_an_in_flight_semantic_search_and_its_child() {
     mcp_semantic_search_stopped_by(false);
 }
 
+/// A workspace test home: every XDG root inside `dir`, a fake profile configured (unless
+/// `profile` is false) and `FIG` prepared with scope `0:0` by the CLI. Returns the prepare
+/// report and the copied file.
+fn indexed(dir: &test_support::TestDir, profile: bool) -> (serde_json::Value, PathBuf) {
+    let root = std::path::absolute(dir.join("")).unwrap();
+    for (var, sub) in [
+        ("XDG_STATE_HOME", "state"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CONFIG_HOME", "config"),
+    ] {
+        // SAFETY: this harness runs one test at a time on the main thread.
+        unsafe { std::env::set_var(var, root.join(sub)) };
+    }
+    if profile {
+        configured(dir);
+    }
+    let fig = root.join("design.fig");
+    std::fs::copy(FIG, &fig).unwrap();
+    let report = cli(&["index", "prepare", fig.to_str().unwrap(), "--scope", "0:0"]);
+    (report, fig)
+}
+
+fn figlens(args: &[&str]) -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_figlens"));
+    cmd.args(args).env_remove("FIGLENS_TEST_HOLD");
+    cmd
+}
+
+/// A successful CLI call's JSON report.
+fn cli(args: &[&str]) -> serde_json::Value {
+    let out = figlens(args).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+fn workspace_semantic_search_says_the_layer_is_pending_and_names_the_embed_step() {
+    let dir = test_support::TestDir::new();
+    let (_, fig) = indexed(&dir, true);
+    let fig = fig.to_str().unwrap();
+    let semantic = cli(&["search", "--file", fig, "task", "--mode", "semantic"]);
+    let layer = &semantic["coverage"]["layers"]["semantic"];
+    assert_eq!(
+        (layer["state"].as_str(), semantic["nextCursor"].is_null()),
+        (Some("pending"), true)
+    );
+    let steps = semantic["nextSteps"].to_string();
+    assert!(steps.contains("\"embed\""), "{steps}");
+    // "card" is also a layer name, so the text channel answers while the layer is pending.
+    let hybrid = cli(&["search", "--file", fig, "card", "--mode", "hybrid"]);
+    assert_eq!(hybrid["query"]["usedModes"], json!(["text", "semantic"]));
+    assert!(hybrid["results"].as_array().is_some_and(|r| !r.is_empty()));
+    assert_eq!(hybrid["coverage"]["complete"], false);
+}
+
+fn db(prepared: &serde_json::Value) -> rusqlite::Connection {
+    let path = prepared["paths"]["database"].as_str().unwrap();
+    rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap()
+}
+
+fn count(conn: &rusqlite::Connection, sql: &str) -> i64 {
+    conn.query_row(sql, [], |r| r.get(0)).unwrap()
+}
+
+/// `index embed` of scope `0:0` started in the background, held once its layer reads
+/// `building`; returns the CLI process and the hold file to remove.
+fn held_embed(dir: &test_support::TestDir, ws: &str) -> (std::process::Child, PathBuf) {
+    let hold = std::path::absolute(dir.join("hold")).unwrap();
+    std::fs::write(&hold, "").unwrap();
+    let child = figlens(&["index", "embed", "--id", ws, "--scope", "0:0"])
+        .env("FIGLENS_TEST_HOLD", format!("embed:{}", hold.display()))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let reached = hold.with_extension("reached");
+    let end = Instant::now() + Duration::from_secs(60);
+    while !reached.exists() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(reached.exists(), "the embed worker never reached its hold");
+    (child, hold)
+}
+
+fn workspace_semantic_search_pages_a_built_layer() {
+    let dir = test_support::TestDir::new();
+    let (prepared, fig) = indexed(&dir, true);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    cli(&["index", "embed", "--id", ws, "--scope", "0:0"]);
+    let fig = fig.to_str().unwrap();
+    let ask = |cursor: Option<&str>| {
+        let mut args = vec![
+            "search", "--file", fig, "task", "--mode", "semantic", "--limit", "1",
+        ];
+        args.extend(cursor.map(|c| ["--cursor", c]).into_iter().flatten());
+        cli(&args)
+    };
+    let first = ask(None);
+    assert_eq!(first["coverage"]["layers"]["semantic"]["state"], "ready");
+    assert_eq!(first["results"][0]["matches"][0]["basis"], "semantic");
+    let next = ask(first["nextCursor"].as_str());
+    assert_eq!(next["results"][0]["rank"], 2);
+    assert_ne!(next["results"][0]["ref"], first["results"][0]["ref"]);
+}
+
+fn embed_job_publishes_a_layer_and_later_ones_reuse_its_vectors() {
+    let dir = test_support::TestDir::new();
+    let (prepared, _) = indexed(&dir, true);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    let log = std::path::absolute(dir.join("embed.log")).unwrap();
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe { std::env::set_var("SEMANTIC_EMBED_LOG", &log) };
+    let first = cli(&["index", "embed", "--id", ws, "--scope", "0:0"]);
+    let job = &first["jobs"][0];
+    assert_eq!(
+        (job["kind"].as_str(), job["state"].as_str()),
+        (Some("embed"), Some("succeeded"))
+    );
+    let conn = db(&prepared);
+    let texts = count(
+        &conn,
+        "SELECT texts FROM model_layers WHERE state = 'ready'",
+    );
+    assert!(texts > 0);
+    assert_eq!(
+        [
+            count(&conn, "SELECT embedded FROM model_layers"),
+            count(&conn, "SELECT count(*) FROM model_refs"),
+            count(&conn, "SELECT count(*) FROM model_vectors"),
+        ],
+        [texts; 3]
+    );
+    let loaded = std::fs::read_to_string(&log).unwrap();
+    // A rebuild publishes a new generation of the same texts: its layer references the stored
+    // vectors and never loads the model.
+    cli(&["index", "rebuild", "--id", ws]);
+    let second = cli(&["index", "embed", "--id", ws, "--scope", "0:0"]);
+    assert_eq!(second["jobs"][0]["state"], "succeeded");
+    assert_ne!(second["jobs"][0]["generation"], job["generation"]);
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), loaded);
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT count(*) FROM model_layers WHERE state = 'ready'"
+        ),
+        2
+    );
+    // The next rebuild drops the first generation; the second still references every vector.
+    cli(&["index", "rebuild", "--id", ws]);
+    assert_eq!(count(&conn, "SELECT count(*) FROM model_vectors"), texts);
+    // The one after drops the second; no generation references a vector any more.
+    cli(&["index", "rebuild", "--id", ws]);
+    assert_eq!(count(&conn, "SELECT count(*) FROM model_vectors"), 0);
+    // SAFETY: as above.
+    unsafe { std::env::remove_var("SEMANTIC_EMBED_LOG") };
+}
+
+fn cancel_of_a_running_embed_kills_its_worker_and_leaves_the_layer_not_ready() {
+    let dir = test_support::TestDir::new();
+    let (prepared, _) = indexed(&dir, true);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    let pids = std::path::absolute(dir.join("pids")).unwrap();
+    std::fs::create_dir_all(&pids).unwrap();
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe { std::env::set_var("SEMANTIC_CHILD_PIDS", &pids) };
+    let (mut owner, hold) = held_embed(&dir, ws);
+    unsafe { std::env::remove_var("SEMANTIC_CHILD_PIDS") };
+    let conn = db(&prepared);
+    let job: String = conn
+        .query_row("SELECT job_id FROM jobs WHERE kind = 'embed'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let cancelled = cli(&["jobs", "cancel", &job]);
+    assert_eq!(
+        (cancelled["cancel"].as_str(), cancelled["state"].as_str()),
+        (Some("accepted"), Some("cancelled"))
+    );
+    #[cfg(target_os = "linux")]
+    assert!(all_gone(&children(&pids, 1)));
+    // Released after the cancel: a worker still running would now write its layer.
+    std::fs::remove_file(&hold).unwrap();
+    assert!(!owner.wait().unwrap().success());
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT count(*) FROM model_layers WHERE state <> 'building'"
+        ),
+        0
+    );
+}
+
+fn a_newer_publication_fences_out_a_running_embed() {
+    let dir = test_support::TestDir::new();
+    let (prepared, _) = indexed(&dir, true);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    let (owner, hold) = held_embed(&dir, ws);
+    // The text build runs and publishes while the model job still holds its layer.
+    let rebuilt = cli(&["index", "rebuild", "--id", ws]);
+    assert_eq!(rebuilt["jobs"][0]["state"], "succeeded");
+    std::fs::remove_file(&hold).unwrap();
+    let out = owner.wait_with_output().unwrap();
+    assert!(!out.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let job = &report["jobs"][0];
+    assert_eq!(job["state"], "failed");
+    assert!(
+        job["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("superseded")
+    );
+    let conn = db(&prepared);
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT count(*) FROM model_layers WHERE state <> 'building'"
+        ),
+        0
+    );
+}
+
+fn an_mcp_text_build_queues_and_runs_its_embed_on_the_model_lane() {
+    use std::io::Write;
+    let dir = test_support::TestDir::new();
+    let (prepared, _) = indexed(&dir, true);
+    let mut mcp = figlens(&["mcp"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "index",
+        "arguments": {"action": "refresh", "workspaceId": prepared["workspaceId"]}}});
+    let mut stdin = mcp.stdin.take().unwrap();
+    writeln!(stdin, "{call}").unwrap();
+    let conn = db(&prepared);
+    let ready = || {
+        count(
+            &conn,
+            "SELECT count(*) FROM model_layers WHERE state = 'ready'",
+        )
+    };
+    let end = Instant::now() + Duration::from_secs(60);
+    while ready() == 0 && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(stdin);
+    mcp.wait().unwrap();
+    assert_eq!(ready(), 1);
+}
+
+fn index_embed_without_a_profile_is_mode_unavailable() {
+    let dir = test_support::TestDir::new();
+    let (prepared, _) = indexed(&dir, false);
+    let storage = figlens::workspace::storage(None).unwrap();
+    let select = figlens::workspace::Select::Id(prepared["workspaceId"].as_str().unwrap().into());
+    let err = figlens::workspace::jobs::embed(&storage, &select, None, Some("0:0"), None)
+        .err()
+        .unwrap();
+    let kind = err
+        .downcast_ref::<figlens::FigError>()
+        .map(figlens::FigError::kind);
+    assert_eq!(kind, Some(figlens::ErrorKind::ModeUnavailable));
+}
+
+fn a_cli_build_with_a_profile_lists_the_embed_instead_of_queueing_it() {
+    let dir = test_support::TestDir::new();
+    let (prepared, _) = indexed(&dir, true);
+    let steps = prepared["job"]["nextSteps"].as_array().unwrap();
+    assert!(
+        steps.iter().any(|s| s["arguments"]["action"] == "embed"),
+        "{steps:?}"
+    );
+    assert_eq!(
+        count(
+            &db(&prepared),
+            "SELECT count(*) FROM jobs WHERE kind = 'embed'"
+        ),
+        0
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if let [_, worker, dir, job] = args.as_slice()
+        && worker == "__model-worker"
+    {
+        std::process::exit(if model_worker(dir, job) { 0 } else { 1 });
+    }
     // `__child <mode>` from `start`, or `<model-dir>` alone as a configured profile runs it.
     if args.get(1).map(String::as_str) == Some("__child") {
         child(&args[2]).unwrap();
@@ -627,6 +952,14 @@ fn main() {
             "a_changed_model_file_is_refused_before_the_child_starts",
             a_changed_model_file_is_refused_before_the_child_starts,
         ),
+        (
+            "workspace_semantic_search_says_the_layer_is_pending_and_names_the_embed_step",
+            workspace_semantic_search_says_the_layer_is_pending_and_names_the_embed_step,
+        ),
+        (
+            "workspace_semantic_search_pages_a_built_layer",
+            workspace_semantic_search_pages_a_built_layer,
+        ),
         #[cfg(unix)]
         (
             "a_fifo_model_file_is_refused_without_blocking",
@@ -651,6 +984,30 @@ fn main() {
         (
             "mcp_end_of_input_ends_queued_model_calls_too",
             mcp_end_of_input_ends_queued_model_calls_too,
+        ),
+        (
+            "embed_job_publishes_a_layer_and_later_ones_reuse_its_vectors",
+            embed_job_publishes_a_layer_and_later_ones_reuse_its_vectors,
+        ),
+        (
+            "cancel_of_a_running_embed_kills_its_worker_and_leaves_the_layer_not_ready",
+            cancel_of_a_running_embed_kills_its_worker_and_leaves_the_layer_not_ready,
+        ),
+        (
+            "a_newer_publication_fences_out_a_running_embed",
+            a_newer_publication_fences_out_a_running_embed,
+        ),
+        (
+            "an_mcp_text_build_queues_and_runs_its_embed_on_the_model_lane",
+            an_mcp_text_build_queues_and_runs_its_embed_on_the_model_lane,
+        ),
+        (
+            "index_embed_without_a_profile_is_mode_unavailable",
+            index_embed_without_a_profile_is_mode_unavailable,
+        ),
+        (
+            "a_cli_build_with_a_profile_lists_the_embed_instead_of_queueing_it",
+            a_cli_build_with_a_profile_lists_the_embed_instead_of_queueing_it,
         ),
     ];
     let filter = args.iter().skip(1).find(|a| !a.starts_with('-'));

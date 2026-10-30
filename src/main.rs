@@ -194,6 +194,10 @@ usage:
                                              rebuild published scopes even when unchanged; the old index
                                              serves until then. A reply with admission partial lists
                                              deferred items, each with the call that builds it later
+  figlens index embed <select> [--source ID] [--scope NODE] [--request-id ID]
+                                             embed published scopes with the configured local model
+                                             (figlens models) for semantic search; text search keeps
+                                             serving. A refresh with a model configured lists this step
   figlens index clear|clear_cache <select>   delete retired and unfinished indexes; keeps published ones
   figlens index status <select>              state, sources and storage rule; creates nothing
   figlens index add <file.fig|dir> <select> [--dry-run | --manifest HEX] [--cursor C]
@@ -1027,6 +1031,18 @@ fn finish_jobs(
             }
         }
     };
+    // This process runs no model job after it exits, so a text build that could have one says
+    // which call embeds it instead of leaving it queued for a dead owner.
+    let mut fin = |job: &serde_json::Value| -> Result<serde_json::Value, Box<dyn Error>> {
+        let mut done = fin(job)?;
+        if let (Some(step), Some(next)) = (
+            jobs::embed_step(storage, &done),
+            done["nextSteps"].as_array_mut(),
+        ) {
+            next.push(step);
+        }
+        Ok(done)
+    };
     if report["job"].is_object() {
         report["job"] = fin(&report["job"])?;
     }
@@ -1205,7 +1221,7 @@ fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
     use command::index::{Reply, Request};
     use figlens::workspace::{self, Select};
     let usage = || -> Box<dyn Error> {
-        "usage: figlens index prepare|status|add|refresh|remove|relocate|clear|rebuild|track|untrack|reset ...; see `figlens --help`"
+        "usage: figlens index prepare|status|add|refresh|remove|relocate|clear|rebuild|track|untrack|embed|reset ...; see `figlens --help`"
             .into()
     };
     let action = args.first().ok_or_else(usage)?.as_str();
@@ -1236,7 +1252,7 @@ fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
             request.file = Some(Path::new(path));
             request.project = a.workspace.map(Path::new);
         }
-        ("refresh" | "rebuild" | "track" | "untrack", []) => {
+        ("refresh" | "rebuild" | "track" | "untrack" | "embed", []) => {
             request.source = a.source.first().copied();
         }
         ("add", [path]) if a.source.is_empty() => request.file = Some(Path::new(path)),
@@ -1326,11 +1342,19 @@ fn workspace_search(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>
     let mut search_args = vec![query.to_string()];
     search_args.extend(a.search.iter().cloned());
     let (request, mode) = command::search_request(&search_args)?;
-    if mode != figlens::semantic::Mode::Text {
-        return Err(command::workspace_mode(mode));
-    }
     let only: Vec<String> = a.source.iter().map(|s| s.to_string()).collect();
-    workspace::query::search(&storage, &select, &only, &request)
+    if mode == figlens::semantic::Mode::Text {
+        return workspace::query::search(&storage, &select, &only, &request);
+    }
+    signals::catch();
+    workspace::query::search_mode(
+        &storage,
+        &select,
+        &only,
+        &request,
+        mode,
+        &signals::INTERRUPTED,
+    )
 }
 
 const WATCH_RUN: &str = "usage: figlens watch run --workspace DIR|--file <file.fig>|--id ws_... --scope NODE [--source ID] [--request-id R] [--storage DIR]";
