@@ -44,6 +44,11 @@ def check_runtime(cli, mcp, cwd, env):
         empty.mkdir()
         env = user_roots(base, env)
         profile = json.loads(run([*cli, 'models', 'list'], cwd, env))['profiles'][0]['name']
+        # Before any model is set up, status names the runtime beside the executable that ran.
+        status = json.loads(run([*cli, 'models', 'status'], cwd, env))
+        assert status['profiles'] == [] and status['defaultRuntime']['available'], status
+        runtime = Path(status['defaultRuntime']['path'])
+        assert runtime.is_file() and runtime.stem == 'figlens-embed' and runtime.with_stem('figlens').is_file(), status
         try:
             run([*cli, 'models', 'configure', profile, '--model', empty], cwd, env)
             raise AssertionError('configure accepted an empty model directory')
@@ -56,7 +61,7 @@ def check_runtime(cli, mcp, cwd, env):
             text = json.dumps(reply)
             assert reply['isError'] and f'{profile}:' in text and 'no model runtime' not in text, text
         assert json.loads(run([*cli, 'models', 'status'], cwd, env))['profiles'] == []
-    return {'profile': profile, 'runtimeFound': True, 'configured': False}
+    return {'profile': profile, 'runtime': status['defaultRuntime'], 'configured': False}
 
 
 def imported_dlls(path):
