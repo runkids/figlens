@@ -2321,7 +2321,14 @@ fn library_edges(index: &Index) -> Vec<(String, Json, &'static str, &'static str
 fn library_references_keep_namespace_and_key_apart_and_never_borrow_a_namespace() {
     let message = libraries_design();
     let tree = Tree::new(&message);
-    let index = crate::search::build_with(&tree, "0:0", bounds(WORK), true, true, None);
+    let index = crate::search::build_with(
+        &tree,
+        "0:0",
+        bounds(WORK),
+        true,
+        crate::search::Library::Stored,
+        None,
+    );
     let field = json!({"field": "styleIdForFill", "version": "v1"});
     let tint = json!({"field": "fills", "version": "1:2"});
     let unresolved = |key: &str| {
@@ -2426,7 +2433,14 @@ fn library_references_stay_off_record_edges_and_no_query_lists_them_as_a_relatio
     let tree = Tree::new(&message);
     let stateless = build(&tree, "0:0", bounds(WORK));
     assert_eq!(library_edges(&stateless), []);
-    let index = crate::search::build_with(&tree, "0:0", bounds(WORK), true, true, None);
+    let index = crate::search::build_with(
+        &tree,
+        "0:0",
+        bounds(WORK),
+        true,
+        crate::search::Library::Stored,
+        None,
+    );
     // Every other reader of a record's edges sees exactly what a build without them sees.
     let same = |a: &Index, b: &Index| {
         a.records
@@ -2475,12 +2489,19 @@ fn library_references_stay_off_record_edges_and_no_query_lists_them_as_a_relatio
 fn a_cached_copy_use_names_its_library_reference_in_memory_and_stored_alike() {
     let message = libraries_design();
     let tree = Tree::new(&message);
-    let index = crate::search::build_with(&tree, "0:0", bounds(WORK), true, true, None);
+    let index = crate::search::build_with(
+        &tree,
+        "0:0",
+        bounds(WORK),
+        true,
+        crate::search::Library::Stored,
+        None,
+    );
     let conn = stored(&index);
     let named = |ns: Json, key: &str, kind: &str| {
         let mut l = json!({"kind": kind, "namespace": ns, "key": key, "basis": "cached_copy"});
         if ns.is_null() {
-            l["unknownReason"] = json!("namespace_unrecorded");
+            l["unknownReason"] = json!("namespace_unconfirmed");
         }
         l
     };
@@ -2522,12 +2543,46 @@ fn a_cached_copy_use_names_its_library_reference_in_memory_and_stored_alike() {
             spent: 0,
         };
         let disk = picked(query(graph, &q, &r, served_at(1)).unwrap());
-        assert_eq!(
-            (&memory, &disk),
-            (&vec![json!([relation, want])], &memory),
-            "{node}"
-        );
+        assert_eq!(memory, [json!([relation, want])], "{node}");
+        assert_eq!(disk, memory, "{node}");
     }
+}
+
+#[test]
+fn a_stateless_library_scan_that_does_not_fit_names_nothing_instead_of_stopping_the_build() {
+    use crate::search::{Library, build_with};
+    let message = libraries_design();
+    let tree = Tree::new(&message);
+    // The scan reads the whole file, the build only the screens page: some budget stops a stored
+    // build at its scan, before any record, yet the stateless one keeps records without it.
+    let kept = (1..20 * tree.nodes.len()).any(|work| {
+        let stored = build_with(&tree, "0:2", bounds(work), true, Library::Stored, None);
+        let named = build_with(&tree, "0:2", bounds(work), true, Library::Named, None);
+        stored.records.is_empty() && !named.records.is_empty() && named.library_unread
+    });
+    assert!(kept);
+    // Such a build says why a cached-copy use names no library.
+    let mut index = build_with(&tree, "0:0", bounds(WORK), true, Library::Named, None);
+    index.library_unread = true;
+    index.records.iter_mut().for_each(|r| r.library.clear());
+    let mut r = req("0:20");
+    r.outgoing = true;
+    let out = run(&index, &r).unwrap();
+    let named = out["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e.get("library").is_some());
+    let codes: Vec<_> = out["coverage"]["reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["code"].clone())
+        .collect();
+    assert_eq!(
+        (named, codes.contains(&json!("library_reference_unread"))),
+        (false, true)
+    );
 }
 
 fn served_at(gen_id: i64) -> Served<'static> {

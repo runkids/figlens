@@ -308,6 +308,9 @@ def main():
         # Each entry starts its own first use from clean roots, the way a host would launch it.
         first_use = {'nativeMcp': check_first_use([cache, 'mcp'], work/'first-use-native', fixture, env),
                      'wrapperMcp': check_first_use(wrapper + ['mcp'], work/'first-use-wrapper', fixture, wrapped_env)}
+        # A host lane needs the fixture anyway, so it fails without one; a CLI-only job records the skip.
+        if not MAPPING.is_file() and (args.opencode_bin or args.omp_sdk):
+            raise SystemExit(f'{MAPPING} is missing; generate it as wiki/integrations.md says')
         library = lambda command, name, env: (check_library(command, work/name, MAPPING, env) if MAPPING.is_file()
                                               else 'skipped: no samples/plugin-research/fixtures/mapping.fig')
         first_use['nativeLibrary'] = library([cache, 'mcp'], 'library-native', env)

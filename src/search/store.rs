@@ -489,6 +489,7 @@ pub(crate) fn load_with(
         hidden_content: info["hiddenContent"].as_u64().ok_or_else(bad)? as usize,
         unverified_links: info["unverifiedLinks"].as_u64().ok_or_else(bad)? as usize,
         unread_fields: info["unreadFields"].as_u64().ok_or_else(bad)? as usize,
+        library_unread: false,
         text_bytes: info["textBytes"].as_u64().ok_or_else(bad)? as usize,
         generation: text(&info["generation"])?,
         definitions: BTreeMap::new(),

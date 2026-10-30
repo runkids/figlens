@@ -27,9 +27,9 @@ pub(crate) const KINDS: [&str; 7] = [
     "variant_of",
 ];
 /// A library reference: the namespace (`sourceLibraryKey`) and key a cached library copy records
-/// for the component, style or variable a record uses. Only the workspace library query
-/// (`workspace::library`) reads it, so it is not in `KINDS` and no other query, default or
-/// coverage lists it.
+/// for the component, style or variable a record uses. Read by the workspace library query
+/// (`workspace::library`) and, per use, by outgoing usages (`library_of`); it is not in `KINDS`
+/// and no query, default or coverage lists it as a relation.
 pub(crate) const LIBRARY: &str = "uses_library";
 /// Every relation a stored generation holds: `KINDS` and `LIBRARY`.
 pub(crate) const STORED: [&str; 8] = [
@@ -1603,6 +1603,7 @@ pub(crate) fn query(
     let after = q.after.as_ref();
     let (hits, more, results): (Vec<(u32, Edge)>, bool, Vec<Json>);
     let mut hidden_excluded = false;
+    let mut library_unread = false;
     let source = served.source;
     if req.outgoing {
         let Some(rid) = rid else {
@@ -1625,14 +1626,19 @@ pub(crate) fn query(
         // so repeated or large definitions never pile up copies past the budget.
         let mut defs: HashMap<&str, Option<Definition>> = HashMap::new();
         // The library reference each cached-copy use names, read only when one could.
-        let refs = match hits.iter().any(|(_, e)| LIBRARY_OF.contains(&e.relation)) {
-            true => graph.library(rid)?,
+        let named_use = hits.iter().any(|(_, e)| LIBRARY_OF.contains(&e.relation));
+        let refs = match named_use {
+            true => named(graph.library(rid)?),
             false => Vec::new(),
         };
+        library_unread = named_use && graph.index().library_unread;
+        // Only the references this page names are charged, each as it is sent.
+        let libraries: Vec<Option<Json>> = hits.iter().map(|(_, e)| library_of(e, &refs)).collect();
         let mut bytes = head
-            + refs
+            + libraries
                 .iter()
-                .map(|r| 96 + r.target.as_ref().map_or(0, String::len))
+                .flatten()
+                .map(|l| l.to_string().len())
                 .sum::<usize>();
         for (_, e) in &hits {
             let name = match e.target.as_deref() {
@@ -1652,10 +1658,11 @@ pub(crate) fn query(
         }
         results = hits
             .iter()
-            .map(|(_, e)| {
+            .zip(libraries)
+            .map(|((_, e), l)| {
                 let d = e.target.as_deref().and_then(|t| defs[t].as_ref());
                 let mut out = outgoing(e, d, source);
-                if let Some(l) = library_of(e, &refs) {
+                if let Some(l) = l {
                     out["library"] = l;
                 }
                 out
@@ -1726,6 +1733,10 @@ pub(crate) fn query(
         reasons.push(json!({"code": "hidden_locations_excluded",
             "detail": "pass includeHidden to list usages on hidden layers"}));
     }
+    if library_unread {
+        reasons.push(json!({"code": "library_reference_unread",
+            "detail": "the library scan did not fit this build, so no result names a library; ask with a narrower scope"}));
+    }
     if members_truncated {
         reasons.push(json!({"code": "members_truncated", "limits": {"members": MAX_MEMBERS}}));
     } else if !members_complete && index.stop.is_none() {
@@ -1791,9 +1802,44 @@ pub(crate) fn query(
 /// Relations whose target a cached library copy can name.
 const LIBRARY_OF: [&str; 3] = ["instance_of", "uses_style", "binds_variable"];
 
+/// One of a record's library references, parsed once: kind, namespace and key (no key when the
+/// reference was too long to keep), and the copy or field it was read from.
+struct Named {
+    kind: Option<String>,
+    namespace: Option<String>,
+    key: Option<String>,
+    copy: Json,
+    field: Json,
+}
+
+fn named(refs: Vec<Edge>) -> Vec<Named> {
+    refs.into_iter()
+        .filter_map(|r| {
+            let evidence: Json = serde_json::from_str(&r.evidence).ok()?;
+            let (kind, namespace, key) = match r.target.as_deref() {
+                Some(t) => {
+                    let (k, ns, key): (String, Option<String>, String) =
+                        serde_json::from_str(t).ok()?;
+                    (Some(k), ns, Some(key))
+                }
+                None => (None, None, None),
+            };
+            Some(Named {
+                kind,
+                namespace,
+                key,
+                copy: evidence["copy"].clone(),
+                field: evidence["field"].clone(),
+            })
+        })
+        .collect()
+}
+
 /// The library reference `e` uses, from the record's own `uses_library` edge for the same copy
-/// or field and key; a copy that records no namespace, or copies that disagree, leave it null.
-fn library_of(e: &Edge, refs: &[Edge]) -> Option<Json> {
+/// (a component) or field and key (a style or variable). A namespace no copy records, or one
+/// two copies disagree on, stays null; a reference too long to keep names no key. Nothing is
+/// inferred.
+fn library_of(e: &Edge, refs: &[Named]) -> Option<Json> {
     let target = e.target.as_deref()?;
     let (kind, key) = match e.relation {
         "instance_of" => ("component", None),
@@ -1804,29 +1850,29 @@ fn library_of(e: &Edge, refs: &[Edge]) -> Option<Json> {
         ),
         _ => return None,
     };
-    refs.iter().find_map(|r| {
-        let evidence: Json = serde_json::from_str(&r.evidence).ok()?;
-        let same = match key {
-            None => evidence["copy"] == target,
-            Some(_) => evidence["field"] == e.evidence.as_str(),
-        };
-        let Some(t) = r.target.as_deref() else {
-            // A reference too long to keep names no key; it is not guessed.
-            return (same && key.is_none()).then(|| {
-                json!({"kind": kind, "namespace": null,
-                "key": null, "basis": "cached_copy", "unknownReason": "reference_not_kept"})
-            });
-        };
-        let (k, ns, found): (String, Option<String>, String) = serde_json::from_str(t).ok()?;
-        if !same || k != kind || key.is_some_and(|key| key != found) {
-            return None;
+    let same = |r: &&Named| match key {
+        None => r.copy == target,
+        Some(_) => r.field == e.evidence.as_str(),
+    };
+    let found = refs
+        .iter()
+        .filter(same)
+        .find(|r| r.kind.as_deref() == Some(kind) && (key.is_none() || r.key.as_deref() == key));
+    let mut out = json!({"kind": kind, "namespace": null, "key": null, "basis": "cached_copy"});
+    match found {
+        Some(r) => {
+            out["namespace"] = json!(r.namespace);
+            out["key"] = json!(r.key);
+            if r.namespace.is_none() {
+                out["unknownReason"] = json!("namespace_unconfirmed");
+            }
         }
-        let mut out = json!({"kind": kind, "namespace": ns, "key": found, "basis": "cached_copy"});
-        if ns.is_none() {
-            out["unknownReason"] = json!("namespace_unrecorded");
+        None if refs.iter().filter(same).any(|r| r.key.is_none()) => {
+            out["unknownReason"] = json!("reference_not_kept");
         }
-        Some(out)
-    })
+        None => return None,
+    }
+    Some(out)
 }
 
 fn edge_fields(out: &mut Json, e: &Edge) {

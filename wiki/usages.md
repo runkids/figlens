@@ -1,6 +1,6 @@
 # Usages
 
-Exact, revision-bound relationships over one indexed scope (issue #91, core slice). `figlens usages` and the MCP `usages` tool answer "where is this component, set, variable, style or image used" (incoming, default) and "what does this layer point at" (`--out` / `direction: "out"`). Code: `src/search/usages.rs` (extraction, query, cursor), `src/search/store.rs` (`Stored` graph over SQLite), `src/workspace/usages.rs` (workspace entry).
+Exact, revision-bound relationships over one indexed scope (issue #91, core slice). `figlens usages` and the MCP `usages` tool answer "where is this component, set, variable, style or image used" (incoming, default) and "what does this layer point at" (`--out` / `direction: "out"`, which names a cached library copy's `library` reference; see [library usages](library-usages.md)). Code: `src/search/usages.rs` (extraction, query, cursor), `src/search/store.rs` (`Stored` graph over SQLite), `src/workspace/usages.rs` (workspace entry).
 
 ## Edges
 

@@ -440,7 +440,9 @@ pub(crate) struct Record {
     /// Its relations, `contains` excepted (that is `parent`), in relation and sequence order.
     edges: Vec<usages::Edge>,
     /// Its library references (`usages::LIBRARY`), kept apart so every `edges` reader (usages,
-    /// diff, stored diff) sees what a build without them sees. Stored, never loaded back.
+    /// diff, stored diff) sees what a build without them sees. Kept by stored generations and
+    /// stateless full builds (`Library`); only `usages::Graph::library` reads them, one record
+    /// at a time, and `store::add` never loads them.
     library: Vec<usages::Edge>,
 }
 
@@ -490,6 +492,8 @@ pub struct Index {
     unverified_links: usize,
     /// Binding fields left out for being too large to read.
     unread_fields: usize,
+    /// A stateless full build whose library scan did not fit, so no use names its reference.
+    library_unread: bool,
     text_bytes: usize,
     generation: String,
     /// Whether every relation kind was extracted; a text-only build (ordinary stateless search)
@@ -518,6 +522,7 @@ impl Index {
             hidden_content: 0,
             unverified_links: 0,
             unread_fields: 0,
+            library_unread: false,
             text_bytes: 0,
             generation: String::new(),
             relations: false,
@@ -592,18 +597,31 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
 
 #[cfg(test)]
 fn build_as(tree: &Tree, scope: &str, bounds: Bounds, relations: bool) -> Index {
-    build_with(tree, scope, bounds, relations, false, None)
+    build_with(tree, scope, bounds, relations, Library::Skip, None)
+}
+
+/// Which library references a full build keeps in `Record.library`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Library {
+    /// None: text-only, viewer and diff builds.
+    Skip,
+    /// A stored generation's: a scan that runs out stops the build, so coverage says so.
+    Stored,
+    /// A stateless full build's, so outgoing usages can name them: a scan that does not fit what
+    /// is left keeps none instead of stopping the build (`Index::library_unread`); one that fits
+    /// is charged like any other work.
+    Named,
 }
 
 /// `build_as` that also records each record's diff facets into `facets`, in record order (the
-/// explicit diff profile; search never asks for them). `library` adds the internal library
-/// references (`usages::LIBRARY`) to a full build; only a stored generation asks for them.
+/// explicit diff profile; search never asks for them). `library` keeps the internal library
+/// references (`usages::LIBRARY`) of a full build as `Library` says.
 fn build_with(
     tree: &Tree,
     scope: &str,
     bounds: Bounds,
     relations: bool,
-    library: bool,
+    library: Library,
     mut facets: Option<&mut Vec<diff::Facets>>,
 ) -> Index {
     // A full build describes definitions within the caller's bounds: an eighth is kept back
@@ -634,12 +652,26 @@ fn build_with(
     let expansion = bounds.stop.take_if(|stop| *stop != Stop::Deadline);
     bounds.work += reserve.0;
     bounds.bytes += reserve.1;
-    // Only a full build reads library references; a spent budget stops at the first record.
-    let libraries = match relations && library {
-        true => usages::libraries(tree, &mut bounds).unwrap_or_default(),
-        false => usages::Libraries::new(),
+    // Only a full build reads library references; for a stored one a spent budget stops at the
+    // first record, a stateless one tries the scan on a copy and keeps none when it runs out.
+    let (libraries, library_unread) = match (relations, library) {
+        (true, Library::Stored) => (usages::libraries(tree, &mut bounds), false),
+        (true, Library::Named) => {
+            let mut trial = bounds;
+            match usages::libraries(tree, &mut trial) {
+                Some(l) => {
+                    bounds = trial;
+                    (Some(l), false)
+                }
+                None => (None, true),
+            }
+        }
+        _ => (None, false),
     };
+    let libraries = libraries.unwrap_or_default();
+    let keep_library = relations && library != Library::Skip && !library_unread;
     let mut index = Index::empty();
+    index.library_unread = library_unread;
     // Stored ancestors give the scope its page, navigation root and inherited visibility.
     let mut chain = Vec::new();
     let mut cur = tree.nodes.get(scope).and_then(|n| parent_of(n));
@@ -773,7 +805,7 @@ fn build_with(
             ex.nodes.get(&id),
             &mut bounds,
             relations.then_some((&mut index.unverified_links, &mut index.unread_fields)),
-            (relations && library).then_some(&libraries),
+            keep_library.then_some(&libraries),
         ) else {
             break;
         };
@@ -1693,7 +1725,7 @@ pub(crate) fn index_bytes(
     scope: &str,
     deadline: Instant,
 ) -> Result<Index, Box<dyn Error>> {
-    decode_index(bytes, label, scope, deadline, true, true)
+    decode_index(bytes, label, scope, deadline, true, Library::Stored)
 }
 
 /// `index_bytes` of a scope with change tracking on: the same full build, plus the facets and
@@ -1723,13 +1755,13 @@ fn decode_index(
     scope: &str,
     deadline: Instant,
     relations: bool,
-    library: bool,
+    library: Library,
 ) -> Result<Index, Box<dyn Error>> {
     let mut doc = Document::from_bytes(&bytes, label)?;
     drop(bytes);
     let message = doc.take_message()?;
     let tree = Tree::new(&message);
-    if relations && !library {
+    if relations && library == Library::Skip {
         index_tree(&tree, scope, deadline)
     } else {
         profiled(&tree, scope, deadline, relations, library)
@@ -1743,7 +1775,7 @@ pub(crate) fn index_tree(
     scope: &str,
     deadline: Instant,
 ) -> Result<Index, Box<dyn Error>> {
-    profiled(tree, scope, deadline, true, false)
+    profiled(tree, scope, deadline, true, Library::Skip)
 }
 
 fn profiled(
@@ -1751,7 +1783,7 @@ fn profiled(
     scope: &str,
     deadline: Instant,
     relations: bool,
-    library: bool,
+    library: Library,
 ) -> Result<Index, Box<dyn Error>> {
     require_scope(tree, scope)?;
     let bounds = Bounds {
@@ -1856,10 +1888,14 @@ fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json
                 }
                 None => {
                     let label = path.display().to_string();
-                    // A full build also keeps library references, so a usages result can name
-                    // the one it uses; a text-only build reads none.
+                    // A full build also keeps library references when they fit, so a usages
+                    // result can name the one it uses; a text-only build reads none.
+                    let library = match relations {
+                        true => Library::Named,
+                        false => Library::Skip,
+                    };
                     let index = Arc::new(decode_index(
-                        bytes, &label, scope, deadline, relations, relations,
+                        bytes, &label, scope, deadline, relations, library,
                     )?);
                     if stamp(&canonical)? != staged {
                         return Err(FigError::new(
