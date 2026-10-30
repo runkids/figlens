@@ -75,6 +75,7 @@ Verify each host's independent entry from the same extracted npm candidate; disp
 Validate host reference-output directories before export, including symlinked parents; see `integrations`.
 Cancel owned CLI process trees and await exit before reference cleanup; see `integrations`.
 Check parsing budgets before Kiwi recursion or declared-length expansion; see `parsing`.
+Gate readers on the schema that added their feature, not `SCHEMA`; see `workspace`.
 Run `expand::check_depth` before any walk that recurses once per layer; see `parsing`.
 Bound declared and actual original-image bytes per image and per scope before retaining them; see `parsing`.
 Publish bundle/export/snapshot files through `output::write` to protect sources and existing outputs; see `parsing`.
