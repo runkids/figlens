@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, relationChoices, acceptReply, reasonCodes, mergePages, rowModel, groupUsages, localSearch, sourceRef, pageOf, scopeCoverage} = require('../src/preview/viewer.js');
+const {pngDimensions, imageCrop, matchReasons, flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, freshRow, relationChoices, acceptReply, reasonCodes, semanticSummary, mergePages, rowModel, groupUsages, localSearch, sourceRef, pageOf, scopeCoverage} = require('../src/preview/viewer.js');
 
 test('prototype missing fields remain unspecified without click or navigation defaults', () => {
   const rows = prototypeRows({state:'recorded', sourceNodeId:'0:1', interactions:[
@@ -212,4 +212,68 @@ test('usages relation choices list every kind, checked as the reply ran', () => 
   const incoming = relationChoices({relations:['instance_of', 'uses_style'], coverage:{layers:{relations:{kinds}}}});
   assert.deepEqual(incoming.find(c => c.value === 'contains'), {value:'contains', checked:false});
   assert.equal(incoming.length, 3);
+});
+
+test('semantic coverage reasons are listed with the others, so a hybrid downgrade says why', () => {
+  assert.deepEqual(reasonCodes({coverage: {reasons: [], layers: {semantic: {state: 'unavailable', reasons: [{code: 'no_profile'}]}}}}), ['no_profile']);
+  assert.deepEqual(reasonCodes({coverage: {layers: {semantic: {state: 'partial', reasons: [], sources: [{state: 'pending', reasons: [{code: 'semantic_layer_building'}]}, {state: 'ready'}]}}}}), ['semantic_layer_building']);
+});
+
+test('the semantic line shows the running build and offers Enable only without a current index or with a ready model', () => {
+  const snap = 'sha256:a', current = {sources: [{indexed: [{scope: '0:1', current: true, snapshotId: snap}]}]};
+  const building = semanticSummary({scope: '0:1', job: {running: true, report: {kind: 'refresh', stage: 'parse', progress: {units: 3, total: 9}}}}, snap);
+  assert.deepEqual(building, {text: 'Indexing 0:1: text parse 3/9.', enable: false, running: true});
+  const none = semanticSummary({scope: '0:1', index: {}, models: {profiles: []}}, snap);
+  assert.equal(none.enable, true);
+  assert.match(none.text, /No index of 0:1 for this revision\. No local model configured/);
+  // An index of other bytes is not current for this revision.
+  assert.equal(semanticSummary({scope: '0:1', index: current, models: {profiles: []}}, 'sha256:b').enable, true);
+  const textOnly = semanticSummary({scope: '0:1', index: current, models: {profiles: [{name: 'bge-m3', state: 'unavailable', reason: 'runtime missing'}]}}, snap);
+  assert.deepEqual([textOnly.enable, textOnly.text], [false, 'Index of 0:1 ready. Local model bge-m3 unavailable: runtime missing.']);
+  assert.equal(semanticSummary({scope: '0:1', index: current, models: {profiles: [{name: 'bge-m3', state: 'ready'}]}}, snap).enable, true);
+  assert.match(semanticSummary({scope: '0:1', index: current, models: {profiles: []}, job: {running: false, report: {state: 'cancelled'}}}, snap).text, /Last build cancelled\./);
+  assert.deepEqual(semanticSummary({error: {message: 'Saved design changed'}}, snap), {text: 'Saved design changed', enable: false, running: false});
+});
+
+test('a relocated workspace row keeps its registered ref and stays fresh under the revision its reply was accepted for', () => {
+  const loaded = {sourceId: 'local:viewer', snapshotId: 'sha256:a'};
+  const row = rowModel({ref: {nodeId: '0:1', sourceId: 'local:registered', snapshotId: 'sha256:a'}}, loaded);
+  assert.deepEqual([row.sourceId, row.viewSourceId], ['local:registered', 'local:viewer']);
+  assert.equal(freshRow(loaded, row), true);
+  assert.equal(freshRow({...loaded, snapshotId: 'sha256:b'}, row), false);
+  // Text rows, whose refs name the loaded source, are judged as before.
+  assert.equal(freshRow(loaded, rowModel({ref: {nodeId: '0:1', sourceId: 'local:viewer', snapshotId: 'sha256:a'}}, loaded)), true);
+});
+
+test('image header admission rejects excessive bytes/pixels before decode', () => {
+  const bytes = new ArrayBuffer(24), b = new Uint8Array(bytes), d = new DataView(bytes);
+  b.set([137,80,78,71,13,10,26,10]); b.set([73,72,68,82],12); d.setUint32(16, 2000); d.setUint32(20, 2000);
+  assert.deepEqual(pngDimensions(bytes, 100), {width:2000, height:2000});
+  assert.throws(() => pngDimensions(bytes, 8*1024*1024+1));
+  d.setUint32(20,2001); assert.throws(() => pngDimensions(bytes,100));
+  d.setUint32(16,0); assert.throws(() => pngDimensions(bytes,100));
+  assert.throws(() => pngDimensions(new ArrayBuffer(12),12));
+});
+test('image crops use whole in-bounds pixels, not percentages or design coordinates', () => {
+  assert.equal(imageCrop(['0','3','256','200'],256,256),'0,3,256,200');
+  for (const values of [['0','0','257','1'],['-1','0','1','1'],['0','0','1.5','1'],['','0','1','1'],['0','0','0','1']]) assert.throws(() => imageCrop(values,256,256));
+});
+test('image match reasons retain distinct evidence and never claim component identity', () => {
+  const row = {matches:[{basis:'normalized_pixels'},{basis:'perceptual_hash',distance:{hamming:3}},{basis:'visual_embedding',cosine:.98765},{basis:'semantic',field:'scope',chunk:2}]};
+  const text = matchReasons(row);
+  assert.match(text,/Same normalized pixels/); assert.match(text,/distance 3/);
+  assert.match(text,/cosine 0.988/); assert.match(text,/Semantic scope, chunk 2/);
+  assert.doesNotMatch(text,/probability|component identity/);
+});
+test('visual and per-source semantic coverage reasons remain visible', () => {
+  const reply = {coverage: {layers: {
+    semantic: {sources: [{reasons: [{code: 'chunk_refused'}]}]},
+    visual: {
+      hash: {sources: [{reasons: [{code: 'render_failed'}]}]},
+      embedding: {reasons: [{code: 'no_visual_profile'}]},
+    },
+  }}};
+  assert.deepEqual(reasonCodes(reply), ['chunk_refused','render_failed','no_visual_profile']);
+  const summary=semanticSummary({scope:'0:0',models:{profiles:[{name:'text',state:'ready',modality:'text'}]},index:{sources:[]}},'s',true);
+  assert.equal(summary.enable,true); assert.match(summary.text,/No visual model/);
 });

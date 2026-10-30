@@ -14,6 +14,7 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 | `tokens` | Changing DTCG variable export, validation or interoperability | `tokens.md` |
 | `discovery` | Changing find or inspect summaries (fields, limits, truncation, `--flat` lines), `tree --top-frames` screen lists or `export --match-dir` icon matching | `discovery.md` |
 | `search` | Changing search indexing, normalization, ranking, cursors, coverage or its budgets | `search.md`, `usages.md`, `library-usages.md` |
+| `visual` | Changing visual units, query-image admission, fingerprints or vision profiles | `visual-search.md` |
 | `semantic` | Changing semantic or hybrid search, `models` or the model profile and runtime lookup | `semantic.md` |
 | `diff` | Changing the diff engine (facets, matching, coverage, pair budgets, paging or its cursor) | `diff.md` |
 | `changes` | Changing change tracking, its revisions, `changes` reads, `watch ack` checkpoints or host stale-context notes | `changes.md`, `stale-context.md` |

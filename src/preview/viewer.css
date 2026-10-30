@@ -278,3 +278,14 @@ pre { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 11p
     #fileStatus:not(:empty) { max-width: 60%; }
     #workspace { height: 80vh; }
 }
+
+#visualControls { min-width: 0; }
+#visualControls > * { min-width: 0; max-width: 100%; }
+#visualFile { max-width: 100%; }
+#visualPreview { display: block; width: 100%; height: auto; aspect-ratio: 1; object-fit: contain; background: white; }
+#visualPreview[hidden] { display: none; }
+#visualCropFields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: .3rem; }
+#visualCropFields[hidden] { display: none; }
+#visualCropFields input { width: 100%; min-width: 0; }
+
+.visual-result { display: block; object-fit: contain; background: white; }

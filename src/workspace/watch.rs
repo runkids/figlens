@@ -1520,8 +1520,8 @@ enum Done {
 /// Refreshes every still-served scope of one source, one at a time: its own jobs run here to
 /// their end; a job another process already runs is awaited, never run or cancelled. A source
 /// counts as verified only when every job ended `succeeded`. A published scope whose model
-/// layer is missing gets an embed job this runner owns, sent to `models` so the next save
-/// never waits for the model.
+/// layer is missing gets an embed job this runner owns, and one whose earlier generation had a
+/// visual layer a visual job, sent to `models` so the next save never waits for the model.
 fn refresh(
     storage: &Storage,
     ws_id: &str,
@@ -1576,6 +1576,9 @@ fn refresh(
                 Ok(Some(r)) if r["state"] == "succeeded" => {
                     if let Some(embed) = super::jobs::embed_after(storage, &r) {
                         let _ = models.send(embed);
+                    }
+                    if let Some(visual) = super::jobs::visual_after(storage, &r) {
+                        let _ = models.send(visual);
                     }
                 }
                 Ok(Some(r)) => {
@@ -1660,9 +1663,9 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
     let halt = AtomicBool::new(false);
     let (to_worker, jobs) = std::sync::mpsc::channel::<Work>();
     let (done, finished) = std::sync::mpsc::channel::<Done>();
-    // Embed jobs this runner owns, run apart from refreshes. Like refreshes they take `cancel`,
-    // never `quit`: an exit cancels only unshared jobs through their rows (`cancel_exclusive`),
-    // so an embed another caller joined still finishes.
+    // Embed and visual jobs this runner owns, run apart from refreshes. Like refreshes they take
+    // `cancel`, never `quit`: an exit cancels only unshared jobs through their rows
+    // (`cancel_exclusive`), so a job another caller joined still finishes.
     let (to_model, models) = std::sync::mpsc::channel::<String>();
     std::thread::scope(|scope| -> Result<()> {
         let (cancel, quit, idle, halt) = (&cancel, &quit, &idle, &halt);

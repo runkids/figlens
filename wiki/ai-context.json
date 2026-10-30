@@ -166,11 +166,11 @@
         }
       ]
     },
-    "semantic": {
-      "description": "Changing semantic or hybrid search, the models command and tool, the model profile or the figlens-embed runtime lookup.",
+    "visual": {
+      "description": "Changing visual units, query-image admission, raster fingerprints or the local vision profile.",
       "sources": [
         {
-          "path": "wiki/semantic.md"
+          "path": "wiki/visual-search.md"
         }
       ]
     },
@@ -224,6 +224,14 @@
           "path": "wiki/index-jobs.md"
         }
       ]
+    },
+    "semantic": {
+      "description": "Changing semantic or hybrid search, the models command and tool, the model profile or the figlens-embed runtime lookup.",
+      "sources": [
+        {
+          "path": "wiki/semantic.md"
+        }
+      ]
     }
   },
   "unrouted": {
@@ -233,6 +241,7 @@
     "wiki/mcp-contract.md": "Field reference linked from mcp.md; read when changing an MCP tool parameter range, default or failure code.",
     "wiki/preview-api.md": "Field reference linked from preview.md; read when changing window.figlens calls or the preview image and snapshot budgets.",
     "wiki/library-usages.md": "Field reference linked from usages.md; read when changing stored library references or the cross-source library query.",
-    "wiki/directory-add.md": "Field reference linked from workspace.md; read when changing index add of a directory (enumeration, links, bounds) or its host asks."
+    "wiki/directory-add.md": "Field reference linked from workspace.md; read when changing index add of a directory (enumeration, links, bounds) or its host asks.",
+    "wiki/preview-search.md": "Search route reference linked from preview.md and preview-api.md; read for indexed/image inputs, preparation, cancellation or revision checks."
   }
 }

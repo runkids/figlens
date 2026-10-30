@@ -125,8 +125,26 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
             (
                 "query",
                 "string",
-                true,
-                "words or a phrase; case, width and accents fold, CJK matches by character pairs or a single character; no regex",
+                false,
+                "words or a phrase; case, width and accents fold, CJK matches by character pairs or a single character; no regex. Required unless image or imageRef is given",
+            ),
+            (
+                "image",
+                "string",
+                false,
+                "with workspaceId: a local PNG (at most 8 MiB, 4 MP) inside the server's roots to search by; read for this call only, never stored or sent anywhere. Not with imageRef",
+            ),
+            (
+                "imageRef",
+                "object",
+                false,
+                "with workspaceId: {sourceId, snapshotId, nodeId} of a node in a search result, to search by its stored render; the snapshot must still be the source's current one. Not with image",
+            ),
+            (
+                "crop",
+                "object",
+                false,
+                "{x, y, width, height} in whole pixels of the query image (of the stored 256-pixel render for imageRef)",
             ),
             (
                 "node",
@@ -168,7 +186,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "mode",
                 "string",
                 false,
-                "text (default); semantic or hybrid with a configured local model (see models)",
+                "text (default); semantic or hybrid with a configured local model (see models); with image or imageRef, visual (default without query) or hybrid (default with query: image plus text channels)",
             ),
         ],
     ),
@@ -447,13 +465,13 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "index",
-        "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes; add of a directory registers up to 10 .fig files under it in one step, in path order, never through a link leading out of it, and replies directory {added, existing, skipped, notFig, truncated, nextCursor}; pass nextCursor as cursor to add the next 10; a repeat adds nothing, and a moved file is a new source unless relocated); refresh rebuilds changed scopes and rebuild every indexed scope even when unchanged (sourceId and scope narrow both), while the previous index keeps serving; track starts recording one scope's changes, read with the changes tool, with a baseline build, and untrack stops it, keeping its history; embed runs the configured local model (models tool) over published scopes for semantic search, as jobs beside the text builds (mode_unavailable without a profile), and a text build this server runs queues it after publishing; a reply that could not admit every job has admission partial and deferred items, each with the nextStep that builds it later; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
+        "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes; add of a directory registers up to 10 .fig files under it in one step, in path order, never through a link leading out of it, and replies directory {added, existing, skipped, notFig, truncated, nextCursor}; pass nextCursor as cursor to add the next 10; a repeat adds nothing, and a moved file is a new source unless relocated); refresh rebuilds changed scopes and rebuild every indexed scope even when unchanged (sourceId and scope narrow both), while the previous index keeps serving; track starts recording one scope's changes, read with the changes tool, with a baseline build, and untrack stops it, keeping its history; embed runs the configured local model (models tool) over published scopes for semantic search, as jobs beside the text builds (mode_unavailable without a profile), and a text build this server runs queues it after publishing; visual (scope required, never widened to the whole file) renders that published scope's screens and components, and the scope node below a page, for image search, and embeds them when a vision profile is configured (hash-only otherwise), as a job on the model lane beside text builds; called again it resumes a partial layer, retrying units that failed; a scope that had a visual layer is rendered again after a text build this server runs republishes it, and no other scope is rendered implicitly; a reply that could not admit every job has admission partial and deferred items, each with the nextStep that builds it later; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
         &[
             (
                 "action",
                 "string",
                 true,
-                "prepare, status, add, remove, relocate, refresh, rebuild, track, untrack, embed, clear_cache or reset",
+                "prepare, status, add, remove, relocate, refresh, rebuild, track, untrack, embed, visual, clear_cache or reset",
             ),
             (
                 "file",
@@ -472,19 +490,19 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "sourceId",
                 "string",
                 false,
-                "a registered source, for remove, relocate, refresh, rebuild, track, untrack and embed",
+                "a registered source, for remove, relocate, refresh, rebuild, track, untrack, embed and visual",
             ),
             (
                 "scope",
                 "string",
                 false,
-                "stored node id to index (prepare), refresh, rebuild, track, untrack or embed; 0:0 is the whole file",
+                "stored node id to index (prepare), refresh, rebuild, track, untrack, embed or visual (required); 0:0 is the whole file",
             ),
             (
                 "requestId",
                 "string",
                 false,
-                "an idempotency key: repeating a prepare, refresh, rebuild, track or embed of one source and scope with it returns the same job; one first used for another request (track is its own) is refused",
+                "an idempotency key: repeating a prepare, refresh, rebuild, track, embed or visual of one source and scope with it returns the same job; one first used for another request (track is its own) is refused",
             ),
             STORAGE,
             (
@@ -512,7 +530,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "models",
-        "Local text model profiles for semantic and hybrid search. list shows the documented profiles with model, revision, license and the files each needs; status reports each configured profile ready or unavailable with the reason, or the setup steps when none is configured; configure checks a model directory the user already downloaded against pinned SHA-256 digests, starts the figlens-embed shipped beside figlens once offline and records the profile; remove forgets the profile and keeps its files. Nothing is downloaded and no design text leaves the machine.",
+        "Local model profiles: bge-m3 (text) for semantic and hybrid search, and siglip-base (image) for search with image or imageRef. list shows the documented profiles with modality, model, revision, license and the files each needs; status reports each configured profile ready or unavailable with the reason, and the setup steps for each modality no profile serves; configure checks a model directory the user already downloaded against pinned SHA-256 digests, starts the figlens-embed shipped beside figlens once offline and records the profile; remove forgets the profile and keeps its files. Nothing is downloaded and no design content leaves the machine.",
         &[
             (
                 "action",
@@ -693,12 +711,12 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
         ),
         "search" => (
             serde_json::json!({
-                "query": {"type": "object", "description": "the query as given, its normalized phrase, mode and the whole tokens actually searched"},
+                "query": {"type": "object", "description": "the query as given, its normalized phrase, mode and the whole tokens actually searched; an image search adds image (kind path|bytes|ref and crop, never the path), requestedMode and usedModes (text, semantic, visual_hash, visual_exact, visual_embedding)"},
                 "source": {"type": "object", "description": "sourceId (opaque, from this path), snapshotId (sha256 of the exact .fig bytes decoded) and freshness: file-stamp reuse, not a per-query disk hash"},
                 "scope": {"type": "object"},
-                "ranking": {"type": "object", "description": "ranking and tokenizer versions, field weights and tie order"},
-                "results": {"type": "array", "items": {"type": "object"}},
-                "coverage": {"type": "object", "description": "complete, scannedRecords, totalRecords (null unless complete), layers.text.state ready|partial, layers.semantic in semantic and hybrid modes (state ready|partial|pending|unavailable, profileId, counts, reasons; workspace searches per source), layers.relations (per kind: ready or partial when built; stateless search builds contains, instance_of and variant_of and lists the others not_built, which says nothing about absence; library_identity relation_unavailable), reasons with counts, excluded hidden/internal matches, knownGaps and work limits"},
+                "ranking": {"type": "object", "description": "ranking and tokenizer versions, field weights and tie order; an image search names its fusion (visual-rrf-1), channels and candidatesPerChannel"},
+                "results": {"type": "array", "items": {"type": "object"}, "description": "ranked rows; in an image search each match names its basis (lexical, semantic, normalized_pixels, perceptual_hash, visual_embedding) and each row has visual {state rendered|failed|absent, bounds, diagnostics, diagnosticsTruncated, error}"},
+                "coverage": {"type": "object", "description": "complete, scannedRecords, totalRecords (null unless complete), layers.text.state ready|partial, layers.visual in image searches (hash and embedding state per source, ready|partial|pending|building|failed|stale|unavailable, and the approximate signal), layers.semantic in semantic and hybrid modes (state ready|partial|pending|unavailable, profileId, counts, reasons; workspace searches per source), layers.relations (per kind: ready or partial when built; stateless search builds contains, instance_of and variant_of and lists the others not_built, which says nothing about absence; library_identity relation_unavailable), reasons with counts, excluded hidden/internal matches, knownGaps and work limits"},
                 "hasMore": {"type": "boolean"},
                 "nextCursor": {"type": ["string", "null"]},
                 "workspaceId": {"type": "string", "description": "workspace searches only"},
@@ -746,7 +764,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "incarnation": {"type": "string", "description": "changes when the database is recreated; cached results of another incarnation are void"},
                 "sources": {"type": "array", "items": {"type": "object"}, "description": "visible sources: sourceId, path, present and indexed scopes with snapshotId, records, complete and current; a gs:// source adds remote {uri, generation its download was pinned to}, not proof the object is unchanged"},
                 "job": {"type": "object", "description": "the build prepare started or joined: jobId, state, stage, progress"},
-                "jobs": {"type": "array", "items": {"type": "object"}, "description": "refresh, rebuild and track: one job per admitted source and scope, each with joined"},
+                "jobs": {"type": "array", "items": {"type": "object"}, "description": "refresh, rebuild, track, embed and visual: one job per admitted source and scope, each with joined"},
                 "admission": {"type": "string", "description": "refresh and rebuild: complete, or partial when some jobs were not admitted"},
                 "deferred": {"type": "array", "items": {"type": "object"}, "description": "partial admission: sourceId, scope and the nextStep index call that builds it later"},
                 "deferredBecause": {"type": ["object", "null"], "description": "partial admission: the error that stopped admission, {code, message}"},
@@ -761,8 +779,8 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
         ),
         "models" => (
             serde_json::json!({
-                "profiles": {"type": "array", "items": {"type": "object"}, "description": "list: name, model, revision, license, files, configured, profileId, dataFlow; status: name, profileId, model, runtime, dim, state ready or unavailable, code (runtime_missing, runtime_changed or model_missing), reason and recovery (models configure with the same files)"},
-                "setup": {"type": "array", "items": {"type": "object"}, "description": "status with no profile configured: the steps to configure one"},
+                "profiles": {"type": "array", "items": {"type": "object"}, "description": "list: name, modality, model, revision, license, files, configured, profileId, dataFlow; status: name, modality, profileId, model, runtime, dim, state ready or unavailable, code (runtime_missing, runtime_changed or model_missing), reason and recovery (models configure with the same files)"},
+                "setup": {"type": "array", "items": {"type": "object"}, "description": "status: the steps to configure a profile for each modality (text, image) no configured profile serves"},
                 "configRoot": {"type": "string", "description": "status: the config directory models.json lives in (ask write access to it before configure)"},
                 "defaultRuntime": {"type": "object", "description": "status: {path, available} of the figlens-embed beside this figlens; available means the file exists, not that a model is ready"},
                 "configured": {"type": "object", "description": "configure: the recorded profile and its profileId"},
@@ -774,7 +792,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
             serde_json::json!({
                 "jobId": {"type": "string"},
                 "workspaceId": {"type": "string", "description": "the workspace the job builds in, for index status"},
-                "kind": {"type": "string", "description": "prepare, refresh, rebuild, track or embed (the model layer of a published scope)"},
+                "kind": {"type": "string", "description": "prepare, refresh, rebuild, track, embed (the model layer of a published scope) or visual (its rendered and, with a vision profile, embedded units)"},
                 "state": {"type": "string", "description": "queued, running, succeeded, failed, cancelled or interrupted (its owner exited)"},
                 "stage": {"type": ["string", "null"], "description": "null until the job starts"},
                 "progress": {"type": "object"},
@@ -791,7 +809,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "revisions": {"type": "array", "items": {"type": "object"}, "description": "oldest first: revisionId, sourceId, scope, kind (baseline or changes), from (the previous revisionId, null for a baseline or when deleted), snapshotId, coverage (a baseline's reason, such as tracking_started or index_version_changed), summary (changes, kinds, facets, possibleMatches), detail (complete, truncated or expired), detailRows, impact (null, or complete, reasons [{reason, count}], listed per class)"},
                 "nextCursor": {"type": ["string", "null"], "description": "pass as cursor for the next page, or to watch ack once handled"},
                 "hasMore": {"type": "boolean"},
-                "tracking": {"type": "array", "items": {"type": "object"}, "description": "each tracked scope of the visible sources: sourceId, scope, state (baseline_pending, active or disabled), lastRevisionId, lastCheckedAtMs (when its last build verified the file), refreshRequired (the file's size or mtime differs from that build's)"},
+                "tracking": {"type": "array", "items": {"type": "object"}, "description": "each tracked scope of the visible sources: sourceId, scope, state (baseline_pending, active or disabled), lastRevisionId, lastCheckedAtMs (when its last build verified the file), refreshRequired (the file's size or mtime differs from that build's), model (its published generation's semantic layer under the active profile: state ready|partial|pending|unavailable, profileId, policy, generation; coverage only, never a revision)"},
                 "trackingTruncated": {"type": "boolean", "description": "true when more tracked scopes exist than tracking lists"},
                 "monitor": {"type": "object", "description": "the watch monitor's state, separate from tracking: inactive when no lease covers the view, partial when some tracked scope of the view has none, else watching or the first problem (unauthorized, source_busy, source_missing, source_unreadable, refresh_failed, stale); source_busy then source_unreadable also when the source path now leads elsewhere through a link, which is never read: relocate the source"},
                 "revisionId": {"type": "string", "description": "with revision"},
@@ -927,7 +945,6 @@ fn default(tool: &str, key: &str) -> Option<Value> {
         | ("search", "includeHidden" | "includeInternal") => Some(json!(false)),
         ("inspect", "depth") | ("export", "scale") => Some(json!(1)),
         ("find" | "search", "limit") => Some(json!(20)),
-        ("search", "mode") => Some(json!("text")),
         ("variables", "format") => Some(json!("rest")),
         ("usages", "scope") | ("diff", "node") => Some(json!("0:0")),
         ("diff", "limit") => Some(json!(100)),
@@ -1008,6 +1025,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
             "track",
             "untrack",
             "embed",
+            "visual",
             "clear_cache",
             "reset"
         ]);
@@ -1032,7 +1050,19 @@ pub fn property(tool: &str, param: &Param) -> Value {
         ]);
     }
     if tool == "search" && key == "mode" {
-        p["enum"] = json!(["text", "semantic", "hybrid"]);
+        p["enum"] = json!(["text", "semantic", "hybrid", "visual"]);
+    }
+    if tool == "search" && key == "imageRef" {
+        p["properties"] = json!({"sourceId": {"type": "string", "minLength": 1},
+            "snapshotId": {"type": "string", "minLength": 1}, "nodeId": {"type": "string", "minLength": 1}});
+        p["required"] = json!(["sourceId", "snapshotId", "nodeId"]);
+        p["additionalProperties"] = json!(false);
+    }
+    if tool == "search" && key == "crop" {
+        let pixel = json!({"type": "integer", "minimum": 0, "maximum": u32::MAX});
+        p["properties"] = json!({"x": pixel, "y": pixel, "width": pixel, "height": pixel});
+        p["required"] = json!(["x", "y", "width", "height"]);
+        p["additionalProperties"] = json!(false);
     }
     if tool == "usages" && key == "direction" {
         p["enum"] = json!(["in", "out"]);
@@ -1052,8 +1082,8 @@ pub fn property(tool: &str, param: &Param) -> Value {
     p
 }
 
-/// `value` against an object schema of string and object fields: every required field present,
-/// no other one, each string non-empty and within its enum.
+/// `value` against an object schema of string, integer and object fields: every required field
+/// present, no other one, each string non-empty and within its enum, each integer in range.
 fn object_fits(value: &Value, schema: &Value) -> bool {
     let (Some(fields), Some(props)) = (value.as_object(), schema["properties"].as_object()) else {
         return false;
@@ -1065,6 +1095,10 @@ fn object_fits(value: &Value, schema: &Value) -> bool {
         && fields.iter().all(|(name, v)| match props.get(name) {
             None => false,
             Some(p) if p["type"] == "object" => object_fits(v, p),
+            Some(p) if p["type"] == "integer" => integer(v).is_some_and(|n| {
+                p["minimum"].as_u64().is_none_or(|m| n >= m)
+                    && p["maximum"].as_u64().is_none_or(|m| n <= m)
+            }),
             Some(p) => v.as_str().is_some_and(|text| {
                 !text.is_empty() && p["enum"].as_array().is_none_or(|e| e.contains(v))
             }),
@@ -1153,7 +1187,7 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
                 }
             }
             "boolean" if !value.is_boolean() => return Err(bad()),
-            // Only library (usages, watch) takes an object; its schema lists every field.
+            // Library (usages, watch), imageRef and crop (search) list every field.
             "object" if !object_fits(value, &schema) => return Err(bad()),
             "string" => {
                 let text = value.as_str().ok_or_else(bad)?;
@@ -1202,7 +1236,9 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
                 "search needs file or workspaceId, not both; sourceId and storage apply to workspaceId",
             ));
         }
-        crate::command::search_tool(&call).map_err(Failure::from_error)?;
+        // Only validates: the image path is admitted under the roots before the call runs.
+        crate::command::search_tool(&call, call.string("image").map(std::path::Path::new))
+            .map_err(Failure::from_error)?;
     }
     if tool == "usages" {
         let file = call.string("file").is_some();
