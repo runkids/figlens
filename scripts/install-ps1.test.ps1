@@ -18,7 +18,8 @@ function Check($bin, $want) {
         $got = (Get-Content (Join-Path $bin $n)).Trim()
         if ($got -ne $want) { throw "$n holds '$got', expected '$want'" }
     }
-    $left = @(Get-ChildItem $bin -Filter "*.exe.*")
+    # Compare names in PowerShell: a native -Filter "*.exe.*" also matches the bare .exe on Windows.
+    $left = @(Get-ChildItem $bin | Where-Object { $Names -notcontains $_.Name })
     if ($left.Count) { throw "left behind: $($left.Name -join ', ')" }
 }
 
