@@ -125,8 +125,26 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
             (
                 "query",
                 "string",
-                true,
-                "words or a phrase; case, width and accents fold, CJK matches by character pairs or a single character; no regex",
+                false,
+                "words or a phrase; case, width and accents fold, CJK matches by character pairs or a single character; no regex. Required unless image or imageRef is given",
+            ),
+            (
+                "image",
+                "string",
+                false,
+                "with workspaceId: a local PNG (at most 8 MiB, 4 MP) inside the server's roots to search by; read for this call only, never stored or sent anywhere. Not with imageRef",
+            ),
+            (
+                "imageRef",
+                "object",
+                false,
+                "with workspaceId: {sourceId, snapshotId, nodeId} of a node in a search result, to search by its stored render; the snapshot must still be the source's current one. Not with image",
+            ),
+            (
+                "crop",
+                "object",
+                false,
+                "{x, y, width, height} in whole pixels of the query image (of the stored 256-pixel render for imageRef)",
             ),
             (
                 "node",
@@ -168,7 +186,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "mode",
                 "string",
                 false,
-                "text (default); semantic or hybrid with a configured local model (see models)",
+                "text (default); semantic or hybrid with a configured local model (see models); with image or imageRef, visual (default without query) or hybrid (default with query: image plus text channels)",
             ),
         ],
     ),
@@ -927,7 +945,6 @@ fn default(tool: &str, key: &str) -> Option<Value> {
         | ("search", "includeHidden" | "includeInternal") => Some(json!(false)),
         ("inspect", "depth") | ("export", "scale") => Some(json!(1)),
         ("find" | "search", "limit") => Some(json!(20)),
-        ("search", "mode") => Some(json!("text")),
         ("variables", "format") => Some(json!("rest")),
         ("usages", "scope") | ("diff", "node") => Some(json!("0:0")),
         ("diff", "limit") => Some(json!(100)),
@@ -1032,7 +1049,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
         ]);
     }
     if tool == "search" && key == "mode" {
-        p["enum"] = json!(["text", "semantic", "hybrid"]);
+        p["enum"] = json!(["text", "semantic", "hybrid", "visual"]);
     }
     if tool == "usages" && key == "direction" {
         p["enum"] = json!(["in", "out"]);
@@ -1202,7 +1219,9 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
                 "search needs file or workspaceId, not both; sourceId and storage apply to workspaceId",
             ));
         }
-        crate::command::search_tool(&call).map_err(Failure::from_error)?;
+        // Only validates: the image path is admitted under the roots before the call runs.
+        crate::command::search_tool(&call, call.string("image").map(std::path::Path::new))
+            .map_err(Failure::from_error)?;
     }
     if tool == "usages" {
         let file = call.string("file").is_some();

@@ -1063,7 +1063,7 @@ fn hides_content(tree: &Tree, ex: &Expansion, id: &str, kind: &str) -> bool {
 
 // ---- Retrieval ----
 
-struct Hit {
+pub(crate) struct Hit {
     /// Position of the hit's index in the corpus.
     source: usize,
     record: u32,
@@ -1081,6 +1081,26 @@ fn idf(n: usize, df: u32) -> f64 {
 /// then corpus order and document order. Record counts, document frequencies and field lengths
 /// are summed over the whole corpus before any record is scored, so one source's hits are never
 /// ranked alone and merged afterwards; one index ranks exactly as it always did.
+/// Why `req`'s filters leave a record out; hidden and internal ones are counted as excluded.
+pub(crate) enum Filtered {
+    Type,
+    Hidden,
+    Internal,
+}
+
+/// `req`'s type, hidden and internal filters on loaded record `rid`, in that order; `None` keeps it.
+pub(crate) fn filtered(index: &Index, rid: u32, req: &Request) -> Option<Filtered> {
+    let r = index.record(rid);
+    if !req.types.is_empty() && !req.types.contains(&r.kind) {
+        return Some(Filtered::Type);
+    }
+    if r.hidden && !req.include_hidden {
+        return Some(Filtered::Hidden);
+    }
+    let internal = r.page.is_some_and(|p| index.pages[p as usize].internal);
+    (internal && !req.include_internal).then_some(Filtered::Internal)
+}
+
 fn retrieve(
     corpus: &[&Index],
     q: &Prepared,
@@ -1144,19 +1164,19 @@ fn retrieve(
             if cancel.load(Ordering::Relaxed) {
                 break 'rank;
             }
+            match filtered(index, record, req) {
+                Some(Filtered::Type) => continue,
+                Some(Filtered::Hidden) => {
+                    excluded[0] += 1;
+                    continue;
+                }
+                Some(Filtered::Internal) => {
+                    excluded[1] += 1;
+                    continue;
+                }
+                None => {}
+            }
             let r = index.record(record);
-            if !req.types.is_empty() && !req.types.contains(&r.kind) {
-                continue;
-            }
-            let internal = r.page.is_some_and(|p| index.pages[p as usize].internal);
-            if r.hidden && !req.include_hidden {
-                excluded[0] += 1;
-                continue;
-            }
-            if internal && !req.include_internal {
-                excluded[1] += 1;
-                continue;
-            }
             let [name, text] = &r.norm;
             let tier = if *name == q.phrase {
                 3

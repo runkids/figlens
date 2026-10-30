@@ -520,7 +520,10 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
         .then(|| command::usages_request(&args[2..]))
         .transpose()?;
     let path = figlens::remote::local(file).map_err(|e| contract::source(file, e))?;
-    if let Some((request, mode)) = search {
+    if let Some((request, query)) = search {
+        let command::Query::Text(mode) = query else {
+            return Err(command::image_needs_workspace(file, &request.scope));
+        };
         // Ctrl-C stops a model run and its child instead of killing figlens around them.
         if mode != figlens::semantic::Mode::Text {
             signals::catch();
@@ -1345,28 +1348,49 @@ fn models(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
 fn workspace_search(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
     use figlens::workspace::{self, Select};
     let a = index_args(args, true)?;
-    let [query] = a.positional.as_slice() else {
-        return Err("usage: figlens search --workspace DIR|--file <file.fig>|--id ws_... <query> [--source ID]... [--node ID]".into());
+    let image = a
+        .search
+        .iter()
+        .any(|f| f == "--image" || f == "--image-ref");
+    let query = match a.positional.as_slice() {
+        [query] => query.to_string(),
+        [] if image => String::new(),
+        _ => return Err("usage: figlens search --workspace DIR|--file <file.fig>|--id ws_... <query> [--source ID]... [--node ID] | [query] --image PNG|--image-ref JSON [--crop X,Y,W,H]".into()),
     };
     let storage = workspace::storage(a.storage.map(Path::new))?;
     let select = Select::from_choice(a.workspace.map(Path::new), a.file.map(Path::new), a.id)?
         .ok_or("choose the workspace with --workspace, --file or --id")?;
-    let mut search_args = vec![query.to_string()];
+    let mut search_args = vec![query];
     search_args.extend(a.search.iter().cloned());
-    let (request, mode) = command::search_request(&search_args)?;
+    let (request, query) = command::search_request(&search_args)?;
     let only: Vec<String> = a.source.iter().map(|s| s.to_string()).collect();
-    if mode == figlens::semantic::Mode::Text {
-        return workspace::query::search(&storage, &select, &only, &request);
+    match query {
+        command::Query::Text(figlens::semantic::Mode::Text) => {
+            workspace::query::search(&storage, &select, &only, &request)
+        }
+        command::Query::Text(mode) => {
+            signals::catch();
+            workspace::query::search_mode(
+                &storage,
+                &select,
+                &only,
+                &request,
+                mode,
+                &signals::INTERRUPTED,
+            )
+        }
+        command::Query::Image(image) => {
+            signals::catch();
+            workspace::query::search_image(
+                &storage,
+                &select,
+                &only,
+                &request,
+                &image,
+                &signals::INTERRUPTED,
+            )
+        }
     }
-    signals::catch();
-    workspace::query::search_mode(
-        &storage,
-        &select,
-        &only,
-        &request,
-        mode,
-        &signals::INTERRUPTED,
-    )
 }
 
 const WATCH_RUN: &str = "usage: figlens watch run --workspace DIR|--file <file.fig>|--id ws_... --scope NODE [--source ID] [--request-id R] [--storage DIR]";

@@ -3,7 +3,9 @@
 //! ranked together. Search reads only; it never builds, so a source without a ready index is
 //! reported with the action that prepares it.
 
+use super::visual_search::{ImageMode, ImageQuery, Input};
 use super::*;
+use crate::search::visual::rank;
 use crate::search::{self, Index, Part, Request};
 use crate::semantic::{Mode, Profile, profile};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,8 +35,30 @@ pub fn search_mode(
     mode: Mode,
     cancel: &AtomicBool,
 ) -> Result<Json> {
-    search_index(storage, select, only, req, Some(cancel), mode)
+    search_index(storage, select, only, req, Some(cancel), mode, None)
         .map_err(|e| with_fallback(storage, select, req, e))
+}
+
+/// `search` with a query image: the sources' visual layers and, in hybrid, the query text's
+/// lexical and semantic channels, fused once. Reads only: a source without a visual layer is
+/// listed with the step that builds it, and the query image is never stored.
+pub fn search_image(
+    storage: &Storage,
+    select: &Select,
+    only: &[String],
+    req: &Request,
+    image: &ImageQuery,
+    cancel: &AtomicBool,
+) -> Result<Json> {
+    search_index(
+        storage,
+        select,
+        only,
+        req,
+        Some(cancel),
+        Mode::Text,
+        Some(image),
+    )
 }
 
 /// `search`, ended with `Cancelled` once `cancel` is set: SQLite is interrupted in its
@@ -46,7 +70,7 @@ pub(crate) fn search_with(
     req: &Request,
     cancel: Option<&AtomicBool>,
 ) -> Result<Json> {
-    search_index(storage, select, only, req, cancel, Mode::Text)
+    search_index(storage, select, only, req, cancel, Mode::Text, None)
         .map_err(|e| with_fallback(storage, select, req, e))
 }
 
@@ -151,13 +175,27 @@ fn search_index(
     req: &Request,
     cancel: Option<&AtomicBool>,
     mode: Mode,
+    image: Option<&ImageQuery>,
 ) -> Result<Json> {
-    let q = req.validate()?;
+    let q = match image {
+        Some(_) => req.validate_image()?,
+        None => req.validate()?,
+    };
     let (_, ws) = opened(storage, select, false)?;
     match cancel {
-        None => searched(storage, select, only, req, q, ws, &search::NEVER, mode),
+        None => searched(
+            storage,
+            select,
+            only,
+            req,
+            q,
+            ws,
+            &search::NEVER,
+            mode,
+            image,
+        ),
         Some(flag) => interruptible(ws.conn.get_interrupt_handle(), flag, || {
-            searched(storage, select, only, req, q, ws, flag, mode)
+            searched(storage, select, only, req, q, ws, flag, mode, image)
         }),
     }
 }
@@ -172,6 +210,7 @@ fn searched(
     ws: Opened,
     cancel: &AtomicBool,
     mode: Mode,
+    image: Option<&ImageQuery>,
 ) -> Result<Json> {
     // Semantic needs a usable profile; hybrid answers as text without one and says why.
     let (profile, mut downgrade) = match (mode, profile::active(storage)) {
@@ -223,6 +262,39 @@ fn searched(
         .filter(|r| storage.sees(Path::new(&r.path)))
         .collect();
     let restricted = rows.len() < all && only.is_empty();
+    let versions = search::store::versions();
+    // A referenced node is read from any source this caller sees, whatever the result filters.
+    let query_image = match image.map(|i| (i, &i.input)) {
+        None => None,
+        Some((i, Input::Path(path))) => Some(super::visual::query_image(path, i.crop, cancel)?),
+        Some((i, Input::Ref { source_id, .. })) => {
+            let row = rows.iter().find(|r| r.id == *source_id).ok_or_else(|| {
+                fail(
+                    ErrorKind::InvalidArguments,
+                    format!("imageRef names source {source_id}, which this workspace does not serve to this caller"),
+                )
+            })?;
+            let checked = row.check(&tx, &dir, &req.scope, &versions, true)?;
+            if checked.state.label() != "ready" {
+                return Err(FigError::new(
+                    ErrorKind::SourceStale,
+                    format!("imageRef source {source_id} has no ready index of this scope; refresh it, then take the reference from new results"),
+                )
+                .with_recovery(json!([{"action": "refresh", "requires": "none", "tool": "index",
+                    "arguments": {"action": "refresh", "workspaceId": ws_id, "sourceId": source_id, "scope": req.scope}}]))
+                .into());
+            }
+            let gen_id = row.gen_id.expect("ready");
+            Some(super::visual_search::referenced(
+                &tx,
+                &ws_id,
+                gen_id,
+                row.snapshot.as_deref(),
+                i,
+                &req.scope,
+            )?)
+        }
+    };
     let rows: Vec<Row> = rows
         .into_iter()
         .filter(|r| only.is_empty() || only.contains(&r.id))
@@ -233,7 +305,6 @@ fn searched(
             format!("workspace {ws_id} has no source {unknown}"),
         ));
     }
-    let versions = search::store::versions();
     let now = now_ms();
     if q.cursor_expired(now) {
         return Err(FigError::new(
@@ -374,57 +445,81 @@ fn searched(
         }
         return Ok(out);
     }
-    let key = json!(loaded.iter().map(|l| &l.3).collect::<Vec<_>>());
-    let (ranked, decor) = match &profile {
-        Some(p) => {
-            let mut cache = crate::semantic::lock(&LAYERS, cancel)
-                .map_err(|_| fail(ErrorKind::Cancelled, "search cancelled"))?;
+    let mut key = json!(loaded.iter().map(|l| &l.3).collect::<Vec<_>>());
+    let mut drawn = None;
+    let (ranked, decor) = match (image, &query_image) {
+        (Some(image), Some(picture)) => {
+            key = json!([key, super::visual_search::digest(picture, image)]);
             let ws_key = (ws_id.as_str(), incarnation.as_str(), version);
-            let layer = model_layers(
-                &tx, ws_key, req, &loaded, p, &mut spent, &mut cache, &mut steps, cancel,
-            )?;
-            let sides: Vec<search::semantic::Side> = loaded
-                .iter()
-                .map(|l| {
-                    let key = layer_key(&incarnation, l.2);
-                    let (_, _, index, layer) = cache
-                        .iter()
-                        .find(|c| c.0 == key && c.1 == p.id)
-                        .expect("loaded above");
-                    search::semantic::Side { index, layer }
-                })
-                .collect();
-            match search::semantic::workspace_rank(
-                &parts(&loaded),
-                &sides,
-                mode,
-                p,
-                layer,
-                &q,
+            let (ranked, decor, complete, layers) = image_rank(
+                storage,
+                &tx,
+                ws_key,
                 req,
+                &q,
+                image.mode,
+                picture,
+                &mut loaded,
+                &mut steps,
+                &mut spent,
                 &key,
                 cancel,
-            ) {
-                Ok((ranked, decor)) => (ranked, Some(decor)),
-                // A model that cannot run leaves hybrid's text ranking working.
-                Err(e)
-                    if mode == Mode::Hybrid
-                        && e.downcast_ref::<FigError>().map(FigError::kind)
-                            == Some(ErrorKind::OperationFailed) =>
-                {
-                    downgrade = Some(json!({"code": "runtime_failed", "message": e.to_string()}));
-                    (
-                        search::corpus_rank(&parts(&loaded), &q, req, &key, cancel)?,
-                        None,
-                    )
-                }
-                Err(e) => return Err(e),
-            }
+            )?;
+            drawn = Some((image, decor, complete, layers));
+            (ranked, None)
         }
-        None => (
-            search::corpus_rank(&parts(&loaded), &q, req, &key, cancel)?,
-            None,
-        ),
+        _ => match &profile {
+            Some(p) => {
+                let mut cache = crate::semantic::lock(&LAYERS, cancel)
+                    .map_err(|_| fail(ErrorKind::Cancelled, "search cancelled"))?;
+                let ws_key = (ws_id.as_str(), incarnation.as_str(), version);
+                let layer = model_layers(
+                    &tx, ws_key, req, &loaded, p, &mut spent, &mut cache, &mut steps, cancel,
+                )?;
+                let sides: Vec<search::semantic::Side> = loaded
+                    .iter()
+                    .map(|l| {
+                        let key = layer_key(&incarnation, l.2);
+                        let (_, _, index, layer) = cache
+                            .iter()
+                            .find(|c| c.0 == key && c.1 == p.id)
+                            .expect("loaded above");
+                        search::semantic::Side { index, layer }
+                    })
+                    .collect();
+                match search::semantic::workspace_rank(
+                    &parts(&loaded),
+                    &sides,
+                    mode,
+                    p,
+                    layer,
+                    &q,
+                    req,
+                    &key,
+                    cancel,
+                ) {
+                    Ok((ranked, decor)) => (ranked, Some(decor)),
+                    // A model that cannot run leaves hybrid's text ranking working.
+                    Err(e)
+                        if mode == Mode::Hybrid
+                            && e.downcast_ref::<FigError>().map(FigError::kind)
+                                == Some(ErrorKind::OperationFailed) =>
+                    {
+                        downgrade =
+                            Some(json!({"code": "runtime_failed", "message": e.to_string()}));
+                        (
+                            search::corpus_rank(&parts(&loaded), &q, req, &key, cancel)?,
+                            None,
+                        )
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            None => (
+                search::corpus_rank(&parts(&loaded), &q, req, &key, cancel)?,
+                None,
+            ),
+        },
     };
     // Only the shown page reads its records' ancestors, one tree level per query.
     let mut wanted: Vec<Vec<u32>> = vec![Vec::new(); loaded.len()];
@@ -458,6 +553,13 @@ fn searched(
         }
         (None, None) => {}
     }
+    if let Some((image, decor, complete, layers)) = drawn {
+        rank::decorate(&mut out, image.mode.as_str(), decor, complete);
+        out["query"]["image"] = image.describe();
+        for (name, layer) in layers.as_object().into_iter().flatten() {
+            out["coverage"]["layers"][name] = layer.clone();
+        }
+    }
     let left_out: Vec<&Json> = states.iter().filter(|s| s["state"] != "ready").collect();
     if !left_out.is_empty() {
         let coverage = &mut out["coverage"];
@@ -480,6 +582,257 @@ fn searched(
     out["sources"] = json!(states);
     out["nextSteps"] = json!(steps);
     Ok(out)
+}
+
+/// The channels of an image search over `loaded`, each ranked across every source, fused once.
+/// Returns the page, its evidence, whether every channel covered every source (else the page
+/// offers no cursor) and the `coverage.layers` it reports. Filters apply before ranking; only
+/// filtered units' records and vectors are read, and the model runs only for a ready layer.
+#[allow(clippy::too_many_arguments)]
+fn image_rank(
+    storage: &Storage,
+    tx: &rusqlite::Transaction,
+    ws: (&str, &str, i64),
+    req: &Request,
+    q: &search::Prepared,
+    mode: ImageMode,
+    picture: &crate::search::visual::QueryImage,
+    loaded: &mut [(Index, Json, i64, Json)],
+    steps: &mut Vec<Json>,
+    spent: &mut usize,
+    key: &Json,
+    cancel: &AtomicBool,
+) -> Result<(search::Ranked, rank::Decor, bool, Json)> {
+    use super::visual_search::{layer_state, vectors, visual_step};
+    use crate::search::visual::{self, Hit as VisualHit};
+    let (ws_id, _, _) = ws;
+    let mut complete = true;
+    let mut bounds = crate::expand::Bounds {
+        work: search::semantic::LAYER_WORK,
+        bytes: search::semantic::LAYER_BYTES,
+        depth: 0,
+        deadline: std::time::Instant::now() + Duration::from_secs(15),
+        stop: None,
+    };
+    // Hash: each source's filtered units, nearest first; then one order across the sources.
+    let mut hash: Vec<(rank::Key, VisualHit)> = Vec::new();
+    let mut units: Vec<Vec<u32>> = vec![Vec::new(); loaded.len()];
+    let mut hash_sources = Vec::new();
+    for (part, (index, source, gen_id, _)) in loaded.iter_mut().enumerate() {
+        let state = layer_state(tx, *gen_id, visual::VERSION)?;
+        let label = state.as_deref().unwrap_or("pending");
+        hash_sources.push(json!({"sourceId": source["sourceId"], "state": label}));
+        if label != "ready" {
+            complete = false;
+            steps.push(visual_step(
+                ws_id,
+                &source["sourceId"],
+                &req.scope,
+                "this source's visual layer is not built or not finished for this scope",
+            ));
+        }
+        if state.is_none() {
+            continue;
+        }
+        let candidates = super::visual::candidates(tx, *gen_id)?;
+        let rids: Vec<u32> = candidates.iter().map(|c| c.rid).collect();
+        search::store::add_with(tx, *gen_id, index, &rids, spent, cancel)?;
+        let kept: Vec<(u32, visual::Fingerprint)> = candidates
+            .into_iter()
+            .filter(|c| search::filtered(index, c.rid, req).is_none())
+            .map(|c| (c.rid, c.fingerprint))
+            .collect();
+        units[part] = kept.iter().map(|k| k.0).collect();
+        if kept.is_empty() {
+            continue;
+        }
+        let found = visual::nearest(
+            &picture.fingerprint,
+            &kept,
+            rank::CANDIDATES,
+            &mut bounds,
+            cancel,
+        )?;
+        complete &= found.complete;
+        hash.extend(found.hits.into_iter().map(|h| ((part, h.rid), h)));
+    }
+    hash.sort_by_key(|(k, h)| {
+        (
+            !h.exact,
+            h.distance.hamming,
+            h.distance.color,
+            h.distance.aspect,
+            *k,
+        )
+    });
+    hash.truncate(rank::CANDIDATES);
+    let any_hash = hash_sources.iter().any(|s| s["state"] != "pending");
+    let mut layers = json!({"visual": {"version": visual::VERSION, "ranking": visual::RANKING,
+        "policy": super::visual::POLICY,
+        "hash": {"state": if !any_hash { "pending" } else if hash_sources.iter().all(|s| s["state"] == "ready") { "ready" } else { "partial" },
+            "sources": hash_sources}}});
+    // Vision: the active image profile's stored vectors of the same units; the query image is
+    // embedded only when some source has a ready layer to compare it with.
+    let vision = match profile::active_visual(storage) {
+        Ok(None) => {
+            layers["visual"]["embedding"] = json!({"state": "not_configured",
+                "reasons": [{"code": "no_visual_profile"}]});
+            None
+        }
+        Err(e) => {
+            complete = false;
+            layers["visual"]["embedding"] = json!({"state": "unavailable",
+                "reasons": [{"code": "profile_unreadable", "message": e.to_string()}]});
+            None
+        }
+        Ok(Some(p)) => {
+            let mut stored: Vec<(rank::Key, Vec<f32>)> = Vec::new();
+            let mut sources = Vec::new();
+            for (part, (_, source, gen_id, _)) in loaded.iter().enumerate() {
+                let state = layer_state(tx, *gen_id, &p.id)?;
+                let label = state.as_deref().unwrap_or("pending");
+                sources.push(json!({"sourceId": source["sourceId"], "state": label}));
+                if label != "ready" {
+                    complete = false;
+                }
+                if state.is_none() {
+                    continue;
+                }
+                let mut by = vectors(tx, *gen_id, &p.id, p.dim)?;
+                stored.extend(
+                    units[part]
+                        .iter()
+                        .filter_map(|rid| by.remove(rid).map(|v| ((part, *rid), v))),
+                );
+            }
+            let state = if sources.iter().all(|s| s["state"] == "ready") {
+                "ready"
+            } else if sources.iter().any(|s| s["state"] != "pending") {
+                "partial"
+            } else {
+                "pending"
+            };
+            layers["visual"]["embedding"] =
+                json!({"state": state, "profileId": p.id, "sources": sources});
+            if stored.is_empty() {
+                None
+            } else {
+                match profile::with_runtime(&p, cancel, |rt| {
+                    rt.embed_images(std::slice::from_ref(picture), cancel)
+                }) {
+                    Ok(mut v) => {
+                        let query = v.remove(0);
+                        let mut scored: Vec<(rank::Key, f32)> = stored
+                            .iter()
+                            .map(|(k, v)| {
+                                (*k, query.iter().zip(v).map(|(a, b)| a * b).sum::<f32>())
+                            })
+                            .collect();
+                        scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+                        scored.truncate(rank::CANDIDATES);
+                        Some(scored)
+                    }
+                    Err(crate::semantic::Stop::Cancelled) => {
+                        return Err(fail(ErrorKind::Cancelled, "search cancelled"));
+                    }
+                    // A model that cannot run leaves the hash ranking working, named as partial.
+                    Err(e) => {
+                        complete = false;
+                        layers["visual"]["embedding"]["state"] = json!("unavailable");
+                        layers["visual"]["embedding"]["reasons"] =
+                            json!([{"code": "runtime_failed", "message": e.to_string()}]);
+                        None
+                    }
+                }
+            }
+        }
+    };
+    if vision.is_none() && !any_hash {
+        return Err(FigError::new(
+            ErrorKind::ModeUnavailable,
+            "no searched source has a visual layer for this scope yet; build it with index visual, then search again",
+        )
+        .with_recovery(json!(steps.iter().filter(|s| s["arguments"]["action"] == "visual").map(|s| {
+            let mut s = s.clone();
+            s["action"] = json!("index_visual");
+            s["requires"] = json!("none");
+            s
+        }).collect::<Vec<_>>()))
+        .into());
+    }
+    let mut text = None;
+    let mut semantic = None;
+    // The query text's channels, in hybrid with text; an image alone has no text to rank.
+    if mode == ImageMode::Hybrid && !req.query.is_empty() {
+        text = Some(rank::text(&parts(loaded), q, req, key, cancel)?);
+        match profile::active(storage) {
+            Ok(Some(p)) => {
+                let mut cache = crate::semantic::lock(&LAYERS, cancel)
+                    .map_err(|_| fail(ErrorKind::Cancelled, "search cancelled"))?;
+                let layer =
+                    model_layers(tx, ws, req, loaded, &p, spent, &mut cache, steps, cancel)?;
+                layers["semantic"] = layer.clone();
+                let sides: Vec<search::semantic::Side> = loaded
+                    .iter()
+                    .map(|l| {
+                        let key = layer_key(ws.1, l.2);
+                        let (_, _, index, layer) = cache
+                            .iter()
+                            .find(|c| c.0 == key && c.1 == p.id)
+                            .expect("loaded above");
+                        search::semantic::Side { index, layer }
+                    })
+                    .collect();
+                let wide = Request {
+                    limit: rank::CANDIDATES,
+                    cursor: None,
+                    ..req.clone()
+                };
+                match search::semantic::workspace_rank(
+                    &parts(loaded),
+                    &sides,
+                    Mode::Semantic,
+                    &p,
+                    layer,
+                    &rank::first(q),
+                    &wide,
+                    key,
+                    cancel,
+                ) {
+                    Ok((ranked, decor)) => {
+                        complete &= decor.ready();
+                        semantic = Some((ranked.shown().collect(), decor.evidence()));
+                    }
+                    Err(e)
+                        if e.downcast_ref::<FigError>().map(FigError::kind)
+                            == Some(ErrorKind::OperationFailed) =>
+                    {
+                        complete = false;
+                        layers["semantic"]["state"] = json!("unavailable");
+                        layers["semantic"]["reasons"] =
+                            json!([{"code": "runtime_failed", "message": e.to_string()}]);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(None) => {
+                layers["semantic"] =
+                    json!({"state": "unavailable", "reasons": [{"code": "no_profile"}]})
+            }
+            Err(e) => {
+                complete = false;
+                layers["semantic"] = json!({"state": "unavailable", "reasons": [{"code": "profile_unreadable", "message": e.to_string()}]});
+            }
+        }
+    }
+    let channels = rank::Channels {
+        text,
+        semantic,
+        hash: any_hash.then_some(hash),
+        vision,
+    };
+    let (ranked, decor) = rank::rank(q, req, key, channels, complete)?;
+    Ok((ranked, decor, complete, layers))
 }
 
 /// A `--file` whose workspace no longer holds that path (its source was relocated) must not
