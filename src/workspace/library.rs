@@ -159,7 +159,7 @@ fn ask(
         .into());
     }
     let tx = ws.conn.unchecked_transaction().map_err(sql)?;
-    let mut rows = super::query::rows(&tx, &req.scope)?;
+    let mut rows = super::readiness::rows(&tx, &req.scope)?;
     if let Some(only) = only {
         rows.retain(|r| only.contains(&r.id));
     }
@@ -220,47 +220,18 @@ fn ask(
     for row in visible {
         let refresh = json!({"tool": "index", "arguments": {"action": "refresh",
             "workspaceId": ws_id, "sourceId": row.id, "scope": req.scope}});
-        // Regular-file checks come before any open or readiness ladder, as search does.
-        let stamp = readable(Path::new(&row.path))
-            .and_then(|p| crate::search::stamp(&p).map_err(Into::into));
-        let current = row
-            .gen_id
-            .filter(|_| row.gen_membership.as_deref() == Some(row.membership.as_str()));
-        let (state, step) = match (&stamp, current) {
-            (Err(_), _) => ("unreadable", Json::Null),
-            (_, None) => {
-                let job: Option<(String, String, i64)> = tx
-                    .query_row(
-                        "SELECT job_id, owner, attempt FROM jobs WHERE source_id = ?1
-                         AND scope = ?2 AND state IN ('queued', 'running')",
-                        [&row.id, &req.scope],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                    )
-                    .optional()
-                    .map_err(sql)?;
-                let job = job.filter(|(job, owner, attempt)| {
-                    jobs::job_alive(&ws.held.dir, owner, job, *attempt)
-                });
-                match (job, row.gen_id) {
-                    (Some((job, ..)), _) => (
-                        "pending",
-                        json!({"tool": "jobs", "arguments": {"action": "status", "jobId": job}}),
-                    ),
-                    (None, None) => ("not_prepared", refresh),
-                    (None, Some(_)) => ("stale", refresh),
-                }
+        use super::readiness::State;
+        let checked = row.check(&tx, &ws.held.dir, &req.scope, &versions, false)?;
+        let current = row.current();
+        let state = checked.state.label();
+        let step = match checked.state {
+            State::Pending => json!({"tool": "jobs", "arguments": {"action": "status",
+                "jobId": checked.job.expect("pending job")["jobId"]}}),
+            State::NotPrepared | State::StaleMembership | State::StaleStamp => refresh,
+            State::Incompatible => {
+                json!({"tool": "index", "arguments": {"action": "rebuild", "workspaceId": ws_id}})
             }
-            _ if row.versions.as_deref() != Some(versions.as_str()) => (
-                "incompatible",
-                json!({"tool": "index", "arguments": {"action": "rebuild", "workspaceId": ws_id}}),
-            ),
-            (Ok((mtime_at, len)), _)
-                if Some(*len as i64) != row.bytes
-                    || Some(super::query::mtime_ns(*mtime_at)) != row.mtime_ns =>
-            {
-                ("stale", refresh)
-            }
-            _ => ("ready", Json::Null),
+            State::Unreadable | State::Ready => Json::Null,
         };
         // As search: the snapshot was verified then, and its stamp was checked now; no hash now.
         let freshness = row.snapshot.as_ref().map(|_| {

@@ -1,6 +1,6 @@
 # Local workspaces
 
-`src/workspace.rs` is the facade over `storage.rs` (roots, placement, location records, directory, marker and locks), `database.rs` (schema, open, upgrade, registry reads) and `registry.rs` (prepare, status, add, remove, relocate, reset). Durable indexes, jobs and workspace search are in [index](index-jobs.md). CLI `figlens index`, `jobs`, `search` and `usages` with `--workspace|--file|--id`, and the MCP `index`, `jobs`, `search` and `usages` (`workspaceId`) tools call it; Pi, OpenCode and OMP reach it only through those. Connecting, listing tools, `find`, `inspect`, stateless `search` and every other command create no storage.
+`src/workspace.rs` is the facade over `storage.rs` (roots, placement, location records, directory, marker and locks), `database.rs` (schema, open, upgrade, registry reads), `registry.rs` (actions) and `readiness.rs` (published checks). Durable indexes, jobs and workspace search are in [index](index-jobs.md). CLI `figlens index`, `jobs`, `search` and `usages` with `--workspace|--file|--id`, and the MCP `index`, `jobs`, `search` and `usages` (`workspaceId`) tools call it; Pi, OpenCode and OMP reach it only through those. Connecting, listing tools, `find`, `inspect`, stateless `search` and every other command create no storage.
 
 ## Roots and storage location
 

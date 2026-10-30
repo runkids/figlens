@@ -2,6 +2,7 @@
 //! search it reads only: one SQLite read transaction, no parse, no build; a source without a
 //! ready index is reported with the step that prepares it.
 
+use super::readiness::{Row, State};
 use super::*;
 use crate::search::store::{self, Stored};
 use crate::search::usages::{self, Request, Served};
@@ -29,60 +30,22 @@ pub fn usages(
         .into());
     }
     let tx = ws.conn.unchecked_transaction().map_err(sql)?;
-    let mut stmt = tx
-        .prepare(
-            "SELECT s.source_id, s.path, s.membership, p.gen, g.membership, g.snapshot_id,
-             g.versions, n.bytes, n.mtime_ns FROM sources s
-             LEFT JOIN published p ON p.source_id = s.source_id AND p.scope = ?1
-             LEFT JOIN generations g ON g.gen = p.gen
-             LEFT JOIN snapshots n ON n.source_id = s.source_id AND n.snapshot_id = g.snapshot_id
-             ORDER BY s.added_at_ms, s.source_id",
-        )
-        .map_err(sql)?;
-    type Row = (
-        String,
-        String,
-        String,
-        Option<i64>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<i64>,
-        Option<i64>,
-    );
-    let rows: Vec<Row> = stmt
-        .query_map([&req.scope], |r| {
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-                r.get(6)?,
-                r.get(7)?,
-                r.get(8)?,
-            ))
-        })
-        .map_err(sql)?
-        .collect::<rusqlite::Result<_>>()
-        .map_err(sql)?;
-    drop(stmt);
+    let rows = super::readiness::rows(&tx, &req.scope)?;
     // The recovery repeats the caller's whole question against the new path.
     super::query::relocated(
         storage,
         select,
-        rows.iter().map(|r| r.1.as_str()),
+        rows.iter().map(|r| r.path.as_str()),
         "usages",
         req.arguments(),
     )?;
     // Invisible sources are dropped before anything about them is read or named.
     let visible: Vec<Row> = rows
         .into_iter()
-        .filter(|r| storage.sees(Path::new(&r.1)))
+        .filter(|r| storage.sees(Path::new(&r.path)))
         .collect();
     let row = match source {
-        Some(id) => visible.into_iter().find(|r| r.0 == id).ok_or_else(|| {
+        Some(id) => visible.into_iter().find(|r| r.id == id).ok_or_else(|| {
             fail(
                 ErrorKind::InvalidArguments,
                 format!("workspace {ws_id} has no source {id}"),
@@ -93,7 +56,7 @@ pub fn usages(
             let mut published: Vec<Row> = if visible.len() == 1 {
                 visible
             } else {
-                visible.into_iter().filter(|r| r.3.is_some()).collect()
+                visible.into_iter().filter(|r| r.gen_id.is_some()).collect()
             };
             if published.len() != 1 {
                 return Err(fail(
@@ -108,63 +71,44 @@ pub fn usages(
             published.remove(0)
         }
     };
-    let (id, path, membership, gen_id, gen_membership, snapshot, versions, bytes, mtime) = row;
+    let checked = row.check(&tx, &ws.held.dir, &req.scope, &store::versions(), false)?;
+    let current = row.current();
+    let Row { id, snapshot, .. } = row;
     let refresh = json!([{"action": "refresh", "requires": "none", "tool": "index",
         "arguments": {"action": "refresh", "workspaceId": ws_id, "sourceId": id, "scope": req.scope}}]);
-    let stamp =
-        readable(Path::new(&path)).and_then(|p| crate::search::stamp(&p).map_err(Into::into));
-    let Ok(stamp) = stamp else {
+    if checked.state == State::Unreadable {
         return Err(fail(
             ErrorKind::SourceUnreadable,
             format!("source {id} cannot be read now; restore access to it, then query again"),
         ));
-    };
-    let current = gen_id.filter(|_| gen_membership.as_deref() == Some(membership.as_str()));
-    if current.is_none() {
-        let job: Option<(String, String, i64)> = tx
-            .query_row(
-                "SELECT job_id, owner, attempt FROM jobs WHERE source_id = ?1 AND scope = ?2
-                 AND state IN ('queued', 'running')",
-                [&id, &req.scope],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()
-            .map_err(sql)?;
-        let job =
-            job.filter(|(job, owner, attempt)| jobs::job_alive(&ws.held.dir, owner, job, *attempt));
-        // A build on its way, or a scope never indexed: a state with its next step, never an
-        // empty result set that reads as "no usages".
-        let (state, step) = match (&job, gen_id) {
-            (Some((job, ..)), _) => (
-                "pending",
-                json!({"tool": "jobs", "arguments": {"action": "status", "jobId": job}}),
-            ),
-            (None, None) => ("not_prepared", refresh[0]["arguments"].clone()),
-            (None, Some(_)) => ("stale", Json::Null),
-        };
-        if state != "stale" && req.cursor.is_some() {
+    }
+    if matches!(checked.state, State::Pending | State::NotPrepared) {
+        if req.cursor.is_some() {
             return Err(FigError::new(
                 ErrorKind::CursorStale,
                 format!("the index this cursor paged is no longer published; query usages again without cursor once source {id} is ready"),
             )
             .into());
         }
-        if state != "stale" {
-            let step = if state == "pending" {
-                step
-            } else {
-                json!({"tool": "index", "arguments": step})
-            };
-            return Ok(json!({
-                "workspaceId": ws_id, "state": state, "definition": null,
-                "direction": if req.outgoing { "out" } else { "in" },
-                "relations": q.relations, "scope": {"nodeId": req.scope}, "results": [],
-                "coverage": {"complete": false, "layers": {"relations": crate::search::relations(state)},
-                    "reasons": [{"code": if state == "pending" { "index_pending" } else { "scope_not_indexed" }}]},
-                "hasMore": false, "nextCursor": null,
-                "source": {"sourceId": id, "snapshotId": null}, "nextSteps": [step],
-            }));
-        }
+        // A pending or never-indexed scope is not an empty set of usages.
+        let state = checked.state.label();
+        let step = if checked.state == State::Pending {
+            json!({"tool": "jobs", "arguments": {"action": "status", "jobId": checked.job.expect("pending job")["jobId"]}})
+        } else {
+            json!({"tool": "index", "arguments": refresh[0]["arguments"]})
+        };
+        return Ok(json!({
+            "workspaceId": ws_id, "state": state, "definition": null,
+            "direction": if req.outgoing { "out" } else { "in" },
+            "relations": q.relations, "scope": {"nodeId": req.scope}, "results": [],
+            "coverage": {
+                "complete": false,
+                "layers": {"relations": crate::search::relations(state)},
+                "reasons": [{"code": if state == "pending" { "index_pending" } else { "scope_not_indexed" }}],
+            },
+            "hasMore": false, "nextCursor": null,
+            "source": {"sourceId": id, "snapshotId": null}, "nextSteps": [step],
+        }));
     }
     let Some(gen_id) = current else {
         return Err(FigError::new(
@@ -177,7 +121,7 @@ pub fn usages(
         .with_recovery(refresh)
         .into());
     };
-    if versions.as_deref() != Some(store::versions().as_str()) {
+    if checked.state == State::Incompatible {
         return Err(FigError::new(
             ErrorKind::IndexIncompatible,
             format!(
@@ -187,11 +131,7 @@ pub fn usages(
         .with_recovery(rebuild)
         .into());
     }
-    let mtime_ns = stamp
-        .0
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as i64);
-    if Some(stamp.1 as i64) != bytes || Some(mtime_ns) != mtime {
+    if checked.state == State::StaleStamp {
         return Err(FigError::new(
             ErrorKind::SourceStale,
             format!("source {id} changed since it was indexed; refresh it, then query usages"),

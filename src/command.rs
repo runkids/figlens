@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use crate::USAGE;
 
 mod discover;
+pub mod index;
 #[cfg(test)]
 mod instance_tests;
 #[cfg(test)]
@@ -1158,149 +1159,47 @@ pub fn index_tool(
         .map_err(|e| figlens::workspace::rooted(&storage, e))
 }
 
-/// `index add`: a `gs://` object is downloaded first, pinned to its current generation (the
-/// only index action that reaches the network), then that download is registered.
-pub fn index_add(
-    storage: &figlens::workspace::Storage,
-    select: &figlens::workspace::Select,
-    file: &Path,
-) -> Result<Value, Box<dyn Error>> {
-    match file.to_str().filter(|f| f.starts_with("gs://")) {
-        Some(uri) => {
-            let (local, generation) =
-                figlens::remote::fetch(uri, true).map_err(|e| crate::contract::source(uri, e))?;
-            figlens::workspace::add_remote(storage, select, uri, &local, &generation)
-        }
-        None => figlens::workspace::add(storage, select, file),
-    }
-}
-
 fn index_on(
     call: &crate::contract::PreparedCall,
     file: Option<&Path>,
     project: Option<&Path>,
     storage: figlens::workspace::Storage,
 ) -> Result<(Output, Option<Runs>), Box<dyn Error>> {
-    use figlens::workspace::{self, PrepareOptions, Select};
+    use figlens::workspace::Select;
     let action = call.string("action").unwrap();
-    let source_id = call.string("sourceId");
-    let scope = call.string("scope").map(normalize_id);
-    let request = call.string("requestId");
     let id = call.string("workspaceId");
-    let missing = |what: &str| -> Box<dyn Error> {
-        figlens::FigError::new(
-            figlens::ErrorKind::InvalidArguments,
-            format!("index {action} needs {what}"),
-        )
-        .into()
-    };
-    // The file is the source itself for prepare, add and relocate, and a selector otherwise.
+    let scope = call.string("scope").map(normalize_id);
+    // For these actions the admitted file is a source, not a workspace selector.
     let source_action = matches!(action, "prepare" | "add" | "relocate");
     let select = Select::from_choice(project, file.filter(|_| !source_action), id)?;
-    let chosen = || {
-        select
-            .clone()
-            .ok_or_else(|| missing("workspace, workspaceId or file"))
+    let request = index::Request {
+        action,
+        select,
+        file,
+        project,
+        source: call.string("sourceId"),
+        scope: scope.as_deref(),
+        request: call.string("requestId"),
+        replace: call.argument("replaceUnavailable") == true,
+        cursor: call.string("cursor"),
+        ..Default::default()
     };
-    let unexpected = (scope.is_some()
-        && !matches!(
-            action,
-            "prepare" | "refresh" | "rebuild" | "track" | "untrack"
-        ))
-        || (request.is_some() && !matches!(action, "prepare" | "refresh" | "rebuild" | "track"))
-        || (call.argument("replaceUnavailable") == true && action != "prepare")
-        || (call.string("cursor").is_some() && action != "add")
-        || (source_id.is_some()
-            && !matches!(
-                action,
-                "remove" | "relocate" | "refresh" | "rebuild" | "track" | "untrack"
-            ));
-    if unexpected {
+    // Preserve option validation before the prepare-only selector error.
+    if request.applicable() && action == "prepare" && id.is_some() {
         return Err(figlens::FigError::new(
             figlens::ErrorKind::InvalidArguments,
-            format!("an argument given does not apply to index {action}; see the tool description"),
+            "index prepare needs file (and workspace for a project), not workspaceId",
         )
         .into());
     }
-    let mut outcome = None;
-    let value = match action {
-        "prepare" => {
-            if id.is_some() {
-                return Err(missing(
-                    "file (and workspace for a project), not workspaceId",
-                ));
-            }
-            let options = PrepareOptions {
-                scope: scope.as_deref(),
-                request_id: request,
-                replace_unavailable: call.argument("replaceUnavailable") == true,
-            };
-            let done = workspace::prepare(
-                &storage,
-                file.ok_or_else(|| missing("file"))?,
-                project,
-                options,
-            )?;
-            let value = done.report.clone();
-            outcome = Some(done);
-            value
-        }
-        "status" => workspace::status(&storage, &chosen()?)?,
-        "add" => match call.string("cursor") {
-            Some(cursor) => workspace::add_dir(
-                &storage,
-                &chosen()?,
-                file.ok_or_else(|| missing("file"))?,
-                None,
-                Some(cursor),
-            )?,
-            None => index_add(&storage, &chosen()?, file.ok_or_else(|| missing("file"))?)?,
-        },
-        "remove" => workspace::remove(
-            &storage,
-            &chosen()?,
-            source_id.ok_or_else(|| missing("sourceId"))?,
-        )?,
-        "relocate" => workspace::relocate(
-            &storage,
-            &chosen()?,
-            source_id.ok_or_else(|| missing("sourceId"))?,
-            file.ok_or_else(|| missing("file"))?,
-        )?,
-        "refresh" | "rebuild" => {
-            let done = if action == "refresh" {
-                workspace::refresh(&storage, &chosen()?, source_id, scope.as_deref(), request)?
-            } else {
-                workspace::jobs::rebuild_scope(
-                    &storage,
-                    &chosen()?,
-                    source_id,
-                    scope.as_deref(),
-                    request,
-                )?
-            };
-            let value = done.report.clone();
-            outcome = Some(done);
-            value
-        }
-        "track" => {
-            let scope = scope.as_deref().ok_or_else(|| missing("scope"))?;
-            let done = workspace::jobs::track(&storage, &chosen()?, source_id, scope, request)?;
-            let value = done.report.clone();
-            outcome = Some(done);
-            value
-        }
-        "untrack" => {
-            let scope = scope.as_deref().ok_or_else(|| missing("scope"))?;
-            workspace::jobs::untrack(&storage, &chosen()?, source_id, scope)?
-        }
-        "clear_cache" => workspace::clear_cache(&storage, &chosen()?)?,
-        _ => workspace::reset(&storage, &chosen()?)?,
+    let (value, outcome) = match request.run(&storage)? {
+        index::Reply::Report(value) => (value, None),
+        index::Reply::Jobs(done) => (done.report, Some(done.run)),
     };
-    let runs = outcome.filter(|o| !o.run.is_empty()).map(|o| Runs {
+    let runs = outcome.filter(|jobs| !jobs.is_empty()).map(|jobs| Runs {
         workspace_id: value["workspaceId"].as_str().unwrap_or_default().to_owned(),
         storage,
-        jobs: o.run,
+        jobs,
     });
     Ok((
         Output::Json {

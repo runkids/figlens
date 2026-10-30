@@ -12,60 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub(super) const QUERY_SOURCES: usize = 10;
 const QUERY_RECORDS: usize = 100_000;
 
-/// One registered source as the query found it.
-pub(super) struct Row {
-    pub(super) id: String,
-    pub(super) path: String,
-    pub(super) membership: String,
-    pub(super) gen_id: Option<i64>,
-    pub(super) gen_membership: Option<String>,
-    pub(super) snapshot: Option<String>,
-    pub(super) versions: Option<String>,
-    pub(super) bytes: Option<i64>,
-    pub(super) mtime_ns: Option<i64>,
-    pub(super) verified_ms: Option<i64>,
-}
-
-pub(super) fn mtime_ns(t: SystemTime) -> i64 {
-    t.duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as i64)
-}
-
-/// Every registered source with its published generation of `scope` and that snapshot's stamp,
-/// in added order, from one read of `tx`.
-pub(super) fn rows(tx: &rusqlite::Transaction, scope: &str) -> Result<Vec<Row>> {
-    let mut stmt = tx
-        .prepare(
-            "SELECT s.source_id, s.path, s.membership, p.gen, g.membership, g.snapshot_id,
-             g.versions, n.bytes, n.mtime_ns, n.verified_ms
-             FROM sources s
-             LEFT JOIN published p ON p.source_id = s.source_id AND p.scope = ?1
-             LEFT JOIN generations g ON g.gen = p.gen
-             LEFT JOIN snapshots n ON n.source_id = s.source_id AND n.snapshot_id = g.snapshot_id
-             ORDER BY s.added_at_ms, s.source_id",
-        )
-        .map_err(sql)?;
-    let rows = stmt
-        .query_map([scope], |r| {
-            Ok(Row {
-                id: r.get(0)?,
-                path: r.get(1)?,
-                membership: r.get(2)?,
-                gen_id: r.get(3)?,
-                gen_membership: r.get(4)?,
-                snapshot: r.get(5)?,
-                versions: r.get(6)?,
-                bytes: r.get(7)?,
-                mtime_ns: r.get(8)?,
-                verified_ms: r.get(9)?,
-            })
-        })
-        .map_err(sql)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(sql)?;
-    drop(stmt);
-    Ok(rows)
-}
+use super::readiness::{Row, State, rows};
 
 /// Searches `req.scope` across the workspace's visible sources (or the `only` ones), ranked as
 /// one corpus. Sources that are not ready are listed with their state and next step; stale
@@ -266,63 +213,30 @@ fn searched(
             return Err(fail(ErrorKind::Cancelled, "search cancelled"));
         }
         let mut state = json!({"sourceId": row.id, "path": row.path});
-        let job: Option<(String, String, String, i64)> = tx
-            .query_row(
-                "SELECT job_id, state, owner, attempt FROM jobs WHERE source_id = ?1 AND scope = ?2
-                 AND state IN ('queued', 'running')",
-                [&row.id, &req.scope],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()
-            .map_err(sql)?;
-        let job = job.map(|(id, s, holder, attempt)| {
-            let s = if jobs::job_alive(&dir, &holder, &id, attempt) {
-                s
-            } else {
-                "interrupted".into()
-            };
-            json!({"jobId": id, "state": s})
-        });
+        let checked = row.check(&tx, &dir, &req.scope, &versions, true)?;
+        let job = checked.job;
         if let Some(job) = &job {
             state["job"] = job.clone();
         }
         let refresh = json!({"tool": "index", "arguments": {"action": "refresh",
             "workspaceId": ws_id, "sourceId": row.id, "scope": req.scope}});
-        // Regular-file checks come before any open, so a source replaced by a FIFO cannot block.
-        let stamp =
-            readable(Path::new(&row.path)).and_then(|p| search::stamp(&p).map_err(Into::into));
-        let current =
-            row.gen_id.is_some() && row.gen_membership.as_deref() == Some(&row.membership);
-        let label = match (&stamp, current, &job) {
-            (Err(_), ..) => "unreadable",
-            (_, false, Some(j)) if j["state"] != "interrupted" => {
-                steps.push(
-                    json!({"tool": "jobs", "arguments": {"action": "status", "jobId": j["jobId"]}}),
-                );
-                "pending"
-            }
-            (_, false, _) if row.gen_id.is_some() => {
-                // Relocated or re-added since its index was built.
-                steps.push(refresh.clone());
-                "stale"
-            }
-            (_, false, _) => {
+        let label = checked.state.label();
+        match checked.state {
+            State::Pending => steps.push(
+                json!({"tool": "jobs", "arguments": {"action": "status", "jobId": job.as_ref().expect("pending job")["jobId"]}}),
+            ),
+            State::StaleMembership | State::StaleStamp => steps.push(refresh.clone()),
+            State::NotPrepared => {
                 steps.push(json!({"tool": "index", "arguments": {"action": "refresh",
                     "workspaceId": ws_id, "sourceId": row.id, "scope": req.scope},
                     "why": "this scope is not indexed for this source yet"}));
                 state["reason"] = json!("scope_not_indexed");
-                "not_prepared"
             }
-            _ if row.versions.as_deref() != Some(versions.as_str()) => {
-                steps.push(json!({"tool": "index", "arguments": {"action": "rebuild", "workspaceId": ws_id}}));
-                "incompatible"
-            }
-            (Ok(s), ..) if Some(s.1 as i64) != row.bytes || Some(mtime_ns(s.0)) != row.mtime_ns => {
-                steps.push(refresh.clone());
-                "stale"
-            }
-            _ => "ready",
-        };
+            State::Incompatible => steps.push(
+                json!({"tool": "index", "arguments": {"action": "rebuild", "workspaceId": ws_id}}),
+            ),
+            State::Unreadable | State::Ready => {}
+        }
         state["state"] = json!(label);
         if let Some(snapshot) = &row.snapshot {
             state["snapshotId"] = json!(snapshot);

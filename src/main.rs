@@ -1177,9 +1177,10 @@ mod signals {
     }
 }
 
-/// `figlens index <action> ...`: workspaces, their sources and their indexes.
+/// `figlens index <action> ...`: CLI syntax and foreground execution of shared index actions.
 fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
-    use figlens::workspace::{self, PrepareOptions, Select};
+    use command::index::{Reply, Request};
+    use figlens::workspace::{self, Select};
     let usage = || -> Box<dyn Error> {
         "usage: figlens index prepare|status|add|refresh|remove|relocate|clear|rebuild|track|untrack|reset ...; see `figlens --help`"
             .into()
@@ -1188,99 +1189,55 @@ fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
     let a = index_args(&args[1..], false)?;
     let storage = workspace::storage(a.storage.map(Path::new))?;
     let select = Select::from_choice(a.workspace.map(Path::new), a.file.map(Path::new), a.id)?;
-    let chosen = || {
-        select
-            .clone()
-            .ok_or("choose the workspace with --workspace, --file or --id")
+    let scope = a.scope.map(normalize_id);
+    let mut request = Request {
+        action: if action == "clear" {
+            "clear_cache"
+        } else {
+            action
+        },
+        select,
+        scope: scope.as_deref(),
+        request: a.request,
+        replace: a.replace,
+        cursor: a.cursor,
+        manifest: a.manifest,
+        dry_run: a.dry_run,
+        ..Default::default()
     };
-    let only_source = || -> Result<Option<&str>, Box<dyn Error>> {
-        match a.source.as_slice() {
-            [] => Ok(None),
-            [one] => Ok(Some(*one)),
-            _ => Err("--source is given twice".into()),
-        }
-    };
-    let scoped = a.scope.is_some() || a.request.is_some() || a.replace;
-    let result = match (action, a.positional.as_slice()) {
-        // Add-only flags are refused before any other action can run and write.
+    match (action, a.positional.as_slice()) {
         _ if action != "add" && (a.dry_run || a.manifest.is_some() || a.cursor.is_some()) => {
-            Err(usage())
+            return Err(usage());
         }
         ("prepare", [path]) if a.file.is_none() && a.id.is_none() && a.source.is_empty() => {
-            let scope = a.scope.map(normalize_id);
-            let options = PrepareOptions {
-                scope: scope.as_deref(),
-                request_id: a.request,
-                replace_unavailable: a.replace,
-            };
-            let outcome = workspace::prepare(
-                &storage,
-                Path::new(path),
-                a.workspace.map(Path::new),
-                options,
-            )?;
-            finish_jobs(&storage, outcome)
+            request.file = Some(Path::new(path));
+            request.project = a.workspace.map(Path::new);
         }
-        ("refresh", []) if !a.replace => {
-            let scope = a.scope.map(normalize_id);
-            let outcome = workspace::refresh(
-                &storage,
-                &chosen()?,
-                only_source()?,
-                scope.as_deref(),
-                a.request,
-            )?;
-            finish_jobs(&storage, outcome)
+        ("refresh" | "rebuild" | "track" | "untrack", []) => {
+            request.source = a.source.first().copied();
         }
-        ("rebuild", []) if !a.replace => {
-            let scope = a.scope.map(normalize_id);
-            let outcome = workspace::jobs::rebuild_scope(
-                &storage,
-                &chosen()?,
-                only_source()?,
-                scope.as_deref(),
-                a.request,
-            )?;
-            finish_jobs(&storage, outcome)
+        ("add", [path]) if a.source.is_empty() => request.file = Some(Path::new(path)),
+        ("remove", [source]) if a.source.is_empty() => request.source = Some(source),
+        ("relocate", [source, path]) if a.source.is_empty() => {
+            request.source = Some(source);
+            request.file = Some(Path::new(path));
         }
-        ("track", []) if !a.replace => {
-            let scope = normalize_id(a.scope.ok_or_else(usage)?);
-            let outcome =
-                workspace::jobs::track(&storage, &chosen()?, only_source()?, &scope, a.request)?;
-            finish_jobs(&storage, outcome)
-        }
-        ("untrack", []) if !a.replace && a.request.is_none() => {
-            let scope = normalize_id(a.scope.ok_or_else(usage)?);
-            workspace::jobs::untrack(&storage, &chosen()?, only_source()?, &scope)
-        }
-        ("add", [path]) if a.dry_run && !scoped && a.source.is_empty() => {
-            workspace::list_add(&storage, &chosen()?, Path::new(path), a.cursor)
-        }
-        ("add", [path])
-            if !a.dry_run
-                && !scoped
-                && a.source.is_empty()
-                && (a.manifest.is_some() || a.cursor.is_some()) =>
-        {
-            workspace::add_dir(&storage, &chosen()?, Path::new(path), a.manifest, a.cursor)
-        }
-        _ if scoped
-            || a.dry_run
-            || a.manifest.is_some()
-            || a.cursor.is_some()
-            || !a.source.is_empty() =>
-        {
-            Err(usage())
-        }
-        ("status", []) => workspace::status(&storage, &chosen()?),
-        ("add", [path]) => command::index_add(&storage, &chosen()?, Path::new(path)),
-        ("remove", [source]) => workspace::remove(&storage, &chosen()?, source),
-        ("relocate", [source, path]) => {
-            workspace::relocate(&storage, &chosen()?, source, Path::new(path))
-        }
-        ("clear" | "clear_cache", []) => workspace::clear_cache(&storage, &chosen()?),
-        ("reset", []) => workspace::reset(&storage, &chosen()?),
-        _ => Err(usage()),
+        ("status" | "clear" | "clear_cache" | "reset", []) if a.source.is_empty() => {}
+        _ => return Err(usage()),
+    }
+    if !request.applicable() || (matches!(action, "track" | "untrack") && scope.is_none()) {
+        return Err(usage());
+    }
+    if action != "prepare" && request.select.is_none() {
+        return Err("choose the workspace with --workspace, --file or --id".into());
+    }
+    if a.source.len() > 1 {
+        return Err("--source is given twice".into());
+    }
+    let result = match request.run(&storage) {
+        Ok(Reply::Report(value)) => Ok(value),
+        Ok(Reply::Jobs(outcome)) => finish_jobs(&storage, outcome),
+        Err(e) => Err(e),
     };
     result.map_err(|e| workspace::rooted(&storage, e))
 }
