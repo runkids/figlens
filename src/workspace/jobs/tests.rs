@@ -2949,7 +2949,7 @@ fn a_listed_set_is_bounded_before_any_member_is_resolved() {
     let d = TestDir::new();
     let (storage, select, _conn, srcs) = library_workspace(&d, 1);
     // Eleven names of one visible source, and one name past the byte cap.
-    let refused = [vec![srcs[0].1.as_str(); 11].join(","), "x".repeat(5000)].map(|list| {
+    let refused = [[srcs[0].1.as_str(); 11].join(","), "x".repeat(5000)].map(|list| {
         subscribe_set(&storage, &select, "a", &list, Some("badge"), None)
             .unwrap_err()
             .to_string()
