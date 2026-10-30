@@ -123,7 +123,7 @@ npx -y @runkids/figlens preview design.fig                        # 本機 viewe
 npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可寄給任何人的離線 HTML 快照
 ```
 
-可瀏覽頁面與圖層、搜尋、量測，檢視排版、字體、variables 與 CSS，匯出任何圖層，複製實作 prompt，或下載所選項目的 bundle。拖入你實作成果的截圖，即可疊在設計上比對。詳情：[預覽指南](../wiki/preview.md)。
+可瀏覽頁面與圖層、搜尋、排序搜尋與所選項目的精確用處（usages）、量測，檢視排版、字體、variables 與 CSS，匯出任何圖層，複製實作 prompt，或下載所選項目的 bundle。拖入你實作成果的截圖，即可疊在設計上比對。詳情：[預覽指南](../wiki/preview.md)。
 
 <a id="mcp-and-skill"></a>
 

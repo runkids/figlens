@@ -474,7 +474,7 @@ pub struct Index {
     above: Vec<(String, String)>,
     /// Token counts summed per field, so several indexes share one average.
     lens: [u64; 2],
-    stop: Option<&'static str>,
+    pub(crate) stop: Option<&'static str>,
     hidden_content: usize,
     /// Prototype links inherited from a component definition, left out as unverified.
     unverified_links: usize,
