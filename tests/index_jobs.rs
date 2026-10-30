@@ -3655,6 +3655,50 @@ fn impact_entry(detail: &Value, id: &str) -> Value {
 }
 
 #[test]
+fn a_node_subscription_inside_a_removed_then_re_added_frame_reads_both_revisions() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    // 0:12 lies inside frame 0:1, which each save removes or adds whole; 0:31 is elsewhere.
+    let subs: Vec<String> = ["0:12", "0:31"]
+        .iter()
+        .map(|n| t.subscribe(&["--node", n]))
+        .collect();
+    let save = |removed: bool| {
+        let next = env.dir.join("next.fig");
+        match removed {
+            true => corpus::write_auto_layout_removed(next.as_os_str()),
+            false => corpus::write(next.as_os_str(), false),
+        }
+        .unwrap();
+        std::fs::rename(&next, &t.path).unwrap();
+        t.index("refresh");
+        let counts: Vec<usize> = subs
+            .iter()
+            .map(|s| {
+                t.changes(&["--subscription", s])["revisions"]
+                    .as_array()
+                    .unwrap()
+                    .len()
+            })
+            .collect();
+        let all = t.changes(&[]);
+        let id = all["revisions"].as_array().unwrap().last().unwrap()["revisionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let detail = t.changes(&["--revision", &id, "--limit", "500"]);
+        (counts, impact_entry(&detail, "0:12"))
+    };
+    assert_eq!(
+        (save(true), save(false)),
+        (
+            (vec![1, 0], json!(["direct", ["old"]])),
+            (vec![2, 0], json!(["direct", ["new"]]))
+        )
+    );
+}
+
+#[test]
 fn node_subscriptions_follow_a_component_child_change_to_the_instance_and_its_frame() {
     let env = Env::new();
     // The Dot child changes; neither chip overrides it. The Chip main 0:50 holds the change

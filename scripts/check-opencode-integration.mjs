@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { existsSync, renameSync, writeFileSync } from 'node:fs';
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, stat, utimes, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
@@ -127,6 +127,8 @@ async function reply(request, response) {
   scripted.raw = messages.filter(message => message.role === 'tool').map(message =>
     typeof message.content === 'string' ? message.content : message.content.map(part => part.text ?? '').join(''));
   scripted.results = scripted.raw.map(value);
+  scripted.system = messages.filter(message => message.role === 'system').map(message =>
+    typeof message.content === 'string' ? message.content : message.content.map(part => part.text ?? '').join(''));
   const code = steps[scripted.results.length]?.(...scripted.results);
   const call = typeof code === 'string' ? { name: 'execute', arguments: JSON.stringify({ code }) }
     : code && { name: code.name, arguments: JSON.stringify(code.input) };
@@ -448,6 +450,34 @@ try {
       await until('the reload to release its lease', () => !active().length);
       return { deniedReadStartsNothing: true, statusWithoutEdit: true, saveRecorded: true, ownStop: stopped.reason, requestIdReplayed: true, otherSessionRefused: true, deletionReleases: true, reloadReleases: true };
     } finally { await writeFile(fixture, original); }
+  });
+  await check('with a disabled MCP override a consumer this session acknowledged is checked before each later prompt and noted as data', async () => {
+    const cli = args => JSON.parse(execFileSync(binary, args, { cwd: project, env, encoding: 'utf8' }));
+    const { workspaceId } = cli(['index', 'status', '--file', fixture]);
+    // The previous check rewrote the fixture, so its published index starts behind the file.
+    cli(['index', 'refresh', '--id', workspaceId, '--scope', '0:1']);
+    const notes = () => (scripted.system ?? []).filter(text => text.includes('figlens checked the watch targets'));
+    const follow = { workspaceId, consumer: 'stale-context', scope: '0:1' };
+    const [, acked] = await converse('Follow the review frame.', [() => direct('figlens_changes', follow),
+      page => page?.nextCursor && direct('figlens_watch', { action: 'ack', ...follow, cursor: page.nextCursor })]);
+    assert.equal(acked?.advanced, true, JSON.stringify(acked).slice(0, 500));
+    assert.deepEqual(notes(), [], 'a prompt before any subscribe or ack was noted');
+    const again = async text => {
+      lane([]);
+      await client.session.prompt({ sessionID: converse.session, text });
+      await client.session.wait({ sessionID: converse.session }, { signal: AbortSignal.timeout(60000) });
+      assert.ok(!scripted.error, scripted.error);
+      return notes();
+    };
+    assert.deepEqual(await again('Anything new?'), [], 'an acknowledged, verified consumer was noted');
+    const before = await stat(fixture);
+    try {
+      await utimes(fixture, before.atime, new Date(Date.now() + 60000));
+      const [note] = await again('Anything new now?');
+      assert.match(note ?? '', /not instructions/);
+      assert.match(note ?? '', /"refreshRequired":true/);
+    } finally { await utimes(fixture, before.atime, before.mtime); }
+    return { noTargetNoNote: true, freshNoNote: true, refreshRequiredNoted: true, provider: 'scripted loopback, not a model' };
   });
 } finally {
   provider.close();

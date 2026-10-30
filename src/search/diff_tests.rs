@@ -2739,6 +2739,61 @@ fn a_kept_row_whose_seed_does_not_fit_stays_a_row_but_leaves_the_impact_incomple
 }
 
 #[test]
+fn a_removed_subtree_seeds_each_layer_below_its_top_or_leaves_the_impact_incomplete() {
+    let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
+    let other = || node(20, Some(1), "FRAME", "Other", vec![]);
+    let old = doc(vec![
+        node(10, Some(1), "FRAME", "Home", vec![]),
+        node(13, Some(10), "TEXT", "Label", vec![]),
+        node(14, Some(10), "RECTANGLE", "Dot", vec![]),
+        other(),
+    ]);
+    let new = doc(vec![other()]);
+    let conn = saved(&[&Tree::new(&old), &Tree::new(&new)], "0:0");
+    let at = |bytes| {
+        let bounds = Bounds {
+            work: WORK,
+            bytes,
+            depth: DEPTH,
+            deadline: Instant::now() + DEADLINE,
+            stop: None,
+        };
+        revision_with(
+            &conn,
+            (1, side("old")),
+            (2, side("new")),
+            "0:0",
+            REVISION_BYTES,
+            bounds,
+        )
+        .unwrap()
+    };
+    use super::super::impact::Class;
+    let whole = at(PAIR_BYTES);
+    let class = |id: &str| {
+        whole
+            .impact
+            .hits
+            .iter()
+            .find(|h| h.node == id)
+            .map(|h| h.class)
+    };
+    assert_eq!(
+        (class("0:13"), class("0:14"), whole.impact.complete),
+        (Some(Class::Direct), Some(Class::Direct), true)
+    );
+    // Room for the top's seed only: the layers below it are cut, never a complete empty impact.
+    let cut = at(std::mem::size_of::<Seed>() + 4);
+    assert_eq!(
+        (
+            cut.impact.complete,
+            cut.impact.reasons.contains_key("seeds_truncated")
+        ),
+        (false, true)
+    );
+}
+
+#[test]
 fn a_partial_comparison_leaves_its_impact_incomplete_without_changes() {
     let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
     let (a, b) = (styled(12.0), styled(12.0));

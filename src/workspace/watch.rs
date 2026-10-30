@@ -780,8 +780,8 @@ pub(super) fn monitor(
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(sql)?;
-        // A tracked scope of the view that no lease serves: the view is not all watched.
-        uncovered |= live < tracked;
+        // A tracked scope of the view that no authorizing lease serves is not refreshed.
+        uncovered |= authorized < tracked;
         if live == 0 {
             continue;
         }
@@ -1287,24 +1287,23 @@ fn persist(
     Ok(true)
 }
 
-/// Whether a lease still wants `scope` of `source` at `path`, read right before a submit, so
-/// an untrack, relocation or lease end since the last union read submits nothing.
-fn served(storage: &Storage, ws_id: &str, source: &str, scope: &str, path: &Path) -> Result<bool> {
-    let (_, ws) = opened(storage, &Select::Id(ws_id.to_owned()), false)?;
-    let n: i64 = ws
-        .conn
+/// Whether a lease still wants `scope` of `source` at `path`: the runner's admission fence,
+/// read inside the submit's write, so an untrack, relocation or lease end since the last union
+/// read admits and joins nothing.
+fn served(
+    conn: &Connection,
+    incarnation: &str,
+    source: &str,
+    scope: &str,
+    path: &Path,
+) -> Result<bool> {
+    let n: i64 = conn
         .query_row(
             &format!(
                 "SELECT count(*) FROM {SERVED_FROM}
                  WHERE {SERVED} AND l.source_id = ?3 AND l.scope = ?4 AND s.path = ?5"
             ),
-            params![
-                now_ms(),
-                ws.incarnation,
-                source,
-                scope,
-                path.to_string_lossy()
-            ],
+            params![now_ms(), incarnation, source, scope, path.to_string_lossy()],
             |r| r.get(0),
         )
         .map_err(sql)?;
@@ -1476,17 +1475,15 @@ fn refresh(
         if quit.load(std::sync::atomic::Ordering::SeqCst) {
             break;
         }
-        match served(storage, ws_id, &job.source, scope, &job.path) {
-            Ok(true) => {}
-            Ok(false) => continue,
-            Err(e) => {
-                fail_with(e.to_string());
-                continue;
-            }
-        }
+        // Judged inside the admission's write, so a relocation lands wholly before it (nothing
+        // admitted or joined) or after it (and cancels the stale build itself).
+        let fence = |conn: &Connection, incarnation: &str| {
+            served(conn, incarnation, &job.source, scope, &job.path)
+        };
         let outcome =
-            match super::jobs::refresh(storage, &select, Some(&job.source), Some(scope), None) {
-                Ok(outcome) => outcome,
+            match super::jobs::refresh_fenced(storage, &select, &job.source, scope, &fence) {
+                Ok(Some(outcome)) => outcome,
+                Ok(None) => continue,
                 Err(e) => {
                     fail_with(e.to_string());
                     continue;
@@ -2033,6 +2030,35 @@ mod tests {
     }
 
     #[test]
+    fn a_monitor_is_partial_while_one_leased_scope_is_unauthorized() {
+        let dir = TestDir::new();
+        let (storage, select, dir, ids) = tracked(&dir, 1);
+        let conn = open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE).unwrap();
+        conn.execute(
+            "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
+             VALUES (?1, '0:2', 'active', 1, 'test', 0)",
+            [&ids[0]],
+        )
+        .unwrap();
+        lease(&storage, &select, None, "0:1", None).unwrap();
+        lease(&storage, &select, None, "0:2", None).unwrap();
+        conn.execute_batch(&format!(
+            "UPDATE watch_leases SET authorized_path = NULL WHERE scope = '0:2';
+             INSERT INTO watch_runner (one, token, attempt, placement, started_ms, beat_ms)
+             VALUES (1, 't', 1, 'test', 0, {now})",
+            now = now_ms()
+        ))
+        .unwrap();
+        std::fs::create_dir_all(dir.join("watch")).unwrap();
+        let held = File::create(runner_lock(&dir)).unwrap();
+        held.lock().unwrap();
+        assert_eq!(
+            monitor(&conn, &dir, &ids, None).unwrap()["state"],
+            "partial"
+        );
+    }
+
+    #[test]
     fn status_writes_nothing() {
         let dir = TestDir::new();
         let (storage, select, dir, _) = tracked(&dir, 1);
@@ -2287,6 +2313,47 @@ mod tests {
         assert_eq!(close(&storage, &ws_id, "other", attempt).unwrap(), None);
         assert_eq!(close(&storage, &ws_id, "t", attempt).unwrap(), Some(true));
         assert_eq!(rows(&dir, "SELECT closing FROM watch_runner"), 1);
+    }
+
+    #[test]
+    fn a_relocation_committed_while_the_runner_waits_to_admit_admits_and_joins_nothing() {
+        let dir = TestDir::new();
+        let (storage, select, dir, ids) = tracked(&dir, 1);
+        lease(&storage, &select, None, "0:1", None).unwrap();
+        let mut db = open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE).unwrap();
+        let path: String = db
+            .query_row("SELECT path FROM sources", [], |r| r.get(0))
+            .unwrap();
+        let moved = format!("{path}.moved.fig");
+        std::fs::copy(&path, &moved).unwrap();
+        // The relocation holds the write lock while the runner reads its lease state, and
+        // commits while the runner waits to admit.
+        let tx = db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        tx.execute("UPDATE sources SET path = ?1", [&moved])
+            .unwrap();
+        let runner = std::thread::spawn({
+            let (storage, ws_id) = (storage.clone(), select_id(&select));
+            let job = Refresh {
+                source: ids[0].clone(),
+                path: path.into(),
+                scopes: vec!["0:1".into()],
+            };
+            move || {
+                let stop = AtomicBool::new(false);
+                refresh(&storage, &ws_id, &job, &stop, &stop).job
+            }
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        tx.commit().unwrap();
+        assert_eq!(
+            (
+                runner.join().unwrap(),
+                rows(&dir, "SELECT count(*) FROM jobs")
+            ),
+            (None, 0)
+        );
     }
 
     #[test]
