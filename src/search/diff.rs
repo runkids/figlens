@@ -555,8 +555,8 @@ pub(super) fn facets(
                     a.extend(id);
                 }
             }
-            // The GUID walk visits at most one value per serialized byte.
-            if !bounds.charge(len, 0) {
+            // The GUID walk, charged per 64 serialized bytes like the digest that wrote them.
+            if !bounds.charge(len.div_ceil(64), 0) {
                 return None;
             }
             fields.push(Field {

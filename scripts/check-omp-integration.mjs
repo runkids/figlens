@@ -73,7 +73,12 @@ await check('packaged descriptor, bridge handshake and absolute design path', as
   assert.equal(config.args[0], path.resolve(packageInput, 'omp/mcp.cjs'));
   assert.equal(config.cwd, path.resolve(packageInput));
   const { connectToServer, listTools, callTool, disconnectServer } = await load('mcp/client.ts');
+  // The library question below indexes the project, so its state stays in this run's output.
+  const saved = { XDG_STATE_HOME: process.env.XDG_STATE_HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
+  process.env.XDG_STATE_HOME = path.join(output, 'descriptor-state');
+  process.env.XDG_CONFIG_HOME = path.join(output, 'descriptor-config');
   const connection = await connectToServer('figlens', config);
+  for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
   try {
     assert.ok((await listTools(connection)).some(tool => tool.name === 'find'));
     const relative = await callTool(connection, 'find', { file: 'mapping.fig', query: 'Mapping review' });
