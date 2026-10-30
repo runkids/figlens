@@ -3733,7 +3733,7 @@ fn a_schema_9_upgrade_keeps_model_rows_sources_and_incarnation() {
 }
 
 #[test]
-fn a_schema_8_upgrade_reaches_10_with_separate_visual_and_text_job_slots() {
+fn a_schema_8_upgrade_keeps_separate_visual_and_text_job_slots() {
     let d = TestDir::new();
     let (storage, select, dir) = workspace(&d, 1);
     let conn = connection(&dir);
@@ -3745,6 +3745,7 @@ fn a_schema_8_upgrade_reaches_10_with_separate_visual_and_text_job_slots() {
          DROP INDEX jobs_embed; DROP INDEX jobs_active; ALTER TABLE jobs DROP COLUMN profile_id;
          CREATE UNIQUE INDEX jobs_active ON jobs (source_id, scope)
              WHERE state IN ('queued', 'running');
+         ALTER TABLE records DROP COLUMN props;
          PRAGMA user_version = 8;",
     )
     .unwrap();
