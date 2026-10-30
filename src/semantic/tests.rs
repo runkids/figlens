@@ -83,7 +83,8 @@ fn a_vision_child_checks_every_image_before_embedding_any() {
         json!({"id": 1, "kind": "image", "texts": ["a"]}),
     ];
     for body in refused {
-        assert!(ask(body.clone(), &mut embed)["error"].is_string(), "{body}");
+        let reply = ask(body.clone(), &mut embed);
+        assert!(reply["error"].is_string() && reply["refused"] == true, "{body}: {reply}");
     }
     let ok = ask(
         json!({"id": 2, "kind": "image", "images": [good]}),

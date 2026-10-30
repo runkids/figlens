@@ -112,6 +112,19 @@ impl Kind {
     }
 }
 
+/// A text the model can never embed as given (over its token limit, empty or oversized): the
+/// one refusal kept as a permanent uncovered chunk. Any other error stays retryable.
+#[derive(Debug)]
+pub struct Refused(pub String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Error for Refused {}
+
 /// Checks one batch before it reaches a child.
 fn check_batch(texts: &[String]) -> Result<()> {
     if texts.is_empty() || texts.len() > MAX_BATCH {
@@ -218,14 +231,14 @@ fn answer(
     let kind = match req["kind"].as_str() {
         Some("query") => Kind::Query,
         Some("passage") => Kind::Passage,
-        _ => return json!({"id": id, "error": "kind is query or passage"}),
+        _ => return json!({"id": id, "error": "kind is query or passage", "refused": true}),
     };
     let texts: Option<Vec<String>> = req["texts"]
         .as_array()
         .and_then(|a| a.iter().map(|t| t.as_str().map(str::to_owned)).collect());
     let run = || -> Result<Vec<Vec<f32>>> {
         let texts = texts.ok_or("texts is an array of strings")?;
-        check_batch(&texts)?;
+        check_batch(&texts).map_err(|e| Refused(e.to_string()))?;
         checked(embed(kind, &texts)?, texts.len(), dim)
     };
     reply(id, run())
@@ -245,7 +258,7 @@ fn checked(vectors: Vec<Vec<f32>>, n: usize, dim: usize) -> Result<Vec<Vec<f32>>
 fn reply(id: Json, vectors: Result<Vec<Vec<f32>>>) -> Json {
     match vectors {
         Ok(vectors) => json!({"id": id, "vectors": vectors}),
-        Err(e) => json!({"id": id, "error": e.to_string()}),
+        Err(e) => json!({"id": id, "error": e.to_string(), "refused": e.is::<Refused>()}),
     }
 }
 
@@ -261,9 +274,10 @@ fn answer_images(
     };
     let id = req["id"].clone();
     if req["kind"] != "image" {
-        return json!({"id": id, "error": "kind is image"});
+        return json!({"id": id, "error": "kind is image", "refused": true});
     }
-    let mut run = || -> Result<Vec<Vec<f32>>> {
+    // Everything about the images themselves is a refusal of the input; only `embed` can fail.
+    let input = || -> Result<Vec<QueryImage>> {
         let images = req["images"]
             .as_array()
             .ok_or("images is an array of hex strings")?;
@@ -279,10 +293,10 @@ fn answer_images(
             })
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| fail(format!("each image is {RGB_BYTES} RGB bytes in hex")))?;
-        let images = bytes
-            .iter()
-            .map(|b| QueryImage::from_rgb(b))
-            .collect::<Result<Vec<_>>>()?;
+        bytes.iter().map(|b| QueryImage::from_rgb(b)).collect()
+    };
+    let mut run = || -> Result<Vec<Vec<f32>>> {
+        let images = input().map_err(|e| Refused(e.to_string()))?;
         checked(embed(&images)?, images.len(), dim)
     };
     reply(id, run())
@@ -515,8 +529,12 @@ impl Runtime {
         if reply["id"] != id {
             return Err(self.dead("reply answers another request"));
         }
+        // Only a declared refusal is the input's fault; any other error is the runtime's.
         if let Some(e) = reply["error"].as_str() {
-            return Err(Stop::Refused(e.to_owned()));
+            return Err(match reply["refused"] == true {
+                true => Stop::Refused(e.to_owned()),
+                false => Stop::Failed(e.to_owned()),
+            });
         }
         let parsed: Option<Vec<Vec<f32>>> = serde_json::from_value(reply["vectors"].take()).ok();
         let vectors = match parsed {
@@ -701,7 +719,7 @@ impl Drop for Runtime {
     }
 }
 
-fn sha256_file(path: &Path, cancel: &AtomicBool) -> Result<String> {
+pub(crate) fn sha256_file(path: &Path, cancel: &AtomicBool) -> Result<String> {
     // Checked before open: opening a FIFO or device would block or read without end.
     if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
         return Err(fail(format!("{} is not a regular file", path.display())));

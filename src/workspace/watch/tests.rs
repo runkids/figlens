@@ -563,7 +563,14 @@ fn a_relocation_committed_while_the_runner_waits_to_admit_admits_and_joins_nothi
         };
         move || {
             let stop = AtomicBool::new(false);
-            let done = refresh(&storage, &ws_id, &job, &stop, &stop);
+            let done = refresh(
+                &storage,
+                &ws_id,
+                &job,
+                &stop,
+                &stop,
+                &std::sync::mpsc::channel().0,
+            );
             (done.job, done.error, Instant::now())
         }
     });

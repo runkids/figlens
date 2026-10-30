@@ -174,7 +174,7 @@ fn searched(
     mode: Mode,
 ) -> Result<Json> {
     // Semantic needs a usable profile; hybrid answers as text without one and says why.
-    let (profile, downgrade) = match (mode, profile::active(storage)) {
+    let (profile, mut downgrade) = match (mode, profile::active(storage)) {
         (Mode::Text, _) => (None, None),
         (_, Ok(Some(p))) => (Some(p), None),
         (Mode::Semantic, Ok(None)) => {
@@ -195,6 +195,7 @@ fn searched(
     };
     let stop = || cancel.load(Ordering::Relaxed);
     let ws_id = ws.held.id.clone();
+    let (incarnation, version) = (ws.incarnation.clone(), ws.version);
     let dir = ws.held.dir.clone();
     if ws.version < 2 {
         return Ok(not_ready(
@@ -378,20 +379,22 @@ fn searched(
         Some(p) => {
             let mut cache = crate::semantic::lock(&LAYERS, cancel)
                 .map_err(|_| fail(ErrorKind::Cancelled, "search cancelled"))?;
+            let ws_key = (ws_id.as_str(), incarnation.as_str(), version);
             let layer = model_layers(
-                &tx, &ws_id, req, &loaded, p, &mut spent, &mut cache, &mut steps, cancel,
+                &tx, ws_key, req, &loaded, p, &mut spent, &mut cache, &mut steps, cancel,
             )?;
             let sides: Vec<search::semantic::Side> = loaded
                 .iter()
                 .map(|l| {
+                    let key = layer_key(&incarnation, l.2);
                     let (_, _, index, layer) = cache
                         .iter()
-                        .find(|c| c.0 == l.2 && c.1 == p.id)
+                        .find(|c| c.0 == key && c.1 == p.id)
                         .expect("loaded above");
                     search::semantic::Side { index, layer }
                 })
                 .collect();
-            let (ranked, decor) = search::semantic::workspace_rank(
+            match search::semantic::workspace_rank(
                 &parts(&loaded),
                 &sides,
                 mode,
@@ -401,8 +404,22 @@ fn searched(
                 req,
                 &key,
                 cancel,
-            )?;
-            (ranked, Some(decor))
+            ) {
+                Ok((ranked, decor)) => (ranked, Some(decor)),
+                // A model that cannot run leaves hybrid's text ranking working.
+                Err(e)
+                    if mode == Mode::Hybrid
+                        && e.downcast_ref::<FigError>().map(FigError::kind)
+                            == Some(ErrorKind::OperationFailed) =>
+                {
+                    downgrade = Some(json!({"code": "runtime_failed", "message": e.to_string()}));
+                    (
+                        search::corpus_rank(&parts(&loaded), &q, req, &key, cancel)?,
+                        None,
+                    )
+                }
+                Err(e) => return Err(e),
+            }
         }
         None => (
             search::corpus_rank(&parts(&loaded), &q, req, &key, cancel)?,
@@ -435,6 +452,9 @@ fn searched(
             out["query"]["usedModes"] = json!(["text"]);
             out["coverage"]["layers"]["semantic"] =
                 json!({"state": "unavailable", "reasons": [reason]});
+            // The next page could rank with the model again, so this text page is not replayable.
+            out["coverage"]["complete"] = json!(false);
+            out["nextCursor"] = Json::Null;
         }
         (None, None) => {}
     }
@@ -582,18 +602,29 @@ fn not_ready(ws_id: &str, req: &Request, states: Vec<Json>, steps: Vec<Json>) ->
     })
 }
 
-/// Fully loaded generations and their model layers, per generation and profile, reused while
-/// a process serves queries; at most `QUERY_SOURCES` are kept.
-type Layers = Vec<(i64, String, Index, search::semantic::Layer)>;
+/// Fully loaded generations and their model layers, by database incarnation, generation and
+/// profile (generation numbers repeat across workspaces), reused while a process serves
+/// queries; at most `QUERY_SOURCES` are kept.
+type Layers = Vec<(String, String, Index, search::semantic::Layer)>;
 static LAYERS: std::sync::Mutex<Layers> = std::sync::Mutex::new(Vec::new());
+
+/// The cache key of generation `gen_id` of the database `incarnation`.
+fn layer_key(incarnation: &str, gen_id: i64) -> String {
+    format!("{incarnation}/{gen_id}/{}", super::model::POLICY)
+}
+
+/// Bytes every cached layer together may keep, the search byte budget: entries this query does
+/// not use are evicted oldest first past it.
+const LAYERS_BYTES: usize = 512 * 1024 * 1024;
 
 /// Makes sure `cache` holds every loaded source's full generation and layer under `p`, reads
 /// the vectors its layer still lacks in batches, and returns the sources' combined
-/// `coverage.layers.semantic`. A source whose layer was never built adds an embed step.
+/// `coverage.layers.semantic`. Extraction shares one budget across the sources. A source whose
+/// layer is not ready adds an embed step; a schema before 9 has no stored layer to read.
 #[allow(clippy::too_many_arguments)]
 fn model_layers(
     tx: &rusqlite::Transaction,
-    ws_id: &str,
+    ws: (&str, &str, i64),
     req: &Request,
     loaded: &[(Index, Json, i64, Json)],
     p: &Profile,
@@ -602,12 +633,26 @@ fn model_layers(
     steps: &mut Vec<Json>,
     cancel: &AtomicBool,
 ) -> Result<Json> {
+    let (ws_id, incarnation, version) = ws;
+    let mut bounds = crate::expand::Bounds {
+        work: search::semantic::LAYER_WORK,
+        bytes: search::semantic::LAYER_BYTES,
+        depth: 0,
+        deadline: std::time::Instant::now() + Duration::from_secs(15),
+        stop: None,
+    };
     let mut sources = Vec::new();
     let mut ready = true;
     for (_, source, gen_id, _) in loaded {
-        let at = match cache.iter().position(|c| c.0 == *gen_id && c.1 == p.id) {
+        let key = layer_key(incarnation, *gen_id);
+        // A layer cut short by the shared budget is a miss: it is extracted again.
+        let at = match cache
+            .iter()
+            .position(|c| c.0 == key && c.1 == p.id && c.3.stop.is_none())
+        {
             Some(at) => at,
             None => {
+                cache.retain(|c| c.0 != key || c.1 != p.id);
                 let records: i64 = tx
                     .query_row(
                         "SELECT records FROM generations WHERE gen = ?1",
@@ -618,58 +663,62 @@ fn model_layers(
                 let mut index = search::store::load_with(tx, *gen_id, &[], spent, cancel)?;
                 let all: Vec<u32> = (0..records.max(0) as u32).collect();
                 search::store::add_with(tx, *gen_id, &mut index, &all, spent, cancel)?;
-                let bounds = crate::expand::Bounds {
-                    work: search::semantic::LAYER_WORK,
-                    bytes: search::semantic::LAYER_BYTES,
-                    depth: 0,
-                    deadline: std::time::Instant::now() + Duration::from_secs(15),
-                    stop: None,
-                };
                 let layer = search::semantic::Layer::new(
                     &index,
-                    json!([gen_id, p.id]),
+                    json!([key, p.id]),
                     p.dim,
-                    bounds,
+                    &mut bounds,
                     cancel,
                 )
                 .map_err(|_| fail(ErrorKind::Cancelled, "search cancelled"))?;
-                if cache.len() == QUERY_SOURCES {
-                    cache.remove(0);
+                // Evicts the oldest entry this query does not use; at most QUERY_SOURCES are used.
+                if cache.len() >= QUERY_SOURCES
+                    && let Some(old) = cache.iter().position(|c| {
+                        c.1 != p.id || !loaded.iter().any(|l| layer_key(incarnation, l.2) == c.0)
+                    })
+                {
+                    cache.remove(old);
                 }
-                cache.push((*gen_id, p.id.clone(), index, layer));
+                cache.push((key, p.id.clone(), index, layer));
                 cache.len() - 1
             }
         };
         let layer = &mut cache[at].3;
-        let missing: Vec<usize> = (0..layer.texts.len())
-            .filter(|&i| layer.vectors[i].is_none())
-            .collect();
-        let hashes: Vec<[u8; 32]> = missing
-            .iter()
-            .map(|&i| super::model::text_hash(&layer.texts[i]))
-            .collect();
-        let stored = super::model::vectors(tx, &p.id, &hashes).map_err(sql)?;
-        for (&i, hash) in missing.iter().zip(&hashes) {
-            if let Some(bytes) = stored.get(hash) {
-                layer.vectors[i] = Some(match bytes.is_empty() {
-                    true => Vec::new(),
-                    false => crate::semantic::decode(bytes, p.dim)?,
-                });
+        let built = if version >= 9 {
+            let missing: Vec<usize> = (0..layer.texts.len())
+                .filter(|&i| layer.vectors[i].is_none())
+                .collect();
+            let hashes: Vec<[u8; 32]> = missing
+                .iter()
+                .map(|&i| super::model::text_hash(&layer.texts[i]))
+                .collect();
+            let stored = super::model::vectors(tx, &p.id, &hashes).map_err(sql)?;
+            for (&i, hash) in missing.iter().zip(&hashes) {
+                if let Some(bytes) = stored.get(hash) {
+                    layer.vectors[i] = Some(match bytes.is_empty() {
+                        true => Vec::new(),
+                        false => crate::semantic::decode(bytes, p.dim)?,
+                    });
+                }
             }
-        }
-        let built = super::model::layer(tx, *gen_id, &p.id).map_err(sql)?;
+            super::model::layer(tx, *gen_id, &p.id).map_err(sql)?
+        } else {
+            None
+        };
         let mut cov = search::semantic::layer_coverage(layer, &p.id, [0, 0]);
         let state = match built.as_ref().map(|b| b["state"].as_str().unwrap_or("")) {
             None => "pending",
             Some("ready") if cov["state"] == "ready" => "ready",
-            Some("failed") => "failed",
             Some(_) => "partial",
         };
-        if state == "pending" {
+        if state != "ready" {
+            let why = match state {
+                "pending" => "this source's model layer is not built for the configured profile",
+                _ => "this source's model layer is unfinished; embed again to complete it",
+            };
             steps.push(
                 json!({"tool": "index", "arguments": {"action": "embed", "workspaceId": ws_id,
-                "sourceId": source["sourceId"], "scope": req.scope},
-                "why": "this source's model layer is not built for the configured profile"}),
+                "sourceId": source["sourceId"], "scope": req.scope}, "why": why}),
             );
         }
         ready &= state == "ready";
@@ -677,6 +726,20 @@ fn model_layers(
         cov["sourceId"] = source["sourceId"].clone();
         cov["job"] = built.map_or(Json::Null, |b| b["jobId"].clone());
         sources.push(cov);
+    }
+    let used = |c: &(String, String, Index, search::semantic::Layer)| {
+        c.1 == p.id && loaded.iter().any(|l| layer_key(incarnation, l.2) == c.0)
+    };
+    let mut total: usize = cache
+        .iter()
+        .map(|c| search::semantic::cached_bytes(&c.2, &c.3))
+        .sum();
+    while total > LAYERS_BYTES {
+        let Some(old) = cache.iter().position(|c| !used(c)) else {
+            break;
+        };
+        total -= search::semantic::cached_bytes(&cache[old].2, &cache[old].3);
+        cache.remove(old);
     }
     Ok(
         json!({"state": if ready { "ready" } else if sources.iter().any(|s| s["state"] != "pending") { "partial" } else { "pending" },

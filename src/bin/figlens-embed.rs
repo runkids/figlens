@@ -142,7 +142,7 @@ fn embed(
             .iter()
             .any(|e| e.get_attention_mask().iter().sum::<u32>() as usize > TOKENS)
         {
-            return Err(format!("a text is longer than {TOKENS} tokens").into());
+            return Err(semantic::Refused(format!("a text is longer than {TOKENS} tokens")).into());
         }
         let ids = rows(&enc, |e| e.get_ids())?;
         let mask = rows(&enc, |e| e.get_attention_mask())?;
