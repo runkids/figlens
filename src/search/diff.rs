@@ -266,6 +266,19 @@ struct Digesting<'b> {
     bounds: &'b mut Bounds,
 }
 
+/// A writer that only counts the bytes written to it.
+struct Counted(usize);
+
+impl std::io::Write for Counted {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 impl std::io::Write for Digesting<'_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let visits = (self.len + buf.len()).div_ceil(64) - self.len.div_ceil(64);
@@ -1749,12 +1762,9 @@ fn decode(text: &str, spent: &mut usize) -> Result<Facets, Box<dyn Error>> {
         super::store::charge_query(spent, 64 + key.len())?;
         if let Some(v) = &value {
             // Counted as the live build counts a kept value, without a serialized copy.
-            let mut kept = Digesting {
-                hash: Sha256::new(),
-                len: 0,
-            };
+            let mut kept = Counted(0);
             serde_json::to_writer(&mut kept, v)?;
-            super::store::charge_query(spent, kept.len)?;
+            super::store::charge_query(spent, kept.0)?;
         }
         fields.push(Field {
             key,
