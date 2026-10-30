@@ -200,7 +200,7 @@ Mehrere Designs in einem Ordner? `index add <dir> --workspace DIR` registriert b
 
 Daten: Die SQLite-Datenbank enthält registrierte lokale Pfade, Layer-Namen und effektiven Text der gewählten Bereiche, die Komponenten-Property-Werte von Instanzen, Such-Postings, exakte Beziehungen (Verschachtelung, Instanzen, Varianten, Variablen-/Style-/Bild-Bindungen, Prototyp-Ziele) und die Definitionen, auf die sie zeigen, Hashes, Generationen und Jobs. Die ursprüngliche `.fig` bleibt unverändert, wo sie ist; ihre Rohbytes werden nicht in der Datenbank gespeichert. Mit einem optionalen Modell speichert sie außerdem die Vektoren eingebetteter Chunk-Texte und für die visuelle Suche PNG-Renderings indexierter Layer; Abfragebilder werden nie gespeichert.
 
-Pi, OpenCode und OMP nutzen denselben Index über ihren eigenen Opt-in-Einstieg; der Workspace wird über Neustarts und Hosts hinweg wiederverwendet. Nicht implementiert: Datei-Events (ein Watch fragt die Datei ab, und nur solange ein Holder läuft), Vektoren und Push-Events.
+Pi, OpenCode und OMP nutzen denselben Index über ihren eigenen Opt-in-Einstieg; der Workspace wird über Neustarts und Hosts hinweg wiederverwendet. Nicht implementiert: Datei-Events (ein Watch fragt die Datei ab, und nur solange ein Holder läuft) und Push-Events.
 
 <a id="semantic-search"></a>
 

@@ -200,7 +200,7 @@ MCP：`index` 的 prepare 返回一个 job；轮询 `jobs` 直到 `succeeded`，
 
 数据：SQLite 数据库保存已注册的本地路径、所选范围的图层名称与有效文本、实例的组件属性值、搜索 postings、精确关系（包含、实例、变体、变量/样式/图片绑定、原型目标）及其指向的定义、哈希、generation 和 job。原始 `.fig` 留在原处且保持不变；其原始字节不会存入数据库。 使用可选模型时，还会保存已嵌入文本片段的向量，以及供视觉搜索使用的已索引图层 PNG 渲染图；查询图片从不保存。
 
-Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，workspace 可跨重启和宿主复用。尚未实现：文件事件（watch 以轮询读取文件，且只在有 holder 运行时进行）、向量与推送事件。
+Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，workspace 可跨重启和宿主复用。尚未实现：文件事件（watch 以轮询读取文件，且只在有 holder 运行时进行）与推送事件。
 
 <a id="semantic-search"></a>
 

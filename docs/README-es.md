@@ -200,7 +200,7 @@ Ciclo de vida: `refresh` reconstruye solo los ámbitos cuyos bytes del `.fig` ca
 
 Datos: la base de datos SQLite contiene rutas locales registradas, nombres de capas y texto efectivo de los ámbitos elegidos, valores de propiedades de componentes de las instancias, postings de búsqueda, relaciones exactas (contención, instancias, variantes, enlaces de variables/estilos/imágenes, destinos de prototipo) y las definiciones a las que apuntan, hashes, generaciones y jobs. El `.fig` original permanece sin cambios donde está; sus bytes sin procesar no se guardan en la base de datos. Con un modelo opcional también guarda los vectores de los fragmentos de texto incrustados y, para la búsqueda visual, renders PNG de las capas indexadas; las imágenes de consulta nunca se guardan.
 
-Pi, OpenCode y OMP usan el mismo índice mediante su propia entrada opt-in, y el workspace se reutiliza entre reinicios y hosts. No implementado: eventos de archivo (un watch sondea el archivo, y solo mientras un holder se ejecuta), vectores y eventos push.
+Pi, OpenCode y OMP usan el mismo índice mediante su propia entrada opt-in, y el workspace se reutiliza entre reinicios y hosts. No implementado: eventos de archivo (un watch sondea el archivo, y solo mientras un holder se ejecuta) y eventos push.
 
 <a id="semantic-search"></a>
 

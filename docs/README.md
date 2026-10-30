@@ -198,7 +198,7 @@ Several designs in one folder? `index add <dir> --workspace DIR` registers up to
 
 Data: the SQLite database holds registered local paths, the selected scopes' layer names and effective text, instances' component property values, search postings, exact relations (containment, instances, variants, variable/style/image bindings, prototype targets) and the definitions they point at, hashes, generations and jobs. The original `.fig` stays unchanged where it is; its raw bytes are not stored in the database. With an optional model it also keeps the vectors of embedded chunk texts and, for visual search, PNG renders of indexed layers; query images are never stored.
 
-Pi, OpenCode and OMP use the same index through their own opt-in entry, and the workspace is reused across restarts and hosts. Not implemented: file events (a watch polls the file, and only while a holder runs), vectors and push events.
+Pi, OpenCode and OMP use the same index through their own opt-in entry, and the workspace is reused across restarts and hosts. Not implemented: file events (a watch polls the file, and only while a holder runs) and push events.
 
 <a id="semantic-search"></a>
 

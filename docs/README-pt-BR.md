@@ -200,7 +200,7 @@ Vários designs em uma pasta? `index add <dir> --workspace DIR` registra de uma 
 
 Dados: o banco SQLite guarda caminhos locais registrados, nomes de camadas e texto efetivo dos escopos escolhidos, valores de propriedades de componente das instâncias, postings de busca, relações exatas (contenção, instâncias, variantes, vínculos de variáveis/estilos/imagens, destinos de protótipo) e as definições a que apontam, hashes, gerações e jobs. O `.fig` original permanece inalterado onde está; seus bytes brutos não são guardados no banco. Com um modelo opcional, também guarda os vetores dos trechos de texto incorporados e, para a busca visual, renderizações PNG das camadas indexadas; imagens de consulta nunca são guardadas.
 
-Pi, OpenCode e OMP usam o mesmo índice por meio de sua própria entrada opt-in, e o workspace é reutilizado entre reinícios e hosts. Não implementado: eventos de arquivo (um watch consulta o arquivo, e só enquanto um holder roda), vetores e eventos push.
+Pi, OpenCode e OMP usam o mesmo índice por meio de sua própria entrada opt-in, e o workspace é reutilizado entre reinícios e hosts. Não implementado: eventos de arquivo (um watch consulta o arquivo, e só enquanto um holder roda) e eventos push.
 
 <a id="semantic-search"></a>
 
