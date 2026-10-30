@@ -780,8 +780,8 @@ pub(super) fn monitor(
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(sql)?;
-        // A tracked scope of the view that no lease serves: the view is not all watched.
-        uncovered |= live < tracked;
+        // A tracked scope of the view that no authorizing lease serves is not refreshed.
+        uncovered |= authorized < tracked;
         if live == 0 {
             continue;
         }
@@ -1311,6 +1311,24 @@ fn served(storage: &Storage, ws_id: &str, source: &str, scope: &str, path: &Path
     Ok(n > 0)
 }
 
+/// Runs a job this runner admitted only while a lease still serves its path. A relocation that
+/// committed between `served` and the admission left the job on a path no lease authorizes, so
+/// it is cancelled unrun; one after the admission cancels the job itself.
+fn run_served(
+    storage: &Storage,
+    ws_id: &str,
+    job: &Refresh,
+    scope: &str,
+    id: &str,
+    cancel: &AtomicBool,
+) -> Result<Json> {
+    if served(storage, ws_id, &job.source, scope, &job.path)? {
+        super::jobs::run(storage, ws_id, id, cancel, &mut |_| {})
+    } else {
+        super::jobs::cancel(storage, id)
+    }
+}
+
 /// Waits for a job another process runs to end, never running or cancelling it, and returns
 /// its final report; `None` when `quit` was set first.
 fn await_joined(storage: &Storage, id: &str, quit: &AtomicBool) -> Result<Option<Json>> {
@@ -1506,7 +1524,7 @@ fn refresh(
         for id in ids {
             last = Some(id.clone());
             let report = if outcome.run.contains(&id) {
-                super::jobs::run(storage, ws_id, &id, cancel, &mut |_| {}).map(Some)
+                run_served(storage, ws_id, job, scope, &id, cancel).map(Some)
             } else {
                 await_joined(storage, &id, quit)
             };
@@ -2033,6 +2051,35 @@ mod tests {
     }
 
     #[test]
+    fn a_monitor_is_partial_while_one_leased_scope_is_unauthorized() {
+        let dir = TestDir::new();
+        let (storage, select, dir, ids) = tracked(&dir, 1);
+        let conn = open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE).unwrap();
+        conn.execute(
+            "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
+             VALUES (?1, '0:2', 'active', 1, 'test', 0)",
+            [&ids[0]],
+        )
+        .unwrap();
+        lease(&storage, &select, None, "0:1", None).unwrap();
+        lease(&storage, &select, None, "0:2", None).unwrap();
+        conn.execute_batch(&format!(
+            "UPDATE watch_leases SET authorized_path = NULL WHERE scope = '0:2';
+             INSERT INTO watch_runner (one, token, attempt, placement, started_ms, beat_ms)
+             VALUES (1, 't', 1, 'test', 0, {now})",
+            now = now_ms()
+        ))
+        .unwrap();
+        std::fs::create_dir_all(dir.join("watch")).unwrap();
+        let held = File::create(runner_lock(&dir)).unwrap();
+        held.lock().unwrap();
+        assert_eq!(
+            monitor(&conn, &dir, &ids, None).unwrap()["state"],
+            "partial"
+        );
+    }
+
+    #[test]
     fn status_writes_nothing() {
         let dir = TestDir::new();
         let (storage, select, dir, _) = tracked(&dir, 1);
@@ -2287,6 +2334,43 @@ mod tests {
         assert_eq!(close(&storage, &ws_id, "other", attempt).unwrap(), None);
         assert_eq!(close(&storage, &ws_id, "t", attempt).unwrap(), Some(true));
         assert_eq!(rows(&dir, "SELECT closing FROM watch_runner"), 1);
+    }
+
+    #[test]
+    fn an_admitted_refresh_whose_path_no_lease_authorizes_any_more_is_cancelled_unrun() {
+        let dir = TestDir::new();
+        let (storage, select, dir, ids) = tracked(&dir, 1);
+        lease(&storage, &select, None, "0:1", None).unwrap();
+        let path: String = open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap()
+            .query_row("SELECT path FROM sources", [], |r| r.get(0))
+            .unwrap();
+        super::super::jobs::refresh(&storage, &select, None, Some("0:1"), None).unwrap();
+        let id: String = open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap()
+            .query_row("SELECT job_id FROM jobs", [], |r| r.get(0))
+            .unwrap();
+        // As a relocation committed before the admission leaves it.
+        open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .unwrap()
+            .execute("UPDATE watch_leases SET authorized_path = NULL", [])
+            .unwrap();
+        let job = Refresh {
+            source: ids[0].clone(),
+            path: path.into(),
+            scopes: vec!["0:1".into()],
+        };
+        let report = run_served(
+            &storage,
+            &select_id(&select),
+            &job,
+            "0:1",
+            &id,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        // Cancelled from queued: the build never started.
+        assert_eq!(report["state"], "cancelled");
     }
 
     #[test]
