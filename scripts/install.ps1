@@ -53,11 +53,14 @@ try {
     Expand-Archive -Path "$Tmp\$Archive" -DestinationPath "$Tmp\out" -Force
 
     New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
-    $Exe = Join-Path $BinDir "figlens.exe"
-    # A running exe cannot be overwritten, but it can be renamed (figlens update replaces itself).
-    if (Test-Path $Exe) { Move-Item $Exe "$Exe.old" -Force }
-    Move-Item "$Tmp\out\figlens.exe" $Exe -Force
-    Remove-Item "$Exe.old" -Force -ErrorAction SilentlyContinue
+    # figlens-embed.exe is the optional local model runtime; figlens looks for it beside itself.
+    foreach ($Name in "figlens-embed.exe", "figlens.exe") {
+        $Exe = Join-Path $BinDir $Name
+        # A running exe cannot be overwritten, but it can be renamed (figlens update replaces itself).
+        if (Test-Path $Exe) { Move-Item $Exe "$Exe.old" -Force }
+        Move-Item "$Tmp\out\$Name" $Exe -Force
+        Remove-Item "$Exe.old" -Force -ErrorAction SilentlyContinue
+    }
 } finally {
     Remove-Item $Tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

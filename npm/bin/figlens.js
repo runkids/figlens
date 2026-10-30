@@ -13,7 +13,7 @@ const cacheRoot =
   process.env.XDG_CACHE_HOME ||
   (process.platform === "win32" ? process.env.LOCALAPPDATA : null) ||
   path.join(os.homedir(), ".cache");
-const { archive, binary } = asset(process.platform, process.arch, version);
+const { archive, binary, companion } = asset(process.platform, process.arch, version);
 const bin = cachedBinary(path.join(cacheRoot, "figlens"), process.platform, process.arch, version);
 const dir = path.dirname(bin);
 
@@ -46,7 +46,8 @@ async function install() {
     const extractor = process.platform === "win32"
       ? path.win32.join(process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows", "System32", "tar.exe")
       : "tar";
-    const tar = spawnSync(extractor, ["-xf", archive, binary], { cwd: tmp, stdio: "inherit" });
+    // Both executables land in one directory and are renamed into place together.
+    const tar = spawnSync(extractor, ["-xf", archive, binary, companion], { cwd: tmp, stdio: "inherit" });
     if (tar.status !== 0) throw new Error("tar could not extract the archive");
     fs.rmSync(path.join(tmp, archive));
     try {

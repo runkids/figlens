@@ -22,7 +22,7 @@ import threading
 import time
 import traceback
 from installation import environment, run, toolchain
-from mcp_smoke import check_directory, check_first_use, check_library, check_mcp, check_question, check_reuse
+from mcp_smoke import check_directory, check_first_use, check_library, check_mcp, check_question, check_reuse, session
 
 ROOT = Path(__file__).resolve().parent.parent
 # The synthetic mapping fixture the host lanes use; generate it as wiki/integrations.md says.
@@ -31,6 +31,30 @@ MAPPING = ROOT/'samples/plugin-research/fixtures/mapping-library.fig'
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def check_runtime(cli, mcp, cwd, env):
+    """Model-free: figlens finds the figlens-embed shipped beside it. configure checks the runtime
+    before any model file, so an empty model directory must fail on the model (an error naming
+    the profile), never on a missing runtime, and nothing is configured. Each entry is a CLI and
+    its MCP command; Pi, OpenCode and OMP launch one of them."""
+    base = Path(tempfile.mkdtemp(prefix='runtime-', dir=cwd))
+    empty = base/'model'
+    empty.mkdir()
+    env = dict(env, **{f'XDG_{kind}_HOME': str(base/kind.lower()) for kind in ['CONFIG', 'STATE', 'DATA']})
+    profile = json.loads(run([*cli, 'models', 'list'], cwd, env))['profiles'][0]['name']
+    configured = subprocess.run([*map(str, cli), 'models', 'configure', profile, '--model', str(empty)], cwd=cwd, env=env,
+                                capture_output=True, text=True, encoding='utf-8', timeout=60)
+    assert configured.returncode and f'{profile}:' in configured.stderr and 'no model runtime' not in configured.stderr, configured.stderr
+    with session(mcp, cwd, env, timeout=60) as request:
+        request('initialize', {'protocolVersion': '2025-06-18'})
+        request('notifications/initialized', {})
+        reply = request('tools/call', {'name': 'models', 'arguments': {'action': 'configure', 'profile': profile, 'modelDir': str(empty)}})
+        text = json.dumps(reply)
+        assert reply['isError'] and f'{profile}:' in text and 'no model runtime' not in text, text
+    assert json.loads(run([*cli, 'models', 'status'], cwd, env))['profiles'] == []
+    shutil.rmtree(base)
+    return {'profile': profile, 'runtimeFound': True, 'configured': False}
 
 
 def check_index(binary, fixture, cwd, env):
@@ -289,6 +313,12 @@ def main():
         expected_version = f'figlens {metadata["version"]}'
         assert run(wrapper + ['--version'], consumer, wrapped_env).strip() == expected_version
         assert sha(cache) == expected['binarySha256'], 'Wrapper ran a different native binary'
+        # The optional model runtime is extracted beside it, executable, and starts natively
+        # (no missing DLL): without a model directory it prints its usage and exits nonzero.
+        companion = cache.with_name(asset['companion'])
+        assert sha(companion) == expected['companionSha256'], 'Wrapper extracted a different model runtime'
+        started = subprocess.run([companion], cwd=consumer, env=env, capture_output=True, text=True, timeout=60)
+        assert started.returncode and 'usage: figlens-embed' in started.stderr, (started.returncode, started.stderr)
         downloads = events.read_text().splitlines()
         assert sorted(json.loads(line)['name'] for line in downloads) == sorted([archive, 'SHA256SUMS'])
         assert run(wrapper + ['--version'], consumer, wrapped_env).strip() == expected_version
@@ -300,6 +330,7 @@ def main():
             versions = list(pool.map(lambda _: run(wrapper + ['--version'], consumer, parallel_env), range(2)))
         assert all(v.strip() == expected_version for v in versions)
         assert sha(concurrent/'figlens/npm'/metadata['version']/asset['binary']) == expected['binarySha256']
+        assert sha(concurrent/'figlens/npm'/metadata['version']/asset['companion']) == expected['companionSha256']
         assert not list((work/'cache/figlens/npm').glob('.tmp-*'))
         assert not list((concurrent/'figlens/npm').glob('.tmp-*'))
         fixture = consumer/'design.fig'
@@ -308,6 +339,9 @@ def main():
         native_mcp = check_mcp([cache, 'mcp'], consumer, env, fixture, metadata['version'])
         gcs = runpy.run_path(str(ROOT/'scripts/check-gcs-snapshot.py'))['check_gcs'](cache, fixture)
         index = check_index(cache, fixture, consumer, env)
+        # OpenCode and OMP launch this cached binary; Pi launches the wrapper's MCP command below.
+        runtime = {'native': check_runtime([cache], [cache, 'mcp'], consumer, env),
+                   'wrapper': check_runtime(wrapper, wrapper + ['mcp'], consumer, wrapped_env)}
         # Each entry starts its own first use from clean roots, the way a host would launch it.
         first_use = {'nativeMcp': check_first_use([cache, 'mcp'], work/'first-use-native', fixture, env),
                      'wrapperMcp': check_first_use(wrapper + ['mcp'], work/'first-use-wrapper', fixture, wrapped_env)}
@@ -345,6 +379,7 @@ def main():
             config = pi['mcp']
             pi['stdio'] = check_mcp([config['command'], *config['args']], consumer, wrapped_env, fixture, metadata['version'])
             first_use['piMcp'] = check_first_use([config['command'], *config['args']], work/'first-use-pi', fixture, wrapped_env)
+            runtime['piMcp'] = check_runtime(wrapper, [config['command'], *config['args']], consumer, wrapped_env)
             first_use['piLibrary'] = library([config['command'], *config['args']], 'library-pi', wrapped_env)
             # Pi's registered MCP command registers a directory page by page, as an agent follows nextCursor.
             first_use['piDirectory'] = check_directory([config['command'], *config['args']], work/'directory-pi', fixture, wrapped_env)
@@ -368,6 +403,7 @@ def main():
         print(json.dumps({'layer': 'B: candidate artifacts, injected local transport; not a published release',
                           'commit': metadata['commit'], 'dirty': metadata['dirty'], 'sourceDigest': metadata['sourceDigest'],
                           'package': manifest['version'], 'tarballSha256': sha(package), 'binarySha256': sha(cache),
+                          'companionSha256': sha(companion), 'runtime': runtime,
                           'node': run([node, '--version'], consumer, env).strip(),
                           'npm': run(npm + ['--version'], consumer, env).strip(),
                           'coldInstall': True, 'warmCacheNoDownload': True, 'parallelFirstUse': True,
