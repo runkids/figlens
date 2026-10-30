@@ -1276,6 +1276,32 @@ fn an_impact_whose_escapes_pass_the_detail_budget_lists_nothing_and_keeps_its_re
 }
 
 #[test]
+fn change_rows_at_the_detail_budget_make_room_for_the_impact_summary() {
+    // Eight rows the diff admits, filling the budget exactly.
+    let node = "1".repeat(search::diff::REVISION_BYTES / 8 - 64 - "0:0".len() - "FRAME".len());
+    let room = |reserve| {
+        let mut rows: Vec<_> = (0..8)
+            .map(|_| search::diff::Row {
+                frame: "0:0".into(),
+                node: node.clone(),
+                kind: "FRAME".into(),
+                change: "changed",
+                facets: 1,
+                descendants: 0,
+            })
+            .collect();
+        let dropped = make_room(&mut rows, reserve);
+        let used: usize = rows.iter().map(row_cost).sum();
+        (
+            rows.len(),
+            dropped,
+            used + reserve <= search::diff::REVISION_BYTES,
+        )
+    };
+    assert_eq!((room(0), room(1)), ((8, false, true), (7, true, true)));
+}
+
+#[test]
 fn an_impact_that_would_pass_the_disk_cap_is_left_out_as_truncated() {
     let dir = TestDir::new();
     let (storage, select, _) = workspace(&dir, 1);

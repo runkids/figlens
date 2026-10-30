@@ -1440,6 +1440,23 @@ fn plan(conn: &mut Connection, job_id: &str, gen_id: i64) -> Result<Option<Plann
     Ok(Some(Planned { epoch, from, what }))
 }
 
+/// Bytes a change row's detail takes, as the diff admitted it.
+fn row_cost(r: &search::diff::Row) -> usize {
+    64 + r.frame.len() + r.node.len() + r.kind.len()
+}
+
+/// Drops the last change rows until they and `reserve` bytes fit one revision's detail budget,
+/// since the impact summary is always stored. Returns whether any was dropped.
+fn make_room(rows: &mut Vec<search::diff::Row>, reserve: usize) -> bool {
+    let mut used: usize = rows.iter().map(row_cost).sum();
+    let before = rows.len();
+    while used + reserve > search::diff::REVISION_BYTES {
+        let Some(r) = rows.pop() else { break };
+        used -= row_cost(&r);
+    }
+    rows.len() < before
+}
+
 /// Records the revision publishing `gen_id` makes, inside the publication `tx`, if tracking is
 /// still as `planned` read it: a baseline when tracking just started, else the planned changes.
 /// Then retires whole revision groups past retention. Returns whether one was recorded.
@@ -1516,11 +1533,7 @@ fn record(
             Vec::new(),
         ),
     };
-    let row_bytes = |rows: &[search::diff::Row]| {
-        rows.iter()
-            .map(|r| 64 + r.frame.len() + r.node.len() + r.kind.len())
-            .sum::<usize>() as u64
-    };
+    let row_bytes = |rows: &[search::diff::Row]| rows.iter().map(row_cost).sum::<usize>() as u64;
     // Its impact summary as it will be stored: the hits left out read `impact_truncated`.
     let noted = |kept: usize, by: &BTreeMap<&'static str, u64>| {
         impact.as_ref().map(|(complete, reasons)| {
@@ -1540,6 +1553,7 @@ fn record(
     let every = [Direct, Effective, EffectiveUnchanged, Possible];
     let most = every.map(|c| (c.name(), reached.len() as u64)).into();
     let reserve = len(&noted(0, &most)) as usize;
+    truncated |= make_room(&mut rows, reserve);
     let mut left = search::diff::REVISION_BYTES.saturating_sub(row_bytes(&rows) as usize + reserve);
     let (mut kept, mut by, mut hit_bytes) = (0, BTreeMap::new(), 0);
     for h in &reached {
