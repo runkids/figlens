@@ -9,7 +9,14 @@ import { cliArgs, createAdapter, indexGrant, launcherRuntime } from './adapter.m
 
 async function context(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'figlens-opencode-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  // One hook, so every adapter's children exit before root goes: Windows cannot remove a running
+  // image or a live cwd, and a failed hook skips every later one.
+  const owned = [];
+  const own = adapter => (owned.push(adapter), adapter);
+  t.after(async () => {
+    await Promise.all(owned.map(adapter => adapter.dispose()));
+    await rm(root, { recursive: true, force: true });
+  });
   const writes = [];
   const ctx = { location: { directory: root },
     session: { get: async () => ({ location: { directory: root } }), wait: async () => {}, prompt: async input => writes.push(input) },
@@ -17,9 +24,8 @@ async function context(t) {
     tool: { list: async () => [] },
     permission: { assert: async () => {} },
   };
-  const adapter = createAdapter(ctx);
-  t.after(() => adapter.dispose());
-  return { root, ctx, adapter, writes };
+  const adapter = own(createAdapter(ctx));
+  return { root, ctx, adapter, writes, own };
 }
 
 test('OpenCode preserves existing local, remote and disabled MCP settings and blocks unverified dispatch', async t => {
@@ -35,7 +41,7 @@ test('OpenCode preserves existing local, remote and disabled MCP settings and bl
 });
 
 test('OpenCode shortcuts wait until the managed MCP tools reach the tool registry', async t => {
-  const { root, ctx, writes } = await context(t);
+  const { root, ctx, writes, own } = await context(t);
   const override = process.env.FIGLENS_BIN;
   delete process.env.FIGLENS_BIN;
   t.after(() => {
@@ -47,8 +53,7 @@ test('OpenCode shortcuts wait until the managed MCP tools reach the tool registr
   let lists = 0;
   // Connected from the start; the server's tools appear only on the third registry read.
   ctx.tool.list = async () => ++lists < 3 ? [] : [{ id: 'figlensmcp_search', name: 'search', options: { namespace: 'figlensmcp' } }];
-  const adapter = createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href);
-  t.after(() => adapter.dispose());
+  const adapter = own(createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href));
   adapter.configureMcp({ get: () => undefined, set: () => {} });
   await adapter.commandHandler({ sessionID: 'session', prompt: { text: 'open the hero' } });
   assert.equal(lists, 3);
@@ -104,7 +109,7 @@ test('OpenCode closes a session\'s viewer and owner even when one of its command
 });
 
 test('selection never exports through symlinked preview or guide directories', async t => {
-  const { root, ctx } = await context(t);
+  const { root, ctx, own } = await context(t);
   const external = await mkdtemp(path.join(tmpdir(), 'figlens-external-preview-'));
   t.after(() => rm(external, { recursive: true, force: true }));
   const override = process.env.FIGLENS_BIN;
@@ -121,8 +126,7 @@ else throw new Error('Unexpected command');`);
   ctx.permission.assert = async ({ action, resources }) => {
     if (action === 'edit' && resources.some(resource => resource.startsWith(external))) throw new Error('External edit denied');
   };
-  const adapter = createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href);
-  t.after(() => adapter.dispose());
+  const adapter = own(createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href));
   const directory = path.join(root, '.figlens');
   for (const linked of ['previews', '.figlens']) {
     if (linked === 'previews') await mkdir(directory);
@@ -137,7 +141,7 @@ else throw new Error('Unexpected command');`);
 });
 
 test('cancelling a bundled export stops its native child before cleanup', async t => {
-  const { root, ctx } = await context(t);
+  const { root, ctx, own } = await context(t);
   const override = process.env.FIGLENS_BIN;
   delete process.env.FIGLENS_BIN;
   t.after(() => {
@@ -152,8 +156,7 @@ else if (process.argv[2] === 'export') {
   setTimeout(() => fs.writeFileSync(process.argv[5], 'late reference'), 500);
 } else throw new Error('Unexpected command');`);
   await writeFile(path.join(root, 'design.fig'), 'Synthetic snapshot');
-  const adapter = createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href);
-  t.after(() => adapter.dispose());
+  const adapter = own(createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href));
   for (const cancel of ['rpc', 'session']) {
     const controller = new AbortController();
     const pending = adapter.operation({ sessionID: cancel, action: 'select', file: 'design.fig', node: '0:1' }, controller.signal);
@@ -624,7 +627,7 @@ test('CLI-path track runs until its baseline job finishes, and untrack asks only
 
 // A bundled package whose native CLI answers status and holds `watch run` leases as the real one does.
 async function watching(t) {
-  const { root, ctx } = await context(t);
+  const { root, ctx, own } = await context(t);
   const override = process.env.FIGLENS_BIN;
   delete process.env.FIGLENS_BIN;
   t.after(() => {
@@ -660,8 +663,7 @@ else if (command === 'watch' && action === 'run') {
   const saved = process.env.XDG_CACHE_HOME;
   process.env.XDG_CACHE_HOME = cache;
   t.after(() => { if (saved === undefined) delete process.env.XDG_CACHE_HOME; else process.env.XDG_CACHE_HOME = saved; });
-  const adapter = createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href);
-  t.after(() => adapter.dispose());
+  const adapter = own(createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href));
   const lines = async name => (await readFile(path.join(root, name), 'utf8').catch(() => '')).split('\n').filter(Boolean);
   return { ctx, adapter, lines };
 }

@@ -82,7 +82,9 @@ jobs:
         run: node --test pi/viewer.test.mjs
       - name: OpenCode watch holder process lifecycle
         shell: bash
-        run: node --test opencode/watch-holder.test.mjs && node --test --test-name-pattern="CLI-path watch" opencode/adapter.test.mjs
+        # Bounded, so a hung child fails with the test that waited on it instead of holding the job.
+        timeout-minutes: 10
+        run: node --test --test-timeout=120000 opencode/watch-holder.test.mjs && node --test --test-timeout=120000 --test-name-pattern="CLI-path watch" opencode/adapter.test.mjs
       - name: Test
         shell: bash
         run: |
