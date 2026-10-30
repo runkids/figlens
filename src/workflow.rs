@@ -212,5 +212,9 @@ mod tests {
         assert!(
             yolo.contains("unexpected edits") && yolo.contains("leaves the working plan available")
         );
+        assert!(
+            yolo.contains("Start no watch lease, subscription or tracking unless the user asked")
+                && yolo.contains("never `forget`, another owner's or an ownerless one")
+        );
     }
 }
