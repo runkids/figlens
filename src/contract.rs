@@ -662,6 +662,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "deferred": {"type": "array", "items": {"type": "object"}, "description": "partial admission: sourceId, scope and the nextStep index call that builds it later"},
                 "deferredBecause": {"type": ["object", "null"], "description": "partial admission: the error that stopped admission, {code, message}"},
                 "coverage": {"type": "object", "description": "prepare without scope: text and relations not_requested"},
+                "partial": {"type": "boolean", "description": "clear_cache: true when a source left this caller's view meanwhile and kept its data; retry later"},
                 "nextSteps": {"type": "array", "items": {"type": "object"}},
                 "storage": {"type": "object"},
                 "paths": {"type": ["object", "null"], "description": "workspace, database and lock paths (the lock sits beside the workspace directory); null when the workspace does not exist"},

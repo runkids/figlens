@@ -302,6 +302,7 @@ pub fn changes(storage: &Storage, select: &Select, req: &Request) -> Result<Json
     // Visible sources and every row read come from one registry snapshot.
     let tx = ws.conn.unchecked_transaction().map_err(sql)?;
     let v = view(storage, &ws, req)?;
+    jobs::hold("changes");
     if v.key.is_none() {
         // A workspace from before change tracking has nothing recorded.
         if req.cursor.is_some() {

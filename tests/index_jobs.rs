@@ -3607,3 +3607,190 @@ fn a_last_evaluation_whose_columns_together_pass_the_row_cap_is_damaged_not_read
     ]);
     assert!(refused.contains("is damaged"), "{refused}");
 }
+
+/// A design inside an MCP root, tracked, and a path outside it to relocate the design to.
+fn inside_and_out(env: &Env) -> (String, String, String, String) {
+    let (inside, outside) = (env.dir.join("in"), env.dir.join("out"));
+    std::fs::create_dir(&inside).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    let path = inside.join("a.fig");
+    corpus::write(path.as_os_str(), false).unwrap();
+    let file = std::fs::canonicalize(&path).unwrap();
+    let file = file.to_str().unwrap().to_owned();
+    env.json(&["index", "prepare", &file, "--scope", "0:0"]);
+    env.json(&["index", "track", "--file", &file, "--scope", "0:0"]);
+    let root = std::fs::canonicalize(inside).unwrap();
+    let moved = std::fs::canonicalize(outside).unwrap().join("a.fig");
+    let source = env.json(&["index", "status", "--file", &file])["sources"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    (
+        file,
+        root.to_str().unwrap().to_owned(),
+        moved.to_str().unwrap().to_owned(),
+        source,
+    )
+}
+
+#[test]
+fn a_changes_read_relocated_out_of_its_root_meanwhile_reads_the_registry_it_authorized() {
+    let env = Env::new();
+    let (file, root, moved, source) = inside_and_out(&env);
+    let ws = env.json(&["changes", "--file", &file])["workspaceId"].clone();
+    let before = env.json(&["changes", "--file", &file])["revisions"].clone();
+    let gate = env.gate("changes.hold");
+    let mut mcp = Mcp::held(&env, &["--root", &root], Some(("changes", &gate)));
+    mcp.send(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "changes", "arguments": {"workspaceId": ws}}}));
+    let reached = PathBuf::from(format!("{}.reached", gate.display()));
+    wait_for("the read to choose its visible sources", || {
+        reached.exists()
+    });
+    std::fs::rename(&file, &moved).unwrap();
+    env.json(&["index", "relocate", &source, &moved, "--file", &file]);
+    // A revision published after the move. A real build would wait for this held reader to
+    // let the write-ahead log reset, so the row is written as its publication would.
+    let db = env.json(&["index", "status", "--file", &moved])["paths"]["database"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    rusqlite::Connection::open(db)
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO revisions SELECT randomblob(16), seq + 100, source_id, scope, epoch,
+             gen, from_gen, snapshot_id, kind, coverage, summary, detail, detail_rows,
+             detail_bytes, created_ms FROM revisions ORDER BY seq DESC LIMIT 1",
+        )
+        .unwrap();
+    let after = env.json(&["changes", "--file", &moved])["revisions"].clone();
+    std::fs::remove_file(&gate).unwrap();
+    let reply = loop {
+        let reply = mcp.read();
+        if reply["id"] == 1 {
+            break reply["result"]["structuredContent"].clone();
+        }
+    };
+    // The build recorded after the move is never served to a caller that cannot see it.
+    assert_eq!(
+        (
+            after.as_array().unwrap().len() > before.as_array().unwrap().len(),
+            reply["revisions"].clone(),
+        ),
+        (true, before)
+    );
+}
+
+#[test]
+fn a_clear_cache_keeps_what_a_source_moved_out_of_its_root_meanwhile_owns() {
+    let env = Env::new();
+    let (file, root, moved, source) = inside_and_out(&env);
+    // The baseline rebuild retired the first generation.
+    let ws = env.json(&["index", "status", "--file", &file])["workspaceId"].clone();
+    let db = env.json(&["index", "status", "--file", &file])["paths"]["database"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let retired = || -> i64 {
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM generations WHERE state = 'retired'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let kept = retired();
+    let gate = env.gate("clear.hold");
+    let mut mcp = Mcp::held(&env, &["--root", &root], Some(("clear_cache", &gate)));
+    mcp.send(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "index", "arguments": {"action": "clear_cache", "workspaceId": ws}}}));
+    let reached = PathBuf::from(format!("{}.reached", gate.display()));
+    wait_for("clear_cache to choose what it deletes", || reached.exists());
+    std::fs::rename(&file, &moved).unwrap();
+    env.json(&["index", "relocate", &source, &moved, "--file", &file]);
+    std::fs::remove_file(&gate).unwrap();
+    let reply = loop {
+        let reply = mcp.read();
+        if reply["id"] == 1 {
+            break reply["result"]["structuredContent"].clone();
+        }
+    };
+    assert_eq!(
+        (
+            kept > 0,
+            reply["partial"].clone(),
+            reply["removed"]["generations"].clone(),
+            retired()
+        ),
+        (true, json!(true), json!(0), kept)
+    );
+}
+
+#[test]
+fn a_retried_track_request_after_untrack_replays_its_job_and_never_tracks_again() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let track = |id: &str| {
+        env.json(&[
+            "index",
+            "track",
+            "--file",
+            file,
+            "--scope",
+            "0:0",
+            "--request-id",
+            id,
+        ])
+    };
+    let first = track("x");
+    env.json(&["index", "untrack", "--file", file, "--scope", "0:0"]);
+    let retried = track("x");
+    let fresh = track("y");
+    let outcome = |r: &Value| {
+        (
+            r["tracking"][0]["state"].clone(),
+            r["jobs"][0]["jobId"] == first["jobs"][0]["jobId"],
+        )
+    };
+    assert_eq!(
+        (outcome(&retried), outcome(&fresh)),
+        (
+            (json!("disabled"), true),
+            (json!("baseline_pending"), false)
+        )
+    );
+}
+
+#[test]
+fn a_tracked_scope_deleted_from_the_file_records_its_removal() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let scope =
+        |action: &str, node: &str| env.json(&["index", action, "--file", &t.file, "--scope", node]);
+    scope("refresh", "0:13");
+    scope("track", "0:13");
+    t.save(true);
+    scope("refresh", "0:13");
+    let revisions = env.json(&["changes", "--file", &t.file, "--scope", "0:13"])["revisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| json!([r["kind"], r["detail"], r["summary"]["kinds"]]))
+        .collect::<Vec<_>>();
+    // A scope never tracked, and missing, is still refused.
+    let refused = t.fails(&["index", "refresh", "--file", &t.file, "--scope", "0:99"]);
+    assert_eq!(
+        (revisions, refused.contains("ended \"failed\"")),
+        (
+            vec![
+                json!(["baseline", "complete", null]),
+                json!(["changes", "complete", {"removed": 1}])
+            ],
+            true
+        )
+    );
+}

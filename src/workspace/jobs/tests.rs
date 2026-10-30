@@ -576,18 +576,42 @@ fn a_submit_never_joins_a_build_of_the_source_s_previous_registration() {
     );
 }
 
+/// The workspace's two sources, with storage that sees only the first.
+fn one_hidden(d: &TestDir) -> (Storage, Storage, Select, String, String) {
+    let (storage, select, _) = workspace(d, 2);
+    let (_, ws) = opened(&storage, &select, false).unwrap();
+    let paths: Vec<(String, String)> = ws
+        .conn
+        .prepare("SELECT source_id, path FROM sources ORDER BY path")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    let seen = std::fs::canonicalize(&paths[0].1).unwrap();
+    let confined = storage.clone().confined(&[seen]);
+    let [(shown, _), (hidden, _)] = <[_; 2]>::try_from(paths).unwrap();
+    (storage, confined, select, shown, hidden)
+}
+
 #[test]
 fn a_full_workspace_names_no_job_of_a_source_the_caller_cannot_see() {
     let d = TestDir::new();
-    let (storage, select, _) = workspace(&d, 1);
+    let (storage, confined, select, shown, hidden) = one_hidden(&d);
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
     for i in 0..MAX_ACTIVE {
-        queued(&storage, &select, &format!("{i}:0"));
+        submit(
+            &storage,
+            &mut ws,
+            "refresh",
+            &hidden,
+            &format!("{i}:0"),
+            None,
+        )
+        .unwrap();
     }
-    let elsewhere = std::fs::canonicalize(d.join("home")).unwrap();
-    let confined = storage.clone().confined(&[elsewhere]);
     let (_, mut ws) = opened(&confined, &select, true).unwrap();
-    let source = sources(&ws.conn)[0].clone();
-    let Err(error) = submit(&confined, &mut ws, "refresh", &source, "99:0", None) else {
+    let Err(error) = submit(&confined, &mut ws, "refresh", &shown, "99:0", None) else {
         panic!("admitted");
     };
     let recovery = error
@@ -596,6 +620,24 @@ fn a_full_workspace_names_no_job_of_a_source_the_caller_cannot_see() {
         .recovery()
         .unwrap();
     assert_eq!(recovery[0]["jobIds"], json!([]), "{recovery}");
+}
+
+#[test]
+fn a_submit_of_a_source_the_caller_cannot_see_is_refused_before_admitting_anything() {
+    let d = TestDir::new();
+    let (storage, confined, select, _, hidden) = one_hidden(&d);
+    // A request already admitted for the hidden source is not replayed to this caller either.
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    submit(&storage, &mut ws, "refresh", &hidden, "0:0", Some("r")).unwrap();
+    let (_, mut ws) = opened(&confined, &select, true).unwrap();
+    let count = |ws: &Opened| -> i64 {
+        ws.conn
+            .query_row("SELECT count(*) FROM jobs", [], |r| r.get(0))
+            .unwrap()
+    };
+    let before = count(&ws);
+    let refused = submit(&confined, &mut ws, "refresh", &hidden, "0:0", Some("r")).is_err();
+    assert_eq!((refused, count(&ws)), (true, before));
 }
 
 /// The logical size of the database in bytes, uncheckpointed pages included.
