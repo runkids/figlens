@@ -375,6 +375,45 @@ fn binary_values_of_equal_length_differ_and_an_override_holding_bytes_is_unread(
 }
 
 #[test]
+fn an_unread_field_is_charged_its_metadata_like_a_read_one() {
+    let held = (
+        "fillPaints",
+        K::Array(vec![obj(vec![
+            ("type", K::Enum("PaintType", "SOLID")),
+            ("blob", K::Bytes(vec![1, 2])),
+        ])]),
+    );
+    let giant = text(&"x".repeat(FIELD_BYTES + 1));
+    // Too large to read, a malformed blob, and an override holding bytes.
+    for (message, id) in [
+        (
+            doc(vec![node(10, Some(1), "TEXT", "T", vec![giant])]),
+            "0:10",
+        ),
+        (vector_with(Some(K::UInt(1))), "0:10"),
+        (
+            with_instance(30, vec![obj(vec![path(&[31]), held])]),
+            "I0:11;0:31",
+        ),
+    ] {
+        let tree = Tree::new(&message);
+        let bounds = super::super::tests::bounds;
+        let (ex, _) = crate::expand::expand_instances_bounded(&tree, "0:0", bounds(WORK));
+        let mut b = bounds(WORK);
+        let before = b.bytes;
+        let f = facets(&tree, id, ex.nodes.get(id), &mut b).unwrap();
+        assert!(f.fields.iter().any(|f| f.digest.is_none()), "{id}");
+        // Each field pays its metadata, and a kept value its serialized length; nothing else.
+        let kept: usize = f
+            .fields
+            .iter()
+            .map(|f| 64 + f.key.len() + f.value.as_ref().map_or(0, |v| v.to_string().len()))
+            .sum();
+        assert_eq!(before - b.bytes, kept, "{id}");
+    }
+}
+
+#[test]
 fn a_page_full_of_long_names_ends_early_and_its_cursor_reaches_every_change() {
     let name = "n".repeat(2000);
     let side = |red: f64| {

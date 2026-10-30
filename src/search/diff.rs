@@ -293,7 +293,11 @@ pub(super) fn facets(
                     Value::Owned(v) => placeholder(v),
                     Value::Kiwi(_) => false,
                 };
+            // A field kept unread retains its metadata, charged as a read one's is.
             if unread || gone {
+                if !bounds.charge(0, 64 + key.len()) {
+                    return None;
+                }
                 fields.push(Field {
                     key,
                     facet: facet as u8,
@@ -347,6 +351,9 @@ pub(super) fn facets(
                 blobs.extend(b);
             }
             if large {
+                if !bounds.charge(0, 64 + key.len()) {
+                    return None;
+                }
                 fields.push(Field {
                     key,
                     facet: facet as u8,
