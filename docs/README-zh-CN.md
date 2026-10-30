@@ -125,7 +125,7 @@ npx -y @runkids/figlens preview design.fig                        # 本地 viewe
 npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可发给任何人的离线 HTML 快照
 ```
 
-浏览页面和图层、搜索、排序搜索与所选内容的精确用处（usages）、测量，检查布局、字体样式、变量和 CSS，导出任意图层，复制实现提示词，或下载所选内容的 bundle。导入你实现的截图，即可叠加在设计上比对。详情：[预览指南](../wiki/preview.md)。
+浏览页面和图层、搜索、排序搜索与所选内容的精确用处（usages）、测量，检查布局、字体样式、变量和 CSS，导出任意图层，复制实现提示词，或下载所选内容的 bundle。排序搜索可借助可选的本地模型切换为语义或混合模式，只有按下 Enable index 时，查看器才会为文件建立索引。导入你实现的截图，即可叠加在设计上比对。详情：[预览指南](../wiki/preview.md)。
 
 <a id="mcp-and-skill"></a>
 

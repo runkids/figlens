@@ -39,8 +39,10 @@
           <label><input id="rankedHidden" type="checkbox"> Include hidden</label>
           <label><input id="rankedInternal" type="checkbox"> Include internal</label>
           <label><input id="rankedSelection" type="checkbox"> Current selection only (default: whole file)</label>
+          <label>Mode <select id="rankedMode"><option value="text">Text</option><option value="semantic">Semantic (local model)</option><option value="hybrid">Hybrid</option></select></label>
           <button id="rankedGo" type="submit">Search</button>
         </form>
+        <div id="semanticPanel" hidden><output id="semanticState" role="status" aria-live="polite"></output> <button id="semanticEnable" type="button" hidden>Enable index</button></div>
         <p id="rankedNote" hidden>Searching the packaged scope only — absence here says nothing about the rest of the file</p>
         <output id="rankedStatus" role="status" aria-live="polite"></output>
         <button id="rankedRetry" type="button" hidden>Retry</button>

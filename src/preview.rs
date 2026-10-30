@@ -456,7 +456,13 @@ const IDLE: &str = "idle connection";
 /// percent-encoded (3 bytes per byte), plus the other bounded parameters.
 const MAX_LINE: usize = 6 * search::store::ID_BYTES + 4096;
 
-fn request(stream: &TcpStream, authority: &str, token: &str) -> Result<String> {
+/// Routes that change state take POST, never GET, so no prefetch, cache or link can trigger them.
+const POSTS: [&str; 1] = ["enable/"];
+/// The largest POST body: a small JSON object.
+const POST_BYTES: usize = 4096;
+
+/// The route of a bounded same-origin request, with the body of a POST.
+fn request(stream: &TcpStream, authority: &str, token: &str) -> Result<(String, Option<Vec<u8>>)> {
     // Requests are served one at a time, so an idle socket must not hold the service for long.
     stream.set_read_timeout(Some(Duration::from_millis(300)))?;
     let mut reader = BufReader::new(stream);
@@ -474,9 +480,11 @@ fn request(stream: &TcpStream, authority: &str, token: &str) -> Result<String> {
         return Err("request too large".into());
     }
     let parts: Vec<_> = first.split_whitespace().collect();
-    if parts.len() != 3 || parts[0] != "GET" || parts[2] != "HTTP/1.1" {
-        return Err("only HTTP/1.1 GET supported".into());
+    if parts.len() != 3 || !matches!(parts[0], "GET" | "POST") || parts[2] != "HTTP/1.1" {
+        return Err("only HTTP/1.1 GET or POST supported".into());
     }
+    let post = parts[0] == "POST";
+    let (mut origin, mut json, mut length, mut same_origin) = (false, false, None, true);
     let mut host = false;
     let (mut cross_site, mut navigate, mut document) = (false, false, false);
     let mut total = 0;
@@ -498,8 +506,22 @@ fn request(stream: &TcpStream, authority: &str, token: &str) -> Result<String> {
                 key.eq_ignore_ascii_case("sec-fetch-site") && value.trim() == "cross-site";
             navigate |= key.eq_ignore_ascii_case("sec-fetch-mode") && value.trim() == "navigate";
             document |= key.eq_ignore_ascii_case("sec-fetch-dest") && value.trim() == "document";
-            if key.eq_ignore_ascii_case("origin") && value.trim() != format!("http://{authority}") {
-                return Err("origin rejected".into());
+            if key.eq_ignore_ascii_case("origin") {
+                if value.trim() != format!("http://{authority}") {
+                    return Err("origin rejected".into());
+                }
+                origin = true;
+            }
+            json |= key.eq_ignore_ascii_case("content-type") && value.trim() == "application/json";
+            same_origin &=
+                !key.eq_ignore_ascii_case("sec-fetch-site") || value.trim() == "same-origin";
+            if key.eq_ignore_ascii_case("content-length") {
+                length = Some(
+                    value
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|_| "invalid headers")?,
+                );
             }
         }
     }
@@ -513,7 +535,20 @@ fn request(stream: &TcpStream, authority: &str, token: &str) -> Result<String> {
     if cross_site && !(route.is_empty() && navigate && document) {
         return Err("cross-site request rejected".into());
     }
-    Ok(route.to_owned())
+    if post != POSTS.iter().any(|p| route.starts_with(p)) {
+        return Err("method not allowed for this route".into());
+    }
+    if !post {
+        return Ok((route.to_owned(), None));
+    }
+    // A state change comes only from this page: its own origin, as JSON, with a small declared body.
+    let length = length.filter(|n| *n <= POST_BYTES);
+    let (true, true, true, Some(length)) = (origin, same_origin, json, length) else {
+        return Err("post rejected".into());
+    };
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body)?;
+    Ok((route.to_owned(), Some(body)))
 }
 
 fn reply(mut stream: TcpStream, result: Result<(&str, Vec<u8>)>, area: Option<&str>) {
@@ -565,6 +600,7 @@ pub fn serve(file: &Path, initial: Option<&str>, address: SocketAddr) -> Result<
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get().clamp(2, 8));
     // A connection accepted just as a save was noticed is answered after the reload.
     let mut pending: Option<TcpStream> = None;
+    let indexing = semantic::Indexing::default();
     loop {
         // Decode once per revision; the revision's workers share the tree and finish before a reload.
         let (fresh, stamp, identity) = {
@@ -585,6 +621,7 @@ pub fn serve(file: &Path, initial: Option<&str>, address: SocketAddr) -> Result<
                 bundles: AtomicUsize::new(0),
                 source: source.clone(),
                 indexes: Mutex::default(),
+                indexing: &indexing,
             };
             let (jobs, queue) = mpsc::channel::<TcpStream>();
             let queue = Mutex::new(queue);
@@ -625,6 +662,8 @@ pub fn serve(file: &Path, initial: Option<&str>, address: SocketAddr) -> Result<
                 }
             })?
         };
+        // A build of the old bytes must not publish under the new revision: stop it first.
+        indexing.stop();
         document = fresh;
         version = stamp;
         source = identity;
@@ -658,6 +697,8 @@ struct Revision<'r> {
     source: Value,
     /// Search indexes of this revision's scopes, most recently used last.
     indexes: Mutex<Vec<(String, Built)>>,
+    /// The index build the user enabled, owned across revisions until a save stops it.
+    indexing: &'r semantic::Indexing,
 }
 
 /// One scope's index, built once by the first request and shared by those that wait on it.
@@ -682,8 +723,11 @@ impl Revision<'_> {
         {
             return;
         }
-        let key = route.as_ref().ok().cloned();
-        let result = route.and_then(|route| self.respond(&route));
+        let key = route.as_ref().ok().map(|(route, _)| route.clone());
+        let result = route.and_then(|(route, body)| match body {
+            Some(body) => self.post(&route, &body),
+            None => self.respond(&route),
+        });
         let area = key.and_then(|k| self.memory.lock().ok()?.areas.get(&k).cloned());
         reply(stream, result, area.as_deref());
     }
@@ -735,6 +779,13 @@ impl Revision<'_> {
         }
         if let Some(rest) = route.strip_prefix("usages/") {
             return Ok(("application/json", self.relations(true, rest)?));
+        }
+        // Semantic readiness; refusals are JSON, as search's are.
+        if let Some(rest) = route.strip_prefix("semantic/") {
+            let reply = self
+                .semantic(rest)
+                .unwrap_or_else(|e| refusal(&*e, &self.source));
+            return Ok(("application/json", reply.to_string().into_bytes()));
         }
         let (action, id) = scope_route(route, self.generation)?;
         let (id, key) = id.rsplit_once('/').unwrap_or((id, ""));
@@ -854,7 +905,7 @@ impl Revision<'_> {
             ]
         } else {
             &[
-                "q", "scope", "type", "hidden", "internal", "limit", "cursor",
+                "q", "scope", "type", "hidden", "internal", "limit", "cursor", "mode",
             ]
         };
         if let Some((key, _)) = params.iter().find(|(k, _)| !known.contains(&k.as_str())) {
@@ -915,15 +966,18 @@ impl Revision<'_> {
                     cursor: one("cursor"),
                 };
                 req.validate()?;
-                search::search_index(&*self.index(&req.scope)?, &req, self.source.clone())
+                let mode = one("mode").unwrap_or_else(|| "text".to_owned());
+                match crate::semantic::Mode::parse(&mode) {
+                    Some(crate::semantic::Mode::Text) => {
+                        search::search_index(&*self.index(&req.scope)?, &req, self.source.clone())
+                    }
+                    // Semantic and hybrid read this file's enabled workspace index, never this tree.
+                    Some(mode) => self.indexed_search(&req, mode),
+                    None => Err("mode takes text, semantic or hybrid".into()),
+                }
             }
         })()
-        .unwrap_or_else(|e| {
-            let kind = e
-                .downcast_ref::<FigError>()
-                .map(|f| format!("{:?}", f.kind()));
-            json!({"error": {"kind": kind, "message": e.to_string()}, "source": self.source})
-        });
+        .unwrap_or_else(|e| refusal(&*e, &self.source));
         Ok(reply.to_string().into_bytes())
     }
 
@@ -993,6 +1047,13 @@ impl Revision<'_> {
 
 const STALE: &str = "Saved design changed; wait for the preview to refresh.";
 
+/// A refused route's JSON reply: the error's kind, message and any recovery, beside `source`.
+fn refusal(e: &(dyn Error + 'static), source: &Value) -> Value {
+    let figlens = e.downcast_ref::<FigError>();
+    let kind = figlens.map(|f| format!("{:?}", f.kind()));
+    json!({"error": {"kind": kind, "message": e.to_string(), "recovery": figlens.and_then(|f| f.recovery())}, "source": source})
+}
+
 /// `application/x-www-form-urlencoded` pairs, as `URLSearchParams` writes them: `+` is a space.
 fn form(query: &str) -> Result<Vec<(String, String)>> {
     let decode = |text: &str| -> Result<String> {
@@ -1050,5 +1111,6 @@ fn staged(file: &Path) -> Result<Staged> {
     Ok((document, modified, source))
 }
 
+mod semantic;
 #[cfg(test)]
 mod tests;

@@ -25,6 +25,15 @@ Code: `src/workspace/query.rs` (`search_mode`, `model_layers`), `src/workspace/m
 - Schema 9 stores vectors once per profile and chunk-text SHA-256 (`model_vectors`), per-generation references (`model_refs`) and layer progress (`model_layers`). Dropping a generation (retention, rebuild, remove, clear) drops its references and any vector nothing references. Reset deletes the database as before.
 - Diagnostic, not a gate: embedding 210 short texts took 5.8 s including model load on an 18-CPU Docker host; a cold CLI workspace semantic search took 1.6 s.
 
+## Viewer
+
+Code: `src/preview/semantic.rs`, `src/preview/viewer.js` (`semanticSummary`), tests in `tests/preview_semantic.rs`.
+
+- The live viewer's ranked search has a Mode select (Text, Semantic, Hybrid; disabled in snapshots). Text keeps the in-memory index: opening a design and searching its text create no workspace and start no model.
+- `semantic/<revision>?scope=ID` is read-only: `models status` profiles and setup, `index status` of the file's source-scoped workspace (a missing one stays missing) and the viewer's own build of that scope.
+- `POST enable/<revision>` with `{"scope": ID}` is the explicit Enable index button, which names the scope (the line beside it the file): the viewer's only POST (same-origin `Origin`, `Sec-Fetch-Site` same-origin when sent, `application/json`, declared body ≤ 4 KiB), so no prefetch, cache or link can create a workspace. The scope must be a stored layer of the current revision, never widened. A viewer thread owns the jobs: the prepare's text build, then, with an active profile, `index embed` of that scope; one build at a time, rejoined while it runs, polled each second for stage and progress. A save stops it (cancels and awaits its jobs and workers) before the new revision serves; ending the process ends its workers as for any job owner.
+- `search/<revision>?…&mode=semantic|hybrid` runs workspace `search_mode` and is served only while the workspace's one source is `ready` with this revision's `sourceId` and `snapshotId`, else `mode_unavailable` naming Enable; the reply's `coverage.layers.semantic` reasons are listed verbatim (a hybrid fallback says `no_profile`). Model setup stays in each host's `models` tool: the page takes no paths, model folders or URLs.
+
 ## Models
 
 - `figlens models list|status`, `models configure bge-m3 --model DIR [--runtime FILE]`, `models remove bge-m3` (MCP `models`: `action`, `profile`, `modelDir`). The profile is stored in `models.json` under the config root (same XDG/`%LOCALAPPDATA%` rules as other state). `remove` forgets the profile and keeps the files.

@@ -125,7 +125,7 @@ npx -y @runkids/figlens preview design.fig                        # local viewer
 npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # offline HTML snapshot to send to anyone
 ```
 
-Browse pages and layers, search, run ranked search and exact usages of the selection, measure, inspect layout, typography, variables and CSS, export any layer, copy an implementation prompt or download a bundle for the selection. Drop in a screenshot of your build to overlay it on the design. Details: [preview guide](../wiki/preview.md).
+Browse pages and layers, search, run ranked search and exact usages of the selection, measure, inspect layout, typography, variables and CSS, export any layer, copy an implementation prompt or download a bundle for the selection. Switch ranked search to semantic or hybrid with an optional local model: the viewer indexes the file only when you press Enable index. Drop in a screenshot of your build to overlay it on the design. Details: [preview guide](../wiki/preview.md).
 
 <a id="mcp-and-skill"></a>
 

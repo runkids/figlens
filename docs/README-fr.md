@@ -125,7 +125,7 @@ npx -y @runkids/figlens preview design.fig                        # viewer local
 npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # snapshot HTML hors ligne à envoyer à n’importe qui
 ```
 
-Parcourez les pages et les calques, recherchez, lancez la recherche classée et les usages exacts de la sélection, mesurez, inspectez la mise en page, la typographie, les variables et le CSS, exportez n’importe quel calque, copiez un prompt d’implémentation ou téléchargez un bundle pour la sélection. Déposez une capture d’écran de votre build pour la superposer au design. Détails : [guide du preview](../wiki/preview.md).
+Parcourez les pages et les calques, recherchez, lancez la recherche classée et les usages exacts de la sélection, mesurez, inspectez la mise en page, la typographie, les variables et le CSS, exportez n’importe quel calque, copiez un prompt d’implémentation ou téléchargez un bundle pour la sélection. Passez la recherche classée en mode sémantique ou hybride avec un modèle local facultatif : le visualiseur n’indexe le fichier que lorsque vous cliquez sur Enable index. Déposez une capture d’écran de votre build pour la superposer au design. Détails : [guide du preview](../wiki/preview.md).
 
 <a id="mcp-and-skill"></a>
 

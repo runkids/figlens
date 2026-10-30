@@ -125,7 +125,7 @@ npx -y @runkids/figlens preview design.fig                        # viewer local
 npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # snapshot HTML offline para enviar a cualquiera
 ```
 
-Explora páginas y capas, busca, usa la búsqueda clasificada y los usos exactos de la selección, mide, inspecciona layout, tipografía, variables y CSS, exporta cualquier capa, copia un prompt de implementación o descarga un bundle de la selección. Suelta una captura de pantalla de tu build para superponerla al diseño. Detalles: [guía de preview](../wiki/preview.md).
+Explora páginas y capas, busca, usa la búsqueda clasificada y los usos exactos de la selección, mide, inspecciona layout, tipografía, variables y CSS, exporta cualquier capa, copia un prompt de implementación o descarga un bundle de la selección. Cambia la búsqueda clasificada a semántica o híbrida con un modelo local opcional: el visor indexa el archivo solo cuando pulsas Enable index. Suelta una captura de pantalla de tu build para superponerla al diseño. Detalles: [guía de preview](../wiki/preview.md).
 
 <a id="mcp-and-skill"></a>
 
