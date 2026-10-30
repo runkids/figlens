@@ -230,6 +230,25 @@ try {
     assert.equal(flow.usedSource, true);
     return { ...flow, sources: undefined, paths: paths.filter(item => /index|jobs|search|inspect|usages/.test(item)), provider: 'scripted loopback, not a model' };
   });
+  await check('through managed MCP a consumer acknowledged in Code Mode gets an explicit-check reminder before each later prompt', async () => {
+    const { workspaceId } = JSON.parse((await execute(binary, ['index', 'status', '--file', fixture], { cwd: project, env })).stdout);
+    await execute(binary, ['index', 'track', '--id', workspaceId, '--scope', '0:0'], { cwd: project, env });
+    const follow = { workspaceId, consumer: 'mcp-stale', scope: '0:0' };
+    const reminders = () => (scripted.system ?? []).filter(text => text.includes('figlens does not check these watch targets in the background here'));
+    const [, acked] = await converse('Follow the whole design.', [() => catalog(['changes', 'watch']),
+      paths => tool(paths, 'changes') && tool(paths, 'watch') && `
+        const page = await ${tool(paths, 'changes')}(${JSON.stringify(follow)});
+        return await ${tool(paths, 'watch')}({ action: 'ack', ...${JSON.stringify(follow)}, cursor: page.nextCursor });`]);
+    assert.equal(acked?.advanced, true, JSON.stringify(scripted.raw).slice(0, 1000));
+    assert.deepEqual(reminders(), [], 'a prompt before any subscribe or ack was reminded');
+    lane([]);
+    await client.session.prompt({ sessionID: converse.session, text: 'Anything new?' });
+    await client.session.wait({ sessionID: converse.session }, { signal: AbortSignal.timeout(60000) });
+    assert.ok(!scripted.error, scripted.error);
+    const [note] = reminders();
+    assert.match(note ?? '', /"consumer":"mcp-stale"/, JSON.stringify(scripted.system).slice(0, 1000));
+    return { noTargetNoReminder: true, codeModeAckReminded: true, provider: 'scripted loopback, not a model' };
+  });
   await check('MCP reset asks the figlens_index permission: a deny rule keeps the database, an allow resets it', async () => {
     const [, refused] = await converse('Reset the design index.', resetSteps, [...allowAll, { action: 'figlens_index', resource: 'reset', effect: 'deny' }]);
     assert.match(refused?.refused ?? '', /permission|denied|rule/i, JSON.stringify(refused));
