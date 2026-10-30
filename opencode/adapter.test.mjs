@@ -784,12 +784,7 @@ async function watching(t) {
   const native = `const fs = require('node:fs');
 const say = value => console.log(JSON.stringify(value));
 const [command, action] = process.argv.slice(2);
-if (command === 'index' && action === 'status') {
-  // As the binary, --source narrows the listed sources.
-  const sources = [{ sourceId: 's1', path: '/a.fig' }, { sourceId: 's2', path: '/b.fig' }];
-  const only = process.argv.includes('--source') ? process.argv[process.argv.indexOf('--source') + 1] : null;
-  say({ paths: { workspace: '/w', lock: '/w.lock' }, roots: { config: { path: '/c' } }, sources: sources.filter(s => !only || s.sourceId === only) });
-}
+if (command === 'index' && action === 'status') say({ paths: { workspace: '/w', lock: '/w.lock' }, roots: { config: { path: '/c' } }, sources: [{ sourceId: 's1', path: '/a.fig' }, { sourceId: 's2', path: '/b.fig' }] });
 else if (command === 'watch' && action === 'status') say({ leases: [], runner: { state: 'stopped' } });
 else if (command === 'watch' && action === 'run') {
   fs.appendFileSync('runs', process.argv.slice(4).join(' ') + '\\n');

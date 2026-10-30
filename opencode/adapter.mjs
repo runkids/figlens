@@ -424,7 +424,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
     // including sets and definitions in other sources, so start asks read on every registered source.
     if (tool === 'watch' && input.action === 'start') {
       const found = await status(input);
-      await readSources(input.sourceId === undefined ? found : await status({ ...input, sourceId: undefined }), null);
+      await readSources(found, null);
       await edit(place(found));
       await current.authorize('bash', [commandLine(args, holding())]);
       return current.holder.start(args.slice(2), current.signal);
