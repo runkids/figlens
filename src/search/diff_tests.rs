@@ -1752,3 +1752,182 @@ fn stored_facets_charge_their_text_then_each_field_as_the_live_build_does() {
         Some(ErrorKind::QueryWorkLimit)
     );
 }
+
+/// A main whose fill changes, a frame whose fill changes, an instance that overrides the fill
+/// with the same color on both sides and, when `plain`, one that records no fill of its own.
+fn impacted(red: f64, plain: bool) -> K<'static> {
+    let mut nodes = vec![
+        node(30, Some(1), "SYMBOL", "Main", vec![fill(red)]),
+        node(10, Some(1), "FRAME", "Home", vec![fill(red)]),
+        instance(12, 10, "Fixed", 30, vec![fill(0.2)]),
+        node(13, Some(10), "TEXT", "Label", vec![]),
+    ];
+    if plain {
+        nodes.push(instance(11, 10, "Plain", 30, vec![]));
+    }
+    doc(nodes)
+}
+
+fn probe(pair: &Pair, recipient: &str, facet: u8, work: usize) -> (Verdict, bool) {
+    let mut evidence = PairEvidence {
+        pair,
+        ids: None,
+        orders: None,
+    };
+    let mut bounds = Bounds {
+        work,
+        bytes: BYTES,
+        depth: DEPTH,
+        deadline: Instant::now() + DEADLINE,
+        stop: None,
+    };
+    let p = Probe {
+        recipient,
+        through: "0:30",
+        seed: "0:30",
+        facet,
+    };
+    let verdict = super::super::impact::Evidence::compare(&mut evidence, &p, &mut bounds);
+    (verdict.unwrap(), bounds.stop.is_some())
+}
+
+#[test]
+fn a_probe_proves_one_facet_of_one_record_both_generations_hold() {
+    let (a, b) = (impacted(1.0, false), impacted(0.5, false));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let pair = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
+    let appearance = 1 << 2;
+    let at = |id, facet| probe(&pair, id, facet, WORK).0;
+    assert_eq!(at("0:10", appearance), Verdict::Changed);
+    assert_eq!(at("0:12", appearance), Verdict::Equal);
+    // Structure is proven equal on two complete sides.
+    assert_eq!(at("0:12", 1 << 4), Verdict::Equal);
+    // A facet with no field on either side is never a vacuous equal.
+    assert_eq!(at("0:13", 1 << 0), Verdict::Unknown);
+    // Edges, unread, several facets at once, or a record one side lacks prove nothing.
+    for facet in [EDGES, UNREAD, appearance | 1 << 4, 0] {
+        assert_eq!(at("0:12", facet), Verdict::Unknown, "{facet}");
+    }
+    assert_eq!(at("0:99", appearance), Verdict::Unknown);
+}
+
+#[test]
+fn a_probe_of_structure_on_a_stopped_side_is_unknown() {
+    let (a, b) = (impacted(1.0, false), impacted(0.5, false));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    // The old side stops partway, so sibling positions there are not known.
+    let shared = (1..100).find_map(|work| {
+        let pair = compare_trees(&a, &b, [work, WORK, PAIR_WORK], "0:0");
+        let id = pair
+            .old
+            .index
+            .records
+            .iter()
+            .map(|r| r.id.clone())
+            .find(|id| pair.new.index.records.iter().any(|r| r.id == *id));
+        id.filter(|_| pair.old.index.stop.is_some())
+            .map(|id| (pair, id))
+    });
+    let (pair, id) = shared.unwrap();
+    assert_eq!(probe(&pair, &id, 1 << 4, WORK).0, Verdict::Unknown);
+}
+
+#[test]
+fn a_probe_of_a_retyped_or_unread_record_is_unknown() {
+    let side = |kind| doc(vec![node(10, Some(1), kind, "Home", vec![fill(1.0)])]);
+    let (a, b) = (side("FRAME"), side("RECTANGLE"));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let pair = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
+    assert_eq!(probe(&pair, "0:10", 1 << 2, WORK).0, Verdict::Unknown);
+    // A field read on one side only is no proof of equality.
+    let field = |digest| Field {
+        key: "fillPaints",
+        facet: 2,
+        digest,
+        value: None,
+    };
+    let (read, unread) = ([field(Some([1; 32]))], [field(None)]);
+    assert_eq!(proof(&read, &unread, 2), None);
+    assert_eq!(proof(&read, &read, 2), Some(false));
+    assert_eq!(proof(&read, &[field(Some([2; 32]))], 2), Some(true));
+    assert_eq!(proof(&read, &[], 2), Some(true));
+}
+
+#[test]
+fn a_probe_pays_for_its_lookups_before_building_them() {
+    let (a, b) = (impacted(1.0, false), impacted(0.5, false));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let pair = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
+    let records = pair.old.index.records.len() + pair.new.index.records.len();
+    assert_eq!(probe(&pair, "0:10", 1 << 2, 0), (Verdict::Unknown, true));
+    assert_eq!(
+        probe(&pair, "0:10", 1 << 2, records),
+        (Verdict::Unknown, true)
+    );
+    assert_eq!(
+        probe(&pair, "0:10", 1 << 2, records + 2),
+        (Verdict::Changed, false)
+    );
+}
+
+#[test]
+fn a_revision_classifies_what_its_kept_changes_reach() {
+    let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
+    let saved_pair = |plain| {
+        let (a, b) = (impacted(1.0, plain), impacted(0.5, plain));
+        saved(&[&Tree::new(&a), &Tree::new(&b)], "0:0")
+    };
+    let (conn, with_plain) = (saved_pair(false), saved_pair(true));
+    let at = |bytes| revision(&conn, (1, side("old")), (2, side("new")), "0:0", bytes).unwrap();
+    let whole = at(REVISION_BYTES);
+    let class =
+        |r: &Revision, id: &str| r.impact.hits.iter().find(|h| h.node == id).map(|h| h.class);
+    use super::super::impact::Class;
+    assert_eq!(whole.coverage["complete"], true);
+    assert_eq!(class(&whole, "0:30"), Some(Class::Direct));
+    assert_eq!(class(&whole, "0:12"), Some(Class::EffectiveUnchanged));
+    assert!(whole.impact.complete, "{:?}", whole.impact.reasons);
+    // An instance recording no fill of its own is reached, but its fill is not proven either way.
+    let plain = revision(
+        &with_plain,
+        (1, side("old")),
+        (2, side("new")),
+        "0:0",
+        REVISION_BYTES,
+    )
+    .unwrap();
+    assert_eq!(class(&plain, "0:11"), Some(Class::Possible));
+    assert_eq!(
+        (&plain.impact.reasons, plain.impact.complete),
+        (
+            &std::collections::BTreeMap::from([("comparison_unknown", 1)]),
+            false
+        )
+    );
+    // Rows past the bytes are no seeds: never complete, even with nothing reached.
+    let none = at(0);
+    assert_eq!((none.impact.hits.len(), none.impact.complete), (0, false));
+    assert_eq!(
+        none.impact.reasons.get("seeds_truncated"),
+        Some(&(whole.rows.len() as u64))
+    );
+}
+
+#[test]
+fn a_partial_comparison_leaves_its_impact_incomplete_without_changes() {
+    let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
+    let (a, b) = (styled(12.0), styled(12.0));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let conn = saved(&[&a, &b], "0:10");
+    let r = revision(
+        &conn,
+        (1, side("old")),
+        (2, side("new")),
+        "0:10",
+        REVISION_BYTES,
+    )
+    .unwrap();
+    assert_eq!(r.coverage["complete"], false);
+    assert_eq!((r.rows.len(), r.impact.complete), (0, false));
+    assert_eq!(r.impact.reasons.get("source_comparison_partial"), Some(&1));
+}

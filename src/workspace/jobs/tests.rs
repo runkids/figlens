@@ -962,6 +962,7 @@ fn revision_retention_deletes_and_expires_only_whole_groups() {
                 summary: json!({"changes": 5}),
                 rows: (0..5).map(|_| row()).collect(),
                 truncated: false,
+                impact: Default::default(),
             })),
         };
         let tx = ws.conn.transaction().unwrap();
@@ -1073,6 +1074,7 @@ fn a_revision_at_the_high_water_size_keeps_its_rows_in_pages_cleanup_freed() {
             summary: json!({"changes": 1}),
             rows: vec![row],
             truncated: false,
+            impact: Default::default(),
         })),
     };
     let tx = ws.conn.transaction().unwrap();

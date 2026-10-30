@@ -14,6 +14,7 @@ use std::time::{Instant, SystemTime};
 use serde_json::{Map, Value as Json, json};
 use sha2::{Digest, Sha256};
 
+use super::impact::{Change as Seeded, Impact, Probe, Seed, Verdict};
 use super::{
     BYTES, DEADLINE, DEPTH, Index, REHASH, Stamp, WORK, build_with, hex, missing_scope,
     require_scope, snapshot_id, source_id, stage, stamp,
@@ -797,6 +798,88 @@ fn in_facet(f: &[Field], facet: u8) -> impl Iterator<Item = (&str, Option<[u8; 3
         .map(|x| (x.key, x.digest))
 }
 
+/// What one field facet of two records of the same id and kind proves: `Some(true)` a
+/// difference, `Some(false)` every field read on both sides and equal, `None` neither (no
+/// field at all, or one unread). A facet differs only where that is proven: a field present on
+/// one side only, or read on both with other digests. An unread value proves nothing either way.
+fn proof(a: &[Field], b: &[Field], facet: u8) -> Option<bool> {
+    let differs = in_facet(a, facet).count() != in_facet(b, facet).count()
+        || in_facet(a, facet)
+            .zip(in_facet(b, facet))
+            .any(|(x, y)| x.0 != y.0 || matches!((x.1, y.1), (Some(p), Some(q)) if p != q));
+    if differs {
+        return Some(true);
+    }
+    let mut all = in_facet(a, facet).chain(in_facet(b, facet)).peekable();
+    (all.peek().is_some() && all.all(|(_, d)| d.is_some())).then_some(false)
+}
+
+/// Answers impact probes from a compared pair while both generations are loaded: the proof
+/// `differs` uses, for one facet of the record both sides hold under the probe's id.
+struct PairEvidence<'a> {
+    pair: &'a Pair,
+    ids: Option<[HashMap<&'a str, usize>; 2]>,
+    orders: Option<[Vec<u32>; 2]>,
+}
+
+/// Estimated bytes of one id lookup or order entry kept for the probes.
+const LOOKUP: usize = 64;
+
+impl super::impact::Evidence for PairEvidence<'_> {
+    fn compare(&mut self, probe: &Probe, bounds: &mut Bounds) -> Result<Verdict, Box<dyn Error>> {
+        let (old, new) = (&self.pair.old, &self.pair.new);
+        let records = old.index.records.len() + new.index.records.len();
+        if self.ids.is_none() {
+            if !bounds.charge(records, records * LOOKUP) {
+                return Ok(Verdict::Unknown);
+            }
+            self.ids = Some([by_id(old), by_id(new)]);
+        }
+        let ids = self.ids.as_ref().unwrap();
+        let (Some(&o), Some(&n)) = (ids[0].get(probe.recipient), ids[1].get(probe.recipient))
+        else {
+            return Ok(Verdict::Unknown);
+        };
+        // A retyped record proves nothing, and a probe names exactly one facet.
+        if old.index.records[o].kind != new.index.records[n].kind || probe.facet.count_ones() != 1 {
+            return Ok(Verdict::Unknown);
+        }
+        let facet = probe.facet.trailing_zeros() as u8;
+        let proven = if usize::from(facet) < FIELDS.len() {
+            let (a, b) = (&old.facets[o].fields, &new.facets[n].fields);
+            if !bounds.charge(a.len() + b.len(), 0) {
+                return Ok(Verdict::Unknown);
+            }
+            proof(a, b, facet)
+        } else if probe.facet == 1 << 4 {
+            // Positions are among indexed siblings, which a stopped or partly hidden side may
+            // lack, and a root's parent is its stored origin.
+            let known = |s: &Side| {
+                s.index.stop.is_none() && s.index.hidden_content == 0 && s.origin.is_ok()
+            };
+            if !known(old) || !known(new) {
+                return Ok(Verdict::Unknown);
+            }
+            if self.orders.is_none() {
+                if !bounds.charge(records, records * LOOKUP) {
+                    return Ok(Verdict::Unknown);
+                }
+                self.orders = Some([orders(&old.index), orders(&new.index)]);
+            }
+            let orders = self.orders.as_ref().unwrap();
+            Some(structure(old, o, &orders[0]) != structure(new, n, &orders[1]))
+        } else {
+            // Edges and unread bits are not a field facet the pair proves per record.
+            None
+        };
+        Ok(match proven {
+            Some(true) => Verdict::Changed,
+            Some(false) => Verdict::Equal,
+            None => Verdict::Unknown,
+        })
+    }
+}
+
 /// The facet bits on which two records of the same id and kind differ.
 fn differs(old: &Side, o: usize, oo: &[u32], new: &Side, n: usize, no: &[u32]) -> u8 {
     let mut bits = 0;
@@ -804,14 +887,8 @@ fn differs(old: &Side, o: usize, oo: &[u32], new: &Side, n: usize, no: &[u32]) -
     if a.iter().chain(b).any(|x| x.digest.is_none()) {
         bits |= UNREAD;
     }
-    // A facet differs only where that is proven: a field present on one side only, or read on
-    // both with other digests. An unread value proves nothing either way.
     for facet in 0..FIELDS.len() as u8 {
-        let proven = in_facet(a, facet).count() != in_facet(b, facet).count()
-            || in_facet(a, facet)
-                .zip(in_facet(b, facet))
-                .any(|(x, y)| x.0 != y.0 || matches!((x.1, y.1), (Some(p), Some(q)) if p != q));
-        if proven {
+        if proof(a, b, facet) == Some(true) {
             bits |= 1 << facet;
         }
     }
@@ -1938,6 +2015,16 @@ pub(crate) struct Revision {
     pub summary: Json,
     pub rows: Vec<Row>,
     pub truncated: bool,
+    /// The layers the kept rows reach, computed while both generations are loaded; complete
+    /// only when the comparison was and every change is a seed.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "recording it with the revision is the next #92 step"
+        )
+    )]
+    pub impact: Impact,
 }
 
 /// Compares stored generations `old` and `new` of `scope` as a live diff of them would, keeping at most
@@ -1957,6 +2044,7 @@ pub(crate) fn revision(
     );
     let (mut kinds, mut facets) = ([0u32; 5], vec![0u32; FACETS.len() + 1]);
     let (mut rows, mut used, mut truncated) = (Vec::new(), 0, false);
+    let (mut seeds, mut omitted) = (Vec::new(), 0u64);
     for c in &pair.changes {
         kinds[c.kind as usize] += 1;
         for (i, n) in facets.iter_mut().enumerate() {
@@ -1972,9 +2060,20 @@ pub(crate) fn revision(
         let cost = 64 + frame.len() + r.id.len() + r.kind.len();
         if truncated || rows.len() == REVISION_ROWS || used + cost > bytes {
             truncated = true;
+            omitted += 1;
             continue;
         }
         used += cost;
+        seeds.push(Seed {
+            node: r.id.clone(),
+            change: match c.kind {
+                Kind::Added => Seeded::Added,
+                Kind::Removed => Seeded::Removed,
+                Kind::Changed => Seeded::Changed,
+                Kind::Retyped | Kind::Unknown => Seeded::Unknown,
+            },
+            facets: c.facets & !UNREAD,
+        });
         rows.push(Row {
             frame: frame.clone(),
             node: r.id.clone(),
@@ -2002,8 +2101,41 @@ pub(crate) fn revision(
     ]
     .map(Kind::name);
     let facet_names: Vec<&str> = FACETS.iter().copied().chain(["bindings"]).collect();
+    let coverage = coverage(&pair);
+    // Its own bounds, sized as the pair's: the walk reads the indexes the pair already holds.
+    let mut bounds = Bounds {
+        work: PAIR_WORK,
+        bytes: PAIR_BYTES,
+        depth: DEPTH,
+        deadline: Instant::now() + DEADLINE,
+        stop: None,
+    };
+    let mut evidence = PairEvidence {
+        pair: &pair,
+        ids: None,
+        orders: None,
+    };
+    let mut impact = super::impact::compute(
+        &pair.old.index,
+        &pair.new.index,
+        &seeds,
+        &mut evidence,
+        &mut bounds,
+    )?;
+    // A partial comparison or an unkept change may reach layers the walk never saw, even
+    // when it found none.
+    if coverage["complete"] != true {
+        *impact
+            .reasons
+            .entry("source_comparison_partial")
+            .or_default() += 1;
+    }
+    if omitted > 0 {
+        *impact.reasons.entry("seeds_truncated").or_default() += omitted;
+    }
+    impact.complete = impact.reasons.is_empty();
     Ok(Revision {
-        coverage: coverage(&pair),
+        coverage,
         summary: json!({
             "changes": pair.changes.len(),
             "kinds": named(&kind_names, &kinds),
@@ -2012,6 +2144,7 @@ pub(crate) fn revision(
         }),
         rows,
         truncated,
+        impact,
     })
 }
 
