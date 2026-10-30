@@ -53,6 +53,23 @@ fn build(file: &Path, scope: &str, cancel: &AtomicBool, state: &Mutex<Value>) ->
         .as_str()
         .ok_or("prepare named no workspace")?
         .to_owned();
+    // A build another process runs is awaited, never owned or cancelled here, so the embed
+    // below reads the generation it publishes.
+    if prepared.run.is_empty()
+        && let Some(id) = prepared.report["job"]["jobId"].as_str()
+    {
+        loop {
+            let now = jobs::status(&storage, id)?;
+            note(&now);
+            match now["state"].as_str() {
+                Some("queued" | "running") if !cancel.load(Ordering::SeqCst) => {
+                    std::thread::sleep(Duration::from_millis(250))
+                }
+                Some("succeeded") => break,
+                _ => return Ok(()),
+            }
+        }
+    }
     let mut runs = prepared.run;
     let mut embedding = false;
     loop {

@@ -346,3 +346,49 @@ fn a_relocated_workspace_serves_the_viewer_under_its_own_source_id() {
     assert_eq!(hybrid["source"]["sourceId"], mine, "{hybrid}");
     assert_eq!(hybrid["results"][0]["ref"]["sourceId"], mine, "{hybrid}");
 }
+
+#[cfg(debug_assertions)]
+#[test]
+fn enable_awaits_a_build_another_process_runs_before_it_ends() {
+    let owned = test_support::TestDir::new();
+    let root = std::path::absolute(owned.join("")).unwrap();
+    let viewer = Viewer::start(&root, &[]);
+    // Another process builds the same scope and is held in parse.
+    let hold = root.join("hold");
+    std::fs::write(&hold, "").unwrap();
+    let mut other = Command::new(env!("CARGO_BIN_EXE_figlens"))
+        .args([
+            "index",
+            "prepare",
+            viewer.design.to_str().unwrap(),
+            "--scope",
+            "0:0",
+        ])
+        .envs([
+            ("HOME", root.join("home")),
+            ("XDG_STATE_HOME", root.join("state")),
+            ("XDG_CONFIG_HOME", root.join("config")),
+        ])
+        .env("FIGLENS_TEST_HOLD", format!("parse:{}", hold.display()))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let reached = PathBuf::from(format!("{}.reached", hold.display()));
+    let start = Instant::now();
+    while !reached.exists() {
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "the other build never reached parse"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(viewer.enable(1, r#"{"scope":"0:0"}"#)["started"], true);
+    std::thread::sleep(Duration::from_millis(600));
+    let joined = viewer.get("semantic/1?scope=0:0");
+    assert_eq!(joined["job"]["running"], true, "{joined}");
+    std::fs::remove_file(&hold).unwrap();
+    let state = viewer.settled(1, "0:0");
+    assert_eq!(state["job"]["report"]["state"], "succeeded", "{state}");
+    assert!(other.wait().unwrap().success());
+}
