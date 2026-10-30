@@ -81,7 +81,14 @@ pub(crate) fn source_id(path: &Path) -> String {
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    // Hot: every tracked build encodes each facet digest, where a `format!` per byte showed in profiles.
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(2 * bytes.len());
+    for b in bytes {
+        out.push(DIGITS[usize::from(b >> 4)] as char);
+        out.push(DIGITS[usize::from(b & 15)] as char);
+    }
+    out
 }
 
 fn invalid(message: impl Into<String>) -> Box<dyn Error> {
