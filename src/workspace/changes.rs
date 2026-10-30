@@ -23,7 +23,7 @@ const OLDEST: [u8; 16] = [0; 16];
 mod queries;
 pub mod subscriptions;
 
-pub use queries::{evaluate, evaluate_published};
+pub use queries::{Continuation, evaluate, evaluate_published};
 
 #[derive(Default)]
 pub struct Request<'a> {

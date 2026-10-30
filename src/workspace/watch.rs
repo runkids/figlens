@@ -1315,26 +1315,7 @@ fn await_joined(storage: &Storage, id: &str, quit: &AtomicBool) -> Result<Option
     }
 }
 
-// shortcut: B3's bounded saved-query Turn (agreed v3) is not committed yet; this stand-in has its
-// signature and finds nothing due. Replace it with B3's `changes` items when its pin lands.
-mod saved {
-    use super::*;
-    #[derive(Clone, Debug, PartialEq)]
-    pub(super) struct Continuation;
-    pub(super) struct Turn {
-        pub(super) next: Option<Continuation>,
-    }
-    pub(super) fn evaluate_published(
-        _: &Storage,
-        _: &Select,
-        _: &str,
-        _: &str,
-        _: Option<Continuation>,
-        _: &AtomicBool,
-    ) -> Result<Turn> {
-        Ok(Turn { next: None })
-    }
-}
+use super::changes::{self as saved, Continuation};
 
 type Scope = (String, String);
 
@@ -1419,9 +1400,9 @@ impl<C> Saved<C> {
 fn turn(
     storage: &Storage,
     ws_id: &str,
-    due: Due<saved::Continuation>,
+    due: Due<Continuation>,
     halt: &AtomicBool,
-) -> Outcome<saved::Continuation> {
+) -> Outcome<Continuation> {
     if fault("turn_holds") {
         // Test builds: a Turn that only an interrupt ends; `<file>.reached` says it started.
         if let Some((_, file)) = std::env::var("FIGLENS_TEST_WATCH")
@@ -1456,12 +1437,12 @@ fn turn(
 /// The runner worker's one job at a time.
 enum Work {
     Refresh(Refresh),
-    Turn(Due<saved::Continuation>),
+    Turn(Box<Due<Continuation>>),
 }
 
 enum Done {
     Refresh(Finished),
-    Turn(Scope, Outcome<saved::Continuation>),
+    Turn(Box<(Scope, Outcome<Continuation>)>),
 }
 
 /// Refreshes every still-served scope of one source, one at a time: its own jobs run here to
@@ -1608,7 +1589,10 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
                     Work::Refresh(job) => {
                         Done::Refresh(refresh(storage, ws_id, &job, cancel, quit))
                     }
-                    Work::Turn(due) => Done::Turn(due.key.clone(), turn(storage, ws_id, due, halt)),
+                    Work::Turn(due) => Done::Turn(Box::new((
+                        due.key.clone(),
+                        turn(storage, ws_id, *due, halt),
+                    ))),
                 });
             }
             idle.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1679,7 +1663,8 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
                 while let Ok(done) = finished.try_recv() {
                     let f = match done {
                         Done::Refresh(f) => f,
-                        Done::Turn(key, outcome) => {
+                        Done::Turn(done) => {
+                            let (key, outcome) = *done;
                             turning = false;
                             saved.finished(key, outcome, Instant::now());
                             continue;
@@ -1753,7 +1738,7 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
                 {
                     halt.store(false, std::sync::atomic::Ordering::SeqCst);
                     turning = true;
-                    let _ = to_worker.send(Work::Turn(due));
+                    let _ = to_worker.send(Work::Turn(Box::new(due)));
                 }
                 if Instant::now() >= persist_at {
                     persist_at = Instant::now() + PERSIST;

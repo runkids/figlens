@@ -200,6 +200,68 @@ fn a_save_interrupts_a_saved_query_turn_and_an_exit_ends_one() {
     );
 }
 
+impl Env {
+    /// Saves a search of the tracked scope as a query subscription; returns a reader of its
+    /// stored evaluation count and current evaluation state.
+    fn saved_query(&self) -> impl Fn() -> (usize, Value) + '_ {
+        let changes = self.json(&["changes", "--file", &self.file, "--scope", "0:0"]);
+        let source = changes["tracking"][0]["sourceId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let reply = self.json(&[
+            "watch",
+            "subscribe",
+            "--file",
+            &self.file,
+            "--consumer",
+            "bot",
+            "--source",
+            &source,
+            "--scope",
+            "0:0",
+            "--query",
+            "badge",
+        ]);
+        let id = reply["subscription"]["subscriptionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        move || {
+            let page = self.json(&["changes", "--file", &self.file, "--subscription", &id]);
+            let n = page["evaluations"].as_array().map_or(0, Vec::len);
+            (n, page["evaluation"]["state"].clone())
+        }
+    }
+}
+
+#[test]
+fn the_runner_evaluates_a_saved_query_after_a_save_without_an_evaluate_call() {
+    let env = Env::new();
+    let evaluations = env.saved_query();
+    let (first, _) = evaluations();
+    let holder = env.holder();
+    env.save(true);
+    wait_for("the runner's evaluation", Duration::from_secs(10), || {
+        evaluations().0 > first
+    });
+    holder.close();
+}
+
+#[test]
+fn the_runner_evaluates_a_saved_query_after_another_process_publishes() {
+    let env = Env::new();
+    let evaluations = env.saved_query();
+    let holder = env.holder();
+    // The same bytes rebuilt: the evaluation goes pending, and only an evaluation makes it
+    // current again (no new row, since nothing changed).
+    env.json(&["index", "rebuild", "--file", &env.file]);
+    wait_for("the runner's evaluation", Duration::from_secs(10), || {
+        evaluations().1 == "current"
+    });
+    holder.close();
+}
+
 #[test]
 fn changes_reports_the_monitor_apart_from_tracking() {
     let env = Env::new();
