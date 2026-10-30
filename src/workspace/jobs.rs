@@ -418,13 +418,17 @@ pub(crate) fn submit(
         .conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(sql)?;
-    let membership: String = tx
-        .query_row(
-            "SELECT membership FROM sources WHERE source_id = ?1",
-            [source_id],
-            |r| r.get(0),
-        )
-        .optional()
+    // Visibility is judged again inside this write: a source moved out of view since it was
+    // chosen is unknown here, before any replay or admission.
+    let membership: String = registry::visible_path(storage, &tx, source_id)?
+        .map(|_| {
+            tx.query_row(
+                "SELECT membership FROM sources WHERE source_id = ?1",
+                [source_id],
+                |r| r.get(0),
+            )
+        })
+        .transpose()
         .map_err(sql)?
         .ok_or_else(|| {
             fail(
@@ -772,7 +776,7 @@ fn spawn(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Child> {
 /// `file` exists and creates `<file>.reached` when it gets there, so process tests reach each
 /// stage deterministically. `start` is before the worker locks its worker file; `submit` holds
 /// the submitting process once its new job is admitted.
-fn hold(stage: &str) {
+pub(super) fn hold(stage: &str) {
     #[cfg(debug_assertions)]
     if let Some((at, file)) = std::env::var("FIGLENS_TEST_HOLD")
         .ok()
@@ -1985,21 +1989,27 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
     stage(&conn, "parse")?;
     let label = path.display().to_string();
     // Only a tracked scope's build keeps facets; an untracked one writes what it always did.
-    let tracking: bool = conn
+    let tracking: Option<String> = conn
         .query_row(
-            "SELECT EXISTS (SELECT 1 FROM tracking WHERE source_id = ?1 AND scope = ?2
-             AND state != 'disabled')",
+            "SELECT state FROM tracking WHERE source_id = ?1 AND scope = ?2
+             AND state != 'disabled'",
             [&source_id, &scope],
             |r| r.get(0),
         )
+        .optional()
         .map_err(sql)?;
     let (index, tracked) = match tracking {
-        true => {
-            let (index, tracked) =
-                search::index_bytes_tracked(bytes, &label, &scope, search::deadline())?;
+        Some(state) => {
+            let (index, tracked) = search::index_bytes_tracked(
+                bytes,
+                &label,
+                &scope,
+                search::deadline(),
+                state == "active",
+            )?;
             (index, Some(tracked))
         }
-        false => (
+        None => (
             search::index_bytes(bytes, &label, &scope, search::deadline())?,
             None,
         ),
@@ -2321,7 +2331,8 @@ fn set_tracking(
             "requestId names one job; pass a sourceId and scope with it",
         ));
     }
-    // A requestId first used by another request is refused before tracking changes.
+    // A requestId first used by another request is refused before tracking changes; a retry of
+    // this one replays its job and changes nothing, so after an untrack it never re-enables it.
     if let (Some(Some(request)), [source_id]) = (on, sources.as_slice()) {
         let membership: String = tx
             .query_row(
@@ -2331,8 +2342,23 @@ fn set_tracking(
             )
             .map_err(sql)?;
         let print = fingerprint("track", &ws.held.id, source_id, &membership, scope);
-        if requested(&tx, request)?.is_some_and(|(_, fp)| fp != print) {
-            return Err(other_request(request));
+        match requested(&tx, request)? {
+            Some((_, fp)) if fp != print => return Err(other_request(request)),
+            Some(_) => {
+                let (state, epoch) = tx
+                    .query_row(
+                        "SELECT state, epoch FROM tracking WHERE source_id = ?1 AND scope = ?2",
+                        [source_id, scope],
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                    )
+                    .optional()
+                    .map_err(sql)?
+                    .unwrap_or(("untracked".into(), 0));
+                let row =
+                    json!({"sourceId": source_id, "scope": scope, "state": state, "epoch": epoch});
+                return Ok((ws.held.id.clone(), json!([row]), vec![source_id.clone()]));
+            }
+            None => {}
         }
     }
     let on = on.is_some();
@@ -2484,9 +2510,24 @@ pub fn clear_cache(storage: &Storage, select: &Select) -> Result<Json> {
         }
     }
     drop(stmt);
-    let mut records = 0i64;
+    hold("clear_cache");
+    let (mut records, mut removed) = (0i64, 0usize);
     for gen_id in &doomed {
         let tx = ws.conn.transaction().map_err(sql)?;
+        // Authorized again in this deletion: a source moved out of view since keeps its data.
+        let path: Option<String> = tx
+            .query_row(
+                "SELECT s.path FROM generations g JOIN sources s ON s.source_id = g.source_id
+                 WHERE g.gen = ?1",
+                [gen_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(sql)?;
+        if path.is_some_and(|p| !storage.sees(Path::new(&p))) {
+            continue;
+        }
+        removed += 1;
         records += tx
             .query_row(
                 "SELECT count(*) FROM records WHERE gen = ?1",
@@ -2518,7 +2559,9 @@ pub fn clear_cache(storage: &Storage, select: &Select) -> Result<Json> {
         .join("workspace-cache")
         .join(&ws.held.id);
     let extra = json!({
-        "removed": {"generations": doomed.len(), "records": records},
+        "removed": {"generations": removed, "records": records},
+        // Some were kept because their source left this caller's view meanwhile: retry later.
+        "partial": removed < doomed.len(),
         "retained": {"publishedGenerations": if storage.visible.is_none() { json!(published) } else { Json::Null },
             "registry": true, "jobs": true, "location": true},
         "failed": [],
