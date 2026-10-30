@@ -1811,48 +1811,49 @@ struct Cached {
     hashed: SystemTime,
     /// What text search reads: a text-only build, or a full one that indexed the same corpus.
     text: Option<Arc<Index>>,
+    /// The text build also kept the model's property inputs (semantic search asked for it).
+    text_inputs: bool,
     /// What usages reads: a full build. It can stop earlier than the text one under the same
     /// bounds, so it replaces the text one only when it indexed the same text corpus.
     full: Option<Arc<Index>>,
 }
 
 impl Cached {
-    /// The index that answers `relations` (usages) or text search, if this entry holds one.
+    /// The index that answers `relations` (usages), semantic search's property `inputs`, or
+    /// text search, if this entry holds one.
     fn pick(&self, relations: bool, inputs: bool) -> Option<Arc<Index>> {
-        if relations {
-            self.full.clone()
-        } else if inputs {
-            // Records of a build that kept property inputs hold them, even an empty list.
-            self.text
+        match (relations, inputs) {
+            (true, _) => self.full.clone(),
+            (false, true) => self.text.clone().filter(|_| self.text_inputs),
+            // A property-input build that stopped spent part of its bounds on properties, so it
+            // can hold less text than text search's own build: only a complete one serves it.
+            (false, false) => self
+                .text
                 .clone()
-                .filter(|i| i.records.first().is_none_or(|r| r.props.is_some()))
-        } else {
-            self.text.clone()
+                .filter(|t| !self.text_inputs || t.stop.is_none()),
         }
     }
 
-    /// Keeps `index` in its slot; a full build whose text corpus matches the text one serves
-    /// both, so the entry never holds two copies of one corpus.
-    fn keep(&mut self, index: Arc<Index>) {
+    /// Keeps `index`, built with property `inputs` or not, in its slot; a full build whose
+    /// text corpus matches the text one serves both, so the entry never holds two copies of one
+    /// corpus. A text build that kept property inputs is never swapped for one without them.
+    fn keep(&mut self, index: Arc<Index>, inputs: bool) {
         let shares = |a: &Index, b: &Index| a.generation == b.generation && a.stop == b.stop;
-        // A text build that kept property inputs is never swapped for a full one without them.
-        let inputs = |i: &Index| i.records.first().is_some_and(|r| r.props.is_some());
         if index.relations {
             // A stopped full build may hold less text than a text-only one would.
             let serves = match &self.text {
-                Some(t) => shares(t, &index) && !inputs(t),
+                Some(t) => shares(t, &index) && !self.text_inputs,
                 None => index.stop.is_none(),
             };
             if serves {
                 self.text = Some(index.clone());
+                self.text_inputs = false;
             }
             self.full = Some(index);
         } else {
-            let full = self
-                .full
-                .as_ref()
-                .filter(|f| shares(f, &index) && !inputs(&index));
+            let full = self.full.as_ref().filter(|f| !inputs && shares(f, &index));
             self.text = Some(full.cloned().unwrap_or(index));
+            self.text_inputs = inputs;
         }
     }
 }
@@ -2112,11 +2113,12 @@ pub(crate) fn loaded(
                                 snapshot: snapshot.clone(),
                                 hashed,
                                 text: None,
+                                text_inputs: false,
                                 full: None,
                             });
                         }
                         if let Some(c) = cache.as_mut() {
-                            c.keep(index.clone());
+                            c.keep(index.clone(), inputs);
                         }
                     }
                     (snapshot, index, hashed, false)
