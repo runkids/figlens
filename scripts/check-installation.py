@@ -314,11 +314,11 @@ def main():
         assert run(wrapper + ['--version'], consumer, wrapped_env).strip() == expected_version
         assert sha(cache) == expected['binarySha256'], 'Wrapper ran a different native binary'
         # The optional model runtime is extracted beside it, executable, and starts natively
-        # (no missing DLL): without a model directory it prints its usage and exits nonzero.
+        # (no missing DLL), answering --version and --help without a model.
         companion = cache.with_name(asset['companion'])
         assert sha(companion) == expected['companionSha256'], 'Wrapper extracted a different model runtime'
-        started = subprocess.run([companion], cwd=consumer, env=env, capture_output=True, text=True, timeout=60)
-        assert started.returncode and 'usage: figlens-embed' in started.stderr, (started.returncode, started.stderr)
+        assert run([companion, '--version'], consumer, env).strip() == f'figlens-embed {metadata["version"]}'
+        assert 'figlens-embed' in run([companion, '--help'], consumer, env)
         downloads = events.read_text().splitlines()
         assert sorted(json.loads(line)['name'] for line in downloads) == sorted([archive, 'SHA256SUMS'])
         assert run(wrapper + ['--version'], consumer, wrapped_env).strip() == expected_version
