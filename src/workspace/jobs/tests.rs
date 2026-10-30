@@ -2349,7 +2349,9 @@ fn an_oversized_tampered_copy_kind_is_refused_before_it_is_copied() {
         limit: 10,
         ..reference("k", None)
     };
-    let err = library(&storage, &select, None, &ask).unwrap_err().to_string();
+    let err = library(&storage, &select, None, &ask)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("invalid stored index"), "{err}");
 }
 
