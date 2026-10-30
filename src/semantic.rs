@@ -229,6 +229,9 @@ fn answer(
 /// timeout or cancel kills the child's process tree and leaves the runtime dead.
 pub struct Runtime {
     child: Child,
+    /// Windows: the job object the child runs in, so killing it ends every descendant.
+    #[cfg(windows)]
+    job: Job,
     /// Request lines for the writer thread; dropping it closes the child's stdin.
     requests: Option<SyncSender<Vec<u8>>>,
     lines: Receiver<std::io::Result<Vec<u8>>>,
@@ -275,6 +278,8 @@ impl Runtime {
         let mut child = cmd
             .spawn()
             .map_err(|e| fail(format!("cannot start {}: {e}", exe.display())))?;
+        #[cfg(windows)]
+        let job = Job::assign(&child)?;
         let stdout = child.stdout.take().ok_or("child has no stdout")?;
         let (tx, lines) = sync_channel(1);
         std::thread::spawn(move || {
@@ -303,6 +308,8 @@ impl Runtime {
         });
         let mut rt = Runtime {
             requests: Some(requests),
+            #[cfg(windows)]
+            job,
             child,
             lines,
             hello: Json::Null,
@@ -343,6 +350,8 @@ impl Runtime {
         unsafe {
             libc::kill(-(self.child.id() as i32), libc::SIGKILL);
         }
+        #[cfg(windows)]
+        self.job.terminate();
         let _ = self.child.kill();
         let _ = self.child.wait();
         // The writer ends once the pipe closes. It is not joined: a descendant that inherited
@@ -444,6 +453,57 @@ impl Runtime {
             std::thread::sleep(POLL);
         }
         self.kill();
+    }
+}
+
+/// A Windows job object that kills its processes when terminated or closed.
+#[cfg(windows)]
+struct Job(windows_sys::Win32::Foundation::HANDLE);
+
+// SAFETY: a job handle may be used and closed from any thread.
+#[cfg(windows)]
+unsafe impl Send for Job {}
+
+#[cfg(windows)]
+impl Job {
+    /// Puts `child` in a new kill-on-close job. shortcut: a process the child starts before
+    /// this assignment escapes the job; figlens-embed starts none, so start suspended only if a
+    /// runtime ever does.
+    fn assign(child: &Child) -> Result<Job> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::*;
+        // SAFETY: plain Win32 calls on a handle this function owns and the child's own handle.
+        unsafe {
+            let job = Job(CreateJobObjectW(std::ptr::null(), std::ptr::null()));
+            if job.0.is_null() {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let set = SetInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if set == 0 || AssignProcessToJobObject(job.0, child.as_raw_handle()) == 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            Ok(job)
+        }
+    }
+
+    fn terminate(&self) {
+        // SAFETY: the handle stays open until drop.
+        unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(self.0, 1) };
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Job {
+    fn drop(&mut self) {
+        // SAFETY: closed once; kill-on-close ends what is still running.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
     }
 }
 
