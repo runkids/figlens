@@ -197,6 +197,26 @@ pub fn configure(
             ),
         ));
     }
+    // Named before anything is hashed, so the user knows which file to fetch where.
+    let missing: Vec<&str> = k
+        .files
+        .iter()
+        .map(|f| f.0)
+        .filter(|f| !model.join(f).is_file())
+        .collect();
+    if !missing.is_empty() {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            format!(
+                "{} is missing {}; download {} revision {} ({}) into it, then configure again; nothing was recorded",
+                model.display(),
+                missing.join(", "),
+                k.model,
+                k.revision,
+                k.license
+            ),
+        ));
+    }
     let p = Profile::probe(&runtime, model, k.files, cancel)
         .map_err(|e| fail(ErrorKind::InvalidArguments, format!("{name}: {e}")))?;
     let record = json!({"name": k.name, "profileId": p.id, "model": p.model, "runtime": p.exe,
