@@ -40,12 +40,14 @@ struct View {
 
 fn view(storage: &Storage, ws: &Opened, req: &Request) -> Result<View> {
     let sources = jobs::chosen(storage, ws, req.source)?;
+    // Named as `index track` names it: `1-2` is `1:2`.
+    let scope = req.scope.map(crate::normalize_id);
     // A checkpoint is kept per view too: progress over more sources must not skip a narrower
     // view's revisions.
     let filter = format!(
         "{}\u{1f}{}\u{1f}{}",
         req.source.unwrap_or(""),
-        req.scope.unwrap_or(""),
+        scope.as_deref().unwrap_or(""),
         crate::search::hex(&Sha256::digest(sources.join("\u{1f}")))
     );
     let key = match ws.version >= SCHEMA {
@@ -65,22 +67,23 @@ fn view(storage: &Storage, ws: &Opened, req: &Request) -> Result<View> {
         workspace: ws.held.id.clone(),
         sources,
         source: req.source.map(str::to_owned),
-        scope: req.scope.map(str::to_owned),
+        scope,
         filter,
         key,
         bind,
     })
 }
 
-fn mac(v: &View, payload: &[u8]) -> Option<Hmac<Sha256>> {
+fn mac(v: &View, tag: &str, payload: &[u8]) -> Option<Hmac<Sha256>> {
     let mut mac = Hmac::<Sha256>::new_from_slice(v.key.as_ref()?.as_bytes()).ok()?;
     mac.update(&v.bind);
+    mac.update(&[tag.as_bytes(), &[0x1f]].concat());
     mac.update(payload);
     Some(mac)
 }
 
 fn cursor(v: &View, tag: &str, payload: &[u8]) -> Json {
-    match mac(v, payload) {
+    match mac(v, tag, payload) {
         Some(m) => json!(format!(
             "{tag}.{}",
             crate::search::hex(&[payload, &m.finalize().into_bytes()[..16]].concat())
@@ -105,7 +108,7 @@ fn payload(v: &View, tag: &str, text: &str, len: usize) -> Result<Vec<u8>> {
         .and_then(unhex)
         .ok_or_else(stale)?;
     let (payload, tail) = raw.split_at(len);
-    mac(v, payload)
+    mac(v, tag, payload)
         .ok_or_else(stale)?
         .verify_truncated_left(tail)
         .map_err(|_| stale())?;
@@ -123,26 +126,61 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
         .flatten()
 }
 
-/// The newest revision retention deleted among the view's sources and scope.
-fn pruned(conn: &Connection, v: &View) -> Result<i64> {
+/// The newest revision retention deleted among the view's sources and scope, counting only
+/// deletions by a publication after revision seq `floor` (all with `None`). A reader has
+/// accepted every deletion up to the floor its cursor or checkpoint carries.
+fn pruned(conn: &Connection, v: &View, floor: Option<i64>) -> Result<i64> {
+    // A mark is `<newest deleted seq> <seq of the publication that deleted it>`.
     let mut stmt = conn
-        .prepare("SELECT key, CAST(value AS INTEGER) FROM meta WHERE key LIKE 'pruned' || char(31) || '%'")
+        .prepare(
+            "SELECT key, CAST(value AS INTEGER), CAST(substr(value, instr(value, ' ') + 1) AS INTEGER)
+             FROM meta WHERE key LIKE 'pruned' || char(31) || '%'",
+        )
         .map_err(sql)?;
     let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })
         .map_err(sql)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(sql)?;
     Ok(rows
         .into_iter()
-        .filter(|(key, _)| {
+        .filter(|(key, _, by)| {
             let mut parts = key.split('\u{1f}').skip(1);
             let (source, scope) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
-            v.sources.iter().any(|s| s == source) && v.scope.as_deref().is_none_or(|s| s == scope)
+            v.sources.iter().any(|s| s == source)
+                && v.scope.as_deref().is_none_or(|s| s == scope)
+                && floor.is_none_or(|f| *by > f)
         })
-        .map(|(_, seq)| seq)
+        .map(|(_, seq, _)| seq)
         .max()
         .unwrap_or(0))
+}
+
+/// The seq of the newest revision recorded: the floor a cursor issued now carries.
+fn floor(conn: &Connection) -> Result<i64> {
+    conn.query_row(
+        "SELECT IFNULL((SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'revision_seq'), 0)",
+        [],
+        |r| r.get(0),
+    )
+    .map_err(sql)
+}
+
+/// A `c1.` position cursor: the revision id it follows and the floor it was issued at.
+fn position_cursor(v: &View, id: &[u8], floor: i64) -> Json {
+    cursor(v, "c1", &[id, &floor.to_le_bytes()].concat())
+}
+
+fn read_position(v: &View, text: &str) -> Result<(Vec<u8>, i64)> {
+    let p = payload(v, "c1", text, 24)?;
+    let floor = i64::from_le_bytes(p[16..].try_into().map_err(|_| stale())?);
+    Ok((p[..16].to_vec(), floor))
 }
 
 /// The position after `id`: its seq, before every revision kept for [`OLDEST`], or `event_gap`
@@ -151,20 +189,27 @@ fn position(conn: &Connection, v: &View, id: &[u8]) -> Result<i64> {
     if id == OLDEST {
         return Ok(0);
     }
-    conn.query_row(
-        "SELECT seq FROM revisions WHERE id = ?1
-         AND source_id IN (SELECT value FROM json_each(?2)) AND (?3 IS NULL OR scope = ?3)",
-        params![id, json!(v.sources).to_string(), v.scope],
-        |r| r.get(0),
-    )
-    .optional()
-    .map_err(sql)?
-    .ok_or_else(|| gap(v))
+    let seq = conn
+        .query_row(
+            "SELECT seq FROM revisions WHERE id = ?1
+             AND source_id IN (SELECT value FROM json_each(?2)) AND (?3 IS NULL OR scope = ?3)",
+            params![id, json!(v.sources).to_string(), v.scope],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    seq.ok_or_else(|| gap(conn, v))
 }
 
-fn gap(v: &View) -> Box<dyn Error> {
+/// `event_gap`, whose recovery reads from the oldest kept, accepting every deletion so far.
+fn gap(conn: &Connection, v: &View) -> Box<dyn Error> {
+    let now = match floor(conn) {
+        Ok(now) => now,
+        Err(e) => return e,
+    };
     // The cursor is bound to these filters, so the recovery repeats them.
-    let mut arguments = json!({"workspaceId": v.workspace, "cursor": cursor(v, "c1", &OLDEST)});
+    let mut arguments =
+        json!({"workspaceId": v.workspace, "cursor": position_cursor(v, &OLDEST, now)});
     if let Some(source) = &v.source {
         arguments["sourceId"] = json!(source);
     }
@@ -211,23 +256,35 @@ fn poll(conn: &Connection, v: &View, req: &Request) -> Result<Json> {
         ));
     }
     let after = match (req.cursor, req.consumer) {
-        (Some(c), _) => position(conn, v, &payload(v, "c1", c, 16)?)?,
+        (Some(c), _) => {
+            let (id, floor) = read_position(v, c)?;
+            let at = position(conn, v, &id)?;
+            // Retention is per scope: a kept cursor can still sit before revisions deleted
+            // since it was issued.
+            if at < pruned(conn, v, Some(floor))? {
+                return Err(gap(conn, v));
+            }
+            at
+        }
         (None, Some(consumer)) => {
-            let at: Option<i64> = conn
+            let at: Option<(i64, i64)> = conn
                 .query_row(
-                    "SELECT after_seq FROM consumers WHERE consumer = ?1 AND filter = ?2",
+                    "SELECT after_seq, floor FROM consumers WHERE consumer = ?1 AND filter = ?2",
                     [consumer, &v.filter],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()
                 .map_err(sql)?;
             match at {
-                Some(at) if at < pruned(conn, v)? => return Err(gap(v)),
-                at => at.unwrap_or(0),
+                Some((at, floor)) if at < pruned(conn, v, Some(floor))? => {
+                    return Err(gap(conn, v));
+                }
+                at => at.map_or(0, |(at, _)| at),
             }
         }
         (None, None) => 0,
     };
+    let now = floor(conn)?;
     let mut stmt = conn
         .prepare(
             "SELECT r.id, r.source_id, r.scope, r.kind, r.snapshot_id, r.coverage, r.summary,
@@ -279,7 +336,7 @@ fn poll(conn: &Connection, v: &View, req: &Request) -> Result<Json> {
     Ok(json!({
         "workspaceId": v.workspace,
         "revisions": page,
-        "nextCursor": last.map_or(Json::Null, |id| cursor(v, "c1", id)),
+        "nextCursor": last.map_or(Json::Null, |id| position_cursor(v, id, now)),
         "hasMore": has_more,
         "tracking": tracked,
         "trackingTruncated": truncated,
@@ -363,7 +420,7 @@ fn detail(conn: &Connection, v: &View, req: &Request, revision: &str) -> Result<
         .filter(|r| r.len() == 32)
         .and_then(unhex)
         .ok_or_else(missing)?;
-    let state: String = conn
+    let state: Option<String> = conn
         .query_row(
             "SELECT detail FROM revisions WHERE id = ?1
              AND source_id IN (SELECT value FROM json_each(?2)) AND (?3 IS NULL OR scope = ?3)",
@@ -371,8 +428,13 @@ fn detail(conn: &Connection, v: &View, req: &Request, revision: &str) -> Result<
             |r| r.get(0),
         )
         .optional()
-        .map_err(sql)?
-        .ok_or_else(missing)?;
+        .map_err(sql)?;
+    // Only retention deletes a revision figlens issued, and it leaves a mark.
+    let state = match state {
+        Some(state) => state,
+        None if pruned(conn, v, None)? > 0 => return Err(gap(conn, v)),
+        None => return Err(missing()),
+    };
     let after = match req.cursor {
         Some(c) => {
             let p = payload(v, "d1", c, 24)?;
@@ -450,25 +512,28 @@ pub fn ack(storage: &Storage, select: &Select, req: &Request) -> Result<Json> {
     })?;
     let (_, mut ws) = opened(storage, select, true)?;
     let v = view(storage, &ws, req)?;
-    let id = payload(&v, "c1", text, 16)?;
+    let (id, floor) = read_position(&v, text)?;
     let tx = ws
         .conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(sql)?;
     let seq = position(&tx, &v, &id)?;
-    let advanced = tx.execute(
-        "INSERT INTO consumers (consumer, filter, after_seq, updated_ms) VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT (consumer, filter) DO UPDATE SET after_seq = excluded.after_seq,
-         updated_ms = excluded.updated_ms WHERE excluded.after_seq > after_seq",
-        params![consumer, v.filter, seq, now_ms()],
-    )
-    .map_err(sql)?
+    // A later floor at the same position also moves the checkpoint: it accepts more deletions.
+    let advanced = tx
+        .execute(
+            "INSERT INTO consumers (consumer, filter, after_seq, floor, updated_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (consumer, filter) DO UPDATE SET
+         after_seq = excluded.after_seq, floor = excluded.floor, updated_ms = excluded.updated_ms
+         WHERE (excluded.after_seq, excluded.floor) > (after_seq, floor)",
+            params![consumer, v.filter, seq, floor, now_ms()],
+        )
+        .map_err(sql)?
         > 0;
-    let at: i64 = tx
+    let (at, held_floor): (i64, i64) = tx
         .query_row(
-            "SELECT after_seq FROM consumers WHERE consumer = ?1 AND filter = ?2",
+            "SELECT after_seq, floor FROM consumers WHERE consumer = ?1 AND filter = ?2",
             [consumer, &v.filter],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .map_err(sql)?;
     let held: Option<Vec<u8>> = tx
@@ -483,6 +548,9 @@ pub fn ack(storage: &Storage, select: &Select, req: &Request) -> Result<Json> {
     tx.commit().map_err(sql)?;
     Ok(
         json!({"workspaceId": v.workspace, "consumer": consumer, "advanced": advanced,
-        "checkpoint": cursor(&v, "c1", held.as_deref().unwrap_or(&OLDEST))}),
+        "checkpoint": match (at, held) {
+            (0, _) => Some(position_cursor(&v, &OLDEST, held_floor)),
+            (_, held) => held.map(|id| position_cursor(&v, &id, held_floor)),
+        }}),
     )
 }

@@ -1302,15 +1302,14 @@ pub(crate) fn publish(
         params![job_id, gen_id, now, evicted_json],
     )
     .map_err(sql)?;
-    tx.commit().map_err(sql)?;
     // The replaced generation's facets were only kept to be compared.
     if let (true, Some(old)) = (recorded, expected) {
         for table in ["facets", "facet_sets"] {
-            ws.conn
-                .execute(&format!("DELETE FROM {table} WHERE gen = ?1"), [old])
+            tx.execute(&format!("DELETE FROM {table} WHERE gen = ?1"), [old])
                 .map_err(sql)?;
         }
     }
+    tx.commit().map_err(sql)?;
     // Retention, outside the publication: one retired generation per source and scope.
     // An evicted scope serves nothing, so it keeps no retired generation: retention stays at
     // one per published scope, however many scopes a source has seen.
@@ -1424,10 +1423,10 @@ fn record(
         ("baseline_pending", _) => Err("tracking_started"),
         // An evicted scope published again has nothing to compare with: never a silent gap.
         ("active", None) if expected.is_none() => Err("previous_unpublished"),
-        ("active", Some(p)) if p.epoch == epoch && Some(p.from) == expected => match p.what {
-            Ok(compared) => Ok(compared),
-            Err(reason) => Err(reason),
-        },
+        ("active", Some(p)) if p.epoch == epoch && Some(p.from) == expected => p.what,
+        // Compared against another generation or tracking: a baseline, never a silent gap.
+        ("active", Some(p)) if p.epoch == epoch => Err("previous_changed"),
+        ("active", _) => Err("tracking_changed"),
         _ => return Ok(false),
     };
     let (kind, from, coverage, summary, mut rows, mut truncated) = match what {
@@ -1540,11 +1539,13 @@ fn record(
     // keep their summary and read as `expired`.
     let old = "SELECT id FROM revisions WHERE source_id = ?1 AND scope = ?2
                ORDER BY seq DESC LIMIT -1 OFFSET ?3";
-    // The newest deleted, so a checkpoint behind it reads as `event_gap`.
+    // The newest deleted and the publication that deleted it, so a reader behind it that had
+    // not accepted that deletion reads `event_gap`.
     tx.execute(
         &format!(
             "INSERT INTO meta (key, value) SELECT 'pruned' || char(31) || ?1 || char(31) || ?2,
-             CAST(MAX(seq) AS TEXT) FROM revisions WHERE id IN ({old}) HAVING COUNT(*) > 0
+             MAX(seq) || ' ' || (SELECT value FROM meta WHERE key = 'revision_seq')
+             FROM revisions WHERE id IN ({old}) HAVING COUNT(*) > 0
              ON CONFLICT (key) DO UPDATE SET value = excluded.value"
         ),
         params![source, scope, REVISIONS],
@@ -2102,7 +2103,7 @@ pub(super) fn chosen(storage: &Storage, ws: &Opened, only: Option<&str>) -> Resu
 }
 
 /// Starts or joins builds of `kind` for each (source, scope): the given scope, or every scope
-/// the source has published.
+/// the source has published; `among` narrows the chosen sources.
 fn submit_all(
     storage: &Storage,
     select: &Select,
@@ -2110,10 +2111,14 @@ fn submit_all(
     only: Option<&str>,
     scope: Option<&str>,
     request_id: Option<&str>,
+    among: Option<&[String]>,
 ) -> Result<Outcome> {
     let (place, mut ws) = opened(storage, select, true)?;
     let mut plan = Vec::new();
     for source in chosen(storage, &ws, only)? {
+        if among.is_some_and(|among| !among.contains(&source)) {
+            continue;
+        }
         let scopes: Vec<String> = match scope {
             Some(scope) => vec![scope.to_owned()],
             None => ws
@@ -2223,13 +2228,13 @@ pub fn refresh(
     scope: Option<&str>,
     request_id: Option<&str>,
 ) -> Result<Outcome> {
-    submit_all(storage, select, "refresh", source, scope, request_id)
+    submit_all(storage, select, "refresh", source, scope, request_id, None)
 }
 
 /// `index rebuild`: builds every published scope of every source again, even unchanged ones,
 /// keeping the registry and each prior generation until its replacement publishes.
 pub fn rebuild(storage: &Storage, select: &Select, request_id: Option<&str>) -> Result<Outcome> {
-    submit_all(storage, select, "rebuild", None, None, request_id)
+    submit_all(storage, select, "rebuild", None, None, request_id, None)
 }
 
 /// `index rebuild` of one source, or one of its scopes: a deferred item's continuation, which
@@ -2241,7 +2246,7 @@ pub fn rebuild_scope(
     scope: Option<&str>,
     request_id: Option<&str>,
 ) -> Result<Outcome> {
-    submit_all(storage, select, "rebuild", source, scope, request_id)
+    submit_all(storage, select, "rebuild", source, scope, request_id, None)
 }
 
 /// `index track`: turns change tracking on for published scope `scope` of each chosen source and
@@ -2255,10 +2260,20 @@ pub fn track(
     scope: &str,
     request_id: Option<&str>,
 ) -> Result<Outcome> {
-    let (id, rows, started) = set_tracking(storage, select, source, scope, true)?;
-    let mut done = match started {
-        true => rebuild_scope(storage, select, source, Some(scope), request_id)?,
-        false => Outcome {
+    let one = request_id.is_some();
+    let (id, rows, started) = set_tracking(storage, select, source, scope, Some(one))?;
+    // Only the sources whose baseline is pending build: an active one is not rebuilt.
+    let mut done = match started.is_empty() {
+        false => submit_all(
+            storage,
+            select,
+            "rebuild",
+            source,
+            Some(scope),
+            request_id,
+            Some(&started),
+        )?,
+        true => Outcome {
             report: json!({"workspaceId": id, "jobs": []}),
             run: Vec::new(),
         },
@@ -2274,27 +2289,36 @@ pub fn untrack(
     source: Option<&str>,
     scope: &str,
 ) -> Result<Json> {
-    let (id, rows, _) = set_tracking(storage, select, source, scope, false)?;
+    let (id, rows, _) = set_tracking(storage, select, source, scope, None)?;
     Ok(json!({"workspaceId": id, "tracking": rows}))
 }
 
-/// Sets tracking of `scope` on or off for each chosen source in one transaction, bumping a
-/// row's epoch on every change so work begun under the old state can tell. Turning it on
-/// needs the scope published; returns whether any row became `baseline_pending`.
+/// Sets tracking of `scope` on (`Some`, whose `true` allows one source only, for a requestId's
+/// single job) or off for each chosen source in one transaction, bumping a row's epoch on
+/// every change so work begun under the old state can tell. Turning it on needs the scope
+/// published; returns the sources whose baseline is pending.
 fn set_tracking(
     storage: &Storage,
     select: &Select,
     source: Option<&str>,
     scope: &str,
-    on: bool,
-) -> Result<(String, Json, bool)> {
+    on: Option<bool>,
+) -> Result<(String, Json, Vec<String>)> {
     let (_, mut ws) = opened(storage, select, true)?;
     let sources = chosen(storage, &ws, source)?;
+    // Refused before any write, so no source is left pending without its job.
+    if on == Some(true) && sources.len() > 1 {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            "requestId names one job; pass a sourceId and scope with it",
+        ));
+    }
+    let on = on.is_some();
     let tx = ws
         .conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(sql)?;
-    let (mut rows, mut started) = (Vec::new(), false);
+    let (mut rows, mut started) = (Vec::new(), Vec::new());
     for source_id in &sources {
         let published: bool = tx
             .query_row(
@@ -2364,11 +2388,11 @@ fn set_tracking(
                 params![source_id, scope, search::diff::facet_version(), now_ms()],
             )
             .map_err(sql)?;
-            started = true;
+            started.push(source_id.clone());
         } else if on && state.as_deref() == Some("baseline_pending") {
             // A build that started before tracking stored no facets, so its publication left
             // the baseline pending: tracking again builds it.
-            started = true;
+            started.push(source_id.clone());
         } else if !on && tracked {
             tx.execute(
                 "UPDATE tracking SET state = 'disabled', epoch = epoch + 1

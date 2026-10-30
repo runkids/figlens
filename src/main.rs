@@ -184,11 +184,11 @@ usage:
   figlens index track|untrack <select> --scope NODE [--source ID] [--request-id ID]
                                              record a published scope's design changes on each build of it
                                              (track builds a baseline first), or stop; history stays
-  figlens changes <select> [--source ID] [--scope NODE] [--consumer NAME|--cursor C] [--limit N]
+  figlens changes <select> [--source ID] [--scope NODE] [--consumer NAME] [--cursor C] [--limit N] [--storage DIR]
                                              recorded revisions after the cursor, the consumer's checkpoint
                                              or the oldest kept, with tracking state; never writes.
                                              --revision R [--cursor C]: one revision's changed nodes
-  figlens watch ack <select> --consumer NAME --cursor C [--source ID] [--scope NODE]
+  figlens watch ack <select> --consumer NAME --cursor C [--source ID] [--scope NODE] [--storage DIR]
                                              move the consumer's checkpoint for these filters to C; an
                                              older C changes nothing
   figlens update                               install the latest GitHub release over this binary
@@ -960,7 +960,7 @@ mod signals {
 fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
     use figlens::workspace::{self, PrepareOptions, Select};
     let usage = || -> Box<dyn Error> {
-        "usage: figlens index prepare|status|add|refresh|remove|relocate|clear|rebuild|reset ...; see `figlens --help`"
+        "usage: figlens index prepare|status|add|refresh|remove|relocate|clear|rebuild|track|untrack|reset ...; see `figlens --help`"
             .into()
     };
     let action = args.first().ok_or_else(usage)?.as_str();
@@ -1078,10 +1078,10 @@ fn changes(args: &[String], ack: bool) -> Result<serde_json::Value, Box<dyn Erro
     use figlens::workspace::{self, Select, changes};
     let usage = match ack {
         true => {
-            "usage: figlens watch ack --workspace DIR|--file <file.fig>|--id ws_... --consumer NAME --cursor C [--source ID] [--scope NODE]"
+            "usage: figlens watch ack --workspace DIR|--file <file.fig>|--id ws_... --consumer NAME --cursor C [--source ID] [--scope NODE] [--storage DIR]"
         }
         false => {
-            "usage: figlens changes --workspace DIR|--file <file.fig>|--id ws_... [--source ID] [--scope NODE] [--consumer NAME] [--cursor C] [--revision R] [--limit N]"
+            "usage: figlens changes --workspace DIR|--file <file.fig>|--id ws_... [--source ID] [--scope NODE] [--consumer NAME] [--cursor C] [--revision R] [--limit N] [--storage DIR]"
         }
     };
     let a = index_args(args, true)?;

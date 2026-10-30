@@ -955,7 +955,8 @@ fn revision_retention_deletes_and_expires_only_whole_groups() {
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    // The newest deleted revision's seq marks the gap for checkpoints behind it.
+    // The newest deleted revision's seq marks the gap for checkpoints behind it, with the seq of
+    // the publication that deleted it.
     let pruned: String = ws
         .conn
         .query_row(
@@ -972,7 +973,7 @@ fn revision_retention_deletes_and_expires_only_whole_groups() {
                 (5, "complete".into(), 5),
                 (6, "complete".into(), 5)
             ],
-            "2".into()
+            "2 5".into()
         )
     );
 }

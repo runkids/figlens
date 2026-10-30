@@ -1994,7 +1994,7 @@ fn a_failed_comparison_still_publishes_and_a_new_field_layout_is_a_baseline() {
 }
 
 #[test]
-fn a_tracking_change_after_the_comparison_records_no_revision() {
+fn a_tracking_change_after_the_comparison_records_a_baseline_not_a_gap() {
     let env = Env::new();
     let t = Tracked::new(&env);
     t.save(true);
@@ -2008,13 +2008,13 @@ fn a_tracking_change_after_the_comparison_records_no_revision() {
     t.sql("UPDATE tracking SET epoch = epoch + 1");
     std::fs::remove_file(&gate).unwrap();
     assert!(owner.wait().unwrap().success());
-    // The generation still publishes; only the stale revision is left out.
+    // The generation still publishes, as a baseline: the next comparison starts from it.
     assert_eq!(
         (
-            t.revisions().len(),
+            t.revisions().last().unwrap()[1]["reason"].clone(),
             env.json(&["search", "--file", &t.file, "first"])["state"].clone()
         ),
-        (1, json!("ready"))
+        (json!("tracking_changed"), json!("ready"))
     );
 }
 
@@ -2249,8 +2249,9 @@ fn a_cursor_for_other_filters_is_stale_and_a_position_retention_deleted_is_a_gap
     // Retention deleted the revision the cursor and the checkpoint name, and the next, unread.
     t.sql(&format!(
         "DELETE FROM revisions WHERE seq < (SELECT MAX(seq) FROM revisions);
+         UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'revision_seq';
          INSERT INTO meta SELECT 'pruned' || char(31) || '{source}' || char(31) || '0:0',
-         CAST(MAX(seq) - 1 AS TEXT) FROM revisions"
+         (MAX(seq) - 1) || ' ' || (SELECT value FROM meta WHERE key = 'revision_seq') FROM revisions"
     ));
     let gap = t.fails(&[
         "changes", "--file", &t.file, "--scope", "0:0", "--cursor", cursor,
@@ -2266,7 +2267,9 @@ fn a_cursor_for_other_filters_is_stale_and_a_position_retention_deleted_is_a_gap
     ]);
     // Another scope pruned past everything this one keeps must not hide what it keeps.
     t.sql(&format!(
-        "INSERT INTO meta VALUES ('pruned' || char(31) || '{source}' || char(31) || '9:9', '100')"
+        "UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'revision_seq';
+         INSERT INTO meta SELECT 'pruned' || char(31) || '{source}' || char(31) || '9:9',
+         '100' || ' ' || (SELECT value FROM meta WHERE key = 'revision_seq')"
     ));
     let mixed = t.fails(&["changes", "--file", &t.file, "--cursor", unscoped]);
     // Each recovery runs exactly as given.
@@ -2300,6 +2303,115 @@ fn a_cursor_for_other_filters_is_stale_and_a_position_retention_deleted_is_a_gap
             resume(&mixed),
         ),
         (true, true, 1, 1)
+    );
+}
+
+#[test]
+fn a_kept_cursor_before_another_scopes_deleted_revisions_is_a_gap_read_past_once() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let page = t.changes(&["--limit", "1"]);
+    let cursor = page["nextCursor"].as_str().unwrap();
+    let source = page["revisions"][0]["sourceId"].as_str().unwrap();
+    // Retention deleted another scope's revisions recorded after the cursor's, which is kept.
+    t.sql(&format!(
+        "UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'revision_seq';
+         INSERT INTO meta SELECT 'pruned' || char(31) || '{source}' || char(31) || '9:9',
+         '100' || ' ' || (SELECT value FROM meta WHERE key = 'revision_seq')"
+    ));
+    let gap = t.fails(&["changes", "--file", &t.file, "--cursor", cursor]);
+    // The recovery accepts that deletion: its pages read on past it, not into the gap again.
+    let r: Value = serde_json::from_str(gap.lines().last().unwrap()).unwrap();
+    let oldest = r["recovery"][0]["arguments"]["cursor"].as_str().unwrap();
+    let first = t.changes(&["--cursor", oldest, "--limit", "1"]);
+    let next = t.changes(&["--cursor", first["nextCursor"].as_str().unwrap()]);
+    assert_eq!(next["revisions"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn changes_and_ack_refuse_limits_and_consumers_out_of_range() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let page = t.changes(&[]);
+    let id = page["revisions"][0]["revisionId"].as_str().unwrap();
+    let cursor = page["nextCursor"].as_str().unwrap();
+    let long = "c".repeat(129);
+    let refused = [
+        t.fails(&["changes", "--file", &t.file, "--limit", "51"]),
+        t.fails(&[
+            "changes",
+            "--file",
+            &t.file,
+            "--revision",
+            id,
+            "--limit",
+            "501",
+        ]),
+        t.fails(&[
+            "watch",
+            "ack",
+            "--file",
+            &t.file,
+            "--consumer",
+            &long,
+            "--cursor",
+            cursor,
+        ]),
+    ];
+    assert_eq!(
+        refused
+            .each_ref()
+            .map(|e| e.contains("limit must be 1 to") || e.contains("pass consumer")),
+        [true; 3],
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn changes_names_a_scope_as_track_does() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let page = t.changes(&["--scope", "0-0"]);
+    assert_eq!(page["revisions"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn a_deleted_revision_reads_as_a_gap_and_a_checkpoint_on_it_as_null() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let page = t.changes(&[]);
+    let id = page["revisions"][0]["revisionId"].as_str().unwrap();
+    let ack = |c: &str| {
+        env.json(&[
+            "watch",
+            "ack",
+            "--file",
+            &t.file,
+            "--consumer",
+            "bot",
+            "--cursor",
+            c,
+        ])
+    };
+    ack(page["nextCursor"].as_str().unwrap());
+    let source = page["revisions"][0]["sourceId"].as_str().unwrap();
+    t.sql(&format!(
+        "DELETE FROM revisions;
+         UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'revision_seq';
+         INSERT INTO meta SELECT 'pruned' || char(31) || '{source}' || char(31) || '0:0',
+         '1' || ' ' || (SELECT value FROM meta WHERE key = 'revision_seq')"
+    ));
+    let detail = t.fails(&["changes", "--file", &t.file, "--revision", id]);
+    let r: Value = serde_json::from_str(detail.lines().last().unwrap()).unwrap();
+    let oldest = r["recovery"][0]["arguments"]["cursor"].as_str().unwrap();
+    assert_eq!(
+        (
+            detail.contains("deleted by retention"),
+            ack(oldest)["checkpoint"].clone()
+        ),
+        (true, Value::Null)
     );
 }
 
@@ -2396,6 +2508,62 @@ fn a_consumer_checkpoint_is_kept_per_view_so_a_narrower_view_skips_nothing() {
                 .len()
         ),
         (2, 1)
+    );
+}
+
+#[test]
+fn tracking_every_source_builds_only_those_not_yet_tracked() {
+    let env = Env::new();
+    for d in ["project", "in", "out"] {
+        std::fs::create_dir(env.dir.join(d)).unwrap();
+    }
+    let dir = std::fs::canonicalize(env.dir.join("project")).unwrap();
+    let dir = dir.to_str().unwrap();
+    let mut ids = Vec::new();
+    for name in ["in/a.fig", "out/b.fig"] {
+        let fig = env.fig(name);
+        let prepared = env.json(&[
+            "index",
+            "prepare",
+            fig.to_str().unwrap(),
+            "--workspace",
+            dir,
+            "--scope",
+            "0:0",
+        ]);
+        ids.push(prepared["job"]["sourceId"].as_str().unwrap().to_owned());
+    }
+    let track = |more: &[&str]| {
+        let mut args = vec!["index", "track", "--workspace", dir, "--scope", "0:0"];
+        args.extend(more);
+        env.json(&args)
+    };
+    track(&["--source", &ids[0]]);
+    let both = track(&[]);
+    let refused = env.run(&[
+        "index",
+        "track",
+        "--workspace",
+        dir,
+        "--scope",
+        "9:9",
+        "--request-id",
+        "r1",
+    ]);
+    let built = |r: &Value| {
+        r["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|j| j["sourceId"].clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        (
+            built(&both),
+            String::from_utf8_lossy(&refused.stderr).contains("requestId names one job")
+        ),
+        (vec![json!(ids[1])], true)
     );
 }
 

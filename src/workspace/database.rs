@@ -342,7 +342,7 @@ pub(crate) const V4: &str = "
         descendants INTEGER NOT NULL, PRIMARY KEY (rev, ord)) STRICT, WITHOUT ROWID;
     CREATE TABLE consumers (
         consumer TEXT NOT NULL, filter TEXT NOT NULL, after_seq INTEGER NOT NULL,
-        updated_ms INTEGER NOT NULL, PRIMARY KEY (consumer, filter)) STRICT;
+        floor INTEGER NOT NULL, updated_ms INTEGER NOT NULL, PRIMARY KEY (consumer, filter)) STRICT;
     INSERT INTO meta (key, value) VALUES ('cursor_secret', lower(hex(randomblob(32))));
     PRAGMA user_version = 4;";
 
