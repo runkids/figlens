@@ -169,10 +169,9 @@ pub fn library(
     // Invisible sources are dropped before anything about them is read or named; visibility is
     // decided again on every page, and the cursor binds the sources it saw.
     let total = rows.len();
-    // A selected definition's source is only told apart as unknown or not visible; nothing
-    // else about one this caller may not see is read.
+    // A selected definition's source this caller may not see reads as unknown: nothing about
+    // it, not even that it exists, is told.
     let wanted = req.definition.as_ref().map(|d| d.source_id.as_str());
-    let known = wanted.is_some_and(|id| rows.iter().any(|r| r.id == id));
     let mut visible: Vec<_> = rows
         .into_iter()
         .filter(|r| storage.sees(Path::new(&r.path)))
@@ -252,7 +251,7 @@ pub fn library(
             step,
         });
     }
-    let (definition, definition_gen) = selected(&tx, req, &sources, known)?;
+    let (definition, definition_gen) = selected(&tx, req, &sources)?;
     if let Some(id) = source {
         sources.retain(|s| s.id == id);
     }
@@ -618,7 +617,6 @@ fn selected(
     tx: &rusqlite::Transaction,
     req: &Request,
     sources: &[Source],
-    known: bool,
 ) -> Result<(Json, Option<i64>)> {
     let unresolved = |reason: &str| json!({"state": "unresolved", "reason": reason});
     let Some(d) = &req.definition else {
@@ -629,11 +627,7 @@ fn selected(
         return Ok((unresolved(reason), None));
     };
     let Some(s) = sources.iter().find(|s| s.id == d.source_id) else {
-        let reason = match known {
-            true => "authorization_restricted",
-            false => "definition_not_found",
-        };
-        return Ok((unresolved(reason), None));
+        return Ok((unresolved("definition_not_found"), None));
     };
     let Some(gen_id) = s.gen_id else {
         return Ok((unresolved("source_not_ready"), None));
@@ -644,7 +638,7 @@ fn selected(
     let kind: Option<String> = tx
         .query_row(
             "SELECT kind FROM records INDEXED BY records_node WHERE gen = ?1 AND node_id = ?2
-             LIMIT 1",
+             ORDER BY rid LIMIT 1",
             params![gen_id, d.node_id],
             |r| r.get(0),
         )

@@ -2111,7 +2111,8 @@ fn a_selected_definition_is_checked_on_its_exact_ref_and_never_resolved() {
         (library_ids(&narrowed), &narrowed["definition"]["state"]),
         (vec![srcs[0].1.clone()], &json!("selected"))
     );
-    // Only the first file is under the caller's roots now: the second is neither named nor read.
+    // Only the first file is under the caller's roots now: the second is neither named nor read,
+    // and reads as an unknown source, so its existence is not told either.
     let narrow = storage.clone().confined(std::slice::from_ref(&srcs[0].0));
     let hidden = ask(&narrow, None, "component", def.clone());
     let text = hidden.to_string();
@@ -2149,8 +2150,32 @@ fn a_selected_definition_is_checked_on_its_exact_ref_and_never_resolved() {
             unresolved("definition_snapshot_stale"),
             unresolved("definition_not_found"),
             unresolved("definition_not_found"),
-            unresolved("authorization_restricted"),
+            unresolved("definition_not_found"),
         ]
+    );
+    // A changed ref cannot continue a cursor paged under another one.
+    let paged = ask(&storage, None, "component", def.clone());
+    let other = Request {
+        definition: Some(with(|d| d.node_id = "9:9".into())),
+        ..reference("k", Some(&paged["nextCursor"]))
+    };
+    assert_eq!(
+        kind_of_error(library(&storage, &select, None, &other)),
+        ErrorKind::CursorStale
+    );
+    // A variable is checked as one; a style adds that its kind is unverified.
+    conn.execute(
+        "UPDATE records SET kind = 'VARIABLE' WHERE gen = ?1 AND node_id = ?2",
+        params![srcs[1].2, def.node_id],
+    )
+    .unwrap();
+    let kinds: Vec<Json> = ["variable", "style"]
+        .iter()
+        .map(|k| ask(&storage, None, k, def.clone())["definition"].clone())
+        .collect();
+    assert_eq!(
+        (&kinds[0]["state"], &kinds[1]["kindEvidence"]),
+        (&json!("selected"), &json!("unverified"))
     );
 }
 

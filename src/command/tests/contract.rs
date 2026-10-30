@@ -508,7 +508,7 @@ fn usages_library_is_a_workspace_question_apart_from_node_questions() {
 }
 
 #[test]
-fn cli_library_takes_three_flags_and_no_node_options() {
+fn cli_library_takes_its_reference_and_definition_flags_and_no_node_options() {
     let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<_>>();
     let request = crate::command::library_request(&args(&[
         "--library",
