@@ -235,6 +235,14 @@ test('CLI path runs the MCP index, jobs, search, usages, diff, changes, watch an
   assert.deepEqual(cliArgs('inspect', { file: '/d.fig', node: '1:2', compareVariant: '1:3' }), ['inspect', '/d.fig', '1:2', '--compare-variant', '1:3']);
   for (const input of [{ file: '/a.fig', workspaceId: 'ws_p', sourceId: 'b', query: 'Pay' }, { file: '/a.fig', storage: '/s', query: 'Pay' }, { query: 'Pay' }])
     assert.throws(() => cliArgs('search', input), /file or workspaceId, not both/);
+  // An image search: the query text is optional, the reference and crop become flags, and hybrid needs an image.
+  assert.deepEqual(cliArgs('search', { workspaceId: 'ws_1', image: '/q.png', crop: { x: 1, y: 2, width: 3, height: 4 } }),
+    ['search', '--id', 'ws_1', '--image', '/q.png', '--crop', '1,2,3,4', '--', '']);
+  assert.deepEqual(cliArgs('search', { workspaceId: 'ws_1', imageRef: { sourceId: 's', snapshotId: 'sha256:x', nodeId: '1:2' }, query: 'Pay', mode: 'hybrid' }),
+    ['search', '--id', 'ws_1', '--mode', 'hybrid', '--image-ref', '{"sourceId":"s","snapshotId":"sha256:x","nodeId":"1:2"}', '--', 'Pay']);
+  assert.throws(() => cliArgs('search', { workspaceId: 'ws_1', query: 'Pay', mode: 'hybrid' }), /hybrid here takes image or imageRef/);
+  assert.throws(() => cliArgs('search', { workspaceId: 'ws_1', query: 'Pay', crop: { x: 0, y: 0, width: 1, height: 1 } }), /crop applies to a query image/);
+  assert.throws(() => cliArgs('search', { workspaceId: 'ws_1' }), /needs query/);
   assert.throws(() => cliArgs('index', { action: 'remove', workspaceId: 'ws_1' }), /needs sourceId/);
   assert.deepEqual(cliArgs('usages', { file: '/d.fig', node: 'I1:2;3:4', relation: 'instance_of,uses_style', direction: 'out', includeHidden: true, limit: 5 }),
     ['usages', '/d.fig', 'I1:2;3:4', '--relation', 'instance_of,uses_style', '--out', '--include-hidden', '--limit', '5']);
@@ -798,6 +806,31 @@ test('CLI-path workspace search, usages, changes, rebuild and track ask read on 
   await assert.rejects(adapter.cli(current, 'index', { action: 'track', workspaceId: 'ws_1', scope: '0:1' }), /read denied/);
   assert.deepEqual(asked, [['read', '/a.fig'], ['read', '/a.fig', '/b.fig'], ['read', '/b.fig'], ['read', '/c.fig'], ['read', '/b.fig'], ['read', '/a.fig', '/b.fig']]);
   assert.deepEqual(ran, ['status', 'status', 'status', 'status', 'status'], 'only the read-only status ran');
+});
+
+test('CLI-path image search asks read on the referenced source and on the local query image before running', async t => {
+  const { root, ctx, adapter } = await context(t);
+  const asked = [], ran = [];
+  // Every source read is allowed; the query image read is denied.
+  ctx.permission.assert = async ({ action, resources }) => {
+    asked.push([action, ...resources]);
+    if (resources.some(r => r.endsWith('.png'))) throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  const current = await adapter.scope('image session');
+  current.run = async args => {
+    ran.push(args[0] === 'index' ? args[1] : args[0]);
+    return { stdout: JSON.stringify({ paths: { workspace: '/w', lock: '/w.lock' }, storage: { rule: 'default' }, roots: { config: { path: '/c' } },
+      sources: [{ sourceId: 's1', path: '/a.fig' }, { sourceId: 's2', path: '/b.fig' }] }) };
+  };
+  const image = path.join(root, 'q.png');
+  await writeFile(image, '');
+  await assert.rejects(adapter.cli(current, 'search', { workspaceId: 'ws_1', sourceId: 's1', image }), /read denied/);
+  // A reference to another source's node reads that source too, though the search narrows to s1; the
+  // session already granted /a.fig, so only /b.fig is asked.
+  const reference = { sourceId: 's2', snapshotId: 'sha256:x', nodeId: '1:2' };
+  assert.equal((await adapter.cli(current, 'search', { workspaceId: 'ws_1', sourceId: 's1', imageRef: reference })).sources.length, 2);
+  assert.deepEqual(asked, [['read', '/a.fig'], ['read', image, await realpath(image)].filter((v, i, a) => a.indexOf(v) === i), ['read', '/b.fig']]);
+  assert.deepEqual(ran, ['status', 'status', 'search'], 'the denied image search never ran');
 });
 
 test('CLI-path diff asks read on each design on its own and runs only after both are allowed', async t => {

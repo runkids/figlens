@@ -267,6 +267,10 @@ fn searched(
     let query_image = match image.map(|i| (i, &i.input)) {
         None => None,
         Some((i, Input::Path(path))) => Some(super::visual::query_image(path, i.crop, cancel)?),
+        // Admission (8 MiB, 4 MP, crop) happens before decoding; the bytes are never written.
+        Some((i, Input::Png(bytes))) => {
+            Some(crate::search::visual::QueryImage::from_png(bytes, i.crop)?)
+        }
         Some((i, Input::Ref { source_id, .. })) => {
             let row = rows.iter().find(|r| r.id == *source_id).ok_or_else(|| {
                 fail(
@@ -825,10 +829,33 @@ fn image_rank(
             }
         }
     }
+    // A vision layer ready on every source is the approximate visual signal; the hash then adds
+    // only exact normalized-pixel copies, which are independent evidence. Otherwise the hash
+    // ranking is the model-free visual signal. Counting both approximations would reward
+    // correlated evidence (#95 diagnostic: crop and background queries ranked worse).
+    let vision_ready = vision.is_some() && layers["visual"]["embedding"]["state"] == "ready";
+    let (hash, exact) = match vision_ready {
+        true => (None, Some(hash.into_iter().filter(|h| h.1.exact).collect())),
+        false => (any_hash.then_some(hash), None),
+    };
+    let vision = if vision_ready {
+        vision
+    } else {
+        if vision.is_some() {
+            layers["visual"]["embedding"]["reasons"] = json!([{"code": "not_every_source_ready"}]);
+        }
+        None
+    };
+    layers["visual"]["approximate"] = json!(if vision_ready {
+        "visual_embedding"
+    } else {
+        "visual_hash"
+    });
     let channels = rank::Channels {
         text,
         semantic,
-        hash: any_hash.then_some(hash),
+        hash,
+        exact,
         vision,
     };
     let (ranked, decor) = rank::rank(q, req, key, channels, complete)?;

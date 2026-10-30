@@ -22,11 +22,13 @@ impl ImageMode {
     }
 }
 
-/// Where the query image comes from: a local PNG the caller may read, or the stored raster of a
-/// node in exactly one published snapshot of a workspace source.
+/// Where the query image comes from: a local PNG the caller may read, encoded PNG bytes a
+/// caller already holds (the viewer's upload; no CLI or MCP argument carries them), or the
+/// stored raster of a node in exactly one published snapshot of a workspace source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Input {
     Path(PathBuf),
+    Png(Vec<u8>),
     Ref {
         source_id: String,
         snapshot_id: String,
@@ -74,6 +76,7 @@ impl ImageQuery {
             .map(|c| json!({"x": c.x, "y": c.y, "width": c.width, "height": c.height}));
         match &self.input {
             Input::Path(_) => json!({"kind": "path", "crop": crop}),
+            Input::Png(_) => json!({"kind": "bytes", "crop": crop}),
             Input::Ref {
                 source_id,
                 snapshot_id,
