@@ -355,6 +355,13 @@ fn searched(
         }
         states.push(state);
     }
+    if q.cursor_expired(now) {
+        return Err(FigError::new(
+            ErrorKind::CursorExpired,
+            "this search cursor's lease ended; search again without cursor",
+        )
+        .into());
+    }
     let used: Vec<i64> = loaded.iter().map(|l| l.2).collect();
     if let Some(gens) = q.cursor_gens()
         && gens != used.as_slice()

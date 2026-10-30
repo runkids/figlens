@@ -48,6 +48,9 @@ const REPLY_BYTES: usize = 8 * 1024 * 1024;
 const DEADLINE: Duration = Duration::from_secs(15);
 /// Same-stamp reuse lasts at most this long before the bytes are hashed again.
 const REHASH: Duration = Duration::from_secs(60);
+/// How long a workspace search cursor may be used after its page was served (one hour, as long
+/// as the watch keeps ended leases); later use is `cursor_expired`, distinct from `cursor_stale`.
+pub(crate) const CURSOR_LEASE_MS: i64 = 3_600_000;
 
 const RANKING: &str = "lexical-1";
 const WEIGHTS: [f64; 2] = [2.0, 1.0];
@@ -105,6 +108,8 @@ pub struct Prepared {
     fingerprint: Option<String>,
     /// The generations a workspace cursor paged, `None` for a stateless cursor.
     gens: Option<Vec<i64>>,
+    /// When a workspace cursor was issued, in Unix milliseconds.
+    issued: Option<i64>,
 }
 
 impl Prepared {
@@ -119,6 +124,12 @@ impl Prepared {
     /// The generations of the sources a workspace cursor paged.
     pub(crate) fn cursor_gens(&self) -> Option<&[i64]> {
         self.gens.as_deref()
+    }
+
+    /// Whether a workspace cursor was issued more than [`CURSOR_LEASE_MS`] before `now_ms`.
+    pub(crate) fn cursor_expired(&self, now_ms: i64) -> bool {
+        self.issued
+            .is_some_and(|t| now_ms.saturating_sub(t) > CURSOR_LEASE_MS)
     }
 }
 
@@ -167,22 +178,26 @@ impl Request {
                 "search types take up to {MAX_TYPES} node types such as TEXT or FRAME"
             )));
         }
-        let (offset, fingerprint, gens) = match &self.cursor {
-            None => (0, None, None),
+        let (offset, fingerprint, gens, issued) = match &self.cursor {
+            None => (0, None, None, None),
             Some(cursor) => {
-                // A workspace cursor also lists the generations it paged: `w1.fp.offset.g-g`.
-                let (rest, gens) = match cursor.strip_prefix("w1.") {
-                    Some(rest) => match rest.rsplit_once('.') {
-                        Some((rest, gens)) => (
+                // A workspace cursor also lists the generations it paged and when it was
+                // issued: `w1.fp.offset.g-g.ms`.
+                let (rest, gens, issued) = match cursor.strip_prefix("w1.") {
+                    Some(rest) => match rest.rsplit_once('.').and_then(|(rest, ms)| {
+                        Some((rest.rsplit_once('.')?, ms.parse::<i64>().ok()?))
+                    }) {
+                        Some(((rest, gens), ms)) => (
                             Some(rest),
                             gens.split('-')
                                 .map(|g| g.parse::<i64>().ok())
                                 .collect::<Option<Vec<_>>>()
                                 .filter(|g| (1..=MAX_SOURCES).contains(&g.len())),
+                            Some(ms),
                         ),
-                        None => (None, None),
+                        None => (None, None, None),
                     },
-                    None => (cursor.strip_prefix("s1."), None),
+                    None => (cursor.strip_prefix("s1."), None, None),
                 };
                 let parsed = rest
                     .filter(|_| cursor.starts_with("s1.") || gens.is_some())
@@ -193,7 +208,7 @@ impl Request {
                 let (offset, fp) = parsed.ok_or_else(|| {
                     invalid("invalid search cursor; pass nextCursor from the previous reply")
                 })?;
-                (offset, Some(fp.to_owned()), gens)
+                (offset, Some(fp.to_owned()), gens, issued)
             }
         };
         Ok(Prepared {
@@ -202,6 +217,7 @@ impl Request {
             offset,
             fingerprint,
             gens,
+            issued,
         })
     }
 
@@ -1650,7 +1666,7 @@ pub(crate) fn corpus_page(
         "coverage": corpus_coverage(parts, req, excluded),
         "hasMore": more,
         "nextCursor": (more && q.offset + req.limit <= MAX_OFFSET)
-            .then(|| format!("w1.{fingerprint}.{}.{}", q.offset + req.limit, gens.join("-"))),
+            .then(|| format!("w1.{fingerprint}.{}.{}.{}", q.offset + req.limit, gens.join("-"), ms(SystemTime::now()))),
     }))
 }
 

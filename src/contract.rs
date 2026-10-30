@@ -150,7 +150,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "cursor",
                 "string",
                 false,
-                "nextCursor from the previous page of the same query, filters and snapshot",
+                "nextCursor from the previous page of the same query, filters and snapshot; a workspace cursor lasts one hour (then cursor_expired)",
             ),
             (
                 "includeHidden",
@@ -1259,7 +1259,7 @@ impl Failure {
             ),
             ErrorKind::CursorExpired => (
                 "cursor_expired",
-                "The index this cursor paged was deleted; search again without cursor.",
+                "The index this cursor paged was deleted, or its one-hour lease ended; search again without cursor.",
             ),
             ErrorKind::EventGap => (
                 "event_gap",
