@@ -7,6 +7,9 @@ const STDERR = 64 * 1024;
 
 export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } = {}) {
   const held = new Map();
+  // requestId -> its start, while that start is pending or its lease is held here. Once released,
+  // a replay reaches figlens again, which reports the ended lease and never restarts it.
+  const requests = new Map();
   const owned = new Set();  // every child's watch, from spawn until it exits
   let closing = false;
 
@@ -56,10 +59,33 @@ export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } =
         recovery: 'its holder process has not exited and may still renew the lease; stop it again, or end that process, then check watch status' };
   }
 
-  // `signal` cancels a start still waiting for its reply: its child is released and awaited.
+  // A requestId this session already started replays that start instead of spawning again: figlens
+  // refuses a live lease's requestId from any other process, this host's own next child included.
   async function start(args, signal) {
     if (closing) throw new Error('figlens watch holder is shutting down');
     signal?.throwIfAborted();
+    const at = args.indexOf('--request-id');
+    if (at < 0) return begin(args, signal);
+    const id = args[at + 1], key = JSON.stringify(args);
+    let request = requests.get(id);
+    if (request && request.key !== key) throw new Error(`requestId ${id} names a different watch; start with a new requestId`);
+    if (!request) {
+      // The first start owns the child, so its cancel waits for begin to release it.
+      request = { key, reply: begin(args, signal) };
+      requests.set(id, request);
+      request.reply.then(reply => { if (held.has(reply.leaseId)) held.get(reply.leaseId).request = id; else requests.delete(id); },
+        () => requests.delete(id));
+      return request.reply;
+    }
+    // A replay's own cancel leaves the start it shares running.
+    let cancel;
+    const cancelled = new Promise((_, reject) => { cancel = () => reject(signal.reason); signal?.addEventListener('abort', cancel, { once: true }); });
+    try { return await Promise.race([request.reply, cancelled]); }
+    finally { signal?.removeEventListener('abort', cancel); }
+  }
+
+  // `signal` cancels a start still waiting for its reply: its child is released and awaited.
+  async function begin(args, signal) {
     let out;
     try { out = watch(spawnRun(['watch', 'run', ...args])); }
     catch (error) { throw new Error(`figlens watch run could not start: ${error.message}`); }
@@ -92,8 +118,14 @@ export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } =
     const end = out.line().then(line => { try { return line && JSON.parse(line); } catch { return null; } });
     const lease = { out, end };
     held.set(reply.leaseId, lease);
-    out.exited.then(() => { if (held.get(reply.leaseId) === lease) held.delete(reply.leaseId); });
+    out.exited.then(() => drop(reply.leaseId, lease));
     return reply;
+  }
+
+  function drop(leaseId, lease) {
+    if (held.get(leaseId) !== lease) return;
+    held.delete(leaseId);
+    if (lease.request) requests.delete(lease.request);
   }
 
   // The end reply of a lease this host holds, once its child released it; unconfirmed when the
@@ -102,7 +134,7 @@ export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } =
     const lease = held.get(leaseId);
     if (!lease) return null;
     const exited = await shutdown(lease.out);
-    if (exited && held.get(leaseId) === lease) held.delete(leaseId);
+    if (exited) drop(leaseId, lease);
     const end = exited ? await within(lease.end, exitMs) : null;
     return end && end !== 'timeout' ? end : unconfirmed(leaseId, exited);
   }

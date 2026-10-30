@@ -134,3 +134,20 @@ test('cancelling a start before its reply releases and awaits its child, and hol
   await assert.rejects(starting, { name: 'AbortError' });
   assert.deepEqual([ended, c.exitCode, holder.leases], [true, 0, []]);
 });
+
+test('a requestId replay shares its start: one child, a changed watch refused, and a replay cancel leaves it running', async () => {
+  let spawned = 0;
+  let reply;
+  const holder = createHolder(() => (spawned++, child({ start: c => { reply = () => c.say(active); } })));
+  const args = ['--id', 'ws_1', '--scope', '0:0', '--request-id', 'r'];
+  const first = holder.start(args);
+  const replay = new AbortController();
+  const cancelled = holder.start(args, replay.signal);
+  await new Promise(resolve => setImmediate(resolve));
+  replay.abort(new Error('replay cancelled'));
+  await assert.rejects(cancelled, /replay cancelled/);
+  reply();
+  const leases = [await first, await holder.start(args)];
+  await assert.rejects(holder.start(['--id', 'ws_1', '--scope', '0:1', '--request-id', 'r']), /names a different watch/);
+  assert.deepEqual([spawned, leases, holder.leases], [1, [active, active], ['l1']]);
+});

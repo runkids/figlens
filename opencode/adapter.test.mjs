@@ -551,9 +551,11 @@ if (command === 'index' && action === 'status') say({ paths: { workspace: '/w', 
 else if (command === 'watch' && action === 'status') say({ leases: [], runner: { state: 'stopped' } });
 else if (command === 'watch' && action === 'run') {
   fs.appendFileSync('runs', process.argv.slice(4).join(' ') + '\\n');
+  const request = process.argv.includes('--request-id') ? 'ended-' + process.argv[process.argv.indexOf('--request-id') + 1] : null;
+  if (request && fs.existsSync(request)) { say({ leaseId: fs.readFileSync(request, 'utf8'), state: 'ended', reason: 'released' }); process.exit(1); }
   const leaseId = 'l' + fs.readFileSync('runs', 'utf8').split('\\n').length;
   say({ leaseId, state: 'active' });
-  process.stdin.on('end', () => { fs.appendFileSync('released', leaseId + '\\n'); say({ leaseId, state: 'ended', reason: 'released' }); process.exit(0); });
+  process.stdin.on('end', () => { fs.appendFileSync('released', leaseId + '\\n'); if (request) fs.writeFileSync(request, leaseId); say({ leaseId, state: 'ended', reason: 'released' }); process.exit(0); });
   process.stdin.resume();
 } else throw new Error('Unexpected command');`);
   const adapter = createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href);
@@ -591,6 +593,25 @@ test('CLI-path watch stop ends only a lease this session started, and closing a 
   await adapter.close('a');
   assert.deepEqual([end, await lines('released')], [{ leaseId: 'l2', state: 'ended', reason: 'released' }, ['l2', 'l4']],
     "b's lease l3 outlives a's close");
+});
+
+test('CLI-path watch start replays a requestId within its session, and only there, after asking again', async t => {
+  const { ctx, adapter, lines } = await watching(t);
+  const [a, b] = [await adapter.scope('a'), await adapter.scope('b')];
+  const start = (current, scope = '0:0') => adapter.cli(current, 'watch', { action: 'start', workspaceId: 'ws_1', scope, requestId: 'r' });
+  const [first, concurrent] = await Promise.all([start(a), start(a)]);
+  const repeat = await start(a);
+  await assert.rejects(start(a, '0:1'), /requestId r names a different watch/);
+  const foreign = await start(b);
+  const spawned = (await lines('runs')).length;
+  await adapter.cli(a, 'watch', { action: 'stop', leaseId: first.leaseId });
+  const ended = await start(a);
+  ctx.permission.assert = async ({ action }) => {
+    if (action === 'read') throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  await assert.rejects(start(await adapter.scope('b')), /read denied/, "a replay's call asks read again, so a revoked grant fails closed");
+  assert.deepEqual([concurrent, repeat, foreign.leaseId !== first.leaseId, spawned, ended, (await lines('runs')).length],
+    [first, first, true, 2, { leaseId: first.leaseId, state: 'ended', reason: 'released' }, 3]);
 });
 
 test('CLI-path watch start spawns nothing when read on the design is denied', async t => {
