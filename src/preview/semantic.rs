@@ -108,10 +108,12 @@ impl Revision<'_> {
         let storage = workspace::storage(None)?;
         let mut out =
             workspace::query::search_mode(&storage, &self.select()?, &[], req, mode, &self.cancel)?;
+        // The file at this path with exactly these bytes. A relocated workspace keeps the source
+        // id it registered, so the id is translated to this viewer's, as its refs expect.
         let current = match out["sources"].as_array().map(Vec::as_slice) {
             Some([one]) => {
                 one["state"] == "ready"
-                    && one["sourceId"] == self.source["sourceId"]
+                    && one["path"] == self.source["path"]
                     && one["snapshotId"] == self.source["snapshotId"]
             }
             _ => false,
@@ -122,6 +124,9 @@ impl Revision<'_> {
                 "this revision has no ready index of the scope; enable it for semantic search",
             )
             .into());
+        }
+        for result in out["results"].as_array_mut().into_iter().flatten() {
+            result["ref"]["sourceId"] = self.source["sourceId"].clone();
         }
         out["source"] = self.source.clone();
         Ok(out)

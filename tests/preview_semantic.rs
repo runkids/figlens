@@ -291,3 +291,58 @@ fn a_signal_cancels_the_build_the_viewer_owns_before_it_exits() {
     );
     std::fs::remove_file(&hold).unwrap();
 }
+
+#[test]
+fn a_relocated_workspace_serves_the_viewer_under_its_own_source_id() {
+    let owned = test_support::TestDir::new();
+    let root = std::path::absolute(owned.join("")).unwrap();
+    let cli = |args: &[&str]| -> Value {
+        let out = Command::new(env!("CARGO_BIN_EXE_figlens"))
+            .args(args)
+            .envs([
+                ("HOME", root.join("home")),
+                ("XDG_STATE_HOME", root.join("state")),
+                ("XDG_CONFIG_HOME", root.join("config")),
+            ])
+            .env_remove("FIGLENS_TEST_HOLD")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    // Indexed where it was, then moved to where the viewer opens it.
+    let old = root.join("old.fig");
+    std::fs::copy(FIG, &old).unwrap();
+    let prepared = cli(&["index", "prepare", old.to_str().unwrap(), "--scope", "0:0"]);
+    let (ws, source) = (
+        prepared["workspaceId"].as_str().unwrap(),
+        prepared["job"]["sourceId"].as_str().unwrap().to_owned(),
+    );
+    let viewer = Viewer::start(&root, &[]);
+    std::fs::remove_file(&old).unwrap();
+    cli(&[
+        "index",
+        "relocate",
+        &source,
+        viewer.design.to_str().unwrap(),
+        "--id",
+        ws,
+    ]);
+    assert_eq!(viewer.enable(1, r#"{"scope":"0:0"}"#)["started"], true);
+    assert_eq!(
+        viewer.settled(1, "0:0")["job"]["report"]["state"],
+        "succeeded"
+    );
+    let hybrid = viewer.get("search/1?q=First+success&mode=hybrid&scope=0:0");
+    let mine = viewer.get("revision")["source"]["sourceId"].clone();
+    assert_ne!(
+        mine, source,
+        "the viewer derives its own id from the new path"
+    );
+    assert_eq!(hybrid["source"]["sourceId"], mine, "{hybrid}");
+    assert_eq!(hybrid["results"][0]["ref"]["sourceId"], mine, "{hybrid}");
+}
