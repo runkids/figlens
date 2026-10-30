@@ -103,6 +103,8 @@ pi install npm:@runkids/figlens
 
 重启 Pi 或执行 `/reload`，然后用日常语言要一个画面。Pi 会找到 frame，通过自动注册的 MCP server 读取，并用你的技术栈构建。不需要 node ID，也不需要全局 CLI。
 
+请它找文案或画面时，会直接搜索 `.fig`，不保存任何东西。需要反复搜索时，请 Pi 为某个设计和范围启用索引：它会准备一次本地索引（不需要设置命令），在完成前回报任务状态，之后在重启和其他 host 中继续使用。重置该索引需要你明确要求。询问某个 component、variable、style 或图片用在哪里时，会以同样方式列出精确的 usages：直接读 `.fig`，或在启用索引后读该索引。 详情：[本地索引](#local-index)。
+
 - `/figlens plan <request>` 只生成计划，不修改应用程序。
 - `/figlens yolo <request>` 规划、构建、检查，并清理自己创建的临时计划。
 - `/figlens preview [description]` 打开本地 viewer。
@@ -196,7 +198,7 @@ MCP：`index` 的 prepare 返回一个 job；轮询 `jobs` 直到 `succeeded`，
 
 数据：SQLite 数据库保存已注册的本地路径、所选范围的图层名称与有效文本、搜索 postings、精确关系（包含、实例、变体、变量/样式/图片绑定、原型目标）及其指向的定义、哈希、generation 和 job。原始 `.fig` 留在原处且保持不变；其原始字节不会存入数据库。
 
-Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，workspace 可跨重启和宿主复用。尚未实现：文件监视、Pi、OpenCode 与 OMP 的 usages 工具、向量、事件与订阅。
+Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，workspace 可跨重启和宿主复用。尚未实现：文件监视、向量、事件与订阅。
 
 <a id="commands"></a>
 

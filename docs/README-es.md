@@ -103,6 +103,8 @@ Guías de instalación: [OpenCode V2](../opencode/README.md) · [OMP](../omp/REA
 
 Reinicia Pi o ejecuta `/reload`, y luego pide una pantalla con tus propias palabras. Pi encuentra el frame, lo lee a través del servidor MCP registrado automáticamente y construye con tu stack. Sin ids de nodo, sin CLI global.
 
+Pedir un texto o una pantalla busca directamente en el `.fig` y no guarda nada. Para búsquedas repetidas, pide a Pi que active un índice para un diseño y un ámbito: prepara una vez un índice local (sin comando de configuración), informa del trabajo hasta que está listo y lo reutiliza tras reinicios y en otros hosts. Restablecer ese índice requiere que lo pidas explícitamente. Preguntar dónde se usa un componente, una variable, un estilo o una imagen lista sus usages exactos de la misma forma: directamente desde el `.fig` o, una vez activado, desde ese índice. Detalles: [índice local](#local-index).
+
 - `/figlens plan <request>` solo crea un plan; no modifica la aplicación.
 - `/figlens yolo <request>` planifica, construye, comprueba y limpia su propio plan temporal.
 - `/figlens preview [description]` abre el viewer local.
@@ -196,7 +198,7 @@ Ciclo de vida: `refresh` reconstruye solo los ámbitos cuyos bytes del `.fig` ca
 
 Datos: la base de datos SQLite contiene rutas locales registradas, nombres de capas y texto efectivo de los ámbitos elegidos, postings de búsqueda, relaciones exactas (contención, instancias, variantes, enlaces de variables/estilos/imágenes, destinos de prototipo) y las definiciones a las que apuntan, hashes, generaciones y jobs. El `.fig` original permanece sin cambios donde está; sus bytes sin procesar no se guardan en la base de datos.
 
-Pi, OpenCode y OMP usan el mismo índice mediante su propia entrada opt-in, y el workspace se reutiliza entre reinicios y hosts. No implementado: vigilancia de archivos, herramientas de usages en Pi, OpenCode y OMP, vectores, eventos y suscripciones.
+Pi, OpenCode y OMP usan el mismo índice mediante su propia entrada opt-in, y el workspace se reutiliza entre reinicios y hosts. No implementado: vigilancia de archivos, vectores, eventos y suscripciones.
 
 <a id="commands"></a>
 
