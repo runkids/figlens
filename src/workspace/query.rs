@@ -611,7 +611,7 @@ fn searched(
 
 /// The stored 256-pixel render, before any crop, of the node an image reference names: what a
 /// search by that reference reads and what the viewer shows. The source must be one this
-/// caller sees, with a ready index of `scope` serving exactly the referenced snapshot.
+/// caller sees, with a ready published scope serving exactly the referenced snapshot.
 pub fn reference_image(
     storage: &Storage,
     select: &Select,
@@ -675,6 +675,7 @@ fn resolved(
         scopes.push(other.map_err(sql)?);
     }
     let (mut served, mut snapshot) = (false, false);
+    let (mut refresh_scope, mut visual_scope) = (None, None);
     for s in &scopes {
         let Some(row) = rows(tx, s)?.into_iter().find(|r| r.id == *source_id) else {
             continue;
@@ -683,19 +684,35 @@ fn resolved(
             break;
         }
         served = true;
+        if row.gen_id.is_some() && (refresh_scope.is_none() || s == node_id) {
+            refresh_scope = Some(s);
+        }
         if row.check(tx, dir, s, versions, true)?.state.label() != "ready"
             || row.snapshot.as_deref() != Some(snapshot_id.as_str())
         {
             continue;
         }
         snapshot = true;
-        // Stored renders came with schema 10.
-        if version < 10 {
-            continue;
-        }
-        if let Some(image) = super::visual_search::stored(tx, row.gen_id.expect("ready"), node_id)?
+        let gen_id = row.gen_id.expect("ready");
+        // Stored renders came with schema 10. A successful lookup needs no recovery query.
+        if version >= 10
+            && let Some(image) = super::visual_search::stored(tx, gen_id, node_id)?
         {
             return Ok(image);
+        }
+        // Recovery must build a generation that actually contains the referenced node.
+        let contains: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM records WHERE gen = ?1 AND node_id = ?2)",
+                rusqlite::params![gen_id, node_id],
+                |r| r.get(0),
+            )
+            .map_err(sql)?;
+        if !contains {
+            continue;
+        }
+        if visual_scope.is_none() || s == node_id {
+            visual_scope = Some(s);
         }
     }
     if !served {
@@ -707,20 +724,26 @@ fn resolved(
         ));
     }
     if !snapshot {
+        let steps: Vec<Json> = refresh_scope.into_iter().map(|s| {
+            json!({"action": "refresh", "requires": "none", "tool": "index",
+                "arguments": {"action": "refresh", "workspaceId": ws_id, "sourceId": source_id, "scope": s}})
+        }).collect();
         return Err(FigError::new(
             ErrorKind::SourceStale,
             format!("imageRef names snapshot {snapshot_id}, but no ready index of source {source_id} serves it now; search again and take the reference from the new results"),
         )
-        .with_recovery(json!([{"action": "refresh", "requires": "none", "tool": "index",
-            "arguments": {"action": "refresh", "workspaceId": ws_id, "sourceId": source_id, "scope": scope}}]))
+        .with_recovery(json!(steps))
         .into());
     }
+    let steps: Vec<Json> = visual_scope.into_iter().map(|s| {
+        json!({"action": "index_visual", "requires": "none", "tool": "index",
+            "arguments": {"action": "visual", "workspaceId": ws_id, "sourceId": source_id, "scope": s}})
+    }).collect();
     Err(FigError::new(
         ErrorKind::InvalidArguments,
         format!("node {node_id} of source {source_id} has no stored visual raster in any ready scope: it is not a visual unit, or the visual layer is not built"),
     )
-    .with_recovery(json!([{"action": "index_visual", "requires": "none", "tool": "index",
-        "arguments": {"action": "visual", "workspaceId": ws_id, "sourceId": source_id, "scope": scope}}]))
+    .with_recovery(json!(steps))
     .into())
 }
 

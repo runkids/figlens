@@ -319,6 +319,58 @@ fn a_reference_reads_its_render_from_another_prepared_scope_of_its_source() {
     );
 }
 
+/// A missing reference raster names a published scope of its own source, even when the
+/// search reads a different source and scope. Its suggested action must actually run.
+#[test]
+fn a_reference_recovers_in_its_sources_published_scope() {
+    let env = Env::new();
+    let (design, a) = env.source("a.fig");
+    env.prepare(&design, "0:1");
+    env.layer(&a, "0:1", &[("0:1", RED)]);
+    let other = env.dir.join("b.fig");
+    std::fs::copy(&design, &other).unwrap();
+    let b = env.prepare(&other, "0:2");
+    let snapshot =
+        env.search(&["Card", "--node", "0:1", "--source", &a])["results"][0]["ref"]["snapshotId"]
+            .clone();
+    let reference = json!({"sourceId": b, "snapshotId": snapshot, "nodeId": "0:2"}).to_string();
+    let args = ["--image-ref", &reference, "--node", "0:1", "--source", &a];
+    let error = env.search_error(&args);
+    let recovery = &error["recovery"][0]["arguments"];
+    assert_eq!(recovery["sourceId"], b, "{error}");
+    assert_eq!(recovery["scope"], "0:2", "{error}");
+    env.json(&[
+        "index",
+        "visual",
+        "--workspace",
+        path(&env.workspace),
+        "--source",
+        recovery["sourceId"].as_str().unwrap(),
+        "--scope",
+        recovery["scope"].as_str().unwrap(),
+    ]);
+    assert_eq!(hits(&env.search(&args)), [(a, "0:1".to_owned())]);
+
+    let unknown = json!({"sourceId": b, "snapshotId": snapshot, "nodeId": "0:99"}).to_string();
+    let error = env.search_error(&["--image-ref", &unknown, "--node", "0:1"]);
+    assert_eq!(error["recovery"], json!([]), "{error}");
+
+    let stale = json!({"sourceId": b, "snapshotId": "sha256:0", "nodeId": "0:2"}).to_string();
+    let error = env.search_error(&["--image-ref", &stale, "--node", "0:1"]);
+    let recovery = &error["recovery"][0]["arguments"];
+    assert_eq!(recovery["scope"], "0:2", "{error}");
+    env.json(&[
+        "index",
+        "refresh",
+        "--workspace",
+        path(&env.workspace),
+        "--source",
+        recovery["sourceId"].as_str().unwrap(),
+        "--scope",
+        recovery["scope"].as_str().unwrap(),
+    ]);
+}
+
 #[test]
 fn filters_apply_before_ranking_and_cursors_bind_the_image() {
     let (env, _, _) = two();
