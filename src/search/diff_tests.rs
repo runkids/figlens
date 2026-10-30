@@ -1183,6 +1183,28 @@ fn a_changed_truncation_line_count_is_a_text_change() {
 }
 
 #[test]
+fn a_frame_renamed_in_place_is_a_structure_change_not_removed_and_added() {
+    let file = |name| doc(vec![node(10, Some(1), "FRAME", name, vec![])]);
+    let (a, b) = (file("Home"), file("Start"));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let out = page(
+        &compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0"),
+        &Request {
+            node: "0:0".into(),
+            limit: LIMIT,
+            cursor: None,
+        },
+        false,
+    )
+    .unwrap();
+    let node = &out["frames"][0]["nodes"][0];
+    assert_eq!(
+        (&node["id"], &node["change"], &node["facets"]),
+        (&json!("0:10"), &json!("changed"), &json!(["structure"]))
+    );
+}
+
+#[test]
 fn a_selected_node_moved_to_another_parent_is_a_structure_change() {
     let file = |parent| {
         doc(vec![
