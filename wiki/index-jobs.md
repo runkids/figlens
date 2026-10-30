@@ -27,7 +27,7 @@ Schema 2 adds `snapshots` (verified size and mtime per content hash), `generatio
 
 - Generation (records, terms, edges, definitions, fingerprints, facets): `refresh` reuses a complete one with the same snapshot sha256, `store::versions()` and membership; `rebuild` never does.
 - Overrides, main definitions and variable modes are in the file bytes, so the hash covers them; no generation depends on another file. `versions()` carries `fingerprint::VERSION`; `diff::facet_version()` is not in it (bump `RELATIONS` with it; revisions compare it).
-- Any byte change parses and builds the whole file: no node-level incremental decoding, no chunk or vector cache.
+- Any byte change parses and builds the whole file: no node-level incremental decoding; only embed vectors are cached, by chunk text.
 - Preview renders: path hash + crate version + mtime + length (no content hash). `gs://` downloads: URI hash + object generation. MCP parsed tree: path + mtime + length.
 
 ## Actions
@@ -37,6 +37,7 @@ Schema 2 adds `snapshots` (verified size and mtime per content hash), `generatio
 | `refresh <select> [--source ID] [--scope NODE]` | Builds the chosen published scopes again when their bytes changed |
 | `rebuild <select> [--source ID] [--scope NODE]` | Builds the chosen published scopes again even when unchanged (a corrupt or deferred one included); the previous generations serve until each replacement publishes |
 | `clear_cache <select>` | Deletes retired generations, unpublished ones no live job or orphaned worker writes, and unreferenced snapshots; keeps the registry, published indexes, jobs and location. Each deletion reauthorizes its source: one moved out of a confined caller's view meanwhile keeps its data, and the reply has `partial: true` |
+| `embed <select> [--source ID] [--scope NODE]` | One `embed` job per published scope stores its model layer; see [semantic](semantic.md#workspace-layer) |
 | `jobs status <jobId>` / `jobs cancel <jobId>` | A job's `workspaceId`, state, stage, progress, attempt, generation and next steps |
 
 The CLI runs owned jobs in the foreground with stderr progress, then exits 1 if any did not succeed. MCP runs them on its build lane and returns at once; see [mcp](mcp.md).
@@ -68,11 +69,11 @@ Hard refusals, checked before the work they bound:
 | WAL | `WAL_CAP` 64 MiB threshold after each batch; one batch's pages over it at most | the build fails `workspace_busy`; the prior generation serves |
 | Published scopes per source, active jobs per workspace | 8, 16 | oldest scope retired; submit refused |
 
-The registry and every published index stay when a search exceeds the envelope. Measured so far: one source of 36,171 records and the two-source and eleven-source test corpora; a corpus near 100,000 records over 10 sources is not measured yet.
+The registry and every published index stay when a search exceeds the envelope. Measured: one source of 36,171 records and the two- and eleven-source test corpora; not a corpus near 100,000 records over 10 sources.
 
 ## Measurements
 
-Measured at `fd8d4bf` (the contended and base rows at `ba08580`) in Docker (linux/aarch64 on Apple silicon), release build, a public 60 MB Community file kept in the OS page cache (warm file cache); each figlens call is a new process. n=20 unless stated.
+Measured at `fd8d4bf` (the contended and base rows at `ba08580`) in Docker (linux/aarch64 on Apple silicon), release build, a public 60 MB Community file in the warm OS page cache; each figlens call is a new process. n=20 unless stated.
 
 | Case | Scope `0:0` (36,171 records, 2,349 terms, 6,351 edges) | Page scope (2,263 records) |
 |---|---|---|
@@ -87,12 +88,12 @@ Measured at `fd8d4bf` (the contended and base rows at `ba08580`) in Docker (linu
 | Workspace search, n=100, while a rebuild loop writes and publishes (7 publishes, 0 errors) | p50 4.6, p95 5.4, max 9.6 ms (idle: 3.9, 4.3, 5.6) | — |
 | `find` / `inspect 0:1` / stateless search vs base `0b6d8a6`, n=20 interleaved, p50 (p95) | find 318 (412) vs 320 (352); inspect 317 (324) vs 313 (322); search 582 (605) vs 578 (638) ms | — |
 
-- Hashing the 57 MiB file (sha256, page-cached) takes about 26 ms; verify also re-reads the written generation.
-- Cancel, request to terminal state with no worker left, x20 per stage, max: 132 (stage), 121 (hash), 104 (parse), 186 (write), 137 (verify) ms.
-- Parity: 36 queries and filters including page 2 return the same results as stateless search.
-- Stage times come from a 2 ms poll of the job row; whole rebuild timings include the real fenced publication. `find` and `inspect` output is byte-identical to the base; stateless search adds only `coverage.layers.relations` (plus its per-run freshness timestamps).
+- Hashing the 57 MiB file takes about 26 ms; verify also re-reads the written generation.
+- Cancel to terminal state with no worker left, x20 per stage, max: 132, 121, 104, 186, 137 ms (stage to verify).
+- Parity: 36 queries and filters, page 2 included, match stateless search.
+- Stage times come from a 2 ms poll of the job row; rebuild timings include the fenced publication. `find` and `inspect` output is byte-identical to the base; stateless search adds only `coverage.layers.relations`.
 
-Worker memory is the parse of the whole `.fig`, as in stateless search. Not measured yet: a cold OS cache, native Windows and macOS (PR3 hosts), and a corpus near the 100,000-record, 10-source envelope.
+Worker memory is the parse of the whole `.fig`, as in stateless search. Not measured yet: a cold OS cache, native Windows and macOS, and a corpus near the 100,000-record, 10-source envelope.
 
 ## Tests
 
