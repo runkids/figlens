@@ -3913,6 +3913,20 @@ fn a_schema_6_workspace_reads_impact_as_null_and_records_it_once_a_build_upgrade
 }
 
 #[test]
+fn watch_list_reads_a_schema_7_workspace_without_its_source_set_columns() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let id = t.subscribe(&[]);
+    // As schema 7 left it: no subscription source sets or disabled reasons (schema 8).
+    t.sql(
+        "ALTER TABLE subscriptions DROP COLUMN sources;
+         ALTER TABLE subscriptions DROP COLUMN disabled; PRAGMA user_version = 7;",
+    );
+    let listed = t.watch("list", &[]);
+    assert_eq!(listed["subscriptions"][0]["subscriptionId"], json!(id));
+}
+
+#[test]
 fn a_subscribe_reply_describes_its_source_as_authorized_though_it_is_relocated_meanwhile() {
     let env = Env::new();
     let (inside, outside) = (env.dir.join("in"), env.dir.join("out"));

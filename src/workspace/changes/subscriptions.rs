@@ -71,10 +71,15 @@ pub(super) const SET: &str = "*";
 
 /// Whether the caller sees a subscription row of `subscriptions`: its source, or every member of
 /// its set that still exists (a removed member's data is gone with it). `?N` is the caller's
-/// visible sources as JSON; an unreadable set is never seen.
-pub(super) fn seen(n: usize) -> String {
+/// visible sources as JSON; an unreadable set is never seen. Before schema 8 no row is a set,
+/// and a read never upgrades.
+pub(super) fn seen(n: usize, version: i64) -> String {
+    let one = format!("subscriptions.source_id IN (SELECT value FROM json_each(?{n}))");
+    if version < 8 {
+        return format!("({one})");
+    }
     format!(
-        "(subscriptions.source_id IN (SELECT value FROM json_each(?{n}))
+        "({one}
          OR CASE WHEN subscriptions.source_id = '*' AND json_valid(subscriptions.sources)
          THEN NOT EXISTS (SELECT 1 FROM json_each(subscriptions.sources) m
            JOIN sources x ON x.source_id = m.value
@@ -555,7 +560,7 @@ pub fn list(
             "SELECT {} FROM subscriptions WHERE (?1 IS NULL OR consumer = ?1)
              AND id > ?2 AND {} ORDER BY id LIMIT ?4",
             columns(ws.version),
-            seen(3)
+            seen(3, ws.version)
         ))
         .map_err(sql)?;
     let subs = stmt
@@ -600,7 +605,10 @@ pub fn unsubscribe(
         (Some(id), None, None) => {
             let n = tx
                 .execute(
-                    &format!("DELETE FROM subscriptions WHERE id = ?1 AND {}", seen(2)),
+                    &format!(
+                        "DELETE FROM subscriptions WHERE id = ?1 AND {}",
+                        seen(2, ws.version)
+                    ),
                     params![id, json!(sources).to_string()],
                 )
                 .map_err(sql)?;
@@ -613,7 +621,7 @@ pub fn unsubscribe(
             .execute(
                 &format!(
                     "DELETE FROM subscriptions WHERE consumer = ?1 AND owner = ?2 AND {}",
-                    seen(3)
+                    seen(3, ws.version)
                 ),
                 params![consumer, owner, json!(sources).to_string()],
             )
