@@ -14,11 +14,14 @@ import { Workflow } from '../pi/workflow.mjs';
 const [hostInput, sdkInput, packageInput, binaryInput, outputInput] = process.argv.slice(2);
 assert.ok(outputInput, 'Usage: node scripts/check-opencode-integration.mjs <opencode> <client-root> <installed-package> <binary> <fresh-output> [--tui]');
 const [host, sdk, packaged, binary, output] = [hostInput, sdkInput, packageInput, binaryInput, outputInput].map(value => path.resolve(value));
+// --watch-only=<public.fig>: only the watch and stale-context checks, on the distributable design, for every OS.
+const watchOnly = process.argv.find(arg => arg.startsWith('--watch-only='))?.slice('--watch-only='.length);
+const watchChecks = ['production loader', 'through managed MCP a consumer', 'with a disabled MCP override figlens_watch', 'with a disabled MCP override a consumer'];
 await mkdir(output);
 const project = path.join(output, 'project'), config = path.join(output, 'config');
 await mkdir(path.join(project, 'src'), { recursive: true });
 await mkdir(config);
-await copyFile(new URL('../samples/plugin-research/fixtures/mapping.fig', import.meta.url), path.join(project, 'mapping.fig'));
+await copyFile(watchOnly ? path.resolve(watchOnly) : new URL('../samples/plugin-research/fixtures/mapping.fig', import.meta.url), path.join(project, 'mapping.fig'));
 await copyFile(path.join(project, 'mapping.fig'), path.join(project, 'mapping-old.fig'));
 await writeFile(path.join(project, 'src/Button.mjs'), 'export const Button = () => "button";\n');
 // Scripted loopback provider: each turn returns a fixed Code Mode `execute` call (find the figlens
@@ -127,7 +130,9 @@ const execute = promisify(execFile);
 const flow = new Workflow(project, async args => JSON.parse((await execute(binary, args, { cwd: project })).stdout));
 const proposal = instance => ({ instance, target: { path: 'src/Button.mjs', export: 'Button', import: 'import { Button } from "./src/Button.mjs";', example: 'Button()' }, rationale: 'Original synthetic fixture' });
 const password = randomBytes(32).toString('hex');
-const env = { PATH: '/usr/bin:/bin', HOME: path.join(output, 'home'),
+const windows = process.platform === 'win32' && { SystemRoot: process.env.SystemRoot, PATHEXT: process.env.PATHEXT, TEMP: process.env.TEMP, TMP: process.env.TMP,
+  USERPROFILE: path.join(output, 'home'), APPDATA: path.join(output, 'appdata'), LOCALAPPDATA: path.join(output, 'localappdata') };
+const env = { ...windows, PATH: windows ? process.env.PATH : '/usr/bin:/bin', HOME: path.join(output, 'home'),
   OPENCODE_SERVER_PASSWORD: password, OPENCODE_CONFIG_DIR: config, OPENCODE_TEST_HOME: path.join(output, 'home'),
   XDG_CONFIG_HOME: config, XDG_DATA_HOME: path.join(output, 'data'), XDG_STATE_HOME: path.join(output, 'state'), XDG_CACHE_HOME: path.join(output, 'cache'),
   OPENCODE_DISABLE_MODELS_FETCH: '1', OPENCODE_DISABLE_CLAUDE_CODE: '1', OPENCODE_DISABLE_PROJECT_CONFIG: '1', FIGLENS_BIN: binary };
@@ -137,6 +142,7 @@ let logs = '';
 server.stderr.on('data', data => { logs += data; });
 const result = { package: packaged, modelCalled: false, tests: [] };
 async function check(name, run) {
+  if (watchOnly && !watchChecks.some(prefix => name.startsWith(prefix))) return;
   try { result.tests.push({ name, status: 'passed', evidence: await run() }); }
   catch (error) { result.tests.push({ name, status: 'failed', error: error.stack || JSON.stringify(error) }); }
 }
@@ -231,7 +237,7 @@ try {
     return { ...flow, sources: undefined, paths: paths.filter(item => /index|jobs|search|inspect|usages/.test(item)), provider: 'scripted loopback, not a model' };
   });
   await check('through managed MCP a consumer acknowledged in Code Mode gets an explicit-check reminder before each later prompt', async () => {
-    const { workspaceId } = JSON.parse((await execute(binary, ['index', 'status', '--file', fixture], { cwd: project, env })).stdout);
+    const { workspaceId } = JSON.parse((await execute(binary, ['index', 'prepare', fixture, '--scope', '0:0'], { cwd: project, env })).stdout);
     await execute(binary, ['index', 'track', '--id', workspaceId, '--scope', '0:0'], { cwd: project, env });
     const follow = { workspaceId, consumer: 'mcp-stale', scope: '0:0' };
     const reminders = () => (scripted.system ?? []).filter(text => text.includes('figlens does not check these watch targets in the background here'));
@@ -345,11 +351,16 @@ try {
     await assert.rejects(fetch(activeUrl));
     return { ownedViewerClosed: true, operationRpcReloaded: true };
   });
+  // A disabled user server under the managed key: the plugin keeps it and serves the same flow over the CLI.
+  await writeFile(path.join(config, 'opencode.json'), JSON.stringify({ plugins: [pathToFileURL(packaged).href, pathToFileURL(probe).href],
+    mcp: { figlensmcp: { type: 'local', command: [binary, 'mcp'], enabled: false } } }));
+  await client.location.reload();
+  // The skipped CLI-path flow tracks the review frame that the watch checks follow.
+  if (watchOnly) {
+    const { workspaceId } = JSON.parse((await execute(binary, ['index', 'prepare', fixture, '--scope', '0:1'], { cwd: project, env })).stdout);
+    await execute(binary, ['index', 'track', '--id', workspaceId, '--scope', '0:1'], { cwd: project, env });
+  }
   await check('with a disabled MCP override the CLI path prepares, polls, searches, inspects and follows changes through plugin tools', async () => {
-    // A disabled user server under the managed key: the plugin keeps it and serves the same flow over the CLI.
-    await writeFile(path.join(config, 'opencode.json'), JSON.stringify({ plugins: [pathToFileURL(packaged).href, pathToFileURL(probe).href],
-      mcp: { figlensmcp: { type: 'local', command: [binary, 'mcp'], enabled: false } } }));
-    await client.location.reload();
     const status = await rpc.run({ sessionID: session.id, action: 'status' }, options);
     assert.equal(status.mcp.managed, false, JSON.stringify(status.mcp));
     for (const name of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages', 'figlens_diff', 'figlens_changes', 'figlens_watch']) assert.ok(status.mcp.tools.includes(name), name);
@@ -400,7 +411,7 @@ try {
         if (held?.state !== 'active') return null;
         writeFileSync(`${fixture}.next`, Buffer.concat([original, Buffer.alloc(16)]));
         renameSync(`${fixture}.next`, fixture);
-        for (const start = Date.now(); recorded() === before && Date.now() - start < 15000;) execFileSync('/bin/sleep', ['0.1']);
+        for (const start = Date.now(); recorded() === before && Date.now() - start < 15000;) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
         return direct('figlens_watch', { action: 'status', workspaceId });
       }, () => direct('figlens_changes', { workspaceId, scope: '0:1' }), held => direct('figlens_watch', { action: 'stop', workspaceId, leaseId: held.leaseId })]);
       assert.equal(lease?.state, 'active', JSON.stringify(lease));

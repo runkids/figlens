@@ -10,12 +10,16 @@ import { Workflow } from '../pi/workflow.mjs';
 const [sdkInput, outputInput, binaryInput, packageInput] = process.argv.slice(2);
 assert.ok(sdkInput && outputInput && binaryInput && packageInput, 'Usage: bun scripts/check-omp-integration.mjs <omp-root> <fresh-output> <binary> <installed-package> [--tui]');
 const sdk = path.resolve(sdkInput), output = path.resolve(outputInput), binary = path.resolve(binaryInput);
+// --watch-only=<public.fig>: only the bridge's first use (watch lease, track, ack) and stale context, on the distributable design, for every OS.
+const watchOnly = process.argv.find(arg => arg.startsWith('--watch-only='))?.slice('--watch-only='.length);
+const watchChecks = ['real OMP loader', 'first use through the packaged bridge', 'stale context'];
+const frameName = watchOnly ? 'First success' : 'Mapping review';
 await mkdir(output);
 const project = path.join(output, 'project 空白');
 await mkdir(path.join(project, 'src'), { recursive: true });
 process.env.PI_CODING_AGENT_DIR = path.join(output, 'agent');
 process.env.FIGLENS_BIN = binary;
-await copyFile(new URL('../samples/plugin-research/fixtures/mapping.fig', import.meta.url), path.join(project, 'mapping.fig'));
+await copyFile(watchOnly ? path.resolve(watchOnly) : new URL('../samples/plugin-research/fixtures/mapping.fig', import.meta.url), path.join(project, 'mapping.fig'));
 await copyFile(path.join(project, 'mapping.fig'), path.join(project, 'mapping-old.fig'));
 await writeFile(path.join(project, 'src/Button.mjs'), 'export const Button = () => "button";\n');
 const execute = promisify(execFile);
@@ -51,6 +55,7 @@ const settings = policy => Settings.isolated({ 'tools.approvalMode': 'always-ask
 const invoke = (name, policy, signal, params = {}) => tools[name].execute('installed', params, signal, undefined, { settings: settings(policy) });
 const proposal = { instance: '0:2', target: { path: 'src/Button.mjs', export: 'Button', import: 'import { Button } from \"./src/Button.mjs\";', example: 'Button()' }, rationale: 'Original synthetic component fixture' };
 async function check(name, run) {
+  if (watchOnly && !watchChecks.some(prefix => name.startsWith(prefix))) return;
   try { result.tests.push({ name, status: 'passed', evidence: await run() }); }
   catch (error) { result.tests.push({ name, status: 'failed', error: String(error.stack || error) }); }
 }
@@ -119,7 +124,7 @@ await check('first use through the packaged bridge: prepare, poll, search the pu
       assert.equal(reply.isError, false, JSON.stringify(reply).slice(0, 2000));
       return reply.structuredContent;
     };
-    await content('search', { file, query: 'Mapping review' });
+    await content('search', { file, query: frameName });
     await assert.rejects(readdir(path.join(state, 'figlens')), { code: 'ENOENT' }, 'connecting, listing and stateless search created figlens state');
     const prepared = await content('index', { action: 'prepare', file, scope: '0:0' });
     let job = prepared.job, polls = 0;
@@ -128,12 +133,13 @@ await check('first use through the packaged bridge: prepare, poll, search the pu
       job = await content('jobs', { action: 'status', jobId: job.jobId });
     }
     assert.equal(job.state, 'succeeded', JSON.stringify(job));
-    const found = await content('search', { workspaceId: prepared.workspaceId, query: 'Mapping review' });
+    const found = await content('search', { workspaceId: prepared.workspaceId, query: frameName });
     assert.deepEqual(found.sources.map(source => source.state), ['ready']);
     const inspected = await content('inspect', { file, node: found.results[0].ref.nodeId });
     assert.equal(inspected.node.id, '0:1');
-    const used = await content('usages', { workspaceId: prepared.workspaceId, node: '0:10' });
-    assert.deepEqual(used.results.map(item => `${item.relation} ${item.ref.nodeId}`), ['instance_of 0:2', 'instance_of 0:3']);
+    // The public design has no component instances, so only the mapping design checks usages.
+    const used = watchOnly ? { results: [] } : await content('usages', { workspaceId: prepared.workspaceId, node: '0:10' });
+    if (!watchOnly) assert.deepEqual(used.results.map(item => `${item.relation} ${item.ref.nodeId}`), ['instance_of 0:2', 'instance_of 0:3']);
     // Following changes: track builds a baseline, and a consumer that acks it reads nothing new.
     const settle = async job => {
       for (const deadline = Date.now() + 30000; !['succeeded', 'failed', 'cancelled', 'interrupted'].includes(job.state) && Date.now() < deadline;) {
