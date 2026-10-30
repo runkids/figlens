@@ -108,6 +108,8 @@ Node.js가 없다면 독립 바이너리([CLI](#setup-cli))를 설치하고 `"co
 
 `figlens mcp --storage` 옵션은 없습니다. 실제 위치는 `index` tool의 `storage` 인수(허용된 저장소 루트 내 절대 경로) 또는 CLI `figlens index prepare design.fig --storage /absolute/storage-a`로 선택합니다. `prepare` 후에는 workspace 위치를 기억하므로 재시작이나 호스트 변경 후에도 `storage`나 `--storage-root` 없이 재사용합니다. 사용자 지정 위치가 없으면 사용자별 기본 디렉터리를 사용하며 저장소 플래그는 필요 없습니다.
 
+커밋되는 설정에 이 경로를 고정하지 않거나 Git worktree 사이에서 디자인을 공유하려면 [커밋되는 설정의 root](wiki/mcp.md#roots-in-a-checked-in-config)를 참고하세요.
+
 여러 저장소 루트는 허용 위치만 늘립니다. 각 `storage`는 여전히 한 위치를 선택하며 인덱스를 분산, 동기화 또는 백업하지 않습니다. 다른 루트를 지정하는 것만으로 기존 workspace 데이터베이스를 옮길 수 없으며, figlens는 충돌하는 위치를 거부합니다.
 
 <a id="setup-pi"></a>

@@ -6,6 +6,29 @@ Use this topic for MCP instructions, tool discovery and built-in workflow guidan
 
 Client `args` pass `--root DIR` and `--storage-root DIR` after `mcp`; these are the only startup options, both optional and repeatable. Use absolute paths to existing directories. Without `--root`, figlens adds no design/output path boundary beyond OS permissions; it neither defaults to the project nor scans the computer. These boundaries apply only to figlens MCP, not other host tools. `--storage-root` authorizes explicit custom storage; it does not choose a location. The `index` tool's `storage` argument chooses it, and `prepare` remembers it for later hosts without another flag. See the [README parameter table and multi-root JSON example](../README.md#mcp-args) and [workspace authorization](workspace.md#mcp-authorization).
 
+## Roots in a checked-in config
+
+A project config committed to Git cannot hold one machine's absolute paths, and a relative `--root` resolves against whatever directory the client starts the server in. When designs are git-ignored and kept only in the main checkout, shared by its linked worktrees, a relative `figma` root does not even exist inside a worktree. Point the client at a script in the repository that resolves the roots with Git, then starts figlens:
+
+```sh
+#!/bin/sh
+# figlens MCP with absolute roots that also work in linked worktrees (Git >= 2.31)
+set -eu
+cd "$(dirname "$0")"
+top=$(git rev-parse --show-toplevel)
+main=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
+mkdir -p "$top/.figlens" # figlens refuses a missing root
+set -- --root "$top/.figlens"
+if [ -d "$main/figma" ]; then set -- "$@" --root "$main/figma"; fi
+exec npx -y @runkids/figlens mcp "$@"
+```
+
+```json
+{ "mcpServers": { "figlens": { "command": "scripts/figlens-mcp.sh" } } }
+```
+
+These roots allow scratch output in `.figlens/` and reading the shared designs, so figlens MCP never writes source files: the agent copies a shipped asset from `.figlens/exports/` into the project with its own tools, under the host's permissions. Add the project's asset folders as roots when figlens should export into them directly. The command path is relative, so the client must start the server from the repository root, and the script needs a POSIX shell.
+
 ## Intent and tool selection
 
 `src/mcp.rs` serves stdio JSON-RPC; `src/main.rs` configures roots and starts it. Initialization returns a short intent router: resolve recognizable screens through `find`/`tree` (or `search` for effective instance copy), read compact values with `inspect`, full style/mask/component data with `nodes`, tokens with `variables`, and pixels/assets with `export`. `bundle` writes a scoped handoff, `verify` checks it. Only if asked for an index: `index` prepare with a scope, `jobs` status, `search` with `workspaceId`. `usages` takes an exact id on the file or within a prepared scope. Outside the router, `models` lists, configures or removes the local model profiles: the text one `search` `mode` `semantic`/`hybrid` and `index` `embed` need, and the image one visual search will use ([semantic](semantic.md)). `diff` pages changes between two local revisions ([diff](diff.md)). Only if asked to follow changes: `index` track, then `changes` with a consumer and `watch` ack of each handled page ([changes](changes.md)).

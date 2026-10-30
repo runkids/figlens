@@ -108,6 +108,8 @@ Node.js がない場合は、スタンドアロン版のバイナリ（[CLI](#se
 
 `figlens mcp --storage` オプションはありません。実際の保存先は `index` ツールの `storage` 引数（許可された保存先ルート内の絶対パス）、または CLI `figlens index prepare design.fig --storage /absolute/storage-a` で選択します。`prepare` 後は workspace の場所が記憶され、再起動やホストをまたいで `storage` や `--storage-root` を再指定せず再利用できます。未指定時はユーザーごとの既定ディレクトリを使うため、保存先フラグは不要です。
 
+これらのパスをコミットする設定に書かずに済ませる方法や、Git worktree 間でデザインを共有する方法は、[コミットする設定での root](wiki/mcp.md#roots-in-a-checked-in-config) を参照してください。
+
 保存先ルートを複数指定しても許可範囲が増えるだけで、各 `storage` が選ぶ場所は 1 つです。インデックスの分散・同期・バックアップは行いません。別のルートを指定するだけでは既存 workspace のデータベースは移動できず、場所が競合すると figlens は拒否します。
 
 <a id="setup-pi"></a>

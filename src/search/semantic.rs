@@ -451,6 +451,10 @@ fn reply_with(
                 terms: q.terms.clone(),
             };
             let (hits, _, excluded) = retrieve(&[index], &first, &wide, cancel);
+            // A cancelled ranking stops early; never answer it as a complete page.
+            if cancel.load(Ordering::SeqCst) {
+                return Err(FigError::new(ErrorKind::Cancelled, "search cancelled").into());
+            }
             (hits, excluded)
         }
         _ => (Vec::new(), [0, 0]),
@@ -592,9 +596,12 @@ fn ranked(
     source: &Json,
     cancel: &AtomicBool,
 ) -> Result<(Vec<Best>, Json), Stop> {
+    // The generation tells apart two partial builds of one snapshot (a deadline stop is not
+    // cached), whose record ids differ.
     let key = json!([
         source["sourceId"],
         source["snapshotId"],
+        index.generation,
         req.scope,
         profile.id
     ]);
@@ -622,7 +629,7 @@ fn ranked(
         rt.embed(Kind::Query, std::slice::from_ref(&req.query), cancel)
     })?
     .remove(0);
-    let (order, excluded) = score(index, layer, &query, req);
+    let (order, excluded) = score(index, layer, &query, req, cancel)?;
     let order: Vec<Best> = order
         .into_iter()
         .take(CANDIDATES)
@@ -638,7 +645,8 @@ pub(crate) fn score(
     layer: &Layer,
     query: &[f32],
     req: &Request,
-) -> (Vec<Scored>, [usize; 2]) {
+    cancel: &AtomicBool,
+) -> Result<(Vec<Scored>, [usize; 2]), Stop> {
     // One dot product per unique text; a refused or missing text scores nothing.
     let scores: Vec<Option<f32>> = layer
         .vectors
@@ -651,7 +659,10 @@ pub(crate) fn score(
         .collect();
     let mut best: BTreeMap<u32, (f32, u8, u32)> = BTreeMap::new();
     let mut excluded = [0usize; 2];
-    for &(rid, field, chunk, text) in &layer.units {
+    for (n, &(rid, field, chunk, text)) in layer.units.iter().enumerate() {
+        if n % 4096 == 0 && cancel.load(Ordering::Relaxed) {
+            return Err(Stop::Cancelled);
+        }
         let Some(score) = scores[text] else { continue };
         let r = index.record(rid);
         let internal = r.page.is_some_and(|p| index.pages[p as usize].internal);
@@ -676,11 +687,24 @@ pub(crate) fn score(
         .map(|(rid, (score, field, chunk))| (rid, score, field, chunk))
         .collect();
     order.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-    (order, excluded)
+    if cancel.load(Ordering::Relaxed) {
+        return Err(Stop::Cancelled);
+    }
+    Ok((order, excluded))
 }
 
-/// Estimated bytes a cached full generation and its layer keep: records, texts, chunk
-/// mappings and the vectors read so far.
+/// Estimated bytes a cached full generation and its layer keep: every record's strings,
+/// texts, chunk mappings and the vectors read so far.
+/// Drops what a cached semantic corpus never reads (relations, library references and
+/// definitions), so only names, texts and the filter fields stay in memory.
+pub(crate) fn keep_text_only(index: &mut Index) {
+    for r in &mut index.records {
+        r.edges = Vec::new();
+        r.library = Vec::new();
+    }
+    index.definitions = BTreeMap::new();
+}
+
 pub(crate) fn cached_bytes(index: &Index, layer: &Layer) -> usize {
     let vectors: usize = layer
         .vectors
@@ -688,18 +712,41 @@ pub(crate) fn cached_bytes(index: &Index, layer: &Layer) -> usize {
         .map(|v| v.as_ref().map_or(0, |v| 24 + 4 * v.len()))
         .sum();
     let texts: usize = layer.texts.iter().map(|t| 24 + t.len()).sum();
+    // Every string a loaded record keeps, its normalized copies included, plus a fixed share.
+    let records: usize = index
+        .records
+        .iter()
+        .map(|r| {
+            256 + r.id.len()
+                + r.name.len()
+                + r.kind.len()
+                + r.text.as_ref().map_or(0, String::len)
+                + r.norm[0].len()
+                + r.norm[1].len()
+                // Relations a caller kept: `keep_text_only` drops them from the cache.
+                + 128 * (r.edges.len() + r.library.len())
+        })
+        .sum();
+    // The scope metadata a loaded index keeps beside its records.
+    let meta: usize = index
+        .pages
+        .iter()
+        .map(|p| 64 + p.id.len() + p.name.len())
+        .sum::<usize>()
+        + index.roots.iter().map(|r| 24 + r.len()).sum::<usize>()
+        + index
+            .above
+            .iter()
+            .map(|(a, b)| 48 + a.len() + b.len())
+            .sum::<usize>();
+    // Model property inputs a loaded record keeps (schema 11), beside its other strings.
     let props: usize = index
         .records
         .iter()
         .flat_map(|r| r.props.iter().flatten())
         .map(|(n, v)| 48 + n.len() + v.as_ref().map_or(0, String::len))
         .sum();
-    index.records.len() * 256
-        + 2 * index.text_bytes
-        + props
-        + texts
-        + UNIT * layer.units.len()
-        + vectors
+    records + meta + props + texts + UNIT * layer.units.len() + vectors
 }
 
 /// `coverage.layers.semantic` of one layer.
@@ -821,7 +868,8 @@ pub(crate) fn workspace_rank(
     let mut semantic: Vec<((usize, u32), f32, u8, u32)> = Vec::new();
     let mut excluded = [0usize; 2];
     for (part, side) in sides.iter().enumerate() {
-        let (order, out) = score(side.index, side.layer, &query, req);
+        let (order, out) = score(side.index, side.layer, &query, req, cancel)
+            .map_err(|_| FigError::new(ErrorKind::Cancelled, "search cancelled"))?;
         excluded = [excluded[0] + out[0], excluded[1] + out[1]];
         semantic.extend(
             order
@@ -991,6 +1039,41 @@ mod tests {
         assert_eq!((cut.stop, cut.units.len()), (Some("work_limit"), 2));
         let tiny = Layer::new(&idx, json!(1), 8, &mut bounds(LAYER_WORK, 16), &no).unwrap();
         assert_eq!((tiny.stop, tiny.texts.len()), (Some("byte_limit"), 0));
+    }
+
+    #[test]
+    fn cached_bytes_count_long_names_and_their_normalized_copies() {
+        let mut idx = index("t");
+        let short = Layer::new(
+            &idx,
+            json!(1),
+            8,
+            &mut bounds(LAYER_WORK, LAYER_BYTES),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let long = "n".repeat(4000);
+        for r in &mut idx.records {
+            r.name = long.clone();
+            r.norm[0] = long.clone();
+        }
+        assert!(cached_bytes(&idx, &short) >= 2 * 4000 * idx.records.len());
+    }
+
+    #[test]
+    fn cached_bytes_count_the_scope_ancestors_kept_beside_records() {
+        let mut idx = index("t");
+        let layer = Layer::new(
+            &idx,
+            json!(1),
+            8,
+            &mut bounds(LAYER_WORK, LAYER_BYTES),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let before = cached_bytes(&idx, &layer);
+        idx.above = vec![("1:1".into(), "a".repeat(100_000))];
+        assert!(cached_bytes(&idx, &layer) >= before + 100_000);
     }
 
     #[test]

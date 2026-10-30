@@ -108,6 +108,8 @@ Ejemplo con dos raíces de diseño/salida y dos raíces de almacenamiento permit
 
 No existe `figlens mcp --storage`. Selecciona la ubicación real con el argumento `storage` del tool `index` (ruta absoluta dentro de una raíz permitida), o con CLI: `figlens index prepare design.fig --storage /absolute/storage-a`. Tras `prepare`, figlens recuerda la ubicación del workspace y la reutiliza entre reinicios y hosts sin repetir `storage` ni `--storage-root`. Sin ubicación personalizada se usan los directorios predeterminados del usuario, sin flags de almacenamiento.
 
+Para no fijar estas rutas en una configuración versionada, o para compartir diseños entre worktrees de Git, consulta [roots en una configuración versionada](wiki/mcp.md#roots-in-a-checked-in-config).
+
 Varias raíces de almacenamiento solo amplían las ubicaciones permitidas: cada `storage` elige una sola. No distribuyen, sincronizan ni respaldan índices. No se puede mover una base de datos existente indicando otra raíz; figlens rechaza la ubicación en conflicto.
 
 <a id="setup-pi"></a>

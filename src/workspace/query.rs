@@ -665,6 +665,7 @@ fn model_layers(
                 if version >= 11 {
                     search::store::add_properties(tx, *gen_id, &mut index, spent, cancel)?;
                 }
+                search::semantic::keep_text_only(&mut index);
                 let layer = search::semantic::Layer::new(
                     &index,
                     json!([key, p.id]),
