@@ -1804,6 +1804,41 @@ fn a_render_error_is_unit_coverage_and_the_visual_job_succeeds_partial() {
     );
 }
 
+/// With a vision profile, rerunning `index visual` on a layer a render error left partial renders
+/// the unit again and then embeds it, so both layers end ready.
+fn rerunning_a_partial_vision_layer_renders_then_embeds_what_it_left_out() {
+    let dir = test_support::TestDir::new();
+    let (prepared, _) = indexed(&dir, false);
+    configured_vision(&dir);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    let visual = ["index", "visual", "--id", ws, "--scope", "0:0"];
+    let out = figlens(&visual)
+        .env("FIGLENS_TEST_RENDER_FAIL", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let conn = db(&prepared);
+    let states = |conn: &rusqlite::Connection| {
+        let mut stmt = conn
+            .prepare(&format!("SELECT state FROM model_layers WHERE policy = '{VISUAL_POLICY}' ORDER BY profile_id = 'visual-hash-1' DESC"))
+            .unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(states(&conn), ["partial", "partial"]);
+    let refs = format!("SELECT count(*) FROM model_refs WHERE policy = '{VISUAL_POLICY}'");
+    assert_eq!(count(&conn, &refs), 0);
+    assert_eq!(cli(&visual)["jobs"][0]["state"], "succeeded");
+    assert_eq!(states(&conn), ["ready", "ready"]);
+    assert!(count(&conn, &refs) > 0);
+}
+
 fn index_visual_without_a_published_scope_names_the_refresh_step() {
     let dir = test_support::TestDir::new();
     let (prepared, _) = indexed(&dir, false);
@@ -2300,6 +2335,10 @@ fn main() {
         (
             "cancel_kills_a_hung_vision_child",
             cancel_kills_a_hung_vision_child,
+        ),
+        (
+            "rerunning_a_partial_vision_layer_renders_then_embeds_what_it_left_out",
+            rerunning_a_partial_vision_layer_renders_then_embeds_what_it_left_out,
         ),
         (
             "text_and_image_children_stay_warm_side_by_side",

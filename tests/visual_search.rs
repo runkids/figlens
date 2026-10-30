@@ -42,16 +42,20 @@ impl Env {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(BIN)
+        self.command(args).output().unwrap()
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(BIN);
+        command
             .args(args)
             .env("HOME", &self.home)
             .env("LOCALAPPDATA", &self.home)
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("XDG_STATE_HOME")
             .env_remove("XDG_CACHE_HOME")
-            .env_remove("XDG_DATA_HOME")
-            .output()
-            .unwrap()
+            .env_remove("XDG_DATA_HOME");
+        command
     }
 
     fn json(&self, args: &[&str]) -> Value {
@@ -382,30 +386,44 @@ fn a_missing_visual_layer_names_its_step_and_a_partial_page_cannot_continue() {
     );
 }
 
-/// A partial layer (a render budget or unit cap reached) keeps the page partial, but names no
-/// `index visual` step, which would leave it unchanged.
+/// A partial layer keeps the page partial. Left by render errors or the unit cap it names no
+/// `index visual` step, which could not change it; stopped by its render budget it names one.
 #[test]
-fn a_partial_visual_layer_is_partial_without_a_step_that_cannot_change_it() {
+fn a_partial_visual_layer_names_index_visual_only_when_a_rerun_can_advance_it() {
     let (env, _, _) = two();
+    let visual_steps = |env: &Env| {
+        let reply = env.search(&["--image", path(&env.png("red.png", RED))]);
+        assert_eq!(
+            (
+                reply["coverage"]["complete"].clone(),
+                reply["nextCursor"].clone()
+            ),
+            (json!(false), Value::Null)
+        );
+        assert_eq!(
+            reply["coverage"]["layers"]["visual"]["hash"]["sources"][0]["state"],
+            "partial"
+        );
+        let steps = reply["nextSteps"].as_array().cloned().unwrap_or_default();
+        steps
+            .iter()
+            .filter(|s| s["arguments"]["action"] == "visual")
+            .count()
+    };
     env.database()
-        .execute("UPDATE model_layers SET state = 'partial'", [])
+        .execute(
+            "UPDATE model_layers SET state = 'partial', stop = 'visual_capacity'",
+            [],
+        )
         .unwrap();
-    let reply = env.search(&["--image", path(&env.png("red.png", RED))]);
+    assert_eq!(visual_steps(&env), 0);
+    env.database()
+        .execute("UPDATE model_layers SET stop = 'render_budget'", [])
+        .unwrap();
     assert_eq!(
-        (
-            reply["coverage"]["complete"].clone(),
-            reply["nextCursor"].clone()
-        ),
-        (json!(false), Value::Null)
-    );
-    let steps = reply["nextSteps"].as_array().cloned().unwrap_or_default();
-    assert!(
-        steps.iter().all(|s| s["arguments"]["action"] != "visual"),
-        "{steps:?}"
-    );
-    assert_eq!(
-        reply["coverage"]["layers"]["visual"]["hash"]["sources"][0]["state"],
-        "partial"
+        visual_steps(&env),
+        2,
+        "one step per source a rerun can advance"
     );
 }
 
@@ -690,4 +708,63 @@ fn index_visual_layers_answer_an_export_of_their_own_unit() {
         reply["coverage"]["layers"]["visual"]["hash"]["state"],
         "ready"
     );
+}
+
+/// A partial layer is resumed by an explicit `index visual`: the unit that failed is rendered
+/// again, while the failure alone names no step a rerun could not fix.
+#[test]
+fn rerunning_index_visual_retries_the_units_a_partial_layer_left_out() {
+    let env = Env::new();
+    let (design, a) = env.source("a.fig");
+    let workspace = path(&env.workspace);
+    let visual = [
+        "index",
+        "visual",
+        "--workspace",
+        workspace,
+        "--scope",
+        "0:0",
+    ];
+    let out = env
+        .command(&visual)
+        .env("FIGLENS_TEST_RENDER_FAIL", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The failed unit leaves nothing to rank; the page is partial and names no step, since
+    // retrying the same render is the user's explicit call.
+    let reply = env.search(&["--image", path(&env.png("red.png", RED))]);
+    assert_eq!(
+        (
+            reply["results"].clone(),
+            reply["coverage"]["complete"].clone()
+        ),
+        (json!([]), json!(false))
+    );
+    let steps = reply["nextSteps"].as_array().cloned().unwrap_or_default();
+    assert!(
+        steps.iter().all(|s| s["arguments"]["action"] != "visual"),
+        "{steps:?}"
+    );
+    let state = |env: &Env| -> String {
+        env.database()
+            .query_row(
+                "SELECT state FROM model_layers WHERE profile_id = 'visual-hash-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(state(&env), "partial");
+    env.json(&visual);
+    assert_eq!(state(&env), "ready");
+    let shot = env.dir.join("screen.png");
+    env.json(&["export", path(&design), "0:1", path(&shot)]);
+    let reply = env.search(&["--image", path(&shot)]);
+    assert_eq!(hits(&reply)[0], (a, "0:1".to_owned()));
+    assert_eq!(reply["coverage"]["complete"], true);
 }

@@ -183,7 +183,7 @@ pub(super) fn stored(
 /// The state a generation's visual layer under `profile` reads in: the hash layer is recorded
 /// with the visual version as its profile, a vision layer with its profile id. A `building`
 /// layer whose job ended or lost its owner reads `failed`; a finished one with a render of
-/// another renderer reads `stale`, so both name the `index visual` step.
+/// another renderer, rendered or failed, reads `stale`, so both name the `index visual` step.
 pub(super) fn layer_state(
     conn: &rusqlite::Connection,
     dir: &Path,
@@ -193,8 +193,7 @@ pub(super) fn layer_state(
     let row: Option<(String, Option<String>, bool)> = conn
         .query_row(
             "SELECT state, job_id, EXISTS (SELECT 1 FROM visual_units u WHERE u.gen = ?1
-              AND u.policy = ?3 AND u.raster_key IS NOT NULL
-              AND json_extract(u.report, '$.renderer') IS NOT ?4)
+              AND u.policy = ?3 AND json_extract(u.report, '$.renderer') IS NOT ?4)
              FROM model_layers WHERE gen = ?1 AND profile_id = ?2 AND policy = ?3",
             params![
                 gen_id,
@@ -217,6 +216,19 @@ pub(super) fn layer_state(
     })
 }
 
+/// Whether `index visual` can still advance a `partial` layer: only one its render budget
+/// stopped. Render errors and the unit cap leave it as it is, so they name no step.
+pub(super) fn resumable(conn: &rusqlite::Connection, gen_id: i64, profile: &str) -> Result<bool> {
+    conn.query_row(
+        "SELECT stop = 'render_budget' FROM model_layers WHERE gen = ?1 AND profile_id = ?2 AND policy = ?3",
+        params![gen_id, profile, super::visual::POLICY],
+        |r| r.get::<_, Option<bool>>(0),
+    )
+    .optional()
+    .map(|v| v.flatten().unwrap_or(false))
+    .map_err(sql)
+}
+
 /// The vision vectors stored for generation `gen_id`'s units in `rids` under `profile`, by
 /// record id; units the filters left out are not decoded, and a scan `bounds` stops is partial. Identical rasters share one vector,
 /// keyed by their raster key.
@@ -235,11 +247,17 @@ pub(super) fn vectors(
              JOIN model_refs r ON r.gen = u.gen AND r.profile_id = ?2 AND r.policy = u.policy
                 AND r.text_hash = u.raster_key
              JOIN model_vectors v ON v.profile_id = r.profile_id AND v.text_hash = r.text_hash
-             WHERE u.gen = ?1 AND u.policy = ?3 AND u.error IS NULL",
+             WHERE u.gen = ?1 AND u.policy = ?3 AND u.error IS NULL
+               AND json_extract(u.report, '$.renderer') IS ?4",
         )
         .map_err(sql)?;
     let mut rows = stmt
-        .query(params![gen_id, profile, super::visual::POLICY])
+        .query(params![
+            gen_id,
+            profile,
+            super::visual::POLICY,
+            super::visual::RENDERER
+        ])
         .map_err(sql)?;
     let mut out = HashMap::new();
     while let Some(row) = rows.next().map_err(sql)? {
@@ -274,6 +292,19 @@ mod tests {
     use crate::search::visual::RenderedUnit;
     use std::sync::atomic::AtomicBool;
 
+    /// A flat 8 by 8 unit render.
+    fn rendered() -> RenderedUnit {
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(8, 8).unwrap();
+        pixmap.fill(resvg::tiny_skia::Color::from_rgba8(9, 9, 9, 255));
+        RenderedUnit {
+            image: QueryImage::from_pixmap(&pixmap, None).unwrap(),
+            diagnostics: vec![],
+            diagnostics_truncated: false,
+            bounds: serde_json::Map::new(),
+            pixels: 0,
+        }
+    }
+
     /// The schema 9 and 10 tables over the part of `jobs` they change.
     fn db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -291,15 +322,7 @@ mod tests {
     #[test]
     fn a_layer_reads_stale_after_another_renderer_and_failed_when_its_build_is_gone() {
         let conn = db();
-        let mut pixmap = resvg::tiny_skia::Pixmap::new(8, 8).unwrap();
-        pixmap.fill(resvg::tiny_skia::Color::from_rgba8(9, 9, 9, 255));
-        let rendered = RenderedUnit {
-            image: QueryImage::from_pixmap(&pixmap, None).unwrap(),
-            diagnostics: vec![],
-            diagnostics_truncated: false,
-            bounds: serde_json::Map::new(),
-            pixels: 0,
-        };
+        let rendered = rendered();
         super::super::visual::save(&conn, 7, 1, &rendered).unwrap();
         let set = |state: &str| {
             conn.execute(
@@ -322,6 +345,74 @@ mod tests {
         )
         .unwrap();
         assert_eq!(read().as_deref(), Some("stale"));
+    }
+
+    /// A layer whose only units failed under an older renderer reads stale, so an upgrade can
+    /// render them again; an older raster neither ranks nor serves its vector meanwhile.
+    #[test]
+    fn units_of_another_renderer_read_stale_and_stay_out_of_ranking_and_vectors() {
+        let mut conn = db();
+        super::super::visual::failed(&conn, 7, 1, "unsupported node").unwrap();
+        let rendered = rendered();
+        let key = super::super::visual::save(&conn, 8, 2, &rendered).unwrap();
+        conn.execute(
+            "INSERT INTO model_vectors VALUES ('p', ?1, ?2)",
+            params![key.to_vec(), crate::semantic::encode(&[1.0, 0.0, 0.0, 0.0])],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO model_refs VALUES (8, 'p', ?1, ?2)",
+            params![super::super::visual::POLICY, key.to_vec()],
+        )
+        .unwrap();
+        for (gen_id, stop) in [(7, None), (8, Some("render_budget"))] {
+            conn.execute(
+                "INSERT INTO model_layers (gen, profile_id, policy, state, chunks, texts, embedded, refused, stop, job_id, updated_ms)
+                 VALUES (?1, ?2, ?3, 'partial', 1, 1, 0, 1, ?4, NULL, 0)",
+                params![gen_id, visual::VERSION, super::super::visual::POLICY, stop],
+            )
+            .unwrap();
+        }
+        let read = |conn: &Connection, gen_id| {
+            layer_state(conn, Path::new("/nowhere"), gen_id, visual::VERSION).unwrap()
+        };
+        // Under this renderer: an error-only layer is partial and no rerun can change it; one a
+        // render budget stopped can still be resumed.
+        assert_eq!(read(&conn, 7).as_deref(), Some("partial"));
+        assert!(!resumable(&conn, 7, visual::VERSION).unwrap());
+        assert!(resumable(&conn, 8, visual::VERSION).unwrap());
+        let rids = [2].into_iter().collect();
+        let scan = |conn: &mut Connection| {
+            let tx = conn.transaction().unwrap();
+            let mut bounds = crate::expand::Bounds {
+                work: usize::MAX,
+                bytes: usize::MAX,
+                depth: 0,
+                deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+                stop: None,
+            };
+            let found =
+                vectors(&tx, 8, "p", 4, &rids, &mut bounds, &AtomicBool::new(false)).unwrap();
+            (
+                super::super::visual::candidates(&tx, 8).unwrap().len(),
+                found.len(),
+            )
+        };
+        assert_eq!(scan(&mut conn), (1, 1));
+        conn.execute(
+            "UPDATE visual_units SET report = json_set(report, '$.renderer', 'figlens 0.0.0')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            (read(&conn, 7).as_deref(), read(&conn, 8).as_deref()),
+            (Some("stale"), Some("stale"))
+        );
+        assert_eq!(
+            scan(&mut conn),
+            (0, 0),
+            "another renderer's raster ranked or served its vector"
+        );
     }
 
     #[test]
