@@ -378,6 +378,9 @@ export function createAdapter(ctx, entry = import.meta.url) {
       const { directory } = await invoke([...args, '--dry-run']);
       if (!Array.isArray(directory?.files)) throw missing("a directory's files");
       if (directory.files.length) await current.authorize('read', directory.files);
+      // The binary refuses the add when the file set changed since this dry run, so nothing unasked registers.
+      if (typeof directory.manifest !== 'string') throw missing("a directory's manifest");
+      args.push('--manifest', directory.manifest);
     }
     // Workspace search, usages and changes, refresh, rebuild and track read the registered designs' content, which this session may deny.
     // `only` names the sources read; null reads every one.

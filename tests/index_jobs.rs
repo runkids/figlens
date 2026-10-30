@@ -1025,6 +1025,10 @@ fn a_directory_add_over_mcp_stays_inside_its_roots_and_the_cli_dry_run_writes_no
     assert!(!env.home.join(".local/state/figlens").exists());
     let ws = env.json(&["index", "prepare", a.to_str().unwrap(), "--workspace", d]);
     let ws = ws["workspaceId"].as_str().unwrap();
+    // The add bound to the dry run's manifest registers that same set.
+    let manifest = listed["directory"]["manifest"].as_str().unwrap();
+    let bound = env.json(&["index", "add", i, "--id", ws, "--manifest", manifest]);
+    assert_eq!(bound["directory"]["existing"][0]["path"], json!(a));
     let mut mcp = Mcp::start(&env, &["--root", i]);
     // A directory wider than the roots is refused before anything under it is read.
     let refused = mcp.call(

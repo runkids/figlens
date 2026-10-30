@@ -479,7 +479,7 @@ test('CLI-path directory add asks read on the directory and on every file the bi
   };
   const run = async args => {
     ran.push(args.join(' '));
-    if (args.includes('--dry-run')) return { stdout: JSON.stringify({ directory: { files: listed, skipped: [] } }) };
+    if (args.includes('--dry-run')) return { stdout: JSON.stringify({ directory: { files: listed, skipped: [], manifest: 'm1' } }) };
     return { stdout: JSON.stringify(args[1] === 'status' ? { paths: { workspace: '/w', lock: '/w.lock' }, roots: { config: { path: '/c' } } } : {}) };
   };
   const input = { action: 'add', file: 'lib', workspaceId: 'ws_1' };
@@ -494,7 +494,7 @@ test('CLI-path directory add asks read on the directory and on every file the bi
   ran.length = 0;
   await adapter.cli(other, 'index', input);
   assert.deepEqual(asked.slice(-2), [['read', ...listed], ['edit', '/w', '/w.lock', '/c']]);
-  assert.deepEqual(ran, ['index add lib --id ws_1 --dry-run', 'index status --id ws_1', 'index add lib --id ws_1']);
+  assert.deepEqual(ran, ['index add lib --id ws_1 --dry-run', 'index status --id ws_1', 'index add lib --id ws_1 --manifest m1'], 'the add is bound to the files the dry run listed');
 });
 
 test('CLI-path saved queries ask read on the sources they search, so a denied read runs no subscribe or evaluate', async t => {

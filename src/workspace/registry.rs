@@ -482,7 +482,7 @@ pub(super) fn project_only(ws: &Opened, file: &Path) -> Result<()> {
 /// Adds `file` to a project workspace, or the `.fig` files under it when it is a directory.
 pub fn add(storage: &Storage, select: &Select, file: &Path) -> Result<Json> {
     if std::fs::metadata(file).is_ok_and(|m| m.is_dir()) {
-        return add_dir(storage, select, file);
+        return add_dir(storage, select, file, None);
     }
     let source = readable(file)?;
     let (place, mut ws) = opened(storage, select, true)?;
@@ -695,14 +695,39 @@ pub fn list_add(storage: &Storage, select: &Select, dir: &Path) -> Result<Json> 
     let l = list_dir(storage, &place, dir)?;
     Ok(
         json!({"workspaceId": id, "directory": {"path": l.root, "files": l.files,
-        "skipped": l.skipped, "notFig": l.not_fig, "truncated": l.truncated}}),
+        "skipped": l.skipped, "notFig": l.not_fig, "truncated": l.truncated,
+        "manifest": manifest(&l)}}),
     )
+}
+
+/// The sha256 of the sorted canonical files a listing would register and its truncation, so an
+/// add can prove it registers exactly the set a host authorized from the dry run.
+fn manifest(l: &Listing) -> String {
+    let mut files: Vec<_> = l
+        .files
+        .iter()
+        .map(|f| f.as_os_str().as_encoded_bytes())
+        .collect();
+    files.sort();
+    let mut hash = Sha256::new();
+    for file in files {
+        hash.update(file);
+        hash.update([0]);
+    }
+    hash.update(l.truncated.to_string());
+    hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// [`add`] of a directory bound to the `manifest` its dry run printed: when the files under it
+/// changed since, nothing registers.
+pub fn add_listed(storage: &Storage, select: &Select, dir: &Path, manifest: &str) -> Result<Json> {
+    add_dir(storage, select, dir, Some(manifest))
 }
 
 /// Registers the `.fig` files under `dir` (see [`list_dir`]) in one write transaction: either
 /// all of them or, on an error, none. Already registered paths keep their ids; nothing is
 /// relocated, so a file moved inside the directory is a new source.
-fn add_dir(storage: &Storage, select: &Select, dir: &Path) -> Result<Json> {
+fn add_dir(storage: &Storage, select: &Select, dir: &Path, planned: Option<&str>) -> Result<Json> {
     let (place, mut ws) = opened(storage, select, true)?;
     if let Locator::Source(_) = ws.held.locator {
         return Err(fail(
@@ -710,11 +735,18 @@ fn add_dir(storage: &Storage, select: &Select, dir: &Path) -> Result<Json> {
             "a source-scoped workspace holds only its own file; prepare with --workspace <dir> to register a directory",
         ));
     }
-    let l = list_dir(storage, &place, dir)?;
     let tx = ws
         .conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(sql)?;
+    // Walked under the write lock, so the files checked against the manifest are those registered.
+    let l = list_dir(storage, &place, dir)?;
+    if planned.is_some_and(|m| m != manifest(&l)) {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            "the .fig files under the directory changed since its dry run; run `index add <dir> --dry-run` again and add with its new manifest",
+        ));
+    }
     let (mut added, mut existing) = (Vec::new(), Vec::new());
     for file in &l.files {
         let (source_id, new) = register_in(&tx, file)?;

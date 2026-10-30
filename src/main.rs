@@ -178,11 +178,12 @@ usage:
                                              deferred items, each with the call that builds it later
   figlens index clear|clear_cache <select>   delete retired and unfinished indexes; keeps published ones
   figlens index status <select>              state, sources and storage rule; creates nothing
-  figlens index add <file.fig|dir> <select> [--dry-run]
+  figlens index add <file.fig|dir> <select> [--dry-run | --manifest HEX]
                                              add a source to a project workspace; a directory adds the
                                              .fig files under it (at most 10 per call, 4096 entries read),
                                              skipping links that lead out of it, and reports added,
-                                             existing, skipped and truncated; --dry-run lists them only
+                                             existing, skipped and truncated; --dry-run lists them only,
+                                             with a manifest; --manifest adds nothing if that set changed
   figlens index add gs://bucket/object <select>
                                              download the object pinned to its current generation (gcloud,
                                              network) and register that copy, reporting remote {uri,
@@ -866,6 +867,8 @@ struct IndexArgs<'a> {
     replace: bool,
     /// `index add <dir> --dry-run`: list what it would register, writing nothing.
     dry_run: bool,
+    /// `index add <dir> --manifest HEX`: add only if the dry run's file set is unchanged.
+    manifest: Option<&'a str>,
     /// Search flags passed through to the search request parser.
     search: Vec<String>,
 }
@@ -881,6 +884,7 @@ fn index_args<'a>(args: &'a [String], search: bool) -> Result<IndexArgs<'a>, Box
             "--id" => &mut parsed.id,
             "--scope" if !search => &mut parsed.scope,
             "--request-id" if !search => &mut parsed.request,
+            "--manifest" if !search => &mut parsed.manifest,
             "--replace-unavailable" if !search => {
                 parsed.replace = true;
                 continue;
@@ -1239,7 +1243,10 @@ fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
         ("add", [path]) if a.dry_run && !scoped && a.source.is_empty() => {
             workspace::list_add(&storage, &chosen()?, Path::new(path))
         }
-        _ if scoped || a.dry_run || !a.source.is_empty() => Err(usage()),
+        ("add", [path]) if !a.dry_run && !scoped && a.source.is_empty() && a.manifest.is_some() => {
+            workspace::add_listed(&storage, &chosen()?, Path::new(path), a.manifest.unwrap())
+        }
+        _ if scoped || a.dry_run || a.manifest.is_some() || !a.source.is_empty() => Err(usage()),
         ("status", []) => workspace::status(&storage, &chosen()?),
         ("add", [path]) => command::index_add(&storage, &chosen()?, Path::new(path)),
         ("remove", [source]) => workspace::remove(&storage, &chosen()?, source),

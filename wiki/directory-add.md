@@ -26,11 +26,12 @@ The cap counts existing sources too, so a repeat lists the same files whatever t
 - A path already registered keeps its `sourceId` and is listed in `existing`; a repeat adds nothing. Nothing is relocated: a file moved inside the directory is a new source, and only `relocate` keeps an id.
 - A source-scoped workspace refuses a directory. Nothing is built: each file gets its scope from `prepare --scope`.
 - `--dry-run` (CLI only) prints `directory.files` with the same `skipped`, `notFig` and `truncated`, reading no database and creating nothing.
+- The dry run also prints `directory.manifest`, a sha256 of its sorted canonical files and truncation. `--manifest <hex>` (CLI only) binds the add to that set: it walks again under the write transaction and, if the digest differs (a new file, a retargeted link), registers nothing and says to run the dry run again.
 
 ## Hosts
 
-MCP replies `directory {path, added, existing, skipped, notFig, truncated}` under the index output schema. Pi and OMP call that MCP tool and need no code. The OpenCode CLI path asks `read` on the directory, then on every file `--dry-run` lists, before the status and `edit` asks of any add; see [integrations](integrations.md).
+MCP replies `directory {path, added, existing, skipped, notFig, truncated}` under the index output schema. Pi and OMP call that MCP tool and need no code. The OpenCode CLI path asks `read` on the directory, then on every file `--dry-run` lists, before the status and `edit` asks of any add, which carries the dry run's `--manifest`; see [integrations](integrations.md).
 
 ## Tests
 
-`src/workspace/tests.rs`: two `.fig` files, a non-`.fig`, an escaping file link, an escaping directory link, in-root file and directory links, a repeat with the same ids, a move inside the directory, a source-scoped refusal, and both bounds. `tests/index_jobs.rs`: a dry run that creates no state, and an MCP caller whose roots are narrower than the directory. `opencode/adapter.test.mjs`: the read asks before any write.
+`src/workspace/tests.rs`: two `.fig` files, a non-`.fig`, an escaping file link, an escaping directory link, in-root file and directory links, a repeat with the same ids, a move inside the directory, a source-scoped refusal, both bounds, and a manifest add refusing a new file and a retargeted link. `tests/index_jobs.rs`: a dry run that creates no state, and an MCP caller whose roots are narrower than the directory. `opencode/adapter.test.mjs`: the read asks before any write, and the add's `--manifest`.

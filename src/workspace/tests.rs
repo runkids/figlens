@@ -1658,3 +1658,58 @@ fn a_directory_add_stops_at_its_source_cap_and_entry_budget_and_says_so() {
     );
     assert_eq!(budget["directory"]["notFig"], registry::DIR_ENTRIES);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_directory_add_with_a_dry_run_manifest_registers_only_that_file_set() {
+    let f = Fixture::new();
+    let project = std::path::absolute(f.dir.join("project")).unwrap();
+    let lib = project.join("lib");
+    for dir in ["y", "z"] {
+        std::fs::create_dir_all(lib.join(dir)).unwrap();
+    }
+    // One file under the cap, so y/y.fig is listed and z/z.fig is truncated.
+    for i in 0..registry::DIR_SOURCES - 1 {
+        std::fs::write(lib.join(format!("{i:02}.fig")), "design").unwrap();
+    }
+    for file in ["y/y.fig", "z/z.fig"] {
+        std::fs::write(lib.join(file), "design").unwrap();
+    }
+    std::os::unix::fs::symlink(lib.join("00.fig"), lib.join("link.fig")).unwrap();
+    prepare(&f.storage, &f.fig("first.fig"), Some(&project)).unwrap();
+    let select = Select::from_choice(Some(&project), None, None)
+        .unwrap()
+        .unwrap();
+    let manifest = |dir: &Path| {
+        let listed = list_add(&f.storage, &select, dir).unwrap();
+        listed["directory"]["manifest"].as_str().unwrap().to_owned()
+    };
+    let sources = || {
+        status(&f.storage, &select).unwrap()["sources"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    // A file created between the dry run and the add is refused, and nothing registers.
+    let planned = manifest(&lib);
+    std::fs::write(lib.join("y/new.fig"), "design").unwrap();
+    let refused = add_listed(&f.storage, &select, &lib, &planned).unwrap_err();
+    assert_eq!(kind(&*refused), ErrorKind::InvalidArguments);
+    assert!(refused.to_string().contains("--dry-run"), "{refused}");
+    assert_eq!(sources(), 1);
+    std::fs::remove_file(lib.join("y/new.fig")).unwrap();
+    // A link retargeted to an in-root file the dry run did not list is refused too.
+    let planned = manifest(&lib);
+    std::fs::remove_file(lib.join("link.fig")).unwrap();
+    std::os::unix::fs::symlink(lib.join("z/z.fig"), lib.join("link.fig")).unwrap();
+    let refused = add_listed(&f.storage, &select, &lib, &planned).unwrap_err();
+    assert_eq!(kind(&*refused), ErrorKind::InvalidArguments);
+    assert_eq!(sources(), 1);
+    // An unchanged directory registers exactly what the dry run listed.
+    let planned = manifest(&lib);
+    let added = add_listed(&f.storage, &select, &lib, &planned).unwrap();
+    assert_eq!(
+        added["directory"]["added"].as_array().unwrap().len(),
+        registry::DIR_SOURCES
+    );
+}
