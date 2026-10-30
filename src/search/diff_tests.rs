@@ -470,6 +470,19 @@ fn a_field_estimate_walks_no_further_than_the_side_has_work_left() {
 }
 
 #[test]
+fn an_escaped_field_pays_for_its_stream_before_hashing_past_the_side_s_work() {
+    // 8,192 control characters estimate at about 130 visits but stream as about 49 KiB.
+    let escaped = text(&"\u{1}".repeat(8192));
+    let message = doc(vec![node(10, Some(1), "TEXT", "T", vec![escaped])]);
+    let tree = Tree::new(&message);
+    let mut b = super::super::tests::bounds(WORK);
+    b.work = 300;
+    assert!(facets(&tree, "0:10", None, &mut b).is_none());
+    // The stream stopped where the work ran out, every hashed chunk paid for.
+    assert_eq!((b.work, b.stop), (0, Some(crate::expand::Stop::Work)));
+}
+
+#[test]
 fn an_expanded_size_or_transform_pays_before_it_is_built() {
     let message = doc(vec![
         node(30, Some(1), "SYMBOL", "A", vec![]),

@@ -246,14 +246,21 @@ fn placeholder(v: &Json) -> bool {
     }
 }
 
-/// Hashes what is written and counts it, keeping nothing.
-struct Digesting {
+/// Hashes what is written and counts it, keeping nothing. A visit per 64 bytes is charged to
+/// `bounds` before each chunk is hashed, since escaping can make the stream longer than its
+/// estimate; a chunk it cannot pay for fails the write.
+struct Digesting<'b> {
     hash: Sha256,
     len: usize,
+    bounds: &'b mut Bounds,
 }
 
-impl std::io::Write for Digesting {
+impl std::io::Write for Digesting<'_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let visits = (self.len + buf.len()) / 64 - self.len / 64;
+        if !self.bounds.charge(visits, 0) {
+            return Err(std::io::ErrorKind::OutOfMemory.into());
+        }
         self.hash.update(buf);
         self.len += buf.len();
         Ok(buf.len())
@@ -430,31 +437,32 @@ pub(super) fn facets(
             let mut w = Digesting {
                 hash: Sha256::new(),
                 len: 0,
+                bounds,
             };
             w.hash.update(VERSION.as_bytes());
             w.hash.update(key.as_bytes());
             w.hash.update([0]);
             serde_json::to_writer(&mut w, json).ok()?;
-            w.hash.update((w.len as u64).to_le_bytes());
+            let Digesting { mut hash, len, .. } = w;
+            hash.update((len as u64).to_le_bytes());
             // Only bytes `to_json` dropped are added, so a stored value and an equal override
             // digest alike.
             if let (Value::Kiwi(v), true) = (&value, placeholder(json)) {
-                raw_bytes(v, &mut w.hash);
+                raw_bytes(v, &mut hash);
             }
             // Bytes and an array of bytes hash alike: their length, then each byte.
-            blobs.into_iter().for_each(|b| raw_bytes(b, &mut w.hash));
-            let fits = w.len <= FIELD_VALUE && kept + w.len <= RECORD_VALUES;
-            // Escaping can make the stream longer than the estimate; that work is charged too.
-            if !bounds.charge(w.len / 64, 64 + key.len() + if fits { w.len } else { 0 }) {
+            blobs.into_iter().for_each(|b| raw_bytes(b, &mut hash));
+            let fits = len <= FIELD_VALUE && kept + len <= RECORD_VALUES;
+            if !bounds.charge(0, 64 + key.len() + if fits { len } else { 0 }) {
                 return None;
             }
             if fits {
-                kept += w.len;
+                kept += len;
             }
             fields.push(Field {
                 key,
                 facet: facet as u8,
-                digest: Some(w.hash.finalize().into()),
+                digest: Some(hash.finalize().into()),
                 value: fits.then(|| json.clone()),
             });
         }
