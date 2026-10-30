@@ -22,6 +22,7 @@ import platform
 import re
 import shutil
 import sqlite3
+from stat import S_ISREG
 import statistics
 import subprocess
 import sys
@@ -58,9 +59,10 @@ def verdict(name, samples):
     return result
 
 
-def within(value, limit):
-    return {'value': value, 'limit': limit,
-            'status': 'unmeasured' if value is None else 'pass' if value <= limit else 'fail'}
+def within(value, limit, exact=True):
+    """An inexact value is a lower bound: over the limit it fails, under it proves nothing."""
+    return {'value': value, 'limit': limit, 'status': 'unmeasured' if value is None else 'fail' if value > limit
+            else 'pass' if exact else 'lower_bound'}
 
 
 # --- the candidate's processes: {pid: {ppid, rss, peak?, cpuMs, readBytes, writeBytes}} ---
@@ -90,6 +92,7 @@ if sys.platform == 'darwin':
             u = lambda at: int.from_bytes(usage.raw[at:at + 8], 'little')
             rows[pid] = {'ppid': int.from_bytes(info.raw[16:20], 'little'), 'rss': u(64),
                          'cpuMs': (u(16) + u(24)) * _base.numer // _base.denom // 1_000_000,
+                         'childCpuMs': (u(96) + u(104)) * _base.numer // _base.denom // 1_000_000,
                          'readBytes': None, 'writeBytes': u(232), 'physReadBytes': u(144), 'physWriteBytes': u(152)}
         return rows
 elif os.name == 'nt':
@@ -121,7 +124,8 @@ elif os.name == 'nt':
                         and kernel32.GetProcessIoCounters(handle, io)):
                     rss, peak = search.windows_memory(handle.value)
                     rows[entry.pid] = {'ppid': entry.ppid, 'rss': rss, 'peak': peak,
-                                       'cpuMs': (times[2] + times[3]) // 10_000, 'readBytes': io[3], 'writeBytes': io[4]}
+                                       'cpuMs': (times[2] + times[3]) // 10_000, 'childCpuMs': None,
+                                       'readBytes': io[3], 'writeBytes': io[4]}
                 kernel32.CloseHandle(handle)
             ok = kernel32.Process32NextW(snap, ctypes.byref(entry))
         kernel32.CloseHandle(snap)
@@ -138,6 +142,7 @@ else:
                 io = {k: int(v) for k, v in (l.split(': ') for l in Path(f'/proc/{pid}/io').read_text().splitlines())}
                 rows[int(pid)] = {'ppid': int(stat[1]), 'rss': int(status['VmRSS']) * 1024, 'peak': int(status['VmHWM']) * 1024,
                                   'cpuMs': (int(stat[11]) + int(stat[12])) * 1000 // tick,
+                                  'childCpuMs': (int(stat[13]) + int(stat[14])) * 1000 // tick,
                                   'readBytes': io['rchar'], 'writeBytes': io['wchar'],
                                   'physReadBytes': io['read_bytes'], 'physWriteBytes': io['write_bytes']}
             except (OSError, ValueError, KeyError, IndexError):
@@ -155,14 +160,34 @@ def roles(rows, holders):
     return runners, {p for p, r in rows.items() if r['ppid'] in runners}
 
 
+def sizes(paths):
+    """(name, bytes) of the regular files among `paths`; a file removed meanwhile (a checkpointed
+    WAL, a replaced temporary) is skipped."""
+    files = []
+    for path in paths:
+        try:
+            info = path.stat()
+        except FileNotFoundError:
+            continue
+        if S_ISREG(info.st_mode):
+            files.append((path.name, info.st_size))
+    return files
+
+
 class Tree:
     """While the block runs: peak RSS of all candidate processes together and of each one, and
     with `state`, the largest state-root, database and WAL sizes seen."""
     def __init__(self, exe, state=None):
-        self.exe, self.state, self.done = exe, state, threading.Event()
+        self.exe, self.state, self.done, self.error = exe, state, threading.Event(), None
         self.peak, self.procs, self.samples, self.disk = 0, {}, 0, {'stateBytes': 0, 'databaseBytes': 0, 'walBytes': 0}
 
     def loop(self):
+        try:
+            self.sample()
+        except BaseException as error:  # re-raised by __exit__, so a dead sampler cannot pass silently
+            self.error = error
+
+    def sample(self):
         while not self.done.is_set():
             rows = table(self.exe)
             self.peak = max(self.peak, sum(r['rss'] for r in rows.values()))
@@ -170,7 +195,7 @@ class Tree:
                 seen = self.procs.setdefault(pid, {'ppid': r['ppid'], 'peak': 0})  # the parent at start
                 seen['peak'] = max(seen['peak'], r['rss'], r.get('peak', 0))
             if self.state and self.samples % 10 == 0:
-                files = [(p.name, p.stat().st_size) for p in self.state.rglob('*') if p.is_file()]
+                files = sizes(self.state.rglob('*'))
                 now = {'stateBytes': sum(s for _, s in files),
                        'databaseBytes': sum(s for n, s in files if n.endswith('.sqlite')),
                        'walBytes': sum(s for n, s in files if n.endswith('.sqlite-wal'))}
@@ -186,6 +211,8 @@ class Tree:
     def __exit__(self, *_):
         self.done.set()
         self.thread.join()
+        if self.error:
+            raise self.error
 
     def roles(self, holders):
         """Peak RSS of the runners the holders started and of the workers those runners started."""
@@ -248,18 +275,36 @@ def windowed(series, size=60):
     return max(sum(series[i:i + size]) for i in range(len(series) - size + 1))
 
 
-def idle_cost(series):
-    """Per-second (cpuMs, readBytes, writeBytes, physReadBytes, physWriteBytes) of a watched,
-    unchanged source → per-60-s costs.
-    Full idle is the worst 60-s window, which holds a scheduled content verification; polling only
-    leaves out the seconds whose CPU stands out (those verifications)."""
-    cpu = [s[0] for s in series]
+IO = ['readBytes', 'writeBytes', 'physReadBytes', 'physWriteBytes']
+
+
+def step(before, now):
+    """One second of a watched, unchanged source from two process tables. A process started
+    within it counts from zero. One that ended was reaped by its candidate parent, whose
+    reaped-children CPU then holds all of the child's CPU, so the part already counted from the
+    child is taken off. Windows has no reaped-children counter, and no OS keeps an ended child's
+    I/O, so a second in which a child ended has I/O as a lower bound (`ended`)."""
+    ended = [r for p, r in before.items() if p not in now]
+    base = lambda p, k: (before.get(p) or {}).get(k) or 0
+    cpu = sum(r['cpuMs'] + (r['childCpuMs'] or 0) - base(p, 'cpuMs') - base(p, 'childCpuMs') for p, r in now.items()) \
+        - sum(r['cpuMs'] + r['childCpuMs'] for r in ended if r['childCpuMs'] is not None)
+    reaped = any((r['childCpuMs'] or 0) > base(p, 'childCpuMs') for p, r in now.items())
+    io = {k: None if any(r.get(k) is None for r in now.values()) else sum(r[k] - base(p, k) for p, r in now.items()) for k in IO}
+    return {'cpuMs': cpu, **io, 'ended': bool(ended) or reaped}
+
+
+def idle_cost(series, cpu_exact=os.name != 'nt'):
+    """Per-second `step`s → per-60-s costs. Full idle is the worst 60-s window, which holds a
+    scheduled content verification; polling only leaves out the seconds whose CPU stands out
+    (those verifications)."""
+    cpu = [s['cpuMs'] for s in series]
     floor = statistics.median(cpu) * 3 + 10
     quiet = [c for c in cpu if c <= floor]
     io = lambda k: None if any(s[k] is None for s in series) else windowed([s[k] for s in series])
     return {'seconds': len(series), 'verificationSeconds': len(cpu) - len(quiet), 'cpuMsPer60s': windowed(cpu),
-            'pollingCpuMsPer60s': round(sum(quiet) * 60 / len(quiet)), 'readBytesPer60s': io(1), 'writeBytesPer60s': io(2),
-            'physReadBytesPer60s': io(3), 'physWriteBytesPer60s': io(4)}
+            'pollingCpuMsPer60s': round(sum(quiet) * 60 / len(quiet)), 'cpuExact': cpu_exact,
+            'ioExact': cpu_exact and not any(s['ended'] for s in series),
+            **{f'{k}Per60s': io(k) for k in IO}}
 
 
 # --- one isolated state root per scenario ---
@@ -314,10 +359,7 @@ def idle(ws, exe, holders, seconds):
         for _ in range(seconds):
             time.sleep(1)
             now = table(exe)
-            # A process started this second counts from zero; one that ended within it is missed.
-            delta = lambda k: None if any(r.get(k) is None for r in now.values()) else \
-                sum(r[k] - before.get(p, {}).get(k, 0) for p, r in now.items())
-            series.append(tuple(map(delta, ['cpuMs', 'readBytes', 'writeBytes', 'physReadBytes', 'physWriteBytes'])))
+            series.append(step(before, now))
             before = now
     finally:
         ws.release(*processes)
@@ -400,15 +442,16 @@ def watch(binary, design, revised, n, seconds, parent):
     # A timed-out cancel of a job proven in flight counts as 30 s, a lower bound.
     valid = [max(x['jobEndMs'], x['workerEndMs'], x['runnerEndMs']) if x['outcome'] == 'cancelled_in_flight' else 30000
              for x in cancels if x['outcome'] == 'cancelled_in_flight' or (x['outcome'] == 'timed_out' and x['inFlight'])]
-    io = lambda cost: {'read': within(cost['readBytesPer60s'], 3 * size + MiB), 'write': within(cost['writeBytesPer60s'], size + 2 * MiB)}
+    io = lambda cost: {'read': within(cost['readBytesPer60s'], 3 * size + MiB, cost['ioExact']),
+                       'write': within(cost['writeBytesPer60s'], size + 2 * MiB, cost['ioExact'])}
     return {
         # An unrecorded save counts as its 30 s wait, a lower bound, so it fails the gate instead of thinning N.
         'save': {'attempts': saves, **verdict('save', [x['ms'] if x['recorded'] else 30000 for x in saves])},
         'cancel': {'attempts': cancels, 'outcomes': Counter(x['outcome'] for x in cancels),
                    **verdict('cancel', valid)},
-        'idleOneHolder': {**one, 'cpu': within(one['cpuMsPer60s'], LIMITS['idleCpuMsPer60s']),
-                          'polling': within(one['pollingCpuMsPer60s'], LIMITS['pollingCpuMsPer60s']), **io(one)},
-        'idleEightHolders': {**eight, 'cpu': within(eight['cpuMsPer60s'], LIMITS['idle8HoldersCpuMsPer60s']), **io(eight)},
+        'idleOneHolder': {**one, 'cpu': within(one['cpuMsPer60s'], LIMITS['idleCpuMsPer60s'], one['cpuExact']),
+                          'polling': within(one['pollingCpuMsPer60s'], LIMITS['pollingCpuMsPer60s'], one['cpuExact']), **io(one)},
+        'idleEightHolders': {**eight, 'cpu': within(eight['cpuMsPer60s'], LIMITS['idle8HoldersCpuMsPer60s'], eight['cpuExact']), **io(eight)},
         **tree.roles(holders),
         'disk': {'sourceBytes': size, **tree.disk, 'database': within(tree.disk['databaseBytes'], LIMITS['databaseBytes']),
                  'wal': within(tree.disk['walBytes'], LIMITS['walBytes']),

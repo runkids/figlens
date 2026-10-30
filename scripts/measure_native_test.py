@@ -2,8 +2,11 @@ import importlib
 import os
 import shutil
 import subprocess
+from pathlib import Path
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 native = importlib.import_module('measure-native')
 
@@ -34,11 +37,32 @@ class MeasureNativeTest(unittest.TestCase):
         self.assertEqual(native.roles(rows, {10, 11}), ({21, 31}, {22, 32}))
 
     def test_idle_cost_separates_verification_seconds_from_polling(self):
-        series = [(2, 10, 5, None, 0)] * 130
-        series[30] = series[90] = (200, 5_000_000, 5, None, 0)
-        cost = native.idle_cost(series)
-        self.assertEqual((cost['verificationSeconds'], cost['pollingCpuMsPer60s'], cost['cpuMsPer60s'], cost['readBytesPer60s']),
-                         (2, 120, 318, 5_000_590))
+        second = {'cpuMs': 2, 'readBytes': 10, 'writeBytes': 5, 'physReadBytes': None, 'physWriteBytes': 0, 'ended': False}
+        series = [second] * 130
+        series[30] = series[90] = {**second, 'cpuMs': 200, 'readBytes': 5_000_000, 'ended': True}
+        cost = native.idle_cost(series, cpu_exact=True)
+        self.assertEqual((cost['verificationSeconds'], cost['pollingCpuMsPer60s'], cost['cpuMsPer60s'],
+                          cost['readBytesPer60s'], cost['ioExact']), (2, 120, 318, 5_000_590, False))
+
+    def test_a_reaped_worker_counts_once(self):
+        row = lambda ppid, cpu, child: {'ppid': ppid, 'cpuMs': cpu, 'childCpuMs': child, 'readBytes': 0,
+                                        'writeBytes': 0, 'physReadBytes': 0, 'physWriteBytes': 0}
+        # The runner (1) ran 2 ms; its worker (2), seen at 30 ms, ended at 50 ms and was reaped.
+        cost = native.step({1: row(0, 10, 0), 2: row(1, 30, 0)}, {1: row(0, 12, 50)})
+        self.assertEqual((cost['cpuMs'], cost['ended']), (22, True))
+
+    def test_a_vanished_state_file_is_skipped(self):
+        with tempfile.TemporaryDirectory() as temp:
+            kept = Path(temp, 'index.sqlite')
+            kept.write_bytes(b'x' * 3)
+            self.assertEqual(native.sizes([kept, Path(temp, 'index.sqlite-wal')]), [('index.sqlite', 3)])
+
+    def test_a_failed_sampler_fails_its_block(self):
+        def broken(_):
+            raise OSError('table failed')
+        with mock.patch.object(native, 'table', broken), self.assertRaises(OSError):
+            with native.Tree('unused'):
+                native.time.sleep(0.05)
 
     def test_only_a_cancel_proven_in_flight_counts(self):
         self.assertEqual([native.classify(True, 'j', 'cancelled', False), native.classify(True, 'j', 'succeeded', False),
