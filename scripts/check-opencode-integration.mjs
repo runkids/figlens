@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { existsSync, renameSync, writeFileSync } from 'node:fs';
-import { copyFile, mkdir, readFile, stat, utimes, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, realpath, stat, utimes, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
@@ -106,6 +106,26 @@ const cliSteps = [
       library: { kind: named.kind, namespace: named.namespace, key: named.key } });
   },
 ];
+// A project directory of one page more than an add registers, so nextCursor is followed once;
+// each lane has its own, so its project workspace starts with nothing registered.
+const designs = async name => {
+  const dir = path.join(project, name);
+  await mkdir(dir);
+  const files = Array.from({ length: 11 }, (_, n) => path.join(dir, `d${String(n + 1).padStart(2, '0')}.fig`));
+  for (const file of files) await copyFile(fixture, file);
+  return { dir, files, canonical: await Promise.all(files.map(file => realpath(file))) };
+};
+// Pages of one directory add, then the workspace's sources: exactly the pages' sources, at their canonical paths.
+const registeredPages = (pages, status, prepared, canonical) => {
+  const listed = pages.flatMap(page => [...page.existing, ...page.added]);
+  assert.deepEqual(pages.map(page => [page.existing.length + page.added.length, page.nextCursor === null]), [[10, false], [1, true]], JSON.stringify(pages));
+  // The prepared design comes first in canonical order, with the id prepare gave it.
+  assert.equal(listed[0].sourceId, prepared.job.sourceId, JSON.stringify(pages[0]));
+  assert.deepEqual(listed.map(source => source.path), canonical);
+  const pairs = sources => sources.map(source => `${source.sourceId} ${source.path}`).sort();
+  assert.deepEqual(pairs(status.sources), pairs(listed), JSON.stringify(status.sources));
+  return { pages: pages.map(page => page.added.length), sources: status.sources.length };
+};
 // What the fixture's cached copy records; the lanes read it from tool output and compare.
 const LIBRARY = { kind: 'component', namespace: 'synthetic-library', key: 'synthetic-button', basis: 'cached_copy' };
 const deepId = `I${Array(60).fill('9:9').join(';')}`;
@@ -283,6 +303,26 @@ try {
     assert.deepEqual(refs?.sort(), bothCopies(registered.map(item => item.sourceId)), JSON.stringify(flow));
     return { ...flow, sources: undefined, paths: paths.filter(item => /index|jobs|search|inspect|usages/.test(item)), provider: 'scripted loopback, not a model' };
   });
+  await check('session registers a project directory page by page through managed MCP, following nextCursor until none is left', async () => {
+    const { dir, files, canonical } = await designs('designs-mcp');
+    const [, flow] = await converse('Index the designs folder.', [() => catalog(['index', 'jobs']), paths => tool(paths, 'index') && tool(paths, 'jobs') && `
+      const prepared = await ${tool(paths, 'index')}(${JSON.stringify({ action: 'prepare', workspace: dir, file: files[0], scope: '0:0' })});
+      let job = prepared.job, polls = 0;
+      while (!${JSON.stringify(terminal)}.includes(job.state) && polls++ < 5000) job = await ${tool(paths, 'jobs')}({ action: 'status', jobId: job.jobId });
+      const pages = [];
+      let cursor = null;
+      do {
+        const page = (await ${tool(paths, 'index')}({ action: 'add', workspaceId: prepared.workspaceId, file: ${JSON.stringify(dir)}, ...(cursor ? { cursor } : {}) })).directory;
+        pages.push(page);
+        cursor = page.nextCursor;
+      } while (cursor && pages.length < 3);
+      const status = await ${tool(paths, 'index')}({ action: 'status', workspaceId: prepared.workspaceId });
+      return { prepared, job: job.state, pages, status };`],
+      // An add is not destructive: a rule denying the index's reset leaves it, unlike a reset, unasked.
+      [...allowAll, { action: 'figlens_index', resource: 'reset', effect: 'deny' }]);
+    assert.equal(flow?.job, 'succeeded', JSON.stringify(scripted.raw).slice(0, 2000));
+    return { ...registeredPages(flow.pages, flow.status, flow.prepared, canonical), resetDenied: true, provider: 'scripted loopback, not a model' };
+  });
   await check('through managed MCP a consumer acknowledged in Code Mode gets an explicit-check reminder before each later prompt', async () => {
     const { workspaceId } = await settled(['index', 'prepare', fixture, '--scope', '0:0']);
     await settled(['index', 'track', '--id', workspaceId, '--scope', '0:0']);
@@ -441,6 +481,25 @@ try {
     assert.deepEqual([library?.results?.map(item => [item.ref.sourceId, item.ref.nodeId]).sort(), library?.definition, library?.coverage?.complete],
       [bothCopies([a.job.sourceId, b.job.sourceId]), { state: 'unresolved', reason: 'library_source_unproven' }, true], (scripted.raw[18] ?? '').slice(0, 500));
     return { pages: [first.results[0].ref.nodeId, second.results[0].ref.nodeId], refused: 'unknown relation', library: library.definition.reason, trackedBaselineAcked: true, diffedCopies: diffed.coverage.changes, usedBy: used.results.map(item => item.ref.nodeId), deepIdBytes: deepId.length, mcp: status.mcp.reason, before: before.state, job: job.state, ref: found.results[0].ref, inspected: node.node.id, tools: scripted.tools.filter(name => /^figlens_/.test(name)) };
+  });
+  await check('with a disabled MCP override the CLI path asks read on each page of a directory add and follows nextCursor', async () => {
+    const { dir, files, canonical } = await designs('designs-cli');
+    const pageOne = [() => direct('figlens_index', { action: 'prepare', workspace: dir, file: files[0], scope: '0:0' }),
+      prepared => prepared?.workspaceId && direct('figlens_index', { action: 'add', workspaceId: prepared.workspaceId, file: dir })];
+    const pageTwo = (prepared, first) => first?.directory?.nextCursor && direct('figlens_index', { action: 'add', workspaceId: prepared.workspaceId, file: dir, cursor: first.directory.nextCursor });
+    // A read denied on the second page's one file refuses only that page: each page is asked on its own.
+    const [prepared, first] = await converse('Index the designs folder.', [...pageOne, pageTwo],
+      [...allowAll, { action: 'read', resource: canonical[10], effect: 'deny' }]);
+    assert.equal(prepared?.job?.state, 'succeeded', JSON.stringify(scripted.raw).slice(0, 2000));
+    assert.equal(first?.directory?.added?.length, 9, (scripted.raw[1] ?? '').slice(0, 500));
+    assert.match(scripted.raw[2] ?? '', /permission|denied|rule/i, (scripted.raw[2] ?? '').slice(0, 500));
+    const refusedStatus = JSON.parse((await execute(binary, ['index', 'status', '--id', prepared.workspaceId], { cwd: project, env })).stdout);
+    assert.equal(refusedStatus.sources.length, 10, JSON.stringify(refusedStatus.sources));
+    // Allowed, the same pages register: the first again (nothing new), then the second.
+    const [again, repeat, second, status] = await converse('Index the designs folder.', [...pageOne, pageTwo,
+      prepared => direct('figlens_index', { action: 'status', workspaceId: prepared.workspaceId })]);
+    assert.deepEqual(repeat?.directory?.added, [], (scripted.raw[1] ?? '').slice(0, 500));
+    return { ...registeredPages([repeat.directory, second?.directory], status, again, canonical), deniedPage: 2 };
   });
   await check('with a disabled MCP override figlens_watch holds a lease per session that records a save, and only its session, deletion or a reload ends it', async () => {
     const cli = args => JSON.parse(execFileSync(binary, args, { cwd: project, env, encoding: 'utf8' }));

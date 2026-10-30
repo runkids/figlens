@@ -22,7 +22,7 @@ import threading
 import time
 import traceback
 from installation import environment, run, toolchain
-from mcp_smoke import check_first_use, check_library, check_mcp, check_reuse
+from mcp_smoke import check_directory, check_first_use, check_library, check_mcp, check_reuse
 
 ROOT = Path(__file__).resolve().parent.parent
 # The synthetic mapping fixture the host lanes use; generate it as wiki/integrations.md says.
@@ -346,6 +346,8 @@ def main():
             pi['stdio'] = check_mcp([config['command'], *config['args']], consumer, wrapped_env, fixture, metadata['version'])
             first_use['piMcp'] = check_first_use([config['command'], *config['args']], work/'first-use-pi', fixture, wrapped_env)
             first_use['piLibrary'] = library([config['command'], *config['args']], 'library-pi', wrapped_env)
+            # Pi's registered MCP command registers a directory page by page, as an agent follows nextCursor.
+            first_use['piDirectory'] = check_directory([config['command'], *config['args']], work/'directory-pi', fixture, wrapped_env)
         watch_only = [f'--watch-only={fixture}'] if args.host_watch_only else []
         if args.opencode_bin:
             hosts['opencode'] = json.loads(run([node, ROOT/'scripts/check-opencode-integration.mjs',
