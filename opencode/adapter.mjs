@@ -430,10 +430,11 @@ export function createAdapter(ctx, entry = import.meta.url) {
       if (input.action === 'evaluate') await readSelected(found);
       await edit(place(found));
     }
-    // A lease makes the shared runner read its source on every save, so start also asks read on it.
+    // A lease makes the shared runner read its source on every save and evaluate the saved questions over it,
+    // including sets and definitions in other sources, so start asks read on every registered source.
     if (tool === 'watch' && input.action === 'start') {
       const found = await status(input);
-      await readSources(found);
+      await readSources(found, null);
       await edit(place(found));
       await current.authorize('bash', [commandLine(args, holding())]);
       return current.holder.start(args.slice(2), current.signal);

@@ -832,7 +832,7 @@ async function watching(t) {
   const native = `const fs = require('node:fs');
 const say = value => console.log(JSON.stringify(value));
 const [command, action] = process.argv.slice(2);
-if (command === 'index' && action === 'status') say({ paths: { workspace: '/w', lock: '/w.lock' }, roots: { config: { path: '/c' } }, sources: [{ sourceId: 's1', path: '/a.fig' }] });
+if (command === 'index' && action === 'status') say({ paths: { workspace: '/w', lock: '/w.lock' }, roots: { config: { path: '/c' } }, sources: [{ sourceId: 's1', path: '/a.fig' }, { sourceId: 's2', path: '/b.fig' }] });
 else if (command === 'watch' && action === 'status') say({ leases: [], runner: { state: 'stopped' } });
 else if (command === 'watch' && action === 'run') {
   fs.appendFileSync('runs', process.argv.slice(4).join(' ') + '\\n');
@@ -863,10 +863,10 @@ else if (command === 'watch' && action === 'run') {
   return { ctx, adapter, lines };
 }
 
-test('CLI-path watch start holds a lease for its session after asking read on the design and edit on the workspace', async t => {
+test('CLI-path watch start holds a lease for its session after asking read on every design and edit on the workspace', async t => {
   const { ctx, adapter, lines } = await watching(t);
   const asked = [];
-  ctx.permission.assert = async ({ action, resources }) => { asked.push([action, resources[0]]); };
+  ctx.permission.assert = async ({ action, resources }) => { asked.push([action, action === 'read' ? resources.join(' ') : resources[0]]); };
   const a = await adapter.scope('a');
   const start = { action: 'start', workspaceId: 'ws_1', sourceId: 's1', scope: '0:0', storage: '/s', requestId: 'r' };
   const lease = await adapter.cli(a, 'watch', start);
@@ -876,7 +876,7 @@ test('CLI-path watch start holds a lease for its session after asking read on th
   const before = asked.length;
   await adapter.cli(await adapter.scope('b'), 'watch', { action: 'status', workspaceId: 'ws_1' });
   assert.deepEqual([lease.state, await lines('runs'), asks, asked.slice(before).filter(([action, resource]) => action === 'edit' && resource === '/w')],
-    ['active', ['--id ws_1 --source s1 --scope 0:0 --storage /s --request-id r'], ['read /a.fig', 'edit /w'], []],
+    ['active', ['--id ws_1 --source s1 --scope 0:0 --storage /s --request-id r'], ['read /a.fig /b.fig', 'edit /w'], []],
     'status asks no edit on the workspace');
 });
 
@@ -929,6 +929,16 @@ test('CLI-path watch start spawns nothing when read on the design is denied', as
     if (action === 'read') throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
   };
   await assert.rejects(adapter.cli(await adapter.scope('a'), 'watch', { action: 'start', workspaceId: 'ws_1', scope: '0:0' }), /read denied/);
+  assert.deepEqual(await lines('runs'), []);
+});
+
+test('CLI-path watch start on an allowed source still asks every source, since its runner evaluates saved sets over others', async t => {
+  const { ctx, adapter, lines } = await watching(t);
+  // s1 (/a.fig) is allowed, s2 (/b.fig) denied: a saved set over both would be evaluated in the background.
+  ctx.permission.assert = async ({ action, resources }) => {
+    if (action === 'read' && resources.includes('/b.fig')) throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  await assert.rejects(adapter.cli(await adapter.scope('a'), 'watch', { action: 'start', workspaceId: 'ws_1', sourceId: 's1', scope: '0:0' }), /read denied/);
   assert.deepEqual(await lines('runs'), []);
 });
 
