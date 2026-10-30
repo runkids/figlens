@@ -1404,9 +1404,8 @@ fn workspace_search(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>
     let storage = workspace::storage(a.storage.map(Path::new))?;
     let select = Select::from_choice(a.workspace.map(Path::new), a.file.map(Path::new), a.id)?
         .ok_or("choose the workspace with --workspace, --file or --id")?;
-    let mut search_args = vec![query];
-    search_args.extend(a.search.iter().cloned());
-    let (request, query) = command::search_request(&search_args)?;
+    let options: Vec<String> = a.search.iter().map(|s| s.to_string()).collect();
+    let (request, query) = command::search_options(Some(query), &options)?;
     let only: Vec<String> = a.source.iter().map(|s| s.to_string()).collect();
     match query {
         command::Query::Text(figlens::semantic::Mode::Text) => {

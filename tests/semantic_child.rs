@@ -491,6 +491,8 @@ fn vision_ranks_when_ready_and_the_hash_takes_over_when_the_model_fails() {
         [([255, 0, 0], axis(2)), ([0, 0, 255], axis(1))],
     );
     let query = query_png(&dir, [200, 40, 120]);
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe { std::env::set_var("SEMANTIC_CHILD_MODE", "image") };
     let search = || {
         cli(&[
             "search",

@@ -246,3 +246,84 @@ pub(super) fn digest(image: &QueryImage, query: &ImageQuery) -> Json {
         visual::VERSION
     ])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search::visual::RenderedUnit;
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn a_vector_scan_stops_at_its_bounds() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE jobs (kind TEXT, source_id TEXT, scope TEXT, state TEXT,
+             expected_gen INTEGER);
+             CREATE INDEX jobs_active ON jobs (source_id, scope);",
+        )
+        .unwrap();
+        conn.execute_batch(super::super::database::V9).unwrap();
+        conn.execute_batch(super::super::database::V10).unwrap();
+        let dim = 4;
+        for (rid, shade) in [(1u32, 10u8), (2, 200)] {
+            let mut pixmap = resvg::tiny_skia::Pixmap::new(8, 8).unwrap();
+            pixmap.fill(resvg::tiny_skia::Color::from_rgba8(shade, 0, 0, 255));
+            let rendered = RenderedUnit {
+                image: QueryImage::from_pixmap(&pixmap, None).unwrap(),
+                diagnostics: vec![],
+                diagnostics_truncated: false,
+                bounds: serde_json::Map::new(),
+            };
+            let key = super::super::visual::save(&conn, 7, rid, &rendered).unwrap();
+            conn.execute(
+                "INSERT INTO model_vectors VALUES ('p', ?1, ?2)",
+                params![key.to_vec(), crate::semantic::encode(&[1.0, 0.0, 0.0, 0.0])],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO model_refs VALUES (7, 'p', ?1, ?2)",
+                params![super::super::visual::POLICY, key.to_vec()],
+            )
+            .unwrap();
+        }
+        let tx = conn.transaction().unwrap();
+        let rids = [1, 2].into_iter().collect();
+        let scan = |work: usize| {
+            let mut bounds = crate::expand::Bounds {
+                work,
+                bytes: usize::MAX,
+                depth: 0,
+                deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+                stop: None,
+            };
+            let found = vectors(
+                &tx,
+                7,
+                "p",
+                dim,
+                &rids,
+                &mut bounds,
+                &AtomicBool::new(false),
+            );
+            (found.unwrap().len(), bounds.stop)
+        };
+        assert_eq!(scan(2 * dim), (2, None));
+        assert_eq!(scan(dim), (1, Some(crate::expand::Stop::Work)));
+        let cancelled = vectors(
+            &tx,
+            7,
+            "p",
+            dim,
+            &rids,
+            &mut crate::expand::Bounds {
+                work: usize::MAX,
+                bytes: usize::MAX,
+                depth: 0,
+                deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+                stop: None,
+            },
+            &AtomicBool::new(true),
+        );
+        assert!(cancelled.is_err());
+    }
+}
