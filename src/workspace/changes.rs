@@ -15,6 +15,8 @@ const DETAIL_MAX: usize = 500;
 const PAGE_BYTES: usize = 256 * 1024;
 /// Tracked scopes listed in a poll; past it `trackingTruncated`.
 const TRACKING: usize = 100;
+/// The retention marks one request may read, each charged 64 bytes plus its key.
+const MARK_BYTES: usize = 4 * PAGE_BYTES;
 /// The cursor of "the oldest revision kept": a zero revision id.
 const OLDEST: [u8; 16] = [0; 16];
 
@@ -126,43 +128,71 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
         .flatten()
 }
 
-/// The newest revision retention deleted among the view's sources and scope, counting only
-/// deletions by a publication after revision seq `floor` (all with `None`). A reader has
-/// accepted every deletion up to the floor its cursor or checkpoint carries.
-fn pruned(conn: &Connection, v: &View, floor: Option<i64>) -> Result<i64> {
-    // A mark is `<newest deleted seq> <seq of the publication that deleted it>`.
-    let mut stmt = conn
-        .prepare(
-            "SELECT key, CAST(value AS INTEGER), CAST(substr(value, instr(value, ' ') + 1) AS INTEGER)
-             FROM meta WHERE key LIKE 'pruned' || char(31) || '%'",
-        )
-        .map_err(sql)?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, i64>(2)?,
-            ))
-        })
-        .map_err(sql)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(sql)?;
-    Ok(rows
-        .into_iter()
-        .filter(|(key, _, by)| {
-            let mut parts = key.split('\u{1f}').skip(1);
-            let (source, scope) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
-            v.sources.iter().any(|s| s == source)
-                && v.scope.as_deref().is_none_or(|s| s == scope)
-                && floor.is_none_or(|f| *by > f)
-        })
-        .map(|(_, seq, _)| seq)
-        .max()
-        .unwrap_or(0))
+/// What the view's retention marks say: their keyed `receipt`, the `newest` deleted seq, and
+/// the newest deleted by a publication after a checkpoint's floor.
+struct Marks {
+    receipt: [u8; 16],
+    newest: i64,
+    since_floor: i64,
 }
 
-/// The seq of the newest revision recorded: the floor a cursor issued now carries.
+/// Streams the view's retention marks, filtered in SQL to its sources and scope, in key order,
+/// paying for each before reading its key. A receipt is never made from part of them.
+fn marks(conn: &Connection, v: &View, floor: Option<i64>) -> Result<Marks> {
+    // One key range per source (an exact key with a scope, so `1:2` never matches `1:20`),
+    // read in key order straight off the primary key: no row is read before it is paid for.
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT length(CAST(key AS BLOB)), key, CAST(value AS INTEGER),
+             CAST(substr(value, instr(value, ' ') + 1) AS INTEGER)
+             FROM meta WHERE key >= ?1 AND key < ?2 ORDER BY key",
+        )
+        .map_err(sql)?;
+    let mut sources: Vec<&String> = v.sources.iter().collect();
+    sources.sort();
+    let mut mac = mac(v, "receipt", &[]).ok_or_else(stale)?;
+    let (mut spent, mut newest, mut since_floor) = (0usize, 0, 0);
+    for source in sources {
+        let (low, high) = match &v.scope {
+            Some(scope) => {
+                let key = format!("pruned\u{1f}{source}\u{1f}{scope}");
+                (key.clone(), format!("{key}\u{1}"))
+            }
+            None => (
+                format!("pruned\u{1f}{source}\u{1f}"),
+                format!("pruned\u{1f}{source}\u{20}"),
+            ),
+        };
+        let mut rows = stmt.query(params![low, high]).map_err(sql)?;
+        while let Some(r) = rows.next().map_err(sql)? {
+            spent += 64 + r.get::<_, i64>(0).map_err(sql)?.max(0) as usize;
+            if spent > MARK_BYTES {
+                return Err(fail(
+                    ErrorKind::QueryWorkLimit,
+                    format!(
+                        "this view's retention marks exceed {MARK_BYTES} bytes; pass a narrower sourceId or scope"
+                    ),
+                ));
+            }
+            let key = r.get_ref(1).and_then(|k| Ok(k.as_str()?)).map_err(sql)?;
+            let (seq, by): (i64, i64) = (r.get(2).map_err(sql)?, r.get(3).map_err(sql)?);
+            mac.update(&[key.as_bytes(), &[0x1f], &seq.to_le_bytes(), &[0x1e]].concat());
+            newest = newest.max(seq);
+            if floor.is_none_or(|f| by > f) {
+                since_floor = since_floor.max(seq);
+            }
+        }
+    }
+    let mut receipt = [0; 16];
+    receipt.copy_from_slice(&mac.finalize().into_bytes()[..16]);
+    Ok(Marks {
+        receipt,
+        newest,
+        since_floor,
+    })
+}
+
+/// The seq of the newest revision recorded, kept private in a consumer's checkpoint.
 fn floor(conn: &Connection) -> Result<i64> {
     conn.query_row(
         "SELECT IFNULL((SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'revision_seq'), 0)",
@@ -172,15 +202,20 @@ fn floor(conn: &Connection) -> Result<i64> {
     .map_err(sql)
 }
 
-/// A `c1.` position cursor: the revision id it follows and the floor it was issued at.
-fn position_cursor(v: &View, id: &[u8], floor: i64) -> Json {
-    cursor(v, "c1", &[id, &floor.to_le_bytes()].concat())
+/// A `c1.` position cursor: the revision id it follows and the view's receipt when issued.
+fn position_cursor(v: &View, id: &[u8], receipt: &[u8; 16]) -> Json {
+    cursor(v, "c1", &[id, receipt].concat())
 }
 
-fn read_position(v: &View, text: &str) -> Result<(Vec<u8>, i64)> {
-    let p = payload(v, "c1", text, 24)?;
-    let floor = i64::from_le_bytes(p[16..].try_into().map_err(|_| stale())?);
-    Ok((p[..16].to_vec(), floor))
+fn read_position(v: &View, text: &str) -> Result<(Vec<u8>, [u8; 16])> {
+    let p = payload(v, "c1", text, 32)?;
+    Ok((p[..16].to_vec(), p[16..].try_into().map_err(|_| stale())?))
+}
+
+/// Whether a reader at `at` holding receipt `held` missed a deletion: only when the view was
+/// pruned since the receipt was issued, and behind that position.
+fn missed(marks: &Marks, held: &[u8; 16], at: i64) -> bool {
+    *held != marks.receipt && at < marks.newest
 }
 
 /// The position after `id`: its seq, before every revision kept for [`OLDEST`], or `event_gap`
@@ -203,13 +238,13 @@ fn position(conn: &Connection, v: &View, id: &[u8]) -> Result<i64> {
 
 /// `event_gap`, whose recovery reads from the oldest kept, accepting every deletion so far.
 fn gap(conn: &Connection, v: &View) -> Box<dyn Error> {
-    let now = match floor(conn) {
-        Ok(now) => now,
+    let now = match marks(conn, v, None) {
+        Ok(marks) => marks.receipt,
         Err(e) => return e,
     };
     // The cursor is bound to these filters, so the recovery repeats them.
     let mut arguments =
-        json!({"workspaceId": v.workspace, "cursor": position_cursor(v, &OLDEST, now)});
+        json!({"workspaceId": v.workspace, "cursor": position_cursor(v, &OLDEST, &now)});
     if let Some(source) = &v.source {
         arguments["sourceId"] = json!(source);
     }
@@ -255,16 +290,17 @@ fn poll(conn: &Connection, v: &View, req: &Request) -> Result<Json> {
             format!("limit must be 1 to {PAGE_MAX}"),
         ));
     }
-    let after = match (req.cursor, req.consumer) {
+    let (after, marks) = match (req.cursor, req.consumer) {
         (Some(c), _) => {
-            let (id, floor) = read_position(v, c)?;
+            let (id, held) = read_position(v, c)?;
             let at = position(conn, v, &id)?;
+            let marks = marks(conn, v, None)?;
             // Retention is per scope: a kept cursor can still sit before revisions deleted
             // since it was issued.
-            if at < pruned(conn, v, Some(floor))? {
+            if missed(&marks, &held, at) {
                 return Err(gap(conn, v));
             }
-            at
+            (at, marks)
         }
         (None, Some(consumer)) => {
             let at: Option<(i64, i64)> = conn
@@ -275,16 +311,15 @@ fn poll(conn: &Connection, v: &View, req: &Request) -> Result<Json> {
                 )
                 .optional()
                 .map_err(sql)?;
+            let marks = marks(conn, v, at.map(|(_, floor)| floor))?;
             match at {
-                Some((at, floor)) if at < pruned(conn, v, Some(floor))? => {
-                    return Err(gap(conn, v));
-                }
-                at => at.map_or(0, |(at, _)| at),
+                Some((at, _)) if at < marks.since_floor => return Err(gap(conn, v)),
+                at => (at.map_or(0, |(at, _)| at), marks),
             }
         }
-        (None, None) => 0,
+        (None, None) => (0, marks(conn, v, None)?),
     };
-    let now = floor(conn)?;
+    let now = marks.receipt;
     let mut stmt = conn
         .prepare(
             "SELECT r.id, r.source_id, r.scope, r.kind, r.snapshot_id, r.coverage, r.summary,
@@ -336,7 +371,7 @@ fn poll(conn: &Connection, v: &View, req: &Request) -> Result<Json> {
     Ok(json!({
         "workspaceId": v.workspace,
         "revisions": page,
-        "nextCursor": last.map_or(Json::Null, |id| position_cursor(v, id, now)),
+        "nextCursor": last.map_or(Json::Null, |id| position_cursor(v, id, &now)),
         "hasMore": has_more,
         "tracking": tracked,
         "trackingTruncated": truncated,
@@ -432,7 +467,7 @@ fn detail(conn: &Connection, v: &View, req: &Request, revision: &str) -> Result<
     // Only retention deletes a revision figlens issued, and it leaves a mark.
     let state = match state {
         Some(state) => state,
-        None if pruned(conn, v, None)? > 0 => return Err(gap(conn, v)),
+        None if marks(conn, v, None)?.newest > 0 => return Err(gap(conn, v)),
         None => return Err(missing()),
     };
     let after = match req.cursor {
@@ -493,7 +528,8 @@ fn detail(conn: &Connection, v: &View, req: &Request, revision: &str) -> Result<
 }
 
 /// Moves `consumer`'s checkpoint for these filters forward to `cursor`; an older or equal
-/// cursor changes nothing. Replies with the checkpoint now held.
+/// cursor never moves it, and one that missed a deletion is `event_gap`, writing nothing.
+/// Replies with the checkpoint now held.
 pub fn ack(storage: &Storage, select: &Select, req: &Request) -> Result<Json> {
     let consumer = req
         .consumer
@@ -512,30 +548,44 @@ pub fn ack(storage: &Storage, select: &Select, req: &Request) -> Result<Json> {
     })?;
     let (_, mut ws) = opened(storage, select, true)?;
     let v = view(storage, &ws, req)?;
-    let (id, floor) = read_position(&v, text)?;
+    let (id, held) = read_position(&v, text)?;
     let tx = ws
         .conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(sql)?;
     let seq = position(&tx, &v, &id)?;
-    // A later floor at the same position also moves the checkpoint: it accepts more deletions.
-    let advanced = tx
-        .execute(
-            "INSERT INTO consumers (consumer, filter, after_seq, floor, updated_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (consumer, filter) DO UPDATE SET
-         after_seq = excluded.after_seq, floor = excluded.floor, updated_ms = excluded.updated_ms
-         WHERE (excluded.after_seq, excluded.floor) > (after_seq, floor)",
-            params![consumer, v.filter, seq, floor, now_ms()],
-        )
-        .map_err(sql)?
-        > 0;
-    let (at, held_floor): (i64, i64) = tx
+    let before: Option<(i64, i64)> = tx
         .query_row(
             "SELECT after_seq, floor FROM consumers WHERE consumer = ?1 AND filter = ?2",
             [consumer, &v.filter],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
+        .optional()
         .map_err(sql)?;
+    let marks = marks(&tx, &v, before.map(|(_, floor)| floor))?;
+    // A stale receipt behind a deletion cannot accept it; nothing is written.
+    if missed(&marks, &held, seq) {
+        return Err(gap(&tx, &v));
+    }
+    // A checkpoint behind a deletion it never accepted moves back to a current cursor's place
+    // before it: the consumer then repeats revisions, never skips them.
+    let reset = before.is_some_and(|(b, _)| seq < b && b < marks.since_floor);
+    // Either way the cursor saw every deletion so far, so the private floor moves to now.
+    tx.execute(
+        "INSERT INTO consumers (consumer, filter, after_seq, floor, updated_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (consumer, filter) DO UPDATE SET
+         after_seq = CASE WHEN ?6 THEN excluded.after_seq ELSE MAX(after_seq, excluded.after_seq) END,
+         floor = MAX(floor, excluded.floor), updated_ms = excluded.updated_ms
+         WHERE ?6 OR excluded.after_seq > after_seq OR excluded.floor > floor",
+        params![consumer, v.filter, seq, floor(&tx)?, now_ms(), reset],
+    )
+    .map_err(sql)?;
+    // Progress is the visible position only, never a private floor refresh.
+    let advanced = seq > before.map_or(0, |(b, _)| b);
+    let at = match before {
+        Some((b, _)) if !reset => b.max(seq),
+        _ => seq,
+    };
     let held: Option<Vec<u8>> = tx
         .query_row(
             "SELECT id FROM revisions WHERE seq = ?1
@@ -549,8 +599,9 @@ pub fn ack(storage: &Storage, select: &Select, req: &Request) -> Result<Json> {
     Ok(
         json!({"workspaceId": v.workspace, "consumer": consumer, "advanced": advanced,
         "checkpoint": match (at, held) {
-            (0, _) => Some(position_cursor(&v, &OLDEST, held_floor)),
-            (_, held) => held.map(|id| position_cursor(&v, &id, held_floor)),
+            // The stored floor now accepts every mark, so the current receipt is honest.
+            (0, _) => Some(position_cursor(&v, &OLDEST, &marks.receipt)),
+            (_, held) => held.map(|id| position_cursor(&v, &id, &marks.receipt)),
         }}),
     )
 }

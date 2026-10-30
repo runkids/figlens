@@ -2331,6 +2331,204 @@ fn a_kept_cursor_before_another_scopes_deleted_revisions_is_a_gap_read_past_once
 }
 
 #[test]
+fn a_hidden_source_s_publication_changes_no_visible_cursor_or_ack() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let ack = |c: &str| {
+        env.json(&[
+            "watch",
+            "ack",
+            "--file",
+            &t.file,
+            "--consumer",
+            "bot",
+            "--cursor",
+            c,
+        ])
+    };
+    let before = t.changes(&[]);
+    let cursor = before["nextCursor"].as_str().unwrap();
+    ack(cursor);
+    // Another source's publication moves the global seq and prunes there.
+    t.sql(
+        "UPDATE meta SET value = CAST(value AS INTEGER) + 5 WHERE key = 'revision_seq';
+         INSERT INTO meta SELECT 'pruned' || char(31) || 'hidden' || char(31) || '0:0',
+         '3' || ' ' || (SELECT value FROM meta WHERE key = 'revision_seq')",
+    );
+    let after = t.changes(&[]);
+    let replay = ack(cursor);
+    assert_eq!(
+        (
+            after["nextCursor"] == before["nextCursor"],
+            cursor.len(),
+            replay["advanced"].clone(),
+            replay["checkpoint"] == json!(cursor),
+        ),
+        // `c1.`, the id and receipt, and the MAC, in hex: no counter.
+        (true, 3 + (16 + 16 + 16) * 2, json!(false), true)
+    );
+}
+
+#[test]
+fn a_stale_ack_behind_a_new_deletion_is_a_gap_and_writes_nothing() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let page = t.changes(&["--limit", "1"]);
+    let cursor = page["nextCursor"].as_str().unwrap();
+    let source = page["revisions"][0]["sourceId"].as_str().unwrap();
+    t.sql(&format!(
+        "UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'revision_seq';
+         INSERT INTO meta SELECT 'pruned' || char(31) || '{source}' || char(31) || '9:9',
+         '100' || ' ' || (SELECT value FROM meta WHERE key = 'revision_seq')"
+    ));
+    let refused = t.fails(&[
+        "watch",
+        "ack",
+        "--file",
+        &t.file,
+        "--consumer",
+        "bot",
+        "--cursor",
+        cursor,
+    ]);
+    let fresh = t.changes(&["--consumer", "bot"]);
+    assert_eq!(
+        (
+            refused.contains("deleted by retention"),
+            fresh["revisions"].as_array().unwrap().len()
+        ),
+        (true, 2)
+    );
+}
+
+#[test]
+fn a_current_cursor_before_a_checkpoint_behind_a_gap_moves_it_back_to_repeat_not_skip() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let ack = |consumer: &str, c: &str| {
+        env.json(&[
+            "watch",
+            "ack",
+            "--file",
+            &t.file,
+            "--consumer",
+            consumer,
+            "--cursor",
+            c,
+        ])
+    };
+    let all = t.changes(&[]);
+    ack("bot", all["nextCursor"].as_str().unwrap());
+    ack("tail", all["nextCursor"].as_str().unwrap());
+    let source = all["revisions"][0]["sourceId"].as_str().unwrap();
+    // Another scope's unread revisions after the checkpoint were deleted.
+    t.sql(&format!(
+        "UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'revision_seq';
+         INSERT INTO meta SELECT 'pruned' || char(31) || '{source}' || char(31) || '9:9',
+         '100' || ' ' || (SELECT value FROM meta WHERE key = 'revision_seq')"
+    ));
+    let gap = t.fails(&["changes", "--file", &t.file, "--consumer", "bot"]);
+    let r: Value = serde_json::from_str(gap.lines().last().unwrap()).unwrap();
+    let oldest = r["recovery"][0]["arguments"]["cursor"].as_str().unwrap();
+    // The first retained page lies before the checkpoint; any current cursor there, from the
+    // recovery or an unrelated read, moves the checkpoint back.
+    let first = t.changes(&["--cursor", oldest, "--limit", "1"]);
+    let unrelated = t.changes(&["--limit", "1"]);
+    let acked = ack("bot", unrelated["nextCursor"].as_str().unwrap());
+    let resumed = t.changes(&["--consumer", "bot"]);
+    // Reading the recovery up to the checkpoint and acking there ends its gap.
+    let through = t.changes(&["--cursor", oldest]);
+    let ended = ack("tail", through["nextCursor"].as_str().unwrap());
+    let caught_up = t.changes(&["--consumer", "tail"]);
+    let kept = all["revisions"].as_array().unwrap().len();
+    assert_eq!(
+        (
+            first["nextCursor"] == unrelated["nextCursor"],
+            acked["advanced"].clone(),
+            acked["checkpoint"] == first["nextCursor"],
+            resumed["revisions"].as_array().unwrap().len(),
+            (
+                ended["advanced"].clone(),
+                ended["checkpoint"] == through["nextCursor"]
+            ),
+            caught_up["revisions"].as_array().unwrap().len(),
+        ),
+        (true, json!(false), true, kept - 1, (json!(false), true), 0)
+    );
+}
+
+#[test]
+fn a_cursor_past_a_new_deletion_or_in_another_scope_reads_on() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let tail = t.changes(&[]);
+    let scoped = t.changes(&["--scope", "0:0"]);
+    let source = tail["revisions"][0]["sourceId"].as_str().unwrap();
+    let prune = |scope: &str, seq: u32| {
+        t.sql(&format!(
+            "UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'revision_seq';
+             INSERT INTO meta SELECT 'pruned' || char(31) || '{source}' || char(31) || '{scope}',
+             '{seq}' || ' ' || (SELECT value FROM meta WHERE key = 'revision_seq')"
+        ))
+    };
+    // A deletion behind every position read, then one in a scope `0:0` is a prefix of.
+    prune("9:9", 1);
+    let at_tail = t.changes(&["--cursor", tail["nextCursor"].as_str().unwrap()]);
+    prune("0:01", 100);
+    let in_scope = t.changes(&[
+        "--scope",
+        "0:0",
+        "--cursor",
+        scoped["nextCursor"].as_str().unwrap(),
+    ]);
+    assert_eq!(
+        (
+            at_tail["revisions"].as_array().unwrap().len(),
+            in_scope["revisions"].as_array().unwrap().len(),
+            // The other scope's mark is not this view's: its receipt is unchanged.
+            t.changes(&["--scope", "0:0"])["nextCursor"] == scoped["nextCursor"]
+        ),
+        (0, 0, true)
+    );
+}
+
+#[test]
+fn retention_marks_past_their_allowance_are_refused_and_hidden_ones_cost_nothing() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let source = t.changes(&[])["revisions"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let insert = |source: &str| {
+        t.sql(&format!(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1200)
+             INSERT INTO meta SELECT 'pruned' || char(31) || '{source}' || char(31) || i || ':'
+             || printf('%.900c', 'x'), '1 1' FROM n"
+        ))
+    };
+    insert("hidden");
+    let hidden = t.changes(&[]);
+    insert(&source);
+    let refused = t.fails(&["changes", "--file", &t.file]);
+    let narrower = t.changes(&["--scope", "0:0"]);
+    assert_eq!(
+        (
+            hidden["revisions"].as_array().unwrap().len(),
+            refused.contains("pass a narrower sourceId or scope"),
+            narrower["revisions"].as_array().unwrap().len(),
+        ),
+        (1, true, 1)
+    );
+}
+
+#[test]
 fn changes_and_ack_refuse_limits_and_consumers_out_of_range() {
     let env = Env::new();
     let t = Tracked::new(&env);

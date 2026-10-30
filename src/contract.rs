@@ -505,7 +505,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "watch",
-        "Change-tracking consumers. ack moves consumer's checkpoint for these filters (sourceId, scope) forward to cursor, the nextCursor of the last changes page it handled with the same filters; an older or equal cursor changes nothing, so a retry is safe. Replies with advanced and the checkpoint held.",
+        "Change-tracking consumers. ack moves consumer's checkpoint for these filters (sourceId, scope) forward to cursor, the nextCursor of the last changes page it handled with the same filters; an older or equal cursor never moves it, so a retry is safe, and a cursor issued before retention deleted revisions behind it is event_gap, writing nothing: follow its recovery. Replies with advanced and the checkpoint held.",
         &[
             ("action", "string", true, "ack"),
             ("workspaceId", "string", true, "ws_... from the index tool"),
@@ -648,7 +648,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
             serde_json::json!({
                 "workspaceId": {"type": "string"},
                 "consumer": {"type": "string"},
-                "advanced": {"type": "boolean", "description": "false when the cursor was not past the checkpoint"},
+                "advanced": {"type": "boolean", "description": "true only when the visible checkpoint moved forward"},
                 "checkpoint": {"type": ["string", "null"], "description": "a cursor at the checkpoint now held; null when retention deleted that revision"},
             }),
             ["workspaceId", "consumer", "advanced", "checkpoint"].as_slice(),

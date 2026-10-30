@@ -190,7 +190,8 @@ usage:
                                              --revision R [--cursor C]: one revision's changed nodes
   figlens watch ack <select> --consumer NAME --cursor C [--source ID] [--scope NODE] [--storage DIR]
                                              move the consumer's checkpoint for these filters to C; an
-                                             older C changes nothing
+                                             older C never moves it, and a C issued before retention
+                                             deleted revisions it had not passed is event_gap
   figlens update                               install the latest GitHub release over this binary
   figlens --help | --version
 
