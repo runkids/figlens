@@ -2342,17 +2342,24 @@ mod tests {
             };
             move || {
                 let stop = AtomicBool::new(false);
-                refresh(&storage, &ws_id, &job, &stop, &stop).job
+                let done = refresh(&storage, &ws_id, &job, &stop, &stop);
+                (done.job, done.error, Instant::now())
             }
         });
         std::thread::sleep(Duration::from_millis(300));
+        let committed = Instant::now();
         tx.commit().unwrap();
+        let (job, error, ended) = runner.join().unwrap();
+        // It ended after the commit with no error: it waited on the admission's write lock and was
+        // refused by the fence, not by a busy workspace or a timeout.
         assert_eq!(
             (
-                runner.join().unwrap(),
+                job,
+                error,
+                ended > committed,
                 rows(&dir, "SELECT count(*) FROM jobs")
             ),
-            (None, 0)
+            (None, None, true, 0)
         );
     }
 

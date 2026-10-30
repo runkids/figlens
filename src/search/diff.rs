@@ -2298,7 +2298,11 @@ fn revision_with(
                 Kind::Changed => Seeded::Changed,
                 Kind::Retyped | Kind::Unknown => Seeded::Unknown,
             };
-            if c.descendants > 0 {
+            // A top whose map entry cannot be paid leaves the layers below it unseeded.
+            let entry = 2 * std::mem::size_of::<((usize, usize), Seeded)>();
+            if c.descendants > 0 && !bounds.charge(0, entry) {
+                omitted += u64::from(c.descendants);
+            } else if c.descendants > 0 {
                 collapsed.insert(
                     (
                         usize::from(c.new.is_some()),
@@ -2350,7 +2354,9 @@ fn revision_with(
     // side lacks was removed or added too: seed those, so a subscription on one reads it.
     if !collapsed.is_empty() {
         let records = pair.old.index.records.len() + pair.new.index.records.len();
-        if bounds.stop.is_some() || !bounds.charge(records, records * LOOKUP) {
+        // Paid before either pass: the id lookups, then one visit and one `under` slot per record.
+        let slots = records * (LOOKUP + std::mem::size_of::<Option<Seeded>>());
+        if bounds.stop.is_some() || !bounds.charge(2 * records, slots) {
             omitted += collapsed.len() as u64;
         } else {
             let ids = [by_id(&pair.old), by_id(&pair.new)];

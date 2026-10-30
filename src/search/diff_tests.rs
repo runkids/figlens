@@ -2744,9 +2744,9 @@ fn a_removed_subtree_seeds_each_layer_below_its_top_or_leaves_the_impact_incompl
     ]);
     let new = doc(vec![other()]);
     let conn = saved(&[&Tree::new(&old), &Tree::new(&new)], "0:0");
-    let at = |bytes| {
+    let at = |work, bytes| {
         let bounds = Bounds {
-            work: WORK,
+            work,
             bytes,
             depth: DEPTH,
             deadline: Instant::now() + DEADLINE,
@@ -2763,7 +2763,7 @@ fn a_removed_subtree_seeds_each_layer_below_its_top_or_leaves_the_impact_incompl
         .unwrap()
     };
     use super::super::impact::Class;
-    let whole = at(PAIR_BYTES);
+    let whole = at(WORK, PAIR_BYTES);
     let class = |id: &str| {
         whole
             .impact
@@ -2777,11 +2777,28 @@ fn a_removed_subtree_seeds_each_layer_below_its_top_or_leaves_the_impact_incompl
         (Some(Class::Direct), Some(Class::Direct), true)
     );
     // Room for the top's seed only: the layers below it are cut, never a complete empty impact.
-    let cut = at(std::mem::size_of::<Seed>() + 4);
+    let cut = at(WORK, std::mem::size_of::<Seed>() + 4);
     assert_eq!(
         (
             cut.impact.complete,
             cut.impact.reasons.contains_key("seeds_truncated")
+        ),
+        (false, true)
+    );
+    // Work for the row seeds, the id lookups and both layers' seeds, but not the pass that finds
+    // those layers: it is paid first, so they stay unseeded.
+    let pair = compare(
+        stored(&conn, 1, side("old")).unwrap(),
+        stored(&conn, 2, side("new")).unwrap(),
+        "0:0",
+        PAIR_WORK,
+    );
+    let records = pair.old.index.records.len() + pair.new.index.records.len();
+    let unpaid = at(pair.changes.len() + records + 2, PAIR_BYTES);
+    assert_eq!(
+        (
+            unpaid.impact.hits.iter().any(|h| h.node == "0:13"),
+            unpaid.impact.reasons.contains_key("seeds_truncated")
         ),
         (false, true)
     );
