@@ -343,7 +343,7 @@ fn stopped(cancel: &AtomicBool) -> Result<()> {
     Ok(())
 }
 
-fn bad() -> Box<dyn Error> {
+pub(crate) fn bad() -> Box<dyn Error> {
     "invalid stored index; rebuild the index".into()
 }
 

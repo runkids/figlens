@@ -1770,6 +1770,71 @@ fn library_uses_page_across_sources_and_never_resolve_the_definition() {
 }
 
 #[test]
+fn a_library_use_says_where_it_is_without_opening_the_file() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 1);
+    // A layer inside a page, unlike the document the helper's use sits on.
+    conn.execute(
+        "UPDATE edges SET rid = (SELECT rid FROM records WHERE gen = ?1 AND hidden = 0
+         AND page IS NOT NULL AND root IS NOT NULL ORDER BY rid LIMIT 1)
+         WHERE gen = ?1 AND relation = 'uses_library'",
+        [srcs[0].2],
+    )
+    .unwrap();
+    let out = library(&storage, &select, None, &reference("k", None)).unwrap();
+    let hit = &out["results"][0];
+    assert_eq!(
+        (
+            hit["page"]["id"].is_string(),
+            hit["scopeRoot"].is_string(),
+            out["coverage"]["sources"][0]["path"]
+                .as_str()
+                .map(PathBuf::from),
+        ),
+        (true, true, Some(srcs[0].0.clone()))
+    );
+}
+
+/// Renames the record holding `gen_id`'s library use to `name`.
+fn rename_use(conn: &Connection, gen_id: i64, name: &str) {
+    conn.execute(
+        "UPDATE records SET name = ?2 WHERE gen = ?1 AND rid IN
+         (SELECT rid FROM edges WHERE gen = ?1 AND relation = 'uses_library')",
+        params![gen_id, name],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_first_library_use_too_large_for_a_page_is_refused_by_its_utf8_bytes() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 1);
+    // 1.5M characters, 4.5 MB: within the page counted in characters, over it in bytes.
+    rename_use(&conn, srcs[0].2, &"漢".repeat(1_500_000));
+    let out = library(&storage, &select, None, &reference("k", None));
+    assert_eq!(kind_of_error(out), ErrorKind::ResponseBudget);
+}
+
+#[test]
+fn a_later_library_use_too_large_for_the_page_starts_the_next_one() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    rename_use(&conn, srcs[1].2, &"a".repeat(4 * 1024 * 1024 - 64));
+    let request = crate::workspace::library::Request {
+        limit: 2,
+        ..reference("k", None)
+    };
+    let first = library(&storage, &select, None, &request).unwrap();
+    assert_eq!(
+        (library_ids(&first), first["nextCursor"].is_string()),
+        (vec![srcs[0].1.clone()], true)
+    );
+}
+
+#[test]
 fn a_use_with_no_namespace_leaves_the_reply_partial_without_being_listed() {
     use crate::workspace::library::library;
     let d = TestDir::new();

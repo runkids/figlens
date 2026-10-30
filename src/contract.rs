@@ -635,7 +635,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "scope": {"type": "object"},
                 "members": {"type": "object", "description": "COMPONENT_SET queries: the known member ids and whether they are complete"},
                 "results": {"type": "array", "items": {"type": "object"}, "description": "in: each location's ref, name, type, origin, hidden, page, scopeRoot, path, relation, state, basis, evidence and via (the member a set query matched); out: target ref or resource, its definition and the edge fields"},
-                "coverage": {"type": "object", "description": "complete, layers.relations kinds and version, reasons; library queries: complete, sources (sourceId, state, snapshotId, nextSteps) and reasons; never a total count"},
+                "coverage": {"type": "object", "description": "complete, layers.relations kinds and version, reasons; library queries: complete, sources (sourceId, path, state, snapshotId, nextSteps) and reasons; never a total count"},
                 "hasMore": {"type": "boolean"},
                 "nextCursor": {"type": ["string", "null"]},
                 "source": {"type": "object", "description": "sourceId and snapshotId; stateless calls add freshness"},

@@ -67,6 +67,7 @@ impl Request {
 /// One visible source and where its published scope stands.
 struct Source {
     id: String,
+    path: String,
     snapshot: Option<String>,
     state: &'static str,
     gen_id: Option<i64>,
@@ -233,6 +234,7 @@ pub fn library(
         };
         sources.push(Source {
             id,
+            path,
             snapshot: snapshot.filter(|_| state == "ready"),
             state,
             gen_id: current.filter(|_| state == "ready"),
@@ -292,7 +294,8 @@ pub fn library(
     let mut uses = tx
         .prepare(
             "SELECT e.rid, e.seq, e.state, e.evidence, r.node_id, r.name, r.kind, r.hidden,
-             length(e.evidence) + length(r.node_id) + length(r.name) + length(r.kind)
+             length(CAST(e.evidence AS BLOB)) + length(CAST(r.node_id AS BLOB))
+             + length(CAST(r.name AS BLOB)) + length(CAST(r.kind AS BLOB)), r.page, r.root
              FROM edges e INDEXED BY edges_target JOIN records r ON r.gen = e.gen AND r.rid = e.rid
              WHERE e.gen = ?1 AND e.target = ?2 AND e.relation = ?3 AND (e.rid, e.seq) > (?4, ?5)
              ORDER BY e.rid, e.seq",
@@ -302,16 +305,20 @@ pub fn library(
         let Some(gen_id) = s.gen_id else { continue };
         // A stopped build, binding fields too large to read, or a reference too long to keep can
         // hide uses; a copy with no namespace may name this one. Each is an indexed probe, made
-        // on every page.
-        let (complete, unread, nameless, unkept): (bool, i64, bool, bool) = tx
+        // on every page. A source this page reads also brings its pages and scope roots.
+        let scan = i >= after.0 && !more;
+        type Probe = (bool, i64, bool, bool, Option<String>, Option<String>);
+        let (complete, unread, nameless, unkept, pages, roots): Probe = tx
             .query_row(
                 "SELECT complete AND stop IS NULL, coalesce(json_extract(info, '$.unreadFields'), 0),
                  EXISTS (SELECT 1 FROM edges INDEXED BY edges_target WHERE gen = ?1 AND target = ?2),
                  EXISTS (SELECT 1 FROM edges INDEXED BY edges_target
-                         WHERE gen = ?1 AND target IS NULL AND relation = ?3)
+                         WHERE gen = ?1 AND target IS NULL AND relation = ?3),
+                 CASE WHEN ?4 THEN json_extract(info, '$.pages') END,
+                 CASE WHEN ?4 THEN json_extract(info, '$.roots') END
                  FROM generations WHERE gen = ?1",
-                params![gen_id, unknown, LIBRARY],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                params![gen_id, unknown, LIBRARY, scan],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             )
             .map_err(sql)?;
         if !complete || unread > 0 || unkept {
@@ -320,9 +327,13 @@ pub fn library(
         if nameless {
             unnamed.push(s.id.clone());
         }
-        if i < after.0 || more {
+        if !scan {
             continue;
         }
+        let pages: Vec<(String, String, bool)> =
+            serde_json::from_str(pages.as_deref().unwrap_or("[]")).map_err(|_| store::bad())?;
+        let roots: Vec<String> =
+            serde_json::from_str(roots.as_deref().unwrap_or("[]")).map_err(|_| store::bad())?;
         let (rid, seq) = if i == after.0 {
             (after.1, after.2)
         } else {
@@ -342,7 +353,31 @@ pub fn library(
                 }
                 continue;
             }
-            let size = 128 + row.get::<_, i64>(8).map_err(sql)? as usize;
+            let at = |col| -> Result<Option<usize>> {
+                Ok(row
+                    .get::<_, Option<i64>>(col)
+                    .map_err(sql)?
+                    .map(|v| v as usize))
+            };
+            let page = match at(9)? {
+                Some(p) => Some(pages.get(p).ok_or_else(store::bad)?),
+                None => None,
+            };
+            let root = match at(10)? {
+                Some(r) => Some(roots.get(r).ok_or_else(store::bad)?),
+                None => None,
+            };
+            let size = 128
+                + row.get::<_, i64>(8).map_err(sql)? as usize
+                + page.map_or(0, |p| p.0.len() + p.1.len())
+                + root.map_or(0, String::len);
+            if results.is_empty() && size > PAGE_BYTES {
+                return Err(FigError::new(
+                    ErrorKind::ResponseBudget,
+                    format!("one library use exceeds the {PAGE_BYTES}-byte page; narrow scope or sourceId"),
+                )
+                .into());
+            }
             if results.len() == req.limit || copied + size > PAGE_BYTES {
                 more = true;
                 break;
@@ -357,7 +392,9 @@ pub fn library(
                 "type": row.get::<_, String>(6).map_err(sql)?,
                 "relation": LIBRARY, "basis": "cached_copy",
                 "state": row.get::<_, String>(2).map_err(sql)?,
-                "evidence": serde_json::from_str::<Json>(&evidence).unwrap_or(json!(evidence)),
+                "evidence": serde_json::from_str::<Json>(&evidence).unwrap_or_else(|_| json!(evidence)),
+                "page": page.map(|p| json!({"id": p.0, "name": p.1})),
+                "scopeRoot": root,
             }));
             last = Some((i, r, q));
         }
@@ -390,7 +427,7 @@ pub fn library(
     let coverage_sources: Vec<Json> = sources
         .iter()
         .map(|s| {
-            let mut c = json!({"sourceId": s.id, "state": s.state, "snapshotId": s.snapshot});
+            let mut c = json!({"sourceId": s.id, "path": s.path, "state": s.state, "snapshotId": s.snapshot});
             if !s.step.is_null() {
                 c["nextSteps"] = json!([s.step]);
             }
