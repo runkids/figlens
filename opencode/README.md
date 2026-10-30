@@ -26,4 +26,4 @@ Server operations validate session/project ownership and request read/edit/bash 
 
 Viewer URLs and design paths belong to the server machine. Reference attachments carry PNG bytes through the host file-content format; a textual path is not an image. Each session owns its viewer; deleting a session, reloading or unloading the plugin closes owned viewers. Client disconnect alone does not delete a durable session, so use `/figlens close` when finished. The adapter creates no tunnel.
 
-Shared mapping files retain Pi's schema and human notes. See [Pi](../pi/README.md) for the underlying workflow and [integration acceptance](https://github.com/runkids/figlens/blob/main/wiki/integrations.md) for source-checkout checks.
+Shared mapping files retain Pi's schema and human notes. See [Pi](../pi/README.md) for the underlying workflow and [integration acceptance](https://github.com/runkids/figlens/blob/main/wiki/host-acceptance.md) for source-checkout checks.

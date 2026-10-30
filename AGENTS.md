@@ -52,7 +52,8 @@ python3 scripts/ai-context.py check     # validate paths, headings, links, orpha
 | `render` | Changing SVG or raster output: text, glyphs, image fills/adjustments, effects, export areas |
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison |
 | `pi` | Changing the Pi extension, component mappings or npm packaging |
-| `integrations` | Changing OpenCode V2/OMP, shared package, permissions, installed-host acceptance |
+| `integrations` | Changing OpenCode V2/OMP, packaging or permissions |
+| `host-acceptance` | Installed-host lanes |
 | `accuracy` | Measuring output against Figma's exports, `compare`, test files, the CI regression corpus |
 | `release` | Packaging, GitHub releases, Homebrew, npm, installers, `figlens update` |
 | `review` | Delivering features/optimizations across CLI, MCP and Pi; reviews, PR follow-up and opening issues |
@@ -72,7 +73,7 @@ If a topic goes over budget, split it rather than raising the cap. Skills are wo
 ## Verification
 
 Pi viewer startup waits for a successful catalog response, not a printed URL; see `pi`.
-Verify each host's independent entry from the same extracted npm candidate; dispatch is not model completion; see `integrations`.
+Verify each host's entry from one extracted npm candidate; dispatch is not model completion; see `host-acceptance`.
 Validate host reference-output directories before export, including symlinked parents; see `integrations`.
 Cancel owned CLI process trees and await exit before reference cleanup; see `integrations`.
 Check parsing budgets before Kiwi recursion or declared-length expansion; see `parsing`.

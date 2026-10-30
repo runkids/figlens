@@ -132,10 +132,18 @@
       ]
     },
     "integrations": {
-      "description": "Changing OpenCode V2/OMP entries, shared host packaging, permissions, ownership or installed-adapter acceptance.",
+      "description": "Changing OpenCode V2/OMP entries, shared host packaging, permissions or ownership.",
       "sources": [
         {
           "path": "wiki/integrations.md"
+        }
+      ]
+    },
+    "host-acceptance": {
+      "description": "Running or changing the installed-host lanes for OpenCode, OMP and Pi.",
+      "sources": [
+        {
+          "path": "wiki/host-acceptance.md"
         }
       ]
     },

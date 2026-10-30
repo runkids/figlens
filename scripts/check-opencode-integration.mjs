@@ -1,7 +1,7 @@
 // Real OpenCode server and native UI against the packaged entries; never starts a model.
 import assert from 'node:assert/strict';
-import { execFile, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { execFile, execFileSync, spawn } from 'node:child_process';
+import { existsSync, renameSync, writeFileSync } from 'node:fs';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
@@ -199,6 +199,7 @@ try {
   async function converse(title, next, permissions = allowAll) {
     lane(next);
     const conversation = await client.session.create({ location, title, permissions });
+    converse.session = conversation.id;
     await client.session.switchModel({ sessionID: conversation.id, model: { id: 'scripted', providerID: 'figlens-scripted' } });
     await client.session.prompt({ sessionID: conversation.id, text: title });
     await client.session.wait({ sessionID: conversation.id }, { signal: AbortSignal.timeout(60000) })
@@ -350,6 +351,51 @@ try {
     assert.equal(acked?.advanced, true, (scripted.raw[12] ?? '').slice(0, 500));
     assert.deepEqual(after?.revisions, [], (scripted.raw[13] ?? '').slice(0, 500));
     return { pages: [first.results[0].ref.nodeId, second.results[0].ref.nodeId], refused: 'unknown relation', trackedBaselineAcked: true, usedBy: used.results.map(item => item.ref.nodeId), deepIdBytes: deepId.length, mcp: status.mcp.reason, before: before.state, job: job.state, ref: found.results[0].ref, inspected: node.node.id, tools: scripted.tools.filter(name => /^figlens_/.test(name)) };
+  });
+  await check('with a disabled MCP override figlens_watch holds a lease per session that records a save, and only its session, deletion or a reload ends it', async () => {
+    const cli = args => JSON.parse(execFileSync(binary, args, { cwd: project, env, encoding: 'utf8' }));
+    const { workspaceId } = cli(['index', 'status', '--file', fixture]);
+    const recorded = () => cli(['changes', '--id', workspaceId, '--scope', '0:1']).revisions.filter(revision => revision.kind === 'changes').length;
+    const active = () => cli(['watch', 'status', '--id', workspaceId]).leases.filter(lease => lease.state === 'active');
+    const until = async (what, done) => {
+      for (const start = Date.now(); !done(); await new Promise(resolve => setTimeout(resolve, 100)))
+        assert.ok(Date.now() - start < 15000, `timed out waiting for ${what}`);
+    };
+    const start = () => direct('figlens_watch', { action: 'start', workspaceId, scope: '0:1' });
+    const original = await readFile(fixture);
+    const before = recorded();
+    try {
+      const [denied] = await converse('Watch the review frame.', [start], [...allowAll, { action: 'read', resource: '*', effect: 'deny' }]);
+      assert.deepEqual(active(), [], `a denied read starts no lease: ${JSON.stringify(denied).slice(0, 500)}`);
+      const [status] = await converse('Show the watch status.', [() => direct('figlens_watch', { action: 'status', workspaceId })],
+        [...allowAll, { action: 'edit', resource: '*', effect: 'deny' }]);
+      assert.ok(Array.isArray(status?.leases), `status needs no edit: ${JSON.stringify(status).slice(0, 500)}`);
+      // One session: start, a save the runner records with no index call, the plugin's changes, then its own stop.
+      const [lease, , seen, stopped] = await converse('Watch the review frame while I save.', [start, held => {
+        if (held?.state !== 'active') return null;
+        writeFileSync(`${fixture}.next`, Buffer.concat([original, Buffer.alloc(16)]));
+        renameSync(`${fixture}.next`, fixture);
+        for (const start = Date.now(); recorded() === before && Date.now() - start < 15000;) execFileSync('/bin/sleep', ['0.1']);
+        return direct('figlens_watch', { action: 'status', workspaceId });
+      }, () => direct('figlens_changes', { workspaceId, scope: '0:1' }), held => direct('figlens_watch', { action: 'stop', leaseId: held.leaseId })]);
+      assert.equal(lease?.state, 'active', JSON.stringify(lease));
+      assert.equal(seen?.revisions?.filter(revision => revision.kind === 'changes').length, before + 1, JSON.stringify(seen).slice(0, 500));
+      assert.deepEqual(stopped, { leaseId: lease.leaseId, state: 'ended', reason: 'released' });
+      // Another session cannot stop a lease it did not start; deleting the owner releases it.
+      const [owned] = await converse('Watch the review frame.', [start]);
+      const owner = converse.session;
+      const [refused] = await converse('Stop that watch.', [() => direct('figlens_watch', { action: 'stop', leaseId: owned.leaseId })]);
+      assert.match(JSON.stringify(refused), /not a lease this session holds/);
+      assert.deepEqual(active().map(lease => lease.leaseId), [owned.leaseId]);
+      await client.session.remove({ sessionID: owner });
+      await until('the deleted session to release its lease', () => !active().length);
+      // A reload disposes the plugin, which releases every lease it held.
+      const [reloaded] = await converse('Watch the review frame.', [start]);
+      assert.equal(reloaded?.state, 'active', JSON.stringify(reloaded));
+      await client.location.reload();
+      await until('the reload to release its lease', () => !active().length);
+      return { deniedReadStartsNothing: true, statusWithoutEdit: true, saveRecorded: true, ownStop: stopped.reason, otherSessionRefused: true, deletionReleases: true, reloadReleases: true };
+    } finally { await writeFile(fixture, original); }
   });
 } finally {
   provider.close();
