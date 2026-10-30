@@ -1871,7 +1871,7 @@ fn stored_facets_keep_a_readable_value_and_charge_text_metadata_and_value() {
         (facets.fields[0].value.clone(), spent),
         (
             Some(serde_json::json!(12)),
-            text.len() + 64 + "fontSize".len() + 2
+            text.len() + FIELD_META + "fontSize".len() + held_value(&serde_json::json!(12), 2)
         )
     );
 }
@@ -1879,8 +1879,9 @@ fn stored_facets_keep_a_readable_value_and_charge_text_metadata_and_value() {
 #[test]
 fn stored_facets_charge_a_kept_value_after_its_metadata() {
     let text = format!(r#"[["fontSize","{}",12]]"#, "a".repeat(64));
-    // Text and metadata fit; the value's two bytes do not.
-    let mut spent = BYTES - text.len() - 64 - "fontSize".len() - 1;
+    // Text and metadata fit; the value does not.
+    let held = held_value(&serde_json::json!(12), 2);
+    let mut spent = BYTES - text.len() - FIELD_META - "fontSize".len() - held + 1;
     let err = decode(&text, &mut spent).err().unwrap();
     assert_eq!(
         err.downcast_ref::<FigError>().map(FigError::kind),
@@ -1890,7 +1891,7 @@ fn stored_facets_charge_a_kept_value_after_its_metadata() {
 
 #[test]
 fn stored_facets_charge_their_text_then_each_field_as_the_live_build_does() {
-    // Once the text is paid for, nothing is left for the field's 64 bytes plus key.
+    // Once the text is paid for, nothing is left for the field's metadata plus key.
     let text = r#"[["fontSize",null]]"#;
     let mut spent = BYTES - text.len();
     let err = decode(text, &mut spent).err().unwrap();

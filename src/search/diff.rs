@@ -1759,12 +1759,12 @@ fn decode(text: &str, spent: &mut usize) -> Result<Facets, Box<dyn Error>> {
         if row.len() > 2 || (digest.is_none() && value.is_some()) {
             return Err(bad());
         }
-        super::store::charge_query(spent, 64 + key.len())?;
+        super::store::charge_query(spent, FIELD_META + key.len())?;
         if let Some(v) = &value {
-            // Counted as the live build counts a kept value, without a serialized copy.
+            // Charged as the live build charges a kept value, measured without a copy.
             let mut kept = Counted(0);
             serde_json::to_writer(&mut kept, v)?;
-            super::store::charge_query(spent, kept.0)?;
+            super::store::charge_query(spent, held_value(v, kept.0))?;
         }
         fields.push(Field {
             key,
