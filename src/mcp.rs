@@ -323,16 +323,18 @@ impl AdmittedCall {
         self.local().filter(|_| {
             !matches!(
                 self.call.name(),
-                "search" | "usages" | "diff" | "index" | "jobs" | "changes" | "watch"
+                "search" | "usages" | "diff" | "index" | "jobs" | "models" | "changes" | "watch"
             )
         })
     }
 
     /// Whether this call reads or changes a workspace rather than a design file.
     fn workspace(&self) -> bool {
-        matches!(self.call.name(), "index" | "jobs" | "changes" | "watch")
-            || (matches!(self.call.name(), "search" | "usages")
-                && self.call.string("workspaceId").is_some())
+        matches!(
+            self.call.name(),
+            "index" | "jobs" | "models" | "changes" | "watch"
+        ) || (matches!(self.call.name(), "search" | "usages")
+            && self.call.string("workspaceId").is_some())
     }
 
     /// Runs a workspace call; the jobs an index call submitted for this process come back
@@ -347,6 +349,7 @@ impl AdmittedCall {
             self.recheck(roots)?;
             match self.call.name() {
                 "jobs" => command::jobs_tool(&self.call, roots, storage_roots),
+                "models" => command::models_tool(&self.call, roots),
                 "changes" | "watch" => command::changes_tool(&self.call, roots, storage_roots),
                 "search" => command::workspace_search_tool(&self.call, roots, storage_roots),
                 "usages" => command::workspace_usages_tool(&self.call, roots, storage_roots),

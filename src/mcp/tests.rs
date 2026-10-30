@@ -70,6 +70,7 @@ fn mcp_lists_every_tool() {
             "export",
             "index",
             "jobs",
+            "models",
             "changes",
             "watch"
         ]
@@ -90,7 +91,7 @@ fn mcp_declares_output_schemas_for_json_results() {
         with_schema,
         [
             "find", "search", "usages", "diff", "inspect", "bundle", "verify", "export", "index",
-            "jobs", "changes", "watch"
+            "jobs", "models", "changes", "watch"
         ]
     );
 }
@@ -591,4 +592,19 @@ fn mcp_reports_a_failed_call_as_a_tool_error() {
     )
     .unwrap();
     assert_eq!(reply["result"]["isError"], true);
+}
+
+#[test]
+fn mcp_models_configure_refuses_a_model_dir_outside_roots() {
+    let dir = test_support::TestDir::new();
+    let inside = dir.join("inside");
+    std::fs::create_dir(&inside).unwrap();
+    let roots = [inside.canonicalize().unwrap()];
+    let input = serde_json::json!({"id": 1, "method": "tools/call", "params": {"name": "models",
+        "arguments": {"action": "configure", "profile": "bge-m3", "modelDir": dir.join("").canonicalize().unwrap()}}});
+    let mut out = Vec::new();
+    serve(std::io::Cursor::new(input.to_string()), &mut out, &roots).unwrap();
+    let reply: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(reply["result"]["isError"], true);
+    assert!(reply.to_string().contains("permission_denied"), "{reply}");
 }

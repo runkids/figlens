@@ -487,6 +487,30 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
         ],
     ),
     (
+        "models",
+        "Local text model profiles for semantic and hybrid search. list shows the documented profiles with model, revision, license and the files each needs; status reports each configured profile ready or unavailable with the reason, or the setup steps when none is configured; configure checks a model directory the user already downloaded against pinned SHA-256 digests, starts the figlens-embed shipped beside figlens once offline and records the profile; remove forgets the profile and keeps its files. Nothing is downloaded and no design text leaves the machine.",
+        &[
+            (
+                "action",
+                "string",
+                true,
+                "list, status, configure or remove",
+            ),
+            (
+                "profile",
+                "string",
+                false,
+                "configure and remove: a profile name from list",
+            ),
+            (
+                "modelDir",
+                "string",
+                false,
+                "configure: the local directory holding the profile's files, inside the server's roots",
+            ),
+        ],
+    ),
+    (
         "changes",
         "Recorded design changes of the scopes index track follows; never writes or builds. A query subscription's subscriptionId instead pages its stored search evaluations (evaluations, evaluation, tracking; no revision pages); ack them the same way. Its evaluation is current, current_for_index (the file changed or is gone since that index: refresh, then evaluate), pending with an evaluate step, or unavailable (also when its last evaluate at this publication failed, with that reason, until a later publication); a stored evaluation too large or damaged to page fails with a recovery that acks past it. Each revision is one published build of a tracked scope: kind baseline (tracking started, or nothing comparable before it, with a reason: tracking_started, tracking_changed, previous_changed, previous_untracked, previous_unpublished, facet_version_changed, or index_version_changed when the previous build used other index versions, such as relations before library references) or changes, with coverage, exact summary counts per change kind and facet, and detail complete, truncated or expired. A changes revision's impact says which layers its changes reach: complete, reasons with counts (impact_truncated: layers left out of its detail) and listed, the count per class (direct, effective, effective_unchanged, possible; a class judges the layer's own fields, not its children, which have their own changes) of the layers its detail listed when recorded, never a total (an expired detail no longer keeps them); it is null for a baseline or a revision recorded before impact, never an empty complete one. A node subscription also reads revisions whose changes reach that layer or a layer of that top-level frame, or whose impact is incomplete. Pages run oldest first after cursor, else after the consumer's checkpoint (moved by watch ack), else from the oldest kept. Pass revision to page that revision's changed nodes, then the layers its impact lists, instead; each entry's entry field says which (change or impact). tracking lists each tracked scope's state, lastRevisionId and refreshRequired (the file changed since its last build: refresh the scope to record it; an empty page never proves the file unchanged); monitor is the watch monitor, separate from tracking. A cursor is bound to the filters, the visible sources and the workspace incarnation: any other use is cursor_stale. event_gap means retention deleted revisions before they were read: follow its recovery and treat the scope as possibly changed.",
         &[
@@ -694,6 +718,15 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "paths": {"type": ["object", "null"], "description": "workspace, database and lock paths (the lock sits beside the workspace directory); null when the workspace does not exist"},
             }),
             ["workspaceId", "state"].as_slice(),
+        ),
+        "models" => (
+            serde_json::json!({
+                "profiles": {"type": "array", "items": {"type": "object"}, "description": "list: name, model, revision, license, files, configured, profileId, dataFlow; status: name, profileId, model, runtime, dim, state ready or unavailable, reason"},
+                "setup": {"type": "array", "items": {"type": "object"}, "description": "status with no profile configured: the steps to configure one"},
+                "configured": {"type": "object", "description": "configure: the recorded profile and its profileId"},
+                "removed": {"type": "boolean"},
+            }),
+            [].as_slice(),
         ),
         "jobs" => (
             serde_json::json!({
@@ -926,6 +959,9 @@ pub fn property(tool: &str, param: &Param) -> Value {
     if tool == "jobs" && key == "action" {
         p["enum"] = json!(["status", "cancel"]);
     }
+    if tool == "models" && key == "action" {
+        p["enum"] = json!(["list", "status", "configure", "remove"]);
+    }
     if tool == "watch" && key == "action" {
         p["enum"] = json!([
             "start",
@@ -1157,6 +1193,9 @@ pub fn tools() -> Value {
                 "idempotentHint": false, "openWorldHint": false}),
             // cancel changes a job.
             "jobs" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": false,
+                "openWorldHint": false}),
+            // remove forgets a configured profile.
+            "models" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": true,
                 "openWorldHint": false}),
             "changes" => tool["annotations"] = json!({"readOnlyHint": true, "openWorldHint": false}),
             // unsubscribe and forget delete checkpoints; start makes a new lease each time.

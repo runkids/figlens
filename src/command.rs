@@ -1031,6 +1031,49 @@ pub fn workspace_search_tool(
     })
 }
 
+/// MCP `models`. configure runs only the figlens-embed shipped beside figlens, never a
+/// client-chosen program, on a model directory inside the server's roots.
+pub fn models_tool(
+    call: &crate::contract::PreparedCall,
+    roots: &[PathBuf],
+) -> Result<Output, Box<dyn Error>> {
+    use figlens::semantic::profile;
+    let storage = figlens::workspace::storage(None)?;
+    let needs = |key: &str| {
+        call.string(key).ok_or_else(|| {
+            figlens::FigError::new(
+                figlens::ErrorKind::InvalidArguments,
+                format!(
+                    "models {} needs {key}",
+                    call.string("action").unwrap_or_default()
+                ),
+            )
+        })
+    };
+    let value = match call.string("action").unwrap() {
+        "list" => profile::list(&storage)?,
+        "status" => profile::status(&storage)?,
+        "configure" => {
+            let known = profile::known(needs("profile")?)?;
+            let dir = std::fs::canonicalize(needs("modelDir")?)?;
+            if !roots.is_empty() && !roots.iter().any(|r| dir.starts_with(r)) {
+                return Err(figlens::FigError::new(
+                    figlens::ErrorKind::PermissionDenied,
+                    "modelDir is outside the server's roots",
+                )
+                .into());
+            }
+            let never = std::sync::atomic::AtomicBool::new(false);
+            profile::configure(&storage, known, &dir, None, &never)?
+        }
+        _ => profile::remove(&storage, needs("profile")?)?,
+    };
+    Ok(Output::Json {
+        value,
+        pretty: false,
+    })
+}
+
 /// MCP `jobs`: status or cancel of one job.
 pub fn jobs_tool(
     call: &crate::contract::PreparedCall,
