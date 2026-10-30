@@ -3118,12 +3118,14 @@ fn an_unreadable_set_reads_as_disabled_and_only_a_caller_seeing_every_source_rem
     let d = TestDir::new();
     let (storage, select, conn, srcs) = library_workspace(&d, 2);
     let narrow = storage.clone().confined(std::slice::from_ref(&srcs[0].0));
-    // Not JSON, not an array, more members than a set holds, more bytes than it takes.
+    // Not JSON, not an array, more members than a set holds, more bytes than it takes, and a
+    // lone surrogate SQLite's JSON accepts but serde refuses.
     let damaged = [
         "not json".to_owned(),
         json!({"m": srcs[0].1}).to_string(),
         json!(vec![srcs[0].1.clone(); 11]).to_string(),
         json!(["s".repeat(5000)]).to_string(),
+        r#"["\ud800"]"#.to_owned(),
     ];
     let subs: Vec<String> = damaged
         .iter()
@@ -3172,8 +3174,8 @@ fn an_unreadable_set_reads_as_disabled_and_only_a_caller_seeing_every_source_rem
         (unseen, listed, removed),
         (
             (json!([]), true),
-            vec![json!(["disabled", null, {"reason": "sources_unreadable"}]); 4],
-            vec![json!(1); 4]
+            vec![json!(["disabled", null, {"reason": "sources_unreadable"}]); 5],
+            vec![json!(1); 5]
         )
     );
 }

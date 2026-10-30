@@ -70,14 +70,15 @@ impl Sub {
 pub(crate) const SET: &str = "*";
 
 /// The most a stored set takes; past it, or as anything but an array of at most
-/// `query::QUERY_SOURCES` sourceIds, it is unreadable.
+/// `query::QUERY_SOURCES` sourceIds, it is unreadable. A written set never holds a JSON escape
+/// (sourceIds are hex), so one makes it unreadable too: SQLite's JSON and serde disagree on some.
 const SET_BYTES: usize = 4096;
 /// The disabled reason an unreadable set reads with: nothing of its members is emitted.
 const UNREADABLE: &str = r#"{"reason":"sources_unreadable"}"#;
 
 /// A stored set as read: `None` when it is unreadable.
 pub(super) fn members(text: Option<String>) -> Option<Vec<String>> {
-    text.filter(|t| t.len() <= SET_BYTES)
+    text.filter(|t| t.len() <= SET_BYTES && !t.contains('\\'))
         .and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok())
         .filter(|m| m.len() <= query::QUERY_SOURCES)
 }
@@ -85,7 +86,8 @@ pub(super) fn members(text: Option<String>) -> Option<Vec<String>> {
 /// SQL: whether column `col` holds a set [`members`] reads.
 pub(super) fn readable(col: &str) -> String {
     format!(
-        "CASE WHEN length(CAST({col} AS BLOB)) <= {SET_BYTES} AND json_valid({col})
+        "CASE WHEN length(CAST({col} AS BLOB)) <= {SET_BYTES} AND instr({col}, char(92)) = 0
+         AND json_valid({col})
          THEN json_type({col}) = 'array' AND json_array_length({col}) <= {}
          AND NOT EXISTS (SELECT 1 FROM json_each({col}) WHERE type <> 'text') ELSE 0 END",
         query::QUERY_SOURCES
