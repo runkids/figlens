@@ -3273,6 +3273,115 @@ fn a_frame_subscription_reads_a_complete_revision_that_reaches_it_only_through_i
     );
 }
 
+/// Follows each node, replaces the file with `write`'s output and refreshes; then how many
+/// revisions each subscription reads, the newest revision's stored entries and the old and new
+/// top-level frames stored for its impact hit on `0:42`.
+fn follow_through(
+    env: &Env,
+    nodes: &[&str],
+    write: fn(&std::ffi::OsStr) -> Result<(), Box<dyn std::error::Error>>,
+) -> (Vec<usize>, Value, Value) {
+    let t = Tracked::new(env);
+    let subs: Vec<String> = nodes.iter().map(|n| t.subscribe(&["--node", n])).collect();
+    let next = env.dir.join("next.fig");
+    write(next.as_os_str()).unwrap();
+    std::fs::rename(&next, &t.path).unwrap();
+    t.index("refresh");
+    let counts = subs
+        .iter()
+        .map(|s| {
+            t.changes(&["--subscription", s])["revisions"]
+                .as_array()
+                .unwrap()
+                .len()
+        })
+        .collect();
+    let all = t.changes(&[]);
+    let id = all["revisions"].as_array().unwrap().last().unwrap()["revisionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let frames = rusqlite::Connection::open(&t.db)
+        .unwrap()
+        .query_row(
+            "SELECT json_array(old_frame, new_frame) FROM revision_impacts WHERE node = '0:42'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .map_or(Value::Null, |f| serde_json::from_str(&f).unwrap());
+    (
+        counts,
+        t.changes(&["--revision", &id, "--limit", "500"]),
+        frames,
+    )
+}
+
+fn impact_entry(detail: &Value, id: &str) -> Value {
+    detail["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["entry"] == "impact" && n["id"] == id)
+        .map_or(Value::Null, |n| json!([n["class"], n["sides"]]))
+}
+
+#[test]
+fn node_subscriptions_follow_a_component_child_change_to_the_instance_and_its_frame() {
+    let env = Env::new();
+    // The Dot child changes; neither chip overrides it. Frame 0:1 and layer 0:12 are unrelated.
+    let (counts, detail, _) = follow_through(
+        &env,
+        &["0:41", "0:4", "0:1", "0:12"],
+        corpus::write_dot_restyled,
+    );
+    assert_eq!(
+        (counts, impact_entry(&detail, "0:41")),
+        (
+            vec![1, 1, 0, 0],
+            json!(["effective_unchanged", ["old", "new"]])
+        ),
+        "{detail}"
+    );
+}
+
+#[test]
+fn a_removed_instance_keeps_its_old_frame_and_its_own_subscription_reading_the_revision() {
+    let env = Env::new();
+    // Chip 0:42 is gone from the new file: its link to the component exists on the old side
+    // only. Its removal leaves the appearance verdict unknown, so the impact is incomplete and
+    // every node subscription reads the revision (0:12), as it cannot be ruled out.
+    let (counts, detail, frames) = follow_through(
+        &env,
+        &["0:4", "0:42", "0:12"],
+        corpus::write_dot_restyled_chip_removed,
+    );
+    assert_eq!(
+        (counts, impact_entry(&detail, "0:42"), frames),
+        (
+            vec![1, 1, 1],
+            json!(["direct", ["old"]]),
+            json!(["0:4", null])
+        ),
+        "{detail}"
+    );
+}
+
+#[test]
+fn only_the_frames_holding_an_affected_instance_on_either_side_read_a_component_change() {
+    let env = Env::new();
+    // Chip 0:42 moves from Components (0:4) into Effects (0:3).
+    let (counts, detail, frames) = follow_through(
+        &env,
+        &["0:1", "0:2", "0:3", "0:4"],
+        corpus::write_dot_restyled_chip_moved,
+    );
+    assert_eq!(
+        (counts, frames),
+        (vec![0, 0, 1, 1], json!(["0:4", "0:3"])),
+        "{detail}"
+    );
+}
+
 #[test]
 fn a_node_subscription_reads_revisions_whose_impact_reaches_that_node_or_is_incomplete() {
     let env = Env::new();
