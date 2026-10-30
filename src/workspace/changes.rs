@@ -52,7 +52,8 @@ fn view(storage: &Storage, ws: &Opened, req: &Request) -> Result<View> {
         scope.as_deref().unwrap_or(""),
         crate::search::hex(&Sha256::digest(sources.join("\u{1f}")))
     );
-    let key = match ws.version >= SCHEMA {
+    // Schema 4 introduced change tracking; a read never upgrades.
+    let key = match ws.version >= 4 {
         true => Some(
             ws.conn
                 .query_row(
@@ -264,6 +265,8 @@ fn gap(conn: &Connection, v: &View) -> Box<dyn Error> {
 /// with `revision` one page of that revision's changed nodes. Never writes.
 pub fn changes(storage: &Storage, select: &Select, req: &Request) -> Result<Json> {
     let (_, ws) = opened(storage, select, false)?;
+    // Visible sources and every row read come from one registry snapshot.
+    let tx = ws.conn.unchecked_transaction().map_err(sql)?;
     let v = view(storage, &ws, req)?;
     if v.key.is_none() {
         // A workspace from before change tracking has nothing recorded.
@@ -275,7 +278,6 @@ pub fn changes(storage: &Storage, select: &Select, req: &Request) -> Result<Json
             "hasMore": false, "tracking": [], "monitor": {"state": "inactive"}}),
         );
     }
-    let tx = ws.conn.unchecked_transaction().map_err(sql)?;
     match req.revision {
         Some(revision) => detail(&tx, &v, req, revision),
         None => poll(&tx, &v, req),
@@ -547,13 +549,13 @@ pub fn ack(storage: &Storage, select: &Select, req: &Request) -> Result<Json> {
             "pass cursor: the nextCursor of the last changes page handled",
         )
     })?;
-    let (_, mut ws) = opened(storage, select, true)?;
+    let (_, ws) = opened(storage, select, true)?;
+    // The write lock is taken first, so visibility and the write share one snapshot.
+    let tx =
+        rusqlite::Transaction::new_unchecked(&ws.conn, rusqlite::TransactionBehavior::Immediate)
+            .map_err(sql)?;
     let v = view(storage, &ws, req)?;
     let (id, held) = read_position(&v, text)?;
-    let tx = ws
-        .conn
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(sql)?;
     let seq = position(&tx, &v, &id)?;
     let before: Option<(i64, i64)> = tx
         .query_row(

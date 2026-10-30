@@ -533,6 +533,36 @@ fn usages_agree_stateless_over_mcp_and_from_a_prepared_scope_and_reject_a_stale_
 }
 
 #[test]
+fn a_schema_3_workspace_serves_usages_and_empty_changes_without_upgrading() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    let prepared = env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let db = prepared["paths"]["database"].as_str().unwrap().to_owned();
+    let version = || -> i64 {
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap()
+    };
+    // As the release before change tracking left it: relations, no tracking tables.
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE tracking; DROP TABLE facet_sets; DROP TABLE facets;
+             DROP TABLE revisions; DROP TABLE revision_changes; DROP TABLE consumers;
+             PRAGMA user_version = 3;",
+        )
+        .unwrap();
+    let usages = env.json(&["usages", "--file", file, "0:1", "--relation", "contains"]);
+    let changes = env.json(&["changes", "--file", file]);
+    assert_eq!(
+        (ids(&usages), changes["revisions"].clone(), version()),
+        (vec!["0:2"], json!([]), 3)
+    );
+}
+
+#[test]
 fn usages_of_a_scope_not_ready_report_its_state_next_step_and_null_fields() {
     let env = Env::new();
     let fig = env.fig("a.fig");
@@ -2090,6 +2120,94 @@ fn tracking_during_a_build_that_read_it_off_is_refused_and_tracking_after_builds
             state["tracking"][0]["state"].clone()
         ),
         (true, json!("succeeded"), json!("active"))
+    );
+}
+
+#[test]
+fn tracking_after_a_build_s_owner_died_takes_the_build_over_as_the_baseline() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let gate = env.gate("write.hold");
+    let mut owner = env.spawn(
+        &["index", "rebuild", "--file", file],
+        Some(("write", &gate)),
+    );
+    let job = active_job(&env, &fig, "write");
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    wait_for("the orphaned worker to exit", || {
+        !worker_running(&env, &job)
+    });
+    std::fs::remove_file(&gate).unwrap();
+    // Stored as running though nobody runs it: waiting would never end.
+    let tracked = env.json(&["index", "track", "--file", file, "--scope", "0:0"]);
+    let state = env.json(&["index", "track", "--file", file, "--scope", "0:0"]);
+    assert_eq!(
+        (
+            tracked["jobs"][0]["state"].clone(),
+            state["tracking"][0]["state"].clone()
+        ),
+        (json!("succeeded"), json!("active"))
+    );
+}
+
+#[test]
+fn a_track_request_id_used_by_a_rebuild_is_refused_before_tracking_changes() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let scope = ["--scope", "0:0"];
+    env.json(
+        &[
+            &["index", "rebuild", "--file", file][..],
+            &scope,
+            &["--request-id", "x"],
+        ]
+        .concat(),
+    );
+    let refused = env.run(
+        &[
+            &["index", "track", "--file", file][..],
+            &scope,
+            &["--request-id", "x"],
+        ]
+        .concat(),
+    );
+    let untouched = env.json(&["index", "untrack", "--file", file, "--scope", "0:0"]);
+    let tracked = env.json(
+        &[
+            &["index", "track", "--file", file][..],
+            &scope,
+            &["--request-id", "y"],
+        ]
+        .concat(),
+    );
+    let replayed = env.json(
+        &[
+            &["index", "track", "--file", file][..],
+            &scope,
+            &["--request-id", "y"],
+        ]
+        .concat(),
+    );
+    assert_eq!(
+        (
+            String::from_utf8_lossy(&refused.stderr).contains("used for a different request"),
+            untouched["tracking"][0]["state"].clone(),
+            tracked["tracking"][0]["state"].clone(),
+            tracked["jobs"][0]["state"].clone(),
+            replayed["tracking"][0]["state"].clone(),
+        ),
+        (
+            true,
+            json!("untracked"),
+            json!("baseline_pending"),
+            json!("succeeded"),
+            json!("active")
+        )
     );
 }
 

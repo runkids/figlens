@@ -367,6 +367,25 @@ fn fingerprint(kind: &str, ws: &str, source: &str, membership: &str, scope: &str
         .to_owned()
 }
 
+/// The job and fingerprint `request` was first used for, if any.
+fn requested(tx: &Connection, request: &str) -> Result<Option<(String, String)>> {
+    tx.query_row(
+        "SELECT job_id, fingerprint FROM jobs WHERE request_id = ?1
+         UNION ALL SELECT job_id, fingerprint FROM requests WHERE request_id = ?1",
+        [request],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+    .map_err(sql)
+}
+
+fn other_request(request: &str) -> Box<dyn Error> {
+    fail(
+        ErrorKind::InvalidArguments,
+        format!("requestId {request} was used for a different request; use a new requestId"),
+    )
+}
+
 /// Records `request_id` for a job it joined or took over, so a retry replays that job.
 fn remember(tx: &Connection, request_id: Option<&str>, print: &str, job_id: &str) -> Result<()> {
     if let Some(request) = request_id {
@@ -390,6 +409,8 @@ pub(crate) fn submit(
     scope: &str,
     request_id: Option<&str>,
 ) -> Result<Submitted> {
+    // A tracking baseline is a rebuild, but its requestId names a different operation.
+    let (op, kind) = (kind, if kind == "track" { "rebuild" } else { kind });
     let dir = ws.held.dir.clone();
     let me = owner(&dir)?;
     let (id, incarnation) = (ws.held.id.clone(), ws.incarnation.clone());
@@ -411,18 +432,9 @@ pub(crate) fn submit(
                 format!("workspace {id} has no source {source_id}"),
             )
         })?;
-    let print = fingerprint(kind, &id, source_id, &membership, scope);
+    let print = fingerprint(op, &id, source_id, &membership, scope);
     if let Some(request) = request_id {
-        let found: Option<(String, String)> = tx
-            .query_row(
-                "SELECT job_id, fingerprint FROM jobs WHERE request_id = ?1
-                 UNION ALL SELECT job_id, fingerprint FROM requests WHERE request_id = ?1",
-                [request],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()
-            .map_err(sql)?;
-        match found {
+        match requested(&tx, request)? {
             Some((job_id, fp)) if fp == print => {
                 tx.commit().map_err(sql)?;
                 return Ok(Submitted {
@@ -431,14 +443,7 @@ pub(crate) fn submit(
                     joined: true,
                 });
             }
-            Some(_) => {
-                return Err(fail(
-                    ErrorKind::InvalidArguments,
-                    format!(
-                        "requestId {request} was used for a different request; use a new requestId"
-                    ),
-                ));
-            }
+            Some(_) => return Err(other_request(request)),
             None => {}
         }
     }
@@ -2260,14 +2265,13 @@ pub fn track(
     scope: &str,
     request_id: Option<&str>,
 ) -> Result<Outcome> {
-    let one = request_id.is_some();
-    let (id, rows, started) = set_tracking(storage, select, source, scope, Some(one))?;
+    let (id, rows, started) = set_tracking(storage, select, source, scope, Some(request_id))?;
     // Only the sources whose baseline is pending build: an active one is not rebuilt.
     let mut done = match started.is_empty() {
         false => submit_all(
             storage,
             select,
-            "rebuild",
+            "track",
             source,
             Some(scope),
             request_id,
@@ -2293,31 +2297,45 @@ pub fn untrack(
     Ok(json!({"workspaceId": id, "tracking": rows}))
 }
 
-/// Sets tracking of `scope` on (`Some`, whose `true` allows one source only, for a requestId's
-/// single job) or off for each chosen source in one transaction, bumping a row's epoch on
-/// every change so work begun under the old state can tell. Turning it on needs the scope
-/// published; returns the sources whose baseline is pending.
+/// Sets tracking of `scope` on (`Some`, with the requestId of its single baseline job, if any)
+/// or off for each chosen source in one transaction, bumping a row's epoch on every change so
+/// work begun under the old state can tell. Turning it on needs the scope published; returns
+/// the sources whose baseline is pending.
 fn set_tracking(
     storage: &Storage,
     select: &Select,
     source: Option<&str>,
     scope: &str,
-    on: Option<bool>,
+    on: Option<Option<&str>>,
 ) -> Result<(String, Json, Vec<String>)> {
-    let (_, mut ws) = opened(storage, select, true)?;
+    let (_, ws) = opened(storage, select, true)?;
+    // The write lock is taken first, so the visible sources come from the snapshot it writes.
+    let tx =
+        rusqlite::Transaction::new_unchecked(&ws.conn, rusqlite::TransactionBehavior::Immediate)
+            .map_err(sql)?;
     let sources = chosen(storage, &ws, source)?;
     // Refused before any write, so no source is left pending without its job.
-    if on == Some(true) && sources.len() > 1 {
+    if matches!(on, Some(Some(_))) && sources.len() > 1 {
         return Err(fail(
             ErrorKind::InvalidArguments,
             "requestId names one job; pass a sourceId and scope with it",
         ));
     }
+    // A requestId first used by another request is refused before tracking changes.
+    if let (Some(Some(request)), [source_id]) = (on, sources.as_slice()) {
+        let membership: String = tx
+            .query_row(
+                "SELECT membership FROM sources WHERE source_id = ?1",
+                [source_id],
+                |r| r.get(0),
+            )
+            .map_err(sql)?;
+        let print = fingerprint("track", &ws.held.id, source_id, &membership, scope);
+        if requested(&tx, request)?.is_some_and(|(_, fp)| fp != print) {
+            return Err(other_request(request));
+        }
+    }
     let on = on.is_some();
-    let tx = ws
-        .conn
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(sql)?;
     let (mut rows, mut started) = (Vec::new(), Vec::new());
     for source_id in &sources {
         let published: bool = tx
@@ -2349,23 +2367,29 @@ fn set_tracking(
         // Only a rebuild that reads tracking on records the baseline: one not yet at parse, where
         // it reads tracking, or one admitted after a pending baseline was enabled (a larger job
         // `seq`, which only grows: never the clock). Any other
-        // running job (a refresh may reuse an unfaceted snapshot) cannot, and joining it would
-        // leave the baseline pending: track after it ends.
-        let busy: Option<String> = match on && pending {
+        // running job with a live owner (a refresh may reuse an unfaceted snapshot) cannot, and
+        // joining it would leave the baseline pending: track after it ends.
+        let busy: Option<(String, String, i64)> = match on && pending {
             true => tx
                 .query_row(
-                    "SELECT j.job_id FROM jobs j LEFT JOIN tracking t ON t.source_id = j.source_id
-                     AND t.scope = j.scope AND t.state = 'baseline_pending'
+                    "SELECT j.job_id, j.owner, j.attempt FROM jobs j LEFT JOIN tracking t
+                     ON t.source_id = j.source_id AND t.scope = j.scope
+                     AND t.state = 'baseline_pending'
                      WHERE j.source_id = ?1 AND j.scope = ?2 AND j.state = 'running'
                      AND NOT (j.kind = 'rebuild' AND (j.stage IN ('stage', 'hash')
                      OR IFNULL(j.seq > t.enabled_seq, 0)))",
                     [source_id, scope],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()
                 .map_err(sql)?,
             false => None,
         };
+        // A build whose owner died never ends by itself: its baseline job takes it over as a
+        // new rebuild attempt instead.
+        let busy = busy
+            .filter(|(job, holder, attempt)| job_alive(&ws.held.dir, holder, job, *attempt))
+            .map(|(job, _, _)| job);
         if let Some(job_id) = busy {
             return Err(FigError::new(
                 ErrorKind::WorkspaceBusy,

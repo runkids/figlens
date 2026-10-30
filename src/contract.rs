@@ -454,7 +454,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "requestId",
                 "string",
                 false,
-                "an idempotency key: repeating a prepare, refresh, rebuild or track of one source and scope with it returns the same job",
+                "an idempotency key: repeating a prepare, refresh, rebuild or track of one source and scope with it returns the same job; one first used for another request (track is its own) is refused",
             ),
             STORAGE,
             (
