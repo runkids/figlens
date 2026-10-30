@@ -1,0 +1,612 @@
+{
+ "layers": [
+  {
+   "concept": "VA1",
+   "group": "A",
+   "lang": "zh",
+   "text": "預訂機票",
+   "frame": "0:100",
+   "node": "0:101"
+  },
+  {
+   "concept": "VA2",
+   "group": "A",
+   "lang": "zh",
+   "text": "取消預訂",
+   "frame": "0:102",
+   "node": "0:103"
+  },
+  {
+   "concept": "VA3",
+   "group": "A",
+   "lang": "zh",
+   "text": "選擇座位",
+   "frame": "0:104",
+   "node": "0:105"
+  },
+  {
+   "concept": "VA4",
+   "group": "A",
+   "lang": "zh",
+   "text": "行李額度",
+   "frame": "0:106",
+   "node": "0:107"
+  },
+  {
+   "concept": "VA5",
+   "group": "A",
+   "lang": "zh",
+   "text": "登機證",
+   "frame": "0:108",
+   "node": "0:109"
+  },
+  {
+   "concept": "VA6",
+   "group": "A",
+   "lang": "zh",
+   "text": "飯店入住時間",
+   "frame": "0:110",
+   "node": "0:111"
+  },
+  {
+   "concept": "VA7",
+   "group": "A",
+   "lang": "zh",
+   "text": "租車",
+   "frame": "0:112",
+   "node": "0:113"
+  },
+  {
+   "concept": "VA8",
+   "group": "A",
+   "lang": "zh",
+   "text": "行程表",
+   "frame": "0:114",
+   "node": "0:115"
+  },
+  {
+   "concept": "VA9",
+   "group": "A",
+   "lang": "zh",
+   "text": "新增行事曆活動",
+   "frame": "0:116",
+   "node": "0:117"
+  },
+  {
+   "concept": "VA10",
+   "group": "A",
+   "lang": "zh",
+   "text": "重複提醒",
+   "frame": "0:118",
+   "node": "0:119"
+  },
+  {
+   "concept": "VA11",
+   "group": "A",
+   "lang": "zh",
+   "text": "播放清單",
+   "frame": "0:120",
+   "node": "0:121"
+  },
+  {
+   "concept": "VA12",
+   "group": "A",
+   "lang": "zh",
+   "text": "下載離線播放",
+   "frame": "0:122",
+   "node": "0:123"
+  },
+  {
+   "concept": "VA13",
+   "group": "A",
+   "lang": "zh",
+   "text": "隨機播放",
+   "frame": "0:124",
+   "node": "0:125"
+  },
+  {
+   "concept": "VA14",
+   "group": "A",
+   "lang": "zh",
+   "text": "睡眠紀錄",
+   "frame": "0:126",
+   "node": "0:127"
+  },
+  {
+   "concept": "VA15",
+   "group": "A",
+   "lang": "zh",
+   "text": "每日步數",
+   "frame": "0:128",
+   "node": "0:129"
+  },
+  {
+   "concept": "VA16",
+   "group": "A",
+   "lang": "zh",
+   "text": "匯出報表",
+   "frame": "0:130",
+   "node": "0:131"
+  },
+  {
+   "concept": "VA17",
+   "group": "A",
+   "lang": "zh",
+   "text": "封存對話",
+   "frame": "0:132",
+   "node": "0:133"
+  },
+  {
+   "concept": "VA18",
+   "group": "A",
+   "lang": "zh",
+   "text": "靜音群組",
+   "frame": "0:134",
+   "node": "0:135"
+  },
+  {
+   "concept": "VA19",
+   "group": "A",
+   "lang": "zh",
+   "text": "轉帳給朋友",
+   "frame": "0:136",
+   "node": "0:137"
+  },
+  {
+   "concept": "VA20",
+   "group": "A",
+   "lang": "zh",
+   "text": "掃描收據",
+   "frame": "0:138",
+   "node": "0:139"
+  },
+  {
+   "concept": "VB1",
+   "group": "B",
+   "lang": "en",
+   "text": "Hotel reservation",
+   "frame": "0:140",
+   "node": "0:141"
+  },
+  {
+   "concept": "VB2",
+   "group": "B",
+   "lang": "en",
+   "text": "Flight delayed",
+   "frame": "0:142",
+   "node": "0:143"
+  },
+  {
+   "concept": "VB3",
+   "group": "B",
+   "lang": "en",
+   "text": "Gate changed",
+   "frame": "0:144",
+   "node": "0:145"
+  },
+  {
+   "concept": "VB4",
+   "group": "B",
+   "lang": "en",
+   "text": "Add to calendar",
+   "frame": "0:146",
+   "node": "0:147"
+  },
+  {
+   "concept": "VB5",
+   "group": "B",
+   "lang": "en",
+   "text": "Snooze alarm",
+   "frame": "0:148",
+   "node": "0:149"
+  },
+  {
+   "concept": "VB6",
+   "group": "B",
+   "lang": "en",
+   "text": "Lyrics",
+   "frame": "0:150",
+   "node": "0:151"
+  },
+  {
+   "concept": "VB7",
+   "group": "B",
+   "lang": "en",
+   "text": "Podcast episodes",
+   "frame": "0:152",
+   "node": "0:153"
+  },
+  {
+   "concept": "VB8",
+   "group": "B",
+   "lang": "en",
+   "text": "Heart rate",
+   "frame": "0:154",
+   "node": "0:155"
+  },
+  {
+   "concept": "VB9",
+   "group": "B",
+   "lang": "en",
+   "text": "Drink water reminder",
+   "frame": "0:156",
+   "node": "0:157"
+  },
+  {
+   "concept": "VB10",
+   "group": "B",
+   "lang": "en",
+   "text": "Split the bill",
+   "frame": "0:158",
+   "node": "0:159"
+  },
+  {
+   "concept": "VB11",
+   "group": "B",
+   "lang": "en",
+   "text": "Currency converter",
+   "frame": "0:160",
+   "node": "0:161"
+  },
+  {
+   "concept": "VB12",
+   "group": "B",
+   "lang": "en",
+   "text": "Travel insurance",
+   "frame": "0:162",
+   "node": "0:163"
+  },
+  {
+   "concept": "VB13",
+   "group": "B",
+   "lang": "en",
+   "text": "Meeting link",
+   "frame": "0:164",
+   "node": "0:165"
+  },
+  {
+   "concept": "VB14",
+   "group": "B",
+   "lang": "en",
+   "text": "Time zone",
+   "frame": "0:166",
+   "node": "0:167"
+  },
+  {
+   "concept": "VB15",
+   "group": "B",
+   "lang": "en",
+   "text": "Unread messages",
+   "frame": "0:168",
+   "node": "0:169"
+  },
+  {
+   "concept": "VB16",
+   "group": "B",
+   "lang": "en",
+   "text": "Pin to top",
+   "frame": "0:170",
+   "node": "0:171"
+  },
+  {
+   "concept": "VB17",
+   "group": "B",
+   "lang": "en",
+   "text": "Mark as read",
+   "frame": "0:172",
+   "node": "0:173"
+  },
+  {
+   "concept": "VB18",
+   "group": "B",
+   "lang": "en",
+   "text": "Weekly summary",
+   "frame": "0:174",
+   "node": "0:175"
+  },
+  {
+   "concept": "VB19",
+   "group": "B",
+   "lang": "en",
+   "text": "Sleep timer",
+   "frame": "0:176",
+   "node": "0:177"
+  },
+  {
+   "concept": "VB20",
+   "group": "B",
+   "lang": "en",
+   "text": "Visa requirements",
+   "frame": "0:178",
+   "node": "0:179"
+  },
+  {
+   "concept": "VC1",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Spotify 歌單同步",
+   "frame": "0:180",
+   "node": "0:181"
+  },
+  {
+   "concept": "VC2",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Uber 叫車",
+   "frame": "0:182",
+   "node": "0:183"
+  },
+  {
+   "concept": "VC3",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Airbnb 訂房",
+   "frame": "0:184",
+   "node": "0:185"
+  },
+  {
+   "concept": "VC4",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Apple Watch 同步",
+   "frame": "0:186",
+   "node": "0:187"
+  },
+  {
+   "concept": "VC5",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Slack 通知整合",
+   "frame": "0:188",
+   "node": "0:189"
+  },
+  {
+   "concept": "VC6",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Netflix 帳號連結",
+   "frame": "0:190",
+   "node": "0:191"
+  },
+  {
+   "concept": "VC7",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Excel 匯出",
+   "frame": "0:192",
+   "node": "0:193"
+  },
+  {
+   "concept": "VC8",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Dropbox 上傳",
+   "frame": "0:194",
+   "node": "0:195"
+  },
+  {
+   "concept": "VC9",
+   "group": "C",
+   "lang": "mixed",
+   "text": "eSIM 安裝",
+   "frame": "0:196",
+   "node": "0:197"
+  },
+  {
+   "concept": "VC10",
+   "group": "C",
+   "lang": "mixed",
+   "text": "5G 網路",
+   "frame": "0:198",
+   "node": "0:199"
+  },
+  {
+   "concept": "VC11",
+   "group": "C",
+   "lang": "mixed",
+   "text": "HDR 相片",
+   "frame": "0:200",
+   "node": "0:201"
+  },
+  {
+   "concept": "VC12",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Face ID 解鎖",
+   "frame": "0:202",
+   "node": "0:203"
+  },
+  {
+   "concept": "VC13",
+   "group": "C",
+   "lang": "mixed",
+   "text": "AirDrop 傳送",
+   "frame": "0:204",
+   "node": "0:205"
+  },
+  {
+   "concept": "VC14",
+   "group": "C",
+   "lang": "mixed",
+   "text": "CSV 匯入",
+   "frame": "0:206",
+   "node": "0:207"
+  },
+  {
+   "concept": "VC15",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Zoom 視訊通話",
+   "frame": "0:208",
+   "node": "0:209"
+  },
+  {
+   "concept": "VC16",
+   "group": "C",
+   "lang": "mixed",
+   "text": "YouTube 影片嵌入",
+   "frame": "0:210",
+   "node": "0:211"
+  },
+  {
+   "concept": "VC17",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Uber Eats 外送",
+   "frame": "0:212",
+   "node": "0:213"
+  },
+  {
+   "concept": "VC18",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Gmail 帳號綁定",
+   "frame": "0:214",
+   "node": "0:215"
+  },
+  {
+   "concept": "VC19",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Podcast 自動下載",
+   "frame": "0:216",
+   "node": "0:217"
+  },
+  {
+   "concept": "VC20",
+   "group": "C",
+   "lang": "mixed",
+   "text": "Google 日曆匯入",
+   "frame": "0:218",
+   "node": "0:219"
+  },
+  {
+   "concept": "VD1",
+   "group": "D",
+   "lang": "en",
+   "text": "Flight on time",
+   "frame": "0:220",
+   "node": "0:221"
+  },
+  {
+   "concept": "VD2",
+   "group": "D",
+   "lang": "zh",
+   "text": "訂房紀錄",
+   "frame": "0:222",
+   "node": "0:223"
+  },
+  {
+   "concept": "VD3",
+   "group": "D",
+   "lang": "zh",
+   "text": "選擇餐點",
+   "frame": "0:224",
+   "node": "0:225"
+  },
+  {
+   "concept": "VD4",
+   "group": "D",
+   "lang": "zh",
+   "text": "鬧鐘音量",
+   "frame": "0:226",
+   "node": "0:227"
+  },
+  {
+   "concept": "VD5",
+   "group": "D",
+   "lang": "zh",
+   "text": "播放速度",
+   "frame": "0:228",
+   "node": "0:229"
+  },
+  {
+   "concept": "VD6",
+   "group": "D",
+   "lang": "zh",
+   "text": "睡眠目標",
+   "frame": "0:230",
+   "node": "0:231"
+  },
+  {
+   "concept": "VD7",
+   "group": "D",
+   "lang": "zh",
+   "text": "匯入聯絡人",
+   "frame": "0:232",
+   "node": "0:233"
+  },
+  {
+   "concept": "VD8",
+   "group": "D",
+   "lang": "en",
+   "text": "Bill paid",
+   "frame": "0:234",
+   "node": "0:235"
+  },
+  {
+   "concept": "VD9",
+   "group": "D",
+   "lang": "zh",
+   "text": "保險理賠進度",
+   "frame": "0:236",
+   "node": "0:237"
+  },
+  {
+   "concept": "VD10",
+   "group": "D",
+   "lang": "en",
+   "text": "Calendar settings",
+   "frame": "0:238",
+   "node": "0:239"
+  },
+  {
+   "concept": "VF1",
+   "group": "F",
+   "lang": "en",
+   "text": "Edit",
+   "frame": "0:240",
+   "node": "0:241"
+  },
+  {
+   "concept": "VF2",
+   "group": "F",
+   "lang": "zh",
+   "text": "編輯",
+   "frame": "0:242",
+   "node": "0:243"
+  },
+  {
+   "concept": "VF3",
+   "group": "F",
+   "lang": "en",
+   "text": "Save",
+   "frame": "0:244",
+   "node": "0:245"
+  },
+  {
+   "concept": "VF4",
+   "group": "F",
+   "lang": "zh",
+   "text": "儲存",
+   "frame": "0:246",
+   "node": "0:247"
+  },
+  {
+   "concept": "VF5",
+   "group": "F",
+   "lang": "en",
+   "text": "Share",
+   "frame": "0:248",
+   "node": "0:249"
+  },
+  {
+   "concept": "VF6",
+   "group": "F",
+   "lang": "zh",
+   "text": "分享",
+   "frame": "0:250",
+   "node": "0:251"
+  }
+ ]
+}

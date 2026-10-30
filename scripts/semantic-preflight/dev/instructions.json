@@ -1,0 +1,21 @@
+{
+ "instructions": [
+  {
+   "id": "i0",
+   "task": "Given a web search query, retrieve relevant passages that answer the query",
+   "source": "the card's default retrieval task"
+  },
+  {
+   "id": "i1",
+   "task": "Given a search query for an app's user interface, retrieve the interface text that has the same meaning, in any language",
+   "source": "written for figlens before any dev run"
+  },
+  {
+   "id": "i2",
+   "task": "Given a description of what a user wants to find or do in an app, retrieve the matching interface label",
+   "source": "written for figlens before any dev run"
+  }
+ ],
+ "format": "Instruct: {task}\\nQuery:{query} (card get_detailed_instruct); documents carry no instruction",
+ "rule": "Pick the candidate passing the most per-category semantic gates of thresholds.json on this dev set (4 categories x 3 metrics); ties by mean semantic MRR, then i0. The pick is committed before the one frozen run."
+}
