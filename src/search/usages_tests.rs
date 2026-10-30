@@ -723,6 +723,113 @@ fn a_page_past_its_scan_cap_is_a_work_limit_not_an_empty_complete_answer() {
 }
 
 #[test]
+fn a_text_range_takes_its_style_from_the_last_row_and_its_paints_from_the_first_painted_row() {
+    let style = |id: u32| obj(vec![("guid", guid(id))]);
+    let paints = |image: u8, var: u32| {
+        K::Array(vec![
+            obj(vec![
+                ("type", K::Enum("PaintType", "IMAGE")),
+                ("image", obj(vec![("hash", K::Bytes(vec![image]))])),
+            ]),
+            obj(vec![
+                ("type", K::Enum("PaintType", "SOLID")),
+                ("colorVar", alias(var)),
+            ]),
+        ])
+    };
+    let row = |sid: u32, fill: Option<(u8, u32)>, text: Option<u32>| {
+        let mut fields = vec![("styleID", K::UInt(sid))];
+        fields.extend(fill.map(|(i, v)| ("fillPaints", paints(i, v))));
+        fields.extend(text.map(|t| ("styleIdForText", style(t))));
+        obj(fields)
+    };
+    let rows = vec![
+        // styleID 1: paints from row 0, the style from row 1.
+        row(1, Some((0xa1, 20)), None),
+        row(1, Some((0xb1, 21)), Some(11)),
+        // styleID 2: row 2 has no paints and is not the last, so row 3 supplies both.
+        row(2, None, Some(12)),
+        row(2, Some((0xc2, 22)), None),
+        // styleID 3 is used by no character.
+        row(3, Some((0xd3, 23)), Some(12)),
+    ];
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(11, Some(1), "TEXT", "Heading", vec![]),
+            node(12, Some(1), "TEXT", "Body", vec![]),
+            node(20, Some(1), "VARIABLE", "A", vec![]),
+            node(21, Some(1), "VARIABLE", "B", vec![]),
+            node(22, Some(1), "VARIABLE", "C", vec![]),
+            node(23, Some(1), "VARIABLE", "D", vec![]),
+            node(
+                3,
+                Some(1),
+                "TEXT",
+                "Label",
+                vec![(
+                    "textData",
+                    obj(vec![
+                        ("characterStyleIDs", K::Array(vec![K::UInt(1), K::UInt(2)])),
+                        ("styleOverrideTable", K::Array(rows)),
+                    ]),
+                )],
+            ),
+        ]),
+    )]);
+    let tree = Tree::new(&message);
+    let mut r = req("0:3");
+    r.outgoing = true;
+    let edges = |work| {
+        // Too little work leaves the node unindexed, which also lists nothing as complete.
+        let Ok(out) = run(&build(&tree, "0:0", bounds(work)), &r) else {
+            return (vec![], json!(false));
+        };
+        let edges: Vec<String> = out["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| format!("{} {} {}", e["relation"], e["target"], e["evidence"]))
+            .collect();
+        (edges, out["coverage"]["complete"].clone())
+    };
+    let (all, complete) = edges(WORK);
+    let rel = |e: &str| all.iter().filter(|x| x.contains(e)).count();
+    assert_eq!(complete, true);
+    assert_eq!(
+        [
+            rel("image:a1"),
+            rel("image:c2"),
+            rel("image:b1"),
+            rel("image:d3")
+        ],
+        [1, 1, 0, 0]
+    );
+    assert_eq!(
+        [
+            rel("VariableID:0:20"),
+            rel("VariableID:0:22"),
+            rel("0:21"),
+            rel("0:23")
+        ],
+        [1, 1, 0, 0]
+    );
+    assert_eq!(rel("uses_style"), 1);
+    assert!(
+        all.iter()
+            .any(|e| e.contains("0:11") && e.contains("[1].styleIdForText"))
+    );
+    assert!(rel("styleOverrideTable[3].fillPaints[0]") == 1);
+    // With too little work the side is partial, never complete with other rows' edges.
+    for work in 0..400 {
+        let (some, complete) = edges(work);
+        assert!(complete == false || some == all, "{work}: {some:?}");
+    }
+}
+
+#[test]
 fn styled_text_and_vector_region_images_and_capped_prototypes_are_kept_or_partial() {
     let table = |b: u8| {
         (
@@ -1536,7 +1643,7 @@ fn only_text_rows_characters_use_lend_their_images_and_paint_bindings() {
                     row(2, image(0x11)),
                     row(4, solid(40)),
                     row(5, solid(41)),
-                    // Two rows of one styleID: the last applies.
+                    // Two rows of one styleID: the first with fills paints, as rendered.
                     row(3, image(0x12)),
                     row(3, image(0x13)),
                 ]),
@@ -1569,8 +1676,8 @@ fn only_text_rows_characters_use_lend_their_images_and_paint_bindings() {
     };
     assert_eq!(users("image:10"), Some(vec!["0:2".to_owned()]));
     assert_eq!(users("image:11"), None);
-    assert_eq!(users("image:12"), None);
-    assert_eq!(users("image:13"), Some(vec!["0:2".to_owned()]));
+    assert_eq!(users("image:12"), Some(vec!["0:2".to_owned()]));
+    assert_eq!(users("image:13"), None);
     assert_eq!(users("VariableID:0:40"), Some(vec!["0:2".to_owned()]));
     assert_eq!(users("VariableID:0:41"), Some(vec![]));
     let mut r = req("0:2");
@@ -1598,8 +1705,8 @@ fn only_text_rows_characters_use_lend_their_images_and_paint_bindings() {
             ),
             (
                 &json!("uses_image"),
-                &json!("image:13"),
-                &json!("textData.styleOverrideTable[5].fillPaints[0]")
+                &json!("image:12"),
+                &json!("textData.styleOverrideTable[4].fillPaints[0]")
             ),
         ]
     );
@@ -1874,5 +1981,50 @@ fn a_hidden_use_before_the_visible_ones_is_reported_by_some_page() {
                 "{target} disk={disk}"
             );
         }
+    }
+}
+
+#[test]
+fn a_row_paint_estimate_pays_for_every_row_even_an_inactive_one() {
+    // Mostly blanked inactive rows, then one with paints: each row is a visit.
+    let mut rows = vec![Json::Null; 1000];
+    rows.push(json!({"fillPaints": [1, 2]}));
+    let mut left = 4;
+    assert_eq!(row_paints([&rows, &[]], &mut left), (0, true));
+    assert_eq!(left, 0);
+    // With room for every row, the paints are estimated after them.
+    let mut left = 2 * VISITS;
+    let (bytes, cut) = row_paints([&[], &rows], &mut left);
+    assert_eq!((bytes > 0, cut, 2 * VISITS - left), (true, false, 1001 + 3));
+}
+
+#[test]
+fn a_field_estimate_with_little_work_left_spends_it_and_stops_the_side() {
+    // The image paint links at once, so only the size estimate walks the 5,000 values.
+    let mut paints = vec![obj(vec![("type", K::Enum("PaintType", "IMAGE"))])];
+    paints.extend(vec![K::Float(0.0); 5000]);
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(
+                2,
+                Some(1),
+                "RECTANGLE",
+                "R",
+                vec![("fillPaints", K::Array(paints))],
+            ),
+        ]),
+    )]);
+    let tree = Tree::new(&message);
+    for work in [1, 100] {
+        let mut b = bounds(work);
+        let mut unread = 0;
+        assert!(effective(&tree, "0:2", None, &mut b, &mut unread, false).is_none());
+        assert_eq!(
+            (b.work, b.stop, unread),
+            (0, Some(crate::expand::Stop::Work), 0)
+        );
     }
 }

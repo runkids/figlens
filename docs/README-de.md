@@ -125,7 +125,7 @@ npx -y @runkids/figlens preview design.fig                        # lokaler View
 npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # Offline-HTML-Snapshot zum Weitergeben an jeden
 ```
 
-Durchsuche Seiten und Layer, suche, miss, inspiziere Layout, Typografie, Variablen und CSS, exportiere jeden Layer, kopiere einen Implementierungs-Prompt oder lade ein Bundle für die Auswahl herunter. Lege einen Screenshot deines Builds über das Design, um beide zu überlagern. Details: [Preview-Anleitung](../wiki/preview.md).
+Durchsuche Seiten und Layer, suche, nutze die gerankte Suche und exakte Verwendungen der Auswahl, miss, inspiziere Layout, Typografie, Variablen und CSS, exportiere jeden Layer, kopiere einen Implementierungs-Prompt oder lade ein Bundle für die Auswahl herunter. Lege einen Screenshot deines Builds über das Design, um beide zu überlagern. Details: [Preview-Anleitung](../wiki/preview.md).
 
 <a id="mcp-and-skill"></a>
 

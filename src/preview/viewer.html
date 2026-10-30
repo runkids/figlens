@@ -26,6 +26,40 @@
     <h2>Pages</h2><div id="pageList"></div><div id="pageResize" class="split" data-for="pageList" role="separator" aria-orientation="horizontal" aria-label="Resize pages list" tabindex="0"></div><select id="pages" hidden></select>
     <output id="searchStatus" role="status"></output>
     <h2>Search results</h2><div id="overview"></div><div id="frameResize" class="split" data-for="overview" role="separator" aria-orientation="horizontal" aria-label="Resize search results" tabindex="0"></div>
+    <details id="relPanel" class="rel">
+      <summary>Ranked search and usages</summary>
+      <div id="relTabs" role="tablist" aria-label="Search mode">
+        <button type="button" role="tab" id="tab-ranked" aria-controls="panel-ranked" aria-selected="true">Ranked search</button>
+        <button type="button" role="tab" id="tab-usages" aria-controls="panel-usages" aria-selected="false" tabindex="-1">Usages (exact)</button>
+      </div>
+      <div role="tabpanel" id="panel-ranked" aria-labelledby="tab-ranked" aria-busy="false" data-state="idle">
+        <form id="rankedForm" class="rel-form">
+          <label>Query <input id="rankedQuery" type="search" autocomplete="off"></label>
+          <label>Types (none = all) <select id="rankedTypes" multiple size="3"></select></label>
+          <label><input id="rankedHidden" type="checkbox"> Include hidden</label>
+          <label><input id="rankedInternal" type="checkbox"> Include internal</label>
+          <label><input id="rankedSelection" type="checkbox"> Current selection only (default: whole file)</label>
+          <button id="rankedGo" type="submit">Search</button>
+        </form>
+        <p id="rankedNote" hidden>Searching the packaged scope only — absence here says nothing about the rest of the file</p>
+        <output id="rankedStatus" role="status" aria-live="polite"></output>
+        <button id="rankedRetry" type="button" hidden>Retry</button>
+        <div id="rankedList"></div>
+        <button id="rankedMore" type="button" hidden>Load more</button>
+      </div>
+      <div role="tabpanel" id="panel-usages" aria-labelledby="tab-usages" aria-busy="false" data-state="idle" hidden>
+        <div class="rel-form">
+          <button id="usagesGo" type="button">Find usages of selection</button>
+          <label>Direction <select id="usagesDir"><option value="in">Usages of it (incoming)</option><option value="out">What it uses (outgoing)</option></select></label>
+          <label><input id="usagesHidden" type="checkbox"> Include hidden</label>
+          <fieldset id="usagesRelations"><legend>Relations</legend></fieldset>
+        </div>
+        <output id="usagesStatus" role="status" aria-live="polite"></output>
+        <button id="usagesRetry" type="button" hidden>Retry</button>
+        <div id="usagesList"></div>
+        <button id="usagesMore" type="button" hidden>Load more</button>
+      </div>
+    </details>
     <h2>Layers</h2><div id="tree"></div>
   </aside>
   <section id="workspace" aria-label="Design canvas">

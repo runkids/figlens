@@ -125,7 +125,7 @@ npx -y @runkids/figlens preview design.fig                        # ローカル
 npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 誰にでも送れるオフライン HTML スナップショット
 ```
 
-ページとレイヤーの閲覧、検索、計測、レイアウト・タイポグラフィ・variables・CSS の確認、任意のレイヤーのエクスポート、実装プロンプトのコピー、選択範囲の bundle のダウンロードができます。作成した画面のスクリーンショットをドロップすると、デザインに重ねて比較できます。詳細：[preview ガイド](../wiki/preview.md)。
+ページとレイヤーの閲覧、検索、ランク付き検索と選択範囲の正確な使用箇所（usages）の確認、計測、レイアウト・タイポグラフィ・variables・CSS の確認、任意のレイヤーのエクスポート、実装プロンプトのコピー、選択範囲の bundle のダウンロードができます。作成した画面のスクリーンショットをドロップすると、デザインに重ねて比較できます。詳細：[preview ガイド](../wiki/preview.md)。
 
 <a id="mcp-and-skill"></a>
 
