@@ -881,6 +881,14 @@ test('CLI-path image search asks read on the referenced source and on the local 
   assert.equal((await adapter.cli(current, 'search', { workspaceId: 'ws_1', sourceId: 's1', imageRef: reference })).sources.length, 2);
   assert.deepEqual(asked, [['read', '/a.fig'], ['read', image, await realpath(image)].filter((v, i, a) => a.indexOf(v) === i), ['read', '/b.fig']]);
   assert.deepEqual(ran, ['status', 'status', 'search'], 'the denied image search never ran');
+  // A project-relative image is resolved against the project root, and a link leaving it asks its destination too.
+  const away = await mkdtemp(path.join(tmpdir(), 'figlens-away-'));
+  t.after(() => rm(away, { recursive: true, force: true }));
+  await writeFile(path.join(away, 'private.png'), '');
+  await symlink(path.join(away, 'private.png'), path.join(root, 'link.png'));
+  asked.length = 0;
+  await assert.rejects(adapter.cli(current, 'search', { workspaceId: 'ws_1', sourceId: 's1', image: 'link.png' }), /read denied/);
+  assert.deepEqual(asked.at(-1), ['read', path.join(await realpath(root), 'link.png'), await realpath(path.join(away, 'private.png'))]);
 });
 
 test('CLI-path diff asks read on each design on its own and runs only after both are allowed', async t => {

@@ -446,7 +446,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
     }
     // A local query image is read by the binary for this call, as the session's own read of it.
     if (tool === 'search' && input.image !== undefined)
-      await current.authorize('read', [...new Set([input.image, await realpath(input.image).catch(() => input.image)])]);
+      await current.authorize('read', await both([input.image]));
     // Every other watch action writes checkpoints, subscriptions or leases into the workspace database, as a cancel writes its job.
     if (tool === 'watch' && !['list', 'status', 'start'].includes(input.action)) {
       // The binary evaluates the subscription's own source, so a sourceId would only narrow the read asked here.
