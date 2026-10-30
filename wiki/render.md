@@ -4,6 +4,7 @@ How figlens turns expanded nodes into SVG and raster images: text styles and gly
 
 ## Verified rules for text styles and rendering (2026-10-22)
 
+- PNG exports/references use oxipng preset 0 (single-threaded) up to 4,194,304 px; larger images keep normal encoding. RGBA is exact; retain original bytes unless smaller. Decode budget: RGBA bytes plus rows; errors propagate. Source images and mip PNGs stay unchanged.
 - A text node's font fields come from its text style (`styleIdForText`, local or `assetRef`), since a node's own copies can be stale; a hidden instance sublayer keeps its overridden values instead. `textAutoResize` is always the node's own.
 - REST line height: kiwi `PERCENT` → `INTRINSIC_%`, px = fontSize × `derivedTextData.fontMetaData[0].fontLineHeight` × value/100, no `lineHeightPercentFontSize`; `PIXELS`/`RAW` → `PIXELS`. Percents are `f32(f32(ratio) × 100)`, Figma's rounding. `fontVariantNumericFigure`/`Spacing` → `opentypeFlags` LNUM/ONUM/TNUM/PNUM.
 - `styleOverrideTable` entries list the REST fields their kiwi entry sets (`fontName` → the four font fields, `fontSize` → size and the line-height fields, …); an entry with `styleIdForText` adds that style's fields and `inheritTextStyleId`. Only ids used in `characterStyleIDs` appear. `lineTypes` maps `PLAIN`/`ORDERED_LIST` to `NONE`/`ORDERED`.
