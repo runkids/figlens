@@ -1476,9 +1476,9 @@ fn encode(f: &Facets) -> String {
     Json::Array(rows.collect()).to_string()
 }
 
-/// The inverse of `encode`, refusing a key outside `FIELDS`, out of order, or a bad digest. Each
-/// field is charged to `spent` as the live build charged it, 64 bytes, its key and a kept value's
-/// JSON, before it is kept.
+/// The inverse of `encode`, refusing a key outside `FIELDS`, out of order, or a bad digest. The
+/// text is charged to `spent` before it is parsed, and each field as the live build charged it
+/// (64 bytes, its key and a kept value's JSON) before it is kept.
 fn decode(text: &str, spent: &mut usize) -> Result<Facets, Box<dyn Error>> {
     let mut keys = FIELDS
         .iter()
@@ -1492,6 +1492,9 @@ fn decode(text: &str, spent: &mut usize) -> Result<Facets, Box<dyn Error>> {
         }
         Some(out)
     };
+    // Parsing allocates about the text's size, paid for first as the live build pays a
+    // conversion.
+    super::store::charge_query(spent, text.len())?;
     let mut fields = Vec::new();
     for mut row in serde_json::from_str::<Vec<Vec<Json>>>(text).map_err(|_| bad())? {
         let value = if row.len() == 3 { row.pop() } else { None };
@@ -1504,11 +1507,16 @@ fn decode(text: &str, spent: &mut usize) -> Result<Facets, Box<dyn Error>> {
         if row.len() > 2 || (digest.is_none() && value.is_some()) {
             return Err(bad());
         }
-        let kept = match &value {
-            Some(v) => serde_json::to_vec(v)?.len(),
-            None => 0,
-        };
-        super::store::charge_query(spent, 64 + key.len() + kept)?;
+        super::store::charge_query(spent, 64 + key.len())?;
+        if let Some(v) = &value {
+            // Counted as the live build counts a kept value, without a serialized copy.
+            let mut kept = Digesting {
+                hash: Sha256::new(),
+                len: 0,
+            };
+            serde_json::to_writer(&mut kept, v)?;
+            super::store::charge_query(spent, kept.len)?;
+        }
         fields.push(Field {
             key,
             facet,
@@ -1703,7 +1711,7 @@ pub(crate) struct Revision {
     pub truncated: bool,
 }
 
-/// Compares stored generations `old` and `new` of `scope` as `stored_diff` does, keeping at most
+/// Compares stored generations `old` and `new` of `scope` as a live diff of them would, keeping at most
 /// `bytes` of change rows.
 pub(crate) fn revision(
     conn: &rusqlite::Connection,

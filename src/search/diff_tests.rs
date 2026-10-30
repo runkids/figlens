@@ -1309,8 +1309,45 @@ fn tampered_or_other_layout_facets_are_refused_not_compared() {
 }
 
 #[test]
-fn stored_facets_charge_a_kept_field_as_the_live_build_does_not_its_shorter_text() {
-    // The text is shorter than the 64 bytes plus key the live build charged for its field.
+fn stored_facets_pay_for_their_text_before_parsing_it() {
+    // Unparseable text past the budget is a limit, not a refused layout: no parse ran.
+    let mut spent = BYTES - 3;
+    let err = decode("{{{{", &mut spent).err().unwrap();
+    assert_eq!(
+        err.downcast_ref::<FigError>().map(FigError::kind),
+        Some(ErrorKind::QueryWorkLimit)
+    );
+}
+
+#[test]
+fn stored_facets_keep_a_readable_value_and_charge_text_metadata_and_value() {
+    let text = format!(r#"[["fontSize","{}",12]]"#, "a".repeat(64));
+    let mut spent = 0;
+    let facets = decode(&text, &mut spent).unwrap();
+    assert_eq!(
+        (facets.fields[0].value.clone(), spent),
+        (
+            Some(serde_json::json!(12)),
+            text.len() + 64 + "fontSize".len() + 2
+        )
+    );
+}
+
+#[test]
+fn stored_facets_charge_a_kept_value_after_its_metadata() {
+    let text = format!(r#"[["fontSize","{}",12]]"#, "a".repeat(64));
+    // Text and metadata fit; the value's two bytes do not.
+    let mut spent = BYTES - text.len() - 64 - "fontSize".len() - 1;
+    let err = decode(&text, &mut spent).err().unwrap();
+    assert_eq!(
+        err.downcast_ref::<FigError>().map(FigError::kind),
+        Some(ErrorKind::QueryWorkLimit)
+    );
+}
+
+#[test]
+fn stored_facets_charge_their_text_then_each_field_as_the_live_build_does() {
+    // Once the text is paid for, nothing is left for the field's 64 bytes plus key.
     let text = r#"[["fontSize",null]]"#;
     let mut spent = BYTES - text.len();
     let err = decode(text, &mut spent).err().unwrap();
