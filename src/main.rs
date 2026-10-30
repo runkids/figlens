@@ -1368,6 +1368,14 @@ fn watch(action: &str, args: &[String]) -> Result<serde_json::Value, Box<dyn Err
     let select = Select::from_choice(a.workspace.map(Path::new), a.file.map(Path::new), a.id)?
         .ok_or("choose the workspace with --workspace, --file or --id")?;
     let (source, flag) = (a.source.first().copied(), |k: &str| flags.get(k).copied());
+    // A library question's own flags never silently drop from a saved search.
+    if flag("--library").is_none()
+        && let Some(f) = flags
+            .keys()
+            .find(|f| ["--namespace", "--key"].contains(f) || f.starts_with("--definition-"))
+    {
+        return Err(format!("{f} applies only with --library; {usage}").into());
+    }
     match action {
         "subscribe" => subs::subscribe(
             &storage,

@@ -4612,6 +4612,34 @@ fn a_tracked_scope_publishes_definition_fingerprints_as_an_untracked_build_does(
 }
 
 #[test]
+fn cli_subscribe_refuses_library_flags_without_library() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let refused = ["--namespace", "--key", "--definition-node"].map(|flag| {
+        t.fails(&[
+            "watch",
+            "subscribe",
+            "--file",
+            &t.file,
+            "--consumer",
+            "bot",
+            "--sources",
+            "visible",
+            "--query",
+            "badge",
+            flag,
+            "k",
+        ])
+    });
+    assert!(
+        refused
+            .iter()
+            .all(|e| e.contains("applies only with --library")),
+        "{refused:?}"
+    );
+}
+
+#[test]
 fn cli_and_mcp_save_questions_over_a_source_set_and_name_the_source_that_changed() {
     let env = Env::new();
     let t = Tracked::new(&env);
