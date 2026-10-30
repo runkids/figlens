@@ -456,6 +456,10 @@ impl Drop for Runtime {
 }
 
 fn sha256_file(path: &Path, cancel: &AtomicBool) -> Result<String> {
+    // Checked before open: opening a FIFO or device would block or read without end.
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return Err(fail(format!("{} is not a regular file", path.display())));
+    }
     let mut file =
         std::fs::File::open(path).map_err(|e| fail(format!("{}: {e}", path.display())))?;
     let mut hash = Sha256::new();

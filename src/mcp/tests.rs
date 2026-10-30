@@ -608,3 +608,28 @@ fn mcp_models_configure_refuses_a_model_dir_outside_roots() {
     assert_eq!(reply["result"]["isError"], true);
     assert!(reply.to_string().contains("permission_denied"), "{reply}");
 }
+
+#[cfg(unix)]
+#[test]
+fn mcp_models_configure_refuses_a_model_file_linked_outside_roots() {
+    let dir = test_support::TestDir::new();
+    let inside = dir.join("inside");
+    std::fs::create_dir(&inside).unwrap();
+    std::fs::write(dir.join("outside.bin"), "weights").unwrap();
+    for (name, _) in figlens::semantic::profile::known("bge-m3").unwrap().files {
+        std::fs::write(inside.join(name), "x").unwrap();
+    }
+    std::fs::remove_file(inside.join("pytorch_model.bin")).unwrap();
+    std::os::unix::fs::symlink(
+        dir.join("outside.bin").canonicalize().unwrap(),
+        inside.join("pytorch_model.bin"),
+    )
+    .unwrap();
+    let roots = [inside.canonicalize().unwrap()];
+    let input = serde_json::json!({"id": 1, "method": "tools/call", "params": {"name": "models",
+        "arguments": {"action": "configure", "profile": "bge-m3", "modelDir": roots[0]}}});
+    let mut out = Vec::new();
+    serve(std::io::Cursor::new(input.to_string()), &mut out, &roots).unwrap();
+    let reply: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert!(reply.to_string().contains("permission_denied"), "{reply}");
+}

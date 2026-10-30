@@ -1056,12 +1056,18 @@ pub fn models_tool(
         "configure" => {
             let known = profile::known(needs("profile")?)?;
             let dir = std::fs::canonicalize(needs("modelDir")?)?;
-            if !roots.is_empty() && !roots.iter().any(|r| dir.starts_with(r)) {
-                return Err(figlens::FigError::new(
-                    figlens::ErrorKind::PermissionDenied,
-                    "modelDir is outside the server's roots",
-                )
-                .into());
+            // Every pinned file, followed through links, must lie inside the roots too, before
+            // any of them is read.
+            let inside = |p: &Path| roots.is_empty() || roots.iter().any(|r| p.starts_with(r));
+            for (name, _) in known.files {
+                let target = std::fs::canonicalize(dir.join(name)).unwrap_or_default();
+                if !inside(&dir) || !inside(&target) {
+                    return Err(figlens::FigError::new(
+                        figlens::ErrorKind::PermissionDenied,
+                        format!("modelDir or its {name} lies outside the server's roots"),
+                    )
+                    .into());
+                }
             }
             let never = std::sync::atomic::AtomicBool::new(false);
             profile::configure(&storage, known, &dir, None, &never)?

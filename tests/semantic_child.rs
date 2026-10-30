@@ -367,6 +367,24 @@ fn a_changed_model_file_is_refused_before_the_child_starts() {
     );
 }
 
+#[cfg(unix)]
+fn a_fifo_model_file_is_refused_without_blocking() {
+    let dir = test_support::TestDir::new();
+    let model = dir.join("model");
+    std::fs::create_dir_all(&model).unwrap();
+    let made = std::process::Command::new("mkfifo")
+        .arg(model.join("w"))
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let exe = std::env::current_exe().unwrap();
+    let digest = "0".repeat(64);
+    let begun = Instant::now();
+    let got = Profile::probe(&exe, &model, &[("w", &digest)], &AtomicBool::new(false));
+    assert!(got.is_err_and(|e| e.to_string().contains("not a regular file")));
+    assert!(begun.elapsed() < Duration::from_secs(2));
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     // `__child <mode>` from `start`, or `<model-dir>` alone as a configured profile runs it.
@@ -431,6 +449,11 @@ fn main() {
         (
             "a_changed_model_file_is_refused_before_the_child_starts",
             a_changed_model_file_is_refused_before_the_child_starts,
+        ),
+        #[cfg(unix)]
+        (
+            "a_fifo_model_file_is_refused_without_blocking",
+            a_fifo_model_file_is_refused_without_blocking,
         ),
     ];
     let filter = args.iter().skip(1).find(|a| !a.starts_with('-'));
