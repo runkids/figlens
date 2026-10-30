@@ -3697,3 +3697,45 @@ fn a_worker_line_past_its_limit_leaves_the_comparison_to_the_owner() {
         (json!(2), json!({"gen": 3}))
     );
 }
+
+#[test]
+fn a_publication_records_the_comparison_its_worker_reported() {
+    let d = TestDir::new();
+    let (storage, _, dir) = workspace(&d, 1);
+    let me = owner(&dir).unwrap();
+    let conn = connection(&dir);
+    let source = sources(&conn)[0].clone();
+    conn.execute(
+        "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
+         VALUES (?1, '0:0', 'active', 1, 'v', 0)",
+        [&source],
+    )
+    .unwrap();
+    conn.execute("DELETE FROM jobs", []).unwrap();
+    let job_id = job(&conn, &source, "0:0", "running", &me, 1);
+    let base = published(&conn, "0:0");
+    conn.execute(
+        "UPDATE jobs SET expected_gen = ?2 WHERE job_id = ?1",
+        params![job_id, base],
+    )
+    .unwrap();
+    let mut built = work(&dir, &job_id, &me, 1).unwrap();
+    let from = built["planned"]["from"].clone();
+    // The owner comparing again would read `previous_untracked`: this reason proves it used
+    // the worker's.
+    built["planned"]["what"] = json!({"baseline": "index_version_changed"});
+    let ws_id = job_id.split('.').next().unwrap();
+    publish(&storage, ws_id, &job_id, &me, 1, &built).unwrap();
+    let coverage: String = conn
+        .query_row(
+            "SELECT coverage FROM revisions ORDER BY seq DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let reason = serde_json::from_str::<Json>(&coverage).unwrap()["reason"].clone();
+    assert_eq!(
+        (from, reason),
+        (json!(base), json!("index_version_changed"))
+    );
+}

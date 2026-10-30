@@ -3182,6 +3182,16 @@ fn stored_and_live() -> Vec<(Revision, Revision)> {
         ),
         (doc(screen("Hello", 1.0, 400.0)), doc(moved), "0:0"),
         (styled(12.0), styled(16.0), "0:10"),
+        // The scope itself is deleted: the new side is an empty build.
+        (
+            doc(vec![
+                node(30, Some(1), "FRAME", "Gone", vec![]),
+                node(31, Some(30), "TEXT", "Label", vec![]),
+                other(),
+            ]),
+            doc(vec![other()]),
+            "0:30",
+        ),
     ];
     pairs
         .into_iter()

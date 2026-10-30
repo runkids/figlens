@@ -5,7 +5,7 @@
 //! into facets. Records match by exact id and kind only; top-level frames left unmatched may be
 //! paired by name or geometry as a labelled `possible_match`, which never transfers identity.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -2441,7 +2441,7 @@ impl Revision {
             .as_object()?
             .iter()
             .map(|(k, n)| Some((name(&REASONS, &json!(k))?, n.as_u64()?)))
-            .collect::<Option<std::collections::BTreeMap<_, _>>>()?;
+            .collect::<Option<BTreeMap<_, _>>>()?;
         Some(Revision {
             coverage: v["coverage"].clone(),
             summary: v["summary"].clone(),
@@ -2477,7 +2477,15 @@ pub(crate) fn revision_live(
     scope: &str,
     bytes: usize,
 ) -> Result<Revision, Box<dyn Error>> {
-    let (index, tracked, source) = new;
+    let bounds = revision_bounds();
+    let (mut index, tracked, source) = new;
+    // As `store::load` reads a generation back, so both sides compare as two stored ones: every
+    // relation kind (an absent scope's empty build too), and no definitions, terms or prints.
+    index.relations = true;
+    index.library_unread = false;
+    index.definitions = BTreeMap::new();
+    index.terms = BTreeMap::new();
+    index.fingerprints = Vec::new();
     let new = Side {
         signature: format!("{}:{}", index.generation, index.stop.unwrap_or("")),
         source,
@@ -2489,13 +2497,7 @@ pub(crate) fn revision_live(
         origin: tracked.origin,
         inherited: tracked.inherited,
     };
-    revise(
-        stored(conn, old.0, old.1)?,
-        new,
-        scope,
-        bytes,
-        revision_bounds(),
-    )
+    revise(stored(conn, old.0, old.1)?, new, scope, bytes, bounds)
 }
 
 /// A revision's own bounds, sized as the pair's: the walk reads the indexes the pair already holds.

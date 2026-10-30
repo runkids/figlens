@@ -88,12 +88,12 @@ Measured at `fd8d4bf` (the contended and base rows at `ba08580`) in Docker (linu
 | Workspace search, n=100, while a rebuild loop writes and publishes (7 publishes, 0 errors) | p50 4.6, p95 5.4, max 9.6 ms (idle: 3.9, 4.3, 5.6) | — |
 | `find` / `inspect 0:1` / stateless search vs base `0b6d8a6`, n=20 interleaved, p50 (p95) | find 318 (412) vs 320 (352); inspect 317 (324) vs 313 (322); search 582 (605) vs 578 (638) ms | — |
 
-- Hashing the 57 MiB file takes about 26 ms; verify also re-reads the written generation.
+- Hashing the 57 MiB file takes about 26 ms; verify re-hashes the source.
 - Cancel to terminal state with no worker left, x20 per stage, max: 132, 121, 104, 186, 137 ms (stage to verify).
 - Parity: 36 queries and filters, page 2 included, match stateless search.
 - Stage times come from a 2 ms poll of the job row; rebuild timings include the fenced publication. `find` and `inspect` output is byte-identical to the base; stateless search adds only `coverage.layers.relations`.
 
-Worker memory is the parse of the whole `.fig`, as in stateless search. Not measured yet: a cold OS cache, native Windows and macOS, and a corpus near the 100,000-record, 10-source envelope.
+Worker memory is the whole `.fig`'s parse plus a tracked scope's previous generation. Not measured yet: a cold OS cache, native Windows and macOS, and a corpus near the 100,000-record, 10-source envelope.
 
 ## Tests
 

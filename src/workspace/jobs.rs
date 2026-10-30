@@ -1161,8 +1161,9 @@ fn my_turn(conn: &Connection, dir: &Path, job_id: &str, embed: bool) -> Result<b
     Ok(false)
 }
 
-/// Reads `child`'s whole output on a thread; the receiver gets one message when it ends, which
-/// is at the child's exit (or a read error).
+/// Reads `child`'s output on a thread, keeping at most `WORKER_OUTPUT` bytes and one more and
+/// draining the rest; the receiver gets one message when it ends, which is at the child's exit
+/// (or a read error).
 fn output(child: &mut Child) -> (std::thread::JoinHandle<String>, Receiver<()>) {
     let mut stdout = child.stdout.take().expect("piped");
     let (ended, eof) = std::sync::mpsc::channel();
@@ -2208,7 +2209,8 @@ pub fn cancel(storage: &Storage, job_id: &str) -> Result<Json> {
 }
 
 /// The hidden `__index-worker <workspace-dir> <jobId>` child: stages, hashes, parses, builds,
-/// writes and verifies one job's generation, printing one JSON line. It exits as soon as its
+/// writes and verifies one job's generation, printing one JSON line (at most `WORKER_OUTPUT`)
+/// that also carries an actively tracked scope's comparison. It exits as soon as its
 /// stdin closes, unless it is stopped, and holds the worker lock for its whole life.
 pub fn worker(dir: &Path, job_id: &str) -> Json {
     worker_with(dir, job_id, work)
