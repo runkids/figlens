@@ -1361,3 +1361,11 @@ fn loading_records_charges_their_edges_to_the_query_bytes() {
         Some(ErrorKind::QueryWorkLimit)
     );
 }
+
+#[test]
+fn hex_is_two_lowercase_digits_per_byte() {
+    let all: Vec<u8> = (0..=255).collect();
+    let expected: String = all.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(hex(&all), expected);
+    assert_eq!(hex(&[]), "");
+}
