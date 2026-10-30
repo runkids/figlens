@@ -560,7 +560,8 @@ struct Pair {
     unread: usize,
     /// Why the pair itself stopped short (`diff_work_limit`).
     stop: Option<&'static str>,
-    /// Per side, style and variable uses whose definition lies outside the compared records.
+    /// Per side, style, variable, main and set uses whose definition lies outside the compared
+    /// records.
     outside: [usize; 2],
     hashed: SystemTime,
     /// Digest of the retained ordered result, which cursors bind (`result`).
@@ -1097,9 +1098,9 @@ fn compare(old: Side, new: Side, node: &str, work: usize) -> Pair {
     pair
 }
 
-/// Style, variable and main component uses on `s` whose definition is not one of its records:
-/// its values, or a main's property definitions, may change while every compared record stays
-/// the same. Each record and edge is charged before
+/// Style, variable, main component and component set uses on `s` whose definition is not one
+/// of its records: its values, or the property definitions a main or a variant inherits from
+/// its set, may change while every compared record stays the same. Each record and edge is charged before
 /// it is read.
 fn outside_uses(s: &Side, ids: &HashMap<&str, usize>, budget: &mut Bounds) -> Option<usize> {
     let mut n = 0;
@@ -1111,7 +1112,7 @@ fn outside_uses(s: &Side, ids: &HashMap<&str, usize>, budget: &mut Bounds) -> Op
             if !budget.charge(1, 0) {
                 return None;
             }
-            if let ("uses_style" | "binds_variable" | "instance_of", Some(t)) =
+            if let ("uses_style" | "binds_variable" | "instance_of" | "variant_of", Some(t)) =
                 (e.relation, e.target.as_deref())
                 && !matches!(e.state, "missing" | "unresolved")
             {
