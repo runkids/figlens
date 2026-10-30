@@ -60,7 +60,7 @@ The manual scratch directory remains for inspection; remove only that directory 
 | File size | 1,615 bytes |
 | SHA-256 | `bd571867ce39471b45fc257538e785c25751a924e5485234cdb59c62ca2515e0` |
 
-The bitmap, triangle and eight block-letter shapes were created specifically for this fixture, without third-party photos, trademarks or font files. Text uses embedded original `Figlens Blocks` outlines; there is no installable font. The reference therefore needs no system font or network. The smoke check decodes RGBA8 PNGs and samples a few interior colors (±1 channel level for rounding), not antialiased glyph edges or whole-image equality. It catches an empty/wrong reference; it does not establish real-design pixel-perfect fidelity or font availability for a web implementation.
+The bitmap, triangle and eight block-letter shapes were created specifically for this fixture, without third-party photos, trademarks or font files. Text uses embedded original `Figlens Blocks` outlines; there is no installable font. The reference therefore needs no system font or network. The smoke check normalizes supported lossless PNG color forms to RGBA and samples a few interior colors (±1 channel level for rounding), not antialiased glyph edges or whole-image equality. It catches an empty/wrong reference; it does not establish real-design pixel-perfect fidelity or font availability for a web implementation.
 
 **License and attribution:** this fixture, its embedded artwork, lettering and generator are provided under the repository's [MIT license](../../LICENSE), Copyright (c) 2026 runkids. Redistribution is allowed with that copyright and license notice. This statement applies to this original fixture only; it does not clear other files in ignored `samples/` or third-party demo assets.
 
@@ -104,6 +104,6 @@ This second step depends on the model, project and available browser tools. The 
 | B: example missing | Use this checkout's `examples/first-success/design.fig` or pass `--example` explicitly. An ignored local sample is not supplied by a fresh clone. |
 | B: frame missing, different ID/size or parse error | Confirm you selected this fixture and check its published hash; keep the reported binary version with the error. |
 | C: cannot write/read ZIP | Check free space and a writable system temporary directory (`TMPDIR` on POSIX); the checker creates its own output directory. |
-| C: missing asset, wrong target, reference decode/content error | Keep the checkpoint error and binary version. This fixture embeds its bitmap and glyph outlines; do not fix it by downloading fonts or substituting assets. The smoke PNG decoder supports the encoder's non-interlaced RGBA8 output only. |
+| C: missing asset, wrong target, reference decode/content error | Keep the checkpoint error and binary version. This fixture embeds its bitmap and glyph outlines; do not fix it by downloading fonts or substituting assets. The smoke PNG decoder supports non-interlaced 1/2/4/8-bit indexed or grayscale and 8-bit RGB, grayscale-alpha or RGBA, including palette and color-key transparency; 16-bit samples and interlacing are unsupported. |
 
 For later platform/release acceptance, reuse the same `--binary` entry with each explicitly selected build. Capture its output and exit status; no CI matrix or download mechanism is introduced here.

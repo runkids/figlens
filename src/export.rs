@@ -269,7 +269,7 @@ fn encode_at(p: &Pixmap, format: Format, quality: u8) -> Result<Vec<u8>, String>
     let rgba = || p.pixels().iter().map(|c| c.demultiply());
     match format {
         Format::Svg => Err("SVG requires vector input; use export instead of encode".into()),
-        Format::Png => p.encode_png().map_err(|e| e.to_string()),
+        Format::Png => render::encode_png(p),
         Format::Jpg => {
             // JPG has no alpha: composite over white, as Figma does. Premultiplied makes it c + (255 - a).
             let rgb: Vec<u8> = p
@@ -705,6 +705,20 @@ mod tests {
     #[test]
     fn png_cannot_meet_a_budget_it_exceeds() {
         assert!(encode(&noise(), Format::Png, 80, Some(100)).is_err());
+    }
+
+    #[test]
+    fn png_budget_uses_the_losslessly_optimized_size() {
+        let mut p = Pixmap::new(128, 128).unwrap();
+        p.fill(resvg::tiny_skia::Color::from_rgba8(30, 120, 180, 255));
+        let optimized = encode(&p, Format::Png, 80, None).unwrap();
+        let budget = optimized.bytes.len();
+        assert!(p.encode_png().unwrap().len() > budget);
+        assert_eq!(
+            encode(&p, Format::Png, 1, Some(budget)).unwrap().bytes,
+            optimized.bytes
+        );
+        assert!(encode(&p, Format::Png, 100, Some(budget - 1)).is_err());
     }
 
     #[test]
