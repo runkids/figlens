@@ -96,7 +96,9 @@ const acceptReply = (seq, current, replySource, loadedSource) => seq === current
 function reasonCodes(reply) {
     const text = r => typeof r === 'string' ? r : `${r.code}${r.relations?.length ? ` (${r.relations.join(', ')})` : ''}`;
     const layers = reply.coverage?.layers;
-    return [...new Set([...(reply.coverage?.reasons || []), ...(layers?.relations?.reasons || []), ...(layers?.semantic?.reasons || [])].map(text))];
+    // A workspace reply also gives reasons per source (a layer pending in one source, say).
+    const perSource = (layers?.semantic?.sources || []).flatMap(x => x.reasons || []);
+    return [...new Set([...(reply.coverage?.reasons || []), ...(layers?.relations?.reasons || []), ...(layers?.semantic?.reasons || []), ...perSource].map(text))];
 }
 // The semantic panel line for a `semantic/<revision>` reply: the viewer's build of the scope while it runs,
 // else whether this revision has a current index of it and whether a local model is ready. Enable is offered
