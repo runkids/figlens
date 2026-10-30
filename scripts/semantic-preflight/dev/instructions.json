@@ -31,5 +31,13 @@
    "i2": 0.896
   },
   "run": "qwen3-embedding-0.6b@97b0c61, equal-length batches of 16, RAYON_NUM_THREADS=8; reports in ignored samples/issue-94/dev-i*.json"
+ },
+ "frozenRun": {
+  "id": "i1",
+  "gatesPass": false,
+  "failed": "synonym_purpose wrongTop1 0.45 > 0.20 (MRR 0.743, R@10 1.0); i0 had 0.30 in the earlier run",
+  "passed": "en_to_zh 1.0/0.883/0.20, zh_to_en 0.95/0.954/0.05, mixed_script 1.0/1.0/0, exact_text = lexical",
+  "cost": "104 texts embedded in 2.4 s (20.7 s one per pass), warm query p50 193 ms p95 244 ms, 3540 MiB peak RSS, 8 threads of 18",
+  "note": "The single frozen run; no further instruction is tried on the frozen suite."
  }
 }
