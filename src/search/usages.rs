@@ -107,16 +107,17 @@ pub(crate) fn extract(
     let mut out: Vec<Edge> = Vec::new();
     let mut push = |bounds: &mut Bounds,
                     relation: &'static str,
-                    target: Option<String>,
+                    target: Option<(&str, &str)>,
                     state: &'static str,
                     basis: &'static str,
                     evidence: String| {
-        // A target longer than any stored id cannot be kept exactly; it stays explicit.
+        // A target longer than any stored id cannot be kept exactly; it stays explicit. Its
+        // prefix and borrowed body are measured first, so only a kept, charged one is copied.
         let (target, state) = match target {
-            Some(t) if t.len() > super::store::ID_BYTES => (None, "unsupported"),
+            Some((p, b)) if p.len() + b.len() > super::store::ID_BYTES => (None, "unsupported"),
             t => (t, state),
         };
-        let bytes = 96 + target.as_ref().map_or(0, String::len) + evidence.len();
+        let bytes = 96 + target.map_or(0, |(p, b)| p.len() + b.len()) + evidence.len();
         if !bounds.charge(1, bytes) {
             return false;
         }
@@ -128,7 +129,7 @@ pub(crate) fn extract(
         out.push(Edge {
             relation,
             seq,
-            target,
+            target: target.map(|(p, b)| format!("{p}{b}")),
             state,
             basis,
             evidence,
@@ -136,21 +137,23 @@ pub(crate) fn extract(
         true
     };
     if kind == "INSTANCE" {
+        let recorded: Option<String>;
         let (target, basis, evidence) = match e {
-            None => (
-                tree.nodes
+            None => {
+                recorded = tree
+                    .nodes
                     .get(id)
-                    .and_then(|n| n.get("symbolData")?.get("symbolID").and_then(guid_key)),
-                "recorded",
-                "symbolData",
-            ),
+                    .and_then(|n| n.get("symbolData")?.get("symbolID").and_then(guid_key));
+                (recorded.as_deref(), "recorded", "symbolData")
+            }
             Some(e) => (
-                e.main.as_ref().map(|m| m.0.clone()),
+                e.main.as_ref().map(|m| m.0.as_str()),
                 "resolved",
                 e.main.as_ref().map_or("definition", |m| m.1),
             ),
         };
-        let state = node_state(tree, target.as_deref(), "COMPONENT");
+        let state = node_state(tree, target, "COMPONENT");
+        let target = target.map(|t| ("", t));
         if !push(bounds, "instance_of", target, state, basis, evidence.into()) {
             return None;
         }
@@ -165,7 +168,7 @@ pub(crate) fn extract(
         && !push(
             bounds,
             "variant_of",
-            Some(set),
+            Some(("", &set)),
             "resolved",
             "recorded",
             "parentIndex".into(),
@@ -326,7 +329,7 @@ pub(crate) fn extract(
             if !push(
                 bounds,
                 "binds_variable",
-                Some(variable),
+                Some(("", &variable)),
                 state,
                 "recorded",
                 field.clone(),
@@ -335,18 +338,6 @@ pub(crate) fn extract(
             }
         }
     }
-    let style = |r: &Json| match (r["assetRef"]["key"].as_str(), crate::rest::guid(&r["guid"])) {
-        (Some(k), _) => Some((format!("StyleKey:{k}"), "external")),
-        (None, Some(g)) => {
-            let state = if tree.nodes.contains_key(&g) {
-                "resolved"
-            } else {
-                "missing"
-            };
-            Some((g, state))
-        }
-        (None, None) => None,
-    };
     let rows = fields
         .get("textData")
         .and_then(|t| t["styleOverrideTable"].as_array())
@@ -363,8 +354,12 @@ pub(crate) fn extract(
         .into_iter()
         .filter_map(|k| Some((fields.get(k)?, k.to_owned())));
     for (r, evidence) in top.chain(rows) {
-        let Some((target, state)) = style(r) else {
-            continue;
+        let guid = crate::rest::guid(&r["guid"]);
+        let (target, state) = match (r["assetRef"]["key"].as_str(), guid.as_deref()) {
+            (Some(k), _) => (("StyleKey:", k), "external"),
+            (None, Some(g)) if tree.nodes.contains_key(g) => (("", g), "resolved"),
+            (None, Some(g)) => (("", g), "missing"),
+            (None, None) => continue,
         };
         if !push(
             bounds,
@@ -396,7 +391,7 @@ pub(crate) fn extract(
             let Some(hash) = p["image"]["hash"].as_str().filter(|_| p["type"] == "IMAGE") else {
                 continue;
             };
-            let target = Some(format!("image:{hash}"));
+            let target = Some(("image:", hash));
             if !push(
                 bounds,
                 "uses_image",
@@ -450,7 +445,7 @@ pub(crate) fn extract(
                 *unverified += 1;
                 continue;
             }
-            let target = d["nodeId"].as_str().map(str::to_owned);
+            let target = d["nodeId"].as_str().map(|t| ("", t));
             let evidence = format!(
                 "{}:{}",
                 p["basis"].as_str().unwrap_or(""),

@@ -2086,3 +2086,64 @@ fn a_library_alias_key_is_charged_for_its_projected_copies_before_they_are_made(
         assert_eq!(index.stop, Some("byte_limit"), "margin {margin}");
     }
 }
+
+#[test]
+fn an_overlong_library_style_key_near_the_byte_limit_stays_an_unsupported_edge() {
+    let doc = |key: &str| {
+        let style = obj(vec![(
+            "assetRef",
+            obj(vec![("key", K::String(key.into()))]),
+        )]);
+        obj(vec![(
+            "nodeChanges",
+            K::Array(vec![
+                node(0, None, "DOCUMENT", "Document", vec![]),
+                node(1, Some(0), "CANVAS", "Page", vec![]),
+                node(
+                    2,
+                    Some(1),
+                    "RECTANGLE",
+                    "Shape",
+                    vec![("styleIdForFill", style)],
+                ),
+            ]),
+        )])
+    };
+    let budget = |bytes| crate::expand::Bounds {
+        bytes,
+        ..bounds(WORK)
+    };
+    let edge = |index: &Index| {
+        let mut r = req("0:2");
+        r.outgoing = true;
+        let out = run(index, &r).unwrap();
+        let e = out["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["relation"] == "uses_style")
+            .cloned()
+            .unwrap();
+        (e["target"].clone(), e["state"].clone())
+    };
+    let short = doc("k");
+    let short = Tree::new(&short);
+    let fits = (1..64)
+        .map(|kib| kib * 1024)
+        .find(|b| build(&short, "0:0", budget(*b)).stop.is_none())
+        .unwrap();
+    let normal = build(&short, "0:0", budget(fits));
+    // The long key's field fits the margin; its target is measured, never copied or charged.
+    let long = "k".repeat(64 * 1024);
+    let message = doc(&long);
+    let tree = Tree::new(&message);
+    let index = build(&tree, "0:0", budget(fits + 4 * long.len()));
+    assert_eq!(
+        (index.stop, edge(&normal), edge(&index)),
+        (
+            None,
+            (json!({"resource": "StyleKey:k"}), json!("external")),
+            (Json::Null, json!("unsupported"))
+        )
+    );
+}
