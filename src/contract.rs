@@ -435,7 +435,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "file",
                 "string",
                 false,
-                "a local .fig: the source to prepare, add or relocate to (add also takes a directory under the roots); also selects its source-scoped workspace",
+                "a local .fig: the source to prepare, add or relocate to (add also takes a directory under the roots, or without --root a gs://bucket/object, downloaded pinned to its generation); also selects its source-scoped workspace",
             ),
             (
                 "workspace",
@@ -674,7 +674,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "state": {"type": "string", "description": "initialized, ready, absent or reset"},
                 "schemaVersion": {"type": "integer"},
                 "incarnation": {"type": "string", "description": "changes when the database is recreated; cached results of another incarnation are void"},
-                "sources": {"type": "array", "items": {"type": "object"}, "description": "visible sources: sourceId, path, present and indexed scopes with snapshotId, records, complete and current"},
+                "sources": {"type": "array", "items": {"type": "object"}, "description": "visible sources: sourceId, path, present and indexed scopes with snapshotId, records, complete and current; a gs:// source adds remote {uri, generation its download was pinned to}, not proof the object is unchanged"},
                 "job": {"type": "object", "description": "the build prepare started or joined: jobId, state, stage, progress"},
                 "jobs": {"type": "array", "items": {"type": "object"}, "description": "refresh, rebuild and track: one job per admitted source and scope, each with joined"},
                 "admission": {"type": "string", "description": "refresh and rebuild: complete, or partial when some jobs were not admitted"},

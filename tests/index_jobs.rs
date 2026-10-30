@@ -47,6 +47,10 @@ impl Env {
             .env_remove("XDG_CACHE_HOME")
             .env_remove("XDG_DATA_HOME")
             .env_remove("FIGLENS_TEST_HOLD");
+        // A `gcloud` stand-in, when a test writes one, comes before the host's own.
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let dirs = std::iter::once(self.dir.join("bin")).chain(std::env::split_paths(&path));
+        command.env("PATH", std::env::join_paths(dirs).unwrap());
         if let Some((stage, file)) = hold {
             command.env("FIGLENS_TEST_HOLD", format!("{stage}:{}", file.display()));
         }
@@ -1041,6 +1045,191 @@ fn a_directory_add_over_mcp_stays_inside_its_roots_and_the_cli_dry_run_writes_no
     drop(mcp);
     let status = env.json(&["index", "status", "--id", ws]);
     assert_eq!(status["sources"].as_array().unwrap().len(), 1);
+}
+
+const OBJECT: &str = "gs://example-bucket/designs/home.fig";
+
+/// A `gcloud` stand-in on the test PATH serving the public fixture as the generation in
+/// `bin/generation`; it appends each call's arguments to `bin/calls`.
+#[cfg(unix)]
+fn gcloud(env: &Env, generation: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = env.dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::copy("examples/first-success/design.fig", bin.join("object.fig")).unwrap();
+    std::fs::write(bin.join("generation"), generation).unwrap();
+    let script = bin.join("gcloud");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nd=$(dirname \"$0\")\necho \"$*\" >> \"$d/calls\"\n\
+         case \"$1 $2\" in\n\
+         'storage objects') cat \"$d/generation\" ;;\n\
+         'storage cp') cp \"$d/object.fig\" \"$4\" ;;\n\
+         *) exit 1 ;;\nesac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin.join("calls")
+}
+
+fn calls(log: &Path) -> String {
+    std::fs::read_to_string(log).unwrap_or_default()
+}
+
+fn source<'a>(status: &'a Value, id: &str) -> &'a Value {
+    let sources = status["sources"].as_array().unwrap();
+    sources.iter().find(|s| s["sourceId"] == id).unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_gs_object_registers_its_generation_pinned_download_under_one_source_id() {
+    let env = Env::new();
+    let log = gcloud(&env, "101");
+    let dir = project(&env);
+    let d = dir.to_str().unwrap();
+    let local = prepare_in(&env, &env.fig("a.fig"), d);
+    let ws = local["workspaceId"].as_str().unwrap();
+    let added = env.json(&["index", "add", OBJECT, "--workspace", d]);
+    let first = &added["source"];
+    assert_eq!(first["added"], true, "{added}");
+    assert_eq!(first["remote"], json!({"uri": OBJECT, "generation": "101"}));
+    // The download names the generation it records, so the bytes are that generation's.
+    assert!(
+        calls(&log).contains(&format!("storage cp {OBJECT}#101 ")),
+        "{}",
+        calls(&log)
+    );
+    let id = first["sourceId"].as_str().unwrap();
+    env.json(&[
+        "index", "refresh", "--id", ws, "--source", id, "--scope", "0:0",
+    ]);
+    let status = env.json(&["index", "status", "--id", ws]);
+    let theirs = local["source"]["sourceId"].as_str().unwrap();
+    // The snapshot is the hash of the downloaded bytes, here the local copy's own.
+    assert_eq!(
+        source(&status, id)["indexed"][0]["snapshotId"],
+        source(&status, theirs)["indexed"][0]["snapshotId"]
+    );
+    assert_eq!(source(&status, id)["remote"]["generation"], "101");
+    let again = env.json(&["index", "add", OBJECT, "--workspace", d]);
+    assert_eq!(again["source"]["added"], false);
+    assert_eq!(again["source"]["sourceId"], id);
+    assert_eq!(calls(&log).matches("storage cp").count(), 1);
+    // A newer upload is fetched by the next add and moves the same source to it.
+    std::fs::write(env.dir.join("bin/generation"), "102").unwrap();
+    let moved = env.json(&["index", "add", OBJECT, "--workspace", d]);
+    assert_eq!(moved["source"]["sourceId"], id);
+    assert_eq!(moved["source"]["remote"]["generation"], "102");
+    assert_ne!(moved["source"]["path"], first["path"]);
+    assert_eq!(
+        env.json(&["index", "status", "--id", ws])["sources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn only_an_explicit_add_reaches_gcloud_never_status_search_refresh_or_watch() {
+    let env = Env::new();
+    let log = gcloud(&env, "7");
+    let dir = project(&env);
+    let d = dir.to_str().unwrap();
+    prepare_in(&env, &env.fig("a.fig"), d);
+    let added = env.json(&["index", "add", OBJECT, "--workspace", d]);
+    let id = added["source"]["sourceId"].as_str().unwrap();
+    let before = calls(&log);
+    env.json(&[
+        "index",
+        "refresh",
+        "--workspace",
+        d,
+        "--source",
+        id,
+        "--scope",
+        "0:0",
+    ]);
+    env.json(&[
+        "index",
+        "track",
+        "--workspace",
+        d,
+        "--source",
+        id,
+        "--scope",
+        "0:0",
+    ]);
+    env.json(&["index", "refresh", "--workspace", d, "--source", id]);
+    env.json(&["index", "status", "--workspace", d]);
+    env.json(&["search", "--workspace", d, "first", "--source", id]);
+    env.json(&[
+        "changes",
+        "--workspace",
+        d,
+        "--source",
+        id,
+        "--scope",
+        "0:0",
+    ]);
+    let mut watch = env
+        .command(
+            &[
+                "watch",
+                "run",
+                "--workspace",
+                d,
+                "--source",
+                id,
+                "--scope",
+                "0:0",
+            ],
+            None,
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(watch.stdout.as_mut().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert!(line.contains("\"active\""), "{line}");
+    // Several watcher polls: each stats the local download, never the object.
+    std::thread::sleep(Duration::from_millis(1500));
+    drop(watch.stdin.take());
+    watch.wait().unwrap();
+    env.json(&["watch", "status", "--workspace", d]);
+    assert_eq!(calls(&log), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn mcp_adds_a_gs_object_without_roots_and_refuses_it_under_roots_before_gcloud() {
+    let env = Env::new();
+    let log = gcloud(&env, "9");
+    let dir = project(&env);
+    let local = prepare_in(&env, &env.fig("a.fig"), dir.to_str().unwrap());
+    let ws = local["workspaceId"].as_str().unwrap();
+    let add = json!({"action": "add", "file": OBJECT, "workspaceId": ws});
+    let mut mcp = Mcp::start(&env, &["--root", dir.to_str().unwrap()]);
+    let refused = mcp.call("index", add.clone());
+    assert_eq!(refused["isError"], true, "{refused}");
+    drop(mcp);
+    assert_eq!(calls(&log), "");
+    let mut mcp = Mcp::start(&env, &[]);
+    let added = mcp.call("index", add);
+    assert_eq!(added["isError"], false, "{added}");
+    assert_eq!(
+        added["structuredContent"]["source"]["remote"],
+        json!({"uri": OBJECT, "generation": "9"})
+    );
+    // Only add takes an object; every other action names a registered source or local file.
+    let other = mcp.call("index", json!({"action": "status", "file": OBJECT}));
+    assert_eq!(other["isError"], true, "{other}");
 }
 
 #[test]
@@ -3958,7 +4147,8 @@ fn a_schema_6_workspace_reads_impact_as_null_and_records_it_once_a_build_upgrade
     t.sql(
         "DROP TABLE revision_impacts; ALTER TABLE revisions DROP COLUMN impact;
          DROP TABLE fingerprints; ALTER TABLE subscriptions DROP COLUMN sources;
-         ALTER TABLE subscriptions DROP COLUMN disabled; PRAGMA user_version = 6;",
+         ALTER TABLE subscriptions DROP COLUMN disabled; DROP INDEX sources_remote;
+         ALTER TABLE sources DROP COLUMN remote; ALTER TABLE sources DROP COLUMN generation; PRAGMA user_version = 6;",
     );
     let version = || -> i64 {
         rusqlite::Connection::open(&t.db)
@@ -4013,7 +4203,8 @@ fn a_92_generation_refreshed_under_new_relations_is_a_baseline_keeping_history_a
     t.sql(
         "DELETE FROM edges WHERE relation = 'uses_library'; DROP TABLE fingerprints;
          ALTER TABLE subscriptions DROP COLUMN sources;
-         ALTER TABLE subscriptions DROP COLUMN disabled;
+         ALTER TABLE subscriptions DROP COLUMN disabled; DROP INDEX sources_remote;
+         ALTER TABLE sources DROP COLUMN remote; ALTER TABLE sources DROP COLUMN generation;
          UPDATE generations SET versions = replace(versions, '\"relations-6\"', '\"relations-5\"');
          PRAGMA user_version = 7;",
     );
@@ -4057,7 +4248,8 @@ fn watch_list_reads_a_schema_7_workspace_without_its_source_set_columns() {
     // As schema 7 left it: no subscription source sets or disabled reasons (schema 8).
     t.sql(
         "ALTER TABLE subscriptions DROP COLUMN sources;
-         ALTER TABLE subscriptions DROP COLUMN disabled; PRAGMA user_version = 7;",
+         ALTER TABLE subscriptions DROP COLUMN disabled; DROP INDEX sources_remote;
+         ALTER TABLE sources DROP COLUMN remote; ALTER TABLE sources DROP COLUMN generation; PRAGMA user_version = 7;",
     );
     let listed = t.watch("list", &[]);
     assert_eq!(listed["subscriptions"][0]["subscriptionId"], json!(id));

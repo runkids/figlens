@@ -264,9 +264,10 @@ fn admit_value(req: Value, roots: &[PathBuf]) -> Admission {
                             "diff reads two local .fig files; download the gs:// object first",
                         ));
                     }
-                    Some(file) if file.starts_with("gs://") && call.name() == "index" => {
+                    Some(file) if file.starts_with("gs://") && call.name() == "index"
+                        && call.string("action") != Some("add") => {
                         return Err(contract::Failure::argument(
-                            "index registers local .fig files; download the gs:// object first",
+                            "only index add takes a gs:// object; other index actions read registered sources or local .fig files",
                         ));
                     }
                     Some(file) if file.starts_with("gs://") => {
@@ -351,7 +352,11 @@ impl AdmittedCall {
                 "usages" => command::workspace_usages_tool(&self.call, roots, storage_roots),
                 _ => command::index_tool(
                     &self.call,
-                    self.local(),
+                    // An admitted gs:// object, only ever an add's, reaches index_add as its URI.
+                    match &self.source {
+                        Some(Source::Remote(uri)) => Some(Path::new(uri)),
+                        _ => self.local(),
+                    },
                     self.project.as_deref(),
                     roots,
                     storage_roots,

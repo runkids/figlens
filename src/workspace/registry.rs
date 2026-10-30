@@ -497,6 +497,78 @@ pub fn add(storage: &Storage, select: &Select, file: &Path) -> Result<Json> {
     )
 }
 
+/// Registers `local`, the download of the `gs://` object `uri` pinned to `generation`, in a
+/// project workspace. Its sourceId comes from the URI, so an add that downloaded a newer
+/// generation keeps the id and, like relocate, moves the source to that download. Nothing here
+/// reaches the network; the caller downloaded it.
+pub fn add_remote(
+    storage: &Storage,
+    select: &Select,
+    uri: &str,
+    local: &Path,
+    generation: &str,
+) -> Result<Json> {
+    // Not `outside_storage`: the download is figlens' own cache copy, never a database file.
+    let local = readable(local)?;
+    let (place, mut ws) = opened(storage, select, true)?;
+    if let Locator::Source(_) = ws.held.locator {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            "a source-scoped workspace holds only its own file; prepare with --workspace <dir> to add a gs:// object",
+        ));
+    }
+    let path = utf8(&local)?;
+    let tx = ws
+        .conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(sql)?;
+    let found: Option<(String, String)> = tx
+        .query_row(
+            "SELECT source_id, path FROM sources WHERE remote = ?1",
+            [uri],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    let (source_id, added) = match found {
+        Some((id, old)) if old == path => (id, false),
+        Some((id, _)) => {
+            // A new membership and stopped builds, as relocate does: the old download's index
+            // is stale until a refresh.
+            tx.execute(
+                "UPDATE sources SET path = ?1, generation = ?2,
+                 membership = lower(hex(randomblob(16))) WHERE source_id = ?3",
+                [path, generation, &id],
+            )
+            .map_err(sql)?;
+            tx.execute(
+                "UPDATE jobs SET cancel = 1 WHERE source_id = ?1 AND state IN ('queued', 'running')",
+                [&id],
+            )
+            .map_err(sql)?;
+            (id, false)
+        }
+        None => {
+            let id = crate::search::source_id(Path::new(uri));
+            tx.execute(
+                "INSERT INTO sources (source_id, path, added_at_ms, membership, remote, generation)
+                 VALUES (?1, ?2, ?3, lower(hex(randomblob(16))), ?4, ?5)",
+                rusqlite::params![id, path, now_ms(), uri, generation],
+            )
+            .map_err(sql)?;
+            (id, true)
+        }
+    };
+    tx.commit().map_err(sql)?;
+    opened_report(
+        storage,
+        &place,
+        &ws,
+        json!({"source": {"sourceId": source_id, "path": local, "added": added,
+            "remote": {"uri": uri, "generation": generation}}}),
+    )
+}
+
 /// New sources one directory add registers: the sources one workspace search reads together.
 pub(super) const DIR_SOURCES: usize = super::query::QUERY_SOURCES;
 /// Directory entries one directory add visits, links and subdirectories included.
@@ -751,6 +823,22 @@ pub fn relocate(storage: &Storage, select: &Select, source_id: &str, file: &Path
         return Err(fail(
             ErrorKind::InvalidArguments,
             format!("workspace {} has no source {source_id}", ws.held.id),
+        ));
+    }
+    let remote: Option<String> = ws
+        .conn
+        .query_row(
+            "SELECT remote FROM sources WHERE source_id = ?1",
+            [source_id],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    if remote.is_some() {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            format!(
+                "{source_id} is a gs:// object's download; add the object again to fetch a new generation, or remove it"
+            ),
         ));
     }
     // A source-scoped workspace keeps its id: the new path's id becomes an alias of it, written

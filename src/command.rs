@@ -1158,6 +1158,23 @@ pub fn index_tool(
         .map_err(|e| figlens::workspace::rooted(&storage, e))
 }
 
+/// `index add`: a `gs://` object is downloaded first, pinned to its current generation (the
+/// only index action that reaches the network), then that download is registered.
+pub fn index_add(
+    storage: &figlens::workspace::Storage,
+    select: &figlens::workspace::Select,
+    file: &Path,
+) -> Result<Value, Box<dyn Error>> {
+    match file.to_str().filter(|f| f.starts_with("gs://")) {
+        Some(uri) => {
+            let (local, generation) =
+                figlens::remote::fetch(uri).map_err(|e| crate::contract::source(uri, e))?;
+            figlens::workspace::add_remote(storage, select, uri, &local, &generation)
+        }
+        None => figlens::workspace::add(storage, select, file),
+    }
+}
+
 fn index_on(
     call: &crate::contract::PreparedCall,
     file: Option<&Path>,
@@ -1228,7 +1245,7 @@ fn index_on(
             value
         }
         "status" => workspace::status(&storage, &chosen()?)?,
-        "add" => workspace::add(&storage, &chosen()?, file.ok_or_else(|| missing("file"))?)?,
+        "add" => index_add(&storage, &chosen()?, file.ok_or_else(|| missing("file"))?)?,
         "remove" => workspace::remove(
             &storage,
             &chosen()?,
