@@ -1077,6 +1077,7 @@ fn a_paint_scan_is_charged_even_when_nothing_links() {
         None,
         &mut roomy,
         Some((&mut unverified, &mut unread)),
+        None,
     );
     // 600 paints and 1,200 stops were visited and paid for although nothing linked.
     assert_eq!(
@@ -1093,6 +1094,7 @@ fn a_paint_scan_is_charged_even_when_nothing_links() {
                 None,
                 &mut tight,
                 Some((&mut unverified, &mut unread)),
+                None,
             )
             .is_none(),
             tight.stop
@@ -1109,6 +1111,7 @@ fn a_paint_scan_is_charged_even_when_nothing_links() {
             None,
             &mut late,
             Some((&mut unverified, &mut unread)),
+            None,
         )
         .is_none()
     );
@@ -2193,4 +2196,186 @@ fn an_overlong_image_hash_stays_an_unsupported_edge_and_a_short_one_is_kept() {
             (None, json!("unsupported"), true)
         )
     );
+}
+
+/// Library copies: mains whose naive `namespace/key` joins collide, a main with no namespace,
+/// one style key under two namespaces, one under one, one with none, and one with no copy.
+fn libraries_design() -> K<'static> {
+    let s = |v: &str| K::String(v.into());
+    let named = |mut extra: Vec<(&'static str, K<'static>)>, ns: Option<&str>| {
+        if let Some(ns) = ns {
+            extra.push(("sourceLibraryKey", s(ns)));
+        }
+        extra
+    };
+    let main = |id, key: &str, ns| {
+        node(
+            id,
+            Some(1),
+            "SYMBOL",
+            "Button",
+            named(vec![("componentKey", s(key))], ns),
+        )
+    };
+    let style = |id, key: &str, ns| {
+        let extra = vec![("styleType", K::Enum("StyleType", "FILL")), ("key", s(key))];
+        node(id, Some(1), "ROUNDED_RECTANGLE", "Brand", named(extra, ns))
+    };
+    let uses = |id, key: &str| {
+        let r = obj(vec![("key", s(key)), ("version", s("v1"))]);
+        let extra = vec![("styleIdForFill", obj(vec![("assetRef", r)]))];
+        node(id, Some(2), "RECTANGLE", "Box", extra)
+    };
+    obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Library copies", vec![]),
+            node(2, Some(0), "CANVAS", "Screens", vec![]),
+            main(10, "c", Some("a/Component:b")),
+            main(11, "b/Component:c", Some("a")),
+            main(12, "k", None),
+            instance(20, 2, "One", 10, vec![]),
+            instance(21, 2, "Two", 11, vec![]),
+            instance(22, 2, "Three", 12, vec![]),
+            style(30, "shared", Some("x")),
+            style(31, "shared", Some("y")),
+            style(32, "solo", Some("x")),
+            style(33, "bare", None),
+            uses(40, "shared"),
+            uses(41, "solo"),
+            uses(42, "bare"),
+            uses(43, "absent"),
+        ]),
+    )])
+}
+
+fn library_edges(index: &Index) -> Vec<(String, Json, &'static str, &'static str, Json)> {
+    let mut out = Vec::new();
+    for r in &index.records {
+        for e in r.edges.iter().filter(|e| e.relation == LIBRARY) {
+            let target = serde_json::from_str(e.target.as_deref().unwrap()).unwrap();
+            let evidence = serde_json::from_str(&e.evidence).unwrap();
+            out.push((r.id.clone(), target, e.state, e.basis, evidence));
+        }
+    }
+    out
+}
+
+#[test]
+fn library_references_keep_namespace_and_key_apart_and_never_borrow_a_namespace() {
+    let message = libraries_design();
+    let tree = Tree::new(&message);
+    let index = crate::search::build_with(&tree, "0:0", bounds(WORK), true, true, None);
+    let field = json!({"field": "styleIdForFill", "version": "v1"});
+    let unresolved = |key: &str| {
+        (
+            json!(["style", null, key]),
+            "unresolved",
+            "cached_copy",
+            field.clone(),
+        )
+    };
+    let mut edges = library_edges(&index);
+    edges.sort_by(|a, b| a.0.cmp(&b.0));
+    let got: Vec<_> = edges
+        .into_iter()
+        .map(|(id, t, s, b, e)| (id, (t, s, b, e)))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (
+                "0:20".into(),
+                (
+                    json!(["component", "a/Component:b", "c"]),
+                    "external",
+                    "cached_copy",
+                    json!({"copy": "0:10"})
+                )
+            ),
+            (
+                "0:21".into(),
+                (
+                    json!(["component", "a", "b/Component:c"]),
+                    "external",
+                    "cached_copy",
+                    json!({"copy": "0:11"})
+                )
+            ),
+            (
+                "0:22".into(),
+                (
+                    json!(["component", null, "k"]),
+                    "unresolved",
+                    "cached_copy",
+                    json!({"copy": "0:12"})
+                )
+            ),
+            ("0:40".into(), unresolved("shared")),
+            (
+                "0:41".into(),
+                (
+                    json!(["style", "x", "solo"]),
+                    "external",
+                    "cached_copy",
+                    field.clone()
+                )
+            ),
+            ("0:42".into(), unresolved("bare")),
+            ("0:43".into(), unresolved("absent")),
+        ]
+    );
+}
+
+#[test]
+fn only_a_stored_generation_extracts_library_references_and_no_query_lists_them() {
+    let message = libraries_design();
+    let tree = Tree::new(&message);
+    let stateless = build(&tree, "0:0", bounds(WORK));
+    assert_eq!(library_edges(&stateless), []);
+    let index = crate::search::build_with(&tree, "0:0", bounds(WORK), true, true, None);
+    let conn = stored(&index);
+    let mut r = req("0:41");
+    r.outgoing = true;
+    let q = r.validate().unwrap();
+    let graph = &mut Stored {
+        conn: &conn,
+        gen_id: 1,
+        index: crate::search::store::load(&conn, 1, &[], &mut 0).unwrap(),
+        spent: 0,
+    };
+    let served = Served {
+        source: &source(),
+        gen_id: 1,
+    };
+    // The stored edge loads back, and the default outgoing relations still leave it out.
+    let out = query(graph, &q, &r, served).unwrap();
+    let relations: Vec<_> = out["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["relation"].clone())
+        .collect();
+    assert_eq!(relations, [json!("contains"), json!("uses_style")]);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM edges WHERE relation = 'uses_library'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        7
+    );
+    let fresh = build(&tree, "0:0", bounds(WORK));
+    assert_eq!(out["coverage"], run(&fresh, &r).unwrap()["coverage"]);
+}
+
+#[test]
+fn a_library_scan_that_runs_out_stops_the_build() {
+    let message = libraries_design();
+    let tree = Tree::new(&message);
+    let mut tight = bounds(tree.nodes.len() + 1);
+    assert_eq!(libraries(&tree, &mut tight), None);
+    assert_eq!(tight.stop, Some(crate::expand::Stop::Work));
 }

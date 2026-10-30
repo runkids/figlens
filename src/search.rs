@@ -587,17 +587,20 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
     build_as(tree, scope, bounds, true)
 }
 
+#[cfg(test)]
 fn build_as(tree: &Tree, scope: &str, bounds: Bounds, relations: bool) -> Index {
-    build_with(tree, scope, bounds, relations, None)
+    build_with(tree, scope, bounds, relations, false, None)
 }
 
 /// `build_as` that also records each record's diff facets into `facets`, in record order (the
-/// explicit diff profile; search never asks for them).
+/// explicit diff profile; search never asks for them). `library` adds the internal library
+/// references (`usages::LIBRARY`) to a full build; only a stored generation asks for them.
 fn build_with(
     tree: &Tree,
     scope: &str,
     bounds: Bounds,
     relations: bool,
+    library: bool,
     mut facets: Option<&mut Vec<diff::Facets>>,
 ) -> Index {
     // A full build describes definitions within the caller's bounds: an eighth is kept back
@@ -628,6 +631,11 @@ fn build_with(
     let expansion = bounds.stop.take_if(|stop| *stop != Stop::Deadline);
     bounds.work += reserve.0;
     bounds.bytes += reserve.1;
+    // Only a full build reads library references; a spent budget stops at the first record.
+    let libraries = match relations && library {
+        true => usages::libraries(tree, &mut bounds).unwrap_or_default(),
+        false => usages::Libraries::new(),
+    };
     let mut index = Index::empty();
     // Stored ancestors give the scope its page, navigation root and inherited visibility.
     let mut chain = Vec::new();
@@ -762,6 +770,7 @@ fn build_with(
             ex.nodes.get(&id),
             &mut bounds,
             relations.then_some((&mut index.unverified_links, &mut index.unread_fields)),
+            (relations && library).then_some(&libraries),
         ) else {
             break;
         };
@@ -1677,7 +1686,7 @@ pub(crate) fn index_bytes(
     scope: &str,
     deadline: Instant,
 ) -> Result<Index, Box<dyn Error>> {
-    decode_index(bytes, label, scope, deadline, true)
+    decode_index(bytes, label, scope, deadline, true, true)
 }
 
 /// `index_bytes` of a scope with change tracking on: the same full build, plus the facets and
@@ -1707,15 +1716,16 @@ fn decode_index(
     scope: &str,
     deadline: Instant,
     relations: bool,
+    library: bool,
 ) -> Result<Index, Box<dyn Error>> {
     let mut doc = Document::from_bytes(&bytes, label)?;
     drop(bytes);
     let message = doc.take_message()?;
     let tree = Tree::new(&message);
-    if relations {
+    if relations && !library {
         index_tree(&tree, scope, deadline)
     } else {
-        profiled(&tree, scope, deadline, false)
+        profiled(&tree, scope, deadline, relations, library)
     }
 }
 
@@ -1726,7 +1736,7 @@ pub(crate) fn index_tree(
     scope: &str,
     deadline: Instant,
 ) -> Result<Index, Box<dyn Error>> {
-    profiled(tree, scope, deadline, true)
+    profiled(tree, scope, deadline, true, false)
 }
 
 fn profiled(
@@ -1734,6 +1744,7 @@ fn profiled(
     scope: &str,
     deadline: Instant,
     relations: bool,
+    library: bool,
 ) -> Result<Index, Box<dyn Error>> {
     require_scope(tree, scope)?;
     let bounds = Bounds {
@@ -1743,7 +1754,7 @@ fn profiled(
         deadline,
         stop: None,
     };
-    Ok(build_as(tree, scope, bounds, relations))
+    Ok(build_with(tree, scope, bounds, relations, library, None))
 }
 
 /// Searches a built index. `source` is the caller's exact identity of the revision the index
@@ -1838,7 +1849,9 @@ fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json
                 }
                 None => {
                     let label = path.display().to_string();
-                    let index = Arc::new(decode_index(bytes, &label, scope, deadline, relations)?);
+                    let index = Arc::new(decode_index(
+                        bytes, &label, scope, deadline, relations, false,
+                    )?);
                     if stamp(&canonical)? != staged {
                         return Err(FigError::new(
                             ErrorKind::SourceUnreadable,

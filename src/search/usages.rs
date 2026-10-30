@@ -15,7 +15,7 @@ use crate::{ErrorKind, FigError, Tree, guid_key, to_json};
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 /// Extraction version: a stored generation built with another one is rebuilt.
-pub(crate) const RELATIONS: &str = "relations-5";
+pub(crate) const RELATIONS: &str = "relations-6";
 /// Relations extracted, in key order; `library_identity` (#93) is not.
 pub(crate) const KINDS: [&str; 7] = [
     "binds_variable",
@@ -23,6 +23,21 @@ pub(crate) const KINDS: [&str; 7] = [
     "instance_of",
     "prototype_target",
     "uses_image",
+    "uses_style",
+    "variant_of",
+];
+/// A library reference: the namespace (`sourceLibraryKey`) and key a cached library copy records
+/// for the component, style or variable a record uses. Internal until its query is public (#93),
+/// so it is not in `KINDS` and no existing query, default or coverage lists it.
+pub(crate) const LIBRARY: &str = "uses_library";
+/// Every relation a stored generation holds: `KINDS` and `LIBRARY`.
+pub(crate) const STORED: [&str; 8] = [
+    "binds_variable",
+    "contains",
+    "instance_of",
+    "prototype_target",
+    "uses_image",
+    LIBRARY,
     "uses_style",
     "variant_of",
 ];
@@ -38,7 +53,9 @@ pub(crate) const STATES: [&str; 6] = [
     "external",
     "recorded",
 ];
-pub(crate) const BASES: [&str; 2] = ["recorded", "resolved"];
+/// `cached_copy`: read from the file's cached copy of a library definition, not proven against
+/// the library itself.
+pub(crate) const BASES: [&str; 3] = ["cached_copy", "recorded", "resolved"];
 /// The kinds a text-only build (ordinary stateless search) still extracts.
 /// Kinds read from binding fields, which a field too large to read leaves partial.
 pub(crate) const FIELDED: [&str; 3] = ["binds_variable", "uses_style", "uses_image"];
@@ -92,6 +109,46 @@ pub(crate) struct Definition {
 
 // ---- Extraction ----
 
+/// The namespace each library style and variable key has in this file, read from the cached
+/// copies that carry the key. `None` when a copy names no namespace or two copies disagree: a
+/// reference to that key keeps no namespace rather than borrowing one.
+pub(crate) type Libraries = HashMap<(&'static str, String), Option<String>>;
+
+/// `Libraries` for `tree`, every node visit and kept key charged first; `None` when `bounds`
+/// ran out.
+pub(crate) fn libraries(tree: &Tree, bounds: &mut Bounds) -> Option<Libraries> {
+    if !bounds.charge(tree.nodes.len(), 0) {
+        return None;
+    }
+    let mut out = Libraries::new();
+    for node in tree.nodes.values() {
+        let kind = match node.get("styleType") {
+            Some(_) => "style",
+            None if plugin_type(node) == "VARIABLE" => "variable",
+            None => continue,
+        };
+        let Some(key) = text(node, "key") else {
+            continue;
+        };
+        let ns = text(node, "sourceLibraryKey");
+        if !bounds.charge(1, 64 + key.len() + ns.map_or(0, str::len)) {
+            return None;
+        }
+        out.entry((kind, key.to_owned()))
+            .and_modify(|v| {
+                if v.as_deref() != ns {
+                    *v = None;
+                }
+            })
+            .or_insert(ns.map(str::to_owned));
+    }
+    Some(out)
+}
+
+fn text<'a>(node: &'a kiwi_schema::Value<'_>, field: &str) -> Option<&'a str> {
+    Some(node.get(field)?.as_string()).filter(|s| !s.is_empty())
+}
+
 /// The edges of one record, `contains` excluded (each record's `parent` is that edge). `None`
 /// when `bounds` ran out first. Prototype links the record inherits from its component
 /// definition are not verified to apply, so they are counted in `gaps.0` (unverified), not
@@ -103,8 +160,11 @@ pub(crate) fn extract(
     e: Option<&Expanded>,
     bounds: &mut Bounds,
     gaps: Option<(&mut usize, &mut usize)>,
+    libraries: Option<&Libraries>,
 ) -> Option<Vec<Edge>> {
     let mut out: Vec<Edge> = Vec::new();
+    // Library references are pushed where each use is read, between other relations' edges.
+    let mut library_seq = 0;
     let mut push = |bounds: &mut Bounds,
                     relation: &'static str,
                     target: Option<(&str, &str)>,
@@ -121,11 +181,17 @@ pub(crate) fn extract(
         if !bounds.charge(1, bytes) {
             return false;
         }
-        // Each relation's edges are pushed together, so its seq follows the last edge's.
-        let seq = out
-            .last()
-            .filter(|x| x.relation == relation)
-            .map_or(0, |x| x.seq + 1);
+        // Each other relation's edges are pushed together, so its seq follows the last edge's.
+        let seq = match relation {
+            LIBRARY => {
+                library_seq += 1;
+                library_seq - 1
+            }
+            _ => out
+                .last()
+                .filter(|x| x.relation == relation)
+                .map_or(0, |x| x.seq + 1),
+        };
         out.push(Edge {
             relation,
             seq,
@@ -136,6 +202,7 @@ pub(crate) fn extract(
         });
         true
     };
+    let mut main = None;
     if kind == "INSTANCE" {
         let recorded: Option<String>;
         let (target, basis, evidence) = match e {
@@ -153,6 +220,7 @@ pub(crate) fn extract(
             ),
         };
         let state = node_state(tree, target, "COMPONENT");
+        main = target.map(str::to_owned);
         let target = target.map(|t| ("", t));
         if !push(bounds, "instance_of", target, state, basis, evidence.into()) {
             return None;
@@ -181,6 +249,47 @@ pub(crate) fn extract(
     let Some((unverified, unread)) = gaps else {
         return Some(out);
     };
+    // A library reference is (kind, namespace, key) as a JSON array, which keeps them apart
+    // whatever characters they hold; with no namespace it stays unresolved. The namespace comes
+    // from a cached copy: a main's own, or for a style or variable the copies with its key.
+    let reference = |kind: &str, ns: Option<&str>, key: &str| {
+        // Measured on the borrowed strings first, so an overlong reference is never copied.
+        if kind.len() + ns.map_or(0, str::len) + key.len() > super::store::ID_BYTES {
+            return (None, "unsupported");
+        }
+        let state = if ns.is_some() {
+            "external"
+        } else {
+            "unresolved"
+        };
+        (Some(json!([kind, ns, key]).to_string()), state)
+    };
+    let version = |field: &str, v: Option<&str>| {
+        // An implausibly long version is left out rather than stored.
+        json!({"field": field, "version": v.filter(|v| v.len() <= 128)}).to_string()
+    };
+    let namespace = |kind: &'static str, key: &str| {
+        // An overlong key keeps no reference, so it is not copied for the lookup either.
+        let libraries = libraries.filter(|_| key.len() <= super::store::ID_BYTES);
+        libraries.and_then(|l| l.get(&(kind, key.to_owned())).cloned().flatten())
+    };
+    if libraries.is_some()
+        && let Some((node, copy)) = main.and_then(|m| Some((tree.nodes.get(&m).copied()?, m)))
+        && let Some(key) = text(node, "componentKey")
+    {
+        let (target, state) = reference("component", text(node, "sourceLibraryKey"), key);
+        let evidence = json!({"copy": copy}).to_string();
+        if !push(
+            bounds,
+            LIBRARY,
+            target.as_deref().map(|t| ("", t)),
+            state,
+            "cached_copy",
+            evidence,
+        ) {
+            return None;
+        }
+    }
     let mut fields = effective(tree, id, e, bounds, unread, false)?;
     // A text range row applies where a character uses its styleID. Its style reference is the
     // last row of that styleID, as in `rest::text_overrides`; its paints are the first row of
@@ -321,6 +430,25 @@ pub(crate) fn extract(
         let mut ids = Vec::new();
         crate::variables::aliases(&aliases, &mut ids);
         for variable in ids {
+            if let Some((key, v)) = variable
+                .strip_prefix("VariableID:")
+                .and_then(|v| v.split_once('/'))
+                .filter(|_| libraries.is_some())
+            {
+                let ns = namespace("variable", key);
+                let (target, state) = reference("variable", ns.as_deref(), key);
+                let evidence = version(&field, Some(v));
+                if !push(
+                    bounds,
+                    LIBRARY,
+                    target.as_deref().map(|t| ("", t)),
+                    state,
+                    "cached_copy",
+                    evidence,
+                ) {
+                    return None;
+                }
+            }
             let state = match variable.strip_prefix("VariableID:") {
                 Some(v) if v.contains('/') => "external",
                 Some(v) => node_state(tree, Some(v), "VARIABLE"),
@@ -354,6 +482,24 @@ pub(crate) fn extract(
         .into_iter()
         .filter_map(|k| Some((fields.get(k)?, k.to_owned())));
     for (r, evidence) in top.chain(rows) {
+        if let Some(key) = r["assetRef"]["key"]
+            .as_str()
+            .filter(|_| libraries.is_some())
+        {
+            let ns = namespace("style", key);
+            let (target, state) = reference("style", ns.as_deref(), key);
+            let evidence = version(&evidence, r["assetRef"]["version"].as_str());
+            if !push(
+                bounds,
+                LIBRARY,
+                target.as_deref().map(|t| ("", t)),
+                state,
+                "cached_copy",
+                evidence,
+            ) {
+                return None;
+            }
+        }
         let guid = crate::rest::guid(&r["guid"]);
         let (target, state) = match (r["assetRef"]["key"].as_str(), guid.as_deref()) {
             (Some(k), _) => (("StyleKey:", k), "external"),

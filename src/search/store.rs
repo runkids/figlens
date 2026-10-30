@@ -13,7 +13,7 @@ use serde_json::{Value as Json, json};
 
 use rusqlite::OptionalExtension;
 
-use super::usages::{self, Definition, Edge, Graph, KINDS, Key, RELATIONS, STATES};
+use super::usages::{self, Definition, Edge, Graph, Key, RELATIONS, STATES};
 use super::{
     BYTES, DEPTH, Index, IndexTerm, MAX_MARKS, NEVER, Page, Posting, RANKING, Record, TEXT_BYTES,
     WORK, tokenizer,
@@ -635,7 +635,7 @@ pub(super) fn charge_query(spent: &mut usize, size: usize) -> Result<()> {
 /// One edge from `row`'s columns `at..at + 6`: relation, seq, target, state, basis, evidence.
 fn edge(row: &rusqlite::Row, at: usize) -> Result<Edge> {
     Ok(Edge {
-        relation: known(&KINDS, text_at(row, at, ID_BYTES)?)?.ok_or_else(bad)?,
+        relation: known(&usages::STORED, text_at(row, at, ID_BYTES)?)?.ok_or_else(bad)?,
         seq: row.get(at + 1)?,
         target: text_at(row, at + 2, ID_BYTES)?,
         state: known(&STATES, text_at(row, at + 3, ID_BYTES)?)?.ok_or_else(bad)?,

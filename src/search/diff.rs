@@ -2093,7 +2093,7 @@ pub(crate) fn tracked(tree: &Tree, node: &str, deadline: Instant) -> (Index, Tra
     let mut facets = Vec::new();
     let present = tree.nodes.contains_key(node);
     let index = match present {
-        true => build_with(tree, node, bounds, true, Some(&mut facets)),
+        true => build_with(tree, node, bounds, true, false, Some(&mut facets)),
         false => Index::empty(),
     };
     let t = Tracked {
@@ -2383,7 +2383,7 @@ fn compare_trees(old: &Tree, new: &Tree, works: [usize; 3], node: &str) -> Pair 
         let mut facets = Vec::new();
         let present = tree.nodes.contains_key(node);
         let index = match present {
-            true => build_with(tree, node, bounds, true, Some(&mut facets)),
+            true => build_with(tree, node, bounds, true, false, Some(&mut facets)),
             false => Index::empty(),
         };
         Side {
