@@ -1652,6 +1652,27 @@ pub(crate) fn index_bytes(
     decode_index(bytes, label, scope, deadline, true)
 }
 
+/// `index_bytes` of a scope with change tracking on: the same full build, plus the facets and
+/// selected-node context change tracking stores beside it. With `deleted_ok` (a scope whose
+/// baseline was recorded), a stored scope gone from the file builds empty, so its removal is
+/// recorded; any other missing scope is refused as an untracked build refuses it.
+pub(crate) fn index_bytes_tracked(
+    bytes: Vec<u8>,
+    label: &str,
+    scope: &str,
+    deadline: Instant,
+    deleted_ok: bool,
+) -> Result<(Index, diff::Tracked), Box<dyn Error>> {
+    let mut doc = Document::from_bytes(&bytes, label)?;
+    drop(bytes);
+    let message = doc.take_message()?;
+    let tree = Tree::new(&message);
+    if !deleted_ok || scope.starts_with('I') {
+        require_scope(&tree, scope)?;
+    }
+    Ok(diff::tracked(&tree, scope, deadline))
+}
+
 fn decode_index(
     bytes: Vec<u8>,
     label: &str,

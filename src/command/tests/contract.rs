@@ -131,6 +131,11 @@ fn discovery_and_preparation_share_defaults() {
     for (name, _, params) in TOOLS {
         let args = if *name == "workflow" {
             json!({"topic":"build"})
+        } else if matches!(*name, "changes" | "watch") {
+            own(
+                name,
+                json!({"action":"ack","workspaceId":"ws_0000000000000000","consumer":"bot","cursor":"c1.00"}),
+            )
         } else {
             own(
                 name,
@@ -357,6 +362,11 @@ fn every_tool_rejects_missing_required_fields_and_wrong_types_before_io() {
     for (name, _, params) in TOOLS {
         let valid = if *name == "workflow" {
             json!({"topic":"build"})
+        } else if matches!(*name, "changes" | "watch") {
+            own(
+                name,
+                json!({"action":"ack","workspaceId":"ws_0000000000000000","consumer":"bot","cursor":"c1.00"}),
+            )
         } else {
             own(
                 name,

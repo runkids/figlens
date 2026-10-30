@@ -57,6 +57,8 @@ pub enum ErrorKind {
     CursorStale,
     /// A cursor's generation no longer exists.
     CursorExpired,
+    /// Retention deleted revisions after a change cursor or checkpoint before they were read.
+    EventGap,
     Cancelled,
     /// A workspace search would read more indexed data than one query supports.
     QueryWorkLimit,

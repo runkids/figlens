@@ -103,7 +103,7 @@ pi install npm:@runkids/figlens
 
 Pi を再起動するか `/reload` を実行し、普通の言葉で画面を依頼します。Pi が frame を見つけ、自動登録された MCP サーバー経由で読み取り、あなたのスタックで実装します。ノード ID もグローバル CLI も不要です。
 
-文言や画面を探すよう頼むと `.fig` を直接検索し、何も保存しません。繰り返し検索する場合は、デザインと範囲を指定してインデックスの有効化を Pi に頼みます。ローカルインデックスを一度だけ準備し（セットアップ用コマンドは不要）、完了までジョブの状態を伝え、再起動後や他のホストでも再利用します。インデックスのリセットにはあなたの明示的な指示が必要です。コンポーネント、変数、スタイル、画像の使用箇所を尋ねると、同じように正確な usages を返します。`.fig` を直接読むか、有効化後はそのインデックスを読みます。 詳細：[ローカルインデックス](#local-index)。
+文言や画面を探すよう頼むと `.fig` を直接検索し、何も保存しません。繰り返し検索する場合は、デザインと範囲を指定してインデックスの有効化を Pi に頼みます。ローカルインデックスを一度だけ準備し（セットアップ用コマンドは不要）、完了までジョブの状態を伝え、再起動後や他のホストでも再利用します。インデックスのリセットにはあなたの明示的な指示が必要です。コンポーネント、変数、スタイル、画像の使用箇所を尋ねると、同じように正確な usages を返します。`.fig` を直接読むか、有効化後はそのインデックスを読みます。 デザインの変更を追うよう Pi に頼むと、必要ならインデックスを用意してそのスコープを track し、前回の確認以降の変更を報告します。保存した 2 つのコピーの違いを尋ねた場合は `diff` で答え、何も開始しません。 詳細：[ローカルインデックス](#local-index)。
 
 - `/figlens plan <request>`は計画のみを作成し、アプリケーションを変更しません。
 - `/figlens yolo <request>` は計画、実装、確認を行い、自身の一時的な計画を片付けます。
@@ -131,7 +131,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 誰に�
 
 ## MCP サーバーとエージェント skill
 
-**MCP。** サーバーは stdio 経由でローカル実行され、`workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`export` を公開します。パスは絶対パスで渡します。`--root /path/to/designs`（複数指定可）を追加すると、すべてのファイルパスと出力パスを指定フォルダーに制限できます。figlens の既定ディレクトリ以外にインデックスを保存するには `--storage-root DIR`（複数指定可）が必要です。ラスターエクスポートは `maxSize`（デフォルト 1600 px）に縮小され、インライン画像は小さく保たれます。SVG はメタデータのみを返します。
+**MCP。** サーバーは stdio 経由でローカル実行され、`workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch`、`export` を公開します。パスは絶対パスで渡します。`--root /path/to/designs`（複数指定可）を追加すると、すべてのファイルパスと出力パスを指定フォルダーに制限できます。figlens の既定ディレクトリ以外にインデックスを保存するには `--storage-root DIR`（複数指定可）が必要です。ラスターエクスポートは `maxSize`（デフォルト 1600 px）に縮小され、インライン画像は小さく保たれます。SVG はメタデータのみを返します。
 
 エージェントは `workflow` で `build`、`audit`、`images`、`plan`、`planning-details`、または明示的に依頼された場合の `yolo` ガイドを取得できます。portable skill と同じソースを使うため、MCP 利用時の skill の別途インストールは任意です。実作業にはエージェント自身のプロジェクト・ブラウザツールとホストの権限を使います。ガイドを読むだけでは処理は実行されません。利用方法はクライアントの対応とモデルの動作に依存します。
 
@@ -224,8 +224,10 @@ Pi、OpenCode、OMP は、それぞれのオプトイン用エントリから同
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | ローカルの読み取り専用 viewer。`--out` でスタンドアロンのオフラインスナップショットを書き出し |
 | `compare <file> <nodes.json> <node>` | 同じ frame の REST エクスポートとの差分 |
 | `node <file> <node>` | `.fig` の生ノード 1 つ |
-| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset` | ユーザーごとの figlens state ディレクトリ、または workspace が以後記憶する `--storage DIR` の下にあるローカル workspace。`prepare <file> --scope NODE` でその範囲の検索インデックスを一度だけ作成し、以後 `search --file <file>`（または `--workspace DIR`）は再解析せず、workspace の全ソースをまとめてランク付けして答えます。`refresh` は変更されたファイル、`rebuild` はすべて（または `--source`/`--scope` の一つ）を再作成し、`clear` は使われていないインデックスを削除します。新しいインデックスができるまで以前のものが使われます。`reset` は workspace データベースだけを削除し、デザイン、エクスポート、記憶された場所には触れません |
+| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset\|track\|untrack` | ユーザーごとの figlens state ディレクトリ、または workspace が以後記憶する `--storage DIR` の下にあるローカル workspace。`prepare <file> --scope NODE` でその範囲の検索インデックスを一度だけ作成し、以後 `search --file <file>`（または `--workspace DIR`）は再解析せず、workspace の全ソースをまとめてランク付けして答えます。`refresh` は変更されたファイル、`rebuild` はすべて（または `--source`/`--scope` の一つ）を再作成し、`clear` は使われていないインデックスを削除します。新しいインデックスができるまで以前のものが使われます。`reset` は workspace データベースだけを削除し、デザイン、エクスポート、記憶された場所には触れません。`track --scope NODE` は baseline ビルドからそのスコープの変更を記録し、`untrack` は履歴を残したまま停止します。 |
 | `jobs status\|cancel <jobId>` | インデックス作成の状態表示または取り消し。`cancel` は作成が止まってから戻ります |
+| `changes --file <file>\|--id ID\|--workspace DIR [--source ID] [--scope NODE] [--consumer NAME\|--cursor C] [--revision R] [--limit N]` | 追跡中のスコープで記録された変更を古い順に返します。公開されたビルドごとに 1 リビジョン（baseline または changes）で、カバレッジと変更種別・ファセットごとの件数を含みます。`--revision` でそのリビジョンの変更ノードをページングします。`tracking` は変更を記録するために `index refresh` が必要なスコープを示します。読み取りのみ |
+| `watch ack --file <file>\|--id ID\|--workspace DIR --consumer NAME --cursor C [--source ID] [--scope NODE]` | 同じフィルターで処理した最後の `changes` ページの `nextCursor` まで、コンシューマーのチェックポイントを進めます。繰り返しても安全で、通常は前にしか進みません。ただし削除の後ろに残ったチェックポイントは、現在のリカバリーカーソルで戻され、保持されたリビジョンを読み直します。まだ通過していないリビジョンを保持期間の削除より前に発行したカーソルは `event_gap` になり、何も書き込みません |
 | `mcp` | stdio 経由のローカル MCP サーバー |
 | `update` | バイナリを最新リリースに置き換え |
 

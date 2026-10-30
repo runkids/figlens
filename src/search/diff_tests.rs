@@ -1505,31 +1505,33 @@ fn scoped(old: K<'static>, new: K<'static>, node: &str) -> Json {
     .unwrap()
 }
 
+/// Text style 20 at `font`, used by a layer of frame 10 but outside it.
+fn styled(font: f32) -> K<'static> {
+    doc(vec![
+        node(
+            20,
+            Some(1),
+            "TEXT",
+            "Body",
+            vec![("fontSize", K::Float(font))],
+        ),
+        node(10, Some(1), "FRAME", "Home", vec![]),
+        node(
+            11,
+            Some(10),
+            "TEXT",
+            "Title",
+            vec![
+                text("Hi"),
+                ("styleIdForText", obj(vec![("guid", guid(20))])),
+            ],
+        ),
+    ])
+}
+
 #[test]
 fn a_text_style_outside_the_scope_makes_coverage_partial_instead_of_unchanged() {
     // The style's own record changes, but only a layer referencing it is in scope.
-    let styled = |font: f32| {
-        doc(vec![
-            node(
-                20,
-                Some(1),
-                "TEXT",
-                "Body",
-                vec![("fontSize", K::Float(font))],
-            ),
-            node(10, Some(1), "FRAME", "Home", vec![]),
-            node(
-                11,
-                Some(10),
-                "TEXT",
-                "Title",
-                vec![
-                    text("Hi"),
-                    ("styleIdForText", obj(vec![("guid", guid(20))])),
-                ],
-            ),
-        ])
-    };
     let out = scoped(styled(12.0), styled(16.0), "0:10");
     assert_eq!(
         (&out["coverage"]["complete"], &out["coverage"]["reasons"]),
@@ -1829,6 +1831,30 @@ fn renaming_a_component_property_definition_is_a_properties_change() {
     );
 }
 
+/// A main component outside frame `0:10` with one Boolean definition, and an instance of it in
+/// the frame.
+fn used(name: &str, default: bool) -> K<'static> {
+    doc(vec![
+        node(
+            20,
+            Some(1),
+            "COMPONENT",
+            "Button",
+            vec![(
+                "componentPropDefs",
+                K::Array(vec![obj(vec![
+                    ("id", guid(70)),
+                    ("name", K::String(name.to_owned())),
+                    ("type", K::Enum("ComponentPropType", "BOOL")),
+                    ("initialValue", obj(vec![("boolValue", K::Bool(default))])),
+                ])]),
+            )],
+        ),
+        node(10, Some(1), "FRAME", "Home", vec![]),
+        instance(11, 10, "Button", 20, vec![]),
+    ])
+}
+
 #[test]
 fn a_variant_whose_set_is_outside_the_scope_makes_coverage_partial() {
     // The set's definition is renamed and its default flipped; the variant inherits it through
@@ -1897,27 +1923,6 @@ fn a_variant_whose_set_is_outside_the_scope_makes_coverage_partial() {
 fn a_main_outside_the_scope_makes_coverage_partial_when_its_property_definitions_change() {
     // Only the instance is in scope; its main's Boolean definition is renamed and its default
     // flipped, which changes the instance's emitted componentProperties.
-    let used = |name: &str, default: bool| {
-        doc(vec![
-            node(
-                20,
-                Some(1),
-                "COMPONENT",
-                "Button",
-                vec![(
-                    "componentPropDefs",
-                    K::Array(vec![obj(vec![
-                        ("id", guid(70)),
-                        ("name", K::String(name.to_owned())),
-                        ("type", K::Enum("ComponentPropType", "BOOL")),
-                        ("initialValue", obj(vec![("boolValue", K::Bool(default))])),
-                    ])]),
-                )],
-            ),
-            node(10, Some(1), "FRAME", "Home", vec![]),
-            instance(11, 10, "Button", 20, vec![]),
-        ])
-    };
     let out = scoped(used("Show icon", true), used("Has icon", false), "0:10");
     assert_eq!(
         (
@@ -1933,6 +1938,185 @@ fn a_main_outside_the_scope_makes_coverage_partial_when_its_property_definitions
                 {"reason": "definition_not_compared", "side": "new", "count": 1},
             ])
         )
+    );
+}
+
+/// A workspace schema in memory, with `trees` saved as generations 1, 2, … of scope `0:0`.
+fn saved(trees: &[&Tree], scope: &str) -> rusqlite::Connection {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(&format!(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+         CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+         added_at_ms INTEGER NOT NULL) STRICT; {} {} {}",
+        crate::workspace::V2,
+        crate::workspace::V3,
+        crate::workspace::V4
+    ))
+    .unwrap();
+    for (i, tree) in trees.iter().enumerate() {
+        let gen_id = i as i64 + 1;
+        conn.execute(
+            "INSERT INTO generations (gen, source_id, membership, scope, versions, job_id, state,
+             created_ms) VALUES (?1, 's', 'm', ?2, 'v', 'j', 'building', 0)",
+            rusqlite::params![gen_id, scope],
+        )
+        .unwrap();
+        let (index, tracked) = tracked(tree, scope, Instant::now() + DEADLINE);
+        crate::search::store::save(
+            &mut conn,
+            gen_id,
+            &index,
+            &|_| Ok(()),
+            &mut |_, _, _| Ok(()),
+        )
+        .unwrap();
+        save_facets(&mut conn, gen_id, &tracked, &|_| Ok(()), &mut |_, _, _| {
+            Ok(())
+        })
+        .unwrap();
+    }
+    conn
+}
+
+#[test]
+fn stored_generations_diff_exactly_like_the_live_trees() {
+    let mut moved = screen("Hi", 0.0, 420.0);
+    moved.push(node(14, Some(1), "FRAME", "Other", vec![]));
+    moved[3] = node(13, Some(14), "RECTANGLE", "Same", vec![fill(0.5)]);
+    let (old, new) = (doc(screen("Hello", 1.0, 400.0)), doc(moved));
+    let (a, b) = (Tree::new(&old), Tree::new(&new));
+    let live = page(
+        &compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0"),
+        &req(LIMIT, None),
+        false,
+    )
+    .unwrap();
+    let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
+    let conn = saved(&[&a, &b], "0:0");
+    let stored = stored_diff(&conn, (1, side("old")), (2, side("new")), &req(LIMIT, None));
+    let unstamped = |mut v: Json| {
+        v["source"]["freshness"]["hashedAtMs"].take();
+        v
+    };
+    assert_eq!(unstamped(stored.unwrap()), unstamped(live));
+}
+
+#[test]
+fn stored_generations_report_an_outside_definition_like_the_live_trees() {
+    outside_parity(styled(12.0), styled(16.0));
+    outside_parity(used("Show icon", true), used("Has icon", false));
+}
+
+/// Diffs `old` and `new` from stored generations of frame `0:10` and asserts the same partial
+/// coverage reasons as the live trees.
+fn outside_parity(old: K<'static>, new: K<'static>) {
+    let (a, b) = (Tree::new(&old), Tree::new(&new));
+    let mut r = req(LIMIT, None);
+    r.node = "0:10".into();
+    let live = page(
+        &compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:10"),
+        &r,
+        false,
+    )
+    .unwrap();
+    let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
+    let conn = saved(&[&a, &b], "0:10");
+    let stored = stored_diff(&conn, (1, side("old")), (2, side("new")), &r).unwrap();
+    let coverage = |v: &Json| {
+        (
+            v["coverage"]["complete"].clone(),
+            v["coverage"]["reasons"].clone(),
+        )
+    };
+    assert_eq!(
+        coverage(&stored),
+        (json!(false), coverage(&live).1),
+        "{stored}"
+    );
+}
+
+#[test]
+fn tampered_or_other_layout_facets_are_refused_not_compared() {
+    let old = doc(screen("Hello", 1.0, 400.0));
+    let tree = Tree::new(&old);
+    let source = json!({"sourceId": "local:a", "snapshotId": "sha256:a"});
+    let run = |conn: &rusqlite::Connection| {
+        let err = stored_diff(
+            conn,
+            (1, source.clone()),
+            (1, source.clone()),
+            &req(LIMIT, None),
+        )
+        .unwrap_err();
+        err.downcast_ref::<FigError>().map(FigError::kind)
+    };
+    let conn = saved(&[&tree], "0:0");
+    conn.execute(
+        "UPDATE facets SET blob = CAST('[[\"bogus\",null]]' AS BLOB) WHERE rid = 1",
+        [],
+    )
+    .unwrap();
+    assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
+    let conn = saved(&[&tree], "0:0");
+    conn.execute(
+        "INSERT INTO facets SELECT gen, MAX(rid) + 1, CAST('[]' AS BLOB) FROM facets",
+        [],
+    )
+    .unwrap();
+    assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
+    let conn = saved(&[&tree], "0:0");
+    conn.execute("UPDATE facet_sets SET facet_version = 'diff-v0:0'", [])
+        .unwrap();
+    assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
+}
+
+#[test]
+fn stored_facets_pay_for_their_text_before_parsing_it() {
+    // Unparseable text past the budget is a limit, not a refused layout: no parse ran.
+    let mut spent = BYTES - 3;
+    let err = decode("{{{{", &mut spent).err().unwrap();
+    assert_eq!(
+        err.downcast_ref::<FigError>().map(FigError::kind),
+        Some(ErrorKind::QueryWorkLimit)
+    );
+}
+
+#[test]
+fn stored_facets_keep_a_readable_value_and_charge_text_metadata_and_value() {
+    let text = format!(r#"[["fontSize","{}",12]]"#, "a".repeat(64));
+    let mut spent = 0;
+    let facets = decode(&text, &mut spent).unwrap();
+    assert_eq!(
+        (facets.fields[0].value.clone(), spent),
+        (
+            Some(serde_json::json!(12)),
+            text.len() + FIELD_META + "fontSize".len() + held_value(&serde_json::json!(12), 2)
+        )
+    );
+}
+
+#[test]
+fn stored_facets_charge_a_kept_value_after_its_metadata() {
+    let text = format!(r#"[["fontSize","{}",12]]"#, "a".repeat(64));
+    // Text and metadata fit; the value does not.
+    let held = held_value(&serde_json::json!(12), 2);
+    let mut spent = BYTES - text.len() - FIELD_META - "fontSize".len() - held + 1;
+    let err = decode(&text, &mut spent).err().unwrap();
+    assert_eq!(
+        err.downcast_ref::<FigError>().map(FigError::kind),
+        Some(ErrorKind::QueryWorkLimit)
+    );
+}
+
+#[test]
+fn stored_facets_charge_their_text_then_each_field_as_the_live_build_does() {
+    // Once the text is paid for, nothing is left for the field's metadata plus key.
+    let text = r#"[["fontSize",null]]"#;
+    let mut spent = BYTES - text.len();
+    let err = decode(text, &mut spent).err().unwrap();
+    assert_eq!(
+        err.downcast_ref::<FigError>().map(FigError::kind),
+        Some(ErrorKind::QueryWorkLimit)
     );
 }
 

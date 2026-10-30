@@ -103,7 +103,7 @@ pi install npm:@runkids/figlens
 
 重启 Pi 或执行 `/reload`，然后用日常语言要一个画面。Pi 会找到 frame，通过自动注册的 MCP server 读取，并用你的技术栈构建。不需要 node ID，也不需要全局 CLI。
 
-请它找文案或画面时，会直接搜索 `.fig`，不保存任何东西。需要反复搜索时，请 Pi 为某个设计和范围启用索引：它会准备一次本地索引（不需要设置命令），在完成前回报任务状态，之后在重启和其他 host 中继续使用。重置该索引需要你明确要求。询问某个 component、variable、style 或图片用在哪里时，会以同样方式列出精确的 usages：直接读 `.fig`，或在启用索引后读该索引。 详情：[本地索引](#local-index)。
+请它找文案或画面时，会直接搜索 `.fig`，不保存任何东西。需要反复搜索时，请 Pi 为某个设计和范围启用索引：它会准备一次本地索引（不需要设置命令），在完成前回报任务状态，之后在重启和其他 host 中继续使用。重置该索引需要你明确要求。询问某个 component、variable、style 或图片用在哪里时，会以同样方式列出精确的 usages：直接读 `.fig`，或在启用索引后读该索引。 请 Pi 跟踪某个设计的变更时，它会在需要时准备索引并 track 该范围，报告上次检查以来的变化；询问两个已保存副本的差异时则用 `diff` 回答，不会启动任何东西。 详情：[本地索引](#local-index)。
 
 - `/figlens plan <request>` 只生成计划，不修改应用程序。
 - `/figlens yolo <request>` 规划、构建、检查，并清理自己创建的临时计划。
@@ -131,7 +131,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可发�
 
 ## MCP server 与 agent skill
 
-**MCP。** server 在本地通过 stdio 运行，提供 `workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs` 和 `export`。请传入绝对路径。加上 `--root /path/to/designs`（可重复）可把所有文件和输出路径限制在指定文件夹内。把索引存放在 figlens 默认目录之外时，需要 `--storage-root DIR`（可重复）。光栅导出会缩小到 `maxSize`（默认 1600 px），让内联图片保持小巧；SVG 只返回 metadata。
+**MCP。** server 在本地通过 stdio 运行，提供 `workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch` 和 `export`。请传入绝对路径。加上 `--root /path/to/designs`（可重复）可把所有文件和输出路径限制在指定文件夹内。把索引存放在 figlens 默认目录之外时，需要 `--storage-root DIR`（可重复）。光栅导出会缩小到 `maxSize`（默认 1600 px），让内联图片保持小巧；SVG 只返回 metadata。
 
 agent 可通过 `workflow` 读取内建的 `build`、`audit`、`images`、`plan`、`planning-details`，或明确请求时的 `yolo` 指引。它们与 portable skill 共用来源；MCP 用户可自行选择是否另装 skill。实际工作仍由 agent 使用项目及浏览器工具，并遵守 host 权限。读取指引不会执行工作流程；使用方式取决于客户端支持与模型行为。
 
@@ -224,8 +224,10 @@ Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，works
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 本地只读 viewer；`--out` 写出独立的离线快照 |
 | `compare <file> <nodes.json> <node>` | 与同一 frame 的 REST 导出做差异比较 |
 | `node <file> <node>` | 单个原始 `.fig` 节点 |
-| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset` | 用户 figlens state 目录中的本地 workspace，或位于 workspace 之后会记住的 `--storage DIR` 下。`prepare <file> --scope NODE` 为该范围建立一次搜索索引；之后 `search --file <file>`（或 `--workspace DIR`）不再解析文件，跨 workspace 的所有来源统一排序作答。`refresh` 重建有变更的文件，`rebuild` 重建全部或单一 `--source`/`--scope`，`clear` 删除未使用的索引；新索引就绪前继续使用旧索引。`reset` 只删除 workspace 数据库，不会删除设计、导出或记住的位置 |
+| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset\|track\|untrack` | 用户 figlens state 目录中的本地 workspace，或位于 workspace 之后会记住的 `--storage DIR` 下。`prepare <file> --scope NODE` 为该范围建立一次搜索索引；之后 `search --file <file>`（或 `--workspace DIR`）不再解析文件，跨 workspace 的所有来源统一排序作答。`refresh` 重建有变更的文件，`rebuild` 重建全部或单一 `--source`/`--scope`，`clear` 删除未使用的索引；新索引就绪前继续使用旧索引。`reset` 只删除 workspace 数据库，不会删除设计、导出或记住的位置。`track --scope NODE` 从 baseline 构建开始记录该范围的变更；`untrack` 停止记录并保留历史。 |
 | `jobs status\|cancel <jobId>` | 查看或取消索引构建；`cancel` 在构建停止后才返回 |
+| `changes --file <file>\|--id ID\|--workspace DIR [--source ID] [--scope NODE] [--consumer NAME\|--cursor C] [--revision R] [--limit N]` | 已跟踪范围记录的变更，从最旧开始：每次发布的构建一个修订（baseline 或 changes），含覆盖情况及按变更类型与 facet 的计数；`--revision` 分页列出该修订变更的节点；`tracking` 指出哪些范围需要 `index refresh` 才能记录变更。只读 |
+| `watch ack --file <file>\|--id ID\|--workspace DIR --consumer NAME --cursor C [--source ID] [--scope NODE]` | 把 consumer 的检查点移到它以相同筛选条件处理完的最后一页 `changes` 的 `nextCursor`；重复执行是安全的，而且只会前进；唯一例外是当前的 recovery cursor 会把落在删除之后的检查点退回，以重读保留的 revision；在保留策略删除它尚未经过的 revision 之前发出的 cursor 会得到 `event_gap`，不写入任何内容 |
 | `mcp` | 通过 stdio 运行的本地 MCP server |
 | `update` | 用最新 release 替换可执行文件 |
 

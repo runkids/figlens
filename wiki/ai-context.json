@@ -151,10 +151,18 @@
       ]
     },
     "diff": {
-      "description": "Changing the diff engine: facets, matching, coverage, pair budgets, paging or its cursor.",
+      "description": "Changing the diff engine (facets, matching, coverage, pair budgets, paging or its cursor).",
       "sources": [
         {
           "path": "wiki/diff.md"
+        }
+      ]
+    },
+    "changes": {
+      "description": "Changing change tracking, its revisions, changes reads or watch ack checkpoints.",
+      "sources": [
+        {
+          "path": "wiki/changes.md"
         }
       ]
     },
@@ -179,6 +187,7 @@
     "wiki/prototype.md": "Field reference linked from fig-format.md, states.md and preview.md; read when changing prototype projection, provenance or unknown markers.",
     "wiki/states.md": "Field reference linked from fig-format.md and wiki/README.md; read when changing related-variant inventory or its limits.",
     "wiki/semantics.md": "Field reference linked from fig-format.md and README.md; read when changing partial semantics or provenance.",
+    "wiki/mcp-contract.md": "Field reference linked from mcp.md; read when changing an MCP tool parameter range, default or failure code.",
     "wiki/preview-api.md": "Field reference linked from preview.md; read when changing window.figlens calls or the preview image and snapshot budgets."
   }
 }
