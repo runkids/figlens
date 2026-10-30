@@ -4275,6 +4275,22 @@ fn mcp_saves_a_typed_query_evaluates_it_and_a_confined_caller_cannot_read_it() {
     let elsewhere = std::fs::canonicalize(elsewhere).unwrap();
     let mut confined = Mcp::start(&env, &["--root", elsewhere.to_str().unwrap()]);
     let hidden = confined.call("changes", json!({"workspaceId": ws, "subscriptionId": id}));
+    // list by subscriptionId reads only that row, through MCP and the CLI alike.
+    let list = json!({"action": "list", "workspaceId": ws, "subscriptionId": id});
+    let only = |reply: &Value| -> Vec<Value> {
+        reply["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["subscriptionId"].clone())
+            .collect()
+    };
+    let listed = (
+        only(&mcp.call("watch", list.clone())["structuredContent"]),
+        only(&t.watch("list", &["--subscription", id.as_str().unwrap()])),
+        only(&confined.call("watch", list)["structuredContent"]),
+    );
+    assert_eq!(listed, (vec![id.clone()], vec![id.clone()], vec![]));
     assert_eq!(
         json!([
             subscribed["subscription"]["types"],

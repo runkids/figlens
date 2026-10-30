@@ -3231,6 +3231,84 @@ fn an_unpublished_set_names_each_member_to_refresh_and_never_the_sentinel() {
 }
 
 #[test]
+fn subscribe_refuses_each_conflicting_or_missing_target_before_opening_the_workspace() {
+    use crate::workspace::changes::subscriptions::{Subscribe, subscribe};
+    let d = TestDir::new();
+    let (storage, select, _) = workspace(&d, 1);
+    let base = || Subscribe {
+        consumer: Some("a"),
+        source: Some("s"),
+        scope: None,
+        node: None,
+        owner: None,
+        query: None,
+        types: Vec::new(),
+        sources: None,
+        library: None,
+    };
+    let cases = [
+        (
+            Subscribe {
+                query: Some("badge"),
+                library: Some(reference("k", None)),
+                ..base()
+            },
+            "pass query or library, not both",
+        ),
+        (
+            Subscribe {
+                source: None,
+                sources: Some("visible"),
+                ..base()
+            },
+            "sources applies to a saved query",
+        ),
+        (
+            Subscribe {
+                sources: Some("visible"),
+                query: Some("badge"),
+                ..base()
+            },
+            "pass sourceId or sources, not both",
+        ),
+        (
+            Subscribe {
+                source: None,
+                ..base()
+            },
+            "pass sourceId",
+        ),
+        (
+            Subscribe {
+                query: Some("badge"),
+                node: Some("1:2"),
+                ..base()
+            },
+            "or node, not both",
+        ),
+        (
+            Subscribe {
+                library: Some(reference("k", None)),
+                node: Some("1:2"),
+                ..base()
+            },
+            "or node, not both",
+        ),
+        (
+            Subscribe {
+                types: vec!["FRAME".into()],
+                ..base()
+            },
+            "type filters a saved query",
+        ),
+    ];
+    for (req, expected) in cases {
+        let err = subscribe(&storage, &select, &req).unwrap_err().to_string();
+        assert!(err.contains(expected), "{expected}: {err}");
+    }
+}
+
+#[test]
 fn a_listed_set_is_bounded_before_any_member_is_resolved() {
     let d = TestDir::new();
     let (storage, select, _conn, srcs) = library_workspace(&d, 1);
