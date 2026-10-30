@@ -2271,6 +2271,13 @@ fn tampered_or_other_layout_facets_are_refused_not_compared() {
     conn.execute("UPDATE facet_sets SET facet_version = 'diff-v0:0'", [])
         .unwrap();
     assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
+    // Facets stored by diff-v9, before collections and inherited modes were kept, are never
+    // read as knowing none: same fields, older version.
+    let conn = saved(&[&tree], "0:0");
+    let v9 = facet_version().replacen(VERSION, "diff-v9", 1);
+    conn.execute("UPDATE facet_sets SET facet_version = ?1", [v9])
+        .unwrap();
+    assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
     // An inherited-mode count past the walk's bound is refused, not added.
     let conn = saved(&[&tree], "0:0");
     conn.execute(
