@@ -248,6 +248,13 @@ fn searched(
     }
     let versions = search::store::versions();
     let now = now_ms();
+    if q.cursor_expired(now) {
+        return Err(FigError::new(
+            ErrorKind::CursorExpired,
+            "this search cursor's lease ended; search again without cursor",
+        )
+        .into());
+    }
     let mut states = Vec::new();
     let mut loaded: Vec<(Index, Json, i64, Json)> = Vec::new();
     let mut steps = Vec::new();
@@ -433,7 +440,7 @@ fn searched(
             rids.dedup();
         }
     }
-    let mut out = search::corpus_page(&parts(&loaded), &q, req, ranked)?;
+    let mut out = search::corpus_page(&parts(&loaded), &q, req, ranked, now)?;
     let left_out: Vec<&Json> = states.iter().filter(|s| s["state"] != "ready").collect();
     if !left_out.is_empty() {
         let coverage = &mut out["coverage"];

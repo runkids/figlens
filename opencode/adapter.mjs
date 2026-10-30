@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readlink, realpath, rm } from 'node:fs/promises';
+import { mkdir, readFile, readlink, realpath, rm, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { homedir, tmpdir } from 'node:os';
@@ -106,7 +106,8 @@ export function cliArgs(tool, input) {
   return ['index', action, ...operands, ...flag('--workspace', input.workspace), ...flag('--id', input.workspaceId),
     ...(['prepare', 'add', 'relocate'].includes(action) ? [] : flag('--file', input.file)),
     ...(['remove', 'relocate'].includes(action) ? [] : flag('--source', input.sourceId)), ...storage,
-    ...flag('--scope', input.scope), ...flag('--request-id', input.requestId), ...flag('--replace-unavailable', input.replaceUnavailable)];
+    ...flag('--scope', input.scope), ...flag('--request-id', input.requestId), ...flag('--replace-unavailable', input.replaceUnavailable),
+    ...flag('--cursor', input.cursor)];
 }
 
 // Index actions that delete a database or start a new one elsewhere; each needs its own host permission.
@@ -372,9 +373,11 @@ export function createAdapter(ctx, entry = import.meta.url) {
         return path.join(await destination(path.dirname(file)), path.basename(file));
       }
     };
+    // A path as the CLI gets it: unnormalized, so a `..` after a link goes where the link leads.
+    const unnormalized = file => path.isAbsolute(file) ? file : `${current.flow.root}${path.sep}${file}`;
     // Each path as requested and as its canonical destination.
     const both = async files => [...new Set((await Promise.all(files.map(async file =>
-      [path.resolve(current.flow.root, file), await destination(path.isAbsolute(file) ? file : `${current.flow.root}${path.sep}${file}`)]))).flat())];
+      [path.resolve(current.flow.root, file), await destination(unnormalized(file))]))).flat())];
     const edit = async files => current.authorize('edit', await both(files));
     // The CLI downloads a gs:// design into its own cache, which this path cannot authorize, so only MCP serves it.
     if ([input.file, input.old].some(file => file?.startsWith('gs://'))) throw new Error('The OpenCode CLI path reads local .fig files only. Enable the figlens MCP server for a gs:// design, or pass a local copy.');
@@ -383,6 +386,15 @@ export function createAdapter(ctx, entry = import.meta.url) {
     // diff reads two designs: each is asked on its own, both before the command runs.
     if (tool === 'diff') await current.authorize('read', await both([input.old]));
     if (input.file && (tool !== 'index' || ['prepare', 'add', 'relocate'].includes(input.action))) await current.authorize('read', await both([input.file]));
+    // A directory add reads every .fig the binary lists under it, so each is asked before anything registers.
+    if (tool === 'index' && input.action === 'add' && (await stat(unnormalized(input.file)).catch(() => null))?.isDirectory()) {
+      const { directory } = await invoke([...args, '--dry-run']);
+      if (!Array.isArray(directory?.files)) throw missing("a directory's files");
+      if (directory.files.length) await current.authorize('read', directory.files);
+      // The binary refuses the add when the file set changed since this dry run, so nothing unasked registers.
+      if (typeof directory.manifest !== 'string') throw missing("a directory's manifest");
+      args.push('--manifest', directory.manifest);
+    }
     // Workspace search, usages and changes, refresh, rebuild and track read the registered designs' content, which this session may deny.
     // `only` names the sources read; null reads every one.
     const readSources = async ({ state, sources }, only = input.sourceId ? [input.sourceId] : null) => {

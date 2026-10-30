@@ -317,13 +317,21 @@ fn ask(
             )
         };
         // One generation id per source at most; checked before splitting it.
-        if c.len() > 64 + 21 * generations.len() {
+        if c.len() > 80 + 21 * generations.len() {
             return Err(bad());
         }
-        let parts: Vec<&str> = c.splitn(6, '.').collect();
-        let ["l2", fp, at, rid, seq, paged] = parts[..] else {
+        let parts: Vec<&str> = c.splitn(7, '.').collect();
+        let ["l2", fp, at, rid, seq, paged, issued] = parts[..] else {
             return Err(bad());
         };
+        // The lease ends before any binding is compared, as for a search cursor.
+        if crate::search::cursor_lease_ended(issued.parse().map_err(|_| bad())?, now_ms()) {
+            return Err(FigError::new(
+                ErrorKind::CursorExpired,
+                "this usages cursor's lease ended; query usages again without cursor",
+            )
+            .into());
+        }
         // Changed filters, visibility or readiness are stale before any generation is looked up.
         if fp != fingerprint {
             return Err(FigError::new(
@@ -693,7 +701,7 @@ fn ask(
                     .iter()
                     .map(|(_, g)| g.map_or("n".into(), |g| g.to_string()))
                     .collect();
-                json!(format!("l2.{fingerprint}.{i}.{r}.{q}.{}", paged.join("-")))
+                json!(format!("l2.{fingerprint}.{i}.{r}.{q}.{}.{}", paged.join("-"), now_ms()))
             }
             _ => Json::Null,
         },

@@ -48,7 +48,7 @@ pub(crate) fn batches<T>(items: &[T], size: impl Fn(&T) -> usize) -> impl Iterat
 /// never reused.
 pub(crate) fn versions() -> String {
     json!({"ranking": RANKING, "tokenizer": tokenizer(), "relations": RELATIONS,
-        "budgets": [WORK, BYTES, TEXT_BYTES, DEPTH, MAX_MARKS]})
+        "fingerprint": fingerprint::VERSION, "budgets": [WORK, BYTES, TEXT_BYTES, DEPTH, MAX_MARKS]})
     .to_string()
 }
 
@@ -943,6 +943,13 @@ pub(crate) fn print(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_generation_with_other_fingerprints_is_not_reused() {
+        // Stored fingerprints hash their version, so it must be part of the reuse key.
+        let v: Json = serde_json::from_str(&versions()).unwrap();
+        assert_eq!(v["fingerprint"], fingerprint::VERSION);
+    }
 
     #[test]
     fn write_batches_end_at_their_byte_budget_or_row_count() {

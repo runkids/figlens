@@ -150,7 +150,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "cursor",
                 "string",
                 false,
-                "nextCursor from the previous page of the same query, filters and snapshot",
+                "nextCursor from the previous page of the same query, filters and snapshot; a workspace cursor lasts one hour (then cursor_expired)",
             ),
             (
                 "includeHidden",
@@ -174,7 +174,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "usages",
-        "Exact relations of one node or resource in one stored scope, from the same effective index as search (nested instances and swaps included): direction in (default) lists the locations that point at it, out lists what it points at; with out, an instance_of, uses_style or binds_variable result whose cached library copy names it carries library {kind, namespace, key}, the selector the library argument takes. Relations: instance_of (instance to main component, recorded symbolData or resolved definition/swap), variant_of (component to its set; a COMPONENT_SET node also lists its known members and returns their instances with via), binds_variable (paint, effect and field variable bindings, local or library), uses_style, uses_image (a text range's style comes from the last row of its styleID, as REST nodes give it; its paint images and variables from the first such row with fills, as rendered), prototype_target (recorded transitions; never a claim that a flow is reachable) and contains (asked for explicitly). Every result keeps an exact ref {sourceId, snapshotId, nodeId}, relation, state (resolved, missing, unresolved, unsupported, external, recorded), basis (recorded or resolved), evidence, page, scopeRoot and path; names never establish identity. The definition may lie outside the scope; scope limits only the returned locations. No total is reported; coverage says complete or partial with reasons (work limits, hidden content not expanded, truncated members, library_identity unavailable), and nextCursor pages in a stable order. Give file to read that .fig now (nothing is written), or workspaceId to read a source's prepared index of exactly this scope (never builds). Pass snapshotId from the ref you hold: another current snapshot is source_stale. With workspaceId, library {kind, namespace, key} instead of node or resource lists uses_library locations of that library component, style or variable across every visible source's prepared scope (basis cached_copy: the namespace comes from each file's cached copy); the definition stays unresolved (library_source_unproven) unless library.definition selects it by exact ref (selected, keyEvidence unverified), coverage lists each source's state and reasons (source_not_ready, index_partial, namespace_unknown, hidden_excluded, authorization_restricted), and snapshotId, relation and direction do not apply; its results carry ref, name, type, relation, basis, state, evidence, hidden, internal, page and scopeRoot but no path or origin.",
+        "Exact relations of one node or resource in one stored scope, from the same effective index as search (nested instances and swaps included): direction in (default) lists the locations that point at it, out lists what it points at; with out, an instance_of, uses_style or binds_variable result whose cached library copy names it carries library {kind, namespace, key}, the selector the library argument takes. Relations: instance_of (instance to main component, recorded symbolData or resolved definition/swap), variant_of (component to its set; a COMPONENT_SET node also lists its known members and returns their instances with via), binds_variable (paint, effect and field variable bindings, local or library), uses_style, uses_image (a text range's style comes from the last row of its styleID, as REST nodes give it; its paint images and variables from the first such row with fills, as rendered), prototype_target (recorded transitions; never a claim that a flow is reachable) and contains (asked for explicitly). Every result keeps an exact ref {sourceId, snapshotId, nodeId}, relation, state (resolved, missing, unresolved, unsupported, external, recorded), basis (recorded or resolved), evidence, page, scopeRoot and path; names never establish identity. The definition may lie outside the scope; scope limits only the returned locations. No total is reported; coverage says complete or partial with reasons (work limits, hidden content not expanded, truncated members, library_identity unavailable), and nextCursor pages in a stable order (a workspace library cursor lasts one hour, then cursor_expired). Give file to read that .fig now (nothing is written), or workspaceId to read a source's prepared index of exactly this scope (never builds). Pass snapshotId from the ref you hold: another current snapshot is source_stale. With workspaceId, library {kind, namespace, key} instead of node or resource lists uses_library locations of that library component, style or variable across every visible source's prepared scope (basis cached_copy: the namespace comes from each file's cached copy); the definition stays unresolved (library_source_unproven) unless library.definition selects it by exact ref (selected, keyEvidence unverified), coverage lists each source's state and reasons (source_not_ready, index_partial, namespace_unknown, hidden_excluded, authorization_restricted), and snapshotId, relation and direction do not apply; its results carry ref, name, type, relation, basis, state, evidence, hidden, internal, page and scopeRoot but no path or origin.",
         &[
             (
                 "file",
@@ -423,7 +423,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "index",
-        "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes); refresh rebuilds changed scopes and rebuild every indexed scope even when unchanged (sourceId and scope narrow both), while the previous index keeps serving; track starts recording one scope's changes, read with the changes tool, with a baseline build, and untrack stops it, keeping its history; a reply that could not admit every job has admission partial and deferred items, each with the nextStep that builds it later; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
+        "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes; add of a directory registers up to 10 .fig files under it in one step, in path order, never through a link leading out of it, and replies directory {added, existing, skipped, notFig, truncated, nextCursor}; pass nextCursor as cursor to add the next 10; a repeat adds nothing, and a moved file is a new source unless relocated); refresh rebuilds changed scopes and rebuild every indexed scope even when unchanged (sourceId and scope narrow both), while the previous index keeps serving; track starts recording one scope's changes, read with the changes tool, with a baseline build, and untrack stops it, keeping its history; a reply that could not admit every job has admission partial and deferred items, each with the nextStep that builds it later; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
         &[
             (
                 "action",
@@ -435,7 +435,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "file",
                 "string",
                 false,
-                "a local .fig: the source to prepare, add or relocate to; also selects its source-scoped workspace",
+                "a local .fig: the source to prepare, add or relocate to (add also takes a directory under the roots, or without --root a gs://bucket/object, downloaded pinned to its generation); also selects its source-scoped workspace",
             ),
             (
                 "workspace",
@@ -468,6 +468,12 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "boolean",
                 false,
                 "prepare only, after the user confirmed: recreate a workspace whose storage is unavailable, denied or unreadable in storage, knowing only file; the old files stay untouched",
+            ),
+            (
+                "cursor",
+                "string",
+                false,
+                "add of a directory only: directory.nextCursor of the previous add of it; a cursor of another directory is cursor_stale",
             ),
         ],
     ),
@@ -674,13 +680,14 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "state": {"type": "string", "description": "initialized, ready, absent or reset"},
                 "schemaVersion": {"type": "integer"},
                 "incarnation": {"type": "string", "description": "changes when the database is recreated; cached results of another incarnation are void"},
-                "sources": {"type": "array", "items": {"type": "object"}, "description": "visible sources: sourceId, path, present and indexed scopes with snapshotId, records, complete and current"},
+                "sources": {"type": "array", "items": {"type": "object"}, "description": "visible sources: sourceId, path, present and indexed scopes with snapshotId, records, complete and current; a gs:// source adds remote {uri, generation its download was pinned to}, not proof the object is unchanged"},
                 "job": {"type": "object", "description": "the build prepare started or joined: jobId, state, stage, progress"},
                 "jobs": {"type": "array", "items": {"type": "object"}, "description": "refresh, rebuild and track: one job per admitted source and scope, each with joined"},
                 "admission": {"type": "string", "description": "refresh and rebuild: complete, or partial when some jobs were not admitted"},
                 "deferred": {"type": "array", "items": {"type": "object"}, "description": "partial admission: sourceId, scope and the nextStep index call that builds it later"},
                 "deferredBecause": {"type": ["object", "null"], "description": "partial admission: the error that stopped admission, {code, message}"},
                 "coverage": {"type": "object", "description": "prepare without scope: text and relations not_requested"},
+                "directory": {"type": "object", "description": "add of a directory: path, added and existing [{sourceId, path}], skipped [{path relative to it, reason escaping_link, linked_directory, unreadable, inside_storage or outside_roots}], notFig count, truncated null or {reason source_cap or entry_budget, limit}, nextCursor for the next 10 or null"},
                 "partial": {"type": "boolean", "description": "clear_cache: true when a source left this caller's view meanwhile and kept its data; retry later"},
                 "nextSteps": {"type": "array", "items": {"type": "object"}},
                 "storage": {"type": "object"},
@@ -1259,7 +1266,7 @@ impl Failure {
             ),
             ErrorKind::CursorExpired => (
                 "cursor_expired",
-                "The index this cursor paged was deleted; search again without cursor.",
+                "The index this cursor paged was deleted, or its one-hour lease ended; search again without cursor.",
             ),
             ErrorKind::EventGap => (
                 "event_gap",

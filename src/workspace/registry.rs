@@ -479,8 +479,11 @@ pub(super) fn project_only(ws: &Opened, file: &Path) -> Result<()> {
     }
 }
 
-/// Adds `file` to a project workspace.
+/// Adds `file` to a project workspace, or the `.fig` files under it when it is a directory.
 pub fn add(storage: &Storage, select: &Select, file: &Path) -> Result<Json> {
+    if std::fs::metadata(file).is_ok_and(|m| m.is_dir()) {
+        return add_dir(storage, select, file, None, None);
+    }
     let source = readable(file)?;
     let (place, mut ws) = opened(storage, select, true)?;
     outside_storage(&source, storage, &place)?;
@@ -491,6 +494,323 @@ pub fn add(storage: &Storage, select: &Select, file: &Path) -> Result<Json> {
         &place,
         &ws,
         json!({"source": {"sourceId": source_id, "path": source, "added": added}}),
+    )
+}
+
+/// Registers `local`, the download of the `gs://` object `uri` pinned to `generation`, in a
+/// project workspace. Its sourceId comes from the URI, so an add that downloaded a newer
+/// generation keeps the id and, like relocate, moves the source to that download. Nothing here
+/// reaches the network; the caller downloaded it.
+pub fn add_remote(
+    storage: &Storage,
+    select: &Select,
+    uri: &str,
+    local: &Path,
+    generation: &str,
+) -> Result<Json> {
+    // Not `outside_storage`: the download is figlens' own cache copy, never a database file.
+    let local = readable(local)?;
+    let (place, mut ws) = opened(storage, select, true)?;
+    if let Locator::Source(_) = ws.held.locator {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            "a source-scoped workspace holds only its own file; prepare with --workspace <dir> to add a gs:// object",
+        ));
+    }
+    let path = utf8(&local)?;
+    let tx = ws
+        .conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(sql)?;
+    let found: Option<(String, String)> = tx
+        .query_row(
+            "SELECT source_id, path FROM sources WHERE remote = ?1",
+            [uri],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    let (source_id, added) = match found {
+        Some((id, old)) if old == path => (id, false),
+        Some((id, _)) => {
+            // A new membership and stopped builds, as relocate does: the old download's index
+            // is stale until a refresh.
+            tx.execute(
+                "UPDATE sources SET path = ?1, generation = ?2,
+                 membership = lower(hex(randomblob(16))) WHERE source_id = ?3",
+                [path, generation, &id],
+            )
+            .map_err(sql)?;
+            tx.execute(
+                "UPDATE jobs SET cancel = 1 WHERE source_id = ?1 AND state IN ('queued', 'running')",
+                [&id],
+            )
+            .map_err(sql)?;
+            (id, false)
+        }
+        None => {
+            let id = crate::search::source_id(Path::new(uri));
+            tx.execute(
+                "INSERT INTO sources (source_id, path, added_at_ms, membership, remote, generation)
+                 VALUES (?1, ?2, ?3, lower(hex(randomblob(16))), ?4, ?5)",
+                rusqlite::params![id, path, now_ms(), uri, generation],
+            )
+            .map_err(sql)?;
+            (id, true)
+        }
+    };
+    tx.commit().map_err(sql)?;
+    opened_report(
+        storage,
+        &place,
+        &ws,
+        json!({"source": {"sourceId": source_id, "path": local, "added": added,
+            "remote": {"uri": uri, "generation": generation}}}),
+    )
+}
+
+/// New sources one directory add registers: the sources one workspace search reads together.
+pub(super) const DIR_SOURCES: usize = super::query::QUERY_SOURCES;
+/// Directory entries one directory add visits, links and subdirectories included.
+pub(super) const DIR_ENTRIES: usize = 4096;
+
+/// What a directory add would register under its root, and why every other entry was left.
+struct Listing {
+    root: PathBuf,
+    files: Vec<PathBuf>,
+    skipped: Vec<Json>,
+    not_fig: usize,
+    truncated: Json,
+    /// Continues after this page's last file when more remain.
+    next: Option<String>,
+}
+
+/// A continuation `d1.<root digest>.<hex of the last file>`, for the next page of `root`.
+fn dir_cursor(root: &Path, last: &Path) -> String {
+    let digest = crate::search::hex(&Sha256::digest(root.as_os_str().as_encoded_bytes()));
+    let last = crate::search::hex(last.as_os_str().as_encoded_bytes());
+    format!("d1.{}.{last}", &digest[..16])
+}
+
+/// The last file the page before `cursor` registered: `cursor_stale` when it was issued for
+/// another directory than `root`.
+fn dir_after(root: &Path, cursor: &str) -> Result<PathBuf> {
+    let invalid = || {
+        fail(
+            ErrorKind::InvalidArguments,
+            "invalid index add cursor; pass directory.nextCursor of the previous add",
+        )
+    };
+    let (_, last) = cursor
+        .strip_prefix("d1.")
+        .and_then(|c| c.split_once('.'))
+        .ok_or_else(invalid)?;
+    let bytes = super::changes::unhex(last)
+        .filter(|b| !b.is_empty())
+        .ok_or_else(invalid)?;
+    let last = PathBuf::from(String::from_utf8(bytes).map_err(|_| invalid())?);
+    if dir_cursor(root, &last) != cursor || !last.starts_with(root) {
+        return Err(fail(
+            ErrorKind::CursorStale,
+            "this cursor pages another directory; add this directory again without cursor",
+        ));
+    }
+    Ok(last)
+}
+
+/// The `.fig` files under `dir` that pass the checks a single add makes: the first
+/// [`DIR_SOURCES`] in canonical path order after `cursor`'s last file. Only
+/// real subdirectories are entered: a link whose target lies outside the root is skipped as
+/// `escaping_link`, and a link to a directory inside it as `linked_directory` (its real path is
+/// listed on its own). Skipped entries are named relative to the root, so a reply never names
+/// where a link leads.
+fn list_dir(storage: &Storage, place: &Place, dir: &Path, cursor: Option<&str>) -> Result<Listing> {
+    let unreadable = |e: std::io::Error| {
+        fail(
+            ErrorKind::SourceUnreadable,
+            format!("{}: {e}", dir.display()),
+        )
+    };
+    let root = std::fs::canonicalize(dir).map_err(unreadable)?;
+    let after = cursor.map(|c| dir_after(&root, c)).transpose()?;
+    let mut l = Listing {
+        root: root.clone(),
+        files: Vec::new(),
+        skipped: Vec::new(),
+        not_fig: 0,
+        truncated: Json::Null,
+        next: None,
+    };
+    let skip = |l: &mut Listing, path: &Path, reason: &str| {
+        let shown = path.strip_prefix(&root).unwrap_or(path);
+        l.skipped
+            .push(json!({"path": shown.to_string_lossy(), "reason": reason}));
+    };
+    let (mut visited, mut stack) = (0, vec![root.clone()]);
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if dir == root => return Err(unreadable(e)),
+            Err(_) => {
+                skip(&mut l, &dir, "unreadable");
+                continue;
+            }
+        };
+        // The budget is checked before each entry is read, so a huge directory costs no more.
+        let mut names = Vec::new();
+        let mut out = false;
+        for entry in entries {
+            if visited == DIR_ENTRIES {
+                l.truncated = json!({"reason": "entry_budget", "limit": DIR_ENTRIES});
+                out = true;
+                break;
+            }
+            visited += 1;
+            match entry {
+                Ok(entry) => names.push(entry.path()),
+                Err(_) => skip(&mut l, &dir, "unreadable"),
+            }
+        }
+        names.sort();
+        let mut subdirs = Vec::new();
+        for path in names {
+            // Under a canonical root, an entry whose canonical path differs is a link.
+            let Ok(real) = std::fs::canonicalize(&path) else {
+                skip(&mut l, &path, "unreadable");
+                continue;
+            };
+            if !real.starts_with(&root) {
+                skip(&mut l, &path, "escaping_link");
+                continue;
+            }
+            if std::fs::metadata(&real).is_ok_and(|m| m.is_dir()) {
+                if real == path {
+                    subdirs.push(path);
+                } else {
+                    skip(&mut l, &path, "linked_directory");
+                }
+                continue;
+            }
+            if !real
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("fig"))
+            {
+                l.not_fig += 1;
+                continue;
+            }
+            if after.as_ref().is_some_and(|a| real <= *a) {
+                continue;
+            }
+            let reason = match readable(&real) {
+                Err(_) => Some("unreadable"),
+                Ok(_) if real.to_str().is_none() => Some("unreadable"),
+                Ok(_) if outside_storage(&real, storage, place).is_err() => Some("inside_storage"),
+                Ok(_) if !storage.sees(&real) => Some("outside_roots"),
+                Ok(_) => None,
+            };
+            match reason {
+                Some(reason) => skip(&mut l, &path, reason),
+                None => l.files.push(real),
+            }
+        }
+        if out {
+            break;
+        }
+        stack.extend(subdirs.into_iter().rev());
+    }
+    // An in-root link to a listed file registers nothing more.
+    l.files.sort();
+    l.files.dedup();
+    if l.files.len() > DIR_SOURCES {
+        l.files.truncate(DIR_SOURCES);
+        l.next = Some(dir_cursor(&root, &l.files[DIR_SOURCES - 1]));
+        if l.truncated.is_null() {
+            l.truncated = json!({"reason": "source_cap", "limit": DIR_SOURCES});
+        }
+    }
+    Ok(l)
+}
+
+/// What `index add <dir> --dry-run [--cursor C]` would register, for a host to authorize
+/// first. Reads no database and creates nothing.
+pub fn list_add(
+    storage: &Storage,
+    select: &Select,
+    dir: &Path,
+    cursor: Option<&str>,
+) -> Result<Json> {
+    let select = &storage.follow(select)?;
+    let id = select.id()?;
+    let place = storage.place(&id, select.locator())?;
+    let l = list_dir(storage, &place, dir, cursor)?;
+    Ok(
+        json!({"workspaceId": id, "directory": {"path": l.root, "files": l.files,
+        "skipped": l.skipped, "notFig": l.not_fig, "truncated": l.truncated,
+        "nextCursor": l.next, "manifest": manifest(&l)}}),
+    )
+}
+
+/// The sha256 of the sorted canonical files a listing would register and its truncation, so an
+/// add can prove it registers exactly the set a host authorized from the dry run.
+fn manifest(l: &Listing) -> String {
+    let files: Vec<_> = l
+        .files
+        .iter()
+        .map(|f| f.as_os_str().as_encoded_bytes())
+        .collect();
+    let mut hash = Sha256::new();
+    for file in files {
+        hash.update(file);
+        hash.update([0]);
+    }
+    hash.update(l.truncated.to_string());
+    hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Registers the page of `.fig` files under `dir` after `cursor` (see [`list_dir`]) in one write
+/// transaction: either all of them or, on an error, none. With the `planned` manifest its dry
+/// run printed, nothing registers when that page changed since. Already registered paths keep
+/// their ids; nothing is relocated, so a file moved inside the directory is a new source.
+pub fn add_dir(
+    storage: &Storage,
+    select: &Select,
+    dir: &Path,
+    planned: Option<&str>,
+    cursor: Option<&str>,
+) -> Result<Json> {
+    let (place, mut ws) = opened(storage, select, true)?;
+    if let Locator::Source(_) = ws.held.locator {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            "a source-scoped workspace holds only its own file; prepare with --workspace <dir> to register a directory",
+        ));
+    }
+    let tx = ws
+        .conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(sql)?;
+    // Walked under the write lock, so the files checked against the manifest are those registered.
+    let l = list_dir(storage, &place, dir, cursor)?;
+    if planned.is_some_and(|m| m != manifest(&l)) {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            "the .fig files under the directory changed since its dry run; run `index add <dir> --dry-run` again and add with its new manifest",
+        ));
+    }
+    let (mut added, mut existing) = (Vec::new(), Vec::new());
+    for file in &l.files {
+        let (source_id, new) = register_in(&tx, file)?;
+        let list = if new { &mut added } else { &mut existing };
+        list.push(json!({"sourceId": source_id, "path": file}));
+    }
+    tx.commit().map_err(sql)?;
+    opened_report(
+        storage,
+        &place,
+        &ws,
+        json!({"directory": {"path": l.root, "added": added, "existing": existing,
+            "skipped": l.skipped, "notFig": l.not_fig, "truncated": l.truncated,
+            "nextCursor": l.next}}),
     )
 }
 
@@ -586,6 +906,22 @@ pub fn relocate(storage: &Storage, select: &Select, source_id: &str, file: &Path
         return Err(fail(
             ErrorKind::InvalidArguments,
             format!("workspace {} has no source {source_id}", ws.held.id),
+        ));
+    }
+    let remote: Option<String> = ws
+        .conn
+        .query_row(
+            "SELECT remote FROM sources WHERE source_id = ?1",
+            [source_id],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    if remote.is_some() {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            format!(
+                "{source_id} is a gs:// object's download; add the object again to fetch a new generation, or remove it"
+            ),
         ));
     }
     // A source-scoped workspace keeps its id: the new path's id becomes an alias of it, written

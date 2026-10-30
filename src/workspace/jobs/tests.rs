@@ -2214,6 +2214,34 @@ fn a_key_only_library_question_lists_copies_naming_no_namespace_and_is_never_com
 }
 
 #[test]
+fn a_library_cursor_past_its_lease_is_expired_before_it_is_stale() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, _conn, _) = library_workspace(&d, 2);
+    let first = library(&storage, &select, None, &reference("k", None)).unwrap();
+    let cursor = first["nextCursor"].as_str().expect("a second page");
+    // The issue time is the cursor's last field; rewrite it instead of sleeping.
+    let (rest, issued) = cursor.rsplit_once('.').unwrap();
+    let issued: i64 = issued.parse().unwrap();
+    let at = |ms: i64| format!("{rest}.{ms}");
+    let page = |c: &str, hidden: bool| {
+        let request = crate::workspace::library::Request {
+            include_hidden: hidden,
+            cursor: Some(c.to_owned()),
+            ..reference("k", None)
+        };
+        library(&storage, &select, None, &request)
+    };
+    let fresh = at(issued - crate::search::CURSOR_LEASE_MS + 1000);
+    assert!(page(&fresh, false).is_ok());
+    let old = at(issued - crate::search::CURSOR_LEASE_MS - 1000);
+    assert_eq!(kind_of_error(page(&old, false)), ErrorKind::CursorExpired);
+    // The lease is checked before the bindings.
+    assert_eq!(kind_of_error(page(&old, true)), ErrorKind::CursorExpired);
+    assert_eq!(kind_of_error(page(&fresh, true)), ErrorKind::CursorStale);
+}
+
+#[test]
 fn a_cursor_ends_when_the_selected_definition_s_source_is_reindexed_or_collected() {
     use crate::workspace::library::{Request, library};
     let d = TestDir::new();
@@ -3473,4 +3501,85 @@ fn a_submit_never_joins_a_build_that_is_being_cancelled() {
         error.downcast_ref::<FigError>().unwrap().kind(),
         ErrorKind::WorkspaceBusy
     );
+}
+
+/// Republishes `source`'s generation `gen_id` as a new one whose term statistics differ.
+fn republish_with_other_statistics(conn: &Connection, source: &str, gen_id: i64) {
+    conn.execute(
+        "INSERT INTO generations (source_id, membership, scope, snapshot_id, versions, job_id, state,
+         complete, records, info, created_ms) SELECT source_id, membership, scope, snapshot_id,
+         versions, job_id, state, complete, records, info, created_ms FROM generations WHERE gen = ?1",
+        [gen_id],
+    )
+    .unwrap();
+    let new = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO records SELECT ?1, rid, node_id, name, kind, text, norm0, norm1, len0, len1,
+         parent, source, text_source, hidden, page, root FROM records WHERE gen = ?2",
+        params![new, gen_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO terms SELECT ?1, term, df + 1, postings FROM terms WHERE gen = ?2",
+        params![new, gen_id],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE published SET gen = ?1 WHERE source_id = ?2",
+        params![new, source],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_search_cursor_is_stale_when_a_selected_source_s_statistics_change_not_an_unrelated_one() {
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 3);
+    let only = [srcs[0].1.clone(), srcs[1].1.clone()];
+    let ask = |cursor: Option<&str>| crate::search::Request {
+        query: "first".into(),
+        scope: "0:0".into(),
+        types: Vec::new(),
+        include_hidden: false,
+        include_internal: false,
+        limit: 1,
+        cursor: cursor.map(str::to_owned),
+    };
+    let first = crate::workspace::query::search(&storage, &select, &only, &ask(None)).unwrap();
+    let cursor = first["nextCursor"]
+        .as_str()
+        .expect("a second page")
+        .to_owned();
+    let again = || crate::workspace::query::search(&storage, &select, &only, &ask(Some(&cursor)));
+    republish_with_other_statistics(&conn, &srcs[2].1, srcs[2].2);
+    assert!(again().is_ok(), "an unselected source changed");
+    republish_with_other_statistics(&conn, &srcs[1].1, srcs[1].2);
+    assert_eq!(kind_of_error(again()), ErrorKind::CursorStale);
+}
+
+#[test]
+fn a_search_cursor_past_its_lease_is_expired_not_stale() {
+    let d = TestDir::new();
+    let (storage, select, _conn, _) = library_workspace(&d, 2);
+    let ask = |cursor: Option<&str>| crate::search::Request {
+        query: "first".into(),
+        scope: "0:0".into(),
+        types: Vec::new(),
+        include_hidden: false,
+        include_internal: false,
+        limit: 1,
+        cursor: cursor.map(str::to_owned),
+    };
+    let search = |cursor: Option<&str>| {
+        crate::workspace::query::search(&storage, &select, &[], &ask(cursor))
+    };
+    let first = search(None).unwrap();
+    let cursor = first["nextCursor"].as_str().expect("a second page");
+    // The issue time is the cursor's last field; one lease earlier, it has ended.
+    let (rest, issued) = cursor.rsplit_once('.').unwrap();
+    let issued: i64 = issued.parse().unwrap();
+    let at = |ms: i64| format!("{rest}.{ms}");
+    assert!(search(Some(&at(issued - crate::search::CURSOR_LEASE_MS + 1000))).is_ok());
+    let old = at(issued - crate::search::CURSOR_LEASE_MS - 1000);
+    assert_eq!(kind_of_error(search(Some(&old))), ErrorKind::CursorExpired);
 }

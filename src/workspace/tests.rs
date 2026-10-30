@@ -1585,3 +1585,236 @@ fn a_registered_source_opens_only_without_following_a_link_at_it_or_above_it() {
     std::os::unix::fs::symlink(&denied, &sub).unwrap();
     assert!(refused(&path));
 }
+
+/// The `path` of each `{sourceId, path}` in a directory add's `list`.
+fn paths(report: &Json, list: &str) -> Vec<PathBuf> {
+    report["directory"][list]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| PathBuf::from(s["path"].as_str().unwrap()))
+        .collect()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_directory_add_registers_only_fig_files_inside_its_root_and_repeats_idempotently() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new();
+    let project = std::path::absolute(f.dir.join("project")).unwrap();
+    let (lib, outside) = (project.join("lib"), f.dir.join("outside"));
+    for dir in [lib.join("sub"), outside.clone()] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    for file in [
+        lib.join("a.fig"),
+        lib.join("sub/b.fig"),
+        outside.join("x.fig"),
+    ] {
+        std::fs::write(file, "design").unwrap();
+    }
+    std::fs::write(lib.join("notes.txt"), "not a design").unwrap();
+    let outside = std::path::absolute(outside).unwrap();
+    symlink(outside.join("x.fig"), lib.join("out.fig")).unwrap();
+    symlink(&outside, lib.join("out-dir")).unwrap();
+    symlink(lib.join("a.fig"), lib.join("sub/again.fig")).unwrap();
+    symlink(lib.join("sub"), lib.join("sub-link")).unwrap();
+    prepare(&f.storage, &f.fig("first.fig"), Some(&project)).unwrap();
+    let select = Select::from_choice(Some(&project), None, None)
+        .unwrap()
+        .unwrap();
+    let real = std::fs::canonicalize(&lib).unwrap();
+    let first = add(&f.storage, &select, &lib).unwrap();
+    assert_eq!(
+        paths(&first, "added"),
+        [real.join("a.fig"), real.join("sub/b.fig")]
+    );
+    assert_eq!(paths(&first, "existing"), Vec::<PathBuf>::new());
+    assert_eq!(
+        first["directory"]["skipped"],
+        json!([{"path": "out-dir", "reason": "escaping_link"},
+            {"path": "out.fig", "reason": "escaping_link"},
+            {"path": "sub-link", "reason": "linked_directory"}])
+    );
+    assert_eq!(first["directory"]["notFig"], 1);
+    assert_eq!(first["directory"]["truncated"], Json::Null);
+    assert!(!first.to_string().contains("outside"), "{first}");
+    assert_eq!(first["sources"].as_array().unwrap().len(), 3);
+    // A repeat registers nothing new and returns the same ids.
+    let again = add(&f.storage, &select, &lib).unwrap();
+    assert_eq!(again["directory"]["added"], json!([]));
+    assert_eq!(again["directory"]["existing"], first["directory"]["added"]);
+    // A file moved inside the directory is a new source; only relocate keeps an id.
+    std::fs::rename(lib.join("sub/b.fig"), lib.join("sub/c.fig")).unwrap();
+    let moved = add(&f.storage, &select, &lib).unwrap();
+    assert_eq!(paths(&moved, "added"), [real.join("sub/c.fig")]);
+    assert_eq!(moved["sources"].as_array().unwrap().len(), 4);
+    // A source-scoped workspace holds only its own file.
+    let solo = Select::Id(id_of(
+        &prepare(&f.storage, &f.fig("solo.fig"), None).unwrap(),
+    ));
+    assert_eq!(
+        kind(&*add(&f.storage, &solo, &lib).unwrap_err()),
+        ErrorKind::InvalidArguments
+    );
+}
+
+#[test]
+fn a_directory_add_stops_at_its_source_cap_and_entry_budget_and_says_so() {
+    let f = Fixture::new();
+    let project = std::path::absolute(f.dir.join("project")).unwrap();
+    let (many, wide) = (project.join("many"), project.join("wide"));
+    std::fs::create_dir_all(&many).unwrap();
+    std::fs::create_dir_all(&wide).unwrap();
+    for i in 0..=registry::DIR_SOURCES {
+        std::fs::write(many.join(format!("{i:02}.fig")), "design").unwrap();
+    }
+    for i in 0..=registry::DIR_ENTRIES {
+        std::fs::write(wide.join(format!("{i:05}.txt")), "").unwrap();
+    }
+    prepare(&f.storage, &f.fig("first.fig"), Some(&project)).unwrap();
+    let select = Select::from_choice(Some(&project), None, None)
+        .unwrap()
+        .unwrap();
+    let capped = add(&f.storage, &select, &many).unwrap();
+    assert_eq!(
+        capped["directory"]["added"].as_array().unwrap().len(),
+        registry::DIR_SOURCES
+    );
+    assert_eq!(
+        capped["directory"]["truncated"],
+        json!({"reason": "source_cap", "limit": registry::DIR_SOURCES})
+    );
+    let budget = add(&f.storage, &select, &wide).unwrap();
+    assert_eq!(
+        budget["directory"]["truncated"],
+        json!({"reason": "entry_budget", "limit": registry::DIR_ENTRIES})
+    );
+    assert_eq!(budget["directory"]["notFig"], registry::DIR_ENTRIES);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_directory_add_with_a_dry_run_manifest_registers_only_that_file_set() {
+    let f = Fixture::new();
+    let project = std::path::absolute(f.dir.join("project")).unwrap();
+    let lib = project.join("lib");
+    for dir in ["y", "z"] {
+        std::fs::create_dir_all(lib.join(dir)).unwrap();
+    }
+    // One file under the cap, so y/y.fig is listed and z/z.fig is truncated.
+    for i in 0..registry::DIR_SOURCES - 1 {
+        std::fs::write(lib.join(format!("{i:02}.fig")), "design").unwrap();
+    }
+    for file in ["y/y.fig", "z/z.fig"] {
+        std::fs::write(lib.join(file), "design").unwrap();
+    }
+    std::os::unix::fs::symlink(lib.join("00.fig"), lib.join("link.fig")).unwrap();
+    prepare(&f.storage, &f.fig("first.fig"), Some(&project)).unwrap();
+    let select = Select::from_choice(Some(&project), None, None)
+        .unwrap()
+        .unwrap();
+    let manifest = |dir: &Path| {
+        let listed = list_add(&f.storage, &select, dir, None).unwrap();
+        listed["directory"]["manifest"].as_str().unwrap().to_owned()
+    };
+    let sources = || {
+        status(&f.storage, &select).unwrap()["sources"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    // A file created between the dry run and the add is refused, and nothing registers.
+    let planned = manifest(&lib);
+    std::fs::write(lib.join("y/new.fig"), "design").unwrap();
+    let refused = add_dir(&f.storage, &select, &lib, Some(&planned), None).unwrap_err();
+    assert_eq!(kind(&*refused), ErrorKind::InvalidArguments);
+    assert!(refused.to_string().contains("--dry-run"), "{refused}");
+    assert_eq!(sources(), 1);
+    std::fs::remove_file(lib.join("y/new.fig")).unwrap();
+    // A page runs in canonical path order, so a link retargeted to another in-root file lists
+    // the same page.
+    let planned = manifest(&lib);
+    std::fs::remove_file(lib.join("link.fig")).unwrap();
+    std::os::unix::fs::symlink(lib.join("z/z.fig"), lib.join("link.fig")).unwrap();
+    assert_eq!(manifest(&lib), planned);
+    // An unchanged directory registers exactly what the dry run listed.
+    let planned = manifest(&lib);
+    let added = add_dir(&f.storage, &select, &lib, Some(&planned), None).unwrap();
+    assert_eq!(
+        added["directory"]["added"].as_array().unwrap().len(),
+        registry::DIR_SOURCES
+    );
+}
+
+#[test]
+fn a_directory_add_continues_page_by_page_and_each_dry_run_manifest_covers_its_page() {
+    let f = Fixture::new();
+    let project = std::path::absolute(f.dir.join("project")).unwrap();
+    let (lib, other) = (project.join("lib"), project.join("other"));
+    std::fs::create_dir_all(lib.join("sub")).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    // 23 files, some in a subdirectory, so pages run in path order, not walk order.
+    for i in 0..20 {
+        std::fs::write(lib.join(format!("{i:02}.fig")), "design").unwrap();
+    }
+    for i in 0..3 {
+        std::fs::write(lib.join(format!("sub/{i}.fig")), "design").unwrap();
+        std::fs::write(other.join(format!("{i:02}.fig")), "design").unwrap();
+    }
+    prepare(&f.storage, &f.fig("first.fig"), Some(&project)).unwrap();
+    let select = Select::from_choice(Some(&project), None, None)
+        .unwrap()
+        .unwrap();
+    let (mut cursor, mut pages) = (None::<String>, Vec::new());
+    loop {
+        let listed = list_add(&f.storage, &select, &lib, cursor.as_deref()).unwrap();
+        let manifest = listed["directory"]["manifest"].as_str().unwrap();
+        let added = add_dir(&f.storage, &select, &lib, Some(manifest), cursor.as_deref()).unwrap();
+        let files: Vec<PathBuf> = listed["directory"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| PathBuf::from(p.as_str().unwrap()))
+            .collect();
+        assert_eq!(paths(&added, "added"), files);
+        assert_eq!(
+            added["directory"]["nextCursor"],
+            listed["directory"]["nextCursor"]
+        );
+        pages.push(files);
+        match added["directory"]["nextCursor"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+    }
+    let real = std::fs::canonicalize(&lib).unwrap();
+    assert_eq!(pages.iter().map(Vec::len).collect::<Vec<_>>(), [10, 10, 3]);
+    assert_eq!(
+        pages[2],
+        (0..3)
+            .map(|i| real.join(format!("sub/{i}.fig")))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        status(&f.storage, &select).unwrap()["sources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        24
+    );
+    // A page's manifest does not authorize another page.
+    let first = list_add(&f.storage, &select, &lib, None).unwrap();
+    let next = first["directory"]["nextCursor"].as_str().unwrap();
+    let wrong = add_dir(
+        &f.storage,
+        &select,
+        &lib,
+        first["directory"]["manifest"].as_str(),
+        Some(next),
+    );
+    assert_eq!(kind(&*wrong.unwrap_err()), ErrorKind::InvalidArguments);
+    // A cursor from another directory is stale.
+    let stale = add_dir(&f.storage, &select, &other, None, Some(next)).unwrap_err();
+    assert_eq!(kind(&*stale), ErrorKind::CursorStale);
+}

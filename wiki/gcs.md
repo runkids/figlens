@@ -38,11 +38,11 @@ Source of truth: `src/remote.rs`, `src/mcp.rs::serve/AdmittedCall` and `src/main
 | Layer | Current behavior |
 |---|---|
 | Metadata | Every remote call runs `gcloud storage objects describe URI --format=value(generation)` before consulting the downloaded file. A missing CLI, denied access, network error or invalid/empty generation fails the call, even with a cached download. Remote reads are not offline reads. |
-| Download | Stored under the platform cache's `figlens/<URI hash>/<generation>.fig`. Same generation reuses bytes, with no copy. A cache miss removes older files for that object, copies to `.part`, then renames to `.fig`. A failed refresh can leave the older cache unavailable. There is no generation-qualified copy or concurrent refresh coordination. |
+| Download | Stored under the platform cache's `figlens/<URI hash>/<generation>.fig`. Same generation reuses bytes, with no copy. A cache miss removes older files for that object except `index add`'s `*.pinned.*` copies, copies to `.part`, then renames to `.fig`. A failed refresh can leave the older cache unavailable. There is no generation-qualified copy or concurrent refresh coordination. |
 | Parse | CLI parses on each call. MCP reuses its last unchanged **local** file by path, modification time and length. Remote calls do not enter that parsed-tree cache, even at the same generation. |
 | Preview | Resolves GCS once at startup, then watches that local cached path. It does not poll GCS or switch to a new generation. Start a new preview to resolve the object again; another call's cache eviction can remove the old preview's source. Treat stale/error state as unavailable fresh evidence. |
 
-Generation lookup and `cp URI` are separate operations. An overwrite between them can download different bytes from the generation just observed. Successful outputs currently contain no GCS generation provenance. Do not claim a bundle proves an exact remote revision; generation-pinned download and operation-level provenance are follow-up suggestions, not implemented guarantees.
+Generation lookup and `cp URI` are separate operations. An overwrite between them can download different bytes from the generation just observed. Successful outputs contain no GCS generation provenance; do not claim a bundle proves an exact remote revision. Only `index add` pins its copy (below).
 
 For diagnostics, the user can query the **current remote** generation:
 
@@ -51,6 +51,19 @@ gcloud storage objects describe gs://example-design-handoff/designs/home.fig --f
 ```
 
 This does not prove which generation a previous figlens call actually used. Keep source identifiers and raw cloud diagnostics out of shared logs. MCP source errors expose safe corrective guidance instead of relaying gcloud stderr, which can contain sensitive URLs; URL-source diagnostics are redacted in the CLI error channel too.
+
+## Index registration
+
+`index add gs://bucket/object <select>` (MCP `index` `add` with that `file`; only `add` takes one) registers the object in a project workspace (#93). Code: `command::index_add` downloads through `remote::fetch`, then `registry::add_remote` registers the copy. A source-scoped workspace refuses it.
+
+- `remote::fetch(uri, true)` copies `URI#G`, which serves generation G's bytes or fails (an overwrite meanwhile, with no versioning keeping G), to `<G>.pinned.fig` beside the read cache. Read pruning skips that name, so another command caching a newer generation leaves it readable. Pinned copies are never pruned.
+- `sources.path` is the pinned download and `sources.remote`/`generation` (schema 8) the URI and the generation it was pinned to. Status and the add reply list `remote {uri, generation}`. That generation names the bytes indexed, not the object now. The download sits in figlens' cache, which a local add refuses as storage; this add skips that check.
+- `sourceId` hashes the URI. A repeat at the same generation downloads nothing and adds nothing. A newer generation moves the source to its download with a new membership and stops its builds, as relocate does; refresh then rebuilds it. `relocate` refuses a remote source: add again, or remove it. Moving between a local path and `gs://` is not supported.
+- Snapshot identity is the worker's hash of the downloaded bytes, like any source.
+- Network: only that add runs `gcloud`. Refresh, rebuild, status, search, changes and watch read the local copy. A watch lease watches that file, which a download never rewrites; it is not remote monitoring, and there is no remote polling.
+- MCP with `--root` refuses it before `gcloud` runs. The OpenCode CLI path refuses `gs://`; its MCP path serves it.
+
+Tests: four `gs` and `gcloud` tests in `tests/index_jobs.rs` use a `gcloud` stand-in on `PATH`. They cover the pinned copy, the snapshot equal to a local copy's, an idempotent repeat, a moved generation, a plain `find` of a newer generation (unpinned `cp`) leaving the source readable, no `gcloud` from refresh, track, status, search, changes or a running watch, and MCP root refusal.
 
 ## Evidence and limitations
 

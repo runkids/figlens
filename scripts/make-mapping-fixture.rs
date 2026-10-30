@@ -72,10 +72,15 @@ fn node(
     // With `--library` the main is a cached library copy, so a usages result can name its library
     // reference; without it the output is the original mapping fixture, byte for byte.
     if library && kind == "SYMBOL" {
-        fields.push(("componentKey", Value::String("synthetic-button".into())));
+        // The env vars let a test build sources with other keys or namespaces; unset keeps the bytes.
+        let env = |name, default: &str| std::env::var(name).unwrap_or_else(|_| default.into());
+        fields.push((
+            "componentKey",
+            Value::String(env("MAPPING_FIXTURE_COMPONENT_KEY", "synthetic-button")),
+        ));
         fields.push((
             "sourceLibraryKey",
-            Value::String("synthetic-library".into()),
+            Value::String(env("MAPPING_FIXTURE_LIBRARY_KEY", "synthetic-library")),
         ));
     }
     object("NodeChange", fields)

@@ -37,7 +37,7 @@ Tool failures retain `isError: true` and text content; additive `_meta.figlens` 
 | `index_incompatible` | Another schema or index version; follow the recovery (`rebuild`, or that figlens version) |
 | `query_work_limit` | Over 10 sources or 100k records per search; run a listed narrower one |
 | `source_stale` | Every searched source changed since indexing; run the listed `refresh`, then search again |
-| `cursor_stale`/`cursor_expired` | Paged data was replaced or deleted, or a `changes` cursor was issued for another view; restart paging, for `changes` and `watch` without the cursor |
+| `cursor_stale`/`cursor_expired` | Paged data was replaced or deleted, a workspace search cursor's one-hour lease ended, or a `changes` cursor was issued for another view; restart paging, for `changes` and `watch` without the cursor |
 | `event_gap` | Retention deleted `changes` revisions before they were read (or before a `watch` `ack` cursor accepted them); follow its recovery (from the oldest kept) and treat the scope as possibly changed |
 | `cancelled` | The job was cancelled; the previous index still serves |
 | `operation_failed` | Other existing operation error; inspect its diagnostic without assuming a more specific category |

@@ -411,14 +411,19 @@ pub(crate) const IMPACTS: &str = "
     PRAGMA user_version = 7;";
 
 /// Schema 8: each generation's definition and cached-copy fingerprints (#93), added beside the
-/// rest and collected with them; and a saved question's fixed source set (`source_id` '*', its
-/// members in `sources`) and why an authoritative event disabled it.
+/// rest and collected with them; a saved question's fixed source set (`source_id` '*', its
+/// members in `sources`) and why an authoritative event disabled it; and, for a source added
+/// from a `gs://` object, its URI and the generation its download was pinned to (`path` is that
+/// local download).
 pub(crate) const V8: &str = "
     CREATE TABLE fingerprints (
         gen INTEGER NOT NULL, rid INTEGER NOT NULL, facet TEXT NOT NULL, state TEXT NOT NULL,
         digest BLOB, PRIMARY KEY (gen, rid, facet)) STRICT, WITHOUT ROWID;
     ALTER TABLE subscriptions ADD COLUMN sources TEXT;
     ALTER TABLE subscriptions ADD COLUMN disabled TEXT;
+    ALTER TABLE sources ADD COLUMN remote TEXT;
+    ALTER TABLE sources ADD COLUMN generation TEXT;
+    CREATE UNIQUE INDEX sources_remote ON sources (remote) WHERE remote IS NOT NULL;
     PRAGMA user_version = 8;";
 
 /// Upgrades schemas 1 to 7 to the current one in one transaction, keeping every source, index,
@@ -588,10 +593,17 @@ pub(super) fn gone(e: &(dyn Error + 'static)) -> bool {
 
 /// The `sourceId` registered for `source`, adding it when new; true when added.
 pub(super) fn register(conn: &mut Connection, source: &Path) -> Result<(String, bool)> {
-    let path = utf8(source)?;
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(sql)?;
+    let registered = register_in(&tx, source)?;
+    tx.commit().map_err(sql)?;
+    Ok(registered)
+}
+
+/// [`register`] inside the caller's write transaction.
+pub(super) fn register_in(tx: &Connection, source: &Path) -> Result<(String, bool)> {
+    let path = utf8(source)?;
     let existing: Option<String> = tx
         .query_row(
             "SELECT source_id FROM sources WHERE path = ?1",
@@ -626,27 +638,44 @@ pub(super) fn register(conn: &mut Connection, source: &Path) -> Result<(String, 
         rusqlite::params![id, path, now_ms()],
     )
     .map_err(sql)?;
-    tx.commit().map_err(sql)?;
     Ok((id, true))
 }
 
 /// The registered sources this caller may see, in registry order, with their published scopes.
 pub(super) fn sources(storage: &Storage, ws: &Opened) -> Result<Vec<Json>> {
     let conn = &ws.conn;
+    // A read never upgrades, so a database before schema 8 has no remote columns.
+    let remote = if ws.version >= 8 {
+        "remote, generation"
+    } else {
+        "NULL, NULL"
+    };
     let mut stmt = conn
-        .prepare("SELECT source_id, path FROM sources ORDER BY added_at_ms, source_id")
+        .prepare(&format!(
+            "SELECT source_id, path, {remote} FROM sources ORDER BY added_at_ms, source_id"
+        ))
         .map_err(sql)?;
     let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+            ))
+        })
         .map_err(sql)?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, path) = row.map_err(sql)?;
+        let (id, path, uri, generation) = row.map_err(sql)?;
         if !storage.sees(Path::new(&path)) {
             continue;
         }
         let present = std::fs::metadata(&path).is_ok_and(|m| m.is_file());
         let mut source = json!({"sourceId": id, "path": path, "present": present});
+        if let Some(uri) = uri {
+            source["remote"] = json!({"uri": uri, "generation": generation});
+        }
         if ws.version >= 2 {
             let mut stmt = conn
                 .prepare(

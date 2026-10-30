@@ -12,6 +12,12 @@ pub fn local(input: &str) -> Result<PathBuf, Box<dyn Error>> {
     if !input.starts_with("gs://") {
         return Ok(PathBuf::from(input));
     }
+    Ok(fetch(input, false)?.0)
+}
+
+/// The cached copy of the `gs://` object `input` and its current generation, looked up first.
+/// `pinned` (index add only) copies `URI#G`, so the bytes are G's or the copy fails.
+pub fn fetch(input: &str, pinned: bool) -> Result<(PathBuf, String), Box<dyn Error>> {
     let generation = gcloud(&[
         "storage",
         "objects",
@@ -19,39 +25,53 @@ pub fn local(input: &str) -> Result<PathBuf, Box<dyn Error>> {
         input,
         "--format=value(generation)",
     ])?;
-    let generation = generation.trim();
+    let generation = generation.trim().to_owned();
     if generation.is_empty() || !generation.bytes().all(|b| b.is_ascii_digit()) {
         return Err(format!("{input}: unexpected generation {generation:?} from gcloud").into());
     }
-    let path = cache_path(&cache_root()?, input, generation);
+    let path = cache_path(&cache_root()?, input, &generation, pinned);
     if path.exists() {
-        return Ok(path);
+        return Ok((path, generation));
     }
     let dir = path.parent().ok_or("cache path has no parent")?;
     std::fs::create_dir_all(dir)?;
-    // Older generations of this object are stale once a newer one is fetched.
-    for entry in std::fs::read_dir(dir)? {
-        std::fs::remove_file(entry?.path())?;
+    // Older generations of this object are stale once a newer one is fetched. Pinned copies stay:
+    // a registered source reads its own, so another read caching a newer generation keeps it.
+    // shortcut: pinned copies are never pruned; add a registry-aware cleanup if they pile up.
+    if !pinned {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?.path();
+            if !entry.to_string_lossy().contains(".pinned.") {
+                std::fs::remove_file(entry)?;
+            }
+        }
     }
     let part = path.with_extension("part");
+    let object = if pinned {
+        format!("{input}#{generation}")
+    } else {
+        input.to_owned()
+    };
     gcloud(&[
         "storage",
         "cp",
-        input,
+        &object,
         part.to_str().ok_or("cache path is not UTF-8")?,
     ])?;
     std::fs::rename(&part, &path)?;
-    Ok(path)
+    Ok((path, generation))
 }
 
-/// `<root>/<sha256 of the URL>/<generation>.fig`; hashing keeps object names like `../x` inside the cache.
-fn cache_path(root: &Path, input: &str, generation: &str) -> PathBuf {
+/// `<root>/<sha256 of the URL>/<generation>.fig`, or `<generation>.pinned.fig` for a pinned copy;
+/// hashing keeps object names like `../x` inside the cache.
+fn cache_path(root: &Path, input: &str, generation: &str, pinned: bool) -> PathBuf {
     let hash: String = Sha256::digest(input.as_bytes())
         .iter()
         .take(16)
         .map(|b| format!("{b:02x}"))
         .collect();
-    root.join(hash).join(format!("{generation}.fig"))
+    let kind = if pinned { ".pinned" } else { "" };
+    root.join(hash).join(format!("{generation}{kind}.fig"))
 }
 
 pub(crate) fn cache_root() -> Result<PathBuf, Box<dyn Error>> {
@@ -96,7 +116,7 @@ mod tests {
     #[test]
     fn keeps_object_names_inside_the_cache() {
         let root = Path::new("/cache/figlens");
-        let path = cache_path(root, "gs://b/../../etc/passwd", "7");
+        let path = cache_path(root, "gs://b/../../etc/passwd", "7", false);
         assert_eq!(path.parent().unwrap().parent().unwrap(), root);
     }
 
@@ -104,8 +124,8 @@ mod tests {
     fn a_new_generation_is_a_new_file() {
         let root = Path::new("/c");
         assert_ne!(
-            cache_path(root, "gs://b/x.fig", "1"),
-            cache_path(root, "gs://b/x.fig", "2")
+            cache_path(root, "gs://b/x.fig", "1", false),
+            cache_path(root, "gs://b/x.fig", "2", false)
         );
     }
 }

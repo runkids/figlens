@@ -196,6 +196,8 @@ MCP: `index` prepare는 job을 반환합니다. `succeeded`가 될 때까지 `jo
 
 `.fig`를 옮겼나요? `index relocate`는 `workspaceId`, `sourceId`, 저장 위치를 유지합니다. 이후 영향받은 범위를 `refresh`하세요. 자동 탐색이나 해시 기반 자동 병합은 없으며 reset은 필요 없습니다.
 
+한 폴더에 디자인이 여러 개인가요? `index add <dir> --workspace DIR`는 그 디렉터리 아래의 `.fig` 파일을 한 번에 최대 10개 등록하고, 디렉터리 밖으로 나가는 링크는 건너뜁니다. 응답에는 `added`, `existing`, `skipped`, `truncated`가 있으며, 반복해도 아무것도 추가되지 않고 각 파일에는 여전히 자체 `prepare --scope`가 필요합니다. 폴더 안에서 옮긴 파일은 `relocate`를 쓰지 않으면 새 소스가 됩니다. 응답의 `nextCursor`를 `--cursor C`(MCP `cursor`)로 넘기면 다음 10개를 추가합니다. 페이지 검색과 라이브러리 커서는 한 시간 동안 유효하며, 이후에는 `cursor_expired`를 반환하므로 다시 검색하세요.
+
 데이터: SQLite 데이터베이스에는 등록된 로컬 경로, 선택한 범위의 레이어 이름과 유효 텍스트, 검색 postings, 정확한 관계(포함, 인스턴스, 변형, 변수/스타일/이미지 바인딩, 프로토타입 대상)와 그 대상 정의, 해시, 세대, job이 들어 있습니다. 원본 `.fig`는 제자리에서 변경되지 않으며, 원시 바이트는 데이터베이스에 저장되지 않습니다.
 
 Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며, workspace는 재시작과 호스트를 넘어 재사용됩니다. 미구현: 파일 이벤트(watch는 파일을 폴링하며, holder가 실행 중일 때만 동작), 벡터, 푸시 이벤트.
@@ -245,6 +247,6 @@ Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며
 
 같은 component set의 두 variants는 `inspect <file> <variantA> --compare-variant <variantB>`(MCP `compareVariant`)로 비교합니다. `variantComparison`은 저장된 필드와 값 집합의 차이, 출처 ID, 알 수 없는 항목을 반환하며 자식 노드의 대응 관계는 추측하지 않습니다. [비교 제한](../wiki/states.md#compare-two-variants)을 참조하세요.
 
-노드 인수는 `12:345`, `12-345`, `?node-id=`가 있는 Figma URL을 받을 수 있습니다. `<file>`에 `gs://bucket/object`도 지정할 수 있으며 `gcloud` 로그인으로 다운로드하고 캐시합니다. 고정 객체를 통한 전달, 필요한 접근 권한과 갱신 제한은 [GCS 스냅샷 가이드](../wiki/gcs.md)를 참고하세요. CLI 호출은 매번 파일을 디코딩합니다. MCP는 마지막으로 읽은 변경 없는 로컬 파일만 재사용합니다. 원격 입력은 다시 파싱합니다. 전체 CLI 사용법은 `figlens --help` 또는 `figlens inspect --help`(`-h`도 가능)를 실행하세요.
+노드 인수는 `12:345`, `12-345`, `?node-id=`가 있는 Figma URL을 받을 수 있습니다. `<file>`에 `gs://bucket/object`도 지정할 수 있으며 `gcloud` 로그인으로 다운로드하고 캐시합니다. 고정 객체를 통한 전달, 필요한 접근 권한과 갱신 제한은 [GCS 스냅샷 가이드](../wiki/gcs.md)를 참고하세요. CLI 호출은 매번 파일을 디코딩합니다. MCP는 마지막으로 읽은 변경 없는 로컬 파일만 재사용합니다. 원격 입력은 다시 파싱합니다. 전체 CLI 사용법은 `figlens --help` 또는 `figlens inspect --help`(`-h`도 가능)를 실행하세요. `index add gs://bucket/object`는 해당 generation의 고정된 사본을 등록하고 `remote {uri, generation}`을 보고하며, gcloud는 add만 실행합니다.
 
 `inspect`에는 기록된 텍스트 크기 조정, 잘림, 최대 줄 수와 장식이 포함됩니다. auto-layout이 없는 부모에는 `childSpacing: "derived"`가 붙습니다. 자식 사이의 간격은 좌표 차이이며 auto-layout 규칙이 아닙니다. `constraints`가 고정할 수는 있습니다. `handoffDiagnostics`는 저장되었지만 출력되지 않는 의미 정보를 개수, 예시, [범위 제한](../wiki/semantics.md#known-handoff-gaps)과 함께 보고합니다. 출력은 원본을 보호하고 쓰기가 완료된 뒤 대상을 교체합니다. MCP 요청 행은 1 MiB, 전체 응답은 8 MiB로 제한되며 초과하면 명시적인 오류를 반환합니다. CLI에서는 전체 JSON을 계속 출력할 수 있습니다.
