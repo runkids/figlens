@@ -267,32 +267,20 @@ fn searched(
     let query_image = match image.map(|i| (i, &i.input)) {
         None => None,
         Some((i, Input::Path(path))) => Some(super::visual::query_image(path, i.crop, cancel)?),
-        Some((i, Input::Ref { source_id, .. })) => {
-            let row = rows.iter().find(|r| r.id == *source_id).ok_or_else(|| {
-                fail(
-                    ErrorKind::InvalidArguments,
-                    format!("imageRef names source {source_id}, which this workspace does not serve to this caller"),
-                )
-            })?;
-            let checked = row.check(&tx, &dir, &req.scope, &versions, true)?;
-            if checked.state.label() != "ready" {
-                return Err(FigError::new(
-                    ErrorKind::SourceStale,
-                    format!("imageRef source {source_id} has no ready index of this scope; refresh it, then take the reference from new results"),
-                )
-                .with_recovery(json!([{"action": "refresh", "requires": "none", "tool": "index",
-                    "arguments": {"action": "refresh", "workspaceId": ws_id, "sourceId": source_id, "scope": req.scope}}]))
-                .into());
+        // Admission (8 MiB, 4 MP, crop) happens before decoding; the bytes are never written.
+        Some((i, Input::Png(bytes))) => {
+            Some(crate::search::visual::QueryImage::from_png(bytes, i.crop)?)
+        }
+        Some((i, input @ Input::Ref { .. })) => {
+            let image = resolved(&tx, &dir, &ws_id, &rows, &req.scope, &versions, input)?;
+            match i.crop {
+                None => Some(image),
+                // A crop is in the stored 256-pixel render's coordinates, the one the viewer shows.
+                Some(crop) => Some(crate::search::visual::QueryImage::from_png(
+                    &image.png()?,
+                    Some(crop),
+                )?),
             }
-            let gen_id = row.gen_id.expect("ready");
-            Some(super::visual_search::referenced(
-                &tx,
-                &ws_id,
-                gen_id,
-                row.snapshot.as_deref(),
-                i,
-                &req.scope,
-            )?)
         }
     };
     let rows: Vec<Row> = rows
@@ -584,6 +572,78 @@ fn searched(
     Ok(out)
 }
 
+/// The stored 256-pixel render, before any crop, of the node an image reference names: what a
+/// search by that reference reads and what the viewer shows. The source must be one this
+/// caller sees, with a ready index of `scope` serving exactly the referenced snapshot.
+pub fn reference_image(
+    storage: &Storage,
+    select: &Select,
+    scope: &str,
+    input: &Input,
+    cancel: &AtomicBool,
+) -> Result<crate::search::visual::QueryImage> {
+    let (_, ws) = opened(storage, select, false)?;
+    let handle = ws.conn.get_interrupt_handle();
+    interruptible(handle, cancel, || {
+        let tx = ws.conn.unchecked_transaction().map_err(sql)?;
+        let rows: Vec<Row> = rows(&tx, scope)?
+            .into_iter()
+            .filter(|r| storage.sees(Path::new(&r.path)))
+            .collect();
+        resolved(
+            &tx,
+            &ws.held.dir,
+            &ws.held.id,
+            &rows,
+            scope,
+            &search::store::versions(),
+            input,
+        )
+    })
+}
+
+/// `reference_image` over the visible `rows` of an open read transaction.
+fn resolved(
+    tx: &rusqlite::Transaction,
+    dir: &Path,
+    ws_id: &str,
+    rows: &[Row],
+    scope: &str,
+    versions: &str,
+    input: &Input,
+) -> Result<crate::search::visual::QueryImage> {
+    let Input::Ref { source_id, .. } = input else {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            "only an image reference names a stored render",
+        ));
+    };
+    let row = rows.iter().find(|r| r.id == *source_id).ok_or_else(|| {
+        fail(
+            ErrorKind::InvalidArguments,
+            format!("imageRef names source {source_id}, which this workspace does not serve to this caller"),
+        )
+    })?;
+    let checked = row.check(tx, dir, scope, versions, true)?;
+    if checked.state.label() != "ready" {
+        return Err(FigError::new(
+            ErrorKind::SourceStale,
+            format!("imageRef source {source_id} has no ready index of this scope; refresh it, then take the reference from new results"),
+        )
+        .with_recovery(json!([{"action": "refresh", "requires": "none", "tool": "index",
+            "arguments": {"action": "refresh", "workspaceId": ws_id, "sourceId": source_id, "scope": scope}}]))
+        .into());
+    }
+    super::visual_search::referenced(
+        tx,
+        ws_id,
+        row.gen_id.expect("ready"),
+        row.snapshot.as_deref(),
+        input,
+        scope,
+    )
+}
+
 /// The channels of an image search over `loaded`, each ranked across every source, fused once.
 /// Returns the page, its evidence, whether every channel covered every source (else the page
 /// offers no cursor) and the `coverage.layers` it reports. Filters apply before ranking; only
@@ -825,10 +885,33 @@ fn image_rank(
             }
         }
     }
+    // A vision layer ready on every source is the approximate visual signal; the hash then adds
+    // only exact normalized-pixel copies, which are independent evidence. Otherwise the hash
+    // ranking is the model-free visual signal. Counting both approximations would reward
+    // correlated evidence (#95 diagnostic: crop and background queries ranked worse).
+    let vision_ready = vision.is_some() && layers["visual"]["embedding"]["state"] == "ready";
+    let (hash, exact) = match vision_ready {
+        true => (None, Some(hash.into_iter().filter(|h| h.1.exact).collect())),
+        false => (any_hash.then_some(hash), None),
+    };
+    let vision = if vision_ready {
+        vision
+    } else {
+        if vision.is_some() {
+            layers["visual"]["embedding"]["reasons"] = json!([{"code": "not_every_source_ready"}]);
+        }
+        None
+    };
+    layers["visual"]["approximate"] = json!(if vision_ready {
+        "visual_embedding"
+    } else {
+        "visual_hash"
+    });
     let channels = rank::Channels {
         text,
         semantic,
-        hash: any_hash.then_some(hash),
+        hash,
+        exact,
         vision,
     };
     let (ranked, decor) = rank::rank(q, req, key, channels, complete)?;

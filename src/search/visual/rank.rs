@@ -20,7 +20,10 @@ pub(crate) struct Channels {
     pub text: Option<Vec<Hit>>,
     /// Semantic keys and, per key, its field/chunk evidence.
     pub semantic: Option<(Vec<Key>, Vec<Option<Json>>)>,
+    /// The perceptual-hash ranking: the visual signal when no vision layer is used.
     pub hash: Option<Vec<(Key, VisualHit)>>,
+    /// Exact normalized-pixel copies only, beside a vision ranking.
+    pub exact: Option<Vec<(Key, VisualHit)>>,
     pub vision: Option<Vec<(Key, f32)>>,
 }
 
@@ -83,6 +86,10 @@ pub(crate) fn rank(
         names.push("visual_hash");
         lists.push(keys(&mut hash.iter().map(|h| h.0)));
     }
+    if let Some(exact) = &channels.exact {
+        names.push("visual_exact");
+        lists.push(keys(&mut exact.iter().map(|h| h.0)));
+    }
     if let Some(vision) = &channels.vision {
         names.push("visual_embedding");
         lists.push(keys(&mut vision.iter().map(|h| h.0)));
@@ -132,7 +139,7 @@ pub(crate) fn rank(
             }
         }
     }
-    for (k, h) in channels.hash.iter().flatten() {
+    for (k, h) in channels.hash.iter().chain(&channels.exact).flatten() {
         evidence
             .entry(*k)
             .or_default()
@@ -245,6 +252,7 @@ mod tests {
             text: None,
             semantic: None,
             hash: Some(vec![((0, 7), hit(7, true)), ((1, 7), hit(7, false))]),
+            exact: None,
             vision: Some(vec![((1, 7), 0.95), ((0, 7), 0.9)]),
         };
         let (ranked, decor) =
@@ -272,6 +280,7 @@ mod tests {
             text: None,
             semantic: None,
             hash: Some(vec![((0, 1), hit(1, true)), ((0, 2), hit(2, false))]),
+            exact: None,
             vision: None,
         };
         let (first, decor) = rank(
