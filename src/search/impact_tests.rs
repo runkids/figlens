@@ -1,0 +1,228 @@
+use super::super::tests::{bounds, instance, node, obj};
+use super::*;
+use crate::Tree;
+use crate::search::usages::Whole;
+use crate::search::{Index, WORK, build};
+use kiwi_schema::Value as K;
+use std::collections::HashMap;
+
+/// Two same-name Buttons, a Card holding a Button instance, and screens of instances. `extra`
+/// adds layers to one generation only.
+fn index(extra: Vec<K<'static>>) -> Index {
+    let mut nodes = vec![
+        node(0, None, "DOCUMENT", "Document", vec![]),
+        node(1, Some(0), "CANVAS", "Components", vec![]),
+        node(2, Some(0), "CANVAS", "Screens", vec![]),
+        node(20, Some(1), "SYMBOL", "Button", vec![]),
+        node(22, Some(20), "TEXT", "Label", vec![]),
+        node(21, Some(1), "SYMBOL", "Button", vec![]),
+        node(30, Some(1), "SYMBOL", "Card", vec![]),
+        instance(31, 30, "Action", 20, vec![]),
+        node(32, Some(30), "TEXT", "Title", vec![]),
+        node(33, Some(30), "TEXT", "Body", vec![]),
+        node(60, Some(1), "SYMBOL", "Panel", vec![]),
+        instance(40, 60, "Card", 30, vec![]),
+        instance(61, 2, "Panel", 60, vec![]),
+        instance(41, 2, "Other button", 21, vec![]),
+    ];
+    nodes.extend(extra);
+    let message = obj(vec![("nodeChanges", K::Array(nodes))]);
+    build(&Tree::new(&message), "0:0", bounds(WORK))
+}
+
+/// Answers by (recipient, seed), `Unknown` when unlisted, and records every probe.
+struct Fixed {
+    answers: HashMap<(&'static str, &'static str), Verdict>,
+    asked: Vec<(String, String, String, u8)>,
+}
+
+impl Evidence for Fixed {
+    fn compare(&mut self, probe: &Probe, _: &mut Bounds) -> Result<Verdict> {
+        let (r, t, s) = (probe.recipient, probe.through, probe.seed);
+        self.asked
+            .push((r.to_owned(), t.to_owned(), s.to_owned(), probe.facets));
+        Ok(*self
+            .answers
+            .get(&(probe.recipient, probe.seed))
+            .unwrap_or(&Verdict::Unknown))
+    }
+}
+
+fn fixed(answers: &[(&'static str, &'static str, Verdict)]) -> Fixed {
+    Fixed {
+        answers: answers.iter().map(|&(r, s, v)| ((r, s), v)).collect(),
+        asked: Vec::new(),
+    }
+}
+
+fn seed(node: &str, change: Change) -> Seed {
+    Seed {
+        node: node.to_owned(),
+        change,
+        facets: 1,
+    }
+}
+
+fn run(old: &Index, new: &Index, seeds: &[Seed], evidence: &mut Fixed, work: usize) -> Impact {
+    compute(
+        &mut Whole(old),
+        &mut Whole(new),
+        seeds,
+        evidence,
+        &mut bounds(work),
+    )
+    .unwrap()
+}
+
+fn class<'a>(impact: &'a Impact, node: &str) -> Option<&'a Hit> {
+    impact.hits.iter().find(|h| h.node == node)
+}
+
+fn classes(impact: &Impact, nodes: &[&str]) -> Vec<Option<Class>> {
+    nodes
+        .iter()
+        .map(|n| class(impact, n).map(|h| h.class))
+        .collect()
+}
+
+const C: Verdict = Verdict::Changed;
+const E: Verdict = Verdict::Equal;
+
+#[test]
+fn a_changed_nested_layer_reaches_instances_by_exact_id_through_its_component() {
+    let i = index(vec![]);
+    let mut e = fixed(&[
+        ("0:31", "0:22", C),
+        ("0:40", "0:22", C),
+        ("0:61", "0:22", C),
+    ]);
+    let out = run(&i, &i, &[seed("0:22", Change::Changed)], &mut e, WORK);
+    let effective = Some(Class::Effective);
+    assert_eq!(
+        classes(&out, &["0:22", "0:31", "0:40", "0:61", "0:41"]),
+        [Some(Class::Direct), effective, effective, effective, None]
+    );
+}
+
+#[test]
+fn a_dependency_without_evidence_is_only_possible() {
+    let i = index(vec![]);
+    let out = run(
+        &i,
+        &i,
+        &[seed("0:22", Change::Changed)],
+        &mut fixed(&[]),
+        WORK,
+    );
+    // An unproven layer still passes its possible change on to what depends on it.
+    let possible = Some(Class::Possible);
+    assert_eq!(classes(&out, &["0:31", "0:61"]), [possible, possible]);
+}
+
+#[test]
+fn a_dependency_the_diff_reads_as_equal_is_effective_unchanged() {
+    let i = index(vec![]);
+    let mut e = fixed(&[("0:31", "0:22", E)]);
+    let out = run(&i, &i, &[seed("0:22", Change::Changed)], &mut e, WORK);
+    assert_eq!(classes(&out, &["0:31"]), [Some(Class::EffectiveUnchanged)]);
+}
+
+#[test]
+fn a_masked_path_first_never_hides_a_later_changed_path_or_what_lies_beyond_it() {
+    let i = index(vec![]);
+    let mut e = fixed(&[
+        ("0:40", "0:33", E),
+        ("0:40", "0:32", C),
+        ("0:61", "0:32", C),
+    ]);
+    let seeds = [seed("0:33", Change::Changed), seed("0:32", Change::Changed)];
+    let out = run(&i, &i, &seeds, &mut e, WORK);
+    let effective = Some(Class::Effective);
+    assert_eq!(classes(&out, &["0:40", "0:61"]), [effective, effective]);
+}
+
+#[test]
+fn a_dependent_in_one_generation_only_is_possible_with_that_side() {
+    let old = index(vec![instance(43, 2, "Old", 20, vec![])]);
+    let new = index(vec![instance(42, 2, "New", 20, vec![])]);
+    let mut e = fixed(&[("0:42", "0:22", C), ("0:43", "0:22", C)]);
+    let out = run(&old, &new, &[seed("0:22", Change::Changed)], &mut e, WORK);
+    let sides: Vec<_> = ["0:43", "0:42"]
+        .iter()
+        .map(|n| class(&out, n).map(|h| (h.class, h.side)))
+        .collect();
+    assert_eq!(
+        sides,
+        [Some((Class::Possible, 1)), Some((Class::Possible, 2))]
+    );
+}
+
+#[test]
+fn a_removed_layer_reaches_only_the_old_generations_dependents() {
+    let old = index(vec![instance(43, 2, "Old", 20, vec![])]);
+    let new = index(vec![instance(42, 2, "New", 20, vec![])]);
+    let mut e = fixed(&[("0:43", "0:22", C)]);
+    let out = run(&old, &new, &[seed("0:22", Change::Removed)], &mut e, WORK);
+    assert_eq!(
+        classes(&out, &["0:43", "0:42"]),
+        [Some(Class::Effective), None]
+    );
+}
+
+#[test]
+fn an_unknown_diff_row_is_possible_never_direct() {
+    let i = index(vec![]);
+    let out = run(
+        &i,
+        &i,
+        &[seed("0:22", Change::Unknown)],
+        &mut fixed(&[]),
+        WORK,
+    );
+    assert_eq!(
+        (classes(&out, &["0:22"]), out.complete),
+        (vec![Some(Class::Possible)], false)
+    );
+}
+
+#[test]
+fn a_bound_that_runs_out_leaves_the_impact_incomplete_not_unchanged() {
+    let i = index(vec![]);
+    let mut e = fixed(&[("0:31", "0:22", E)]);
+    let out = run(&i, &i, &[seed("0:22", Change::Changed)], &mut e, 500);
+    assert_eq!(
+        (out.complete, out.reasons.contains_key("budget_unknown")),
+        (false, true),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn a_nested_layer_is_asked_about_through_its_component_with_its_seed_and_facets() {
+    let i = index(vec![]);
+    let mut e = fixed(&[]);
+    run(&i, &i, &[seed("0:22", Change::Changed)], &mut e, WORK);
+    let probe = ("0:31".to_owned(), "0:20".to_owned(), "0:22".to_owned(), 1);
+    assert!(e.asked.contains(&probe), "{:?}", e.asked);
+}
+
+#[test]
+fn an_added_layer_reaches_only_the_new_generations_dependents() {
+    let old = index(vec![instance(43, 2, "Old", 20, vec![])]);
+    let new = index(vec![instance(42, 2, "New", 20, vec![])]);
+    let mut e = fixed(&[("0:42", "0:22", C)]);
+    let out = run(&old, &new, &[seed("0:22", Change::Added)], &mut e, WORK);
+    assert_eq!(
+        classes(&out, &["0:42", "0:43"]),
+        [Some(Class::Effective), None]
+    );
+}
+
+#[test]
+fn a_masked_path_after_a_changed_one_leaves_the_layer_changed() {
+    let i = index(vec![]);
+    let mut e = fixed(&[("0:40", "0:32", C), ("0:40", "0:33", E)]);
+    let seeds = [seed("0:32", Change::Changed), seed("0:33", Change::Changed)];
+    let out = run(&i, &i, &seeds, &mut e, WORK);
+    assert_eq!(classes(&out, &["0:40"]), [Some(Class::Effective)]);
+}
