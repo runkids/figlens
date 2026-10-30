@@ -20,6 +20,7 @@ hmac = "0.13.0"
 imagesize = "0.15.0"
 jpeg-encoder = "0.7.1"
 kiwi-schema = { version = "0.2.1", path = "vendor/kiwi-schema" }
+oxipng = { version = "10.2.1", default-features = false }
 rayon = "1.12.0"
 # Bundled: the native binaries carry SQLite, so users install nothing.
 rusqlite = { version = "0.41.1", features = ["bundled"] }
@@ -40,6 +41,9 @@ libc = "0.2"
 # The per-user Local AppData Known Folder, when %LOCALAPPDATA% is unset, hard-link counts and Ctrl-C.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Console", "Win32_UI_Shell"] }
+
+[dev-dependencies]
+png = "0.18.1"
 
 [profile.release]
 strip = true

@@ -222,7 +222,7 @@ Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，works
 | `bundle <file> <node> <out.zip> [--states]` | 单个 frame 的设计 bundle；输出 `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]`, `--frames -` (stdin) | 一次解码，并行生成多个 bundle |
 | `verify <bundle>` | 按 manifest 检查 bundle（`.zip` 或解压后的目录）：已验证、缺失和被改动的文件，缺失的素材，需要在项目中确认的字体，以及 `findings`：每项缺失、不支持或未验证的 handoff 输入，附节点、证据和下一步 |
-| `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N] [--match-dir DIR]` | SVG、PNG、JPG、WebP 或 AVIF；`--max-kb` 会降低有损质量直到符合大小；`--bounds layout` 按 layout box 而不是 render bounds 导出；`--match-dir DIR`（仅 SVG，含子文件夹）列出绘制相同轮廓的 SVG（`matches`），以及最多 10 个带分数的相似形状（`similar`） |
+| `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N] [--match-dir DIR]` | SVG、PNG、JPG、WebP 或 AVIF；不超过 4,194,304 像素的 PNG 自动进行无损优化，解码后的 RGBA 不变，若未变小则保留原始编码字节，更大的 PNG 使用常规编码；`--max-kb` 会降低有损质量直到符合大小（PNG 若仍超限则失败，不会回退为有损编码）；`--bounds layout` 按 layout box 而不是 render bounds 导出；`--match-dir DIR`（仅 SVG，含子文件夹）列出绘制相同轮廓的 SVG（`matches`），以及最多 10 个带分数的相似形状（`similar`） |
 | `export <file> --frames <list> --out-dir <dir> [--format F] [--scale N] ...`, `--frames -` (stdin) | 一次解码导出多个节点（默认 `png`）：写入 `<dir>/<nodeId>.<format>`，每个 id 一行 JSON（带 `nodeId` 的 `export` 输出，或 `{nodeId, error}`） |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 本地只读 viewer；`--out` 写出独立的离线快照；结果与复制的 context 会标明页面，live 时也标明已加载文件的路径、source 的 snapshot 与本地 revision（离线时未知，且绝不嵌入路径）；context 也带有参考 scope 的 coverage，未检查时为 `complete: null` |
 | `compare <file> <nodes.json> <node>` | 与同一 frame 的 REST 导出做差异比较 |

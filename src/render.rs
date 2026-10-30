@@ -2088,9 +2088,30 @@ pub fn base64(b: &[u8]) -> String {
     out
 }
 
+/// Losslessly optimize delivery PNGs, keeping the original encoding when it is not smaller.
+pub fn encode_png(p: &resvg::tiny_skia::Pixmap) -> Result<Vec<u8>, String> {
+    let original = p.encode_png().map_err(|e| e.to_string())?;
+    // Bound added optimization work to 4,194,304 pixels; larger rasters keep their encoding.
+    if p.data().len() > 16 * 1024 * 1024 {
+        return Ok(original);
+    }
+    let options = oxipng::Options {
+        optimize_alpha: false,
+        max_decompressed_size: Some(p.data().len() + p.height() as usize),
+        ..oxipng::Options::from_preset(0)
+    };
+    let optimized = oxipng::optimize_from_memory(&original, &options)
+        .map_err(|e| format!("PNG optimization failed: {e}"))?;
+    Ok(if optimized.len() < original.len() {
+        optimized
+    } else {
+        original
+    })
+}
+
 /// Rasterizes an SVG document to PNG bytes.
 pub fn png(svg: &str) -> Result<Vec<u8>, String> {
-    pixmap(svg)?.encode_png().map_err(|e| e.to_string())
+    encode_png(&pixmap(svg)?)
 }
 
 /// Rasterizes an SVG document to premultiplied RGBA pixels.
