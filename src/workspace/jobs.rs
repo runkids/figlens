@@ -450,6 +450,36 @@ pub(crate) fn submit(
     scope: &str,
     request_id: Option<&str>,
 ) -> Result<Submitted> {
+    submit_fenced(storage, ws, kind, source_id, scope, request_id, None)
+}
+
+/// A condition an admission must still meet inside its own write, given the transaction and
+/// the workspace incarnation.
+pub(crate) type Fence<'a> = &'a dyn Fn(&Connection, &str) -> Result<bool>;
+
+/// A fenced admission whose fence no longer held; nothing was replayed, joined or admitted.
+#[derive(Debug)]
+pub(crate) struct Unfenced;
+
+impl std::fmt::Display for Unfenced {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the admission's fence no longer holds")
+    }
+}
+
+impl Error for Unfenced {}
+
+/// `submit`, refused with `Unfenced` when `fence` fails inside the admission's write.
+#[allow(clippy::too_many_arguments)]
+fn submit_fenced(
+    storage: &Storage,
+    ws: &mut Opened,
+    kind: &str,
+    source_id: &str,
+    scope: &str,
+    request_id: Option<&str>,
+    fence: Option<Fence>,
+) -> Result<Submitted> {
     // A tracking baseline is a rebuild, but its requestId names a different operation.
     let (op, kind) = (kind, if kind == "track" { "rebuild" } else { kind });
     let dir = ws.held.dir.clone();
@@ -477,6 +507,11 @@ pub(crate) fn submit(
                 format!("workspace {id} has no source {source_id}"),
             )
         })?;
+    if let Some(fence) = fence
+        && !fence(&tx, &incarnation)?
+    {
+        return Err(Unfenced.into());
+    }
     let print = fingerprint(op, &id, source_id, &membership, scope);
     if let Some(request) = request_id {
         match requested(&tx, request)? {
@@ -2267,7 +2302,9 @@ pub(super) fn chosen(storage: &Storage, ws: &Opened, only: Option<&str>) -> Resu
 }
 
 /// Starts or joins builds of `kind` for each (source, scope): the given scope, or every scope
-/// the source has published; `among` narrows the chosen sources.
+/// the source has published; `among` narrows the chosen sources, and `fence` must hold inside
+/// each admission's write.
+#[allow(clippy::too_many_arguments)]
 fn submit_all(
     storage: &Storage,
     select: &Select,
@@ -2276,6 +2313,7 @@ fn submit_all(
     scope: Option<&str>,
     request_id: Option<&str>,
     among: Option<&[String]>,
+    fence: Option<Fence>,
 ) -> Result<Outcome> {
     let (place, mut ws) = opened(storage, select, true)?;
     let mut plan = Vec::new();
@@ -2323,7 +2361,7 @@ fn submit_all(
             deferred.push(later(&source, &scope));
             continue;
         }
-        let job = match submit(storage, &mut ws, kind, &source, &scope, request_id) {
+        let job = match submit_fenced(storage, &mut ws, kind, &source, &scope, request_id, fence) {
             Ok(job) => job,
             // Each admitted job is committed and owned by this process, which never lets it
             // go: the caller gets them to run, and the rest (past MAX_ACTIVE, say) is reported.
@@ -2392,13 +2430,41 @@ pub fn refresh(
     scope: Option<&str>,
     request_id: Option<&str>,
 ) -> Result<Outcome> {
-    submit_all(storage, select, "refresh", source, scope, request_id, None)
+    submit_all(
+        storage, select, "refresh", source, scope, request_id, None, None,
+    )
+}
+
+/// `refresh` of one source scope, admitted only while `fence` holds inside the admission's
+/// write; `None` when it did not, with nothing admitted, joined or replayed.
+pub(crate) fn refresh_fenced(
+    storage: &Storage,
+    select: &Select,
+    source: &str,
+    scope: &str,
+    fence: Fence,
+) -> Result<Option<Outcome>> {
+    match submit_all(
+        storage,
+        select,
+        "refresh",
+        Some(source),
+        Some(scope),
+        None,
+        None,
+        Some(fence),
+    ) {
+        Err(e) if e.is::<Unfenced>() => Ok(None),
+        outcome => outcome.map(Some),
+    }
 }
 
 /// `index rebuild`: builds every published scope of every source again, even unchanged ones,
 /// keeping the registry and each prior generation until its replacement publishes.
 pub fn rebuild(storage: &Storage, select: &Select, request_id: Option<&str>) -> Result<Outcome> {
-    submit_all(storage, select, "rebuild", None, None, request_id, None)
+    submit_all(
+        storage, select, "rebuild", None, None, request_id, None, None,
+    )
 }
 
 /// `index rebuild` of one source, or one of its scopes: a deferred item's continuation, which
@@ -2410,7 +2476,9 @@ pub fn rebuild_scope(
     scope: Option<&str>,
     request_id: Option<&str>,
 ) -> Result<Outcome> {
-    submit_all(storage, select, "rebuild", source, scope, request_id, None)
+    submit_all(
+        storage, select, "rebuild", source, scope, request_id, None, None,
+    )
 }
 
 /// `index track`: turns change tracking on for published scope `scope` of each chosen source and
@@ -2435,6 +2503,7 @@ pub fn track(
             Some(scope),
             request_id,
             Some(&started),
+            None,
         )?,
         true => Outcome {
             report: json!({"workspaceId": id, "jobs": []}),
