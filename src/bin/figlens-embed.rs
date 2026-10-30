@@ -19,7 +19,21 @@ const BATCH: usize = 16;
 /// CPU threads unless RAYON_NUM_THREADS says otherwise: more oversubscribed an 18-CPU host.
 const THREADS: usize = 8;
 
+const USAGE: &str = "usage: figlens-embed <model-dir>\n\nThe local text model child of figlens semantic search. figlens starts it after\n`figlens models configure`; it reads only <model-dir>, opens no network connection\nand speaks figlens's stdio protocol.";
+
 fn main() -> Result<()> {
+    // Answered before any model file is read, so packaging can check the binary alone.
+    match std::env::args().nth(1).as_deref() {
+        Some("--version" | "-V") => {
+            println!("figlens-embed {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Some("--help" | "-h") | None => {
+            println!("{USAGE}");
+            return Ok(());
+        }
+        _ => {}
+    }
     let dir = PathBuf::from(
         std::env::args()
             .nth(1)
