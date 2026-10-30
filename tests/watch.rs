@@ -1133,3 +1133,87 @@ fn an_unchanged_save_records_no_revision() {
     assert_eq!(env.changes(), 0);
     holder.close();
 }
+
+#[cfg(unix)]
+#[test]
+fn a_watched_source_swapped_for_a_link_out_of_the_roots_is_never_read_and_a_real_save_still_is() {
+    let env = Env::new();
+    let elsewhere = TestDir::new();
+    let secret = std::fs::canonicalize(elsewhere.join(""))
+        .unwrap()
+        .join("secret.fig");
+    corpus::write_restyled(secret.as_os_str()).unwrap();
+    // A server confined to the test directory starts the watch, then the path becomes a link
+    // out of its roots, between renewals.
+    let mut mcp = Mcp::new(&env, "none", &env.dir.join("never"));
+    let ws = mcp.tool(
+        "index",
+        serde_json::json!({"action": "status", "file": env.file}),
+    )["structuredContent"]["workspaceId"]
+        .clone();
+    let started = mcp.tool(
+        "watch",
+        serde_json::json!({"action": "start", "workspaceId": ws, "scope": "0:0"}),
+    );
+    assert_eq!(started["structuredContent"]["state"], "active", "{started}");
+    wait_for("the runner", Duration::from_secs(10), || {
+        env.runner_running()
+    });
+    let db = database(&env);
+    let link = env.dir.join("link.tmp");
+    std::os::unix::fs::symlink(&secret, &link).unwrap();
+    std::fs::rename(&link, &env.path).unwrap();
+    // Long past the detector's stable window, so a followed link would have been refreshed.
+    std::thread::sleep(Duration::from_secs(2));
+    // A real save afterwards is refreshed: one revision, never one of the linked bytes.
+    let refreshes = |after: i64| -> i64 {
+        db.query_row(
+            "SELECT count(*) FROM jobs WHERE kind = 'refresh' AND created_ms >= ?1
+             AND state IN ('succeeded', 'failed', 'cancelled')",
+            [after],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let saved = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    env.save(true);
+    wait_for("the save's refresh", Duration::from_secs(20), || {
+        refreshes(saved) >= 1
+    });
+    assert_eq!((env.changes(), refreshes(0)), (1, 1));
+    mcp.close();
+}
+
+#[test]
+fn a_source_prepared_through_a_link_in_its_roots_follows_saves_to_its_file() {
+    let dir = TestDir::new();
+    let root = std::fs::canonicalize(dir.join("")).unwrap();
+    let real = root.join("real.fig");
+    corpus::write(real.as_os_str(), false).unwrap();
+    let link = root.join("link.fig");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    #[cfg(windows)]
+    if std::os::windows::fs::symlink_file(&real, &link).is_err() {
+        // Creating a link needs Developer Mode or the privilege on Windows.
+        return;
+    }
+    let env = Env {
+        home: root.join("home"),
+        path: real.clone(),
+        file: link.to_str().unwrap().to_owned(),
+        dir,
+    };
+    std::fs::create_dir(&env.home).unwrap();
+    env.json(&["index", "prepare", &env.file, "--scope", "0:0"]);
+    env.json(&["index", "track", "--file", &env.file, "--scope", "0:0"]);
+    let holder = env.holder();
+    env.save(true);
+    wait_for("the save's revision", Duration::from_secs(20), || {
+        env.changes() == 1
+    });
+    holder.close();
+}

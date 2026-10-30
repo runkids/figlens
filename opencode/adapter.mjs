@@ -23,6 +23,16 @@ export function launcherRuntime(versions = process.versions, execPath = process.
 
 const MANAGED_MCP = 'figlensmcp';
 
+// AbortSignal.any arrived in Node 20.3; the npm package still runs on Node 18.
+// shortcut: the fallback's listeners stay on long-lived signals until they abort, fine for Node 18 only.
+const anySignal = AbortSignal.any ? signals => AbortSignal.any(signals) : signals => {
+  const combined = new AbortController();
+  for (const signal of signals) {
+    if (signal.aborted) return AbortSignal.abort(signal.reason);
+    signal.addEventListener('abort', () => combined.abort(signal.reason), { once: true, signal: combined.signal });
+  }
+  return combined.signal;
+};
 const flag = (name, value) => value === undefined || value === false ? [] : value === true ? [name] : [name, String(value)];
 const required = (input, name) => {
   if (typeof input[name] !== 'string' || !input[name]) throw new Error(`${input.action ?? 'This call'} needs ${name}.`);
@@ -162,7 +172,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
           { group: process.platform !== 'win32' }) };
       owners.set(sessionID, current);
     }
-    const combined = AbortSignal.any([lifetime.signal, current.lifetime.signal, ...(signal ? [signal] : [])]);
+    const combined = anySignal([lifetime.signal, current.lifetime.signal, ...(signal ? [signal] : [])]);
     const admitted = new Set();
     async function authorize(action, resources) {
       combined.throwIfAborted();
@@ -176,7 +186,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
       const argv = [...prefix, ...args];
       if (bundled) await authorize('edit', [cacheRoot]);
       await authorize('bash', [commandLine(args)]);
-      const signal = timeout ? AbortSignal.any([combined, AbortSignal.timeout(timeout)]) : combined;
+      const signal = timeout ? anySignal([combined, AbortSignal.timeout(timeout)]) : combined;
       const execution = execute(command, argv, { cwd: root, detached: process.platform !== 'win32', maxBuffer: 64 * 1024 * 1024 });
       let stopping;
       const abort = () => {
