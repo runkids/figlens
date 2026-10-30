@@ -131,7 +131,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可寄�
 
 ## MCP 伺服器與 agent skill
 
-**MCP。** 伺服器透過 stdio 在本機執行，提供 `workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch`、`export` 與 `models`。請傳入絕對路徑。加上 `--root /path/to/designs`（可重複）可將所有檔案與輸出路徑限制在指定的資料夾。將索引存放在 figlens 預設目錄之外時，需要 `--storage-root DIR`（可重複）。點陣圖匯出會縮小到 `maxSize`（預設 1600 px），讓內嵌圖片維持小巧；SVG 只回傳 metadata。
+**MCP。** 伺服器透過 stdio 在本機執行，提供 `workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch`、`export` 與 `models`。請傳入絕對路徑。加上 `--root /path/to/designs`（可重複）可將所有檔案與輸出路徑限制在指定的資料夾。明確指定自訂索引位置時，需要 `--storage-root DIR`（可重複）；已記住的 workspace 位置不必再指定。參見[啟動參數與多個 root 的設定範例](../README-zh-TW.md#mcp-args)。點陣圖匯出會縮小到 `maxSize`（預設 1600 px），讓內嵌圖片維持小巧；SVG 只回傳 metadata。
 
 agent 可透過 `workflow` 讀取內建的 `build`、`audit`、`images`、`plan`、`planning-details`，或明確要求時的 `yolo` 指引。它們與 portable skill 共用來源；MCP 使用者可自行選擇是否另裝 skill。實際工作仍由 agent 使用專案與瀏覽器工具，並遵守 host 權限。讀取指引不會執行工作流程；使用方式取決於客戶端支援與模型行為。
 
@@ -152,7 +152,7 @@ skillshare mcp add figlens --global --target claude --target codex --target curs
 skillshare sync && skillshare sync mcp --global
 ```
 
-**安裝說明。** npm launcher 在首次使用時下載對應的原生執行檔，以發行版的 SHA-256 checksum 驗證後快取。用安裝腳本裝的以 `figlens update` 更新；Homebrew 裝的以 `brew upgrade figlens` 更新。執行檔涵蓋 macOS（Apple silicon、Intel）、Linux（arm64、x86_64、靜態 musl）與 Windows（x86_64）。
+**安裝說明。** npm launcher 在首次使用時下載對應的原生執行檔，以發行版的 SHA-256 checksum 驗證後快取。用安裝腳本裝的以 `figlens update` 更新；Homebrew 裝的以 `brew upgrade figlens` 更新。執行檔涵蓋 macOS（Apple silicon、Intel）、Linux（arm64、x86_64、靜態 musl）與 Windows（x86_64）。每種安裝方式都會把[選用的語意搜尋](#semantic-search)所用的執行環境 `figlens-embed` 放在 `figlens` 旁邊；在你設定模型之前，它不會載入任何模型。
 
 <a id="local-index"></a>
 
@@ -234,7 +234,7 @@ Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，works
 | `bundle <file> <node> <out.zip> [--states]` | 單一 frame 的設計 bundle；輸出 `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]`, `--frames -` (stdin) | 一次解碼，平行產生多個 bundle |
 | `verify <bundle>` | 依 manifest 檢查 bundle（`.zip` 或解開後的目錄）：已驗證、缺少與被改動的檔案、缺少的素材，需在專案中確認的字型，以及 `findings`：每項缺少、不支援或未驗證的 handoff 輸入，附節點、證據與下一步 |
-| `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N] [--match-dir DIR]` | SVG、PNG、JPG、WebP 或 AVIF；`--max-kb` 會降低有損品質直到符合大小；`--bounds layout` 以 layout box 而非 render bounds 匯出；`--match-dir DIR`（僅 SVG，含子資料夾）列出繪製相同輪廓的 SVG（`matches`），以及最多 10 個附分數的相似形狀（`similar`） |
+| `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N] [--match-dir DIR]` | SVG、PNG、JPG、WebP 或 AVIF；不超過 4,194,304 像素的 PNG 自動進行無損最佳化，解碼後的 RGBA 不變，若未變小則保留原始編碼位元組，更大的 PNG 使用一般編碼；`--max-kb` 會降低有損品質直到符合大小（PNG 若仍超限則失敗，不會退回有損編碼）；`--bounds layout` 以 layout box 而非 render bounds 匯出；`--match-dir DIR`（僅 SVG，含子資料夾）列出繪製相同輪廓的 SVG（`matches`），以及最多 10 個附分數的相似形狀（`similar`） |
 | `export <file> --frames <list> --out-dir <dir> [--format F] [--scale N] ...`, `--frames -` (stdin) | 一次解碼匯出多個節點（預設 `png`）：寫入 `<dir>/<nodeId>.<format>`，每個 id 一行 JSON（帶 `nodeId` 的 `export` 輸出，或 `{nodeId, error}`） |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 本機唯讀 viewer；`--out` 會寫出獨立的離線快照；結果與複製的 context 會標明頁面，live 時也標明已載入檔案的路徑、source 的 snapshot 與本機 revision（離線時未知，且絕不嵌入路徑）；context 也帶有參考 scope 的 coverage，未檢查時為 `complete: null` |
 | `compare <file> <nodes.json> <node>` | 與同一 frame 的 REST 匯出做差異比對 |

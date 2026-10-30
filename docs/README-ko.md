@@ -131,7 +131,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 누구�
 
 ## MCP 서버와 에이전트 skill
 
-**MCP.** 서버는 로컬에서 stdio로 실행되며 `workflow`, `tree`, `find`, `search`, `usages`, `diff`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs`, `changes`, `watch`, `export`, `models`를 제공합니다. 절대 경로를 전달하세요. `--root /path/to/designs`(반복 가능)를 추가하면 모든 파일과 출력 경로를 선택한 폴더로 제한합니다. figlens 기본 디렉터리 밖에 인덱스를 저장하려면 `--storage-root DIR`(반복 가능)이 필요합니다. 래스터 내보내기는 `maxSize`(기본 1600px)에 맞게 축소되어 인라인 이미지가 작게 유지되며, SVG는 메타데이터만 반환합니다.
+**MCP.** 서버는 로컬에서 stdio로 실행되며 `workflow`, `tree`, `find`, `search`, `usages`, `diff`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs`, `changes`, `watch`, `export`, `models`를 제공합니다. 절대 경로를 전달하세요. `--root /path/to/designs`(반복 가능)를 추가하면 모든 파일과 출력 경로를 선택한 폴더로 제한합니다. 사용자 지정 저장소를 명시적으로 요청하려면 `--storage-root DIR`(반복 가능)이 필요합니다. 기억된 workspace 위치는 이 옵션 없이 재사용합니다. [시작 인수와 여러 루트 설정 예](../README-ko.md#mcp-args)를 참고하세요. 래스터 내보내기는 `maxSize`(기본 1600px)에 맞게 축소되어 인라인 이미지가 작게 유지되며, SVG는 메타데이터만 반환합니다.
 
 agent는 `workflow`로 `build`, `audit`, `images`, `plan`, `planning-details` 또는 명시적으로 요청된 경우 `yolo` 가이드를 읽을 수 있습니다. portable skill과 같은 소스를 사용하므로 MCP 사용 시 별도 skill 설치는 선택 사항입니다. 실제 작업은 agent의 프로젝트·브라우저 도구와 호스트 권한으로 수행합니다. 가이드를 읽는 것만으로 작업이 실행되지는 않으며, 활용 방식은 클라이언트 지원과 모델 동작에 따라 달라집니다.
 
@@ -152,7 +152,7 @@ skillshare mcp add figlens --global --target claude --target codex --target curs
 skillshare sync && skillshare sync mcp --global
 ```
 
-**설치 참고.** npm 런처는 처음 사용할 때 해당 네이티브 바이너리를 내려받고, 릴리스의 SHA-256 체크섬으로 검증한 뒤 캐시합니다. 스크립트로 설치했다면 `figlens update`, Homebrew로 설치했다면 `brew upgrade figlens`로 업데이트하세요. 바이너리는 macOS(Apple silicon, Intel), Linux(arm64, x86_64, 정적 musl), Windows(x86_64)를 지원합니다.
+**설치 참고.** npm 런처는 처음 사용할 때 해당 네이티브 바이너리를 내려받고, 릴리스의 SHA-256 체크섬으로 검증한 뒤 캐시합니다. 스크립트로 설치했다면 `figlens update`, Homebrew로 설치했다면 `brew upgrade figlens`로 업데이트하세요. 바이너리는 macOS(Apple silicon, Intel), Linux(arm64, x86_64, 정적 musl), Windows(x86_64)를 지원합니다.모든 설치 방법은 [선택형 시맨틱 검색](#semantic-search)의 런타임인 `figlens-embed`도 `figlens` 옆에 둡니다. 모델을 설정하기 전에는 모델을 불러오지 않습니다.
 
 <a id="local-index"></a>
 
@@ -234,7 +234,7 @@ Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며
 | `bundle <file> <node> <out.zip> [--states]` | 한 frame의 디자인 bundle. `{nodeId, path, warnings}` 출력 |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]`, `--frames -` (stdin) | 한 번 디코딩해 여러 bundle을 병렬 생성 |
 | `verify <bundle>` | bundle(`.zip` 또는 압축을 푼 디렉터리)을 manifest와 대조: 검증·누락·변경된 파일, 누락된 asset, 프로젝트에서 확인할 폰트, 그리고 `findings`: 누락·미지원·미검증 handoff 입력마다 노드, 근거, 다음 조치 |
-| `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N] [--match-dir DIR]` | SVG, PNG, JPG, WebP, AVIF. `--max-kb`는 크기에 맞을 때까지 손실 품질을 낮춤. `--bounds layout`은 render bounds 대신 layout box로 내보냄. `--match-dir DIR`(SVG만, 하위 폴더 포함)은 같은 윤곽을 그리는 SVG(`matches`)와 점수가 붙은 비슷한 형태 최대 10개(`similar`)를 나열 |
+| `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N] [--match-dir DIR]` | SVG, PNG, JPG, WebP, AVIF. 4,194,304픽셀 이하의 PNG는 디코딩된 RGBA를 바꾸지 않고 자동 무손실 최적화하며, 더 작아지지 않으면 원래 인코딩된 바이트를 유지. 더 큰 PNG는 일반 인코딩 사용. `--max-kb`는 크기에 맞을 때까지 손실 품질을 낮춤(PNG는 여전히 한도를 넘으면 실패하며 손실 방식으로 대체하지 않음). `--bounds layout`은 render bounds 대신 layout box로 내보냄. `--match-dir DIR`(SVG만, 하위 폴더 포함)은 같은 윤곽을 그리는 SVG(`matches`)와 점수가 붙은 비슷한 형태 최대 10개(`similar`)를 나열 |
 | `export <file> --frames <list> --out-dir <dir> [--format F] [--scale N] ...`, `--frames -` (stdin) | 한 번 디코딩해 여러 개 내보내기(기본 `png`): `<dir>/<nodeId>.<format>`에 쓰고 id마다 JSON 한 줄(`nodeId`가 붙은 `export` 출력 또는 `{nodeId, error}`) |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 로컬 읽기 전용 viewer. `--out`은 독립 오프라인 스냅샷 생성. 결과와 복사한 context는 페이지와, live에서는 불러온 파일 경로, source의 snapshot과 로컬 revision을 표시(오프라인에서는 알 수 없으며 경로는 포함하지 않음). context에는 참조 scope의 coverage도 담기며, 확인하지 않았으면 `complete: null` |
 | `compare <file> <nodes.json> <node>` | 같은 frame의 REST 내보내기와 차이 비교 |

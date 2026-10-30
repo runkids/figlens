@@ -1121,8 +1121,13 @@ pub fn workspace_search_tool(
         .into_iter()
         .collect();
     let (request, mode) = search_tool(call)?;
-    let value =
-        figlens::workspace::query::search_mode(&storage, &select, &only, &request, mode, cancel)?;
+    // Text search keeps its old behavior: it is not one of the calls a server stop cancels.
+    let value = match mode {
+        Mode::Text => figlens::workspace::query::search(&storage, &select, &only, &request)?,
+        _ => figlens::workspace::query::search_mode(
+            &storage, &select, &only, &request, mode, cancel,
+        )?,
+    };
     Ok(Output::Json {
         value,
         pretty: false,
@@ -1158,9 +1163,19 @@ pub fn models_tool(
             // Every pinned file, followed through links, must lie inside the roots too, before
             // any of them is read.
             let inside = |p: &Path| roots.is_empty() || roots.iter().any(|r| p.starts_with(r));
+            if !inside(&dir) {
+                return Err(figlens::FigError::new(
+                    figlens::ErrorKind::PermissionDenied,
+                    "modelDir lies outside the server's roots",
+                )
+                .into());
+            }
             for (name, _) in known.files {
-                let target = std::fs::canonicalize(dir.join(name)).unwrap_or_default();
-                if !inside(&dir) || !inside(&target) {
+                // A file not there yet is reported missing by configure, before anything is read.
+                let Ok(target) = std::fs::canonicalize(dir.join(name)) else {
+                    continue;
+                };
+                if !inside(&target) {
                     return Err(figlens::FigError::new(
                         figlens::ErrorKind::PermissionDenied,
                         format!("modelDir or its {name} lies outside the server's roots"),

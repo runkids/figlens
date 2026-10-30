@@ -13,9 +13,10 @@ const cacheRoot =
   process.env.XDG_CACHE_HOME ||
   (process.platform === "win32" ? process.env.LOCALAPPDATA : null) ||
   path.join(os.homedir(), ".cache");
-const { archive, binary } = asset(process.platform, process.arch, version);
+const { archive, binary, companion } = asset(process.platform, process.arch, version);
 const bin = cachedBinary(path.join(cacheRoot, "figlens"), process.platform, process.arch, version);
 const dir = path.dirname(bin);
+const runtime = path.join(dir, companion);
 
 async function download(url) {
   const res = await fetch(url);
@@ -46,9 +47,17 @@ async function install() {
     const extractor = process.platform === "win32"
       ? path.win32.join(process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows", "System32", "tar.exe")
       : "tar";
-    const tar = spawnSync(extractor, ["-xf", archive, binary], { cwd: tmp, stdio: "inherit" });
+    // Both executables land in one directory and are renamed into place together.
+    const tar = spawnSync(extractor, ["-xf", archive, binary, companion], { cwd: tmp, stdio: "inherit" });
     if (tar.status !== 0) throw new Error("tar could not extract the archive");
     fs.rmSync(path.join(tmp, archive));
+    if (fs.existsSync(bin)) {
+      // A cache from before the runtime shipped: add only the companion, never replacing a
+      // binary another process may be running.
+      if (!fs.existsSync(runtime)) fs.renameSync(path.join(tmp, companion), runtime);
+      fs.rmSync(tmp, { recursive: true, force: true });
+      return;
+    }
     try {
       fs.renameSync(tmp, dir);
     } catch (e) {
@@ -63,7 +72,8 @@ async function install() {
 }
 
 async function main() {
-  if (!fs.existsSync(bin)) await install();
+  // This version's archive always carries the runtime, so a cache without it is repaired.
+  if (!fs.existsSync(bin) || !fs.existsSync(runtime)) await install();
   const run = spawnSync(bin, process.argv.slice(2), { stdio: "inherit" });
   if (run.error) throw run.error;
   process.exit(run.status ?? 1);

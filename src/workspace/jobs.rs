@@ -930,7 +930,16 @@ fn spawn(dir: &Path, job_id: &str, me: &str, attempt: i64, model: Option<&Path>)
 /// The runtime of the active profile, while it is still the one an embed job was submitted for.
 fn model_exe(storage: &Storage, profile_id: Option<&str>) -> Result<PathBuf> {
     match crate::semantic::profile::active(storage)? {
-        Some(p) if Some(p.id.as_str()) == profile_id => Ok(p.exe),
+        // Checked before it runs: a replaced runtime or model must never be started.
+        Some(p) if Some(p.id.as_str()) == profile_id => {
+            p.unchanged(&AtomicBool::new(false)).map_err(|e| {
+                fail(
+                    ErrorKind::OperationFailed,
+                    format!("{e}; run models configure again"),
+                )
+            })?;
+            Ok(p.exe)
+        }
         _ => Err(fail(
             ErrorKind::OperationFailed,
             "the configured model profile changed since this embed job was submitted; run index embed again",
@@ -2159,6 +2168,28 @@ pub(crate) fn kind_code(kind: ErrorKind) -> &'static str {
     }
 }
 
+/// Reclaims the WAL after a writer's batch, so it passes `WAL_CAP` by about one batch at most;
+/// a reader that keeps it from resetting fails the writer after `LOCK_WAIT`.
+pub(super) fn reclaim_wal(conn: &Connection, dir: &Path) -> Result<()> {
+    let wait = Instant::now();
+    loop {
+        let _ = conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
+        let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+        if wal_bytes(dir) <= WAL_CAP {
+            return Ok(());
+        }
+        if wait.elapsed() > LOCK_WAIT {
+            return Err(fail(
+                ErrorKind::WorkspaceBusy,
+                format!(
+                    "a reader keeps the write-ahead log above {WAL_CAP} bytes; retry when other searches finish"
+                ),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Database plus WAL bytes of the workspace at `dir`.
 fn wal_bytes(dir: &Path) -> u64 {
     std::fs::metadata(dir.join("index.sqlite-wal")).map_or(0, |m| m.len())
@@ -2405,25 +2436,7 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
             )
             .map_err(sql)?,
         )?;
-        // The WAL: reclaimed after every batch, so it passes `WAL_CAP` by about one batch at
-        // most; a reader that keeps it from resetting fails the build after `LOCK_WAIT`.
-        let wait = Instant::now();
-        loop {
-            let _ = conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
-            let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
-            if wal_bytes(dir) <= WAL_CAP {
-                return Ok(());
-            }
-            if wait.elapsed() > LOCK_WAIT {
-                return Err(fail(
-                    ErrorKind::WorkspaceBusy,
-                    format!(
-                        "a reader keeps the write-ahead log above {WAL_CAP} bytes; retry when other searches finish"
-                    ),
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        reclaim_wal(conn, dir)
     };
     let guard = |conn: &Connection| owns_launch(conn, job_id, me, attempt);
     search::store::save(&mut conn, gen_id, &index, &guard, &mut between)
@@ -2868,7 +2881,7 @@ fn set_tracking(
                      ON t.source_id = j.source_id AND t.scope = j.scope
                      AND t.state = 'baseline_pending'
                      WHERE j.source_id = ?1 AND j.scope = ?2 AND j.state = 'running'
-                     AND NOT (j.kind = 'rebuild' AND (j.stage IN ('stage', 'hash')
+                     AND j.kind <> 'embed' AND NOT (j.kind = 'rebuild' AND (j.stage IN ('stage', 'hash')
                      OR IFNULL(j.seq > t.enabled_seq, 0)))",
                     [source_id, scope],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),

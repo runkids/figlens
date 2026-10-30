@@ -31,9 +31,10 @@ def invoke(binary, cwd, *args):
 
 
 def png(data, expected_size):
-    """Decode the encoder's non-interlaced RGBA8 output, including all five PNG filters."""
+    """Normalize non-interlaced gray/indexed 1/2/4/8-bit and RGB/GA/RGBA8 PNGs to RGBA."""
     require(data[:8] == b'\x89PNG\r\n\x1a\n', 'not a PNG')
     offset, compressed, header, ended = 8, bytearray(), None, False
+    palette, transparency, seen_data = None, None, False
     while offset < len(data):
         require(offset + 12 <= len(data), 'truncated PNG chunk')
         length = struct.unpack_from('>I', data, offset)[0]
@@ -44,30 +45,63 @@ def png(data, expected_size):
         require(zlib.crc32(kind + payload) & 0xffffffff == struct.unpack_from('>I', data, end)[0],
                 'PNG checksum mismatch')
         if kind == b'IHDR':
-            require(len(payload) == 13, 'invalid PNG header')
+            require(offset == 8 and header is None and len(payload) == 13, 'invalid PNG header')
             header = struct.unpack('>IIBBBBB', payload)
+        elif kind == b'PLTE':
+            require(header is not None and palette is None and transparency is None and not seen_data,
+                    'invalid PNG palette order')
+            palette = payload
+        elif kind == b'tRNS':
+            require(header is not None and transparency is None and not seen_data,
+                    'invalid PNG transparency order')
+            require(header[3] != 3 or palette is not None, 'PNG transparency precedes palette')
+            transparency = payload
         elif kind == b'IDAT':
+            require(header is not None, 'PNG pixel data precedes header')
+            seen_data = True
             compressed.extend(payload)
         elif kind == b'IEND':
+            require(not payload and end + 4 == len(data), 'invalid PNG end')
             ended = True
             break
         offset = end + 4
     require(header is not None and ended, 'PNG header or end missing')
     w, h, depth, color, compression, filtering, interlace = header
     require((w, h) == expected_size, f'PNG size {(w, h)} != {expected_size}')
-    require((depth, color, compression, filtering, interlace) == (8, 6, 0, 0, 0),
-            'smoke decoder expects non-interlaced RGBA8 PNG; inspect encoder changes')
-    stride = w * 4
+    require(w > 0 and h > 0, 'invalid PNG dimensions')
+    require((color in (0, 3) and depth in (1, 2, 4, 8)
+             or color in (2, 4, 6) and depth == 8)
+            and (compression, filtering, interlace) == (0, 0, 0),
+            'smoke decoder supports non-interlaced gray/indexed 1/2/4/8-bit and RGB/GA/RGBA8 PNGs only')
+    if palette is not None:
+        require(color in (2, 3, 6) and 0 < len(palette) <= 768 and len(palette) % 3 == 0,
+                'invalid PNG palette')
+    if color == 3:
+        require(palette is not None and len(palette) // 3 <= 1 << depth, 'invalid PNG palette')
+    if transparency is not None:
+        if color == 3:
+            require(0 < len(transparency) <= len(palette) // 3, 'invalid PNG transparency')
+        elif color in (0, 2):
+            require(len(transparency) == (2 if color == 0 else 6), 'invalid PNG transparency')
+            transparency = struct.unpack('>H' if color == 0 else '>HHH', transparency)
+            require(all(value < 1 << depth for value in transparency), 'invalid PNG transparency')
+        else:
+            require(False, 'invalid PNG transparency')
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[color]
+    stride = (w * channels * depth + 7) // 8
+    bpp = max(1, (channels * depth + 7) // 8)
     decoder = zlib.decompressobj()
     raw = decoder.decompress(compressed, (stride + 1) * h + 1)
-    require(decoder.eof and len(raw) == (stride + 1) * h, 'invalid PNG pixel stream')
+    require(decoder.eof and not decoder.unused_data and not decoder.unconsumed_tail
+            and len(raw) == (stride + 1) * h, 'invalid PNG pixel stream')
     pixels, previous = bytearray(), bytearray(stride)
     for y in range(h):
         start = y * (stride + 1)
         mode, row = raw[start], bytearray(raw[start + 1:start + 1 + stride])
         require(mode <= 4, 'invalid PNG row filter')
         for x in range(stride):
-            a, b, c = (row[x - 4] if x >= 4 else 0), previous[x], (previous[x - 4] if x >= 4 else 0)
+            a = row[x - bpp] if x >= bpp else 0
+            b, c = previous[x], previous[x - bpp] if x >= bpp else 0
             if mode == 4:
                 p = a + b - c
                 distances = [abs(p - a), abs(p - b), abs(p - c)]
@@ -75,8 +109,28 @@ def png(data, expected_size):
             else:
                 prediction = [0, a, b, (a + b) // 2][mode]
             row[x] = (row[x] + prediction) & 255
-        pixels.extend(row)
         previous = row
+        if color == 6:
+            pixels.extend(row)
+            continue
+        for x in range(w):
+            if color in (0, 3):
+                sample = (row[x * depth // 8] >> (8 - depth - x * depth % 8)) & ((1 << depth) - 1)
+                if color == 3:
+                    require(sample < len(palette) // 3, 'PNG palette index out of range')
+                    pixels.extend(palette[sample * 3:sample * 3 + 3])
+                    pixels.append(transparency[sample] if transparency is not None
+                                  and sample < len(transparency) else 255)
+                else:
+                    gray = sample * 255 // ((1 << depth) - 1)
+                    pixels.extend((gray, gray, gray, 0 if transparency == (sample,) else 255))
+            elif color == 2:
+                rgb = row[x * 3:x * 3 + 3]
+                pixels.extend(rgb)
+                pixels.append(0 if transparency == tuple(rgb) else 255)
+            else:
+                gray, alpha = row[x * 2:x * 2 + 2]
+                pixels.extend((gray, gray, gray, alpha))
     return pixels
 
 

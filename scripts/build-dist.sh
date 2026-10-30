@@ -15,17 +15,24 @@ test -f skills/figlens/references/yolo.md
 mkdir -p "$output"
 set --
 for target in $targets; do
-    cargo zigbuild --locked --release --target "$target" --target-dir target/dist-build
+    cargo zigbuild --locked --release --target "$target" --target-dir target/dist-build --bin figlens
     release="target/dist-build/$target/release"
+    case "$target" in *windows*) exe=.exe ;; *) exe= ;; esac
+    core=$(sha256sum "$release/figlens$exe")
+    # The optional model runtime ships beside the model-free core; building it must leave the core as built.
+    cargo zigbuild --locked --release --target "$target" --target-dir target/dist-build --features embed --bin figlens-embed
+    test "$(sha256sum "$release/figlens$exe")" = "$core" || { echo "building figlens-embed changed figlens$exe for $target" >&2; exit 1; }
     case "$target" in
     *windows*)
         # Windows users expect a zip (Expand-Archive); the image has python3 but no zip.
         test -f "$release/figlens.exe"
+        test -f "$release/figlens-embed.exe"
         archive="figlens-$version-$target.zip"
-        python3 - "$output/$archive" "$release/figlens.exe" <<'PY'
+        python3 - "$output/$archive" "$release" <<'PY'
 import pathlib, sys, zipfile
 with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
-    z.write(sys.argv[2], "figlens.exe")
+    for name in ["figlens.exe", "figlens-embed.exe"]:
+        z.write(pathlib.Path(sys.argv[2], name), name)
     for file in sorted(pathlib.Path("skills/figlens").rglob("*")):
         if file.is_file():
             z.write(file, file.as_posix())
@@ -33,8 +40,9 @@ PY
         ;;
     *)
         test -x "$release/figlens"
+        test -x "$release/figlens-embed"
         archive="figlens-$version-$target.tar.gz"
-        tar -czf "$output/$archive" -C "$release" figlens -C "$PWD" skills/figlens
+        tar -czf "$output/$archive" -C "$release" figlens figlens-embed -C "$PWD" skills/figlens
         ;;
     esac
     set -- "$@" "$archive"

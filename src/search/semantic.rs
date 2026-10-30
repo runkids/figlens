@@ -48,7 +48,7 @@ impl Layer {
         index: &Index,
         key: Json,
         dim: usize,
-        mut bounds: Bounds,
+        bounds: &mut Bounds,
         cancel: &AtomicBool,
     ) -> Result<Layer, Stop> {
         let mut slot: HashMap<&str, usize> = HashMap::new();
@@ -161,6 +161,13 @@ fn unavailable(message: impl Into<String>) -> Box<dyn Error> {
         .into()
 }
 
+/// A model runtime that cannot run, with the status call that names its recovery.
+fn runtime_failed(message: String) -> FigError {
+    FigError::new(ErrorKind::OperationFailed, message)
+        .with_recovery(json!([{"action": "models_status", "tool": "models",
+            "arguments": {"action": "status"}, "requires": "none"}]))
+}
+
 /// The semantic layer's coverage when it cannot answer.
 fn down(code: &str, message: Option<String>) -> Json {
     json!({"state": "unavailable", "reasons": [{"code": code, "message": message}]})
@@ -232,14 +239,16 @@ fn reply_with(
     let (semantic, layer_json) = match profile {
         Ok(p) => match ranked(index, req, &p, &source, cancel) {
             Ok(found) => {
-                used.push("semantic");
+                if found.1["embeddedTexts"].as_u64().unwrap_or(0) > 0 {
+                    used.push("semantic");
+                }
                 found
             }
             Err(Stop::Cancelled) => {
                 return Err(FigError::new(ErrorKind::Cancelled, "search cancelled").into());
             }
             Err(e) if mode == Mode::Semantic => {
-                return Err(FigError::new(ErrorKind::OperationFailed, e.to_string()).into());
+                return Err(runtime_failed(e.to_string()).into());
             }
             Err(e) => (Vec::new(), down("runtime_failed", Some(e.to_string()))),
         },
@@ -375,7 +384,13 @@ fn ranked(
             deadline: Instant::now() + DEADLINE,
             stop: None,
         };
-        *guard = Some(Layer::new(index, key, profile.dim, bounds, cancel)?);
+        *guard = Some(Layer::new(
+            index,
+            key,
+            profile.dim,
+            &mut { bounds },
+            cancel,
+        )?);
     }
     let layer = guard.as_mut().expect("set above");
     layer.fill(profile, cancel)?;
@@ -438,6 +453,18 @@ pub(crate) fn score(
         .collect();
     order.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
     (order, excluded)
+}
+
+/// Estimated bytes a cached full generation and its layer keep: records, texts, chunk
+/// mappings and the vectors read so far.
+pub(crate) fn cached_bytes(index: &Index, layer: &Layer) -> usize {
+    let vectors: usize = layer
+        .vectors
+        .iter()
+        .map(|v| v.as_ref().map_or(0, |v| 24 + 4 * v.len()))
+        .sum();
+    let texts: usize = layer.texts.iter().map(|t| 24 + t.len()).sum();
+    index.records.len() * 256 + 2 * index.text_bytes + texts + UNIT * layer.units.len() + vectors
 }
 
 /// `coverage.layers.semantic` of one layer.
@@ -528,15 +555,28 @@ pub(crate) fn workspace_rank(
     } else {
         Vec::new()
     };
-    let query = profile::with_runtime(profile, cancel, |rt| {
-        rt.embed(Kind::Query, std::slice::from_ref(&req.query), cancel)
-    })
-    .map_err(|e| match e {
-        Stop::Cancelled => FigError::new(ErrorKind::Cancelled, "search cancelled"),
-        e => FigError::new(ErrorKind::OperationFailed, e.to_string()),
-    })?
-    .remove(0);
-    used.push("semantic");
+    // No stored vector anywhere: nothing to compare, so the model is not started for the query.
+    let any = sides.iter().any(|s| {
+        s.layer
+            .vectors
+            .iter()
+            .any(|v| v.as_ref().is_some_and(|v| !v.is_empty()))
+    });
+    let query = match any {
+        false => Vec::new(),
+        true => profile::with_runtime(profile, cancel, |rt| {
+            rt.embed(Kind::Query, std::slice::from_ref(&req.query), cancel)
+        })
+        .map_err(|e| match e {
+            Stop::Cancelled => FigError::new(ErrorKind::Cancelled, "search cancelled"),
+            e => runtime_failed(e.to_string()),
+        })?
+        .remove(0),
+    };
+    // Semantic was used only if some vector could be compared.
+    if any {
+        used.push("semantic");
+    }
     let mut semantic: Vec<((usize, u32), f32, u8, u32)> = Vec::new();
     let mut excluded = [0usize; 2];
     for (part, side) in sides.iter().enumerate() {
@@ -692,7 +732,7 @@ mod tests {
         let long = "字".repeat(model::CHUNK_CHARS * 3);
         let idx = index(&long);
         let no = AtomicBool::new(false);
-        let all = Layer::new(&idx, json!(1), 8, bounds(LAYER_WORK, LAYER_BYTES), &no).unwrap();
+        let all = Layer::new(&idx, json!(1), 8, &mut bounds(LAYER_WORK, LAYER_BYTES), &no).unwrap();
         // Every record shares the same three text chunks; only names differ.
         assert!(all.stop.is_none());
         assert!(
@@ -702,9 +742,9 @@ mod tests {
                 .count()
                 == 1
         );
-        let cut = Layer::new(&idx, json!(1), 8, bounds(2, LAYER_BYTES), &no).unwrap();
+        let cut = Layer::new(&idx, json!(1), 8, &mut bounds(2, LAYER_BYTES), &no).unwrap();
         assert_eq!((cut.stop, cut.units.len()), (Some("work_limit"), 2));
-        let tiny = Layer::new(&idx, json!(1), 8, bounds(LAYER_WORK, 16), &no).unwrap();
+        let tiny = Layer::new(&idx, json!(1), 8, &mut bounds(LAYER_WORK, 16), &no).unwrap();
         assert_eq!((tiny.stop, tiny.texts.len()), (Some("byte_limit"), 0));
     }
 
@@ -715,7 +755,7 @@ mod tests {
             &idx,
             json!(1),
             8,
-            bounds(LAYER_WORK, LAYER_BYTES),
+            &mut bounds(LAYER_WORK, LAYER_BYTES),
             &AtomicBool::new(true),
         );
         assert!(matches!(got, Err(Stop::Cancelled)));

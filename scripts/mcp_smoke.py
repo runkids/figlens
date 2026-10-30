@@ -6,10 +6,12 @@ import hashlib
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import threading
 import time
+from pathlib import Path
 from installation import run, stop_process
 
 
@@ -87,6 +89,26 @@ def check_mcp(command, cwd, env, fixture, version):
         searched = request('tools/call', {'name': 'search', 'arguments': {'file': str(fixture), 'query': 'First success'}})
         assert searched['isError'] is False and searched['structuredContent']['results'][0]['ref']['nodeId'] == '0:1', searched
         assert searched['structuredContent']['coverage']['complete'] is True, searched
+        # Optional local models through the same entry: listed and set up, never downloaded; without a
+        # configured profile semantic fails mode_unavailable and hybrid answers with text alone.
+        search_mode = next(t for t in tools if t['name'] == 'search')['inputSchema']['properties']['mode']['enum']
+        assert {'text', 'semantic', 'hybrid'} <= set(search_mode), search_mode
+        listed = request('tools/call', {'name': 'models', 'arguments': {'action': 'list'}})
+        assert listed['isError'] is False and listed['structuredContent']['profiles'], listed
+        status = request('tools/call', {'name': 'models', 'arguments': {'action': 'status'}})
+        assert status['isError'] is False and status['structuredContent'].get('setup'), status
+        assert isinstance(status['structuredContent'].get('configRoot'), str), status
+        empty = Path(cwd) / 'no-model'
+        empty.mkdir(exist_ok=True)
+        refused = request('tools/call', {'name': 'models', 'arguments': {'action': 'configure', 'profile': 'bge-m3', 'modelDir': str(empty)}})
+        assert refused['isError'] is True and ' is missing ' in json.dumps(refused) and 'no model runtime' not in json.dumps(refused), refused
+        after = request('tools/call', {'name': 'models', 'arguments': {'action': 'status'}})
+        assert after['structuredContent']['profiles'] == [], after
+        semantic = request('tools/call', {'name': 'search', 'arguments': {'file': str(fixture), 'query': 'First success', 'mode': 'semantic'}})
+        assert semantic['isError'] is True and semantic['_meta']['figlens']['code'] == 'mode_unavailable', semantic
+        hybrid = request('tools/call', {'name': 'search', 'arguments': {'file': str(fixture), 'query': 'First success', 'mode': 'hybrid'}})
+        assert hybrid['isError'] is False and hybrid['structuredContent']['query']['usedModes'] == ['text'], hybrid
+        assert hybrid['structuredContent']['results'][0]['ref']['nodeId'] == '0:1', hybrid
         ref = searched['structuredContent']['results'][0]['ref']['nodeId']
         opened = request('tools/call', {'name': 'inspect', 'arguments': {'file': str(fixture), 'node': ref}})
         assert opened['isError'] is False and opened['structuredContent']['node']['id'] == ref, opened
@@ -126,7 +148,7 @@ def check_mcp(command, cwd, env, fixture, version):
         cli_audit = run([*command[:-1], 'workflow', 'audit'], cwd, env)
         assert '# Audit an existing UI' in cli_audit
         assert cli_audit.split('# Audit an existing UI', 1)[1].rstrip() == audit['content'][0]['text'].split('# Audit an existing UI', 1)[1].rstrip()
-    return {"recoveredAfterMissingNode": True, "searchedExactRef": True, "diffedTwoCopies": True, "numericPreflight": True, "strictRejectionAndRecovery": True, "stdout": "JSON-RPC only"}
+    return {"recoveredAfterMissingNode": True, "searchedExactRef": True, "modelsWithoutProfile": True, "diffedTwoCopies": True, "numericPreflight": True, "strictRejectionAndRecovery": True, "stdout": "JSON-RPC only"}
 
 
 TERMINAL = {'succeeded', 'failed', 'cancelled', 'interrupted'}

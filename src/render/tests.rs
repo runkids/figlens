@@ -2,6 +2,68 @@ use super::*;
 use std::fs::File;
 
 #[test]
+fn optimized_png_preserves_rgba_and_never_grows() {
+    fn decoded(bytes: &[u8]) -> (u32, u32, Vec<[u8; 4]>) {
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+        decoder.set_transformations(png::Transformations::ALPHA);
+        let mut reader = decoder.read_info().unwrap();
+        let mut data = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut data).unwrap();
+        let channels = info.color_type.samples();
+        let pixels = data[..info.buffer_size()]
+            .chunks_exact(channels)
+            .map(|p| match info.color_type {
+                png::ColorType::Rgba => [p[0], p[1], p[2], p[3]],
+                png::ColorType::Rgb => [p[0], p[1], p[2], 255],
+                png::ColorType::GrayscaleAlpha => [p[0], p[0], p[0], p[1]],
+                png::ColorType::Grayscale => [p[0], p[0], p[0], 255],
+                png::ColorType::Indexed => unreachable!("palette expanded by decoder"),
+            })
+            .collect();
+        (info.width, info.height, pixels)
+    }
+    for kind in 0..4 {
+        let mut p = resvg::tiny_skia::Pixmap::new(64, 64).unwrap();
+        let mut seed = 1u32;
+        for (i, px) in p.pixels_mut().iter_mut().enumerate() {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            let [r, g, b, a] = match kind {
+                0 => [30, 120, 180, 255],
+                1 => [i as u8, i as u8, i as u8, 255],
+                2 => [80, 140, 210, i as u8],
+                _ => seed.to_le_bytes(),
+            };
+            *px = resvg::tiny_skia::ColorU8::from_rgba(r, g, b, a).premultiply();
+        }
+        let original = p.encode_png().unwrap();
+        let optimized = encode_png(&p).unwrap();
+        assert_eq!(decoded(&optimized), decoded(&original));
+        assert!(optimized.len() <= original.len());
+        if optimized.len() == original.len() {
+            assert_eq!(optimized, original);
+        }
+        if kind == 0 {
+            assert!(optimized.len() < original.len());
+        }
+    }
+}
+
+#[test]
+fn png_optimization_stops_above_its_pixel_budget() {
+    for width in [2048, 2049] {
+        let mut p = resvg::tiny_skia::Pixmap::new(width, 2048).unwrap();
+        p.fill(resvg::tiny_skia::Color::from_rgba8(30, 120, 180, 255));
+        let original = p.encode_png().unwrap();
+        let encoded = encode_png(&p).unwrap();
+        if width == 2048 {
+            assert!(encoded.len() < original.len());
+        } else {
+            assert_eq!(encoded, original);
+        }
+    }
+}
+
+#[test]
 fn exported_definition_ids_are_disjoint_and_repeatable() {
     let tree = Tree {
         nodes: Default::default(),
