@@ -605,13 +605,7 @@ fn dir_after(root: &Path, cursor: &str) -> Result<PathBuf> {
         .strip_prefix("d1.")
         .and_then(|c| c.split_once('.'))
         .ok_or_else(invalid)?;
-    let bytes = (0..last.len())
-        .step_by(2)
-        .map(|i| {
-            last.get(i..i + 2)
-                .and_then(|b| u8::from_str_radix(b, 16).ok())
-        })
-        .collect::<Option<Vec<u8>>>()
+    let bytes = super::changes::unhex(last)
         .filter(|b| !b.is_empty())
         .ok_or_else(invalid)?;
     let last = PathBuf::from(String::from_utf8(bytes).map_err(|_| invalid())?);
@@ -759,12 +753,11 @@ pub fn list_add(
 /// The sha256 of the sorted canonical files a listing would register and its truncation, so an
 /// add can prove it registers exactly the set a host authorized from the dry run.
 fn manifest(l: &Listing) -> String {
-    let mut files: Vec<_> = l
+    let files: Vec<_> = l
         .files
         .iter()
         .map(|f| f.as_os_str().as_encoded_bytes())
         .collect();
-    files.sort();
     let mut hash = Sha256::new();
     for file in files {
         hash.update(file);

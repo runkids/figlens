@@ -1633,6 +1633,7 @@ pub(crate) fn corpus_page(
     q: &Prepared,
     req: &Request,
     ranked: Ranked,
+    now_ms: i64,
 ) -> Result<Json, Box<dyn Error>> {
     let corpus: Vec<&Index> = parts.iter().map(|p| p.index).collect();
     let Ranked {
@@ -1670,7 +1671,7 @@ pub(crate) fn corpus_page(
         "coverage": corpus_coverage(parts, req, excluded),
         "hasMore": more,
         "nextCursor": (more && q.offset + req.limit <= MAX_OFFSET)
-            .then(|| format!("w1.{fingerprint}.{}.{}.{}", q.offset + req.limit, gens.join("-"), ms(SystemTime::now()))),
+            .then(|| format!("w1.{fingerprint}.{}.{}.{}", q.offset + req.limit, gens.join("-"), now_ms)),
     }))
 }
 
