@@ -2480,6 +2480,7 @@ fn probe(pair: &Pair, recipient: &str, facet: u8, work: usize) -> (Verdict, bool
         pair,
         ids: None,
         orders: None,
+        aliased: [None, None],
     };
     let mut bounds = Bounds {
         work,
@@ -2625,6 +2626,7 @@ fn a_reached_layer_no_side_holds_is_never_placed_complete() {
         pair: &pair,
         ids: None,
         orders: None,
+        aliased: [None, None],
     };
     let mut impact = super::super::impact::Impact {
         hits: vec![super::super::impact::Hit {
@@ -2860,5 +2862,272 @@ fn a_variable_moved_to_another_corner_is_a_change_and_the_same_binding_is_not() 
             nodes(&run(corner(top), corner(top)))
         ),
         (vec![("0:12".into(), "changed".into())], vec![])
+    );
+}
+
+#[test]
+fn a_variable_only_change_reaches_the_layer_bound_to_it_and_no_other() {
+    let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
+    let screen = |value| {
+        let mut d = bound_screen(value);
+        let K::Object(_, fields) = &mut d else {
+            unreachable!()
+        };
+        let Some(K::Array(nodes)) = fields.get_mut("nodeChanges") else {
+            unreachable!()
+        };
+        nodes.push(node(13, Some(10), "RECTANGLE", "Unbound", vec![]));
+        d
+    };
+    let (old, new) = (screen(1.0), screen(2.0));
+    let conn = saved(&[&Tree::new(&old), &Tree::new(&new)], "0:0");
+    let bounds = Bounds {
+        work: WORK,
+        bytes: PAIR_BYTES,
+        depth: DEPTH,
+        deadline: Instant::now() + DEADLINE,
+        stop: None,
+    };
+    let out = revision_with(
+        &conn,
+        (1, side("old")),
+        (2, side("new")),
+        "0:0",
+        REVISION_BYTES,
+        bounds,
+    )
+    .unwrap();
+    use super::super::impact::Class;
+    let hits: Vec<_> = out
+        .impact
+        .hits
+        .iter()
+        .map(|h| {
+            (
+                h.node.as_str(),
+                h.class,
+                h.via.clone(),
+                h.frames[1].as_deref(),
+            )
+        })
+        .collect();
+    // The binding alone proves nothing equal, so the bound layer stays possible.
+    let via = Some(("binds_variable", "VariableID:0:60".to_owned()));
+    let unknown = std::collections::BTreeMap::from([("comparison_unknown", 1)]);
+    assert_eq!(
+        (hits, out.impact.reasons),
+        (
+            vec![
+                ("0:12", Class::Possible, via, Some("0:10")),
+                ("0:60", Class::Direct, None, Some("0:60")),
+            ],
+            unknown
+        )
+    );
+}
+
+#[test]
+fn a_variable_change_reaches_the_layer_bound_through_an_alias_of_it() {
+    let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
+    // Variable 61 aliases 60; rectangle 12 binds 61. The alias hop counts once per side.
+    let screen = |value| {
+        let entry = obj(vec![("modeID", guid(70)), ("variableData", alias(60))]);
+        let values = obj(vec![("entries", K::Array(vec![entry]))]);
+        let paint = obj(vec![
+            ("type", K::Enum("PaintType", "SOLID")),
+            ("colorVar", alias(61)),
+        ]);
+        doc(vec![
+            variable(value),
+            node(
+                61,
+                Some(1),
+                "VARIABLE",
+                "Accent",
+                vec![("variableDataValues", values)],
+            ),
+            node(10, Some(1), "FRAME", "Home", vec![]),
+            node(
+                12,
+                Some(10),
+                "RECTANGLE",
+                "Card",
+                vec![("fillPaints", K::Array(vec![paint]))],
+            ),
+        ])
+    };
+    let (old, new) = (screen(1.0), screen(2.0));
+    let conn = saved(&[&Tree::new(&old), &Tree::new(&new)], "0:0");
+    let bounds = Bounds {
+        work: WORK,
+        bytes: PAIR_BYTES,
+        depth: DEPTH,
+        deadline: Instant::now() + DEADLINE,
+        stop: None,
+    };
+    let out = revision_with(
+        &conn,
+        (1, side("old")),
+        (2, side("new")),
+        "0:0",
+        REVISION_BYTES,
+        bounds,
+    )
+    .unwrap();
+    use super::super::impact::Class;
+    let hits: Vec<_> = out
+        .impact
+        .hits
+        .iter()
+        .map(|h| (h.node.as_str(), h.class, h.via.clone()))
+        .collect();
+    let via = |t: &str| Some(("binds_variable", t.to_owned()));
+    let unknown = std::collections::BTreeMap::from([("comparison_unknown", 3)]);
+    assert_eq!(
+        (hits, out.impact.complete, out.impact.reasons),
+        (
+            vec![
+                ("0:12", Class::Possible, via("VariableID:0:61")),
+                ("0:60", Class::Direct, None),
+                ("0:61", Class::Possible, via("VariableID:0:60")),
+            ],
+            false,
+            unknown
+        )
+    );
+}
+
+/// The impact of revision 1 → 2 saved from `old` and `new`.
+fn impact_of(old: K<'static>, new: K<'static>, work: usize) -> super::super::impact::Impact {
+    let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
+    let conn = saved(&[&Tree::new(&old), &Tree::new(&new)], "0:0");
+    let bounds = Bounds {
+        work,
+        bytes: PAIR_BYTES,
+        depth: DEPTH,
+        deadline: Instant::now() + DEADLINE,
+        stop: None,
+    };
+    revision_with(
+        &conn,
+        (1, side("old")),
+        (2, side("new")),
+        "0:0",
+        REVISION_BYTES,
+        bounds,
+    )
+    .unwrap()
+    .impact
+}
+
+#[test]
+fn a_collection_only_change_reaches_its_variables_and_the_layer_bound_to_them() {
+    let out = impact_of(collected(70), collected(71), WORK);
+    let reached: Vec<_> = out
+        .hits
+        .iter()
+        .map(|h| (h.node.as_str(), h.class))
+        .collect();
+    use super::super::impact::Class;
+    assert!(
+        reached.contains(&("0:64", Class::Direct)) && reached.contains(&("0:61", Class::Possible)),
+        "{reached:?}"
+    );
+    assert!(
+        out.hits
+            .iter()
+            .any(|h| h.via == Some(("binds_variable", "VariableID:0:61".into())))
+    );
+}
+
+/// Variables 60 and 61 alias each other; rectangle 12 binds 61, and 60 holds `value` too.
+fn cycle(value: f32) -> K<'static> {
+    let values = |to: u32| {
+        let entry = obj(vec![("modeID", guid(70)), ("variableData", alias(to))]);
+        obj(vec![("entries", K::Array(vec![entry]))])
+    };
+    let paint = obj(vec![
+        ("type", K::Enum("PaintType", "SOLID")),
+        ("colorVar", alias(61)),
+    ]);
+    doc(vec![
+        node(
+            60,
+            Some(1),
+            "VARIABLE",
+            "A",
+            vec![
+                ("variableDataValues", values(61)),
+                ("variableScopes", K::Float(value)),
+            ],
+        ),
+        node(
+            61,
+            Some(1),
+            "VARIABLE",
+            "B",
+            vec![("variableDataValues", values(60))],
+        ),
+        node(10, Some(1), "FRAME", "Home", vec![]),
+        node(
+            12,
+            Some(10),
+            "RECTANGLE",
+            "Card",
+            vec![("fillPaints", K::Array(vec![paint]))],
+        ),
+    ])
+}
+
+#[test]
+fn an_alias_cycle_ends_and_reaches_the_bound_layer() {
+    let out = impact_of(cycle(1.0), cycle(2.0), WORK);
+    let ids: Vec<_> = out.hits.iter().map(|h| h.node.as_str()).collect();
+    assert_eq!(ids, ["0:12", "0:60", "0:61"]);
+}
+
+/// `n` variables aliasing variable 60, which holds `value`; layer 12 binds the last.
+fn fan(n: u32, value: f32) -> K<'static> {
+    let mut nodes = vec![variable(value)];
+    for v in 0..n {
+        let entry = obj(vec![("modeID", guid(70)), ("variableData", alias(60))]);
+        let values = obj(vec![("entries", K::Array(vec![entry]))]);
+        nodes.push(node(
+            100 + v,
+            Some(1),
+            "VARIABLE",
+            "V",
+            vec![("variableDataValues", values)],
+        ));
+    }
+    doc(nodes)
+}
+
+#[test]
+fn each_side_s_aliases_are_scanned_once_however_many_variables_ask() {
+    let (old, new) = (fan(40, 1.0), fan(40, 2.0));
+    let (a, b) = (Tree::new(&old), Tree::new(&new));
+    let pair = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
+    let mut evidence = PairEvidence {
+        pair: &pair,
+        ids: None,
+        orders: None,
+        aliased: [None, None],
+    };
+    let mut bounds = super::super::tests::bounds(WORK);
+    let mut ask = |key: &str| {
+        let before = bounds.work;
+        let ids = super::super::impact::Evidence::aliasing(&mut evidence, 1, key, &mut bounds);
+        (ids.map(|v| v.len()), before - bounds.work)
+    };
+    let (first, scan) = ask("VariableID:0:60");
+    assert_eq!(first, Some(40));
+    // Each later ask pays only for the ids it returns, never another scan of the side.
+    let later: Vec<_> = (100..140)
+        .map(|v| ask(&format!("VariableID:0:{v}")))
+        .collect();
+    assert!(
+        scan > 40 && later.iter().all(|&l| l == (Some(0), 0)),
+        "{scan} {later:?}"
     );
 }

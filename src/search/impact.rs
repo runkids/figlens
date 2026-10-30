@@ -90,6 +90,10 @@ pub(crate) struct Probe<'a> {
 /// The diff side of the comparison; it charges its own work to `bounds` before doing it.
 pub(crate) trait Evidence {
     fn compare(&mut self, probe: &Probe, bounds: &mut Bounds) -> Result<Verdict>;
+    /// The variables of generation `at` (0 old, 1 new) whose values alias `key` (a variable's
+    /// `VariableID:` id) or that belong to collection `key` (its id), which no index edge
+    /// records; None when that is unknown.
+    fn aliasing(&mut self, at: usize, key: &str, bounds: &mut Bounds) -> Option<Vec<String>>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -490,7 +494,7 @@ impl Run<'_> {
         // Recipients proven for this step, and those reached so far only by an edge that does
         // not resolve in every generation: a later proven edge supersedes those.
         let mut proven = BTreeSet::new();
-        let mut unproven: BTreeMap<String, (&'static str, String, u8)> = BTreeMap::new();
+        let mut unproven: BTreeMap<String, (&'static str, String, u8, u8)> = BTreeMap::new();
         for (at, bit) in [(0, OLD), (1, NEW)] {
             if step.side & bit == 0 {
                 continue;
@@ -499,7 +503,24 @@ impl Run<'_> {
             let Some(anchors) = self.lineage(index, &step.target) else {
                 return Ok(false);
             };
-            for anchor in anchors {
+            // A layer binds a local variable as `VariableID:<its node id>`, never by the raw id
+            // the diff seeds.
+            let kind = rid_in(index, &step.target).map(|rid| index.record(rid).kind.as_str());
+            let variable = kind == Some("VARIABLE");
+            if variable && !self.pay(1, cost(&step.target)) {
+                return Ok(false);
+            }
+            let alias = variable.then(|| format!("VariableID:{}", step.target));
+            // Variables name what they alias by `VariableID:` id and their collection by its own.
+            let key = match kind {
+                Some("VARIABLE_SET") => Some(step.target.as_str()),
+                _ => alias.as_deref(),
+            };
+            let anchors = anchors
+                .into_iter()
+                .map(|a| (a, false))
+                .chain(alias.as_deref().map(|a| (a, true)));
+            for (anchor, bound) in anchors {
                 for &(rid, i) in pointing_at(index, anchor) {
                     if !self.pay(1, 0) {
                         return Ok(false);
@@ -530,6 +551,10 @@ impl Run<'_> {
                             resolved &= x.state == "resolved";
                         }
                     }
+                    // A bound layer's own fields hold only the binding, which a value change
+                    // leaves equal, and the variable's facet is not the field's: neither is
+                    // asked, so it and what it reaches stay possible.
+                    let facet = if bound { PRESENCE } else { step.facet };
                     if side != step.side || !resolved {
                         if !unproven.contains_key(&r.id) {
                             if self.hits.len() + unproven.len() >= HITS {
@@ -539,7 +564,8 @@ impl Run<'_> {
                             if !self.pay(1, cost(&r.id) + cost(anchor)) {
                                 return Ok(false);
                             }
-                            unproven.insert(r.id.clone(), (e.relation, anchor.to_owned(), side));
+                            unproven
+                                .insert(r.id.clone(), (e.relation, anchor.to_owned(), side, facet));
                         }
                         continue;
                     }
@@ -552,29 +578,51 @@ impl Run<'_> {
                         recipient: &r.id,
                         through: anchor,
                         seed: &step.seed,
-                        facet: step.facet,
+                        facet,
                     };
                     let Some(class) = self.verdict(&probe)? else {
                         return Ok(false);
                     };
-                    if !self.hit(&r.id, class, step.facet, side, Some((e.relation, anchor))) {
+                    if !self.hit(&r.id, class, facet, side, Some((e.relation, anchor))) {
                         return Ok(false);
                     }
                     if class != Class::EffectiveUnchanged
-                        && !self.push(&r.id, &step.seed, step.facet, step.side, step.depth + 1)
+                        && !self.push(&r.id, &step.seed, facet, step.side, step.depth + 1)
+                    {
+                        return Ok(false);
+                    }
+                }
+            }
+            // A variable aliasing this one, or one in this collection (whose modes pick its
+            // value), may change too, and what binds it; unknown aliases leave the walk incomplete.
+            if let Some(key) = key {
+                let Some(by) = self.evidence.aliasing(at, key, self.bounds) else {
+                    if self.bounds.stop.is_some() {
+                        self.stopped = Some("budget_unknown");
+                        return Ok(false);
+                    }
+                    self.reason("relation_unverified");
+                    continue;
+                };
+                for id in by.iter().filter(|id| **id != step.target) {
+                    self.reason("comparison_unknown");
+                    // A collection's member is no relation an index records.
+                    let via = variable.then_some(("binds_variable", key));
+                    if !self.hit(id, Class::Possible, PRESENCE, bit, via)
+                        || !self.push(id, &step.seed, PRESENCE, step.side, step.depth + 1)
                     {
                         return Ok(false);
                     }
                 }
             }
         }
-        for (id, (relation, anchor, side)) in &unproven {
+        for (id, (relation, anchor, side, facet)) in &unproven {
             self.reason("relation_unverified");
             let via = Some((*relation, anchor.as_str()));
             // The change's own generations go on, so a later hop present in only one of them
             // is still unproven.
-            if !self.hit(id, Class::Possible, step.facet, *side, via)
-                || !self.push(id, &step.seed, step.facet, step.side, step.depth + 1)
+            if !self.hit(id, Class::Possible, *facet, *side, via)
+                || !self.push(id, &step.seed, *facet, step.side, step.depth + 1)
             {
                 return Ok(false);
             }
