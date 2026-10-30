@@ -7,8 +7,12 @@
 #[allow(dead_code)]
 mod test_support;
 
+use figlens::search::visual::QueryImage;
 use figlens::semantic::profile;
-use figlens::semantic::{self, Kind, MAX_BATCH, MAX_TEXT_BYTES, Mode, Profile, Runtime, Stop};
+use figlens::semantic::{
+    self, Kind, MAX_BATCH, MAX_IMAGES, MAX_TEXT_BYTES, Mode, Profile, Runtime, Stop,
+};
+use resvg::tiny_skia::Pixmap;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -26,6 +30,15 @@ fn child(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
     if mode == "deaf" {
         println!("{}", json!({"protocol": semantic::PROTOCOL, "dim": DIM}));
         std::thread::sleep(Duration::from_secs(3600));
+    }
+    // A vision child: one unit vector per image; `image-hang` never answers.
+    if mode.starts_with("image") {
+        return semantic::serve_images(&hello(), |images| {
+            if mode == "image-hang" {
+                std::thread::sleep(Duration::from_secs(3600));
+            }
+            Ok(images.iter().map(|_| bag("a", "ok")).collect())
+        });
     }
     semantic::serve(&hello(), |_, texts| {
         if mode == "hang" {
@@ -148,6 +161,139 @@ fn cancel_stops_a_child_that_never_reads_a_full_batch() {
     assert!(!rt.alive());
 }
 
+fn image(shade: u8) -> QueryImage {
+    let mut p = Pixmap::new(16, 16).unwrap();
+    p.fill(resvg::tiny_skia::Color::from_rgba8(
+        shade,
+        0,
+        255 - shade,
+        255,
+    ));
+    QueryImage::from_pixmap(&p, None).unwrap()
+}
+
+fn runtime_embeds_images_and_refuses_bad_batches() {
+    let mut rt = start("image");
+    let no = AtomicBool::new(false);
+    for batch in [vec![], (0..=MAX_IMAGES as u8).map(image).collect()] {
+        assert!(matches!(
+            rt.embed_images(&batch, &no),
+            Err(Stop::Refused(_))
+        ));
+    }
+    // A text request is refused and the vision child keeps serving.
+    assert!(matches!(
+        rt.embed(Kind::Query, &texts(&["a"]), &no),
+        Err(Stop::Refused(_))
+    ));
+    let v = rt.embed_images(&[image(0), image(200)], &no).unwrap();
+    assert_eq!((v.len(), v[0].len()), (2, DIM));
+    rt.stop();
+}
+
+fn a_text_child_refuses_images_and_keeps_serving() {
+    let mut rt = start("ok");
+    let no = AtomicBool::new(false);
+    assert!(matches!(
+        rt.embed_images(&[image(9)], &no),
+        Err(Stop::Refused(_))
+    ));
+    assert_eq!(rt.embed(Kind::Query, &texts(&["a"]), &no).unwrap().len(), 1);
+    rt.stop();
+}
+
+fn cancel_kills_a_hung_vision_child() {
+    let mut rt = start("image-hang");
+    let begun = Instant::now();
+    let got = rt.embed_images(&[image(1)], &after(200));
+    assert!(matches!(got, Err(Stop::Cancelled)), "{got:?}");
+    assert!(begun.elapsed() < Duration::from_millis(700));
+    assert!(!rt.alive());
+}
+
+/// Semantic search takes the first text profile and visual search the first image one,
+/// whatever their order; a record from before visual profiles is text.
+fn each_search_selects_only_its_own_modality() {
+    let dir = test_support::TestDir::new();
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe {
+        std::env::set_var(
+            "XDG_CONFIG_HOME",
+            std::path::absolute(dir.join("")).unwrap().join("config"),
+        )
+    };
+    let storage = figlens::workspace::storage(None).unwrap();
+    let record = |name: &str, modality: Option<&str>| {
+        let mut r =
+            json!({"name": name, "profileId": name, "model": "m", "runtime": "r", "dim": DIM});
+        if let Some(m) = modality {
+            r["modality"] = json!(m);
+        }
+        r
+    };
+    let both = json!({"version": 1, "profiles": [record("siglip-base", Some("image")), record("bge-m3", None)]});
+    storage.update_models(|_| Ok(both)).unwrap();
+    let id = |p: Option<Profile>| p.map(|p| p.id);
+    assert_eq!(
+        id(profile::active(&storage).unwrap()),
+        Some("bge-m3".into())
+    );
+    assert_eq!(
+        id(profile::active_visual(&storage).unwrap()),
+        Some("siglip-base".into())
+    );
+    storage
+        .update_models(|_| {
+            Ok(json!({"version": 1, "profiles": [record("siglip-base", Some("image"))]}))
+        })
+        .unwrap();
+    assert_eq!(id(profile::active(&storage).unwrap()), None);
+}
+
+/// The real pinned SigLIP child, only when `FIGLENS_SIGLIP_DIR` names a local copy and
+/// `FIGLENS_EMBED_BIN` the built `figlens-embed`: its vectors through the wire match the model
+/// run in this process on the same rasters. Not a retrieval-quality check.
+#[cfg(feature = "embed")]
+fn a_pinned_siglip_child_matches_the_in_process_model() {
+    let (Some(dir), Some(exe)) = (
+        std::env::var_os("FIGLENS_SIGLIP_DIR"),
+        std::env::var_os("FIGLENS_EMBED_BIN"),
+    ) else {
+        println!("skipped: set FIGLENS_SIGLIP_DIR and FIGLENS_EMBED_BIN");
+        return;
+    };
+    let (dir, exe, no) = (
+        PathBuf::from(dir),
+        PathBuf::from(exe),
+        AtomicBool::new(false),
+    );
+    let p = Profile::probe(
+        &exe,
+        &dir,
+        profile::known("siglip-base").unwrap().files,
+        &no,
+    )
+    .unwrap();
+    assert_eq!(
+        (p.dim, p.contract["modality"].as_str()),
+        (768, Some("image"))
+    );
+    let images = [image(0), image(200)];
+    let child = profile::with_runtime(&p, &no, |rt| rt.embed_images(&images, &no)).unwrap();
+    let direct = figlens::search::visual::model::Model::load(&dir)
+        .unwrap()
+        .embed(&images)
+        .unwrap();
+    let diff = child
+        .iter()
+        .flatten()
+        .zip(direct.iter().flatten())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0f32, f32::max);
+    println!("siglip child vs in-process: max |diff| {diff:e}");
+    assert!(diff < 1e-5, "{diff}");
+}
+
 fn stop_ends_the_child_when_stdin_closes() {
     let rt = start("ok");
     let begun = Instant::now();
@@ -225,6 +371,7 @@ fn configure_records_a_verified_profile_and_remove_forgets_it() {
         model: "fake",
         revision: "0",
         license: "MIT",
+        modality: "text",
         files,
     };
     assert!(
@@ -302,6 +449,7 @@ fn configured(dir: &test_support::TestDir) -> figlens::workspace::Storage {
         model: "fake",
         revision: "0",
         license: "MIT",
+        modality: "text",
         files,
     };
     let exe = std::env::current_exe().unwrap();
@@ -898,7 +1046,24 @@ fn main() {
         child(&std::env::var("SEMANTIC_CHILD_MODE").unwrap_or("ok".into())).unwrap();
         return;
     }
-    let tests: Vec<(&str, fn())> = vec![
+    #[allow(unused_mut)]
+    let mut tests: Vec<(&str, fn())> = vec![
+        (
+            "runtime_embeds_images_and_refuses_bad_batches",
+            runtime_embeds_images_and_refuses_bad_batches,
+        ),
+        (
+            "a_text_child_refuses_images_and_keeps_serving",
+            a_text_child_refuses_images_and_keeps_serving,
+        ),
+        (
+            "cancel_kills_a_hung_vision_child",
+            cancel_kills_a_hung_vision_child,
+        ),
+        (
+            "each_search_selects_only_its_own_modality",
+            each_search_selects_only_its_own_modality,
+        ),
         (
             "runtime_embeds_and_keeps_serving_after_a_refusal",
             runtime_embeds_and_keeps_serving_after_a_refusal,
@@ -1010,6 +1175,11 @@ fn main() {
             a_cli_build_with_a_profile_lists_the_embed_instead_of_queueing_it,
         ),
     ];
+    #[cfg(feature = "embed")]
+    tests.push((
+        "a_pinned_siglip_child_matches_the_in_process_model",
+        a_pinned_siglip_child_matches_the_in_process_model,
+    ));
     let filter = args.iter().skip(1).find(|a| !a.starts_with('-'));
     let mut failed = 0;
     for (name, test) in tests {

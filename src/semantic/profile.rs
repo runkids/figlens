@@ -1,5 +1,5 @@
-//! `models list|status|configure|remove`: the local text profiles a user configures for
-//! semantic search. A profile names model files the user already has; figlens pins their
+//! `models list|status|configure|remove`: the local profiles a user configures for semantic
+//! (text) and visual (image) search. A profile names model files the user already has; figlens pins their
 //! digests, never downloads them, and keeps one record in `<config>/models.json`.
 
 use super::{Profile, Result, Runtime, Stop};
@@ -18,29 +18,55 @@ pub struct Known {
     pub model: &'static str,
     pub revision: &'static str,
     pub license: &'static str,
+    /// `text` profiles embed design text; `image` profiles embed normalized rasters.
+    pub modality: &'static str,
     pub files: &'static [(&'static str, &'static str)],
 }
 
-pub const KNOWN: &[Known] = &[Known {
-    name: "bge-m3",
-    model: "BAAI/bge-m3",
-    revision: "5617a9f61b028005a4858fdac845db406aefb181",
-    license: "MIT",
-    files: &[
-        (
-            "config.json",
-            "26159e7ad065073448460117eb24b7a4572f6f4e78eadff65dc0a11c052449fa",
-        ),
-        (
-            "pytorch_model.bin",
-            "b5e0ce3470abf5ef3831aa1bd5553b486803e83251590ab7ff35a117cf6aad38",
-        ),
-        (
-            "tokenizer.json",
-            "21106b6d7dab2952c1d496fb21d5dc9db75c28ed361a05f5020bbba27810dd08",
-        ),
-    ],
-}];
+pub const KNOWN: &[Known] = &[
+    Known {
+        name: "bge-m3",
+        model: "BAAI/bge-m3",
+        revision: "5617a9f61b028005a4858fdac845db406aefb181",
+        license: "MIT",
+        modality: "text",
+        files: &[
+            (
+                "config.json",
+                "26159e7ad065073448460117eb24b7a4572f6f4e78eadff65dc0a11c052449fa",
+            ),
+            (
+                "pytorch_model.bin",
+                "b5e0ce3470abf5ef3831aa1bd5553b486803e83251590ab7ff35a117cf6aad38",
+            ),
+            (
+                "tokenizer.json",
+                "21106b6d7dab2952c1d496fb21d5dc9db75c28ed361a05f5020bbba27810dd08",
+            ),
+        ],
+    },
+    Known {
+        name: "siglip-base",
+        model: "google/siglip-base-patch16-224",
+        revision: "7fd15f0689c79d79e38b1c2e2e2370a7bf2761ed",
+        license: "Apache-2.0",
+        modality: "image",
+        files: &[
+            (
+                "config.json",
+                "cd85b3d28829722820bcb89a2cfbb4160e55fd359249a3044da724166a8d9688",
+            ),
+            (
+                "preprocessor_config.json",
+                "d11ccb80f15d358a11bdb070e92e2d889005874b7db15823d5f10d9b2533b14a",
+            ),
+            (
+                "model.safetensors",
+                "2c63cb7d1f2e95ba501893cbb8faeb4ea9a3af295498d35097126228659c2af8",
+            ),
+        ],
+    },
+];
 
 fn fail(kind: ErrorKind, message: impl Into<String>) -> Box<dyn std::error::Error> {
     FigError::new(kind, message).into()
@@ -116,9 +142,11 @@ pub fn list(storage: &Storage) -> Result<Json> {
             json!({
                 "name": k.name, "model": k.model, "revision": k.revision, "license": k.license,
                 "files": k.files.iter().map(|f| f.0).collect::<Vec<_>>(),
+                "modality": k.modality,
                 "configured": record.is_some(),
                 "profileId": record.map(|r| r["profileId"].clone()),
-                "dataFlow": "local: design text goes only to the configured local child; nothing is sent over a network",
+                "dataFlow": format!("local: {} go only to the configured local child; nothing is sent over a network",
+                    if k.modality == "image" { "normalized design and query images" } else { "design text" }),
             })
         })
         .collect();
@@ -179,8 +207,8 @@ pub fn configure(
     }
     let p = Profile::probe(&runtime, model, k.files, cancel)
         .map_err(|e| fail(ErrorKind::InvalidArguments, format!("{name}: {e}")))?;
-    let record = json!({"name": k.name, "profileId": p.id, "model": p.model, "runtime": p.exe,
-        "dim": p.dim, "contract": p.contract, "stamps": p.stamps});
+    let record = json!({"name": k.name, "modality": k.modality, "profileId": p.id, "model": p.model,
+        "runtime": p.exe, "dim": p.dim, "contract": p.contract, "stamps": p.stamps});
     let kept = record.clone();
     save(storage, |profiles| {
         let mut profiles: Vec<Json> = profiles
@@ -207,9 +235,22 @@ pub fn remove(storage: &Storage, name: &str) -> Result<Json> {
     Ok(json!({"name": name, "removed": removed, "modelFilesKept": true}))
 }
 
-/// The profile semantic search uses: the first configured one.
+/// The profile semantic search uses: the first configured text one.
 pub fn active(storage: &Storage) -> Result<Option<Profile>> {
-    let Some(r) = records(storage)?.into_iter().next() else {
+    first(storage, "text")
+}
+
+/// The profile visual search uses: the first configured image one.
+pub fn active_visual(storage: &Storage) -> Result<Option<Profile>> {
+    first(storage, "image")
+}
+
+/// Records written before visual profiles existed carry no modality: they are text.
+fn first(storage: &Storage, modality: &str) -> Result<Option<Profile>> {
+    let Some(r) = records(storage)?
+        .into_iter()
+        .find(|r| r["modality"].as_str().unwrap_or("text") == modality)
+    else {
         return Ok(None);
     };
     Ok(Some(Profile {

@@ -9,7 +9,7 @@ use crate::expand::{Bounds, Stop};
 
 use super::Index;
 
-use resvg::tiny_skia::{Color, FilterQuality, Pixmap, PixmapPaint, Transform};
+use resvg::tiny_skia::{Color, FilterQuality, IntSize, Pixmap, PixmapPaint, Transform};
 use sha2::{Digest, Sha256};
 
 pub const VERSION: &str = "visual-hash-1";
@@ -409,6 +409,37 @@ impl QueryImage {
         let fingerprint = Fingerprint::of(&pixmap, [crop.width, crop.height]);
         Ok(Self {
             fingerprint,
+            pixmap,
+        })
+    }
+
+    /// The normalized raster as `SIZE * SIZE * 3` RGB bytes, the form a vision child receives.
+    /// It is opaque: normalization paints every pixel over white.
+    pub fn rgb(&self) -> Vec<u8> {
+        let rgba = self.pixmap.data();
+        rgba.chunks_exact(4)
+            .flat_map(|p| [p[0], p[1], p[2]])
+            .collect()
+    }
+
+    /// Admits exactly the bytes `rgb` gives, as they are: no resampling, crop or metadata. Its
+    /// fingerprint describes this raster only, not the source the parent normalized.
+    pub fn from_rgb(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+        let side = SIZE as usize;
+        if bytes.len() != side * side * 3 {
+            return Err(super::invalid(format!(
+                "a normalized image holds {} RGB bytes, got {}",
+                side * side * 3,
+                bytes.len()
+            )));
+        }
+        let rgba = bytes
+            .chunks_exact(3)
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect();
+        let pixmap = Pixmap::from_vec(rgba, IntSize::from_wh(SIZE, SIZE).unwrap()).unwrap();
+        Ok(Self {
+            fingerprint: Fingerprint::of(&pixmap, [SIZE, SIZE]),
             pixmap,
         })
     }
