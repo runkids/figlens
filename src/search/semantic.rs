@@ -471,6 +471,16 @@ pub(crate) fn score(
 
 /// Estimated bytes a cached full generation and its layer keep: every record's strings,
 /// texts, chunk mappings and the vectors read so far.
+/// Drops what a cached semantic corpus never reads (relations, library references and
+/// definitions), so only names, texts and the filter fields stay in memory.
+pub(crate) fn keep_text_only(index: &mut Index) {
+    for r in &mut index.records {
+        r.edges = Vec::new();
+        r.library = Vec::new();
+    }
+    index.definitions = BTreeMap::new();
+}
+
 pub(crate) fn cached_bytes(index: &Index, layer: &Layer) -> usize {
     let vectors: usize = layer
         .vectors
@@ -489,6 +499,8 @@ pub(crate) fn cached_bytes(index: &Index, layer: &Layer) -> usize {
                 + r.text.as_ref().map_or(0, String::len)
                 + r.norm[0].len()
                 + r.norm[1].len()
+                // Relations a caller kept: `keep_text_only` drops them from the cache.
+                + 128 * (r.edges.len() + r.library.len())
         })
         .sum();
     records + texts + UNIT * layer.units.len() + vectors

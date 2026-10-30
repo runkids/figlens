@@ -42,6 +42,21 @@ fn main() -> Result<()> {
         // SAFETY: no other thread exists yet.
         unsafe { std::env::set_var("RAYON_NUM_THREADS", cpus.min(THREADS).to_string()) };
     }
+    // A parent that dies without closing our stdin (killed by a signal while the model loads or
+    // embeds) must not leave this process computing: on Unix it watches its parent; on Windows
+    // the parent's kill-on-close job object ends it.
+    #[cfg(unix)]
+    {
+        let parent = std::os::unix::process::parent_id();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if std::os::unix::process::parent_id() != parent {
+                    std::process::exit(1);
+                }
+            }
+        });
+    }
     if let [_, worker, dir, job] = args.as_slice()
         && worker == "__model-worker"
     {
