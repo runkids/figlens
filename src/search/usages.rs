@@ -15,7 +15,7 @@ use crate::{ErrorKind, FigError, Tree, guid_key, to_json};
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 /// Extraction version: a stored generation built with another one is rebuilt.
-pub(crate) const RELATIONS: &str = "relations-3";
+pub(crate) const RELATIONS: &str = "relations-4";
 /// Relations extracted, in key order; `library_identity` (#93) is not.
 pub(crate) const KINDS: [&str; 7] = [
     "binds_variable",
@@ -179,26 +179,43 @@ pub(crate) fn extract(
         return Some(out);
     };
     let mut fields = effective(tree, id, e, bounds, unread, false)?;
-    // A text range row applies where a character uses its styleID; as in `rest::text_overrides`,
-    // the last row of one styleID wins. Unused rows are blanked in place, so every relation read
-    // from the rows skips them and the rest keep their index. Charged per row first.
+    // A text range row applies where a character uses its styleID. Its style reference is the
+    // last row of that styleID, as in `rest::text_overrides`; its paints are the first row of
+    // that styleID with fill paints, as `render` draws them. Each row keeps only what it supplies
+    // and the rest are blanked in place, so every relation read from the rows keeps its index.
+    // Both passes are charged per row first.
     if let Some(text) = fields.get_mut("textData") {
         let uses = text["characterStyleIDs"].take();
         let uses = uses.as_array().map_or(&[][..], Vec::as_slice);
+        let active = |sid: Option<u64>| {
+            sid.is_some_and(|sid| {
+                uses.binary_search_by(|u| u.as_u64().cmp(&Some(sid)))
+                    .is_ok()
+            })
+        };
         if let Some(table) = text["styleOverrideTable"].as_array_mut() {
-            if !bounds.charge(table.len(), 16 * table.len()) {
+            if !bounds.charge(2 * table.len(), 33 * table.len()) {
                 return None;
             }
+            let mut painted = BTreeSet::new();
+            let paints: Vec<bool> = table
+                .iter()
+                .map(|row| {
+                    let sid = row["styleID"].as_u64();
+                    row["fillPaints"].is_array() && active(sid) && painted.insert(sid)
+                })
+                .collect();
             let mut seen = BTreeSet::new();
-            for row in table.iter_mut().rev() {
+            for (row, paints) in table.iter_mut().zip(paints).rev() {
                 let sid = row["styleID"].as_u64();
-                let used = seen.insert(sid)
-                    && sid.is_some_and(|sid| {
-                        uses.binary_search_by(|u| u.as_u64().cmp(&Some(sid)))
-                            .is_ok()
-                    });
-                if !used {
-                    *row = Json::Null;
+                let last = seen.insert(sid) && active(sid);
+                match (last, paints) {
+                    (true, true) => {}
+                    (true, false) => {
+                        row.as_object_mut().map(|r| r.remove("fillPaints"));
+                    }
+                    (false, true) => *row = json!({"fillPaints": row["fillPaints"].take()}),
+                    (false, false) => *row = Json::Null,
                 }
             }
         }
@@ -230,18 +247,24 @@ pub(crate) fn extract(
     }
     // The row paints copied below and by `rest::bound_variables` are charged first; each field
     // was read within `VISITS`, so two fields' estimates fit twice that.
-    fn rows(t: Option<&Json>) -> impl Iterator<Item = &Json> {
-        t.and_then(|t| t["styleOverrideTable"].as_array())
-            .into_iter()
-            .flatten()
-            .filter_map(|s| s.get("fillPaints"))
+    let table = |k: &str| {
+        let rows = fields
+            .get(k)
+            .and_then(|t| t["styleOverrideTable"].as_array());
+        rows.map_or(&[][..], Vec::as_slice)
+    };
+    // The walk stops at what the side has left: running out there stops the side, visits kept.
+    let cap = (2 * VISITS).min(bounds.work);
+    let mut left = cap;
+    let (copies, cut) = row_paints([table("vectorData"), table("textData")], &mut left);
+    if !bounds.charge(cap - left, 0) {
+        return None;
     }
-    let mut left = 2 * VISITS;
-    let copies: usize = rows(fields.get("vectorData"))
-        .chain(rows(fields.get("textData")))
-        .map(|p| json_bytes(p, &mut left))
-        .sum();
-    if !bounds.charge(2 * VISITS - left, copies) {
+    if (cut || left == 0 && cap > 0) && cap < 2 * VISITS {
+        bounds.stop = Some(crate::expand::Stop::Work);
+        return None;
+    }
+    if !bounds.charge(0, copies) {
         return None;
     }
     // REST lists no vector-region fills; usages reads their bindings like top-level fills.
@@ -456,6 +479,22 @@ fn node_state(tree: &Tree, target: Option<&str>, kind: &str) -> &'static str {
     }
 }
 
+/// Estimated bytes of the fill paints in `tables`' rows, walking at most `left`: a visit for
+/// each row, a blanked inactive one too, then its paints'. True when a row was left unwalked.
+fn row_paints(tables: [&[Json]; 2], left: &mut usize) -> (usize, bool) {
+    let mut bytes = 0;
+    for row in tables.into_iter().flatten() {
+        if *left == 0 {
+            return (bytes, true);
+        }
+        *left -= 1;
+        if let Some(p) = row.get("fillPaints") {
+            bytes += json_bytes(p, left);
+        }
+    }
+    (bytes, false)
+}
+
 /// The record's effective binding fields as JSON: an expanded sublayer's override wins over
 /// its source's own field. Each is charged at its estimated size before it is converted.
 fn effective(
@@ -515,22 +554,27 @@ fn effective(
                 continue;
             }
         }
-        let mut left = VISITS;
+        let cap = VISITS.min(bounds.work);
+        let mut left = cap;
         let bytes = match (own, value) {
             (Some(v), _) => json_bytes(v, &mut left),
             (None, Some(v)) => kiwi_bytes(v, &mut left),
             (None, None) => continue,
         };
-        // One field past the per-value cap is left out and counted, not the rest of the index;
-        // the visits that found it too large are still charged.
+        // The visits made are charged either way. One field past the per-value cap is left out
+        // and counted, not the rest of the index; running out of the side's work stops it.
+        if !bounds.charge(cap - left, 0) {
+            return None;
+        }
         if left == 0 {
-            if !bounds.charge(VISITS, 0) {
+            if cap < VISITS {
+                bounds.stop = Some(crate::expand::Stop::Work);
                 return None;
             }
             *unread += 1;
             continue;
         }
-        if !bounds.charge(VISITS - left, bytes) {
+        if !bounds.charge(0, bytes) {
             return None;
         }
         let mut converted = match (own, value) {
@@ -716,6 +760,10 @@ pub(crate) fn definitions(
     // scope binds it, so an unused one answers as such rather than as unknown.
     let mut variables = Vec::new();
     for page in tree.children.get("0:0").into_iter().flatten() {
+        // A page pays its lookup, even one with no children.
+        if !bounds.charge(1, 0) {
+            return None;
+        }
         for id in tree.children.get(page).into_iter().flatten() {
             if !bounds.charge(1, 0) {
                 return None;

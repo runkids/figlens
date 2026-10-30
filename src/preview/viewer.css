@@ -73,6 +73,20 @@ aside > h2:has(+ #pageList:empty), #pageList:empty, #pageList:empty + .split { d
 #pageList button:hover { background: var(--field); }
 #pageList hr { width: calc(100% - 16px); margin: 4px 8px; border: 0; border-top: 1px solid var(--border); }
 #pageList button[aria-current=true] { background: var(--sel-bg); font-weight: 600; }
+.rel { padding: 0 8px; border-bottom: 1px solid var(--border); }
+.rel[open] { max-height: 50vh; overflow: auto; }
+.rel summary { padding: 8px 4px; cursor: pointer; font-weight: 600; }
+.rel [role=tablist] { display: flex; gap: 4px; }
+.rel [role=tab][aria-selected=true] { background: var(--sel-bg); }
+.rel-form { display: grid; gap: 4px; padding: 6px 0; }
+.rel fieldset { display: flex; flex-wrap: wrap; gap: 2px 10px; border: 0; margin: 0; padding: 0; }
+.rel output, .rel p { display: block; padding: 4px 0; color: var(--muted); }
+.rel [data-state=error] > output, .rel [data-state=stale] > output { color: inherit; font-weight: 600; }
+.rel h4 { margin: 8px 0 2px; }
+.rel ul { list-style: none; margin: 0; padding: 0; }
+.rel li { display: grid; padding: 2px 0; }
+.rel li > span { color: var(--muted); overflow-wrap: anywhere; }
+.rel .group { color: var(--muted); }
 #searchStatus { display: block; padding: 0 12px; color: var(--muted); }
 aside > h2:has(+ #overview:empty), #overview:empty, #overview:empty + .split { display: none; }
 #overview { display: flex; flex-direction: column; height: 220px; min-height: 40px; overflow: auto; padding: 0 6px 8px; }

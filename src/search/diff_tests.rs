@@ -91,10 +91,7 @@ fn changed_text_fill_and_size_are_reported_per_facet_and_unchanged_layers_are_no
         ]
     );
     let frame = &out["frames"][0];
-    assert_eq!(
-        frame["summary"],
-        "3 changed, text 1, layout 1, appearance 1"
-    );
+    assert_eq!(frame["summary"], "3 listed, text 1, layout 1, appearance 1");
     let title = &frame["nodes"][1];
     assert_eq!(title["facets"], json!(["text"]));
     assert_eq!(
@@ -300,11 +297,15 @@ fn a_field_too_large_to_read_is_unread_never_unchanged() {
 #[test]
 fn a_giant_field_is_unread_and_an_escaped_one_is_digested_without_keeping_its_value() {
     let one = |s: &str| doc(vec![node(10, Some(1), "TEXT", "T", vec![text(s)])]);
-    // Past the conversion cap: never converted, listed as unread, not taken for unchanged.
+    // Past the conversion cap: never converted, listed as unknown and unread, not taken for
+    // unchanged.
     let giant = "x".repeat(FIELD_BYTES + 1);
     let out = run(one(&giant), one(&giant));
     let n = &out["frames"][0]["nodes"][0];
-    assert_eq!((&n["unread"], &n["facets"]), (&json!(true), &json!([])));
+    assert_eq!(
+        (&n["change"], &n["unread"]),
+        (&json!("unknown"), &json!(true))
+    );
     // Control characters escape to six bytes each; the stream is hashed, the value dropped.
     let escaped = "\u{1}".repeat(FIELD_BYTES / 8);
     let out = run(one(&escaped), one(&format!("{escaped}\u{2}")));
@@ -371,7 +372,7 @@ fn binary_values_of_equal_length_differ_and_an_override_holding_bytes_is_unread(
         with_instance(30, vec![same.clone()]),
         with_instance(30, vec![same]),
     ));
-    assert_eq!(changes, [("I0:11;0:31".to_owned(), "changed".to_owned())]);
+    assert_eq!(changes, [("I0:11;0:31".to_owned(), "unknown".to_owned())]);
 }
 
 #[test]
@@ -403,7 +404,7 @@ fn an_unread_field_is_charged_its_metadata_like_a_read_one() {
         let before = b.bytes;
         let f = facets(&tree, id, ex.nodes.get(id), &mut b).unwrap();
         assert!(f.fields.iter().any(|f| f.digest.is_none()), "{id}");
-        // Each field pays its metadata, and a kept value its serialized length; the malformed
+        // Each field pays its metadata, and a kept value its size as JSON; the malformed
         // blob is found only after its stored geometry was converted and copied, which it pays.
         let converted = tree
             .nodes
@@ -413,7 +414,10 @@ fn an_unread_field_is_charged_its_metadata_like_a_read_one() {
         let kept: usize = f
             .fields
             .iter()
-            .map(|f| 64 + f.key.len() + f.value.as_ref().map_or(0, |v| v.to_string().len()))
+            .map(|f| {
+                let value = f.value.as_ref();
+                FIELD_META + f.key.len() + value.map_or(0, |v| held_value(v, v.to_string().len()))
+            })
             .sum();
         // An expanded size and transform are each built after paying their fixed estimate.
         let e = ex.nodes.get(id);
@@ -436,6 +440,71 @@ fn a_stored_field_pays_for_its_conversion_before_it_is_converted() {
     b.bytes = 1024;
     assert!(facets(&tree, "0:10", None, &mut b).is_none());
     assert_eq!(b.stop, Some(crate::expand::Stop::Bytes));
+}
+
+#[test]
+fn a_field_estimate_walks_no_further_than_the_side_has_work_left() {
+    let big = json!(vec![0; 5000]);
+    // Zero or little work left: the walk stops there, not at `VISITS`.
+    assert_eq!(estimate(&Value::Json(&big), 0).1, 0);
+    assert_eq!(estimate(&Value::Json(&big), 100).1, 100);
+    // A small field takes only its own visits.
+    assert_eq!(estimate(&Value::Json(&json!([1, 2])), 100).1, 3);
+    // Through `facets`, running out of work stops the side; it is not one unread field.
+    let message = doc(vec![node(10, Some(1), "TEXT", "T", vec![text("Hi")])]);
+    let tree = Tree::new(&message);
+    let mut b = super::super::tests::bounds(WORK);
+    b.work = 0;
+    assert!(facets(&tree, "0:10", None, &mut b).is_none());
+    assert_eq!(b.stop, Some(crate::expand::Stop::Work));
+    // With a little work left, a large field spends it all, then stops the side.
+    let wide = doc(vec![node(
+        10,
+        Some(1),
+        "TEXT",
+        "T",
+        vec![("fillPaints", K::Array(vec![K::Float(0.0); 5000]))],
+    )]);
+    let tree = Tree::new(&wide);
+    let mut b = super::super::tests::bounds(WORK);
+    b.work = 100;
+    assert!(facets(&tree, "0:10", None, &mut b).is_none());
+    assert_eq!((b.work, b.stop), (0, Some(crate::expand::Stop::Work)));
+}
+
+#[test]
+fn a_digest_stream_pays_before_hashing_and_split_writes_pay_as_one() {
+    use std::io::Write;
+    let digest = |work: usize, chunks: &[&[u8]]| {
+        let mut b = super::super::tests::bounds(work);
+        let mut w = Digesting {
+            hash: Sha256::new(),
+            len: 0,
+            bounds: &mut b,
+        };
+        let ok = chunks.iter().all(|c| w.write(c).is_ok());
+        let len = w.len;
+        (ok, len, b.work)
+    };
+    // No work left: not one byte is hashed.
+    assert_eq!(digest(0, &[b"x"]), (false, 0, 0));
+    // 130 bytes are three started units, written whole or in pieces.
+    let whole = digest(10, &[&[0; 130]]);
+    assert_eq!(whole, (true, 130, 7));
+    assert_eq!(digest(10, &[&[0; 1], &[0; 63], &[0; 1], &[0; 65]]), whole);
+}
+
+#[test]
+fn an_escaped_field_pays_for_its_stream_before_hashing_past_the_side_s_work() {
+    // 8,192 control characters estimate at about 130 visits but stream as about 49 KiB.
+    let escaped = text(&"\u{1}".repeat(8192));
+    let message = doc(vec![node(10, Some(1), "TEXT", "T", vec![escaped])]);
+    let tree = Tree::new(&message);
+    let mut b = super::super::tests::bounds(WORK);
+    b.work = 300;
+    assert!(facets(&tree, "0:10", None, &mut b).is_none());
+    // The stream stopped where the work ran out, every hashed chunk paid for.
+    assert_eq!((b.work, b.stop), (0, Some(crate::expand::Stop::Work)));
 }
 
 #[test]
@@ -564,8 +633,8 @@ fn possible_match_probes_are_charged_and_stop_the_pair_when_out_of_work() {
     };
     let full = run(PAIR_WORK);
     assert_eq!(full["coverage"]["possibleMatches"], POSSIBLE);
-    // Enough for the maps and the 600 changes, not for every probe.
-    let short = run(2 * 600 + 600 * 4 + 100);
+    // Enough for the maps and the 600 changes and frames, not for every probe.
+    let short = run(2 * 600 + 600 * 6 + 100);
     // Every change was kept; only the probes ran out.
     assert_eq!(
         (
@@ -583,6 +652,37 @@ fn possible_match_probes_are_charged_and_stop_the_pair_when_out_of_work() {
 }
 
 #[test]
+fn a_cursor_binds_the_retained_comparison_not_only_both_sides() {
+    let frames = |first: u32| {
+        (0..300)
+            .map(move |i| node(first + i, Some(1), "FRAME", "A", vec![]))
+            .collect()
+    };
+    let (a, b) = (doc(frames(100)), doc(frames(1000)));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let next = |work| {
+        page(
+            &compare_trees(&a, &b, [WORK, WORK, work], "0:0"),
+            &req(1, None),
+            false,
+        )
+        .unwrap()["nextCursor"]
+            .as_str()
+            .map(str::to_owned)
+    };
+    // Same sides, same changes; only the pair's probes stopped short.
+    let short = next(2 * 600 + 600 * 6 + 100);
+    let full = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
+    let err = page(&full, &req(1, short), false).unwrap_err();
+    assert_eq!(
+        err.downcast_ref::<FigError>().map(FigError::kind),
+        Some(ErrorKind::CursorStale)
+    );
+    // A rebuild of the full pair keeps its cursor.
+    assert!(page(&full, &req(1, next(PAIR_WORK)), false).is_ok());
+}
+
+#[test]
 fn a_first_change_too_large_for_a_page_is_an_error_not_an_oversized_page() {
     let long = "n".repeat(PAGE_VALUES + 1);
     let one = |red| doc(vec![node(10, Some(1), "RECTANGLE", &long, vec![fill(red)])]);
@@ -594,6 +694,101 @@ fn a_first_change_too_large_for_a_page_is_an_error_not_an_oversized_page() {
         e.downcast_ref::<FigError>().unwrap().kind(),
         ErrorKind::ResponseBudget
     );
+}
+
+#[test]
+fn listed_fields_keys_and_markers_count_against_the_page_bytes() {
+    // Many fields differ by small values, so their keys and markers outweigh the values.
+    const KEYS: [&str; 12] = [
+        "stackSpacing",
+        "stackHorizontalPadding",
+        "stackVerticalPadding",
+        "stackPaddingRight",
+        "stackPaddingBottom",
+        "strokeWeight",
+        "borderTopWeight",
+        "borderRightWeight",
+        "borderBottomWeight",
+        "borderLeftWeight",
+        "opacity",
+        "paragraphSpacing",
+    ];
+    let side = |v: f32| {
+        let fields = || KEYS.iter().map(|k| (*k, K::Float(v))).collect::<Vec<_>>();
+        doc(vec![
+            node(10, Some(1), "FRAME", "Home", vec![]),
+            node(11, Some(10), "RECTANGLE", "One", fields()),
+            node(12, Some(10), "RECTANGLE", "Two", fields()),
+        ])
+    };
+    let (a, b) = (side(1.0), side(0.5));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let pair = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
+    let at = |bytes| page_with(&pair, &req(LIMIT, None), false, [bytes, PAGE_WORK]);
+    // The fewest bytes that list a change carry what the reply holds, markers included.
+    let bytes = (1..PAGE_VALUES).find(|b| at(*b).is_ok()).unwrap();
+    let page = at(bytes).unwrap();
+    assert!(serde_json::to_string(&page["frames"]).unwrap().len() <= bytes);
+}
+
+#[test]
+fn escaped_names_and_edges_count_against_the_page_bytes_at_their_reply_size() {
+    // Control characters, quotes and backslashes grow when serialized.
+    let odd = |n: usize| "\u{1}\"\\".repeat(n);
+    let mixed = format!("{}\n\t\u{8}\u{1f}é\u{7f}", odd(3));
+    let exact = serde_json::to_string(&mixed).unwrap().len();
+    assert_eq!(escaped_within(&mixed, exact), Some(exact));
+    // Over the room: refused, whether its raw length or only its escapes pass it.
+    assert_eq!(escaped_within(&mixed, exact - 1), None);
+    assert_eq!(escaped_within(&"x".repeat(1 << 20), 10), None);
+    let side = |main: u32| {
+        doc(vec![
+            node(30, Some(1), "SYMBOL", &odd(40), vec![]),
+            node(40, Some(1), "SYMBOL", &odd(40), vec![]),
+            node(10, Some(1), "FRAME", &odd(300), vec![]),
+            instance(11, 10, &odd(300), main, vec![]),
+            instance(12, 10, &odd(300), main, vec![]),
+        ])
+    };
+    let (a, b) = (side(30), side(40));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let pair = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
+    let at = |bytes| page_with(&pair, &req(LIMIT, None), false, [bytes, PAGE_WORK]);
+    let bytes = (1..PAGE_VALUES).find(|b| at(*b).is_ok()).unwrap();
+    let page = at(bytes).unwrap();
+    assert!(serde_json::to_string(&page["frames"]).unwrap().len() <= bytes);
+}
+
+#[test]
+fn a_page_of_edges_fields_and_swaps_serializes_within_its_bytes_at_every_budget() {
+    // A frame painting 40 other images has 80 differing uses_image edges, and its opacity
+    // differs: edges never crowd out the fields' markers, at any budget that lists the frame.
+    let side = |first: u8, v: f32| {
+        let image = |h: u8| {
+            obj(vec![
+                ("type", K::Enum("PaintType", "IMAGE")),
+                ("image", obj(vec![("hash", K::Bytes(vec![h]))])),
+            ])
+        };
+        let paints = K::Array((first..first + 40).map(image).collect());
+        let fields = vec![("opacity", K::Float(v)), ("fillPaints", paints)];
+        doc(vec![node(10, Some(1), "FRAME", "Home", fields)])
+    };
+    let (a, b) = (side(0, 1.0), side(100, 0.5));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let pair = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
+    let at = |bytes| page_with(&pair, &req(LIMIT, None), false, [bytes, PAGE_WORK]);
+    let first = (1..PAGE_VALUES).find(|b| at(*b).is_ok()).unwrap();
+    // The least budget lists the fields while most edges are only counted.
+    let least = at(first).unwrap();
+    assert!(least["frames"][0]["nodes"][0]["edges"]["truncated"].as_u64() > Some(40));
+    for bytes in first..first + 600 {
+        let page = at(bytes).unwrap();
+        let size = serde_json::to_string(&page["frames"]).unwrap().len();
+        assert!(size <= bytes, "{size} > {bytes}");
+        let node = &page["frames"][0]["nodes"][0];
+        assert!(node["fields"]["opacity"].is_object(), "{bytes}");
+    }
 }
 
 #[test]
@@ -673,6 +868,207 @@ fn a_vector_path_is_compared_by_its_blob_bytes_not_its_blob_index() {
 }
 
 #[test]
+fn derived_text_layout_is_text_and_its_glyphs_compare_by_blob_bytes() {
+    let file = |line: f64, at: usize, bytes: Vec<u8>| {
+        let mut blobs = vec![obj(vec![("bytes", K::Bytes(vec![9]))]); 2];
+        blobs[at] = obj(vec![("bytes", K::Bytes(bytes))]);
+        let derived = obj(vec![
+            (
+                "fontMetaData",
+                K::Array(vec![obj(vec![("fontLineHeight", K::Float(line as f32))])]),
+            ),
+            (
+                "glyphs",
+                K::Array(vec![obj(vec![("commandsBlob", K::UInt(at as u32))])]),
+            ),
+        ]);
+        let K::Object(name, mut fields) = doc(vec![node(
+            10,
+            Some(1),
+            "TEXT",
+            "Title",
+            vec![text("Hi"), ("derivedTextData", derived)],
+        )]) else {
+            unreachable!()
+        };
+        fields.insert("blobs", K::Array(blobs));
+        K::Object(name, fields)
+    };
+    let facets = |a, b| run(a, b)["frames"][0]["nodes"][0]["facets"].clone();
+    assert_eq!(
+        facets(file(1.2, 0, vec![1]), file(1.5, 0, vec![1])),
+        json!(["text"])
+    );
+    assert_eq!(
+        facets(file(1.2, 0, vec![1]), file(1.2, 0, vec![2])),
+        json!(["text"])
+    );
+    assert_eq!(
+        run(file(1.2, 0, vec![1]), file(1.2, 1, vec![1]))["frames"],
+        json!([])
+    );
+}
+
+#[test]
+fn an_unchanged_long_text_layout_is_read_and_unchanged() {
+    let file = || {
+        let glyph = |i: u32| {
+            obj(vec![
+                ("commandsBlob", K::UInt(0)),
+                (
+                    "position",
+                    obj(vec![("x", K::Float(i as f32)), ("y", K::Float(0.0))]),
+                ),
+                ("fontSize", K::Float(12.0)),
+                ("firstCharacter", K::UInt(i)),
+                ("advance", K::Float(7.0)),
+            ])
+        };
+        let derived = obj(vec![("glyphs", K::Array((0..1500).map(glyph).collect()))]);
+        let K::Object(name, mut fields) = doc(vec![node(
+            10,
+            Some(1),
+            "TEXT",
+            "Body",
+            vec![text("long"), ("derivedTextData", derived)],
+        )]) else {
+            unreachable!()
+        };
+        fields.insert(
+            "blobs",
+            K::Array(vec![obj(vec![("bytes", K::Bytes(vec![1]))])]),
+        );
+        K::Object(name, fields)
+    };
+    let out = run(file(), file());
+    assert_eq!(
+        (&out["frames"], &out["coverage"]["complete"]),
+        (&json!([]), &json!(true))
+    );
+}
+
+#[test]
+fn a_re_derived_instance_text_with_font_digest_bytes_is_read_and_unchanged() {
+    let file = |line: f32| {
+        let derived = obj(vec![(
+            "fontMetaData",
+            K::Array(vec![obj(vec![
+                ("fontDigest", K::Bytes(vec![1, 2, 3])),
+                ("fontLineHeight", K::Float(line)),
+            ])]),
+        )]);
+        doc(vec![
+            node(30, Some(1), "SYMBOL", "Card", vec![]),
+            node(31, Some(30), "TEXT", "Label", vec![text("Hi")]),
+            node(10, Some(1), "FRAME", "Home", vec![]),
+            instance(
+                11,
+                10,
+                "Use",
+                30,
+                vec![(
+                    "derivedSymbolData",
+                    K::Array(vec![obj(vec![path(&[31]), ("derivedTextData", derived)])]),
+                )],
+            ),
+        ])
+    };
+    let same = run(file(1.2), file(1.2));
+    assert_eq!(
+        (&same["frames"], &same["coverage"]["complete"]),
+        (&json!([]), &json!(true))
+    );
+    // The rest of the re-derived layout is still compared.
+    let moved = run(file(1.2), file(1.5));
+    assert_eq!(
+        nodes(&moved),
+        vec![("I0:11;0:31".to_owned(), "changed".to_owned())]
+    );
+}
+
+#[test]
+fn a_stored_layout_differing_only_in_font_digest_is_unchanged() {
+    // Other bytes in the layout make it hashed raw; the digest is still left out.
+    let one = |digest: u8| {
+        let layout = obj(vec![
+            ("glyphBytes", K::Bytes(vec![7, 7])),
+            (
+                "fontMetaData",
+                K::Array(vec![obj(vec![("fontDigest", K::Bytes(vec![digest]))])]),
+            ),
+        ]);
+        doc(vec![node(
+            10,
+            Some(1),
+            "TEXT",
+            "T",
+            vec![text("Hi"), ("derivedTextData", layout)],
+        )])
+    };
+    assert_eq!(run(one(1), one(2))["frames"], json!([]));
+}
+
+#[test]
+fn an_unread_field_alone_is_unknown_and_proves_no_facet_change() {
+    let one = |s: &str, fill_red: f64| {
+        doc(vec![node(
+            10,
+            Some(1),
+            "TEXT",
+            "T",
+            vec![text(s), fill(fill_red)],
+        )])
+    };
+    let giant = "x".repeat(FIELD_BYTES + 1);
+    let change = |a: K<'static>, b: K<'static>| {
+        let out = run(a, b);
+        let n = out["frames"][0]["nodes"][0].clone();
+        (
+            n["change"].clone(),
+            n["facets"].clone(),
+            n["unread"].clone(),
+        )
+    };
+    // Unread on both sides, or read on one and unread on the other: no facet is proven to differ.
+    let unknown = (json!("unknown"), Json::Null, json!(true));
+    assert_eq!(change(one(&giant, 1.0), one(&giant, 1.0)), unknown);
+    // It still names the field that was unread, and the frame lists it without calling it changed.
+    let out = run(one("small", 1.0), one(&giant, 1.0));
+    assert_eq!(out["frames"][0]["summary"], "1 listed, unread 1");
+    assert!(out["frames"][0]["nodes"][0]["fields"]["textData"].is_object());
+    assert_eq!(change(one("small", 1.0), one(&giant, 1.0)), unknown);
+    // A proven change elsewhere is a change that also says a field was unread.
+    assert_eq!(
+        change(one(&giant, 1.0), one(&giant, 0.0)),
+        (json!("changed"), json!(["appearance"]), json!(true))
+    );
+}
+
+#[test]
+fn emitted_metadata_scopes_code_syntax_and_prototype_settings_are_properties() {
+    let one = |key: &'static str, v: &str| {
+        doc(vec![node(
+            10,
+            Some(1),
+            "FRAME",
+            "F",
+            vec![(key, K::String(v.into()))],
+        )])
+    };
+    for key in [
+        "description",
+        "symbolDescription",
+        "styleType",
+        "variableScopes",
+        "codeSyntax",
+        "prototypeInteractions",
+    ] {
+        let n = &run(one(key, "a"), one(key, "b"))["frames"][0]["nodes"][0];
+        assert_eq!(n["facets"], json!(["properties"]), "{key}");
+    }
+}
+
+#[test]
 fn an_image_override_equal_to_the_main_fill_is_no_change() {
     let image = || {
         (
@@ -745,7 +1141,7 @@ fn vector_with(blob: Option<K<'static>>) -> K<'static> {
 fn a_missing_or_malformed_blob_is_unread_never_unchanged() {
     for blob in [None, Some(K::Array(vec![K::UInt(1)])), Some(K::UInt(1))] {
         let out = run(vector_with(blob.clone()), vector_with(blob));
-        assert_eq!(nodes(&out), [("0:10".to_owned(), "changed".to_owned())]);
+        assert_eq!(nodes(&out), [("0:10".to_owned(), "unknown".to_owned())]);
         assert_eq!(out["coverage"]["complete"], false);
     }
 }
@@ -764,7 +1160,7 @@ fn compact_blob_bytes_and_a_byte_array_digest_alike() {
 fn a_byte_array_blob_past_the_visit_cap_is_unread() {
     let blob = || Some(K::Array(vec![K::Byte(1); VISITS + 1]));
     let out = run(vector_with(blob()), vector_with(blob()));
-    assert_eq!(nodes(&out), [("0:10".to_owned(), "changed".to_owned())]);
+    assert_eq!(nodes(&out), [("0:10".to_owned(), "unknown".to_owned())]);
     assert_eq!(out["coverage"]["complete"], false);
 }
 
@@ -1328,7 +1724,7 @@ fn stored_facets_keep_a_readable_value_and_charge_text_metadata_and_value() {
         (facets.fields[0].value.clone(), spent),
         (
             Some(serde_json::json!(12)),
-            text.len() + 64 + "fontSize".len() + 2
+            text.len() + FIELD_META + "fontSize".len() + held_value(&serde_json::json!(12), 0)
         )
     );
 }
@@ -1337,7 +1733,7 @@ fn stored_facets_keep_a_readable_value_and_charge_text_metadata_and_value() {
 fn stored_facets_charge_a_kept_value_after_its_metadata() {
     let text = format!(r#"[["fontSize","{}",12]]"#, "a".repeat(64));
     // Text and metadata fit; the value's two bytes do not.
-    let mut spent = BYTES - text.len() - 64 - "fontSize".len() - 1;
+    let mut spent = BYTES - text.len() - FIELD_META - "fontSize".len() - 1;
     let err = decode(&text, &mut spent).err().unwrap();
     assert_eq!(
         err.downcast_ref::<FigError>().map(FigError::kind),
@@ -1347,7 +1743,7 @@ fn stored_facets_charge_a_kept_value_after_its_metadata() {
 
 #[test]
 fn stored_facets_charge_their_text_then_each_field_as_the_live_build_does() {
-    // Once the text is paid for, nothing is left for the field's 64 bytes plus key.
+    // Once the text is paid for, nothing is left for the field's metadata plus key.
     let text = r#"[["fontSize",null]]"#;
     let mut spent = BYTES - text.len();
     let err = decode(text, &mut spent).err().unwrap();

@@ -60,7 +60,65 @@ function prototypeRows(evidence) {
     if (evidence.truncated) rows.push({label: 'Prototype evidence truncated', destination: 'Inspect source fields for omitted records', target: null});
     return rows;
 }
-if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits, prototypeRows};
+// Ranked search and usages (issue #91). Query string for the search/usages routes: empty values are dropped,
+// arrays repeat the key and booleans are 1/0.
+function relQuery(params) {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+        if (v == null || v === '') continue;
+        for (const x of Array.isArray(v) ? v : [v]) q.append(k, typeof x === 'boolean' ? (x ? '1' : '0') : String(x));
+    }
+    return q.toString();
+}
+// A reply is applied only if its request is still the newest and it describes the snapshot now loaded.
+// Exact identity is the pair: the same bytes under another source are another revision.
+const sameSource = (a, b) => !!a?.snapshotId && a.snapshotId === b?.snapshotId && a.sourceId === b?.sourceId;
+// Every relation kind core reports, checked as this reply's effective relations.
+const relationChoices = reply => [...new Set([...Object.keys(reply.coverage?.layers?.relations?.kinds ?? {}), ...reply.relations])]
+    .map(value => ({value, checked: reply.relations.includes(value)}));
+const acceptReply = (seq, current, replySource, loadedSource) => seq === current && sameSource(replySource, loadedSource);
+// Coverage reasons, codes verbatim (with the relations a code names), without repeats.
+function reasonCodes(reply) {
+    const text = r => typeof r === 'string' ? r : `${r.code}${r.relations?.length ? ` (${r.relations.join(', ')})` : ''}`;
+    return [...new Set([...(reply.coverage?.reasons || []), ...(reply.coverage?.layers?.relations?.reasons || [])].map(text))];
+}
+// One display row from a search/usages result, a definition or an outgoing edge. Identity is ref.nodeId only.
+function rowModel(row, source) {
+    const ref = row.ref || row.target?.ref, resource = row.resource ?? row.target?.resource ?? null;
+    return {
+        nodeId: ref?.nodeId ?? null, snapshotId: ref?.snapshotId ?? source?.snapshotId, sourceId: ref?.sourceId ?? source?.sourceId, resource,
+        name: row.name ?? row.definition?.name ?? ref?.nodeId ?? resource ?? '(no target)',
+        type: row.type ?? row.definition?.type ?? null, relation: row.relation ?? null, state: row.state ?? null,
+        basis: row.basis ?? null, via: row.via ?? null, hidden: row.hidden === true,
+        origin: row.origin ?? null, scopeRoot: row.scopeRoot ?? null,
+        path: (row.path || []).map(p => p.name || p.id).join(' / '),
+    };
+}
+// Members (component-set variants) and results grouped by relation, in reply order.
+function groupUsages(reply) {
+    const groups = new Map();
+    for (const row of reply.results || []) {
+        const m = rowModel(row, reply.source);
+        if (!groups.has(m.relation)) groups.set(m.relation, []);
+        groups.get(m.relation).push(m);
+    }
+    const members = reply.members && {ids: reply.members.nodeIds || [], complete: reply.members.complete !== false};
+    return {members: members || null, groups: [...groups]};
+}
+// Offline snapshots: substring search over the packaged layers only (names and text), capped like the live list.
+// Packaged layers under `roots`; a layer under a hidden ancestor counts as hidden, as in core.
+function localSearch(roots, query, {types = [], hidden = false} = {}) {
+    const q = String(query).toLowerCase(), found = [];
+    const walk = (n, inherited) => {
+        const off = inherited || n.visible === false;
+        if (q && `${n.name || ''} ${n.characters || ''}`.toLowerCase().includes(q)
+            && (!types.length || types.includes(n.type)) && (hidden || !off)) found.push([n, off]);
+        for (const c of n.children || []) walk(c, off);
+    };
+    roots.forEach(n => walk(n, false));
+    return {results: found.slice(0, 200).map(([n, off]) => ({name: n.name || n.id, type: n.type, ref: {nodeId: n.id}, hidden: off})), hasMore: found.length > 200};
+}
+if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, relationChoices, acceptReply, reasonCodes, rowModel, groupUsages, localSearch};
 if (typeof document !== 'undefined') {
     const boot = JSON.parse(document.getElementById('boot').textContent);
     const $ = id => document.getElementById(id);
@@ -69,7 +127,7 @@ if (typeof document !== 'undefined') {
         if (text !== undefined) e.textContent = text;
         return e;
     };
-    let payload, nodes = [], selected, rootId, catalog, generation, shapes = {};
+    let payload, nodes = [], selected, rootId, catalog, generation, shapes = {}, loadedSource;
     // Exact vector picking: page-space outlines from the scope data, tested with the canvas API.
     // Path2D objects are built on first use, so large scopes do not pay for outlines nobody hovers.
     const hitContext = document.createElement('canvas').getContext('2d');
@@ -91,8 +149,8 @@ if (typeof document !== 'undefined') {
     const tiles = new Map();
     const buttons = new Map(), parents = new Map();
     function status(message) { $('status').textContent = message; }
-    async function api(route) {
-        const response = await fetch(route, {cache: 'no-store'});
+    async function api(route, init) {
+        const response = await fetch(route, {cache: 'no-store', ...init});
         if (!response.ok) throw new Error(await response.text());
         return response;
     }
@@ -1001,6 +1059,8 @@ if (typeof document !== 'undefined') {
             catalog = next.document;
             catalogIndex = null;
             generation = next.generation;
+            loadedSource = next.source;
+            relReset();
             $('pages').replaceChildren();
             for (const p of catalog.children || []) {
                 if (p.internal) continue;
@@ -1397,6 +1457,207 @@ if (typeof document !== 'undefined') {
             resize(target.offsetHeight + step);
         };
     }
+    // Ranked search and exact usages: two modes of one panel. Each keeps a request sequence and an
+    // AbortController; a reply counts only if its request is still current and it describes the loaded snapshot.
+    const rel = {ranked: {seq: 0}, usages: {seq: 0}};
+    const relUI = name => ({status: $(name + 'Status'), list: $(name + 'List'), more: $(name + 'More'), retry: $(name + 'Retry'), panel: $('panel-' + name)});
+    function relState(name, state, text) {
+        const u = relUI(name);
+        u.panel.dataset.state = state;
+        u.panel.setAttribute('aria-busy', String(state === 'loading'));
+        u.status.textContent = text;
+        u.retry.hidden = state !== 'busy' && state !== 'error';
+    }
+    function relAbort(name) {
+        rel[name].ctl?.abort();
+        rel[name].seq++;
+    }
+    // A new saved revision: results may name other layers, so both panels are cleared and marked stale.
+    function relReset() {
+        for (const name of ['ranked', 'usages']) {
+            const p = rel[name], u = relUI(name);
+            relAbort(name);
+            u.list.replaceChildren();
+            u.more.hidden = true;
+            if (p.ran) relState(name, 'stale', 'Saved design changed — results cleared; rerun.');
+            Object.assign(p, {ran: false, acc: null, target: null});
+        }
+        if (!boot.snapshot) relTypes();
+    }
+    function relTypes() {
+        const types = [...new Set((boot.snapshot ? nodes : flat(catalog)).map(n => n.type).filter(Boolean))].sort();
+        $('rankedTypes').replaceChildren(...types.map(t => Object.assign(el('option', t), {value: t})));
+    }
+    async function relRun(name, base, cursor) {
+        const p = rel[name], u = relUI(name), append = !!cursor;
+        relAbort(name);
+        const ctl = p.ctl = new AbortController(), seq = p.seq;
+        Object.assign(p, {base, ran: true});
+        relState(name, 'loading', 'Loading…');
+        u.more.hidden = true;
+        try {
+            const reply = await (await api(base + (cursor ? '&' + relQuery({cursor}) : ''), {signal: ctl.signal})).json();
+            if (!acceptReply(seq, p.seq, reply.source, loadedSource)) {
+                if (seq === p.seq) relState(name, 'stale', 'Saved design changed — reply dropped; rerun.');
+                return;
+            }
+            if (reply.error) {
+                const {kind, message} = reply.error;
+                return relState(name, kind === 'WorkspaceBusy' ? 'busy' : 'error', `${kind ? kind + ': ' : ''}${message}`);
+            }
+            p.acc = append && p.acc ? {...p.acc, ...reply, results: [...p.acc.results, ...reply.results]} : reply;
+            relShow(name);
+        } catch (e) {
+            if (seq === p.seq) relState(name, 'error', e.message);
+        }
+    }
+    function relShow(name) {
+        const p = rel[name], u = relUI(name), acc = p.acc, n = acc.results.length, codes = reasonCodes(acc);
+        const partial = acc.coverage?.complete === false;
+        if (name === 'ranked') u.list.replaceChildren(relList(name, acc.results.map(r => rowModel(r, acc.source))));
+        else relUsages(acc);
+        u.more.hidden = !(acc.hasMore && acc.nextCursor);
+        let text = n ? `${n} shown${acc.hasMore ? ', more available' : ''}.` : `No matches in ${p.scope}.`;
+        if (!n && partial) text += ' Coverage is partial, so absence is not established.';
+        if (codes.length) text += ` ${partial ? 'Partial coverage' : 'Coverage notes'}: ${codes.join(', ')}.`;
+        relState(name, partial ? 'partial' : n ? 'ok' : 'empty', text);
+    }
+    function relList(name, models) {
+        const ul = el('ul');
+        for (const m of models) {
+            const li = el('li'), open = button(m.name, () => relOpen(name, m));
+            open.disabled = !m.nodeId;
+            li.append(open, el('span', [m.type, m.relation, m.state && `state ${m.state}`, m.basis, m.via && `via ${m.via}`, m.origin, m.scopeRoot && `in ${m.scopeRoot}`, m.hidden && 'hidden', m.resource && `resource ${m.resource}`, m.path].filter(Boolean).join(' · ')));
+            if (m.nodeId && !boot.snapshot) {
+                const copyBtn = button('Copy ID', () => relCopy(name, m, copyBtn));
+                li.append(copyBtn);
+            }
+            ul.append(li);
+        }
+        return ul;
+    }
+    function relUsages(acc) {
+        const g = groupUsages(acc), d = acc.definition, out = [];
+        const section = (title, ...nodes) => { const s = el('section'); s.append(el('h4', title), ...nodes); out.push(s); };
+        section('Definition', relList('usages', [rowModel(d, acc.source)]),
+            ...(d.state !== 'indexed' ? [el('p', `Target state: ${d.state} (not indexed).`)] : []));
+        if (g.members) {
+            const name = id => (catalogIndex ??= new Map(flat(catalog).map(c => [c.id, c]))).get(id)?.name;
+            section('Members (component-set variants)', relList('usages', g.members.ids.map(id => rowModel({ref: {nodeId: id}, name: name(id)}, acc.source))),
+                ...(g.members.complete ? [] : [el('p', 'Member list is incomplete.')]));
+        }
+        const title = acc.direction === 'out' ? 'Outgoing relations' : 'Instances and usages';
+        if (!g.groups.length) section(title, el('p', 'None in this reply.'));
+        for (const [relation, models] of g.groups) section(`${title} · ${relation ?? 'unspecified'} (${models.length})`, relList('usages', models));
+        relUI('usages').list.replaceChildren(...out);
+        if (!$('usagesRelations').querySelector('input') && acc.relations) {
+            for (const {value, checked} of relationChoices(acc)) {
+                const label = el('label'), box = el('input');
+                box.type = 'checkbox';
+                box.value = value;
+                box.checked = checked;
+                label.append(box, ` ${value}`);
+                $('usagesRelations').append(label);
+            }
+        }
+    }
+    // A ref is opened or copied only if the service still serves the snapshot it came from.
+    async function relFresh(m) {
+        if (boot.snapshot) return;
+        const {source} = await (await api('revision')).json();
+        if (!sameSource(source, m)) throw new Error('Refused: stale reference — rerun search.');
+    }
+    async function relOpen(name, m) {
+        try {
+            await relFresh(m);
+            await selectById(m.nodeId, true);
+        } catch (e) { relUI(name).status.textContent = e.message; }
+    }
+    async function relCopy(name, m, source) {
+        try {
+            await relFresh(m);
+            await copy(m.nodeId, source);
+        } catch (e) { relUI(name).status.textContent = e.message; }
+    }
+    function runRanked(more) {
+        const p = rel.ranked, q = $('rankedQuery').value.trim();
+        if (!q) return relState('ranked', 'idle', 'Enter a query.');
+        const types = [...$('rankedTypes').selectedOptions].map(o => o.value), hidden = $('rankedHidden').checked;
+        if (boot.snapshot) {
+            relAbort('ranked');
+            p.ran = true;
+            p.acc = {...localSearch(nodes.slice(0, 1), q, {types, hidden}), source: {}};
+            p.scope = 'the packaged scope (absence here says nothing about the rest of the file)';
+            relUI('ranked').list.replaceChildren(relList('ranked', p.acc.results.map(r => rowModel(r))));
+            relUI('ranked').more.hidden = true;
+            const n = p.acc.results.length;
+            return relState('ranked', n ? 'ok' : 'empty', n ? `${n} shown from the packaged scope only${p.acc.hasMore ? '; first 200' : ''}.` : `No matches in ${p.scope}.`);
+        }
+        if (more) return relRun('ranked', p.base, p.acc.nextCursor);
+        const scoped = $('rankedSelection').checked;
+        if (scoped && !selected) return relState('ranked', 'idle', 'Select a layer to search within it.');
+        if (scoped && selected.id.startsWith('I')) return relState('ranked', 'idle', 'Search scopes are stored layers: select the instance that holds this layer, or search the whole file.');
+        p.scope = scoped ? `selection “${selected.name || selected.id}”` : 'the whole file';
+        relRun('ranked', `search/${generation}?` + relQuery({q, scope: scoped ? selected.id : null, type: types, hidden, internal: $('rankedInternal').checked}));
+    }
+    function runUsages(more) {
+        const p = rel.usages;
+        if (more) return relRun('usages', p.base, p.acc.nextCursor);
+        const boxes = [...$('usagesRelations').querySelectorAll('input')], checked = boxes.filter(b => b.checked).map(b => b.value);
+        if (boxes.length && !checked.length) return relState('usages', 'idle', 'Choose at least one relation.');
+        p.scope = 'the whole file';
+        relRun('usages', `usages/${generation}?` + relQuery({
+            target: p.target, snapshot: p.snapshot, outgoing: $('usagesDir').value === 'out', hidden: $('usagesHidden').checked,
+            // The boxes show what is asked: all checked is not this direction's default set.
+            relation: boxes.length ? checked : null,
+        }));
+    }
+    const tabs = [...document.querySelectorAll('#relTabs [role=tab]')];
+    function relTab(tab, focus) {
+        for (const t of tabs) {
+            t.setAttribute('aria-selected', String(t === tab));
+            t.tabIndex = t === tab ? 0 : -1;
+            $(t.getAttribute('aria-controls')).hidden = t !== tab;
+        }
+        if (focus) tab.focus();
+    }
+    tabs.forEach(t => t.onclick = () => relTab(t));
+    $('relTabs').onkeydown = e => {
+        const i = tabs.indexOf(document.activeElement), next = {ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabs.length - 1}[e.key];
+        if (i < 0 || next === undefined) return;
+        e.preventDefault();
+        relTab(tabs[(next + tabs.length) % tabs.length], true);
+    };
+    $('rankedForm').onsubmit = e => { e.preventDefault(); runRanked(false); };
+    $('rankedMore').onclick = () => runRanked(true);
+    $('rankedRetry').onclick = () => runRanked(false);
+    $('usagesMore').onclick = () => runUsages(true);
+    $('usagesRetry').onclick = () => runUsages(false);
+    $('usagesGo').onclick = () => {
+        if (!selected) return relState('usages', 'idle', 'Select a layer first.');
+        Object.assign(rel.usages, {target: selected.id, snapshot: loadedSource?.snapshotId});
+        runUsages(false);
+    };
+    // Changing a filter reruns the last usages query.
+    for (const id of ['usagesRelations', 'usagesHidden']) $(id).onchange = () => rel.usages.target && runUsages(false);
+    $('usagesDir').onchange = () => {
+        // Each direction has its own default relations: the next reply offers them again.
+        $('usagesRelations').querySelectorAll('label').forEach(l => l.remove());
+        if (rel.usages.target) runUsages(false);
+    };
+    for (const name of ['ranked', 'usages']) relUI(name).panel.addEventListener('keydown', e => {
+        if (e.key !== 'Escape' || relUI(name).panel.dataset.state !== 'loading') return;
+        e.stopPropagation();
+        relAbort(name);
+        relState(name, 'idle', 'Cancelled.');
+    });
+    if (boot.snapshot) {
+        $('rankedNote').hidden = false;
+        $('rankedInternal').disabled = $('rankedSelection').disabled = true;
+        relState('usages', 'unavailable', 'Unavailable in offline snapshots');
+        for (const id of ['usagesGo', 'usagesDir', 'usagesHidden']) $(id).disabled = true;
+    }
+    const relGet = async route => (await api(route)).json();
     // Agent API: the same operations as the UI, for browser-automation agents (Playwright, agent-browser,
     // Claude in Chrome). It runs in the page, so it adds no service routes and keeps the read-only boundary.
     const toBase64 = bytes => {
@@ -1482,6 +1743,14 @@ if (typeof document !== 'undefined') {
             return source.filter(n => `${n.name || ''} ${n.text || n.characters || ''}`.toLowerCase().includes(q))
                 .slice(0, 200).map(n => ({id: n.id, name: n.name, type: n.type}));
         },
+        async rankedSearch(query, {scope, types, hidden, internal, limit, cursor} = {}) {
+            if (boot.snapshot) return {packagedOnly: true, ...localSearch(nodes.slice(0, 1), query, {types, hidden})};
+            return relGet(`search/${generation}?` + relQuery({q: query, scope, type: types, hidden, internal, limit, cursor}));
+        },
+        async usages(id, {resource, scope, relations, outgoing, hidden, limit, cursor, snapshot} = {}) {
+            if (boot.snapshot) throw Object.assign(new Error('Unavailable in offline snapshots'), {unavailable: true});
+            return relGet(`usages/${generation}?` + relQuery({target: id, resource, scope, relation: relations, outgoing, hidden, limit, cursor, snapshot: snapshot ?? (resource ? null : loadedSource?.snapshotId)}));
+        },
         fit,
         zoomTo(id) {
             if (id === undefined || id === 'page') return fit();
@@ -1516,6 +1785,7 @@ if (typeof document !== 'undefined') {
         $('pages').append(el('option', 'Snapshot scope'));
         $('pages').disabled = true;
         openScope(boot.snapshot.nodes.document.id).then(async () => {
+            relTypes();
             const id = linked();
             if (id) await selectById(id, true).catch(e => status(`Link target unavailable: ${e.message}`));
         });
