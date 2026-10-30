@@ -1209,6 +1209,7 @@ fn index_on(
         ))
         || (request.is_some() && !matches!(action, "prepare" | "refresh" | "rebuild" | "track"))
         || (call.argument("replaceUnavailable") == true && action != "prepare")
+        || (call.string("cursor").is_some() && action != "add")
         || (source_id.is_some()
             && !matches!(
                 action,
@@ -1245,7 +1246,16 @@ fn index_on(
             value
         }
         "status" => workspace::status(&storage, &chosen()?)?,
-        "add" => index_add(&storage, &chosen()?, file.ok_or_else(|| missing("file"))?)?,
+        "add" => match call.string("cursor") {
+            Some(cursor) => workspace::add_dir(
+                &storage,
+                &chosen()?,
+                file.ok_or_else(|| missing("file"))?,
+                None,
+                Some(cursor),
+            )?,
+            None => index_add(&storage, &chosen()?, file.ok_or_else(|| missing("file"))?)?,
+        },
         "remove" => workspace::remove(
             &storage,
             &chosen()?,

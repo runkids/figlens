@@ -18,7 +18,7 @@ const node = string((256 + 1) * 23);
 const CLI_TOOLS = [
   ['index', 'Local workspace indexes for search, as the figlens MCP index tool. prepare registers file (or a project workspace) and with scope builds exactly that stored scope (0:0 is the whole file), returning workspaceId and the finished job; status reports sources and storage; add, remove, relocate, refresh, rebuild and clear_cache manage sources and indexes; track starts recording the changes of one scope with a baseline build and untrack stops it, keeping its history; reset deletes this workspace database only after the user asked for it. Errors carry recovery steps; recreation (replaceUnavailable) needs the user\'s confirmation.',
     { action: { enum: ['prepare', 'status', 'add', 'remove', 'relocate', 'refresh', 'rebuild', 'track', 'untrack', 'clear_cache', 'reset'] },
-      file: path, workspace: path, workspaceId: id, sourceId: id, scope: node, requestId: id, storage: path, replaceUnavailable: bool }, ['action']],
+      file: path, workspace: path, workspaceId: id, sourceId: id, scope: node, requestId: id, storage: path, replaceUnavailable: bool, cursor: string(4096) }, ['action']],
   ['jobs', 'Status or cancellation of an index job by its jobId, as the figlens MCP jobs tool.',
     { action: { enum: ['status', 'cancel'] }, jobId: id, storage: path }, ['action', 'jobId']],
   ['search', 'Ranked search of layer names and effective text, as the figlens MCP search tool: give file to read a .fig now, or workspaceId to search its prepared indexes without parsing. Results carry exact ref.nodeId for figlens_inspect, matches and coverage; sources not ready list the index call that prepares them.',

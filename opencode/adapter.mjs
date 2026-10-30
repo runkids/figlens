@@ -96,7 +96,8 @@ export function cliArgs(tool, input) {
   return ['index', action, ...operands, ...flag('--workspace', input.workspace), ...flag('--id', input.workspaceId),
     ...(['prepare', 'add', 'relocate'].includes(action) ? [] : flag('--file', input.file)),
     ...(['remove', 'relocate'].includes(action) ? [] : flag('--source', input.sourceId)), ...storage,
-    ...flag('--scope', input.scope), ...flag('--request-id', input.requestId), ...flag('--replace-unavailable', input.replaceUnavailable)];
+    ...flag('--scope', input.scope), ...flag('--request-id', input.requestId), ...flag('--replace-unavailable', input.replaceUnavailable),
+    ...flag('--cursor', input.cursor)];
 }
 
 // Index actions that delete a database or start a new one elsewhere; each needs its own host permission.

@@ -1681,7 +1681,7 @@ fn a_directory_add_with_a_dry_run_manifest_registers_only_that_file_set() {
         .unwrap()
         .unwrap();
     let manifest = |dir: &Path| {
-        let listed = list_add(&f.storage, &select, dir).unwrap();
+        let listed = list_add(&f.storage, &select, dir, None).unwrap();
         listed["directory"]["manifest"].as_str().unwrap().to_owned()
     };
     let sources = || {
@@ -1693,23 +1693,94 @@ fn a_directory_add_with_a_dry_run_manifest_registers_only_that_file_set() {
     // A file created between the dry run and the add is refused, and nothing registers.
     let planned = manifest(&lib);
     std::fs::write(lib.join("y/new.fig"), "design").unwrap();
-    let refused = add_listed(&f.storage, &select, &lib, &planned).unwrap_err();
+    let refused = add_dir(&f.storage, &select, &lib, Some(&planned), None).unwrap_err();
     assert_eq!(kind(&*refused), ErrorKind::InvalidArguments);
     assert!(refused.to_string().contains("--dry-run"), "{refused}");
     assert_eq!(sources(), 1);
     std::fs::remove_file(lib.join("y/new.fig")).unwrap();
-    // A link retargeted to an in-root file the dry run did not list is refused too.
+    // A page runs in canonical path order, so a link retargeted to another in-root file lists
+    // the same page.
     let planned = manifest(&lib);
     std::fs::remove_file(lib.join("link.fig")).unwrap();
     std::os::unix::fs::symlink(lib.join("z/z.fig"), lib.join("link.fig")).unwrap();
-    let refused = add_listed(&f.storage, &select, &lib, &planned).unwrap_err();
-    assert_eq!(kind(&*refused), ErrorKind::InvalidArguments);
-    assert_eq!(sources(), 1);
+    assert_eq!(manifest(&lib), planned);
     // An unchanged directory registers exactly what the dry run listed.
     let planned = manifest(&lib);
-    let added = add_listed(&f.storage, &select, &lib, &planned).unwrap();
+    let added = add_dir(&f.storage, &select, &lib, Some(&planned), None).unwrap();
     assert_eq!(
         added["directory"]["added"].as_array().unwrap().len(),
         registry::DIR_SOURCES
     );
+}
+
+#[test]
+fn a_directory_add_continues_page_by_page_and_each_dry_run_manifest_covers_its_page() {
+    let f = Fixture::new();
+    let project = std::path::absolute(f.dir.join("project")).unwrap();
+    let (lib, other) = (project.join("lib"), project.join("other"));
+    std::fs::create_dir_all(lib.join("sub")).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    // 23 files, some in a subdirectory, so pages run in path order, not walk order.
+    for i in 0..20 {
+        std::fs::write(lib.join(format!("{i:02}.fig")), "design").unwrap();
+    }
+    for i in 0..3 {
+        std::fs::write(lib.join(format!("sub/{i}.fig")), "design").unwrap();
+        std::fs::write(other.join(format!("{i:02}.fig")), "design").unwrap();
+    }
+    prepare(&f.storage, &f.fig("first.fig"), Some(&project)).unwrap();
+    let select = Select::from_choice(Some(&project), None, None)
+        .unwrap()
+        .unwrap();
+    let (mut cursor, mut pages) = (None::<String>, Vec::new());
+    loop {
+        let listed = list_add(&f.storage, &select, &lib, cursor.as_deref()).unwrap();
+        let manifest = listed["directory"]["manifest"].as_str().unwrap();
+        let added = add_dir(&f.storage, &select, &lib, Some(manifest), cursor.as_deref()).unwrap();
+        let files: Vec<PathBuf> = listed["directory"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| PathBuf::from(p.as_str().unwrap()))
+            .collect();
+        assert_eq!(paths(&added, "added"), files);
+        assert_eq!(
+            added["directory"]["nextCursor"],
+            listed["directory"]["nextCursor"]
+        );
+        pages.push(files);
+        match added["directory"]["nextCursor"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+    }
+    let real = std::fs::canonicalize(&lib).unwrap();
+    assert_eq!(pages.iter().map(Vec::len).collect::<Vec<_>>(), [10, 10, 3]);
+    assert_eq!(
+        pages[2],
+        (0..3)
+            .map(|i| real.join(format!("sub/{i}.fig")))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        status(&f.storage, &select).unwrap()["sources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        24
+    );
+    // A page's manifest does not authorize another page.
+    let first = list_add(&f.storage, &select, &lib, None).unwrap();
+    let next = first["directory"]["nextCursor"].as_str().unwrap();
+    let wrong = add_dir(
+        &f.storage,
+        &select,
+        &lib,
+        first["directory"]["manifest"].as_str(),
+        Some(next),
+    );
+    assert_eq!(kind(&*wrong.unwrap_err()), ErrorKind::InvalidArguments);
+    // A cursor from another directory is stale.
+    let stale = add_dir(&f.storage, &select, &other, None, Some(next)).unwrap_err();
+    assert_eq!(kind(&*stale), ErrorKind::CursorStale);
 }

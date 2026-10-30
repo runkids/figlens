@@ -497,6 +497,23 @@ test('CLI-path directory add asks read on the directory and on every file the bi
   assert.deepEqual(ran, ['index add lib --id ws_1 --dry-run', 'index status --id ws_1', 'index add lib --id ws_1 --manifest m1'], 'the add is bound to the files the dry run listed');
 });
 
+test('CLI-path directory add forwards its cursor to the dry run and the add, asking read on that page', async t => {
+  const { root, ctx, adapter } = await context(t);
+  await mkdir(path.join(root, 'lib'));
+  const page = [path.join(await realpath(root), 'lib', 'k.fig')];
+  const asked = [], ran = [];
+  ctx.permission.assert = async ({ action, resources }) => { asked.push([action, ...resources]); };
+  const current = await adapter.scope('session');
+  current.run = async args => {
+    ran.push(args.join(' '));
+    if (args.includes('--dry-run')) return { stdout: JSON.stringify({ directory: { files: page, skipped: [], manifest: 'm2' } }) };
+    return { stdout: JSON.stringify(args[1] === 'status' ? { paths: { workspace: '/w', lock: '/w.lock' }, roots: { config: { path: '/c' } } } : {}) };
+  };
+  await adapter.cli(current, 'index', { action: 'add', file: 'lib', workspaceId: 'ws_1', cursor: 'd1.c' });
+  assert.deepEqual(asked[1], ['read', ...page]);
+  assert.deepEqual(ran, ['index add lib --id ws_1 --cursor d1.c --dry-run', 'index status --id ws_1', 'index add lib --id ws_1 --cursor d1.c --manifest m2']);
+});
+
 test('CLI-path saved queries ask read on the sources they search, so a denied read runs no subscribe or evaluate', async t => {
   const { root, ctx, adapter } = await context(t);
   const asked = [], ran = [];

@@ -482,7 +482,7 @@ pub(super) fn project_only(ws: &Opened, file: &Path) -> Result<()> {
 /// Adds `file` to a project workspace, or the `.fig` files under it when it is a directory.
 pub fn add(storage: &Storage, select: &Select, file: &Path) -> Result<Json> {
     if std::fs::metadata(file).is_ok_and(|m| m.is_dir()) {
-        return add_dir(storage, select, file, None);
+        return add_dir(storage, select, file, None, None);
     }
     let source = readable(file)?;
     let (place, mut ws) = opened(storage, select, true)?;
@@ -581,14 +581,56 @@ struct Listing {
     skipped: Vec<Json>,
     not_fig: usize,
     truncated: Json,
+    /// Continues after this page's last file when more remain.
+    next: Option<String>,
 }
 
-/// The `.fig` files under `dir` that pass the checks a single add makes, in name order. Only
+/// A continuation `d1.<root digest>.<hex of the last file>`, for the next page of `root`.
+fn dir_cursor(root: &Path, last: &Path) -> String {
+    let digest = crate::search::hex(&Sha256::digest(root.as_os_str().as_encoded_bytes()));
+    let last = crate::search::hex(last.as_os_str().as_encoded_bytes());
+    format!("d1.{}.{last}", &digest[..16])
+}
+
+/// The last file the page before `cursor` registered: `cursor_stale` when it was issued for
+/// another directory than `root`.
+fn dir_after(root: &Path, cursor: &str) -> Result<PathBuf> {
+    let invalid = || {
+        fail(
+            ErrorKind::InvalidArguments,
+            "invalid index add cursor; pass directory.nextCursor of the previous add",
+        )
+    };
+    let (_, last) = cursor
+        .strip_prefix("d1.")
+        .and_then(|c| c.split_once('.'))
+        .ok_or_else(invalid)?;
+    let bytes = (0..last.len())
+        .step_by(2)
+        .map(|i| {
+            last.get(i..i + 2)
+                .and_then(|b| u8::from_str_radix(b, 16).ok())
+        })
+        .collect::<Option<Vec<u8>>>()
+        .filter(|b| !b.is_empty())
+        .ok_or_else(invalid)?;
+    let last = PathBuf::from(String::from_utf8(bytes).map_err(|_| invalid())?);
+    if dir_cursor(root, &last) != cursor || !last.starts_with(root) {
+        return Err(fail(
+            ErrorKind::CursorStale,
+            "this cursor pages another directory; add this directory again without cursor",
+        ));
+    }
+    Ok(last)
+}
+
+/// The `.fig` files under `dir` that pass the checks a single add makes: the first
+/// [`DIR_SOURCES`] in canonical path order after `cursor`'s last file. Only
 /// real subdirectories are entered: a link whose target lies outside the root is skipped as
 /// `escaping_link`, and a link to a directory inside it as `linked_directory` (its real path is
 /// listed on its own). Skipped entries are named relative to the root, so a reply never names
 /// where a link leads.
-fn list_dir(storage: &Storage, place: &Place, dir: &Path) -> Result<Listing> {
+fn list_dir(storage: &Storage, place: &Place, dir: &Path, cursor: Option<&str>) -> Result<Listing> {
     let unreadable = |e: std::io::Error| {
         fail(
             ErrorKind::SourceUnreadable,
@@ -596,12 +638,14 @@ fn list_dir(storage: &Storage, place: &Place, dir: &Path) -> Result<Listing> {
         )
     };
     let root = std::fs::canonicalize(dir).map_err(unreadable)?;
+    let after = cursor.map(|c| dir_after(&root, c)).transpose()?;
     let mut l = Listing {
         root: root.clone(),
         files: Vec::new(),
         skipped: Vec::new(),
         not_fig: 0,
         truncated: Json::Null,
+        next: None,
     };
     let skip = |l: &mut Listing, path: &Path, reason: &str| {
         let shown = path.strip_prefix(&root).unwrap_or(path);
@@ -609,7 +653,7 @@ fn list_dir(storage: &Storage, place: &Place, dir: &Path) -> Result<Listing> {
             .push(json!({"path": shown.to_string_lossy(), "reason": reason}));
     };
     let (mut visited, mut stack) = (0, vec![root.clone()]);
-    'walk: while let Some(dir) = stack.pop() {
+    while let Some(dir) = stack.pop() {
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(e) if dir == root => return Err(unreadable(e)),
@@ -660,22 +704,19 @@ fn list_dir(storage: &Storage, place: &Place, dir: &Path) -> Result<Listing> {
                 l.not_fig += 1;
                 continue;
             }
+            if after.as_ref().is_some_and(|a| real <= *a) {
+                continue;
+            }
             let reason = match readable(&real) {
                 Err(_) => Some("unreadable"),
                 Ok(_) if real.to_str().is_none() => Some("unreadable"),
                 Ok(_) if outside_storage(&real, storage, place).is_err() => Some("inside_storage"),
                 Ok(_) if !storage.sees(&real) => Some("outside_roots"),
-                // An in-root link to a file already listed registers nothing more.
-                Ok(_) if l.files.contains(&real) => continue,
                 Ok(_) => None,
             };
-            if let Some(reason) = reason {
-                skip(&mut l, &path, reason);
-            } else if l.files.len() == DIR_SOURCES {
-                l.truncated = json!({"reason": "source_cap", "limit": DIR_SOURCES});
-                break 'walk;
-            } else {
-                l.files.push(real);
+            match reason {
+                Some(reason) => skip(&mut l, &path, reason),
+                None => l.files.push(real),
             }
         }
         if out {
@@ -683,20 +724,35 @@ fn list_dir(storage: &Storage, place: &Place, dir: &Path) -> Result<Listing> {
         }
         stack.extend(subdirs.into_iter().rev());
     }
+    // An in-root link to a listed file registers nothing more.
+    l.files.sort();
+    l.files.dedup();
+    if l.files.len() > DIR_SOURCES {
+        l.files.truncate(DIR_SOURCES);
+        l.next = Some(dir_cursor(&root, &l.files[DIR_SOURCES - 1]));
+        if l.truncated.is_null() {
+            l.truncated = json!({"reason": "source_cap", "limit": DIR_SOURCES});
+        }
+    }
     Ok(l)
 }
 
-/// What `index add <dir> --dry-run` would register, for a host to authorize first. Reads no
-/// database and creates nothing.
-pub fn list_add(storage: &Storage, select: &Select, dir: &Path) -> Result<Json> {
+/// What `index add <dir> --dry-run [--cursor C]` would register, for a host to authorize
+/// first. Reads no database and creates nothing.
+pub fn list_add(
+    storage: &Storage,
+    select: &Select,
+    dir: &Path,
+    cursor: Option<&str>,
+) -> Result<Json> {
     let select = &storage.follow(select)?;
     let id = select.id()?;
     let place = storage.place(&id, select.locator())?;
-    let l = list_dir(storage, &place, dir)?;
+    let l = list_dir(storage, &place, dir, cursor)?;
     Ok(
         json!({"workspaceId": id, "directory": {"path": l.root, "files": l.files,
         "skipped": l.skipped, "notFig": l.not_fig, "truncated": l.truncated,
-        "manifest": manifest(&l)}}),
+        "nextCursor": l.next, "manifest": manifest(&l)}}),
     )
 }
 
@@ -718,16 +774,17 @@ fn manifest(l: &Listing) -> String {
     hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// [`add`] of a directory bound to the `manifest` its dry run printed: when the files under it
-/// changed since, nothing registers.
-pub fn add_listed(storage: &Storage, select: &Select, dir: &Path, manifest: &str) -> Result<Json> {
-    add_dir(storage, select, dir, Some(manifest))
-}
-
-/// Registers the `.fig` files under `dir` (see [`list_dir`]) in one write transaction: either
-/// all of them or, on an error, none. Already registered paths keep their ids; nothing is
-/// relocated, so a file moved inside the directory is a new source.
-fn add_dir(storage: &Storage, select: &Select, dir: &Path, planned: Option<&str>) -> Result<Json> {
+/// Registers the page of `.fig` files under `dir` after `cursor` (see [`list_dir`]) in one write
+/// transaction: either all of them or, on an error, none. With the `planned` manifest its dry
+/// run printed, nothing registers when that page changed since. Already registered paths keep
+/// their ids; nothing is relocated, so a file moved inside the directory is a new source.
+pub fn add_dir(
+    storage: &Storage,
+    select: &Select,
+    dir: &Path,
+    planned: Option<&str>,
+    cursor: Option<&str>,
+) -> Result<Json> {
     let (place, mut ws) = opened(storage, select, true)?;
     if let Locator::Source(_) = ws.held.locator {
         return Err(fail(
@@ -740,7 +797,7 @@ fn add_dir(storage: &Storage, select: &Select, dir: &Path, planned: Option<&str>
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(sql)?;
     // Walked under the write lock, so the files checked against the manifest are those registered.
-    let l = list_dir(storage, &place, dir)?;
+    let l = list_dir(storage, &place, dir, cursor)?;
     if planned.is_some_and(|m| m != manifest(&l)) {
         return Err(fail(
             ErrorKind::InvalidArguments,
@@ -759,7 +816,8 @@ fn add_dir(storage: &Storage, select: &Select, dir: &Path, planned: Option<&str>
         &place,
         &ws,
         json!({"directory": {"path": l.root, "added": added, "existing": existing,
-            "skipped": l.skipped, "notFig": l.not_fig, "truncated": l.truncated}}),
+            "skipped": l.skipped, "notFig": l.not_fig, "truncated": l.truncated,
+            "nextCursor": l.next}}),
     )
 }
 
