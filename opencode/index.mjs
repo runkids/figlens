@@ -13,10 +13,10 @@ const texts = maxItems => ({ type: 'array', items: string(2000), maxItems });
 const bool = { type: 'boolean' }, path = string(4096), id = string(200);
 // An exact instance sublayer id has up to expand::MAX_DEPTH (256) segments of at most 23 bytes, as src/search/store.rs bounds it.
 const node = string((256 + 1) * 23);
-// The figlens MCP index, jobs, search, usages and inspect tools, run as the same CLI commands.
+// The figlens MCP index, jobs, search, usages, changes, watch and inspect tools, run as the same CLI commands.
 const CLI_TOOLS = [
-  ['index', 'Local workspace indexes for search, as the figlens MCP index tool. prepare registers file (or a project workspace) and with scope builds exactly that stored scope (0:0 is the whole file), returning workspaceId and the finished job; status reports sources and storage; add, remove, relocate, refresh, rebuild and clear_cache manage sources and indexes; reset deletes this workspace database only after the user asked for it. Errors carry recovery steps; recreation (replaceUnavailable) needs the user\'s confirmation.',
-    { action: { enum: ['prepare', 'status', 'add', 'remove', 'relocate', 'refresh', 'rebuild', 'clear_cache', 'reset'] },
+  ['index', 'Local workspace indexes for search, as the figlens MCP index tool. prepare registers file (or a project workspace) and with scope builds exactly that stored scope (0:0 is the whole file), returning workspaceId and the finished job; status reports sources and storage; add, remove, relocate, refresh, rebuild and clear_cache manage sources and indexes; track starts recording the changes of one scope with a baseline build and untrack stops it, keeping its history; reset deletes this workspace database only after the user asked for it. Errors carry recovery steps; recreation (replaceUnavailable) needs the user\'s confirmation.',
+    { action: { enum: ['prepare', 'status', 'add', 'remove', 'relocate', 'refresh', 'rebuild', 'track', 'untrack', 'clear_cache', 'reset'] },
       file: path, workspace: path, workspaceId: id, sourceId: id, scope: node, requestId: id, storage: path, replaceUnavailable: bool }, ['action']],
   ['jobs', 'Status or cancellation of an index job by its jobId, as the figlens MCP jobs tool.',
     { action: { enum: ['status', 'cancel'] }, jobId: id, storage: path }, ['action', 'jobId']],
@@ -27,6 +27,12 @@ const CLI_TOOLS = [
   ['usages', 'Exact relations of one node or resource in one stored scope, as the figlens MCP usages tool: give file to read a .fig now, or workspaceId to read its prepared index of scope. direction in (default) lists what points at it, out what it points at. Results carry exact refs, coverage and a snapshotId; a changed source is source_stale.',
     { file: path, workspaceId: id, sourceId: id, storage: path, node, resource: node, scope: node, relation: string(200),
       direction: { enum: ['in', 'out'] }, snapshotId: id, includeHidden: bool, limit: { type: 'integer', minimum: 1, maximum: 200 }, cursor: string(4096) }],
+  ['changes', 'Recorded design changes of the scopes index track follows, as the figlens MCP changes tool; never writes or builds. Pages revisions oldest first after cursor, else after consumer\'s checkpoint, else from the oldest kept; revision pages one revision\'s changed nodes; limit is 1-50 revisions, or 1-500 nodes with revision. tracking says when a scope needs refresh to record a change; event_gap means retention deleted unread revisions: follow its recovery.',
+    { workspaceId: id, sourceId: id, scope: node, consumer: string(128), cursor: string(4096), revision: id,
+      limit: { type: 'integer', minimum: 1, maximum: 500 }, storage: path }, ['workspaceId']],
+  ['watch', 'Moves a change consumer\'s checkpoint, as the figlens MCP watch tool: ack with the nextCursor of the last figlens_changes page it handled, with the same sourceId and scope. An older cursor changes nothing, so a retry is safe.',
+    { action: { enum: ['ack'] }, workspaceId: id, consumer: string(128), cursor: string(4096), sourceId: id, scope: node, storage: path },
+    ['action', 'workspaceId', 'consumer', 'cursor']],
   ['inspect', 'Compact expanded node summary of a .fig node or exact instance sublayer, as the figlens MCP inspect tool.',
     { file: path, node, depth: { type: 'integer', minimum: 0, maximum: 10 }, images: bool, states: bool, flat: bool, compareVariant: node }, ['file', 'node']],
 ];

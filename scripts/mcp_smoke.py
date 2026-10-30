@@ -186,6 +186,8 @@ def check_first_use(command, base, fixture, env):
         tools = {tool['name']: tool for tool in first('tools/list', {})['tools']}
         assert tools['index']['annotations']['destructiveHint'] is True and tools['index']['annotations']['readOnlyHint'] is False, tools['index']
         assert tools['jobs']['annotations']['readOnlyHint'] is False, tools['jobs']
+        assert tools['changes']['annotations']['readOnlyHint'] is True, tools['changes']
+        assert tools['watch']['annotations']['destructiveHint'] is False, tools['watch']
         call(first, 'find', {'file': str(design), 'query': 'First success'})
         call(first, 'search', {'file': str(design), 'query': 'First success'})
         contains = {'node': '0:1', 'relation': 'contains', 'direction': 'out'}
@@ -201,6 +203,13 @@ def check_first_use(command, base, fixture, env):
         assert search(first, workspace) == ('ready', '0:1')
         used = call(first, 'usages', {'workspaceId': workspace, **contains})
         assert used['coverage']['complete'] and used['results'][0]['target']['ref']['nodeId'] == '0:10', used
+        # Tracking records a baseline; a consumer that acks it reads nothing new after it.
+        for job in call(first, 'index', {'action': 'track', 'workspaceId': workspace, 'scope': '0:0'})['jobs']:
+            settle(first, job)
+        polled = call(second, 'changes', {'workspaceId': workspace, 'consumer': 'smoke'})
+        assert [revision['kind'] for revision in polled['revisions']] == ['baseline'], polled
+        assert call(second, 'watch', {'action': 'ack', 'workspaceId': workspace, 'consumer': 'smoke', 'cursor': polled['nextCursor']})['advanced'] is True
+        assert call(first, 'changes', {'workspaceId': workspace, 'consumer': 'smoke'})['revisions'] == []
         ref = call(first, 'search', {'workspaceId': workspace, 'query': 'First success'})['results'][0]['ref']['nodeId']
         assert call(first, 'inspect', {'file': str(design), 'node': ref})['node']['id'] == ref
         finished = call(first, 'jobs', {'action': 'cancel', 'jobId': jobs[0]['jobId']})
@@ -247,7 +256,7 @@ def check_first_use(command, base, fixture, env):
         lost = call(request, 'index', {'action': 'status', 'file': str(moved)}, error='storage_unavailable')
         assert 'restore_storage' in json.dumps(lost['recovery']), lost
         assert len(list((state/'workspaces').glob('*/index.sqlite'))) == databases, 'a lost remembered root moved to the default state'
-        result = {'concurrentFirstUseJoined': True, 'cancelled': True, 'frameScope': '0:1', 'restartReused': True, 'clearCacheKeptIndex': True, 'rebuild': True,
+        result = {'concurrentFirstUseJoined': True, 'cancelled': True, 'trackedBaselineAcked': True, 'frameScope': '0:1', 'restartReused': True, 'clearCacheKeptIndex': True, 'rebuild': True,
                   'resetReprepared': True, 'otherWorkspaceKept': True, 'missingRememberedRoot': 'storage_unavailable'}
         # chmod does not model a Windows ACL, and root ignores it.
         if os.name == 'nt' or os.geteuid() == 0:

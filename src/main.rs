@@ -181,7 +181,7 @@ usage:
   figlens jobs status|cancel <jobId> [--storage DIR]
                                              an index job's state and progress, or stop it; cancel returns
                                              once the build stopped, and the previous index keeps serving
-  figlens index track|untrack <select> --scope NODE [--source ID]
+  figlens index track|untrack <select> --scope NODE [--source ID] [--request-id ID]
                                              record a published scope's design changes on each build of it
                                              (track builds a baseline first), or stop; history stays
   figlens changes <select> [--source ID] [--scope NODE] [--consumer NAME|--cursor C] [--limit N]

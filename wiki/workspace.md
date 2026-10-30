@@ -65,6 +65,7 @@ Errors carry structured `recovery` (CLI: a JSON line on stderr; MCP: `_meta.figl
 | `relocate <sourceId> <new.fig> <select>` | Keeps the id, changes the path and gives the source a new membership, so its old index is `stale` until a refresh. In a source-scoped workspace it first writes `<config>/workspaces/<new id>.json` `{"aliasOf": <workspaceId>}`, so the new path selects and prepares the same workspace; a path with its own workspace is refused. `--file` of a moved-away file still selects through its canonical directory. The old path no longer serves the source: a search through it is refused with `search_relocated` to the new path (same node, type, hidden, internal and limit; no cursor), and a new file there is not prepared beside it |
 | `reset <select>` | Asks active jobs to stop, then exclusive lock, identity check, `wal_checkpoint(TRUNCATE)` that must finish, close, then removes exactly `index.sqlite`, `-wal`, `-shm` and `-journal` |
 | `refresh`, `rebuild`, `clear_cache` | See [index](index-jobs.md) |
+| `track`, `untrack` | See [changes](changes.md) |
 
 `<select>` is `--workspace DIR`, `--file <file.fig>` (its source-scoped workspace) or `--id ws_...`. `reset` keeps the marker, lock and remembered location and lists `removed`, `retained` and `failed`; when anything failed, the CLI prints that report and exits 1. Designs, `.figlens/`, exports, global models and other workspaces are never touched.
 

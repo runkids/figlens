@@ -165,7 +165,7 @@ test('bundled launcher runs with node under a Bun-built host', () => {
   assert.equal(launcherRuntime({ node: '24.0.0' }, '/usr/bin/node'), '/usr/bin/node');
 });
 
-test('CLI path runs the MCP index, jobs, search, usages and inspect arguments as the same commands', () => {
+test('CLI path runs the MCP index, jobs, search, usages, changes, watch and inspect arguments as the same commands', () => {
   assert.deepEqual(cliArgs('index', { action: 'prepare', file: '/d.fig', scope: '0:0', requestId: 'r' }),
     ['index', 'prepare', '/d.fig', '--scope', '0:0', '--request-id', 'r']);
   assert.deepEqual(cliArgs('index', { action: 'status', file: '/d.fig' }), ['index', 'status', '--file', '/d.fig']);
@@ -175,6 +175,18 @@ test('CLI path runs the MCP index, jobs, search, usages and inspect arguments as
   assert.deepEqual(cliArgs('index', { action: 'refresh', workspaceId: 'ws_1', sourceId: 's', scope: '1:2' }),
     ['index', 'refresh', '--id', 'ws_1', '--source', 's', '--scope', '1:2']);
   assert.deepEqual(cliArgs('index', { action: 'rebuild', file: '/d.fig', scope: '0:0' }), ['index', 'rebuild', '--file', '/d.fig', '--scope', '0:0']);
+  assert.deepEqual(cliArgs('index', { action: 'track', workspaceId: 'ws_1', sourceId: 's', scope: '1:2' }),
+    ['index', 'track', '--id', 'ws_1', '--source', 's', '--scope', '1:2']);
+  assert.deepEqual(cliArgs('changes', { workspaceId: 'ws_1', scope: '1:2', consumer: 'ci', limit: 5 }),
+    ['changes', '--id', 'ws_1', '--scope', '1:2', '--consumer', 'ci', '--limit', '5']);
+  assert.deepEqual(cliArgs('changes', { workspaceId: 'ws_1', sourceId: 's', revision: 'r', cursor: 'd1.x', storage: '/s' }),
+    ['changes', '--id', 'ws_1', '--source', 's', '--storage', '/s', '--cursor', 'd1.x', '--revision', 'r']);
+  assert.deepEqual(cliArgs('watch', { action: 'ack', workspaceId: 'ws_1', scope: '1:2', consumer: 'ci', cursor: 'c1.x' }),
+    ['watch', 'ack', '--id', 'ws_1', '--scope', '1:2', '--consumer', 'ci', '--cursor', 'c1.x']);
+  assert.throws(() => cliArgs('watch', { action: 'ack', workspaceId: 'ws_1', consumer: 'ci' }), /needs cursor/);
+  assert.throws(() => cliArgs('watch', { action: 'ack', workspaceId: 'ws_1', cursor: 'c1.x' }), /needs consumer/);
+  assert.throws(() => cliArgs('changes', { scope: '1:2' }), /needs workspaceId/);
+  assert.deepEqual(cliArgs('index', { action: 'untrack', file: '/d.fig', scope: '1:2' }), ['index', 'untrack', '--file', '/d.fig', '--scope', '1:2']);
   assert.deepEqual(cliArgs('jobs', { action: 'cancel', jobId: 'j' }), ['jobs', 'cancel', 'j']);
   assert.deepEqual(cliArgs('search', { workspaceId: 'ws_1', query: 'Pay now', limit: 5 }), ['search', '--id', 'ws_1', '--limit', '5', '--', 'Pay now']);
   assert.deepEqual(cliArgs('search', { file: '/d.fig', query: 'Pay', includeHidden: true }), ['search', '/d.fig', 'Pay', '--include-hidden']);
@@ -340,7 +352,9 @@ test('CLI-path cancel asks edit on the job workspace, and a denial leaves the jo
   };
   // Cancelling opens the workspace exclusively, which recreates a missing sibling lock.
   await assert.rejects(adapter.cli(current, 'jobs', { action: 'cancel', jobId: 'ws_1.j' }), /denied \/state\/workspaces\/ws_1,\/state\/workspaces\/ws_1\.lock$/);
-  assert.deepEqual(ran, ['jobs status', 'index status']);
+  // An ack writes its checkpoint into the same database.
+  await assert.rejects(adapter.cli(current, 'watch', { action: 'ack', workspaceId: 'ws_1', consumer: 'ci', cursor: 'c1.x' }), /denied \/state\/workspaces\/ws_1,\/state\/workspaces\/ws_1\.lock$/);
+  assert.deepEqual(ran, ['jobs status', 'index status', 'index status']);
 });
 
 test('CLI-path flat inspect returns its text lines as the MCP flat field', async t => {
@@ -451,7 +465,7 @@ test('CLI-path calls refuse a gs:// design before any permission or command, sin
   assert.deepEqual([asked, ran], [[], []]);
 });
 
-test('CLI-path workspace search, usages and rebuild ask read on the selected registered designs before reading them', async t => {
+test('CLI-path workspace search, usages, changes, rebuild and track ask read on the selected registered designs before reading them', async t => {
   const { ctx, adapter } = await context(t);
   const asked = [], ran = [];
   ctx.permission.assert = async ({ action, resources }) => {
@@ -468,8 +482,10 @@ test('CLI-path workspace search, usages and rebuild ask read on the selected reg
   await assert.rejects(adapter.cli(current, 'index', { action: 'rebuild', workspaceId: 'ws_1' }), /read denied/);
   await assert.rejects(adapter.cli(current, 'usages', { workspaceId: 'ws_1', sourceId: 's2', node: '0:1' }), /read denied/);
   await assert.rejects(adapter.cli(current, 'usages', { file: '/c.fig', node: '0:1' }), /read denied/);
-  assert.deepEqual(asked, [['read', '/a.fig'], ['read', '/a.fig', '/b.fig'], ['read', '/b.fig'], ['read', '/c.fig']]);
-  assert.deepEqual(ran, ['status', 'status', 'status'], 'only the read-only status ran');
+  await assert.rejects(adapter.cli(current, 'changes', { workspaceId: 'ws_1', sourceId: 's2' }), /read denied/);
+  await assert.rejects(adapter.cli(current, 'index', { action: 'track', workspaceId: 'ws_1', scope: '0:1' }), /read denied/);
+  assert.deepEqual(asked, [['read', '/a.fig'], ['read', '/a.fig', '/b.fig'], ['read', '/b.fig'], ['read', '/c.fig'], ['read', '/b.fig'], ['read', '/a.fig', '/b.fig']]);
+  assert.deepEqual(ran, ['status', 'status', 'status', 'status', 'status'], 'only the read-only status ran');
 });
 
 test('CLI-path reset keeps every selector and scope field, so the CLI refuses a narrower or conflicting reset before any write', async t => {
@@ -489,4 +505,26 @@ test('CLI-path reset keeps every selector and scope field, so the CLI refuses a 
   await assert.rejects(adapter.cli(current, 'index', { action: 'reset', workspaceId: 'ws_a', sourceId: 's' }), /usage/);
   await assert.rejects(adapter.cli(current, 'index', { action: 'prepare', file: '/b.fig', workspaceId: 'ws_a', storage: '/new', replaceUnavailable: true }), /usage/);
   assert.deepEqual(ran.filter(command => !command.startsWith('index status')), ['index reset --id ws_a --source s']);
+});
+
+test('CLI-path track runs until its baseline job finishes, and untrack asks only edit', async t => {
+  const { ctx, adapter } = await context(t);
+  const asked = [], timeouts = [];
+  ctx.permission.assert = async ({ action, resources }) => { asked.push([action, ...resources]); };
+  const current = await adapter.scope('session');
+  current.run = async (args, timeout) => {
+    timeouts.push([args.slice(0, 2).join(' '), timeout]);
+    return { stdout: JSON.stringify({ paths: { workspace: '/w', lock: '/w.lock' }, roots: { config: { path: '/c' } }, sources: [{ sourceId: 's', path: '/a.fig' }] }) };
+  };
+  await adapter.cli(current, 'index', { action: 'track', workspaceId: 'ws_1', scope: '0:1' });
+  await adapter.cli(current, 'index', { action: 'untrack', workspaceId: 'ws_1', scope: '0:1' });
+  assert.deepEqual(timeouts, [['index status', undefined], ['index track', 0], ['index status', undefined], ['index untrack', undefined]]);
+  assert.deepEqual(asked, [['read', '/a.fig'], ['edit', '/w', '/w.lock', '/c']]);
+});
+
+test('every shipped OpenCode module parses, including the entry tests cannot import without the host', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const dir = new URL('.', import.meta.url);
+  for (const name of (await readdir(dir)).filter(name => name.endsWith('.mjs') && !name.endsWith('.test.mjs')))
+    execFileSync(process.execPath, ['--check', new URL(name, dir).pathname]);
 });

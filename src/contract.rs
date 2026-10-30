@@ -1096,7 +1096,7 @@ impl Failure {
             ),
             ErrorKind::CursorStale => (
                 "cursor_stale",
-                "A source this cursor paged was reindexed; search again without cursor.",
+                "This cursor was issued for another index, filter set or view; call the same tool again without cursor.",
             ),
             ErrorKind::CursorExpired => (
                 "cursor_expired",

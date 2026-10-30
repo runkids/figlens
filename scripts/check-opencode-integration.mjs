@@ -163,8 +163,8 @@ try {
     assert.equal(status.mcp.status.status, 'connected');
     for (const tool of ['figlens_preview', 'figlens_bindings', 'figlens_propose_bindings']) assert.ok(status.mcp.tools.includes(tool), tool);
     for (const tool of ['figlensmcp_search', 'figlensmcp_inspect', 'figlensmcp_diff']) assert.ok(status.mcp.catalog.includes(tool), tool);
-    // The managed server serves index, jobs, search, usages and inspect; the plugin adds no second copy.
-    for (const tool of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages']) assert.ok(!status.mcp.tools.includes(tool), tool);
+    // The managed server serves index, jobs, search, usages, changes, watch and inspect; the plugin adds no second copy.
+    for (const tool of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages', 'figlens_changes', 'figlens_watch']) assert.ok(!status.mcp.tools.includes(tool), tool);
     const skills = await client.skill.list({ location });
     assert.ok(JSON.stringify(skills).includes('figlens'));
     return { mcp: status.mcp, catalogAfterConnectedMs: Date.now() - connected, skills: skills.data.map(skill => skill.name) };
@@ -322,7 +322,7 @@ try {
     await client.location.reload();
     const status = await rpc.run({ sessionID: session.id, action: 'status' }, options);
     assert.equal(status.mcp.managed, false, JSON.stringify(status.mcp));
-    for (const name of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages']) assert.ok(status.mcp.tools.includes(name), name);
+    for (const name of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages', 'figlens_changes', 'figlens_watch']) assert.ok(status.mcp.tools.includes(name), name);
     await execute(binary, ['index', 'reset', '--file', fixture], { cwd: project, env }).catch(() => {});
     const [before, prepared, job, found, node] = await converse('Enable an index for the mapping review frame (0:1) of mapping.fig, then find it.', cliSteps);
     assert.ok(node, JSON.stringify(scripted.raw).slice(0, 2000));
