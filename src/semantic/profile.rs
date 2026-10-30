@@ -127,6 +127,7 @@ pub fn list(storage: &Storage) -> Result<Json> {
 
 /// Readiness of each configured profile, checked without loading the model: its files and
 /// runtime must still exist. A runtime or model file that changed is refused when the child next starts.
+/// Also names the config root and the shipped runtime, even with no profile; nothing is written.
 pub fn status(storage: &Storage) -> Result<Json> {
     let profiles: Vec<Json> = records(storage)?
         .into_iter()
@@ -151,7 +152,12 @@ pub fn status(storage: &Storage) -> Result<Json> {
     } else {
         Vec::new()
     };
-    Ok(json!({"profiles": profiles, "setup": next}))
+    // Where configure and remove write, and the runtime they start, for hosts asking permission first.
+    let runtime = default_runtime()?;
+    Ok(
+        json!({"profiles": profiles, "setup": next, "configRoot": storage.config_root(),
+        "defaultRuntime": {"path": runtime, "available": runtime.is_file()}}),
+    )
 }
 
 /// Verifies `model` against `k`'s pinned digests, starts `runtime` once for its contract and
