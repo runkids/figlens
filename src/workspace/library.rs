@@ -465,6 +465,8 @@ fn ask(
         }
         // Its pages and scope roots, read once the source shows a use to place.
         let mut places: Option<(Vec<Page>, Vec<String>)> = None;
+        // Uses of one key share few cached copies: each copy's match is read once per page.
+        let mut prints: std::collections::HashMap<String, &'static str> = Default::default();
         let (rid, seq) = if i == after.0 {
             (after.1, after.2)
         } else {
@@ -573,10 +575,15 @@ fn ask(
                     .as_str()
                     .filter(|_| req.kind == "component")
                 {
-                    Some(copy) => Some(
-                        store::print(&tx, gen_id, copy)?
-                            .map_or("unknown", |c| fingerprint::compare(d, &c)),
-                    ),
+                    Some(copy) => Some(match prints.get(copy) {
+                        Some(m) => *m,
+                        None => {
+                            let m = store::print(&tx, gen_id, copy)?
+                                .map_or("unknown", |c| fingerprint::compare(d, &c));
+                            prints.insert(copy.to_owned(), m);
+                            m
+                        }
+                    }),
                     None => Some("unknown"),
                 },
             };
