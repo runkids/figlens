@@ -800,6 +800,17 @@ fn mcp(args: &[String]) -> Result<(), Box<dyn Error>> {
         };
         list.push(std::fs::canonicalize(dir).map_err(|e| format!("{arg} {dir}: {e}"))?);
     }
+    // A host may signal right after closing stdin (OMP does), before the reader sees the end:
+    // this server's leases end then too, instead of waiting to expire.
+    signals::catch();
+    std::thread::spawn(|| {
+        let tick = std::time::Duration::from_millis(20);
+        while !signals::INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed) {
+            std::thread::sleep(tick);
+        }
+        figlens::workspace::watch::release();
+        std::process::exit(143);
+    });
     // The reader thread needs a Send input; stdout stays locked on this thread.
     mcp::serve_with(
         std::io::BufReader::new(std::io::stdin()),

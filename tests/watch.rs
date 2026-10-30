@@ -333,6 +333,65 @@ fn an_mcp_server_holds_its_lease_until_its_input_ends() {
     });
 }
 
+#[cfg(unix)]
+#[test]
+fn an_mcp_server_signalled_before_its_input_ends_releases_its_lease() {
+    let env = Env::new();
+    let mut server = env
+        .command(&["mcp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut input = server.stdin.take().unwrap();
+    let mut output = BufReader::new(server.stdout.take().unwrap());
+    let mut call = |id: u64, method: &str, params: Value| -> Value {
+        let line =
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        writeln!(input, "{line}").unwrap();
+        let mut reply = String::new();
+        output.read_line(&mut reply).unwrap();
+        serde_json::from_str(&reply).unwrap()
+    };
+    call(
+        1,
+        "initialize",
+        serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}),
+    );
+    let index = call(
+        2,
+        "tools/call",
+        serde_json::json!({"name": "index", "arguments": {"action": "status", "file": env.file}}),
+    );
+    let ws = index["result"]["structuredContent"]["workspaceId"].clone();
+    call(
+        3,
+        "tools/call",
+        serde_json::json!({"name": "watch",
+        "arguments": {"action": "start", "workspaceId": ws, "scope": "0:0"}}),
+    );
+    // Input stays open: only the signal stops the server, as when a host signals before EOF lands.
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &server.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_eq!(server.wait().unwrap().code(), Some(143));
+    let status = env.status();
+    assert_eq!(
+        (
+            status["leases"][0]["state"].clone(),
+            status["leases"][0]["reason"].clone()
+        ),
+        ("ended".into(), "released".into()),
+        "{status}"
+    );
+    drop(input);
+}
+
 #[test]
 fn the_last_holder_closing_stdin_releases_its_lease_and_the_runner_exits() {
     let env = Env::new();
