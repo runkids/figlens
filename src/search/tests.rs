@@ -1039,6 +1039,7 @@ fn metadata_that_escapes_past_the_read_limit_is_never_published() {
     let name = "\u{1}".repeat(12 * 1024 * 1024);
     index.above.push(("1:1".into(), name));
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    // `V8` also extends `subscriptions`, which only needs to exist here.
     conn.execute_batch(&format!(
         "CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
          added_at_ms INTEGER NOT NULL) STRICT; {}",
@@ -1118,7 +1119,8 @@ pub(super) fn stored(index: &Index) -> rusqlite::Connection {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(&format!(
         "CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
-         added_at_ms INTEGER NOT NULL) STRICT; {} {} {}",
+         added_at_ms INTEGER NOT NULL) STRICT; CREATE TABLE subscriptions (id TEXT) STRICT;
+         {} {} {}",
         crate::workspace::V2,
         crate::workspace::V3,
         crate::workspace::V8
