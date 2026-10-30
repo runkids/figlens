@@ -169,6 +169,14 @@
         }
       ]
     },
+    "subscriptions": {
+      "description": "Changing watch subscriptions, their filters, consumer checkpoint bounds or forget.",
+      "sources": [
+        {
+          "path": "wiki/subscriptions.md"
+        }
+      ]
+    },
     "index": {
       "description": "Changing durable index generations, index jobs (refresh, rebuild, clear_cache, cancel), publication fences or workspace search.",
       "sources": [

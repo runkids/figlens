@@ -955,9 +955,36 @@ pub fn changes_tool(
         cursor: call.string("cursor"),
         revision: call.string("revision"),
         limit: call.argument("limit").as_u64().map(|l| l as usize),
+        subscription: call.string("subscriptionId"),
     };
-    let value = match call.name() {
-        "watch" => changes::ack(&storage, &select, &request)?,
+    let subscribe = changes::subscriptions::Subscribe {
+        consumer: request.consumer,
+        source: request.source,
+        scope: request.scope,
+        node: call.string("node"),
+        owner: call.string("owner"),
+    };
+    use changes::subscriptions as subs;
+    let value = match (call.name(), call.string("action")) {
+        ("watch", Some("subscribe")) => subs::subscribe(&storage, &select, &subscribe)?,
+        ("watch", Some("list")) => {
+            subs::list(&storage, &select, request.consumer, call.string("after"))?
+        }
+        ("watch", Some("unsubscribe")) => subs::unsubscribe(
+            &storage,
+            &select,
+            request.subscription,
+            request.consumer,
+            subscribe.owner,
+        )?,
+        ("watch", Some("forget")) => subs::forget(
+            &storage,
+            &select,
+            request.consumer,
+            request.source,
+            request.scope,
+        )?,
+        ("watch", _) => changes::ack(&storage, &select, &request)?,
         _ => changes::changes(&storage, &select, &request)?,
     };
     Ok(Output::Json {

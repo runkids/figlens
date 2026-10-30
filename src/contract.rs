@@ -489,6 +489,12 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
             ),
             ("cursor", "string", false, "nextCursor of the previous page"),
             (
+                "subscriptionId",
+                "string",
+                false,
+                "read with this subscription's filters and its own checkpoint; pass no sourceId, scope or consumer with it",
+            ),
+            (
                 "revision",
                 "string",
                 false,
@@ -505,33 +511,62 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "watch",
-        "Change-tracking consumers. ack moves consumer's checkpoint for these filters (sourceId, scope) forward to cursor, the nextCursor of the last changes page it handled with the same filters; an older or equal cursor normally leaves it, so a retry is safe. A cursor issued before retention deleted revisions it had not passed is event_gap, writing nothing: follow its recovery. A current recovery cursor before a checkpoint that is behind such a deletion moves the checkpoint back to it, so the kept revisions replay. Replies with advanced, true only when the checkpoint moved forward, and the checkpoint now held, which is authoritative.",
+        "Change-tracking consumers. ack moves consumer's checkpoint for these filters (sourceId, scope), or a subscription's own (subscriptionId), forward to cursor, the nextCursor of the last changes page it handled with the same filters; an older or equal cursor normally leaves it, so a retry is safe. A cursor issued before retention deleted revisions it had not passed is event_gap, writing nothing: follow its recovery. A current recovery cursor before a checkpoint that is behind such a deletion moves the checkpoint back to it, so the kept revisions replay. Replies with advanced, true only when the checkpoint moved forward, and the checkpoint now held, which is authoritative. subscribe follows one source, scope or exact node (node: a layer id that must name one layer kind in the published index, else target_missing or identity_uncertain, never a same-name layer) from its newest visible revision; a repeat returns the same subscription; owner marks it temporary for that task. list pages the visible subscriptions with their state. unsubscribe removes one subscription and its checkpoint (or, with owner, that owner's temporary ones); forget removes a consumer's raw checkpoint views. Neither untracks or deletes history. A consumer holds at most 64 subscriptions and checkpoints, a workspace 4096: past that, workspace_busy names list, unsubscribe and forget; nothing is evicted.",
         &[
-            ("action", "string", true, "ack"),
+            (
+                "action",
+                "string",
+                true,
+                "ack, subscribe, list, unsubscribe or forget",
+            ),
             ("workspaceId", "string", true, "ws_... from the index tool"),
             (
                 "consumer",
                 "string",
-                true,
-                "the consumer's name, 1-128 bytes",
+                false,
+                "the consumer's name, 1-128 bytes: ack without subscriptionId, subscribe and forget need it; list narrows to it",
             ),
             (
                 "cursor",
                 "string",
-                true,
-                "nextCursor from changes with the same filters",
+                false,
+                "ack: nextCursor from changes with the same filters",
             ),
             (
                 "sourceId",
                 "string",
                 false,
-                "the sourceId filter of that changes call",
+                "ack: the sourceId filter of that changes call; subscribe: the source to follow; forget: only its views",
             ),
             (
                 "scope",
                 "string",
                 false,
-                "the scope filter of that changes call",
+                "ack: the scope filter of that changes call; subscribe: only this scope; forget: only its views",
+            ),
+            (
+                "subscriptionId",
+                "string",
+                false,
+                "ack or unsubscribe this subscription",
+            ),
+            (
+                "node",
+                "string",
+                false,
+                "subscribe: follow this exact layer",
+            ),
+            (
+                "owner",
+                "string",
+                false,
+                "subscribe: a task-owned temporary subscription; unsubscribe (with consumer): remove that owner's temporary ones",
+            ),
+            (
+                "after",
+                "string",
+                false,
+                "list: the next of the previous page",
             ),
             STORAGE,
         ],
@@ -648,10 +683,19 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
             serde_json::json!({
                 "workspaceId": {"type": "string"},
                 "consumer": {"type": "string"},
-                "advanced": {"type": "boolean", "description": "true only when the visible checkpoint moved forward"},
-                "checkpoint": {"type": ["string", "null"], "description": "a cursor at the checkpoint now held; null when retention deleted that revision"},
+                "advanced": {"type": "boolean", "description": "ack: true only when the visible checkpoint moved forward"},
+                "checkpoint": {"type": ["string", "null"], "description": "ack, subscribe: a cursor at the checkpoint now held; null when retention deleted that revision"},
+                "subscriptionId": {"type": "string", "description": "ack of a subscription"},
+                "subscription": {"type": "object", "description": "subscribe: subscriptionId, consumer, sourceId, scope, kind (source, scope or node), node, nodeKind, state (active, target_missing or identity_uncertain), lifetime (durable or temporary), filterVersion"},
+                "created": {"type": "boolean", "description": "subscribe: false when the same subscription already existed"},
+                "initialPosition": {"type": "string", "description": "subscribe: tail, the newest revision this subscription can see"},
+                "tracking": {"type": "array", "items": {"type": "object"}, "description": "subscribe: the followed scopes' tracking state"},
+                "subscriptions": {"type": "array", "items": {"type": "object"}, "description": "list: one page, as subscription"},
+                "next": {"type": ["string", "null"], "description": "list: pass as after for the next page"},
+                "removed": {"type": "integer", "description": "unsubscribe, forget: rows removed"},
+                "keptUnknownOwnership": {"type": "integer", "description": "forget: views written before their sources were recorded, kept because this caller does not see every source"},
             }),
-            ["workspaceId", "consumer", "advanced", "checkpoint"].as_slice(),
+            ["workspaceId"].as_slice(),
         ),
         "inspect" => (
             serde_json::json!({
@@ -822,7 +866,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
         p["enum"] = json!(["status", "cancel"]);
     }
     if tool == "watch" && key == "action" {
-        p["enum"] = json!(["ack"]);
+        p["enum"] = json!(["ack", "subscribe", "list", "unsubscribe", "forget"]);
     }
     if tool == "search" && key == "mode" {
         p["enum"] = json!(["text"]);
@@ -994,8 +1038,8 @@ pub fn tools() -> Value {
             "jobs" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": false,
                 "openWorldHint": false}),
             "changes" => tool["annotations"] = json!({"readOnlyHint": true, "openWorldHint": false}),
-            // ack only moves a checkpoint forward.
-            "watch" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": false,
+            // unsubscribe and forget delete checkpoints; ack and subscribe are retry-safe.
+            "watch" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": true,
                 "idempotentHint": true, "openWorldHint": false}),
             _ => {}
         }

@@ -184,7 +184,11 @@ test('CLI path runs the MCP index, jobs, search, usages, changes, watch and insp
   assert.deepEqual(cliArgs('watch', { action: 'ack', workspaceId: 'ws_1', scope: '1:2', consumer: 'ci', cursor: 'c1.x' }),
     ['watch', 'ack', '--id', 'ws_1', '--scope', '1:2', '--consumer', 'ci', '--cursor', 'c1.x']);
   assert.throws(() => cliArgs('watch', { action: 'ack', workspaceId: 'ws_1', consumer: 'ci' }), /needs cursor/);
-  assert.throws(() => cliArgs('watch', { action: 'ack', workspaceId: 'ws_1', cursor: 'c1.x' }), /needs consumer/);
+  assert.deepEqual(cliArgs('watch', { action: 'subscribe', workspaceId: 'ws_1', sourceId: 's', consumer: 'ci', node: '1:2', owner: 't' }),
+    ['watch', 'subscribe', '--id', 'ws_1', '--source', 's', '--consumer', 'ci', '--node', '1:2', '--owner', 't']);
+  assert.deepEqual(cliArgs('watch', { action: 'unsubscribe', workspaceId: 'ws_1', subscriptionId: 'sub_1' }),
+    ['watch', 'unsubscribe', '--id', 'ws_1', '--subscription', 'sub_1']);
+  assert.deepEqual(cliArgs('changes', { workspaceId: 'ws_1', subscriptionId: 'sub_1' }), ['changes', '--id', 'ws_1', '--subscription', 'sub_1']);
   assert.throws(() => cliArgs('changes', { scope: '1:2' }), /needs workspaceId/);
   assert.deepEqual(cliArgs('index', { action: 'untrack', file: '/d.fig', scope: '1:2' }), ['index', 'untrack', '--file', '/d.fig', '--scope', '1:2']);
   assert.deepEqual(cliArgs('jobs', { action: 'cancel', jobId: 'j' }), ['jobs', 'cancel', 'j']);

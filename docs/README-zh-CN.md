@@ -226,8 +226,12 @@ Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，works
 | `node <file> <node>` | 单个原始 `.fig` 节点 |
 | `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset\|track\|untrack` | 用户 figlens state 目录中的本地 workspace，或位于 workspace 之后会记住的 `--storage DIR` 下。`prepare <file> --scope NODE` 为该范围建立一次搜索索引；之后 `search --file <file>`（或 `--workspace DIR`）不再解析文件，跨 workspace 的所有来源统一排序作答。`refresh` 重建有变更的文件，`rebuild` 重建全部或单一 `--source`/`--scope`，`clear` 删除未使用的索引；新索引就绪前继续使用旧索引。`reset` 只删除 workspace 数据库，不会删除设计、导出或记住的位置。`track --scope NODE` 从 baseline 构建开始记录该范围的变更；`untrack` 停止记录并保留历史。 |
 | `jobs status\|cancel <jobId>` | 查看或取消索引构建；`cancel` 在构建停止后才返回 |
-| `changes --file <file>\|--id ID\|--workspace DIR [--source ID] [--scope NODE] [--consumer NAME\|--cursor C] [--revision R] [--limit N]` | 已跟踪范围记录的变更，从最旧开始：每次发布的构建一个修订（baseline 或 changes），含覆盖情况及按变更类型与 facet 的计数；`--revision` 分页列出该修订变更的节点；`tracking` 指出哪些范围需要 `index refresh` 才能记录变更。只读 |
-| `watch ack --file <file>\|--id ID\|--workspace DIR --consumer NAME --cursor C [--source ID] [--scope NODE]` | 把 consumer 的检查点移到它以相同筛选条件处理完的最后一页 `changes` 的 `nextCursor`；重复执行是安全的，而且只会前进；唯一例外是当前的 recovery cursor 会把落在删除之后的检查点退回，以重读保留的 revision；在保留策略删除它尚未经过的 revision 之前发出的 cursor 会得到 `event_gap`，不写入任何内容 |
+| `changes --file <file>\|--id ID\|--workspace DIR [--source ID] [--scope NODE] [--consumer NAME\|--subscription ID\|--cursor C] [--revision R] [--limit N]` | 已跟踪范围记录的变更，从最旧开始：每次发布的构建一个修订（baseline 或 changes），含覆盖情况及按变更类型与 facet 的计数；`--revision` 分页列出该修订变更的节点；`tracking` 指出哪些范围需要 `index refresh` 才能记录变更。只读 |
+| `watch ack --file <file>\|--id ID\|--workspace DIR --consumer NAME\|--subscription ID --cursor C [--source ID] [--scope NODE]` | 把 consumer 的检查点移到它以相同筛选条件处理完的最后一页 `changes` 的 `nextCursor`；重复执行是安全的，而且只会前进；唯一例外是当前的 recovery cursor 会把落在删除之后的检查点退回，以重读保留的 revision；在保留策略删除它尚未经过的 revision 之前发出的 cursor 会得到 `event_gap`，不写入任何内容 |
+| `watch subscribe --file <file>\|--id ID\|--workspace DIR --consumer NAME --source ID [--scope NODE] [--node ID] [--owner NAME]` | 从最新修订开始跟随一个源、scope 或确切图层（`--node`），使用它自己的检查点，用 `changes --subscription` 读取、`watch ack --subscription` 确认；不存在或有歧义的图层为 `target_missing` 或 `identity_uncertain`，绝不换成同名图层；`--owner` 让它只在该任务内临时存在 |
+| `watch list --file <file>\|--id ID\|--workspace DIR [--consumer NAME] [--after ID]` | 分页列出可见的订阅及其状态 |
+| `watch unsubscribe --file <file>\|--id ID\|--workspace DIR --subscription ID\|--consumer C --owner NAME` | 删除一个订阅及其检查点，或某个 owner 的临时订阅；tracking 和历史保留 |
+| `watch forget --file <file>\|--id ID\|--workspace DIR --consumer NAME [--source ID] [--scope NODE]` | 删除 consumer 的原始检查点；每个 consumer 最多保留 64 个订阅与检查点，整个 workspace 4096 个，不会自动淘汰 |
 | `mcp` | 通过 stdio 运行的本地 MCP server |
 | `update` | 用最新 release 替换可执行文件 |
 

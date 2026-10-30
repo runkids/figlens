@@ -60,9 +60,12 @@ export function cliArgs(tool, input) {
   }
   // As the MCP changes and watch tools, which read one workspace by its id.
   const filters = () => ['--id', required(input, 'workspaceId'), ...flag('--source', input.sourceId), ...flag('--scope', input.scope), ...storage];
-  if (tool === 'changes') return ['changes', ...filters(), ...flag('--consumer', input.consumer), ...flag('--cursor', input.cursor),
-    ...flag('--revision', input.revision), ...flag('--limit', input.limit)];
-  if (tool === 'watch') return ['watch', input.action, ...filters(), '--consumer', required(input, 'consumer'), '--cursor', required(input, 'cursor')];
+  if (tool === 'changes') return ['changes', ...filters(), ...flag('--consumer', input.consumer), ...flag('--subscription', input.subscriptionId),
+    ...flag('--cursor', input.cursor), ...flag('--revision', input.revision), ...flag('--limit', input.limit)];
+  // The CLI refuses a flag the action does not take.
+  if (tool === 'watch') return ['watch', input.action, ...filters(), ...flag('--consumer', input.consumer),
+    ...flag('--subscription', input.subscriptionId), ...(input.action === 'ack' ? ['--cursor', required(input, 'cursor')] : flag('--cursor', input.cursor)),
+    ...flag('--node', input.node), ...flag('--owner', input.owner), ...flag('--after', input.after)];
   // Every given selector and scope field reaches the CLI, which refuses conflicting selectors and fields an
   // action does not take, so none is dropped into a broader operation. A file is the operand of prepare, add
   // and relocate, else it selects the workspace; a sourceId is the operand of remove and relocate.
@@ -329,8 +332,8 @@ export function createAdapter(ctx, entry = import.meta.url) {
       await current.authorize('read', [...new Set((await Promise.all(paths.map(async file => [file, await realpath(file).catch(() => file)]))).flat())]);
     };
     if (['search', 'usages', 'changes'].includes(tool) && !input.file) await readSources(await status(input));
-    // An ack writes the consumer's checkpoint into the workspace database, as a cancel writes its job.
-    if (tool === 'watch') await edit(place(await status(input)));
+    // Every watch action but list writes checkpoints or subscriptions into the workspace database, as a cancel writes its job.
+    if (tool === 'watch' && input.action !== 'list') await edit(place(await status(input)));
     if (tool === 'jobs' && input.action === 'cancel') {
       const { workspaceId } = await invoke(cliArgs('jobs', { ...input, action: 'status' }));
       if (!workspaceId) throw missing("a job's workspace");

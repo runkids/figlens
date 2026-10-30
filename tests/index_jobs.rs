@@ -2783,3 +2783,281 @@ fn a_poll_lists_at_most_a_hundred_tracked_scopes_and_says_so() {
         (100, json!(true))
     );
 }
+
+impl Tracked<'_> {
+    fn watch(&self, action: &str, more: &[&str]) -> Value {
+        let mut args = vec!["watch", action, "--file", &self.file];
+        args.extend(more);
+        self.env.json(&args)
+    }
+
+    fn subscribe(&self, more: &[&str]) -> String {
+        let source = self.changes(&[])["tracking"][0]["sourceId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut args = vec!["--consumer", "bot", "--source", &source];
+        args.extend(more);
+        self.watch("subscribe", &args)["subscription"]["subscriptionId"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    fn kinds(&self, page: &Value) -> Vec<Value> {
+        page["revisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["kind"].clone())
+            .collect()
+    }
+}
+
+#[test]
+fn a_subscription_starts_at_the_tail_and_keeps_its_own_checkpoint_apart_from_the_consumer_s() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let id = t.subscribe(&[]);
+    let again = t.subscribe(&[]);
+    let at_start = t.changes(&["--subscription", &id]);
+    t.save(true);
+    t.index("refresh");
+    let page = t.changes(&["--subscription", &id]);
+    let cursor = page["nextCursor"].as_str().unwrap();
+    let acked = t.watch("ack", &["--subscription", &id, "--cursor", cursor]);
+    let after = t.changes(&["--subscription", &id]);
+    // The consumer's raw checkpoint is its own: never moved by the subscription's ack.
+    let raw = t.changes(&["--consumer", "bot"]);
+    let mixed = t.fails(&[
+        "changes",
+        "--file",
+        &t.file,
+        "--subscription",
+        &id,
+        "--consumer",
+        "bot",
+    ]);
+    assert_eq!(
+        (
+            again == id,
+            t.kinds(&at_start),
+            t.kinds(&page),
+            acked["advanced"].clone(),
+            t.kinds(&after),
+            t.kinds(&raw),
+            mixed.contains("pass none of them"),
+        ),
+        (
+            true,
+            vec![],
+            vec![json!("changes")],
+            json!(true),
+            vec![],
+            vec![json!("baseline"), json!("changes")],
+            true
+        )
+    );
+}
+
+#[test]
+fn a_node_subscription_reads_only_revisions_that_change_that_node_and_never_a_missing_one() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let id = t.changes(&[])["revisions"][1]["revisionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let nodes = t.changes(&["--revision", &id, "--limit", "500"]);
+    let touched: Vec<String> = nodes["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|n| [n["id"].clone(), n["frame"].clone()])
+        .filter_map(|v| v.as_str().map(str::to_owned))
+        .collect();
+    let changed = touched[0].clone();
+    let untouched: String = rusqlite::Connection::open(&t.db)
+        .unwrap()
+        .query_row(
+            "SELECT r.node_id FROM records r JOIN published p ON p.gen = r.gen
+             WHERE r.node_id NOT IN (SELECT value FROM json_each(?1)) LIMIT 1",
+            [json!(touched).to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let on_changed = t.subscribe(&["--node", &changed]);
+    let on_untouched = t.subscribe(&["--node", &untouched]);
+    // Saving the first revision again changes the same layers back.
+    t.save(false);
+    t.index("refresh");
+    let source = t.changes(&[])["tracking"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let missing = t.fails(&[
+        "watch",
+        "subscribe",
+        "--file",
+        &t.file,
+        "--consumer",
+        "bot",
+        "--source",
+        &source,
+        "--node",
+        "999:999",
+    ]);
+    let page = t.changes(&["--subscription", &on_changed]);
+    assert_eq!(
+        (
+            t.kinds(&page),
+            page["subscription"]["state"].clone(),
+            t.kinds(&t.changes(&["--subscription", &on_untouched])),
+            missing.contains("target_missing"),
+        ),
+        (vec![json!("changes")], json!("active"), vec![], true)
+    );
+}
+
+#[test]
+fn full_checkpoints_are_refused_not_evicted_and_unsubscribe_and_forget_remove_only_their_rows() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let durable = t.subscribe(&[]);
+    let temporary = t.subscribe(&["--scope", "0:0", "--owner", "task"]);
+    // Raw checkpoint views written before their sources were recorded, filling the consumer.
+    t.sql(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 62)
+         INSERT INTO consumers (consumer, filter, after_seq, floor, updated_ms)
+         SELECT 'bot', 'x' || char(31) || i || char(31), 0, 0, 0 FROM n",
+    );
+    let source = t.changes(&[])["tracking"][0]["sourceId"].clone();
+    let refused = t.fails(&[
+        "watch",
+        "subscribe",
+        "--file",
+        &t.file,
+        "--consumer",
+        "bot",
+        "--source",
+        source.as_str().unwrap(),
+        "--node",
+        "0:1",
+    ]);
+    let dropped = t.watch("unsubscribe", &["--consumer", "bot", "--owner", "task"]);
+    let forgotten = t.watch("forget", &["--consumer", "bot"]);
+    let listed = t.watch("list", &["--consumer", "bot"]);
+    let ids: Vec<Value> = listed["subscriptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["subscriptionId"].clone())
+        .collect();
+    let gone = t.fails(&[
+        "watch",
+        "unsubscribe",
+        "--file",
+        &t.file,
+        "--subscription",
+        &temporary,
+    ]);
+    let tracked = t.changes(&[])["tracking"][0]["state"].clone();
+    assert_eq!(
+        (
+            refused.contains("unsubscribe or forget"),
+            dropped["removed"].clone(),
+            forgotten["removed"].clone(),
+            ids,
+            gone.contains("no subscription"),
+            tracked,
+        ),
+        (
+            true,
+            json!(1),
+            json!(62),
+            vec![json!(durable)],
+            true,
+            json!("active")
+        )
+    );
+}
+
+#[test]
+fn one_consumer_never_shares_a_target_across_owners_and_an_owner_s_cleanup_stays_in_its_consumer() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let source = t.changes(&[])["tracking"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let subscribe = |consumer: &str, more: &[&str]| {
+        let mut args = vec![
+            "watch",
+            "subscribe",
+            "--file",
+            &t.file,
+            "--consumer",
+            consumer,
+        ];
+        args.extend(["--source", &source]);
+        args.extend(more);
+        args.iter().map(|a| a.to_string()).collect::<Vec<_>>()
+    };
+    let run = |args: Vec<String>| env.run(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    env.json(
+        &subscribe("bot", &[])
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    let again = env.json(
+        &subscribe("bot", &[])
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    let collision = run(subscribe("bot", &["--owner", "task"]));
+    env.json(
+        &subscribe("other", &["--owner", "task"])
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    let dropped = t.watch("unsubscribe", &["--consumer", "bot", "--owner", "task"]);
+    let left = t.watch("list", &[])["subscriptions"]
+        .as_array()
+        .unwrap()
+        .len();
+    assert_eq!(
+        (
+            again["initialPosition"].clone(),
+            String::from_utf8_lossy(&collision.stderr).contains("under another owner"),
+            dropped["removed"].clone(),
+            left,
+        ),
+        (json!("existing"), true, json!(0), 2)
+    );
+}
+
+#[test]
+fn forget_removes_a_checkpoint_view_whose_source_was_removed_since() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let page = t.changes(&["--consumer", "bot"]);
+    t.watch(
+        "ack",
+        &[
+            "--consumer",
+            "bot",
+            "--cursor",
+            page["nextCursor"].as_str().unwrap(),
+        ],
+    );
+    let source = page["tracking"][0]["sourceId"].as_str().unwrap().to_owned();
+    let id = page["workspaceId"].as_str().unwrap().to_owned();
+    env.json(&["index", "remove", "--id", &id, &source]);
+    let forgotten = env.json(&["watch", "forget", "--id", &id, "--consumer", "bot"]);
+    assert_eq!(forgotten["removed"], json!(1), "{forgotten}");
+}

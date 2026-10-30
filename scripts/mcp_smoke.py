@@ -187,7 +187,7 @@ def check_first_use(command, base, fixture, env):
         assert tools['index']['annotations']['destructiveHint'] is True and tools['index']['annotations']['readOnlyHint'] is False, tools['index']
         assert tools['jobs']['annotations']['readOnlyHint'] is False, tools['jobs']
         assert tools['changes']['annotations']['readOnlyHint'] is True, tools['changes']
-        assert tools['watch']['annotations']['destructiveHint'] is False, tools['watch']
+        assert tools['watch']['annotations']['destructiveHint'] is True, tools['watch']
         call(first, 'find', {'file': str(design), 'query': 'First success'})
         call(first, 'search', {'file': str(design), 'query': 'First success'})
         contains = {'node': '0:1', 'relation': 'contains', 'direction': 'out'}

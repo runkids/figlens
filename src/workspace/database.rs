@@ -346,7 +346,23 @@ pub(crate) const V4: &str = "
     INSERT INTO meta (key, value) VALUES ('cursor_secret', lower(hex(randomblob(32))));
     PRAGMA user_version = 4;";
 
-/// Upgrades schemas 1 to 3 to the current one in one transaction, keeping every source, index,
+/// Schema 5: durable change subscriptions, each its own checkpoint, and the visible sources a
+/// raw consumer checkpoint was written under, so `watch forget` removes only rows it may see.
+// shortcut: numbered 5 on this branch, becomes 6 on top of B2's watch schema when that lands.
+pub(crate) const SUBSCRIPTIONS: &str = "
+    CREATE TABLE subscriptions (
+        id TEXT PRIMARY KEY, consumer TEXT NOT NULL, source_id TEXT NOT NULL,
+        scope TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('source', 'scope', 'node')),
+        target TEXT NOT NULL, anchor TEXT NOT NULL,
+        lifetime TEXT NOT NULL CHECK (lifetime IN ('durable', 'temporary')), owner TEXT,
+        filter_version INTEGER NOT NULL, after_seq INTEGER NOT NULL, floor INTEGER NOT NULL,
+        created_ms INTEGER NOT NULL, read_ms INTEGER NOT NULL,
+        UNIQUE (consumer, source_id, scope, kind, target)) STRICT;
+    CREATE INDEX subscriptions_owner ON subscriptions (owner) WHERE owner IS NOT NULL;
+    ALTER TABLE consumers ADD COLUMN sources TEXT;
+    PRAGMA user_version = 5;";
+
+/// Upgrades schemas 1 to 4 to the current one in one transaction, keeping every source, index,
 /// job and the incarnation. The caller holds the workspace lock exclusively.
 pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
     let tx = conn
@@ -363,6 +379,9 @@ pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
     }
     if version <= 3 {
         tx.execute_batch(V4).map_err(sql)?;
+    }
+    if version <= 4 {
+        tx.execute_batch(SUBSCRIPTIONS).map_err(sql)?;
     }
     tx.commit().map_err(sql)
 }
@@ -407,6 +426,7 @@ pub(super) fn initialize(
     tx.execute_batch(V2).map_err(sql)?;
     tx.execute_batch(V3).map_err(sql)?;
     tx.execute_batch(V4).map_err(sql)?;
+    tx.execute_batch(SUBSCRIPTIONS).map_err(sql)?;
     if let Some(binding) = binding {
         tx.execute(
             "INSERT INTO meta (key, value) VALUES ('binding', ?1)",

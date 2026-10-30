@@ -188,12 +188,22 @@ usage:
                                              recorded revisions after the cursor, the consumer's checkpoint
                                              or the oldest kept, with tracking state; never writes.
                                              --revision R [--cursor C]: one revision's changed nodes
-  figlens watch ack <select> --consumer NAME --cursor C [--source ID] [--scope NODE] [--storage DIR]
+  figlens watch ack <select> --consumer NAME|--subscription ID --cursor C [--source ID] [--scope NODE] [--storage DIR]
                                              move the consumer's checkpoint for these filters to C; an
                                              older C normally leaves it; a C issued before retention
                                              deleted revisions it had not passed is event_gap; a
                                              current recovery C moves a checkpoint behind such a
                                              deletion back to C, so the kept revisions replay
+  figlens watch subscribe <select> --consumer NAME --source ID [--scope NODE] [--node ID] [--owner NAME]
+                                             follow a source, scope or exact layer from its newest
+                                             revision, with its own checkpoint (read with changes
+                                             --subscription); --owner makes it temporary for that task
+  figlens watch list <select> [--consumer NAME] [--after ID]
+                                             visible subscriptions and their state, a page at a time
+  figlens watch unsubscribe <select> --subscription ID|--consumer C --owner NAME
+                                             remove one subscription, or an owner's temporary ones
+  figlens watch forget <select> --consumer NAME [--source ID] [--scope NODE]
+                                             remove a consumer's raw checkpoints; neither untracks
   figlens update                               install the latest GitHub release over this binary
   figlens --help | --version
 
@@ -341,6 +351,14 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
         }
         Some("watch") if args.get(1).is_some_and(|a| a == "ack") => {
             writeln!(out, "{}", changes(&args[2..], true)?)?;
+            return Ok(());
+        }
+        Some("watch")
+            if args.get(1).is_some_and(|a| {
+                ["subscribe", "list", "unsubscribe", "forget"].contains(&a.as_str())
+            }) =>
+        {
+            writeln!(out, "{}", watch(&args[1], &args[2..])?)?;
             return Ok(());
         }
         Some("jobs") => {
@@ -1081,10 +1099,10 @@ fn changes(args: &[String], ack: bool) -> Result<serde_json::Value, Box<dyn Erro
     use figlens::workspace::{self, Select, changes};
     let usage = match ack {
         true => {
-            "usage: figlens watch ack --workspace DIR|--file <file.fig>|--id ws_... --consumer NAME --cursor C [--source ID] [--scope NODE] [--storage DIR]"
+            "usage: figlens watch ack --workspace DIR|--file <file.fig>|--id ws_... --consumer NAME|--subscription ID --cursor C [--source ID] [--scope NODE] [--storage DIR]"
         }
         false => {
-            "usage: figlens changes --workspace DIR|--file <file.fig>|--id ws_... [--source ID] [--scope NODE] [--consumer NAME] [--cursor C] [--revision R] [--limit N] [--storage DIR]"
+            "usage: figlens changes --workspace DIR|--file <file.fig>|--id ws_... [--source ID] [--scope NODE] [--consumer NAME] [--subscription ID] [--cursor C] [--revision R] [--limit N] [--storage DIR]"
         }
     };
     let a = index_args(args, true)?;
@@ -1094,8 +1112,15 @@ fn changes(args: &[String], ack: bool) -> Result<serde_json::Value, Box<dyn Erro
     let mut flags = std::collections::HashMap::new();
     for pair in a.search.chunks(2) {
         let allowed: &[&str] = match ack {
-            true => &["--scope", "--consumer", "--cursor"],
-            false => &["--scope", "--consumer", "--cursor", "--revision", "--limit"],
+            true => &["--scope", "--consumer", "--subscription", "--cursor"],
+            false => &[
+                "--scope",
+                "--consumer",
+                "--subscription",
+                "--cursor",
+                "--revision",
+                "--limit",
+            ],
         };
         if !allowed.contains(&pair[0].as_str()) || pair.len() < 2 {
             return Err(format!("unknown flag {}; {usage}", pair[0]).into());
@@ -1121,10 +1146,80 @@ fn changes(args: &[String], ack: bool) -> Result<serde_json::Value, Box<dyn Erro
         cursor: flags.get("--cursor").copied(),
         revision: flags.get("--revision").copied(),
         limit,
+        subscription: flags.get("--subscription").copied(),
     };
     match ack {
         true => changes::ack(&storage, &select, &request),
         false => changes::changes(&storage, &select, &request),
+    }
+}
+
+/// `figlens watch subscribe|list|unsubscribe|forget <select> [flags]`: durable subscriptions
+/// and checkpoint views.
+fn watch(action: &str, args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
+    use figlens::workspace::{self, Select, changes::subscriptions as subs};
+    let (usage, allowed): (&str, &[&str]) = match action {
+        "subscribe" => (
+            "usage: figlens watch subscribe <select> --consumer NAME --source ID [--scope NODE] [--node ID] [--owner NAME] [--storage DIR]",
+            &["--consumer", "--scope", "--node", "--owner"],
+        ),
+        "list" => (
+            "usage: figlens watch list <select> [--consumer NAME] [--after ID] [--storage DIR]",
+            &["--consumer", "--after"],
+        ),
+        "unsubscribe" => (
+            "usage: figlens watch unsubscribe <select> --subscription ID|--consumer NAME --owner NAME [--storage DIR]",
+            &["--subscription", "--consumer", "--owner"],
+        ),
+        _ => (
+            "usage: figlens watch forget <select> --consumer NAME [--source ID] [--scope NODE] [--storage DIR]",
+            &["--consumer", "--scope"],
+        ),
+    };
+    let a = index_args(args, true)?;
+    if !a.positional.is_empty() || a.source.len() > 1 {
+        return Err(usage.into());
+    }
+    let mut flags = std::collections::HashMap::new();
+    for pair in a.search.chunks(2) {
+        if !allowed.contains(&pair[0].as_str()) || pair.len() < 2 {
+            return Err(format!("unknown flag {}; {usage}", pair[0]).into());
+        }
+        if flags.insert(pair[0].as_str(), pair[1].as_str()).is_some() {
+            return Err(format!("{} is given twice", pair[0]).into());
+        }
+    }
+    let storage = workspace::storage(a.storage.map(Path::new))?;
+    let select = Select::from_choice(a.workspace.map(Path::new), a.file.map(Path::new), a.id)?
+        .ok_or("choose the workspace with --workspace, --file or --id")?;
+    let (source, flag) = (a.source.first().copied(), |k: &str| flags.get(k).copied());
+    match action {
+        "subscribe" => subs::subscribe(
+            &storage,
+            &select,
+            &subs::Subscribe {
+                consumer: flag("--consumer"),
+                source,
+                scope: flag("--scope"),
+                node: flag("--node"),
+                owner: flag("--owner"),
+            },
+        ),
+        "list" => subs::list(&storage, &select, flag("--consumer"), flag("--after")),
+        "unsubscribe" => subs::unsubscribe(
+            &storage,
+            &select,
+            flag("--subscription"),
+            flag("--consumer"),
+            flag("--owner"),
+        ),
+        _ => subs::forget(
+            &storage,
+            &select,
+            flag("--consumer"),
+            source,
+            flag("--scope"),
+        ),
     }
 }
 
