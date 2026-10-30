@@ -248,7 +248,9 @@ test('CLI path runs the MCP index, jobs, search, usages, diff, changes, watch, i
     ['search', '--id', 'ws_1', '--image', '/q.png', '--crop', '1,2,3,4', '--', '']);
   assert.deepEqual(cliArgs('search', { workspaceId: 'ws_1', imageRef: { sourceId: 's', snapshotId: 'sha256:x', nodeId: '1:2' }, query: 'Pay', mode: 'hybrid' }),
     ['search', '--id', 'ws_1', '--mode', 'hybrid', '--image-ref', '{"sourceId":"s","snapshotId":"sha256:x","nodeId":"1:2"}', '--', 'Pay']);
-  assert.throws(() => cliArgs('search', { workspaceId: 'ws_1', query: 'Pay', mode: 'visual' }), /visual takes image or imageRef/);
+  assert.throws(() => cliArgs('search', { workspaceId: 'ws_1', mode: 'visual' }), /mode visual takes image or imageRef/);
+  assert.deepEqual(cliArgs('search', { workspaceId: 'ws_1', query: 'Pay', mode: 'hybrid' }),
+    ['search', '--id', 'ws_1', '--mode', 'hybrid', '--', 'Pay']);
   assert.throws(() => cliArgs('search', { workspaceId: 'ws_1', query: 'Pay', crop: { x: 0, y: 0, width: 1, height: 1 } }), /crop applies to a query image/);
   assert.throws(() => cliArgs('search', { workspaceId: 'ws_1' }), /needs query/);
   assert.throws(() => cliArgs('index', { action: 'remove', workspaceId: 'ws_1' }), /needs sourceId/);

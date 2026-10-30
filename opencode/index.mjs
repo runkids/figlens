@@ -28,10 +28,10 @@ const CLI_TOOLS = [
   ['search', 'Ranked search of layer names and effective text, as the figlens MCP search tool: give file to read a .fig now, or workspaceId to search its prepared indexes without parsing. Results carry exact ref.nodeId for figlens_inspect, matches and coverage; sources not ready list the index call that prepares them.',
     { file: path, workspaceId: id, sourceId: id, storage: path, query: string(2000), node, type: id,
       limit: { type: 'integer', minimum: 1, maximum: 200 }, cursor: string(4096), includeHidden: bool, includeInternal: bool,
-      // An image search: one local PNG or one stored node render, optionally cropped; hybrid can combine image and text.
+      // An image search: one local PNG or one stored node render, optionally cropped; visual only with an image.
       image: path, imageRef: object({ sourceId: id, snapshotId: id, nodeId: node }, ['sourceId', 'snapshotId', 'nodeId']),
       crop: object({ x: pixel, y: pixel, width: pixel, height: pixel }, ['x', 'y', 'width', 'height']),
-      mode: { enum: ['text', 'semantic', 'visual', 'hybrid'] } }],
+      mode: { enum: ['text', 'semantic', 'hybrid', 'visual'] } }],
   // A usages target and scope take any id an index stores, as src/search/usages.rs validates them.
   ['usages', 'Exact relations of one node or resource in one stored scope, as the figlens MCP usages tool: give file to read a .fig now, or workspaceId to read its prepared index of scope. direction in (default) lists what points at it, out what it points at, with library {kind, namespace, key} on a use of a cached library copy. Results carry exact refs, coverage and a snapshotId; a changed source is source_stale. With workspaceId, library {kind, namespace, key} (from an out result) instead of node or resource lists the layers in every visible source whose cached copy uses that library component, style or variable. Without namespace it lists only copies naming none and is never complete. Its definition stays unresolved unless library.definition {sourceId, snapshotId, nodeId}, an exact ref an earlier reply gave, selects one: then it is reported selected with keyEvidence unverified, and each use\'s definitionMatch compares its cached copy with it: equal (same fingerprint, not proof the library published it), definition_mismatch or unknown. It asks read on the definition\'s source as well as the sources it reads.',
     { file: path, workspaceId: id, sourceId: id, storage: path, node, resource: node, scope: node, relation: string(200),

@@ -27,7 +27,7 @@ Schema 2 adds `snapshots` (verified size and mtime per content hash), `generatio
 
 - Generation (records, terms, edges, definitions, fingerprints, facets): `refresh` reuses a complete one with the same snapshot sha256, `store::versions()` and membership; `rebuild` never does.
 - Overrides, main definitions and variable modes are in the file bytes, so the hash covers them; no generation depends on another file. `versions()` carries `fingerprint::VERSION`; `diff::facet_version()` is not in it (bump `RELATIONS` with it; revisions compare it).
-- Any byte change rebuilds the whole file, not individual nodes. Vectors cache by chunk text; [source rasters](visual-search.md) by content.
+- Any byte change rebuilds the whole file. Vectors cache by chunk text, [source rasters](visual-search.md) by content.
 - Preview renders: path hash + crate version + mtime + length (no content hash). `gs://` downloads: URI hash + object generation. MCP parsed tree: path + mtime + length.
 
 ## Actions

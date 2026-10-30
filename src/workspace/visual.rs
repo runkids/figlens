@@ -219,7 +219,7 @@ pub fn units(conn: &Connection, gen_id: i64) -> Result<Vec<Unit>> {
 
 /// One unit of generation `gen_id`: what a shown visual search result reports about its render.
 pub fn unit(conn: &Connection, gen_id: i64, rid: u32) -> Result<Option<Unit>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT u.rid, r.fingerprint, u.report, u.error FROM visual_units u
          LEFT JOIN visual_rasters r ON r.raster_key = u.raster_key AND r.policy = u.policy
          WHERE u.gen = ?1 AND u.rid = ?2 AND u.policy = ?3",

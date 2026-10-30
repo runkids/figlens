@@ -44,7 +44,24 @@ const MAX_MARKS: usize = 1024;
 /// Bytes one snippet may copy, its context and matched span together.
 const SNIPPET_BYTES: usize = 2048;
 /// Names, ids and paths one page of results may copy; the MCP reply cap, so CLI and MCP agree.
-const REPLY_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const REPLY_BYTES: usize = 8 * 1024 * 1024;
+
+/// The serialized size of `value`, counted without building the text.
+pub(crate) fn json_bytes(value: &Json) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, value).expect("counting cannot fail");
+    count.0
+}
 const DEADLINE: Duration = Duration::from_secs(15);
 /// Same-stamp reuse lasts at most this long before the bytes are hashed again.
 const REHASH: Duration = Duration::from_secs(60);
@@ -1076,11 +1093,6 @@ fn idf(n: usize, df: u32) -> f64 {
     (1.0 + (n - df + 0.5) / (df + 0.5)).ln()
 }
 
-/// Ranked page of `req` over every index of `corpus` together: candidates must contain every
-/// query term; exact name, name phrase and text phrase matches lead, then field-weighted BM25,
-/// then corpus order and document order. Record counts, document frequencies and field lengths
-/// are summed over the whole corpus before any record is scored, so one source's hits are never
-/// ranked alone and merged afterwards; one index ranks exactly as it always did.
 /// Why `req`'s filters leave a record out; hidden and internal ones are counted as excluded.
 pub(crate) enum Filtered {
     Type,
@@ -1101,6 +1113,11 @@ pub(crate) fn filtered(index: &Index, rid: u32, req: &Request) -> Option<Filtere
     (internal && !req.include_internal).then_some(Filtered::Internal)
 }
 
+/// Ranked page of `req` over every index of `corpus` together: candidates must contain every
+/// query term; exact name, name phrase and text phrase matches lead, then field-weighted BM25,
+/// then corpus order and document order. Record counts, document frequencies and field lengths
+/// are summed over the whole corpus before any record is scored, so one source's hits are never
+/// ranked alone and merged afterwards; one index ranks exactly as it always did.
 fn retrieve(
     corpus: &[&Index],
     q: &Prepared,
@@ -1577,7 +1594,7 @@ fn corpus_coverage(parts: &[Part], req: &Request, excluded: [usize; 2]) -> Json 
 pub(crate) struct Ranked {
     hits: Vec<Hit>,
     more: bool,
-    excluded: [usize; 2],
+    pub(crate) excluded: [usize; 2],
     fingerprint: String,
 }
 

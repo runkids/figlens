@@ -52,7 +52,7 @@ fn fail(message: impl Into<String>) -> Box<dyn Error> {
     message.into().into()
 }
 
-/// The search mode a caller asks for; `visual` is reserved for #95.
+/// The text search mode a caller asks for; image searches use `workspace::visual_search::ImageMode`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Text,

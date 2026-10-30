@@ -552,9 +552,11 @@ fn searched(
         for (name, layer) in layers.as_object().into_iter().flatten() {
             out["coverage"]["layers"][name] = layer.clone();
         }
+        // The render evidence counts toward the same reply budget as the page it joins.
+        let mut bytes = search::json_bytes(&out);
         let rows = out["results"].as_array_mut().into_iter().flatten();
         for (row, (part, rid)) in rows.zip(&shown) {
-            row["visual"] = match super::visual::unit(&tx, loaded[*part].2, *rid)? {
+            let visual = match super::visual::unit(&tx, loaded[*part].2, *rid)? {
                 // A hybrid row found by its text alone has no render of its own.
                 None => json!({"state": "absent"}),
                 Some(unit) => json!({
@@ -562,6 +564,15 @@ fn searched(
                     "bounds": unit.report["bounds"], "diagnostics": unit.report["diagnostics"],
                     "diagnosticsTruncated": unit.report["diagnosticsTruncated"], "error": unit.error}),
             };
+            bytes += search::json_bytes(&visual);
+            if bytes > search::REPLY_BYTES {
+                return Err(FigError::new(
+                    ErrorKind::ResponseBudget,
+                    format!("search results with their render evidence would copy more than {} bytes; lower limit", search::REPLY_BYTES),
+                )
+                .into());
+            }
+            row["visual"] = visual;
         }
     }
     let left_out: Vec<&Json> = states.iter().filter(|s| s["state"] != "ready").collect();
@@ -698,8 +709,9 @@ fn resolved(
 
 /// The channels of an image search over `loaded`, each ranked across every source, fused once.
 /// Returns the page, its evidence, whether every channel covered every source (else the page
-/// offers no cursor) and the `coverage.layers` it reports. Filters apply before ranking; only
-/// filtered units' records and vectors are read, and the model runs only for a ready layer.
+/// offers no cursor) and the `coverage.layers` it reports. Filters apply before ranking: every
+/// unit's record is loaded (within `spent`) to be filtered, only the kept units' vectors are
+/// decoded, and the model runs only for a ready layer.
 #[allow(clippy::too_many_arguments)]
 fn image_rank(
     storage: &Storage,
@@ -729,6 +741,7 @@ fn image_rank(
     // Hash: each source's filtered units, nearest first; then one order across the sources.
     let mut hash: Vec<(rank::Key, VisualHit)> = Vec::new();
     let mut units: Vec<Vec<u32>> = vec![Vec::new(); loaded.len()];
+    let mut excluded = [0usize; 2];
     let mut hash_sources = Vec::new();
     for (part, (index, source, gen_id, _)) in loaded.iter_mut().enumerate() {
         let state = layer_state(tx, *gen_id, visual::VERSION)?;
@@ -751,7 +764,18 @@ fn image_rank(
         search::store::add_with(tx, *gen_id, index, &rids, spent, cancel)?;
         let kept: Vec<(u32, visual::Fingerprint)> = candidates
             .into_iter()
-            .filter(|c| search::filtered(index, c.rid, req).is_none())
+            .filter(|c| match search::filtered(index, c.rid, req) {
+                None => true,
+                Some(search::Filtered::Hidden) => {
+                    excluded[0] += 1;
+                    false
+                }
+                Some(search::Filtered::Internal) => {
+                    excluded[1] += 1;
+                    false
+                }
+                Some(search::Filtered::Type) => false,
+            })
             .map(|c| (c.rid, c.fingerprint))
             .collect();
         units[part] = kept.iter().map(|k| k.0).collect();
@@ -810,7 +834,8 @@ fn image_rank(
                 if state.is_none() {
                     continue;
                 }
-                let mut by = vectors(tx, *gen_id, &p.id, p.dim)?;
+                let wanted = units[part].iter().copied().collect();
+                let mut by = vectors(tx, *gen_id, &p.id, p.dim, &wanted)?;
                 stored.extend(
                     units[part]
                         .iter()
@@ -827,6 +852,8 @@ fn image_rank(
             layers["visual"]["embedding"] =
                 json!({"state": state, "profileId": p.id, "sources": sources});
             if stored.is_empty() {
+                // Nothing to compare after the filters: only the hash ranking can run.
+                layers["visual"]["embedding"]["reasons"] = json!([{"code": "no_filtered_units"}]);
                 None
             } else {
                 match profile::with_runtime(&p, cancel, |rt| {
@@ -843,6 +870,10 @@ fn image_rank(
                         scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
                         scored.truncate(rank::CANDIDATES);
                         Some(scored)
+                    }
+                    // A cancel may surface as the killed child's failure.
+                    Err(_) if cancel.load(std::sync::atomic::Ordering::Relaxed) => {
+                        return Err(fail(ErrorKind::Cancelled, "search cancelled"));
                     }
                     Err(crate::semantic::Stop::Cancelled) => {
                         return Err(fail(ErrorKind::Cancelled, "search cancelled"));
@@ -874,11 +905,13 @@ fn image_rank(
     }
     let mut text = None;
     let mut semantic = None;
+    let mut semantic_profile = None;
     // The query text's channels, in hybrid with text; an image alone has no text to rank.
     if mode == ImageMode::Hybrid && !req.query.is_empty() {
         text = Some(rank::text(&parts(loaded), q, req, key, cancel)?);
         match profile::active(storage) {
             Ok(Some(p)) => {
+                semantic_profile = Some(p.id.clone());
                 let mut cache = crate::semantic::lock(&LAYERS, cancel)
                     .map_err(|_| fail(ErrorKind::Cancelled, "search cancelled"))?;
                 let layer =
@@ -966,7 +999,14 @@ fn image_rank(
         exact,
         vision,
     };
-    let (ranked, decor) = rank::rank(q, req, key, channels, complete)?;
+    // The cursor also binds the profiles whose vectors ranked this page.
+    let key = json!([
+        key,
+        layers["visual"]["embedding"]["profileId"],
+        semantic_profile
+    ]);
+    let (mut ranked, decor) = rank::rank(q, req, &key, channels, complete)?;
+    ranked.excluded = excluded;
     Ok((ranked, decor, complete, layers))
 }
 

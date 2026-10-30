@@ -55,9 +55,15 @@ usage:
                                              the same search over a workspace's prepared indexes of
                                              --node (default 0:0) across its sources, without parsing;
                                              sources not ready are listed with the step that prepares them
+          [--image PNG | --image-ref JSON] [--crop x,y,w,h] [--mode visual|hybrid]
+                                             workspace only, experimental: rank units by how they look
+                                             like a local PNG or a stored unit render (sourceId,
+                                             snapshotId and nodeId of a result); the query image is
+                                             never stored. With query text the mode is hybrid; the visual
+                                             layers come from `index visual`, and a search builds none
   figlens models list|status                 the local model profiles: bge-m3 for semantic search,
-                                             siglip-base for visual search (image queries not yet
-                                             available); whether each is configured
+                                             siglip-base for visual search (--image);
+                                             whether each is configured
   figlens models configure <profile> --model DIR [--runtime FILE]
                                              check the profile's files you downloaded (pinned revision,
                                              SHA-256), start the figlens-embed runtime once offline
@@ -527,10 +533,13 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
     let usages = (command == "usages")
         .then(|| command::usages_request(&args[2..]))
         .transpose()?;
+    if let Some((request, command::Query::Image(_))) = &search {
+        return Err(command::image_needs_workspace(file, &request.scope));
+    }
     let path = figlens::remote::local(file).map_err(|e| contract::source(file, e))?;
     if let Some((request, query)) = search {
         let command::Query::Text(mode) = query else {
-            return Err(command::image_needs_workspace(file, &request.scope));
+            unreachable!("refused above")
         };
         // Ctrl-C stops a model run and its child instead of killing figlens around them.
         if mode != figlens::semantic::Mode::Text {
