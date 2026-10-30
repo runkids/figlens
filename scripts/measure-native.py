@@ -51,12 +51,27 @@ LIMITS = {'mcpTreePeakRssBytes': 1024 * MiB, 'viewerTreePeakRssBytes': 1024 * Mi
           'databaseBytes': 2048 * MiB, 'walBytes': 96 * MiB}
 
 
-def verdict(name, samples):
+def verdict(name, samples, invalid=0):
+    """`invalid` attempts timed something other than the gate's outcome (a partial or failed
+    publication), so they fail it however fast they were."""
     target, need = GATES[name]
     result = summarize(samples) if samples else {'samplesMs': [], 'p95Ms': None}
-    result.update(n=len(samples), targetMs=target, required=need,
-                  status='insufficient' if len(samples) < need else 'pass' if result['p95Ms'] <= target else 'fail')
+    result.update(n=len(samples), targetMs=target, required=need, invalidAttempts=invalid,
+                  status='fail' if invalid else 'insufficient' if len(samples) < need
+                  else 'pass' if result['p95Ms'] <= target else 'fail')
     return result
+
+
+def snapshot(path):
+    return 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def published(ws, scope, records, design):
+    """The scope's current generation is complete, holds `records` and is of `design`'s bytes."""
+    status = ws.cli('index', 'status', '--file', ws.source)
+    found = [e for source in status['sources'] for e in source['indexed'] if e['scope'] == scope]
+    return len(found) == 1 and found[0]['complete'] and found[0]['current'] \
+        and found[0]['records'] == records and found[0]['snapshotId'] == snapshot(design)
 
 
 def within(value, limit, exact=True):
@@ -399,8 +414,19 @@ class Workspace:
         return settle(os.path.realpath(self.binary))
 
 
-def changes(ws):
-    return sum(r['kind'] == 'changes' for r in ws.cli('changes', '--file', ws.source, '--scope', '0:0', '--limit', '50')['revisions'])
+def revisions(ws):
+    # shortcut: one page holds the baseline and 49 saves; follow nextCursor if a run ever saves more.
+    return ws.cli('changes', '--file', ws.source, '--scope', '0:0', '--limit', '50')['revisions']
+
+
+def landed(rows, seen, saved, records):
+    """The first revision not in `seen`, judged against the save: None until one exists."""
+    new = [r for r in rows if r['revisionId'] not in seen]
+    if not new:
+        return None
+    r, c = new[0], new[0]['coverage']
+    return {'revisionId': r['revisionId'], 'snapshotMatches': r['snapshotId'] == saved, 'changes': r['summary']['changes'],
+            'complete': c['complete'] and c['new']['complete'] and c['new']['stop'] is None and c['new']['scannedRecords'] == records}
 
 
 def idle(ws, exe, holders, seconds):
@@ -428,7 +454,7 @@ def idle(ws, exe, holders, seconds):
     return {pid.pid for pid in processes}, idle_cost(series, cpu_exact=True)
 
 
-def watch(binary, design, revised, n, seconds, parent):
+def watch(binary, design, revised, records, n, seconds, parent):
     """Save→committed `changes` (N), idle CPU/I/O with one and eight holders, in-flight cancel
     (N attempts), runner and worker RSS, and the state root's disk use."""
     exe = os.path.realpath(binary)
@@ -439,18 +465,20 @@ def watch(binary, design, revised, n, seconds, parent):
     db = next(ws.base.rglob('index.sqlite'))
     saves, cancels, holders = [], [], set()
     with Tree(exe, ws.base/'state') as tree:
-        holder, seen = ws.hold(), changes(ws)
+        holder, seen = ws.hold(), {r['revisionId'] for r in revisions(ws)}
         holders.add(holder.pid)
         try:
             for i in range(n):
                 time.sleep(1.5)  # let the previous turn finish and the detector settle
                 ws.save(copies[i % 2])
-                start = time.monotonic()
-                while (now := changes(ws)) == seen and time.monotonic() - start < 30:
+                saved, start = snapshot(copies[i % 2]), time.monotonic()
+                # The save's own committed revision: new, of the saved bytes, complete over every record.
+                while (rev := landed(rows := revisions(ws), seen, saved, records)) is None and time.monotonic() - start < 30:
                     time.sleep(0.02)
                 ms = (time.monotonic() - start) * 1000
-                saves.append({'i': i, 'ms': round(ms, 1), 'recorded': now > seen})
-                seen = now
+                recorded = bool(rev and rev['snapshotMatches'] and rev['complete'] and rev['changes'] >= 1)
+                saves.append({'i': i, 'ms': round(ms, 1), 'recorded': recorded, 'revision': rev and {k: v for k, v in rev.items() if k != 'revisionId'}})
+                seen = {r['revisionId'] for r in rows}
         finally:
             ws.release(holder)
         pids, one = idle(ws, exe, 1, seconds)
@@ -521,27 +549,34 @@ def watch(binary, design, revised, n, seconds, parent):
     }
 
 
-def builds(binary, design, n, parent):
+def builds(binary, design, facts, n, parent):
     """First prepare of the area scope in a fresh state root (N), full rebuilds of the whole source
-    (N) and indexed cold-process workspace search of the area scope (N)."""
-    exe, prepare, build, cold = os.path.realpath(binary), [], [], []
+    (N) and indexed cold-process workspace search of the area scope (N). Each timed build must
+    publish its whole scope, complete and current, with the records figlens counts in the source."""
+    exe, prepare, build, cold, invalid = os.path.realpath(binary), [], [], [], {'prepare': 0, 'build': 0}
     with Tree(exe) as tree:
         for _ in range(n):
             ws = Workspace(binary, design, parent)
-            prepare.append(ws.timed('index', 'prepare', ws.source, '--scope', AREA)[0])
+            elapsed, reply = ws.timed('index', 'prepare', ws.source, '--scope', AREA)
+            prepare.append(elapsed)
+            invalid['prepare'] += not (reply['job']['state'] == 'succeeded'
+                                       and published(ws, AREA, facts['firstScope']['records'], design))
             shutil.rmtree(ws.base)
         ws = Workspace(binary, design, parent)
         tree.state = ws.base/'state'  # whole-source rebuilds are where the database and WAL peak
         ws.cli('index', 'prepare', ws.source, '--scope', '0:0')
         for _ in range(n):
-            build.append(ws.timed('index', 'rebuild', '--file', ws.source, '--scope', '0:0')[0])
+            elapsed, reply = ws.timed('index', 'rebuild', '--file', ws.source, '--scope', '0:0')
+            build.append(elapsed)
+            invalid['build'] += not (reply['admission'] == 'complete' and all(j['state'] == 'succeeded' for j in reply['jobs'])
+                                     and published(ws, '0:0', facts['whole']['records'], design))
     ws = Workspace(binary, design, parent)
     ws.cli('index', 'prepare', ws.source, '--scope', AREA)
     for _ in range(n):
         elapsed, reply = ws.timed('search', '--file', ws.source, 'checkout', '--node', AREA)
         assert reply['results'], 'indexed search returned nothing'
         cold.append(elapsed)
-    return {'prepare': verdict('prepare', prepare), 'build': verdict('build', build),
+    return {'prepare': verdict('prepare', prepare, invalid['prepare']), 'build': verdict('build', build, invalid['build']),
             'indexedColdSearch': verdict('indexedColdSearch', cold), 'tree': tree.result('buildTreePeakRssBytes'),
             'disk': {**tree.disk, 'database': within(tree.disk['databaseBytes'], LIMITS['databaseBytes']),
                      'wal': within(tree.disk['walBytes'], LIMITS['walBytes'])}}
@@ -632,10 +667,14 @@ def main():
             # Cold stateless CLI and warm MCP search/usages of the area scope, stateless and workspace.
             cost = search.measure(binary, design, AREA, ['checkout', 'button'], args.cold, args.warm, ['0:10'], 1)
         timings = cost['timings']
+        facts = workload(binary, design, revised, Path(temp))
         assert all(s['results'] for s in cost['usages']['shapes']), 'usages are empty'
         report = {
             'candidate': provenance, 'os': f'{platform.system()} {platform.release()} {platform.machine()}',
-            'cpus': os.cpu_count(), 'workload': workload(binary, design, revised, Path(temp)),
+            'cpus': os.cpu_count(), 'workload': facts,
+            'hardware': ('A GitHub-hosted runner' if os.environ.get('GITHUB_ACTIONS') else 'An unlabelled local host')
+                        + ', not checked against Baseline B (4+ physical cores, 16 GiB RAM, local SSD): '
+                        'these numbers make no full-capacity platform claim.',
             'gates': GATES, 'limits': LIMITS,
             'searchShapes': list(cost['shapes'].values()), 'usageShapes': cost['usages']['shapes'],
             'timings': {k: {'n': len(v['samplesMs']), 'medianMs': v['medianMs'], 'p95Ms': v['p95Ms']} for k, v in timings.items()},
@@ -645,9 +684,9 @@ def main():
             'cliPeakRssBytes': cost['cliPeakRssBytes'], 'usagePages': cost['usages']['mcpMemory']['pages'],
             # The MCP server spawns no children, so its own peak is its tree's.
             'mcpTree': tree.result('mcpTreePeakRssBytes', cost['mcpPids']),
-            'builds': builds(binary, design, args.cold, Path(temp)),
+            'builds': builds(binary, design, facts, args.cold, Path(temp)),
             'viewer': viewer(binary, design, args.warm, Path(temp)),
-            'watch': watch(binary, design, revised, args.cold, args.idle_seconds, Path(temp)),
+            'watch': watch(binary, design, revised, facts['whole']['records'], args.cold, args.idle_seconds, Path(temp)),
             'costBoundaries': 'Cold = a new process with the OS file cache warm. A sampler lists every process 10 times a second '
                               'during all timings, as the cost of RSS evidence. ' + cost['costBoundaries'],
         }

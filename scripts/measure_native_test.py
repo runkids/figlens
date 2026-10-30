@@ -72,6 +72,14 @@ class MeasureNativeTest(unittest.TestCase):
             native.idle(ws, 'unused', 2, 1)
         self.assertEqual(len(ws.released), 1)
 
+    def test_only_the_saves_own_complete_revision_counts(self):
+        def revision(rid, snapshot, stop=None):
+            coverage = {'complete': True, 'new': {'complete': True, 'stop': stop, 'scannedRecords': 9}}
+            return {'revisionId': rid, 'snapshotId': snapshot, 'summary': {'changes': 1}, 'coverage': coverage}
+        rows = [revision('old', 'sha256:a'), revision('new', 'sha256:b', stop='work')]
+        self.assertEqual([native.landed(rows[:1], {'old'}, 'sha256:b', 9), native.landed(rows, {'old'}, 'sha256:b', 9)],
+                         [None, {'revisionId': 'new', 'snapshotMatches': True, 'changes': 1, 'complete': False}])
+
     def test_a_reaped_worker_counts_once(self):
         row = lambda ppid, cpu, child: {'ppid': ppid, 'cpuMs': cpu, 'childCpuMs': child, 'readBytes': 0,
                                         'writeBytes': 0, 'physReadBytes': 0, 'physWriteBytes': 0}
