@@ -110,6 +110,7 @@ await check('first use through the packaged bridge: prepare, poll, search the pu
   process.env.XDG_STATE_HOME = state;
   process.env.XDG_CONFIG_HOME = path.join(output, 'config');
   const connection = await connectToServer('figlens', discovered.items.find(item => item.name === 'figlens'));
+  let connected = true;
   try {
     const listed = await listTools(connection);
     const file = path.join(project, 'mapping.fig');
@@ -160,10 +161,21 @@ await check('first use through the packaged bridge: prepare, poll, search the pu
     // The README states this: OMP's default yolo mode runs reset without asking.
     assert.equal(decisions.yolo, 'allow');
     assert.match(index.formatApprovalDetails(reset).join('\n'), /reset/);
-    return { workspaceId: prepared.workspaceId, dispatched: prepared.job.state, job: job.state, polls, ref: found.results[0].ref,
-      inspected: inspected.node.id, usedBy: used.results.map(item => item.ref.nodeId), approvalTier: index.approval, usagesTier: usages.approval, trackedBaselineAcked: true, resetDecisions: decisions };
-  } finally {
+    // A lease the bridge's server holds ends released when OMP disconnects it, read by the CLI afterwards.
+    const lease = await content('watch', { action: 'start', workspaceId: prepared.workspaceId, scope: '0:0' });
+    assert.equal(lease.state, 'active', JSON.stringify(lease));
     await disconnectServer(connection);
+    connected = false;
+    const ended = async () => JSON.parse((await execute(binary, ['watch', 'status', '--id', prepared.workspaceId], { cwd: project })).stdout)
+      .leases.filter(item => item.leaseId === lease.leaseId).map(item => [item.state, item.reason]);
+    let released = await ended();
+    for (const deadline = Date.now() + 10000; released[0]?.[0] !== 'ended' && Date.now() < deadline; released = await ended())
+      await new Promise(resolve => setTimeout(resolve, 100));
+    assert.deepEqual(released, [['ended', 'released']]);
+    return { workspaceId: prepared.workspaceId, dispatched: prepared.job.state, job: job.state, polls, ref: found.results[0].ref,
+      inspected: inspected.node.id, usedBy: used.results.map(item => item.ref.nodeId), approvalTier: index.approval, usagesTier: usages.approval, trackedBaselineAcked: true, watchLeaseReleasedOnDisconnect: true, resetDecisions: decisions };
+  } finally {
+    if (connected) await disconnectServer(connection);
     for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : process.env[name] = value;
   }
 });
