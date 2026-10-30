@@ -770,8 +770,12 @@ fn image_rank(
         };
         let label = state.as_deref().unwrap_or("pending");
         hash_sources.push(json!({"sourceId": source["sourceId"], "state": label}));
+        // A partial layer is final for this renderer: `index visual` would leave it as is, so it
+        // keeps the page partial without naming that step again.
         if label != "ready" {
             complete = false;
+        }
+        if label != "ready" && label != "partial" {
             steps.push(visual_step(
                 ws_id,
                 &source["sourceId"],
@@ -856,6 +860,8 @@ fn image_rank(
                 sources.push(json!({"sourceId": source["sourceId"], "state": label}));
                 if label != "ready" {
                     complete = false;
+                }
+                if label != "ready" && label != "partial" {
                     // A vision layer never built (configured after the hash layer) or not
                     // finished: the same index visual call builds it.
                     let step = visual_step(

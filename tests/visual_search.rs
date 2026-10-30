@@ -382,6 +382,33 @@ fn a_missing_visual_layer_names_its_step_and_a_partial_page_cannot_continue() {
     );
 }
 
+/// A partial layer (a render budget or unit cap reached) keeps the page partial, but names no
+/// `index visual` step, which would leave it unchanged.
+#[test]
+fn a_partial_visual_layer_is_partial_without_a_step_that_cannot_change_it() {
+    let (env, _, _) = two();
+    env.database()
+        .execute("UPDATE model_layers SET state = 'partial'", [])
+        .unwrap();
+    let reply = env.search(&["--image", path(&env.png("red.png", RED))]);
+    assert_eq!(
+        (
+            reply["coverage"]["complete"].clone(),
+            reply["nextCursor"].clone()
+        ),
+        (json!(false), Value::Null)
+    );
+    let steps = reply["nextSteps"].as_array().cloned().unwrap_or_default();
+    assert!(
+        steps.iter().all(|s| s["arguments"]["action"] != "visual"),
+        "{steps:?}"
+    );
+    assert_eq!(
+        reply["coverage"]["layers"]["visual"]["hash"]["sources"][0]["state"],
+        "partial"
+    );
+}
+
 #[test]
 fn image_searches_refuse_incompatible_modes_and_inputs() {
     let (env, a, _) = two();

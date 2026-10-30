@@ -711,12 +711,12 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
         ),
         "search" => (
             serde_json::json!({
-                "query": {"type": "object", "description": "the query as given, its normalized phrase, mode and the whole tokens actually searched"},
+                "query": {"type": "object", "description": "the query as given, its normalized phrase, mode and the whole tokens actually searched; an image search adds image (kind path|bytes|ref and crop, never the path), requestedMode and usedModes (text, semantic, visual_hash, visual_exact, visual_embedding)"},
                 "source": {"type": "object", "description": "sourceId (opaque, from this path), snapshotId (sha256 of the exact .fig bytes decoded) and freshness: file-stamp reuse, not a per-query disk hash"},
                 "scope": {"type": "object"},
-                "ranking": {"type": "object", "description": "ranking and tokenizer versions, field weights and tie order"},
-                "results": {"type": "array", "items": {"type": "object"}},
-                "coverage": {"type": "object", "description": "complete, scannedRecords, totalRecords (null unless complete), layers.text.state ready|partial, layers.semantic in semantic and hybrid modes (state ready|partial|pending|unavailable, profileId, counts, reasons; workspace searches per source), layers.relations (per kind: ready or partial when built; stateless search builds contains, instance_of and variant_of and lists the others not_built, which says nothing about absence; library_identity relation_unavailable), reasons with counts, excluded hidden/internal matches, knownGaps and work limits"},
+                "ranking": {"type": "object", "description": "ranking and tokenizer versions, field weights and tie order; an image search names its fusion (visual-rrf-1), channels and candidatesPerChannel"},
+                "results": {"type": "array", "items": {"type": "object"}, "description": "ranked rows; in an image search each match names its basis (lexical, semantic, normalized_pixels, perceptual_hash, visual_embedding) and each row has visual {state rendered|failed|absent, bounds, diagnostics, diagnosticsTruncated, error}"},
+                "coverage": {"type": "object", "description": "complete, scannedRecords, totalRecords (null unless complete), layers.text.state ready|partial, layers.visual in image searches (hash and embedding state per source, ready|partial|pending|building|failed|stale|unavailable, and the approximate signal), layers.semantic in semantic and hybrid modes (state ready|partial|pending|unavailable, profileId, counts, reasons; workspace searches per source), layers.relations (per kind: ready or partial when built; stateless search builds contains, instance_of and variant_of and lists the others not_built, which says nothing about absence; library_identity relation_unavailable), reasons with counts, excluded hidden/internal matches, knownGaps and work limits"},
                 "hasMore": {"type": "boolean"},
                 "nextCursor": {"type": ["string", "null"]},
                 "workspaceId": {"type": "string", "description": "workspace searches only"},

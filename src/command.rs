@@ -722,7 +722,7 @@ fn search_mode(mode: &str) -> Result<Mode, Box<dyn Error>> {
     Mode::parse(mode).ok_or_else(|| {
         figlens::FigError::new(
             figlens::ErrorKind::InvalidArguments,
-            format!("search mode takes text, semantic or hybrid, not {mode:?}"),
+            format!("search mode takes text, semantic or hybrid, or visual with --image or --image-ref, not {mode:?}"),
         )
         .into()
     })
