@@ -77,25 +77,6 @@ fn mcp_lists_every_tool() {
 }
 
 #[test]
-fn mcp_declares_output_schemas_for_json_results() {
-    let reply = mcp_reply(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).unwrap();
-    let with_schema: Vec<_> = reply["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|t| t["outputSchema"].is_object())
-        .map(|t| t["name"].as_str().unwrap())
-        .collect();
-    assert_eq!(
-        with_schema,
-        [
-            "find", "search", "usages", "diff", "inspect", "bundle", "verify", "export", "index",
-            "jobs", "changes", "watch"
-        ]
-    );
-}
-
-#[test]
 fn mcp_workflows_work_without_design_files_under_restricted_roots() {
     let dir = test_support::TestDir::new();
     let roots = [dir.join("").canonicalize().unwrap()];

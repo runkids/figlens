@@ -2316,6 +2316,42 @@ fn tampered_or_other_layout_facets_are_refused_not_compared() {
 }
 
 #[test]
+fn stored_facets_keep_the_bytes_of_their_json_tree() {
+    let field = |key, digest, value| Field {
+        key,
+        facet: 0,
+        digest,
+        local: false,
+        value,
+    };
+    let fields = vec![
+        field(
+            "characters",
+            Some([7; 32]),
+            Some(json!({"b": "é\"", "a": [1, null]})),
+        ),
+        field("fontSize", Some([0xab; 32]), None),
+        field("fontName", None, None),
+    ];
+    for aliases in [None, Some(vec![]), Some(vec!["VariableID:0:62".to_owned()])] {
+        let f = Facets {
+            fields: fields.clone(),
+            aliases,
+        };
+        let rows: Vec<Json> = f
+            .fields
+            .iter()
+            .map(|f| match &f.value {
+                Some(v) => json!([f.key, f.digest.map(|d| hex(&d)), v]),
+                None => json!([f.key, f.digest.map(|d| hex(&d))]),
+            })
+            .collect();
+        let tree = json!({"fields": rows, "aliases": f.aliases}).to_string();
+        assert_eq!(String::from_utf8(encode(&f)).unwrap(), tree);
+    }
+}
+
+#[test]
 fn stored_facets_pay_for_their_text_before_parsing_it() {
     // Unparseable text past the budget is a limit, not a refused layout: no parse ran.
     let mut spent = BYTES - 3;
@@ -2401,6 +2437,21 @@ fn stored_facets_without_their_aliases_are_refused_not_read_as_none() {
         r#"[["fontSize",null]]"#,
         r#"{"fields":[["fontSize",null]]}"#,
         r#"{"fields":[],"aliases":[1]}"#,
+    ] {
+        let err = decode(text, &mut 0).err().unwrap();
+        assert_eq!(
+            err.downcast_ref::<FigError>().map(FigError::kind),
+            Some(ErrorKind::IndexIncompatible),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn stored_facets_whose_rows_are_not_lists_are_refused() {
+    for text in [
+        r#"{"fields":{},"aliases":[]}"#,
+        r#"{"fields":["fontSize"],"aliases":[]}"#,
     ] {
         let err = decode(text, &mut 0).err().unwrap();
         assert_eq!(

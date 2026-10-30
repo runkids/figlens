@@ -11,6 +11,7 @@ use std::io::{Read as _, Write as _};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 
 use rusqlite::{TransactionBehavior, params};
 
@@ -1045,6 +1046,60 @@ fn my_turn(conn: &Connection, dir: &Path, job_id: &str) -> Result<bool> {
     Ok(false)
 }
 
+/// Reads `child`'s whole output on a thread; the receiver gets one message when it ends, which
+/// is at the child's exit (or a read error).
+fn output(child: &mut Child) -> (std::thread::JoinHandle<String>, Receiver<()>) {
+    let mut stdout = child.stdout.take().expect("piped");
+    let (ended, eof) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ = stdout.read_to_string(&mut out);
+        let _ = ended.send(());
+        out
+    });
+    (reader, eof)
+}
+
+/// Waits for the worker in `child` to exit, running `tick` (cancel check, progress, heartbeat)
+/// between waits, and returns its status; `tick` answering true stops and reaps it (`None`).
+/// The end of its output wakes the wait: an exiting process closes it just before it can be
+/// reaped, so the next `POLL` is waited in 5 ms steps, then whole again, never spinning on a
+/// worker that closed its output early.
+fn wait_worker(
+    child: &mut Option<Child>,
+    eof: &Receiver<()>,
+    mut tick: impl FnMut() -> Result<bool>,
+) -> Result<Option<std::process::ExitStatus>> {
+    const STEP: Duration = Duration::from_millis(5);
+    let mut steps = 0;
+    loop {
+        let running = child.as_mut().expect("spawned");
+        if let Some(status) = running.try_wait()? {
+            return Ok(Some(status));
+        }
+        if tick()? {
+            // Stopped before the output is joined: the reader ends when the child does. An exit
+            // that cannot be confirmed is no cancel: the child stays with the caller.
+            if !stop(running) {
+                return Err(fail(
+                    ErrorKind::OperationFailed,
+                    "the index worker could not be confirmed stopped",
+                ));
+            }
+            *child = None;
+            return Ok(None);
+        }
+        match eof.recv_timeout(POLL) {
+            Err(RecvTimeoutError::Disconnected) if steps < POLL.as_millis() / STEP.as_millis() => {
+                steps += 1;
+                std::thread::sleep(STEP);
+            }
+            Err(RecvTimeoutError::Disconnected) => std::thread::sleep(POLL),
+            _ => {}
+        }
+    }
+}
+
 /// Waits for the build lock, then runs attempt `attempt` of job `job_id` in a child until it
 /// exits. Returns the child's result to publish, or `None` once the job ended here
 /// (cancelled or failed). `child` holds the running child, so a caller seeing an error can
@@ -1116,29 +1171,11 @@ fn build(
         ));
     }
     let running = child.insert(spawn(dir, job_id, me, attempt)?);
-    let mut out = String::new();
-    let mut stdout = running.stdout.take().expect("piped");
-    let reader = std::thread::spawn(move || {
-        let _ = stdout.read_to_string(&mut out);
-        out
-    });
+    let (reader, eof) = output(running);
     let mut last = Json::Null;
-    let status = loop {
-        let running = child.as_mut().expect("spawned");
-        if let Some(status) = running.try_wait()? {
-            break Some(status);
-        }
+    let status = wait_worker(child, &eof, || {
         if cancelled(&ws.conn, job_id, cancel)? {
-            // Stopped before the output is joined: the reader ends when the child does. An exit
-            // that cannot be confirmed is no cancel: the child stays with the caller.
-            if !stop(running) {
-                return Err(fail(
-                    ErrorKind::OperationFailed,
-                    "the index worker could not be confirmed stopped",
-                ));
-            }
-            *child = None;
-            break None;
+            return Ok(true);
         }
         if let Some(now) = report_job(&ws.conn, dir, job_id)?
             && (now["stage"] != last["stage"] || now["progress"] != last["progress"])
@@ -1155,8 +1192,8 @@ fn build(
                 .map_err(sql)?;
             beat = Instant::now();
         }
-        std::thread::sleep(POLL);
-    };
+        Ok(false)
+    })?;
     let output = reader.join().unwrap_or_default();
     let built: Json = output
         .lines()
@@ -2085,6 +2122,11 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
         })
         .map_err(sql)?;
     let ceiling = set as u64 * page as u64;
+    // Also this connection only: it reclaims the WAL itself after every batch (`between`), so
+    // SQLite's checkpoint at each large commit only repeated that, and a 32 MiB cache keeps a
+    // batch's pages from spilling into the WAL before its commit.
+    conn.execute_batch("PRAGMA wal_autocheckpoint = 0; PRAGMA cache_size = -32768;")
+        .map_err(sql)?;
     let (kind, source_id, membership, scope, incarnation, expected): (
         String,
         String,
