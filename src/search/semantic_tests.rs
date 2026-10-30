@@ -388,3 +388,44 @@ fn properties_leave_text_search_unchanged() {
         );
     }
 }
+
+#[test]
+fn a_stopped_property_build_never_masks_plain_text_even_when_no_record_fit() {
+    use crate::search::Cached;
+    use std::sync::Arc;
+    let message = message();
+    let tree = Tree::new(&message);
+    let build = |work, library| build_with(&tree, "0:3", bounds(work), false, library, None);
+    let work = (1..4000)
+        .find(|&w| {
+            let plain = build(w, Library::Skip);
+            let model = build(w, Library::Stored);
+            plain.stop.is_none() && model.stop == Some("work_limit") && model.records.is_empty()
+        })
+        .expect("property definitions can stop before a record that fits plain text");
+    let plain = Arc::new(build(work, Library::Skip));
+    let model = Arc::new(build(work, Library::Stored));
+    assert!(plain.records.iter().any(|r| r.id == "0:3"));
+    let mut cached = Cached {
+        path: Default::default(),
+        stamp: (SystemTime::UNIX_EPOCH, 0),
+        scope: "0:3".into(),
+        snapshot: "s".into(),
+        hashed: SystemTime::UNIX_EPOCH,
+        text: None,
+        text_inputs: false,
+        full: None,
+    };
+    cached.keep(model.clone(), true);
+    assert!(
+        cached.pick(false, false).is_none(),
+        "plain text must rebuild its own budget"
+    );
+    assert!(Arc::ptr_eq(&cached.pick(false, true).unwrap(), &model));
+    cached.keep(plain.clone(), false);
+    assert!(Arc::ptr_eq(&cached.pick(false, false).unwrap(), &plain));
+    assert!(
+        cached.pick(false, true).is_none(),
+        "a plain index has no model inputs"
+    );
+}
