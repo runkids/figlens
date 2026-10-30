@@ -910,6 +910,44 @@ fn derived_text_layout_is_text_and_its_glyphs_compare_by_blob_bytes() {
 }
 
 #[test]
+fn a_glyph_outline_moved_to_another_glyph_is_a_text_change() {
+    // Glyphs at x 0 and 20; one names blob `at` (its outline), the other none (a space).
+    let file = |outlined: usize, at: u32| {
+        let glyph = |i: usize| {
+            let mut fields = vec![(
+                "position",
+                obj(vec![("x", K::Float(20.0 * i as f32)), ("y", K::Float(0.0))]),
+            )];
+            if i == outlined {
+                fields.push(("commandsBlob", K::UInt(at)));
+            }
+            obj(fields)
+        };
+        let derived = obj(vec![("glyphs", K::Array((0..2).map(glyph).collect()))]);
+        let K::Object(name, mut fields) = doc(vec![node(
+            10,
+            Some(1),
+            "TEXT",
+            "Title",
+            vec![text("I "), ("derivedTextData", derived)],
+        )]) else {
+            unreachable!()
+        };
+        let blob = obj(vec![("bytes", K::Bytes(vec![1]))]);
+        fields.insert("blobs", K::Array(vec![blob.clone(), blob]));
+        K::Object(name, fields)
+    };
+    let facets = |a, b| run(a, b)["frames"][0]["nodes"][0]["facets"].clone();
+    assert_eq!(
+        (
+            facets(file(0, 0), file(1, 0)),
+            run(file(0, 0), file(0, 1))["frames"].clone()
+        ),
+        (json!(["text"]), json!([]))
+    );
+}
+
+#[test]
 fn an_unchanged_long_text_layout_is_read_and_unchanged() {
     let file = || {
         let glyph = |i: u32| {

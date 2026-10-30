@@ -22,7 +22,7 @@ use crate::expand::{Bounds, Expanded, json_bytes, kiwi_bytes};
 use crate::{Document, ErrorKind, FigError, Tree, guid_key, to_json};
 
 /// Bumped whenever a field list, facet or digest stream changes; cursors carry it.
-const VERSION: &str = "diff-v7";
+const VERSION: &str = "diff-v8";
 /// Estimated heap of an expanded size or transform built as JSON (a map of at most six numbers).
 const OWNED_BYTES: usize = 512;
 pub(crate) const FACETS: [&str; 5] = ["text", "layout", "appearance", "properties", "structure"];
@@ -200,7 +200,8 @@ const BLOB_KEYS: [&str; 2] = ["commandsBlob", "vectorNetworkBlob"];
 /// it only as a `<N bytes>` placeholder, which would otherwise make every such text unread.
 const UNCOMPARED: [&str; 1] = ["fontDigest"];
 
-/// `v` without its blob indexes, pushed to `refs` in key order, or its `UNCOMPARED` keys.
+/// `v` with each blob index, pushed to `refs` in key order, replaced by `null`, so where a blob
+/// is named still counts but not its file-local number; and without its `UNCOMPARED` keys.
 fn unblob(v: &Json, refs: &mut Vec<u64>) -> Json {
     match v {
         Json::Array(a) => Json::Array(a.iter().map(|x| unblob(x, refs)).collect()),
@@ -209,7 +210,7 @@ fn unblob(v: &Json, refs: &mut Vec<u64>) -> Json {
                 .filter_map(|(k, x)| match BLOB_KEYS.contains(&k.as_str()) {
                     true => {
                         refs.push(x.as_u64().unwrap_or(u64::MAX));
-                        None
+                        Some((k.clone(), Json::Null))
                     }
                     false if UNCOMPARED.contains(&k.as_str()) => None,
                     false => Some((k.clone(), unblob(x, refs))),
