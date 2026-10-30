@@ -430,8 +430,16 @@ pub(crate) const V8: &str = "
 /// chunk text (SHA-256), so unchanged chunks keep theirs across refreshes; `model_refs` names
 /// the texts each generation's layer uses under one profile and chunk policy, so dropping a
 /// generation can drop the vectors nothing else uses; `model_layers` is each layer's published
-/// progress, written only by its embed job.
+/// progress, written only by its embed job. An embed job (`kind` `embed`) names the generation
+/// and profile it embeds (`expected_gen`, `profile_id`) and has its own active slot per source,
+/// scope, generation and profile, so a text build never joins or waits behind a model job.
 pub(crate) const V9: &str = "
+    ALTER TABLE jobs ADD COLUMN profile_id TEXT;
+    DROP INDEX jobs_active;
+    CREATE UNIQUE INDEX jobs_active ON jobs (source_id, scope)
+        WHERE state IN ('queued', 'running') AND kind <> 'embed';
+    CREATE UNIQUE INDEX jobs_embed ON jobs (source_id, scope, expected_gen, profile_id)
+        WHERE state IN ('queued', 'running') AND kind = 'embed';
     CREATE TABLE model_vectors (
         profile_id TEXT NOT NULL, text_hash BLOB NOT NULL, vector BLOB NOT NULL,
         PRIMARY KEY (profile_id, text_hash)) STRICT, WITHOUT ROWID;

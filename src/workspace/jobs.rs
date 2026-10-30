@@ -350,15 +350,19 @@ pub(crate) fn report_job(conn: &Connection, dir: &Path, job_id: &str) -> Result<
             json!([{"tool": "jobs", "arguments": {"action": "status", "jobId": job_id}}])
         }
         "interrupted" | "failed" | "cancelled" => {
-            // A rebuild again, so an unchanged snapshot is not reused instead of repaired.
-            let action = if kind == "rebuild" {
-                "rebuild"
-            } else {
-                "refresh"
+            // A rebuild again, so an unchanged snapshot is not reused instead of repaired; an
+            // embed again, so no text build is repeated for a model layer.
+            let action = match kind.as_str() {
+                "rebuild" => "rebuild",
+                "embed" => "embed",
+                _ => "refresh",
             };
             json!([{"tool": "index", "arguments": {"action": action,
             "workspaceId": ws, "sourceId": source, "scope": scope},
             "why": format!("a {action} starts the build again as a new attempt; the previous index keeps serving")}])
+        }
+        "succeeded" if kind == "embed" => {
+            json!([{"tool": "search", "arguments": {"workspaceId": ws, "node": scope, "query": "<words>", "mode": "semantic"}}])
         }
         "succeeded" => {
             json!([{"tool": "search", "arguments": {"workspaceId": ws, "node": scope, "query": "<words>"}}])
@@ -513,7 +517,34 @@ fn submit_fenced(
     {
         return Err(Unfenced.into());
     }
-    let print = fingerprint(op, &id, source_id, &membership, scope);
+    // An embed job embeds the scope's published generation under the active profile: both are
+    // in its key, so an embed of an older generation or profile is never joined or replayed.
+    let embed = kind == "embed";
+    let (gen_key, profile_key) = if embed {
+        let gen_id: i64 = tx
+            .query_row(
+                "SELECT gen FROM published WHERE source_id = ?1 AND scope = ?2",
+                [source_id, scope],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(sql)?
+            .ok_or_else(|| {
+                fail(
+                    ErrorKind::InvalidArguments,
+                    format!("scope {scope} of source {source_id} has no published index to embed; prepare or refresh it first"),
+                )
+            })?;
+        let profile = crate::semantic::profile::active(storage)?.ok_or_else(no_profile)?;
+        (Some(gen_id), Some(profile.id))
+    } else {
+        (None, None)
+    };
+    let key = match (gen_key, &profile_key) {
+        (Some(g), Some(p)) => format!("{scope}\n{g}\n{p}\n{}", super::model::POLICY),
+        _ => scope.to_owned(),
+    };
+    let print = fingerprint(op, &id, source_id, &membership, &key);
     if let Some(request) = request_id {
         match requested(&tx, request)? {
             Some((job_id, fp)) if fp == print => {
@@ -532,8 +563,9 @@ fn submit_fenced(
     let active: Option<(String, String, i64, String, bool)> = tx
         .query_row(
             "SELECT job_id, owner, attempt, membership, cancel FROM jobs WHERE source_id = ?1
-             AND scope = ?2 AND state IN ('queued', 'running')",
-            [source_id, scope],
+             AND scope = ?2 AND state IN ('queued', 'running') AND (kind = 'embed') = ?3
+             AND (?3 = 0 OR (expected_gen = ?4 AND profile_id = ?5))",
+            params![source_id, scope, embed, gen_key, profile_key],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()
@@ -660,13 +692,24 @@ fn submit_fenced(
         .with_recovery(json!([wait]))
         .into());
     }
+    if embed {
+        // An embed of an older generation or another profile is obsolete: its fence would
+        // refuse its writes anyway, so it stops now instead of at its next batch.
+        tx.execute(
+            "UPDATE jobs SET cancel = 1 WHERE kind = 'embed' AND source_id = ?1 AND scope = ?2
+             AND state IN ('queued', 'running') AND NOT (expected_gen = ?3 AND profile_id = ?4)",
+            params![source_id, scope, gen_key, profile_key],
+        )
+        .map_err(sql)?;
+    }
     let job_id = format!("{id}.{}", random_hex());
     let now = now_ms();
+    // Text jobs set `expected_gen` when they start; an embed names its generation here.
     tx.execute(
         "INSERT INTO jobs (job_id, request_id, fingerprint, kind, source_id, membership, scope,
-         incarnation, state, owner, created_ms, heartbeat_ms, seq)
+         incarnation, state, owner, created_ms, heartbeat_ms, seq, expected_gen, profile_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'queued', ?9, ?10, ?10,
-                 (SELECT COALESCE(max(seq), 0) + 1 FROM jobs))",
+                 (SELECT COALESCE(max(seq), 0) + 1 FROM jobs), ?11, ?12)",
         params![
             job_id,
             request_id,
@@ -677,7 +720,9 @@ fn submit_fenced(
             scope,
             incarnation,
             me,
-            now
+            now,
+            gen_key,
+            profile_key
         ],
     )
     .map_err(sql)?;
@@ -777,6 +822,7 @@ fn finish(
 /// stops it even when the kill fails, so the wait ends either way.
 fn stop(child: &mut Child) -> bool {
     drop(child.stdin.take());
+    crate::semantic::kill_tree(child);
     let _ = child.kill();
     child.wait().is_ok()
 }
@@ -845,27 +891,49 @@ fn cancelled(conn: &Connection, job_id: &str, local: &AtomicBool) -> Result<bool
 
 /// The child process that builds one job. Its stdin closes when this process exits or dies,
 /// which asks it to stop; a stopped child can outlive its owner, so it holds the worker lock.
-fn spawn(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Child> {
-    let exe = std::env::current_exe()?;
+/// `model` is the profile's runtime for an embed job: it runs `__model-worker` itself, as the
+/// root of its own process tree, so stopping it ends whatever the model started too.
+fn spawn(dir: &Path, job_id: &str, me: &str, attempt: i64, model: Option<&Path>) -> Result<Child> {
+    let exe = match model {
+        Some(exe) => exe.to_owned(),
+        None => std::env::current_exe()?,
+    };
     // Before the child exists, so a cancel never mistakes a starting worker for an exited one.
     mkdir(&dir.join("claims"))?;
     let path = worker_path(dir, job_id, attempt);
     File::create(&path).map_err(|e| storage_error(&path, e))?;
-    Command::new(exe)
-        .arg("__index-worker")
-        .arg(dir)
-        .arg(job_id)
-        .env(LAUNCH, format!("{me}:{attempt}"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| {
-            fail(
-                ErrorKind::OperationFailed,
-                format!("cannot start the index worker: {e}"),
-            )
-        })
+    let mut cmd = Command::new(exe);
+    cmd.arg(match model {
+        Some(_) => "__model-worker",
+        None => "__index-worker",
+    })
+    .arg(dir)
+    .arg(job_id)
+    .env(LAUNCH, format!("{me}:{attempt}"))
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null());
+    let child = match model {
+        Some(_) => crate::semantic::spawn_owned(&mut cmd),
+        None => cmd.spawn().map_err(Into::into),
+    };
+    child.map_err(|e| {
+        fail(
+            ErrorKind::OperationFailed,
+            format!("cannot start the index worker: {e}"),
+        )
+    })
+}
+
+/// The runtime of the active profile, while it is still the one an embed job was submitted for.
+fn model_exe(storage: &Storage, profile_id: Option<&str>) -> Result<PathBuf> {
+    match crate::semantic::profile::active(storage)? {
+        Some(p) if Some(p.id.as_str()) == profile_id => Ok(p.exe),
+        _ => Err(fail(
+            ErrorKind::OperationFailed,
+            "the configured model profile changed since this embed job was submitted; run index embed again",
+        )),
+    }
 }
 
 /// Test builds only: `FIGLENS_TEST_HOLD=<stage>:<file>` keeps the worker in `stage` while
@@ -906,18 +974,19 @@ pub fn run(
     let (_, mut ws) = opened(storage, &select, true)?;
     let dir = ws.held.dir.clone();
     let me = owner(&dir)?;
-    let mine: Option<(String, String, i64)> = ws
+    let mine: Option<(String, String, i64, bool)> = ws
         .conn
         .query_row(
-            "SELECT owner, state, attempt FROM jobs WHERE job_id = ?1",
+            "SELECT owner, state, attempt, kind = 'embed' FROM jobs WHERE job_id = ?1",
             [job_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()
         .map_err(sql)?;
+    let embed = mine.as_ref().is_some_and(|m| m.3);
     let Some(attempt) = mine
-        .filter(|(o, s, _)| *o == me && s == "queued")
-        .map(|(.., a)| a)
+        .filter(|(o, s, ..)| *o == me && s == "queued")
+        .map(|(_, _, a, _)| a)
     else {
         // Ended (cancelled while queued, say) or taken over: its claim is no longer needed.
         if let Some((_, claim)) = pending {
@@ -952,8 +1021,10 @@ pub fn run(
         }
     };
     // Held here, not in `build`, so an error keeps it (and the workspace lock) until the child
-    // is stopped and reaped.
-    let build_lock = match open_lock(&dir.join("build.lock"), true) {
+    // is stopped and reaped. Embed jobs take turns on their own lock, so a text build never
+    // waits for a model job.
+    let lock_name = if embed { "embed.lock" } else { "build.lock" };
+    let build_lock = match open_lock(&dir.join(lock_name), true) {
         Ok(lock) => lock.expect("created"),
         Err(e) => {
             return Err(abandon(
@@ -989,6 +1060,18 @@ pub fn run(
             return Err(abandon(&mut ws.conn, job_id, &me, attempt, held, e));
         }
     };
+    if embed {
+        drop(build_lock);
+        // The worker recorded its layer and the job's success in one fenced write; a job it
+        // left running ended without that.
+        let error = error_json(
+            "operation_failed",
+            "the model worker exited without recording its layer",
+        );
+        finish(&ws.conn, job_id, &me, attempt, "failed", Some(error))?;
+        claim.done();
+        return report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id));
+    }
     // Publication: release the build and workspace locks, then take the location lock shared and
     // the workspace lock again (the lock order), re-open and re-validate everything, and publish
     // in one short transaction. The child has exited; the owner and claim locks persist, so
@@ -1020,15 +1103,16 @@ pub fn run(
 /// Whether `job_id` is the first live queued job in admission order. `seq` is assigned under
 /// the submit transaction, at admission and again at takeover, so each owner's jobs are in the
 /// order it runs them and no two owners can wait on each other.
-fn my_turn(conn: &Connection, dir: &Path, job_id: &str) -> Result<bool> {
+/// Embed jobs (`embed`) queue apart from text builds, on their own lock.
+fn my_turn(conn: &Connection, dir: &Path, job_id: &str, embed: bool) -> Result<bool> {
     let mut stmt = conn
         .prepare(
             "SELECT job_id, owner, attempt FROM jobs WHERE state = 'queued'
-             ORDER BY seq, rowid",
+             AND (kind = 'embed') = ?1 ORDER BY seq, rowid",
         )
         .map_err(sql)?;
     for row in stmt
-        .query_map([], |r| {
+        .query_map([embed], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -1119,6 +1203,15 @@ fn build(
     progress: &mut dyn FnMut(&Json),
     child: &mut Option<Child>,
 ) -> Result<Option<Json>> {
+    let (kind, profile_id): (String, Option<String>) = ws
+        .conn
+        .query_row(
+            "SELECT kind, profile_id FROM jobs WHERE job_id = ?1",
+            [job_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(sql)?;
+    let embed = kind == "embed";
     // Wait for the build lock, holding it only while this job is the oldest live queued job,
     // so no process holds it while waiting for its turn.
     let (waited, mut beat) = (Instant::now(), Instant::now());
@@ -1134,7 +1227,7 @@ fn build(
             ));
         }
         if build.try_lock().is_ok() {
-            if my_turn(&ws.conn, dir, job_id)? {
+            if my_turn(&ws.conn, dir, job_id, embed)? {
                 break;
             }
             let _ = build.unlock();
@@ -1154,8 +1247,9 @@ fn build(
         .conn
         .execute(
             "UPDATE jobs SET state = 'running', stage = 'stage', heartbeat_ms = ?3,
-             expected_gen = (SELECT p.gen FROM published p JOIN jobs j ON j.job_id = ?1
-                             WHERE p.source_id = j.source_id AND p.scope = j.scope)
+             expected_gen = CASE WHEN kind = 'embed' THEN expected_gen ELSE
+                            (SELECT p.gen FROM published p JOIN jobs j ON j.job_id = ?1
+                             WHERE p.source_id = j.source_id AND p.scope = j.scope) END
              WHERE job_id = ?1 AND owner = ?2 AND attempt = ?4 AND state = 'queued' AND cancel = 0",
             params![job_id, me, now_ms(), attempt],
         )
@@ -1172,7 +1266,11 @@ fn build(
             "the job's source is no longer inside the visible roots",
         ));
     }
-    let running = child.insert(spawn(dir, job_id, me, attempt)?);
+    let model = match embed {
+        true => Some(model_exe(storage, profile_id.as_deref())?),
+        false => None,
+    };
+    let running = child.insert(spawn(dir, job_id, me, attempt, model.as_deref())?);
     let (reader, eof) = output(running);
     let mut last = Json::Null;
     let status = wait_worker(child, &eof, || {
@@ -1196,6 +1294,9 @@ fn build(
         }
         Ok(false)
     })?;
+    if let Some(exited) = child.as_ref() {
+        crate::semantic::forget_tree(exited);
+    }
     let output = reader.join().unwrap_or_default();
     let built: Json = output
         .lines()
@@ -1207,6 +1308,12 @@ fn build(
             // Cancelled and reaped: nothing more is written for this attempt.
             finish(&ws.conn, job_id, me, attempt, "cancelled", None)?;
             drop_building(&mut ws.conn, job_id, me, attempt)?;
+            return Ok(None);
+        }
+        // A model worker that met its fence after a cancel landed was cancelled.
+        Some(s) if embed && !s.success() && cancelled(&ws.conn, job_id, cancel)? => {
+            *child = None;
+            finish(&ws.conn, job_id, me, attempt, "cancelled", None)?;
             return Ok(None);
         }
         Some(s) if !s.success() || built["error"].is_object() || !built["gen"].is_i64() => {
@@ -1978,6 +2085,16 @@ pub fn cancel(storage: &Storage, job_id: &str) -> Result<Json> {
 /// writes and verifies one job's generation, printing one JSON line. It exits as soon as its
 /// stdin closes, unless it is stopped, and holds the worker lock for its whole life.
 pub fn worker(dir: &Path, job_id: &str) -> Json {
+    worker_with(dir, job_id, work)
+}
+
+/// The life of a worker child around `work(dir, jobId, owner, attempt)`: its stdin watchdog,
+/// launch token and worker lock, and the one JSON line it reports.
+pub(super) fn worker_with(
+    dir: &Path,
+    job_id: &str,
+    work: impl FnOnce(&Path, &str, &str, i64) -> Result<Json>,
+) -> Json {
     // Held until the worker file is locked and marked, so the watchdog never exits in between
     // and leaves an empty file that would read as a worker still starting.
     static STARTUP: Mutex<()> = Mutex::new(());
@@ -2047,7 +2164,7 @@ fn wal_bytes(dir: &Path) -> u64 {
 
 /// The capacity error for SQLite refusing a page past the build's `ceiling` bytes (or a full
 /// disk), so the caller sees what to do instead of `database or disk is full`.
-fn full(e: Box<dyn Error>, ceiling: u64) -> Box<dyn Error> {
+pub(super) fn full(e: Box<dyn Error>, ceiling: u64) -> Box<dyn Error> {
     match e.downcast_ref::<rusqlite::Error>() {
         Some(rusqlite::Error::SqliteFailure(f, _)) if f.code == rusqlite::ErrorCode::DiskFull => {
             fail(
@@ -2090,17 +2207,9 @@ fn launch() -> Result<(String, i64)> {
         .ok_or_else(|| format!("{LAUNCH} is malformed").into())
 }
 
-/// Builds attempt `attempt` of job `job_id` for owner `me`. Every write is fenced to that
-/// launch, never to whichever attempt the row holds now, so a child outliving a takeover
-/// cannot adopt the new attempt.
-fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
-    let stale = || {
-        fail(
-            ErrorKind::OperationFailed,
-            "another attempt owns this job now",
-        )
-    };
-    let fenced = |changed: usize| if changed == 1 { Ok(()) } else { Err(stale()) };
+/// A worker's hold on the workspace at `dir` for job `job_id`: its lock, shared, and a write
+/// connection whose growth SQLite stops at the build ceiling, also returned in bytes.
+pub(super) fn worker_conn(dir: &Path, job_id: &str) -> Result<(File, Connection, u64)> {
     let id = job_workspace(job_id)?;
     let lock_path = dir
         .parent()
@@ -2111,7 +2220,7 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
     if read_marker(dir, &id)?.is_none() {
         return Err(preserved(dir, "has no figlens workspace marker"));
     }
-    let mut conn = open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    let conn = open(&dir.join(DB), OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     writable(&conn)?;
     // The hard ceiling, on this connection only: pages a failed build freed are reused first, so
     // a retry fits again without a VACUUM. SQLite answers with the ceiling it actually set.
@@ -2125,6 +2234,22 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
         })
         .map_err(sql)?;
     let ceiling = set as u64 * page as u64;
+    Ok((lock_file, conn, ceiling))
+}
+
+/// Builds attempt `attempt` of job `job_id` for owner `me`. Every write is fenced to that
+/// launch, never to whichever attempt the row holds now, so a child outliving a takeover
+/// cannot adopt the new attempt.
+fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
+    let stale = || {
+        fail(
+            ErrorKind::OperationFailed,
+            "another attempt owns this job now",
+        )
+    };
+    let fenced = |changed: usize| if changed == 1 { Ok(()) } else { Err(stale()) };
+    let id = job_workspace(job_id)?;
+    let (lock_file, mut conn, ceiling) = worker_conn(dir, job_id)?;
     // Also this connection only: it reclaims the WAL itself after every batch (`between`), so
     // SQLite's checkpoint at each large commit only repeated that, and a 32 MiB cache keeps a
     // batch's pages from spilling into the WAL before its commit.
@@ -2528,6 +2653,71 @@ pub fn rebuild_scope(
     submit_all(
         storage, select, "rebuild", source, scope, request_id, None, None,
     )
+}
+
+/// Semantic search's model layer needs a configured profile; `models status` shows the setup.
+pub(crate) fn no_profile() -> Box<dyn Error> {
+    FigError::new(
+        ErrorKind::ModeUnavailable,
+        "embedding needs a configured local model; run models status for setup",
+    )
+    .with_recovery(json!([{"action": "models_status", "tool": "models",
+        "arguments": {"action": "status"}, "requires": "none"}]))
+    .into()
+}
+
+/// `index embed`: embeds the published generation of each chosen scope (every published one
+/// without `scope`) with the active profile, as jobs beside the text builds. Text search keeps
+/// serving throughout; nothing is downloaded.
+pub fn embed(
+    storage: &Storage,
+    select: &Select,
+    source: Option<&str>,
+    scope: Option<&str>,
+    request_id: Option<&str>,
+) -> Result<Outcome> {
+    if crate::semantic::profile::active(storage)?.is_none() {
+        return Err(no_profile());
+    }
+    submit_all(
+        storage, select, "embed", source, scope, request_id, None, None,
+    )
+}
+
+/// Whether succeeded text job `report`'s generation has no ready model layer under the active
+/// profile; `None` without a profile, or when the layer cannot be read.
+fn layer_missing(storage: &Storage, report: &Json) -> Option<bool> {
+    if report["state"] != "succeeded" || report["kind"] == "embed" {
+        return None;
+    }
+    let profile = crate::semantic::profile::active(storage).ok()??;
+    let select = Select::Id(report["workspaceId"].as_str()?.to_owned());
+    let (_, ws) = opened(storage, &select, false).ok()?;
+    let layer = super::model::layer(&ws.conn, report["generation"].as_i64()?, &profile.id).ok()?;
+    Some(layer.is_none_or(|l| l["state"] != "ready"))
+}
+
+/// For an owner that keeps running after text job `report` succeeded: submits the embed of the
+/// generation it published when a profile is configured and its layer is not ready, returning
+/// the job this process must run. Never fails the text job; a later `index embed` retries.
+pub fn embed_after(storage: &Storage, report: &Json) -> Option<String> {
+    if layer_missing(storage, report) != Some(true) {
+        return None;
+    }
+    let select = Select::Id(report["workspaceId"].as_str()?.to_owned());
+    let (source, scope) = (report["sourceId"].as_str(), report["scope"].as_str());
+    let done = submit_all(storage, &select, "embed", source, scope, None, None, None).ok()?;
+    done.run.into_iter().next()
+}
+
+/// The `index embed` call that builds succeeded text job `report`'s model layer, for a caller
+/// that ends without running model jobs, so none is left queued for a dead owner.
+pub fn embed_step(storage: &Storage, report: &Json) -> Option<Json> {
+    layer_missing(storage, report)?.then(|| {
+        json!({"tool": "index", "arguments": {"action": "embed", "workspaceId": report["workspaceId"],
+            "sourceId": report["sourceId"], "scope": report["scope"]},
+            "why": "a model profile is configured and this index has no ready semantic layer; embedding runs the local model and may take minutes"})
+    })
 }
 
 /// `index track`: turns change tracking on for published scope `scope` of each chosen source and
