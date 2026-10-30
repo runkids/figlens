@@ -507,64 +507,6 @@ impl Builder<'_, '_> {
         );
     }
 
-    /// REST `componentProperties` of an instance of `main`: variant values from the main's
-    /// name specs, other properties from the instance's assignments or the definition's default.
-    fn component_properties(&self, k: &Obj, main: &str) -> Obj {
-        let mut out = Obj::new();
-        let Some(m) = self.tree.nodes.get(main).map(|n| to_json(n)) else {
-            return out;
-        };
-        // Variants define their properties on the component set and point at them.
-        let set = parent_id(self.tree, main).map(|p| to_json(self.tree.nodes[&p]));
-        let set_defs: HashMap<String, &Json> = set
-            .iter()
-            .flat_map(|s| s["componentPropDefs"].as_array().into_iter().flatten())
-            .filter_map(|d| Some((guid(&d["id"])?, d)))
-            .collect();
-        let assigned: HashMap<String, &Json> = at(k, "componentPropAssignments")
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|a| Some((guid(&a["defID"])?, a)))
-            .collect();
-        for own in m["componentPropDefs"].as_array().into_iter().flatten() {
-            let def = semantics::resolve_definition(own, &set_defs);
-            let (Some(def_id), Some(own_id)) = (guid(&def["id"]), guid(&own["id"])) else {
-                continue;
-            };
-            let kind = match def["type"].as_str() {
-                Some("BOOL") => "BOOLEAN",
-                Some("VARIANT") | None => continue,
-                Some(other) => other,
-            };
-            let value = assigned
-                .get(&own_id)
-                .or(assigned.get(&def_id))
-                .and_then(|a| prop_value(a))
-                .or_else(|| prop_value(def));
-            let mut prop = json!({ "type": kind, "value": value });
-            if let Some(list) = def["preferredValues"]["instanceSwapValues"].as_array() {
-                prop["preferredValues"] = list
-                    .iter()
-                    .map(|v| json!({ "type": v["type"], "key": v["key"] }))
-                    .collect();
-            }
-            out.insert(
-                format!("{}#{def_id}", def["name"].as_str().unwrap_or("")),
-                prop,
-            );
-        }
-        for spec in m["variantPropSpecs"].as_array().into_iter().flatten() {
-            if let Some(def) = guid(&spec["propDefId"]).and_then(|id| set_defs.get(&id)) {
-                out.insert(
-                    def["name"].as_str().unwrap_or("").to_owned(),
-                    json!({ "value": spec["value"], "type": "VARIANT", "boundVariables": {} }),
-                );
-            }
-        }
-        out
-    }
-
     /// `rendered`: no ancestor hides this node or consumes it as a boolean operand;
     /// `clip`: the page region its clipping ancestors leave visible.
     fn node(
@@ -649,7 +591,8 @@ impl Builder<'_, '_> {
             list.sort_by_cached_key(|a| variable_order(a["id"].as_str().unwrap_or("")));
         }
         if let Some(main) = out.get("componentId").and_then(Json::as_str) {
-            let props = self.component_properties(&kiwi, main);
+            let props =
+                component_properties(self.tree, main, at(&kiwi, "componentPropAssignments"));
             if !props.is_empty() {
                 out.insert("componentProperties".into(), Json::Object(props));
             }
@@ -857,6 +800,75 @@ pub(crate) fn guid(v: &Json) -> Option<String> {
         v["sessionID"].as_u64()?,
         v["localID"].as_u64()?
     ))
+}
+
+/// REST `componentProperties` of an instance of `main` whose `componentPropAssignments` are
+/// `assignments` (a later entry wins per definition): variant values from the main's name specs,
+/// other properties from the assignments or the definition's default. Search model inputs
+/// (`search::semantic`) read the same values.
+pub(crate) fn component_properties(tree: &Tree, main: &str, assignments: &Json) -> Obj {
+    let mut out = Obj::new();
+    let Some(m) = tree.nodes.get(main) else {
+        return out;
+    };
+    let field = |n: &kiwi_schema::Value, f: &str| n.get(f).map_or(Json::Null, to_json);
+    // Variants define their properties on the component set and point at them.
+    let set = parent_id(tree, main).map(|p| field(tree.nodes[&p], "componentPropDefs"));
+    let set_defs: HashMap<String, &Json> = set
+        .iter()
+        .flat_map(|s| s.as_array().into_iter().flatten())
+        .filter_map(|d| Some((guid(&d["id"])?, d)))
+        .collect();
+    let assigned: HashMap<String, &Json> = assignments
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|a| Some((guid(&a["defID"])?, a)))
+        .collect();
+    for own in field(m, "componentPropDefs")
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let def = semantics::resolve_definition(own, &set_defs);
+        let (Some(def_id), Some(own_id)) = (guid(&def["id"]), guid(&own["id"])) else {
+            continue;
+        };
+        let kind = match def["type"].as_str() {
+            Some("BOOL") => "BOOLEAN",
+            Some("VARIANT") | None => continue,
+            Some(other) => other,
+        };
+        let value = assigned
+            .get(&own_id)
+            .or(assigned.get(&def_id))
+            .and_then(|a| prop_value(a))
+            .or_else(|| prop_value(def));
+        let mut prop = json!({ "type": kind, "value": value });
+        if let Some(list) = def["preferredValues"]["instanceSwapValues"].as_array() {
+            prop["preferredValues"] = list
+                .iter()
+                .map(|v| json!({ "type": v["type"], "key": v["key"] }))
+                .collect();
+        }
+        out.insert(
+            format!("{}#{def_id}", def["name"].as_str().unwrap_or("")),
+            prop,
+        );
+    }
+    for spec in field(m, "variantPropSpecs")
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if let Some(def) = guid(&spec["propDefId"]).and_then(|id| set_defs.get(&id)) {
+            out.insert(
+                def["name"].as_str().unwrap_or("").to_owned(),
+                json!({ "value": spec["value"], "type": "VARIANT", "boundVariables": {} }),
+            );
+        }
+    }
+    out
 }
 
 /// Visual, text and auto-layout fields of one node; `parent` is the parent's kiwi object.
