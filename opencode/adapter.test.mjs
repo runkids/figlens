@@ -784,7 +784,12 @@ async function watching(t) {
   const native = `const fs = require('node:fs');
 const say = value => console.log(JSON.stringify(value));
 const [command, action] = process.argv.slice(2);
-if (command === 'index' && action === 'status') say({ paths: { workspace: '/w', lock: '/w.lock' }, roots: { config: { path: '/c' } }, sources: [{ sourceId: 's1', path: '/a.fig' }] });
+if (command === 'index' && action === 'status') {
+  // As the binary, --source narrows the listed sources.
+  const sources = [{ sourceId: 's1', path: '/a.fig' }, { sourceId: 's2', path: '/b.fig' }];
+  const only = process.argv.includes('--source') ? process.argv[process.argv.indexOf('--source') + 1] : null;
+  say({ paths: { workspace: '/w', lock: '/w.lock' }, roots: { config: { path: '/c' } }, sources: sources.filter(s => !only || s.sourceId === only) });
+}
 else if (command === 'watch' && action === 'status') say({ leases: [], runner: { state: 'stopped' } });
 else if (command === 'watch' && action === 'run') {
   fs.appendFileSync('runs', process.argv.slice(4).join(' ') + '\\n');
@@ -881,6 +886,16 @@ test('CLI-path watch start spawns nothing when read on the design is denied', as
     if (action === 'read') throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
   };
   await assert.rejects(adapter.cli(await adapter.scope('a'), 'watch', { action: 'start', workspaceId: 'ws_1', scope: '0:0' }), /read denied/);
+  assert.deepEqual(await lines('runs'), []);
+});
+
+test('CLI-path watch start on an allowed source still asks every source, since its runner evaluates saved sets over others', async t => {
+  const { ctx, adapter, lines } = await watching(t);
+  // s1 (/a.fig) is allowed, s2 (/b.fig) denied: a saved set over both would be evaluated in the background.
+  ctx.permission.assert = async ({ action, resources }) => {
+    if (action === 'read' && resources.includes('/b.fig')) throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  await assert.rejects(adapter.cli(await adapter.scope('a'), 'watch', { action: 'start', workspaceId: 'ws_1', sourceId: 's1', scope: '0:0' }), /read denied/);
   assert.deepEqual(await lines('runs'), []);
 });
 
