@@ -2604,40 +2604,36 @@ fn saved_library(
     }
 }
 
-/// A -> B -> C: A consumes library B's component k, whose definition itself uses library C's
-/// component c, so C's change reaches A only through B. Returns the workspace and B's definition.
+/// A -> B -> C over `srcs` (three sources): A consumes library B's component k, whose definition
+/// itself uses library C's component c, so C's change reaches A only through B. Returns B's
+/// definition.
 fn transitive_chain(
-    d: &TestDir,
-) -> (
-    Storage,
-    Select,
-    Connection,
-    Vec<(PathBuf, String, i64)>,
-    crate::workspace::library::DefinitionRef,
-) {
-    let (storage, select, conn, srcs) = library_workspace(d, 3);
+    conn: &Connection,
+    srcs: &[(PathBuf, String, i64)],
+) -> crate::workspace::library::DefinitionRef {
     let [(_, _, a_gen), (_, b, b_gen), (_, _, c_gen)] = [0, 1, 2].map(|i| srcs[i].clone());
     conn.execute(
         "DELETE FROM edges WHERE relation = 'uses_library' AND gen IN (?1, ?2)",
         [b_gen, c_gen],
     )
     .unwrap();
-    uses(&conn, b_gen, r#"["component","ns","c"]"#);
-    let def = component_ref(&conn, &b, b_gen);
+    uses(conn, b_gen, r#"["component","ns","c"]"#);
+    let def = component_ref(conn, &b, b_gen);
     conn.execute(
         "UPDATE edges SET evidence = json_object('copy', ?1) WHERE gen = ?2",
         params![def.node_id, a_gen],
     )
     .unwrap();
-    fingerprinted(&conn, a_gen, &def.node_id, &[1; 32]);
-    fingerprinted(&conn, b_gen, &def.node_id, &[1; 32]);
-    (storage, select, conn, srcs, def)
+    fingerprinted(conn, a_gen, &def.node_id, &[1; 32]);
+    fingerprinted(conn, b_gen, &def.node_id, &[1; 32]);
+    def
 }
 
 #[test]
 fn a_saved_library_question_reports_definition_moves_and_never_follows_a_transitive_change() {
     let d = TestDir::new();
-    let (storage, select, conn, srcs, def) = transitive_chain(&d);
+    let (storage, select, conn, srcs) = library_workspace(&d, 3);
+    let def = transitive_chain(&conn, &srcs);
     let [(_, a, a_gen), (_, b, b_gen), (_, c, c_gen)] = [0, 1, 2].map(|i| srcs[i].clone());
     let saved = subscribe_set(
         &storage,
@@ -2767,7 +2763,8 @@ fn subscription_id(reply: &Json) -> String {
 fn a_not_followed_member_outside_a_readers_roots_is_never_shown_to_that_reader() {
     use crate::workspace::changes::{self, subscriptions};
     let d = TestDir::new();
-    let (storage, select, conn, srcs, def) = transitive_chain(&d);
+    let (storage, select, conn, srcs) = library_workspace(&d, 3);
+    let def = transitive_chain(&conn, &srcs);
     let (c, c_gen) = (srcs[2].1.clone(), srcs[2].2);
     // C is registered, but outside the narrower caller's roots.
     let narrow = storage
@@ -2823,7 +2820,8 @@ fn a_not_followed_member_outside_a_readers_roots_is_never_shown_to_that_reader()
 #[test]
 fn a_visible_source_outside_the_set_reaches_no_evaluation_and_the_gap_stays_marked() {
     let d = TestDir::new();
-    let (storage, select, conn, srcs, def) = transitive_chain(&d);
+    let (storage, select, conn, srcs) = library_workspace(&d, 3);
+    let def = transitive_chain(&conn, &srcs);
     let (c, c_gen) = (srcs[2].1.clone(), srcs[2].2);
     let set = format!("{},{}", srcs[0].1, srcs[1].1);
     let sub = subscription_id(
@@ -2854,7 +2852,8 @@ fn a_visible_source_outside_the_set_reaches_no_evaluation_and_the_gap_stays_mark
 fn a_missing_not_followed_member_leaves_no_stored_id_for_a_reader_who_never_saw_it() {
     use crate::workspace::changes::{self, subscriptions};
     let d = TestDir::new();
-    let (storage, select, conn, srcs, def) = transitive_chain(&d);
+    let (storage, select, conn, srcs) = library_workspace(&d, 3);
+    let def = transitive_chain(&conn, &srcs);
     let (c_path, c, c_gen) = srcs[2].clone();
     let rest = storage
         .clone()
