@@ -227,10 +227,24 @@ fn configure_records_a_verified_profile_and_remove_forgets_it() {
         license: "MIT",
         files,
     };
+    let empty = profile::status(&storage).unwrap();
+    assert!(empty["setup"].as_array().is_some_and(|s| !s.is_empty()));
+    let shipped = profile::default_runtime().unwrap();
+    assert_eq!(
+        (&empty["configRoot"], &empty["defaultRuntime"]),
+        (
+            &json!(storage.config_root()),
+            &json!({"path": shipped, "available": shipped.is_file()})
+        )
+    );
     assert!(
-        profile::status(&storage).unwrap()["setup"]
-            .as_array()
-            .is_some_and(|s| !s.is_empty())
+        storage
+            .config_root()
+            .starts_with(std::path::absolute(dir.join("")).unwrap().join("config"))
+    );
+    assert!(
+        !storage.config_root().join("models.json").exists(),
+        "status wrote the record"
     );
     let exe = std::env::current_exe().unwrap();
     let got =
