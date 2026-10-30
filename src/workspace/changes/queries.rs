@@ -1776,6 +1776,14 @@ mod tests {
             ],
             [(Some(0), Some(0), Some(2)), (Some(0), Some(0), Some(2))]
         );
+        // A single source's movements carry the same exact ref as a set's.
+        let named = moved["rankChanged"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| (m["sourceId"].clone(), m["snapshotId"].clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(named, vec![(json!("s"), json!("new")); 2]);
     }
 
     #[test]
