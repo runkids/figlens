@@ -665,13 +665,15 @@ else if (command === 'watch' && action === 'run') {
   t.after(() => { if (saved === undefined) delete process.env.XDG_CACHE_HOME; else process.env.XDG_CACHE_HOME = saved; });
   const adapter = own(createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href));
   const lines = async name => (await readFile(path.join(root, name), 'utf8').catch(() => '')).split('\n').filter(Boolean);
-  return { ctx, adapter, lines };
+  return { root, ctx, adapter, lines };
 }
 
 test('CLI-path watch start holds a lease for its session after asking read on the design and edit on the workspace', async t => {
-  const { ctx, adapter, lines } = await watching(t);
+  const { root, ctx, adapter, lines } = await watching(t);
   const asked = [];
   ctx.permission.assert = async ({ action, resources }) => { asked.push([action, resources[0]]); };
+  // The workspace as the adapter asks for it: resolved against the session root, so a drive on Windows.
+  const workspace = path.resolve(await realpath(root), '/w');
   const a = await adapter.scope('a');
   const start = { action: 'start', workspaceId: 'ws_1', sourceId: 's1', scope: '0:0', storage: '/s', requestId: 'r' };
   const lease = await adapter.cli(a, 'watch', start);
@@ -680,8 +682,8 @@ test('CLI-path watch start holds a lease for its session after asking read on th
   // A fresh session, so no earlier grant hides an edit ask.
   const before = asked.length;
   await adapter.cli(await adapter.scope('b'), 'watch', { action: 'status', workspaceId: 'ws_1' });
-  assert.deepEqual([lease.state, await lines('runs'), asks, asked.slice(before).filter(([action, resource]) => action === 'edit' && resource === '/w')],
-    ['active', ['--id ws_1 --source s1 --scope 0:0 --storage /s --request-id r'], ['read /a.fig', 'edit /w'], []],
+  assert.deepEqual([lease.state, await lines('runs'), asks, asked.slice(before).filter(([action, resource]) => action === 'edit' && resource === workspace)],
+    ['active', ['--id ws_1 --source s1 --scope 0:0 --storage /s --request-id r'], ['read /a.fig', `edit ${workspace}`], []],
     'status asks no edit on the workspace');
 });
 
