@@ -910,6 +910,44 @@ fn derived_text_layout_is_text_and_its_glyphs_compare_by_blob_bytes() {
 }
 
 #[test]
+fn a_glyph_outline_moved_to_another_glyph_is_a_text_change() {
+    // Glyphs at x 0 and 20; one names blob `at` (its outline), the other none (a space).
+    let file = |outlined: usize, at: u32| {
+        let glyph = |i: usize| {
+            let mut fields = vec![(
+                "position",
+                obj(vec![("x", K::Float(20.0 * i as f32)), ("y", K::Float(0.0))]),
+            )];
+            if i == outlined {
+                fields.push(("commandsBlob", K::UInt(at)));
+            }
+            obj(fields)
+        };
+        let derived = obj(vec![("glyphs", K::Array((0..2).map(glyph).collect()))]);
+        let K::Object(name, mut fields) = doc(vec![node(
+            10,
+            Some(1),
+            "TEXT",
+            "Title",
+            vec![text("I "), ("derivedTextData", derived)],
+        )]) else {
+            unreachable!()
+        };
+        let blob = obj(vec![("bytes", K::Bytes(vec![1]))]);
+        fields.insert("blobs", K::Array(vec![blob.clone(), blob]));
+        K::Object(name, fields)
+    };
+    let facets = |a, b| run(a, b)["frames"][0]["nodes"][0]["facets"].clone();
+    assert_eq!(
+        (
+            facets(file(0, 0), file(1, 0)),
+            run(file(0, 0), file(0, 1))["frames"].clone()
+        ),
+        (json!(["text"]), json!([]))
+    );
+}
+
+#[test]
 fn an_unchanged_long_text_layout_is_read_and_unchanged() {
     let file = || {
         let glyph = |i: u32| {
@@ -1041,6 +1079,67 @@ fn an_unread_field_alone_is_unknown_and_proves_no_facet_change() {
     assert_eq!(
         change(one(&giant, 1.0), one(&giant, 0.0)),
         (json!("changed"), json!(["appearance"]), json!(true))
+    );
+}
+
+#[test]
+fn a_field_unread_on_either_side_is_listed_with_its_markers() {
+    let giant = "x".repeat(FIELD_BYTES + 1);
+    let one = |s: Option<&str>, fill_red: f64| {
+        let mut fields = vec![fill(fill_red)];
+        fields.extend(s.map(text));
+        doc(vec![node(10, Some(1), "TEXT", "T", fields)])
+    };
+    let listed = |a: K<'static>, b: K<'static>| {
+        let out = run(a, b);
+        let n = &out["frames"][0]["nodes"][0];
+        (n["change"].clone(), n["fields"]["textData"].clone())
+    };
+    let marker = |old: Json, new: Json| json!({"facet": "text", "old": old, "new": new});
+    let (unread, absent) = (json!({"unread": true}), json!({"present": false}));
+    let small = json!({"value": {"characters": "small"}});
+    let cases = [
+        (
+            Some(&*giant),
+            Some(&*giant),
+            "unknown",
+            marker(unread.clone(), unread.clone()),
+        ),
+        (
+            Some(&*giant),
+            Some("small"),
+            "unknown",
+            marker(unread.clone(), small.clone()),
+        ),
+        (
+            Some("small"),
+            Some(&*giant),
+            "unknown",
+            marker(small, unread.clone()),
+        ),
+        (
+            None,
+            Some(&*giant),
+            "changed",
+            marker(absent, unread.clone()),
+        ),
+    ];
+    for (i, (old, new, change, field)) in cases.into_iter().enumerate() {
+        assert_eq!(
+            listed(one(old, 1.0), one(new, 1.0)),
+            (json!(change), field),
+            "case {i}"
+        );
+    }
+    // Beside a proven change, the field unread on both sides is still listed.
+    let both = run(one(Some(&giant), 1.0), one(Some(&giant), 0.0));
+    let fields = &both["frames"][0]["nodes"][0]["fields"];
+    assert_eq!(
+        (
+            fields["textData"].clone(),
+            fields["fillPaints"]["facet"].clone()
+        ),
+        (marker(unread.clone(), unread), json!("appearance"))
     );
 }
 
@@ -1180,6 +1279,28 @@ fn a_changed_truncation_line_count_is_a_text_change() {
     };
     let n = &run(one(1), one(2))["frames"][0]["nodes"][0];
     assert_eq!(n["facets"], json!(["text"]));
+}
+
+#[test]
+fn a_frame_renamed_in_place_is_a_structure_change_not_removed_and_added() {
+    let file = |name| doc(vec![node(10, Some(1), "FRAME", name, vec![])]);
+    let (a, b) = (file("Home"), file("Start"));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let out = page(
+        &compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0"),
+        &Request {
+            node: "0:0".into(),
+            limit: LIMIT,
+            cursor: None,
+        },
+        false,
+    )
+    .unwrap();
+    let node = &out["frames"][0]["nodes"][0];
+    assert_eq!(
+        (&node["id"], &node["change"], &node["facets"]),
+        (&json!("0:10"), &json!("changed"), &json!(["structure"]))
+    );
 }
 
 #[test]
@@ -1450,6 +1571,253 @@ fn a_bound_variable_outside_the_scope_makes_coverage_partial() {
     );
 }
 
+/// Variable `id` on `parent` with one mode holding `data`.
+fn var(id: u32, parent: u32, data: K<'static>) -> K<'static> {
+    let entry = obj(vec![("modeID", guid(70)), ("variableData", data)]);
+    node(
+        id,
+        Some(parent),
+        "VARIABLE",
+        "V",
+        vec![(
+            "variableDataValues",
+            obj(vec![("entries", K::Array(vec![entry]))]),
+        )],
+    )
+}
+
+fn float(value: f32) -> K<'static> {
+    obj(vec![
+        ("dataType", K::Enum("VariableDataType", "FLOAT")),
+        ("value", obj(vec![("floatValue", K::Float(value))])),
+    ])
+}
+
+/// Page 1 holds a card filled from variable 61 and `vars`; page 2 holds variable 62 = `value`.
+fn aliased(vars: Vec<K<'static>>, value: f32) -> K<'static> {
+    let paint = obj(vec![
+        ("type", K::Enum("PaintType", "SOLID")),
+        ("colorVar", alias(61)),
+    ]);
+    let mut all = vars;
+    all.extend([
+        node(10, Some(1), "FRAME", "Home", vec![]),
+        node(
+            12,
+            Some(10),
+            "RECTANGLE",
+            "Card",
+            vec![("fillPaints", K::Array(vec![paint]))],
+        ),
+        node(2, Some(0), "CANVAS", "Other", vec![]),
+        var(62, 2, float(value)),
+    ]);
+    doc(all)
+}
+
+fn not_compared(count: usize) -> Json {
+    json!([
+        {"reason": "definition_not_compared", "side": "old", "count": count},
+        {"reason": "definition_not_compared", "side": "new", "count": count},
+    ])
+}
+
+#[test]
+fn an_alias_to_a_variable_on_another_page_makes_a_page_diff_partial() {
+    let tree = |v| aliased(vec![var(61, 1, alias(62))], v);
+    let out = scoped(tree(8.0), tree(12.0), "0:1");
+    assert_eq!(
+        (nodes(&out), &out["coverage"]["reasons"]),
+        (vec![], &not_compared(1))
+    );
+}
+
+#[test]
+fn an_alias_on_another_page_is_compared_over_the_whole_file() {
+    let tree = |v| aliased(vec![var(61, 1, alias(62))], v);
+    let out = run(tree(8.0), tree(12.0));
+    assert_eq!(
+        (nodes(&out), &out["coverage"]["complete"]),
+        (vec![("0:62".into(), "changed".into())], &json!(true))
+    );
+}
+
+#[test]
+fn an_alias_chain_leaving_the_page_makes_it_partial_and_one_within_it_does_not() {
+    // 61 -> 63 -> 62, where only 62 is on the other page.
+    let chain = |v| aliased(vec![var(61, 1, alias(63)), var(63, 1, alias(62))], v);
+    let out = scoped(chain(8.0), chain(12.0), "0:1");
+    assert_eq!(out["coverage"]["reasons"], not_compared(1));
+    // 61 -> 63 holding a value, both on the page: nothing outside is followed.
+    let within = |v| aliased(vec![var(61, 1, alias(63)), var(63, 1, float(v))], 1.0);
+    let out = scoped(within(8.0), within(12.0), "0:1");
+    assert_eq!(
+        (nodes(&out), &out["coverage"]["complete"]),
+        (vec![("0:63".into(), "changed".into())], &json!(true))
+    );
+}
+
+#[test]
+fn a_variable_whose_values_were_unread_leaves_its_aliases_unverified() {
+    let long = obj(vec![
+        ("dataType", K::Enum("VariableDataType", "STRING")),
+        (
+            "value",
+            obj(vec![("textValue", K::String("x".repeat(FIELD_BYTES + 1)))]),
+        ),
+    ]);
+    let tree = || aliased(vec![var(61, 1, long.clone())], 8.0);
+    let out = scoped(tree(), tree(), "0:1");
+    // Besides the field's own `unread_fields`.
+    let reasons = out["coverage"]["reasons"].as_array().unwrap();
+    assert_eq!(Json::from(reasons[..2].to_vec()), not_compared(1));
+}
+
+/// An alias to library variable `key`, version 1.
+fn library_alias(key: &str) -> K<'static> {
+    let asset = obj(vec![
+        ("key", K::String(key.to_owned())),
+        ("version", K::String("1".into())),
+    ]);
+    obj(vec![
+        ("dataType", K::Enum("VariableDataType", "ALIAS")),
+        (
+            "value",
+            obj(vec![("alias", obj(vec![("assetRef", asset)]))]),
+        ),
+    ])
+}
+
+/// Work and bytes `facets` spends on variable 61 holding `data` under `key`, and its aliases.
+fn spent(key: &'static str, data: K<'static>) -> (usize, usize, Option<Vec<String>>) {
+    let entry = obj(vec![("modeID", guid(70)), ("variableData", data)]);
+    let values = obj(vec![("entries", K::Array(vec![entry]))]);
+    let message = doc(vec![node(
+        61,
+        Some(1),
+        "VARIABLE",
+        "V",
+        vec![(key, values)],
+    )]);
+    let tree = Tree::new(&message);
+    let mut b = super::super::tests::bounds(WORK);
+    let start = (b.work, b.bytes);
+    let f = facets(&tree, "0:61", None, &mut b).unwrap();
+    (start.0 - b.work, start.1 - b.bytes, f.aliases)
+}
+
+#[test]
+fn alias_ids_are_paid_for_before_they_are_copied() {
+    // The same value under another properties key is digested alike but never walked for ids.
+    let (work, bytes, ids) = spent("variableDataValues", alias(62));
+    let (other_work, other_bytes, none) = spent("variableScopes", alias(62));
+    assert_eq!(ids, Some(vec!["VariableID:0:62".to_owned()]));
+    assert_eq!(none, Some(vec![]));
+    // A visit per entry, and its bytes beyond the longer key's.
+    let longer = "variableDataValues".len() - "variableScopes".len();
+    assert_eq!(work, other_work + 1);
+    assert!(bytes > other_bytes + longer + "VariableID:0:62".len());
+}
+
+#[test]
+fn a_long_library_alias_key_is_paid_for_by_its_length_and_a_short_side_stops_first() {
+    let key = "k".repeat(FIELD_BYTES / 2);
+    let (_, bytes, ids) = spent("variableDataValues", library_alias(&key));
+    let (_, other_bytes, _) = spent("variableScopes", library_alias(&key));
+    assert_eq!(ids, Some(vec![format!("VariableID:{key}/1")]));
+    assert!(bytes >= other_bytes + key.len());
+    // One byte or one visit short of the capture stops the side before any id is made.
+    let entry = obj(vec![
+        ("modeID", guid(70)),
+        ("variableData", library_alias(&key)),
+    ]);
+    let values = obj(vec![("entries", K::Array(vec![entry]))]);
+    let message = doc(vec![node(
+        61,
+        Some(1),
+        "VARIABLE",
+        "V",
+        vec![("variableDataValues", values)],
+    )]);
+    let tree = Tree::new(&message);
+    let (work, _, _) = spent("variableDataValues", library_alias(&key));
+    for (w, by, stop) in [
+        (work - 1, usize::MAX, crate::expand::Stop::Work),
+        (usize::MAX, bytes - 1, crate::expand::Stop::Bytes),
+    ] {
+        let mut b = super::super::tests::bounds(WORK);
+        (b.work, b.bytes) = (w.min(b.work), by.min(b.bytes));
+        assert!(facets(&tree, "0:61", None, &mut b).is_none());
+        assert_eq!(b.stop, Some(stop));
+    }
+}
+
+/// Page 1 holds a card filled from two-mode variable 61; page 2 holds its collection 64, whose
+/// first mode by sort position is `first` (70 or 71).
+fn collected(first: u32) -> K<'static> {
+    let mode = |id: u32, at: &str| {
+        obj(vec![
+            ("id", guid(id)),
+            ("sortPosition", K::String(at.to_owned())),
+        ])
+    };
+    let modes = match first {
+        70 => vec![mode(70, "a"), mode(71, "b")],
+        _ => vec![mode(70, "b"), mode(71, "a")],
+    };
+    let entry = |m: u32, v: f32| obj(vec![("modeID", guid(m)), ("variableData", float(v))]);
+    let mut all = aliased(
+        vec![node(
+            61,
+            Some(1),
+            "VARIABLE",
+            "V",
+            vec![
+                (
+                    "variableDataValues",
+                    obj(vec![(
+                        "entries",
+                        K::Array(vec![entry(70, 1.0), entry(71, 2.0)]),
+                    )]),
+                ),
+                ("variableSetID", obj(vec![("guid", guid(64))])),
+            ],
+        )],
+        8.0,
+    );
+    if let K::Object(_, o) = &mut all
+        && let Some(K::Array(nodes)) = o.get_mut("nodeChanges")
+    {
+        nodes.push(node(
+            64,
+            Some(2),
+            "VARIABLE_SET",
+            "Theme",
+            vec![("variableSetModes", K::Array(modes))],
+        ));
+    }
+    all
+}
+
+#[test]
+fn a_collection_on_another_page_makes_a_page_diff_partial_and_the_whole_file_compares_it() {
+    let out = scoped(collected(70), collected(71), "0:1");
+    assert_eq!(
+        (nodes(&out), &out["coverage"]["reasons"]),
+        (vec![], &not_compared(1))
+    );
+    let out = run(collected(70), collected(71));
+    assert_eq!(
+        (nodes(&out), &out["coverage"]["complete"]),
+        (vec![("0:64".into(), "changed".into())], &json!(true))
+    );
+}
+
+#[test]
+fn stored_generations_keep_a_variable_s_collection_like_the_live_trees() {
+    outside_parity(collected(70), collected(71), "0:1");
+}
+
 #[test]
 fn numeric_variants_trim_links_mask_type_and_grids_are_compared() {
     let link = |url: &str| obj(vec![("url", K::String(url.to_owned()))]);
@@ -1554,6 +1922,70 @@ fn used(name: &str, default: bool) -> K<'static> {
 }
 
 #[test]
+fn a_variant_whose_set_is_outside_the_scope_makes_coverage_partial() {
+    // The set's definition is renamed and its default flipped; the variant inherits it through
+    // parentPropDefId, so its emitted definitions change while its own record does not.
+    let set = |name: &str, default: bool| {
+        doc(vec![
+            node(
+                30,
+                Some(1),
+                "FRAME",
+                "Button",
+                vec![
+                    ("isStateGroup", K::Bool(true)),
+                    (
+                        "componentPropDefs",
+                        K::Array(vec![obj(vec![
+                            ("id", guid(70)),
+                            ("name", K::String(name.to_owned())),
+                            ("type", K::Enum("ComponentPropType", "BOOL")),
+                            ("initialValue", obj(vec![("boolValue", K::Bool(default))])),
+                        ])]),
+                    ),
+                ],
+            ),
+            node(
+                20,
+                Some(30),
+                "COMPONENT",
+                "State=Default",
+                vec![(
+                    "componentPropDefs",
+                    K::Array(vec![obj(vec![
+                        ("id", guid(71)),
+                        ("parentPropDefId", guid(70)),
+                    ])]),
+                )],
+            ),
+        ])
+    };
+    let (old, new) = (|| set("Show icon", true), || set("Has icon", false));
+    let out = scoped(old(), new(), "0:20");
+    assert_eq!(
+        (
+            &out["coverage"]["complete"],
+            nodes(&out),
+            &out["coverage"]["reasons"]
+        ),
+        (
+            &json!(false),
+            vec![],
+            &json!([
+                {"reason": "definition_not_compared", "side": "old", "count": 1},
+                {"reason": "definition_not_compared", "side": "new", "count": 1},
+            ])
+        )
+    );
+    // With the set in scope its own definitions are compared.
+    let whole = run(old(), new());
+    assert_eq!(
+        (nodes(&whole), &whole["coverage"]["complete"]),
+        (vec![("0:30".into(), "changed".into())], &json!(true))
+    );
+}
+
+#[test]
 fn a_main_outside_the_scope_makes_coverage_partial_when_its_property_definitions_change() {
     // Only the instance is in scope; its main's Boolean definition is renamed and its default
     // flipped, which changes the instance's emitted componentProperties.
@@ -1637,24 +2069,24 @@ fn stored_generations_diff_exactly_like_the_live_trees() {
 
 #[test]
 fn stored_generations_report_an_outside_definition_like_the_live_trees() {
-    outside_parity(styled(12.0), styled(16.0));
-    outside_parity(used("Show icon", true), used("Has icon", false));
+    outside_parity(styled(12.0), styled(16.0), "0:10");
+    outside_parity(used("Show icon", true), used("Has icon", false), "0:10");
 }
 
-/// Diffs `old` and `new` from stored generations of frame `0:10` and asserts the same partial
+/// Diffs `old` and `new` from stored generations of `node` and asserts the same partial
 /// coverage reasons as the live trees.
-fn outside_parity(old: K<'static>, new: K<'static>) {
+fn outside_parity(old: K<'static>, new: K<'static>, node: &str) {
     let (a, b) = (Tree::new(&old), Tree::new(&new));
     let mut r = req(LIMIT, None);
-    r.node = "0:10".into();
+    r.node = node.into();
     let live = page(
-        &compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:10"),
+        &compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], node),
         &r,
         false,
     )
     .unwrap();
     let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
-    let conn = saved(&[&a, &b], "0:10");
+    let conn = saved(&[&a, &b], node);
     let stored = stored_diff(&conn, (1, side("old")), (2, side("new")), &r).unwrap();
     let coverage = |v: &Json| {
         (
@@ -1686,14 +2118,14 @@ fn tampered_or_other_layout_facets_are_refused_not_compared() {
     };
     let conn = saved(&[&tree], "0:0");
     conn.execute(
-        "UPDATE facets SET blob = CAST('[[\"bogus\",null]]' AS BLOB) WHERE rid = 1",
+        "UPDATE facets SET blob = CAST('{\"fields\":[[\"bogus\",null]],\"aliases\":[]}' AS BLOB) WHERE rid = 1",
         [],
     )
     .unwrap();
     assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
     let conn = saved(&[&tree], "0:0");
     conn.execute(
-        "INSERT INTO facets SELECT gen, MAX(rid) + 1, CAST('[]' AS BLOB) FROM facets",
+        "INSERT INTO facets SELECT gen, MAX(rid) + 1, CAST('{\"fields\":[],\"aliases\":[]}' AS BLOB) FROM facets",
         [],
     )
     .unwrap();
@@ -1717,23 +2149,30 @@ fn stored_facets_pay_for_their_text_before_parsing_it() {
 
 #[test]
 fn stored_facets_keep_a_readable_value_and_charge_text_metadata_and_value() {
-    let text = format!(r#"[["fontSize","{}",12]]"#, "a".repeat(64));
+    let text = format!(
+        r#"{{"fields":[["fontSize","{}",12]],"aliases":[]}}"#,
+        "a".repeat(64)
+    );
     let mut spent = 0;
     let facets = decode(&text, &mut spent).unwrap();
     assert_eq!(
         (facets.fields[0].value.clone(), spent),
         (
             Some(serde_json::json!(12)),
-            text.len() + FIELD_META + "fontSize".len() + held_value(&serde_json::json!(12), 0)
+            text.len() + FIELD_META + "fontSize".len() + held_value(&serde_json::json!(12), 2)
         )
     );
 }
 
 #[test]
 fn stored_facets_charge_a_kept_value_after_its_metadata() {
-    let text = format!(r#"[["fontSize","{}",12]]"#, "a".repeat(64));
-    // Text and metadata fit; the value's two bytes do not.
-    let mut spent = BYTES - text.len() - FIELD_META - "fontSize".len() - 1;
+    let text = format!(
+        r#"{{"fields":[["fontSize","{}",12]],"aliases":[]}}"#,
+        "a".repeat(64)
+    );
+    // Text and metadata fit; the value does not.
+    let held = held_value(&serde_json::json!(12), 2);
+    let mut spent = BYTES - text.len() - FIELD_META - "fontSize".len() - held + 1;
     let err = decode(&text, &mut spent).err().unwrap();
     assert_eq!(
         err.downcast_ref::<FigError>().map(FigError::kind),
@@ -1742,9 +2181,103 @@ fn stored_facets_charge_a_kept_value_after_its_metadata() {
 }
 
 #[test]
+fn stored_facets_keep_unread_aliases_apart_from_none_and_pay_for_each_id() {
+    let round = |text: &str| decode(text, &mut 0).unwrap().aliases;
+    let id = "VariableID:0:62";
+    // One id per aliasing mode, so a repeat is kept.
+    let text = format!(r#"{{"fields":[],"aliases":["{id}","{id}"]}}"#);
+    let mut spent = 0;
+    decode(&text, &mut spent).unwrap();
+    assert_eq!(
+        (
+            round(r#"{"fields":[],"aliases":null}"#),
+            round(r#"{"fields":[],"aliases":[]}"#),
+            round(&text),
+            spent
+        ),
+        (
+            None,
+            Some(vec![]),
+            Some(vec![id.to_owned(), id.to_owned()]),
+            text.len() + 2 * (std::mem::size_of::<String>() + 2 * id.len())
+        )
+    );
+}
+
+#[test]
+fn stored_facets_pay_for_each_alias_before_keeping_it() {
+    let id = "VariableID:0:62";
+    let text = format!(r#"{{"fields":[],"aliases":["{id}"]}}"#);
+    let mut spent = BYTES - text.len() - std::mem::size_of::<String>() - 2 * id.len() + 1;
+    let err = decode(&text, &mut spent).err().unwrap();
+    assert_eq!(
+        err.downcast_ref::<FigError>().map(FigError::kind),
+        Some(ErrorKind::QueryWorkLimit)
+    );
+}
+
+#[test]
+fn stored_facets_without_their_aliases_are_refused_not_read_as_none() {
+    for text in [
+        r#"[["fontSize",null]]"#,
+        r#"{"fields":[["fontSize",null]]}"#,
+        r#"{"fields":[],"aliases":[1]}"#,
+    ] {
+        let err = decode(text, &mut 0).err().unwrap();
+        assert_eq!(
+            err.downcast_ref::<FigError>().map(FigError::kind),
+            Some(ErrorKind::IndexIncompatible),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn stored_generations_report_an_alias_outside_the_page_like_the_live_trees() {
+    let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
+    let coverage = |old: K<'static>, new: K<'static>| {
+        let (a, b) = (Tree::new(&old), Tree::new(&new));
+        let mut r = req(LIMIT, None);
+        r.node = "0:1".into();
+        let live = page(
+            &compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:1"),
+            &r,
+            false,
+        )
+        .unwrap();
+        let conn = saved(&[&a, &b], "0:1");
+        let stored = stored_diff(&conn, (1, side("old")), (2, side("new")), &r).unwrap();
+        let reasons = |v: &Json| v["coverage"].clone();
+        (reasons(&stored), reasons(&live))
+    };
+    // 61 -> 62, with 62 on the other page: partial once reopened.
+    let outside = |v| aliased(vec![var(61, 1, alias(62))], v);
+    let (stored, live) = coverage(outside(8.0), outside(12.0));
+    assert_eq!((&stored["reasons"], &stored), (&not_compared(1), &live));
+    // 61 -> 63, both on the page: the stored empty closure stays complete.
+    let within = |v| aliased(vec![var(61, 1, alias(63)), var(63, 1, float(v))], 1.0);
+    let (stored, live) = coverage(within(8.0), within(12.0));
+    assert_eq!((&stored["complete"], &stored), (&json!(true), &live));
+    // A library key read within the field cap that escaping makes longer than it.
+    let key = "\u{1}".repeat(FIELD_BYTES / 3);
+    let escaped = || aliased(vec![var(61, 1, library_alias(&key))], 8.0);
+    outside_parity(escaped(), escaped(), "0:1");
+    // Values too long to read leave the aliases unverified once reopened too.
+    let long = obj(vec![
+        ("dataType", K::Enum("VariableDataType", "STRING")),
+        (
+            "value",
+            obj(vec![("textValue", K::String("x".repeat(FIELD_BYTES + 1)))]),
+        ),
+    ]);
+    let unread = || aliased(vec![var(61, 1, long.clone())], 8.0);
+    outside_parity(unread(), unread(), "0:1");
+}
+
+#[test]
 fn stored_facets_charge_their_text_then_each_field_as_the_live_build_does() {
     // Once the text is paid for, nothing is left for the field's metadata plus key.
-    let text = r#"[["fontSize",null]]"#;
+    let text = r#"{"fields":[["fontSize",null]],"aliases":[]}"#;
     let mut spent = BYTES - text.len();
     let err = decode(text, &mut spent).err().unwrap();
     assert_eq!(
@@ -2042,4 +2575,44 @@ fn a_partial_comparison_leaves_its_impact_incomplete_without_changes() {
     assert_eq!(r.coverage["complete"], false);
     assert_eq!((r.rows.len(), r.impact.complete), (0, false));
     assert_eq!(r.impact.reasons.get("source_comparison_partial"), Some(&1));
+}
+#[test]
+fn a_variable_moved_to_another_corner_is_a_change_and_the_same_binding_is_not() {
+    let corner = |field: &'static str| {
+        let alias = obj(vec![
+            ("dataType", K::Enum("VariableDataType", "ALIAS")),
+            ("value", obj(vec![("alias", obj(vec![("guid", guid(20))]))])),
+        ]);
+        doc(vec![
+            node(20, Some(1), "VARIABLE", "Radius", vec![]),
+            node(10, Some(1), "FRAME", "Home", vec![size(400.0, 800.0)]),
+            node(
+                12,
+                Some(10),
+                "RECTANGLE",
+                "Card",
+                vec![(
+                    "parameterConsumptionMap",
+                    obj(vec![(
+                        "entries",
+                        K::Array(vec![obj(vec![
+                            ("variableField", K::Enum("VariableField", field)),
+                            ("variableData", alias),
+                        ])]),
+                    )]),
+                )],
+            ),
+        ])
+    };
+    let (top, bottom) = (
+        "RECTANGLE_TOP_LEFT_CORNER_RADIUS",
+        "RECTANGLE_BOTTOM_RIGHT_CORNER_RADIUS",
+    );
+    assert_eq!(
+        (
+            nodes(&run(corner(top), corner(bottom))),
+            nodes(&run(corner(top), corner(top)))
+        ),
+        (vec![("0:12".into(), "changed".into())], vec![])
+    );
 }

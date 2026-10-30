@@ -810,6 +810,8 @@ pub struct Svg<'t, 'a> {
     edge: Option<Rect>,
     /// Downscaled images by hash and halving count; `None` keeps full images (SVG output).
     mips: Option<std::collections::HashMap<(String, u32), Vec<u8>>>,
+    /// The `<image>` in `defs` for each hash and halving count, so a reused image is embedded once.
+    embedded: std::collections::HashMap<(String, u32), String>,
     /// Cut the drawing to the export area, which the output rounds up to whole pixels.
     clip: bool,
 }
@@ -834,6 +836,7 @@ impl<'t, 'a> Svg<'t, 'a> {
             area: [0.0; 4],
             edge: None,
             mips: None,
+            embedded: Default::default(),
             clip: false,
         }
     }
@@ -955,30 +958,33 @@ impl<'t, 'a> Svg<'t, 'a> {
     /// The image halved (2x2 averages) while it stays at least twice the pixels it covers:
     /// resvg samples a large downscale without averaging, which aliases; Figma's does not.
     // shortcut: only PNGs are downscaled; decode JPEGs too if photos alias.
-    fn mip(&mut self, hash: &str, bytes: Vec<u8>, covered: (f64, f64)) -> Vec<u8> {
-        if self.mips.is_none() {
-            return bytes;
-        }
-        let Ok(mut img) = resvg::tiny_skia::Pixmap::decode_png(&bytes) else {
-            return bytes;
+    /// The image halved while it stays at least `covered` device pixels, and the halving count.
+    fn mip(&mut self, hash: &str, bytes: Vec<u8>, covered: (f64, f64)) -> (Vec<u8>, u32) {
+        let Some((w, h)) = image_size(&bytes).filter(|_| self.mips.is_some()) else {
+            return (bytes, 0);
         };
-        let k = (f64::from(img.width()) / covered.0).min(f64::from(img.height()) / covered.1);
+        let k = (w / covered.0).min(h / covered.1);
         let levels = if k >= 2.0 { k.log2().floor() as u32 } else { 0 };
         if levels == 0 {
-            return bytes;
+            return (bytes, 0);
         }
         let key = (hash.to_owned(), levels);
         if let Some(b) = self.mips.as_ref().and_then(|m| m.get(&key)) {
-            return b.clone();
+            return (b.clone(), levels);
         }
+        let Ok(mut img) = resvg::tiny_skia::Pixmap::decode_png(&bytes) else {
+            return (bytes, 0);
+        };
         for _ in 0..levels {
             img = halve(&img);
         }
-        let out = img.encode_png().unwrap_or(bytes);
+        let Ok(out) = img.encode_png() else {
+            return (bytes, 0);
+        };
         if let Some(m) = self.mips.as_mut() {
             m.insert(key, out.clone());
         }
-        out
+        (out, levels)
     }
 
     fn id(&mut self, prefix: &str) -> String {
@@ -1342,16 +1348,21 @@ impl<'t, 'a> Svg<'t, 'a> {
                         }),
                     };
                     let hash = p["image"]["hash"].as_str().unwrap_or("").to_owned();
-                    let bytes = match covered {
+                    let (bytes, levels) = match covered {
                         Some(c) => self.mip(&hash, bytes, c),
-                        None => bytes,
+                        None => (bytes, 0),
                     };
                     // The pattern already clips its tile. Explicit cover geometry avoids usvg's
-                    // extra slice clip, which resvg truncates to the outer canvas inside patterns.
-                    let (iw, ih, x, y, aspect) = if aspect.ends_with("slice") {
+                    // extra slice clip, which resvg truncates to the outer canvas inside patterns;
+                    // explicit fit geometry lets a fitted image share its embedded copy.
+                    let (iw, ih, x, y, aspect) = if aspect != "none" {
                         match image_size(&bytes) {
                             Some((iw, ih)) => {
-                                let s = (w / iw).max(h / ih);
+                                let s = if aspect.ends_with("slice") {
+                                    (w / iw).max(h / ih)
+                                } else {
+                                    (w / iw).min(h / ih)
+                                };
                                 (
                                     iw * s,
                                     ih * s,
@@ -1414,19 +1425,53 @@ impl<'t, 'a> Svg<'t, 'a> {
                     };
                     let (x, y) = (x - px, y - py);
                     let adjust = self.image_filter(&p["paintFilter"]);
+                    // An image drawn without its own aspect rule is embedded once as a unit square
+                    // and scaled by each pattern that paints it; a unit keeps every scale in num()'s
+                    // precision, where a reciprocal of the pixel size would not be.
+                    let image = match aspect {
+                        "none" => {
+                            let key = (hash, levels);
+                            let id = match self.embedded.get(&key) {
+                                Some(id) => id.clone(),
+                                None => {
+                                    let id = self.id("i");
+                                    let _ = write!(
+                                        self.defs,
+                                        "<image id=\"{id}\" width=\"1\" height=\"1\" preserveAspectRatio=\"none\" href=\"data:{};base64,{}\"/>",
+                                        media_type(&bytes),
+                                        base64(&bytes),
+                                    );
+                                    self.embedded.insert(key, id.clone());
+                                    id
+                                }
+                            };
+                            let place = Mat {
+                                a: iw,
+                                b: 0.0,
+                                c: 0.0,
+                                d: ih,
+                                tx: x,
+                                ty: y,
+                            };
+                            format!("<use href=\"#{id}\" transform=\"{}\"/>", matrix(place))
+                        }
+                        _ => format!(
+                            "<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" preserveAspectRatio=\"{aspect}\" href=\"data:{};base64,{}\"/>",
+                            num(x),
+                            num(y),
+                            num(iw),
+                            num(ih),
+                            media_type(&bytes),
+                            base64(&bytes),
+                        ),
+                    };
                     let pattern = self.id("p");
                     let _ = write!(
                         self.defs,
-                        "<pattern id=\"{pattern}\" patternUnits=\"userSpaceOnUse\"{origin} width=\"{w}\" height=\"{h}\" patternTransform=\"{}\"><image x=\"{x}\" y=\"{y}\" width=\"{iw}\" height=\"{ih}\" preserveAspectRatio=\"{aspect}\" href=\"data:{};base64,{}\"/></pattern>",
+                        "<pattern id=\"{pattern}\" patternUnits=\"userSpaceOnUse\"{origin} width=\"{w}\" height=\"{h}\" patternTransform=\"{}\">{image}</pattern>",
                         matrix(t),
-                        media_type(&bytes),
-                        base64(&bytes),
                         w = num(w),
                         h = num(h),
-                        x = num(x),
-                        y = num(y),
-                        iw = num(iw),
-                        ih = num(ih),
                     );
                     let _ = write!(
                         out,
@@ -2856,6 +2901,54 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_reused_image_is_embedded_once_per_mip_level() {
+        let tree = Tree {
+            nodes: Default::default(),
+            children: Default::default(),
+            blobs: Vec::new(),
+        };
+        // 64x64: left half red, right half blue.
+        let mut image = resvg::tiny_skia::Pixmap::new(64, 64).unwrap();
+        for (i, pixel) in image.data_mut().chunks_exact_mut(4).enumerate() {
+            pixel.copy_from_slice(if i % 64 < 32 {
+                &[255, 0, 0, 255]
+            } else {
+                &[0, 0, 255, 255]
+            });
+        }
+        let bytes = crate::export::encode(&image, crate::export::Format::Png, 95, None)
+            .unwrap()
+            .bytes;
+        let images = |_: &str| Some(bytes.clone());
+        let child = |id: &str, x: f64, w: f64, h: f64, mode: &str| {
+            serde_json::json!({ "id": id, "type": "RECTANGLE", "_r": {
+                "size": { "x": w, "y": h }, "m": [1,0,0,1,x,0],
+                "fillPaints": [{ "type": "IMAGE", "imageScaleMode": mode, "image": { "hash": "a" } }]
+            }})
+        };
+        // Two full-size fills and a FIT into a wide box; then two small fills, a deeper mip level.
+        let frame = serde_json::json!({
+            "id": "frame", "type": "FRAME", "_r": { "size": { "x": 300, "y": 64 }, "m": [1,0,0,1,0,0] },
+            "children": [child("a", 0.0, 64.0, 64.0, "FILL"), child("b", 64.0, 64.0, 64.0, "FILL"),
+                child("c", 128.0, 128.0, 64.0, "FIT"), child("d", 256.0, 8.0, 8.0, "FILL"),
+                child("e", 264.0, 8.0, 8.0, "FILL")]
+        });
+        let area = [0.0, 0.0, 300.0, 64.0];
+        let svg = Svg::new(&tree, &images).document(&frame, area, 1.0);
+        assert_eq!(svg.matches("base64,").count(), 1);
+        let raster = Svg::new(&tree, &images)
+            .for_raster()
+            .document(&frame, area, 1.0);
+        assert_eq!(raster.matches("base64,").count(), 2);
+        // FIT keeps the image square and centred: empty, red, blue, empty across the wide box.
+        let pixels = pixmap(&svg).unwrap();
+        let alpha = |x: u32| pixels.pixel(x, 32).unwrap().alpha();
+        let red = |x: u32| pixels.pixel(x, 32).unwrap().red() > 250;
+        assert_eq!((alpha(140), alpha(244)), (0, 0));
+        assert!(red(176) && !red(208) && alpha(208) == 255);
     }
 
     #[test]

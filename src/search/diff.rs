@@ -23,7 +23,7 @@ use crate::expand::{Bounds, Expanded, json_bytes, kiwi_bytes};
 use crate::{Document, ErrorKind, FigError, Tree, guid_key, to_json};
 
 /// Bumped whenever a field list, facet or digest stream changes; cursors carry it.
-const VERSION: &str = "diff-v7";
+const VERSION: &str = "diff-v9";
 /// Estimated heap of an expanded size or transform built as JSON (a map of at most six numbers).
 const OWNED_BYTES: usize = 512;
 pub(crate) const FACETS: [&str; 5] = ["text", "layout", "appearance", "properties", "structure"];
@@ -168,6 +168,10 @@ pub(crate) struct Field {
 /// A record's effective fields in `FIELDS` order; absent fields are not listed.
 pub(crate) struct Facets {
     fields: Vec<Field>,
+    /// The variables a variable's values alias (`variableDataValues`), one per aliasing mode,
+    /// then its collection (`variableSetID`), whose first mode by sort position is the default
+    /// REST resolves in; `None` when either field was unread, so where they lead is unknown.
+    aliases: Option<Vec<String>>,
 }
 
 /// Feeds the bytes `to_json` shows only as `<N bytes>` into `h`, in key order, so binary values
@@ -201,7 +205,8 @@ const BLOB_KEYS: [&str; 2] = ["commandsBlob", "vectorNetworkBlob"];
 /// it only as a `<N bytes>` placeholder, which would otherwise make every such text unread.
 const UNCOMPARED: [&str; 1] = ["fontDigest"];
 
-/// `v` without its blob indexes, pushed to `refs` in key order, or its `UNCOMPARED` keys.
+/// `v` with each blob index, pushed to `refs` in key order, replaced by `null`, so where a blob
+/// is named still counts but not its file-local number; and without its `UNCOMPARED` keys.
 fn unblob(v: &Json, refs: &mut Vec<u64>) -> Json {
     match v {
         Json::Array(a) => Json::Array(a.iter().map(|x| unblob(x, refs)).collect()),
@@ -210,7 +215,7 @@ fn unblob(v: &Json, refs: &mut Vec<u64>) -> Json {
                 .filter_map(|(k, x)| match BLOB_KEYS.contains(&k.as_str()) {
                     true => {
                         refs.push(x.as_u64().unwrap_or(u64::MAX));
-                        None
+                        Some((k.clone(), Json::Null))
                     }
                     false if UNCOMPARED.contains(&k.as_str()) => None,
                     false => Some((k.clone(), unblob(x, refs))),
@@ -267,6 +272,19 @@ struct Digesting<'b> {
     bounds: &'b mut Bounds,
 }
 
+/// A writer that only counts the bytes written to it.
+struct Counted(usize);
+
+impl std::io::Write for Counted {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 impl std::io::Write for Digesting<'_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let visits = (self.len + buf.len()).div_ceil(64) - self.len.div_ceil(64);
@@ -299,6 +317,7 @@ pub(super) fn facets(
 ) -> Option<Facets> {
     let node = tree.nodes.get(e.map_or(id, |e| e.source.as_str()));
     let mut fields = Vec::new();
+    let mut aliases = Some(Vec::new());
     let mut kept = 0;
     for (facet, keys) in FIELDS.iter().enumerate() {
         for key in *keys {
@@ -367,6 +386,9 @@ pub(super) fn facets(
             if unread || gone {
                 if !bounds.charge(0, FIELD_META + key.len()) {
                     return None;
+                }
+                if matches!(*key, "variableDataValues" | "variableSetID") {
+                    aliases = None;
                 }
                 fields.push(Field {
                     key,
@@ -472,6 +494,51 @@ pub(super) fn facets(
             if fits {
                 kept += len;
             }
+            if *key == "variableDataValues" {
+                // A visit per entry, and each id's bytes, measured on the borrowed reference,
+                // before it is made: one copy, counted per use as edges are.
+                let mut ids = Vec::new();
+                for e in json["entries"].as_array().into_iter().flatten() {
+                    if !bounds.charge(1, 0) {
+                        return None;
+                    }
+                    let data = &e["variableData"];
+                    if data["dataType"] != "ALIAS" {
+                        continue;
+                    }
+                    let r = &data["value"]["alias"];
+                    let made = match (
+                        r["assetRef"]["key"].as_str(),
+                        r["assetRef"]["version"].as_str(),
+                    ) {
+                        (Some(k), Some(v)) => "VariableID:/".len() + k.len() + v.len(),
+                        // `VariableID:` and two u64 halves of a guid.
+                        _ => "VariableID::".len() + 40,
+                    };
+                    // Twice: a local guid's own string comes first, and `format!` may round up.
+                    if !bounds.charge(0, std::mem::size_of::<String>() + 2 * made) {
+                        return None;
+                    }
+                    ids.extend(crate::rest::variable_id(r));
+                }
+                aliases = Some(ids);
+            }
+            if *key == "variableSetID" {
+                // Named as `rest` matches a collection: its library key, else its guid.
+                let made = json["assetRef"]["key"]
+                    .as_str()
+                    .map_or("::".len() + 40, str::len);
+                if !bounds.charge(1, std::mem::size_of::<String>() + 2 * made) {
+                    return None;
+                }
+                let id = json["assetRef"]["key"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .or_else(|| crate::rest::guid(&json["guid"]));
+                if let Some(a) = &mut aliases {
+                    a.extend(id);
+                }
+            }
             fields.push(Field {
                 key,
                 facet: facet as u8,
@@ -480,7 +547,7 @@ pub(super) fn facets(
             });
         }
     }
-    Some(Facets { fields })
+    Some(Facets { fields, aliases })
 }
 
 /// One revision of the selected scope: its index, facets and exact identity.
@@ -561,7 +628,8 @@ struct Pair {
     unread: usize,
     /// Why the pair itself stopped short (`diff_work_limit`).
     stop: Option<&'static str>,
-    /// Per side, style and variable uses whose definition lies outside the compared records.
+    /// Per side, style, variable, main and set uses whose definition lies outside the compared
+    /// records.
     outside: [usize; 2],
     hashed: SystemTime,
     /// Digest of the retained ordered result, which cursors bind (`result`).
@@ -1199,21 +1267,35 @@ fn compare(old: Side, new: Side, node: &str, work: usize) -> Pair {
     pair
 }
 
-/// Style, variable and main component uses on `s` whose definition is not one of its records:
-/// its values, or a main's property definitions, may change while every compared record stays
-/// the same. Each record and edge is charged before
-/// it is read.
+/// Style, variable, main component and component set uses on `s` whose definition is not one
+/// of its records: its values, or the property definitions a main or a variant inherits from
+/// its set, may change while every compared record stays the same. So may a variable a compared
+/// variable aliases, which REST resolution follows across pages, and its collection, whose mode
+/// order picks the default mode; one whose values or collection were unread counts as one such
+/// use. Each record, edge and dependency is charged before it is read.
 fn outside_uses(s: &Side, ids: &HashMap<&str, usize>, budget: &mut Bounds) -> Option<usize> {
     let mut n = 0;
-    for r in &s.index.records {
+    for (r, f) in s.index.records.iter().zip(&s.facets) {
         if !budget.charge(1, 0) {
             return None;
+        }
+        match &f.aliases {
+            None => n += 1,
+            Some(a) => {
+                if !budget.charge(a.len(), 0) {
+                    return None;
+                }
+                n += a
+                    .iter()
+                    .filter(|t| !ids.contains_key(t.strip_prefix("VariableID:").unwrap_or(t)))
+                    .count();
+            }
         }
         for e in &r.edges {
             if !budget.charge(1, 0) {
                 return None;
             }
-            if let ("uses_style" | "binds_variable" | "instance_of", Some(t)) =
+            if let ("uses_style" | "binds_variable" | "instance_of" | "variant_of", Some(t)) =
                 (e.relation, e.target.as_deref())
                 && !matches!(e.state, "missing" | "unresolved")
             {
@@ -1431,8 +1513,8 @@ const FIELD_ENVELOPE: usize = 96;
 /// and a swap marker.
 const EDGE_ENVELOPE: usize = 96;
 
-/// Changed fields with old and new values, within `left` page value bytes; `None` when even
-/// their keys and markers do not fit.
+/// Changed or unread fields with old and new values, within `left` page value bytes; `None`
+/// when even their keys and markers do not fit.
 fn fields(pair: &Pair, c: &Change, left: &mut usize) -> Option<Json> {
     let (Some(o), Some(n)) = (c.old, c.new) else {
         return Some(Json::Null);
@@ -1448,7 +1530,11 @@ fn fields(pair: &Pair, c: &Change, left: &mut usize) -> Option<Json> {
             let x = a.iter().find(|f| f.key == *key);
             (key, x, b.iter().find(|f| f.key == *key))
         })
-        .filter(|(_, x, y)| x.map(|f| f.digest) != y.map(|f| f.digest))
+        // Two unread digests are not equal values: a field unread on either side is listed.
+        .filter(|(_, x, y)| {
+            x.map(|f| f.digest) != y.map(|f| f.digest)
+                || [x, y].iter().any(|f| f.is_some_and(|f| f.digest.is_none()))
+        })
         .collect();
     let envelope: usize = differing
         .iter()
@@ -1811,8 +1897,8 @@ pub(crate) fn facet_version() -> String {
     format!("{VERSION}:{}", &hex(&h.finalize())[..16])
 }
 
-/// A stored record's facets: `[key, digest]`, or `[key, digest, value]` when the value was kept;
-/// an unread field's digest is `null`.
+/// A stored record's facets: `fields` rows `[key, digest]`, or `[key, digest, value]` when the
+/// value was kept (an unread field's digest is `null`), and `aliases`, `null` when unread.
 fn encode(f: &Facets) -> String {
     let rows = f.fields.iter().map(|f| {
         let digest = f.digest.map(|d| hex(&d));
@@ -1821,12 +1907,13 @@ fn encode(f: &Facets) -> String {
             None => json!([f.key, digest]),
         }
     });
-    Json::Array(rows.collect()).to_string()
+    json!({"fields": rows.collect::<Vec<_>>(), "aliases": f.aliases}).to_string()
 }
 
 /// The inverse of `encode`, refusing a key outside `FIELDS`, out of order, or a bad digest. The
 /// text is charged to `spent` before it is parsed, and each field as the live build charged it
-/// (`FIELD_META`, its key and a kept value's held size) before it is kept.
+/// (`FIELD_META`, its key and a kept value's held size) before it is kept, then each alias as
+/// the live build charges its copy.
 fn decode(text: &str, spent: &mut usize) -> Result<Facets, Box<dyn Error>> {
     let mut keys = FIELDS
         .iter()
@@ -1843,8 +1930,17 @@ fn decode(text: &str, spent: &mut usize) -> Result<Facets, Box<dyn Error>> {
     // Parsing allocates about the text's size, paid for first as the live build pays a
     // conversion.
     super::store::charge_query(spent, text.len())?;
+    let mut stored =
+        serde_json::from_str::<serde_json::Map<String, Json>>(text).map_err(|_| bad())?;
+    let (Some(rows), Some(aliases), 2) = (
+        stored.get_mut("fields").map(Json::take),
+        stored.get_mut("aliases").map(Json::take),
+        stored.len(),
+    ) else {
+        return Err(bad());
+    };
     let mut fields = Vec::new();
-    for mut row in serde_json::from_str::<Vec<Vec<Json>>>(text).map_err(|_| bad())? {
+    for mut row in serde_json::from_value::<Vec<Vec<Json>>>(rows).map_err(|_| bad())? {
         let value = if row.len() == 3 { row.pop() } else { None };
         let name = row.first().and_then(Json::as_str).ok_or_else(bad)?;
         let (key, facet) = keys.find(|(k, _)| *k == name).ok_or_else(bad)?;
@@ -1855,10 +1951,12 @@ fn decode(text: &str, spent: &mut usize) -> Result<Facets, Box<dyn Error>> {
         if row.len() > 2 || (digest.is_none() && value.is_some()) {
             return Err(bad());
         }
-        // As the live build holds the field; the value's text was paid with the row's.
         super::store::charge_query(spent, FIELD_META + key.len())?;
         if let Some(v) = &value {
-            super::store::charge_query(spent, held_value(v, 0))?;
+            // Charged as the live build charges a kept value, measured without a copy.
+            let mut kept = Counted(0);
+            serde_json::to_writer(&mut kept, v)?;
+            super::store::charge_query(spent, held_value(v, kept.0))?;
         }
         fields.push(Field {
             key,
@@ -1867,7 +1965,23 @@ fn decode(text: &str, spent: &mut usize) -> Result<Facets, Box<dyn Error>> {
             value,
         });
     }
-    Ok(Facets { fields })
+    // Unread stays distinct from none, so a reopened side never reads a closure as complete.
+    let aliases = match aliases {
+        Json::Null => None,
+        Json::Array(ids) => {
+            let mut kept = Vec::new();
+            for id in ids {
+                let Json::String(id) = id else {
+                    return Err(bad());
+                };
+                super::store::charge_query(spent, std::mem::size_of::<String>() + 2 * id.len())?;
+                kept.push(id);
+            }
+            Some(kept)
+        }
+        _ => return Err(bad()),
+    };
+    Ok(Facets { fields, aliases })
 }
 
 /// Stores a tracked build's facets and selected-node context as generation `gen`'s, beside the
@@ -1896,7 +2010,13 @@ pub(crate) fn save_facets(
             .iter()
             // A kept value is at most `FIELD_VALUE` bytes.
             .map(|x| 96 + if x.value.is_some() { FIELD_VALUE } else { 0 })
-            .sum()
+            .sum::<usize>()
+            // Each id at its escaped upper bound: six bytes a character.
+            + f.aliases
+                .iter()
+                .flatten()
+                .map(|a| 12 + 6 * a.len())
+                .sum::<usize>()
     };
     let (total, mut done) = (tracked.facets.len(), 0);
     for chunk in super::store::batches(&tracked.facets, size) {
@@ -1992,10 +2112,12 @@ fn stored(conn: &rusqlite::Connection, gen_id: i64, source: Json) -> Result<Side
     let mut rows = stmt.query([gen_id])?;
     while let Some(row) = rows.next()? {
         let (rid, len): (i64, i64) = (row.get(0)?, row.get(1)?);
-        // One row per record: a surplus row is refused before it is read.
+        // One row per record: a surplus row is refused before it is read. Aliases come from
+        // values estimated at most FIELD_BYTES before escaping, which writes a character in at
+        // most six bytes.
         if rid != facets.len() as i64
             || facets.len() >= index.records.len()
-            || len.max(0) as usize > FIELD_BYTES
+            || len.max(0) as usize > 7 * FIELD_BYTES
         {
             return Err(bad());
         }

@@ -242,7 +242,7 @@ impl Bounds {
 }
 
 /// Sums `f` over `items` until `left` runs out, without enumerating the rest of a collection.
-fn sum_while<T>(
+pub(crate) fn sum_while<T>(
     items: impl IntoIterator<Item = T>,
     left: &mut usize,
     mut f: impl FnMut(T, &mut usize) -> usize,

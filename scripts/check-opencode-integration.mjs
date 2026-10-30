@@ -74,6 +74,8 @@ const cliSteps = [
   (status, prepared, ...rest) => rest[9]?.nextCursor && direct('figlens_watch', { action: 'ack', workspaceId: prepared.workspaceId, consumer: 'smoke',
     cursor: rest[9].nextCursor }),
   (status, prepared) => direct('figlens_changes', { workspaceId: prepared.workspaceId, consumer: 'smoke' }),
+  // Two copies of one file, each read-checked before the binary compares them.
+  () => direct('figlens_diff', { old: path.join(project, 'mapping-old.fig'), file: fixture }),
 ];
 const deepId = `I${Array(60).fill('9:9').join(';')}`;
 let steps = searchSteps;
@@ -169,8 +171,8 @@ try {
     assert.equal(status.mcp.status.status, 'connected');
     for (const tool of ['figlens_preview', 'figlens_bindings', 'figlens_propose_bindings']) assert.ok(status.mcp.tools.includes(tool), tool);
     for (const tool of ['figlensmcp_search', 'figlensmcp_inspect', 'figlensmcp_diff']) assert.ok(status.mcp.catalog.includes(tool), tool);
-    // The managed server serves index, jobs, search, usages, changes, watch and inspect; the plugin adds no second copy.
-    for (const tool of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages', 'figlens_changes', 'figlens_watch']) assert.ok(!status.mcp.tools.includes(tool), tool);
+    // The managed server serves index, jobs, search, usages, diff, changes, watch and inspect; the plugin adds no second copy.
+    for (const tool of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages', 'figlens_diff', 'figlens_changes', 'figlens_watch']) assert.ok(!status.mcp.tools.includes(tool), tool);
     const skills = await client.skill.list({ location });
     assert.ok(JSON.stringify(skills).includes('figlens'));
     return { mcp: status.mcp, catalogAfterConnectedMs: Date.now() - connected, skills: skills.data.map(skill => skill.name) };
@@ -329,7 +331,7 @@ try {
     await client.location.reload();
     const status = await rpc.run({ sessionID: session.id, action: 'status' }, options);
     assert.equal(status.mcp.managed, false, JSON.stringify(status.mcp));
-    for (const name of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages', 'figlens_changes', 'figlens_watch']) assert.ok(status.mcp.tools.includes(name), name);
+    for (const name of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages', 'figlens_diff', 'figlens_changes', 'figlens_watch']) assert.ok(status.mcp.tools.includes(name), name);
     await execute(binary, ['index', 'reset', '--file', fixture], { cwd: project, env }).catch(() => {});
     const [before, prepared, job, found, node] = await converse('Enable an index for the mapping review frame (0:1) of mapping.fig, then find it.', cliSteps);
     assert.ok(node, JSON.stringify(scripted.raw).slice(0, 2000));
@@ -350,7 +352,9 @@ try {
     assert.deepEqual(polled?.revisions?.map(revision => revision.kind), ['baseline'], (scripted.raw[11] ?? '').slice(0, 500));
     assert.equal(acked?.advanced, true, (scripted.raw[12] ?? '').slice(0, 500));
     assert.deepEqual(after?.revisions, [], (scripted.raw[13] ?? '').slice(0, 500));
-    return { pages: [first.results[0].ref.nodeId, second.results[0].ref.nodeId], refused: 'unknown relation', trackedBaselineAcked: true, usedBy: used.results.map(item => item.ref.nodeId), deepIdBytes: deepId.length, mcp: status.mcp.reason, before: before.state, job: job.state, ref: found.results[0].ref, inspected: node.node.id, tools: scripted.tools.filter(name => /^figlens_/.test(name)) };
+    const diffed = value(scripted.raw[14] ?? '');
+    assert.deepEqual([diffed?.coverage?.complete, diffed?.coverage?.changes], [true, 0], (scripted.raw[14] ?? '').slice(0, 500));
+    return { pages: [first.results[0].ref.nodeId, second.results[0].ref.nodeId], refused: 'unknown relation', trackedBaselineAcked: true, diffedCopies: diffed.coverage.changes, usedBy: used.results.map(item => item.ref.nodeId), deepIdBytes: deepId.length, mcp: status.mcp.reason, before: before.state, job: job.state, ref: found.results[0].ref, inspected: node.node.id, tools: scripted.tools.filter(name => /^figlens_/.test(name)) };
   });
   await check('with a disabled MCP override figlens_watch holds a lease per session that records a save, and only its session, deletion or a reload ends it', async () => {
     const cli = args => JSON.parse(execFileSync(binary, args, { cwd: project, env, encoding: 'utf8' }));

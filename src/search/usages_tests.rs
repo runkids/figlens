@@ -2028,3 +2028,169 @@ fn a_field_estimate_with_little_work_left_spends_it_and_stops_the_side() {
         );
     }
 }
+
+#[test]
+fn a_library_alias_key_is_charged_for_its_projected_copies_before_they_are_made() {
+    let doc = |key: &str| {
+        let lib = obj(vec![
+            ("dataType", K::Enum("VariableDataType", "ALIAS")),
+            (
+                "value",
+                obj(vec![(
+                    "alias",
+                    obj(vec![(
+                        "assetRef",
+                        obj(vec![
+                            ("key", K::String(key.into())),
+                            ("version", K::String("1".into())),
+                        ]),
+                    )]),
+                )]),
+            ),
+        ]);
+        let fills = K::Array(vec![obj(vec![
+            ("type", K::Enum("PaintType", "SOLID")),
+            ("colorVar", lib),
+        ])]);
+        obj(vec![(
+            "nodeChanges",
+            K::Array(vec![
+                node(0, None, "DOCUMENT", "Document", vec![]),
+                node(1, Some(0), "CANVAS", "Page", vec![]),
+                node(
+                    2,
+                    Some(1),
+                    "RECTANGLE",
+                    "Shape",
+                    vec![("fillPaints", fills)],
+                ),
+            ]),
+        )])
+    };
+    let budget = |bytes| crate::expand::Bounds {
+        bytes,
+        ..bounds(WORK)
+    };
+    let short = doc("k");
+    let short = Tree::new(&short);
+    let fits = (1..64)
+        .map(|kib| kib * 1024)
+        .find(|b| build(&short, "0:0", budget(*b)).stop.is_none())
+        .unwrap();
+    // The key's field fits the margin once; its projected copies do not. A control character
+    // serializes to six bytes in the dedup key.
+    for (key, margin) in [("k".repeat(64 * 1024), 2), ("\u{1}".repeat(16 * 1024), 7)] {
+        let message = doc(&key);
+        let tree = Tree::new(&message);
+        let index = build(&tree, "0:0", budget(fits + margin * key.len()));
+        assert_eq!(index.stop, Some("byte_limit"), "margin {margin}");
+    }
+}
+
+#[test]
+fn an_overlong_library_style_key_near_the_byte_limit_stays_an_unsupported_edge() {
+    let doc = |key: &str| {
+        let style = obj(vec![(
+            "assetRef",
+            obj(vec![("key", K::String(key.into()))]),
+        )]);
+        obj(vec![(
+            "nodeChanges",
+            K::Array(vec![
+                node(0, None, "DOCUMENT", "Document", vec![]),
+                node(1, Some(0), "CANVAS", "Page", vec![]),
+                node(
+                    2,
+                    Some(1),
+                    "RECTANGLE",
+                    "Shape",
+                    vec![("styleIdForFill", style)],
+                ),
+            ]),
+        )])
+    };
+    let budget = |bytes| crate::expand::Bounds {
+        bytes,
+        ..bounds(WORK)
+    };
+    let edge = |index: &Index| {
+        let mut r = req("0:2");
+        r.outgoing = true;
+        let out = run(index, &r).unwrap();
+        let e = out["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["relation"] == "uses_style")
+            .cloned()
+            .unwrap();
+        (e["target"].clone(), e["state"].clone())
+    };
+    let short = doc("k");
+    let short = Tree::new(&short);
+    let fits = (1..64)
+        .map(|kib| kib * 1024)
+        .find(|b| build(&short, "0:0", budget(*b)).stop.is_none())
+        .unwrap();
+    let normal = build(&short, "0:0", budget(fits));
+    // The long key's field fits the margin; its target is measured, never copied or charged.
+    let long = "k".repeat(64 * 1024);
+    let message = doc(&long);
+    let tree = Tree::new(&message);
+    let index = build(&tree, "0:0", budget(fits + 4 * long.len()));
+    assert_eq!(
+        (index.stop, edge(&normal), edge(&index)),
+        (
+            None,
+            (json!({"resource": "StyleKey:k"}), json!("external")),
+            (Json::Null, json!("unsupported"))
+        )
+    );
+}
+
+#[test]
+fn an_overlong_image_hash_stays_an_unsupported_edge_and_a_short_one_is_kept() {
+    let doc = |hash: Vec<u8>| {
+        let fills = K::Array(vec![obj(vec![
+            ("type", K::Enum("PaintType", "IMAGE")),
+            ("image", obj(vec![("hash", K::Bytes(hash))])),
+        ])]);
+        obj(vec![(
+            "nodeChanges",
+            K::Array(vec![
+                node(0, None, "DOCUMENT", "Document", vec![]),
+                node(1, Some(0), "CANVAS", "Page", vec![]),
+                node(
+                    2,
+                    Some(1),
+                    "RECTANGLE",
+                    "Shape",
+                    vec![("fillPaints", fills)],
+                ),
+            ]),
+        )])
+    };
+    let edge = |message: &K| {
+        let index = build(&Tree::new(message), "0:0", bounds(WORK));
+        let mut r = req("0:2");
+        r.outgoing = true;
+        let out = run(&index, &r).unwrap();
+        let e = out["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["relation"] == "uses_image")
+            .cloned()
+            .unwrap();
+        (index.stop, e["state"].clone(), e["target"].is_null())
+    };
+    // Hex doubles the hash, so half of ID_BYTES plus one is already too long to keep.
+    let long = vec![0xab; super::super::store::ID_BYTES / 2 + 1];
+    assert_eq!(
+        (edge(&doc(vec![0xab, 0xcd])), edge(&doc(long))),
+        (
+            (None, json!("recorded"), false),
+            (None, json!("unsupported"), true)
+        )
+    );
+}

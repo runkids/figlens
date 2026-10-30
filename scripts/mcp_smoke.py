@@ -90,8 +90,6 @@ def check_mcp(command, cwd, env, fixture, version):
         ref = searched['structuredContent']['results'][0]['ref']['nodeId']
         opened = request('tools/call', {'name': 'inspect', 'arguments': {'file': str(fixture), 'node': ref}})
         assert opened['isError'] is False and opened['structuredContent']['node']['id'] == ref, opened
-        used = request('tools/call', {'name': 'usages', 'arguments': {'file': str(fixture), 'node': ref, 'relation': 'contains', 'direction': 'out'}})
-        assert used['isError'] is False and used['structuredContent']['results'][0]['target']['ref']['nodeId'] == '0:10', used
         # Wiring only: two copies of one file are two sources with no changes; the engine's
         # revised-pair semantics are tested in the crate.
         old = fixture.with_name('diff-old.fig')
@@ -104,6 +102,8 @@ def check_mcp(command, cwd, env, fixture, version):
         assert diffed['isError'] is False and pair['coverage']['complete'] is True and pair['coverage']['changes'] == 0, diffed
         assert pair['source']['old']['sourceId'] != pair['source']['new']['sourceId'], diffed
         assert pair['source']['old']['snapshotId'] == pair['source']['new']['snapshotId'], diffed
+        used = request('tools/call', {'name': 'usages', 'arguments': {'file': str(fixture), 'node': ref, 'relation': 'contains', 'direction': 'out'}})
+        assert used['isError'] is False and used['structuredContent']['results'][0]['target']['ref']['nodeId'] == '0:10', used
         failed = request('tools/call', {'name': 'inspect', 'arguments': {'file': str(fixture), 'node': '9:9'}})
         assert failed['isError'] is True and failed['_meta']['figlens']['code'] == 'node_not_found', failed
         schema = next(t for t in tools if t['name'] == 'inspect')['inputSchema']

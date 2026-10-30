@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, relationChoices, acceptReply, reasonCodes, rowModel, groupUsages, localSearch} = require('../src/preview/viewer.js');
+const {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, relationChoices, acceptReply, reasonCodes, mergePages, rowModel, groupUsages, localSearch} = require('../src/preview/viewer.js');
 
 test('prototype missing fields remain unspecified without click or navigation defaults', () => {
   const rows = prototypeRows({state:'recorded', sourceNodeId:'0:1', interactions:[
@@ -138,6 +138,29 @@ test('coverage reason codes stay verbatim and are not repeated', () => {
     ['scan_limit', 'relation_unavailable (library_identity)']);
   assert.deepEqual(reasonCodes({}), []);
 });
+test('load-more keeps an earlier page\'s coverage reason and partial state; a new query starts over', () => {
+  const hidden = {code: 'hidden_locations_excluded', count: 2};
+  const page1 = {results: [{ref: {nodeId: '1:1'}}], coverage: {complete: false, reasons: [hidden]}, hasMore: true, nextCursor: 'c1'};
+  const page2 = {results: [{ref: {nodeId: '1:2'}}], coverage: {complete: true, reasons: []}, hasMore: false, nextCursor: null};
+  const both = mergePages(page1, page2, true);
+  assert.deepEqual(both.results.map(r => r.ref.nodeId), ['1:1', '1:2']);
+  assert.equal(both.coverage.complete, false);
+  assert.deepEqual(reasonCodes(both), ['hidden_locations_excluded']);
+  assert.equal(both.hasMore, false);
+  assert.deepEqual(mergePages(both, page2, false), page2);
+});
+
+test('load-more joins relation-layer reasons without repeats and keeps a complete pair complete', () => {
+  const lim = {code: 'scan_limit', relations: ['instance']};
+  const layer = reasons => ({relations: {state: 'ready', kinds: {instance: 'ready'}, reasons}});
+  const a = {results: [], coverage: {complete: true, reasons: [], layers: layer([lim])}};
+  const b = {results: [], coverage: {complete: true, reasons: [], layers: layer([])}};
+  const both = mergePages(a, b, true);
+  assert.equal(both.coverage.complete, true);
+  assert.deepEqual(both.coverage.layers.relations.reasons, [lim]);
+  assert.deepEqual(reasonCodes(mergePages(both, a, true)), ['scan_limit (instance)']);
+});
+
 test('usages rows keep identity on ref.nodeId and show unknown targets as rows', () => {
   const ref = {sourceId:'f', snapshotId:'s1', nodeId:'I1:2;3:4'};
   const m = rowModel({target:{resource:'VariableID:x/1'}, relation:'binds_variable', state:'external'}, {sourceId:'f', snapshotId:'s1'});
