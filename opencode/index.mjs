@@ -25,7 +25,7 @@ const CLI_TOOLS = [
       file: path, workspace: path, workspaceId: id, sourceId: id, scope: node, requestId: id, storage: path, replaceUnavailable: bool, cursor: string(DIR_CURSOR) }, ['action']],
   ['jobs', 'Status or cancellation of an index job by its jobId, as the figlens MCP jobs tool.',
     { action: { enum: ['status', 'cancel'] }, jobId: id, storage: path }, ['action', 'jobId']],
-  ['search', 'Ranked search of layer names and effective text, as the figlens MCP search tool: give file to read a .fig now, or workspaceId to search its prepared indexes without parsing. Results carry exact ref.nodeId for figlens_inspect, matches and coverage; sources not ready list the index call that prepares them.',
+  ['search', 'Ranked text, semantic, visual or hybrid search, as the figlens MCP search tool. An image query takes an authorized local PNG (image) or stored node render (imageRef), optionally cropped. Give file for queries without an image, or workspaceId for prepared text/model/visual layers; index visual builds the image layer. Results carry exact ref.nodeId for figlens_inspect, matches and coverage; sources not ready list the index call that prepares them.',
     { file: path, workspaceId: id, sourceId: id, storage: path, query: string(2000), node, type: id,
       limit: { type: 'integer', minimum: 1, maximum: 200 }, cursor: string(4096), includeHidden: bool, includeInternal: bool,
       // An image search: one local PNG or one stored node render, optionally cropped; visual only with an image.

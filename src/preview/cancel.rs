@@ -46,7 +46,7 @@ impl Requests {
         if calls.running.contains_key(&id) {
             return Err("requestId is already running".into());
         }
-        // One warm model child serves queries serially; leave HTTP workers free for cancel/status.
+        // Admit one indexed query at a time, leaving HTTP workers free for cancel/status.
         if !calls.running.is_empty() {
             return Err(FigError::new(
                 crate::ErrorKind::WorkspaceBusy,

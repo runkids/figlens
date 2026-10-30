@@ -1835,8 +1835,8 @@ if (typeof document !== 'undefined') {
             shownScope = scope;
             shownVisual = visual;
             const what = scope === '0:0' ? 'the whole file' : `layer ${scope}`;
-            $('semanticEnable').textContent = `Enable ${visual ? 'visual ' : ''}index of ${what}`;
-            if (v.enable) $('semanticState').textContent += ` Enable index stores a local figlens index of ${what} of ${loadedSource?.path ?? 'this file'}; ${visual ? 'visual indexing also stores source thumbnails and, with an image model, image vectors' : 'with a local text model it also builds the model layer here'}. Nothing is downloaded or sent anywhere, and a save stops the build.`;
+            $('semanticEnable').textContent = `${visual ? 'Build visual' : 'Enable'} index of ${what}`;
+            if (v.enable) $('semanticState').textContent += ` ${visual ? 'Build visual index' : 'Enable index'} stores a local figlens index of ${what} of ${loadedSource?.path ?? 'this file'}; ${visual ? 'visual indexing also stores source thumbnails and, with an image model, image vectors' : 'with a local text model it also builds the model layer here'}. Nothing is downloaded or sent anywhere, and a save stops the build.`;
             if (v.running) semanticTimer = setTimeout(semanticRefresh, 1000);
         } catch (e) { if (seq === semanticSeq) $('semanticState').textContent = e.message; }
     }
