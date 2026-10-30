@@ -26,6 +26,7 @@ pub mod render;
 pub mod rest;
 pub mod search;
 pub mod states;
+pub mod tokens;
 pub mod variables;
 pub mod verify;
 pub mod workspace;

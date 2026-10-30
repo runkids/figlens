@@ -2003,15 +2003,25 @@ pub(crate) fn facet_version() -> String {
 
 /// A stored record's facets: `fields` rows `[key, digest]`, or `[key, digest, value]` when the
 /// value was kept (an unread field's digest is `null`), and `aliases`, `null` when unread.
-fn encode(f: &Facets) -> String {
-    let rows = f.fields.iter().map(|f| {
+fn encode(f: &Facets) -> Vec<u8> {
+    // The bytes of `json!({"aliases": .., "fields": rows})`, whose keys sort, written from
+    // borrowed values instead of a copied tree. Writing JSON to memory cannot fail.
+    let mut out = b"{\"aliases\":".to_vec();
+    serde_json::to_writer(&mut out, &f.aliases).expect("in memory");
+    out.extend_from_slice(b",\"fields\":[");
+    for (i, f) in f.fields.iter().enumerate() {
+        if i > 0 {
+            out.push(b',');
+        }
         let digest = f.digest.map(|d| hex(&d));
         match &f.value {
-            Some(v) => json!([f.key, digest, v]),
-            None => json!([f.key, digest]),
+            Some(v) => serde_json::to_writer(&mut out, &(f.key, digest, v)),
+            None => serde_json::to_writer(&mut out, &(f.key, digest)),
         }
-    });
-    json!({"fields": rows.collect::<Vec<_>>(), "aliases": f.aliases}).to_string()
+        .expect("in memory");
+    }
+    out.extend_from_slice(b"]}");
+    out
 }
 
 /// The inverse of `encode`, refusing a key outside `FIELDS`, out of order, or a bad digest. The
@@ -2044,7 +2054,13 @@ fn decode(text: &str, spent: &mut usize) -> Result<Facets, Box<dyn Error>> {
         return Err(bad());
     };
     let mut fields = Vec::new();
-    for mut row in serde_json::from_value::<Vec<Vec<Json>>>(rows).map_err(|_| bad())? {
+    let Json::Array(rows) = rows else {
+        return Err(bad());
+    };
+    for row in rows {
+        let Json::Array(mut row) = row else {
+            return Err(bad());
+        };
         let value = if row.len() == 3 { row.pop() } else { None };
         let name = row.first().and_then(Json::as_str).ok_or_else(bad)?;
         let (key, facet) = keys.find(|(k, _)| *k == name).ok_or_else(bad)?;
@@ -2132,7 +2148,7 @@ pub(crate) fn save_facets(
                 tx.prepare_cached("INSERT INTO facets (gen, rid, blob) VALUES (?1, ?2, ?3)")?;
             for (i, f) in chunk.iter().enumerate() {
                 let rid = (done + i) as i64;
-                stmt.execute(rusqlite::params![gen_id, rid, encode(f).into_bytes()])?;
+                stmt.execute(rusqlite::params![gen_id, rid, encode(f)])?;
             }
         }
         tx.commit()?;

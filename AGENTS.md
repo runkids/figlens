@@ -1,6 +1,6 @@
 # AGENTS.md — figlens
 
-Reads Figma `.fig` local copies (File > Save local copy) for offline/CI design-to-code: no Figma app, login or API rate limits. Designers keep working in Figma; figlens owns the read path. Rust crate (`src/`) and native CLI; users need no Rust or Docker. Shared rules here; load task details by topic.
+Reads saved Figma `.fig` files offline: no API rate limits, login or running Figma. Designers keep working in Figma; figlens owns the read path. A Rust crate (`src/`) and native `figlens` CLI. Task details load per topic rather than putting the whole wiki in context.
 
 ## Language
 
@@ -40,6 +40,7 @@ python3 scripts/ai-context.py check     # validate paths, headings, links, orpha
 | `performance` | Measuring load time and memory, the perf baseline, cache or decode cost |
 | `parsing` | Changing untrusted container/schema/value decoding or parsing budgets |
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields or variables |
+| `tokens` | Changing DTCG variable export, validation or interoperability |
 | `discovery` | Changing find/inspect summaries or `--flat`, `tree --top-frames` or `export --match-dir` |
 | `search` | Changing search indexing, ranking, cursors, coverage or budgets |
 | `visual` | Changing visual units, query-image admission, fingerprints or vision profiles |
