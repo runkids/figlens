@@ -798,16 +798,20 @@ fn in_facet(f: &[Field], facet: u8) -> impl Iterator<Item = (&str, Option<[u8; 3
         .map(|x| (x.key, x.digest))
 }
 
-/// What one field facet of two records of the same id and kind proves: `Some(true)` a
-/// difference, `Some(false)` every field read on both sides and equal, `None` neither (no
-/// field at all, or one unread). A facet differs only where that is proven: a field present on
-/// one side only, or read on both with other digests. An unread value proves nothing either way.
-fn proof(a: &[Field], b: &[Field], facet: u8) -> Option<bool> {
-    let differs = in_facet(a, facet).count() != in_facet(b, facet).count()
+/// A field facet of two records of the same id and kind differs only where that is proven: a
+/// field present on one side only, or read on both with other digests. An unread value proves
+/// nothing either way.
+fn proven(a: &[Field], b: &[Field], facet: u8) -> bool {
+    in_facet(a, facet).count() != in_facet(b, facet).count()
         || in_facet(a, facet)
             .zip(in_facet(b, facet))
-            .any(|(x, y)| x.0 != y.0 || matches!((x.1, y.1), (Some(p), Some(q)) if p != q));
-    if differs {
+            .any(|(x, y)| x.0 != y.0 || matches!((x.1, y.1), (Some(p), Some(q)) if p != q))
+}
+
+/// What one field facet proves: `Some(true)` a difference, `Some(false)` every field read on
+/// both sides and equal, `None` neither (no field at all, or one unread).
+fn proof(a: &[Field], b: &[Field], facet: u8) -> Option<bool> {
+    if proven(a, b, facet) {
         return Some(true);
     }
     let mut all = in_facet(a, facet).chain(in_facet(b, facet)).peekable();
@@ -888,7 +892,7 @@ fn differs(old: &Side, o: usize, oo: &[u32], new: &Side, n: usize, no: &[u32]) -
         bits |= UNREAD;
     }
     for facet in 0..FIELDS.len() as u8 {
-        if proof(a, b, facet) == Some(true) {
+        if proven(a, b, facet) {
             bits |= 1 << facet;
         }
     }
