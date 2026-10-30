@@ -1553,7 +1553,7 @@ if (typeof document !== 'undefined') {
     function relList(name, models) {
         const ul = el('ul');
         for (const m of models) {
-            const li = el('li'), open = button(m.name, () => relOpen(name, m));
+            const li = el('li'), open = button(m.name, () => relOpen(name, m, open));
             open.disabled = !m.nodeId;
             li.append(open, el('span', [m.type, m.relation, m.state && `state ${m.state}`, m.basis, m.via && `via ${m.via}`, m.origin, m.scopeRoot && `in ${m.scopeRoot}`, m.page && `page ${m.page}`, m.hidden && 'hidden', m.resource && `resource ${m.resource}`, m.path].filter(Boolean).join(' · ')));
             if (m.nodeId && !boot.snapshot) {
@@ -1595,12 +1595,22 @@ if (typeof document !== 'undefined') {
         const {source} = await (await api('revision')).json();
         if (!sameSource(source, m)) throw new Error('Refused: stale reference — rerun search.');
     }
-    async function relOpen(name, m) {
+    // Opening moves focus to the layer, as other results do; Escape there returns to the row that opened it.
+    let relReturn = null;
+    async function relOpen(name, m, row) {
         try {
             await relFresh(m);
             await selectById(m.nodeId, true);
+            relReturn = row;
+            status(`Opened ${m.name || m.nodeId}; Escape in Layers returns to the results.`);
         } catch (e) { relUI(name).status.textContent = e.message; }
     }
+    $('tree').addEventListener('keydown', e => {
+        if (e.key !== 'Escape' || !relReturn?.isConnected) return;
+        e.preventDefault();
+        relReturn.focus();
+        relReturn = null;
+    });
     async function relCopy(name, m, source) {
         try {
             await relFresh(m);
