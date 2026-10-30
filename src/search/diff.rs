@@ -804,7 +804,8 @@ impl Collect {
         kind: Kind,
         facets: u8,
     ) -> bool {
-        if !self.budget.charge(1, 96) {
+        // A second visit for each change and frame pays for hashing it into `result`.
+        if !self.budget.charge(2, 96) {
             return false;
         }
         let index = &side.index;
@@ -826,7 +827,7 @@ impl Collect {
         if !self.at.contains_key(id) {
             if !self
                 .budget
-                .charge(1, 128 + id.len() + name.len() + page.len())
+                .charge(2, 128 + id.len() + name.len() + page.len())
             {
                 return false;
             }
@@ -1165,24 +1166,36 @@ fn pair_frames(
 /// The retained ordered result a cursor's offset indexes into: a rebuild over the same sides that
 /// stopped elsewhere (the pair's own deadline or work) can change it.
 fn result(pair: &Pair) -> String {
-    let mut result = Sha256::new();
+    let mut h = Sha256::new();
+    let n = |v: u64| v.to_le_bytes();
+    let text = |h: &mut Sha256, t: &str| {
+        h.update(n(t.len() as u64));
+        h.update(t);
+    };
     for c in &pair.changes {
-        result.update(format!(
-            "{}|{:?}|{:?}|{:?}|{}|{};",
-            c.frame, c.old, c.new, c.kind, c.facets, c.descendants
-        ));
+        h.update(n(c.frame.into()));
+        h.update(n(c.old.map_or(u64::MAX, u64::from)));
+        h.update(n(c.new.map_or(u64::MAX, u64::from)));
+        h.update([c.kind as u8, c.facets]);
+        h.update(n(c.descendants.into()));
     }
     for f in &pair.frames {
-        result.update(format!(
-            "{}|{:?}|{:?}|{:?};",
-            f.id, f.change, f.counts, f.possible
-        ));
+        text(&mut h, &f.id);
+        h.update([f.change.map_or(u8::MAX, |k| k as u8)]);
+        f.counts.iter().for_each(|c| h.update(n((*c).into())));
+        match &f.possible {
+            Some((id, basis)) => {
+                text(&mut h, id);
+                text(&mut h, basis);
+            }
+            None => h.update([0]),
+        }
     }
-    result.update(format!(
-        "{}|{}|{:?}|{:?}",
-        pair.possible, pair.unread, pair.stop, pair.outside
-    ));
-    hex(&result.finalize())
+    h.update(n(pair.possible as u64));
+    h.update(n(pair.unread as u64));
+    text(&mut h, pair.stop.unwrap_or(""));
+    pair.outside.iter().for_each(|o| h.update(n(*o as u64)));
+    hex(&h.finalize())
 }
 
 fn binding(pair: &Pair) -> String {

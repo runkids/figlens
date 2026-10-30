@@ -564,8 +564,8 @@ fn possible_match_probes_are_charged_and_stop_the_pair_when_out_of_work() {
     };
     let full = run(PAIR_WORK);
     assert_eq!(full["coverage"]["possibleMatches"], POSSIBLE);
-    // Enough for the maps and the 600 changes, not for every probe.
-    let short = run(2 * 600 + 600 * 4 + 100);
+    // Enough for the maps and the 600 changes and frames, not for every probe.
+    let short = run(2 * 600 + 600 * 6 + 100);
     // Every change was kept; only the probes ran out.
     assert_eq!(
         (
@@ -602,15 +602,20 @@ fn a_cursor_binds_the_retained_comparison_not_only_both_sides() {
             .map(str::to_owned)
     };
     // Same sides, same changes; only the pair's probes stopped short.
-    let short = next(2 * 600 + 600 * 4 + 100);
+    let short = next(2 * 600 + 600 * 6 + 100);
     let full = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
     let err = page(&full, &req(1, short), false).unwrap_err();
     assert_eq!(
         err.downcast_ref::<FigError>().map(FigError::kind),
         Some(ErrorKind::CursorStale)
     );
-    // A rebuild of the full pair keeps its cursor.
-    assert!(page(&full, &req(1, next(PAIR_WORK)), false).is_ok());
+    // A rebuild of the full pair keeps its cursor, which reads the digest kept with the pair
+    // instead of hashing the whole result again on every page.
+    let cursor = next(PAIR_WORK);
+    assert!(page(&full, &req(1, cursor.clone()), false).is_ok());
+    let mut kept = full;
+    kept.result.clear();
+    assert!(page(&kept, &req(1, cursor), false).is_err());
 }
 
 #[test]
