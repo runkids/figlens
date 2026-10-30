@@ -1439,18 +1439,18 @@ struct Planned {
 /// read transaction, when the scope is actively tracked; `None` otherwise.
 fn plan(conn: &mut Connection, job_id: &str, gen_id: i64) -> Result<Option<Planned>> {
     let tx = conn.transaction().map_err(sql)?;
-    let row: Option<(i64, i64, String, Option<String>)> = tx
+    let row: Option<(i64, i64, String, Option<String>, String)> = tx
         .query_row(
-            "SELECT t.epoch, j.expected_gen, j.source_id, g.snapshot_id FROM jobs j
+            "SELECT t.epoch, j.expected_gen, j.source_id, g.snapshot_id, g.versions FROM jobs j
              JOIN tracking t ON t.source_id = j.source_id AND t.scope = j.scope
              AND t.state = 'active' JOIN generations g ON g.gen = j.expected_gen
              WHERE j.job_id = ?1",
             [job_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()
         .map_err(sql)?;
-    let Some((epoch, from, source, old_snapshot)) = row else {
+    let Some((epoch, from, source, old_snapshot, old_versions)) = row else {
         return Ok(None);
     };
     let (scope, new_snapshot): (String, Option<String>) = tx
@@ -1468,11 +1468,13 @@ fn plan(conn: &mut Connection, job_id: &str, gen_id: i64) -> Result<Option<Plann
         )
         .optional()
         .map_err(sql)?;
-    // A previous generation without facets, or with another field layout, is only a baseline:
-    // comparing it would report a layout change as design changes.
+    // A previous generation without facets, or with another field layout or extraction (such
+    // as relations that now keep library references), is only a baseline: comparing it would
+    // report a layout or extraction change as design changes.
     let what = match version {
         None => Err("previous_untracked"),
         Some(v) if v != search::diff::facet_version() => Err("facet_version_changed"),
+        Some(_) if old_versions != search::store::versions() => Err("index_version_changed"),
         Some(_) => {
             let side =
                 |snapshot: Option<String>| json!({"sourceId": source, "snapshotId": snapshot});

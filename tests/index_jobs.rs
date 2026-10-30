@@ -3957,6 +3957,56 @@ fn a_schema_6_workspace_reads_impact_as_null_and_records_it_once_a_build_upgrade
 }
 
 #[test]
+fn a_92_generation_refreshed_under_new_relations_is_a_baseline_keeping_history_and_checkpoints() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let id = t.subscribe(&[]);
+    let tail = t.changes(&[])["nextCursor"].as_str().unwrap().to_owned();
+    t.watch("ack", &["--consumer", "bot", "--cursor", &tail]);
+    // As #92 left it: schema 7, generations built by relations-5, no library references,
+    // fingerprints or subscription source sets.
+    t.sql(
+        "DELETE FROM edges WHERE relation = 'uses_library'; DROP TABLE fingerprints;
+         ALTER TABLE subscriptions DROP COLUMN sources;
+         ALTER TABLE subscriptions DROP COLUMN disabled;
+         UPDATE generations SET versions = replace(versions, '\"relations-6\"', '\"relations-5\"');
+         PRAGMA user_version = 7;",
+    );
+    let before = t.revisions();
+    let checkpoints = "SELECT count(*) FROM consumers";
+    let held = t.count(checkpoints);
+    t.changes(&["--consumer", "bot"]);
+    t.watch("list", &[]);
+    let read = t.count("PRAGMA user_version");
+    // The same bytes, so only the extraction changed: a baseline, never a comparison.
+    t.index("refresh");
+    let after = t.revisions();
+    let kinds = |more: &[&str]| t.kinds(&t.changes(more));
+    assert_eq!(
+        (
+            read,
+            &after[..2],
+            after[2].clone(),
+            t.count("PRAGMA user_version"),
+            t.count(checkpoints),
+            kinds(&["--consumer", "bot"]),
+            kinds(&["--subscription", &id]),
+        ),
+        (
+            7,
+            &before[..],
+            json!(["baseline", {"basis": "baseline", "reason": "index_version_changed"}, null, "complete", false, null, 0]),
+            8,
+            held,
+            vec![json!("baseline")],
+            vec![json!("baseline")],
+        )
+    );
+}
+
+#[test]
 fn watch_list_reads_a_schema_7_workspace_without_its_source_set_columns() {
     let env = Env::new();
     let t = Tracked::new(&env);
