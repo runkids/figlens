@@ -43,10 +43,16 @@ const libraryFlags = library => ['--library', required(library, 'kind'), ...flag
   '--key', required(library, 'key'), ...(library.definition === undefined ? [] : ['--definition-source', required(library.definition, 'sourceId'),
     '--definition-snapshot', required(library.definition, 'snapshotId'), '--definition-node', required(library.definition, 'nodeId')])];
 
-// The MCP index, jobs, search, usages, diff, changes, watch and inspect arguments as the same CLI command, for the plugin's CLI path.
+// The MCP index, jobs, search, usages, diff, changes, watch, inspect and models arguments as the same CLI command, for the plugin's CLI path.
 export function cliArgs(tool, input) {
   const storage = flag('--storage', input.storage);
   if (tool === 'jobs') return ['jobs', input.action, required(input, 'jobId'), ...storage];
+  // Only the figlens-embed beside the binary runs, as through MCP: the CLI's --runtime override is never passed.
+  if (tool === 'models') {
+    if (input.action === 'configure') return ['models', 'configure', required(input, 'profile'), '--model', required(input, 'modelDir')];
+    if (input.action === 'remove') return ['models', 'remove', required(input, 'profile')];
+    return ['models', input.action];
+  }
   if (tool === 'diff') return ['diff', required(input, 'old'), required(input, 'file'), ...flag('--node', input.node),
     ...flag('--limit', input.limit), ...flag('--cursor', input.cursor), '--json'];
   if (tool === 'inspect') return ['inspect', required(input, 'file'), required(input, 'node'), ...flag('--depth', input.depth),
@@ -339,7 +345,8 @@ export function createAdapter(ctx, entry = import.meta.url) {
     // Invalid or conflicting arguments fail before any permission prompt.
     const args = cliArgs(tool, input);
     const invoke = async (args, text = false) => {
-      const build = args[0] === 'index' && ['prepare', 'refresh', 'rebuild', 'track'].includes(args[1]);
+      // A model configure hashes its pinned files and waits for the runtime to start, as long as a build.
+      const build = (args[0] === 'index' && ['prepare', 'refresh', 'rebuild', 'track'].includes(args[1])) || args.slice(0, 2).join(' ') === 'models configure';
       try { const { stdout } = await current.run(args, build ? 0 : undefined); return text ? { flat: stdout } : JSON.parse(stdout); }
       catch (error) {
         // The CLI explains a failure on stderr; a partial reset or failed job also prints its report.
@@ -450,6 +457,20 @@ export function createAdapter(ctx, entry = import.meta.url) {
       await edit(place(found));
       await current.authorize('bash', [commandLine(args, holding())]);
       return current.holder.start(args.slice(2), current.signal);
+    }
+    // configure reads the model files; configure and remove rewrite models.json under the config root that
+    // models status reports. Removing keeps the model files and every design untouched.
+    if (tool === 'models' && ['configure', 'remove'].includes(input.action)) {
+      // Each pinned file is asked where it really leads too, as the MCP tool checks each one against its roots.
+      if (input.action === 'configure') {
+        const { profiles } = await invoke(cliArgs('models', { action: 'list' }));
+        const files = profiles?.find(p => p.name === input.profile)?.files;
+        if (!Array.isArray(files)) throw new Error(`${input.profile} is not a figlens model profile; figlens_models list names them.`);
+        await current.authorize('read', await both([input.modelDir, ...files.map(file => `${input.modelDir}${path.sep}${file}`)]));
+      }
+      const { config } = await invoke(cliArgs('models', { action: 'status' }));
+      if (!config?.path) throw missing('its config root');
+      await edit([config.path]);
     }
     if (tool === 'jobs' && input.action === 'cancel') {
       const { workspaceId } = await invoke(cliArgs('jobs', { ...input, action: 'status' }));
