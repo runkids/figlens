@@ -128,6 +128,8 @@ usage:
           [--max-kb N] [--max-size N] [--match-dir DIR]
                                             render a node to out.png|jpg|webp|avif|svg (default 1x,
                                              quality 80); SVG keeps vectors, scale/quality do not apply;
+                                             PNGs up to 4,194,304 pixels are losslessly optimized;
+                                             keeps original encoding unless smaller; larger PNGs unchanged;
                                              --max-kb lowers lossy quality until it fits;
                                              --max-size scales raster output to fit its longest side;
                                              --bounds layout exports the node's own box instead of
