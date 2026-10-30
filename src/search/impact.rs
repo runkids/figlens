@@ -170,8 +170,8 @@ fn bits(facets: u8) -> Vec<u8> {
 
 /// The layers `seeds` reach through `old` and `new`, classified by `evidence`, within `bounds`.
 /// Both indexes must carry relations; any other is not walked and reads
-/// `relations_unavailable`. Their reverse maps are paid from `bounds` before they are built. A bound or cap that runs out stops the
-/// walk and leaves it incomplete; it is never an error.
+/// `relations_unavailable`. Their reverse maps are paid from `bounds` before they are built.
+/// A bound or cap that runs out stops the walk and leaves it incomplete; it is never an error.
 pub(crate) fn compute(
     old: &Index,
     new: &Index,

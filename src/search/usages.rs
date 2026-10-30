@@ -1072,7 +1072,7 @@ pub(crate) struct Reverse {
 
 impl Reverse {
     // A full build prepays these lookups' visits and estimated copies with each record, edge
-    // and definition, so they stay within the build's bounds.
+    // and definition, so they stay within the build's bounds; `prepare` pays for any other.
     fn of(index: &Index) -> &Reverse {
         index.reverse.get_or_init(|| {
             let mut out = Reverse::default();
@@ -1102,8 +1102,9 @@ impl Reverse {
 }
 
 /// Builds `index`'s reverse map for `pointing_at` and `rid_in`, first paying `bounds` what a
-/// relations build estimates for it (a loaded index never paid that); false, with nothing
-/// built, when it does not fit. An index whose map is already built costs nothing more.
+/// relations build estimates for it: a loaded index never paid that, and a fresh build that
+/// did is charged again, since an unbuilt map cannot tell which it is. False, with nothing
+/// built, when it does not fit; an index whose map is already built costs nothing more.
 pub(crate) fn prepare(index: &Index, bounds: &mut Bounds) -> bool {
     if index.reverse.get().is_none() {
         for r in &index.records {
@@ -1114,7 +1115,9 @@ pub(crate) fn prepare(index: &Index, bounds: &mut Bounds) -> bool {
             }
         }
         for (id, d) in &index.definitions {
-            if d.set.is_some() && !bounds.charge(1, 64 + id.len()) {
+            if let Some(set) = &d.set
+                && !bounds.charge(1, 64 + id.len() + set.len())
+            {
                 return false;
             }
         }
