@@ -229,6 +229,8 @@ Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，works
 | `changes --file <file>\|--id ID\|--workspace DIR [--source ID] [--scope NODE] [--consumer NAME\|--subscription ID\|--cursor C] [--revision R] [--limit N]` | 已跟踪范围记录的变更，从最旧开始：每次发布的构建一个修订（baseline 或 changes），含覆盖情况及按变更类型与 facet 的计数；`--revision` 分页列出该修订变更的节点；`tracking` 指出哪些范围需要 `index refresh` 才能记录变更。只读 |
 | `watch ack --file <file>\|--id ID\|--workspace DIR --consumer NAME\|--subscription ID --cursor C [--source ID] [--scope NODE]` | 把 consumer 的检查点移到它以相同筛选条件处理完的最后一页 `changes` 的 `nextCursor`；重复执行是安全的，而且只会前进；唯一例外是当前的 recovery cursor 会把落在删除之后的检查点退回，以重读保留的 revision；在保留策略删除它尚未经过的 revision 之前发出的 cursor 会得到 `event_gap`，不写入任何内容 |
 | `watch subscribe --file <file>\|--id ID\|--workspace DIR --consumer NAME --source ID [--scope NODE] [--node ID] [--owner NAME]` | 从最新修订开始跟随一个源、scope 或确切图层（`--node`），使用它自己的检查点，用 `changes --subscription` 读取、`watch ack --subscription` 确认；不存在或有歧义的图层为 `target_missing` 或 `identity_uncertain`，绝不换成同名图层；`--owner` 让它只在该任务内临时存在 |
+| `watch subscribe --file <file>\|--id ID\|--workspace DIR --consumer NAME --source ID --query TEXT [--type T[,T]] [--scope NODE]` | 保存对一个来源 scope 的搜索：立即评估其前 50 名；`changes --subscription` 只读取已保存的评估，从不计算 |
+| `watch evaluate --file <file>\|--id ID\|--workspace DIR --subscription ID` | 按 scope 当前的索引评估并保存查询订阅，已评估则不做任何事 |
 | `watch list --file <file>\|--id ID\|--workspace DIR [--consumer NAME] [--after ID]` | 分页列出可见的订阅及其状态 |
 | `watch unsubscribe --file <file>\|--id ID\|--workspace DIR --subscription ID\|--consumer C --owner NAME` | 删除一个订阅及其检查点，或某个 owner 的临时订阅；tracking 和历史保留 |
 | `watch forget --file <file>\|--id ID\|--workspace DIR --consumer NAME [--source ID] [--scope NODE]` | 删除 consumer 的原始检查点；每个 consumer 最多保留 64 个订阅与检查点，整个 workspace 4096 个，不会自动淘汰 |

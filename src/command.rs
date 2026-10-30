@@ -628,7 +628,7 @@ fn search_mode(mode: &str) -> Result<(), Box<dyn Error>> {
     .into())
 }
 
-fn search_types(value: &str) -> impl Iterator<Item = String> + '_ {
+pub fn search_types(value: &str) -> impl Iterator<Item = String> + '_ {
     value
         .split(',')
         .map(|t| t.trim().to_uppercase())
@@ -939,7 +939,8 @@ pub fn jobs_tool(
     })
 }
 
-/// MCP `changes`, and `watch` (only `ack`): recorded revisions of tracked scopes.
+/// MCP `changes` and `watch`: recorded revisions, saved-query evaluations, checkpoints and
+/// subscriptions.
 pub fn changes_tool(
     call: &crate::contract::PreparedCall,
     roots: &[PathBuf],
@@ -963,10 +964,18 @@ pub fn changes_tool(
         scope: request.scope,
         node: call.string("node"),
         owner: call.string("owner"),
+        query: call.string("query"),
+        types: call
+            .string("type")
+            .map(search_types)
+            .into_iter()
+            .flatten()
+            .collect(),
     };
     use changes::subscriptions as subs;
     let value = match (call.name(), call.string("action")) {
         ("watch", Some("subscribe")) => subs::subscribe(&storage, &select, &subscribe)?,
+        ("watch", Some("evaluate")) => changes::evaluate(&storage, &select, request.subscription)?,
         ("watch", Some("list")) => {
             subs::list(&storage, &select, request.consumer, call.string("after"))?
         }

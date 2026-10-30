@@ -3147,3 +3147,215 @@ fn a_subscribe_reply_describes_its_source_as_authorized_though_it_is_relocated_m
         (false, json!("active"), json!(source))
     );
 }
+
+impl Tracked<'_> {
+    fn count(&self, q: &str) -> i64 {
+        rusqlite::Connection::open(&self.db)
+            .unwrap()
+            .query_row(q, [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// A saved query subscription to `query` and its subscribe reply.
+    fn query(&self, query: &str) -> (String, Value) {
+        let source = self.changes(&[])["tracking"][0]["sourceId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let reply = self.watch(
+            "subscribe",
+            &["--consumer", "bot", "--source", &source, "--query", query],
+        );
+        let id = reply["subscription"]["subscriptionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        (id, reply)
+    }
+}
+
+#[test]
+fn a_query_subscription_reads_stored_evaluations_and_only_evaluate_adds_one() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, subscribed) = t.query("badge");
+    t.save(true);
+    t.index("refresh");
+    let rows = "SELECT COUNT(*) FROM query_evaluations";
+    let before = t.count(rows);
+    let waiting = t.changes(&["--subscription", &id]);
+    let unchanged = t.count(rows);
+    let evaluated = t.watch("evaluate", &["--subscription", &id]);
+    let again = t.watch("evaluate", &["--subscription", &id]);
+    let page = t.changes(&["--subscription", &id]);
+    let cursor = page["nextCursor"].as_str().unwrap().to_owned();
+    let acked = t.watch("ack", &["--subscription", &id, "--cursor", &cursor]);
+    let after = t.changes(&["--subscription", &id]);
+    t.watch("unsubscribe", &["--subscription", &id]);
+    assert_eq!(
+        json!([
+            subscribed["evaluation"]["causes"],
+            subscribed["initialPosition"],
+            waiting["evaluation"]["state"],
+            [before, unchanged],
+            evaluated["evaluation"]["causes"],
+            evaluated["evaluation"]["delta"]["enteredTopK"]
+                .as_array()
+                .unwrap()
+                .len(),
+            again["evaluation"]["state"],
+            page["evaluations"].as_array().unwrap().len(),
+            acked["advanced"],
+            after["evaluations"].as_array().unwrap().len(),
+            t.count(rows)
+        ]),
+        json!([
+            ["initial"],
+            "initial_evaluation",
+            "pending",
+            [1, 1],
+            ["source_changed"],
+            1,
+            "current",
+            2,
+            true,
+            0,
+            0
+        ])
+    );
+}
+
+#[test]
+fn a_rebuild_that_changes_no_result_adds_no_evaluation_and_reads_current() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, _) = t.query("auto layout");
+    t.index("rebuild");
+    let evaluated = t.watch("evaluate", &["--subscription", &id]);
+    let page = t.changes(&["--subscription", &id]);
+    assert_eq!(
+        json!([
+            evaluated["evaluation"]["state"],
+            page["evaluation"]["state"],
+            t.count("SELECT COUNT(*) FROM query_evaluations")
+        ]),
+        json!(["current", "current", 1])
+    );
+}
+
+#[test]
+fn spellings_search_normalizes_alike_are_one_query_subscription_and_type_needs_a_query() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (first, _) = t.query("auto layout");
+    let (again, repeat) = t.query("  AUTO   Layout ");
+    let source = t.changes(&[])["tracking"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let refused = t.fails(&[
+        "watch",
+        "subscribe",
+        "--file",
+        &t.file,
+        "--consumer",
+        "bot",
+        "--source",
+        &source,
+        "--type",
+        "TEXT",
+    ]);
+    assert_eq!(
+        (
+            first == again,
+            repeat["created"].clone(),
+            repeat.get("evaluation").is_none(),
+            refused.contains("pass query with it")
+        ),
+        (true, json!(false), true, true)
+    );
+}
+
+#[test]
+fn evaluations_past_retention_are_an_event_gap_and_past_the_byte_quota_are_refused() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, _) = t.query("badge");
+    // Fifteen more kept evaluations: the next one deletes the oldest the checkpoint is before.
+    t.sql(
+        "WITH RECURSIVE n(i) AS (SELECT 2 UNION ALL SELECT i + 1 FROM n WHERE i < 16)
+         INSERT INTO query_evaluations (id, sub, seq, gen, snapshot_id, membership, ranking,
+         coverage, causes, refs, total, delta, bytes, created_ms)
+         SELECT randomblob(16), sub, i, gen, snapshot_id, membership, ranking, coverage, causes,
+         refs, total, delta, bytes, created_ms FROM query_evaluations, n",
+    );
+    t.save(true);
+    t.index("refresh");
+    t.watch("evaluate", &["--subscription", &id]);
+    let gap = t
+        .env
+        .run(&["changes", "--file", &t.file, "--subscription", &id]);
+    t.sql("UPDATE query_evaluations SET bytes = 8 * 1024 * 1024");
+    t.save(false);
+    t.index("refresh");
+    let refused = t.env.run(&[
+        "watch",
+        "evaluate",
+        "--file",
+        &t.file,
+        "--subscription",
+        &id,
+    ]);
+    assert_eq!(
+        (
+            t.count("SELECT COUNT(*) FROM query_evaluations"),
+            String::from_utf8_lossy(&gap.stderr).contains("deleted by retention"),
+            String::from_utf8_lossy(&refused.stderr).contains("evaluations already hold"),
+        ),
+        (16, true, true)
+    );
+}
+
+#[test]
+fn mcp_saves_a_typed_query_evaluates_it_and_a_confined_caller_cannot_read_it() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let polled = t.changes(&[]);
+    let (ws, source) = (
+        polled["workspaceId"].clone(),
+        polled["tracking"][0]["sourceId"].clone(),
+    );
+    let mut mcp = Mcp::start(&env, &[]);
+    let subscribed = mcp.call(
+        "watch",
+        json!({"action": "subscribe", "workspaceId": ws, "consumer": "bot", "sourceId": source,
+            "query": "badge", "type": "rectangle"}),
+    )["structuredContent"]
+        .clone();
+    let id = subscribed["subscription"]["subscriptionId"].clone();
+    t.save(true);
+    t.index("refresh");
+    let evaluated = mcp.call(
+        "watch",
+        json!({"action": "evaluate", "workspaceId": ws, "subscriptionId": id}),
+    )["structuredContent"]
+        .clone();
+    let elsewhere = env.dir.join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let elsewhere = std::fs::canonicalize(elsewhere).unwrap();
+    let mut confined = Mcp::start(&env, &["--root", elsewhere.to_str().unwrap()]);
+    let hidden = confined.call("changes", json!({"workspaceId": ws, "subscriptionId": id}));
+    assert_eq!(
+        json!([
+            subscribed["subscription"]["types"],
+            evaluated["evaluation"]["delta"]["enteredTopK"]
+                .as_array()
+                .unwrap()
+                .len(),
+            hidden["content"][0]["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("no subscription")),
+        ]),
+        json!([["RECTANGLE"], 1, true])
+    );
+}

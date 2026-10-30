@@ -229,6 +229,8 @@ Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，works
 | `changes --file <file>\|--id ID\|--workspace DIR [--source ID] [--scope NODE] [--consumer NAME\|--subscription ID\|--cursor C] [--revision R] [--limit N]` | 已追蹤範圍記錄的變更，從最舊開始：每次發布的建置一個修訂（baseline 或 changes），含涵蓋狀況及依變更類型與 facet 的計數；`--revision` 分頁列出該修訂變更的節點；`tracking` 指出哪些範圍需要 `index refresh` 才能記錄變更。唯讀 |
 | `watch ack --file <file>\|--id ID\|--workspace DIR --consumer NAME\|--subscription ID --cursor C [--source ID] [--scope NODE]` | 把 consumer 的檢查點移到它以相同篩選條件處理完的最後一頁 `changes` 的 `nextCursor`；重複執行是安全的，而且只會前進；唯一例外是目前的 recovery cursor 會把落在刪除之後的檢查點退回，以重讀保留的 revision；在保留策略刪除它尚未經過的 revision 之前發出的 cursor 會得到 `event_gap`，不寫入任何內容 |
 | `watch subscribe --file <file>\|--id ID\|--workspace DIR --consumer NAME --source ID [--scope NODE] [--node ID] [--owner NAME]` | 從最新修訂開始追蹤一個來源、scope 或確切圖層（`--node`），使用它自己的檢查點，用 `changes --subscription` 讀取、`watch ack --subscription` 確認；不存在或有歧義的圖層為 `target_missing` 或 `identity_uncertain`，絕不換成同名圖層；`--owner` 讓它只在該任務內暫時存在 |
+| `watch subscribe --file <file>\|--id ID\|--workspace DIR --consumer NAME --source ID --query TEXT [--type T[,T]] [--scope NODE]` | 儲存對一個來源 scope 的搜尋：立即評估其前 50 名；`changes --subscription` 只讀取已儲存的評估，從不計算 |
+| `watch evaluate --file <file>\|--id ID\|--workspace DIR --subscription ID` | 依 scope 目前的索引評估並儲存查詢訂閱，已評估則不做任何事 |
 | `watch list --file <file>\|--id ID\|--workspace DIR [--consumer NAME] [--after ID]` | 分頁列出可見的訂閱及其狀態 |
 | `watch unsubscribe --file <file>\|--id ID\|--workspace DIR --subscription ID\|--consumer C --owner NAME` | 刪除一個訂閱及其檢查點，或某個 owner 的暫時訂閱；tracking 與歷史保留 |
 | `watch forget --file <file>\|--id ID\|--workspace DIR --consumer NAME [--source ID] [--scope NODE]` | 刪除 consumer 的原始檢查點；每個 consumer 最多保留 64 個訂閱與檢查點，整個 workspace 4096 個，不會自動淘汰 |

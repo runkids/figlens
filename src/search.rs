@@ -109,6 +109,10 @@ impl Prepared {
         &self.terms
     }
 
+    pub(crate) fn phrase(&self) -> &str {
+        &self.phrase
+    }
+
     /// The generations of the sources a workspace cursor paged.
     pub(crate) fn cursor_gens(&self) -> Option<&[i64]> {
         self.gens.as_deref()
@@ -1481,6 +1485,12 @@ pub(crate) fn corpus_rank(
 }
 
 /// The reply for a ranked page; every part has the shown records and their ancestors.
+/// The ranking a workspace search reports and a saved query's evaluations are bound to.
+pub(crate) fn corpus_ranking() -> Json {
+    json!({"version": RANKING, "tokenizer": tokenizer(), "weights": {"name": WEIGHTS[0], "text": WEIGHTS[1]},
+        "k1": K1, "b": B, "order": ["exact-name", "name-phrase", "text-phrase", "score", "source-order", "document-order"]})
+}
+
 pub(crate) fn corpus_page(
     parts: &[Part],
     q: &Prepared,
@@ -1518,8 +1528,7 @@ pub(crate) fn corpus_page(
     Ok(json!({
         "query": {"text": req.query, "normalized": q.phrase, "mode": "text", "terms": q.terms},
         "scope": {"nodeId": req.scope, "name": scope.map(|r| r.name.as_str())},
-        "ranking": {"version": RANKING, "tokenizer": tokenizer(), "weights": {"name": WEIGHTS[0], "text": WEIGHTS[1]},
-            "k1": K1, "b": B, "order": ["exact-name", "name-phrase", "text-phrase", "score", "source-order", "document-order"]},
+        "ranking": corpus_ranking(),
         "results": results,
         "coverage": corpus_coverage(parts, req, excluded),
         "hasMore": more,

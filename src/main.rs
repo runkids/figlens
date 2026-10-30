@@ -187,7 +187,8 @@ usage:
   figlens changes <select> [--source ID] [--scope NODE] [--consumer NAME] [--cursor C] [--limit N] [--storage DIR]
                                              recorded revisions after the cursor, the consumer's checkpoint
                                              or the oldest kept, with tracking state; never writes.
-                                             --revision R [--cursor C]: one revision's changed nodes
+                                             --revision R [--cursor C]: one revision's changed nodes;
+                                             a query --subscription pages its stored evaluations
   figlens watch ack <select> --consumer NAME|--subscription ID --cursor C [--source ID] [--scope NODE] [--storage DIR]
                                              move the consumer's checkpoint for these filters to C; an
                                              older C normally leaves it; a C issued before retention
@@ -198,6 +199,12 @@ usage:
                                              follow a source, scope or exact layer from its newest
                                              revision, with its own checkpoint (read with changes
                                              --subscription); --owner makes it temporary for that task
+          [--query TEXT [--type T[,T]]]      or a saved search of the scope (default 0:0): its top 50
+                                             are evaluated now and on watch evaluate; changes reads
+                                             the evaluations, never computes one
+  figlens watch evaluate <select> --subscription ID
+                                             store a query subscription's evaluation of the scope's
+                                             current index, unless it is already evaluated
   figlens watch list <select> [--consumer NAME] [--after ID]
                                              visible subscriptions and their state, a page at a time
   figlens watch unsubscribe <select> --subscription ID|--consumer C --owner NAME
@@ -355,7 +362,7 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
         }
         Some("watch")
             if args.get(1).is_some_and(|a| {
-                ["subscribe", "list", "unsubscribe", "forget"].contains(&a.as_str())
+                ["subscribe", "evaluate", "list", "unsubscribe", "forget"].contains(&a.as_str())
             }) =>
         {
             writeln!(out, "{}", watch(&args[1], &args[2..])?)?;
@@ -1154,14 +1161,25 @@ fn changes(args: &[String], ack: bool) -> Result<serde_json::Value, Box<dyn Erro
     }
 }
 
-/// `figlens watch subscribe|list|unsubscribe|forget <select> [flags]`: durable subscriptions
+/// `figlens watch subscribe|evaluate|list|unsubscribe|forget <select> [flags]`: durable subscriptions
 /// and checkpoint views.
 fn watch(action: &str, args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
     use figlens::workspace::{self, Select, changes::subscriptions as subs};
     let (usage, allowed): (&str, &[&str]) = match action {
         "subscribe" => (
-            "usage: figlens watch subscribe <select> --consumer NAME --source ID [--scope NODE] [--node ID] [--owner NAME] [--storage DIR]",
-            &["--consumer", "--scope", "--node", "--owner"],
+            "usage: figlens watch subscribe <select> --consumer NAME --source ID [--scope NODE] [--node ID|--query TEXT [--type T[,T]]] [--owner NAME] [--storage DIR]",
+            &[
+                "--consumer",
+                "--scope",
+                "--node",
+                "--owner",
+                "--query",
+                "--type",
+            ],
+        ),
+        "evaluate" => (
+            "usage: figlens watch evaluate <select> --subscription ID [--storage DIR]",
+            &["--subscription"],
         ),
         "list" => (
             "usage: figlens watch list <select> [--consumer NAME] [--after ID] [--storage DIR]",
@@ -1203,8 +1221,15 @@ fn watch(action: &str, args: &[String]) -> Result<serde_json::Value, Box<dyn Err
                 scope: flag("--scope"),
                 node: flag("--node"),
                 owner: flag("--owner"),
+                query: flag("--query"),
+                types: flag("--type")
+                    .map(command::search_types)
+                    .into_iter()
+                    .flatten()
+                    .collect(),
             },
         ),
+        "evaluate" => workspace::changes::evaluate(&storage, &select, flag("--subscription")),
         "list" => subs::list(&storage, &select, flag("--consumer"), flag("--after")),
         "unsubscribe" => subs::unsubscribe(
             &storage,

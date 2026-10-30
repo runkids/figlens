@@ -476,7 +476,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "changes",
-        "Recorded design changes of the scopes index track follows; never writes or builds. Each revision is one published build of a tracked scope: kind baseline (tracking started, or nothing comparable before it, with a reason) or changes, with coverage, exact summary counts per change kind and facet, and detail complete, truncated or expired. Pages run oldest first after cursor, else after the consumer's checkpoint (moved by watch ack), else from the oldest kept. Pass revision to page that revision's changed nodes instead. tracking lists each tracked scope's state, lastRevisionId and refreshRequired (the file changed since its last build: refresh the scope to record it; an empty page never proves the file unchanged); monitor is the watch monitor, separate from tracking. A cursor is bound to the filters, the visible sources and the workspace incarnation: any other use is cursor_stale. event_gap means retention deleted revisions before they were read: follow its recovery and treat the scope as possibly changed.",
+        "Recorded design changes of the scopes index track follows; never writes or builds. A query subscription's subscriptionId instead pages its stored search evaluations (evaluations, evaluation; no revision pages); ack them the same way. Each revision is one published build of a tracked scope: kind baseline (tracking started, or nothing comparable before it, with a reason) or changes, with coverage, exact summary counts per change kind and facet, and detail complete, truncated or expired. Pages run oldest first after cursor, else after the consumer's checkpoint (moved by watch ack), else from the oldest kept. Pass revision to page that revision's changed nodes instead. tracking lists each tracked scope's state, lastRevisionId and refreshRequired (the file changed since its last build: refresh the scope to record it; an empty page never proves the file unchanged); monitor is the watch monitor, separate from tracking. A cursor is bound to the filters, the visible sources and the workspace incarnation: any other use is cursor_stale. event_gap means retention deleted revisions before they were read: follow its recovery and treat the scope as possibly changed.",
         &[
             ("workspaceId", "string", true, "ws_... from the index tool"),
             ("sourceId", "string", false, "only this source's revisions"),
@@ -511,13 +511,13 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "watch",
-        "Change-tracking consumers. ack moves consumer's checkpoint for these filters (sourceId, scope), or a subscription's own (subscriptionId), forward to cursor, the nextCursor of the last changes page it handled with the same filters; an older or equal cursor normally leaves it, so a retry is safe. A cursor issued before retention deleted revisions it had not passed is event_gap, writing nothing: follow its recovery. A current recovery cursor before a checkpoint that is behind such a deletion moves the checkpoint back to it, so the kept revisions replay. Replies with advanced, true only when the checkpoint moved forward, and the checkpoint now held, which is authoritative. subscribe follows one source, scope or exact node (node: a layer id that must name one layer kind in the published index, else target_missing or identity_uncertain, never a same-name layer) from its newest visible revision; a repeat returns the same subscription; owner marks it temporary for that task. list pages the visible subscriptions with their state. unsubscribe removes one subscription and its checkpoint (or, with owner, that owner's temporary ones); forget removes a consumer's raw checkpoint views. Neither untracks or deletes history. A consumer holds at most 64 subscriptions and checkpoints, a workspace 4096: past that, workspace_busy names list, unsubscribe and forget; nothing is evicted.",
+        "Change-tracking consumers. ack moves consumer's checkpoint for these filters (sourceId, scope), or a subscription's own (subscriptionId), forward to cursor, the nextCursor of the last changes page it handled with the same filters; an older or equal cursor normally leaves it, so a retry is safe. A cursor issued before retention deleted revisions it had not passed is event_gap, writing nothing: follow its recovery. A current recovery cursor before a checkpoint that is behind such a deletion moves the checkpoint back to it, so the kept revisions replay. Replies with advanced, true only when the checkpoint moved forward, and the checkpoint now held, which is authoritative. subscribe follows one source, scope or exact node (node: a layer id that must name one layer kind in the published index, else target_missing or identity_uncertain, never a same-name layer) from its newest visible revision; a repeat returns the same subscription; owner marks it temporary for that task. subscribe with query (and type) saves a workspace search of one source's scope (default 0:0) and stores its first evaluation of the top 50; evaluate stores a newer one after a publication; changes with its subscriptionId reads the stored evaluations (causes such as source_changed only for new file bytes or index_rebuilt; enteredTopK, leftTopK and rankChanged describe the top-50 window, not the whole result set; total only when the search counted every hit) and reports evaluation pending with an evaluate step, never computing one. list pages the visible subscriptions with their state. unsubscribe removes one subscription and its checkpoint (or, with owner, that owner's temporary ones); forget removes a consumer's raw checkpoint views. Neither untracks or deletes history. A consumer holds at most 64 subscriptions and checkpoints, a workspace 4096: past that, workspace_busy names list, unsubscribe and forget; nothing is evicted.",
         &[
             (
                 "action",
                 "string",
                 true,
-                "ack, subscribe, list, unsubscribe or forget",
+                "ack, subscribe, evaluate, list, unsubscribe or forget",
             ),
             ("workspaceId", "string", true, "ws_... from the index tool"),
             (
@@ -548,7 +548,19 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "subscriptionId",
                 "string",
                 false,
-                "ack or unsubscribe this subscription",
+                "ack, evaluate or unsubscribe this subscription",
+            ),
+            (
+                "query",
+                "string",
+                false,
+                "subscribe: save this workspace search of the scope instead of following revisions",
+            ),
+            (
+                "type",
+                "string",
+                false,
+                "subscribe with query: only these node types, comma-separated, as search takes them",
             ),
             (
                 "node",
@@ -676,6 +688,9 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "revisionId": {"type": "string", "description": "with revision"},
                 "detail": {"type": "string", "description": "with revision: complete, truncated (rows past the cap were not kept) or expired"},
                 "nodes": {"type": "array", "items": {"type": "object"}, "description": "with revision: frame, id, kind, change, facets, unread, descendants"},
+                "subscription": {"type": "object", "description": "with subscriptionId: as watch subscribe describes it"},
+                "evaluations": {"type": "array", "items": {"type": "object"}, "description": "a query subscription's stored evaluations, oldest first: evaluationId, snapshotId, coverage, causes (initial, source_changed, index_rebuilt, coverage_changed, ranking_changed, corpus_changed), total (null unless every hit was counted), topK, delta (enteredTopK, leftTopK, rankChanged within the window; rankComparable), createdAtMs"},
+                "evaluation": {"type": "object", "description": "a query subscription: state current, pending (with reason and an evaluate step) or unavailable"},
             }),
             ["workspaceId", "nextCursor"].as_slice(),
         ),
@@ -686,9 +701,10 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "advanced": {"type": "boolean", "description": "ack: true only when the visible checkpoint moved forward"},
                 "checkpoint": {"type": ["string", "null"], "description": "ack, subscribe: a cursor at the checkpoint now held; null when retention deleted that revision"},
                 "subscriptionId": {"type": "string", "description": "ack of a subscription"},
-                "subscription": {"type": "object", "description": "subscribe: subscriptionId, consumer, sourceId, scope, kind (source, scope or node), node, nodeKind, state (active, target_missing or identity_uncertain), lifetime (durable or temporary), filterVersion"},
+                "subscription": {"type": "object", "description": "subscribe: subscriptionId, consumer, sourceId, scope, kind (source, scope, node or query), node, nodeKind, query, types, topK, state (active, target_missing or identity_uncertain), lifetime (durable or temporary), filterVersion"},
+                "evaluation": {"type": "object", "description": "subscribe with query, evaluate: state evaluated (evaluationId, causes, delta), current, pending (reason, nextSteps) or unavailable (reason, nextSteps)"},
                 "created": {"type": "boolean", "description": "subscribe: false when the same subscription already existed"},
-                "initialPosition": {"type": "string", "description": "subscribe: tail, the newest revision this subscription can see"},
+                "initialPosition": {"type": "string", "description": "subscribe: tail (the newest revision it can see), initial_evaluation (a query, before its first evaluation) or existing"},
                 "tracking": {"type": "array", "items": {"type": "object"}, "description": "subscribe: the followed scopes' tracking state"},
                 "subscriptions": {"type": "array", "items": {"type": "object"}, "description": "list: one page, as subscription"},
                 "next": {"type": ["string", "null"], "description": "list: pass as after for the next page"},
@@ -866,7 +882,14 @@ pub fn property(tool: &str, param: &Param) -> Value {
         p["enum"] = json!(["status", "cancel"]);
     }
     if tool == "watch" && key == "action" {
-        p["enum"] = json!(["ack", "subscribe", "list", "unsubscribe", "forget"]);
+        p["enum"] = json!([
+            "ack",
+            "subscribe",
+            "evaluate",
+            "list",
+            "unsubscribe",
+            "forget"
+        ]);
     }
     if tool == "search" && key == "mode" {
         p["enum"] = json!(["text"]);

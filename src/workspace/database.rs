@@ -352,12 +352,21 @@ pub(crate) const V4: &str = "
 pub(crate) const SUBSCRIPTIONS: &str = "
     CREATE TABLE subscriptions (
         id TEXT PRIMARY KEY, consumer TEXT NOT NULL, source_id TEXT NOT NULL,
-        scope TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('source', 'scope', 'node')),
+        scope TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('source', 'scope', 'node', 'query')),
         target TEXT NOT NULL, anchor TEXT NOT NULL,
         lifetime TEXT NOT NULL CHECK (lifetime IN ('durable', 'temporary')), owner TEXT,
         filter_version INTEGER NOT NULL, after_seq INTEGER NOT NULL, floor INTEGER NOT NULL,
         created_ms INTEGER NOT NULL, read_ms INTEGER NOT NULL,
+        pruned_seq INTEGER NOT NULL DEFAULT 0,
         UNIQUE (consumer, source_id, scope, kind, target)) STRICT;
+    CREATE TABLE query_evaluations (
+        id BLOB PRIMARY KEY,
+        sub TEXT NOT NULL REFERENCES subscriptions (id) ON DELETE CASCADE, seq INTEGER NOT NULL,
+        gen INTEGER NOT NULL, snapshot_id TEXT NOT NULL, membership TEXT NOT NULL,
+        ranking TEXT NOT NULL, coverage TEXT NOT NULL, causes TEXT NOT NULL, refs TEXT NOT NULL,
+        total INTEGER, delta TEXT NOT NULL, bytes INTEGER NOT NULL, created_ms INTEGER NOT NULL,
+        UNIQUE (sub, seq)) STRICT;
     CREATE INDEX subscriptions_owner ON subscriptions (owner) WHERE owner IS NOT NULL;
     ALTER TABLE consumers ADD COLUMN sources TEXT;
     PRAGMA user_version = 5;";

@@ -65,7 +65,8 @@ export function cliArgs(tool, input) {
   // The CLI refuses a flag the action does not take.
   if (tool === 'watch') return ['watch', input.action, ...filters(), ...flag('--consumer', input.consumer),
     ...flag('--subscription', input.subscriptionId), ...(input.action === 'ack' ? ['--cursor', required(input, 'cursor')] : flag('--cursor', input.cursor)),
-    ...flag('--node', input.node), ...flag('--owner', input.owner), ...flag('--after', input.after)];
+    ...flag('--node', input.node), ...flag('--query', input.query), ...flag('--type', input.type), ...flag('--owner', input.owner),
+    ...flag('--after', input.after)];
   // Every given selector and scope field reaches the CLI, which refuses conflicting selectors and fields an
   // action does not take, so none is dropped into a broader operation. A file is the operand of prepare, add
   // and relocate, else it selects the workspace; a sourceId is the operand of remove and relocate.

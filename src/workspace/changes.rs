@@ -20,7 +20,10 @@ const MARK_BYTES: usize = 4 * PAGE_BYTES;
 /// The cursor of "the oldest revision kept": a zero revision id.
 const OLDEST: [u8; 16] = [0; 16];
 
+mod queries;
 pub mod subscriptions;
+
+pub use queries::evaluate;
 
 #[derive(Default)]
 pub struct Request<'a> {
@@ -308,9 +311,14 @@ pub fn changes(storage: &Storage, select: &Select, req: &Request) -> Result<Json
         );
     }
     let tx = ws.conn.unchecked_transaction().map_err(sql)?;
-    match req.revision {
-        Some(revision) => detail(&tx, &v, req, revision),
-        None => poll(&tx, &v, req),
+    match (req.revision, &v.sub) {
+        (Some(_), Some(sub)) if sub.is_query() => Err(fail(
+            ErrorKind::InvalidArguments,
+            "a query subscription records evaluations, not revisions; read it without revision",
+        )),
+        (None, Some(sub)) if sub.is_query() => queries::poll(&tx, &v, sub, req),
+        (Some(revision), _) => detail(&tx, &v, req, revision),
+        (None, _) => poll(&tx, &v, req),
     }
 }
 
@@ -603,6 +611,13 @@ pub fn ack(storage: &Storage, select: &Select, req: &Request) -> Result<Json> {
         .conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(sql)?;
+    if let Some(sub) = &v.sub
+        && sub.is_query()
+    {
+        let reply = queries::ack(&tx, &v, sub, text)?;
+        tx.commit().map_err(sql)?;
+        return Ok(reply);
+    }
     let seq = position(&tx, &v, &id)?;
     let consumer = v.sub.as_ref().map_or(consumer, |s| s.consumer.as_str());
     let before: Option<(i64, i64)> = match &v.sub {

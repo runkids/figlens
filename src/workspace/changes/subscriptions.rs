@@ -18,6 +18,9 @@ pub struct Subscribe<'a> {
     pub node: Option<&'a str>,
     /// A task-owned subscription its owner removes by owner; otherwise it is durable.
     pub owner: Option<&'a str>,
+    /// A saved workspace search over the source's scope, with its node types.
+    pub query: Option<&'a str>,
+    pub types: Vec<String>,
 }
 
 pub(super) struct Sub {
@@ -37,6 +40,17 @@ impl Sub {
     pub(super) fn node(&self) -> Option<&str> {
         (self.kind == "node").then_some(self.target.as_str())
     }
+
+    pub(super) fn is_query(&self) -> bool {
+        self.kind == "query"
+    }
+
+    /// The saved search of a query subscription.
+    pub(super) fn saved(&self) -> Result<Option<queries::Saved>> {
+        (self.kind == "query")
+            .then(|| queries::Saved::parse(&self.anchor))
+            .transpose()
+    }
 }
 
 fn name(what: &str, value: Option<&str>) -> Result<String> {
@@ -51,7 +65,7 @@ fn name(what: &str, value: Option<&str>) -> Result<String> {
         })
 }
 
-fn unknown(id: &str) -> Box<dyn Error> {
+pub(super) fn unknown(id: &str) -> Box<dyn Error> {
     fail(
         ErrorKind::InvalidArguments,
         format!("no subscription {id} in this workspace"),
@@ -148,6 +162,11 @@ pub(super) fn describe(conn: &Connection, sub: &Sub) -> Result<Json> {
         out["node"] = json!(node);
         out["nodeKind"] = json!(sub.anchor);
     }
+    if let Some(saved) = sub.saved()? {
+        out["query"] = json!(saved.query);
+        out["types"] = json!(saved.types);
+        out["topK"] = json!(queries::TOP_K);
+    }
     Ok(out)
 }
 
@@ -198,8 +217,34 @@ pub fn subscribe(storage: &Storage, select: &Select, req: &Subscribe) -> Result<
         )
     })?;
     let owner = req.owner.map(|o| name("owner", Some(o))).transpose()?;
-    let scope = req.scope.map(crate::normalize_id).unwrap_or_default();
     let node = req.node.map(crate::normalize_id);
+    let saved = req.query.map(|q| {
+        let mut types = req.types.clone();
+        types.sort();
+        types.dedup();
+        queries::Saved {
+            query: q.to_owned(),
+            types,
+        }
+    });
+    // A saved query searches one published scope, the whole file unless named.
+    let scope = match (&saved, req.scope) {
+        (Some(_), None) => "0:0".to_owned(),
+        (_, scope) => scope.map(crate::normalize_id).unwrap_or_default(),
+    };
+    if saved.is_some() && node.is_some() {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            "pass query or node, not both",
+        ));
+    }
+    if saved.is_none() && !req.types.is_empty() {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            "type filters a saved query; pass query with it",
+        ));
+    }
+    let canonical = saved.as_ref().map(|s| s.canonical(&scope)).transpose()?;
     let (_, ws) = opened(storage, select, true)?;
     // The write lock is taken first, so visibility and the write share one snapshot.
     let tx =
@@ -208,6 +253,9 @@ pub fn subscribe(storage: &Storage, select: &Select, req: &Subscribe) -> Result<
     jobs::chosen(storage, &ws, Some(source))?;
     let ws_id = ws.held.id.clone();
     let (kind, target_id, anchor) = match &node {
+        None if let (Some(saved), Some(canonical)) = (&saved, &canonical) => {
+            ("query", canonical.clone(), saved.anchor())
+        }
         Some(node) => match target(&tx, source, &scope, node)? {
             Ok(kind) => ("node", node.clone(), kind),
             Err(state) => {
@@ -256,8 +304,8 @@ pub fn subscribe(storage: &Storage, select: &Select, req: &Subscribe) -> Result<
                 "INSERT INTO subscriptions (id, consumer, source_id, scope, kind, target, anchor,
                  lifetime, owner, filter_version, after_seq, floor, created_ms, read_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                 (SELECT IFNULL(MAX(seq), 0) FROM revisions WHERE source_id = ?3
-                 AND (?4 = '' OR scope = ?4)), ?11, ?12, ?12)",
+                 CASE WHEN ?5 = 'query' THEN 0 ELSE (SELECT IFNULL(MAX(seq), 0) FROM revisions
+                 WHERE source_id = ?3 AND (?4 = '' OR scope = ?4)) END, ?11, ?12, ?12)",
                 params![id, consumer, source, scope, kind, target_id, anchor,
                     if owner.is_some() { "temporary" } else { "durable" }, owner,
                     FILTER_VERSION, floor(&tx)?, now_ms()],
@@ -278,14 +326,43 @@ pub fn subscribe(storage: &Storage, select: &Select, req: &Subscribe) -> Result<
         },
     )?;
     let sub = v.sub.as_ref().ok_or_else(|| unknown(&id))?;
-    let marks = marks(&tx, &v, Some(sub.floor))?;
     let (tracked, _) = tracking(&tx, &v)?;
-    let reply = json!({"workspaceId": v.workspace, "subscription": describe(&tx, sub)?,
+    // A saved query's checkpoint sits before its first evaluation, which `changes` then reads.
+    let checkpoint = match kind {
+        "query" => queries::held(&tx, &v, &sub.id, sub.after_seq)?,
+        _ => held_cursor(
+            &tx,
+            &v,
+            sub.after_seq,
+            &marks(&tx, &v, Some(sub.floor))?.receipt,
+        )?,
+    };
+    let mut reply = json!({"workspaceId": v.workspace, "subscription": describe(&tx, sub)?,
         "created": created,
         // An existing subscription resumes at its own checkpoint, not the tail.
-        "initialPosition": if created { "tail" } else { "existing" }, "tracking": tracked,
-        "checkpoint": held_cursor(&tx, &v, sub.after_seq, &marks.receipt)?});
+        "initialPosition": match (created, kind) {
+            (false, _) => "existing",
+            (true, "query") => "initial_evaluation",
+            _ => "tail",
+        },
+        "tracking": tracked, "checkpoint": checkpoint});
     tx.commit().map_err(sql)?;
+    // Only a new one is evaluated here, outside that write and under its own fences; a repeat
+    // reads its stored evaluations with `changes`.
+    if created && kind == "query" {
+        drop(ws);
+        // The subscription is already written: a failed first evaluation is reported, and
+        // `watch evaluate` retries it.
+        reply["evaluation"] = match queries::evaluate(storage, select, Some(&id)) {
+            Ok(mut out) => out["evaluation"].take(),
+            Err(e) => {
+                let mut out = queries::pending("evaluation_failed", &v.workspace, &id);
+                out["state"] = json!("unavailable");
+                out["message"] = json!(e.to_string());
+                out
+            }
+        };
+    }
     Ok(reply)
 }
 
