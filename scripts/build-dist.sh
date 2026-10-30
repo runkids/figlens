@@ -25,7 +25,8 @@ for target in $targets; do
     case "$target" in
     *windows*)
         # Windows users expect a zip (Expand-Archive); the image has python3 but no zip.
-        test -f "$release/figlens.exe" && test -f "$release/figlens-embed.exe"
+        test -f "$release/figlens.exe"
+        test -f "$release/figlens-embed.exe"
         archive="figlens-$version-$target.zip"
         python3 - "$output/$archive" "$release" <<'PY'
 import pathlib, sys, zipfile
@@ -38,7 +39,8 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
 PY
         ;;
     *)
-        test -x "$release/figlens" && test -x "$release/figlens-embed"
+        test -x "$release/figlens"
+        test -x "$release/figlens-embed"
         archive="figlens-$version-$target.tar.gz"
         tar -czf "$output/$archive" -C "$release" figlens figlens-embed -C "$PWD" skills/figlens
         ;;

@@ -79,13 +79,13 @@ function installer(root, failure, env = {}) {
     Buffer,
     require(name) {
       if (name === '../package.json') return { version };
-      if (name === '../target.js') return { asset: () => ({ archive: 'test.zip', binary: 'figlens.exe' }), cachedBinary: (cache, platform, arch, version) => path.join(cache, 'npm', version, 'figlens.exe') };
-      if (name === 'node:child_process') return { spawnSync(command, _args, options) {
+      if (name === '../target.js') return { asset: () => ({ archive: 'test.zip', binary: 'figlens.exe', companion: 'figlens-embed.exe' }), cachedBinary: (cache, platform, arch, version) => path.join(cache, 'npm', version, 'figlens.exe') };
+      if (name === 'node:child_process') return { spawnSync(command, args, options) {
         if (command === 'tar' || command.endsWith('\\tar.exe')) {
           state.extractor = command;
           if (failure === 'missing-tar') return { status: null, error: Object.assign(new Error('tar missing'), { code: 'ENOENT' }) };
-          // An extractor can fail after writing part of a binary.
-          fs.writeFileSync(path.join(options.cwd, 'figlens.exe'), failure === 'extract' ? 'partial' : 'verified binary');
+          // An extractor can fail after writing part of a binary; it writes every member it was asked for.
+          for (const member of args.slice(2)) fs.writeFileSync(path.join(options.cwd, member), failure === 'extract' ? 'partial' : 'verified binary');
           return { status: failure === 'extract' ? 2 : 0 };
         }
         assert.equal(command, binary);
@@ -124,6 +124,8 @@ test('cold install then warm start reuses the valid binary without downloads', {
   await first.done;
   assert.deepEqual(first.exits, [0]);
   assert.equal(first.downloads, 2);
+  // The model runtime lands beside the binary, where figlens looks for it.
+  assert.equal(fs.readFileSync(path.join(root, 'figlens/npm/0.3.1/figlens-embed.exe'), 'utf8'), 'verified binary');
   const again = installer(root, 'http');
   await again.done;
   assert.deepEqual(again.exits, [0]);
