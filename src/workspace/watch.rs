@@ -46,6 +46,9 @@ pub(crate) enum State {
     SourceBusy,
     SourceMissing,
     SourceUnreadable,
+    /// The source stats fine but its refresh failed twice running: saves are not indexed until
+    /// one succeeds.
+    RefreshFailed,
 }
 
 /// What the runner does after one observation.
@@ -69,6 +72,8 @@ pub(crate) struct Detector<S> {
     busy: Option<(Instant, Duration)>,
     running: bool,
     dirty: bool,
+    /// Refreshes failed since the last one that succeeded; a good stat never clears it.
+    failures: u32,
 }
 
 impl<S: Clone + PartialEq> Detector<S> {
@@ -81,6 +86,23 @@ impl<S: Clone + PartialEq> Detector<S> {
             busy: None,
             running: false,
             dirty: false,
+            failures: 0,
+        }
+    }
+
+    /// A scope newly served on this source may lag its last refresh: the next stable stamp
+    /// refreshes again, as for a new detector.
+    pub(crate) fn invalidate(&mut self) {
+        self.seen = None;
+    }
+
+    /// `Watching`, or `RefreshFailed` once a retry failed too, so one save caught mid-write is
+    /// not reported.
+    fn health(&self) -> State {
+        if self.failures >= 2 {
+            State::RefreshFailed
+        } else {
+            State::Watching
         }
     }
 
@@ -93,7 +115,7 @@ impl<S: Clone + PartialEq> Detector<S> {
                 let state = if now - since >= MISSING {
                     State::SourceMissing
                 } else {
-                    State::Watching
+                    self.health()
                 };
                 return self.wait(now + POLL, state);
             }
@@ -107,7 +129,7 @@ impl<S: Clone + PartialEq> Detector<S> {
                 let state = match now - since {
                     held if held >= UNREADABLE => State::SourceUnreadable,
                     held if held >= BUSY => State::SourceBusy,
-                    _ => State::Watching,
+                    _ => self.health(),
                 };
                 return self.wait(now + delay, state);
             }
@@ -135,7 +157,7 @@ impl<S: Clone + PartialEq> Detector<S> {
             self.seen = Some(stamp);
             return self.request(now);
         }
-        self.wait(now + POLL, State::Watching)
+        self.wait(now + POLL, self.health())
     }
 
     /// The submitted refresh ended; `failed` (the file kept changing, or any job error) makes
@@ -144,23 +166,26 @@ impl<S: Clone + PartialEq> Detector<S> {
         self.running = false;
         if failed {
             self.seen = None;
+            self.failures += 1;
+        } else {
+            self.failures = 0;
         }
         if std::mem::take(&mut self.dirty) {
             return self.request(now);
         }
-        self.wait(now + POLL, State::Watching)
+        self.wait(now + POLL, self.health())
     }
 
     fn request(&mut self, now: Instant) -> Step {
         self.verify_at = now + VERIFY;
         if self.running {
             self.dirty = true;
-            return self.wait(now + POLL, State::Watching);
+            return self.wait(now + POLL, self.health());
         }
         self.running = true;
         Step {
             submit: true,
-            state: State::Watching,
+            state: self.health(),
             next: now + POLL,
         }
     }
@@ -1131,6 +1156,7 @@ fn state_name(state: State) -> &'static str {
         State::SourceBusy => "source_busy",
         State::SourceMissing => "source_missing",
         State::SourceUnreadable => "source_unreadable",
+        State::RefreshFailed => "refresh_failed",
     }
 }
 
@@ -1676,20 +1702,24 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
                     });
                     waiting.retain(|source| wanted.contains_key(source));
                     for (source, (path, scopes)) in wanted {
-                        watched
-                            .entry(source)
-                            .or_insert_with(|| Watched {
-                                path: PathBuf::from(path),
-                                scopes: Vec::new(),
-                                detector: Detector::new(now),
-                                next: now,
-                                state: State::Watching,
-                                stamp_checked_ms: None,
-                                content_verified_ms: None,
-                                last_job: None,
-                                last_error: None,
-                            })
-                            .scopes = scopes;
+                        let w = watched.entry(source).or_insert_with(|| Watched {
+                            path: PathBuf::from(path),
+                            scopes: Vec::new(),
+                            detector: Detector::new(now),
+                            next: now,
+                            state: State::Watching,
+                            stamp_checked_ms: None,
+                            content_verified_ms: None,
+                            last_job: None,
+                            last_error: None,
+                        });
+                        // A scope added to a watched source catches up now, not at the next verify;
+                        // a new source's detector already refreshes first.
+                        if !w.scopes.is_empty() && scopes.iter().any(|s| !w.scopes.contains(s)) {
+                            w.detector.invalidate();
+                            w.next = now;
+                        }
+                        w.scopes = scopes;
                     }
                 }
                 while let Ok(done) = finished.try_recv() {
@@ -2502,6 +2532,38 @@ mod tests {
         d.finished(at(400), true);
         assert!(!d.observe(at(500), Probe::Stamp(1)).submit);
         assert!(d.observe(at(800), Probe::Stamp(1)).submit);
+    }
+
+    #[test]
+    fn refreshes_failing_twice_running_stay_reported_until_one_succeeds() {
+        let t0 = Instant::now();
+        let at = |ms| t0 + Duration::from_millis(ms);
+        let mut d = Detector::new(t0);
+        d.observe(at(0), Probe::Stamp(1));
+        assert!(d.observe(at(300), Probe::Stamp(1)).submit);
+        // One failure alone is a save caught mid-write.
+        assert_eq!(d.finished(at(400), true).state, State::Watching);
+        d.observe(at(500), Probe::Stamp(1));
+        assert!(d.observe(at(800), Probe::Stamp(1)).submit);
+        assert_eq!(d.finished(at(900), true).state, State::RefreshFailed);
+        // A good stat of the same file does not clear it.
+        for ms in (1000..3000).step_by(250) {
+            assert_eq!(
+                d.observe(at(ms), Probe::Stamp(1)).state,
+                State::RefreshFailed
+            );
+        }
+        assert_eq!(d.finished(at(3000), false).state, State::Watching);
+        assert_eq!(d.observe(at(3250), Probe::Stamp(1)).state, State::Watching);
+    }
+
+    #[test]
+    fn an_invalidated_detector_refreshes_its_unchanged_stamp_once_it_holds() {
+        let t0 = Instant::now();
+        let mut d = Detector::new(t0);
+        run(&mut d, t0, &ticks(0, 1000, Some(1)));
+        d.invalidate();
+        assert_eq!(run(&mut d, t0, &ticks(1000, 3000, Some(1))), [1500]);
     }
 
     #[test]
