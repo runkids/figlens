@@ -108,6 +108,8 @@ Example with two design/output roots and two allowed storage roots:
 
 There is no `figlens mcp --storage` option. Choose the actual location with the `index` tool's `storage` argument (an absolute path under an allowed storage root), or CLI `figlens index prepare design.fig --storage /absolute/storage-a`. After `prepare`, figlens remembers that workspace's location and reuses it across restarts and hosts without repeating `storage` or `--storage-root`. Without a custom location, the per-user defaults apply; no storage flag is needed.
 
+To keep these paths out of a checked-in config, or to share designs across Git worktrees, see [roots in a checked-in config](wiki/mcp.md#roots-in-a-checked-in-config).
+
 Multiple storage roots only expand the allowed locations: each `storage` argument still selects one location. They do not distribute, sync or back up indexes. An existing workspace database cannot be moved by simply naming another root; figlens refuses the conflicting location.
 
 <a id="setup-pi"></a>

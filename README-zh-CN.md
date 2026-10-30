@@ -108,6 +108,8 @@ codex mcp add figlens -- npx -y @runkids/figlens mcp
 
 没有 `figlens mcp --storage` 选项。实际位置由 `index` tool 的 `storage` 参数指定（允许的 storage 范围内的绝对路径），或使用 CLI `figlens index prepare design.fig --storage /absolute/storage-a`。`prepare` 后会记住该 workspace 的位置，跨重启、跨 host 复用，不必再传 `storage` 或 `--storage-root`。未自定义位置时，使用每位用户的默认目录，无需 storage 标志。
 
+要避免在提交进 Git 的配置里写死这些路径，或在多个 Git worktree 之间共享设计稿，请看 [提交进 Git 的配置中的 root](wiki/mcp.md#roots-in-a-checked-in-config)。
+
 多个 storage root 只会扩大允许范围：每次 `storage` 仍只选一个位置，不会自动分流、同步或备份索引。已有 workspace 数据库不能仅靠改指定另一个 root 搬家；位置冲突时 figlens 会拒绝。
 
 <a id="setup-pi"></a>

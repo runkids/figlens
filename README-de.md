@@ -108,6 +108,8 @@ Beispiel mit zwei Design-/Ausgabeordnern und zwei erlaubten Speicherwurzeln:
 
 `figlens mcp --storage` gibt es nicht. Wähle den tatsächlichen Ort mit dem Argument `storage` des Tools `index` (absoluter Pfad innerhalb einer erlaubten Speicherwurzel) oder per CLI: `figlens index prepare design.fig --storage /absolute/storage-a`. Nach `prepare` merkt sich figlens den Ort dieses Workspace und verwendet ihn über Neustarts und Hosts hinweg ohne erneutes `storage` oder `--storage-root`. Ohne eigene Auswahl gelten die benutzerspezifischen Standardverzeichnisse; kein Speicher-Flag nötig.
 
+Wie du diese Pfade aus einer eingecheckten Konfiguration heraushältst oder Designs über Git-Worktrees hinweg teilst, steht unter [Roots in einer eingecheckten Konfiguration](wiki/mcp.md#roots-in-a-checked-in-config).
+
 Mehrere Speicherwurzeln erweitern nur die erlaubten Orte: Jedes `storage` wählt weiterhin einen Ort. Indizes werden nicht verteilt, synchronisiert oder gesichert. Eine bestehende Workspace-Datenbank lässt sich nicht durch die Angabe einer anderen Wurzel verschieben; figlens verweigert den widersprüchlichen Ort.
 
 <a id="setup-pi"></a>
