@@ -1569,6 +1569,137 @@ fn a_bound_variable_outside_the_scope_makes_coverage_partial() {
     );
 }
 
+/// Variable `id` on `parent` with one mode holding `data`.
+fn var(id: u32, parent: u32, data: K<'static>) -> K<'static> {
+    let entry = obj(vec![("modeID", guid(70)), ("variableData", data)]);
+    node(
+        id,
+        Some(parent),
+        "VARIABLE",
+        "V",
+        vec![(
+            "variableDataValues",
+            obj(vec![("entries", K::Array(vec![entry]))]),
+        )],
+    )
+}
+
+fn float(value: f32) -> K<'static> {
+    obj(vec![
+        ("dataType", K::Enum("VariableDataType", "FLOAT")),
+        ("value", obj(vec![("floatValue", K::Float(value))])),
+    ])
+}
+
+/// Page 1 holds a card filled from variable 61 and `vars`; page 2 holds variable 62 = `value`.
+fn aliased(vars: Vec<K<'static>>, value: f32) -> K<'static> {
+    let paint = obj(vec![
+        ("type", K::Enum("PaintType", "SOLID")),
+        ("colorVar", alias(61)),
+    ]);
+    let mut all = vars;
+    all.extend([
+        node(10, Some(1), "FRAME", "Home", vec![]),
+        node(
+            12,
+            Some(10),
+            "RECTANGLE",
+            "Card",
+            vec![("fillPaints", K::Array(vec![paint]))],
+        ),
+        node(2, Some(0), "CANVAS", "Other", vec![]),
+        var(62, 2, float(value)),
+    ]);
+    doc(all)
+}
+
+fn not_compared(count: usize) -> Json {
+    json!([
+        {"reason": "definition_not_compared", "side": "old", "count": count},
+        {"reason": "definition_not_compared", "side": "new", "count": count},
+    ])
+}
+
+#[test]
+fn an_alias_to_a_variable_on_another_page_makes_a_page_diff_partial() {
+    let tree = |v| aliased(vec![var(61, 1, alias(62))], v);
+    let out = scoped(tree(8.0), tree(12.0), "0:1");
+    assert_eq!(
+        (nodes(&out), &out["coverage"]["reasons"]),
+        (vec![], &not_compared(1))
+    );
+}
+
+#[test]
+fn an_alias_on_another_page_is_compared_over_the_whole_file() {
+    let tree = |v| aliased(vec![var(61, 1, alias(62))], v);
+    let out = run(tree(8.0), tree(12.0));
+    assert_eq!(
+        (nodes(&out), &out["coverage"]["complete"]),
+        (vec![("0:62".into(), "changed".into())], &json!(true))
+    );
+}
+
+#[test]
+fn an_alias_chain_leaving_the_page_makes_it_partial_and_one_within_it_does_not() {
+    // 61 -> 63 -> 62, where only 62 is on the other page.
+    let chain = |v| aliased(vec![var(61, 1, alias(63)), var(63, 1, alias(62))], v);
+    let out = scoped(chain(8.0), chain(12.0), "0:1");
+    assert_eq!(out["coverage"]["reasons"], not_compared(1));
+    // 61 -> 63 holding a value, both on the page: nothing outside is followed.
+    let within = |v| aliased(vec![var(61, 1, alias(63)), var(63, 1, float(v))], 1.0);
+    let out = scoped(within(8.0), within(12.0), "0:1");
+    assert_eq!(
+        (nodes(&out), &out["coverage"]["complete"]),
+        (vec![("0:63".into(), "changed".into())], &json!(true))
+    );
+}
+
+#[test]
+fn a_variable_whose_values_were_unread_leaves_its_aliases_unverified() {
+    let long = obj(vec![
+        ("dataType", K::Enum("VariableDataType", "STRING")),
+        (
+            "value",
+            obj(vec![("textValue", K::String("x".repeat(FIELD_BYTES + 1)))]),
+        ),
+    ]);
+    let tree = || aliased(vec![var(61, 1, long.clone())], 8.0);
+    let out = scoped(tree(), tree(), "0:1");
+    // Besides the field's own `unread_fields`.
+    let reasons = out["coverage"]["reasons"].as_array().unwrap();
+    assert_eq!(Json::from(reasons[..2].to_vec()), not_compared(1));
+}
+
+#[test]
+fn alias_ids_are_paid_for_before_they_are_copied() {
+    // The same value under another properties key is digested alike but never walked for ids.
+    let spent = |key: &'static str| {
+        let entry = obj(vec![("modeID", guid(70)), ("variableData", alias(62))]);
+        let values = obj(vec![("entries", K::Array(vec![entry]))]);
+        let message = doc(vec![node(
+            61,
+            Some(1),
+            "VARIABLE",
+            "V",
+            vec![(key, values)],
+        )]);
+        let tree = Tree::new(&message);
+        let mut b = super::super::tests::bounds(WORK);
+        let start = (b.work, b.bytes);
+        let f = facets(&tree, "0:61", None, &mut b).unwrap();
+        (start.0 - b.work, start.1 - b.bytes, f.aliases)
+    };
+    let (work, bytes, ids) = spent("variableDataValues");
+    let (other_work, other_bytes, none) = spent("variableScopes");
+    assert_eq!(ids, Some(vec!["VariableID:0:62".to_owned()]));
+    assert_eq!(none, Some(vec![]));
+    // A visit per entry, and its bytes beyond the longer key's.
+    let longer = "variableDataValues".len() - "variableScopes".len();
+    assert_eq!(work, other_work + 1);
+    assert!(bytes > other_bytes + longer + "VariableID:0:62".len());
+}
+
 #[test]
 fn numeric_variants_trim_links_mask_type_and_grids_are_compared() {
     let link = |url: &str| obj(vec![("url", K::String(url.to_owned()))]);

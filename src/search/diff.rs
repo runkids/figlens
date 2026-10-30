@@ -22,7 +22,7 @@ use crate::expand::{Bounds, Expanded, json_bytes, kiwi_bytes};
 use crate::{Document, ErrorKind, FigError, Tree, guid_key, to_json};
 
 /// Bumped whenever a field list, facet or digest stream changes; cursors carry it.
-const VERSION: &str = "diff-v8";
+const VERSION: &str = "diff-v9";
 /// Estimated heap of an expanded size or transform built as JSON (a map of at most six numbers).
 const OWNED_BYTES: usize = 512;
 pub(crate) const FACETS: [&str; 5] = ["text", "layout", "appearance", "properties", "structure"];
@@ -167,6 +167,9 @@ pub(crate) struct Field {
 /// A record's effective fields in `FIELDS` order; absent fields are not listed.
 pub(crate) struct Facets {
     fields: Vec<Field>,
+    /// The variables a variable's values alias (`variableDataValues`), sorted and deduplicated;
+    /// `None` when that field was unread, so where they lead is unknown.
+    aliases: Option<Vec<String>>,
 }
 
 /// Feeds the bytes `to_json` shows only as `<N bytes>` into `h`, in key order, so binary values
@@ -299,6 +302,7 @@ pub(super) fn facets(
 ) -> Option<Facets> {
     let node = tree.nodes.get(e.map_or(id, |e| e.source.as_str()));
     let mut fields = Vec::new();
+    let mut aliases = Some(Vec::new());
     let mut kept = 0;
     for (facet, keys) in FIELDS.iter().enumerate() {
         for key in *keys {
@@ -367,6 +371,9 @@ pub(super) fn facets(
             if unread || gone {
                 if !bounds.charge(0, FIELD_META + key.len()) {
                     return None;
+                }
+                if *key == "variableDataValues" {
+                    aliases = None;
                 }
                 fields.push(Field {
                     key,
@@ -472,6 +479,21 @@ pub(super) fn facets(
             if fits {
                 kept += len;
             }
+            if *key == "variableDataValues" {
+                // Each id is a prefix and parts of the field's own bytes, paid for before it is made.
+                let entries = json["entries"].as_array().map_or(&[][..], Vec::as_slice);
+                if !bounds.charge(entries.len(), len + 32 * entries.len()) {
+                    return None;
+                }
+                let mut ids: Vec<String> = entries
+                    .iter()
+                    .filter_map(|e| crate::rest::alias(&e["variableData"]))
+                    .filter_map(|a| a["id"].as_str().map(str::to_owned))
+                    .collect();
+                ids.sort_unstable();
+                ids.dedup();
+                aliases = Some(ids);
+            }
             fields.push(Field {
                 key,
                 facet: facet as u8,
@@ -480,7 +502,7 @@ pub(super) fn facets(
             });
         }
     }
-    Some(Facets { fields })
+    Some(Facets { fields, aliases })
 }
 
 /// One revision of the selected scope: its index, facets and exact identity.
@@ -1101,13 +1123,26 @@ fn compare(old: Side, new: Side, node: &str, work: usize) -> Pair {
 
 /// Style, variable, main component and component set uses on `s` whose definition is not one
 /// of its records: its values, or the property definitions a main or a variant inherits from
-/// its set, may change while every compared record stays the same. Each record and edge is charged before
-/// it is read.
+/// its set, may change while every compared record stays the same. So may a variable a compared
+/// variable aliases, which REST resolution follows across pages; one whose values were unread
+/// counts as one such use. Each record, edge and alias is charged before it is read.
 fn outside_uses(s: &Side, ids: &HashMap<&str, usize>, budget: &mut Bounds) -> Option<usize> {
     let mut n = 0;
-    for r in &s.index.records {
+    for (r, f) in s.index.records.iter().zip(&s.facets) {
         if !budget.charge(1, 0) {
             return None;
+        }
+        match &f.aliases {
+            None => n += 1,
+            Some(a) => {
+                if !budget.charge(a.len(), 0) {
+                    return None;
+                }
+                n += a
+                    .iter()
+                    .filter(|t| !ids.contains_key(t.strip_prefix("VariableID:").unwrap_or(t)))
+                    .count();
+            }
         }
         for e in &r.edges {
             if !budget.charge(1, 0) {
