@@ -2003,24 +2003,24 @@ fn stored_generations_diff_exactly_like_the_live_trees() {
 
 #[test]
 fn stored_generations_report_an_outside_definition_like_the_live_trees() {
-    outside_parity(styled(12.0), styled(16.0));
-    outside_parity(used("Show icon", true), used("Has icon", false));
+    outside_parity(styled(12.0), styled(16.0), "0:10");
+    outside_parity(used("Show icon", true), used("Has icon", false), "0:10");
 }
 
-/// Diffs `old` and `new` from stored generations of frame `0:10` and asserts the same partial
+/// Diffs `old` and `new` from stored generations of `node` and asserts the same partial
 /// coverage reasons as the live trees.
-fn outside_parity(old: K<'static>, new: K<'static>) {
+fn outside_parity(old: K<'static>, new: K<'static>, node: &str) {
     let (a, b) = (Tree::new(&old), Tree::new(&new));
     let mut r = req(LIMIT, None);
-    r.node = "0:10".into();
+    r.node = node.into();
     let live = page(
-        &compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:10"),
+        &compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], node),
         &r,
         false,
     )
     .unwrap();
     let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
-    let conn = saved(&[&a, &b], "0:10");
+    let conn = saved(&[&a, &b], node);
     let stored = stored_diff(&conn, (1, side("old")), (2, side("new")), &r).unwrap();
     let coverage = |v: &Json| {
         (
@@ -2052,14 +2052,14 @@ fn tampered_or_other_layout_facets_are_refused_not_compared() {
     };
     let conn = saved(&[&tree], "0:0");
     conn.execute(
-        "UPDATE facets SET blob = CAST('[[\"bogus\",null]]' AS BLOB) WHERE rid = 1",
+        "UPDATE facets SET blob = CAST('{\"fields\":[[\"bogus\",null]],\"aliases\":[]}' AS BLOB) WHERE rid = 1",
         [],
     )
     .unwrap();
     assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
     let conn = saved(&[&tree], "0:0");
     conn.execute(
-        "INSERT INTO facets SELECT gen, MAX(rid) + 1, CAST('[]' AS BLOB) FROM facets",
+        "INSERT INTO facets SELECT gen, MAX(rid) + 1, CAST('{\"fields\":[],\"aliases\":[]}' AS BLOB) FROM facets",
         [],
     )
     .unwrap();
@@ -2083,7 +2083,10 @@ fn stored_facets_pay_for_their_text_before_parsing_it() {
 
 #[test]
 fn stored_facets_keep_a_readable_value_and_charge_text_metadata_and_value() {
-    let text = format!(r#"[["fontSize","{}",12]]"#, "a".repeat(64));
+    let text = format!(
+        r#"{{"fields":[["fontSize","{}",12]],"aliases":[]}}"#,
+        "a".repeat(64)
+    );
     let mut spent = 0;
     let facets = decode(&text, &mut spent).unwrap();
     assert_eq!(
@@ -2097,7 +2100,10 @@ fn stored_facets_keep_a_readable_value_and_charge_text_metadata_and_value() {
 
 #[test]
 fn stored_facets_charge_a_kept_value_after_its_metadata() {
-    let text = format!(r#"[["fontSize","{}",12]]"#, "a".repeat(64));
+    let text = format!(
+        r#"{{"fields":[["fontSize","{}",12]],"aliases":[]}}"#,
+        "a".repeat(64)
+    );
     // Text and metadata fit; the value does not.
     let held = held_value(&serde_json::json!(12), 2);
     let mut spent = BYTES - text.len() - FIELD_META - "fontSize".len() - held + 1;
@@ -2109,9 +2115,103 @@ fn stored_facets_charge_a_kept_value_after_its_metadata() {
 }
 
 #[test]
+fn stored_facets_keep_unread_aliases_apart_from_none_and_pay_for_each_id() {
+    let round = |text: &str| decode(text, &mut 0).unwrap().aliases;
+    let id = "VariableID:0:62";
+    // One id per aliasing mode, so a repeat is kept.
+    let text = format!(r#"{{"fields":[],"aliases":["{id}","{id}"]}}"#);
+    let mut spent = 0;
+    decode(&text, &mut spent).unwrap();
+    assert_eq!(
+        (
+            round(r#"{"fields":[],"aliases":null}"#),
+            round(r#"{"fields":[],"aliases":[]}"#),
+            round(&text),
+            spent
+        ),
+        (
+            None,
+            Some(vec![]),
+            Some(vec![id.to_owned(), id.to_owned()]),
+            text.len() + 2 * (std::mem::size_of::<String>() + 2 * id.len())
+        )
+    );
+}
+
+#[test]
+fn stored_facets_pay_for_each_alias_before_keeping_it() {
+    let id = "VariableID:0:62";
+    let text = format!(r#"{{"fields":[],"aliases":["{id}"]}}"#);
+    let mut spent = BYTES - text.len() - std::mem::size_of::<String>() - 2 * id.len() + 1;
+    let err = decode(&text, &mut spent).err().unwrap();
+    assert_eq!(
+        err.downcast_ref::<FigError>().map(FigError::kind),
+        Some(ErrorKind::QueryWorkLimit)
+    );
+}
+
+#[test]
+fn stored_facets_without_their_aliases_are_refused_not_read_as_none() {
+    for text in [
+        r#"[["fontSize",null]]"#,
+        r#"{"fields":[["fontSize",null]]}"#,
+        r#"{"fields":[],"aliases":[1]}"#,
+    ] {
+        let err = decode(text, &mut 0).err().unwrap();
+        assert_eq!(
+            err.downcast_ref::<FigError>().map(FigError::kind),
+            Some(ErrorKind::IndexIncompatible),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn stored_generations_report_an_alias_outside_the_page_like_the_live_trees() {
+    let side = |label: &str| json!({"sourceId": format!("local:{label}"), "snapshotId": format!("sha256:{label}")});
+    let coverage = |old: K<'static>, new: K<'static>| {
+        let (a, b) = (Tree::new(&old), Tree::new(&new));
+        let mut r = req(LIMIT, None);
+        r.node = "0:1".into();
+        let live = page(
+            &compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:1"),
+            &r,
+            false,
+        )
+        .unwrap();
+        let conn = saved(&[&a, &b], "0:1");
+        let stored = stored_diff(&conn, (1, side("old")), (2, side("new")), &r).unwrap();
+        let reasons = |v: &Json| v["coverage"].clone();
+        (reasons(&stored), reasons(&live))
+    };
+    // 61 -> 62, with 62 on the other page: partial once reopened.
+    let outside = |v| aliased(vec![var(61, 1, alias(62))], v);
+    let (stored, live) = coverage(outside(8.0), outside(12.0));
+    assert_eq!((&stored["reasons"], &stored), (&not_compared(1), &live));
+    // 61 -> 63, both on the page: the stored empty closure stays complete.
+    let within = |v| aliased(vec![var(61, 1, alias(63)), var(63, 1, float(v))], 1.0);
+    let (stored, live) = coverage(within(8.0), within(12.0));
+    assert_eq!((&stored["complete"], &stored), (&json!(true), &live));
+    // A library key read within the field cap that escaping makes longer than it.
+    let key = "\u{1}".repeat(FIELD_BYTES / 3);
+    let escaped = || aliased(vec![var(61, 1, library_alias(&key))], 8.0);
+    outside_parity(escaped(), escaped(), "0:1");
+    // Values too long to read leave the aliases unverified once reopened too.
+    let long = obj(vec![
+        ("dataType", K::Enum("VariableDataType", "STRING")),
+        (
+            "value",
+            obj(vec![("textValue", K::String("x".repeat(FIELD_BYTES + 1)))]),
+        ),
+    ]);
+    let unread = || aliased(vec![var(61, 1, long.clone())], 8.0);
+    outside_parity(unread(), unread(), "0:1");
+}
+
+#[test]
 fn stored_facets_charge_their_text_then_each_field_as_the_live_build_does() {
     // Once the text is paid for, nothing is left for the field's metadata plus key.
-    let text = r#"[["fontSize",null]]"#;
+    let text = r#"{"fields":[["fontSize",null]],"aliases":[]}"#;
     let mut spent = BYTES - text.len();
     let err = decode(text, &mut spent).err().unwrap();
     assert_eq!(

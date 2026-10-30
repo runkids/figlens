@@ -1765,8 +1765,8 @@ pub(crate) fn facet_version() -> String {
     format!("{VERSION}:{}", &hex(&h.finalize())[..16])
 }
 
-/// A stored record's facets: `[key, digest]`, or `[key, digest, value]` when the value was kept;
-/// an unread field's digest is `null`.
+/// A stored record's facets: `fields` rows `[key, digest]`, or `[key, digest, value]` when the
+/// value was kept (an unread field's digest is `null`), and `aliases`, `null` when unread.
 fn encode(f: &Facets) -> String {
     let rows = f.fields.iter().map(|f| {
         let digest = f.digest.map(|d| hex(&d));
@@ -1775,12 +1775,13 @@ fn encode(f: &Facets) -> String {
             None => json!([f.key, digest]),
         }
     });
-    Json::Array(rows.collect()).to_string()
+    json!({"fields": rows.collect::<Vec<_>>(), "aliases": f.aliases}).to_string()
 }
 
 /// The inverse of `encode`, refusing a key outside `FIELDS`, out of order, or a bad digest. The
 /// text is charged to `spent` before it is parsed, and each field as the live build charged it
-/// (64 bytes, its key and a kept value's JSON) before it is kept.
+/// (64 bytes, its key and a kept value's JSON) before it is kept, then each alias as the live
+/// build charges its copy.
 fn decode(text: &str, spent: &mut usize) -> Result<Facets, Box<dyn Error>> {
     let mut keys = FIELDS
         .iter()
@@ -1797,8 +1798,17 @@ fn decode(text: &str, spent: &mut usize) -> Result<Facets, Box<dyn Error>> {
     // Parsing allocates about the text's size, paid for first as the live build pays a
     // conversion.
     super::store::charge_query(spent, text.len())?;
+    let mut stored =
+        serde_json::from_str::<serde_json::Map<String, Json>>(text).map_err(|_| bad())?;
+    let (Some(rows), Some(aliases), 2) = (
+        stored.get_mut("fields").map(Json::take),
+        stored.get_mut("aliases").map(Json::take),
+        stored.len(),
+    ) else {
+        return Err(bad());
+    };
     let mut fields = Vec::new();
-    for mut row in serde_json::from_str::<Vec<Vec<Json>>>(text).map_err(|_| bad())? {
+    for mut row in serde_json::from_value::<Vec<Vec<Json>>>(rows).map_err(|_| bad())? {
         let value = if row.len() == 3 { row.pop() } else { None };
         let name = row.first().and_then(Json::as_str).ok_or_else(bad)?;
         let (key, facet) = keys.find(|(k, _)| *k == name).ok_or_else(bad)?;
@@ -1823,7 +1833,23 @@ fn decode(text: &str, spent: &mut usize) -> Result<Facets, Box<dyn Error>> {
             value,
         });
     }
-    Ok(Facets { fields })
+    // Unread stays distinct from none, so a reopened side never reads a closure as complete.
+    let aliases = match aliases {
+        Json::Null => None,
+        Json::Array(ids) => {
+            let mut kept = Vec::new();
+            for id in ids {
+                let Json::String(id) = id else {
+                    return Err(bad());
+                };
+                super::store::charge_query(spent, std::mem::size_of::<String>() + 2 * id.len())?;
+                kept.push(id);
+            }
+            Some(kept)
+        }
+        _ => return Err(bad()),
+    };
+    Ok(Facets { fields, aliases })
 }
 
 /// Stores a tracked build's facets and selected-node context as generation `gen`'s, beside the
@@ -1852,7 +1878,12 @@ pub(crate) fn save_facets(
             .iter()
             // A kept value is at most `FIELD_VALUE` bytes.
             .map(|x| 96 + if x.value.is_some() { FIELD_VALUE } else { 0 })
-            .sum()
+            .sum::<usize>()
+            + f.aliases
+                .iter()
+                .flatten()
+                .map(|a| 12 + a.len())
+                .sum::<usize>()
     };
     let (total, mut done) = (tracked.facets.len(), 0);
     for chunk in super::store::batches(&tracked.facets, size) {
@@ -1948,10 +1979,12 @@ fn stored(conn: &rusqlite::Connection, gen_id: i64, source: Json) -> Result<Side
     let mut rows = stmt.query([gen_id])?;
     while let Some(row) = rows.next()? {
         let (rid, len): (i64, i64) = (row.get(0)?, row.get(1)?);
-        // One row per record: a surplus row is refused before it is read.
+        // One row per record: a surplus row is refused before it is read. Aliases come from
+        // values estimated at most FIELD_BYTES before escaping, which writes a character in at
+        // most six bytes.
         if rid != facets.len() as i64
             || facets.len() >= index.records.len()
-            || len.max(0) as usize > FIELD_BYTES
+            || len.max(0) as usize > 7 * FIELD_BYTES
         {
             return Err(bad());
         }
