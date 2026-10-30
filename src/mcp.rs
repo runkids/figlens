@@ -652,8 +652,11 @@ fn lane(req: &Value) -> Lane {
         req["params"]["name"].as_str(),
         req["params"]["arguments"]["action"].as_str(),
     ) {
-        (Some("jobs"), _) | (Some("index"), Some("status")) => Lane::Control,
-        (Some("index"), _) => Lane::Index,
+        (Some("jobs"), _)
+        | (Some("index"), Some("status"))
+        | (Some("models"), Some("list" | "status" | "remove")) => Lane::Control,
+        // Configure hashes gigabytes and loads the model once: never ahead of interactive calls.
+        (Some("index"), _) | (Some("models"), _) => Lane::Index,
         _ => Lane::Interactive,
     }
 }

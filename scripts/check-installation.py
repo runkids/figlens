@@ -22,7 +22,7 @@ import threading
 import time
 import traceback
 from installation import environment, run, toolchain
-from mcp_smoke import check_directory, check_first_use, check_library, check_mcp, check_question, check_reuse
+from mcp_smoke import check_directory, check_first_use, check_library, check_mcp, check_question, check_reuse, session, user_roots
 
 ROOT = Path(__file__).resolve().parent.parent
 # The synthetic mapping fixture the host lanes use; generate it as wiki/integrations.md says.
@@ -31,6 +31,56 @@ MAPPING = ROOT/'samples/plugin-research/fixtures/mapping-library.fig'
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def check_runtime(cli, mcp, cwd, env):
+    """Model-free: figlens finds the figlens-embed shipped beside it. configure checks the runtime
+    before any model file, so an empty model directory must fail on the model (an error naming
+    the profile), never on a missing runtime, and nothing is configured. Each entry is a CLI and
+    its MCP command; Pi, OpenCode and OMP launch one of them."""
+    with tempfile.TemporaryDirectory(prefix='runtime-', dir=cwd) as temp:
+        base = Path(temp)
+        empty = base/'model'
+        empty.mkdir()
+        env = user_roots(base, env)
+        profile = json.loads(run([*cli, 'models', 'list'], cwd, env))['profiles'][0]['name']
+        # Before any model is set up, status names the runtime beside the executable that ran.
+        status = json.loads(run([*cli, 'models', 'status'], cwd, env))
+        assert status['profiles'] == [] and status['defaultRuntime']['available'], status
+        runtime = Path(status['defaultRuntime']['path'])
+        assert runtime.is_file() and runtime.stem == 'figlens-embed' and runtime.with_stem('figlens').is_file(), status
+        try:
+            run([*cli, 'models', 'configure', profile, '--model', empty], cwd, env)
+            raise AssertionError('configure accepted an empty model directory')
+        except RuntimeError as error:
+            assert f'{profile}:' in str(error) and 'no model runtime' not in str(error), str(error)
+        with session(mcp, cwd, env, timeout=60) as request:
+            request('initialize', {'protocolVersion': '2025-06-18'})
+            request('notifications/initialized', {})
+            reply = request('tools/call', {'name': 'models', 'arguments': {'action': 'configure', 'profile': profile, 'modelDir': str(empty)}})
+            text = json.dumps(reply)
+            assert reply['isError'] and f'{profile}:' in text and 'no model runtime' not in text, text
+        assert json.loads(run([*cli, 'models', 'status'], cwd, env))['profiles'] == []
+    return {'profile': profile, 'runtime': status['defaultRuntime'], 'configured': False}
+
+
+def imported_dlls(path):
+    """The DLL names a PE executable's import table names."""
+    data = Path(path).read_bytes()
+    pe = int.from_bytes(data[0x3c:0x40], 'little')
+    assert data[pe:pe + 4] == b'PE\0\0', f'{path} is not a PE executable'
+    word = lambda at, n=4: int.from_bytes(data[at:at + n], 'little')
+    sections, optional = word(pe + 6, 2), pe + 24
+    imports = word(optional + (112 if word(optional, 2) == 0x20b else 96) + 8)
+    table = [(word(at + 12), max(word(at + 8), word(at + 16)), word(at + 20))
+             for at in (optional + word(pe + 20, 2) + 40 * i for i in range(sections))]
+    offset = lambda rva: next(rva - va + raw for va, size, raw in table if va <= rva < va + size)
+    names, at = [], offset(imports)
+    while word(at + 12):
+        start = offset(word(at + 12))
+        names.append(data[start:data.index(b'\0', start)].decode())
+        at += 20
+    return names
 
 
 def check_index(binary, fixture, cwd, env):
@@ -289,6 +339,20 @@ def main():
         expected_version = f'figlens {metadata["version"]}'
         assert run(wrapper + ['--version'], consumer, wrapped_env).strip() == expected_version
         assert sha(cache) == expected['binarySha256'], 'Wrapper ran a different native binary'
+        # The optional model runtime is extracted beside it, executable, and starts natively
+        # (no missing DLL), answering --version and --help without a model.
+        companion = cache.with_name(asset['companion'])
+        assert sha(companion) == expected['companionSha256'], 'Wrapper extracted a different model runtime'
+        assert run([companion, '--version'], consumer, env).strip() == f'figlens-embed {metadata["version"]}'
+        assert 'figlens-embed' in run([companion, '--help'], consumer, env)
+        if os.name == 'nt':
+            # Git Bash puts MinGW runtime DLLs on PATH, so starting proves nothing: every import must
+            # be a Windows API set or a DLL Windows itself ships in System32.
+            system32 = Path(os.environ['SystemRoot'])/'System32'
+            for exe in [cache, companion]:
+                assert 'kernel32.dll' in map(str.lower, imported_dlls(exe)), f'{exe.name}: import table unread'
+                extra = [d for d in imported_dlls(exe) if not d.lower().startswith('api-ms-win-') and not (system32/d).is_file()]
+                assert not extra, f'{exe.name} needs DLLs Windows does not ship: {extra}'
         downloads = events.read_text().splitlines()
         assert sorted(json.loads(line)['name'] for line in downloads) == sorted([archive, 'SHA256SUMS'])
         assert run(wrapper + ['--version'], consumer, wrapped_env).strip() == expected_version
@@ -300,6 +364,7 @@ def main():
             versions = list(pool.map(lambda _: run(wrapper + ['--version'], consumer, parallel_env), range(2)))
         assert all(v.strip() == expected_version for v in versions)
         assert sha(concurrent/'figlens/npm'/metadata['version']/asset['binary']) == expected['binarySha256']
+        assert sha(concurrent/'figlens/npm'/metadata['version']/asset['companion']) == expected['companionSha256']
         assert not list((work/'cache/figlens/npm').glob('.tmp-*'))
         assert not list((concurrent/'figlens/npm').glob('.tmp-*'))
         fixture = consumer/'design.fig'
@@ -308,6 +373,9 @@ def main():
         native_mcp = check_mcp([cache, 'mcp'], consumer, env, fixture, metadata['version'])
         gcs = runpy.run_path(str(ROOT/'scripts/check-gcs-snapshot.py'))['check_gcs'](cache, fixture)
         index = check_index(cache, fixture, consumer, env)
+        # OpenCode and OMP launch this cached binary; Pi launches the wrapper's MCP command below.
+        runtime = {'native': check_runtime([cache], [cache, 'mcp'], consumer, env),
+                   'wrapper': check_runtime(wrapper, wrapper + ['mcp'], consumer, wrapped_env)}
         # Each entry starts its own first use from clean roots, the way a host would launch it.
         first_use = {'nativeMcp': check_first_use([cache, 'mcp'], work/'first-use-native', fixture, env),
                      'wrapperMcp': check_first_use(wrapper + ['mcp'], work/'first-use-wrapper', fixture, wrapped_env)}
@@ -331,6 +399,7 @@ def main():
         mcp_env = dict(wrapped_env, XDG_CACHE_HOME=str(mcp_cache), LOCALAPPDATA=str(mcp_cache))
         wrapped_mcp = check_mcp(wrapper + ['mcp'], consumer, mcp_env, fixture, metadata['version'])
         assert sha(mcp_cache/'figlens/npm'/metadata['version']/asset['binary']) == expected['binarySha256']
+        assert sha(mcp_cache/'figlens/npm'/metadata['version']/asset['companion']) == expected['companionSha256']
         pi = {'status': 'not requested', 'reason': 'CLI-only job; Pi requires Node >=22.19.0'}
         hosts = {}
         if args.pi_version:
@@ -345,6 +414,7 @@ def main():
             config = pi['mcp']
             pi['stdio'] = check_mcp([config['command'], *config['args']], consumer, wrapped_env, fixture, metadata['version'])
             first_use['piMcp'] = check_first_use([config['command'], *config['args']], work/'first-use-pi', fixture, wrapped_env)
+            runtime['piMcp'] = check_runtime(wrapper, [config['command'], *config['args']], consumer, wrapped_env)
             first_use['piLibrary'] = library([config['command'], *config['args']], 'library-pi', wrapped_env)
             # Pi's registered MCP command registers a directory page by page, as an agent follows nextCursor.
             first_use['piDirectory'] = check_directory([config['command'], *config['args']], work/'directory-pi', fixture, wrapped_env)
@@ -368,6 +438,7 @@ def main():
         print(json.dumps({'layer': 'B: candidate artifacts, injected local transport; not a published release',
                           'commit': metadata['commit'], 'dirty': metadata['dirty'], 'sourceDigest': metadata['sourceDigest'],
                           'package': manifest['version'], 'tarballSha256': sha(package), 'binarySha256': sha(cache),
+                          'companionSha256': sha(companion), 'runtime': runtime,
                           'node': run([node, '--version'], consumer, env).strip(),
                           'npm': run(npm + ['--version'], consumer, env).strip(),
                           'coldInstall': True, 'warmCacheNoDownload': True, 'parallelFirstUse': True,

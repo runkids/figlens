@@ -131,7 +131,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可发�
 
 ## MCP server 与 agent skill
 
-**MCP。** server 在本地通过 stdio 运行，提供 `workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch`、`export` 和 `models`。请传入绝对路径。加上 `--root /path/to/designs`（可重复）可把所有文件和输出路径限制在指定文件夹内。把索引存放在 figlens 默认目录之外时，需要 `--storage-root DIR`（可重复）。光栅导出会缩小到 `maxSize`（默认 1600 px），让内联图片保持小巧；SVG 只返回 metadata。
+**MCP。** server 在本地通过 stdio 运行，提供 `workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch`、`export` 和 `models`。请传入绝对路径。加上 `--root /path/to/designs`（可重复）可把所有文件和输出路径限制在指定文件夹内。明确指定自定义索引位置时，需要 `--storage-root DIR`（可重复）；已记住的 workspace 位置无需再次指定。参见[启动参数及多个 root 的配置示例](../README-zh-CN.md#mcp-args)。光栅导出会缩小到 `maxSize`（默认 1600 px），让内联图片保持小巧；SVG 只返回 metadata。
 
 agent 可通过 `workflow` 读取内建的 `build`、`audit`、`images`、`plan`、`planning-details`，或明确请求时的 `yolo` 指引。它们与 portable skill 共用来源；MCP 用户可自行选择是否另装 skill。实际工作仍由 agent 使用项目及浏览器工具，并遵守 host 权限。读取指引不会执行工作流程；使用方式取决于客户端支持与模型行为。
 
@@ -152,7 +152,7 @@ skillshare mcp add figlens --global --target claude --target codex --target curs
 skillshare sync && skillshare sync mcp --global
 ```
 
-**安装说明。** npm launcher 会在首次使用时下载匹配的原生可执行文件，对照 release 的 SHA-256 校验和进行验证并缓存。用安装脚本装的通过 `figlens update` 更新；Homebrew 装的通过 `brew upgrade figlens` 更新。可执行文件覆盖 macOS（Apple silicon、Intel）、Linux（arm64、x86_64、静态 musl）和 Windows（x86_64）。
+**安装说明。** npm launcher 会在首次使用时下载匹配的原生可执行文件，对照 release 的 SHA-256 校验和进行验证并缓存。用安装脚本装的通过 `figlens update` 更新；Homebrew 装的通过 `brew upgrade figlens` 更新。可执行文件覆盖 macOS（Apple silicon、Intel）、Linux（arm64、x86_64、静态 musl）和 Windows（x86_64）。每种安装方式都会把[可选的语义搜索](#semantic-search)所用的运行时 `figlens-embed` 放在 `figlens` 旁边；在你配置模型之前，它不会加载任何模型。
 
 <a id="local-index"></a>
 

@@ -40,11 +40,12 @@ $(asset x86_64-unknown-linux-musl)
   end
 
   def install
-    bin.install "figlens"
+    bin.install "figlens", "figlens-embed"
   end
 
   test do
     assert_match version.to_s, shell_output("#{bin}/figlens --version")
+    assert_match version.to_s, shell_output("#{bin}/figlens-embed --version")
   end
 end
 EOF

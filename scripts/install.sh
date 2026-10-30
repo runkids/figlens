@@ -26,8 +26,12 @@ curl -fsSL -o "$tmp/SHA256SUMS" "$repo/releases/download/$tag/SHA256SUMS"
 (cd "$tmp" && grep -- "  $archive$" SHA256SUMS | shasum -a 256 -c - >/dev/null)
 tar -xzf "$tmp"/figlens-*.tar.gz -C "$tmp"
 mkdir -p "$bin_dir"
-# Rename over the old binary: writing into a running one fails (Linux) or breaks its signature (macOS).
-install -m 755 "$tmp/figlens" "$bin_dir/.figlens.new"
-mv -f "$bin_dir/.figlens.new" "$bin_dir/figlens"
+# Rename over the old binaries: writing into a running one fails (Linux) or breaks its signature (macOS).
+# figlens-embed is the optional local model runtime figlens looks for beside itself; releases
+# before it shipped have none. Both are staged before either is replaced.
+names=figlens
+[ -f "$tmp/figlens-embed" ] && names="figlens-embed figlens"
+for name in $names; do install -m 755 "$tmp/$name" "$bin_dir/.$name.new"; done
+for name in $names; do mv -f "$bin_dir/.$name.new" "$bin_dir/$name"; done
 echo "installed $("$bin_dir/figlens" --version) to $bin_dir"
 case ":$PATH:" in *":$bin_dir:"*) ;; *) echo "add $bin_dir to PATH" >&2 ;; esac

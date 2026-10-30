@@ -85,7 +85,9 @@ pub fn known(name: &str) -> Result<&'static Known> {
 
 /// The runtime figlens ships beside itself.
 pub fn default_runtime() -> Result<PathBuf> {
+    // Through links (macOS reports the invoked path), to the directory figlens really lives in.
     let exe = std::env::current_exe()?;
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
     Ok(exe.with_file_name(format!("figlens-embed{}", std::env::consts::EXE_SUFFIX)))
 }
 
@@ -238,8 +240,37 @@ pub fn configure(
             ),
         ));
     }
-    let p = Profile::probe(&runtime, model, k.files, cancel)
-        .map_err(|e| fail(ErrorKind::InvalidArguments, format!("{name}: {e}")))?;
+    // Named before anything is hashed, so the user knows which file to fetch where.
+    let missing: Vec<&str> = k
+        .files
+        .iter()
+        .map(|f| f.0)
+        .filter(|f| !model.join(f).is_file())
+        .collect();
+    if !missing.is_empty() {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            format!(
+                "{}: {} is missing {}; download {} revision {} ({}) into it, then configure again; nothing was recorded",
+                name,
+                model.display(),
+                missing.join(", "),
+                k.model,
+                k.revision,
+                k.license
+            ),
+        ));
+    }
+    let p = Profile::probe(&runtime, model, k.files, cancel).map_err(|e| {
+        match e.downcast::<Stop>() {
+            Ok(stop) if matches!(*stop, Stop::Cancelled) => fail(
+                ErrorKind::Cancelled,
+                "models configure cancelled; nothing was recorded",
+            ),
+            Ok(stop) => fail(ErrorKind::InvalidArguments, format!("{name}: {stop}")),
+            Err(e) => fail(ErrorKind::InvalidArguments, format!("{name}: {e}")),
+        }
+    })?;
     let served = p.contract["modality"].as_str().unwrap_or("text");
     if served != k.modality {
         return Err(fail(

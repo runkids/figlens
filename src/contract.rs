@@ -490,19 +490,19 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "sourceId",
                 "string",
                 false,
-                "a registered source, for remove, relocate, refresh, rebuild, track and untrack",
+                "a registered source, for remove, relocate, refresh, rebuild, track, untrack and embed",
             ),
             (
                 "scope",
                 "string",
                 false,
-                "stored node id to index (prepare), refresh, rebuild, track or untrack; 0:0 is the whole file",
+                "stored node id to index (prepare), refresh, rebuild, track, untrack or embed; 0:0 is the whole file",
             ),
             (
                 "requestId",
                 "string",
                 false,
-                "an idempotency key: repeating a prepare, refresh, rebuild or track of one source and scope with it returns the same job; one first used for another request (track is its own) is refused",
+                "an idempotency key: repeating a prepare, refresh, rebuild, track or embed of one source and scope with it returns the same job; one first used for another request (track is its own) is refused",
             ),
             STORAGE,
             (
@@ -779,7 +779,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
         ),
         "models" => (
             serde_json::json!({
-                "profiles": {"type": "array", "items": {"type": "object"}, "description": "list: name, modality, model, revision, license, files, configured, profileId, dataFlow; status: name, modality, profileId, model, runtime, dim, state ready or unavailable, code, reason, recovery"},
+                "profiles": {"type": "array", "items": {"type": "object"}, "description": "list: name, modality, model, revision, license, files, configured, profileId, dataFlow; status: name, modality, profileId, model, runtime, dim, state ready or unavailable, code (runtime_missing, runtime_changed or model_missing), reason and recovery (models configure with the same files)"},
                 "setup": {"type": "array", "items": {"type": "object"}, "description": "status: the steps to configure a profile for each modality (text, image) no configured profile serves"},
                 "configRoot": {"type": "string", "description": "status: the config directory models.json lives in (ask write access to it before configure)"},
                 "defaultRuntime": {"type": "object", "description": "status: {path, available} of the figlens-embed beside this figlens; available means the file exists, not that a model is ready"},

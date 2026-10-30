@@ -248,7 +248,7 @@ try {
     for (const tool of ['figlens_preview', 'figlens_bindings', 'figlens_propose_bindings']) assert.ok(status.mcp.tools.includes(tool), tool);
     for (const tool of ['figlensmcp_search', 'figlensmcp_inspect', 'figlensmcp_diff']) assert.ok(status.mcp.catalog.includes(tool), tool);
     // The managed server serves index, jobs, search, usages, diff, changes, watch and inspect; the plugin adds no second copy.
-    for (const tool of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages', 'figlens_diff', 'figlens_changes', 'figlens_watch']) assert.ok(!status.mcp.tools.includes(tool), tool);
+    for (const tool of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages', 'figlens_diff', 'figlens_changes', 'figlens_watch', 'figlens_models']) assert.ok(!status.mcp.tools.includes(tool), tool);
     const skills = await client.skill.list({ location });
     assert.ok(JSON.stringify(skills).includes('figlens'));
     return { mcp: status.mcp, catalogAfterConnectedMs: Date.now() - connected, skills: skills.data.map(skill => skill.name) };
@@ -495,7 +495,7 @@ try {
   await check('with a disabled MCP override the CLI path prepares, polls, searches, inspects and follows changes through plugin tools', async () => {
     const status = await rpc.run({ sessionID: session.id, action: 'status' }, options);
     assert.equal(status.mcp.managed, false, JSON.stringify(status.mcp));
-    for (const name of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages', 'figlens_diff', 'figlens_changes', 'figlens_watch']) assert.ok(status.mcp.tools.includes(name), name);
+    for (const name of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages', 'figlens_diff', 'figlens_changes', 'figlens_watch', 'figlens_models']) assert.ok(status.mcp.tools.includes(name), name);
     await execute(binary, ['index', 'reset', '--file', fixture], { cwd: project, env }).catch(() => {});
     const [before, prepared, job, found, node] = await converse('Enable an index for the mapping review frame (0:1) of mapping.fig, then find it.', cliSteps);
     assert.ok(node, JSON.stringify(scripted.raw).slice(0, 2000));
@@ -526,6 +526,28 @@ try {
     assert.deepEqual([library?.results?.map(item => [item.ref.sourceId, item.ref.nodeId]).sort(), library?.definition, library?.coverage?.complete],
       [bothCopies([a.job.sourceId, b.job.sourceId]), { state: 'unresolved', reason: 'library_source_unproven' }, true], (scripted.raw[18] ?? '').slice(0, 500));
     return { pages: [first.results[0].ref.nodeId, second.results[0].ref.nodeId], refused: 'unknown relation', library: library.definition.reason, trackedBaselineAcked: true, diffedCopies: diffed.coverage.changes, usedBy: used.results.map(item => item.ref.nodeId), deepIdBytes: deepId.length, mcp: status.mcp.reason, before: before.state, job: job.state, ref: found.results[0].ref, inspected: node.node.id, tools: scripted.tools.filter(name => /^figlens_/.test(name)) };
+  });
+  await check('with a disabled MCP override the CLI path lists local model profiles and forwards the semantic and hybrid modes', async () => {
+    // No profile is configured in this run's config root and nothing is downloaded: semantic is refused with its
+    // setup recovery, and hybrid answers with text alone.
+    await mkdir(path.join(project, 'no-model'), { recursive: true });
+    const [listed, status, , after, , hybrid] = await converse('Which local models can figlens use? Then find the mapping review frame by meaning.', [
+      () => direct('figlens_models', { action: 'list' }),
+      () => direct('figlens_models', { action: 'status' }),
+      // A folder holding no model: configure asks, then fails with a setup error and records nothing.
+      () => direct('figlens_models', { action: 'configure', profile: 'bge-m3', modelDir: path.join(project, 'no-model') }),
+      () => direct('figlens_models', { action: 'status' }),
+      () => direct('figlens_search', { file: fixture, query: 'Mapping review', mode: 'semantic' }),
+      () => direct('figlens_search', { file: fixture, query: 'Mapping review', mode: 'hybrid' })]);
+    assert.ok(listed?.profiles?.length, JSON.stringify(scripted.raw).slice(0, 2000));
+    assert.ok(status?.setup?.length && typeof status.configRoot === 'string', (scripted.raw[1] ?? '').slice(0, 500));
+    assert.match(scripted.raw[2] ?? '', / is missing /, (scripted.raw[2] ?? '').slice(0, 500));
+    assert.doesNotMatch(scripted.raw[2] ?? '', /no model runtime/, (scripted.raw[2] ?? '').slice(0, 500));
+    assert.deepEqual(after?.profiles, [], (scripted.raw[3] ?? '').slice(0, 500));
+    assert.match(scripted.raw[4] ?? '', /mode_unavailable|configured local model/i, (scripted.raw[4] ?? '').slice(0, 500));
+    assert.deepEqual(hybrid?.query?.usedModes, ['text'], (scripted.raw[5] ?? '').slice(0, 500));
+    assert.equal(hybrid.results[0].ref.nodeId, '0:1');
+    return { profiles: listed.profiles.map(profile => profile.name), setup: true, configureRefused: true, semantic: 'mode_unavailable', hybrid: hybrid.query.usedModes };
   });
   await check('with a disabled MCP override the CLI path asks read on each page of a directory add and follows nextCursor', async () => {
     const { dir, files, canonical } = await designs('designs-cli');

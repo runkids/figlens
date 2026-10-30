@@ -131,7 +131,7 @@ Parcourez les pages et les calques, recherchez, lancez la recherche classée et 
 
 ## Serveur MCP et skill pour agent
 
-**MCP.** Le serveur s’exécute en local via stdio et expose `workflow`, `tree`, `find`, `search`, `usages`, `diff`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs`, `changes`, `watch`, `export` et `models`. Passez des chemins absolus. Ajoutez `--root /path/to/designs` (répétable) pour confiner chaque chemin de fichier et de sortie aux dossiers choisis. Un stockage d'index hors des répertoires par défaut de figlens exige `--storage-root DIR` (répétable). Les exports raster sont réduits à `maxSize` (1600 px par défaut) pour que les images inline restent légères ; SVG ne renvoie que des métadonnées.
+**MCP.** Le serveur s’exécute en local via stdio et expose `workflow`, `tree`, `find`, `search`, `usages`, `diff`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs`, `changes`, `watch`, `export` et `models`. Passez des chemins absolus. Ajoutez `--root /path/to/designs` (répétable) pour confiner chaque chemin de fichier et de sortie aux dossiers choisis. Un stockage personnalisé explicitement demandé exige `--storage-root DIR` (répétable) ; les emplacements mémorisés sont réutilisés sans cette option. Voir les [arguments de démarrage et l’exemple de configuration avec plusieurs racines](../README-fr.md#mcp-args). Les exports raster sont réduits à `maxSize` (1600 px par défaut) pour que les images inline restent légères ; SVG ne renvoie que des métadonnées.
 
 Avec `workflow`, l’agent peut lire les guides intégrés `build`, `audit`, `images`, `plan`, `planning-details` ou `yolo` sur demande explicite. Ils partagent les sources du skill portable ; son installation séparée est facultative avec MCP. L’agent réalise le travail avec ses outils de projet et de navigateur et les permissions de l’hôte. Lire un guide n’exécute pas le workflow ; son utilisation dépend du client et du comportement du modèle.
 
@@ -152,7 +152,7 @@ skillshare mcp add figlens --global --target claude --target codex --target curs
 skillshare sync && skillshare sync mcp --global
 ```
 
-**Notes d’installation.** Le lanceur npm télécharge le binaire natif correspondant à la première utilisation, le vérifie avec les checksums SHA-256 de la release et le met en cache. Les installations par script se mettent à jour avec `figlens update`, celles de Homebrew avec `brew upgrade figlens`. Les binaires couvrent macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl statique) et Windows (x86_64).
+**Notes d’installation.** Le lanceur npm télécharge le binaire natif correspondant à la première utilisation, le vérifie avec les checksums SHA-256 de la release et le met en cache. Les installations par script se mettent à jour avec `figlens update`, celles de Homebrew avec `brew upgrade figlens`. Les binaires couvrent macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl statique) et Windows (x86_64). Chaque méthode d’installation place aussi `figlens-embed`, le runtime de la [recherche sémantique optionnelle](#semantic-search), à côté de `figlens` ; il ne charge aucun modèle tant que vous n’en configurez pas.
 
 <a id="local-index"></a>
 

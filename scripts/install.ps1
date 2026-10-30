@@ -53,11 +53,34 @@ try {
     Expand-Archive -Path "$Tmp\$Archive" -DestinationPath "$Tmp\out" -Force
 
     New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
-    $Exe = Join-Path $BinDir "figlens.exe"
+    # figlens-embed.exe is the optional local model runtime figlens looks for beside itself;
+    # releases before it shipped have none. Both are staged in the bin directory first.
+    $Names = @("figlens-embed.exe", "figlens.exe") | Where-Object { Test-Path "$Tmp\out\$_" }
+    foreach ($Name in $Names) { Copy-Item "$Tmp\out\$Name" (Join-Path $BinDir "$Name.new") -Force }
     # A running exe cannot be overwritten, but it can be renamed (figlens update replaces itself).
-    if (Test-Path $Exe) { Move-Item $Exe "$Exe.old" -Force }
-    Move-Item "$Tmp\out\figlens.exe" $Exe -Force
-    Remove-Item "$Exe.old" -Force -ErrorAction SilentlyContinue
+    # The pair is swapped as one: if any move fails, every exe already swapped gets its old copy
+    # back, so figlens never runs beside a runtime from another release.
+    $Swapped = @()
+    try {
+        foreach ($Name in $Names) {
+            $Exe = Join-Path $BinDir $Name
+            if (Test-Path $Exe) { Move-Item $Exe "$Exe.old" -Force -ErrorAction Stop }
+            $Swapped += $Name
+            Move-Item "$Exe.new" $Exe -Force -ErrorAction Stop
+        }
+    } catch {
+        foreach ($Name in $Swapped) {
+            $Exe = Join-Path $BinDir $Name
+            if (Test-Path "$Exe.old") {
+                Remove-Item $Exe -Force -ErrorAction SilentlyContinue
+                Move-Item "$Exe.old" $Exe -Force -ErrorAction SilentlyContinue
+            }
+        }
+        foreach ($Name in $Names) { Remove-Item (Join-Path $BinDir "$Name.new") -Force -ErrorAction SilentlyContinue }
+        Fail "could not replace $BinDir ($($_.Exception.Message)); the previous install was kept"
+    }
+    foreach ($Name in $Names) { Remove-Item (Join-Path $BinDir "$Name.old") -Force -ErrorAction SilentlyContinue }
+    $Exe = Join-Path $BinDir "figlens.exe"
 } finally {
     Remove-Item $Tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
