@@ -337,11 +337,12 @@ fn first(storage: &Storage, modality: &str) -> Result<Option<Profile>> {
     }))
 }
 
-/// One warm child per process, reused by every request with the same profile.
-static WARM: Mutex<Option<(String, Runtime)>> = Mutex::new(None);
+/// One warm child per modality per process (text, then image), each reused by every request
+/// with the same profile, so a hybrid search does not restart one model to run the other.
+static WARM: [Mutex<Option<(String, Runtime)>>; 2] = [Mutex::new(None), Mutex::new(None)];
 
-/// Runs `f` on the warm runtime of `profile`, starting it if needed; concurrent requests take
-/// turns, each still cancellable while it waits. A dead child or another
+/// Runs `f` on the warm runtime of `profile`, starting it if needed; concurrent requests of a
+/// modality take turns, each still cancellable while it waits. A dead child or another
 /// profile's child is replaced; a child that declares another dimension is refused.
 pub fn with_runtime<T>(
     profile: &Profile,
@@ -349,7 +350,9 @@ pub fn with_runtime<T>(
     f: impl FnOnce(&mut Runtime) -> std::result::Result<T, Stop>,
 ) -> std::result::Result<T, Stop> {
     // Another request holds the child; wait for it without ignoring this request's cancel.
-    let mut warm = super::lock(&WARM, cancel)?;
+    // The configured contract names the modality; a text profile's may predate the field.
+    let slot = &WARM[usize::from(profile.contract["modality"] == "image")];
+    let mut warm = super::lock(slot, cancel)?;
     let reuse = match warm.as_mut() {
         Some((id, rt)) => *id == profile.id && rt.alive(),
         None => false,

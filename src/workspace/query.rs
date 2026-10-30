@@ -453,7 +453,7 @@ fn searched(
                 &mut steps,
                 &mut spent,
                 &key,
-                cancel,
+                (&dir, cancel),
             )?;
             drawn = Some((image, decor, complete, layers));
             (ranked, None)
@@ -464,7 +464,15 @@ fn searched(
                     .map_err(|_| fail(ErrorKind::Cancelled, "search cancelled"))?;
                 let ws_key = (ws_id.as_str(), incarnation.as_str(), version);
                 let layer = model_layers(
-                    &tx, ws_key, req, &loaded, p, &mut spent, &mut cache, &mut steps, cancel,
+                    &tx,
+                    ws_key,
+                    req,
+                    &loaded,
+                    p,
+                    &mut spent,
+                    &mut cache,
+                    &mut steps,
+                    (&dir, cancel),
                 )?;
                 let sides: Vec<search::semantic::Side> = loaded
                     .iter()
@@ -734,7 +742,7 @@ fn image_rank(
     steps: &mut Vec<Json>,
     spent: &mut usize,
     key: &Json,
-    cancel: &AtomicBool,
+    (dir, cancel): (&Path, &AtomicBool),
 ) -> Result<(search::Ranked, rank::Decor, bool, Json)> {
     use super::visual_search::{layer_state, vectors, visual_step};
     use crate::search::visual::{self, Hit as VisualHit};
@@ -757,13 +765,17 @@ fn image_rank(
     let mut hash_sources = Vec::new();
     for (part, (index, source, gen_id, _)) in loaded.iter_mut().enumerate() {
         let state = match visual_tables {
-            true => layer_state(tx, *gen_id, visual::VERSION)?,
+            true => layer_state(tx, dir, *gen_id, visual::VERSION)?,
             false => None,
         };
         let label = state.as_deref().unwrap_or("pending");
         hash_sources.push(json!({"sourceId": source["sourceId"], "state": label}));
+        // A partial layer is final for this renderer: `index visual` would leave it as is, so it
+        // keeps the page partial without naming that step again.
         if label != "ready" {
             complete = false;
+        }
+        if label != "ready" && label != "partial" {
             steps.push(visual_step(
                 ws_id,
                 &source["sourceId"],
@@ -841,13 +853,26 @@ fn image_rank(
             let mut sources = Vec::new();
             for (part, (_, source, gen_id, _)) in loaded.iter().enumerate() {
                 let state = match visual_tables {
-                    true => layer_state(tx, *gen_id, &p.id)?,
+                    true => layer_state(tx, dir, *gen_id, &p.id)?,
                     false => None,
                 };
                 let label = state.as_deref().unwrap_or("pending");
                 sources.push(json!({"sourceId": source["sourceId"], "state": label}));
                 if label != "ready" {
                     complete = false;
+                }
+                if label != "ready" && label != "partial" {
+                    // A vision layer never built (configured after the hash layer) or not
+                    // finished: the same index visual call builds it.
+                    let step = visual_step(
+                        ws_id,
+                        &source["sourceId"],
+                        &req.scope,
+                        "this source's vision layer is not built or not finished for this scope",
+                    );
+                    if !steps.iter().any(|s| s["arguments"] == step["arguments"]) {
+                        steps.push(step);
+                    }
                 }
                 if state.is_none() {
                     continue;
@@ -939,8 +964,17 @@ fn image_rank(
                 semantic_profile = Some(p.id.clone());
                 let mut cache = crate::semantic::lock(&LAYERS, cancel)
                     .map_err(|_| fail(ErrorKind::Cancelled, "search cancelled"))?;
-                let layer =
-                    model_layers(tx, ws, req, loaded, &p, spent, &mut cache, steps, cancel)?;
+                let layer = model_layers(
+                    tx,
+                    ws,
+                    req,
+                    loaded,
+                    &p,
+                    spent,
+                    &mut cache,
+                    steps,
+                    (dir, cancel),
+                )?;
                 layers["semantic"] = layer.clone();
                 let sides: Vec<search::semantic::Side> = loaded
                     .iter()
@@ -1180,7 +1214,7 @@ fn model_layers(
     spent: &mut usize,
     cache: &mut Layers,
     steps: &mut Vec<Json>,
-    cancel: &AtomicBool,
+    (dir, cancel): (&Path, &AtomicBool),
 ) -> Result<Json> {
     let (ws_id, incarnation, version) = ws;
     let mut bounds = crate::expand::Bounds {
@@ -1254,11 +1288,23 @@ fn model_layers(
         let state = match built.as_ref().map(|b| b["state"].as_str().unwrap_or("")) {
             None => "pending",
             Some("ready") if cov["state"] == "ready" => "ready",
+            Some("failed") => "failed",
+            // Its job ended or lost its owner without finishing it.
+            Some("building")
+                if !super::jobs::layer_live(
+                    tx,
+                    dir,
+                    built.as_ref().and_then(|b| b["jobId"].as_str()),
+                )? =>
+            {
+                "failed"
+            }
             Some(_) => "partial",
         };
         if state != "ready" {
             let why = match state {
                 "pending" => "this source's model layer is not built for the configured profile",
+                "failed" => "this source's last embed job failed or was cancelled; embed again",
                 _ => "this source's model layer is unfinished; embed again to complete it",
             };
             steps.push(

@@ -19,6 +19,7 @@ fn action_options_are_rejected_before_workspace_io() {
         "clear_cache",
         "reset",
         "embed",
+        "visual",
     ] {
         for option in [
             "scope", "request", "replace", "cursor", "manifest", "dry_run", "source",
@@ -32,14 +33,20 @@ fn action_options_are_rejected_before_workspace_io() {
                     req.scope = Some("0:0");
                     matches!(
                         action,
-                        "prepare" | "refresh" | "rebuild" | "track" | "untrack" | "embed"
+                        "prepare"
+                            | "refresh"
+                            | "rebuild"
+                            | "track"
+                            | "untrack"
+                            | "embed"
+                            | "visual"
                     )
                 }
                 "request" => {
                     req.request = Some("retry");
                     matches!(
                         action,
-                        "prepare" | "refresh" | "rebuild" | "track" | "embed"
+                        "prepare" | "refresh" | "rebuild" | "track" | "embed" | "visual"
                     )
                 }
                 "replace" => {
@@ -69,6 +76,7 @@ fn action_options_are_rejected_before_workspace_io() {
                             | "track"
                             | "untrack"
                             | "embed"
+                            | "visual"
                     )
                 }
                 _ => unreachable!(),

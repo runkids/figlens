@@ -790,7 +790,7 @@ pub fn serve_with(
                     }
                     continue;
                 }
-                let mut embeds = Vec::new();
+                let mut model_jobs = Vec::new();
                 for job in &runs.jobs {
                     let report = figlens::workspace::jobs::run(
                         &runs.storage,
@@ -801,16 +801,16 @@ pub fn serve_with(
                     );
                     if let Some(r) = report.ok().filter(|_| !stop.load(Ordering::SeqCst)) {
                         use figlens::workspace::jobs::{embed_after, visual_after};
-                        embeds.extend(embed_after(&runs.storage, &r));
-                        embeds.extend(visual_after(&runs.storage, &r));
+                        model_jobs.extend(embed_after(&runs.storage, &r));
+                        model_jobs.extend(visual_after(&runs.storage, &r));
                     }
                 }
-                if !embeds.is_empty() {
+                if !model_jobs.is_empty() {
                     builds.fetch_add(1, Ordering::SeqCst);
                     let model = command::Runs {
                         storage: runs.storage.clone(),
                         workspace_id: runs.workspace_id.clone(),
-                        jobs: embeds,
+                        jobs: model_jobs,
                         model: true,
                     };
                     if to_model.send(model).is_err() {

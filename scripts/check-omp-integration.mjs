@@ -98,7 +98,7 @@ await check('packaged descriptor, bridge handshake and absolute design path', as
     // Optional local models through OMP's bridge: listed and set up, never downloaded; with no profile in this run's
     // fresh config, semantic is mode_unavailable and hybrid answers with text alone.
     const tools = await listTools(connection);
-    assert.deepEqual(tools.find(tool => tool.name === 'search')?.inputSchema?.properties?.mode?.enum, ['text', 'semantic', 'hybrid']);
+    assert.deepEqual(tools.find(tool => tool.name === 'search')?.inputSchema?.properties?.mode?.enum, ['text', 'semantic', 'hybrid', 'visual']);
     assert.ok(tools.some(tool => tool.name === 'models'));
     const listedModels = await callTool(connection, 'models', { action: 'list' });
     assert.equal(listedModels.isError, false, JSON.stringify(listedModels).slice(0, 2000));

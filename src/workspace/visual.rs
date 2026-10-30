@@ -11,6 +11,8 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 /// Output bounds, white compositing and 256-pixel normalization are pinned by this policy.
 pub const POLICY: &str = "visual-export1024-white256-1";
 pub const MAX_UNITS: usize = 2_000;
+/// The renderer a stored raster came from; a raster of another one is stale and rendered again.
+pub const RENDERER: &str = concat!("figlens ", env!("CARGO_PKG_VERSION"));
 const MAX_PNG: usize = 300 * 1024;
 const MAX_REPORT: usize = 256 * 1024;
 
@@ -97,7 +99,7 @@ pub fn save(conn: &Connection, gen_id: i64, rid: u32, rendered: &RenderedUnit) -
     digest.update(fingerprint);
     let key: [u8; 32] = digest.finalize().into();
     let report = json!({"bounds": rendered.bounds, "diagnostics": rendered.diagnostics,
-        "diagnosticsTruncated": rendered.diagnostics_truncated});
+        "diagnosticsTruncated": rendered.diagnostics_truncated, "renderer": RENDERER});
     let report = report.to_string();
     if report.len() > MAX_REPORT {
         return Err(super::fail(
@@ -327,6 +329,7 @@ mod tests {
             diagnostics: vec![],
             diagnostics_truncated: false,
             bounds: serde_json::Map::new(),
+            pixels: 0,
         }
     }
 

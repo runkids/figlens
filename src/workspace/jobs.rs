@@ -556,7 +556,7 @@ fn submit_fenced(
             .ok_or_else(|| -> Box<dyn Error> {
                 FigError::new(
                     ErrorKind::InvalidArguments,
-                    format!("scope {scope} of source {source_id} has no published index to {kind}; build it with index refresh first"),
+                    format!("scope {scope} of source {source_id} has no published index for index {kind}; build it with index refresh first"),
                 )
                 .with_recovery(json!([{"action": "refresh", "requires": "none", "tool": "index",
                     "arguments": {"action": "refresh", "workspaceId": id, "sourceId": source_id, "scope": scope}}]))
@@ -829,6 +829,8 @@ fn drop_building(conn: &mut Connection, job_id: &str, holder: &str, attempt: i64
 }
 
 /// Ends job `job_id` in a terminal state, if `me`'s `attempt` still owns it and it is active.
+/// A model job's layers it left `building` read `failed` from the same write, never as work
+/// still going on; a later job's success overwrites them.
 fn finish(
     conn: &Connection,
     job_id: &str,
@@ -837,20 +839,56 @@ fn finish(
     state: &str,
     error: Option<Json>,
 ) -> Result<()> {
-    conn.execute(
-        "UPDATE jobs SET state = ?4, error = ?5, finished_ms = ?6 WHERE job_id = ?1 AND owner = ?2
-         AND attempt = ?3 AND state IN ('queued', 'running')",
-        params![
-            job_id,
-            me,
-            attempt,
-            state,
-            error.map(|e| e.to_string()),
-            now_ms()
-        ],
-    )
-    .map_err(sql)?;
+    let tx = conn.unchecked_transaction().map_err(sql)?;
+    let kind: Option<String> = tx
+        .query_row(
+            "UPDATE jobs SET state = ?4, error = ?5, finished_ms = ?6 WHERE job_id = ?1
+             AND owner = ?2 AND attempt = ?3 AND state IN ('queued', 'running') RETURNING kind",
+            params![
+                job_id,
+                me,
+                attempt,
+                state,
+                error.map(|e| e.to_string()),
+                now_ms()
+            ],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    fail_layers(&tx, job_id, kind.as_deref())?;
+    tx.commit().map_err(sql)
+}
+
+/// In the write that ended model job `job_id` (of `kind`), marks the layers it left `building`
+/// `failed`: only rows it wrote last, so a layer another job finished stays as it is.
+fn fail_layers(tx: &Connection, job_id: &str, kind: Option<&str>) -> Result<()> {
+    if kind.is_some_and(|k| !lane(k).is_empty()) {
+        tx.execute(
+            "UPDATE model_layers SET state = 'failed', updated_ms = ?2 WHERE job_id = ?1
+             AND state = 'building'",
+            params![job_id, now_ms()],
+        )
+        .map_err(sql)?;
+    }
     Ok(())
+}
+
+/// Whether a layer that reads `building` under `job_id` is still being written: its job is
+/// active with a live owner. Otherwise (it ended or its owner died) readers report it failed.
+pub(crate) fn layer_live(conn: &Connection, dir: &Path, job_id: Option<&str>) -> Result<bool> {
+    let Some(job_id) = job_id else {
+        return Ok(false);
+    };
+    let row: Option<(String, i64)> = conn
+        .query_row(
+            "SELECT owner, attempt FROM jobs WHERE job_id = ?1 AND state IN ('queued', 'running')",
+            [job_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    Ok(row.is_some_and(|(owner, attempt)| job_alive(dir, &owner, job_id, attempt)))
 }
 
 /// Stops `child` and reaps it; true only when it is known to have exited. Closing its stdin
@@ -2142,15 +2180,19 @@ pub fn cancel(storage: &Storage, job_id: &str) -> Result<Json> {
             return Ok(report);
         }
         // Fenced to the dead owner's attempt: a takeover since the read is left running.
-        let ended = ws
-            .conn
-            .execute(
+        let tx = ws.conn.unchecked_transaction().map_err(sql)?;
+        let kind: Option<String> = tx
+            .query_row(
                 "UPDATE jobs SET state = 'cancelled', cancel = 1, finished_ms = ?2 WHERE job_id = ?1
-                 AND owner = ?3 AND attempt = ?4 AND state IN ('queued', 'running')",
+                 AND owner = ?3 AND attempt = ?4 AND state IN ('queued', 'running') RETURNING kind",
                 params![job_id, now_ms(), holder, attempt],
+                |r| r.get(0),
             )
+            .optional()
             .map_err(sql)?;
-        if ended == 1 {
+        fail_layers(&tx, job_id, kind.as_deref())?;
+        tx.commit().map_err(sql)?;
+        if kind.is_some() {
             drop_building(&mut ws.conn, job_id, &holder, attempt)?;
         }
     } else {
@@ -2863,9 +2905,12 @@ pub fn visual(
     )
 }
 
-/// Whether succeeded text job `report`'s scope had a visual layer before (on the generation
-/// it replaced) and its new generation has no ready one. Only an explicitly requested layer is
-/// kept up to date: a scope never rendered is never rendered implicitly.
+/// Whether succeeded text job `report`'s scope wants a visual layer its generation lacks. A
+/// scope wants one when any retained generation of it has a hash layer row (in any state) or
+/// a visual job of it is still queued, running or interrupted: only an explicitly requested
+/// layer is kept up to date, and a scope never rendered is never rendered implicitly. The
+/// generation has its layer when the hash layer, and with a vision profile configured its
+/// vision layer, are `ready` or `partial` and still of this renderer.
 fn visual_missing(storage: &Storage, report: &Json) -> Option<bool> {
     if report["state"] != "succeeded" || !lane(report["kind"].as_str()?).is_empty() {
         return None;
@@ -2876,25 +2921,33 @@ fn visual_missing(storage: &Storage, report: &Json) -> Option<bool> {
         return None;
     }
     let gen_id = report["generation"].as_i64()?;
-    let (before, ready): (bool, bool) = ws
+    let (source, scope) = (report["sourceId"].as_str()?, report["scope"].as_str()?);
+    let wanted: bool = ws
         .conn
         .query_row(
             "SELECT EXISTS (SELECT 1 FROM model_layers l JOIN generations g ON g.gen = l.gen
-              WHERE g.source_id = ?1 AND g.scope = ?2 AND l.gen <> ?3 AND l.profile_id = ?4
-              AND l.policy = ?5),
-             EXISTS (SELECT 1 FROM model_layers WHERE gen = ?3 AND profile_id = ?4
-              AND policy = ?5 AND state = 'ready')",
+              WHERE g.source_id = ?1 AND g.scope = ?2 AND l.profile_id = ?3 AND l.policy = ?4)
+             OR EXISTS (SELECT 1 FROM jobs WHERE kind = 'visual' AND source_id = ?1
+              AND scope = ?2 AND state IN ('queued', 'running'))",
             params![
-                report["sourceId"].as_str()?,
-                report["scope"].as_str()?,
-                gen_id,
+                source,
+                scope,
                 search::visual::VERSION,
                 super::visual::POLICY
             ],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| r.get(0),
         )
         .ok()?;
-    Some(before && !ready)
+    let vision = crate::semantic::profile::active_visual(storage).ok()?;
+    let mut profiles = vec![search::visual::VERSION.to_owned()];
+    profiles.extend(vision.map(|p| p.id));
+    let mut present = true;
+    for profile in &profiles {
+        let state =
+            super::visual_search::layer_state(&ws.conn, &ws.held.dir, gen_id, profile).ok()?;
+        present &= matches!(state.as_deref(), Some("ready" | "partial"));
+    }
+    Some(wanted && !present)
 }
 
 /// For an owner that keeps running after text job `report` succeeded: submits the visual job

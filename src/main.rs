@@ -222,7 +222,7 @@ usage:
                                              render that published scope's screens and components (and
                                              the scope node below a page) for image search, and embed them
                                              with a configured vision profile; text search keeps serving.
-                                             A rebuild of a scope that had a visual layer lists this step
+                                             A CLI build of a scope that has a visual layer lists this step
   figlens index clear|clear_cache <select>   delete retired and unfinished indexes; keeps published ones
   figlens index status <select>              state, sources and storage rule; creates nothing
   figlens index add <file.fig|dir> <select> [--dry-run | --manifest HEX] [--cursor C]

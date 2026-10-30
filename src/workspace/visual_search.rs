@@ -180,20 +180,41 @@ pub(super) fn stored(
     }
 }
 
-/// The state a generation's visual layer under `profile` was published in: the hash layer is
-/// recorded with the visual version as its profile, a vision layer with its profile id.
+/// The state a generation's visual layer under `profile` reads in: the hash layer is recorded
+/// with the visual version as its profile, a vision layer with its profile id. A `building`
+/// layer whose job ended or lost its owner reads `failed`; a finished one with a render of
+/// another renderer reads `stale`, so both name the `index visual` step.
 pub(super) fn layer_state(
-    tx: &rusqlite::Transaction,
+    conn: &rusqlite::Connection,
+    dir: &Path,
     gen_id: i64,
     profile: &str,
 ) -> Result<Option<String>> {
-    tx.query_row(
-        "SELECT state FROM model_layers WHERE gen = ?1 AND profile_id = ?2 AND policy = ?3",
-        params![gen_id, profile, super::visual::POLICY],
-        |r| r.get(0),
-    )
-    .optional()
-    .map_err(sql)
+    let row: Option<(String, Option<String>, bool)> = conn
+        .query_row(
+            "SELECT state, job_id, EXISTS (SELECT 1 FROM visual_units u WHERE u.gen = ?1
+              AND u.policy = ?3 AND u.raster_key IS NOT NULL
+              AND json_extract(u.report, '$.renderer') IS NOT ?4)
+             FROM model_layers WHERE gen = ?1 AND profile_id = ?2 AND policy = ?3",
+            params![
+                gen_id,
+                profile,
+                super::visual::POLICY,
+                super::visual::RENDERER
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    Ok(match row {
+        Some((state, job, _))
+            if state == "building" && !super::jobs::layer_live(conn, dir, job.as_deref())? =>
+        {
+            Some("failed".to_owned())
+        }
+        Some((state, _, true)) if state != "building" => Some("stale".to_owned()),
+        row => row.map(|r| r.0),
+    })
 }
 
 /// The vision vectors stored for generation `gen_id`'s units in `rids` under `profile`, by
@@ -253,17 +274,59 @@ mod tests {
     use crate::search::visual::RenderedUnit;
     use std::sync::atomic::AtomicBool;
 
-    #[test]
-    fn a_vector_scan_stops_at_its_bounds() {
-        let mut conn = Connection::open_in_memory().unwrap();
+    /// The schema 9 and 10 tables over the part of `jobs` they change.
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE jobs (kind TEXT, source_id TEXT, scope TEXT, state TEXT,
-             expected_gen INTEGER);
+            "CREATE TABLE jobs (job_id TEXT, owner TEXT, attempt INTEGER, kind TEXT, source_id TEXT,
+             scope TEXT, state TEXT, expected_gen INTEGER);
              CREATE INDEX jobs_active ON jobs (source_id, scope);",
         )
         .unwrap();
         conn.execute_batch(super::super::database::V9).unwrap();
         conn.execute_batch(super::super::database::V10).unwrap();
+        conn
+    }
+
+    #[test]
+    fn a_layer_reads_stale_after_another_renderer_and_failed_when_its_build_is_gone() {
+        let conn = db();
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(8, 8).unwrap();
+        pixmap.fill(resvg::tiny_skia::Color::from_rgba8(9, 9, 9, 255));
+        let rendered = RenderedUnit {
+            image: QueryImage::from_pixmap(&pixmap, None).unwrap(),
+            diagnostics: vec![],
+            diagnostics_truncated: false,
+            bounds: serde_json::Map::new(),
+            pixels: 0,
+        };
+        super::super::visual::save(&conn, 7, 1, &rendered).unwrap();
+        let set = |state: &str| {
+            conn.execute(
+                "INSERT OR REPLACE INTO model_layers (gen, profile_id, policy, state, chunks, texts, embedded, refused, stop, job_id, updated_ms)
+                 VALUES (7, ?1, ?2, ?3, 1, 1, 1, 0, NULL, NULL, 0)",
+                params![visual::VERSION, super::super::visual::POLICY, state],
+            )
+            .unwrap();
+        };
+        let read = || layer_state(&conn, Path::new("/nowhere"), 7, visual::VERSION).unwrap();
+        set("ready");
+        assert_eq!(read().as_deref(), Some("ready"));
+        // A build with no live job left it behind.
+        set("building");
+        assert_eq!(read().as_deref(), Some("failed"));
+        set("ready");
+        conn.execute(
+            "UPDATE visual_units SET report = json_set(report, '$.renderer', 'figlens 0.0.0')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(read().as_deref(), Some("stale"));
+    }
+
+    #[test]
+    fn a_vector_scan_stops_at_its_bounds() {
+        let mut conn = db();
         let dim = 4;
         for (rid, shade) in [(1u32, 10u8), (2, 200)] {
             let mut pixmap = resvg::tiny_skia::Pixmap::new(8, 8).unwrap();
@@ -273,6 +336,7 @@ mod tests {
                 diagnostics: vec![],
                 diagnostics_truncated: false,
                 bounds: serde_json::Map::new(),
+                pixels: 0,
             };
             let key = super::super::visual::save(&conn, 7, rid, &rendered).unwrap();
             conn.execute(
