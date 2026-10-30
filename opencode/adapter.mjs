@@ -400,8 +400,13 @@ export function createAdapter(ctx, entry = import.meta.url) {
     // Every other watch action writes checkpoints, subscriptions or leases into the workspace database, as a cancel writes its job.
     if (tool === 'watch' && !['list', 'status', 'start'].includes(input.action)) {
       const found = await status(input);
-      // A saved query runs a workspace search on its source when saved and each time it is evaluated.
-      if ((input.action === 'subscribe' && input.query !== undefined) || input.action === 'evaluate') await readSelected(found);
+      // A saved query or library question reads its source when saved and each time it is evaluated. A listed set
+      // (sources without visible) reads exactly those ids; visible, or an id status does not list, asks every one.
+      if (input.action === 'subscribe' && (input.query !== undefined || input.library !== undefined)) {
+        const ids = typeof input.sources === 'string' && input.sources !== 'visible' ? input.sources.split(',').map(id => id.trim()) : null;
+        await readSources(found, ids?.every(id => found.sources?.some(source => source.sourceId === id)) ? ids : undefined);
+      }
+      if (input.action === 'evaluate') await readSelected(found);
       await edit(place(found));
     }
     // A lease makes the shared runner read its source on every save, so start also asks read on it.

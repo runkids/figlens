@@ -482,6 +482,38 @@ test('CLI-path saved queries ask read on the sources they search, so a denied re
   assert.deepEqual([asked.map(([action]) => action), ran], [['read', 'read'], ['status', 'status', 'list']]);
 });
 
+test('CLI-path subscribe over a listed set asks read on exactly those sources, and on every one for visible or an unknown id', async t => {
+  const { root, ctx, adapter } = await context(t);
+  const [a, b] = [path.join(root, 'a.fig'), path.join(root, 'b.fig')];
+  await writeFile(a, '');
+  await writeFile(b, '');
+  const [realA, realB] = [await realpath(a), await realpath(b)];
+  const asked = [];
+  let ran = [];
+  // Read of A is allowed, B denied.
+  ctx.permission.assert = async ({ action, resources }) => {
+    if (action !== 'read') return;
+    asked.push(resources);
+    if (resources.includes(b)) throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  const run = async args => {
+    ran.push(args[1]);
+    return { stdout: JSON.stringify({ state: 'ready', paths: { workspace: '/w', lock: '/w.lock' }, storage: { rule: 'default' },
+      roots: { config: { path: '/c' } }, sources: [{ sourceId: 'A', path: a }, { sourceId: 'B', path: b }] }) };
+  };
+  // Each case in its own session, so no earlier grant hides what it asks.
+  const subscribe = async more => adapter.cli(Object.assign(await adapter.scope(JSON.stringify(more)), { run }), 'watch',
+    { action: 'subscribe', workspaceId: 'ws_1', consumer: 'c', ...more });
+  await subscribe({ sources: 'A', query: 'badge' });
+  await subscribe({ sources: ' A ', library: { kind: 'component', key: 'k' } });
+  assert.deepEqual([asked, ran], [[[a, realA], [a, realA]], ['status', 'subscribe', 'status', 'subscribe']]);
+  for (const sources of ['A,B', 'visible', 'A,unknown']) {
+    ran = [];
+    await assert.rejects(subscribe({ sources, query: 'badge' }), /read denied/);
+    assert.deepEqual([asked.at(-1), ran], [[a, realA, b, realB], ['status']], sources);
+  }
+});
+
 test('CLI-path subscription reads ask read on exactly the subscription\'s sources that watch list names', async t => {
   const { root, ctx, adapter } = await context(t);
   const [a, b] = [path.join(root, 'a.fig'), path.join(root, 'b.fig')];
