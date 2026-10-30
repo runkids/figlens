@@ -698,8 +698,9 @@ fn resolved(
 
 /// The channels of an image search over `loaded`, each ranked across every source, fused once.
 /// Returns the page, its evidence, whether every channel covered every source (else the page
-/// offers no cursor) and the `coverage.layers` it reports. Filters apply before ranking; only
-/// filtered units' records and vectors are read, and the model runs only for a ready layer.
+/// offers no cursor) and the `coverage.layers` it reports. Filters apply before ranking: every
+/// unit's record is loaded (within `spent`) to be filtered, only the kept units' vectors are
+/// decoded, and the model runs only for a ready layer.
 #[allow(clippy::too_many_arguments)]
 fn image_rank(
     storage: &Storage,
@@ -729,6 +730,7 @@ fn image_rank(
     // Hash: each source's filtered units, nearest first; then one order across the sources.
     let mut hash: Vec<(rank::Key, VisualHit)> = Vec::new();
     let mut units: Vec<Vec<u32>> = vec![Vec::new(); loaded.len()];
+    let mut excluded = [0usize; 2];
     let mut hash_sources = Vec::new();
     for (part, (index, source, gen_id, _)) in loaded.iter_mut().enumerate() {
         let state = layer_state(tx, *gen_id, visual::VERSION)?;
@@ -751,7 +753,18 @@ fn image_rank(
         search::store::add_with(tx, *gen_id, index, &rids, spent, cancel)?;
         let kept: Vec<(u32, visual::Fingerprint)> = candidates
             .into_iter()
-            .filter(|c| search::filtered(index, c.rid, req).is_none())
+            .filter(|c| match search::filtered(index, c.rid, req) {
+                None => true,
+                Some(search::Filtered::Hidden) => {
+                    excluded[0] += 1;
+                    false
+                }
+                Some(search::Filtered::Internal) => {
+                    excluded[1] += 1;
+                    false
+                }
+                Some(search::Filtered::Type) => false,
+            })
             .map(|c| (c.rid, c.fingerprint))
             .collect();
         units[part] = kept.iter().map(|k| k.0).collect();
@@ -846,6 +859,10 @@ fn image_rank(
                         scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
                         scored.truncate(rank::CANDIDATES);
                         Some(scored)
+                    }
+                    // A cancel may surface as the killed child's failure.
+                    Err(_) if cancel.load(std::sync::atomic::Ordering::Relaxed) => {
+                        return Err(fail(ErrorKind::Cancelled, "search cancelled"));
                     }
                     Err(crate::semantic::Stop::Cancelled) => {
                         return Err(fail(ErrorKind::Cancelled, "search cancelled"));
@@ -977,7 +994,8 @@ fn image_rank(
         layers["visual"]["embedding"]["profileId"],
         semantic_profile
     ]);
-    let (ranked, decor) = rank::rank(q, req, &key, channels, complete)?;
+    let (mut ranked, decor) = rank::rank(q, req, &key, channels, complete)?;
+    ranked.excluded = excluded;
     Ok((ranked, decor, complete, layers))
 }
 

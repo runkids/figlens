@@ -1577,7 +1577,7 @@ fn corpus_coverage(parts: &[Part], req: &Request, excluded: [usize; 2]) -> Json 
 pub(crate) struct Ranked {
     hits: Vec<Hit>,
     more: bool,
-    excluded: [usize; 2],
+    pub(crate) excluded: [usize; 2],
     fingerprint: String,
 }
 

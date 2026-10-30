@@ -134,7 +134,7 @@ pub fn reference(value: &Json) -> Result<Input> {
     let field = |k: &str| {
         value[k]
             .as_str()
-            .filter(|s| !s.is_empty() && s.len() <= 1024)
+            .filter(|s| !s.is_empty() && s.len() <= crate::search::store::ID_BYTES)
             .map(str::to_owned)
     };
     match (
