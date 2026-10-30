@@ -1,6 +1,6 @@
 ---
 name: figlens
-description: Plan, build and audit UI from local Figma .fig files using figlens CLI or MCP. Use when given a .fig file or a screen name to implement or plan, comparing an existing UI with a design or fixing layout differences, a Figma URL with a local copy, requests to extract design assets or tokens, or when Figma API access is unavailable. Use the host's registered figlens tools when available.
+description: Read local Figma .fig files with the figlens CLI or MCP, offline and without the Figma API. Use when given a .fig file, a Figma URL with a local copy, or a screen name to implement, plan or audit; comparing an existing UI with a design or fixing layout differences; extracting design assets or tokens; searching a design for a screen, layer or text; finding where a component, variable, style or image is used; asking what changed between two saved copies of a design; or following a design's changes from now on. Also when Figma API access is unavailable. Use the host's registered figlens tools when available.
 ---
 
 # figlens
