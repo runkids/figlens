@@ -497,6 +497,38 @@ test('CLI-path directory add asks read on the directory and on every file the bi
   assert.deepEqual(ran, ['index add lib --id ws_1 --dry-run', 'index status --id ws_1', 'index add lib --id ws_1 --manifest m1'], 'the add is bound to the files the dry run listed');
 });
 
+test('CLI-path directory add detects a directory reached through a link and .., as the binary does', async t => {
+  const { root, ctx, adapter } = await context(t);
+  // link/../designs is outside/designs to the binary, while a lexical resolve would look for <root>/designs.
+  const outside = await mkdtemp(path.join(tmpdir(), 'figlens-outside-'));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await mkdir(path.join(outside, 'sub'));
+  await mkdir(path.join(outside, 'designs'));
+  await symlink(path.join(outside, 'sub'), path.join(root, 'link'));
+  const listed = [path.join(await realpath(outside), 'designs', 'a.fig')];
+  const ran = [];
+  let deny = listed[0];
+  ctx.permission.assert = async ({ resources }) => {
+    if (resources.includes(deny)) throw Object.assign(new Error('denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  const run = async args => {
+    ran.push(args.join(' '));
+    if (args.includes('--dry-run')) return { stdout: JSON.stringify({ directory: { files: listed, skipped: [], manifest: 'm3' } }) };
+    return { stdout: JSON.stringify(args[1] === 'status' ? { paths: { workspace: '/w', lock: '/w.lock' }, roots: { config: { path: '/c' } } } : {}) };
+  };
+  const input = { action: 'add', file: 'link/../designs', workspaceId: 'ws_1' };
+  const current = await adapter.scope('session');
+  current.run = run;
+  await assert.rejects(adapter.cli(current, 'index', input), /denied/);
+  assert.deepEqual(ran, ['index add link/../designs --id ws_1 --dry-run'], 'nothing registers past a denied file');
+  deny = null;
+  const other = await adapter.scope('other');
+  other.run = run;
+  ran.length = 0;
+  await adapter.cli(other, 'index', input);
+  assert.deepEqual(ran.at(-1), 'index add link/../designs --id ws_1 --manifest m3');
+});
+
 test('CLI-path directory add forwards its cursor to the dry run and the add, asking read on that page', async t => {
   const { root, ctx, adapter } = await context(t);
   await mkdir(path.join(root, 'lib'));
