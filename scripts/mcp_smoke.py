@@ -6,10 +6,12 @@ import hashlib
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import threading
 import time
+from pathlib import Path
 from installation import run, stop_process
 
 
@@ -95,6 +97,13 @@ def check_mcp(command, cwd, env, fixture, version):
         assert listed['isError'] is False and listed['structuredContent']['profiles'], listed
         status = request('tools/call', {'name': 'models', 'arguments': {'action': 'status'}})
         assert status['isError'] is False and status['structuredContent'].get('setup'), status
+        assert isinstance(status['structuredContent'].get('configRoot'), str), status
+        empty = Path(cwd) / 'no-model'
+        empty.mkdir(exist_ok=True)
+        refused = request('tools/call', {'name': 'models', 'arguments': {'action': 'configure', 'profile': 'bge-m3', 'modelDir': str(empty)}})
+        assert refused['isError'] is True and re.search(r'runtime|missing', json.dumps(refused)), refused
+        after = request('tools/call', {'name': 'models', 'arguments': {'action': 'status'}})
+        assert after['structuredContent']['profiles'] == [], after
         semantic = request('tools/call', {'name': 'search', 'arguments': {'file': str(fixture), 'query': 'First success', 'mode': 'semantic'}})
         assert semantic['isError'] is True and semantic['_meta']['figlens']['code'] == 'mode_unavailable', semantic
         hybrid = request('tools/call', {'name': 'search', 'arguments': {'file': str(fixture), 'query': 'First success', 'mode': 'hybrid'}})

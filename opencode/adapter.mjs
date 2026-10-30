@@ -468,9 +468,9 @@ export function createAdapter(ctx, entry = import.meta.url) {
         if (!Array.isArray(files)) throw new Error(`${input.profile} is not a figlens model profile; figlens_models list names them.`);
         await current.authorize('read', await both([input.modelDir, ...files.map(file => `${input.modelDir}${path.sep}${file}`)]));
       }
-      const { config } = await invoke(cliArgs('models', { action: 'status' }));
-      if (!config?.path) throw missing('its config root');
-      await edit([config.path]);
+      const { configRoot } = await invoke(cliArgs('models', { action: 'status' }));
+      if (typeof configRoot !== 'string') throw missing('its config root');
+      await edit([configRoot]);
     }
     if (tool === 'jobs' && input.action === 'cancel') {
       const { workspaceId } = await invoke(cliArgs('jobs', { ...input, action: 'status' }));

@@ -429,7 +429,7 @@ test('CLI-path models list and status ask nothing; configure asks read on the mo
   current.run = async args => {
     ran.push(args.join(' '));
     const reply = args[1] === 'list' ? { profiles: [{ name: 'bge-m3', files: ['config.json', 'tokenizer.json'] }] }
-      : args[1] === 'status' ? { profiles: [], config: { path: '/config' } } : { args };
+      : args[1] === 'status' ? { profiles: [], configRoot: '/config', defaultRuntime: { path: '/bin/figlens-embed', available: true } } : { args };
     return { stdout: JSON.stringify(reply) };
   };
   await adapter.cli(current, 'models', { action: 'list' });

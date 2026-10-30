@@ -196,7 +196,9 @@ for line in sys.stdin:
             {'isError': False, 'structuredContent': {
                 'results': [{'ref': {'nodeId': '0:1'}}], 'coverage': {'complete': True}}},
             {'isError': False, 'structuredContent': {'profiles': [{'name': 'bge-m3'}]}},
-            {'isError': False, 'structuredContent': {'profiles': [], 'setup': [{'action': 'configure'}]}},
+            {'isError': False, 'structuredContent': {'profiles': [], 'setup': [{'action': 'configure'}], 'configRoot': '/config'}},
+            {'isError': True, 'content': [{'text': 'no model runtime at /bin/figlens-embed'}]},
+            {'isError': False, 'structuredContent': {'profiles': []}},
             {'isError': True, '_meta': {'figlens': {'code': 'mode_unavailable'}}},
             {'isError': False, 'structuredContent': {'query': {'usedModes': ['text']}, 'results': [{'ref': {'nodeId': '0:1'}}]}},
             {'isError': False, 'structuredContent': {'node': {'id': '0:1'}}},

@@ -530,17 +530,23 @@ try {
   await check('with a disabled MCP override the CLI path lists local model profiles and forwards the semantic and hybrid modes', async () => {
     // No profile is configured in this run's config root and nothing is downloaded: semantic is refused with its
     // setup recovery, and hybrid answers with text alone.
-    const [listed, status, , hybrid] = await converse('Which local models can figlens use? Then find the mapping review frame by meaning.', [
+    await mkdir(path.join(project, 'no-model'), { recursive: true });
+    const [listed, status, , after, , hybrid] = await converse('Which local models can figlens use? Then find the mapping review frame by meaning.', [
       () => direct('figlens_models', { action: 'list' }),
+      () => direct('figlens_models', { action: 'status' }),
+      // A folder holding no model: configure asks, then fails with a setup error and records nothing.
+      () => direct('figlens_models', { action: 'configure', profile: 'bge-m3', modelDir: path.join(project, 'no-model') }),
       () => direct('figlens_models', { action: 'status' }),
       () => direct('figlens_search', { file: fixture, query: 'Mapping review', mode: 'semantic' }),
       () => direct('figlens_search', { file: fixture, query: 'Mapping review', mode: 'hybrid' })]);
     assert.ok(listed?.profiles?.length, JSON.stringify(scripted.raw).slice(0, 2000));
-    assert.ok(status?.setup?.length, (scripted.raw[1] ?? '').slice(0, 500));
-    assert.match(scripted.raw[2] ?? '', /mode_unavailable|configured local model/i, (scripted.raw[2] ?? '').slice(0, 500));
-    assert.deepEqual(hybrid?.query?.usedModes, ['text'], (scripted.raw[3] ?? '').slice(0, 500));
+    assert.ok(status?.setup?.length && typeof status.configRoot === 'string', (scripted.raw[1] ?? '').slice(0, 500));
+    assert.match(scripted.raw[2] ?? '', /runtime|missing/i, (scripted.raw[2] ?? '').slice(0, 500));
+    assert.deepEqual(after?.profiles, [], (scripted.raw[3] ?? '').slice(0, 500));
+    assert.match(scripted.raw[4] ?? '', /mode_unavailable|configured local model/i, (scripted.raw[4] ?? '').slice(0, 500));
+    assert.deepEqual(hybrid?.query?.usedModes, ['text'], (scripted.raw[5] ?? '').slice(0, 500));
     assert.equal(hybrid.results[0].ref.nodeId, '0:1');
-    return { profiles: listed.profiles.map(profile => profile.name), setup: true, semantic: 'mode_unavailable', hybrid: hybrid.query.usedModes };
+    return { profiles: listed.profiles.map(profile => profile.name), setup: true, configureRefused: true, semantic: 'mode_unavailable', hybrid: hybrid.query.usedModes };
   });
   await check('with a disabled MCP override the CLI path asks read on each page of a directory add and follows nextCursor', async () => {
     const { dir, files, canonical } = await designs('designs-cli');

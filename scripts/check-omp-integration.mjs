@@ -105,6 +105,12 @@ await check('packaged descriptor, bridge handshake and absolute design path', as
     assert.ok(listedModels.structuredContent.profiles.length);
     const modelStatus = await callTool(connection, 'models', { action: 'status' });
     assert.ok(modelStatus.isError === false && modelStatus.structuredContent.setup?.length, JSON.stringify(modelStatus).slice(0, 2000));
+    assert.equal(typeof modelStatus.structuredContent.configRoot, 'string');
+    // configure of a folder holding no model fails with a setup error and records nothing.
+    await mkdir(path.join(project, 'no-model'), { recursive: true });
+    const refused = await callTool(connection, 'models', { action: 'configure', profile: 'bge-m3', modelDir: path.join(project, 'no-model') });
+    assert.ok(refused.isError === true && /runtime|missing/i.test(JSON.stringify(refused)), JSON.stringify(refused).slice(0, 2000));
+    assert.deepEqual((await callTool(connection, 'models', { action: 'status' })).structuredContent.profiles, []);
     const semantic = await callTool(connection, 'search', { file: path.join(project, 'mapping.fig'), query: 'Mapping review', mode: 'semantic' });
     assert.ok(semantic.isError === true && /mode_unavailable|configured local model/i.test(JSON.stringify(semantic)), JSON.stringify(semantic).slice(0, 2000));
     const hybrid = await callTool(connection, 'search', { file: path.join(project, 'mapping.fig'), query: 'Mapping review', mode: 'hybrid' });
