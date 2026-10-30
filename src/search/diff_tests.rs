@@ -732,6 +732,33 @@ fn listed_fields_keys_and_markers_count_against_the_page_bytes() {
 }
 
 #[test]
+fn escaped_names_and_edges_count_against_the_page_bytes_at_their_reply_size() {
+    // Control characters, quotes and backslashes grow when serialized.
+    let odd = |n: usize| "\u{1}\"\\".repeat(n);
+    let mixed = format!("{}\n\t\u{8}\u{1f}é\u{7f}", odd(3));
+    assert_eq!(
+        escaped(&mixed),
+        serde_json::to_string(&mixed).unwrap().len()
+    );
+    let side = |main: u32| {
+        doc(vec![
+            node(30, Some(1), "SYMBOL", &odd(40), vec![]),
+            node(40, Some(1), "SYMBOL", &odd(40), vec![]),
+            node(10, Some(1), "FRAME", &odd(300), vec![]),
+            instance(11, 10, &odd(300), main, vec![]),
+            instance(12, 10, &odd(300), main, vec![]),
+        ])
+    };
+    let (a, b) = (side(30), side(40));
+    let (a, b) = (Tree::new(&a), Tree::new(&b));
+    let pair = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
+    let at = |bytes| page_with(&pair, &req(LIMIT, None), false, [bytes, PAGE_WORK]);
+    let bytes = (1..PAGE_VALUES).find(|b| at(*b).is_ok()).unwrap();
+    let page = at(bytes).unwrap();
+    assert!(serde_json::to_string(&page["frames"]).unwrap().len() <= bytes);
+}
+
+#[test]
 fn edges_past_the_page_work_end_the_page_or_fail_the_first_change() {
     let side = |main: u32| {
         doc(vec![

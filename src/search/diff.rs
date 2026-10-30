@@ -1363,6 +1363,20 @@ fn fields(pair: &Pair, c: &Change, left: &mut usize) -> Option<Json> {
     Some(Json::Object(out))
 }
 
+/// The length of `s` as a JSON string, quotes included, as serde_json escapes it: control
+/// characters grow to six bytes, so a name's raw length can understate its reply size sixfold.
+fn escaped(s: &str) -> usize {
+    let grown: usize = s
+        .bytes()
+        .map(|b| match b {
+            b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0x08 | 0x0c => 1,
+            0..=0x1f => 5,
+            _ => 0,
+        })
+        .sum();
+    s.len() + grown + 2
+}
+
 fn edge_key(e: &super::usages::Edge) -> (&str, Option<&str>, &str, &str) {
     (
         e.relation,
@@ -1397,10 +1411,10 @@ fn edges(pair: &Pair, c: &Change, left: &mut usize, work: &mut usize) -> Option<
     for (name, list, other) in [("removed", a, &sb), ("added", b, &sa)] {
         for e in list.iter().filter(|e| !other.contains(&edge_key(e))) {
             let cost = 64
-                + e.relation.len()
-                + e.target.as_ref().map_or(0, String::len)
-                + e.state.len()
-                + e.evidence.len();
+                + escaped(e.relation)
+                + e.target.as_deref().map_or(4, escaped)
+                + escaped(e.state)
+                + escaped(&e.evidence);
             if cost > *left {
                 omitted += 1;
                 continue;
@@ -1420,6 +1434,8 @@ fn edges(pair: &Pair, c: &Change, left: &mut usize, work: &mut usize) -> Option<
             .and_then(|e| e.target.clone())
     };
     if main(a) != main(b) {
+        let side = |m: &Option<String>| m.as_deref().map_or(4, escaped);
+        *left = left.checked_sub(32 + side(&main(a)) + side(&main(b)))?;
         out["swap"] = json!({"old": main(a), "new": main(b)});
     }
     Some(out)
@@ -1457,11 +1473,20 @@ fn page_with(
         // Names and frame headers count against the page too; a full page ends early and the
         // cursor resumes at the next change, so none is dropped.
         let f = &pair.frames[c.frame as usize];
-        let header = match last == Some(c.frame) {
-            true => 0,
-            false => 192 + f.id.len() + f.name.len() + f.page.len(),
+        let header = match (last == Some(c.frame), &f.possible) {
+            (true, _) => 0,
+            (false, p) => {
+                let possible = p
+                    .as_ref()
+                    .map_or(0, |(id, basis)| 64 + escaped(id) + escaped(basis));
+                192 + escaped(&f.id) + escaped(&f.name) + escaped(&f.page) + possible
+            }
         };
-        let cost = 96 + r.id.len() + r.kind.len() + r.name.len() + header;
+        let old_kind = match c.kind {
+            Kind::Retyped => 32 + escaped(&pair.old.index.records[c.old.unwrap() as usize].kind),
+            _ => 0,
+        };
+        let cost = 96 + escaped(&r.id) + escaped(&r.kind) + escaped(&r.name) + header + old_kind;
         if cost > left {
             if end > start {
                 break;
