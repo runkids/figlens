@@ -9,13 +9,13 @@ use std::error::Error;
 use serde_json::{Map, Value as Json, json};
 
 use super::{Index, Record, kiwi_name, short_hash};
-use crate::expand::{Bounds, Expanded, json_bytes, kiwi_bytes, parent_of, plugin_type};
+use crate::expand::{Bounds, Expanded, json_bytes, kiwi_bytes, parent_of, plugin_type, sum_while};
 use crate::{ErrorKind, FigError, Tree, guid_key, to_json};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 /// Extraction version: a stored generation built with another one is rebuilt.
-pub(crate) const RELATIONS: &str = "relations-4";
+pub(crate) const RELATIONS: &str = "relations-5";
 /// Relations extracted, in key order; `library_identity` (#93) is not.
 pub(crate) const KINDS: [&str; 7] = [
     "binds_variable",
@@ -107,16 +107,17 @@ pub(crate) fn extract(
     let mut out: Vec<Edge> = Vec::new();
     let mut push = |bounds: &mut Bounds,
                     relation: &'static str,
-                    target: Option<String>,
+                    target: Option<(&str, &str)>,
                     state: &'static str,
                     basis: &'static str,
                     evidence: String| {
-        // A target longer than any stored id cannot be kept exactly; it stays explicit.
+        // A target longer than any stored id cannot be kept exactly; it stays explicit. Its
+        // prefix and borrowed body are measured first, so only a kept, charged one is copied.
         let (target, state) = match target {
-            Some(t) if t.len() > super::store::ID_BYTES => (None, "unsupported"),
+            Some((p, b)) if p.len() + b.len() > super::store::ID_BYTES => (None, "unsupported"),
             t => (t, state),
         };
-        let bytes = 96 + target.as_ref().map_or(0, String::len) + evidence.len();
+        let bytes = 96 + target.map_or(0, |(p, b)| p.len() + b.len()) + evidence.len();
         if !bounds.charge(1, bytes) {
             return false;
         }
@@ -128,7 +129,7 @@ pub(crate) fn extract(
         out.push(Edge {
             relation,
             seq,
-            target,
+            target: target.map(|(p, b)| format!("{p}{b}")),
             state,
             basis,
             evidence,
@@ -136,21 +137,23 @@ pub(crate) fn extract(
         true
     };
     if kind == "INSTANCE" {
+        let recorded: Option<String>;
         let (target, basis, evidence) = match e {
-            None => (
-                tree.nodes
+            None => {
+                recorded = tree
+                    .nodes
                     .get(id)
-                    .and_then(|n| n.get("symbolData")?.get("symbolID").and_then(guid_key)),
-                "recorded",
-                "symbolData",
-            ),
+                    .and_then(|n| n.get("symbolData")?.get("symbolID").and_then(guid_key));
+                (recorded.as_deref(), "recorded", "symbolData")
+            }
             Some(e) => (
-                e.main.as_ref().map(|m| m.0.clone()),
+                e.main.as_ref().map(|m| m.0.as_str()),
                 "resolved",
                 e.main.as_ref().map_or("definition", |m| m.1),
             ),
         };
-        let state = node_state(tree, target.as_deref(), "COMPONENT");
+        let state = node_state(tree, target, "COMPONENT");
+        let target = target.map(|t| ("", t));
         if !push(bounds, "instance_of", target, state, basis, evidence.into()) {
             return None;
         }
@@ -165,7 +168,7 @@ pub(crate) fn extract(
         && !push(
             bounds,
             "variant_of",
-            Some(set),
+            Some(("", &set)),
             "resolved",
             "recorded",
             "parentIndex".into(),
@@ -277,6 +280,9 @@ pub(crate) fn extract(
         .flatten()
         .cloned()
         .collect();
+    if !prepay_aliases(&fields, bounds) {
+        return None;
+    }
     let mut bound = crate::rest::bound_variables(&fields);
     if let Some(list) =
         crate::rest::bound_variables(&Map::from_iter([("fillPaints".into(), regions)]))
@@ -294,12 +300,21 @@ pub(crate) fn extract(
         .and_then(|r| crate::rest::guid(&r["guid"]))
         .filter(|g| tree.nodes.contains_key(g))
     {
-        let inherited =
-            crate::rest::bound_variables(&effective(tree, &style, None, bounds, unread, true)?);
+        let maps = effective(tree, &style, None, bounds, unread, true)?;
+        if !prepay_aliases(&maps, bounds) {
+            return None;
+        }
+        let inherited = crate::rest::bound_variables(&maps);
         for f in ["fontSize", "fontWeight"] {
             if let (Some(v), false) = (inherited.get(f), bound.contains_key(f)) {
                 bound.insert(format!("styleIdForText.{f}"), v.clone());
             }
+        }
+    }
+    // Each corner's binding keeps its own path, so a variable moved to another corner differs.
+    if let Some(Json::Object(corners)) = bound.remove("rectangleCornerRadii") {
+        for (corner, a) in corners {
+            bound.insert(format!("rectangleCornerRadii.{corner}"), a);
         }
     }
     for (field, aliases) in bound {
@@ -314,7 +329,7 @@ pub(crate) fn extract(
             if !push(
                 bounds,
                 "binds_variable",
-                Some(variable),
+                Some(("", &variable)),
                 state,
                 "recorded",
                 field.clone(),
@@ -323,18 +338,6 @@ pub(crate) fn extract(
             }
         }
     }
-    let style = |r: &Json| match (r["assetRef"]["key"].as_str(), crate::rest::guid(&r["guid"])) {
-        (Some(k), _) => Some((format!("StyleKey:{k}"), "external")),
-        (None, Some(g)) => {
-            let state = if tree.nodes.contains_key(&g) {
-                "resolved"
-            } else {
-                "missing"
-            };
-            Some((g, state))
-        }
-        (None, None) => None,
-    };
     let rows = fields
         .get("textData")
         .and_then(|t| t["styleOverrideTable"].as_array())
@@ -351,8 +354,12 @@ pub(crate) fn extract(
         .into_iter()
         .filter_map(|k| Some((fields.get(k)?, k.to_owned())));
     for (r, evidence) in top.chain(rows) {
-        let Some((target, state)) = style(r) else {
-            continue;
+        let guid = crate::rest::guid(&r["guid"]);
+        let (target, state) = match (r["assetRef"]["key"].as_str(), guid.as_deref()) {
+            (Some(k), _) => (("StyleKey:", k), "external"),
+            (None, Some(g)) if tree.nodes.contains_key(g) => (("", g), "resolved"),
+            (None, Some(g)) => (("", g), "missing"),
+            (None, None) => continue,
         };
         if !push(
             bounds,
@@ -384,7 +391,7 @@ pub(crate) fn extract(
             let Some(hash) = p["image"]["hash"].as_str().filter(|_| p["type"] == "IMAGE") else {
                 continue;
             };
-            let target = Some(format!("image:{hash}"));
+            let target = Some(("image:", hash));
             if !push(
                 bounds,
                 "uses_image",
@@ -438,7 +445,7 @@ pub(crate) fn extract(
                 *unverified += 1;
                 continue;
             }
-            let target = d["nodeId"].as_str().map(str::to_owned);
+            let target = d["nodeId"].as_str().map(|t| ("", t));
             let evidence = format!(
                 "{}:{}",
                 p["basis"].as_str().unwrap_or(""),
@@ -476,6 +483,44 @@ fn node_state(tree: &Tree, target: Option<&str>, kind: &str) -> &'static str {
         Some(None) => "missing",
         Some(Some(n)) if plugin_type(n) == kind => "resolved",
         Some(Some(_)) => "unsupported",
+    }
+}
+
+/// Charges what `rest::bound_variables` and `variables::aliases` copy from `fields`' alias
+/// bindings, before they run: each id is held by the projection, its dedup key, the alias set,
+/// the id list and an inherited copy, whether or not its edge can keep it.
+fn prepay_aliases(fields: &Map<String, Json>, bounds: &mut Bounds) -> bool {
+    // One visit past the side's work: a walk cut short there fails its charge, a stop for work.
+    let cap = bounds.work.saturating_add(1);
+    let mut left = cap;
+    let bytes = sum_while(fields.values(), &mut left, alias_bytes);
+    bounds.charge(cap - left, 0) && bounds.charge(0, bytes)
+}
+
+fn alias_bytes(v: &Json, left: &mut usize) -> usize {
+    if *left == 0 {
+        return 0;
+    }
+    *left -= 1;
+    match v {
+        Json::Array(a) => sum_while(a, left, alias_bytes),
+        Json::Object(o) => {
+            let own = if v["dataType"] == "ALIAS" {
+                let r = &v["value"]["alias"];
+                let key = [&r["assetRef"]["key"], &r["assetRef"]["version"]]
+                    .iter()
+                    .filter_map(|s| s.as_str())
+                    .map(str::len)
+                    .sum::<usize>();
+                // Four raw copies of `VariableID:<guid or key/version>`, plus the serialized dedup
+                // key, which escapes each byte to at most six.
+                10 * key + 1024
+            } else {
+                0
+            };
+            own + sum_while(o.values(), left, alias_bytes)
+        }
+        _ => 0,
     }
 }
 

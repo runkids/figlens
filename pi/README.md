@@ -105,6 +105,9 @@ pi install /absolute/path/to/figlens
 
 **Following changes.** Ask Pi to follow a design's changes, which opts in to that scope's index and history: the agent prepares the scope when no index covers it, then calls `index` `track` with the workspace and the scope, which builds a baseline as an index rebuild does, then reads `changes` by `workspaceId` with a consumer name and acknowledges each page it handled with `watch` `ack`; `untrack` stops following and keeps the history. A `tracking` entry with `refreshRequired` means the file changed since its last build and `index refresh` records the change; an empty page never proves the file unchanged. `changes` changes nothing; `track`, `untrack` and `watch` `ack` write only that workspace's database and never reset it.
 
+
+**Comparing revisions.** Ask Pi what changed between two saved copies of a design: the agent calls the MCP `diff` tool with `old` and `file` (local paths) and pages with `nextCursor`. Layers match by exact id and type only; `unknown` means a side stopped or left that layer unexpanded, not that it was removed. It reads both files and writes nothing.
+
 **Agent tools.** The MCP `workflow` tool exposes on-demand build, audit, image, planning and opt-in YOLO guides from the same skill sources used by the commands above. For an existing UI, ask Pi to compare it with the design; the shared skill routes to `workflow(topic="audit")`, with no separate audit command. Static review and screenshot comparison are reported separately; fixes require a fix request. It returns guidance only; the current agent performs the authorized work with its project/browser tools. Besides the design tools (`tree`, `find`, `search`, `usages`, `inspect`, `nodes`, `variables`, `bundle`, `export`), the extension adds:
 
 | Tool | Purpose |
