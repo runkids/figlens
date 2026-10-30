@@ -1883,6 +1883,23 @@ fn a_page_list_too_large_for_the_page_is_refused_before_it_is_read() {
 }
 
 #[test]
+fn a_first_use_that_no_longer_fits_beside_its_page_list_is_refused_not_left_without_a_cursor() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 1);
+    // The list fits the page, but leaves less room than the use needs.
+    let page = format!(r#"["0:1","{}",false]"#, "p".repeat(1024));
+    set_pages(
+        &conn,
+        srcs[0].2,
+        &format!("[{}]", vec![page; 2900].join(",")),
+    );
+    rename_use(&conn, srcs[0].2, &"n".repeat(200_000));
+    let out = library(&storage, &select, None, &reference("k", None));
+    assert_eq!(kind_of_error(out), ErrorKind::ResponseBudget);
+}
+
+#[test]
 fn a_library_source_names_its_freshness_or_an_unreadable_file_first() {
     use crate::workspace::library::library;
     let d = TestDir::new();

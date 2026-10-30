@@ -634,7 +634,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "relations": {"type": "array", "items": {"type": "string"}},
                 "scope": {"type": "object"},
                 "members": {"type": "object", "description": "COMPONENT_SET queries: the known member ids and whether they are complete"},
-                "results": {"type": "array", "items": {"type": "object"}, "description": "in: each location's ref, name, type, origin, hidden, page, scopeRoot, path, relation, state, basis, evidence and via (the member a set query matched); out: target ref or resource, its definition and the edge fields"},
+                "results": {"type": "array", "items": {"type": "object"}, "description": "in: each location's ref, name, type, origin, hidden, page, scopeRoot, path, relation, state, basis, evidence and via (the member a set query matched); library queries: ref, name, type, relation, state, basis, evidence, hidden, internal, page and scopeRoot, no origin or path; out: target ref or resource, its definition and the edge fields"},
                 "coverage": {"type": "object", "description": "complete, layers.relations kinds and version, reasons; library queries: complete, sources (sourceId, path, state, snapshotId, freshness when ready, nextSteps) and reasons; never a total count"},
                 "hasMore": {"type": "boolean"},
                 "nextCursor": {"type": ["string", "null"]},

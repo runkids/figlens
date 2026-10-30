@@ -12,7 +12,7 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 | `parsing` | Changing untrusted container/schema/value decoding or parsing budgets | `parsing.md` |
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields or variables | `fig-format.md` |
 | `discovery` | Changing find or inspect summaries (fields, limits, truncation, `--flat` lines), `tree --top-frames` screen lists or `export --match-dir` icon matching | `discovery.md` |
-| `search` | Changing search indexing, normalization, ranking, cursors, coverage or its budgets | `search.md`, `usages.md` |
+| `search` | Changing search indexing, normalization, ranking, cursors, coverage or its budgets | `search.md`, `usages.md`, `library-usages.md` |
 | `diff` | Changing the diff engine (facets, matching, coverage, pair budgets, paging or its cursor) | `diff.md` |
 | `changes` | Changing change tracking, its revisions, `changes` reads or `watch ack` checkpoints | `changes.md` |
 | `subscriptions` | Changing watch subscriptions, their filters, consumer checkpoint bounds or forget | `subscriptions.md` |

@@ -16,7 +16,7 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 /// Extraction version: a stored generation built with another one is rebuilt.
 pub(crate) const RELATIONS: &str = "relations-6";
-/// Relations extracted, in key order; `library_identity` (#93) is not.
+/// Relations extracted, in key order; `LIBRARY` is stored apart and not listed here.
 pub(crate) const KINDS: [&str; 7] = [
     "binds_variable",
     "contains",
@@ -27,8 +27,9 @@ pub(crate) const KINDS: [&str; 7] = [
     "variant_of",
 ];
 /// A library reference: the namespace (`sourceLibraryKey`) and key a cached library copy records
-/// for the component, style or variable a record uses. Internal until its query is public (#93),
-/// so it is not in `KINDS` and no existing query, default or coverage lists it.
+/// for the component, style or variable a record uses. Only the workspace library query
+/// (`workspace::library`) reads it, so it is not in `KINDS` and no other query, default or
+/// coverage lists it.
 pub(crate) const LIBRARY: &str = "uses_library";
 /// Every relation a stored generation holds: `KINDS` and `LIBRARY`.
 pub(crate) const STORED: [&str; 8] = [

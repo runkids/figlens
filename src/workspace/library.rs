@@ -306,10 +306,39 @@ pub fn library(
             seq.parse().map_err(|_| bad())?,
         );
     }
+    // Coverage is sent on every page, and reasons repeat source ids at most four times; both are
+    // charged before any use, so a workspace of many sources cannot push a page past its budget.
+    let coverage_sources: Vec<Json> = sources
+        .iter()
+        .map(|s| {
+            let mut c = json!({"sourceId": s.id, "path": s.path, "state": s.state, "snapshotId": s.snapshot});
+            if let Some(f) = &s.freshness {
+                c["freshness"] = f.clone();
+            }
+            if !s.step.is_null() {
+                c["nextSteps"] = json!([s.step]);
+            }
+            c
+        })
+        .collect();
+    let ids: usize = sources.iter().map(|s| s.id.len() + 3).sum();
+    let mut copied = serde_json::to_vec(&coverage_sources)
+        .map_err(|e| e.to_string())?
+        .len()
+        + 4 * ids;
+    if copied > PAGE_BYTES {
+        return Err(fail(
+            ErrorKind::ResponseBudget,
+            format!(
+                "the {} visible sources' coverage exceeds the {PAGE_BYTES}-byte page; ask with sourceId",
+                sources.len()
+            ),
+        ));
+    }
     let exact = req.target(Some(&req.namespace));
     let unknown = req.target(None);
     let mut results = Vec::new();
-    let (mut scanned, mut copied) = (0usize, 0usize);
+    let mut scanned = 0usize;
     let (mut more, mut last) = (false, None);
     let (mut hidden, mut partial, mut unnamed) = (Vec::new(), Vec::new(), Vec::new());
     let mut uses = tx
@@ -327,15 +356,17 @@ pub fn library(
         // A stopped build, binding fields too large to read, or a reference too long to keep can
         // hide uses; a copy with no namespace may name this one. Each is an indexed probe, made
         // on every page.
-        let (complete, unread, nameless, unkept): (bool, i64, bool, bool) = tx
+        let (complete, unread, nameless, unkept, need): (bool, i64, bool, bool, i64) = tx
             .query_row(
                 "SELECT complete AND stop IS NULL, coalesce(json_extract(info, '$.unreadFields'), 0),
                  EXISTS (SELECT 1 FROM edges INDEXED BY edges_target WHERE gen = ?1 AND target = ?2),
                  EXISTS (SELECT 1 FROM edges INDEXED BY edges_target
-                         WHERE gen = ?1 AND target IS NULL AND relation = ?3)
+                         WHERE gen = ?1 AND target IS NULL AND relation = ?3),
+                 coalesce(length(CAST(json_extract(info, '$.pages') AS BLOB)), 0)
+                 + coalesce(length(CAST(json_extract(info, '$.roots') AS BLOB)), 0)
                  FROM generations WHERE gen = ?1",
                 params![gen_id, unknown, LIBRARY],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .map_err(sql)?;
         if !complete || unread > 0 || unkept {
@@ -394,15 +425,6 @@ pub fn library(
             };
             if places.is_none() {
                 // The lists' UTF-8 bytes are charged to the page before they are copied or parsed.
-                let need: i64 = tx
-                    .query_row(
-                        "SELECT coalesce(length(CAST(json_extract(info, '$.pages') AS BLOB)), 0)
-                         + coalesce(length(CAST(json_extract(info, '$.roots') AS BLOB)), 0)
-                         FROM generations WHERE gen = ?1",
-                        [gen_id],
-                        |r| r.get(0),
-                    )
-                    .map_err(sql)?;
                 if copied + need as usize > PAGE_BYTES {
                     if results.is_empty() {
                         return Err(too_large().into());
@@ -445,7 +467,8 @@ pub fn library(
             let raw = row.get::<_, i64>(8).map_err(sql)? as usize
                 + page.map_or(0, |p| p.0.len() + p.1.len())
                 + root.map_or(0, String::len);
-            if results.is_empty() && raw > PAGE_BYTES {
+            // An empty page that cannot take this use refuses it; it never ends without a cursor.
+            if results.is_empty() && copied + raw > PAGE_BYTES {
                 return Err(too_large().into());
             }
             if results.len() == req.limit || copied + raw > PAGE_BYTES {
@@ -505,19 +528,6 @@ pub fn library(
     }
     // Hidden matches are left out as asked, which is not incompleteness.
     let complete = reasons.iter().all(|r| r["code"] == "hidden_excluded");
-    let coverage_sources: Vec<Json> = sources
-        .iter()
-        .map(|s| {
-            let mut c = json!({"sourceId": s.id, "path": s.path, "state": s.state, "snapshotId": s.snapshot});
-            if let Some(f) = &s.freshness {
-                c["freshness"] = f.clone();
-            }
-            if !s.step.is_null() {
-                c["nextSteps"] = json!([s.step]);
-            }
-            c
-        })
-        .collect();
     Ok(json!({
         "workspaceId": ws_id,
         "library": {"kind": req.kind, "namespace": req.namespace, "key": req.key},
