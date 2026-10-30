@@ -1,6 +1,6 @@
 # Visual retrieval core
 
-`src/search/visual.rs` supplies raster comparison primitives. It does not expose a CLI, MCP or viewer visual query yet; the public workflow remains tracked in #95. Exact SVG outline lookup remains `export::SvgIndex` and is a different comparison.
+`src/search/visual.rs` supplies raster comparison primitives. It does not expose a CLI, MCP or viewer visual query yet; the public workflow remains tracked in #95. The `siglip-base` model profile and the model child's image requests are implemented ([semantic](semantic.md)). Exact SVG outline lookup remains `export::SvgIndex` and is a different comparison.
 
 ## Units and admission
 
@@ -18,7 +18,7 @@ A fingerprint keeps the normalized pixel SHA-256 with reduced source aspect, 128
 
 The `embed` feature contains the CPU SigLIP vision tower at `google/siglip-base-patch16-224` revision `7fd15f0689c79d79e38b1c2e2e2370a7bf2761ed` ([model card](https://huggingface.co/google/siglip-base-patch16-224)). The loader verifies the pinned weight SHA-256, uses safe buffered loading and retains only vision tensors. Its policy adds bilinear 224 RGB sampling, scaling to [-1,1], pooled output and L2 normalization; this differs from the upstream processor's bicubic resize and has its own version. A batch holds at most four images.
 
-`scripts/visual-preflight.rs` and `scripts/visual-reference.py` compare the tower's forward output against the offline transformers reference on identical normalized NCHW tensors, including batch/single parity. This is not upstream image-processor parity or retrieval-quality acceptance. No visual profile is offered through model configuration until its held-out quality, cancellation, resource and installed-host checks are completed.
+`scripts/visual-preflight.rs` and `scripts/visual-reference.py` compare the tower's forward output against the offline transformers reference on identical normalized NCHW tensors, including batch/single parity. This is not upstream image-processor parity or retrieval-quality acceptance. `models configure siglip-base` records the vision profile, and its child's vectors through the image protocol equal this tower run in process on the same rasters (a local check on the pinned weights). Image query and index routing, held-out quality, native performance and installed-host acceptance remain pending.
 
 ## Stored source rasters
 

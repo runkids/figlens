@@ -3,7 +3,8 @@
 //! model's own `pytorch_model.bin` by candle's data-only pickle reader. It reads only that
 //! directory, opens no network connection and speaks `figlens::semantic`'s stdio protocol.
 //! `figlens-embed __model-worker <workspace-dir> <jobId>` runs one workspace embed job in this
-//! process instead (`figlens::workspace::model::run_embed_worker`).
+//! process instead (`figlens::workspace::model::run_embed_worker`). A SigLIP model directory
+//! (`config.json` model_type `siglip`) makes it the vision child of visual search (#95).
 
 use candle_core::{DType, Device, Tensor};
 use candle_transformers::models::xlm_roberta::{Config, XLMRobertaModel};
@@ -21,7 +22,7 @@ const BATCH: usize = 16;
 /// CPU threads unless RAYON_NUM_THREADS says otherwise: more oversubscribed an 18-CPU host.
 const THREADS: usize = 8;
 
-const USAGE: &str = "usage: figlens-embed <model-dir>\n\nThe local text model child of figlens semantic search. figlens starts it after\n`figlens models configure`; it reads only <model-dir>, opens no network connection\nand speaks figlens's stdio protocol.";
+const USAGE: &str = "usage: figlens-embed <model-dir>\n\nThe local model child of figlens semantic and visual search. figlens starts it after\n`figlens models configure`; it reads only <model-dir>, opens no network connection\nand speaks figlens's stdio protocol.";
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -58,8 +59,30 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let dir = PathBuf::from(&args[1]);
+    if model_type(&dir)? == "siglip" {
+        return serve_vision(&dir);
+    }
     let (model, tokenizer, hello) = load(&dir)?;
     semantic::serve(&hello, |_: Kind, texts| embed(&model, &tokenizer, texts))
+}
+
+fn model_type(dir: &Path) -> Result<String> {
+    let config: Json = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json"))?)?;
+    Ok(config["model_type"].as_str().unwrap_or_default().to_owned())
+}
+
+/// The pinned SigLIP vision tower over normalized query rasters; its hello names the modality
+/// and the preprocessing policy, so both enter the profile fingerprint.
+fn serve_vision(dir: &Path) -> Result<()> {
+    use figlens::search::visual::model;
+    let vision = model::Model::load(dir)?;
+    let hello = json!({
+        "protocol": semantic::PROTOCOL, "dim": model::DIM, "model": model::MODEL,
+        "revision": model::REVISION, "modality": "image", "processor": model::PREPROCESS,
+        "normalize": true, "maxBatch": model::MAX_BATCH,
+        "runtime": format!("figlens-embed {} candle 0.11.0", env!("CARGO_PKG_VERSION")),
+    });
+    semantic::serve_images(&hello, |images| vision.embed(images))
 }
 
 /// The model, tokenizer and hello (the contract figlens pins at configure) read from `dir`.

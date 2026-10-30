@@ -170,7 +170,7 @@ fn payload(v: &View, tag: &str, text: &str, len: usize) -> Result<Vec<u8>> {
     Ok(payload.to_vec())
 }
 
-pub(super) fn unhex(s: &str) -> Option<Vec<u8>> {
+pub(crate) fn unhex(s: &str) -> Option<Vec<u8>> {
     (s.len().is_multiple_of(2) && s.bytes().all(|b| b.is_ascii_hexdigit()))
         .then(|| {
             (0..s.len())

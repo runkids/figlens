@@ -3,6 +3,7 @@
 //! Reciprocal Rank Fusion shared with lexical search. No model is loaded unless a profile is
 //! configured; nothing here downloads, installs or transmits anything.
 
+use crate::search::visual::{QueryImage, RGB_BYTES};
 use serde_json::{Value as Json, json};
 use sha2::{Digest, Sha256};
 use std::error::Error;
@@ -23,6 +24,9 @@ const RRF_K: f64 = 60.0;
 
 /// Texts one request may carry, bytes per text, and the widest vector a profile may declare.
 pub const MAX_BATCH: usize = 32;
+/// Images one request may carry, each the normalized query raster as RGB bytes: an opaque
+/// `visual::SIZE` square, so its exact length is the whole shape check.
+pub const MAX_IMAGES: usize = 4;
 pub const MAX_TEXT_BYTES: usize = 4096;
 pub const MAX_DIM: usize = 4096;
 /// One reply line: every float of a full batch at its longest JSON spelling, plus framing.
@@ -164,6 +168,19 @@ pub fn serve(
     mut embed: impl FnMut(Kind, &[String]) -> Result<Vec<Vec<f32>>>,
 ) -> Result<()> {
     let dim = hello["dim"].as_u64().ok_or("hello needs dim")? as usize;
+    serve_with(hello, |line| answer(line, dim, &mut embed))
+}
+
+/// `serve` for a vision child: requests carry images (`kind: image`), never texts.
+pub fn serve_images(
+    hello: &Json,
+    mut embed: impl FnMut(&[QueryImage]) -> Result<Vec<Vec<f32>>>,
+) -> Result<()> {
+    let dim = hello["dim"].as_u64().ok_or("hello needs dim")? as usize;
+    serve_with(hello, |line| answer_images(line, dim, &mut embed))
+}
+
+fn serve_with(hello: &Json, mut answer: impl FnMut(&[u8]) -> Json) -> Result<()> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     writeln!(out, "{hello}")?;
@@ -194,7 +211,7 @@ pub fn serve(
             }
             json!({"id": null, "error": "request too large"})
         } else {
-            answer(&line, dim, &mut embed)
+            answer(&line)
         };
         writeln!(out, "{reply}")?;
         out.flush()?;
@@ -214,7 +231,7 @@ fn answer(
     let kind = match req["kind"].as_str() {
         Some("query") => Kind::Query,
         Some("passage") => Kind::Passage,
-        _ => return json!({"id": id, "error": "kind is query or passage"}),
+        _ => return json!({"id": id, "error": "kind is query or passage", "refused": true}),
     };
     let texts: Option<Vec<String>> = req["texts"]
         .as_array()
@@ -222,19 +239,67 @@ fn answer(
     let run = || -> Result<Vec<Vec<f32>>> {
         let texts = texts.ok_or("texts is an array of strings")?;
         check_batch(&texts).map_err(|e| Refused(e.to_string()))?;
-        let vectors = embed(kind, &texts)?;
-        if vectors.len() != texts.len() {
-            return Err(fail("embedder returned the wrong number of vectors"));
-        }
-        for v in &vectors {
-            check_vector(v, dim)?;
-        }
-        Ok(vectors)
+        checked(embed(kind, &texts)?, texts.len(), dim)
     };
-    match run() {
+    reply(id, run())
+}
+
+/// An embedder's answer for `n` inputs: one finite, unit `dim`-vector each.
+fn checked(vectors: Vec<Vec<f32>>, n: usize, dim: usize) -> Result<Vec<Vec<f32>>> {
+    if vectors.len() != n {
+        return Err(fail("embedder returned the wrong number of vectors"));
+    }
+    for v in &vectors {
+        check_vector(v, dim)?;
+    }
+    Ok(vectors)
+}
+
+fn reply(id: Json, vectors: Result<Vec<Vec<f32>>>) -> Json {
+    match vectors {
         Ok(vectors) => json!({"id": id, "vectors": vectors}),
         Err(e) => json!({"id": id, "error": e.to_string(), "refused": e.is::<Refused>()}),
     }
+}
+
+/// Checks every image's count, encoding and exact length before any is decoded or embedded.
+fn answer_images(
+    line: &[u8],
+    dim: usize,
+    embed: &mut impl FnMut(&[QueryImage]) -> Result<Vec<Vec<f32>>>,
+) -> Json {
+    let req: Json = match serde_json::from_slice(line) {
+        Ok(r) => r,
+        Err(_) => return json!({"id": null, "error": "request is not JSON"}),
+    };
+    let id = req["id"].clone();
+    if req["kind"] != "image" {
+        return json!({"id": id, "error": "kind is image", "refused": true});
+    }
+    // Everything about the images themselves is a refusal of the input; only `embed` can fail.
+    let input = || -> Result<Vec<QueryImage>> {
+        let images = req["images"]
+            .as_array()
+            .ok_or("images is an array of hex strings")?;
+        if images.is_empty() || images.len() > MAX_IMAGES {
+            return Err(fail(format!("a batch holds 1 to {MAX_IMAGES} images")));
+        }
+        let bytes = images
+            .iter()
+            .map(|i| {
+                i.as_str()
+                    .filter(|h| h.len() == 2 * RGB_BYTES)
+                    .and_then(crate::workspace::changes::unhex)
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| fail(format!("each image is {RGB_BYTES} RGB bytes in hex")))?;
+        bytes.iter().map(|b| QueryImage::from_rgb(b)).collect()
+    };
+    let mut run = || -> Result<Vec<Vec<f32>>> {
+        let images = input().map_err(|e| Refused(e.to_string()))?;
+        checked(embed(&images)?, images.len(), dim)
+    };
+    reply(id, run())
 }
 
 /// One running child. Its stdin is written and its stdout read on threads, so a child that
@@ -407,9 +472,48 @@ impl Runtime {
         cancel: &AtomicBool,
     ) -> std::result::Result<Vec<Vec<f32>>, Stop> {
         check_batch(texts).map_err(|e| Stop::Refused(e.to_string()))?;
+        self.request(
+            json!({"kind": kind.as_str(), "texts": texts}),
+            texts.len(),
+            cancel,
+        )
+    }
+
+    /// Embeds 1 to `MAX_IMAGES` normalized query rasters with a vision profile's child, under
+    /// the same deadline, cancellation and vector checks as `embed`. Only the opaque RGB bytes
+    /// of each raster leave this process; nothing is written.
+    pub fn embed_images(
+        &mut self,
+        images: &[QueryImage],
+        cancel: &AtomicBool,
+    ) -> std::result::Result<Vec<Vec<f32>>, Stop> {
+        if images.is_empty() || images.len() > MAX_IMAGES {
+            return Err(Stop::Refused(format!(
+                "a batch holds 1 to {MAX_IMAGES} images"
+            )));
+        }
+        let hex: Vec<String> = images
+            .iter()
+            .map(|i| crate::search::hex(&i.rgb()))
+            .collect();
+        self.request(
+            json!({"kind": "image", "images": hex}),
+            images.len(),
+            cancel,
+        )
+    }
+
+    /// Sends `body` with the next id and reads its reply: `count` vectors of the declared size.
+    fn request(
+        &mut self,
+        mut body: Json,
+        count: usize,
+        cancel: &AtomicBool,
+    ) -> std::result::Result<Vec<Vec<f32>>, Stop> {
         self.next += 1;
         let id = self.next;
-        let mut req = json!({"id": id, "kind": kind.as_str(), "texts": texts}).to_string();
+        body["id"] = json!(id);
+        let mut req = body.to_string();
         req.push('\n');
         // The writer is idle: every earlier request was answered, or the runtime was killed.
         let sent = match &self.requests {
@@ -434,8 +538,8 @@ impl Runtime {
         }
         let parsed: Option<Vec<Vec<f32>>> = serde_json::from_value(reply["vectors"].take()).ok();
         let vectors = match parsed {
-            Some(v) if v.len() == texts.len() => v,
-            _ => return Err(self.dead("reply holds no vector per text")),
+            Some(v) if v.len() == count => v,
+            _ => return Err(self.dead("reply holds no vector per input")),
         };
         for v in &vectors {
             if let Err(e) = check_vector(v, self.dim) {
