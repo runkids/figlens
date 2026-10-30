@@ -637,9 +637,13 @@ fn delta(last: Option<&Last>, e: &Eval) -> Json {
             .iter()
             .enumerate()
             .filter_map(|(to, r)| {
-                pos(before, r)
-                    .filter(|from| *from != to)
-                    .map(|from| json!({"nodeId": identity(r).1, "from": from + 1, "to": to + 1}))
+                // The same exact ref as enteredTopK, in the new snapshot: a set's nodeIds repeat across sources.
+                pos(before, r).filter(|from| *from != to).map(|from| {
+                    let mut moved = node(snapshot(&e.members, &e.snapshot, r), r);
+                    moved["from"] = json!(from + 1);
+                    moved["to"] = json!(to + 1);
+                    moved
+                })
             })
             .collect::<Vec<_>>()
     });
@@ -1771,6 +1775,45 @@ mod tests {
                 )
             ],
             [(Some(0), Some(0), Some(2)), (Some(0), Some(0), Some(2))]
+        );
+    }
+
+    #[test]
+    fn a_set_names_the_source_of_each_moved_result_that_shares_its_node_id() {
+        let members: Vec<Member> = ["A", "B"]
+            .map(|s| (s.into(), Some(1), "m".into(), Some(format!("{s}-snap"))))
+            .into();
+        let refs = |ids: &[&str]| ids.iter().map(|s| json!([s, "1:1"])).collect::<Vec<_>>();
+        let last = Last {
+            id: vec![0; 16],
+            generation: 1,
+            membership: "m".into(),
+            members: members.clone(),
+            snapshot: String::new(),
+            ranking: "r".into(),
+            coverage: "{}".into(),
+            refs: refs(&["A", "B"]),
+        };
+        let e = Eval {
+            source: SET.into(),
+            generation: 2,
+            membership: "m".into(),
+            members,
+            snapshot: String::new(),
+            ranking: "r".into(),
+            coverage: json!({}),
+            refs: refs(&["B", "A"]),
+            more: false,
+            library: false,
+            definition: None,
+            canonical: String::new(),
+        };
+        assert_eq!(
+            delta(Some(&last), &e)["rankChanged"],
+            json!([
+                {"sourceId": "B", "snapshotId": "B-snap", "nodeId": "1:1", "from": 2, "to": 1},
+                {"sourceId": "A", "snapshotId": "A-snap", "nodeId": "1:1", "from": 1, "to": 2}
+            ])
         );
     }
 }
