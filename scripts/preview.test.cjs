@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, relationChoices, acceptReply, reasonCodes, semanticSummary, mergePages, rowModel, groupUsages, localSearch, sourceRef, pageOf, scopeCoverage} = require('../src/preview/viewer.js');
+const {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, freshRow, relationChoices, acceptReply, reasonCodes, semanticSummary, mergePages, rowModel, groupUsages, localSearch, sourceRef, pageOf, scopeCoverage} = require('../src/preview/viewer.js');
 
 test('prototype missing fields remain unspecified without click or navigation defaults', () => {
   const rows = prototypeRows({state:'recorded', sourceNodeId:'0:1', interactions:[
@@ -232,4 +232,14 @@ test('the semantic line shows the running build and offers Enable only without a
   assert.equal(semanticSummary({scope: '0:1', index: current, models: {profiles: [{name: 'bge-m3', state: 'ready'}]}}, snap).enable, true);
   assert.match(semanticSummary({scope: '0:1', index: current, models: {profiles: []}, job: {running: false, report: {state: 'cancelled'}}}, snap).text, /Last build cancelled\./);
   assert.deepEqual(semanticSummary({error: {message: 'Saved design changed'}}, snap), {text: 'Saved design changed', enable: false, running: false});
+});
+
+test('a relocated workspace row keeps its registered ref and stays fresh under the revision its reply was accepted for', () => {
+  const loaded = {sourceId: 'local:viewer', snapshotId: 'sha256:a'};
+  const row = rowModel({ref: {nodeId: '0:1', sourceId: 'local:registered', snapshotId: 'sha256:a'}}, loaded);
+  assert.deepEqual([row.sourceId, row.viewSourceId], ['local:registered', 'local:viewer']);
+  assert.equal(freshRow(loaded, row), true);
+  assert.equal(freshRow({...loaded, snapshotId: 'sha256:b'}, row), false);
+  // Text rows, whose refs name the loaded source, are judged as before.
+  assert.equal(freshRow(loaded, rowModel({ref: {nodeId: '0:1', sourceId: 'local:viewer', snapshotId: 'sha256:a'}}, loaded)), true);
 });

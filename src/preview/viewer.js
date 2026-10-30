@@ -73,6 +73,8 @@ function relQuery(params) {
 // A reply is applied only if its request is still the newest and it describes the snapshot now loaded.
 // Exact identity is the pair: the same bytes under another source are another revision.
 const sameSource = (a, b) => !!a?.snapshotId && a.snapshotId === b?.snapshotId && a.sourceId === b?.sourceId;
+// A result row still names the loaded revision: the same bytes under the source its reply was accepted for.
+const freshRow = (source, m) => sameSource(source, {snapshotId: m.snapshotId, sourceId: m.viewSourceId ?? m.sourceId});
 // Every relation kind core reports, checked as this reply's effective relations.
 const relationChoices = reply => [...new Set([...Object.keys(reply.coverage?.layers?.relations?.kinds ?? {}), ...reply.relations])]
     .map(value => ({value, checked: reply.relations.includes(value)}));
@@ -131,6 +133,8 @@ function rowModel(row, source) {
     const ref = row.ref || row.target?.ref, resource = row.resource ?? row.target?.resource ?? null;
     return {
         nodeId: ref?.nodeId ?? null, snapshotId: ref?.snapshotId ?? source?.snapshotId, sourceId: ref?.sourceId ?? source?.sourceId, resource,
+        // The loaded revision's source the reply was accepted under; a relocated workspace's refs keep their registered id.
+        viewSourceId: source?.sourceId ?? ref?.sourceId,
         name: row.name ?? row.definition?.name ?? ref?.nodeId ?? resource ?? '(no target)',
         type: row.type ?? row.definition?.type ?? null, relation: row.relation ?? null, state: row.state ?? null,
         basis: row.basis ?? null, via: row.via ?? null, hidden: row.hidden === true,
@@ -162,7 +166,7 @@ function localSearch(roots, query, {types = [], hidden = false} = {}) {
     roots.forEach(n => walk(n, false));
     return {results: found.slice(0, 200).map(([n, off]) => ({name: n.name || n.id, type: n.type, ref: {nodeId: n.id}, hidden: off})), hasMore: found.length > 200};
 }
-if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, relationChoices, acceptReply, reasonCodes, semanticSummary, mergePages, rowModel, groupUsages, localSearch, sourceRef, pageOf, scopeCoverage};
+if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, freshRow, relationChoices, acceptReply, reasonCodes, semanticSummary, mergePages, rowModel, groupUsages, localSearch, sourceRef, pageOf, scopeCoverage};
 if (typeof document !== 'undefined') {
     const boot = JSON.parse(document.getElementById('boot').textContent);
     const $ = id => document.getElementById(id);
@@ -1618,7 +1622,7 @@ if (typeof document !== 'undefined') {
     async function relFresh(m) {
         if (boot.snapshot) return;
         const {source} = await (await api('revision')).json();
-        if (!sameSource(source, m)) throw new Error('Refused: stale reference — rerun search.');
+        if (!freshRow(source, m)) throw new Error('Refused: stale reference — rerun search.');
     }
     // Opening moves focus to the layer, as other results do; Escape there returns to the row that opened it.
     async function relOpen(name, m, row) {

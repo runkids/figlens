@@ -344,7 +344,38 @@ fn a_relocated_workspace_serves_the_viewer_under_its_own_source_id() {
         "the viewer derives its own id from the new path"
     );
     assert_eq!(hybrid["source"]["sourceId"], mine, "{hybrid}");
-    assert_eq!(hybrid["results"][0]["ref"]["sourceId"], mine, "{hybrid}");
+    // The ref keeps the registered identity, so workspace consumers resolve it.
+    let ref_source = hybrid["results"][0]["ref"]["sourceId"].as_str().unwrap();
+    assert_eq!(ref_source, source, "{hybrid}");
+    let found = cli(&[
+        "search",
+        "--id",
+        ws,
+        "--source",
+        ref_source,
+        "First success",
+    ]);
+    assert_eq!(
+        found["results"][0]["ref"], hybrid["results"][0]["ref"],
+        "{found}"
+    );
+    // Other bytes at the same path: the next revision refuses the index of the old ones.
+    let mut bytes = std::fs::read(&viewer.design).unwrap();
+    bytes.push(0);
+    std::fs::write(&viewer.design, bytes).unwrap();
+    let file = std::fs::File::options()
+        .write(true)
+        .open(&viewer.design)
+        .unwrap();
+    file.set_modified(std::time::SystemTime::now() + Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(viewer.get("revision")["generation"], 2);
+    let stale = viewer.get("search/2?q=First+success&mode=hybrid&scope=0:0");
+    // Core reports the index stale (or the viewer, not ready): either way nothing is served.
+    assert!(
+        !stale["error"].is_null() && stale["results"].is_null(),
+        "{stale}"
+    );
 }
 
 #[cfg(debug_assertions)]
