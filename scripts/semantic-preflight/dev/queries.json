@@ -1,0 +1,354 @@
+{
+ "queries": [
+  {
+   "category": "en_to_zh",
+   "query": "book a flight",
+   "relevant": [
+    "VA1"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "choose a seat",
+   "relevant": [
+    "VA3"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "baggage allowance",
+   "relevant": [
+    "VA4"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "boarding pass",
+   "relevant": [
+    "VA5"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "car rental",
+   "relevant": [
+    "VA7"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "itinerary",
+   "relevant": [
+    "VA8"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "playlist",
+   "relevant": [
+    "VA11"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "daily steps",
+   "relevant": [
+    "VA15"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "export report",
+   "relevant": [
+    "VA16"
+   ]
+  },
+  {
+   "category": "en_to_zh",
+   "query": "archive conversation",
+   "relevant": [
+    "VA17"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "飯店預訂",
+   "relevant": [
+    "VB1"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "班機延誤",
+   "relevant": [
+    "VB2"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "登機門變更",
+   "relevant": [
+    "VB3"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "加入行事曆",
+   "relevant": [
+    "VB4"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "貪睡鬧鐘",
+   "relevant": [
+    "VB5"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "歌詞",
+   "relevant": [
+    "VB6"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "心率",
+   "relevant": [
+    "VB8"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "分攤帳單",
+   "relevant": [
+    "VB10"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "匯率換算",
+   "relevant": [
+    "VB11"
+   ]
+  },
+  {
+   "category": "zh_to_en",
+   "query": "旅遊保險",
+   "relevant": [
+    "VB12"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "spotify 歌單",
+   "relevant": [
+    "VC1"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "叫 Uber",
+   "relevant": [
+    "VC2"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "Face ID",
+   "relevant": [
+    "VC12"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "用 AirDrop 傳",
+   "relevant": [
+    "VC13"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "CSV import",
+   "relevant": [
+    "VC14"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "esim 設定",
+   "relevant": [
+    "VC9"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "dropbox upload",
+   "relevant": [
+    "VC8"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "excel 報表下載",
+   "relevant": [
+    "VC7"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "Apple Watch 連線",
+   "relevant": [
+    "VC4"
+   ]
+  },
+  {
+   "category": "mixed_script",
+   "query": "綁定 gmail",
+   "relevant": [
+    "VC18"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "wake me again in a few minutes",
+   "relevant": [
+    "VB5"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "提醒我多喝水",
+   "relevant": [
+    "VB9"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "who owes what after dinner",
+   "relevant": [
+    "VB10"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "my trip plan for each day",
+   "relevant": [
+    "VA8"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "listen without internet",
+   "relevant": [
+    "VA12"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "how well did I sleep",
+   "relevant": [
+    "VA14"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "do I need a visa to enter",
+   "relevant": [
+    "VB20"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "play songs in random order",
+   "relevant": [
+    "VA13"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "keep a chat at the top of the list",
+   "relevant": [
+    "VB16"
+   ]
+  },
+  {
+   "category": "synonym_purpose",
+   "query": "send money to a friend",
+   "relevant": [
+    "VA19"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "掃描收據",
+   "relevant": [
+    "VA20"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "Meeting link",
+   "relevant": [
+    "VB13"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "Unread messages",
+   "relevant": [
+    "VB15"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "重複提醒",
+   "relevant": [
+    "VA10"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "Podcast episodes",
+   "relevant": [
+    "VB7"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "Weekly summary",
+   "relevant": [
+    "VB18"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "Sleep timer",
+   "relevant": [
+    "VB19"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "新增行事曆活動",
+   "relevant": [
+    "VA9"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "靜音群組",
+   "relevant": [
+    "VA18"
+   ]
+  },
+  {
+   "category": "exact_text",
+   "query": "Time zone",
+   "relevant": [
+    "VB14"
+   ]
+  }
+ ]
+}

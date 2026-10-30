@@ -9,6 +9,7 @@
 use std::error::Error;
 use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
@@ -116,6 +117,9 @@ struct AdmittedCall {
     project: Option<PathBuf>,
     /// The earlier revision a diff reads beside `source`.
     old: Option<PathBuf>,
+    /// Its token in the server's pending calls, removed when the call is dropped; `None` for a
+    /// call admitted outside a server.
+    live: Option<Live>,
 }
 
 enum Source {
@@ -128,7 +132,7 @@ enum Admission {
     /// `notifications/cancelled` for this request id.
     Cancel(Value),
     Reply(Value),
-    Call(AdmittedCall),
+    Call(Box<AdmittedCall>),
     /// A parsed tools/call, admitted later by the lane that runs it.
     Request(Value),
 }
@@ -292,10 +296,10 @@ fn admit_value(req: Value, roots: &[PathBuf]) -> Admission {
                     }
                     file => file.map(|path| checked_path(Path::new(path), roots)).transpose()?,
                 };
-                Ok(AdmittedCall { id:id.clone(), call, source, output, input, match_dir, project, old })
+                Ok(AdmittedCall { id:id.clone(), call, source, output, input, match_dir, project, old, live: None })
             });
             return match admitted {
-                Ok(call) => Admission::Call(call),
+                Ok(call) => Admission::Call(Box::new(call)),
                 Err(error) => Admission::Reply(response(id, tool_reply(name, Err(error)))),
             };
         }
@@ -311,6 +315,13 @@ fn admit_value(req: Value, roots: &[PathBuf]) -> Admission {
 }
 
 impl AdmittedCall {
+    /// Set by `notifications/cancelled` for this call, or when the server stops while it runs or
+    /// before it started; the calls that run owned model work poll it.
+    fn cancel(&self) -> &AtomicBool {
+        static NEVER: AtomicBool = AtomicBool::new(false);
+        self.live.as_ref().map_or(&NEVER, |l| &l.token.cancel)
+    }
+
     fn local(&self) -> Option<&Path> {
         match &self.source {
             Some(Source::Local(path)) => Some(path),
@@ -323,16 +334,18 @@ impl AdmittedCall {
         self.local().filter(|_| {
             !matches!(
                 self.call.name(),
-                "search" | "usages" | "diff" | "index" | "jobs" | "changes" | "watch"
+                "search" | "usages" | "diff" | "index" | "jobs" | "models" | "changes" | "watch"
             )
         })
     }
 
     /// Whether this call reads or changes a workspace rather than a design file.
     fn workspace(&self) -> bool {
-        matches!(self.call.name(), "index" | "jobs" | "changes" | "watch")
-            || (matches!(self.call.name(), "search" | "usages")
-                && self.call.string("workspaceId").is_some())
+        matches!(
+            self.call.name(),
+            "index" | "jobs" | "models" | "changes" | "watch"
+        ) || (matches!(self.call.name(), "search" | "usages")
+            && self.call.string("workspaceId").is_some())
     }
 
     /// Runs a workspace call; the jobs an index call submitted for this process come back
@@ -347,8 +360,11 @@ impl AdmittedCall {
             self.recheck(roots)?;
             match self.call.name() {
                 "jobs" => command::jobs_tool(&self.call, roots, storage_roots),
+                "models" => command::models_tool(&self.call, roots, self.cancel()),
                 "changes" | "watch" => command::changes_tool(&self.call, roots, storage_roots),
-                "search" => command::workspace_search_tool(&self.call, roots, storage_roots),
+                "search" => {
+                    command::workspace_search_tool(&self.call, roots, storage_roots, self.cancel())
+                }
                 "usages" => command::workspace_usages_tool(&self.call, roots, storage_roots),
                 _ => command::index_tool(
                     &self.call,
@@ -445,7 +461,9 @@ impl AdmittedCall {
                         .map_err(contract::Failure::from_error);
                 }
                 return command::search_tool(&self.call)
-                    .and_then(|request| command::search(&path, &request, ""))
+                    .and_then(|(request, mode)| {
+                        command::search(&path, &request, mode, "", self.cancel())
+                    })
                     .map_err(contract::Failure::from_error);
             }
             let run = |tree: &Tree, path: &Path| {
@@ -514,20 +532,92 @@ const WRITER_QUEUE: usize = 64;
 /// Build submissions this server may hold before a build-submitting call is answered busy.
 const BUILD_QUEUE: usize = 8;
 
-/// Tool calls queued in a lane, by request id; `true` once the client cancelled one before it
-/// ran. Bounded by the lane queues, since only queued ids are kept.
-type Pending = std::sync::Mutex<std::collections::HashMap<String, bool>>;
+/// One queued or running tool call's cancel state, made when the reader queues the call and
+/// carried with it, so a call is found by identity, never by its (reusable) id.
+#[derive(Default)]
+struct Token {
+    cancel: AtomicBool,
+    started: AtomicBool,
+}
 
-/// Takes a call off the pending list as its lane starts it; false when it was cancelled.
-fn live(pending: &Pending, req: &Value) -> bool {
-    pending.lock().unwrap().remove(&req["id"].to_string()) != Some(true)
+/// Tool calls queued in a lane or running, by request id; a reused id keeps one token per call
+/// and a cancel names every call of that id. Bounded by the lane queues plus one running call
+/// per lane.
+type Pending = std::sync::Mutex<std::collections::HashMap<String, Vec<Arc<Token>>>>;
+
+/// Removes exactly `token` of `id`.
+fn forget(pending: &Pending, id: &str, token: &Arc<Token>) {
+    let mut pending = pending.lock().unwrap();
+    if let Some(calls) = pending.get_mut(id) {
+        calls.retain(|t| !Arc::ptr_eq(t, token));
+        if calls.is_empty() {
+            pending.remove(id);
+        }
+    }
+}
+
+/// An admitted call's place in `Pending`, removed when the call is dropped after its reply.
+struct Live {
+    pending: Arc<Pending>,
+    id: String,
+    token: Arc<Token>,
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        forget(&self.pending, &self.id, &self.token);
+    }
+}
+
+/// Admits a call as its lane starts it. A call cancelled while it queued is dropped unanswered,
+/// as before; one that starts after the server stopped starts cancelled, so it does not begin
+/// owned model work, while ordinary calls still run and answer.
+fn admit_live(
+    pending: &Arc<Pending>,
+    (req, token): (Value, Arc<Token>),
+    roots: &[PathBuf],
+    stop: &AtomicBool,
+) -> Admission {
+    let id = req["id"].to_string();
+    token.started.store(true, Ordering::SeqCst);
+    if token.cancel.load(Ordering::SeqCst) {
+        forget(pending, &id, &token);
+        return Admission::Ignore;
+    }
+    if stop.load(Ordering::SeqCst) {
+        token.cancel.store(true, Ordering::SeqCst);
+    }
+    match admit_value(req, roots) {
+        Admission::Call(mut call) => {
+            call.live = Some(Live {
+                pending: pending.clone(),
+                id,
+                token,
+            });
+            Admission::Call(call)
+        }
+        other => {
+            forget(pending, &id, &token);
+            other
+        }
+    }
+}
+
+/// Cancels every running call when input ends or replies cannot be written; a queued call
+/// starts cancelled instead (see `admit_live`).
+fn cancel_running(pending: &Pending) {
+    for token in pending.lock().unwrap().values().flatten() {
+        if token.started.load(Ordering::SeqCst) {
+            token.cancel.store(true, Ordering::SeqCst);
+        }
+    }
 }
 
 /// Whether an index call submits jobs to the build lane.
 fn submits(req: &Value) -> bool {
     matches!(
         req["params"]["arguments"]["action"].as_str(),
-        Some("prepare" | "refresh" | "rebuild" | "track")
+        Some("prepare" | "refresh" | "rebuild" | "track" | "embed")
     )
 }
 
@@ -543,8 +633,11 @@ fn lane(req: &Value) -> Lane {
         req["params"]["name"].as_str(),
         req["params"]["arguments"]["action"].as_str(),
     ) {
-        (Some("jobs"), _) | (Some("index"), Some("status")) => Lane::Control,
-        (Some("index"), _) => Lane::Index,
+        (Some("jobs"), _)
+        | (Some("index"), Some("status"))
+        | (Some("models"), Some("list" | "status" | "remove")) => Lane::Control,
+        // Configure hashes gigabytes and loads the model once: never ahead of interactive calls.
+        (Some("index"), _) | (Some("models"), _) => Lane::Index,
         _ => Lane::Interactive,
     }
 }
@@ -597,15 +690,17 @@ pub fn serve_with(
     let stop = AtomicBool::new(false);
     // Set when a reply cannot be written; no lane admits a build after that.
     let dead = AtomicBool::new(false);
-    let pending = Pending::default();
+    let pending = Arc::new(Pending::default());
     let builds = std::sync::atomic::AtomicUsize::new(0);
     #[cfg(test)]
     let counters = Counter::share();
     std::thread::scope(|scope| -> Result<(), Box<dyn Error>> {
-        let (control, control_rx) = mpsc::sync_channel::<Value>(CONTROL_QUEUE);
-        let (interactive, interactive_rx) = mpsc::sync_channel::<Admission>(INTERACTIVE_QUEUE);
-        let (index, index_rx) = mpsc::sync_channel::<Value>(INDEX_QUEUE);
+        let (control, control_rx) = mpsc::sync_channel::<(Value, Arc<Token>)>(CONTROL_QUEUE);
+        let (interactive, interactive_rx) =
+            mpsc::sync_channel::<(Value, Arc<Token>)>(INTERACTIVE_QUEUE);
+        let (index, index_rx) = mpsc::sync_channel::<(Value, Arc<Token>)>(INDEX_QUEUE);
         let (to_build, build_rx) = mpsc::channel::<command::Runs>();
+        let (to_model, model_rx) = mpsc::channel::<command::Runs>();
         let (stop, dead, pending, builds) = (&stop, &dead, &pending, &builds);
         // Control and index lanes: each call admitted and run in arrival order.
         for (rx, build) in [(control_rx, None), (index_rx, Some(to_build))] {
@@ -615,25 +710,30 @@ pub fn serve_with(
             scope.spawn(move || {
                 #[cfg(test)]
                 Counter::adopt(counters);
-                for req in rx {
-                    if !live(pending, &req) {
-                        continue;
-                    }
+                for queued in rx {
+                    let submitting = submits(&queued.0);
+                    let req = match admit_live(pending, queued, roots, stop) {
+                        Admission::Ignore => continue,
+                        admitted => admitted,
+                    };
                     // Counted before the call creates its job, so a writer that fails meanwhile
                     // waits for it instead of exiting with the job unowned.
                     // With `dead` checked after the count (both SeqCst), either the writer sees
                     // this build or this lane sees the writer died.
-                    let counted = build.is_some() && submits(&req);
+                    let counted =
+                        build.is_some() && submitting && matches!(req, Admission::Call(_));
                     if counted {
                         let full = builds.fetch_add(1, Ordering::SeqCst) >= BUILD_QUEUE;
                         if full || dead.load(Ordering::SeqCst) {
                             builds.fetch_sub(1, Ordering::SeqCst);
-                            out.send(busy(&req["id"]));
+                            if let Admission::Call(call) = &req {
+                                out.send(busy(&call.id));
+                            }
                             continue;
                         }
                     }
                     let mut queued = false;
-                    match admit_value(req, roots) {
+                    match req {
                         Admission::Call(call) => {
                             let (reply, runs) = call.run_workspace(roots, storage_roots);
                             if let (Some(runs), Some(build)) = (runs, &build) {
@@ -659,9 +759,52 @@ pub fn serve_with(
         // until input ends.
         scope.spawn(move || figlens::workspace::watch::renew_until(stop));
         // Build lane: this server's jobs, one at a time; they stop when input ends or a reply
-        // cannot be written.
+        // cannot be written. A text build that publishes queues its model layer's embed on the
+        // model lane, so no text build waits behind the model; each send counts as a build.
         scope.spawn(move || {
             for runs in build_rx {
+                if runs.model {
+                    // Already counted: the model lane ends it.
+                    if to_model.send(runs).is_err() {
+                        builds.fetch_sub(1, Ordering::SeqCst);
+                    }
+                    continue;
+                }
+                let mut embeds = Vec::new();
+                for job in &runs.jobs {
+                    let report = figlens::workspace::jobs::run(
+                        &runs.storage,
+                        &runs.workspace_id,
+                        job,
+                        stop,
+                        &mut |_| {},
+                    );
+                    if let Some(id) = report
+                        .ok()
+                        .filter(|_| !stop.load(Ordering::SeqCst))
+                        .and_then(|r| figlens::workspace::jobs::embed_after(&runs.storage, &r))
+                    {
+                        embeds.push(id);
+                    }
+                }
+                if !embeds.is_empty() {
+                    builds.fetch_add(1, Ordering::SeqCst);
+                    let model = command::Runs {
+                        storage: runs.storage.clone(),
+                        workspace_id: runs.workspace_id.clone(),
+                        jobs: embeds,
+                        model: true,
+                    };
+                    if to_model.send(model).is_err() {
+                        builds.fetch_sub(1, Ordering::SeqCst);
+                    }
+                }
+                builds.fetch_sub(1, Ordering::SeqCst);
+            }
+        });
+        // Model lane: this server's embed jobs, one at a time, beside its text builds.
+        scope.spawn(move || {
+            for runs in model_rx {
                 for job in &runs.jobs {
                     let _ = figlens::workspace::jobs::run(
                         &runs.storage,
@@ -682,11 +825,10 @@ pub fn serve_with(
             #[cfg(test)]
             Counter::adopt(lane_counters);
             let next = || {
-                interactive_rx.recv().ok().map(|a| match a {
-                    Admission::Request(req) if !live(pending, &req) => Admission::Ignore,
-                    Admission::Request(req) => admit_value(req, roots),
-                    other => other,
-                })
+                interactive_rx
+                    .recv()
+                    .ok()
+                    .map(|queued| admit_live(pending, queued, roots, stop))
             };
             interactive_loop(
                 next,
@@ -720,26 +862,33 @@ pub fn serve_with(
                         reader.send(reply);
                     }
                     Admission::Cancel(id) => {
-                        if let Some(cancelled) = pending.lock().unwrap().get_mut(&id.to_string()) {
-                            *cancelled = true;
+                        for token in pending
+                            .lock()
+                            .unwrap()
+                            .get(&id.to_string())
+                            .into_iter()
+                            .flatten()
+                        {
+                            token.cancel.store(true, Ordering::SeqCst);
                         }
                     }
                     Admission::Request(req) => {
                         let id = req["id"].clone();
-                        pending.lock().unwrap().insert(id.to_string(), false);
-                        let full = match lane(&req) {
-                            Lane::Interactive => interactive
-                                .try_send(Admission::Request(req))
-                                .is_err_and(|e| matches!(e, mpsc::TrySendError::Full(_))),
-                            Lane::Control => lanes[0]
-                                .try_send(req)
-                                .is_err_and(|e| matches!(e, mpsc::TrySendError::Full(_))),
-                            Lane::Index => lanes[1]
-                                .try_send(req)
-                                .is_err_and(|e| matches!(e, mpsc::TrySendError::Full(_))),
+                        let token = Arc::<Token>::default();
+                        pending
+                            .lock()
+                            .unwrap()
+                            .entry(id.to_string())
+                            .or_default()
+                            .push(token.clone());
+                        let queued = (req, token.clone());
+                        let sent = match lane(&queued.0) {
+                            Lane::Interactive => interactive.try_send(queued),
+                            Lane::Control => lanes[0].try_send(queued),
+                            Lane::Index => lanes[1].try_send(queued),
                         };
-                        if full {
-                            pending.lock().unwrap().remove(&id.to_string());
+                        if sent.is_err_and(|e| matches!(e, mpsc::TrySendError::Full(_))) {
+                            forget(pending, &id.to_string(), &token);
                             reader.send(busy(&id));
                         }
                     }
@@ -747,6 +896,7 @@ pub fn serve_with(
                 }
             }
             stop.store(true, Ordering::SeqCst);
+            cancel_running(pending);
             figlens::workspace::watch::wake();
         });
         drop(to_writer);
@@ -757,6 +907,7 @@ pub fn serve_with(
                 // stop this server's builds, wait until they cancelled their workers, then end.
                 dead.store(true, Ordering::SeqCst);
                 stop.store(true, Ordering::Relaxed);
+                cancel_running(pending);
                 // Replies still sent meanwhile are dropped, so no lane waits on this queue.
                 let tick = std::time::Duration::from_millis(20);
                 while builds.load(Ordering::SeqCst) > 0 {

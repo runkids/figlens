@@ -25,6 +25,7 @@ pub mod remote;
 pub mod render;
 pub mod rest;
 pub mod search;
+pub mod semantic;
 pub mod states;
 pub mod tokens;
 pub mod variables;
@@ -63,6 +64,8 @@ pub enum ErrorKind {
     Cancelled,
     /// A workspace search would read more indexed data than one query supports.
     QueryWorkLimit,
+    /// The requested search mode has no usable model profile or layer.
+    ModeUnavailable,
 }
 
 #[derive(Debug)]

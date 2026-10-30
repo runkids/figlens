@@ -41,7 +41,7 @@ Placez `design.fig` dans votre projet, puis choisissez **une** configuration. Ch
 | [OMP](#setup-omp) | OMP 18.13.2 | le skill fourni dans le paquet |
 | [CLI](#setup-cli) | les agents qui n'exécutent que des commandes shell, les scripts et la CI, ou vous | `figlens workflow <topic>`, ou le [skill](#setup-skill) facultatif |
 
-**Ordinaire vs avancé.** L'usage ordinaire ne demande aucune configuration : `figlens search design.fig "query"` lit le `.fig` et ne crée rien. Un index local optionnel n'est créé que sur votre demande (`figlens index prepare design.fig --scope 0:0`), puis réutilisé entre redémarrages et hôtes. Voir [Recherche ordinaire et index local optionnel](docs/README-fr.md#local-index).
+**Ordinaire vs avancé.** L'usage ordinaire ne demande aucune configuration : `figlens search design.fig "query"` lit le `.fig` et ne crée rien. Un index local optionnel n'est créé que sur votre demande (`figlens index prepare design.fig --scope 0:0`), puis réutilisé entre redémarrages et hôtes. Voir [Recherche ordinaire et index local optionnel](docs/README-fr.md#local-index). Optionnel et expérimental : `--mode semantic` ou `hybrid` classe par le sens avec un modèle local que vous installez vous-même ; voir [Recherche sémantique optionnelle](docs/README-fr.md#semantic-search).
 
 <a id="setup-mcp"></a>
 

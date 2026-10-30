@@ -426,7 +426,37 @@ pub(crate) const V8: &str = "
     CREATE UNIQUE INDEX sources_remote ON sources (remote) WHERE remote IS NOT NULL;
     PRAGMA user_version = 8;";
 
-/// Upgrades schemas 1 to 7 to the current one in one transaction, keeping every source, index,
+/// Schema 9: the model layer of semantic search (#94). Vectors are stored once per profile and
+/// chunk text (SHA-256), so unchanged chunks keep theirs across refreshes; `model_refs` names
+/// the texts each generation's layer uses under one profile and chunk policy, so dropping a
+/// generation can drop the vectors nothing else uses; `model_layers` is each layer's published
+/// progress, written only by its embed job. An embed job (`kind` `embed`) names the generation
+/// and profile it embeds (`expected_gen`, `profile_id`) and has its own active slot per source,
+/// scope, generation and profile, so a text build never joins or waits behind a model job.
+pub(crate) const V9: &str = "
+    ALTER TABLE jobs ADD COLUMN profile_id TEXT;
+    DROP INDEX jobs_active;
+    CREATE UNIQUE INDEX jobs_active ON jobs (source_id, scope)
+        WHERE state IN ('queued', 'running') AND kind <> 'embed';
+    CREATE UNIQUE INDEX jobs_embed ON jobs (source_id, scope, expected_gen, profile_id)
+        WHERE state IN ('queued', 'running') AND kind = 'embed';
+    CREATE TABLE model_vectors (
+        profile_id TEXT NOT NULL, text_hash BLOB NOT NULL, vector BLOB NOT NULL,
+        PRIMARY KEY (profile_id, text_hash)) STRICT, WITHOUT ROWID;
+    CREATE TABLE model_refs (
+        gen INTEGER NOT NULL, profile_id TEXT NOT NULL, policy TEXT NOT NULL,
+        text_hash BLOB NOT NULL,
+        PRIMARY KEY (gen, profile_id, policy, text_hash)) STRICT, WITHOUT ROWID;
+    CREATE INDEX model_refs_text ON model_refs (profile_id, text_hash);
+    CREATE TABLE model_layers (
+        gen INTEGER NOT NULL, profile_id TEXT NOT NULL, policy TEXT NOT NULL,
+        state TEXT NOT NULL, chunks INTEGER NOT NULL, texts INTEGER NOT NULL,
+        embedded INTEGER NOT NULL, refused INTEGER NOT NULL, stop TEXT, job_id TEXT,
+        updated_ms INTEGER NOT NULL,
+        PRIMARY KEY (gen, profile_id, policy)) STRICT;
+    PRAGMA user_version = 9;";
+
+/// Upgrades schemas 1 to 8 to the current one in one transaction, keeping every source, index,
 /// job and the incarnation. The caller holds the workspace lock exclusively.
 pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
     let tx = conn
@@ -455,6 +485,9 @@ pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
     }
     if version <= 7 {
         tx.execute_batch(V8).map_err(sql)?;
+    }
+    if version <= 8 {
+        tx.execute_batch(V9).map_err(sql)?;
     }
     tx.commit().map_err(sql)
 }
@@ -503,6 +536,7 @@ pub(super) fn initialize(
     tx.execute_batch(SUBSCRIPTIONS).map_err(sql)?;
     tx.execute_batch(IMPACTS).map_err(sql)?;
     tx.execute_batch(V8).map_err(sql)?;
+    tx.execute_batch(V9).map_err(sql)?;
     if let Some(binding) = binding {
         tx.execute(
             "INSERT INTO meta (key, value) VALUES ('binding', ?1)",

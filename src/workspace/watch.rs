@@ -1519,13 +1519,16 @@ enum Done {
 
 /// Refreshes every still-served scope of one source, one at a time: its own jobs run here to
 /// their end; a job another process already runs is awaited, never run or cancelled. A source
-/// counts as verified only when every job ended `succeeded`.
+/// counts as verified only when every job ended `succeeded`. A published scope whose model
+/// layer is missing gets an embed job this runner owns, sent to `models` so the next save
+/// never waits for the model.
 fn refresh(
     storage: &Storage,
     ws_id: &str,
     job: &Refresh,
     cancel: &AtomicBool,
     quit: &AtomicBool,
+    models: &std::sync::mpsc::Sender<String>,
 ) -> Finished {
     let select = Select::Id(ws_id.to_owned());
     let (mut failed, mut last, mut error) = (false, None, None);
@@ -1570,7 +1573,11 @@ fn refresh(
                 await_joined(storage, &id, quit)
             };
             match report {
-                Ok(Some(r)) if r["state"] == "succeeded" => {}
+                Ok(Some(r)) if r["state"] == "succeeded" => {
+                    if let Some(embed) = super::jobs::embed_after(storage, &r) {
+                        let _ = models.send(embed);
+                    }
+                }
                 Ok(Some(r)) => {
                     fail_with(r["error"]["code"].as_str().unwrap_or("failed").to_owned())
                 }
@@ -1647,17 +1654,30 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
     // Set on exit: submit nothing more and stop waiting for a job another process runs.
     let quit = AtomicBool::new(false);
     let idle = AtomicBool::new(false);
+    // Set once the model thread ran its last embed, after the worker closed its queue.
+    let models_idle = AtomicBool::new(false);
     // Set to interrupt a saved-query Turn: a save waits, or the runner exits.
     let halt = AtomicBool::new(false);
     let (to_worker, jobs) = std::sync::mpsc::channel::<Work>();
     let (done, finished) = std::sync::mpsc::channel::<Done>();
+    // Embed jobs this runner owns, run apart from refreshes. Like refreshes they take `cancel`,
+    // never `quit`: an exit cancels only unshared jobs through their rows (`cancel_exclusive`),
+    // so an embed another caller joined still finishes.
+    let (to_model, models) = std::sync::mpsc::channel::<String>();
     std::thread::scope(|scope| -> Result<()> {
         let (cancel, quit, idle, halt) = (&cancel, &quit, &idle, &halt);
+        let models_idle = &models_idle;
+        scope.spawn(move || {
+            for id in models {
+                let _ = super::jobs::run(storage, ws_id, &id, cancel, &mut |_| {});
+            }
+            models_idle.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
         scope.spawn(move || {
             for work in jobs {
                 let _ = done.send(match work {
                     Work::Refresh(job) => {
-                        Done::Refresh(refresh(storage, ws_id, &job, cancel, quit))
+                        Done::Refresh(refresh(storage, ws_id, &job, cancel, quit, &to_model))
                     }
                     Work::Turn(due) => Done::Turn(Box::new((
                         due.key.clone(),
@@ -1827,11 +1847,14 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
         })();
         // No lease is left (or this runner was fenced out): submit nothing more, cancel its own
         // unshared attempt, let a shared one finish, then release the lock.
-        // Repeated until the worker is done, so an attempt it admitted meanwhile is caught too.
+        // Repeated until the worker and the model thread are done, so an attempt either admitted
+        // meanwhile (an embed queued by a last refresh) is caught too.
         quit.store(true, std::sync::atomic::Ordering::SeqCst);
         halt.store(true, std::sync::atomic::Ordering::SeqCst);
         drop(to_worker);
-        while !idle.load(std::sync::atomic::Ordering::SeqCst) {
+        while !idle.load(std::sync::atomic::Ordering::SeqCst)
+            || !models_idle.load(std::sync::atomic::Ordering::SeqCst)
+        {
             let _ = cancel_exclusive(storage, ws_id, &token);
             std::thread::sleep(Duration::from_millis(20));
         }

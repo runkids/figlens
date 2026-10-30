@@ -426,7 +426,7 @@ fn jobs_submitted_in_one_millisecond_build_in_submission_order() {
     )
     .unwrap();
     assert!(
-        !my_turn(&conn, &dir, &second).unwrap(),
+        !my_turn(&conn, &dir, &second, false).unwrap(),
         "{first} goes first"
     );
 }
@@ -612,7 +612,7 @@ fn a_taken_over_job_queues_behind_another_owner_s_job_so_no_two_owners_wait_on_e
     };
     assert!(a2.owned);
     // B runs its job first; A waits for it, then runs its own in the order it admitted them.
-    assert!(my_turn(&conn, &dir, &b1).unwrap());
+    assert!(my_turn(&conn, &dir, &b1, false).unwrap());
 }
 
 #[test]

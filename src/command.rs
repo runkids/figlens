@@ -8,6 +8,7 @@ use std::sync::Arc;
 use figlens::expand::plugin_type;
 use figlens::export::SvgIndex;
 use figlens::rest::resolve_nodes;
+use figlens::semantic::Mode;
 use figlens::variables::variables;
 use figlens::{Tree, normalize_id, to_json};
 use serde_json::{Value, json};
@@ -717,15 +718,14 @@ fn check_export(
         .transpose()?)
 }
 
-fn search_mode(mode: &str) -> Result<(), Box<dyn Error>> {
-    if mode == "text" {
-        return Ok(());
-    }
-    Err(figlens::FigError::new(
-        figlens::ErrorKind::InvalidArguments,
-        format!("search mode {mode:?} is unavailable; this release searches text only"),
-    )
-    .into())
+fn search_mode(mode: &str) -> Result<Mode, Box<dyn Error>> {
+    Mode::parse(mode).ok_or_else(|| {
+        figlens::FigError::new(
+            figlens::ErrorKind::InvalidArguments,
+            format!("search mode takes text, semantic or hybrid, not {mode:?}"),
+        )
+        .into()
+    })
 }
 
 pub fn search_types(value: &str) -> impl Iterator<Item = String> + '_ {
@@ -736,7 +736,8 @@ pub fn search_types(value: &str) -> impl Iterator<Item = String> + '_ {
 }
 
 /// CLI search arguments, checked before the source is downloaded or read.
-pub fn search_request(args: &[String]) -> Result<figlens::search::Request, Box<dyn Error>> {
+pub fn search_request(args: &[String]) -> Result<(figlens::search::Request, Mode), Box<dyn Error>> {
+    let mut mode = Mode::Text;
     let mut request = figlens::search::Request {
         query: args.first().cloned().ok_or(USAGE)?,
         scope: "0:0".into(),
@@ -758,21 +759,21 @@ pub fn search_request(args: &[String]) -> Result<figlens::search::Request, Box<d
                     "--type" => request.types.extend(search_types(value)),
                     "--limit" => request.limit = value.parse().unwrap_or(0),
                     "--cursor" => request.cursor = Some(value.clone()),
-                    "--mode" => search_mode(value)?,
+                    "--mode" => mode = search_mode(value)?,
                     _ => return Err(USAGE.into()),
                 }
             }
         }
     }
     request.validate()?;
-    Ok(request)
+    Ok((request, mode))
 }
 
 /// The same request from schema-checked MCP arguments.
 pub fn search_tool(
     call: &crate::contract::PreparedCall,
-) -> Result<figlens::search::Request, Box<dyn Error>> {
-    search_mode(call.string("mode").unwrap())?;
+) -> Result<(figlens::search::Request, Mode), Box<dyn Error>> {
+    let mode = search_mode(call.string("mode").unwrap())?;
     let request = figlens::search::Request {
         query: call.string("query").ok_or(USAGE)?.to_owned(),
         scope: normalize_id(call.string("node").unwrap()),
@@ -788,7 +789,7 @@ pub fn search_tool(
         cursor: call.string("cursor").map(str::to_owned),
     };
     request.validate()?;
-    Ok(request)
+    Ok((request, mode))
 }
 
 /// CLI usages arguments after the source: the node or resource, then options; checked before
@@ -1110,6 +1111,7 @@ pub fn workspace_search_tool(
     call: &crate::contract::PreparedCall,
     roots: &[PathBuf],
     storage_roots: &[PathBuf],
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<Output, Box<dyn Error>> {
     let storage = tool_storage(call, roots, storage_roots)?;
     let select = figlens::workspace::Select::Id(call.string("workspaceId").unwrap().to_owned());
@@ -1118,7 +1120,73 @@ pub fn workspace_search_tool(
         .map(str::to_owned)
         .into_iter()
         .collect();
-    let value = figlens::workspace::query::search(&storage, &select, &only, &search_tool(call)?)?;
+    let (request, mode) = search_tool(call)?;
+    // Text search keeps its old behavior: it is not one of the calls a server stop cancels.
+    let value = match mode {
+        Mode::Text => figlens::workspace::query::search(&storage, &select, &only, &request)?,
+        _ => figlens::workspace::query::search_mode(
+            &storage, &select, &only, &request, mode, cancel,
+        )?,
+    };
+    Ok(Output::Json {
+        value,
+        pretty: false,
+    })
+}
+
+/// MCP `models`. configure runs only the figlens-embed shipped beside figlens, never a
+/// client-chosen program, on a model directory inside the server's roots.
+pub fn models_tool(
+    call: &crate::contract::PreparedCall,
+    roots: &[PathBuf],
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<Output, Box<dyn Error>> {
+    use figlens::semantic::profile;
+    let storage = figlens::workspace::storage(None)?;
+    let needs = |key: &str| {
+        call.string(key).ok_or_else(|| {
+            figlens::FigError::new(
+                figlens::ErrorKind::InvalidArguments,
+                format!(
+                    "models {} needs {key}",
+                    call.string("action").unwrap_or_default()
+                ),
+            )
+        })
+    };
+    let value = match call.string("action").unwrap() {
+        "list" => profile::list(&storage)?,
+        "status" => profile::status(&storage)?,
+        "configure" => {
+            let known = profile::known(needs("profile")?)?;
+            let dir = std::fs::canonicalize(needs("modelDir")?)?;
+            // Every pinned file, followed through links, must lie inside the roots too, before
+            // any of them is read.
+            let inside = |p: &Path| roots.is_empty() || roots.iter().any(|r| p.starts_with(r));
+            if !inside(&dir) {
+                return Err(figlens::FigError::new(
+                    figlens::ErrorKind::PermissionDenied,
+                    "modelDir lies outside the server's roots",
+                )
+                .into());
+            }
+            for (name, _) in known.files {
+                // A file not there yet is reported missing by configure, before anything is read.
+                let Ok(target) = std::fs::canonicalize(dir.join(name)) else {
+                    continue;
+                };
+                if !inside(&target) {
+                    return Err(figlens::FigError::new(
+                        figlens::ErrorKind::PermissionDenied,
+                        format!("modelDir or its {name} lies outside the server's roots"),
+                    )
+                    .into());
+                }
+            }
+            profile::configure(&storage, known, &dir, None, cancel)?
+        }
+        _ => profile::remove(&storage, needs("profile")?)?,
+    };
     Ok(Output::Json {
         value,
         pretty: false,
@@ -1242,6 +1310,8 @@ pub struct Runs {
     pub storage: figlens::workspace::Storage,
     pub workspace_id: String,
     pub jobs: Vec<String>,
+    /// Model (embed) jobs, run apart from text builds so none waits behind one.
+    pub model: bool,
 }
 
 /// MCP `index`: one workspace action. `file` and `project` are admitted paths. Returns the
@@ -1299,6 +1369,7 @@ fn index_on(
         workspace_id: value["workspaceId"].as_str().unwrap_or_default().to_owned(),
         storage,
         jobs,
+        model: action == "embed",
     });
     Ok((
         Output::Json {
@@ -1309,13 +1380,22 @@ fn index_on(
     ))
 }
 
-/// Search reads and hashes its own snapshot of `path`, so it never needs a loaded tree.
+/// Search reads and hashes its own snapshot of `path`, so it never needs a loaded tree. Only a
+/// semantic or hybrid search reads the model profiles, so text search needs no config root.
 pub fn search(
     path: &Path,
     request: &figlens::search::Request,
+    mode: Mode,
     label: &str,
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<Output, Box<dyn Error>> {
-    let value = figlens::search::search(path, request).map_err(|e| {
+    let found = match mode {
+        Mode::Text => figlens::search::search(path, request),
+        _ => figlens::workspace::storage(None).and_then(|storage| {
+            figlens::search::semantic::search(path, request, mode, &storage, cancel)
+        }),
+    };
+    let value = found.map_err(|e| {
         if e.is::<figlens::FigError>() {
             e
         } else {

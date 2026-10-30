@@ -1,0 +1,43 @@
+{
+ "instructions": [
+  {
+   "id": "i0",
+   "task": "Given a web search query, retrieve relevant passages that answer the query",
+   "source": "the card's default retrieval task"
+  },
+  {
+   "id": "i1",
+   "task": "Given a search query for an app's user interface, retrieve the interface text that has the same meaning, in any language",
+   "source": "written for figlens before any dev run"
+  },
+  {
+   "id": "i2",
+   "task": "Given a description of what a user wants to find or do in an app, retrieve the matching interface label",
+   "source": "written for figlens before any dev run"
+  }
+ ],
+ "format": "Instruct: {task}\\nQuery:{query} (card get_detailed_instruct); documents carry no instruction",
+ "rule": "Pick the candidate passing the most per-category semantic gates of thresholds.json on this dev set (4 categories x 3 metrics); ties by mean semantic MRR, then i0. The pick is committed before the one frozen run.",
+ "chosen": {
+  "id": "i1",
+  "devGatesPassed": {
+   "i0": 11,
+   "i1": 12,
+   "i2": 11
+  },
+  "devMeanSemanticMrr": {
+   "i0": 0.909,
+   "i1": 0.938,
+   "i2": 0.896
+  },
+  "run": "qwen3-embedding-0.6b@97b0c61, equal-length batches of 16, RAYON_NUM_THREADS=8; reports in ignored samples/issue-94/dev-i*.json"
+ },
+ "frozenRun": {
+  "id": "i1",
+  "gatesPass": false,
+  "failed": "synonym_purpose wrongTop1 0.45 > 0.20 (MRR 0.743, R@10 1.0); i0 had 0.30 in the earlier run",
+  "passed": "en_to_zh 1.0/0.883/0.20, zh_to_en 0.95/0.954/0.05, mixed_script 1.0/1.0/0, exact_text = lexical",
+  "cost": "104 texts embedded in 2.4 s (20.7 s one per pass), warm query p50 193 ms p95 244 ms, 3540 MiB peak RSS, 8 threads of 18",
+  "note": "The single frozen run; no further instruction is tried on the frozen suite."
+ }
+}

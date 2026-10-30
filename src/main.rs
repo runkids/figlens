@@ -39,17 +39,30 @@ usage:
                                              search stored layer names and text, case-insensitive;
                                              default 20 results (1-200), with paths and truncation flag
   figlens search <file.fig> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C]
-          [--include-hidden] [--include-internal] [--mode text]
+          [--include-hidden] [--include-internal] [--mode text|semantic|hybrid]
                                              ranked search of names and full text in one stored scope
                                              (default: the document), with instance overrides, text and
                                              boolean properties and swaps applied; exact refs, match
                                              reasons, UTF-16 spans, coverage and cursor pages (20, 1-200);
                                              hidden layers and internal pages need their flag
+                                             --mode semantic ranks layers by meaning and hybrid fuses
+                                             text and semantic ranks (RRF), both with a model set up by
+                                             `figlens models configure`; without one semantic fails with
+                                             mode_unavailable and hybrid answers as text; experimental;
+                                             a workspace search reads the layer `index embed` stores
   figlens search --workspace DIR|--file <file.fig>|--id ws_... <query> [--source ID]... [--storage DIR] [same options]
                                            (put -- before a query that starts with -)
                                              the same search over a workspace's prepared indexes of
                                              --node (default 0:0) across its sources, without parsing;
                                              sources not ready are listed with the step that prepares them
+  figlens models list|status                 the local model profile semantic search uses (bge-m3) and
+                                             whether it is configured
+  figlens models configure bge-m3 --model DIR [--runtime FILE]
+                                             check the BAAI/bge-m3 files you downloaded (pinned revision,
+                                             SHA-256), start the figlens-embed runtime once offline
+                                             (default: next to figlens) and record the profile; never
+                                             downloads
+  figlens models remove bge-m3               forget the profile, keep its files
   figlens usages <file.fig> <node>|<resource> [--scope ID] [--relation R[,R]] [--out]
           [--snapshot S] [--include-hidden] [--limit N] [--cursor C]
                                              exact relations of a node or resource (VariableID:...,
@@ -166,8 +179,9 @@ usage:
   figlens compare <file.fig> <nodes.json> <node>   diff a frame against a REST nodes.json export
   figlens compare <file.fig> --frames <list.txt>   same for every `node|nodes.json[|variables.json]` line
   figlens mcp [--root DIR]... [--storage-root DIR]...
-                                             serve workflow guidance, tree, find, search, inspect, nodes,
-                                             variables, bundle, export, index and jobs as MCP tools; raster export returns an inline image;
+                                             serve workflow guidance, tree, find, search, usages, diff, inspect,
+                                             nodes, variables, bundle, export, index, jobs, models, changes and
+                                             watch as MCP tools; raster export returns an inline image;
                                              with --root, files and outputs must be under one of the folders;
                                              a custom index storage must be under a --storage-root
   figlens workflow <topic>                     print built-in agent guidance, the same text as MCP workflow:
@@ -188,6 +202,10 @@ usage:
                                              rebuild published scopes even when unchanged; the old index
                                              serves until then. A reply with admission partial lists
                                              deferred items, each with the call that builds it later
+  figlens index embed <select> [--source ID] [--scope NODE] [--request-id ID]
+                                             embed published scopes with the configured local model
+                                             (figlens models) for semantic search; text search keeps
+                                             serving. A refresh with a model configured lists this step
   figlens index clear|clear_cache <select>   delete retired and unfinished indexes; keeps published ones
   figlens index status <select>              state, sources and storage rule; creates nothing
   figlens index add <file.fig|dir> <select> [--dry-run | --manifest HEX] [--cursor C]
@@ -451,6 +469,11 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             writeln!(out, "{}", watch(&args[1], &args[2..])?)?;
             return Ok(());
         }
+        Some("models") => {
+            let report = models(&args[1..])?;
+            writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
+            return Ok(());
+        }
         Some("jobs") => {
             let report = jobs(&args[1..])?;
             writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
@@ -499,8 +522,13 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
         .then(|| command::usages_request(&args[2..]))
         .transpose()?;
     let path = figlens::remote::local(file).map_err(|e| contract::source(file, e))?;
-    if let Some(request) = search {
-        out.push_str(&command::search(&path, &request, file)?.text()?);
+    if let Some((request, mode)) = search {
+        // Ctrl-C stops a model run and its child instead of killing figlens around them.
+        if mode != figlens::semantic::Mode::Text {
+            signals::catch();
+        }
+        let interrupted = &signals::INTERRUPTED;
+        out.push_str(&command::search(&path, &request, mode, file, interrupted)?.text()?);
         return Ok(());
     }
     if let Some(request) = usages {
@@ -998,13 +1026,15 @@ fn finish_jobs(
                 }
                 Some("interrupted") => {
                     // Retried as the same kind: a rebuild of an unchanged scope must not
-                    // become a refresh that reuses it.
+                    // become a refresh that reuses it, nor an embed a text refresh.
                     let select = Select::Id(ws.clone());
                     let (source, scope) = (now["sourceId"].as_str(), now["scope"].as_str());
-                    let again = if now["kind"] == "rebuild" {
-                        jobs::rebuild_scope(storage, &select, source, scope, None)?
-                    } else {
-                        figlens::workspace::refresh(storage, &select, source, scope, None)?
+                    let again = match now["kind"].as_str() {
+                        Some("rebuild") => {
+                            jobs::rebuild_scope(storage, &select, source, scope, None)?
+                        }
+                        Some("embed") => jobs::embed(storage, &select, source, scope, None)?,
+                        _ => figlens::workspace::refresh(storage, &select, source, scope, None)?,
                     };
                     // Another process may have taken it over first; then keep waiting.
                     if let Some(id) = again.run.first() {
@@ -1014,6 +1044,18 @@ fn finish_jobs(
                 _ => return Ok(now),
             }
         }
+    };
+    // This process runs no model job after it exits, so a text build that could have one says
+    // which call embeds it instead of leaving it queued for a dead owner.
+    let mut fin = |job: &serde_json::Value| -> Result<serde_json::Value, Box<dyn Error>> {
+        let mut done = fin(job)?;
+        if let (Some(step), Some(next)) = (
+            jobs::embed_step(storage, &done),
+            done["nextSteps"].as_array_mut(),
+        ) {
+            next.push(step);
+        }
+        Ok(done)
     };
     if report["job"].is_object() {
         report["job"] = fin(&report["job"])?;
@@ -1193,7 +1235,7 @@ fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
     use command::index::{Reply, Request};
     use figlens::workspace::{self, Select};
     let usage = || -> Box<dyn Error> {
-        "usage: figlens index prepare|status|add|refresh|remove|relocate|clear|rebuild|track|untrack|reset ...; see `figlens --help`"
+        "usage: figlens index prepare|status|add|refresh|remove|relocate|clear|rebuild|track|untrack|embed|reset ...; see `figlens --help`"
             .into()
     };
     let action = args.first().ok_or_else(usage)?.as_str();
@@ -1224,7 +1266,7 @@ fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
             request.file = Some(Path::new(path));
             request.project = a.workspace.map(Path::new);
         }
-        ("refresh" | "rebuild" | "track" | "untrack", []) => {
+        ("refresh" | "rebuild" | "track" | "untrack" | "embed", []) => {
             request.source = a.source.first().copied();
         }
         ("add", [path]) if a.source.is_empty() => request.file = Some(Path::new(path)),
@@ -1265,6 +1307,41 @@ fn jobs(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
     }
 }
 
+const MODELS: &str = "usage: figlens models list|status | configure <profile> --model DIR [--runtime FILE] | remove <profile>";
+
+/// `figlens models ...`: the local text model profiles semantic search uses. Nothing is
+/// downloaded; `configure` checks files the user already has.
+fn models(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
+    use figlens::semantic::profile;
+    let storage = figlens::workspace::storage(None)?;
+    let (mut model, mut runtime, mut rest) = (None, None, Vec::new());
+    let mut it = args.iter().skip(1);
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--model" => model = Some(PathBuf::from(it.next().ok_or(MODELS)?)),
+            "--runtime" => runtime = Some(PathBuf::from(it.next().ok_or(MODELS)?)),
+            _ if arg.starts_with("--") => return Err(MODELS.into()),
+            _ => rest.push(arg.as_str()),
+        }
+    }
+    match (args.first().map(String::as_str), rest.as_slice(), model) {
+        (Some("list"), [], None) => profile::list(&storage),
+        (Some("status"), [], None) => profile::status(&storage),
+        (Some("configure"), [name], Some(model)) => {
+            signals::catch();
+            profile::configure(
+                &storage,
+                profile::known(name)?,
+                &model,
+                runtime.as_deref(),
+                &signals::INTERRUPTED,
+            )
+        }
+        (Some("remove"), [name], None) => profile::remove(&storage, name),
+        _ => Err(MODELS.into()),
+    }
+}
+
 /// `figlens search --workspace DIR|--file <file.fig>|--id ws_... <query> [--source ID]...`:
 /// search the workspace's published indexes; nothing is built.
 fn workspace_search(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
@@ -1278,9 +1355,20 @@ fn workspace_search(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>
         .ok_or("choose the workspace with --workspace, --file or --id")?;
     let mut search_args = vec![query.to_string()];
     search_args.extend(a.search.iter().cloned());
-    let request = command::search_request(&search_args)?;
+    let (request, mode) = command::search_request(&search_args)?;
     let only: Vec<String> = a.source.iter().map(|s| s.to_string()).collect();
-    workspace::query::search(&storage, &select, &only, &request)
+    if mode == figlens::semantic::Mode::Text {
+        return workspace::query::search(&storage, &select, &only, &request);
+    }
+    signals::catch();
+    workspace::query::search_mode(
+        &storage,
+        &select,
+        &only,
+        &request,
+        mode,
+        &signals::INTERRUPTED,
+    )
 }
 
 const WATCH_RUN: &str = "usage: figlens watch run --workspace DIR|--file <file.fig>|--id ws_... --scope NODE [--source ID] [--request-id R] [--storage DIR]";

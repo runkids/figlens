@@ -14,6 +14,8 @@ function asset(platform, arch, version) {
   return {
     archive: `figlens-${version}-${ARCH[cpu]}-${OS[platform]}.${windows ? "zip" : "tar.gz"}`,
     binary: windows ? "figlens.exe" : "figlens",
+    // The optional local model runtime; figlens looks for it beside itself.
+    companion: windows ? "figlens-embed.exe" : "figlens-embed",
   };
 }
 
