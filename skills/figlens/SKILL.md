@@ -137,7 +137,7 @@ When the user asks for related component states, add `--states` to `inspect` or 
 
 When the user asks how two variants differ, inspect the first definition with `--compare-variant <other-id>` (MCP `compareVariant`). Both must belong to the same component set. Read `variantComparison.rootChanges`, descendant `collectionChanges`, `unpairedNodes`, `unknownFields` and its independent truncation before describing differences. These are stored fields/value multisets, not paired descendant changes, alternate instance renderings or pixel fidelity; use returned source IDs for further inspection.
 
-When the person has a `figlens preview` open, a browser-automation tool can ask the page instead: `window.figlens.rankedSearch(query, …)` and exact `window.figlens.usages(id, …)` return the `search` and `usages` replies for the served file, bound to its snapshot; see [the Agent API](https://github.com/runkids/figlens/blob/main/wiki/preview-api.md#calls).
+When the person has a `figlens preview` open, a browser-automation tool can ask the page instead: `window.figlens.rankedSearch(query, …)` and exact `window.figlens.usages(id, …)` return the `search` and `usages` replies for the served file, bound to its snapshot. Result rows and `context()` name the page; live, `context().source` names the loaded `sourceId`, `snapshotId` and local `revision`, which are null offline, where the page is unknown too; see [the Agent API](https://github.com/runkids/figlens/blob/main/wiki/preview-api.md#calls).
 
 ## Verification evidence
 
