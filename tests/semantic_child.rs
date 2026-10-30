@@ -968,6 +968,55 @@ fn without_a_profile_hybrid_says_why_and_semantic_refuses() {
     assert_eq!(kind, Some(figlens::ErrorKind::ModeUnavailable));
 }
 
+fn mcp_hybrid_without_a_profile_reuses_the_text_index() {
+    use std::io::{BufRead, BufReader, Write};
+    let dir = test_support::TestDir::new();
+    let root = std::path::absolute(dir.join("")).unwrap();
+    let mut mcp = figlens(&["mcp"]);
+    for var in [
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+    ] {
+        mcp.env(var, root.join(var));
+    }
+    let mut mcp = mcp
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = mcp.stdin.take().unwrap();
+    let mut stdout = BufReader::new(mcp.stdout.take().unwrap()).lines();
+    // Each call waits for its reply, so hybrid starts after text search's build; end of input
+    // would also cancel a model-mode call still running.
+    let [text, hybrid] = ["text", "hybrid"].map(|mode| {
+        let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "search",
+            "arguments": {"file": std::path::absolute(FIG).unwrap(), "query": "card", "mode": mode}}});
+        writeln!(stdin, "{call}").unwrap();
+        let reply: serde_json::Value =
+            serde_json::from_str(&stdout.next().unwrap().unwrap()).unwrap();
+        reply["result"]["structuredContent"].clone()
+    });
+    drop(stdin);
+    assert!(mcp.wait().unwrap().success());
+    assert_eq!(
+        hybrid["coverage"]["layers"]["semantic"]["reasons"][0]["code"],
+        "no_profile"
+    );
+    assert_eq!(hybrid["source"]["freshness"]["reusedIndex"], true);
+    let refs = |v: &serde_json::Value| -> Vec<serde_json::Value> {
+        v["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["ref"].clone())
+            .collect()
+    };
+    assert!(!refs(&text).is_empty());
+    assert_eq!(refs(&hybrid), refs(&text));
+}
+
 fn a_changed_model_file_is_refused_before_the_child_starts() {
     let dir = test_support::TestDir::new();
     // Its own weights, so no warm child of an earlier test shares its profile id.
@@ -2816,6 +2865,10 @@ fn main() {
         (
             "without_a_profile_hybrid_says_why_and_semantic_refuses",
             without_a_profile_hybrid_says_why_and_semantic_refuses,
+        ),
+        (
+            "mcp_hybrid_without_a_profile_reuses_the_text_index",
+            mcp_hybrid_without_a_profile_reuses_the_text_index,
         ),
         (
             "a_changed_model_file_is_refused_before_the_child_starts",

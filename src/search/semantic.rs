@@ -154,8 +154,12 @@ pub(super) fn properties(
         };
         let value = match (&prop["value"], prop["type"].as_str()) {
             _ if unknown => None,
+            // The target's name lies outside the definitions and assignments charged above.
             (Json::String(id), Some("INSTANCE_SWAP")) => {
-                tree.nodes.get(id).map(|n| kiwi_name(n).to_owned())
+                match tree.nodes.get(id).map(|n| kiwi_name(n)) {
+                    Some(n) if !bounds.charge(0, n.len()) => return None,
+                    n => n.map(str::to_owned),
+                }
             }
             (Json::String(v), _) => Some(v.clone()),
             (Json::Bool(b), _) => Some(b.to_string()),
@@ -423,8 +427,9 @@ pub fn search(
         (Ok(None), _) => Err(down("no_profile", None)),
         (Err(e), _) => Err(down("profile_unreadable", Some(e.to_string()))),
     };
-    // A text build that also kept the property inputs the layer embeds (never a usages build).
-    let (index, source) = loaded(path, &req.scope, false, true)?;
+    // A text build that also kept the property inputs the layer embeds (never a usages build);
+    // a hybrid fallback without a profile is text search: it shares text search's own index.
+    let (index, source) = loaded(path, &req.scope, false, profile.is_ok())?;
     reply_with(&index, &q, req, mode, profile, source, cancel)
 }
 

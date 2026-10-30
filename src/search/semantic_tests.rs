@@ -68,13 +68,18 @@ fn variant(id: u32, state: &str) -> K<'static> {
 /// file; `Promo card` overrides the label of the button its card nests, whose own assignments
 /// also set `Show icon`.
 fn message() -> K<'static> {
+    swapped("Arrow icon", 99)
+}
+
+/// `message` with `Pay button`'s `Icon` swapped to `arrow` and its `Badge` to node `badge`.
+fn swapped(arrow: &str, badge: u32) -> K<'static> {
     obj(vec![(
         "nodeChanges",
         K::Array(vec![
             node(0, None, "DOCUMENT", "Document", vec![]),
             node(1, Some(0), "CANVAS", "Checkout page", vec![]),
             node(20, Some(1), "SYMBOL", "Star icon", vec![]),
-            node(25, Some(1), "SYMBOL", "Arrow icon", vec![]),
+            node(25, Some(1), "SYMBOL", arrow, vec![]),
             node(
                 40,
                 Some(1),
@@ -112,7 +117,7 @@ fn message() -> K<'static> {
                     assign(90, text_value("Complete purchase")),
                     assign(91, bool_value(false)),
                     assign(92, swap_value(25)),
-                    assign(93, swap_value(99)),
+                    assign(93, swap_value(badge)),
                 ])],
             ),
             instance(
@@ -217,6 +222,29 @@ fn overridden_instance_properties_are_model_inputs_with_exact_provenance() {
     );
     assert_eq!(layer.unknown, 2);
     assert_eq!(layer_coverage(&layer, "p", [0, 0])["unknownProperties"], 2);
+}
+
+#[test]
+fn swap_target_names_are_charged_before_they_are_copied() {
+    // Both swaps name `Arrow icon`, which lies outside the definitions and assignments.
+    let pay = |arrow: &str, bytes| {
+        let message = swapped(arrow, 25);
+        let mut b = bounds(WORK);
+        b.bytes = bytes;
+        let got = properties(&Tree::new(&message), "0:3", None, &mut Defs::new(), &mut b);
+        (got, bytes - b.bytes)
+    };
+    let (_, spent) = pay("Arrow icon", BYTES);
+    let long = "Arrow icon ".repeat(10_000);
+    assert!(pay(&long, spent + long.len()).0.is_none());
+    let (all, _) = pay(&long, spent + 2 * long.len());
+    assert_eq!(
+        all.unwrap()
+            .into_iter()
+            .filter(|p| p.1.as_ref() == Some(&long))
+            .count(),
+        2
+    );
 }
 
 #[test]
