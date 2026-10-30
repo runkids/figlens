@@ -190,16 +190,25 @@ const VALID: &str = "EXISTS (SELECT 1 FROM tracking t WHERE t.source_id = watch_
     AND t.state IN ('active', 'baseline_pending'))";
 
 /// Workspaces this process holds leases in, so one renewal pass and one exit release reach
-/// them all.
-static HELD: std::sync::Mutex<Vec<(Storage, String)>> = std::sync::Mutex::new(Vec::new());
+/// them all, each with the mark of its latest lease start.
+static HELD: std::sync::Mutex<Vec<(Storage, String, u64)>> = std::sync::Mutex::new(Vec::new());
+static STARTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn remember_held(storage: &Storage, ws_id: &str) {
-    if let Ok(mut held) = HELD.lock()
-        && !held.iter().any(|(_, id)| id == ws_id)
-    {
-        held.push((storage.clone(), ws_id.to_owned()));
+    let mark = STARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    if let Ok(mut held) = HELD.lock() {
+        match held.iter_mut().find(|(_, id, _)| id == ws_id) {
+            Some(entry) => entry.2 = mark,
+            None => held.push((storage.clone(), ws_id.to_owned(), mark)),
+        }
     }
     wake();
+}
+
+/// Forgets the workspaces a renewal pass found done, unless a lease started in one since that
+/// pass read it: its mark moved, and the next pass renews it.
+fn forget(held: &mut Vec<(Storage, String, u64)>, done: &[(String, u64)]) {
+    held.retain(|(_, id, mark)| !done.iter().any(|(d, seen)| d == id && seen == mark));
 }
 
 /// MCP servers' renewal threads (one per server; tests run several in one process), parked
@@ -529,11 +538,11 @@ pub fn renew() -> Vec<(String, Result<usize>)> {
     let held = HELD.lock().map(|h| h.clone()).unwrap_or_default();
     // Every workspace renews before any runner start, which can wait for a stopping runner,
     // so one slow workspace never lets another's leases expire.
-    let renewals: Vec<_> = held.iter().map(|(s, id)| renew_one(s, id)).collect();
+    let renewals: Vec<_> = held.iter().map(|(s, id, _)| renew_one(s, id)).collect();
     let renewed: Vec<(String, Result<usize>)> = held
         .iter()
         .zip(renewals)
-        .map(|((storage, id), renewal)| {
+        .map(|((storage, id, _), renewal)| {
             let renewed = renewal.and_then(|(n, dir)| {
                 if n > 0 {
                     ensure_runner(storage, id, &dir)?;
@@ -545,15 +554,17 @@ pub fn renew() -> Vec<(String, Result<usize>)> {
         .collect();
     // A workspace with no lease of this process left (all ended, or it was reset or removed)
     // is forgotten, so the renewal thread parks again; a busy one is retried.
-    let done = |id: &str| {
-        renewed.iter().any(|(r, n)| {
-            r == id
-                && n.as_ref()
-                    .map_or_else(|e| super::database::gone(&**e), |n| *n == 0)
+    let done: Vec<(String, u64)> = held
+        .iter()
+        .zip(&renewed)
+        .filter(|(_, (_, n))| {
+            n.as_ref()
+                .map_or_else(|e| super::database::gone(&**e), |n| *n == 0)
         })
-    };
-    if let Ok(mut held) = HELD.lock() {
-        held.retain(|(_, id)| !done(id));
+        .map(|((_, id, mark), _)| (id.clone(), *mark))
+        .collect();
+    if let Ok(mut current) = HELD.lock() {
+        forget(&mut current, &done);
     }
     renewed
 }
@@ -583,7 +594,7 @@ pub fn stop(storage: &Storage, select: &Select, lease_id: &str) -> Result<Json> 
 /// process held the last ones it waits up to `CANCEL_WAIT` for that exit.
 pub fn release() {
     let held = HELD.lock().map(|h| h.clone()).unwrap_or_default();
-    for (storage, id) in held {
+    for (storage, id, _) in held {
         if let Ok((_, ws)) = opened(&storage, &Select::Id(id), true)
             && let Ok(holder) = owner(&ws.held.dir)
         {
@@ -1781,6 +1792,22 @@ mod tests {
 
     fn key(scope: &str) -> Scope {
         ("src".to_owned(), scope.to_owned())
+    }
+
+    #[test]
+    fn a_renewal_pass_forgets_a_workspace_only_if_no_lease_started_in_it_since_its_read() {
+        let dir = TestDir::new();
+        let home = std::path::absolute(dir.join("home")).unwrap();
+        let vars = move |name: &str| (name == "HOME").then(|| home.clone().into_os_string());
+        let storage = resolve(None, &vars, false, &|| None).unwrap();
+        let mut held = vec![
+            (storage.clone(), "a".to_owned(), 1),
+            (storage, "b".to_owned(), 3),
+        ];
+        // The pass read both with no lease left; a start in "b" moved its mark to 3 meanwhile.
+        forget(&mut held, &[("a".to_owned(), 1), ("b".to_owned(), 2)]);
+        let left: Vec<&str> = held.iter().map(|(_, id, _)| id.as_str()).collect();
+        assert_eq!(left, ["b"]);
     }
 
     #[test]

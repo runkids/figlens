@@ -3602,6 +3602,147 @@ fn a_frame_subscription_reads_a_complete_revision_that_reaches_it_only_through_i
     );
 }
 
+/// Follows each node, replaces the file with `write`'s output and refreshes; then how many
+/// revisions each subscription reads, the newest revision's stored entries and the old and new
+/// top-level frames stored for its impact hit on `0:42`.
+fn follow_through(
+    env: &Env,
+    nodes: &[&str],
+    write: fn(&std::ffi::OsStr) -> Result<(), Box<dyn std::error::Error>>,
+) -> (Vec<usize>, Value, Value) {
+    let t = Tracked::new(env);
+    let subs: Vec<String> = nodes.iter().map(|n| t.subscribe(&["--node", n])).collect();
+    let next = env.dir.join("next.fig");
+    write(next.as_os_str()).unwrap();
+    std::fs::rename(&next, &t.path).unwrap();
+    t.index("refresh");
+    let counts = subs
+        .iter()
+        .map(|s| {
+            t.changes(&["--subscription", s])["revisions"]
+                .as_array()
+                .unwrap()
+                .len()
+        })
+        .collect();
+    let all = t.changes(&[]);
+    let id = all["revisions"].as_array().unwrap().last().unwrap()["revisionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let frames = rusqlite::Connection::open(&t.db)
+        .unwrap()
+        .query_row(
+            "SELECT json_array(old_frame, new_frame) FROM revision_impacts WHERE node = '0:42'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .map_or(Value::Null, |f| serde_json::from_str(&f).unwrap());
+    (
+        counts,
+        t.changes(&["--revision", &id, "--limit", "500"]),
+        frames,
+    )
+}
+
+fn impact_entry(detail: &Value, id: &str) -> Value {
+    detail["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["entry"] == "impact" && n["id"] == id)
+        .map_or(Value::Null, |n| json!([n["class"], n["sides"]]))
+}
+
+#[test]
+fn node_subscriptions_follow_a_component_child_change_to_the_instance_and_its_frame() {
+    let env = Env::new();
+    // The Dot child changes; neither chip overrides it. The Chip main 0:50 holds the change
+    // itself; frame 0:1 and layer 0:12 are unrelated.
+    let (counts, detail, _) = follow_through(
+        &env,
+        &["0:41", "0:4", "0:50", "0:1", "0:12"],
+        corpus::write_dot_restyled,
+    );
+    // The instance's own facets are unchanged, while its expanded Dot child's appearance is not:
+    // a recorded change in the frame, whose REST fill differs between the two files.
+    let dot = detail["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["entry"] == "change" && n["id"] == "I0:41;0:51")
+        .map_or(Value::Null, |n| {
+            json!([n["change"], n["facets"], n["frame"]])
+        });
+    let fills = |write: fn(&std::ffi::OsStr) -> Result<(), Box<dyn std::error::Error>>,
+                 name: &str| {
+        let path = env.dir.join(name);
+        write(path.as_os_str()).unwrap();
+        fn find<'a>(v: &'a Value, id: &str) -> Option<&'a Value> {
+            if v["id"] == id {
+                return Some(v);
+            }
+            match v {
+                Value::Object(m) => m.values().find_map(|c| find(c, id)),
+                Value::Array(a) => a.iter().find_map(|c| find(c, id)),
+                _ => None,
+            }
+        }
+        let rest = env.json(&["nodes", path.to_str().unwrap(), "0:41"]);
+        find(&rest, "I0:41;0:51").unwrap()["fills"].clone()
+    };
+    let before = fills(|p| corpus::write(p, false), "old-dot.fig");
+    let after = fills(corpus::write_dot_restyled, "new-dot.fig");
+    assert_eq!(
+        (counts, impact_entry(&detail, "0:41"), dot, before == after),
+        (
+            vec![1, 1, 1, 0, 0],
+            json!(["effective_unchanged", ["old", "new"]]),
+            json!(["changed", ["appearance"], "0:4"]),
+            false
+        ),
+        "{detail}"
+    );
+}
+
+#[test]
+fn a_removed_instance_keeps_its_old_frame_and_its_own_subscription_reading_the_revision() {
+    let env = Env::new();
+    // Chip 0:42 is gone from the new file: its link to the component exists on the old side
+    // only. Its removal leaves the appearance verdict unknown, so the impact is incomplete and
+    // every node subscription reads the revision (0:12), as it cannot be ruled out.
+    let (counts, detail, frames) = follow_through(
+        &env,
+        &["0:4", "0:42", "0:12"],
+        corpus::write_dot_restyled_chip_removed,
+    );
+    assert_eq!(
+        (counts, impact_entry(&detail, "0:42"), frames),
+        (
+            vec![1, 1, 1],
+            json!(["direct", ["old"]]),
+            json!(["0:4", null])
+        ),
+        "{detail}"
+    );
+}
+
+#[test]
+fn only_the_frames_holding_an_affected_instance_on_either_side_read_a_component_change() {
+    let env = Env::new();
+    // Chip 0:42 moves from Components (0:4) into Effects (0:3).
+    let (counts, detail, frames) = follow_through(
+        &env,
+        &["0:1", "0:2", "0:3", "0:4"],
+        corpus::write_dot_restyled_chip_moved,
+    );
+    assert_eq!(
+        (counts, frames),
+        (vec![0, 0, 1, 1], json!(["0:4", "0:3"])),
+        "{detail}"
+    );
+}
+
 #[test]
 fn a_node_subscription_reads_revisions_whose_impact_reaches_that_node_or_is_incomplete() {
     let env = Env::new();
@@ -3655,6 +3796,30 @@ fn a_node_subscription_reads_revisions_whose_impact_reaches_that_node_or_is_inco
     ));
     let page = t.changes(&["--subscription", &reached]);
     assert_eq!(page["revisions"].as_array().unwrap().len(), 2, "{page}");
+}
+
+#[test]
+fn a_node_subscription_reads_a_revision_recorded_before_impact_was() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let source = t.changes(&[])["tracking"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let followed = t.subscribe(&["--node", "0:12"]);
+    // A complete revision naming none of 0:12, as schema 7 keeps one recorded before it: its
+    // impact is unknown, never an empty complete one, so it cannot rule the node out.
+    t.sql(&format!(
+        "INSERT INTO revisions (id, seq, source_id, scope, epoch, gen, from_gen, snapshot_id,
+         kind, coverage, summary, detail, detail_rows, detail_bytes, created_ms, impact)
+         SELECT randomblob(16), seq + 1, source_id, scope, epoch, gen, from_gen, snapshot_id,
+         'changes', '{{\"complete\":true}}', summary, 'complete', 0, 0, created_ms, NULL
+         FROM revisions WHERE source_id = '{source}' ORDER BY seq DESC LIMIT 1"
+    ));
+    let page = t.changes(&["--subscription", &followed]);
+    assert_eq!(page["revisions"].as_array().unwrap().len(), 1, "{page}");
 }
 
 #[test]

@@ -10,7 +10,7 @@ Field reference linked from [mcp](mcp.md).
 | `inspect.depth` | 0–10 / 1 |
 | `find.limit`, `search.limit` | 1–200 / 20 |
 | `usages.limit`, `usages.scope` | 1–200 / 50; `0:0` |
-| `changes.limit` | revisions 1–50 / 20; with `revision`, nodes 1–500 / 100 |
+| `changes.limit` | revisions 1–50 / 20; with `revision`, entries (changes, then impact) 1–500 / 100; with a query `subscriptionId`, evaluations 1–50 / 20 |
 | `export.scale` | finite and greater than 0 / 1 |
 | `export.quality` | 1–100 / 80 |
 | `export.maxKb` | 0 through `2^53-1`; omitted means no byte budget |
