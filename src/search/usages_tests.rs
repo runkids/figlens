@@ -2254,6 +2254,20 @@ fn libraries_design() -> K<'static> {
         let extra = vec![("styleIdForFill", obj(vec![("assetRef", r)]))];
         node(id, Some(2), "RECTANGLE", "Box", extra)
     };
+    // Two library styles on one record: each relation's edges keep their own sequence.
+    let both = |id| {
+        let r = |k: &str| {
+            obj(vec![(
+                "assetRef",
+                obj(vec![("key", s(k)), ("version", s("v1"))]),
+            )])
+        };
+        let extra = vec![
+            ("styleIdForFill", r("solo")),
+            ("styleIdForStrokeFill", r("bare")),
+        ];
+        node(id, Some(2), "RECTANGLE", "Outlined", extra)
+    };
     obj(vec![(
         "nodeChanges",
         K::Array(vec![
@@ -2278,6 +2292,7 @@ fn libraries_design() -> K<'static> {
             variable(34, "solo", Some("v")),
             binds(44, "solo"),
             binds(45, "absent"),
+            both(46),
         ]),
     )])
 }
@@ -2286,6 +2301,13 @@ fn library_edges(index: &Index) -> Vec<(String, Json, &'static str, &'static str
     let mut out = Vec::new();
     for r in &index.records {
         assert!(r.edges.iter().all(|e| e.relation != LIBRARY));
+        let keys: BTreeSet<_> = r
+            .edges
+            .iter()
+            .chain(&r.library)
+            .map(|e| (e.relation, e.seq))
+            .collect();
+        assert_eq!(keys.len(), r.edges.len() + r.library.len(), "{}", r.id);
         for e in &r.library {
             let target = serde_json::from_str(e.target.as_deref().unwrap()).unwrap();
             let evidence = serde_json::from_str(&e.evidence).unwrap();
@@ -2376,6 +2398,24 @@ fn library_references_keep_namespace_and_key_apart_and_never_borrow_a_namespace(
                     tint
                 )
             ),
+            (
+                "0:46".into(),
+                (
+                    json!(["style", "x", "solo"]),
+                    "external",
+                    "cached_copy",
+                    field.clone()
+                )
+            ),
+            (
+                "0:46".into(),
+                (
+                    json!(["style", null, "bare"]),
+                    "unresolved",
+                    "cached_copy",
+                    json!({"field": "styleIdForStrokeFill", "version": "v1"})
+                )
+            ),
         ]
     );
 }
@@ -2425,7 +2465,7 @@ fn only_a_stored_generation_extracts_library_references_and_no_query_lists_them(
             |row| row.get::<_, i64>(0)
         )
         .unwrap(),
-        9
+        11
     );
     let fresh = build(&tree, "0:0", bounds(WORK));
     assert_eq!(out["coverage"], run(&fresh, &r).unwrap()["coverage"]);

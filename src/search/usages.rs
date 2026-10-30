@@ -188,7 +188,8 @@ pub(crate) fn extract(
                 library_seq - 1
             }
             _ => out
-                .last()
+                .iter()
+                .rfind(|x| x.relation != LIBRARY)
                 .filter(|x| x.relation == relation)
                 .map_or(0, |x| x.seq + 1),
         };
