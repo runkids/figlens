@@ -673,8 +673,10 @@ pub(crate) fn add_properties(
             false => index.rids.binary_search(&rid).ok(),
         };
         let Some(at) = at else { continue };
-        // The text and the values parsed from it.
-        charge_query(spent, 2 * text_len(row, 1)?)?;
+        // The text and the values parsed from it, each entry (at least `["",null]`, 9 bytes)
+        // held as a name and an optional value: 48 bytes, as `cached_bytes` counts it.
+        let len = text_len(row, 1)?;
+        charge_query(spent, 2 * len + 48 * (len / 9 + 1))?;
         index.records[at].props =
             Some(serde_json::from_str(&need(text_at(row, 1, TEXT_BYTES)?)?).map_err(|_| bad())?);
     }

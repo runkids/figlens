@@ -247,7 +247,10 @@ impl Layer {
                     _ => open[n - 1].1.as_deref().unwrap_or_default(),
                 };
                 let line = match (p.kind.as_str(), above, p.name.as_str()) {
-                    ("DOCUMENT", ..) | (_, _, "") => above.to_owned(),
+                    ("DOCUMENT", ..) | (_, _, "") if bounds.charge(0, above.len()) => {
+                        above.to_owned()
+                    }
+                    ("DOCUMENT", ..) | (_, _, "") => break 'records,
                     (_, "", name) if bounds.charge(0, name.len()) => name.to_owned(),
                     (_, above, name) if bounds.charge(0, above.len() + 3 + name.len()) => {
                         format!("{above} / {name}")
@@ -421,7 +424,7 @@ pub fn search(
         (Err(e), _) => Err(down("profile_unreadable", Some(e.to_string()))),
     };
     // A full build: only it keeps the component properties the layer embeds.
-    let (index, source) = loaded(path, &req.scope, true)?;
+    let (index, source) = loaded(path, &req.scope, false, true)?;
     reply_with(&index, &q, req, mode, profile, source, cancel)
 }
 
