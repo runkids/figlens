@@ -627,8 +627,14 @@ pub fn list(
     let mut stmt = tx
         .prepare(&format!(
             "SELECT {} FROM subscriptions WHERE (?1 IS NULL OR consumer = ?1)
-             AND id > ?2 AND (?5 IS NULL OR id = ?5) AND {} ORDER BY id LIMIT ?4",
+             AND id > ?2 AND {} AND {} ORDER BY id LIMIT ?4",
             columns(ws.version),
+            // A plain `id = ?5` so the lookup seeks the key; an optional OR would range-scan.
+            if id.is_some() {
+                "id = ?5"
+            } else {
+                "?5 IS NULL"
+            },
             seen(3, ws.version)
         ))
         .map_err(sql)?;
