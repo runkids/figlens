@@ -1103,7 +1103,11 @@ fn state_name(state: State) -> &'static str {
 /// fenced out (another attempt took over, or the workspace was reset).
 /// `ws` is the runner's one read connection, held open (with the workspace's shared lock, so
 /// the database cannot be replaced under it) but with no transaction between reads.
-fn union(ws: &Opened, token: &str, attempt: i64) -> Result<Option<Vec<(String, String, String)>>> {
+/// Each served `(source, scope, path, published gen)`; the gen is what saved-query discovery
+/// compares, so a publication by anyone (this runner, `index refresh`, another host) is seen.
+type Served = Vec<(String, String, String, Option<i64>)>;
+
+fn union(ws: &Opened, token: &str, attempt: i64) -> Result<Option<Served>> {
     if fault("union_fails") {
         return Err(fail(
             ErrorKind::OperationFailed,
@@ -1125,12 +1129,13 @@ fn union(ws: &Opened, token: &str, attempt: i64) -> Result<Option<Vec<(String, S
     let rows = ws
         .conn
         .prepare_cached(&format!(
-            "SELECT DISTINCT l.source_id, l.scope, s.path FROM {SERVED_FROM}
+            "SELECT DISTINCT l.source_id, l.scope, s.path, p.gen FROM {SERVED_FROM}
+             LEFT JOIN published p ON p.source_id = l.source_id AND p.scope = l.scope
              WHERE {SERVED} ORDER BY l.source_id, l.scope"
         ))
         .and_then(|mut s| {
             s.query_map(params![now_ms(), ws.incarnation], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
             })?
             .collect()
         })
@@ -1310,6 +1315,155 @@ fn await_joined(storage: &Storage, id: &str, quit: &AtomicBool) -> Result<Option
     }
 }
 
+// shortcut: B3's bounded saved-query Turn (agreed v3) is not committed yet; this stand-in has its
+// signature and finds nothing due. Replace it with B3's `changes` items when its pin lands.
+mod saved {
+    use super::*;
+    #[derive(Clone, Debug, PartialEq)]
+    pub(super) struct Continuation;
+    pub(super) struct Turn {
+        pub(super) next: Option<Continuation>,
+    }
+    pub(super) fn evaluate_published(
+        _: &Storage,
+        _: &Select,
+        _: &str,
+        _: &str,
+        _: Option<Continuation>,
+        _: &AtomicBool,
+    ) -> Result<Turn> {
+        Ok(Turn { next: None })
+    }
+}
+
+type Scope = (String, String);
+
+/// One leased scope's next saved-query Turn: where it resumes, and not before `at`.
+struct Due<C> {
+    key: Scope,
+    from: Option<C>,
+    at: Instant,
+}
+
+/// How a Turn ended: `Next` with the queue's continuation (none: nothing left at this
+/// publication); `Again` when a save or exit interrupted it, writing nothing; `Retry` after a
+/// transient busy or storage race; `Drop` for anything else, which the queue records itself.
+enum Outcome<C> {
+    Next(Option<C>),
+    Again(Option<C>),
+    Retry(Option<C>),
+    Drop,
+}
+
+/// Saved-query work of the leased scopes, in memory only: a scope is due when it first appears
+/// (runner start, lease admission) or its published generation changes, then gets one bounded
+/// Turn at a time, round-robin. A restart recomputes everything from the stored evaluations.
+struct Saved<C> {
+    seen: std::collections::BTreeMap<Scope, Option<i64>>,
+    due: std::collections::VecDeque<Due<C>>,
+}
+
+impl<C> Saved<C> {
+    fn new() -> Self {
+        Saved {
+            seen: Default::default(),
+            due: Default::default(),
+        }
+    }
+
+    /// Takes one union read: drops scopes no longer served and queues new or republished ones
+    /// from their start, superseding any continuation of an older publication.
+    fn observe(&mut self, rows: &Served, now: Instant) {
+        let live: std::collections::BTreeSet<Scope> =
+            rows.iter().map(|r| (r.0.clone(), r.1.clone())).collect();
+        self.seen.retain(|k, _| live.contains(k));
+        self.due.retain(|d| live.contains(&d.key));
+        for (source, scope, _, published) in rows {
+            let key = (source.clone(), scope.clone());
+            if self.seen.get(&key) != Some(published) {
+                self.seen.insert(key.clone(), *published);
+                self.due.retain(|d| d.key != key);
+                self.due.push_back(Due {
+                    key,
+                    from: None,
+                    at: now,
+                });
+            }
+        }
+    }
+
+    /// The first queued Turn whose time has come.
+    fn take(&mut self, now: Instant) -> Option<Due<C>> {
+        let i = self.due.iter().position(|d| d.at <= now)?;
+        self.due.remove(i)
+    }
+
+    /// Requeues a finished Turn's scope at the back, unless it stopped being served or a newer
+    /// publication already queued it afresh.
+    fn finished(&mut self, key: Scope, outcome: Outcome<C>, now: Instant) {
+        if !self.seen.contains_key(&key) || self.due.iter().any(|d| d.key == key) {
+            return;
+        }
+        let (from, at) = match outcome {
+            Outcome::Next(None) | Outcome::Drop => return,
+            Outcome::Next(Some(c)) => (Some(c), now),
+            Outcome::Again(from) => (from, now),
+            Outcome::Retry(from) => (from, now + BUSY),
+        };
+        self.due.push_back(Due { key, from, at });
+    }
+}
+
+/// Runs one bounded saved-query Turn. `halt` is set when a save waits or the runner exits, and
+/// interrupts the Turn's search.
+fn turn(
+    storage: &Storage,
+    ws_id: &str,
+    due: Due<saved::Continuation>,
+    halt: &AtomicBool,
+) -> Outcome<saved::Continuation> {
+    if fault("turn_holds") {
+        // Test builds: a Turn that only an interrupt ends; `<file>.reached` says it started.
+        if let Some((_, file)) = std::env::var("FIGLENS_TEST_WATCH")
+            .ok()
+            .as_deref()
+            .and_then(|v| v.split_once(':'))
+        {
+            let _ = std::fs::write(format!("{file}.reached"), "");
+        }
+        while !halt.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        return Outcome::Again(due.from);
+    }
+    let (source, scope) = &due.key;
+    let select = Select::Id(ws_id.to_owned());
+    match saved::evaluate_published(storage, &select, source, scope, due.from.clone(), halt) {
+        Ok(t) => Outcome::Next(t.next),
+        Err(e) => match e.downcast_ref::<FigError>().map(|f| f.kind()) {
+            Some(ErrorKind::Cancelled) => Outcome::Again(due.from),
+            Some(ErrorKind::WorkspaceBusy | ErrorKind::StorageUnavailable) => {
+                Outcome::Retry(due.from)
+            }
+            _ => {
+                eprintln!("figlens watch: saved queries of {source} {scope}: {e}");
+                Outcome::Drop
+            }
+        },
+    }
+}
+
+/// The runner worker's one job at a time.
+enum Work {
+    Refresh(Refresh),
+    Turn(Due<saved::Continuation>),
+}
+
+enum Done {
+    Refresh(Finished),
+    Turn(Scope, Outcome<saved::Continuation>),
+}
+
 /// Refreshes every still-served scope of one source, one at a time: its own jobs run here to
 /// their end; a job another process already runs is awaited, never run or cancelled. A source
 /// counts as verified only when every job ended `succeeded`.
@@ -1442,19 +1596,28 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
     // Set on exit: submit nothing more and stop waiting for a job another process runs.
     let quit = AtomicBool::new(false);
     let idle = AtomicBool::new(false);
-    let (to_worker, jobs) = std::sync::mpsc::channel::<Refresh>();
-    let (done, finished) = std::sync::mpsc::channel::<Finished>();
+    // Set to interrupt a saved-query Turn: a save waits, or the runner exits.
+    let halt = AtomicBool::new(false);
+    let (to_worker, jobs) = std::sync::mpsc::channel::<Work>();
+    let (done, finished) = std::sync::mpsc::channel::<Done>();
     std::thread::scope(|scope| -> Result<()> {
-        let (cancel, quit, idle) = (&cancel, &quit, &idle);
+        let (cancel, quit, idle, halt) = (&cancel, &quit, &idle, &halt);
         scope.spawn(move || {
-            for job in jobs {
-                let _ = done.send(refresh(storage, ws_id, &job, cancel, quit));
+            for work in jobs {
+                let _ = done.send(match work {
+                    Work::Refresh(job) => {
+                        Done::Refresh(refresh(storage, ws_id, &job, cancel, quit))
+                    }
+                    Work::Turn(due) => Done::Turn(due.key.clone(), turn(storage, ws_id, due, halt)),
+                });
             }
             idle.store(true, std::sync::atomic::Ordering::SeqCst);
         });
         let mut watched = std::collections::BTreeMap::<String, Watched>::new();
         let (mut read_at, mut persist_at) = (Instant::now(), Instant::now() + PERSIST);
         let mut busy = false;
+        let mut saved = Saved::new();
+        let mut turning = false;
         // Sources whose refresh waits for the worker, served in arrival order so a source that
         // keeps changing cannot take every turn.
         let mut waiting = std::collections::VecDeque::<String>::new();
@@ -1467,6 +1630,7 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
                     let Some(rows) = union(&reader, &token, attempt)? else {
                         return Ok(());
                     };
+                    saved.observe(&rows, now);
                     // No lease served: exit unless a live one (say, on a pending baseline) remains;
                     // the reader checks first so such a lease costs no write transaction per poll.
                     if rows.is_empty() && live_leases(&reader)? == 0 {
@@ -1482,7 +1646,7 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
                     }
                     let mut wanted =
                         std::collections::BTreeMap::<String, (String, Vec<String>)>::new();
-                    for (source, scope, path) in rows {
+                    for (source, scope, path, _) in rows {
                         wanted
                             .entry(source)
                             .or_insert((path, Vec::new()))
@@ -1512,7 +1676,15 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
                             .scopes = scopes;
                     }
                 }
-                while let Ok(f) = finished.try_recv() {
+                while let Ok(done) = finished.try_recv() {
+                    let f = match done {
+                        Done::Refresh(f) => f,
+                        Done::Turn(key, outcome) => {
+                            turning = false;
+                            saved.finished(key, outcome, Instant::now());
+                            continue;
+                        }
+                    };
                     busy = false;
                     // A source relocated meanwhile is watched anew: this result is not its own.
                     if let Some(w) = watched.get_mut(&f.source).filter(|w| w.path == f.path) {
@@ -1537,11 +1709,11 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
                 while !busy && let Some(source) = waiting.pop_front() {
                     if let Some(w) = watched.get(&source) {
                         busy = true;
-                        let _ = to_worker.send(Refresh {
+                        let _ = to_worker.send(Work::Refresh(Refresh {
                             source,
                             path: w.path.clone(),
                             scopes: w.scopes.clone(),
-                        });
+                        }));
                     }
                 }
                 for (source, w) in watched.iter_mut() {
@@ -1561,14 +1733,27 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
                     // One refresh at a time; the detector coalesces a change seen meanwhile.
                     if step.submit && !busy {
                         busy = true;
-                        let _ = to_worker.send(Refresh {
+                        let _ = to_worker.send(Work::Refresh(Refresh {
                             source: source.clone(),
                             path: w.path.clone(),
                             scopes: w.scopes.clone(),
-                        });
+                        }));
                     } else if step.submit && !waiting.contains(source) {
                         waiting.push_back(source.clone());
                     }
+                }
+                // Saves come first: a Turn runs only on an idle worker, and one in flight is
+                // interrupted as soon as a refresh is queued behind it.
+                if turning && (busy || !waiting.is_empty()) {
+                    halt.store(true, std::sync::atomic::Ordering::SeqCst);
+                } else if !turning
+                    && !busy
+                    && waiting.is_empty()
+                    && let Some(due) = saved.take(Instant::now())
+                {
+                    halt.store(false, std::sync::atomic::Ordering::SeqCst);
+                    turning = true;
+                    let _ = to_worker.send(Work::Turn(due));
                 }
                 if Instant::now() >= persist_at {
                     persist_at = Instant::now() + PERSIST;
@@ -1583,6 +1768,7 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
         // unshared attempt, let a shared one finish, then release the lock.
         // Repeated until the worker is done, so an attempt it admitted meanwhile is caught too.
         quit.store(true, std::sync::atomic::Ordering::SeqCst);
+        halt.store(true, std::sync::atomic::Ordering::SeqCst);
         drop(to_worker);
         while !idle.load(std::sync::atomic::Ordering::SeqCst) {
             let _ = cancel_exclusive(storage, ws_id, &token);
@@ -1601,6 +1787,82 @@ mod tests {
     use crate::test_support::TestDir;
     use crate::workspace::{PrepareOptions, prepare, resolve};
     use std::ffi::OsString;
+
+    fn served(rows: &[(&str, Option<i64>)]) -> Served {
+        rows.iter()
+            .map(|(scope, g)| ("src".to_owned(), (*scope).to_owned(), "f".to_owned(), *g))
+            .collect()
+    }
+
+    fn key(scope: &str) -> Scope {
+        ("src".to_owned(), scope.to_owned())
+    }
+
+    #[test]
+    fn saved_queries_are_due_once_per_appearance_or_publication() {
+        let (mut q, now) = (Saved::<u32>::new(), Instant::now());
+        q.observe(&served(&[("0:1", Some(1)), ("0:2", None)]), now);
+        q.observe(&served(&[("0:1", Some(1)), ("0:2", None)]), now);
+        assert_eq!(
+            q.due.len(),
+            2,
+            "an unchanged union read queues nothing more"
+        );
+        let first = q.take(now).unwrap();
+        q.finished(first.key, Outcome::Next(Some(7)), now);
+        q.observe(&served(&[("0:1", Some(2)), ("0:2", None)]), now);
+        let again: Vec<_> = q.due.iter().map(|d| (d.key.1.clone(), d.from)).collect();
+        assert_eq!(again, [("0:2".to_owned(), None), ("0:1".to_owned(), None)]);
+    }
+
+    #[test]
+    fn a_scope_no_longer_served_is_dropped_even_mid_turn() {
+        let (mut q, now) = (Saved::<u32>::new(), Instant::now());
+        q.observe(&served(&[("0:1", Some(1))]), now);
+        let due = q.take(now).unwrap();
+        q.observe(&served(&[]), now);
+        q.finished(due.key, Outcome::Again(Some(3)), now);
+        assert!(q.due.is_empty() && q.seen.is_empty());
+    }
+
+    #[test]
+    fn a_busy_turn_waits_out_the_backoff_and_an_interrupted_one_resumes_at_once() {
+        let (mut q, now) = (Saved::<u32>::new(), Instant::now());
+        q.observe(&served(&[("0:1", Some(1)), ("0:2", Some(1))]), now);
+        let a = q.take(now).unwrap();
+        q.finished(a.key, Outcome::Retry(Some(4)), now);
+        let b = q.take(now).unwrap();
+        assert_eq!(b.key, key("0:2"));
+        q.finished(b.key, Outcome::Again(Some(5)), now);
+        assert_eq!(
+            q.take(now).map(|d| (d.key, d.from)),
+            Some((key("0:2"), Some(5)))
+        );
+        assert!(q.take(now).is_none(), "the busy scope waits");
+        assert_eq!(q.take(now + BUSY).map(|d| d.from), Some(Some(4)));
+    }
+
+    #[test]
+    fn scopes_take_turns_and_a_finished_queue_stops_until_the_next_publication() {
+        let (mut q, now) = (Saved::<u32>::new(), Instant::now());
+        q.observe(&served(&[("0:1", Some(1)), ("0:2", Some(1))]), now);
+        let a = q.take(now).unwrap();
+        q.finished(a.key, Outcome::Next(Some(1)), now);
+        assert_eq!(q.take(now).unwrap().key, key("0:2"), "round-robin");
+        let a = q.take(now).unwrap();
+        q.finished(a.key, Outcome::Next(None), now);
+        assert!(q.take(now).is_none());
+    }
+
+    #[test]
+    fn a_turn_of_an_older_publication_does_not_overwrite_the_fresh_start() {
+        let (mut q, now) = (Saved::<u32>::new(), Instant::now());
+        q.observe(&served(&[("0:1", Some(1))]), now);
+        let due = q.take(now).unwrap();
+        q.observe(&served(&[("0:1", Some(2))]), now);
+        q.finished(due.key, Outcome::Next(Some(9)), now);
+        assert_eq!(q.due.iter().map(|d| d.from).collect::<Vec<_>>(), [None]);
+    }
 
     /// A prepared workspace with `n` copies of the public fixture, each source's scope `0:1`
     /// marked tracked; its storage, selector, directory and source ids.

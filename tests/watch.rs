@@ -171,6 +171,36 @@ fn a_save_while_watched_records_a_revision_without_a_refresh_call() {
 }
 
 #[test]
+fn a_save_interrupts_a_saved_query_turn_and_an_exit_ends_one() {
+    let env = Env::new();
+    let hold = env.dir.join("turn");
+    std::fs::write(&hold, "").unwrap();
+    let mut command = env.command(&["watch", "run", "--file", &env.file, "--scope", "0:0"]);
+    command.env(
+        "FIGLENS_TEST_WATCH",
+        format!("turn_holds:{}", hold.display()),
+    );
+    let holder = env.holder_with(&mut command);
+    wait_for(
+        "a saved-query turn in flight",
+        Duration::from_secs(10),
+        || env.dir.join("turn.reached").exists(),
+    );
+    env.save(true);
+    wait_for(
+        "the save's revision past the turn",
+        Duration::from_secs(10),
+        || env.changes() == 1,
+    );
+    holder.close();
+    wait_for(
+        "the runner to exit mid-turn",
+        Duration::from_secs(10),
+        || !env.runner_running(),
+    );
+}
+
+#[test]
 fn changes_reports_the_monitor_apart_from_tracking() {
     let env = Env::new();
     assert_eq!(env.monitor()["state"], "inactive");
