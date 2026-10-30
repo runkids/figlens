@@ -2,6 +2,10 @@
 
 Use this topic for MCP instructions, tool discovery and built-in workflow guidance. Design decoding and result contracts are in `fig-format`; Pi-specific commands and tools are in `pi`; OpenCode/OMP MCP registration, override policy and host permissions are in [integrations](integrations.md).
 
+## Startup arguments
+
+Client `args` pass `--root DIR` and `--storage-root DIR` after `mcp`; these are the only startup options, both optional and repeatable. Use absolute paths to existing directories. Without `--root`, figlens adds no design/output path boundary beyond OS permissions; it neither defaults to the project nor scans the computer. These boundaries apply only to figlens MCP, not other host tools. `--storage-root` authorizes explicit custom storage; it does not choose a location. The `index` tool's `storage` argument chooses it, and `prepare` remembers it for later hosts without another flag. See the [README parameter table and multi-root JSON example](../README.md#mcp-args) and [workspace authorization](workspace.md#mcp-authorization).
+
 ## Intent and tool selection
 
 `src/mcp.rs` serves stdio JSON-RPC; `src/main.rs` configures roots and starts it. Initialization returns a short intent router: resolve recognizable screens through `find`/`tree` (or `search` for effective instance copy), read compact values with `inspect`, full style/mask/component data with `nodes`, tokens with `variables`, and pixels/assets with `export`. `bundle` writes a scoped handoff, `verify` checks it. Only if asked for an index: `index` prepare with a scope, `jobs` status, `search` with `workspaceId`. `usages` takes an exact id on the file or within a prepared scope. `diff` pages changes between two local revisions ([diff](diff.md)). Only if asked to follow changes: `index` track, then `changes` with a consumer and `watch` ack of each handled page ([changes](changes.md)).

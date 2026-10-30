@@ -74,6 +74,42 @@ codex mcp add figlens -- npx -y @runkids/figlens mcp
 
 Sans Node.js, installez le binaire autonome ([CLI](#setup-cli)) et utilisez `"command": "figlens", "args": ["mcp"]`. Ouvrez une nouvelle session et vérifiez que les outils figlens apparaissent (`/mcp` dans Claude Code). Aucune installation séparée du skill n'est nécessaire. Ajoutez `--root <dir>` après `mcp` pour limiter les dossiers que figlens peut lire et écrire.
 
+<a id="mcp-args"></a>
+
+#### Arguments de démarrage MCP
+
+Ajoutez ces options après `mcp` dans les `args` du client. Ce sont les seules options de démarrage MCP ; les deux sont facultatives et répétables.
+
+| Option | Rôle |
+|---|---|
+| `--root DIR` | Autorise la lecture des designs et les exports dans `DIR` et ses sous-dossiers. Sans cette option, figlens n’ajoute aucune restriction de chemin ; les permissions système restent applicables. Il ne se limite pas au projet courant et ne parcourt pas l’ordinateur. |
+| `--storage-root DIR` | Autorise un stockage d’index personnalisé explicitement demandé dans `DIR` et ses sous-dossiers. Ne sélectionne ni ne modifie le stockage par défaut. |
+
+Utilisez des chemins absolus vers des répertoires existants. Chaque option et chemin est un élément distinct du tableau ; répétez l’option pour plusieurs dossiers. `--root` est une limite de chemin, pas un accès administrateur, et ne restreint que figlens MCP, pas les autres outils de l’agent.
+
+Exemple avec deux racines de design/sortie et deux racines de stockage autorisées :
+
+```json
+{
+  "mcpServers": {
+    "figlens": {
+      "command": "npx",
+      "args": [
+        "-y", "@runkids/figlens", "mcp",
+        "--root", "/absolute/designs",
+        "--root", "/absolute/project",
+        "--storage-root", "/absolute/storage-a",
+        "--storage-root", "/absolute/storage-b"
+      ]
+    }
+  }
+}
+```
+
+`figlens mcp --storage` n’existe pas. Choisissez l’emplacement réel avec l’argument `storage` de l’outil `index` (chemin absolu sous une racine autorisée), ou via CLI : `figlens index prepare design.fig --storage /absolute/storage-a`. Après `prepare`, figlens mémorise l’emplacement du workspace et le réutilise entre redémarrages et hôtes sans répéter `storage` ni `--storage-root`. Sans emplacement personnalisé, les répertoires par défaut de l’utilisateur s’appliquent, sans option de stockage.
+
+Plusieurs racines de stockage élargissent seulement les emplacements autorisés : chaque `storage` en choisit un seul. Elles ne distribuent, ne synchronisent et ne sauvegardent pas les index. Indiquer une autre racine ne déplace pas une base existante ; figlens refuse l’emplacement en conflit.
+
 <a id="setup-pi"></a>
 
 ### Pi

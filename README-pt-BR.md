@@ -74,6 +74,42 @@ codex mcp add figlens -- npx -y @runkids/figlens mcp
 
 Sem Node.js, instale o binário independente ([CLI](#setup-cli)) e use `"command": "figlens", "args": ["mcp"]`. Abra uma nova sessão e confira se as ferramentas do figlens aparecem (`/mcp` no Claude Code). Não é preciso instalar o skill separadamente. Adicione `--root <dir>` depois de `mcp` para limitar quais pastas o figlens pode ler e gravar.
 
+<a id="mcp-args"></a>
+
+#### Argumentos de inicialização MCP
+
+Adicione estas opções após `mcp` nos `args` do cliente. São as únicas opções de inicialização MCP; ambas são opcionais e repetíveis.
+
+| Opção | Significado |
+|---|---|
+| `--root DIR` | Permite ler designs e exportar dentro de `DIR` e suas subpastas. Sem ela, figlens não adiciona restrições de caminho; as permissões do sistema continuam valendo. Não se limita ao projeto atual nem varre o computador. |
+| `--storage-root DIR` | Permite armazenamento de índices personalizado solicitado explicitamente dentro de `DIR` e suas subpastas. Não seleciona nem altera o local padrão. |
+
+Use caminhos absolutos para diretórios existentes. Cada opção e caminho é um item separado do array; repita a opção para várias pastas. `--root` é um limite de caminho, não acesso de administrador, e restringe apenas figlens MCP, não outras ferramentas do agent.
+
+Exemplo com duas raízes de design/saída e duas raízes de armazenamento permitidas:
+
+```json
+{
+  "mcpServers": {
+    "figlens": {
+      "command": "npx",
+      "args": [
+        "-y", "@runkids/figlens", "mcp",
+        "--root", "/absolute/designs",
+        "--root", "/absolute/project",
+        "--storage-root", "/absolute/storage-a",
+        "--storage-root", "/absolute/storage-b"
+      ]
+    }
+  }
+}
+```
+
+Não existe `figlens mcp --storage`. Escolha o local real com o argumento `storage` do tool `index` (caminho absoluto dentro de uma raiz permitida), ou pela CLI: `figlens index prepare design.fig --storage /absolute/storage-a`. Após `prepare`, figlens lembra o local do workspace e o reutiliza entre reinicializações e hosts sem repetir `storage` ou `--storage-root`. Sem local personalizado, usa os diretórios padrão do usuário, sem flags de armazenamento.
+
+Várias raízes de armazenamento apenas ampliam os locais permitidos: cada `storage` ainda escolhe um só. Não distribuem, sincronizam nem fazem backup dos índices. Indicar outra raiz não move um banco de dados existente; figlens recusa o local em conflito.
+
 <a id="setup-pi"></a>
 
 ### Pi

@@ -74,6 +74,42 @@ codex mcp add figlens -- npx -y @runkids/figlens mcp
 
 Sin Node.js, instala el binario independiente ([CLI](#setup-cli)) y usa `"command": "figlens", "args": ["mcp"]`. Abre una sesión nueva y comprueba que aparecen las herramientas de figlens (`/mcp` en Claude Code). No hace falta instalar el skill por separado. Añade `--root <dir>` después de `mcp` para limitar qué carpetas puede leer y escribir figlens.
 
+<a id="mcp-args"></a>
+
+#### Argumentos de inicio MCP
+
+Añade estas opciones después de `mcp` en los `args` del cliente. Son las únicas opciones de inicio MCP; ambas son opcionales y repetibles.
+
+| Opción | Significado |
+|---|---|
+| `--root DIR` | Permite leer diseños y exportar dentro de `DIR` y sus subcarpetas. Sin ella, figlens no añade límites de ruta; siguen aplicándose los permisos del sistema. No se limita al proyecto actual ni escanea el equipo. |
+| `--storage-root DIR` | Permite solicitar explícitamente almacenamiento de índices personalizado dentro de `DIR` y sus subcarpetas. No selecciona ni cambia la ubicación predeterminada. |
+
+Usa rutas absolutas a directorios existentes. Cada opción y ruta es un elemento del array; repite la opción para varias carpetas. `--root` es un límite de rutas, no acceso de administrador, y solo restringe figlens MCP, no otras herramientas del agent.
+
+Ejemplo con dos raíces de diseño/salida y dos raíces de almacenamiento permitidas:
+
+```json
+{
+  "mcpServers": {
+    "figlens": {
+      "command": "npx",
+      "args": [
+        "-y", "@runkids/figlens", "mcp",
+        "--root", "/absolute/designs",
+        "--root", "/absolute/project",
+        "--storage-root", "/absolute/storage-a",
+        "--storage-root", "/absolute/storage-b"
+      ]
+    }
+  }
+}
+```
+
+No existe `figlens mcp --storage`. Selecciona la ubicación real con el argumento `storage` del tool `index` (ruta absoluta dentro de una raíz permitida), o con CLI: `figlens index prepare design.fig --storage /absolute/storage-a`. Tras `prepare`, figlens recuerda la ubicación del workspace y la reutiliza entre reinicios y hosts sin repetir `storage` ni `--storage-root`. Sin ubicación personalizada se usan los directorios predeterminados del usuario, sin flags de almacenamiento.
+
+Varias raíces de almacenamiento solo amplían las ubicaciones permitidas: cada `storage` elige una sola. No distribuyen, sincronizan ni respaldan índices. No se puede mover una base de datos existente indicando otra raíz; figlens rechaza la ubicación en conflicto.
+
 <a id="setup-pi"></a>
 
 ### Pi

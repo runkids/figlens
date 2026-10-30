@@ -74,6 +74,42 @@ codex mcp add figlens -- npx -y @runkids/figlens mcp
 
 Node.js がない場合は、スタンドアロン版のバイナリ（[CLI](#setup-cli)）をインストールし、`"command": "figlens", "args": ["mcp"]` を使います。新しいセッションを開き、figlens のツールが一覧に表示されることを確認します（Claude Code では `/mcp`）。skill を別途インストールする必要はありません。`mcp` の後に `--root <dir>` を付けると、figlens が読み書きできるフォルダーを制限できます。
 
+<a id="mcp-args"></a>
+
+#### MCP 起動引数
+
+クライアントの `args` で `mcp` の後に指定します。MCP の起動オプションはこの 2 つだけで、どちらも省略・複数指定が可能です。
+
+| オプション | 用途 |
+|---|---|
+| `--root DIR` | `DIR` とそのサブフォルダー内のデザイン読み取りとエクスポートを許可します。省略時は figlens 独自のパス制限はなく、OS の権限が適用されます。現在のプロジェクトに限定されるわけではなく、コンピューターを自動走査することもありません。 |
+| `--storage-root DIR` | `DIR` とそのサブフォルダー内で明示的に要求されたカスタムのインデックス保存先を許可します。既定の保存先を選択・変更するものではありません。 |
+
+既存ディレクトリの絶対パスを使ってください。オプションとパスはそれぞれ別の配列要素です。複数フォルダーにはオプションを繰り返します。`--root` はパスの境界であり管理者権限ではありません。figlens MCP のみを制限し、エージェントの他のツールは制限しません。
+
+デザイン／出力用ルート 2 つと、保存先の許可ルート 2 つの例：
+
+```json
+{
+  "mcpServers": {
+    "figlens": {
+      "command": "npx",
+      "args": [
+        "-y", "@runkids/figlens", "mcp",
+        "--root", "/absolute/designs",
+        "--root", "/absolute/project",
+        "--storage-root", "/absolute/storage-a",
+        "--storage-root", "/absolute/storage-b"
+      ]
+    }
+  }
+}
+```
+
+`figlens mcp --storage` オプションはありません。実際の保存先は `index` ツールの `storage` 引数（許可された保存先ルート内の絶対パス）、または CLI `figlens index prepare design.fig --storage /absolute/storage-a` で選択します。`prepare` 後は workspace の場所が記憶され、再起動やホストをまたいで `storage` や `--storage-root` を再指定せず再利用できます。未指定時はユーザーごとの既定ディレクトリを使うため、保存先フラグは不要です。
+
+保存先ルートを複数指定しても許可範囲が増えるだけで、各 `storage` が選ぶ場所は 1 つです。インデックスの分散・同期・バックアップは行いません。別のルートを指定するだけでは既存 workspace のデータベースは移動できず、場所が競合すると figlens は拒否します。
+
 <a id="setup-pi"></a>
 
 ### Pi

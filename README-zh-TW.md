@@ -74,6 +74,42 @@ codex mcp add figlens -- npx -y @runkids/figlens mcp
 
 沒有 Node.js 時，先安裝獨立執行檔（見 [CLI](#setup-cli)），再改用 `"command": "figlens", "args": ["mcp"]`。開啟新的 session，確認看得到 figlens 工具（Claude Code 用 `/mcp`）。不必另外安裝 skill。在 `mcp` 後面加上 `--root <dir>`，可以限制 figlens 能讀寫的資料夾。
 
+<a id="mcp-args"></a>
+
+#### MCP 啟動參數
+
+將以下選項放在 client 的 `args` 中、`mcp` 之後。MCP 啟動選項只有這兩個，皆為選填且可重複。
+
+| 選項 | 用途 |
+|---|---|
+| `--root DIR` | 允許讀取 `DIR` 與子資料夾內的設計檔，以及寫出匯出檔案。未指定時，figlens 不加上路徑限制，仍受作業系統權限約束；不是預設限制在目前專案，也不會掃描整台電腦。 |
+| `--storage-root DIR` | 允許在 `DIR` 與子資料夾內明確指定自訂索引儲存位置。它不會選擇或改變預設儲存位置。 |
+
+請使用已存在目錄的絕對路徑。每個選項和路徑都是獨立的陣列項目；多個資料夾要重複寫選項。`--root` 是路徑邊界，不是管理員權限；只限制 figlens MCP，不限制 agent 的其他工具。
+
+兩個設計／輸出範圍與兩個 storage 允許範圍的範例：
+
+```json
+{
+  "mcpServers": {
+    "figlens": {
+      "command": "npx",
+      "args": [
+        "-y", "@runkids/figlens", "mcp",
+        "--root", "/absolute/designs",
+        "--root", "/absolute/project",
+        "--storage-root", "/absolute/storage-a",
+        "--storage-root", "/absolute/storage-b"
+      ]
+    }
+  }
+}
+```
+
+沒有 `figlens mcp --storage` 這個選項。實際位置由 `index` tool 的 `storage` 參數指定（允許的 storage 範圍內的絕對路徑），或使用 CLI `figlens index prepare design.fig --storage /absolute/storage-a`。`prepare` 後會記住該 workspace 的位置，跨重啟、跨 host 重用，不必再傳 `storage` 或 `--storage-root`。未自訂位置時，使用每位使用者的預設目錄，不必設定 storage 旗標。
+
+多個 storage root 只會擴大允許範圍：每次 `storage` 仍只選一個位置，不會自動分流、同步或備份索引。既有 workspace 資料庫不能只靠改指定另一個 root 搬家；位置衝突時 figlens 會拒絕。
+
 <a id="setup-pi"></a>
 
 ### Pi
