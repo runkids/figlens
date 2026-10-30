@@ -14,6 +14,36 @@ $Repo = "runkids/figlens"
 
 function Fail { param($Message) Write-Host "figlens: $Message" -ForegroundColor Red; exit 1 }
 
+# Copies `$Names` from `$From` into `$BinDir` as one pair. A running exe cannot be overwritten,
+# but it can be renamed (figlens update replaces itself), so each is staged as .new, the old one
+# renamed to .old, then swapped. If any move fails, every exe already swapped is put back (or
+# removed when there was none), so figlens never runs beside a runtime from another release.
+function Install-Pair {
+    param($From, $BinDir, $Names)
+    foreach ($Name in $Names) { Copy-Item (Join-Path $From $Name) (Join-Path $BinDir "$Name.new") -Force }
+    $Swapped = @()
+    try {
+        foreach ($Name in $Names) {
+            $Exe = Join-Path $BinDir $Name
+            if (Test-Path $Exe) { Move-Item $Exe "$Exe.old" -Force -ErrorAction Stop }
+            $Swapped += $Name
+            Move-Item "$Exe.new" $Exe -Force -ErrorAction Stop
+        }
+    } catch {
+        foreach ($Name in $Swapped) {
+            $Exe = Join-Path $BinDir $Name
+            Remove-Item $Exe -Force -ErrorAction SilentlyContinue
+            if (Test-Path "$Exe.old") { Move-Item "$Exe.old" $Exe -Force -ErrorAction SilentlyContinue }
+        }
+        foreach ($Name in $Names) { Remove-Item (Join-Path $BinDir "$Name.new") -Force -ErrorAction SilentlyContinue }
+        throw "could not replace $BinDir ($($_.Exception.Message)); the previous install was kept"
+    }
+    foreach ($Name in $Names) { Remove-Item (Join-Path $BinDir "$Name.old") -Force -ErrorAction SilentlyContinue }
+}
+
+# Tests load the functions above without installing anything.
+if ($env:FIGLENS_INSTALL_DEFINE_ONLY) { return }
+
 switch ($env:PROCESSOR_ARCHITECTURE) {
     # Windows on ARM runs the x64 build under emulation.
     { $_ -in "AMD64", "ARM64" } { $Target = "x86_64-pc-windows-gnu" }
@@ -54,32 +84,9 @@ try {
 
     New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
     # figlens-embed.exe is the optional local model runtime figlens looks for beside itself;
-    # releases before it shipped have none. Both are staged in the bin directory first.
+    # releases before it shipped have none.
     $Names = @("figlens-embed.exe", "figlens.exe") | Where-Object { Test-Path "$Tmp\out\$_" }
-    foreach ($Name in $Names) { Copy-Item "$Tmp\out\$Name" (Join-Path $BinDir "$Name.new") -Force }
-    # A running exe cannot be overwritten, but it can be renamed (figlens update replaces itself).
-    # The pair is swapped as one: if any move fails, every exe already swapped gets its old copy
-    # back, so figlens never runs beside a runtime from another release.
-    $Swapped = @()
-    try {
-        foreach ($Name in $Names) {
-            $Exe = Join-Path $BinDir $Name
-            if (Test-Path $Exe) { Move-Item $Exe "$Exe.old" -Force -ErrorAction Stop }
-            $Swapped += $Name
-            Move-Item "$Exe.new" $Exe -Force -ErrorAction Stop
-        }
-    } catch {
-        foreach ($Name in $Swapped) {
-            $Exe = Join-Path $BinDir $Name
-            if (Test-Path "$Exe.old") {
-                Remove-Item $Exe -Force -ErrorAction SilentlyContinue
-                Move-Item "$Exe.old" $Exe -Force -ErrorAction SilentlyContinue
-            }
-        }
-        foreach ($Name in $Names) { Remove-Item (Join-Path $BinDir "$Name.new") -Force -ErrorAction SilentlyContinue }
-        Fail "could not replace $BinDir ($($_.Exception.Message)); the previous install was kept"
-    }
-    foreach ($Name in $Names) { Remove-Item (Join-Path $BinDir "$Name.old") -Force -ErrorAction SilentlyContinue }
+    try { Install-Pair "$Tmp\out" $BinDir $Names } catch { Fail $_.Exception.Message }
     $Exe = Join-Path $BinDir "figlens.exe"
 } finally {
     Remove-Item $Tmp -Recurse -Force -ErrorAction SilentlyContinue
