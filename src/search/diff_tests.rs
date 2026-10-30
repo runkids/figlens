@@ -606,12 +606,11 @@ fn a_cursor_binds_the_retained_comparison_not_only_both_sides() {
     let full = compare_trees(&a, &b, [WORK, WORK, PAIR_WORK], "0:0");
     let err = page(&full, &req(1, short), false).unwrap_err();
     assert_eq!(
-        (
-            err.downcast_ref::<FigError>().map(FigError::kind),
-            next(PAIR_WORK)
-        ),
-        (Some(ErrorKind::CursorStale), next(PAIR_WORK))
+        err.downcast_ref::<FigError>().map(FigError::kind),
+        Some(ErrorKind::CursorStale)
     );
+    // A rebuild of the full pair keeps its cursor.
+    assert!(page(&full, &req(1, next(PAIR_WORK)), false).is_ok());
 }
 
 #[test]
@@ -743,6 +742,44 @@ fn derived_text_layout_is_text_and_its_glyphs_compare_by_blob_bytes() {
     assert_eq!(
         run(file(1.2, 0, vec![1]), file(1.2, 1, vec![1]))["frames"],
         json!([])
+    );
+}
+
+#[test]
+fn an_unchanged_long_text_layout_is_read_and_unchanged() {
+    let file = || {
+        let glyph = |i: u32| {
+            obj(vec![
+                ("commandsBlob", K::UInt(0)),
+                (
+                    "position",
+                    obj(vec![("x", K::Float(i as f32)), ("y", K::Float(0.0))]),
+                ),
+                ("fontSize", K::Float(12.0)),
+                ("firstCharacter", K::UInt(i)),
+                ("advance", K::Float(7.0)),
+            ])
+        };
+        let derived = obj(vec![("glyphs", K::Array((0..1500).map(glyph).collect()))]);
+        let K::Object(name, mut fields) = doc(vec![node(
+            10,
+            Some(1),
+            "TEXT",
+            "Body",
+            vec![text("long"), ("derivedTextData", derived)],
+        )]) else {
+            unreachable!()
+        };
+        fields.insert(
+            "blobs",
+            K::Array(vec![obj(vec![("bytes", K::Bytes(vec![1]))])]),
+        );
+        K::Object(name, fields)
+    };
+    let out = run(file(), file());
+    assert_eq!(
+        (&out["frames"], &out["coverage"]["complete"]),
+        (&json!([]), &json!(true))
     );
 }
 

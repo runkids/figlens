@@ -135,8 +135,10 @@ const VISITS: usize = 1 << 16;
 /// truncated; its digest still decides whether it changed.
 const FIELD_VALUE: usize = 512;
 const RECORD_VALUES: usize = 4 * 1024;
-/// Largest estimated field converted and digested; a larger one is `unread`.
+/// Largest estimated field converted and digested; a larger one is `unread`. Laid-out text
+/// holds about 400 bytes a glyph, so it gets room for a long text layer (`VISITS` still caps it).
 const FIELD_BYTES: usize = 64 * 1024;
+const DERIVED_TEXT_BYTES: usize = 4 * 1024 * 1024;
 /// Changes and candidate probes one pair may hold or spend, charged before they are kept.
 const PAIR_WORK: usize = 2_000_000;
 const PAIR_BYTES: usize = 64 * 1024 * 1024;
@@ -303,7 +305,11 @@ pub(super) fn facets(
                 Value::Kiwi(v) => kiwi_bytes(v, &mut left),
             };
             // Converting and hashing is paid for before it happens: a visit per 64 bytes.
-            let unread = left == 0 || estimate > FIELD_BYTES;
+            let cap = match *key {
+                "derivedTextData" => DERIVED_TEXT_BYTES,
+                _ => FIELD_BYTES,
+            };
+            let unread = left == 0 || estimate > cap;
             if !bounds.charge(VISITS - left + if unread { 0 } else { estimate / 64 }, 0) {
                 return None;
             }
@@ -513,6 +519,8 @@ struct Pair {
     /// Per side, style and variable uses whose definition lies outside the compared records.
     outside: [usize; 2],
     hashed: SystemTime,
+    /// Digest of the retained ordered result, which cursors bind (`result`).
+    result: String,
 }
 
 // shortcut: one old/new pair per process (two indexes with their facets), reused while both
@@ -882,6 +890,7 @@ fn compare(old: Side, new: Side, node: &str, work: usize) -> Pair {
             stop: Some("diff_work_limit"),
             outside: [0; 2],
             hashed: SystemTime::now(),
+            result: String::new(),
         };
     }
     let (oo, no) = (orders(&old.index), orders(&new.index));
@@ -1016,7 +1025,7 @@ fn compare(old: Side, new: Side, node: &str, work: usize) -> Pair {
     let unread = changes.iter().filter(|c| c.facets & UNREAD != 0).count();
     // Pages list changes frame by frame, in first-seen frame order.
     changes.sort_by_key(|c| c.frame);
-    Pair {
+    let mut pair = Pair {
         old,
         new,
         node: node.to_owned(),
@@ -1027,7 +1036,10 @@ fn compare(old: Side, new: Side, node: &str, work: usize) -> Pair {
         stop,
         outside,
         hashed: SystemTime::now(),
-    }
+        result: String::new(),
+    };
+    pair.result = result(&pair);
+    pair
 }
 
 /// Style, variable and main component uses on `s` whose definition is not one of its records:
@@ -1150,15 +1162,9 @@ fn pair_frames(
     found
 }
 
-fn binding(pair: &Pair) -> String {
-    let s = |s: &Side| {
-        format!(
-            "{}|{}|{}",
-            s.source["sourceId"], s.source["snapshotId"], s.signature
-        )
-    };
-    // The offset indexes the retained ordered result, which a rebuild that stopped elsewhere
-    // (the pair's own deadline or work) can change while both sides stay the same.
+/// The retained ordered result a cursor's offset indexes into: a rebuild over the same sides that
+/// stopped elsewhere (the pair's own deadline or work) can change it.
+fn result(pair: &Pair) -> String {
     let mut result = Sha256::new();
     for c in &pair.changes {
         result.update(format!(
@@ -1176,12 +1182,22 @@ fn binding(pair: &Pair) -> String {
         "{}|{}|{:?}|{:?}",
         pair.possible, pair.unread, pair.stop, pair.outside
     ));
+    hex(&result.finalize())
+}
+
+fn binding(pair: &Pair) -> String {
+    let s = |s: &Side| {
+        format!(
+            "{}|{}|{}",
+            s.source["sourceId"], s.source["snapshotId"], s.signature
+        )
+    };
     format!(
         "{VERSION}|{}|{}|{}|{}",
         s(&pair.old),
         s(&pair.new),
         pair.node,
-        hex(&result.finalize())
+        pair.result
     )
 }
 
