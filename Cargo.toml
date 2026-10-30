@@ -34,6 +34,9 @@ webp = { version = "0.3.1", default-features = false }
 zip = "9.0.5"
 
 # The per-user Local AppData Known Folder, when %LOCALAPPDATA% is unset, hard-link counts and Ctrl-C.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Console", "Win32_UI_Shell"] }
 

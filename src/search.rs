@@ -31,7 +31,7 @@ const MAX_OFFSET: usize = 100_000;
 pub(crate) const MAX_SOURCES: usize = 16;
 
 /// Work bounds of one scope extraction, independent of the result limit.
-const SOURCE_BYTES: u64 = 512 * 1024 * 1024;
+pub(crate) const SOURCE_BYTES: u64 = 512 * 1024 * 1024;
 /// Expanding a 179 MB held-out file charged 7.1M; each override value walked counts once.
 const WORK: usize = 10_000_000;
 /// The cancel flag of a search nobody cancels.
@@ -1561,7 +1561,11 @@ pub(crate) fn corpus_page(
 pub(crate) type Stamp = (SystemTime, u64);
 
 pub(crate) fn stamp(path: &Path) -> std::io::Result<Stamp> {
-    let meta = std::fs::metadata(path)?;
+    stamp_of(&std::fs::metadata(path)?)
+}
+
+/// The stamp of `meta`, a regular file's.
+pub(crate) fn stamp_of(meta: &std::fs::Metadata) -> std::io::Result<Stamp> {
     if !meta.is_file() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,

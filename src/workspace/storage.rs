@@ -876,6 +876,133 @@ pub(super) fn same_dir(a: &Path, b: &Path) -> bool {
     a == b || resolved(a).is_some_and(|a| resolved(b).is_some_and(|b| a == b))
 }
 
+/// Whether a registered (canonical) source path still leads to itself: no link swapped in at it
+/// or above it.
+pub(super) fn leads_to_itself(path: &Path) -> bool {
+    std::fs::canonicalize(path).is_ok_and(|p| p == path)
+}
+
+/// A registered source's bytes, read only from the file at its canonical path, the one its
+/// holders authorized: a link swapped in at it or above it is refused. The size and time are the
+/// opened file's own, so a save racing the read is retried, as `search::stage` does.
+pub(crate) fn staged(
+    path: &Path,
+) -> std::result::Result<(Vec<u8>, crate::search::Stamp), Box<dyn std::error::Error>> {
+    use crate::search::{SOURCE_BYTES, stamp_of};
+    for _ in 0..3 {
+        let mut file = registered(path)?;
+        let before = stamp_of(&file.metadata()?)?;
+        if before.1 > SOURCE_BYTES {
+            return Err(crate::parse::exceeded("source bytes", SOURCE_BYTES).into());
+        }
+        let mut bytes = Vec::with_capacity(before.1 as usize);
+        (&mut file).take(SOURCE_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 == before.1 && stamp_of(&file.metadata()?)? == before {
+            return Ok((bytes, before));
+        }
+    }
+    Err(fail(
+        ErrorKind::SourceUnreadable,
+        "the .fig kept changing while it was read; retry after the save finishes",
+    ))
+}
+
+fn linked(path: &Path) -> Box<dyn std::error::Error> {
+    fail(
+        ErrorKind::SourceUnreadable,
+        format!(
+            "{} now leads elsewhere through a link; relocate the source to the file it should read",
+            path.display()
+        ),
+    )
+}
+
+/// Opens `path`, canonical, one component at a time from `/` without following any link, so no
+/// swap at it or above it, before or during the open, can lead the handle elsewhere.
+#[cfg(unix)]
+pub(super) fn registered(path: &Path) -> std::result::Result<File, Box<dyn std::error::Error>> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    // Search-only directory handles, so a known file under an execute-only parent stays readable.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    const DIR: libc::c_int = libc::O_PATH | libc::O_DIRECTORY;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    const DIR: libc::c_int = libc::O_SEARCH;
+    let open = |at: libc::c_int, name: &std::ffi::OsStr, flags: libc::c_int| {
+        let name = CString::new(name.as_bytes())?;
+        // SAFETY: `name` is NUL-terminated and `at` is AT_FDCWD or an open directory handle.
+        let fd = unsafe {
+            libc::openat(
+                at,
+                name.as_ptr(),
+                flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            let e = std::io::Error::last_os_error();
+            return Err(match e.raw_os_error() {
+                Some(libc::ELOOP | libc::ENOTDIR) => linked(path),
+                _ => e.into(),
+            });
+        }
+        // SAFETY: `fd` was just opened and nothing else owns it.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    };
+    let mut names = Vec::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::RootDir if names.is_empty() => {}
+            std::path::Component::Normal(name) => names.push(name),
+            _ => return Err(linked(path)),
+        }
+    }
+    let (leaf, dirs) = names.split_last().ok_or_else(|| linked(path))?;
+    let mut dir = open(libc::AT_FDCWD, "/".as_ref(), DIR)?;
+    for name in dirs {
+        dir = open(dir.as_raw_fd(), name, DIR)?;
+    }
+    // Nonblocking, so a FIFO swapped in is refused below instead of blocking the open.
+    let file = File::from(open(
+        dir.as_raw_fd(),
+        leaf,
+        libc::O_RDONLY | libc::O_NONBLOCK,
+    )?);
+    crate::search::stamp_of(&file.metadata()?)?;
+    Ok(file)
+}
+
+/// Opens `path` and checks the handle's own final path is it, which a link anywhere on the way
+/// changes; the system answers for the handle, so no swap after the open can fool it.
+#[cfg(windows)]
+pub(super) fn registered(path: &Path) -> std::result::Result<File, Box<dyn std::error::Error>> {
+    use std::os::windows::{ffi::OsStringExt, io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+    if !leads_to_itself(path) {
+        return Err(linked(path));
+    }
+    let file = File::open(path)?;
+    let mut buf = vec![0u16; 32_768];
+    // SAFETY: the handle is open for this call and `buf` holds `buf.len()` wide characters;
+    // flags 0 ask for the normalized `\\?\` DOS path, as `canonicalize` gives.
+    let n = unsafe {
+        GetFinalPathNameByHandleW(
+            file.as_raw_handle() as _,
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            0,
+        )
+    } as usize;
+    if n == 0 || n >= buf.len() {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])) != path {
+        return Err(linked(path));
+    }
+    crate::search::stamp_of(&file.metadata()?)?;
+    Ok(file)
+}
+
 /// `path` with its longest existing prefix canonicalized and the missing rest applied
 /// lexically, so two spellings of one directory compare equal even after it was removed
 /// (`C:\store` and a remembered `\\?\C:\store`, or a path through `..`).

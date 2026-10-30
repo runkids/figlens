@@ -2138,7 +2138,8 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
         Ok::<_, Box<dyn Error>>(())
     };
     let path = PathBuf::from(path);
-    let (bytes, stamp) = search::stage(&path)?;
+    // Read only where the registered path its holders authorized still leads.
+    let (bytes, stamp) = super::storage::staged(&path)?;
     stage(&conn, "hash")?;
     let snapshot = search::snapshot_id(&bytes);
     let mtime_ns = stamp
@@ -2259,7 +2260,7 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
     }
     stage(&conn, "verify")?;
     // The source is read and hashed again: a save that kept its size and time is caught here.
-    let (again, _) = search::stage(&path)?;
+    let (again, _) = super::storage::staged(&path)?;
     if search::snapshot_id(&again) != snapshot {
         return Err(fail(
             ErrorKind::SourceUnreadable,
