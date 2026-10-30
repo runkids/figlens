@@ -439,6 +439,112 @@ fn mcp_semantic_search_stopped_by(cancel: bool) {
     assert!(gone(), "model child {pid} still running");
 }
 
+/// `figlens mcp` with a profile whose child hangs embedding and writes its pid to `pids/`.
+#[cfg(target_os = "linux")]
+fn hanging_mcp(dir: &test_support::TestDir) -> (std::process::Child, PathBuf) {
+    configured(dir);
+    let pids = std::path::absolute(dir.join("pids")).unwrap();
+    std::fs::create_dir_all(&pids).unwrap();
+    let mcp = std::process::Command::new(env!("CARGO_BIN_EXE_figlens"))
+        .arg("mcp")
+        .env("SEMANTIC_CHILD_MODE", "hang")
+        .env("SEMANTIC_CHILD_PIDS", &pids)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    (mcp, pids)
+}
+
+#[cfg(target_os = "linux")]
+fn semantic_call(id: u64) -> serde_json::Value {
+    json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": "search",
+        "arguments": {"file": std::path::absolute(FIG).unwrap(), "query": "task", "mode": "semantic"}}})
+}
+
+/// Waits until `n` model children have written their pids, then returns them.
+#[cfg(target_os = "linux")]
+fn children(pids: &Path, n: usize) -> Vec<String> {
+    let end = Instant::now() + Duration::from_secs(20);
+    loop {
+        let found: Vec<String> = std::fs::read_dir(pids)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        if found.len() >= n || Instant::now() > end {
+            return found;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn all_gone(pids: &[String]) -> bool {
+    pids.iter().all(|pid| {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .map(|s| s.split_whitespace().nth(2) == Some("Z"))
+            .unwrap_or(true)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn mcp_cancel_reaches_a_running_call_after_another_lane_answers_its_id() {
+    use std::io::{BufRead, BufReader, Write};
+    let dir = test_support::TestDir::new();
+    let (mut mcp, pids) = hanging_mcp(&dir);
+    let mut stdin = mcp.stdin.take().unwrap();
+    let mut out = BufReader::new(mcp.stdout.take().unwrap());
+    writeln!(stdin, "{}", semantic_call(1)).unwrap();
+    let running = children(&pids, 1);
+    // A control-lane call reusing id 1 is answered while the search still runs.
+    let jobs = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "jobs",
+        "arguments": {"action": "status", "jobId": "job_none"}}});
+    writeln!(stdin, "{jobs}").unwrap();
+    let mut line = String::new();
+    out.read_line(&mut line).unwrap();
+    assert!(
+        line.contains("job_none") || line.contains("isError"),
+        "{line}"
+    );
+    let note =
+        json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}});
+    writeln!(stdin, "{note}").unwrap();
+    line.clear();
+    let begun = Instant::now();
+    out.read_line(&mut line).unwrap();
+    assert!(line.contains("cancelled"), "{line}");
+    assert!(begun.elapsed() < Duration::from_secs(3));
+    drop(stdin);
+    mcp.wait().unwrap();
+    assert!(all_gone(&running));
+}
+
+#[cfg(target_os = "linux")]
+fn mcp_end_of_input_ends_queued_model_calls_too() {
+    use std::io::Write;
+    let dir = test_support::TestDir::new();
+    let (mut mcp, pids) = hanging_mcp(&dir);
+    let mut stdin = mcp.stdin.take().unwrap();
+    writeln!(stdin, "{}", semantic_call(1)).unwrap();
+    writeln!(stdin, "{}", semantic_call(2)).unwrap();
+    children(&pids, 1);
+    let begun = Instant::now();
+    drop(stdin);
+    mcp.wait().unwrap();
+    assert!(
+        begun.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        begun.elapsed()
+    );
+    let started = children(&pids, 0);
+    assert_eq!(
+        started.len(),
+        1,
+        "the queued call started a model child after shutdown"
+    );
+    assert!(all_gone(&started));
+}
+
 #[cfg(target_os = "linux")]
 fn mcp_cancel_stops_an_in_flight_semantic_search_and_its_child() {
     mcp_semantic_search_stopped_by(true);
@@ -460,6 +566,9 @@ fn main() {
         // Started by figlens as a configured profile: the test chooses its mode and learns its pid.
         if let Ok(file) = std::env::var("SEMANTIC_CHILD_PID") {
             std::fs::write(file, std::process::id().to_string()).unwrap();
+        }
+        if let Ok(dir) = std::env::var("SEMANTIC_CHILD_PIDS") {
+            std::fs::write(Path::new(&dir).join(std::process::id().to_string()), "").unwrap();
         }
         child(&std::env::var("SEMANTIC_CHILD_MODE").unwrap_or("ok".into())).unwrap();
         return;
@@ -532,6 +641,16 @@ fn main() {
         (
             "mcp_end_of_input_stops_an_in_flight_semantic_search_and_its_child",
             mcp_end_of_input_stops_an_in_flight_semantic_search_and_its_child,
+        ),
+        #[cfg(target_os = "linux")]
+        (
+            "mcp_cancel_reaches_a_running_call_after_another_lane_answers_its_id",
+            mcp_cancel_reaches_a_running_call_after_another_lane_answers_its_id,
+        ),
+        #[cfg(target_os = "linux")]
+        (
+            "mcp_end_of_input_ends_queued_model_calls_too",
+            mcp_end_of_input_ends_queued_model_calls_too,
         ),
     ];
     let filter = args.iter().skip(1).find(|a| !a.starts_with('-'));

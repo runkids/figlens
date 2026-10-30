@@ -117,9 +117,9 @@ struct AdmittedCall {
     project: Option<PathBuf>,
     /// The earlier revision a diff reads beside `source`.
     old: Option<PathBuf>,
-    /// Set by `notifications/cancelled` for this request or when the server stops; the calls
-    /// that run owned work (semantic search, models) poll it.
-    cancel: Arc<AtomicBool>,
+    /// Its token in the server's pending calls, removed when the call is dropped; `None` for a
+    /// call admitted outside a server.
+    live: Option<Live>,
 }
 
 enum Source {
@@ -296,7 +296,7 @@ fn admit_value(req: Value, roots: &[PathBuf]) -> Admission {
                     }
                     file => file.map(|path| checked_path(Path::new(path), roots)).transpose()?,
                 };
-                Ok(AdmittedCall { id:id.clone(), call, source, output, input, match_dir, project, old, cancel: Default::default() })
+                Ok(AdmittedCall { id:id.clone(), call, source, output, input, match_dir, project, old, live: None })
             });
             return match admitted {
                 Ok(call) => Admission::Call(Box::new(call)),
@@ -315,6 +315,13 @@ fn admit_value(req: Value, roots: &[PathBuf]) -> Admission {
 }
 
 impl AdmittedCall {
+    /// Set by `notifications/cancelled` for this call, or when the server stops while it runs or
+    /// before it started; the calls that run owned model work poll it.
+    fn cancel(&self) -> &AtomicBool {
+        static NEVER: AtomicBool = AtomicBool::new(false);
+        self.live.as_ref().map_or(&NEVER, |l| &l.token.cancel)
+    }
+
     fn local(&self) -> Option<&Path> {
         match &self.source {
             Some(Source::Local(path)) => Some(path),
@@ -353,7 +360,7 @@ impl AdmittedCall {
             self.recheck(roots)?;
             match self.call.name() {
                 "jobs" => command::jobs_tool(&self.call, roots, storage_roots),
-                "models" => command::models_tool(&self.call, roots, &self.cancel),
+                "models" => command::models_tool(&self.call, roots, self.cancel()),
                 "changes" | "watch" => command::changes_tool(&self.call, roots, storage_roots),
                 "search" => command::workspace_search_tool(&self.call, roots, storage_roots),
                 "usages" => command::workspace_usages_tool(&self.call, roots, storage_roots),
@@ -453,7 +460,7 @@ impl AdmittedCall {
                 }
                 return command::search_tool(&self.call)
                     .and_then(|(request, mode)| {
-                        command::search(&path, &request, mode, "", &self.cancel)
+                        command::search(&path, &request, mode, "", self.cancel())
                     })
                     .map_err(contract::Failure::from_error);
             }
@@ -523,67 +530,83 @@ const WRITER_QUEUE: usize = 64;
 /// Build submissions this server may hold before a build-submitting call is answered busy.
 const BUILD_QUEUE: usize = 8;
 
-/// Tool calls queued in a lane or running, by request id: each one's cancel flag and whether it
-/// started, kept until it is answered. A reused id keeps one entry per call, so no call takes
-/// over another's flag; a cancel names every call of that id. Bounded by the lane queues plus
-/// one running call per lane.
-type Pending = std::sync::Mutex<
-    std::collections::HashMap<String, std::collections::VecDeque<(Arc<AtomicBool>, bool)>>,
->;
+/// One queued or running tool call's cancel state, made when the reader queues the call and
+/// carried with it, so a call is found by identity, never by its (reusable) id.
+#[derive(Default)]
+struct Token {
+    cancel: AtomicBool,
+    started: AtomicBool,
+}
 
-/// Admits a call as its lane starts it, carrying its cancel flag; a call cancelled while it
-/// queued is dropped unanswered, as before.
-fn admit_live(pending: &Pending, req: Value, roots: &[PathBuf]) -> Admission {
-    let id = req["id"].to_string();
-    let flag = {
-        let mut pending = pending.lock().unwrap();
-        let calls = pending.entry(id.clone()).or_default();
-        // Lanes start calls of one id in arrival order: the first not yet started is this one.
-        let at = calls.iter().position(|(_, started)| !started);
-        let at = at.unwrap_or_else(|| {
-            calls.push_back((Arc::default(), false));
-            calls.len() - 1
-        });
-        calls[at].1 = true;
-        let flag = calls[at].0.clone();
-        if flag.load(Ordering::SeqCst) {
-            calls.remove(at);
-            if calls.is_empty() {
-                pending.remove(&id);
-            }
-            return Admission::Ignore;
+/// Tool calls queued in a lane or running, by request id; a reused id keeps one token per call
+/// and a cancel names every call of that id. Bounded by the lane queues plus one running call
+/// per lane.
+type Pending = std::sync::Mutex<std::collections::HashMap<String, Vec<Arc<Token>>>>;
+
+/// Removes exactly `token` of `id`.
+fn forget(pending: &Pending, id: &str, token: &Arc<Token>) {
+    let mut pending = pending.lock().unwrap();
+    if let Some(calls) = pending.get_mut(id) {
+        calls.retain(|t| !Arc::ptr_eq(t, token));
+        if calls.is_empty() {
+            pending.remove(id);
         }
-        flag
-    };
+    }
+}
+
+/// An admitted call's place in `Pending`, removed when the call is dropped after its reply.
+struct Live {
+    pending: Arc<Pending>,
+    id: String,
+    token: Arc<Token>,
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        forget(&self.pending, &self.id, &self.token);
+    }
+}
+
+/// Admits a call as its lane starts it. A call cancelled while it queued is dropped unanswered,
+/// as before; one that starts after the server stopped starts cancelled, so it does not begin
+/// owned model work, while ordinary calls still run and answer.
+fn admit_live(
+    pending: &Arc<Pending>,
+    (req, token): (Value, Arc<Token>),
+    roots: &[PathBuf],
+    stop: &AtomicBool,
+) -> Admission {
+    let id = req["id"].to_string();
+    token.started.store(true, Ordering::SeqCst);
+    if token.cancel.load(Ordering::SeqCst) {
+        forget(pending, &id, &token);
+        return Admission::Ignore;
+    }
+    if stop.load(Ordering::SeqCst) {
+        token.cancel.store(true, Ordering::SeqCst);
+    }
     match admit_value(req, roots) {
         Admission::Call(mut call) => {
-            call.cancel = flag;
+            call.live = Some(Live {
+                pending: pending.clone(),
+                id,
+                token,
+            });
             Admission::Call(call)
         }
-        other => other,
-    }
-}
-
-/// Forgets an answered call: the oldest started one of its id.
-fn answered(pending: &Pending, reply: &Value) {
-    let id = reply["id"].to_string();
-    let mut pending = pending.lock().unwrap();
-    if let Some(calls) = pending.get_mut(&id) {
-        if let Some(at) = calls.iter().position(|(_, started)| *started) {
-            calls.remove(at);
-        }
-        if calls.is_empty() {
-            pending.remove(&id);
+        other => {
+            forget(pending, &id, &token);
+            other
         }
     }
 }
 
-/// Cancels every running call when input ends or replies cannot be written; queued calls still
-/// run and answer, as before.
+/// Cancels every running call when input ends or replies cannot be written; a queued call
+/// starts cancelled instead (see `admit_live`).
 fn cancel_running(pending: &Pending) {
-    for (flag, started) in pending.lock().unwrap().values().flatten() {
-        if *started {
-            flag.store(true, Ordering::SeqCst);
+    for token in pending.lock().unwrap().values().flatten() {
+        if token.started.load(Ordering::SeqCst) {
+            token.cancel.store(true, Ordering::SeqCst);
         }
     }
 }
@@ -662,14 +685,15 @@ pub fn serve_with(
     let stop = AtomicBool::new(false);
     // Set when a reply cannot be written; no lane admits a build after that.
     let dead = AtomicBool::new(false);
-    let pending = Pending::default();
+    let pending = Arc::new(Pending::default());
     let builds = std::sync::atomic::AtomicUsize::new(0);
     #[cfg(test)]
     let counters = Counter::share();
     std::thread::scope(|scope| -> Result<(), Box<dyn Error>> {
-        let (control, control_rx) = mpsc::sync_channel::<Value>(CONTROL_QUEUE);
-        let (interactive, interactive_rx) = mpsc::sync_channel::<Admission>(INTERACTIVE_QUEUE);
-        let (index, index_rx) = mpsc::sync_channel::<Value>(INDEX_QUEUE);
+        let (control, control_rx) = mpsc::sync_channel::<(Value, Arc<Token>)>(CONTROL_QUEUE);
+        let (interactive, interactive_rx) =
+            mpsc::sync_channel::<(Value, Arc<Token>)>(INTERACTIVE_QUEUE);
+        let (index, index_rx) = mpsc::sync_channel::<(Value, Arc<Token>)>(INDEX_QUEUE);
         let (to_build, build_rx) = mpsc::channel::<command::Runs>();
         let (stop, dead, pending, builds) = (&stop, &dead, &pending, &builds);
         // Control and index lanes: each call admitted and run in arrival order.
@@ -680,9 +704,9 @@ pub fn serve_with(
             scope.spawn(move || {
                 #[cfg(test)]
                 Counter::adopt(counters);
-                for req in rx {
-                    let submitting = submits(&req);
-                    let req = match admit_live(pending, req, roots) {
+                for queued in rx {
+                    let submitting = submits(&queued.0);
+                    let req = match admit_live(pending, queued, roots, stop) {
                         Admission::Ignore => continue,
                         admitted => admitted,
                     };
@@ -697,9 +721,7 @@ pub fn serve_with(
                         if full || dead.load(Ordering::SeqCst) {
                             builds.fetch_sub(1, Ordering::SeqCst);
                             if let Admission::Call(call) = &req {
-                                let reply = busy(&call.id);
-                                answered(pending, &reply);
-                                out.send(reply);
+                                out.send(busy(&call.id));
                             }
                             continue;
                         }
@@ -714,11 +736,9 @@ pub fn serve_with(
                                 }
                                 queued = build.send(runs).is_ok();
                             }
-                            answered(pending, &reply);
                             out.send(reply);
                         }
                         Admission::Reply(reply) => {
-                            answered(pending, &reply);
                             out.send(reply);
                         }
                         _ => {}
@@ -756,15 +776,14 @@ pub fn serve_with(
             #[cfg(test)]
             Counter::adopt(lane_counters);
             let next = || {
-                interactive_rx.recv().ok().map(|a| match a {
-                    Admission::Request(req) => admit_live(pending, req, roots),
-                    other => other,
-                })
+                interactive_rx
+                    .recv()
+                    .ok()
+                    .map(|queued| admit_live(pending, queued, roots, stop))
             };
             interactive_loop(
                 next,
                 |value| {
-                    answered(pending, &value);
                     out.send(value);
                 },
                 roots,
@@ -794,47 +813,33 @@ pub fn serve_with(
                         reader.send(reply);
                     }
                     Admission::Cancel(id) => {
-                        for (flag, _) in pending
+                        for token in pending
                             .lock()
                             .unwrap()
                             .get(&id.to_string())
                             .into_iter()
                             .flatten()
                         {
-                            flag.store(true, Ordering::SeqCst);
+                            token.cancel.store(true, Ordering::SeqCst);
                         }
                     }
                     Admission::Request(req) => {
                         let id = req["id"].clone();
-                        if !id.is_null() {
-                            pending
-                                .lock()
-                                .unwrap()
-                                .entry(id.to_string())
-                                .or_default()
-                                .push_back((Arc::default(), false));
-                        }
-                        let full = match lane(&req) {
-                            Lane::Interactive => interactive
-                                .try_send(Admission::Request(req))
-                                .is_err_and(|e| matches!(e, mpsc::TrySendError::Full(_))),
-                            Lane::Control => lanes[0]
-                                .try_send(req)
-                                .is_err_and(|e| matches!(e, mpsc::TrySendError::Full(_))),
-                            Lane::Index => lanes[1]
-                                .try_send(req)
-                                .is_err_and(|e| matches!(e, mpsc::TrySendError::Full(_))),
+                        let token = Arc::<Token>::default();
+                        pending
+                            .lock()
+                            .unwrap()
+                            .entry(id.to_string())
+                            .or_default()
+                            .push(token.clone());
+                        let queued = (req, token.clone());
+                        let sent = match lane(&queued.0) {
+                            Lane::Interactive => interactive.try_send(queued),
+                            Lane::Control => lanes[0].try_send(queued),
+                            Lane::Index => lanes[1].try_send(queued),
                         };
-                        if full {
-                            // The newest entry of this id is the call just refused.
-                            let mut pending = pending.lock().unwrap();
-                            if let Some(calls) = pending.get_mut(&id.to_string()) {
-                                calls.pop_back();
-                                if calls.is_empty() {
-                                    pending.remove(&id.to_string());
-                                }
-                            }
-                            drop(pending);
+                        if sent.is_err_and(|e| matches!(e, mpsc::TrySendError::Full(_))) {
+                            forget(pending, &id.to_string(), &token);
                             reader.send(busy(&id));
                         }
                     }
