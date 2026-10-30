@@ -84,6 +84,14 @@ Experimental and optional; text search stays the default. `search` with `mode: "
 - Workspace search (`workspaceId`, `file`, `workspace`) reads each source's stored model layer and never embeds design text. A source with `coverage.layers.semantic.sources[].state` `pending` has no layer yet: call `index` `embed` (CLI `figlens index embed <select>`) only when the user asks, since it uses CPU and memory, then poll `jobs`. The MCP server and the watch runner also queue it after a text build; the one-shot CLI does not. If `models status` says `runtime_missing`, `runtime_changed` (an upgrade replaced it) or `model_missing`, follow its `recovery` (configure again) after the user agrees. A partial page has no `nextCursor`: repeat after the layer finishes.
 - A running semantic search or `configure` can be cancelled; it uses the CPU and about 2.5 GiB of memory.
 
+### Image search
+
+Experimental, workspace only. When the user gives a screenshot or points at a result and asks for screens that look like it, call `search` with `workspaceId` and `image` (a local PNG path inside the roots) or `imageRef` (`sourceId`, `snapshotId`, `nodeId` copied from a result), optionally `crop` `{x, y, width, height}`. Add `query` text only when the user also names words; that makes it `hybrid`. Never pass a URL or base64.
+
+- A stateless `file` search, or a source without visual layers, answers with steps: `index` `prepare`, then `index` `visual`. Run them only when the user asks; a search never builds them.
+- Read `query.usedModes` and `coverage.layers.visual`: `visual_hash` alone means no vision model was used (not configured, pending or failed), so say results are by pixel hash. Results are similarity hints, not component identity; the ranking policy is still being validated.
+- `source_stale` on `imageRef`: search again and copy a fresh reference. A partial page has no `nextCursor`.
+
 ### Where it is used
 
 `usages` answers by exact id, never by name: two components called "Button" are two answers, so get the id from `search`, `find` or the user first. It lists linked instances only: a detached copy cannot be linked back, because figlens decodes no detach history from the saved file.
