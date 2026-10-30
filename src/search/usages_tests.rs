@@ -1882,11 +1882,10 @@ fn a_row_copy_estimate_stops_pulling_rows_once_work_runs_out() {
     let rows = vec![json!([1, 2]); 1000];
     let pulled = std::cell::Cell::new(0);
     let mut left = 4;
-    let (_, cut) = rows_bytes(
-        rows.iter().inspect(|_| pulled.set(pulled.get() + 1)),
-        &mut left,
-    );
-    assert_eq!((cut, pulled.get()), (true, 3));
+    let rows = rows.iter().inspect(|_| pulled.set(pulled.get() + 1));
+    crate::expand::sum_while(rows, &mut left, json_bytes);
+    // Two rows walked, a third pulled and left: not the other 997.
+    assert_eq!((left, pulled.get()), (0, 3));
 }
 
 #[test]

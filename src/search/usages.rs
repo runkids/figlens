@@ -238,15 +238,13 @@ pub(crate) fn extract(
     }
     // The walk stops at what the side has left: running out there stops the side, visits kept.
     let cap = (2 * VISITS).min(bounds.work);
+    let all = || rows(fields.get("vectorData")).chain(rows(fields.get("textData")));
     let mut left = cap;
-    let (copies, cut) = rows_bytes(
-        rows(fields.get("vectorData")).chain(rows(fields.get("textData"))),
-        &mut left,
-    );
+    let copies = crate::expand::sum_while(all(), &mut left, json_bytes);
     if !bounds.charge(cap - left, 0) {
         return None;
     }
-    if (cut || left == 0 && cap > 0) && cap < 2 * VISITS {
+    if left == 0 && (cap > 0 || all().next().is_some()) && cap < 2 * VISITS {
         bounds.stop = Some(crate::expand::Stop::Work);
         return None;
     }
@@ -467,18 +465,6 @@ fn node_state(tree: &Tree, target: Option<&str>, kind: &str) -> &'static str {
 
 /// The record's effective binding fields as JSON: an expanded sublayer's override wins over
 /// its source's own field. Each is charged at its estimated size before it is converted.
-/// Estimated bytes of `rows`, walking at most `left`; true when a row was left unwalked.
-fn rows_bytes<'a>(rows: impl Iterator<Item = &'a Json>, left: &mut usize) -> (usize, bool) {
-    let mut bytes = 0;
-    for row in rows {
-        if *left == 0 {
-            return (bytes, true);
-        }
-        bytes += json_bytes(row, left);
-    }
-    (bytes, false)
-}
-
 fn effective(
     tree: &Tree,
     id: &str,
