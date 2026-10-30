@@ -470,7 +470,8 @@ enum Kind {
     Changed,
     /// Same id on both sides but another layer type: identity is not proven either way.
     Retyped,
-    /// Present on one side while the other stopped before reaching it.
+    /// Present on one side while the other stopped before reaching it, or on both with a
+    /// compared field unread and no proven difference.
     Unknown,
 }
 
@@ -780,8 +781,14 @@ fn differs(old: &Side, o: usize, oo: &[u32], new: &Side, n: usize, no: &[u32]) -
     if a.iter().chain(b).any(|x| x.digest.is_none()) {
         bits |= UNREAD;
     }
+    // A facet differs only where that is proven: a field present on one side only, or read on
+    // both with other digests. An unread value proves nothing either way.
     for facet in 0..FIELDS.len() as u8 {
-        if !in_facet(a, facet).eq(in_facet(b, facet)) {
+        let proven = in_facet(a, facet).count() != in_facet(b, facet).count()
+            || in_facet(a, facet)
+                .zip(in_facet(b, facet))
+                .any(|(x, y)| x.0 != y.0 || matches!((x.1, y.1), (Some(p), Some(q)) if p != q));
+        if proven {
             bits |= 1 << facet;
         }
     }
@@ -930,16 +937,20 @@ fn compare(old: Side, new: Side, node: &str, work: usize) -> Pair {
                     + r.edges.len()
                     + new.index.records[n].edges.len();
                 c.budget.charge(work, 0) && {
-                    // A record that differs only where a field was unread is listed, never
-                    // taken for unchanged.
+                    // A record with a field unread and no proven difference is unknown: listed,
+                    // never taken for unchanged nor reported as changed.
                     let bits = differs(&old, o, &oo, &new, n, &no);
+                    let kind = match bits {
+                        UNREAD => Kind::Unknown,
+                        _ => Kind::Changed,
+                    };
                     bits == 0
                         || c.push(
                             &new,
                             &new_ids,
                             n,
                             (Some(o as u32), Some(n as u32)),
-                            Kind::Changed,
+                            kind,
                             bits,
                         )
                 }
@@ -1455,6 +1466,8 @@ fn page_with(
             if let Some(e) = edge_list {
                 node["edges"] = e;
             }
+        } else if c.facets & UNREAD != 0 {
+            node["unread"] = json!(true);
         }
         if c.descendants > 0 {
             node["descendants"] = json!(c.descendants);

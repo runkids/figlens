@@ -300,11 +300,15 @@ fn a_field_too_large_to_read_is_unread_never_unchanged() {
 #[test]
 fn a_giant_field_is_unread_and_an_escaped_one_is_digested_without_keeping_its_value() {
     let one = |s: &str| doc(vec![node(10, Some(1), "TEXT", "T", vec![text(s)])]);
-    // Past the conversion cap: never converted, listed as unread, not taken for unchanged.
+    // Past the conversion cap: never converted, listed as unknown and unread, not taken for
+    // unchanged.
     let giant = "x".repeat(FIELD_BYTES + 1);
     let out = run(one(&giant), one(&giant));
     let n = &out["frames"][0]["nodes"][0];
-    assert_eq!((&n["unread"], &n["facets"]), (&json!(true), &json!([])));
+    assert_eq!(
+        (&n["change"], &n["unread"]),
+        (&json!("unknown"), &json!(true))
+    );
     // Control characters escape to six bytes each; the stream is hashed, the value dropped.
     let escaped = "\u{1}".repeat(FIELD_BYTES / 8);
     let out = run(one(&escaped), one(&format!("{escaped}\u{2}")));
@@ -371,7 +375,7 @@ fn binary_values_of_equal_length_differ_and_an_override_holding_bytes_is_unread(
         with_instance(30, vec![same.clone()]),
         with_instance(30, vec![same]),
     ));
-    assert_eq!(changes, [("I0:11;0:31".to_owned(), "changed".to_owned())]);
+    assert_eq!(changes, [("I0:11;0:31".to_owned(), "unknown".to_owned())]);
 }
 
 #[test]
@@ -823,6 +827,38 @@ fn a_re_derived_instance_text_with_font_digest_bytes_is_read_and_unchanged() {
 }
 
 #[test]
+fn an_unread_field_alone_is_unknown_and_proves_no_facet_change() {
+    let one = |s: &str, fill_red: f64| {
+        doc(vec![node(
+            10,
+            Some(1),
+            "TEXT",
+            "T",
+            vec![text(s), fill(fill_red)],
+        )])
+    };
+    let giant = "x".repeat(FIELD_BYTES + 1);
+    let change = |a: K<'static>, b: K<'static>| {
+        let out = run(a, b);
+        let n = out["frames"][0]["nodes"][0].clone();
+        (
+            n["change"].clone(),
+            n["facets"].clone(),
+            n["unread"].clone(),
+        )
+    };
+    // Unread on both sides, or read on one and unread on the other: no facet is proven to differ.
+    let unknown = (json!("unknown"), Json::Null, json!(true));
+    assert_eq!(change(one(&giant, 1.0), one(&giant, 1.0)), unknown);
+    assert_eq!(change(one("small", 1.0), one(&giant, 1.0)), unknown);
+    // A proven change elsewhere is a change that also says a field was unread.
+    assert_eq!(
+        change(one(&giant, 1.0), one(&giant, 0.0)),
+        (json!("changed"), json!(["appearance"]), json!(true))
+    );
+}
+
+#[test]
 fn emitted_metadata_scopes_code_syntax_and_prototype_settings_are_properties() {
     let one = |key: &'static str, v: &str| {
         doc(vec![node(
@@ -919,7 +955,7 @@ fn vector_with(blob: Option<K<'static>>) -> K<'static> {
 fn a_missing_or_malformed_blob_is_unread_never_unchanged() {
     for blob in [None, Some(K::Array(vec![K::UInt(1)])), Some(K::UInt(1))] {
         let out = run(vector_with(blob.clone()), vector_with(blob));
-        assert_eq!(nodes(&out), [("0:10".to_owned(), "changed".to_owned())]);
+        assert_eq!(nodes(&out), [("0:10".to_owned(), "unknown".to_owned())]);
         assert_eq!(out["coverage"]["complete"], false);
     }
 }
@@ -938,7 +974,7 @@ fn compact_blob_bytes_and_a_byte_array_digest_alike() {
 fn a_byte_array_blob_past_the_visit_cap_is_unread() {
     let blob = || Some(K::Array(vec![K::Byte(1); VISITS + 1]));
     let out = run(vector_with(blob()), vector_with(blob()));
-    assert_eq!(nodes(&out), [("0:10".to_owned(), "changed".to_owned())]);
+    assert_eq!(nodes(&out), [("0:10".to_owned(), "unknown".to_owned())]);
     assert_eq!(out["coverage"]["complete"], false);
 }
 
