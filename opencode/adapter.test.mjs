@@ -22,6 +22,10 @@ async function context(t) {
   return { root, ctx, adapter, writes };
 }
 
+// The paths a read asks, deduped as the adapter does: a design's canonical path equals its requested one unless a tmp
+// ancestor is a link (macOS /var -> /private/var).
+const reads = (...files) => [...new Set(files)];
+
 test('OpenCode preserves existing local, remote and disabled MCP settings and blocks unverified dispatch', async t => {
   const { root, adapter, writes } = await context(t);
   for (const config of [{ type: 'local', command: ['other', 'mcp'] }, { type: 'remote', url: 'https://example.invalid/mcp' },
@@ -506,11 +510,11 @@ test('CLI-path subscribe over a listed set asks read on exactly those sources, a
     { action: 'subscribe', workspaceId: 'ws_1', consumer: 'c', ...more });
   await subscribe({ sources: 'A', query: 'badge' });
   await subscribe({ sources: ' A ', library: { kind: 'component', key: 'k' } });
-  assert.deepEqual([asked, ran], [[[a, realA], [a, realA]], ['status', 'subscribe', 'status', 'subscribe']]);
+  assert.deepEqual([asked, ran], [[reads(a, realA), reads(a, realA)], ['status', 'subscribe', 'status', 'subscribe']]);
   for (const sources of ['A,B', 'visible', 'A,unknown']) {
     ran = [];
     await assert.rejects(subscribe({ sources, query: 'badge' }), /read denied/);
-    assert.deepEqual([asked.at(-1), ran], [[a, realA, b, realB], ['status']], sources);
+    assert.deepEqual([asked.at(-1), ran], [reads(a, realA, b, realB), ['status']], sources);
   }
 });
 
@@ -545,7 +549,7 @@ test('CLI-path subscription reads ask read on exactly the subscription\'s source
   const evaluate = async more => adapter.cli(await session(JSON.stringify(more)), 'watch', { action: 'evaluate', workspaceId: 'ws_1', ...more });
   await evaluate({ subscriptionId: 'one' });
   await adapter.cli(await session('changes'), 'changes', { workspaceId: 'ws_1', subscriptionId: 'one' });
-  assert.deepEqual([asked, ran], [[[a, realA], [a, realA]], ['status', 'list', 'evaluate', 'status', 'list', 'changes']]);
+  assert.deepEqual([asked, ran], [[reads(a, realA), reads(a, realA)], ['status', 'list', 'evaluate', 'status', 'list', 'changes']]);
   // A set, a source the caller narrows away, an unreadable set and an unseen subscription all ask B: nothing runs.
   // evaluate refuses any sourceId outright, so the cases that pass one go through changes, where it is a real filter.
   const read = more => more.sourceId === undefined ? evaluate(more)
@@ -557,12 +561,12 @@ test('CLI-path subscription reads ask read on exactly the subscription\'s source
     // One indexed list read per call, never a page walk, and nothing after it.
     assert.deepEqual([asked.at(-1).includes(b), ran], [true, ['status', 'list']], JSON.stringify(more));
   }
-  assert.deepEqual(asked.at(-1), [a, realA, b, realB], 'an unseen subscription asks every source');
+  assert.deepEqual(asked.at(-1), reads(a, realA, b, realB), 'an unseen subscription asks every source');
   // search and usages ignore a subscriptionId, so it never narrows their ask: B is asked, and nothing runs.
   for (const tool of ['search', 'usages']) {
     ran = [];
     await assert.rejects(adapter.cli(await session(tool), tool, { workspaceId: 'ws_1', query: 'badge', node: '1:1', subscriptionId: 'one' }), /read denied/);
-    assert.deepEqual([asked.at(-1), ran], [[a, realA, b, realB], ['status']], tool);
+    assert.deepEqual([asked.at(-1), ran], [reads(a, realA, b, realB), ['status']], tool);
   }
 });
 
