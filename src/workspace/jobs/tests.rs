@@ -2917,6 +2917,28 @@ fn an_unreadable_set_reads_as_disabled_and_only_a_caller_seeing_every_source_rem
 }
 
 #[test]
+fn an_unpublished_set_names_each_member_to_refresh_and_never_the_sentinel() {
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let saved = subscribe_set(&storage, &select, "a", "visible", Some("badge"), None).unwrap();
+    let sub = saved["subscription"]["subscriptionId"].as_str().unwrap();
+    conn.execute("DELETE FROM published", []).unwrap();
+    let out = crate::workspace::changes::evaluate(&storage, &select, Some(sub)).unwrap();
+    let steps = out["evaluation"]["nextSteps"].as_array().unwrap();
+    let mut named: Vec<&str> = steps
+        .iter()
+        .map(|s| s["arguments"]["sourceId"].as_str().unwrap())
+        .collect();
+    named.sort();
+    let mut ids: Vec<&str> = srcs.iter().map(|s| s.1.as_str()).collect();
+    ids.sort();
+    assert_eq!(
+        (&out["evaluation"]["reason"], named),
+        (&json!("scope_not_published"), ids)
+    );
+}
+
+#[test]
 fn a_subscribe_that_meets_its_disabled_subscription_asks_to_unsubscribe_first() {
     let d = TestDir::new();
     let (storage, select, conn, _) = library_workspace(&d, 2);

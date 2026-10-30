@@ -330,12 +330,36 @@ pub(super) fn compute(
     // it read.
     let read = published(&ws.conn, source, members, scope)?;
     let Some((generation, membership)) = read.clone() else {
+        // A set names each registered member lacking the scope, never its sentinel.
+        let mut lacking = Vec::new();
+        for m in members.unwrap_or(&[]) {
+            let unpublished = ws
+                .conn
+                .query_row(
+                    "SELECT 1 FROM sources s WHERE s.source_id = ?1 AND NOT EXISTS
+                     (SELECT 1 FROM published p WHERE p.source_id = ?1 AND p.scope = ?2)",
+                    [m, scope],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(sql)?;
+            lacking.extend(unpublished.map(|_| m.as_str()));
+        }
+        if members.is_none() {
+            lacking.push(source);
+        }
+        let steps: Vec<Json> = lacking
+            .iter()
+            .map(|s| {
+                json!({"tool": "index", "arguments": {"action": "refresh",
+                    "workspaceId": ws.held.id, "sourceId": s, "scope": scope}})
+            })
+            .collect();
         return Ok((
             None,
             Err(
                 json!({"state": "unavailable", "reason": "scope_not_published",
-            "nextSteps": [{"tool": "index", "arguments": {"action": "refresh",
-                "workspaceId": ws.held.id, "sourceId": source, "scope": scope}}]}),
+                "nextSteps": steps}),
             ),
         ));
     };
