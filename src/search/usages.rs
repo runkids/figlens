@@ -9,7 +9,7 @@ use std::error::Error;
 use serde_json::{Map, Value as Json, json};
 
 use super::{Index, Record, kiwi_name, short_hash};
-use crate::expand::{Bounds, Expanded, json_bytes, kiwi_bytes, parent_of, plugin_type};
+use crate::expand::{Bounds, Expanded, json_bytes, kiwi_bytes, parent_of, plugin_type, sum_while};
 use crate::{ErrorKind, FigError, Tree, guid_key, to_json};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -277,6 +277,9 @@ pub(crate) fn extract(
         .flatten()
         .cloned()
         .collect();
+    if !prepay_aliases(&fields, bounds) {
+        return None;
+    }
     let mut bound = crate::rest::bound_variables(&fields);
     if let Some(list) =
         crate::rest::bound_variables(&Map::from_iter([("fillPaints".into(), regions)]))
@@ -294,8 +297,11 @@ pub(crate) fn extract(
         .and_then(|r| crate::rest::guid(&r["guid"]))
         .filter(|g| tree.nodes.contains_key(g))
     {
-        let inherited =
-            crate::rest::bound_variables(&effective(tree, &style, None, bounds, unread, true)?);
+        let maps = effective(tree, &style, None, bounds, unread, true)?;
+        if !prepay_aliases(&maps, bounds) {
+            return None;
+        }
+        let inherited = crate::rest::bound_variables(&maps);
         for f in ["fontSize", "fontWeight"] {
             if let (Some(v), false) = (inherited.get(f), bound.contains_key(f)) {
                 bound.insert(format!("styleIdForText.{f}"), v.clone());
@@ -476,6 +482,44 @@ fn node_state(tree: &Tree, target: Option<&str>, kind: &str) -> &'static str {
         Some(None) => "missing",
         Some(Some(n)) if plugin_type(n) == kind => "resolved",
         Some(Some(_)) => "unsupported",
+    }
+}
+
+/// Charges what `rest::bound_variables` and `variables::aliases` copy from `fields`' alias
+/// bindings, before they run: each id is held by the projection, its dedup key, the alias set,
+/// the id list and an inherited copy, whether or not its edge can keep it.
+fn prepay_aliases(fields: &Map<String, Json>, bounds: &mut Bounds) -> bool {
+    // One visit past the side's work: a walk cut short there fails its charge, a stop for work.
+    let cap = bounds.work.saturating_add(1);
+    let mut left = cap;
+    let bytes = sum_while(fields.values(), &mut left, alias_bytes);
+    bounds.charge(cap - left, 0) && bounds.charge(0, bytes)
+}
+
+fn alias_bytes(v: &Json, left: &mut usize) -> usize {
+    if *left == 0 {
+        return 0;
+    }
+    *left -= 1;
+    match v {
+        Json::Array(a) => sum_while(a, left, alias_bytes),
+        Json::Object(o) => {
+            let own = if v["dataType"] == "ALIAS" {
+                let r = &v["value"]["alias"];
+                let key = [&r["assetRef"]["key"], &r["assetRef"]["version"]]
+                    .iter()
+                    .filter_map(|s| s.as_str())
+                    .map(str::len)
+                    .sum::<usize>();
+                // Four raw copies of `VariableID:<guid or key/version>`, plus the serialized dedup
+                // key, which escapes each byte to at most six.
+                10 * key + 1024
+            } else {
+                0
+            };
+            own + sum_while(o.values(), left, alias_bytes)
+        }
+        _ => 0,
     }
 }
 

@@ -28,7 +28,7 @@ Rules: a target that is not in the file stays as an explicit `missing`/`unresolv
 - No totals. `coverage.complete` is false after a budget stop or truncated members. Hidden instance content that was never expanded is a reason, not incompleteness. Hidden layers are left out unless requested; the page's own scan notes each hidden match it passes over, so the page whose range (or, last, whose tail) held one says `hidden_locations_excluded`, whatever the limit and with no second scan, so an empty page never reads as "unused". `layers.relations` stays `partial` with `relation_unavailable: library_identity`.
 - `snapshotId` pins the revision: a mismatch is `source_stale` with `use_current_snapshot`.
 - The scope filters returned locations only; definitions are looked up anywhere in the index.
-- The queried id, its definition (name, type, set, page) and the set's member ids start the reply byte budget and are checked even when no row follows; results add to it, checked before serialization, like search. Row paints copied for bindings are charged to the build bounds before they are copied.
+- The queried id, its definition (name, type, set, page) and the set's member ids start the reply byte budget and are checked even when no row follows; results add to it, checked before serialization, like search. Row paints copied for bindings are charged to the build bounds before they are copied. So are the alias ids projected from bindings (every copy, even of an id too long to keep), before `rest::bound_variables` runs.
 
 ## Stateless vs workspace
 
