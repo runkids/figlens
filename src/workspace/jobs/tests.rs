@@ -3730,3 +3730,35 @@ fn a_schema_9_upgrade_keeps_model_rows_sources_and_incarnation() {
             .is_empty()
     );
 }
+
+#[test]
+fn a_schema_8_upgrade_reaches_10_with_separate_visual_and_text_job_slots() {
+    let d = TestDir::new();
+    let (storage, select, dir) = workspace(&d, 1);
+    let conn = connection(&dir);
+    let source = sources(&conn).remove(0);
+    // As schema 8 left it: no model or visual tables, one active slot per source and scope.
+    conn.execute_batch(
+        "DROP TABLE visual_units; DROP TABLE visual_rasters; DROP INDEX jobs_visual;
+         DROP TABLE model_vectors; DROP TABLE model_refs; DROP TABLE model_layers;
+         DROP INDEX jobs_embed; DROP INDEX jobs_active; ALTER TABLE jobs DROP COLUMN profile_id;
+         CREATE UNIQUE INDEX jobs_active ON jobs (source_id, scope)
+             WHERE state IN ('queued', 'running');
+         PRAGMA user_version = 8;",
+    )
+    .unwrap();
+    drop(conn);
+    let (_, ws) = opened(&storage, &select, true).unwrap();
+    assert_eq!(ws.version, SCHEMA);
+    job(&ws.conn, &source, "0:1", "running", "holder", 1);
+    // A visual job of the same scope takes its own slot beside the running text build.
+    ws.conn
+        .execute(
+            "INSERT INTO jobs (job_id, fingerprint, kind, source_id, membership, scope, incarnation,
+             state, owner, created_ms, heartbeat_ms, seq, expected_gen, profile_id)
+             SELECT 'v', 'v', 'visual', source_id, membership, scope, incarnation, 'queued',
+             owner, created_ms, heartbeat_ms, seq + 1, 1, 'visual-hash-1' FROM jobs LIMIT 1",
+            [],
+        )
+        .unwrap();
+}

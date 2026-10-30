@@ -21,6 +21,10 @@ pub type EmbedImages = Box<dyn FnMut(&[QueryImage]) -> Result<Vec<Vec<f32>>>>;
 
 /// Units rendered per fenced commit.
 const RENDER_BATCH: usize = 8;
+/// One job's render budget: wall time, and pixels rendered before normalization (about a
+/// thousand full-size 1024-pixel renders). Reaching either leaves the layer `partial`.
+const RENDER_TIME: std::time::Duration = std::time::Duration::from_secs(600);
+const RENDER_PIXELS: u64 = 1 << 30;
 
 fn fail(message: impl Into<String>) -> Box<dyn Error> {
     FigError::new(ErrorKind::OperationFailed, message).into()
@@ -60,31 +64,31 @@ fn render(tree: &crate::Tree, bytes: &[u8], id: &str, first: bool) -> Result<vis
     visual::render_unit(tree, bytes, id)
 }
 
-/// The state of layer (`gen`, `profile`, visual `POLICY`), `None` before a job started it.
-fn layer_state(conn: &Connection, gen_id: i64, profile: &str) -> Result<Option<String>> {
-    conn.query_row(
-        "SELECT state FROM model_layers WHERE gen = ?1 AND profile_id = ?2 AND policy = ?3",
-        params![gen_id, profile, POLICY],
-        |r| r.get(0),
-    )
-    .optional()
-    .map_err(sql)
-}
+/// One stored unit: record id, raster key (none for a render error), raster of this renderer.
+type Stored = (u32, Option<[u8; 32]>, bool);
 
-/// Units stored for `gen_id`: (rendered, render errors).
-fn stored_counts(conn: &Connection, gen_id: i64) -> Result<(i64, i64)> {
-    conn.query_row(
-        "SELECT count(raster_key), count(error) FROM visual_units WHERE gen = ?1 AND policy = ?2",
-        params![gen_id, POLICY],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )
+/// Every stored unit of `gen_id`: record id, raster key (none for a render error) and whether
+/// its raster came from this renderer.
+fn stored_units(conn: &Connection, gen_id: i64) -> Result<Vec<Stored>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT rid, raster_key, json_extract(report, '$.renderer') IS ?3 FROM visual_units
+             WHERE gen = ?1 AND policy = ?2 ORDER BY rid",
+        )
+        .map_err(sql)?;
+    stmt.query_map(params![gen_id, POLICY, cache::RENDERER], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    })
+    .map_err(sql)?
+    .collect::<rusqlite::Result<_>>()
     .map_err(sql)
 }
 
 /// Renders attempt `attempt` of visual job `job_id` for owner `me`. Every batch commits its
-/// units and the layers' `building` progress in one transaction, only while the fence holds;
-/// the last write marks the layers `ready` or `partial` and the job succeeded
-/// together. A crash or kill leaves the layers `building`, which reads as not ready.
+/// units and the layer's `building` progress in one transaction, only while the fence holds.
+/// The hash layer is published `ready` or `partial` once rendering ends; a vision job then
+/// embeds, and its last write marks the vision layer and the job succeeded together. A crash
+/// leaves a layer `building`; a job that ends failed or cancelled marks it `failed`.
 fn visual_work(
     dir: &Path,
     job_id: &str,
@@ -209,162 +213,222 @@ fn visual_work(
         )
         .map_err(sql)
     };
-    let ready = |conn: &Connection, profile: &str| -> Result<bool> {
-        Ok(layer_state(conn, gen_id, profile)?.as_deref() == Some("ready"))
+    let state = |conn: &Connection, profile: &str| -> Result<Option<String>> {
+        super::visual_search::layer_state(conn, dir, gen_id, profile)
     };
-    if ready(&conn, visual::VERSION)? && (!vision || ready(&conn, &profile_id)?) {
+    // A finished hash layer of this renderer is never written again, so hash search keeps
+    // reading it and a later failure of this job cannot mark it failed.
+    let hash_done = matches!(
+        state(&conn, visual::VERSION)?.as_deref(),
+        Some("ready" | "partial")
+    );
+    if state(&conn, visual::VERSION)?.as_deref() == Some("ready")
+        && (!vision || state(&conn, &profile_id)?.as_deref() == Some("ready"))
+    {
         commit(&mut conn, &mut |_| Ok(()), 0, 0, true)?;
         return Ok(json!({"gen": gen_id, "renderedNow": 0, "embeddedNow": 0}));
     }
-
-    // Render: the registered source's bytes, which must be the published generation's.
-    let path: String = conn
-        .query_row(
-            "SELECT path FROM sources WHERE source_id = ?1 AND membership = ?2",
-            [&source_id, &membership],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(sql)?
-        .ok_or_else(|| {
-            FigError::new(ErrorKind::InvalidArguments, "the source left the workspace")
-        })?;
-    let path = PathBuf::from(path);
-    let (bytes, _) = super::storage::staged(&path)?;
-    let published: String = conn
-        .query_row(
-            "SELECT snapshot_id FROM generations WHERE gen = ?1",
-            [gen_id],
-            |r| r.get(0),
-        )
-        .map_err(sql)?;
-    if crate::search::snapshot_id(&bytes) != published {
-        return Err(FigError::new(
-            ErrorKind::SourceStale,
-            "the .fig changed since this index was published; refresh it, then run index visual again",
-        )
-        .into());
-    }
-    stage(&conn, "parse")?;
-    let document = crate::Document::from_bytes(&bytes, &path.display().to_string())?;
-    let message = document.message()?;
-    let tree = crate::Tree::new(&message);
-    let index = crate::search::index_stored(&tree, &scope, crate::search::deadline())?;
-    let mut bounds = crate::expand::Bounds {
-        work: crate::search::semantic::LAYER_WORK,
-        bytes: crate::search::semantic::LAYER_BYTES,
-        depth: 0,
-        deadline: crate::search::deadline(),
-        stop: None,
-    };
-    let selected = visual::scope_units(&index, &mut bounds)?;
-    let mut stop = selected.reason;
-    let mut units: Vec<(u32, String)> = selected
-        .units
-        .iter()
-        .map(|u| (u.rid, u.id.to_owned()))
-        .collect();
-    drop(selected);
-    drop(index);
-    if units.len() > cache::MAX_UNITS {
-        units.truncate(cache::MAX_UNITS);
-        stop = stop.or(Some("visual_capacity"));
-    }
-    // A record id names the same node in the published generation, or this build is not its.
-    for (rid, id) in &units {
-        let stored: Option<String> = conn
+    let (counts, hash_state, selection, rendered_now) = if hash_done {
+        let row: (i64, i64, i64, Option<String>, String) = conn
             .query_row(
-                "SELECT node_id FROM records WHERE gen = ?1 AND rid = ?2",
-                params![gen_id, rid],
+                "SELECT chunks, embedded, refused, stop, state FROM model_layers WHERE gen = ?1
+                 AND profile_id = ?2 AND policy = ?3",
+                params![gen_id, visual::VERSION, POLICY],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .map_err(sql)?;
+        let counts = json!({"chunks": row.0, "texts": row.0, "embedded": row.1,
+            "refused": row.2, "stop": row.3});
+        (counts, row.4, None, 0)
+    } else {
+        // Render: the registered source's bytes, which must be the published generation's.
+        let path: String = conn
+            .query_row(
+                "SELECT path FROM sources WHERE source_id = ?1 AND membership = ?2",
+                [&source_id, &membership],
                 |r| r.get(0),
             )
             .optional()
+            .map_err(sql)?
+            .ok_or_else(|| {
+                FigError::new(ErrorKind::InvalidArguments, "the source left the workspace")
+            })?;
+        let path = PathBuf::from(path);
+        let (bytes, _) = super::storage::staged(&path)?;
+        let published: String = conn
+            .query_row(
+                "SELECT snapshot_id FROM generations WHERE gen = ?1",
+                [gen_id],
+                |r| r.get(0),
+            )
             .map_err(sql)?;
-        if stored.as_deref() != Some(id.as_str()) {
+        if crate::search::snapshot_id(&bytes) != published {
             return Err(FigError::new(
-                ErrorKind::IndexIncompatible,
-                "the published index does not match its source's records; rebuild it, then run index visual again",
+                ErrorKind::SourceStale,
+                "the .fig changed since this index was published; refresh it, then run index visual again",
             )
             .into());
         }
-    }
-    let total = units.len();
-    let hash_counts = |conn: &Connection| -> Result<(Json, &'static str)> {
-        let (rendered, refused) = stored_counts(conn, gen_id)?;
-        // A unit that did not render is uncovered, never a failed job: the rest still serve.
-        let state = if refused > 0 || stop.is_some() {
-            "partial"
-        } else {
-            "ready"
+        stage(&conn, "parse")?;
+        let document = crate::Document::from_bytes(&bytes, &path.display().to_string())?;
+        let message = document.message()?;
+        let tree = crate::Tree::new(&message);
+        let index = crate::search::index_stored(&tree, &scope, crate::search::deadline())?;
+        let mut bounds = crate::expand::Bounds {
+            work: crate::search::semantic::LAYER_WORK,
+            bytes: crate::search::semantic::LAYER_BYTES,
+            depth: 0,
+            deadline: crate::search::deadline(),
+            stop: None,
         };
-        let counts = json!({"chunks": total, "texts": total, "embedded": rendered,
-            "refused": refused, "stop": stop});
-        Ok((counts, state))
-    };
-    // Rasters an earlier attempt stored for this generation are kept, never rendered again.
-    let kept: HashSet<u32> = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT rid FROM visual_units WHERE gen = ?1 AND policy = ?2
-                 AND raster_key IS NOT NULL",
-            )
-            .map_err(sql)?;
-        stmt.query_map(params![gen_id, POLICY], |r| r.get(0))
-            .map_err(sql)?
-            .collect::<rusqlite::Result<_>>()
-            .map_err(sql)?
-    };
-    stage(&conn, "render")?;
-    let mut rendered_now = 0;
-    for (n, batch) in units.chunks(RENDER_BATCH).enumerate() {
-        // Before rendering a batch nobody can publish.
-        fence(&conn)?;
-        let renders: Vec<(u32, Result<visual::RenderedUnit>)> = batch
+        let selected = visual::scope_units(&index, &mut bounds)?;
+        let mut stop = selected.reason;
+        // Hidden units and units on internal pages are left out (they would spend the unit
+        // cap), unless one is the selected scope itself.
+        let mut units: Vec<(u32, String)> = selected
+            .units
             .iter()
-            .filter(|(rid, _)| !kept.contains(rid))
-            .map(|(rid, id)| (*rid, render(&tree, &bytes, id, *rid == units[0].0)))
+            .filter(|u| u.rid == 0 || !(u.hidden || u.internal))
+            .map(|u| (u.rid, u.id.to_owned()))
             .collect();
-        rendered_now += renders.iter().filter(|r| r.1.is_ok()).count();
-        let done = (n * RENDER_BATCH + batch.len()).min(total);
+        drop(selected);
+        drop(index);
+        if units.len() > cache::MAX_UNITS {
+            units.truncate(cache::MAX_UNITS);
+            stop = stop.or(Some("visual_capacity"));
+        }
+        // A record id names the same node in the published generation, or this build is not its.
+        for (rid, id) in &units {
+            let stored: Option<String> = conn
+                .query_row(
+                    "SELECT node_id FROM records WHERE gen = ?1 AND rid = ?2",
+                    params![gen_id, rid],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(sql)?;
+            if stored.as_deref() != Some(id.as_str()) {
+                return Err(FigError::new(
+                    ErrorKind::IndexIncompatible,
+                    "the published index does not match its source's records; rebuild it, then run index visual again",
+                )
+                .into());
+            }
+        }
+        let total = units.len();
+        let chosen: HashSet<u32> = units.iter().map(|u| u.0).collect();
+        // This selection's rendered units (of this renderer) and render errors.
+        let tally = |conn: &Connection| -> Result<(usize, usize, HashSet<u32>)> {
+            let (mut rendered, mut refused, mut kept) = (0, 0, HashSet::new());
+            for (rid, key, current) in stored_units(conn, gen_id)? {
+                if !chosen.contains(&rid) {
+                    continue;
+                }
+                match key {
+                    Some(_) if current => {
+                        rendered += 1;
+                        kept.insert(rid);
+                    }
+                    Some(_) => {}
+                    None => refused += 1,
+                }
+            }
+            Ok((rendered, refused, kept))
+        };
+        let layer = |conn: &Connection, stop: Option<&str>| -> Result<(Json, &'static str)> {
+            let (rendered, refused, _) = tally(conn)?;
+            // A unit that did not render is uncovered, never a failed job: the rest still serve.
+            let state = if refused > 0 || stop.is_some() || rendered + refused < total {
+                "partial"
+            } else {
+                "ready"
+            };
+            Ok((
+                json!({"chunks": total, "texts": total, "embedded": rendered,
+                    "refused": refused, "stop": stop}),
+                state,
+            ))
+        };
+        // Rasters this generation already stored from this renderer are kept, never rendered again.
+        let (_, _, kept) = tally(&conn)?;
+        stage(&conn, "render")?;
+        // One job-wide budget across units, charged before each render.
+        let (began, mut pixels, mut rendered_now) = (std::time::Instant::now(), 0u64, 0);
+        'render: for (n, batch) in units.chunks(RENDER_BATCH).enumerate() {
+            let todo: Vec<&(u32, String)> = batch
+                .iter()
+                .filter(|(rid, _)| !kept.contains(rid))
+                .collect();
+            if todo.is_empty() {
+                continue;
+            }
+            // Before rendering a batch nobody can publish.
+            fence(&conn)?;
+            let mut renders = Vec::with_capacity(todo.len());
+            for (rid, id) in todo {
+                if began.elapsed() > RENDER_TIME || pixels >= RENDER_PIXELS {
+                    stop = Some("render_budget");
+                }
+                if stop == Some("render_budget") {
+                    break;
+                }
+                let render = render(&tree, &bytes, id, *rid == units[0].0);
+                if let Ok(r) = &render {
+                    pixels += r.pixels;
+                }
+                renders.push((*rid, render));
+            }
+            rendered_now += renders.iter().filter(|r| r.1.is_ok()).count();
+            let done = (n * RENDER_BATCH + batch.len()).min(total);
+            commit(
+                &mut conn,
+                &mut |tx| {
+                    for (rid, render) in &renders {
+                        // A unit that cannot render, or whose render is over its budget, is
+                        // recorded as uncovered; its text record stays searchable.
+                        let saved = match render {
+                            Ok(r) => cache::save(tx, gen_id, *rid, r).map(|_| ()),
+                            Err(e) => Err(e.to_string().into()),
+                        };
+                        match saved {
+                            Ok(()) => {}
+                            Err(e) if e.is::<rusqlite::Error>() => return Err(e),
+                            Err(e) => cache::failed(tx, gen_id, *rid, &e.to_string())?,
+                        }
+                    }
+                    let (counts, _) = layer(tx, stop)?;
+                    set(tx, visual::VERSION, "building", &counts)
+                },
+                done,
+                total,
+                false,
+            )?;
+            if stop == Some("render_budget") {
+                break 'render;
+            }
+        }
+        drop(tree);
+        drop(message);
+        drop(document);
+        drop(bytes);
+        let (done_counts, state) = layer(&conn, stop)?;
+        // Published on its own as soon as rendering ends: a vision failure after it fails only
+        // the vision layer.
         commit(
             &mut conn,
-            &mut |tx| {
-                for (rid, render) in &renders {
-                    // A unit that cannot render, or whose render is over its budget, is
-                    // recorded as uncovered; its text record stays searchable.
-                    let saved = match render {
-                        Ok(r) => cache::save(tx, gen_id, *rid, r).map(|_| ()),
-                        Err(e) => Err(e.to_string().into()),
-                    };
-                    match saved {
-                        Ok(()) => {}
-                        Err(e) if e.is::<rusqlite::Error>() => return Err(e),
-                        Err(e) => cache::failed(tx, gen_id, *rid, &e.to_string())?,
-                    }
-                }
-                let (counts, _) = hash_counts(tx)?;
-                set(tx, visual::VERSION, "building", &counts)
-            },
-            done,
+            &mut |tx| set(tx, visual::VERSION, state, &done_counts),
+            total,
             total,
             false,
         )?;
-    }
-    drop(tree);
-    drop(message);
-    drop(document);
-    drop(bytes);
-    let (counts, hash_state) = hash_counts(&conn)?;
+        (done_counts, state.to_owned(), Some(chosen), rendered_now)
+    };
     if !vision {
-        commit(
-            &mut conn,
-            &mut |tx| set(tx, visual::VERSION, hash_state, &counts),
-            total,
-            total,
-            true,
-        )?;
+        commit(&mut conn, &mut |_| Ok(()), 0, 0, true)?;
         return Ok(json!({"gen": gen_id, "layer": counts, "renderedNow": rendered_now}));
     }
+    let total = counts["chunks"].as_u64().unwrap_or(0) as usize;
+    let stop = counts["stop"].clone();
 
     // Embed: the stored rasters, keyed by their content address, in batches under the fence.
     stage(&conn, "load")?;
@@ -373,18 +437,12 @@ fn visual_work(
         .ok_or_else(|| {
             fail("the configured vision profile changed since this visual job was submitted")
         })?;
-    let keys: Vec<(u32, [u8; 32])> = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT rid, raster_key FROM visual_units WHERE gen = ?1 AND policy = ?2
-                 AND raster_key IS NOT NULL ORDER BY rid",
-            )
-            .map_err(sql)?;
-        stmt.query_map(params![gen_id, POLICY], |r| Ok((r.get(0)?, r.get(1)?)))
-            .map_err(sql)?
-            .collect::<rusqlite::Result<_>>()
-            .map_err(sql)?
-    };
+    // Only this job's selection (the whole stored layer when it was already finished).
+    let keys: Vec<(u32, [u8; 32])> = stored_units(&conn, gen_id)?
+        .into_iter()
+        .filter(|u| selection.as_ref().is_none_or(|s| s.contains(&u.0)))
+        .filter_map(|(rid, key, _)| key.map(|k| (rid, k)))
+        .collect();
     let mut unique: Vec<(u32, [u8; 32])> = Vec::new();
     let mut seen = HashSet::new();
     for (rid, key) in &keys {
@@ -464,10 +522,7 @@ fn visual_work(
     let vision = vision_counts(embedded);
     commit(
         &mut conn,
-        &mut |tx| {
-            set(tx, visual::VERSION, hash_state, &counts)?;
-            set(tx, &profile_id, hash_state, &vision)
-        },
+        &mut |tx| set(tx, &profile_id, &hash_state, &vision),
         embedded,
         hashes.len(),
         true,

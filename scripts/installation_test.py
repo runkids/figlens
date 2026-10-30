@@ -197,7 +197,7 @@ for line in sys.stdin:
                 'results': [{'ref': {'nodeId': '0:1'}}], 'coverage': {'complete': True}}},
             {'isError': False, 'structuredContent': {'profiles': [{'name': 'bge-m3'}]}},
             {'isError': False, 'structuredContent': {'profiles': [], 'setup': [{'action': 'configure'}], 'configRoot': '/config'}},
-            {'isError': True, 'content': [{'text': 'no model runtime at /bin/figlens-embed'}]},
+            {'isError': True, 'content': [{'text': 'bge-m3: /tmp/no-model is missing config.json, pytorch_model.bin, tokenizer.json; download BAAI/bge-m3 revision 5617a9f (MIT) into it, then configure again; nothing was recorded'}]},
             {'isError': False, 'structuredContent': {'profiles': []}},
             {'isError': True, '_meta': {'figlens': {'code': 'mode_unavailable'}}},
             {'isError': False, 'structuredContent': {'query': {'usedModes': ['text']}, 'results': [{'ref': {'nodeId': '0:1'}}]}},

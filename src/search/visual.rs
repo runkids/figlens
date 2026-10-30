@@ -41,6 +41,8 @@ pub struct RenderedUnit {
     pub diagnostics: Vec<serde_json::Value>,
     pub diagnostics_truncated: bool,
     pub bounds: serde_json::Map<String, serde_json::Value>,
+    /// Pixels the export rendered before normalization, for a caller's job-wide budget.
+    pub pixels: u64,
 }
 
 /// Render over export bounds at at most 1024 pixels on the longest side, then normalize.
@@ -63,6 +65,7 @@ pub fn render_unit(
         Some(1024),
     )?;
     let image = QueryImage::from_png(&raster.bytes, None)?;
+    let pixels = u64::from(raster.width) * u64::from(raster.height);
     let mut diagnostics = Vec::new();
     let mut truncated = false;
     collect_diagnostics(
@@ -76,6 +79,7 @@ pub fn render_unit(
         diagnostics,
         diagnostics_truncated: truncated,
         bounds,
+        pixels,
     })
 }
 
