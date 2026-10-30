@@ -28,6 +28,10 @@ const required = (input, name) => {
   if (typeof input[name] !== 'string' || !input[name]) throw new Error(`${input.action ?? 'This call'} needs ${name}.`);
   return input[name];
 };
+// A library reference and its optional exact definition ref, as the MCP library object carries them.
+const libraryFlags = library => ['--library', required(library, 'kind'), ...flag('--namespace', library.namespace),
+  '--key', required(library, 'key'), ...(library.definition === undefined ? [] : ['--definition-source', required(library.definition, 'sourceId'),
+    '--definition-snapshot', required(library.definition, 'snapshotId'), '--definition-node', required(library.definition, 'nodeId')])];
 
 // The MCP index, jobs, search, usages, diff, changes, watch and inspect arguments as the same CLI command, for the plugin's CLI path.
 export function cliArgs(tool, input) {
@@ -57,8 +61,7 @@ export function cliArgs(tool, input) {
     if (input.library !== undefined) {
       const extra = ['file', 'node', 'resource', 'snapshotId', 'relation', 'direction'].find(key => input[key] !== undefined);
       if (extra) throw new Error(`usages with library takes no ${extra}: library replaces node and resource, and snapshotId, relation and direction apply only to them`);
-      return ['usages', ...target, '--library', required(input.library, 'kind'), '--namespace', required(input.library, 'namespace'),
-        '--key', required(input.library, 'key'), ...flag('--scope', input.scope), ...flag('--include-hidden', input.includeHidden),
+      return ['usages', ...target, ...libraryFlags(input.library), ...flag('--scope', input.scope), ...flag('--include-hidden', input.includeHidden),
         ...flag('--limit', input.limit), ...flag('--cursor', input.cursor)];
     }
     if (!input.node === !input.resource) throw new Error('usages needs node or resource, not both');
@@ -78,11 +81,7 @@ export function cliArgs(tool, input) {
   if (tool === 'watch' && input.action === 'start') return ['watch', 'run', '--id', required(input, 'workspaceId'), ...flag('--source', input.sourceId),
     '--scope', required(input, 'scope'), ...storage, ...flag('--request-id', input.requestId)];
   // The CLI refuses a flag the action does not take.
-  // A saved library question's reference and exact definition ref, as the MCP library object carries them.
-  const library = input.library === undefined ? [] : ['--library', required(input.library, 'kind'),
-    ...flag('--namespace', input.library.namespace), '--key', required(input.library, 'key'),
-    ...(input.library.definition === undefined ? [] : ['--definition-source', required(input.library.definition, 'sourceId'),
-      '--definition-snapshot', required(input.library.definition, 'snapshotId'), '--definition-node', required(input.library.definition, 'nodeId')])];
+  const library = input.library === undefined ? [] : libraryFlags(input.library);
   if (tool === 'watch') return ['watch', input.action, ...filters(), ...flag('--sources', input.sources), ...flag('--consumer', input.consumer),
     ...flag('--subscription', input.subscriptionId), ...(input.action === 'ack' ? ['--cursor', required(input, 'cursor')] : flag('--cursor', input.cursor)),
     ...flag('--node', input.node), ...flag('--query', input.query), ...flag('--type', input.type), ...library, ...flag('--owner', input.owner),

@@ -242,7 +242,10 @@ test('CLI path runs the MCP index, jobs, search, usages, diff, changes, watch an
   for (const extra of [{ node: '1:2' }, { resource: 'image:a' }, { snapshotId: 'snap' }, { relation: 'uses_style' }, { direction: 'in' }])
     assert.throws(() => cliArgs('usages', { workspaceId: 'ws_1', library, ...extra }), new RegExp(`library takes no ${Object.keys(extra)[0]}`));
   assert.throws(() => cliArgs('usages', { file: '/a.fig', library }), /library takes no file/);
-  assert.throws(() => cliArgs('usages', { workspaceId: 'ws_1', library: { kind: 'component', key: 'k1' } }), /needs namespace/);
+  // Without namespace, and with an exact definition ref, as MCP takes them.
+  assert.deepEqual(cliArgs('usages', { workspaceId: 'ws_1', library: { kind: 'component', key: 'k1', definition: { sourceId: 's', snapshotId: 'sha256:a', nodeId: '1:2' } } }),
+    ['usages', '--id', 'ws_1', '--library', 'component', '--key', 'k1', '--definition-source', 's', '--definition-snapshot', 'sha256:a', '--definition-node', '1:2']);
+  assert.throws(() => cliArgs('usages', { workspaceId: 'ws_1', library: { kind: 'component', key: 'k1', definition: { sourceId: 's' } } }), /needs snapshotId/);
 });
 
 test('CLI-path writes ask edit where the binary places the workspace; only reset and recreation ask figlens_index', async t => {

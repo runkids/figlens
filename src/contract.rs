@@ -641,7 +641,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
         "usages" => (
             serde_json::json!({
                 "library": {"type": "object", "description": "library queries: the kind, namespace and key asked"},
-                "definition": {"type": ["object", "null"], "description": "library queries: always state unresolved, reason library_source_unproven; null while a workspace scope is pending or not_prepared; else ref or resource, state (indexed in scope, outside_scope, or the state of the edges that name it: missing, unresolved, external, recorded), name, type, setId and page when known"},
+                "definition": {"type": ["object", "null"], "description": "library queries: state unresolved with a reason (library_source_unproven when none is selected), or selected with basis caller_ref, the selected ref and keyEvidence unverified; null while a workspace scope is pending or not_prepared; else ref or resource, state (indexed in scope, outside_scope, or the state of the edges that name it: missing, unresolved, external, recorded), name, type, setId and page when known"},
                 "direction": {"type": "string"},
                 "relations": {"type": "array", "items": {"type": "string"}},
                 "scope": {"type": "object"},
