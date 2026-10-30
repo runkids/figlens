@@ -806,7 +806,8 @@ fn inherited_modes(tree: &Tree, node: &str, bounds: &mut Bounds) -> usize {
         n += usize::from(matches!(modes, Some(K::Array(e)) if !e.is_empty()));
         at = p;
     }
-    n + 1
+    // Only a chain that goes on past the walk is unknown.
+    n + usize::from(tree.nodes[&at].get("parentIndex").is_some())
 }
 
 /// A record's structure digest input: name, kind, parent id, order among siblings and hidden.

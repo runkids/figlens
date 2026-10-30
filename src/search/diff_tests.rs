@@ -1838,6 +1838,29 @@ fn moded_page() -> K<'static> {
 }
 
 #[test]
+fn an_ancestor_walk_it_cannot_finish_counts_as_one_mode_not_compared() {
+    // Frames 100.. chained under page 1; the last of `frames` has `frames + 1` ancestors.
+    let chain = |frames: u32| {
+        let mut nodes = vec![node(100, Some(1), "FRAME", "F", vec![])];
+        nodes.extend((101..100 + frames).map(|id| node(id, Some(id - 1), "FRAME", "F", vec![])));
+        doc(nodes)
+    };
+    let count = |message: &K<'static>, last: u32, work: usize| {
+        let mut b = super::super::tests::bounds(work);
+        inherited_modes(&Tree::new(message), &format!("0:{last}"), &mut b)
+    };
+    let depth = DEPTH as u32;
+    assert_eq!(
+        (
+            count(&chain(depth - 1), 98 + depth, WORK),
+            count(&chain(depth), 99 + depth, WORK),
+            count(&chain(1), 100, 0),
+        ),
+        (0, 1, 1)
+    );
+}
+
+#[test]
 fn modes_a_frame_inherits_from_above_it_make_its_diff_partial() {
     let plain = scoped(
         doc(screen("Hi", 0.5, 400.0)),

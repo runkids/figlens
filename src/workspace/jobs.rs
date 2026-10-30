@@ -386,7 +386,8 @@ fn other_request(request: &str) -> Box<dyn Error> {
     )
 }
 
-/// Records `request_id` for a job it joined or took over, so a retry replays that job.
+/// Records `request_id` for a job it joined or took over, so a retry replays that job; `''`
+/// records a track that started none, so its retry replays without submitting.
 fn remember(tx: &Connection, request_id: Option<&str>, print: &str, job_id: &str) -> Result<()> {
     if let Some(request) = request_id {
         tx.execute(
