@@ -68,6 +68,12 @@ const cliSteps = [
     cursor: rest[5].nextCursor, snapshotId: rest[5].source.snapshotId }),
   // The binary's own refusal reaches the agent unchanged.
   (status, prepared) => direct('figlens_usages', { workspaceId: prepared.workspaceId, node: '0:10', scope: '0:1', relation: 'nope' }),
+  // Tracking records a baseline; a consumer that acks it reads nothing new after it.
+  (status, prepared) => direct('figlens_index', { action: 'track', workspaceId: prepared.workspaceId, scope: '0:1' }),
+  (status, prepared) => direct('figlens_changes', { workspaceId: prepared.workspaceId, consumer: 'smoke' }),
+  (status, prepared, ...rest) => rest[9]?.nextCursor && direct('figlens_watch', { action: 'ack', workspaceId: prepared.workspaceId, consumer: 'smoke',
+    cursor: rest[9].nextCursor }),
+  (status, prepared) => direct('figlens_changes', { workspaceId: prepared.workspaceId, consumer: 'smoke' }),
 ];
 const deepId = `I${Array(60).fill('9:9').join(';')}`;
 let steps = searchSteps;
@@ -315,7 +321,7 @@ try {
     await assert.rejects(fetch(activeUrl));
     return { ownedViewerClosed: true, operationRpcReloaded: true };
   });
-  await check('with a disabled MCP override the CLI path prepares, polls, searches and inspects through plugin tools', async () => {
+  await check('with a disabled MCP override the CLI path prepares, polls, searches, inspects and follows changes through plugin tools', async () => {
     // A disabled user server under the managed key: the plugin keeps it and serves the same flow over the CLI.
     await writeFile(path.join(config, 'opencode.json'), JSON.stringify({ plugins: [pathToFileURL(packaged).href, pathToFileURL(probe).href],
       mcp: { figlensmcp: { type: 'local', command: [binary, 'mcp'], enabled: false } } }));
@@ -339,7 +345,11 @@ try {
     assert.deepEqual([first?.results?.map(item => item.ref.nodeId), first?.hasMore], [['0:2'], true], (scripted.raw[7] ?? '').slice(0, 500));
     assert.deepEqual([second?.results?.map(item => item.ref.nodeId), second?.hasMore], [['0:3'], false], (scripted.raw[8] ?? '').slice(0, 500));
     assert.match(JSON.parse(scripted.raw[9] ?? '{}').error?.message ?? '', /unknown relation "nope"/, (scripted.raw[9] ?? '').slice(0, 500));
-    return { pages: [first.results[0].ref.nodeId, second.results[0].ref.nodeId], refused: 'unknown relation', usedBy: used.results.map(item => item.ref.nodeId), deepIdBytes: deepId.length, mcp: status.mcp.reason, before: before.state, job: job.state, ref: found.results[0].ref, inspected: node.node.id, tools: scripted.tools.filter(name => /^figlens_/.test(name)) };
+    const [polled, acked, after] = [11, 12, 13].map(index => value(scripted.raw[index] ?? ''));
+    assert.deepEqual(polled?.revisions?.map(revision => revision.kind), ['baseline'], (scripted.raw[11] ?? '').slice(0, 500));
+    assert.equal(acked?.advanced, true, (scripted.raw[12] ?? '').slice(0, 500));
+    assert.deepEqual(after?.revisions, [], (scripted.raw[13] ?? '').slice(0, 500));
+    return { pages: [first.results[0].ref.nodeId, second.results[0].ref.nodeId], refused: 'unknown relation', trackedBaselineAcked: true, usedBy: used.results.map(item => item.ref.nodeId), deepIdBytes: deepId.length, mcp: status.mcp.reason, before: before.state, job: job.state, ref: found.results[0].ref, inspected: node.node.id, tools: scripted.tools.filter(name => /^figlens_/.test(name)) };
   });
 } finally {
   provider.close();

@@ -103,7 +103,7 @@ pi install npm:@runkids/figlens
 
 Pi를 다시 시작하거나 `/reload`를 실행한 뒤 평소 말로 화면을 요청하세요. Pi는 frame을 찾고, 자동 등록된 MCP 서버로 읽고, 프로젝트의 기술 스택으로 구현합니다. 노드 ID도, 전역 CLI도 필요 없습니다.
 
-문구나 화면을 찾아 달라고 하면 `.fig`를 직접 검색하며 아무것도 저장하지 않습니다. 반복 검색이 필요하면 디자인과 범위를 지정해 인덱스를 활성화해 달라고 Pi에 요청하세요. 로컬 인덱스를 한 번 준비하고(설정 명령 없음), 준비될 때까지 작업 상태를 알려 주며, 재시작 후와 다른 호스트에서도 재사용합니다. 인덱스를 초기화하려면 명시적으로 요청해야 합니다. 컴포넌트, 변수, 스타일, 이미지가 어디에 쓰이는지 물으면 같은 방식으로 정확한 usages를 알려 줍니다. `.fig`를 직접 읽거나, 인덱스를 활성화한 뒤에는 그 인덱스를 읽습니다. 자세히: [로컬 인덱스](#local-index).
+문구나 화면을 찾아 달라고 하면 `.fig`를 직접 검색하며 아무것도 저장하지 않습니다. 반복 검색이 필요하면 디자인과 범위를 지정해 인덱스를 활성화해 달라고 Pi에 요청하세요. 로컬 인덱스를 한 번 준비하고(설정 명령 없음), 준비될 때까지 작업 상태를 알려 주며, 재시작 후와 다른 호스트에서도 재사용합니다. 인덱스를 초기화하려면 명시적으로 요청해야 합니다. 컴포넌트, 변수, 스타일, 이미지가 어디에 쓰이는지 물으면 같은 방식으로 정확한 usages를 알려 줍니다. `.fig`를 직접 읽거나, 인덱스를 활성화한 뒤에는 그 인덱스를 읽습니다. Pi에게 디자인의 변경을 따라가 달라고 하면, 필요할 때 인덱스를 준비해 그 범위를 track하고 마지막 확인 이후 바뀐 점을 알려 줍니다. 저장한 두 사본의 차이를 물으면 `diff`로 답하며 아무것도 시작하지 않습니다. 자세히: [로컬 인덱스](#local-index).
 
 - `/figlens plan <request>`는 계획만 작성하며 애플리케이션을 수정하지 않습니다.
 - `/figlens yolo <request>`는 계획, 구현, 확인을 하고 자신이 만든 임시 계획을 정리합니다.
@@ -224,7 +224,7 @@ Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 로컬 읽기 전용 viewer. `--out`은 독립 오프라인 스냅샷 생성 |
 | `compare <file> <nodes.json> <node>` | 같은 frame의 REST 내보내기와 차이 비교 |
 | `node <file> <node>` | 원시 `.fig` 노드 하나 |
-| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset\|track\|untrack` | 사용자별 figlens state 디렉터리 또는 workspace가 이후 기억하는 `--storage DIR` 아래의 로컬 workspace. `prepare <file> --scope NODE`로 해당 범위의 검색 인덱스를 한 번 만들면, 이후 `search --file <file>`(또는 `--workspace DIR`)은 다시 파싱하지 않고 workspace의 모든 소스를 함께 순위 매겨 답합니다. `refresh`는 변경된 파일을, `rebuild`는 전부(또는 `--source`/`--scope` 하나)를 다시 만들고, `clear`는 쓰지 않는 인덱스를 지웁니다. 새 인덱스가 준비될 때까지 이전 인덱스가 계속 쓰입니다. `reset`은 workspace 데이터베이스만 지우며 디자인, 내보내기, 기억된 위치는 건드리지 않습니다 `track --scope NODE`는 baseline 빌드부터 그 스코프의 변경을 기록하고, `untrack`은 기록을 남긴 채 중단합니다. |
+| `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset\|track\|untrack` | 사용자별 figlens state 디렉터리 또는 workspace가 이후 기억하는 `--storage DIR` 아래의 로컬 workspace. `prepare <file> --scope NODE`로 해당 범위의 검색 인덱스를 한 번 만들면, 이후 `search --file <file>`(또는 `--workspace DIR`)은 다시 파싱하지 않고 workspace의 모든 소스를 함께 순위 매겨 답합니다. `refresh`는 변경된 파일을, `rebuild`는 전부(또는 `--source`/`--scope` 하나)를 다시 만들고, `clear`는 쓰지 않는 인덱스를 지웁니다. 새 인덱스가 준비될 때까지 이전 인덱스가 계속 쓰입니다. `reset`은 workspace 데이터베이스만 지우며 디자인, 내보내기, 기억된 위치는 건드리지 않습니다. `track --scope NODE`는 baseline 빌드부터 그 스코프의 변경을 기록하고, `untrack`은 기록을 남긴 채 중단합니다. |
 | `jobs status\|cancel <jobId>` | 인덱스 빌드 상태 확인 또는 취소. `cancel`은 빌드가 멈춘 뒤에 반환합니다 |
 | `changes --file <file>\|--id ID\|--workspace DIR [--source ID] [--scope NODE] [--consumer NAME\|--cursor C] [--revision R] [--limit N]` | 추적 중인 스코프에 기록된 변경을 오래된 순으로 반환합니다. 게시된 빌드마다 리비전 하나(baseline 또는 changes)와 커버리지, 변경 종류·facet별 개수를 포함합니다. `--revision`은 그 리비전의 변경된 노드를 페이지로 나눕니다. `tracking`은 변경을 기록하려면 `index refresh`가 필요한 스코프를 알려 줍니다. 읽기 전용 |
 | `watch ack --file <file>\|--id ID\|--workspace DIR --consumer NAME --cursor C [--source ID] [--scope NODE]` | 같은 필터로 처리한 마지막 `changes` 페이지의 `nextCursor`로 consumer의 체크포인트를 옮깁니다. 반복해도 안전합니다 |
