@@ -97,12 +97,12 @@ await check('packaged descriptor, bridge handshake and absolute design path', as
     const prepared = await callTool(connection, 'index', { action: 'prepare', file: path.join(project, 'mapping.fig'), scope: '0:0' });
     assert.equal(prepared.isError, false);
     let job;
-    for (let tries = 0; tries < 100; tries++) {
-      job = (await callTool(connection, 'jobs', { action: 'status', jobId: prepared.structuredContent.job.jobId })).structuredContent;
-      if (job.state !== 'queued' && job.state !== 'running') break;
+    for (const end = Date.now() + 30000; Date.now() < end;) {
+      job = await callTool(connection, 'jobs', { action: 'status', jobId: prepared.structuredContent.job.jobId });
+      if (job.isError || !['queued', 'running'].includes(job.structuredContent.state)) break;
       await new Promise(resolve => setTimeout(resolve, 100));
     }
-    assert.equal(job.state, 'succeeded');
+    assert.equal(job.structuredContent?.state, 'succeeded', JSON.stringify(job));
     const library = { kind: 'component', namespace: 'lib', key: 'k1' };
     const used = await callTool(connection, 'usages', { workspaceId: prepared.structuredContent.workspaceId, library });
     assert.equal(used.isError, false);

@@ -629,6 +629,8 @@ fn a_library_question_by_a_relocated_path_is_asked_again_by_workspace() {
         "lib",
         "--key",
         "k1",
+        "--source",
+        source,
     ]);
     assert!(!asked.status.success());
     let stderr = String::from_utf8_lossy(&asked.stderr);
@@ -639,6 +641,7 @@ fn a_library_question_by_a_relocated_path_is_asked_again_by_workspace() {
         "{stderr}"
     );
     assert_eq!(arguments["library"]["key"], "k1");
+    assert_eq!(arguments["sourceId"], source);
     assert!(arguments.get("file").is_none(), "{stderr}");
 }
 

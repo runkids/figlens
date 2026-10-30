@@ -125,17 +125,25 @@ pub fn library(
         .map_err(sql)?;
     // A file whose source moved no longer names this workspace; a library question reads every
     // source, so it is asked again by workspaceId, never of the moved file.
-    if super::query::relocated(
+    // Only the relocation error carries a recovery; any other one stands as it is.
+    if let Err(e) = super::query::relocated(
         storage,
         select,
         rows.iter().map(|r| r.1.as_str()),
         "usages",
         json!({}),
-    )
-    .is_err()
-    {
+    ) {
+        if e.downcast_ref::<FigError>()
+            .and_then(FigError::recovery)
+            .is_none()
+        {
+            return Err(e);
+        }
         let mut arguments = req.arguments();
         arguments["workspaceId"] = json!(ws_id);
+        if let Some(source) = source {
+            arguments["sourceId"] = json!(source);
+        }
         return Err(FigError::new(
             ErrorKind::InvalidArguments,
             "that file is no longer this workspace's source: it was relocated; ask by workspaceId",
