@@ -108,6 +108,19 @@ impl Kind {
     }
 }
 
+/// A text the model can never embed as given (over its token limit, empty or oversized): the
+/// one refusal kept as a permanent uncovered chunk. Any other error stays retryable.
+#[derive(Debug)]
+pub struct Refused(pub String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Error for Refused {}
+
 /// Checks one batch before it reaches a child.
 fn check_batch(texts: &[String]) -> Result<()> {
     if texts.is_empty() || texts.len() > MAX_BATCH {
@@ -208,7 +221,7 @@ fn answer(
         .and_then(|a| a.iter().map(|t| t.as_str().map(str::to_owned)).collect());
     let run = || -> Result<Vec<Vec<f32>>> {
         let texts = texts.ok_or("texts is an array of strings")?;
-        check_batch(&texts)?;
+        check_batch(&texts).map_err(|e| Refused(e.to_string()))?;
         let vectors = embed(kind, &texts)?;
         if vectors.len() != texts.len() {
             return Err(fail("embedder returned the wrong number of vectors"));
@@ -220,7 +233,7 @@ fn answer(
     };
     match run() {
         Ok(vectors) => json!({"id": id, "vectors": vectors}),
-        Err(e) => json!({"id": id, "error": e.to_string()}),
+        Err(e) => json!({"id": id, "error": e.to_string(), "refused": e.is::<Refused>()}),
     }
 }
 
@@ -229,9 +242,7 @@ fn answer(
 /// timeout or cancel kills the child's process tree and leaves the runtime dead.
 pub struct Runtime {
     child: Child,
-    /// Windows: the job object the child runs in, so killing it ends every descendant.
-    #[cfg(windows)]
-    job: Job,
+    tree: Tree,
     /// Request lines for the writer thread; dropping it closes the child's stdin.
     requests: Option<SyncSender<Vec<u8>>>,
     lines: Receiver<std::io::Result<Vec<u8>>>,
@@ -273,13 +284,8 @@ impl Runtime {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        #[cfg(unix)]
-        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-        let mut child = cmd
-            .spawn()
+        let (mut child, tree) = spawn_tree(&mut cmd)
             .map_err(|e| fail(format!("cannot start {}: {e}", exe.display())))?;
-        #[cfg(windows)]
-        let job = Job::assign(&child)?;
         let stdout = child.stdout.take().ok_or("child has no stdout")?;
         let (tx, lines) = sync_channel(1);
         std::thread::spawn(move || {
@@ -308,8 +314,7 @@ impl Runtime {
         });
         let mut rt = Runtime {
             requests: Some(requests),
-            #[cfg(windows)]
-            job,
+            tree,
             child,
             lines,
             hello: Json::Null,
@@ -345,13 +350,7 @@ impl Runtime {
     /// Kills the child's process group (on Windows the child alone: it starts no processes)
     /// and waits for it to exit, so cancellation leaves nothing running.
     fn kill(&mut self) {
-        #[cfg(unix)]
-        // SAFETY: plain syscall; the child leads its own process group.
-        unsafe {
-            libc::kill(-(self.child.id() as i32), libc::SIGKILL);
-        }
-        #[cfg(windows)]
-        self.job.terminate();
+        self.tree.kill(&self.child);
         let _ = self.child.kill();
         let _ = self.child.wait();
         // The writer ends once the pipe closes. It is not joined: a descendant that inherited
@@ -426,8 +425,12 @@ impl Runtime {
         if reply["id"] != id {
             return Err(self.dead("reply answers another request"));
         }
+        // Only a declared refusal is the input's fault; any other error is the runtime's.
         if let Some(e) = reply["error"].as_str() {
-            return Err(Stop::Refused(e.to_owned()));
+            return Err(match reply["refused"] == true {
+                true => Stop::Refused(e.to_owned()),
+                false => Stop::Failed(e.to_owned()),
+            });
         }
         let parsed: Option<Vec<Vec<f32>>> = serde_json::from_value(reply["vectors"].take()).ok();
         let vectors = match parsed {
@@ -456,6 +459,98 @@ impl Runtime {
     }
 }
 
+/// What ends a child started by `spawn_tree` together with every process it started.
+pub(crate) struct Tree {
+    /// Windows: the job object the child runs in, so killing it ends every descendant.
+    #[cfg(windows)]
+    job: Job,
+}
+
+impl Tree {
+    /// Kills `child`'s process group (Unix) or job (Windows); the caller still reaps `child`.
+    fn kill(&self, child: &Child) {
+        #[cfg(unix)]
+        // SAFETY: plain syscall; the child leads its own process group.
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
+        #[cfg(windows)]
+        let _ = child;
+        #[cfg(windows)]
+        self.job.terminate();
+    }
+}
+
+/// Spawns `cmd` (no shell) as the root of its own process tree: its own process group on
+/// Unix; on Windows suspended until it is in a kill-on-close job, so nothing it starts escapes.
+pub(crate) fn spawn_tree(cmd: &mut Command) -> Result<(Child, Tree)> {
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(cmd, 0);
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(cmd, CREATE_SUSPENDED);
+    let mut child = cmd.spawn()?;
+    #[cfg(windows)]
+    let job = match Job::assign(&child) {
+        Ok(job) => job,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
+    };
+    #[cfg(unix)]
+    let _ = &mut child;
+    Ok((
+        child,
+        Tree {
+            #[cfg(windows)]
+            job,
+        },
+    ))
+}
+
+/// Trees of children `spawn_owned` started, by process id, until `kill_tree` or `forget_tree`.
+static TREES: std::sync::Mutex<Vec<(u32, Tree)>> = std::sync::Mutex::new(Vec::new());
+
+/// `spawn_tree` for a caller that keeps only the `Child`: the tree is kept here by process id.
+pub(crate) fn spawn_owned(cmd: &mut Command) -> Result<Child> {
+    let (child, tree) = spawn_tree(cmd)?;
+    TREES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((child.id(), tree));
+    Ok(child)
+}
+
+fn take_tree(pid: u32) -> Option<Tree> {
+    let mut trees = TREES.lock().unwrap_or_else(|e| e.into_inner());
+    let at = trees.iter().position(|(p, _)| *p == pid)?;
+    Some(trees.swap_remove(at).1)
+}
+
+/// Kills the whole tree of `child` when `spawn_owned` started it; any other child is left
+/// alone. The caller still kills and reaps `child` itself.
+pub(crate) fn kill_tree(child: &Child) {
+    if let Some(tree) = take_tree(child.id()) {
+        tree.kill(child);
+    }
+}
+
+/// Forgets the tree of a reaped `spawn_owned` child, before its process id can be reused.
+pub(crate) fn forget_tree(child: &Child) {
+    let _ = take_tree(child.id());
+}
+
+#[cfg(windows)]
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
+
+#[cfg(windows)]
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    /// Resumes every thread of a process; std gives no thread handle to resume one.
+    fn NtResumeProcess(process: windows_sys::Win32::Foundation::HANDLE) -> i32;
+}
+
 /// A Windows job object that kills its processes when terminated or closed.
 #[cfg(windows)]
 struct Job(windows_sys::Win32::Foundation::HANDLE);
@@ -466,9 +561,8 @@ unsafe impl Send for Job {}
 
 #[cfg(windows)]
 impl Job {
-    /// Puts `child` in a new kill-on-close job. shortcut: a process the child starts before
-    /// this assignment escapes the job; figlens-embed starts none, so start suspended only if a
-    /// runtime ever does.
+    /// Puts the suspended `child` in a new kill-on-close job, then resumes it, so every process
+    /// it starts belongs to the job.
     fn assign(child: &Child) -> Result<Job> {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::System::JobObjects::*;
@@ -488,6 +582,12 @@ impl Job {
             );
             if set == 0 || AssignProcessToJobObject(job.0, child.as_raw_handle()) == 0 {
                 return Err(std::io::Error::last_os_error().into());
+            }
+            let status = NtResumeProcess(child.as_raw_handle());
+            if status < 0 {
+                return Err(fail(format!(
+                    "cannot resume the model runtime (NTSTATUS {status:#x})"
+                )));
             }
             Ok(job)
         }
@@ -515,7 +615,7 @@ impl Drop for Runtime {
     }
 }
 
-fn sha256_file(path: &Path, cancel: &AtomicBool) -> Result<String> {
+pub(crate) fn sha256_file(path: &Path, cancel: &AtomicBool) -> Result<String> {
     // Checked before open: opening a FIFO or device would block or read without end.
     if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
         return Err(fail(format!("{} is not a regular file", path.display())));

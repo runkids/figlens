@@ -123,7 +123,7 @@ impl Row {
         let job: Option<(String, String, String, i64)> = tx
             .query_row(
                 "SELECT job_id, state, owner, attempt FROM jobs WHERE source_id = ?1 AND scope = ?2
-             AND state IN ('queued', 'running')",
+             AND state IN ('queued', 'running') AND kind <> 'embed'",
                 [&self.id, scope],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )

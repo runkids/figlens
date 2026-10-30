@@ -563,7 +563,14 @@ fn a_relocation_committed_while_the_runner_waits_to_admit_admits_and_joins_nothi
         };
         move || {
             let stop = AtomicBool::new(false);
-            let done = refresh(&storage, &ws_id, &job, &stop, &stop);
+            let done = refresh(
+                &storage,
+                &ws_id,
+                &job,
+                &stop,
+                &stop,
+                &std::sync::mpsc::channel().0,
+            );
             (done.job, done.error, Instant::now())
         }
     });
@@ -763,4 +770,52 @@ fn a_busy_source_backs_off_to_the_cap_and_never_refreshes() {
     assert_eq!(seen.first().unwrap().1, State::Watching);
     assert!(seen.iter().any(|(_, s)| *s == State::SourceBusy));
     assert_eq!(seen.last().unwrap().1, State::SourceUnreadable);
+}
+
+/// Probes where each step says to, from `from` ms after `t0`, until a submit; returns every
+/// probe time (ms after `t0`), the submitting one last.
+fn follow(d: &mut Detector<u32>, t0: Instant, from: u64, stamp: impl Fn(u64) -> u32) -> Vec<u64> {
+    let mut at = t0 + Duration::from_millis(from);
+    let mut probes = Vec::new();
+    loop {
+        let ms = (at - t0).as_millis() as u64;
+        probes.push(ms);
+        let step = d.observe(at, Probe::Stamp(stamp(ms)));
+        if step.submit {
+            d.finished(at, false);
+            return probes;
+        }
+        at = step.next;
+    }
+}
+
+#[test]
+fn a_held_stamp_is_probed_again_exactly_when_it_settles() {
+    let t0 = Instant::now();
+    let mut d = Detector::new(t0);
+    assert_eq!(follow(&mut d, t0, 0, |_| 1), [0, 250, 300]);
+    run(&mut d, t0, &ticks(1000, 2000, Some(1)));
+    assert_eq!(follow(&mut d, t0, 2000, |_| 2), [2000, 2250, 2300]);
+}
+
+#[test]
+fn churn_is_probed_again_exactly_at_its_cap() {
+    let t0 = Instant::now();
+    let mut d = Detector::new(t0);
+    run(&mut d, t0, &ticks(0, 1000, Some(1)));
+    let probes = follow(&mut d, t0, 1000, |ms| ms as u32);
+    assert_eq!(probes, [1000, 1250, 1500, 1750, 2000, 2200]);
+}
+
+#[test]
+fn the_runner_sleeps_until_the_earliest_probe_but_never_past_a_poll() {
+    let now = Instant::now();
+    let ms = Duration::from_millis;
+    assert_eq!(pause(now, std::iter::empty()), POLL);
+    assert_eq!(
+        pause(now, [now + ms(400), now + ms(50)].into_iter()),
+        ms(50)
+    );
+    assert_eq!(pause(now, [now + ms(5000)].into_iter()), POLL);
+    assert_eq!(pause(now + ms(10), [now].into_iter()), Duration::ZERO);
 }

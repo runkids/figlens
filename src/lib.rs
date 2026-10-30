@@ -27,6 +27,7 @@ pub mod rest;
 pub mod search;
 pub mod semantic;
 pub mod states;
+pub mod tokens;
 pub mod variables;
 pub mod verify;
 pub mod workspace;

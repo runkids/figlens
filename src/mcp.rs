@@ -362,7 +362,9 @@ impl AdmittedCall {
                 "jobs" => command::jobs_tool(&self.call, roots, storage_roots),
                 "models" => command::models_tool(&self.call, roots, self.cancel()),
                 "changes" | "watch" => command::changes_tool(&self.call, roots, storage_roots),
-                "search" => command::workspace_search_tool(&self.call, roots, storage_roots),
+                "search" => {
+                    command::workspace_search_tool(&self.call, roots, storage_roots, self.cancel())
+                }
                 "usages" => command::workspace_usages_tool(&self.call, roots, storage_roots),
                 _ => command::index_tool(
                     &self.call,
@@ -615,7 +617,7 @@ fn cancel_running(pending: &Pending) {
 fn submits(req: &Value) -> bool {
     matches!(
         req["params"]["arguments"]["action"].as_str(),
-        Some("prepare" | "refresh" | "rebuild" | "track")
+        Some("prepare" | "refresh" | "rebuild" | "track" | "embed")
     )
 }
 
@@ -695,6 +697,7 @@ pub fn serve_with(
             mpsc::sync_channel::<(Value, Arc<Token>)>(INTERACTIVE_QUEUE);
         let (index, index_rx) = mpsc::sync_channel::<(Value, Arc<Token>)>(INDEX_QUEUE);
         let (to_build, build_rx) = mpsc::channel::<command::Runs>();
+        let (to_model, model_rx) = mpsc::channel::<command::Runs>();
         let (stop, dead, pending, builds) = (&stop, &dead, &pending, &builds);
         // Control and index lanes: each call admitted and run in arrival order.
         for (rx, build) in [(control_rx, None), (index_rx, Some(to_build))] {
@@ -753,9 +756,52 @@ pub fn serve_with(
         // until input ends.
         scope.spawn(move || figlens::workspace::watch::renew_until(stop));
         // Build lane: this server's jobs, one at a time; they stop when input ends or a reply
-        // cannot be written.
+        // cannot be written. A text build that publishes queues its model layer's embed on the
+        // model lane, so no text build waits behind the model; each send counts as a build.
         scope.spawn(move || {
             for runs in build_rx {
+                if runs.model {
+                    // Already counted: the model lane ends it.
+                    if to_model.send(runs).is_err() {
+                        builds.fetch_sub(1, Ordering::SeqCst);
+                    }
+                    continue;
+                }
+                let mut embeds = Vec::new();
+                for job in &runs.jobs {
+                    let report = figlens::workspace::jobs::run(
+                        &runs.storage,
+                        &runs.workspace_id,
+                        job,
+                        stop,
+                        &mut |_| {},
+                    );
+                    if let Some(id) = report
+                        .ok()
+                        .filter(|_| !stop.load(Ordering::SeqCst))
+                        .and_then(|r| figlens::workspace::jobs::embed_after(&runs.storage, &r))
+                    {
+                        embeds.push(id);
+                    }
+                }
+                if !embeds.is_empty() {
+                    builds.fetch_add(1, Ordering::SeqCst);
+                    let model = command::Runs {
+                        storage: runs.storage.clone(),
+                        workspace_id: runs.workspace_id.clone(),
+                        jobs: embeds,
+                        model: true,
+                    };
+                    if to_model.send(model).is_err() {
+                        builds.fetch_sub(1, Ordering::SeqCst);
+                    }
+                }
+                builds.fetch_sub(1, Ordering::SeqCst);
+            }
+        });
+        // Model lane: this server's embed jobs, one at a time, beside its text builds.
+        scope.spawn(move || {
+            for runs in model_rx {
                 for job in &runs.jobs {
                     let _ = figlens::workspace::jobs::run(
                         &runs.storage,
