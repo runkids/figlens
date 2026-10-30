@@ -108,6 +108,8 @@ Exemple avec deux racines de design/sortie et deux racines de stockage autorisé
 
 `figlens mcp --storage` n’existe pas. Choisissez l’emplacement réel avec l’argument `storage` de l’outil `index` (chemin absolu sous une racine autorisée), ou via CLI : `figlens index prepare design.fig --storage /absolute/storage-a`. Après `prepare`, figlens mémorise l’emplacement du workspace et le réutilise entre redémarrages et hôtes sans répéter `storage` ni `--storage-root`. Sans emplacement personnalisé, les répertoires par défaut de l’utilisateur s’appliquent, sans option de stockage.
 
+Pour ne pas figer ces chemins dans une configuration versionnée, ou pour partager les designs entre worktrees Git, consultez [roots dans une configuration versionnée](wiki/mcp.md#roots-in-a-checked-in-config).
+
 Plusieurs racines de stockage élargissent seulement les emplacements autorisés : chaque `storage` en choisit un seul. Elles ne distribuent, ne synchronisent et ne sauvegardent pas les index. Indiquer une autre racine ne déplace pas une base existante ; figlens refuse l’emplacement en conflit.
 
 <a id="setup-pi"></a>

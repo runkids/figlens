@@ -92,6 +92,7 @@ Image-fill changes must test shifted sprites exported from a clipping frame; see
 Blur backdrops reference blur-free copies within the per-export budget, or nested blurs explode; see `render`.
 Reproduce a browser SVG misdraw with the consumer's optimizer and inlining before changing export coordinates or ids; see `render`.
 Cancel a job only after its worker exits; publish via fence; see `index`.
+Keep libdeflate's Zig SIMD guards; see `release`.
 
 ```sh
 docker compose run --rm dev cargo test

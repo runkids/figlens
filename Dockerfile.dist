@@ -10,3 +10,6 @@ RUN apt-get update \
         x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-pc-windows-gnu
 
 ENV PATH="/opt/cross/bin:${PATH}"
+
+# shortcut: Zig 0.15.2 needs libdeflate's EVEX512 paths disabled; recheck on Zig upgrades.
+ENV CFLAGS="-DLIBDEFLATE_ASSEMBLER_DOES_NOT_SUPPORT_AVX512VNNI -DLIBDEFLATE_ASSEMBLER_DOES_NOT_SUPPORT_VPCLMULQDQ"
