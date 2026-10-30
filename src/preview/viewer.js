@@ -1182,7 +1182,7 @@ if (typeof document !== 'undefined') {
     };
     const label = n => `${n.name || n.id} (${n.id})`;
     $('context').onclick = () => selected && confirmDownload('Download context JSON?',
-        `${label(selected)} with its subtree, reference scope, export area, variables, components and styles.`,
+        `${label(selected)} with its subtree, page, source file (live only), reference scope and its coverage, export area, variables, components and styles.`,
         'design-context.json', () => {
             download('design-context.json', JSON.stringify(context(), null, 2), 'application/json');
             flash($('context'), 'Downloaded');
