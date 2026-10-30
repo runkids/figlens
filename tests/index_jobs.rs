@@ -594,7 +594,15 @@ fn library_usages_agree_over_the_cli_and_mcp_and_refuse_a_node_target() {
     );
     drop(mcp);
     assert_eq!(reply["isError"], false, "{reply}");
-    assert_eq!(reply["structuredContent"]["coverage"], cli["coverage"]);
+    // Each call checks the stamp when it runs; everything else agrees.
+    let checked = |mut c: Value| {
+        c["sources"][0]["freshness"]["stampCheckedAtMs"] = Value::Null;
+        c
+    };
+    assert_eq!(
+        checked(reply["structuredContent"]["coverage"].clone()),
+        checked(cli["coverage"].clone())
+    );
     let both = env.run(&[&["usages", "--file", file, "0:1"][..], &library].concat());
     assert!(!both.status.success());
     assert!(String::from_utf8_lossy(&both.stderr).contains("not both"));

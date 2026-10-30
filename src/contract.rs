@@ -635,7 +635,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "scope": {"type": "object"},
                 "members": {"type": "object", "description": "COMPONENT_SET queries: the known member ids and whether they are complete"},
                 "results": {"type": "array", "items": {"type": "object"}, "description": "in: each location's ref, name, type, origin, hidden, page, scopeRoot, path, relation, state, basis, evidence and via (the member a set query matched); out: target ref or resource, its definition and the edge fields"},
-                "coverage": {"type": "object", "description": "complete, layers.relations kinds and version, reasons; library queries: complete, sources (sourceId, path, state, snapshotId, nextSteps) and reasons; never a total count"},
+                "coverage": {"type": "object", "description": "complete, layers.relations kinds and version, reasons; library queries: complete, sources (sourceId, path, state, snapshotId, freshness when ready, nextSteps) and reasons; never a total count"},
                 "hasMore": {"type": "boolean"},
                 "nextCursor": {"type": ["string", "null"]},
                 "source": {"type": "object", "description": "sourceId and snapshotId; stateless calls add freshness"},
@@ -1268,7 +1268,11 @@ impl Failure {
             r[0]["tool"] == "watch"
                 && matches!(r[0]["action"].as_str(), Some("ack" | "unsubscribe"))
         });
-        let next = if storage {
+        // A budget failure that names its own narrower request is fixed by that request.
+        let narrowed = self.kind == ErrorKind::ResponseBudget && self.recovery.is_some() && !stored;
+        let next = if narrowed {
+            "Follow recovery: it names a narrower request or the exact item to read instead."
+        } else if storage {
             "The figlens storage named in the error is missing or denied; ask the user to restore it (never change permissions yourself), then retry; recreate_elsewhere only after the user confirms."
         } else if stored {
             "A stored saved-query evaluation is damaged or too large to page; follow recovery (ack past it, or unsubscribe); the design file is not at fault."

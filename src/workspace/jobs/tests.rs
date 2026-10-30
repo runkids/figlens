@@ -1826,7 +1826,26 @@ fn a_library_use_is_measured_as_it_is_sent_so_both_mcp_copies_fit() {
     // 2 MB stored, 4 MB once each quote is escaped: past the page as sent.
     rename_use(&conn, srcs[0].2, &"\"".repeat(2_000_000));
     let out = library(&storage, &select, None, &reference("k", None));
-    assert_eq!(kind_of_error(out), ErrorKind::ResponseBudget);
+    let error = out.unwrap_err();
+    let error = error.downcast_ref::<FigError>().unwrap();
+    let steps: Vec<_> = error
+        .recovery()
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["action"].clone(), s["arguments"]["sourceId"].clone()))
+        .collect();
+    assert_eq!(
+        (error.kind(), steps),
+        (
+            ErrorKind::ResponseBudget,
+            vec![
+                (json!("usages_source"), json!(srcs[0].1)),
+                (json!("inspect_use"), Json::Null)
+            ]
+        )
+    );
 }
 
 /// Replaces `gen_id`'s stored page list with `pages`, a JSON value.
@@ -1861,6 +1880,30 @@ fn a_page_list_too_large_for_the_page_is_refused_before_it_is_read() {
     set_pages(&conn, srcs[0].2, &pages);
     let out = library(&storage, &select, None, &reference("k", None));
     assert_eq!(kind_of_error(out), ErrorKind::ResponseBudget);
+}
+
+#[test]
+fn a_library_source_names_its_freshness_or_an_unreadable_file_first() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, _conn, srcs) = library_workspace(&d, 1);
+    let ready = library(&storage, &select, None, &reference("k", None)).unwrap();
+    let freshness = &ready["coverage"]["sources"][0]["freshness"];
+    // A scope never indexed for a file that is gone is unreadable, as search reports it.
+    std::fs::remove_file(&srcs[0].0).unwrap();
+    let request = crate::workspace::library::Request {
+        scope: "0:1".into(),
+        ..reference("k", None)
+    };
+    let gone = library(&storage, &select, None, &request).unwrap();
+    assert_eq!(
+        (
+            freshness["verifiedAtMs"].is_i64(),
+            freshness["stampCheckedAtMs"].is_i64(),
+            gone["coverage"]["sources"][0]["state"].clone(),
+        ),
+        (true, true, json!("unreadable"))
+    );
 }
 
 #[test]
@@ -1949,6 +1992,15 @@ fn a_revoked_root_or_a_new_generation_ends_a_library_cursor() {
         kind_of_error(library(&narrow, &select, None, &reference("k", cursor))),
         ErrorKind::CursorStale
     );
+    // A changed filter cannot continue it either.
+    let hidden = crate::workspace::library::Request {
+        include_hidden: true,
+        ..reference("k", cursor)
+    };
+    assert_eq!(
+        kind_of_error(library(&storage, &select, None, &hidden)),
+        ErrorKind::CursorStale
+    );
     // The second source is republished at a new generation with the same rows.
     conn.execute(
         "INSERT INTO generations (source_id, membership, scope, snapshot_id, versions, job_id, state,
@@ -1966,6 +2018,15 @@ fn a_revoked_root_or_a_new_generation_ends_a_library_cursor() {
     assert_eq!(
         kind_of_error(library(&storage, &select, None, &reference("k", cursor))),
         ErrorKind::CursorStale
+    );
+    // Once the paged generation is collected, the same cursor has expired.
+    for table in ["edges", "records", "generations"] {
+        conn.execute(&format!("DELETE FROM {table} WHERE gen = ?1"), [srcs[1].2])
+            .unwrap();
+    }
+    assert_eq!(
+        kind_of_error(library(&storage, &select, None, &reference("k", cursor))),
+        ErrorKind::CursorExpired
     );
 }
 

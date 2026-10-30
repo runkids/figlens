@@ -71,14 +71,15 @@ impl Request {
     }
 }
 
-/// One visible source and where its published scope stands.
 /// A stored page: id, name and whether it is internal.
 type Page = (String, String, bool);
 
+/// One visible source and where its published scope stands.
 struct Source {
     id: String,
     path: String,
     snapshot: Option<String>,
+    freshness: Option<Json>,
     state: &'static str,
     gen_id: Option<i64>,
     step: Json,
@@ -104,43 +105,14 @@ pub fn library(
         .into());
     }
     let tx = ws.conn.unchecked_transaction().map_err(sql)?;
-    type Row = (
-        String,
-        String,
-        String,
-        Option<i64>,
-        Option<String>,
-        Option<String>,
-    );
-    let rows: Vec<Row> = tx
-        .prepare(
-            "SELECT s.source_id, s.path, s.membership, p.gen, g.membership, g.snapshot_id
-             FROM sources s
-             LEFT JOIN published p ON p.source_id = s.source_id AND p.scope = ?1
-             LEFT JOIN generations g ON g.gen = p.gen
-             ORDER BY s.added_at_ms, s.source_id",
-        )
-        .map_err(sql)?
-        .query_map([&req.scope], |r| {
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-            ))
-        })
-        .map_err(sql)?
-        .collect::<rusqlite::Result<_>>()
-        .map_err(sql)?;
+    let rows = super::query::rows(&tx, &req.scope)?;
     // A file whose source moved no longer names this workspace; a library question reads every
     // source, so it is asked again by workspaceId, never of the moved file.
     // Only the relocation error carries a recovery; any other one stands as it is.
     if let Err(e) = super::query::relocated(
         storage,
         select,
-        rows.iter().map(|r| r.1.as_str()),
+        rows.iter().map(|r| r.path.as_str()),
         "usages",
         json!({}),
     ) {
@@ -166,14 +138,14 @@ pub fn library(
     // Invisible sources are dropped before anything about them is read or named; visibility is
     // decided again on every page, and the cursor binds the sources it saw.
     let total = rows.len();
-    let mut visible: Vec<Row> = rows
+    let mut visible: Vec<_> = rows
         .into_iter()
-        .filter(|r| storage.sees(Path::new(&r.1)))
+        .filter(|r| storage.sees(Path::new(&r.path)))
         .collect();
     // Sources this caller may not see are left out unnamed, so the reply cannot be complete.
     let restricted = source.is_none() && visible.len() < total;
     if let Some(id) = source {
-        visible.retain(|r| r.0 == id);
+        visible.retain(|r| r.id == id);
         if visible.is_empty() {
             return Err(fail(
                 ErrorKind::InvalidArguments,
@@ -183,17 +155,24 @@ pub fn library(
     }
     let versions = store::versions();
     let mut sources = Vec::new();
-    for (id, path, membership, gen_id, gen_membership, snapshot) in visible {
+    let now = now_ms();
+    for row in visible {
         let refresh = json!({"tool": "index", "arguments": {"action": "refresh",
-            "workspaceId": ws_id, "sourceId": id, "scope": req.scope}});
-        let current = gen_id.filter(|_| gen_membership.as_deref() == Some(membership.as_str()));
-        let (state, step) = match current {
-            None => {
+            "workspaceId": ws_id, "sourceId": row.id, "scope": req.scope}});
+        // Regular-file checks come before any open or readiness ladder, as search does.
+        let stamp = readable(Path::new(&row.path))
+            .and_then(|p| crate::search::stamp(&p).map_err(Into::into));
+        let current = row
+            .gen_id
+            .filter(|_| row.gen_membership.as_deref() == Some(row.membership.as_str()));
+        let (state, step) = match (&stamp, current) {
+            (Err(_), _) => ("unreadable", Json::Null),
+            (_, None) => {
                 let job: Option<(String, String, i64)> = tx
                     .query_row(
                         "SELECT job_id, owner, attempt FROM jobs WHERE source_id = ?1
                          AND scope = ?2 AND state IN ('queued', 'running')",
-                        [&id, &req.scope],
+                        [&row.id, &req.scope],
                         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                     )
                     .optional()
@@ -201,7 +180,7 @@ pub fn library(
                 let job = job.filter(|(job, owner, attempt)| {
                     jobs::job_alive(&ws.held.dir, owner, job, *attempt)
                 });
-                match (job, gen_id) {
+                match (job, row.gen_id) {
                     (Some((job, ..)), _) => (
                         "pending",
                         json!({"tool": "jobs", "arguments": {"action": "status", "jobId": job}}),
@@ -210,54 +189,38 @@ pub fn library(
                     (None, Some(_)) => ("stale", refresh),
                 }
             }
-            Some(gen_id) => {
-                let (built, bytes, mtime): (String, Option<i64>, Option<i64>) = tx
-                    .query_row(
-                        "SELECT g.versions, n.bytes, n.mtime_ns FROM generations g
-                         LEFT JOIN snapshots n ON n.source_id = g.source_id
-                         AND n.snapshot_id = g.snapshot_id WHERE g.gen = ?1",
-                        [gen_id],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                    )
-                    .map_err(sql)?;
-                let stamp = readable(Path::new(&path))
-                    .and_then(|p| crate::search::stamp(&p).map_err(Into::into));
-                match stamp {
-                    Err(_) => ("unreadable", Json::Null),
-                    Ok(_) if built != versions => (
-                        "incompatible",
-                        json!({"tool": "index", "arguments": {"action": "rebuild",
-                            "workspaceId": ws_id}}),
-                    ),
-                    Ok((mtime_at, len)) => {
-                        let ns = mtime_at
-                            .duration_since(SystemTime::UNIX_EPOCH)
-                            .map_or(0, |d| d.as_nanos() as i64);
-                        if Some(len as i64) != bytes || Some(ns) != mtime {
-                            ("stale", refresh)
-                        } else {
-                            ("ready", Json::Null)
-                        }
-                    }
-                }
+            _ if row.versions.as_deref() != Some(versions.as_str()) => (
+                "incompatible",
+                json!({"tool": "index", "arguments": {"action": "rebuild", "workspaceId": ws_id}}),
+            ),
+            (Ok((mtime_at, len)), _)
+                if Some(*len as i64) != row.bytes
+                    || Some(super::query::mtime_ns(*mtime_at)) != row.mtime_ns =>
+            {
+                ("stale", refresh)
             }
+            _ => ("ready", Json::Null),
         };
+        // As search: the snapshot was verified then, and its stamp was checked now; no hash now.
+        let freshness = row.snapshot.as_ref().map(|_| {
+            json!({"verifiedAtMs": row.verified_ms, "stampCheckedAtMs": now,
+                "basis": "size and modification time equal to the verified snapshot"})
+        });
         sources.push(Source {
-            id,
-            path,
-            snapshot: snapshot.filter(|_| state == "ready"),
+            id: row.id,
+            path: row.path,
+            snapshot: row.snapshot.filter(|_| state == "ready"),
+            freshness: freshness.filter(|_| state == "ready"),
             state,
             gen_id: current.filter(|_| state == "ready"),
             step,
         });
     }
     // The cursor binds the question and every source it covered, so a changed reference, scope,
-    // filter, figlens, visibility or generation cannot continue it.
+    // filter, figlens, visibility or readiness cannot continue it. It also carries each source's
+    // generation, so a reindexed source is stale and a deleted generation expired.
     let fingerprint = {
-        let bound: Vec<Json> = sources
-            .iter()
-            .map(|s| json!([s.id, s.state, s.gen_id]))
-            .collect();
+        let bound: Vec<Json> = sources.iter().map(|s| json!([s.id, s.state])).collect();
         let asked = json!([
             "l1",
             req.target(Some(&req.namespace)),
@@ -278,16 +241,64 @@ pub fn library(
                 "invalid usages cursor; pass nextCursor from the previous reply",
             )
         };
-        let parts: Vec<&str> = c.split('.').collect();
-        let ["l1", fp, at, rid, seq] = parts[..] else {
+        // One generation id per source at most; checked before splitting it.
+        if c.len() > 64 + 21 * sources.len() {
+            return Err(bad());
+        }
+        let parts: Vec<&str> = c.splitn(6, '.').collect();
+        let ["l1", fp, at, rid, seq, paged] = parts[..] else {
             return Err(bad());
         };
+        // Changed filters, visibility or readiness are stale before any generation is looked up.
         if fp != fingerprint {
             return Err(FigError::new(
                 ErrorKind::CursorStale,
                 "the reference, its scope or the workspace's sources or indexes changed since this cursor; query usages again without cursor",
             )
             .into());
+        }
+        let paged: Vec<&str> = paged.split('-').collect();
+        if paged.len() != sources.len() {
+            return Err(bad());
+        }
+        let (mut changed, mut gone) = (false, false);
+        for (s, g) in sources.iter().zip(paged) {
+            let old = match g {
+                "n" => None,
+                g => Some(g.parse::<i64>().map_err(|_| bad())?),
+            };
+            if old == s.gen_id {
+                continue;
+            }
+            changed = true;
+            // Only this source's own generation is looked up, never another source's.
+            if let Some(old) = old {
+                gone |= tx
+                    .query_row(
+                        "SELECT 1 FROM generations WHERE gen = ?1 AND source_id = ?2",
+                        params![old, s.id],
+                        |_| Ok(()),
+                    )
+                    .optional()
+                    .map_err(sql)?
+                    .is_none();
+            }
+        }
+        if changed {
+            let (kind, why) = if gone {
+                (
+                    ErrorKind::CursorExpired,
+                    "an index this cursor paged was deleted",
+                )
+            } else {
+                (
+                    ErrorKind::CursorStale,
+                    "a source this cursor paged was reindexed",
+                )
+            };
+            return Err(
+                FigError::new(kind, format!("{why}; query usages again without cursor")).into(),
+            );
         }
         after = (
             at.parse().map_err(|_| bad())?,
@@ -357,13 +368,29 @@ pub fn library(
                 }
                 continue;
             }
+            let node: String = row.get(4).map_err(sql)?;
+            // The same question narrowed to this source, and the use itself, which inspect reads.
             let too_large = || {
+                let mut steps = Vec::new();
+                if source.is_none() {
+                    let mut arguments = req.arguments();
+                    arguments["workspaceId"] = json!(ws_id);
+                    arguments["sourceId"] = json!(s.id);
+                    steps.push(json!({"action": "usages_source", "requires": "none",
+                        "tool": "usages", "arguments": arguments}));
+                }
+                steps.push(
+                    json!({"action": "inspect_use", "requires": "none", "tool": "inspect",
+                    "arguments": {"file": s.path, "node": node}}),
+                );
                 FigError::new(
                     ErrorKind::ResponseBudget,
                     format!(
-                        "one library use exceeds the {PAGE_BYTES}-byte page; narrow scope or sourceId"
+                        "one library use in source {} exceeds the {PAGE_BYTES}-byte page",
+                        s.id
                     ),
                 )
+                .with_recovery(json!(steps))
             };
             if places.is_none() {
                 // The lists' UTF-8 bytes are charged to the page before they are copied or parsed.
@@ -429,7 +456,7 @@ pub fn library(
             let evidence: String = row.get(3).map_err(sql)?;
             let item = json!({
                 "ref": {"sourceId": s.id, "snapshotId": s.snapshot,
-                    "nodeId": row.get::<_, String>(4).map_err(sql)?},
+                    "nodeId": node},
                 "name": row.get::<_, String>(5).map_err(sql)?,
                 "type": row.get::<_, String>(6).map_err(sql)?,
                 "relation": LIBRARY, "basis": "cached_copy",
@@ -482,6 +509,9 @@ pub fn library(
         .iter()
         .map(|s| {
             let mut c = json!({"sourceId": s.id, "path": s.path, "state": s.state, "snapshotId": s.snapshot});
+            if let Some(f) = &s.freshness {
+                c["freshness"] = f.clone();
+            }
             if !s.step.is_null() {
                 c["nextSteps"] = json!([s.step]);
             }
@@ -497,7 +527,13 @@ pub fn library(
         "coverage": {"complete": complete, "sources": coverage_sources, "reasons": reasons},
         "hasMore": more,
         "nextCursor": match (more, last) {
-            (true, Some((i, r, q))) => json!(format!("l1.{fingerprint}.{i}.{r}.{q}")),
+            (true, Some((i, r, q))) => {
+                let paged: Vec<String> = sources
+                    .iter()
+                    .map(|s| s.gen_id.map_or("n".into(), |g| g.to_string()))
+                    .collect();
+                json!(format!("l1.{fingerprint}.{i}.{r}.{q}.{}", paged.join("-")))
+            }
             _ => Json::Null,
         },
     }))
