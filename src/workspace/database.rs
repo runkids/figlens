@@ -456,7 +456,20 @@ pub(crate) const V9: &str = "
         PRIMARY KEY (gen, profile_id, policy)) STRICT;
     PRAGMA user_version = 9;";
 
-/// Upgrades schemas 1 to 8 to the current one in one transaction, keeping every source, index,
+/// Schema 10: content-addressed source thumbnails and per-generation visual evidence (#95).
+/// Query images are request-owned and never enter these tables.
+pub(crate) const V10: &str = "
+    CREATE TABLE visual_rasters (
+        raster_key BLOB PRIMARY KEY, policy TEXT NOT NULL, fingerprint BLOB NOT NULL,
+        png BLOB NOT NULL) STRICT, WITHOUT ROWID;
+    CREATE TABLE visual_units (
+        gen INTEGER NOT NULL, rid INTEGER NOT NULL, policy TEXT NOT NULL, raster_key BLOB,
+        report TEXT NOT NULL, error TEXT,
+        PRIMARY KEY (gen, rid, policy)) STRICT, WITHOUT ROWID;
+    CREATE INDEX visual_units_raster ON visual_units (raster_key);
+    PRAGMA user_version = 10;";
+
+/// Upgrades schemas 1 to 9 to the current one in one transaction, keeping every source, index,
 /// job and the incarnation. The caller holds the workspace lock exclusively.
 pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
     let tx = conn
@@ -488,6 +501,9 @@ pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
     }
     if version <= 8 {
         tx.execute_batch(V9).map_err(sql)?;
+    }
+    if version <= 9 {
+        tx.execute_batch(V10).map_err(sql)?;
     }
     tx.commit().map_err(sql)
 }
@@ -537,6 +553,7 @@ pub(super) fn initialize(
     tx.execute_batch(IMPACTS).map_err(sql)?;
     tx.execute_batch(V8).map_err(sql)?;
     tx.execute_batch(V9).map_err(sql)?;
+    tx.execute_batch(V10).map_err(sql)?;
     if let Some(binding) = binding {
         tx.execute(
             "INSERT INTO meta (key, value) VALUES ('binding', ?1)",
