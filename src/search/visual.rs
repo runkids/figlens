@@ -33,6 +33,87 @@ pub struct QueryImage {
     pixmap: Pixmap,
 }
 
+/// One immutable snapshot's rendered unit, with bounded evidence of known omissions.
+pub struct RenderedUnit {
+    pub image: QueryImage,
+    pub diagnostics: Vec<serde_json::Value>,
+    pub diagnostics_truncated: bool,
+    pub bounds: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Render over export bounds at at most 1024 pixels on the longest side, then normalize.
+/// The caller decodes `tree` from `snapshot`; image paints never reopen a changing source path.
+pub fn render_unit(
+    tree: &crate::Tree,
+    snapshot: &[u8],
+    id: &str,
+) -> Result<RenderedUnit, Box<dyn Error>> {
+    let prepared = crate::render::Prepared::from_snapshot(tree, snapshot, id)?;
+    let (raster, bounds) = crate::export::prepared_export(
+        tree,
+        &prepared,
+        id,
+        crate::export::Format::Png,
+        false,
+        1.0,
+        100,
+        Some(MAX_BYTES),
+        Some(1024),
+    )?;
+    let image = QueryImage::from_png(&raster.bytes, None)?;
+    let mut diagnostics = Vec::new();
+    let mut truncated = false;
+    collect_diagnostics(
+        prepared.node(),
+        &prepared.images,
+        &mut diagnostics,
+        &mut truncated,
+    );
+    Ok(RenderedUnit {
+        image,
+        diagnostics,
+        diagnostics_truncated: truncated,
+        bounds,
+    })
+}
+
+fn collect_diagnostics(
+    node: &serde_json::Value,
+    images: &std::collections::HashMap<String, Vec<u8>>,
+    out: &mut Vec<serde_json::Value>,
+    truncated: &mut bool,
+) {
+    let mut add = |item: serde_json::Value| {
+        if out.len() < super::MAX_LIMIT {
+            out.push(item);
+        } else {
+            *truncated = true;
+        }
+    };
+    for item in node["_figlens"]["renderDiagnostics"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        add(item.clone());
+    }
+    for paint in ["fills", "strokes"] {
+        for fill in node[paint].as_array().into_iter().flatten() {
+            if let Some(reference) = fill["imageRef"].as_str()
+                && !images.contains_key(reference)
+            {
+                add(
+                    serde_json::json!({"nodeId": node["id"], "feature": "image", "field": paint,
+                    "state": "missing", "reason": "original image is not in the snapshot"}),
+                );
+            }
+        }
+    }
+    for child in node["children"].as_array().into_iter().flatten() {
+        collect_diagnostics(child, images, out, truncated);
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fingerprint {
     /// SHA-256 of the version, reduced aspect ratio and normalized opaque pixels.

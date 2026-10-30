@@ -8,6 +8,8 @@
 
 `QueryImage` admits PNG only: encoded bytes at most 8 MiB and decoded pixels at most 4,000,000, checked before decoding. The entry point must also bound its read to the byte cap plus one. Crops are positive integer pixel rectangles within the source. Crop before filtering, composite on white, aspect-fit to 256 by 256 with bilinear sampling; `visual-hash-1` pins this policy. Re-encoding the normalized raster strips source metadata. Query rasters remain request-owned and are not persisted by this module.
 
+`render_unit` reuses the export renderer and original-image byte budgets, reading image paints from the same staged bytes used to decode the tree. It renders export bounds at at most 1024 pixels on the longest side, then applies the query normalization. It returns the export bounds and at most 200 known render/missing-image diagnostics, with a truncation flag. These diagnostics are not an exhaustive fidelity audit. File exports keep the same renderer path and behavior.
+
 ## Fingerprints and ranking
 
 A fingerprint keeps the normalized pixel SHA-256 with reduced source aspect, 128 luma-gradient bits and mean RGB. Its fixed-size cache blob has an explicit version and rejects invalid dimensions. `visual-hash-distance-1` ranks equal normalized pixels first, then gradient, color, aspect distance and record order, retaining only bounded top-k candidates. Callers supply only authorized, filtered units from the requested generation. Work stops are partial coverage, cancellation is an error, and distances are not probabilities or component identity.

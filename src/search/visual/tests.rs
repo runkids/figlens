@@ -300,3 +300,63 @@ fn unit_selection_accepts_a_fully_loaded_stored_index_but_not_a_partial_query() 
     index.rids.pop();
     assert!(units(&index, &[], &mut bounds(100)).is_err());
 }
+
+#[test]
+fn snapshot_units_reuse_export_pixels_and_keep_render_evidence() {
+    let source = std::path::Path::new("examples/first-success/design.fig");
+    let bytes = std::fs::read(source).unwrap();
+    let document = crate::Document::from_bytes(&bytes, "visual snapshot").unwrap();
+    let value = document.message().unwrap();
+    let tree = crate::Tree::new(&value);
+    // The documented public screen includes an original bitmap and outlined text.
+    let id = "0:1";
+    let rendered = render_unit(&tree, &bytes, id).unwrap();
+    let (image, report) = crate::export::export(
+        &tree,
+        source,
+        id,
+        crate::export::Format::Png,
+        false,
+        1.0,
+        100,
+        Some(MAX_BYTES),
+        Some(1024),
+    )
+    .unwrap();
+    let expected = QueryImage::from_png(&image.bytes, None).unwrap();
+    assert_eq!(rendered.image.fingerprint, expected.fingerprint);
+    assert_eq!(rendered.image.png().unwrap(), expected.png().unwrap());
+    assert_eq!(rendered.bounds, report);
+    assert!(!rendered.diagnostics_truncated);
+}
+
+#[test]
+fn snapshot_render_keeps_original_image_budget() {
+    let dir = crate::test_support::TestDir::new();
+    let source = dir.oversized_image("first-success-tile");
+    let bytes = std::fs::read(source).unwrap();
+    let document = crate::Document::from_bytes(&bytes, "oversized paint").unwrap();
+    let value = document.message().unwrap();
+    let tree = crate::Tree::new(&value);
+    let error = render_unit(&tree, &bytes, "0:1").err().unwrap();
+    assert!(error.to_string().contains("image bytes"), "{error}");
+}
+
+#[test]
+fn render_evidence_reports_missing_paints_and_caps_diagnostics() {
+    let node = serde_json::json!({"id": "0:3", "fills": [{"imageRef": "missing"}],
+    "_figlens": {"renderDiagnostics": [
+        {"feature": "effect", "state": "skipped", "reason": "not drawn"}
+    ]}});
+    let mut items = Vec::new();
+    let mut truncated = false;
+    collect_diagnostics(&node, &Default::default(), &mut items, &mut truncated);
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[1]["state"], "missing");
+    assert!(!truncated);
+    let many = serde_json::json!({"children": vec![node; crate::search::MAX_LIMIT]});
+    items.clear();
+    collect_diagnostics(&many, &Default::default(), &mut items, &mut truncated);
+    assert_eq!(items.len(), crate::search::MAX_LIMIT);
+    assert!(truncated);
+}

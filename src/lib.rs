@@ -123,6 +123,17 @@ pub(crate) fn open_zip(path: &Path) -> Result<zip::ZipArchive<BufReader<File>>, 
     }
 }
 
+/// Open immutable staged bytes with the same offset fast path and fallback as a file.
+pub(crate) fn open_zip_bytes(
+    bytes: &[u8],
+) -> Result<zip::ZipArchive<std::io::Cursor<&[u8]>>, zip::result::ZipError> {
+    let config = zip::read::Config {
+        archive_offset: zip::read::ArchiveOffset::Known(0),
+    };
+    zip::ZipArchive::with_config(config, std::io::Cursor::new(bytes))
+        .or_else(|_| zip::ZipArchive::new(std::io::Cursor::new(bytes)))
+}
+
 /// A decoded `canvas.fig`: the embedded schema plus the raw message bytes.
 pub struct Document {
     pub version: u32,
@@ -138,18 +149,12 @@ impl Document {
 
     /// `open` for `.fig` bytes already in memory, so a caller can hash exactly what it decodes.
     pub fn from_bytes(fig: &[u8], label: &str) -> Result<Document, Box<dyn Error>> {
-        // Same known-offset fast path as `open_zip`, with Detect only as the fallback.
-        let config = zip::read::Config {
-            archive_offset: zip::read::ArchiveOffset::Known(0),
-        };
-        let archive = zip::ZipArchive::with_config(config, std::io::Cursor::new(fig))
-            .or_else(|_| zip::ZipArchive::new(std::io::Cursor::new(fig)))
-            .map_err(|e| {
-                FigError::new(
-                    ErrorKind::InvalidData,
-                    format!("{label}: not a .fig zip ({e})"),
-                )
-            })?;
+        let archive = open_zip_bytes(fig).map_err(|e| {
+            FigError::new(
+                ErrorKind::InvalidData,
+                format!("{label}: not a .fig zip ({e})"),
+            )
+        })?;
         Self::from_archive(archive, label)
     }
 

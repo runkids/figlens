@@ -63,6 +63,24 @@ pub fn export(
     max_px: Option<u32>,
 ) -> Result<(Image, Map<String, Json>), Box<dyn Error>> {
     let prepared = Prepared::new(tree, fig, id)?;
+    prepared_export(
+        tree, &prepared, id, format, layout, scale, quality, max_bytes, max_px,
+    )
+}
+
+/// Shared renderer path for file exports and immutable snapshot thumbnails.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepared_export(
+    tree: &Tree,
+    prepared: &Prepared,
+    id: &str,
+    format: Format,
+    layout: bool,
+    scale: f64,
+    quality: u8,
+    max_bytes: Option<usize>,
+    max_px: Option<u32>,
+) -> Result<(Image, Map<String, Json>), Box<dyn Error>> {
     let unsupported = |reason: &str| {
         crate::FigError::new(
             crate::ErrorKind::UnsupportedNode,

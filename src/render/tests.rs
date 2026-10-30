@@ -237,6 +237,8 @@ fn preparation_selects_an_expanded_sublayer_and_only_loads_its_images() {
         zip.write_all(hash.as_bytes()).unwrap();
     }
     zip.finish().unwrap();
+    let snapshot = std::fs::read(&path).unwrap();
+    let staged = Prepared::from_snapshot(&tree, &snapshot, "I1:1;2:2").unwrap();
     let prepared = Prepared::new(&tree, &path, "I1:1;2:2").unwrap();
     assert_eq!(prepared.node()["id"], "I1:1;2:2");
     assert!(prepared.node()["_r"].is_object());
@@ -244,6 +246,22 @@ fn preparation_selects_an_expanded_sublayer_and_only_loads_its_images() {
         prepared.images,
         HashMap::from([("present".into(), b"present".to_vec())])
     );
+    assert_eq!(staged.document, prepared.document);
+    assert_eq!(staged.images, prepared.images);
+    // A later source replacement must not change a generation's staged image paints.
+    std::fs::write(&path, b"replaced source").unwrap();
+    let staged_again = Prepared::from_snapshot(&tree, &snapshot, "I1:1;2:2").unwrap();
+    assert_eq!(staged_again.images, prepared.images);
+    let mut prefixed = b"saved local copy prefix".to_vec();
+    prefixed.extend_from_slice(&snapshot);
+    assert_eq!(
+        Prepared::from_snapshot(&tree, &prefixed, "I1:1;2:2")
+            .unwrap()
+            .images,
+        prepared.images
+    );
+    // Restore this owned fixture for the file-path error assertion below.
+    std::fs::write(&path, &snapshot).unwrap();
     let pixels = pixmap(&prepared.export_svg(&tree, 2.0).unwrap()).unwrap();
     assert_eq!((pixels.width(), pixels.height()), (20, 40));
     assert_eq!(
