@@ -74,6 +74,42 @@ codex mcp add figlens -- npx -y @runkids/figlens mcp
 
 Without Node.js, install the standalone binary ([CLI](#setup-cli)) and use `"command": "figlens", "args": ["mcp"]`. Start a new session and check that the figlens tools are listed (`/mcp` in Claude Code). No separate skill install is required. Add `--root <dir>` after `mcp` to limit which folders figlens may read and write.
 
+<a id="mcp-args"></a>
+
+#### MCP startup arguments
+
+Add these options after `mcp` in your client's `args`. These are the only MCP startup options; both are optional and repeatable.
+
+| Option | Meaning |
+|---|---|
+| `--root DIR` | Allows design reads and exports inside `DIR` and its subfolders. Without it, figlens adds no path restriction: OS permissions still apply. It does not default to the current project or scan the computer. |
+| `--storage-root DIR` | Allows explicitly requested custom index storage inside `DIR` and its subfolders. It does not select or change the default storage location. |
+
+Use absolute paths to existing directories. Each option and path is a separate array item; repeat the option for multiple folders. `--root` means a path boundary, not administrator access, and only restricts figlens MCP, not the agent's other tools.
+
+Example with two design/output roots and two allowed storage roots:
+
+```json
+{
+  "mcpServers": {
+    "figlens": {
+      "command": "npx",
+      "args": [
+        "-y", "@runkids/figlens", "mcp",
+        "--root", "/absolute/designs",
+        "--root", "/absolute/project",
+        "--storage-root", "/absolute/storage-a",
+        "--storage-root", "/absolute/storage-b"
+      ]
+    }
+  }
+}
+```
+
+There is no `figlens mcp --storage` option. Choose the actual location with the `index` tool's `storage` argument (an absolute path under an allowed storage root), or CLI `figlens index prepare design.fig --storage /absolute/storage-a`. After `prepare`, figlens remembers that workspace's location and reuses it across restarts and hosts without repeating `storage` or `--storage-root`. Without a custom location, the per-user defaults apply; no storage flag is needed.
+
+Multiple storage roots only expand the allowed locations: each `storage` argument still selects one location. They do not distribute, sync or back up indexes. An existing workspace database cannot be moved by simply naming another root; figlens refuses the conflicting location.
+
 <a id="setup-pi"></a>
 
 ### Pi

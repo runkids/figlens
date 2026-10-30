@@ -40,7 +40,7 @@ $(asset x86_64-unknown-linux-musl)
   end
 
   def install
-    bin.install "figlens"
+    bin.install "figlens", "figlens-embed"
   end
 
   test do

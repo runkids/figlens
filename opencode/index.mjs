@@ -17,21 +17,21 @@ const texts = maxItems => ({ type: 'array', items: string(2000), maxItems });
 const bool = { type: 'boolean' }, path = string(4096), id = string(200);
 // An exact instance sublayer id has up to expand::MAX_DEPTH (256) segments of at most 23 bytes, as src/search/store.rs bounds it.
 const node = string((256 + 1) * 23);
-// The figlens MCP index, jobs, search, usages, diff, changes, watch and inspect tools, run as the same CLI commands.
+// The figlens MCP index, jobs, search, usages, diff, changes, watch, inspect and models tools, run as the same CLI commands.
 const pixel = { type: 'integer', minimum: 0 };
 const CLI_TOOLS = [
-  ['index', 'Local workspace indexes for search, as the figlens MCP index tool. prepare registers file (or a project workspace) and with scope builds exactly that stored scope (0:0 is the whole file), returning workspaceId and the finished job; status reports sources and storage; add, remove, relocate, refresh, rebuild and clear_cache manage sources and indexes; track starts recording the changes of one scope with a baseline build and untrack stops it, keeping its history; reset deletes this workspace database only after the user asked for it. A directory file registers 10 files per call and returns nextCursor; pass it as cursor for the next page; the CLI path refuses gs://. Errors carry recovery steps; recreation (replaceUnavailable) needs the user\'s confirmation.',
-    { action: { enum: ['prepare', 'status', 'add', 'remove', 'relocate', 'refresh', 'rebuild', 'track', 'untrack', 'clear_cache', 'reset'] },
+  ['index', 'Local workspace indexes for search, as the figlens MCP index tool. prepare registers file (or a project workspace) and with scope builds exactly that stored scope (0:0 is the whole file), returning workspaceId and the finished job; status reports sources and storage; add, remove, relocate, refresh, rebuild and clear_cache manage sources and indexes; track starts recording the changes of one scope with a baseline build and untrack stops it, keeping its history; embed runs the configured local model (figlens_models) over published scopes for semantic search, as jobs (mode_unavailable without a profile); reset deletes this workspace database only after the user asked for it. A directory file registers 10 files per call and returns nextCursor; pass it as cursor for the next page; the CLI path refuses gs://. Errors carry recovery steps; recreation (replaceUnavailable) needs the user\'s confirmation.',
+    { action: { enum: ['prepare', 'status', 'add', 'remove', 'relocate', 'refresh', 'rebuild', 'track', 'untrack', 'embed', 'clear_cache', 'reset'] },
       file: path, workspace: path, workspaceId: id, sourceId: id, scope: node, requestId: id, storage: path, replaceUnavailable: bool, cursor: string(DIR_CURSOR) }, ['action']],
   ['jobs', 'Status or cancellation of an index job by its jobId, as the figlens MCP jobs tool.',
     { action: { enum: ['status', 'cancel'] }, jobId: id, storage: path }, ['action', 'jobId']],
   ['search', 'Ranked search of layer names and effective text, as the figlens MCP search tool: give file to read a .fig now, or workspaceId to search its prepared indexes without parsing. Results carry exact ref.nodeId for figlens_inspect, matches and coverage; sources not ready list the index call that prepares them.',
     { file: path, workspaceId: id, sourceId: id, storage: path, query: string(2000), node, type: id,
       limit: { type: 'integer', minimum: 1, maximum: 200 }, cursor: string(4096), includeHidden: bool, includeInternal: bool,
-      // An image search: one local PNG or one stored node render, optionally cropped; hybrid only with an image.
+      // An image search: one local PNG or one stored node render, optionally cropped; hybrid can combine image and text.
       image: path, imageRef: object({ sourceId: id, snapshotId: id, nodeId: node }, ['sourceId', 'snapshotId', 'nodeId']),
       crop: object({ x: pixel, y: pixel, width: pixel, height: pixel }, ['x', 'y', 'width', 'height']),
-      mode: { enum: ['text', 'visual', 'hybrid'] } }],
+      mode: { enum: ['text', 'semantic', 'visual', 'hybrid'] } }],
   // A usages target and scope take any id an index stores, as src/search/usages.rs validates them.
   ['usages', 'Exact relations of one node or resource in one stored scope, as the figlens MCP usages tool: give file to read a .fig now, or workspaceId to read its prepared index of scope. direction in (default) lists what points at it, out what it points at, with library {kind, namespace, key} on a use of a cached library copy. Results carry exact refs, coverage and a snapshotId; a changed source is source_stale. With workspaceId, library {kind, namespace, key} (from an out result) instead of node or resource lists the layers in every visible source whose cached copy uses that library component, style or variable. Without namespace it lists only copies naming none and is never complete. Its definition stays unresolved unless library.definition {sourceId, snapshotId, nodeId}, an exact ref an earlier reply gave, selects one: then it is reported selected with keyEvidence unverified, and each use\'s definitionMatch compares its cached copy with it: equal (same fingerprint, not proof the library published it), definition_mismatch or unknown. It asks read on the definition\'s source as well as the sources it reads.',
     { file: path, workspaceId: id, sourceId: id, storage: path, node, resource: node, scope: node, relation: string(200),
@@ -50,6 +50,8 @@ const CLI_TOOLS = [
         definition: object({ sourceId: id, snapshotId: id, nodeId: node }, ['sourceId', 'snapshotId', 'nodeId']) }, ['kind', 'key']),
       owner: string(128), after: id, leaseId: id, requestId: id, storage: path },
     ['action', 'workspaceId']],
+  ['models', 'Local text model profiles for semantic and hybrid search, as the figlens MCP models tool. list shows the documented profiles with model, revision, license and the files each needs; status reports each configured profile ready or unavailable with the reason, or the setup steps when none is configured; configure checks a model directory the user already downloaded against pinned SHA-256 digests, starts the figlens-embed shipped beside figlens once offline and records the profile; remove forgets the profile and keeps its files. Nothing is downloaded and no design text leaves the machine. configure asks read on modelDir and each pinned file it names; configure and remove ask edit on the figlens config root that records profiles.',
+    { action: { enum: ['list', 'status', 'configure', 'remove'] }, profile: id, modelDir: path }, ['action']],
   ['inspect', 'Compact expanded node summary of a .fig node or exact instance sublayer, as the figlens MCP inspect tool.',
     { file: path, node, depth: { type: 'integer', minimum: 0, maximum: 10 }, images: bool, states: bool, flat: bool, compareVariant: node }, ['file', 'node']],
 ];

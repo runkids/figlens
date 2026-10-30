@@ -131,7 +131,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 누구�
 
 ## MCP 서버와 에이전트 skill
 
-**MCP.** 서버는 로컬에서 stdio로 실행되며 `workflow`, `tree`, `find`, `search`, `usages`, `diff`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs`, `changes`, `watch`, `export`, `models`를 제공합니다. 절대 경로를 전달하세요. `--root /path/to/designs`(반복 가능)를 추가하면 모든 파일과 출력 경로를 선택한 폴더로 제한합니다. figlens 기본 디렉터리 밖에 인덱스를 저장하려면 `--storage-root DIR`(반복 가능)이 필요합니다. 래스터 내보내기는 `maxSize`(기본 1600px)에 맞게 축소되어 인라인 이미지가 작게 유지되며, SVG는 메타데이터만 반환합니다.
+**MCP.** 서버는 로컬에서 stdio로 실행되며 `workflow`, `tree`, `find`, `search`, `usages`, `diff`, `inspect`, `nodes`, `variables`, `bundle`, `verify`, `index`, `jobs`, `changes`, `watch`, `export`, `models`를 제공합니다. 절대 경로를 전달하세요. `--root /path/to/designs`(반복 가능)를 추가하면 모든 파일과 출력 경로를 선택한 폴더로 제한합니다. 사용자 지정 저장소를 명시적으로 요청하려면 `--storage-root DIR`(반복 가능)이 필요합니다. 기억된 workspace 위치는 이 옵션 없이 재사용합니다. [시작 인수와 여러 루트 설정 예](../README-ko.md#mcp-args)를 참고하세요. 래스터 내보내기는 `maxSize`(기본 1600px)에 맞게 축소되어 인라인 이미지가 작게 유지되며, SVG는 메타데이터만 반환합니다.
 
 agent는 `workflow`로 `build`, `audit`, `images`, `plan`, `planning-details` 또는 명시적으로 요청된 경우 `yolo` 가이드를 읽을 수 있습니다. portable skill과 같은 소스를 사용하므로 MCP 사용 시 별도 skill 설치는 선택 사항입니다. 실제 작업은 agent의 프로젝트·브라우저 도구와 호스트 권한으로 수행합니다. 가이드를 읽는 것만으로 작업이 실행되지는 않으며, 활용 방식은 클라이언트 지원과 모델 동작에 따라 달라집니다.
 
@@ -152,7 +152,7 @@ skillshare mcp add figlens --global --target claude --target codex --target curs
 skillshare sync && skillshare sync mcp --global
 ```
 
-**설치 참고.** npm 런처는 처음 사용할 때 해당 네이티브 바이너리를 내려받고, 릴리스의 SHA-256 체크섬으로 검증한 뒤 캐시합니다. 스크립트로 설치했다면 `figlens update`, Homebrew로 설치했다면 `brew upgrade figlens`로 업데이트하세요. 바이너리는 macOS(Apple silicon, Intel), Linux(arm64, x86_64, 정적 musl), Windows(x86_64)를 지원합니다.
+**설치 참고.** npm 런처는 처음 사용할 때 해당 네이티브 바이너리를 내려받고, 릴리스의 SHA-256 체크섬으로 검증한 뒤 캐시합니다. 스크립트로 설치했다면 `figlens update`, Homebrew로 설치했다면 `brew upgrade figlens`로 업데이트하세요. 바이너리는 macOS(Apple silicon, Intel), Linux(arm64, x86_64, 정적 musl), Windows(x86_64)를 지원합니다.모든 설치 방법은 [선택형 시맨틱 검색](#semantic-search)의 런타임인 `figlens-embed`도 `figlens` 옆에 둡니다. 모델을 설정하기 전에는 모델을 불러오지 않습니다.
 
 <a id="local-index"></a>
 

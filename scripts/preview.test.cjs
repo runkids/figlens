@@ -216,6 +216,7 @@ test('usages relation choices list every kind, checked as the reply ran', () => 
 
 test('semantic coverage reasons are listed with the others, so a hybrid downgrade says why', () => {
   assert.deepEqual(reasonCodes({coverage: {reasons: [], layers: {semantic: {state: 'unavailable', reasons: [{code: 'no_profile'}]}}}}), ['no_profile']);
+  assert.deepEqual(reasonCodes({coverage: {layers: {semantic: {state: 'partial', reasons: [], sources: [{state: 'pending', reasons: [{code: 'semantic_layer_building'}]}, {state: 'ready'}]}}}}), ['semantic_layer_building']);
 });
 
 test('the semantic line shows the running build and offers Enable only without a current index or with a ready model', () => {

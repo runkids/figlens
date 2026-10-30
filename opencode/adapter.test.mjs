@@ -186,7 +186,7 @@ test('bundled launcher runs with node under a Bun-built host', () => {
   assert.equal(launcherRuntime({ node: '24.0.0' }, '/usr/bin/node'), '/usr/bin/node');
 });
 
-test('CLI path runs the MCP index, jobs, search, usages, diff, changes, watch and inspect arguments as the same commands', () => {
+test('CLI path runs the MCP index, jobs, search, usages, diff, changes, watch, inspect and models arguments as the same commands', () => {
   assert.deepEqual(cliArgs('index', { action: 'prepare', file: '/d.fig', scope: '0:0', requestId: 'r' }),
     ['index', 'prepare', '/d.fig', '--scope', '0:0', '--request-id', 'r']);
   assert.deepEqual(cliArgs('index', { action: 'status', file: '/d.fig' }), ['index', 'status', '--file', '/d.fig']);
@@ -227,6 +227,14 @@ test('CLI path runs the MCP index, jobs, search, usages, diff, changes, watch an
   assert.deepEqual(cliArgs('jobs', { action: 'cancel', jobId: 'j' }), ['jobs', 'cancel', 'j']);
   assert.deepEqual(cliArgs('search', { workspaceId: 'ws_1', query: 'Pay now', limit: 5 }), ['search', '--id', 'ws_1', '--limit', '5', '--', 'Pay now']);
   assert.deepEqual(cliArgs('search', { file: '/d.fig', query: 'Pay', includeHidden: true }), ['search', '/d.fig', 'Pay', '--include-hidden']);
+  assert.deepEqual(cliArgs('search', { file: '/d.fig', query: 'Pay', mode: 'hybrid' }), ['search', '/d.fig', 'Pay', '--mode', 'hybrid']);
+  assert.deepEqual(cliArgs('search', { workspaceId: 'ws_1', query: 'Pay', mode: 'semantic' }), ['search', '--id', 'ws_1', '--mode', 'semantic', '--', 'Pay']);
+  assert.deepEqual(cliArgs('models', { action: 'list' }), ['models', 'list']);
+  assert.deepEqual(cliArgs('models', { action: 'status' }), ['models', 'status']);
+  assert.deepEqual(cliArgs('models', { action: 'configure', profile: 'bge-m3', modelDir: '/m' }), ['models', 'configure', 'bge-m3', '--model', '/m']);
+  assert.throws(() => cliArgs('models', { action: 'configure', profile: 'bge-m3' }), /needs modelDir/);
+  assert.deepEqual(cliArgs('models', { action: 'remove', profile: 'bge-m3' }), ['models', 'remove', 'bge-m3']);
+  assert.throws(() => cliArgs('models', { action: 'remove' }), /needs profile/);
   assert.deepEqual(cliArgs('inspect', { file: '/d.fig', node: 'I1:2;3:4', depth: 0 }), ['inspect', '/d.fig', 'I1:2;3:4', '--depth', '0']);
   assert.deepEqual(cliArgs('diff', { old: '/a.fig', file: '/b.fig', node: '1:2', limit: 5, cursor: 'c' }),
     ['diff', '/a.fig', '/b.fig', '--node', '1:2', '--limit', '5', '--cursor', 'c', '--json']);
@@ -414,6 +422,46 @@ test('CLI-path cancel asks edit on the job workspace, and a denial leaves the jo
   // An ack writes its checkpoint into the same database.
   await assert.rejects(adapter.cli(current, 'watch', { action: 'ack', workspaceId: 'ws_1', consumer: 'ci', cursor: 'c1.x' }), /denied \/state\/workspaces\/ws_1,\/state\/workspaces\/ws_1\.lock$/);
   assert.deepEqual(ran, ['jobs status', 'index status', 'index status']);
+});
+
+test('CLI-path models list and status ask nothing; configure asks read on the model files and edit on the config root before running', async t => {
+  const { ctx, adapter, root } = await context(t);
+  const asked = [], ran = [];
+  let deny = null;
+  ctx.permission.assert = async ({ action, resources }) => {
+    if (action === 'bash') return;
+    asked.push([action, ...resources]);
+    if (action === deny) throw Object.assign(new Error(`denied ${resources}`), { _tag: 'Permission.DeclinedError' });
+  };
+  const current = await adapter.scope('session');
+  current.run = async args => {
+    ran.push(args.join(' '));
+    const reply = args[1] === 'list' ? { profiles: [{ name: 'bge-m3', files: ['config.json', 'tokenizer.json'] }] }
+      : args[1] === 'status' ? { profiles: [], configRoot: '/config', defaultRuntime: { path: '/bin/figlens-embed', available: true } } : { args };
+    return { stdout: JSON.stringify(reply) };
+  };
+  await adapter.cli(current, 'models', { action: 'list' });
+  await adapter.cli(current, 'models', { action: 'status' });
+  assert.deepEqual(asked, []);
+  const dir = await realpath(root);
+  await adapter.cli(current, 'models', { action: 'configure', profile: 'bge-m3', modelDir: dir });
+  assert.deepEqual(asked, [['read', dir, path.join(dir, 'config.json'), path.join(dir, 'tokenizer.json')], ['edit', '/config']]);
+  assert.equal(ran.at(-1), `models configure bge-m3 --model ${dir}`, 'no --runtime: only the shipped sibling runs');
+  // remove asks only the edit, in a session not yet granted it.
+  const third = await adapter.scope('third');
+  third.run = current.run;
+  await adapter.cli(third, 'models', { action: 'remove', profile: 'bge-m3' });
+  assert.deepEqual(asked.slice(2), [['edit', '/config']]);
+  // A denied edit runs no configure or remove.
+  const other = await adapter.scope('other');
+  other.run = current.run;
+  deny = 'edit';
+  const before = ran.length;
+  await assert.rejects(adapter.cli(other, 'models', { action: 'remove', profile: 'bge-m3' }), /denied \/config/);
+  assert.deepEqual(ran.slice(before), ['models status']);
+  // A binary that does not report its config root fails closed before any edit.
+  other.run = async args => ({ stdout: JSON.stringify({ profiles: [] }) });
+  await assert.rejects(adapter.cli(other, 'models', { action: 'remove', profile: 'bge-m3' }), /does not report its config root/);
 });
 
 test('CLI-path flat inspect returns its text lines as the MCP flat field', async t => {
@@ -885,6 +933,20 @@ test('CLI-path track runs until its baseline job finishes, and untrack asks only
   await adapter.cli(current, 'index', { action: 'track', workspaceId: 'ws_1', scope: '0:1' });
   await adapter.cli(current, 'index', { action: 'untrack', workspaceId: 'ws_1', scope: '0:1' });
   assert.deepEqual(timeouts, [['index status', undefined], ['index track', 0], ['index status', undefined], ['index untrack', undefined]]);
+  assert.deepEqual(asked, [['read', '/a.fig'], ['edit', '/w', '/w.lock', '/c']]);
+});
+
+test('CLI-path embed reads the sources it sends to the local model, asks edit like a build and runs until its jobs finish', async t => {
+  const { ctx, adapter } = await context(t);
+  const asked = [], timeouts = [];
+  ctx.permission.assert = async ({ action, resources }) => { asked.push([action, ...resources]); };
+  const current = await adapter.scope('session');
+  current.run = async (args, timeout) => {
+    timeouts.push([args.join(' '), timeout]);
+    return { stdout: JSON.stringify({ paths: { workspace: '/w', lock: '/w.lock' }, roots: { config: { path: '/c' } }, sources: [{ sourceId: 's', path: '/a.fig' }] }) };
+  };
+  await adapter.cli(current, 'index', { action: 'embed', workspaceId: 'ws_1', sourceId: 's', scope: '0:1' });
+  assert.deepEqual(timeouts, [['index status --id ws_1', undefined], ['index embed --id ws_1 --source s --scope 0:1', 0]]);
   assert.deepEqual(asked, [['read', '/a.fig'], ['edit', '/w', '/w.lock', '/c']]);
 });
 

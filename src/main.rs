@@ -181,8 +181,9 @@ usage:
   figlens compare <file.fig> <nodes.json> <node>   diff a frame against a REST nodes.json export
   figlens compare <file.fig> --frames <list.txt>   same for every `node|nodes.json[|variables.json]` line
   figlens mcp [--root DIR]... [--storage-root DIR]...
-                                             serve workflow guidance, tree, find, search, inspect, nodes,
-                                             variables, bundle, export, index and jobs as MCP tools; raster export returns an inline image;
+                                             serve workflow guidance, tree, find, search, usages, diff, inspect,
+                                             nodes, variables, bundle, export, index, jobs, models, changes and
+                                             watch as MCP tools; raster export returns an inline image;
                                              with --root, files and outputs must be under one of the folders;
                                              a custom index storage must be under a --storage-root
   figlens workflow <topic>                     print built-in agent guidance, the same text as MCP workflow:

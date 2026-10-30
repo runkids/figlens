@@ -270,7 +270,9 @@ fn embed_work(
             ],
         )
         .map_err(sql)?;
-        tx.commit().map_err(|e| full(sql(e)))
+        tx.commit().map_err(|e| full(sql(e)))?;
+        // The same WAL backpressure as a text build: a reader cannot pin an ever-growing log.
+        super::jobs::reclaim_wal(conn, dir)
     };
     let ready = layer(&conn, gen_id, &profile_id).map_err(sql)?;
     if let Some(ready) = ready.filter(|l| l["state"] == "ready") {
