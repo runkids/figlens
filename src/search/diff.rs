@@ -555,6 +555,10 @@ pub(super) fn facets(
                     a.extend(id);
                 }
             }
+            // The GUID walk visits at most one value per serialized byte.
+            if !bounds.charge(len, 0) {
+                return None;
+            }
             fields.push(Field {
                 key,
                 facet: facet as u8,
