@@ -317,19 +317,7 @@ pub fn write_with_states(
             )
         })
         .collect();
-    render_warnings(document, &mut warnings);
-    for item in doc["_figlens"]["handoffDiagnostics"]["items"]
-        .as_array()
-        .into_iter()
-        .flatten()
-    {
-        warnings.push(format!(
-            "Handoff {}: {} node(s) have stored data not emitted. {}",
-            item["feature"].as_str().unwrap_or(""),
-            item["nodeCount"],
-            item["reason"].as_str().unwrap_or("")
-        ));
-    }
+    diagnostics(&doc, &mut warnings);
     let states = include_states.then(|| crate::states::inspect(tree, document, fig));
     if let Some(states) = &states {
         files.push(json_file("design/states.json", states, "metadata"));
@@ -354,6 +342,23 @@ pub fn write_with_states(
     )));
     pack(files, file_key, root, &name, &warnings, fig, out)?;
     Ok(warnings)
+}
+
+/// Render and handoff diagnostics of a stripped scope document, as bundle warnings.
+pub(crate) fn diagnostics(doc: &Json, warnings: &mut Vec<String>) {
+    render_warnings(&doc["document"], warnings);
+    for item in doc["_figlens"]["handoffDiagnostics"]["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        warnings.push(format!(
+            "Handoff {}: {} node(s) have stored data not emitted. {}",
+            item["feature"].as_str().unwrap_or(""),
+            item["nodeCount"],
+            item["reason"].as_str().unwrap_or("")
+        ));
+    }
 }
 
 fn render_warnings(node: &Json, warnings: &mut Vec<String>) {

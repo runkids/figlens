@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, relationChoices, acceptReply, reasonCodes, mergePages, rowModel, groupUsages, localSearch, sourceRef, pageOf} = require('../src/preview/viewer.js');
+const {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, relationChoices, acceptReply, reasonCodes, mergePages, rowModel, groupUsages, localSearch, sourceRef, pageOf, scopeCoverage} = require('../src/preview/viewer.js');
 
 test('prototype missing fields remain unspecified without click or navigation defaults', () => {
   const rows = prototypeRows({state:'recorded', sourceNodeId:'0:1', interactions:[
@@ -179,6 +179,14 @@ test('handoff names its exact source, revision and listed page', () => {
   assert.equal(sourceRef(undefined, 3), null);
   const catalog = {children:[{id:'0:9', internal:true, children:[{id:'1:2'}]}, {id:'0:1', name:'Home', children:[{id:'1:2'}]}]};
   assert.equal(pageOf(catalog, 'I1:2;3:4').id, '0:1');
+});
+test('handoff coverage comes only from the reference scope payload, never a search reply', () => {
+  const search = {complete: true, reasons: []};
+  const p = {nodes: {document: {id: '1:2'}}, coverage: {scopeId: '1:2', complete: null, warnings: [], reasons: ['asset_renders_unchecked']}};
+  assert.equal(scopeCoverage(p), p.coverage);
+  assert.deepEqual(scopeCoverage({nodes: {document: {id: '1:2'}}, coverage: {...search, scopeId: '9:9'}}),
+    {scopeId: '1:2', complete: null, warnings: [], reasons: ['coverage_unavailable']});
+  assert.equal(scopeCoverage({nodes: {document: {id: '1:2'}}}).complete, null);
 });
 test('usages group members apart from results, and results by relation', () => {
   const g = groupUsages({source:{snapshotId:'s1'}, members:{nodeIds:['1:2','1:3'], complete:false}, results:[

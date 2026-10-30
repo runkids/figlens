@@ -172,6 +172,22 @@ fn data(tree: &Tree, file: &Path, id: &str, image: bool) -> Result<Value> {
             None => json!({"key":key,"nodeId":node,"error":"Original image missing from .fig"}),
         }
     }).collect::<Vec<_>>();
+    let mut warnings: Vec<String> = assets
+        .iter()
+        .filter(|a| a["error"].is_string())
+        .map(|a| {
+            format!(
+                "Missing asset {} at node {}: {}",
+                a["key"].as_str().unwrap_or(""),
+                a["nodeId"].as_str().unwrap_or(""),
+                a["error"].as_str().unwrap_or("")
+            )
+        })
+        .collect();
+    crate::bundle::diagnostics(&doc, &mut warnings);
+    // Only the bundle renders vector and composite assets, so without warnings coverage stays unknown.
+    let coverage = json!({"scopeId":id,"complete":if warnings.is_empty() { Value::Null } else { json!(false) },
+        "warnings":warnings,"reasons":["asset_renders_unchecked"]});
     let png = if image {
         Some(render::png(
             &p.export_svg(tree, 1.0).ok_or("nothing to render")?,
@@ -180,7 +196,7 @@ fn data(tree: &Tree, file: &Path, id: &str, image: bool) -> Result<Value> {
         None
     };
     Ok(
-        json!({"nodes":doc,"area":area,"geometry":geometry,"paths":paths,"interactions":prototype,"variables":crate::variables::variables(tree,Some(p.node())),"assets":assets,
+        json!({"nodes":doc,"area":area,"geometry":geometry,"paths":paths,"interactions":prototype,"variables":crate::variables::variables(tree,Some(p.node())),"assets":assets,"coverage":coverage,
         "image":png.map(|b|format!("data:image/png;base64,{}",render::base64(&b)))}),
     )
 }
@@ -216,6 +232,8 @@ pub fn snapshot(file: &Path, id: &str, out: &Path) -> Result<()> {
     let warnings = crate::bundle::write(&tree, file, None, None, id, &zip)?;
     let mut payload = data(&tree, file, id, true)?;
     payload["bundle"] = json!(render::base64(&fs::read(zip)?));
+    payload["coverage"] =
+        json!({"scopeId":id,"complete":warnings.is_empty(),"warnings":warnings,"reasons":[]});
     payload["warnings"] = json!(warnings);
     crate::output::write(file, out, |file| {
         file.write_all(html(&json!({"snapshot":payload})).as_bytes())?;
@@ -636,7 +654,7 @@ struct Revision<'r> {
     memory: Mutex<Memory>,
     disk: Mutex<DiskCache>,
     bundles: AtomicUsize,
-    /// `sourceId` and `snapshotId` of the bytes this revision decoded.
+    /// `sourceId`, `snapshotId` and canonical `path` of the bytes this revision decoded.
     source: Value,
     /// Search indexes of this revision's scopes, most recently used last.
     indexes: Mutex<Vec<(String, Built)>>,
@@ -1025,8 +1043,9 @@ type Staged = (Document, SystemTime, Value);
 fn staged(file: &Path) -> Result<Staged> {
     let canonical = fs::canonicalize(file)?;
     let (bytes, (modified, _)) = search::stage(&canonical)?;
+    // Live only: snapshots never embed this, so the user's local path stays out of shared HTML.
     let source = json!({"sourceId": search::source_id(&canonical),
-        "snapshotId": search::snapshot_id(&bytes)});
+        "snapshotId": search::snapshot_id(&bytes), "path": canonical.display().to_string()});
     let document = Document::from_bytes(&bytes, &file.display().to_string())?;
     Ok((document, modified, source))
 }
@@ -1158,6 +1177,40 @@ mod tests {
                 )
             );
         });
+    }
+
+    #[test]
+    fn live_handoff_names_its_file_and_scope_coverage_while_snapshots_omit_the_path() {
+        let file = Path::new("examples/first-success/design.fig");
+        let path = fs::canonicalize(file).unwrap().display().to_string();
+        let checked = |c: &Value, id: &str, unchecked: Value| {
+            assert_eq!(c["scopeId"], id, "{c}");
+            let clean = c["warnings"].as_array().unwrap().is_empty();
+            assert_eq!(
+                c["complete"],
+                if clean { unchecked } else { json!(false) },
+                "{c}"
+            );
+        };
+        served(|r| {
+            assert_eq!(reply(r, "revision")["source"]["path"], path);
+            let coverage = &reply(r, "data/1/0:2")["coverage"];
+            checked(coverage, "0:2", Value::Null);
+            assert_eq!(coverage["reasons"], json!(["asset_renders_unchecked"]));
+        });
+        let dir = crate::test_support::TestDir::new();
+        let out = dir.join("snapshot.html");
+        snapshot(file, "0:2", &out).unwrap();
+        let html = fs::read_to_string(&out).unwrap();
+        // Raw and JSON-escaped (Windows backslashes) forms of the live path.
+        assert!(!html.contains(&path) && !html.contains(json!(path).to_string().trim_matches('"')));
+        let boot = html
+            .split(r#"<script id="boot" type="application/json">"#)
+            .nth(1)
+            .unwrap();
+        let boot: Value = serde_json::from_str(boot.split("</script>").next().unwrap()).unwrap();
+        checked(&boot["snapshot"]["coverage"], "0:2", json!(true));
+        assert_eq!(boot["snapshot"]["coverage"]["reasons"], json!([]));
     }
 
     #[test]
