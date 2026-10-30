@@ -10,8 +10,9 @@ Not product code. It measures one local embedding candidate against figlens lexi
   only the query list, never the corpus.
 - `src/main.rs`: `fig` writes the synthetic design, `rank` loads a local model and ranks layers
   by exact cosine with timings (BERT encoders with mean pooling, or a Qwen3 decoder with
-  last-token pooling run one text per pass, since candle's `qwen3::Model::forward` takes no
-  padding mask),
+  last-token pooling batched only across texts of equal token length, since candle's
+  `qwen3::Model::forward` takes no padding mask; an XLM-RoBERTa encoder with CLS pooling for
+  BGE-M3 dense, pre-registered in `bge-m3.json`),
   `child` is a bounded stdio embedding child, `rerank` scores
   query/text pairs with a one-label XLM-R cross-encoder (its card's pair encoding, raw logit).
 - `evaluate.py`: lexical, lexical-with-expansion, semantic and fused (RRF, k=60) metrics against

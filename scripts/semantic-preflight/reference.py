@@ -1,5 +1,5 @@
 """Numerical parity of the candle model against the model card's transformers code (mask-aware mean
-pooling, or last-token pooling over left padding where the card pools that way, then L2
+pooling, CLS pooling, or last-token pooling over left padding where the card pools that way, then L2
 normalization), offline on the same pinned local files. See README.md for the steps.
 
   reference.py requests <inputs.json>      child requests: one batch, then each text alone
@@ -46,15 +46,17 @@ if not all(isinstance(contract.get(k), str) for k in ("queryPrefix", "passagePre
 if not (isinstance(contract.get("maxTokens"), int) and 1 <= contract["maxTokens"] <= 512):
     fail("figlens-preflight.json maxTokens must be 1-512")
 # The contract must say what the card's own sentence-transformers files say, where the card has them.
-if os.path.exists(at("sentence_bert_config.json")) and json.load(open(at("sentence_bert_config.json")))["max_seq_length"] != contract["maxTokens"]:
-    fail("maxTokens differs from the card's sentence_bert_config.json max_seq_length")
-LAST_TOKEN = False
+# A lower limit only refuses more texts (none is truncated), so it may sit under the card's.
+if os.path.exists(at("sentence_bert_config.json")) and json.load(open(at("sentence_bert_config.json")))["max_seq_length"] < contract["maxTokens"]:
+    fail("maxTokens exceeds the card's sentence_bert_config.json max_seq_length")
+LAST_TOKEN = CLS = False
 if os.path.exists(at("1_Pooling/config.json")):
     pooling = {k: v for k, v in json.load(open(at("1_Pooling/config.json"))).items() if k.startswith("pooling_mode_")}
     modes = [k for k, v in pooling.items() if v]
-    if modes not in (["pooling_mode_mean_tokens"], ["pooling_mode_lasttoken"]):
-        fail(f"the card pools with {pooling}, not mean tokens or the last token alone")
+    if modes not in (["pooling_mode_mean_tokens"], ["pooling_mode_lasttoken"], ["pooling_mode_cls_token"]):
+        fail(f"the card pools with {pooling}, not mean tokens, the last token or CLS alone")
     LAST_TOKEN = modes == ["pooling_mode_lasttoken"]
+    CLS = modes == ["pooling_mode_cls_token"]
 if os.path.exists(at("config_sentence_transformers.json")):
     prompts = json.load(open(at("config_sentence_transformers.json"))).get("prompts", {})
     if prompts and (prompts.get("query", "") != contract["queryPrefix"] or prompts.get("document", "") != contract["passagePrefix"]):
@@ -117,6 +119,8 @@ def embed(texts, prefix):
         else:
             pooled = hidden[torch.arange(hidden.shape[0]), mask.sum(dim=1) - 1]
         return F.normalize(pooled, p=2, dim=1), enc
+    if CLS:
+        return F.normalize(hidden[:, 0], p=2, dim=1), enc
     hidden = hidden.masked_fill(~enc["attention_mask"][..., None].bool(), 0.0)
     pooled = hidden.sum(dim=1) / enc["attention_mask"].sum(dim=1)[..., None]
     return F.normalize(pooled, p=2, dim=1), enc

@@ -4,7 +4,7 @@ use kiwi_schema::{DefKind, Def, Field, Schema, TYPE_STRING, TYPE_UINT, Value};
 use candle_core::{DType, Device, Tensor};
 use candle_transformers::models::bert::{BertModel, Config};
 use candle_transformers::models::qwen3;
-use candle_transformers::models::xlm_roberta::{Config as XlmConfig, XLMRobertaForSequenceClassification};
+use candle_transformers::models::xlm_roberta::{Config as XlmConfig, XLMRobertaForSequenceClassification, XLMRobertaModel};
 use model2vec_rs::model::StaticModel;
 use serde_json::{Value as Json, json};
 use std::error::Error;
@@ -96,6 +96,8 @@ enum Model {
     /// A Qwen3 decoder with last-token pooling, batching only texts of equal token length: candle's
     /// CPU attention is causal only, so a padded batch would let real tokens attend to padding.
     Qwen3(Box<qwen3::Model>, Box<tokenizers::Tokenizer>, Contract),
+    /// An XLM-RoBERTa encoder with CLS pooling (BGE-M3 dense), padded batches under its mask.
+    Xlmr(Box<XLMRobertaModel>, Box<tokenizers::Tokenizer>, Contract),
 }
 
 /// Equal-length texts per Qwen3 forward pass; `PREFLIGHT_BATCH=1` is the one-text-per-pass baseline.
@@ -168,6 +170,29 @@ impl Model {
                 }
                 Ok(out)
             }
+            Model::Xlmr(m, tokenizer, contract) => {
+                let prefix = if query { &contract.query } else { &contract.passage };
+                // Similar lengths share a batch, so padding stays short; the mask makes it exact.
+                let mut order: Vec<usize> = (0..texts.len()).collect();
+                order.sort_by_key(|&i| texts[i].len());
+                let mut out = vec![Vec::new(); texts.len()];
+                for batch in order.chunks(qwen3_batch()) {
+                    let inputs: Vec<String> = batch.iter().map(|&i| format!("{prefix}{}", texts[i])).collect();
+                    let enc = tokenizer.encode_batch(inputs, true).map_err(|e| e.to_string())?;
+                    if enc.iter().any(|e| e.get_attention_mask().iter().sum::<u32>() as usize > contract.tokens) {
+                        return Err(format!("a text with its prefix is longer than {} tokens", contract.tokens).into());
+                    }
+                    let ids = rows(&enc, |e| e.get_ids())?;
+                    let mask = rows(&enc, |e| e.get_attention_mask())?;
+                    let hidden = m.forward(&ids, &mask, &ids.zeros_like()?, None, None, None)?;
+                    let cls = hidden.narrow(1, 0, 1)?.squeeze(1)?;
+                    let norm = cls.sqr()?.sum_keepdim(1)?.sqrt()?;
+                    for (v, &i) in cls.broadcast_div(&norm)?.to_vec2::<f32>()?.into_iter().zip(batch) {
+                        out[i] = v;
+                    }
+                }
+                Ok(out)
+            }
         }
     }
 }
@@ -200,6 +225,17 @@ fn load(dir: &str) -> Result<(Model, f64)> {
         tokenizer.with_padding(None);
         let vb = candle_nn::VarBuilder::from_tensors(weights, DType::F32, &Device::Cpu);
         Model::Qwen3(Box::new(qwen3::Model::new(&config, vb)?), Box::new(tokenizer), contract(dir)?)
+    } else if config["model_type"] == "xlm-roberta" {
+        let config: XlmConfig = serde_json::from_value(config)?;
+        // SAFETY: the pinned weights file is only read while this process runs.
+        let vb = unsafe {
+            candle_nn::VarBuilder::from_mmaped_safetensors(&[path.join("model.safetensors")], DType::F32, &Device::Cpu)?
+        };
+        let mut tokenizer = tokenizers::Tokenizer::from_file(path.join("tokenizer.json")).map_err(|e| e.to_string())?;
+        tokenizer.with_truncation(None).map_err(|e| e.to_string())?;
+        let pad_token = tokenizer.id_to_token(config.pad_token_id).ok_or("the pad id has no token")?;
+        tokenizer.with_padding(Some(tokenizers::PaddingParams { pad_id: config.pad_token_id, pad_token, ..Default::default() }));
+        Model::Xlmr(Box::new(XLMRobertaModel::new(&config, vb)?), Box::new(tokenizer), contract(dir)?)
     } else {
         let config: Config = serde_json::from_value(config)?;
         // SAFETY: the pinned weights file is only read while this process runs.
