@@ -171,6 +171,34 @@ fn a_save_while_watched_records_a_revision_without_a_refresh_call() {
 }
 
 #[test]
+fn a_scope_newly_watched_on_a_watched_source_catches_up_without_another_save() {
+    let env = Env::new();
+    env.json(&["index", "refresh", "--file", &env.file, "--scope", "0:1"]);
+    env.json(&["index", "track", "--file", &env.file, "--scope", "0:1"]);
+    let a = env.holder();
+    env.save(true);
+    wait_for(
+        "the watched scope's revision",
+        Duration::from_secs(10),
+        || env.changes() == 1,
+    );
+    // The save is already behind the runner, so only the new lease can bring 0:1 up to date.
+    let b =
+        env.holder_with(&mut env.command(&["watch", "run", "--file", &env.file, "--scope", "0:1"]));
+    wait_for(
+        "the added scope's revision",
+        Duration::from_secs(10),
+        || {
+            let reply = env.json(&["changes", "--file", &env.file, "--scope", "0:1"]);
+            let revisions = reply["revisions"].as_array().unwrap();
+            revisions.iter().filter(|r| r["kind"] == "changes").count() == 1
+        },
+    );
+    b.close();
+    a.close();
+}
+
+#[test]
 fn a_save_interrupts_a_saved_query_turn_and_an_exit_ends_one() {
     let env = Env::new();
     let hold = env.dir.join("turn");
