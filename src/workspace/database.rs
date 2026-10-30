@@ -457,8 +457,15 @@ pub(crate) const V9: &str = "
     PRAGMA user_version = 9;";
 
 /// Schema 10: content-addressed source thumbnails and per-generation visual evidence (#95).
-/// Query images are request-owned and never enter these tables.
+/// Query images are request-owned and never enter these tables. A visual job (`kind`
+/// `visual`) renders one published generation and has its own active slot per source, scope,
+/// generation and vision profile (`visual-hash-1` without one), like an embed job.
 pub(crate) const V10: &str = "
+    DROP INDEX jobs_active;
+    CREATE UNIQUE INDEX jobs_active ON jobs (source_id, scope)
+        WHERE state IN ('queued', 'running') AND kind NOT IN ('embed', 'visual');
+    CREATE UNIQUE INDEX jobs_visual ON jobs (source_id, scope, expected_gen, profile_id)
+        WHERE state IN ('queued', 'running') AND kind = 'visual';
     CREATE TABLE visual_rasters (
         raster_key BLOB PRIMARY KEY, policy TEXT NOT NULL, fingerprint BLOB NOT NULL,
         png BLOB NOT NULL) STRICT, WITHOUT ROWID;

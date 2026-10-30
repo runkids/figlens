@@ -465,13 +465,13 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "index",
-        "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes; add of a directory registers up to 10 .fig files under it in one step, in path order, never through a link leading out of it, and replies directory {added, existing, skipped, notFig, truncated, nextCursor}; pass nextCursor as cursor to add the next 10; a repeat adds nothing, and a moved file is a new source unless relocated); refresh rebuilds changed scopes and rebuild every indexed scope even when unchanged (sourceId and scope narrow both), while the previous index keeps serving; track starts recording one scope's changes, read with the changes tool, with a baseline build, and untrack stops it, keeping its history; embed runs the configured local model (models tool) over published scopes for semantic search, as jobs beside the text builds (mode_unavailable without a profile), and a text build this server runs queues it after publishing; a reply that could not admit every job has admission partial and deferred items, each with the nextStep that builds it later; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
+        "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes; add of a directory registers up to 10 .fig files under it in one step, in path order, never through a link leading out of it, and replies directory {added, existing, skipped, notFig, truncated, nextCursor}; pass nextCursor as cursor to add the next 10; a repeat adds nothing, and a moved file is a new source unless relocated); refresh rebuilds changed scopes and rebuild every indexed scope even when unchanged (sourceId and scope narrow both), while the previous index keeps serving; track starts recording one scope's changes, read with the changes tool, with a baseline build, and untrack stops it, keeping its history; embed runs the configured local model (models tool) over published scopes for semantic search, as jobs beside the text builds (mode_unavailable without a profile), and a text build this server runs queues it after publishing; visual (scope required, never widened to the whole file) renders that published scope's screens and components, and the scope node below a page, for image search, and embeds them when a vision profile is configured (hash-only otherwise), as a job on the same model lane; a scope that had a visual layer is rendered again after a text build this server runs republishes it, and no other scope is rendered implicitly; a reply that could not admit every job has admission partial and deferred items, each with the nextStep that builds it later; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
         &[
             (
                 "action",
                 "string",
                 true,
-                "prepare, status, add, remove, relocate, refresh, rebuild, track, untrack, embed, clear_cache or reset",
+                "prepare, status, add, remove, relocate, refresh, rebuild, track, untrack, embed, visual, clear_cache or reset",
             ),
             (
                 "file",
@@ -490,19 +490,19 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "sourceId",
                 "string",
                 false,
-                "a registered source, for remove, relocate, refresh, rebuild, track, untrack and embed",
+                "a registered source, for remove, relocate, refresh, rebuild, track, untrack, embed and visual",
             ),
             (
                 "scope",
                 "string",
                 false,
-                "stored node id to index (prepare), refresh, rebuild, track, untrack or embed; 0:0 is the whole file",
+                "stored node id to index (prepare), refresh, rebuild, track, untrack, embed or visual (required); 0:0 is the whole file",
             ),
             (
                 "requestId",
                 "string",
                 false,
-                "an idempotency key: repeating a prepare, refresh, rebuild, track or embed of one source and scope with it returns the same job; one first used for another request (track is its own) is refused",
+                "an idempotency key: repeating a prepare, refresh, rebuild, track, embed or visual of one source and scope with it returns the same job; one first used for another request (track is its own) is refused",
             ),
             STORAGE,
             (
@@ -764,7 +764,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "incarnation": {"type": "string", "description": "changes when the database is recreated; cached results of another incarnation are void"},
                 "sources": {"type": "array", "items": {"type": "object"}, "description": "visible sources: sourceId, path, present and indexed scopes with snapshotId, records, complete and current; a gs:// source adds remote {uri, generation its download was pinned to}, not proof the object is unchanged"},
                 "job": {"type": "object", "description": "the build prepare started or joined: jobId, state, stage, progress"},
-                "jobs": {"type": "array", "items": {"type": "object"}, "description": "refresh, rebuild and track: one job per admitted source and scope, each with joined"},
+                "jobs": {"type": "array", "items": {"type": "object"}, "description": "refresh, rebuild, track, embed and visual: one job per admitted source and scope, each with joined"},
                 "admission": {"type": "string", "description": "refresh and rebuild: complete, or partial when some jobs were not admitted"},
                 "deferred": {"type": "array", "items": {"type": "object"}, "description": "partial admission: sourceId, scope and the nextStep index call that builds it later"},
                 "deferredBecause": {"type": ["object", "null"], "description": "partial admission: the error that stopped admission, {code, message}"},
@@ -792,7 +792,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
             serde_json::json!({
                 "jobId": {"type": "string"},
                 "workspaceId": {"type": "string", "description": "the workspace the job builds in, for index status"},
-                "kind": {"type": "string", "description": "prepare, refresh, rebuild, track or embed (the model layer of a published scope)"},
+                "kind": {"type": "string", "description": "prepare, refresh, rebuild, track, embed (the model layer of a published scope) or visual (its rendered and, with a vision profile, embedded units)"},
                 "state": {"type": "string", "description": "queued, running, succeeded, failed, cancelled or interrupted (its owner exited)"},
                 "stage": {"type": ["string", "null"], "description": "null until the job starts"},
                 "progress": {"type": "object"},
@@ -1025,6 +1025,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
             "track",
             "untrack",
             "embed",
+            "visual",
             "clear_cache",
             "reset"
         ]);

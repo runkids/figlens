@@ -37,7 +37,7 @@ Schema 2 adds `snapshots` (verified size and mtime per content hash), `generatio
 | `refresh <select> [--source ID] [--scope NODE]` | Builds the chosen published scopes again when their bytes changed |
 | `rebuild <select> [--source ID] [--scope NODE]` | Builds the chosen published scopes again even when unchanged (a corrupt or deferred one included); the previous generations serve until each replacement publishes |
 | `clear_cache <select>` | Deletes retired generations, unpublished ones no live job or orphaned worker writes, and unreferenced snapshots; keeps the registry, published indexes, jobs and location. Each deletion reauthorizes its source: one moved out of a confined caller's view meanwhile keeps its data, and the reply has `partial: true` |
-| `embed <select> [--source ID] [--scope NODE]` | One `embed` job per published scope stores its model layer; see [semantic](semantic.md#workspace-layer) |
+| `embed`, `visual` | Model jobs on a published generation: [semantic](semantic.md#workspace-layer), [visual](visual-search.md#visual-jobs) |
 | `jobs status <jobId>` / `jobs cancel <jobId>` | A job's `workspaceId`, state, stage, progress, attempt, generation and next steps |
 
 The CLI runs owned jobs in the foreground with stderr progress, then exits 1 if any did not succeed. MCP runs them on its build lane and returns at once; see [mcp](mcp.md).

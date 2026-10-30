@@ -213,6 +213,11 @@ usage:
                                              embed published scopes with the configured local model
                                              (figlens models) for semantic search; text search keeps
                                              serving. A refresh with a model configured lists this step
+  figlens index visual <select> --scope NODE [--source ID] [--request-id ID]
+                                             render that published scope's screens and components (and
+                                             the scope node below a page) for image search, and embed them
+                                             with a configured vision profile; text search keeps serving.
+                                             A rebuild of a scope that had a visual layer lists this step
   figlens index clear|clear_cache <select>   delete retired and unfinished indexes; keeps published ones
   figlens index status <select>              state, sources and storage rule; creates nothing
   figlens index add <file.fig|dir> <select> [--dry-run | --manifest HEX] [--cursor C]
@@ -417,6 +422,23 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             writeln!(out, "{report}")?;
             return if report["error"].is_object() {
                 Err("index worker failed".into())
+            } else {
+                Ok(())
+            };
+        }
+        Some("__visual-worker") => {
+            let (Some(dir), Some(job)) = (args.get(1), args.get(2)) else {
+                return Err(USAGE.into());
+            };
+            signals::ignore();
+            // A hash-only job renders here; a vision job runs in its profile's figlens-embed.
+            let report =
+                figlens::workspace::visual_job::run_visual_worker(Path::new(dir), job, |_| {
+                    Err("this figlens renders only; a vision job runs in figlens-embed".into())
+                });
+            writeln!(out, "{report}")?;
+            return if report["error"].is_object() {
+                Err("visual worker failed".into())
             } else {
                 Ok(())
             };
@@ -1047,6 +1069,7 @@ fn finish_jobs(
                             jobs::rebuild_scope(storage, &select, source, scope, None)?
                         }
                         Some("embed") => jobs::embed(storage, &select, source, scope, None)?,
+                        Some("visual") => jobs::visual(storage, &select, source, scope, None)?,
                         _ => figlens::workspace::refresh(storage, &select, source, scope, None)?,
                     };
                     // Another process may have taken it over first; then keep waiting.
@@ -1059,14 +1082,15 @@ fn finish_jobs(
         }
     };
     // This process runs no model job after it exits, so a text build that could have one says
-    // which call embeds it instead of leaving it queued for a dead owner.
+    // which call embeds or renders it instead of leaving it queued for a dead owner.
     let mut fin = |job: &serde_json::Value| -> Result<serde_json::Value, Box<dyn Error>> {
         let mut done = fin(job)?;
-        if let (Some(step), Some(next)) = (
+        let steps = [
             jobs::embed_step(storage, &done),
-            done["nextSteps"].as_array_mut(),
-        ) {
-            next.push(step);
+            jobs::visual_step(storage, &done),
+        ];
+        if let Some(next) = done["nextSteps"].as_array_mut() {
+            next.extend(steps.into_iter().flatten());
         }
         Ok(done)
     };
@@ -1248,7 +1272,7 @@ fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
     use command::index::{Reply, Request};
     use figlens::workspace::{self, Select};
     let usage = || -> Box<dyn Error> {
-        "usage: figlens index prepare|status|add|refresh|remove|relocate|clear|rebuild|track|untrack|embed|reset ...; see `figlens --help`"
+        "usage: figlens index prepare|status|add|refresh|remove|relocate|clear|rebuild|track|untrack|embed|visual|reset ...; see `figlens --help`"
             .into()
     };
     let action = args.first().ok_or_else(usage)?.as_str();
@@ -1279,7 +1303,7 @@ fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
             request.file = Some(Path::new(path));
             request.project = a.workspace.map(Path::new);
         }
-        ("refresh" | "rebuild" | "track" | "untrack" | "embed", []) => {
+        ("refresh" | "rebuild" | "track" | "untrack" | "embed" | "visual", []) => {
             request.source = a.source.first().copied();
         }
         ("add", [path]) if a.source.is_empty() => request.file = Some(Path::new(path)),

@@ -308,6 +308,13 @@ mod tests {
 
     fn db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
+        // The part of the jobs table schema 10 changes.
+        conn.execute_batch(
+            "CREATE TABLE jobs (kind TEXT, source_id TEXT, scope TEXT, state TEXT,
+             expected_gen INTEGER, profile_id TEXT);
+             CREATE INDEX jobs_active ON jobs (source_id, scope);",
+        )
+        .unwrap();
         conn.execute_batch(super::super::database::V10).unwrap();
         conn
     }

@@ -4,7 +4,9 @@
 //! directory, opens no network connection and speaks `figlens::semantic`'s stdio protocol.
 //! `figlens-embed __model-worker <workspace-dir> <jobId>` runs one workspace embed job in this
 //! process instead (`figlens::workspace::model::run_embed_worker`). A SigLIP model directory
-//! (`config.json` model_type `siglip`) makes it the vision child of visual search (#95).
+//! (`config.json` model_type `siglip`) makes it the vision child of visual search (#95), and
+//! `figlens-embed __visual-worker <workspace-dir> <jobId>` renders and embeds one workspace
+//! visual job in this process (`figlens::workspace::visual_job::run_visual_worker`).
 
 use candle_core::{DType, Device, Tensor};
 use candle_transformers::models::xlm_roberta::{Config, XLMRobertaModel};
@@ -58,6 +60,22 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
+    if let [_, worker, dir, job] = args.as_slice()
+        && worker == "__visual-worker"
+    {
+        use figlens::search::visual::model;
+        let report = figlens::workspace::visual_job::run_visual_worker(Path::new(dir), job, |p| {
+            let vision = model::Model::load(&p.model)?;
+            let embed: figlens::workspace::visual_job::EmbedImages =
+                Box::new(move |images| vision.embed(images));
+            Ok((vision_hello(), embed))
+        });
+        println!("{report}");
+        if report["error"].is_object() {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     let dir = PathBuf::from(&args[1]);
     if model_type(&dir)? == "siglip" {
         return serve_vision(&dir);
@@ -74,15 +92,18 @@ fn model_type(dir: &Path) -> Result<String> {
 /// The pinned SigLIP vision tower over normalized query rasters; its hello names the modality
 /// and the preprocessing policy, so both enter the profile fingerprint.
 fn serve_vision(dir: &Path) -> Result<()> {
+    let vision = figlens::search::visual::model::Model::load(dir)?;
+    semantic::serve_images(&vision_hello(), |images| vision.embed(images))
+}
+
+fn vision_hello() -> Json {
     use figlens::search::visual::model;
-    let vision = model::Model::load(dir)?;
-    let hello = json!({
+    json!({
         "protocol": semantic::PROTOCOL, "dim": model::DIM, "model": model::MODEL,
         "revision": model::REVISION, "modality": "image", "processor": model::PREPROCESS,
         "normalize": true, "maxBatch": model::MAX_BATCH,
         "runtime": format!("figlens-embed {} candle 0.11.0", env!("CARGO_PKG_VERSION")),
-    });
-    semantic::serve_images(&hello, |images| vision.embed(images))
+    })
 }
 
 /// The model, tokenizer and hello (the contract figlens pins at configure) read from `dir`.

@@ -1425,7 +1425,7 @@ pub struct Runs {
     pub storage: figlens::workspace::Storage,
     pub workspace_id: String,
     pub jobs: Vec<String>,
-    /// Model (embed) jobs, run apart from text builds so none waits behind one.
+    /// Model (embed and visual) jobs, run apart from text builds so none waits behind one.
     pub model: bool,
 }
 
@@ -1484,7 +1484,7 @@ fn index_on(
         workspace_id: value["workspaceId"].as_str().unwrap_or_default().to_owned(),
         storage,
         jobs,
-        model: action == "embed",
+        model: matches!(action, "embed" | "visual"),
     });
     Ok((
         Output::Json {

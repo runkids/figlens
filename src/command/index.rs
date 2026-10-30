@@ -30,12 +30,12 @@ impl Request<'_> {
         (self.scope.is_none()
             || matches!(
                 self.action,
-                "prepare" | "refresh" | "rebuild" | "track" | "untrack" | "embed"
+                "prepare" | "refresh" | "rebuild" | "track" | "untrack" | "embed" | "visual"
             ))
             && (self.request.is_none()
                 || matches!(
                     self.action,
-                    "prepare" | "refresh" | "rebuild" | "track" | "embed"
+                    "prepare" | "refresh" | "rebuild" | "track" | "embed" | "visual"
                 ))
             && (!self.replace || self.action == "prepare")
             && (!(self.cursor.is_some() || self.manifest.is_some() || self.dry_run)
@@ -43,7 +43,14 @@ impl Request<'_> {
             && (self.source.is_none()
                 || matches!(
                     self.action,
-                    "remove" | "relocate" | "refresh" | "rebuild" | "track" | "untrack" | "embed"
+                    "remove"
+                        | "relocate"
+                        | "refresh"
+                        | "rebuild"
+                        | "track"
+                        | "untrack"
+                        | "embed"
+                        | "visual"
                 ))
     }
 
@@ -106,6 +113,15 @@ impl Request<'_> {
             }
             "embed" => {
                 return Ok(Reply::Jobs(workspace::jobs::embed(
+                    storage,
+                    chosen()?,
+                    self.source,
+                    self.scope,
+                    self.request,
+                )?));
+            }
+            "visual" => {
+                return Ok(Reply::Jobs(workspace::jobs::visual(
                     storage,
                     chosen()?,
                     self.source,
