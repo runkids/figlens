@@ -2604,12 +2604,19 @@ fn saved_library(
     }
 }
 
-#[test]
-fn a_saved_library_question_reports_definition_moves_and_never_follows_a_transitive_change() {
-    let d = TestDir::new();
-    // A consumes library B's component k; B's definition itself uses library C's component c.
-    let (storage, select, conn, srcs) = library_workspace(&d, 3);
-    let [(_, a, a_gen), (_, b, b_gen), (_, c, c_gen)] = [0, 1, 2].map(|i| srcs[i].clone());
+/// A -> B -> C: A consumes library B's component k, whose definition itself uses library C's
+/// component c, so C's change reaches A only through B. Returns the workspace and B's definition.
+fn transitive_chain(
+    d: &TestDir,
+) -> (
+    Storage,
+    Select,
+    Connection,
+    Vec<(PathBuf, String, i64)>,
+    crate::workspace::library::DefinitionRef,
+) {
+    let (storage, select, conn, srcs) = library_workspace(d, 3);
+    let [(_, _, a_gen), (_, b, b_gen), (_, _, c_gen)] = [0, 1, 2].map(|i| srcs[i].clone());
     conn.execute(
         "DELETE FROM edges WHERE relation = 'uses_library' AND gen IN (?1, ?2)",
         [b_gen, c_gen],
@@ -2624,6 +2631,14 @@ fn a_saved_library_question_reports_definition_moves_and_never_follows_a_transit
     .unwrap();
     fingerprinted(&conn, a_gen, &def.node_id, &[1; 32]);
     fingerprinted(&conn, b_gen, &def.node_id, &[1; 32]);
+    (storage, select, conn, srcs, def)
+}
+
+#[test]
+fn a_saved_library_question_reports_definition_moves_and_never_follows_a_transitive_change() {
+    let d = TestDir::new();
+    let (storage, select, conn, srcs, def) = transitive_chain(&d);
+    let [(_, a, a_gen), (_, b, b_gen), (_, c, c_gen)] = [0, 1, 2].map(|i| srcs[i].clone());
     let saved = subscribe_set(
         &storage,
         &select,
@@ -2726,6 +2741,175 @@ fn a_saved_library_question_reports_definition_moves_and_never_follows_a_transit
     assert_eq!(
         node(&dropped, "leftTopK"),
         json!([{"sourceId": a, "snapshotId": "sha256:a2", "nodeId": def.node_id}])
+    );
+}
+
+/// The newest stored evaluation of `sub` as `storage` reads it, and the whole reply.
+fn newest(storage: &Storage, select: &Select, sub: &str) -> (Json, String) {
+    let page = evaluations(storage, select, sub);
+    let last = page["evaluations"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    (last, page.to_string())
+}
+
+fn subscription_id(reply: &Json) -> String {
+    reply["subscription"]["subscriptionId"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn a_not_followed_member_outside_a_readers_roots_is_never_shown_to_that_reader() {
+    use crate::workspace::changes::{self, subscriptions};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs, def) = transitive_chain(&d);
+    let (c, c_gen) = (srcs[2].1.clone(), srcs[2].2);
+    // C is registered, but outside the narrower caller's roots.
+    let narrow = storage
+        .clone()
+        .confined(&[srcs[0].0.clone(), srcs[1].0.clone()]);
+    let ask = || Some(saved_library(def.clone()));
+    let wide =
+        subscription_id(&subscribe_set(&storage, &select, "w", "visible", None, ask()).unwrap());
+    let mine =
+        subscription_id(&subscribe_set(&narrow, &select, "n", "visible", None, ask()).unwrap());
+    republish(&conn, c_gen, "sha256:c2");
+    // Only the set holding C is due; the wider reader is shown C as not followed.
+    let turned = runner(&storage, &select, &c);
+    let shown = newest(&storage, &select, &wide).0["delta"]["notFollowedSourceIds"].clone();
+    let req = changes::Request {
+        subscription: Some(&wide),
+        ..Default::default()
+    };
+    let refused = [
+        changes::changes(&narrow, &select, &req)
+            .unwrap_err()
+            .to_string(),
+        changes::evaluate(&narrow, &select, Some(&wide))
+            .unwrap_err()
+            .to_string(),
+        subscriptions::unsubscribe(&narrow, &select, Some(&wide), None, None)
+            .unwrap_err()
+            .to_string(),
+    ];
+    let listed = subscriptions::list(&narrow, &select, None, None).unwrap();
+    let (own, page) = newest(&narrow, &select, &mine);
+    let text = format!("{refused:?}{listed}{page}");
+    assert_eq!(
+        (
+            (turned.0, turned.1.len()),
+            shown,
+            listed["subscriptions"].as_array().unwrap().len(),
+            &own["causes"],
+            &own["coverage"]["transitive"],
+            text.contains(&c),
+        ),
+        (
+            (1, 1),
+            json!([c]),
+            1,
+            &json!(["initial"]),
+            &json!("not_followed"),
+            false
+        )
+    );
+}
+
+#[test]
+fn a_visible_source_outside_the_set_reaches_no_evaluation_and_the_gap_stays_marked() {
+    let d = TestDir::new();
+    let (storage, select, conn, srcs, def) = transitive_chain(&d);
+    let (c, c_gen) = (srcs[2].1.clone(), srcs[2].2);
+    let set = format!("{},{}", srcs[0].1, srcs[1].1);
+    let sub = subscription_id(
+        &subscribe_set(&storage, &select, "a", &set, None, Some(saved_library(def))).unwrap(),
+    );
+    republish(&conn, c_gen, "sha256:c2");
+    let turned = runner(&storage, &select, &c).0;
+    let (last, page) = newest(&storage, &select, &sub);
+    assert_eq!(
+        (
+            turned,
+            &last["causes"],
+            &last["coverage"]["transitive"],
+            &last["delta"]["notFollowedSourceIds"],
+            page.contains(&c),
+        ),
+        (
+            0,
+            &json!(["initial"]),
+            &json!("not_followed"),
+            &json!([]),
+            false
+        )
+    );
+}
+
+#[test]
+fn a_missing_not_followed_member_leaves_no_stored_id_for_a_reader_who_never_saw_it() {
+    use crate::workspace::changes::{self, subscriptions};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs, def) = transitive_chain(&d);
+    let (c_path, c, c_gen) = srcs[2].clone();
+    let rest = storage
+        .clone()
+        .confined(&[srcs[0].0.clone(), srcs[1].0.clone()]);
+    let sub = subscription_id(
+        &subscribe_set(
+            &storage,
+            &select,
+            "a",
+            "visible",
+            None,
+            Some(saved_library(def)),
+        )
+        .unwrap(),
+    );
+    republish(&conn, c_gen, "sha256:c2");
+    runner(&storage, &select, &c);
+    let req = changes::Request {
+        subscription: Some(&sub),
+        ..Default::default()
+    };
+    // Unreadable: C's file is gone but C stays registered, so the set stays whole and hidden.
+    std::fs::remove_file(&c_path).unwrap();
+    let unreadable = (
+        evaluations(&storage, &select, &sub)["evaluation"]["state"].clone(),
+        changes::changes(&rest, &select, &req).is_err(),
+    );
+    // Removed: the set is disabled and drops every evaluation that named C before a reader who
+    // sees the remaining members can read it.
+    crate::workspace::registry::remove(&storage, &select, &c).unwrap();
+    let stored: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM query_evaluations WHERE sub = ?1",
+            [&sub],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let listed = subscriptions::list(&rest, &select, None, None).unwrap();
+    let page = changes::changes(&rest, &select, &req).unwrap();
+    let evaluated = changes::evaluate(&rest, &select, Some(&sub)).unwrap();
+    assert_eq!(
+        (
+            unreadable,
+            stored,
+            &page["evaluation"]["state"],
+            &page["subscription"]["disabled"],
+            format!("{listed}{page}{evaluated}").contains(&c),
+        ),
+        (
+            (json!("current_for_index"), true),
+            0,
+            &json!("disabled"),
+            &json!({"reason": "source_removed"}),
+            false
+        )
     );
 }
 
