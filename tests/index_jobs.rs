@@ -3334,11 +3334,42 @@ fn node_subscriptions_follow_a_component_child_change_to_the_instance_and_its_fr
         &["0:41", "0:4", "0:1", "0:12"],
         corpus::write_dot_restyled,
     );
+    // The instance's own facets are unchanged, while its expanded Dot child's appearance is not:
+    // a recorded change in the frame, whose REST fill differs between the two files.
+    let dot = detail["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["entry"] == "change" && n["id"] == "I0:41;0:51")
+        .map_or(Value::Null, |n| {
+            json!([n["change"], n["facets"], n["frame"]])
+        });
+    let fills = |write: fn(&std::ffi::OsStr) -> Result<(), Box<dyn std::error::Error>>,
+                 name: &str| {
+        let path = env.dir.join(name);
+        write(path.as_os_str()).unwrap();
+        fn find<'a>(v: &'a Value, id: &str) -> Option<&'a Value> {
+            if v["id"] == id {
+                return Some(v);
+            }
+            match v {
+                Value::Object(m) => m.values().find_map(|c| find(c, id)),
+                Value::Array(a) => a.iter().find_map(|c| find(c, id)),
+                _ => None,
+            }
+        }
+        let rest = env.json(&["nodes", path.to_str().unwrap(), "0:41"]);
+        find(&rest, "I0:41;0:51").unwrap()["fills"].clone()
+    };
+    let before = fills(|p| corpus::write(p, false), "old-dot.fig");
+    let after = fills(corpus::write_dot_restyled, "new-dot.fig");
     assert_eq!(
-        (counts, impact_entry(&detail, "0:41")),
+        (counts, impact_entry(&detail, "0:41"), dot, before == after),
         (
             vec![1, 1, 0, 0],
-            json!(["effective_unchanged", ["old", "new"]])
+            json!(["effective_unchanged", ["old", "new"]]),
+            json!(["changed", ["appearance"], "0:4"]),
+            false
         ),
         "{detail}"
     );
