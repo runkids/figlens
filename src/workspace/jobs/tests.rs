@@ -2687,23 +2687,28 @@ fn a_saved_library_question_reports_definition_moves_and_never_follows_a_transit
             node(&after_c.1, "changedSourceIds"),
             node(&after_c.1, "definitionMatchChanged"),
             &after_c.1["coverage"]["transitive"],
+            // C holds no use and no definition: what its change feeds was not followed.
+            node(&after_c.1, "notFollowedSourceIds"),
         ),
         (
             1,
             &json!(["source_changed"]),
             json!([c]),
             json!([]),
-            &json!("not_followed")
+            &json!("not_followed"),
+            json!([c]),
         )
     );
     assert_eq!(
         (
             node(&after_b, "changedSourceIds"),
-            node(&after_b, "definitionMatchChanged")
+            node(&after_b, "definitionMatchChanged"),
+            node(&after_b, "notFollowedSourceIds"),
         ),
         (
             json!([b]),
-            json!([{"sourceId": a, "nodeId": def.node_id, "from": "equal", "to": "definition_mismatch"}])
+            json!([{"sourceId": a, "nodeId": def.node_id, "from": "equal", "to": "definition_mismatch"}]),
+            json!([]),
         )
     );
     assert_eq!(
@@ -2714,8 +2719,9 @@ fn a_saved_library_question_reports_definition_moves_and_never_follows_a_transit
                 .as_array()
                 .unwrap()
                 .contains(&json!("definition_mismatch")),
+            node(&masked, "notFollowedSourceIds"),
         ),
-        (json!([a]), json!([]), true)
+        (json!([a]), json!([]), true, json!([]))
     );
     assert_eq!(
         node(&dropped, "leftTopK"),

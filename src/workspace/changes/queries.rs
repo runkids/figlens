@@ -261,6 +261,8 @@ pub(super) struct Eval {
     more: bool,
     /// A library question's uses, in source and document order rather than ranked.
     library: bool,
+    /// A library question's definition source, whose changes its uses' matches follow.
+    definition: Option<String>,
     /// The query as search normalized it, which a subscription's identity is bound to.
     pub(super) canonical: String,
 }
@@ -457,6 +459,11 @@ pub(super) fn compute(
             refs,
             more: reply["hasMore"] == true,
             library: saved.library.is_some(),
+            definition: saved
+                .library
+                .as_ref()
+                .and_then(|l| l.definition.as_ref())
+                .map(|d| d.source_id.clone()),
             canonical,
         }),
     ))
@@ -653,8 +660,24 @@ fn delta(last: Option<&Last>, e: &Eval) -> Json {
         out["fromSnapshotId"] = json!(last.map(|l| &l.snapshot));
         out["snapshotId"] = json!(e.snapshot);
     }
-    // A use whose cached copy now compares otherwise with the definition.
+    // A use whose cached copy now compares otherwise with the definition, and changed members
+    // whose change reached no use directly: neither the definition's source nor holding a use
+    // in either window, so what their own library dependencies feed was not followed.
     if e.library {
+        out["notFollowedSourceIds"] = json!(last.map_or_else(Vec::new, |l| {
+            moved(l, e)
+                .0
+                .into_iter()
+                .filter(|s| {
+                    e.definition.as_ref() != Some(s)
+                        && !e
+                            .refs
+                            .iter()
+                            .chain(&l.refs)
+                            .any(|r| identity(r).0 == Some(s))
+                })
+                .collect()
+        }));
         out["definitionMatchChanged"] = json!(
             e.refs
                 .iter()
@@ -1638,6 +1661,7 @@ mod tests {
             refs: vec![json!(id.repeat(4096)); TOP_K],
             more: false,
             library: false,
+            definition: None,
             canonical: "c".into(),
         };
         let reason = |o: Outcome| o.err().map(|why| why["reason"].clone());
@@ -1698,6 +1722,7 @@ mod tests {
             refs: refs(&["1:2", "1:1"]),
             more: false,
             library: false,
+            definition: None,
             canonical: String::new(),
         };
         let count = |d: &Json, k: &str| d[k].as_array().map(|a| a.len());
