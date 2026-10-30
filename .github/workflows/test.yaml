@@ -42,7 +42,7 @@ jobs:
 
       # The same toolchain as local development (compose.yaml `dev`).
       - name: Format, lint and test
-        run: docker compose run --rm dev sh -c 'cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --locked'
+        run: docker compose run --rm dev sh -c 'cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo clippy --locked --features embed --bin figlens-embed -- -D warnings && cargo test --locked'
 
       # Owned synthetic corpus against recorded baselines; exit 2 means setup, 1 means regression.
       - name: Design-corpus regression lane

@@ -45,6 +45,7 @@ $(asset x86_64-unknown-linux-musl)
 
   test do
     assert_match version.to_s, shell_output("#{bin}/figlens --version")
+    assert_match version.to_s, shell_output("#{bin}/figlens-embed --version")
   end
 end
 EOF
