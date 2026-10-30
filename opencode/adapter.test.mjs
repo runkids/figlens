@@ -9,7 +9,15 @@ import { cliArgs, createAdapter, indexGrant, launcherRuntime } from './adapter.m
 
 async function context(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'figlens-opencode-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  // One hook, so every adapter's children exit before root goes: Windows cannot remove a running
+  // image or a live cwd, and a failed hook skips every later one.
+  const owned = [];
+  const own = adapter => (owned.push(adapter), adapter);
+  t.after(async () => {
+    await Promise.all(owned.map(adapter => adapter.dispose()));
+    // Windows can hold a just-closed image busy a moment; rm retries only EBUSY-like errors.
+    await rm(root, { recursive: true, force: true, maxRetries: 5 });
+  });
   const writes = [];
   const ctx = { location: { directory: root },
     session: { get: async () => ({ location: { directory: root } }), wait: async () => {}, prompt: async input => writes.push(input) },
@@ -17,9 +25,8 @@ async function context(t) {
     tool: { list: async () => [] },
     permission: { assert: async () => {} },
   };
-  const adapter = createAdapter(ctx);
-  t.after(() => adapter.dispose());
-  return { root, ctx, adapter, writes };
+  const adapter = own(createAdapter(ctx));
+  return { root, ctx, adapter, writes, own };
 }
 
 // The paths a read asks, deduped as the adapter does: a design's canonical path equals its requested one unless a tmp
@@ -39,7 +46,7 @@ test('OpenCode preserves existing local, remote and disabled MCP settings and bl
 });
 
 test('OpenCode shortcuts wait until the managed MCP tools reach the tool registry', async t => {
-  const { root, ctx, writes } = await context(t);
+  const { root, ctx, writes, own } = await context(t);
   const override = process.env.FIGLENS_BIN;
   delete process.env.FIGLENS_BIN;
   t.after(() => {
@@ -51,8 +58,7 @@ test('OpenCode shortcuts wait until the managed MCP tools reach the tool registr
   let lists = 0;
   // Connected from the start; the server's tools appear only on the third registry read.
   ctx.tool.list = async () => ++lists < 3 ? [] : [{ id: 'figlensmcp_search', name: 'search', options: { namespace: 'figlensmcp' } }];
-  const adapter = createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href);
-  t.after(() => adapter.dispose());
+  const adapter = own(createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href));
   adapter.configureMcp({ get: () => undefined, set: () => {} });
   await adapter.commandHandler({ sessionID: 'session', prompt: { text: 'open the hero' } });
   assert.equal(lists, 3);
@@ -108,7 +114,7 @@ test('OpenCode closes a session\'s viewer and owner even when one of its command
 });
 
 test('selection never exports through symlinked preview or guide directories', async t => {
-  const { root, ctx } = await context(t);
+  const { root, ctx, own } = await context(t);
   const external = await mkdtemp(path.join(tmpdir(), 'figlens-external-preview-'));
   t.after(() => rm(external, { recursive: true, force: true }));
   const override = process.env.FIGLENS_BIN;
@@ -125,8 +131,7 @@ else throw new Error('Unexpected command');`);
   ctx.permission.assert = async ({ action, resources }) => {
     if (action === 'edit' && resources.some(resource => resource.startsWith(external))) throw new Error('External edit denied');
   };
-  const adapter = createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href);
-  t.after(() => adapter.dispose());
+  const adapter = own(createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href));
   const directory = path.join(root, '.figlens');
   for (const linked of ['previews', '.figlens']) {
     if (linked === 'previews') await mkdir(directory);
@@ -141,7 +146,7 @@ else throw new Error('Unexpected command');`);
 });
 
 test('cancelling a bundled export stops its native child before cleanup', async t => {
-  const { root, ctx } = await context(t);
+  const { root, ctx, own } = await context(t);
   const override = process.env.FIGLENS_BIN;
   delete process.env.FIGLENS_BIN;
   t.after(() => {
@@ -156,8 +161,7 @@ else if (process.argv[2] === 'export') {
   setTimeout(() => fs.writeFileSync(process.argv[5], 'late reference'), 500);
 } else throw new Error('Unexpected command');`);
   await writeFile(path.join(root, 'design.fig'), 'Synthetic snapshot');
-  const adapter = createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href);
-  t.after(() => adapter.dispose());
+  const adapter = own(createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href));
   for (const cancel of ['rpc', 'session']) {
     const controller = new AbortController();
     const pending = adapter.operation({ sessionID: cancel, action: 'select', file: 'design.fig', node: '0:1' }, controller.signal);
@@ -497,6 +501,38 @@ test('CLI-path directory add asks read on the directory and on every file the bi
   assert.deepEqual(ran, ['index add lib --id ws_1 --dry-run', 'index status --id ws_1', 'index add lib --id ws_1 --manifest m1'], 'the add is bound to the files the dry run listed');
 });
 
+test('CLI-path directory add detects a directory reached through a link and .., as the binary does', async t => {
+  const { root, ctx, adapter } = await context(t);
+  // link/../designs is outside/designs to the binary, while a lexical resolve would look for <root>/designs.
+  const outside = await mkdtemp(path.join(tmpdir(), 'figlens-outside-'));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await mkdir(path.join(outside, 'sub'));
+  await mkdir(path.join(outside, 'designs'));
+  await symlink(path.join(outside, 'sub'), path.join(root, 'link'));
+  const listed = [path.join(await realpath(outside), 'designs', 'a.fig')];
+  const ran = [];
+  let deny = listed[0];
+  ctx.permission.assert = async ({ resources }) => {
+    if (resources.includes(deny)) throw Object.assign(new Error('denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  const run = async args => {
+    ran.push(args.join(' '));
+    if (args.includes('--dry-run')) return { stdout: JSON.stringify({ directory: { files: listed, skipped: [], manifest: 'm3' } }) };
+    return { stdout: JSON.stringify(args[1] === 'status' ? { paths: { workspace: '/w', lock: '/w.lock' }, roots: { config: { path: '/c' } } } : {}) };
+  };
+  const input = { action: 'add', file: 'link/../designs', workspaceId: 'ws_1' };
+  const current = await adapter.scope('session');
+  current.run = run;
+  await assert.rejects(adapter.cli(current, 'index', input), /denied/);
+  assert.deepEqual(ran, ['index add link/../designs --id ws_1 --dry-run'], 'nothing registers past a denied file');
+  deny = null;
+  const other = await adapter.scope('other');
+  other.run = run;
+  ran.length = 0;
+  await adapter.cli(other, 'index', input);
+  assert.deepEqual(ran.at(-1), 'index add link/../designs --id ws_1 --manifest m3');
+});
+
 test('CLI-path directory add forwards its cursor to the dry run and the add, asking read on that page', async t => {
   const { root, ctx, adapter } = await context(t);
   await mkdir(path.join(root, 'lib'));
@@ -821,7 +857,7 @@ test('CLI-path track runs until its baseline job finishes, and untrack asks only
 
 // A bundled package whose native CLI answers status and holds `watch run` leases as the real one does.
 async function watching(t) {
-  const { root, ctx } = await context(t);
+  const { root, ctx, own } = await context(t);
   const override = process.env.FIGLENS_BIN;
   delete process.env.FIGLENS_BIN;
   t.after(() => {
@@ -857,16 +893,17 @@ else if (command === 'watch' && action === 'run') {
   const saved = process.env.XDG_CACHE_HOME;
   process.env.XDG_CACHE_HOME = cache;
   t.after(() => { if (saved === undefined) delete process.env.XDG_CACHE_HOME; else process.env.XDG_CACHE_HOME = saved; });
-  const adapter = createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href);
-  t.after(() => adapter.dispose());
+  const adapter = own(createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href));
   const lines = async name => (await readFile(path.join(root, name), 'utf8').catch(() => '')).split('\n').filter(Boolean);
-  return { ctx, adapter, lines };
+  return { root, ctx, adapter, lines };
 }
 
 test('CLI-path watch start holds a lease for its session after asking read on every design and edit on the workspace', async t => {
-  const { ctx, adapter, lines } = await watching(t);
+  const { root, ctx, adapter, lines } = await watching(t);
   const asked = [];
   ctx.permission.assert = async ({ action, resources }) => { asked.push([action, action === 'read' ? resources.join(' ') : resources[0]]); };
+  // The workspace as the adapter asks for it: resolved against the session root, so a drive on Windows.
+  const workspace = path.resolve(await realpath(root), '/w');
   const a = await adapter.scope('a');
   const start = { action: 'start', workspaceId: 'ws_1', sourceId: 's1', scope: '0:0', storage: '/s', requestId: 'r' };
   const lease = await adapter.cli(a, 'watch', start);
@@ -875,8 +912,8 @@ test('CLI-path watch start holds a lease for its session after asking read on ev
   // A fresh session, so no earlier grant hides an edit ask.
   const before = asked.length;
   await adapter.cli(await adapter.scope('b'), 'watch', { action: 'status', workspaceId: 'ws_1' });
-  assert.deepEqual([lease.state, await lines('runs'), asks, asked.slice(before).filter(([action, resource]) => action === 'edit' && resource === '/w')],
-    ['active', ['--id ws_1 --source s1 --scope 0:0 --storage /s --request-id r'], ['read /a.fig /b.fig', 'edit /w'], []],
+  assert.deepEqual([lease.state, await lines('runs'), asks, asked.slice(before).filter(([action, resource]) => action === 'edit' && resource === workspace)],
+    ['active', ['--id ws_1 --source s1 --scope 0:0 --storage /s --request-id r'], ['read /a.fig /b.fig', `edit ${workspace}`], []],
     'status asks no edit on the workspace');
 });
 
