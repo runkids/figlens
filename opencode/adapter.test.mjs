@@ -22,6 +22,10 @@ async function context(t) {
   return { root, ctx, adapter, writes };
 }
 
+// The paths a read asks, deduped as the adapter does: a design's canonical path equals its requested one unless a tmp
+// ancestor is a link (macOS /var -> /private/var).
+const reads = (...files) => [...new Set(files)];
+
 test('OpenCode preserves existing local, remote and disabled MCP settings and blocks unverified dispatch', async t => {
   const { root, adapter, writes } = await context(t);
   for (const config of [{ type: 'local', command: ['other', 'mcp'] }, { type: 'remote', url: 'https://example.invalid/mcp' },
@@ -537,11 +541,11 @@ test('CLI-path subscribe over a listed set asks read on exactly those sources, a
     { action: 'subscribe', workspaceId: 'ws_1', consumer: 'c', ...more });
   await subscribe({ sources: 'A', query: 'badge' });
   await subscribe({ sources: ' A ', library: { kind: 'component', key: 'k' } });
-  assert.deepEqual([asked, ran], [[[a, realA], [a, realA]], ['status', 'subscribe', 'status', 'subscribe']]);
+  assert.deepEqual([asked, ran], [[reads(a, realA), reads(a, realA)], ['status', 'subscribe', 'status', 'subscribe']]);
   for (const sources of ['A,B', 'visible', 'A,unknown']) {
     ran = [];
     await assert.rejects(subscribe({ sources, query: 'badge' }), /read denied/);
-    assert.deepEqual([asked.at(-1), ran], [[a, realA, b, realB], ['status']], sources);
+    assert.deepEqual([asked.at(-1), ran], [reads(a, realA, b, realB), ['status']], sources);
   }
 });
 
@@ -576,7 +580,7 @@ test('CLI-path subscription reads ask read on exactly the subscription\'s source
   const evaluate = async more => adapter.cli(await session(JSON.stringify(more)), 'watch', { action: 'evaluate', workspaceId: 'ws_1', ...more });
   await evaluate({ subscriptionId: 'one' });
   await adapter.cli(await session('changes'), 'changes', { workspaceId: 'ws_1', subscriptionId: 'one' });
-  assert.deepEqual([asked, ran], [[[a, realA], [a, realA]], ['status', 'list', 'evaluate', 'status', 'list', 'changes']]);
+  assert.deepEqual([asked, ran], [[reads(a, realA), reads(a, realA)], ['status', 'list', 'evaluate', 'status', 'list', 'changes']]);
   // A set, a source the caller narrows away, an unreadable set and an unseen subscription all ask B: nothing runs.
   // evaluate refuses any sourceId outright, so the cases that pass one go through changes, where it is a real filter.
   const read = more => more.sourceId === undefined ? evaluate(more)
@@ -588,13 +592,59 @@ test('CLI-path subscription reads ask read on exactly the subscription\'s source
     // One indexed list read per call, never a page walk, and nothing after it.
     assert.deepEqual([asked.at(-1).includes(b), ran], [true, ['status', 'list']], JSON.stringify(more));
   }
-  assert.deepEqual(asked.at(-1), [a, realA, b, realB], 'an unseen subscription asks every source');
+  assert.deepEqual(asked.at(-1), reads(a, realA, b, realB), 'an unseen subscription asks every source');
   // search and usages ignore a subscriptionId, so it never narrows their ask: B is asked, and nothing runs.
   for (const tool of ['search', 'usages']) {
     ran = [];
     await assert.rejects(adapter.cli(await session(tool), tool, { workspaceId: 'ws_1', query: 'badge', node: '1:1', subscriptionId: 'one' }), /read denied/);
-    assert.deepEqual([asked.at(-1), ran], [[a, realA, b, realB], ['status']], tool);
+    assert.deepEqual([asked.at(-1), ran], [reads(a, realA, b, realB), ['status']], tool);
   }
+});
+
+test('CLI-path library questions also ask read on the definition\'s source, so a denied one runs no usages, subscribe, evaluate or changes', async t => {
+  const { root, ctx, adapter } = await context(t);
+  const [a, b] = [path.join(root, 'a.fig'), path.join(root, 'b.fig')];
+  await writeFile(a, '');
+  await writeFile(b, '');
+  const [realA, realB] = [await realpath(a), await realpath(b)];
+  const definition = { sourceId: 'B', snapshotId: 'snap', nodeId: '1:1' };
+  const library = { kind: 'component', key: 'k', definition };
+  const row = { sourceId: 'A', library: { kind: 'component', namespace: null, key: 'k' } };
+  // A row whose definition source was removed names it null, so it cannot narrow the ask.
+  const subscriptions = [{ ...row, subscriptionId: 'lib', definition: { sourceId: 'B', nodeId: '1:1', baselineSnapshotId: 'snap' } },
+    { ...row, subscriptionId: 'hidden', definition: { sourceId: null, nodeId: null, baselineSnapshotId: null } }];
+  const asked = [];
+  let ran = [], denied = b;
+  ctx.permission.assert = async ({ action, resources }) => {
+    if (action !== 'read') return;
+    asked.push(resources);
+    if (resources.includes(denied)) throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  const run = async args => {
+    ran.push(['changes', 'usages'].includes(args[0]) ? args[0] : args[1]);
+    if (args[1] === 'list') {
+      const id = args[args.indexOf('--subscription') + 1];
+      return { stdout: JSON.stringify({ subscriptions: subscriptions.filter(s => s.subscriptionId === id), next: null }) };
+    }
+    return { stdout: JSON.stringify({ state: 'ready', paths: { workspace: '/w', lock: '/w.lock' }, storage: { rule: 'default' },
+      roots: { config: { path: '/c' } }, sources: [{ sourceId: 'A', path: a }, { sourceId: 'B', path: b }] }) };
+  };
+  // Each case in its own session, so no earlier grant hides what it asks.
+  const call = async (tool, input) => adapter.cli(Object.assign(await adapter.scope(JSON.stringify([tool, input, denied])), { run }), tool, input);
+  const usages = { workspaceId: 'ws_1', sourceId: 'A', library };
+  for (const [tool, input] of [['usages', usages], ['usages', { ...usages, library: { ...library, definition: { ...definition, sourceId: 'Z' } } }],
+    ['watch', { action: 'subscribe', workspaceId: 'ws_1', consumer: 'c', sourceId: 'A', library }],
+    ['watch', { action: 'subscribe', workspaceId: 'ws_1', consumer: 'c', sources: 'A', library }],
+    ['watch', { action: 'evaluate', workspaceId: 'ws_1', subscriptionId: 'lib' }], ['changes', { workspaceId: 'ws_1', subscriptionId: 'lib' }],
+    ['changes', { workspaceId: 'ws_1', subscriptionId: 'hidden' }]]) {
+    ran = [];
+    await assert.rejects(call(tool, input), /read denied/);
+    // Only the read-only status and list ran.
+    assert.deepEqual([asked.at(-1), ran.filter(step => !['status', 'list'].includes(step))], [reads(a, realA, b, realB), []], JSON.stringify(input));
+  }
+  [denied, ran] = [undefined, []];
+  await call('usages', usages);
+  assert.deepEqual([asked.at(-1), ran], [reads(a, realA, b, realB), ['status', 'usages']]);
 });
 
 test('CLI-path evaluate refuses any sourceId before asking or running, and otherwise asks read on every source of an unlisted subscription', async t => {

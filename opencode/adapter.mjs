@@ -388,21 +388,28 @@ export function createAdapter(ctx, entry = import.meta.url) {
       const paths = sources.filter(source => !only || only.includes(source.sourceId)).map(source => source.path);
       await current.authorize('read', [...new Set((await Promise.all(paths.map(async file => [file, await realpath(file).catch(() => file)]))).flat())]);
     };
+    // A library question also reads its definition's source, whichever sources it queries; a definition source
+    // status does not list (or a row naming it null) asks every source.
+    const withDefinition = ({ sources }, only, definition) => !only || definition === undefined ? only
+      : sources?.some(source => source.sourceId === definition?.sourceId) ? [...only, definition.sourceId] : null;
     // A subscription's evaluation reads its own source or set, which one read-only `watch list --subscription` names
     // without any evaluation; one not listed to this caller, or with an unreadable set, is asked on every source. A
     // caller's sourceId is asked too but never narrows the ask.
-    const subscribed = async () => {
+    const subscribed = async found => {
       const { subscriptions } = await invoke(cliArgs('watch', { action: 'list', workspaceId: input.workspaceId, storage: input.storage,
         subscriptionId: input.subscriptionId }));
       const sub = subscriptions?.find(s => s.subscriptionId === input.subscriptionId);
       const ids = sub?.sources ?? (sub?.sourceId ? [sub.sourceId] : []);
-      return ids.length ? [...ids, ...(input.sourceId ? [input.sourceId] : [])] : null;
+      // A library row names its definition (null when it has none); a row without the field asks every source.
+      const definition = !sub?.library || sub.definition === null ? undefined : sub.definition ?? {};
+      return withDefinition(found, ids.length ? [...ids, ...(input.sourceId ? [input.sourceId] : [])] : null, definition);
     };
     // Only changes and watch evaluate read a subscription's sources; search and usages ignore a subscriptionId.
-    const readSelected = async found => readSources(found, input.subscriptionId ? await subscribed() : undefined);
+    const readSelected = async found => readSources(found, input.subscriptionId ? await subscribed(found) : undefined);
     if (['search', 'usages', 'changes'].includes(tool) && !input.file) {
       const found = await status(input);
-      await (tool === 'changes' ? readSelected(found) : readSources(found));
+      await (tool === 'changes' ? readSelected(found)
+        : readSources(found, tool === 'usages' ? withDefinition(found, input.sourceId ? [input.sourceId] : null, input.library?.definition) : undefined));
     }
     // Every other watch action writes checkpoints, subscriptions or leases into the workspace database, as a cancel writes its job.
     if (tool === 'watch' && !['list', 'status', 'start'].includes(input.action)) {
@@ -413,7 +420,8 @@ export function createAdapter(ctx, entry = import.meta.url) {
       // (sources without visible) reads exactly those ids; visible, or an id status does not list, asks every one.
       if (input.action === 'subscribe' && (input.query !== undefined || input.library !== undefined)) {
         const ids = typeof input.sources === 'string' && input.sources !== 'visible' ? input.sources.split(',').map(id => id.trim()) : null;
-        await readSources(found, ids?.every(id => found.sources?.some(source => source.sourceId === id)) ? ids : undefined);
+        const only = ids?.every(id => found.sources?.some(source => source.sourceId === id)) ? ids : input.sourceId ? [input.sourceId] : null;
+        await readSources(found, withDefinition(found, only, input.library?.definition));
       }
       if (input.action === 'evaluate') await readSelected(found);
       await edit(place(found));
