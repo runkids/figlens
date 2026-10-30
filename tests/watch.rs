@@ -408,7 +408,7 @@ fn an_mcp_server_signalled_before_its_input_ends_releases_its_lease() {
 
 #[cfg(unix)]
 #[test]
-fn an_mcp_server_whose_input_ends_as_it_is_signalled_releases_its_lease_once() {
+fn an_mcp_server_whose_input_ends_as_it_is_signalled_releases_its_lease() {
     let env = Env::new();
     let (mut server, input) = leased_mcp(&env);
     drop(input);
