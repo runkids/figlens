@@ -381,7 +381,7 @@ try {
         renameSync(`${fixture}.next`, fixture);
         for (const start = Date.now(); recorded() === before && Date.now() - start < 15000;) execFileSync('/bin/sleep', ['0.1']);
         return direct('figlens_watch', { action: 'status', workspaceId });
-      }, () => direct('figlens_changes', { workspaceId, scope: '0:1' }), held => direct('figlens_watch', { action: 'stop', leaseId: held.leaseId })]);
+      }, () => direct('figlens_changes', { workspaceId, scope: '0:1' }), held => direct('figlens_watch', { action: 'stop', workspaceId, leaseId: held.leaseId })]);
       assert.equal(lease?.state, 'active', JSON.stringify(lease));
       assert.equal(seen?.revisions?.filter(revision => revision.kind === 'changes').length, before + 1, JSON.stringify(seen).slice(0, 500));
       assert.deepEqual(stopped, { leaseId: lease.leaseId, state: 'ended', reason: 'released' });
@@ -390,7 +390,7 @@ try {
       const [owned, replayed] = await converse('Watch the review frame.', [request, request]);
       assert.equal(replayed?.leaseId, owned?.leaseId, `a requestId replays its lease in its session: ${JSON.stringify(replayed).slice(0, 500)}`);
       const owner = converse.session;
-      const [refused] = await converse('Stop that watch.', [() => direct('figlens_watch', { action: 'stop', leaseId: owned.leaseId })]);
+      const [refused] = await converse('Stop that watch.', [() => direct('figlens_watch', { action: 'stop', workspaceId, leaseId: owned.leaseId })]);
       assert.match(JSON.stringify(refused), /not a lease this session holds/);
       assert.deepEqual(active().map(lease => lease.leaseId), [owned.leaseId]);
       await client.session.remove({ sessionID: owner });

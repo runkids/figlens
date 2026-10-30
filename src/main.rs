@@ -186,9 +186,9 @@ usage:
   figlens index track|untrack <select> --scope NODE [--source ID] [--request-id ID]
                                              record a published scope's design changes on each build of it
                                              (track builds a baseline first), or stop; history stays
-  figlens changes <select> [--source ID] [--scope NODE] [--consumer NAME] [--cursor C] [--limit N] [--storage DIR]
-                                             recorded revisions after the cursor, the consumer's checkpoint
-                                             or the oldest kept, with tracking state; never writes.
+  figlens changes <select> [--source ID] [--scope NODE] [--consumer NAME|--subscription ID] [--cursor C] [--limit N] [--storage DIR]
+                                             recorded revisions after the cursor, the consumer's or subscription's
+                                             checkpoint or the oldest kept, with tracking state; never writes;
                                              each with its impact (the layers its changes reach).
                                              --revision R [--cursor C]: one revision's changed nodes,
                                              then its impact's listed layers;
