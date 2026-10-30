@@ -26,6 +26,16 @@ const RENDER_BATCH: usize = 8;
 const RENDER_TIME: std::time::Duration = std::time::Duration::from_secs(600);
 const RENDER_PIXELS: u64 = 1 << 30;
 
+/// A unit a visual job renders: hidden ones and ones on internal pages only as the scope root.
+fn renderable(u: &&visual::Unit<'_>) -> bool {
+    u.rid == 0 || !(u.hidden || u.internal)
+}
+
+/// Whether the job-wide render budget is used up after `elapsed` and `pixels` rendered.
+fn spent(elapsed: std::time::Duration, pixels: u64) -> bool {
+    elapsed > RENDER_TIME || pixels >= RENDER_PIXELS
+}
+
 fn fail(message: impl Into<String>) -> Box<dyn Error> {
     FigError::new(ErrorKind::OperationFailed, message).into()
 }
@@ -288,7 +298,7 @@ fn visual_work(
         let mut units: Vec<(u32, String)> = selected
             .units
             .iter()
-            .filter(|u| u.rid == 0 || !(u.hidden || u.internal))
+            .filter(renderable)
             .map(|u| (u.rid, u.id.to_owned()))
             .collect();
         drop(selected);
@@ -366,7 +376,7 @@ fn visual_work(
             fence(&conn)?;
             let mut renders = Vec::with_capacity(todo.len());
             for (rid, id) in todo {
-                if began.elapsed() > RENDER_TIME || pixels >= RENDER_PIXELS {
+                if spent(began.elapsed(), pixels) {
                     stop = Some("render_budget");
                 }
                 if stop == Some("render_budget") {
@@ -529,4 +539,38 @@ fn visual_work(
     )?;
     Ok(json!({"gen": gen_id, "layer": counts, "vision": vision,
         "renderedNow": rendered_now, "embeddedNow": embedded_now}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hidden_and_internal_units_render_only_as_the_scope_root() {
+        let unit = |rid, hidden, internal| visual::Unit {
+            rid,
+            id: "1:2",
+            hidden,
+            internal,
+        };
+        let kept: Vec<u32> = [
+            unit(0, true, false),
+            unit(1, true, false),
+            unit(2, false, true),
+            unit(3, false, false),
+        ]
+        .iter()
+        .filter(renderable)
+        .map(|u| u.rid)
+        .collect();
+        assert_eq!(kept, [0, 3]);
+    }
+
+    #[test]
+    fn the_render_budget_ends_at_its_time_or_pixel_limit() {
+        let minute = std::time::Duration::from_secs(60);
+        assert!(!spent(minute, RENDER_PIXELS - 1));
+        assert!(spent(minute, RENDER_PIXELS));
+        assert!(spent(RENDER_TIME + minute, 0));
+    }
 }
