@@ -252,6 +252,37 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
         ],
     ),
     (
+        "diff",
+        "What changed between two saved revisions of a design (old, file): exact layer ids and types only: a frame renamed in place (same id and type) is a structure change, while a recreated frame (a new id) is reported as removed plus added, with a labelled possibleMatch (same name, else same rounded size and position) that never claims identity; lineage between the two files is not verified. Each changed top-level frame (layers directly on a page group under the page) has one summary line with counts per facet: text (text, fonts and laid-out glyphs), layout (size, transform, constraints, auto layout), appearance (fills, strokes, effects, opacity, radius, visibility), properties (component property definitions and assignments, variable values, scopes and code syntax, descriptions, style type and prototype interactions), structure (name, type, parent, order, hidden) and bindings (variable, style, image, main component and prototype edges, old and new compared so removed ones are listed). Nodes carry changed fields with old/new values (each within 512 bytes and 4 KiB per node, 256 KiB per page; larger values say truncated, never unchanged) and edge additions/removals, with swap naming both mains. A side that stopped short reports its missing layers as unknown, never removed; a layer with a field it could not read and no proven difference is unknown with unread, never changed. Pages of changes in stable frame order; nextCursor binds both snapshots, the node, the built corpora and the retained result, so a rebuild that stopped elsewhere is cursor_stale. Nothing is written.",
+        &[
+            (
+                "old",
+                "string",
+                true,
+                "the earlier saved .fig: a local path",
+            ),
+            ("file", "string", true, "the later saved .fig: a local path"),
+            (
+                "node",
+                "string",
+                false,
+                "stored scope root on both sides; default the document",
+            ),
+            (
+                "limit",
+                "integer",
+                false,
+                "1-500 changed layers per page, default 100",
+            ),
+            (
+                "cursor",
+                "string",
+                false,
+                "nextCursor from the previous page of the same pair and node",
+            ),
+        ],
+    ),
+    (
         "inspect",
         "Compact expanded node summary: bounds, layout, typography, text previews and child counts. A parent without auto-layout has childSpacing \"derived\": gaps between its children are coordinate differences, not an auto-layout rule; constraints may still pin them. For image decisions, images=true adds original dimensions/bytes and source-pixel rectangles before masks, not blur diagnoses. Depth and a 200-node budget bound the summary; image paints have their own 200-item limit. nodes returns full design data.",
         &[
@@ -386,13 +417,13 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "index",
-        "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes); refresh rebuilds changed scopes and rebuild every indexed scope even when unchanged (sourceId and scope narrow both), while the previous index keeps serving; a reply that could not admit every job has admission partial and deferred items, each with the nextStep that builds it later; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
+        "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes); refresh rebuilds changed scopes and rebuild every indexed scope even when unchanged (sourceId and scope narrow both), while the previous index keeps serving; track starts recording one scope's changes, read with the changes tool, with a baseline build, and untrack stops it, keeping its history; a reply that could not admit every job has admission partial and deferred items, each with the nextStep that builds it later; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
         &[
             (
                 "action",
                 "string",
                 true,
-                "prepare, status, add, remove, relocate, refresh, rebuild, clear_cache or reset",
+                "prepare, status, add, remove, relocate, refresh, rebuild, track, untrack, clear_cache or reset",
             ),
             (
                 "file",
@@ -411,19 +442,19 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "sourceId",
                 "string",
                 false,
-                "a registered source, for remove, relocate, refresh and rebuild",
+                "a registered source, for remove, relocate, refresh, rebuild, track and untrack",
             ),
             (
                 "scope",
                 "string",
                 false,
-                "stored node id to index (prepare), refresh or rebuild; 0:0 is the whole file",
+                "stored node id to index (prepare), refresh, rebuild, track or untrack; 0:0 is the whole file",
             ),
             (
                 "requestId",
                 "string",
                 false,
-                "an idempotency key: repeating a prepare or refresh with it returns the same job",
+                "an idempotency key: repeating a prepare, refresh, rebuild or track of one source and scope with it returns the same job; one first used for another request (track is its own) is refused",
             ),
             STORAGE,
             (
@@ -440,6 +471,68 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
         &[
             ("action", "string", true, "status or cancel"),
             ("jobId", "string", true, "the jobId from an index reply"),
+            STORAGE,
+        ],
+    ),
+    (
+        "changes",
+        "Recorded design changes of the scopes index track follows; never writes or builds. Each revision is one published build of a tracked scope: kind baseline (tracking started, or nothing comparable before it, with a reason) or changes, with coverage, exact summary counts per change kind and facet, and detail complete, truncated or expired. Pages run oldest first after cursor, else after the consumer's checkpoint (moved by watch ack), else from the oldest kept. Pass revision to page that revision's changed nodes instead. tracking lists each tracked scope's state, lastRevisionId and refreshRequired (the file changed since its last build: refresh the scope to record it; an empty page never proves the file unchanged); monitor is the watch monitor, separate from tracking. A cursor is bound to the filters, the visible sources and the workspace incarnation: any other use is cursor_stale. event_gap means retention deleted revisions before they were read: follow its recovery and treat the scope as possibly changed.",
+        &[
+            ("workspaceId", "string", true, "ws_... from the index tool"),
+            ("sourceId", "string", false, "only this source's revisions"),
+            ("scope", "string", false, "only this scope's revisions"),
+            (
+                "consumer",
+                "string",
+                false,
+                "without cursor, start after this consumer's checkpoint",
+            ),
+            ("cursor", "string", false, "nextCursor of the previous page"),
+            (
+                "revision",
+                "string",
+                false,
+                "a revisionId: page its changed nodes instead",
+            ),
+            (
+                "limit",
+                "integer",
+                false,
+                "revisions per page, 1-50 (default 20); with revision, nodes per page, 1-500 (default 100)",
+            ),
+            STORAGE,
+        ],
+    ),
+    (
+        "watch",
+        "Change-tracking consumers. ack moves consumer's checkpoint for these filters (sourceId, scope) forward to cursor, the nextCursor of the last changes page it handled with the same filters; an older or equal cursor normally leaves it, so a retry is safe. A cursor issued before retention deleted revisions it had not passed is event_gap, writing nothing: follow its recovery. A current recovery cursor before a checkpoint that is behind such a deletion moves the checkpoint back to it, so the kept revisions replay. Replies with advanced, true only when the checkpoint moved forward, and the checkpoint now held, which is authoritative.",
+        &[
+            ("action", "string", true, "ack"),
+            ("workspaceId", "string", true, "ws_... from the index tool"),
+            (
+                "consumer",
+                "string",
+                true,
+                "the consumer's name, 1-128 bytes",
+            ),
+            (
+                "cursor",
+                "string",
+                true,
+                "nextCursor from changes with the same filters",
+            ),
+            (
+                "sourceId",
+                "string",
+                false,
+                "the sourceId filter of that changes call",
+            ),
+            (
+                "scope",
+                "string",
+                false,
+                "the scope filter of that changes call",
+            ),
             STORAGE,
         ],
     ),
@@ -491,6 +584,17 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
             }),
             ["definition", "results", "coverage", "hasMore", "nextCursor"].as_slice(),
         ),
+        "diff" => (
+            serde_json::json!({
+                "source": {"type": "object", "description": "old and new sourceId and snapshotId, and freshness.reusedPair"},
+                "node": {"type": "string"},
+                "matching": {"type": "object", "description": "basis node_id+kind; lineage unverified"},
+                "coverage": {"type": "object", "description": "complete; old and new stop and scannedRecords; changes (layers listed across pages, added/removed subtrees counted at their top), possibleMatches and reasons (a side's stop, diff_work_limit, unread_fields, relation_unverified, hidden_content_not_expanded, selection_context_unknown, definition_not_compared for styles, variables, main components and component sets outside the compared records, including variables a compared variable aliases)"},
+                "frames": {"type": "array", "items": {"type": "object"}, "description": "id, name, page, change when the frame itself changed, summary (N listed, then counts per facet and unread), possibleMatch {id, basis, identity possible_match}, and this page's nodes: id, kind, name, change, facets, fields {key: {facet, old, new}}, edges {added, removed, truncated count, swap {old, new} or {truncated}}, descendants, identity_uncertain with oldKind; unread with fields when a field could not be read (change unknown when nothing else proves a difference)"},
+                "nextCursor": {"type": ["string", "null"]},
+            }),
+            ["source", "coverage", "frames", "nextCursor"].as_slice(),
+        ),
         "index" => (
             serde_json::json!({
                 "workspaceId": {"type": "string"},
@@ -499,11 +603,12 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "incarnation": {"type": "string", "description": "changes when the database is recreated; cached results of another incarnation are void"},
                 "sources": {"type": "array", "items": {"type": "object"}, "description": "visible sources: sourceId, path, present and indexed scopes with snapshotId, records, complete and current"},
                 "job": {"type": "object", "description": "the build prepare started or joined: jobId, state, stage, progress"},
-                "jobs": {"type": "array", "items": {"type": "object"}, "description": "refresh and rebuild: one job per admitted source and scope, each with joined"},
+                "jobs": {"type": "array", "items": {"type": "object"}, "description": "refresh, rebuild and track: one job per admitted source and scope, each with joined"},
                 "admission": {"type": "string", "description": "refresh and rebuild: complete, or partial when some jobs were not admitted"},
                 "deferred": {"type": "array", "items": {"type": "object"}, "description": "partial admission: sourceId, scope and the nextStep index call that builds it later"},
                 "deferredBecause": {"type": ["object", "null"], "description": "partial admission: the error that stopped admission, {code, message}"},
                 "coverage": {"type": "object", "description": "prepare without scope: text and relations not_requested"},
+                "partial": {"type": "boolean", "description": "clear_cache: true when a source left this caller's view meanwhile and kept its data; retry later"},
                 "nextSteps": {"type": "array", "items": {"type": "object"}},
                 "storage": {"type": "object"},
                 "paths": {"type": ["object", "null"], "description": "workspace, database and lock paths (the lock sits beside the workspace directory); null when the workspace does not exist"},
@@ -524,6 +629,30 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "nextSteps": {"type": "array", "items": {"type": "object"}},
             }),
             ["jobId", "state"].as_slice(),
+        ),
+        "changes" => (
+            serde_json::json!({
+                "workspaceId": {"type": "string"},
+                "revisions": {"type": "array", "items": {"type": "object"}, "description": "oldest first: revisionId, sourceId, scope, kind (baseline or changes), from (the previous revisionId, null for a baseline or when deleted), snapshotId, coverage (a baseline's reason), summary (changes, kinds, facets, possibleMatches), detail (complete, truncated or expired), detailRows"},
+                "nextCursor": {"type": ["string", "null"], "description": "pass as cursor for the next page, or to watch ack once handled"},
+                "hasMore": {"type": "boolean"},
+                "tracking": {"type": "array", "items": {"type": "object"}, "description": "each tracked scope of the visible sources: sourceId, scope, state (baseline_pending, active or disabled), lastRevisionId, lastCheckedAtMs (when its last build verified the file), refreshRequired (the file's size or mtime differs from that build's)"},
+                "trackingTruncated": {"type": "boolean", "description": "true when more tracked scopes exist than tracking lists"},
+                "monitor": {"type": "object", "description": "the watch monitor's state, separate from tracking"},
+                "revisionId": {"type": "string", "description": "with revision"},
+                "detail": {"type": "string", "description": "with revision: complete, truncated (rows past the cap were not kept) or expired"},
+                "nodes": {"type": "array", "items": {"type": "object"}, "description": "with revision: frame, id, kind, change, facets, unread, descendants"},
+            }),
+            ["workspaceId", "nextCursor"].as_slice(),
+        ),
+        "watch" => (
+            serde_json::json!({
+                "workspaceId": {"type": "string"},
+                "consumer": {"type": "string"},
+                "advanced": {"type": "boolean", "description": "true only when the visible checkpoint moved forward"},
+                "checkpoint": {"type": ["string", "null"], "description": "a cursor at the checkpoint now held; null when retention deleted that revision"},
+            }),
+            ["workspaceId", "consumer", "advanced", "checkpoint"].as_slice(),
         ),
         "inspect" => (
             serde_json::json!({
@@ -620,7 +749,8 @@ fn default(tool: &str, key: &str) -> Option<Value> {
         ("inspect", "depth") | ("export", "scale") => Some(json!(1)),
         ("find" | "search", "limit") => Some(json!(20)),
         ("search", "mode") => Some(json!("text")),
-        ("usages", "scope") => Some(json!("0:0")),
+        ("usages", "scope") | ("diff", "node") => Some(json!("0:0")),
+        ("diff", "limit") => Some(json!(100)),
         ("usages", "direction") => Some(json!("in")),
         ("usages", "limit") => Some(json!(50)),
         ("usages", "includeHidden") => Some(json!(false)),
@@ -643,6 +773,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
         ("inspect", "depth") => Some((0, 10)),
         ("tree", "depth") => Some((0, JSON_SAFE.min(usize::MAX as u64))),
         ("find" | "search" | "usages", "limit") => Some((1, 200)),
+        ("diff" | "changes", "limit") => Some((1, 500)),
         ("export", "quality") => Some((1, 100)),
         ("export", "maxKb") => Some((0, JSON_SAFE.min((usize::MAX / 1024) as u64))),
         ("export", "maxSize") => Some((0, u64::from(u32::MAX))),
@@ -657,7 +788,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
     }
     if matches!(
         key,
-        "file" | "out" | "query" | "compareVariant" | "bundle" | "cursor" | "matchDir"
+        "file" | "old" | "out" | "query" | "compareVariant" | "bundle" | "cursor" | "matchDir"
     ) {
         p["minLength"] = json!(1);
     }
@@ -682,12 +813,17 @@ pub fn property(tool: &str, param: &Param) -> Value {
             "relocate",
             "refresh",
             "rebuild",
+            "track",
+            "untrack",
             "clear_cache",
             "reset"
         ]);
     }
     if tool == "jobs" && key == "action" {
         p["enum"] = json!(["status", "cancel"]);
+    }
+    if tool == "watch" && key == "action" {
+        p["enum"] = json!(["ack"]);
     }
     if tool == "search" && key == "mode" {
         p["enum"] = json!(["text"]);
@@ -858,6 +994,10 @@ pub fn tools() -> Value {
             // cancel changes a job.
             "jobs" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": false,
                 "openWorldHint": false}),
+            "changes" => tool["annotations"] = json!({"readOnlyHint": true, "openWorldHint": false}),
+            // ack only moves a checkpoint forward.
+            "watch" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": false,
+                "idempotentHint": true, "openWorldHint": false}),
             _ => {}
         }
         tool
@@ -958,11 +1098,15 @@ impl Failure {
             ),
             ErrorKind::CursorStale => (
                 "cursor_stale",
-                "A source this cursor paged was reindexed; search again without cursor.",
+                "This cursor was issued for another index, filter set or view; call the same tool again without cursor.",
             ),
             ErrorKind::CursorExpired => (
                 "cursor_expired",
                 "The index this cursor paged was deleted; search again without cursor.",
+            ),
+            ErrorKind::EventGap => (
+                "event_gap",
+                "Revisions after this position were deleted before they were read; follow recovery to read changes from the oldest kept, and treat the scope as possibly changed.",
             ),
             ErrorKind::Cancelled => (
                 "cancelled",

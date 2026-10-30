@@ -367,6 +367,25 @@ fn fingerprint(kind: &str, ws: &str, source: &str, membership: &str, scope: &str
         .to_owned()
 }
 
+/// The job and fingerprint `request` was first used for, if any.
+fn requested(tx: &Connection, request: &str) -> Result<Option<(String, String)>> {
+    tx.query_row(
+        "SELECT job_id, fingerprint FROM jobs WHERE request_id = ?1
+         UNION ALL SELECT job_id, fingerprint FROM requests WHERE request_id = ?1",
+        [request],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+    .map_err(sql)
+}
+
+fn other_request(request: &str) -> Box<dyn Error> {
+    fail(
+        ErrorKind::InvalidArguments,
+        format!("requestId {request} was used for a different request; use a new requestId"),
+    )
+}
+
 /// Records `request_id` for a job it joined or took over, so a retry replays that job.
 fn remember(tx: &Connection, request_id: Option<&str>, print: &str, job_id: &str) -> Result<()> {
     if let Some(request) = request_id {
@@ -390,6 +409,8 @@ pub(crate) fn submit(
     scope: &str,
     request_id: Option<&str>,
 ) -> Result<Submitted> {
+    // A tracking baseline is a rebuild, but its requestId names a different operation.
+    let (op, kind) = (kind, if kind == "track" { "rebuild" } else { kind });
     let dir = ws.held.dir.clone();
     let me = owner(&dir)?;
     let (id, incarnation) = (ws.held.id.clone(), ws.incarnation.clone());
@@ -397,13 +418,17 @@ pub(crate) fn submit(
         .conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(sql)?;
-    let membership: String = tx
-        .query_row(
-            "SELECT membership FROM sources WHERE source_id = ?1",
-            [source_id],
-            |r| r.get(0),
-        )
-        .optional()
+    // Visibility is judged again inside this write: a source moved out of view since it was
+    // chosen is unknown here, before any replay or admission.
+    let membership: String = registry::visible_path(storage, &tx, source_id)?
+        .map(|_| {
+            tx.query_row(
+                "SELECT membership FROM sources WHERE source_id = ?1",
+                [source_id],
+                |r| r.get(0),
+            )
+        })
+        .transpose()
         .map_err(sql)?
         .ok_or_else(|| {
             fail(
@@ -411,18 +436,9 @@ pub(crate) fn submit(
                 format!("workspace {id} has no source {source_id}"),
             )
         })?;
-    let print = fingerprint(kind, &id, source_id, &membership, scope);
+    let print = fingerprint(op, &id, source_id, &membership, scope);
     if let Some(request) = request_id {
-        let found: Option<(String, String)> = tx
-            .query_row(
-                "SELECT job_id, fingerprint FROM jobs WHERE request_id = ?1
-                 UNION ALL SELECT job_id, fingerprint FROM requests WHERE request_id = ?1",
-                [request],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()
-            .map_err(sql)?;
-        match found {
+        match requested(&tx, request)? {
             Some((job_id, fp)) if fp == print => {
                 tx.commit().map_err(sql)?;
                 return Ok(Submitted {
@@ -431,14 +447,7 @@ pub(crate) fn submit(
                     joined: true,
                 });
             }
-            Some(_) => {
-                return Err(fail(
-                    ErrorKind::InvalidArguments,
-                    format!(
-                        "requestId {request} was used for a different request; use a new requestId"
-                    ),
-                ));
-            }
+            Some(_) => return Err(other_request(request)),
             None => {}
         }
     }
@@ -604,7 +613,15 @@ pub(crate) fn submit(
 
 /// Deletes generation `gen_id` and everything it holds, in one transaction.
 fn drop_gen(conn: &Connection, gen_id: i64) -> rusqlite::Result<()> {
-    for table in ["records", "terms", "edges", "definitions", "generations"] {
+    for table in [
+        "records",
+        "terms",
+        "edges",
+        "definitions",
+        "facets",
+        "facet_sets",
+        "generations",
+    ] {
         conn.execute(&format!("DELETE FROM {table} WHERE gen = ?1"), [gen_id])?;
     }
     Ok(())
@@ -759,7 +776,7 @@ fn spawn(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Child> {
 /// `file` exists and creates `<file>.reached` when it gets there, so process tests reach each
 /// stage deterministically. `start` is before the worker locks its worker file; `submit` holds
 /// the submitting process once its new job is admitted.
-fn hold(stage: &str) {
+pub(super) fn hold(stage: &str) {
     #[cfg(debug_assertions)]
     if let Some((at, file)) = std::env::var("FIGLENS_TEST_HOLD")
         .ok()
@@ -1127,6 +1144,13 @@ pub(crate) fn publish(
     let gen_id = built["gen"].as_i64().expect("checked");
     let unchanged = built["unchanged"] == true;
     let incarnation = ws.incarnation.clone();
+    // A tracked scope's generations are compared before the publication, outside any write
+    // transaction; the publication only writes the result if tracking is still as read.
+    let planned = match unchanged {
+        true => None,
+        false => plan(&mut ws.conn, job_id, gen_id)?,
+    };
+    hold("compare");
     let tx = ws
         .conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -1276,6 +1300,10 @@ pub(crate) fn publish(
         [&source],
     )
     .map_err(sql)?;
+    let recorded = match unchanged {
+        true => false,
+        false => record(&tx, &source, &scope, gen_id, expected, built, planned, now)?,
+    };
     let evicted_json = (!evicted.is_empty()).then(|| json!(evicted).to_string());
     tx.execute(
         "UPDATE jobs SET state = 'succeeded', stage = 'publish', gen = ?2, finished_ms = ?3,
@@ -1283,6 +1311,13 @@ pub(crate) fn publish(
         params![job_id, gen_id, now, evicted_json],
     )
     .map_err(sql)?;
+    // The replaced generation's facets were only kept to be compared.
+    if let (true, Some(old)) = (recorded, expected) {
+        for table in ["facets", "facet_sets"] {
+            tx.execute(&format!("DELETE FROM {table} WHERE gen = ?1"), [old])
+                .map_err(sql)?;
+        }
+    }
     tx.commit().map_err(sql)?;
     // Retention, outside the publication: one retired generation per source and scope.
     // An evicted scope serves nothing, so it keeps no retired generation: retention stays at
@@ -1292,6 +1327,263 @@ pub(crate) fn publish(
     }
     prune(&mut ws.conn, &source, &scope, 1)?;
     report_job(&ws.conn, &dir, job_id)?.ok_or_else(|| unknown_job(job_id))
+}
+
+/// Most revision groups kept per source and scope; older whole groups are deleted.
+const REVISIONS: i64 = if cfg!(test) { 3 } else { 1000 };
+/// Change-row bytes kept per source and scope; older groups beyond it keep only their summary.
+const DETAIL_BYTES: i64 = if cfg!(test) { 1024 } else { 16 * 1024 * 1024 };
+
+/// What a tracked scope's publication will record, compared against the generation it replaces.
+struct Planned {
+    epoch: i64,
+    from: i64,
+    /// `Err` is a reason the change is a new baseline; an `Err` inside is a failed comparison.
+    what: std::result::Result<std::result::Result<search::diff::Revision, String>, &'static str>,
+}
+
+/// Compares the generation job `job_id` expects to replace with its new one `gen_id`, in one
+/// read transaction, when the scope is actively tracked; `None` otherwise.
+fn plan(conn: &mut Connection, job_id: &str, gen_id: i64) -> Result<Option<Planned>> {
+    let tx = conn.transaction().map_err(sql)?;
+    let row: Option<(i64, i64, String, Option<String>)> = tx
+        .query_row(
+            "SELECT t.epoch, j.expected_gen, j.source_id, g.snapshot_id FROM jobs j
+             JOIN tracking t ON t.source_id = j.source_id AND t.scope = j.scope
+             AND t.state = 'active' JOIN generations g ON g.gen = j.expected_gen
+             WHERE j.job_id = ?1",
+            [job_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    let Some((epoch, from, source, old_snapshot)) = row else {
+        return Ok(None);
+    };
+    let (scope, new_snapshot): (String, Option<String>) = tx
+        .query_row(
+            "SELECT scope, snapshot_id FROM generations WHERE gen = ?1",
+            [gen_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(sql)?;
+    let version: Option<String> = tx
+        .query_row(
+            "SELECT facet_version FROM facet_sets WHERE gen = ?1",
+            [from],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    // A previous generation without facets, or with another field layout, is only a baseline:
+    // comparing it would report a layout change as design changes.
+    let what = match version {
+        None => Err("previous_untracked"),
+        Some(v) if v != search::diff::facet_version() => Err("facet_version_changed"),
+        Some(_) => {
+            let side =
+                |snapshot: Option<String>| json!({"sourceId": source, "snapshotId": snapshot});
+            Ok(search::diff::revision(
+                &tx,
+                (from, side(old_snapshot)),
+                (gen_id, side(new_snapshot)),
+                &scope,
+                search::diff::REVISION_BYTES,
+            )
+            .map_err(|e| e.to_string()))
+        }
+    };
+    Ok(Some(Planned { epoch, from, what }))
+}
+
+/// Records the revision publishing `gen_id` makes, inside the publication `tx`, if tracking is
+/// still as `planned` read it: a baseline when tracking just started, else the planned changes.
+/// Then retires whole revision groups past retention. Returns whether one was recorded.
+#[allow(clippy::too_many_arguments)]
+fn record(
+    tx: &Connection,
+    source: &str,
+    scope: &str,
+    gen_id: i64,
+    expected: Option<i64>,
+    built: &Json,
+    planned: Option<Planned>,
+    now: i64,
+) -> Result<bool> {
+    let tracking: Option<(String, i64)> = tx
+        .query_row(
+            "SELECT state, epoch FROM tracking WHERE source_id = ?1 AND scope = ?2",
+            [source, scope],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    let facetted: bool = tx
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM facet_sets WHERE gen = ?1)",
+            [gen_id],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    let Some((state, epoch)) = tracking.filter(|_| facetted) else {
+        return Ok(false);
+    };
+    let what = match (state.as_str(), planned) {
+        ("baseline_pending", _) => Err("tracking_started"),
+        // An evicted scope published again has nothing to compare with: never a silent gap.
+        ("active", None) if expected.is_none() => Err("previous_unpublished"),
+        ("active", Some(p)) if p.epoch == epoch && Some(p.from) == expected => p.what,
+        // Compared against another generation or tracking: a baseline, never a silent gap.
+        ("active", Some(p)) if p.epoch == epoch => Err("previous_changed"),
+        ("active", _) => Err("tracking_changed"),
+        _ => return Ok(false),
+    };
+    let (kind, from, coverage, summary, mut rows, mut truncated) = match what {
+        Err(reason) => (
+            "baseline",
+            None,
+            json!({"basis": "baseline", "reason": reason}),
+            json!({}),
+            Vec::new(),
+            false,
+        ),
+        Ok(Ok(r)) => (
+            "changes",
+            expected,
+            r.coverage,
+            r.summary,
+            r.rows,
+            r.truncated,
+        ),
+        // Never a false unchanged: the generation still publishes, the history stays.
+        Ok(Err(why)) => (
+            "changes",
+            expected,
+            json!({"complete": false, "reasons": [{"reason": "comparison_failed", "message": why.chars().take(500).collect::<String>()}]}),
+            json!({"changes": null}),
+            Vec::new(),
+            true,
+        ),
+    };
+    let row_bytes = |rows: &[search::diff::Row]| {
+        rows.iter()
+            .map(|r| 64 + r.frame.len() + r.node.len() + r.kind.len())
+            .sum::<usize>() as u64
+    };
+    // Publication writes are not capped by SQLite: rows that would pass the disk cap are left out.
+    let size: u64 = tx
+        .query_row(
+            "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map_err(sql)? as u64;
+    if size + row_bytes(&rows) > DISK_CAP {
+        rows.clear();
+        truncated = true;
+    }
+    let seq: i64 = tx
+        .query_row(
+            "INSERT INTO meta (key, value) VALUES ('revision_seq', '1') ON CONFLICT (key)
+             DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
+             RETURNING CAST(value AS INTEGER)",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    let id: Vec<u8> = tx
+        .query_row(
+            "INSERT INTO revisions (id, seq, source_id, scope, epoch, gen, from_gen, snapshot_id,
+             kind, coverage, summary, detail, detail_rows, detail_bytes, created_ms)
+             VALUES (randomblob(16), ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             RETURNING id",
+            params![
+                seq,
+                source,
+                scope,
+                epoch,
+                gen_id,
+                from,
+                built["snapshot"].as_str(),
+                kind,
+                coverage.to_string(),
+                summary.to_string(),
+                if truncated { "truncated" } else { "complete" },
+                rows.len() as i64,
+                row_bytes(&rows) as i64,
+                now
+            ],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    let mut insert = tx
+        .prepare_cached(
+            "INSERT INTO revision_changes (rev, ord, frame, node, kind, change, facets, descendants)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .map_err(sql)?;
+    for (ord, r) in rows.iter().enumerate() {
+        insert
+            .execute(params![
+                id,
+                ord as i64,
+                r.frame,
+                r.node,
+                r.kind,
+                r.change,
+                r.facets,
+                r.descendants
+            ])
+            .map_err(sql)?;
+    }
+    if state == "baseline_pending" {
+        tx.execute(
+            "UPDATE tracking SET state = 'active', baseline_gen = ?3
+             WHERE source_id = ?1 AND scope = ?2",
+            params![source, scope, gen_id],
+        )
+        .map_err(sql)?;
+    }
+    // Whole groups only: the oldest past the count are deleted, the oldest past the detail bytes
+    // keep their summary and read as `expired`.
+    let old = "SELECT id FROM revisions WHERE source_id = ?1 AND scope = ?2
+               ORDER BY seq DESC LIMIT -1 OFFSET ?3";
+    // The newest deleted and the publication that deleted it, so a reader behind it that had
+    // not accepted that deletion reads `event_gap`.
+    tx.execute(
+        &format!(
+            "INSERT INTO meta (key, value) SELECT 'pruned' || char(31) || ?1 || char(31) || ?2,
+             MAX(seq) || ' ' || (SELECT value FROM meta WHERE key = 'revision_seq')
+             FROM revisions WHERE id IN ({old}) HAVING COUNT(*) > 0
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value"
+        ),
+        params![source, scope, REVISIONS],
+    )
+    .map_err(sql)?;
+    tx.execute(
+        &format!("DELETE FROM revision_changes WHERE rev IN ({old})"),
+        params![source, scope, REVISIONS],
+    )
+    .map_err(sql)?;
+    tx.execute(
+        &format!("DELETE FROM revisions WHERE id IN ({old})"),
+        params![source, scope, REVISIONS],
+    )
+    .map_err(sql)?;
+    let over = "SELECT id FROM (SELECT id, SUM(detail_bytes) OVER (ORDER BY seq DESC) AS total
+                FROM revisions WHERE source_id = ?1 AND scope = ?2 AND detail != 'expired')
+                WHERE total > ?3";
+    tx.execute(
+        &format!("DELETE FROM revision_changes WHERE rev IN ({over})"),
+        params![source, scope, DETAIL_BYTES],
+    )
+    .map_err(sql)?;
+    tx.execute(
+        &format!("UPDATE revisions SET detail = 'expired' WHERE id IN ({over})"),
+        params![source, scope, DETAIL_BYTES],
+    )
+    .map_err(sql)?;
+    Ok(true)
 }
 
 /// Deletes retired generations of `source` and `scope` beyond the newest `keep`, and snapshots no
@@ -1517,6 +1809,7 @@ pub(crate) fn kind_code(kind: ErrorKind) -> &'static str {
         ErrorKind::SourceStale => "source_stale",
         ErrorKind::CursorStale => "cursor_stale",
         ErrorKind::CursorExpired => "cursor_expired",
+        ErrorKind::EventGap => "event_gap",
         ErrorKind::Cancelled => "cancelled",
         ErrorKind::QueryWorkLimit => "query_work_limit",
     }
@@ -1695,7 +1988,32 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
     }
     stage(&conn, "parse")?;
     let label = path.display().to_string();
-    let index = search::index_bytes(bytes, &label, &scope, search::deadline())?;
+    // Only a tracked scope's build keeps facets; an untracked one writes what it always did.
+    let tracking: Option<String> = conn
+        .query_row(
+            "SELECT state FROM tracking WHERE source_id = ?1 AND scope = ?2
+             AND state != 'disabled'",
+            [&source_id, &scope],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    let (index, tracked) = match tracking {
+        Some(state) => {
+            let (index, tracked) = search::index_bytes_tracked(
+                bytes,
+                &label,
+                &scope,
+                search::deadline(),
+                state == "active",
+            )?;
+            (index, Some(tracked))
+        }
+        None => (
+            search::index_bytes(bytes, &label, &scope, search::deadline())?,
+            None,
+        ),
+    };
     stage(&conn, "write")?;
     // One statement, so the fence and the insert are atomic.
     fenced(
@@ -1753,6 +2071,10 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
     search::store::save(&mut conn, gen_id, &index, &guard, &mut between)
         .map_err(|e| full(e, ceiling))?;
     drop(index);
+    if let Some(tracked) = tracked {
+        search::diff::save_facets(&mut conn, gen_id, &tracked, &guard, &mut between)
+            .map_err(|e| full(e, ceiling))?;
+    }
     stage(&conn, "verify")?;
     // The source is read and hashed again: a save that kept its size and time is caught here.
     let (again, _) = search::stage(&path)?;
@@ -1769,7 +2091,7 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
 }
 
 /// The visible sources `only` names (every visible source when empty), in registry order.
-fn chosen(storage: &Storage, ws: &Opened, only: Option<&str>) -> Result<Vec<String>> {
+pub(super) fn chosen(storage: &Storage, ws: &Opened, only: Option<&str>) -> Result<Vec<String>> {
     let mut stmt = ws
         .conn
         .prepare("SELECT source_id, path FROM sources ORDER BY added_at_ms, source_id")
@@ -1796,7 +2118,7 @@ fn chosen(storage: &Storage, ws: &Opened, only: Option<&str>) -> Result<Vec<Stri
 }
 
 /// Starts or joins builds of `kind` for each (source, scope): the given scope, or every scope
-/// the source has published.
+/// the source has published; `among` narrows the chosen sources.
 fn submit_all(
     storage: &Storage,
     select: &Select,
@@ -1804,10 +2126,14 @@ fn submit_all(
     only: Option<&str>,
     scope: Option<&str>,
     request_id: Option<&str>,
+    among: Option<&[String]>,
 ) -> Result<Outcome> {
     let (place, mut ws) = opened(storage, select, true)?;
     let mut plan = Vec::new();
     for source in chosen(storage, &ws, only)? {
+        if among.is_some_and(|among| !among.contains(&source)) {
+            continue;
+        }
         let scopes: Vec<String> = match scope {
             Some(scope) => vec![scope.to_owned()],
             None => ws
@@ -1917,13 +2243,13 @@ pub fn refresh(
     scope: Option<&str>,
     request_id: Option<&str>,
 ) -> Result<Outcome> {
-    submit_all(storage, select, "refresh", source, scope, request_id)
+    submit_all(storage, select, "refresh", source, scope, request_id, None)
 }
 
 /// `index rebuild`: builds every published scope of every source again, even unchanged ones,
 /// keeping the registry and each prior generation until its replacement publishes.
 pub fn rebuild(storage: &Storage, select: &Select, request_id: Option<&str>) -> Result<Outcome> {
-    submit_all(storage, select, "rebuild", None, None, request_id)
+    submit_all(storage, select, "rebuild", None, None, request_id, None)
 }
 
 /// `index rebuild` of one source, or one of its scopes: a deferred item's continuation, which
@@ -1935,7 +2261,209 @@ pub fn rebuild_scope(
     scope: Option<&str>,
     request_id: Option<&str>,
 ) -> Result<Outcome> {
-    submit_all(storage, select, "rebuild", source, scope, request_id)
+    submit_all(storage, select, "rebuild", source, scope, request_id, None)
+}
+
+/// `index track`: turns change tracking on for published scope `scope` of each chosen source and
+/// builds its baseline as a rebuild, which never reuses an unchanged snapshot and stores the
+/// scope's facets; its publication records the baseline revision. A scope already tracked
+/// keeps its epoch and builds nothing unless its baseline is still pending.
+pub fn track(
+    storage: &Storage,
+    select: &Select,
+    source: Option<&str>,
+    scope: &str,
+    request_id: Option<&str>,
+) -> Result<Outcome> {
+    let (id, rows, started) = set_tracking(storage, select, source, scope, Some(request_id))?;
+    // Only the sources whose baseline is pending build: an active one is not rebuilt.
+    let mut done = match started.is_empty() {
+        false => submit_all(
+            storage,
+            select,
+            "track",
+            source,
+            Some(scope),
+            request_id,
+            Some(&started),
+        )?,
+        true => Outcome {
+            report: json!({"workspaceId": id, "jobs": []}),
+            run: Vec::new(),
+        },
+    };
+    done.report["tracking"] = rows;
+    Ok(done)
+}
+
+/// `index untrack`: later builds of the scope store no facets. Revisions and checkpoints stay.
+pub fn untrack(
+    storage: &Storage,
+    select: &Select,
+    source: Option<&str>,
+    scope: &str,
+) -> Result<Json> {
+    let (id, rows, _) = set_tracking(storage, select, source, scope, None)?;
+    Ok(json!({"workspaceId": id, "tracking": rows}))
+}
+
+/// Sets tracking of `scope` on (`Some`, with the requestId of its single baseline job, if any)
+/// or off for each chosen source in one transaction, bumping a row's epoch on every change so
+/// work begun under the old state can tell. Turning it on needs the scope published; returns
+/// the sources whose baseline is pending.
+fn set_tracking(
+    storage: &Storage,
+    select: &Select,
+    source: Option<&str>,
+    scope: &str,
+    on: Option<Option<&str>>,
+) -> Result<(String, Json, Vec<String>)> {
+    let (_, ws) = opened(storage, select, true)?;
+    // The write lock is taken first, so the visible sources come from the snapshot it writes.
+    let tx =
+        rusqlite::Transaction::new_unchecked(&ws.conn, rusqlite::TransactionBehavior::Immediate)
+            .map_err(sql)?;
+    let sources = chosen(storage, &ws, source)?;
+    // Refused before any write, so no source is left pending without its job.
+    if matches!(on, Some(Some(_))) && sources.len() > 1 {
+        return Err(fail(
+            ErrorKind::InvalidArguments,
+            "requestId names one job; pass a sourceId and scope with it",
+        ));
+    }
+    // A requestId first used by another request is refused before tracking changes; a retry of
+    // this one replays its job and changes nothing, so after an untrack it never re-enables it.
+    if let (Some(Some(request)), [source_id]) = (on, sources.as_slice()) {
+        let membership: String = tx
+            .query_row(
+                "SELECT membership FROM sources WHERE source_id = ?1",
+                [source_id],
+                |r| r.get(0),
+            )
+            .map_err(sql)?;
+        let print = fingerprint("track", &ws.held.id, source_id, &membership, scope);
+        match requested(&tx, request)? {
+            Some((_, fp)) if fp != print => return Err(other_request(request)),
+            Some(_) => {
+                let (state, epoch) = tx
+                    .query_row(
+                        "SELECT state, epoch FROM tracking WHERE source_id = ?1 AND scope = ?2",
+                        [source_id, scope],
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                    )
+                    .optional()
+                    .map_err(sql)?
+                    .unwrap_or(("untracked".into(), 0));
+                let row =
+                    json!({"sourceId": source_id, "scope": scope, "state": state, "epoch": epoch});
+                return Ok((ws.held.id.clone(), json!([row]), vec![source_id.clone()]));
+            }
+            None => {}
+        }
+    }
+    let on = on.is_some();
+    let (mut rows, mut started) = (Vec::new(), Vec::new());
+    for source_id in &sources {
+        let published: bool = tx
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM published WHERE source_id = ?1 AND scope = ?2)",
+                [source_id, scope],
+                |r| r.get(0),
+            )
+            .map_err(sql)?;
+        if on && !published {
+            return Err(FigError::new(
+                ErrorKind::InvalidArguments,
+                format!("source {source_id} has no published scope {scope} to track; index it first"),
+            )
+            .with_recovery(json!([{"action": "refresh", "requires": "none", "tool": "index",
+                "arguments": {"action": "refresh", "workspaceId": ws.held.id, "sourceId": source_id, "scope": scope}}]))
+            .into());
+        }
+        let state: Option<String> = tx
+            .query_row(
+                "SELECT state FROM tracking WHERE source_id = ?1 AND scope = ?2",
+                [source_id, scope],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(sql)?;
+        let tracked = state.as_deref().is_some_and(|s| s != "disabled");
+        let pending = !tracked || state.as_deref() == Some("baseline_pending");
+        // Only a rebuild that reads tracking on records the baseline: one not yet at parse, where
+        // it reads tracking, or one admitted after a pending baseline was enabled (a larger job
+        // `seq`, which only grows: never the clock). Any other
+        // running job with a live owner (a refresh may reuse an unfaceted snapshot) cannot, and
+        // joining it would leave the baseline pending: track after it ends.
+        let busy: Option<(String, String, i64)> = match on && pending {
+            true => tx
+                .query_row(
+                    "SELECT j.job_id, j.owner, j.attempt FROM jobs j LEFT JOIN tracking t
+                     ON t.source_id = j.source_id AND t.scope = j.scope
+                     AND t.state = 'baseline_pending'
+                     WHERE j.source_id = ?1 AND j.scope = ?2 AND j.state = 'running'
+                     AND NOT (j.kind = 'rebuild' AND (j.stage IN ('stage', 'hash')
+                     OR IFNULL(j.seq > t.enabled_seq, 0)))",
+                    [source_id, scope],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()
+                .map_err(sql)?,
+            false => None,
+        };
+        // A build whose owner died never ends by itself: its baseline job takes it over as a
+        // new rebuild attempt instead.
+        let busy = busy
+            .filter(|(job, holder, attempt)| job_alive(&ws.held.dir, holder, job, *attempt))
+            .map(|(job, _, _)| job);
+        if let Some(job_id) = busy {
+            return Err(FigError::new(
+                ErrorKind::WorkspaceBusy,
+                format!("a build of source {source_id} scope {scope} is running that cannot record the baseline (it may have read tracking off or reuse an unchanged snapshot); track after it ends"),
+            )
+            .with_recovery(json!([{"action": "wait", "requires": "none", "tool": "jobs",
+                "arguments": {"action": "status", "jobId": job_id}},
+                {"action": "track", "requires": "none", "tool": "index",
+                "arguments": {"action": "track", "workspaceId": ws.held.id, "sourceId": source_id, "scope": scope}}]))
+            .into());
+        }
+        if on && !tracked {
+            tx.execute(
+                "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms,
+                 enabled_seq) VALUES (?1, ?2, 'baseline_pending', 1, ?3, ?4,
+                 (SELECT IFNULL(MAX(seq), 0) FROM jobs))
+                 ON CONFLICT (source_id, scope) DO UPDATE SET state = 'baseline_pending',
+                 epoch = epoch + 1, facet_version = ?3, enabled_ms = ?4,
+                 enabled_seq = excluded.enabled_seq, baseline_gen = NULL",
+                params![source_id, scope, search::diff::facet_version(), now_ms()],
+            )
+            .map_err(sql)?;
+            started.push(source_id.clone());
+        } else if on && state.as_deref() == Some("baseline_pending") {
+            // A build that started before tracking stored no facets, so its publication left
+            // the baseline pending: tracking again builds it.
+            started.push(source_id.clone());
+        } else if !on && tracked {
+            tx.execute(
+                "UPDATE tracking SET state = 'disabled', epoch = epoch + 1
+                 WHERE source_id = ?1 AND scope = ?2",
+                [source_id, scope],
+            )
+            .map_err(sql)?;
+        }
+        let row: Option<(String, i64)> = tx
+            .query_row(
+                "SELECT state, epoch FROM tracking WHERE source_id = ?1 AND scope = ?2",
+                [source_id, scope],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(sql)?;
+        let (state, epoch) = row.unwrap_or(("untracked".into(), 0));
+        rows.push(json!({"sourceId": source_id, "scope": scope, "state": state, "epoch": epoch}));
+    }
+    tx.commit().map_err(sql)?;
+    Ok((ws.held.id.clone(), Json::Array(rows), started))
 }
 
 /// `index clear_cache`: deletes only what a build can recreate and nothing serves: retired
@@ -1982,9 +2510,24 @@ pub fn clear_cache(storage: &Storage, select: &Select) -> Result<Json> {
         }
     }
     drop(stmt);
-    let mut records = 0i64;
+    hold("clear_cache");
+    let (mut records, mut removed) = (0i64, 0usize);
     for gen_id in &doomed {
         let tx = ws.conn.transaction().map_err(sql)?;
+        // Authorized again in this deletion: a source moved out of view since keeps its data.
+        let path: Option<String> = tx
+            .query_row(
+                "SELECT s.path FROM generations g JOIN sources s ON s.source_id = g.source_id
+                 WHERE g.gen = ?1",
+                [gen_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(sql)?;
+        if path.is_some_and(|p| !storage.sees(Path::new(&p))) {
+            continue;
+        }
+        removed += 1;
         records += tx
             .query_row(
                 "SELECT count(*) FROM records WHERE gen = ?1",
@@ -2016,7 +2559,9 @@ pub fn clear_cache(storage: &Storage, select: &Select) -> Result<Json> {
         .join("workspace-cache")
         .join(&ws.held.id);
     let extra = json!({
-        "removed": {"generations": doomed.len(), "records": records},
+        "removed": {"generations": removed, "records": records},
+        // Some were kept because their source left this caller's view meanwhile: retry later.
+        "partial": removed < doomed.len(),
         "retained": {"publishedGenerations": if storage.visible.is_none() { json!(published) } else { Json::Null },
             "registry": true, "jobs": true, "location": true},
         "failed": [],

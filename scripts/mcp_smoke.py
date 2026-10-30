@@ -81,7 +81,7 @@ def check_mcp(command, cwd, env, fixture, version):
         assert initialized['serverInfo']['version'] == version, initialized
         request('notifications/initialized', {})
         tools = request('tools/list', {})['tools']
-        assert {'find', 'search', 'inspect', 'nodes', 'bundle', 'export', 'workflow', 'index', 'jobs', 'usages'} <= {t['name'] for t in tools}
+        assert {'find', 'search', 'inspect', 'diff', 'nodes', 'bundle', 'export', 'workflow', 'index', 'jobs', 'usages'} <= {t['name'] for t in tools}
         found = request('tools/call', {'name': 'find', 'arguments': {'file': str(fixture), 'query': 'First success', 'type': 'FRAME'}})
         assert found['isError'] is False and found['structuredContent']['results'][0]['id'] == '0:1', found
         searched = request('tools/call', {'name': 'search', 'arguments': {'file': str(fixture), 'query': 'First success'}})
@@ -90,6 +90,18 @@ def check_mcp(command, cwd, env, fixture, version):
         ref = searched['structuredContent']['results'][0]['ref']['nodeId']
         opened = request('tools/call', {'name': 'inspect', 'arguments': {'file': str(fixture), 'node': ref}})
         assert opened['isError'] is False and opened['structuredContent']['node']['id'] == ref, opened
+        # Wiring only: two copies of one file are two sources with no changes; the engine's
+        # revised-pair semantics are tested in the crate.
+        old = fixture.with_name('diff-old.fig')
+        shutil.copyfile(fixture, old)
+        try:
+            diffed = request('tools/call', {'name': 'diff', 'arguments': {'old': str(old), 'file': str(fixture)}})
+        finally:
+            old.unlink()
+        pair = diffed.get('structuredContent', {})
+        assert diffed['isError'] is False and pair['coverage']['complete'] is True and pair['coverage']['changes'] == 0, diffed
+        assert pair['source']['old']['sourceId'] != pair['source']['new']['sourceId'], diffed
+        assert pair['source']['old']['snapshotId'] == pair['source']['new']['snapshotId'], diffed
         used = request('tools/call', {'name': 'usages', 'arguments': {'file': str(fixture), 'node': ref, 'relation': 'contains', 'direction': 'out'}})
         assert used['isError'] is False and used['structuredContent']['results'][0]['target']['ref']['nodeId'] == '0:10', used
         failed = request('tools/call', {'name': 'inspect', 'arguments': {'file': str(fixture), 'node': '9:9'}})
@@ -114,7 +126,7 @@ def check_mcp(command, cwd, env, fixture, version):
         cli_audit = run([*command[:-1], 'workflow', 'audit'], cwd, env)
         assert '# Audit an existing UI' in cli_audit
         assert cli_audit.split('# Audit an existing UI', 1)[1].rstrip() == audit['content'][0]['text'].split('# Audit an existing UI', 1)[1].rstrip()
-    return {"recoveredAfterMissingNode": True, "searchedExactRef": True, "numericPreflight": True, "strictRejectionAndRecovery": True, "stdout": "JSON-RPC only"}
+    return {"recoveredAfterMissingNode": True, "searchedExactRef": True, "diffedTwoCopies": True, "numericPreflight": True, "strictRejectionAndRecovery": True, "stdout": "JSON-RPC only"}
 
 
 TERMINAL = {'succeeded', 'failed', 'cancelled', 'interrupted'}
@@ -174,6 +186,8 @@ def check_first_use(command, base, fixture, env):
         tools = {tool['name']: tool for tool in first('tools/list', {})['tools']}
         assert tools['index']['annotations']['destructiveHint'] is True and tools['index']['annotations']['readOnlyHint'] is False, tools['index']
         assert tools['jobs']['annotations']['readOnlyHint'] is False, tools['jobs']
+        assert tools['changes']['annotations']['readOnlyHint'] is True, tools['changes']
+        assert tools['watch']['annotations']['destructiveHint'] is False, tools['watch']
         call(first, 'find', {'file': str(design), 'query': 'First success'})
         call(first, 'search', {'file': str(design), 'query': 'First success'})
         contains = {'node': '0:1', 'relation': 'contains', 'direction': 'out'}
@@ -189,6 +203,13 @@ def check_first_use(command, base, fixture, env):
         assert search(first, workspace) == ('ready', '0:1')
         used = call(first, 'usages', {'workspaceId': workspace, **contains})
         assert used['coverage']['complete'] and used['results'][0]['target']['ref']['nodeId'] == '0:10', used
+        # Tracking records a baseline; a consumer that acks it reads nothing new after it.
+        for job in call(first, 'index', {'action': 'track', 'workspaceId': workspace, 'scope': '0:0'})['jobs']:
+            settle(first, job)
+        polled = call(second, 'changes', {'workspaceId': workspace, 'consumer': 'smoke'})
+        assert [revision['kind'] for revision in polled['revisions']] == ['baseline'], polled
+        assert call(second, 'watch', {'action': 'ack', 'workspaceId': workspace, 'consumer': 'smoke', 'cursor': polled['nextCursor']})['advanced'] is True
+        assert call(first, 'changes', {'workspaceId': workspace, 'consumer': 'smoke'})['revisions'] == []
         ref = call(first, 'search', {'workspaceId': workspace, 'query': 'First success'})['results'][0]['ref']['nodeId']
         assert call(first, 'inspect', {'file': str(design), 'node': ref})['node']['id'] == ref
         finished = call(first, 'jobs', {'action': 'cancel', 'jobId': jobs[0]['jobId']})
@@ -235,7 +256,7 @@ def check_first_use(command, base, fixture, env):
         lost = call(request, 'index', {'action': 'status', 'file': str(moved)}, error='storage_unavailable')
         assert 'restore_storage' in json.dumps(lost['recovery']), lost
         assert len(list((state/'workspaces').glob('*/index.sqlite'))) == databases, 'a lost remembered root moved to the default state'
-        result = {'concurrentFirstUseJoined': True, 'cancelled': True, 'frameScope': '0:1', 'restartReused': True, 'clearCacheKeptIndex': True, 'rebuild': True,
+        result = {'concurrentFirstUseJoined': True, 'cancelled': True, 'trackedBaselineAcked': True, 'frameScope': '0:1', 'restartReused': True, 'clearCacheKeptIndex': True, 'rebuild': True,
                   'resetReprepared': True, 'otherWorkspaceKept': True, 'missingRememberedRoot': 'storage_unavailable'}
         # chmod does not model a Windows ACL, and root ignores it.
         if os.name == 'nt' or os.geteuid() == 0:

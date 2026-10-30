@@ -358,10 +358,44 @@ fn nodes() -> Vec<V> {
     ]
 }
 
+/// A later revision for `figlens diff` tests: a renamed frame, a changed fill, a removed and
+/// an added layer. The default corpus stays byte-identical.
+fn revise(nodes: &mut Vec<V>) {
+    let id = |n: &V| match n.get("guid").and_then(|g| g.get("localID")) {
+        Some(Value::UInt(id)) => *id,
+        _ => u32::MAX,
+    };
+    nodes.retain(|n| id(n) != 13);
+    for n in nodes.iter_mut() {
+        let (key, value) = match id(n) {
+            1 => ("name", Value::String("Auto layout v2".into())),
+            11 => ("fillPaints", solid([200, 0, 0])),
+            _ => continue,
+        };
+        if let Value::Object(_, fields) = n {
+            fields.insert(key, value);
+        }
+    }
+    nodes.push(node(
+        14,
+        1,
+        "RECTANGLE",
+        "New badge",
+        [200.0, 4.0, 12.0, 12.0],
+        vec![],
+    ));
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let output = std::env::args_os()
         .nth(1)
-        .ok_or("usage: corpus-fixture <new-output.fig>")?;
+        .ok_or("usage: corpus-fixture <new-output.fig> [--revised]")?;
+    let revised = std::env::args().nth(2).as_deref() == Some("--revised");
+    write(&output, revised)
+}
+
+/// Writes the corpus, or its `revise`d revision, to a new file at `output`.
+pub fn write(output: &std::ffi::OsStr, revised: bool) -> Result<(), Box<dyn Error>> {
     // Definition order gives each user type its index.
     const DEFS: [&str; 20] = [
         "GUID",
@@ -545,7 +579,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         "DEFS must list the definitions in order"
     );
     let schema = Schema::new(defs);
-    let message = obj("Message", vec![("nodeChanges", Value::Array(nodes()))]);
+    let mut nodes = nodes();
+    if revised {
+        revise(&mut nodes);
+    }
+    let message = obj("Message", vec![("nodeChanges", Value::Array(nodes))]);
     let mut canvas = b"fig-kiwi".to_vec();
     canvas.extend(106u32.to_le_bytes());
     for bytes in [schema.encode(), message.encode(&schema)] {

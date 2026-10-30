@@ -27,10 +27,12 @@ const required = (input, name) => {
   return input[name];
 };
 
-// The MCP index, jobs, search, usages and inspect arguments as the same CLI command, for the plugin's CLI path.
+// The MCP index, jobs, search, usages, diff, changes, watch and inspect arguments as the same CLI command, for the plugin's CLI path.
 export function cliArgs(tool, input) {
   const storage = flag('--storage', input.storage);
   if (tool === 'jobs') return ['jobs', input.action, required(input, 'jobId'), ...storage];
+  if (tool === 'diff') return ['diff', required(input, 'old'), required(input, 'file'), ...flag('--node', input.node),
+    ...flag('--limit', input.limit), ...flag('--cursor', input.cursor), '--json'];
   if (tool === 'inspect') return ['inspect', required(input, 'file'), required(input, 'node'), ...flag('--depth', input.depth),
     ...flag('--images', input.images), ...flag('--states', input.states), ...flag('--flat', input.flat), ...flag('--compare-variant', input.compareVariant)];
   // As the MCP search and usages tools: one corpus, and source narrowing never silently disappears.
@@ -58,6 +60,11 @@ export function cliArgs(tool, input) {
       ...flag('--out', input.direction === 'out'), ...flag('--snapshot', input.snapshotId), ...flag('--include-hidden', input.includeHidden),
       ...flag('--limit', input.limit), ...flag('--cursor', input.cursor)];
   }
+  // As the MCP changes and watch tools, which read one workspace by its id.
+  const filters = () => ['--id', required(input, 'workspaceId'), ...flag('--source', input.sourceId), ...flag('--scope', input.scope), ...storage];
+  if (tool === 'changes') return ['changes', ...filters(), ...flag('--consumer', input.consumer), ...flag('--cursor', input.cursor),
+    ...flag('--revision', input.revision), ...flag('--limit', input.limit)];
+  if (tool === 'watch') return ['watch', input.action, ...filters(), '--consumer', required(input, 'consumer'), '--cursor', required(input, 'cursor')];
   // Every given selector and scope field reaches the CLI, which refuses conflicting selectors and fields an
   // action does not take, so none is dropped into a broader operation. A file is the operand of prepare, add
   // and relocate, else it selects the workspace; a sourceId is the operand of remove and relocate.
@@ -272,7 +279,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
     // Invalid or conflicting arguments fail before any permission prompt.
     const args = cliArgs(tool, input);
     const invoke = async (args, text = false) => {
-      const build = args[0] === 'index' && ['prepare', 'refresh', 'rebuild'].includes(args[1]);
+      const build = args[0] === 'index' && ['prepare', 'refresh', 'rebuild', 'track'].includes(args[1]);
       try { const { stdout } = await current.run(args, build ? 0 : undefined); return text ? { flat: stdout } : JSON.parse(stdout); }
       catch (error) {
         // The CLI explains a failure on stderr; a partial reset or failed job also prints its report.
@@ -311,11 +318,13 @@ export function createAdapter(ctx, entry = import.meta.url) {
       [path.resolve(current.flow.root, file), await destination(path.isAbsolute(file) ? file : `${current.flow.root}${path.sep}${file}`)]))).flat())];
     const edit = async files => current.authorize('edit', await both(files));
     // The CLI downloads a gs:// design into its own cache, which this path cannot authorize, so only MCP serves it.
-    if (input.file?.startsWith('gs://')) throw new Error('The OpenCode CLI path reads local .fig files only. Enable the figlens MCP server for a gs:// design, or pass a local copy.');
+    if ([input.file, input.old].some(file => file?.startsWith('gs://'))) throw new Error('The OpenCode CLI path reads local .fig files only. Enable the figlens MCP server for a gs:// design, or pass a local copy.');
     // A design the CLI reads honours read rules on its requested and canonical paths, as Workflow.source does; the
     // CLI gets the path unnormalized, so a `..` after a link reads where the link leads.
+    // diff reads two designs: each is asked on its own, both before the command runs.
+    if (tool === 'diff') await current.authorize('read', await both([input.old]));
     if (input.file && (tool !== 'index' || ['prepare', 'add', 'relocate'].includes(input.action))) await current.authorize('read', await both([input.file]));
-    // Workspace search and usages, refresh and rebuild read the registered designs' content, which this session may deny.
+    // Workspace search, usages and changes, refresh, rebuild and track read the registered designs' content, which this session may deny.
     const readSources = async ({ state, sources }) => {
       // A workspace that does not exist yet reads no design; the command then fails as the MCP tool does.
       if (['absent', 'uninitialized'].includes(state)) return;
@@ -323,7 +332,9 @@ export function createAdapter(ctx, entry = import.meta.url) {
       const paths = sources.filter(source => !input.sourceId || source.sourceId === input.sourceId).map(source => source.path);
       await current.authorize('read', [...new Set((await Promise.all(paths.map(async file => [file, await realpath(file).catch(() => file)]))).flat())]);
     };
-    if (['search', 'usages'].includes(tool) && !input.file) await readSources(await status(input));
+    if (['search', 'usages', 'changes'].includes(tool) && !input.file) await readSources(await status(input));
+    // An ack writes the consumer's checkpoint into the workspace database, as a cancel writes its job.
+    if (tool === 'watch') await edit(place(await status(input)));
     if (tool === 'jobs' && input.action === 'cancel') {
       const { workspaceId } = await invoke(cliArgs('jobs', { ...input, action: 'status' }));
       if (!workspaceId) throw missing("a job's workspace");
@@ -348,7 +359,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
           return { paths: { workspace: fix.path, lock: fix.lock }, roots: fix.roots };
         });
         if (!found.roots?.config) throw missing('its config root');
-        if (['refresh', 'rebuild'].includes(input.action)) await readSources(found);
+        if (['refresh', 'rebuild', 'track'].includes(input.action)) await readSources(found);
         if (grant) await current.authorize('figlens_index', [grant]);
         // Every write also takes a location lock or record under the config root (a build's publish, relocation's alias).
         await edit([...place(found), found.roots.config.path]);

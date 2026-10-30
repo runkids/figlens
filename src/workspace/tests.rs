@@ -1440,3 +1440,33 @@ fn usages_relocated_recovery_keeps_the_callers_selectors() {
             "relation": "contains,uses_style", "includeHidden": true, "snapshotId": "sha256:abc"})
     );
 }
+
+#[test]
+fn a_schema_3_workspace_upgrades_to_change_tracking_keeping_its_rows() {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(&format!(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+         CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+         added_at_ms INTEGER NOT NULL) STRICT;
+         INSERT INTO sources (source_id, path, added_at_ms) VALUES ('s', '/a.fig', 1);
+         {} {}
+         INSERT INTO generations (source_id, membership, scope, versions, job_id, state, created_ms)
+         VALUES ('s', 'm', '0:1', 'v', 'j', 'ready', 2);
+         INSERT INTO published (source_id, scope, gen, published_ms) VALUES ('s', '0:1', 1, 3);",
+        database::V2,
+        database::V3
+    ))
+    .unwrap();
+    database::upgrade(&mut conn).unwrap();
+    let one = |q: &str| conn.query_row(q, [], |r| r.get::<_, i64>(0)).unwrap();
+    assert_eq!(
+        [
+            one("PRAGMA user_version"),
+            one("SELECT count(*) FROM sources"),
+            one("SELECT gen FROM published WHERE source_id = 's'"),
+            one("SELECT count(*) FROM tracking"),
+            one("SELECT length(value) FROM meta WHERE key = 'cursor_secret'"),
+        ],
+        [SCHEMA, 1, 1, 0, 64]
+    );
+}

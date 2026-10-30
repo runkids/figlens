@@ -182,7 +182,7 @@ for line in sys.stdin:
 
     def test_mcp_audit_cli_uses_bounded_runner(self):
         guide = '# Audit an existing UI\nStatic review is not visual acceptance'
-        tools = [{'name': name} for name in ['find', 'search', 'nodes', 'bundle', 'export', 'index', 'jobs', 'usages']]
+        tools = [{'name': name} for name in ['find', 'search', 'diff', 'nodes', 'bundle', 'export', 'index', 'jobs', 'usages']]
         tools.extend([
             {'name': 'inspect', 'inputSchema': {'properties': {'depth': {'maximum': 10}}}},
             {'name': 'workflow', 'inputSchema': {'properties': {'topic': {'enum': ['audit']}}}},
@@ -195,6 +195,8 @@ for line in sys.stdin:
             {'isError': False, 'structuredContent': {
                 'results': [{'ref': {'nodeId': '0:1'}}], 'coverage': {'complete': True}}},
             {'isError': False, 'structuredContent': {'node': {'id': '0:1'}}},
+            {'isError': False, 'structuredContent': {'coverage': {'complete': True, 'changes': 0}, 'source': {
+                'old': {'sourceId': 'local:a', 'snapshotId': 's'}, 'new': {'sourceId': 'local:b', 'snapshotId': 's'}}}},
             {'isError': False, 'structuredContent': {'results': [{'target': {'ref': {'nodeId': '0:10'}}}]}},
             {'isError': True, '_meta': {'figlens': {'code': 'node_not_found'}}},
             {'isError': True, '_meta': {'figlens': {'code': 'invalid_arguments'}}},
@@ -212,8 +214,10 @@ for line in sys.stdin:
                     patch('mcp_smoke.subprocess.check_output', return_value=guide) as unbounded:
                 smoke.return_value.__enter__.return_value = request
                 runner.return_value = guide
-                result = check_mcp(command, root, env, root/'unused.fig', '0.0.0')
+                (root/'design.fig').write_bytes(b'fig')
+                result = check_mcp(command, root, env, root/'design.fig', '0.0.0')
                 self.assertTrue(result['recoveredAfterMissingNode'])
+                self.assertFalse((root/'diff-old.fig').exists())
                 runner.assert_called_once_with([sys.executable, 'wrapper.py', 'workflow', 'audit'], root, env)
                 unbounded.assert_not_called()
 

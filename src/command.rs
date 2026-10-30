@@ -765,6 +765,88 @@ pub fn usages_tool(
     Ok(request)
 }
 
+/// CLI `diff <old.fig> <new.fig> [--node ID] [--limit N] [--cursor C] [--json]`: one summary
+/// line per changed top-level frame, or the reply with `--json`.
+pub fn diff_cli(args: &[String]) -> Result<String, Box<dyn Error>> {
+    use figlens::search::diff;
+    let (Some(old), Some(new)) = (args.first(), args.get(1)) else {
+        return Err(USAGE.into());
+    };
+    let mut request = diff::Request {
+        node: "0:0".into(),
+        limit: diff::LIMIT,
+        cursor: None,
+    };
+    let mut json = false;
+    let mut rest = args[2..].iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--node" => request.node = normalize_id(rest.next().ok_or("--node needs an id")?),
+            "--limit" => request.limit = rest.next().ok_or("--limit needs a number")?.parse()?,
+            "--cursor" => {
+                request.cursor = Some(rest.next().ok_or("--cursor needs a value")?.to_owned())
+            }
+            "--json" => json = true,
+            _ => return Err(USAGE.into()),
+        }
+    }
+    // Each side is opened first, so a missing or unreadable file is named, not the other one.
+    let local = |file: &String| {
+        figlens::remote::local(file)
+            .and_then(|path| Ok(std::fs::File::open(&path).map(|_| path)?))
+            .map_err(|e| crate::contract::source(file, e))
+    };
+    let value = diff::diff(&local(old)?, &local(new)?, &request).map_err(|e| {
+        if e.is::<figlens::FigError>() {
+            e
+        } else {
+            crate::contract::source(old, e)
+        }
+    })?;
+    if json {
+        return Ok(format!("{value}\n"));
+    }
+    let mut out = String::new();
+    for f in value["frames"].as_array().into_iter().flatten() {
+        let change = f["change"].as_str().unwrap_or("changed");
+        out += &format!(
+            "{} {:?} {change}: {}",
+            f["id"].as_str().unwrap_or(""),
+            f["name"].as_str().unwrap_or(""),
+            f["summary"].as_str().unwrap_or("")
+        );
+        if let Some(m) = f["possibleMatch"].as_object() {
+            out += &format!(
+                " (possible match {} by {})",
+                m["id"].as_str().unwrap_or(""),
+                m["basis"].as_str().unwrap_or("")
+            );
+        }
+        out.push('\n');
+    }
+    if value["frames"].as_array().is_some_and(Vec::is_empty) && value["nextCursor"].is_null() {
+        out += "no changes\n";
+    }
+    if value["coverage"]["complete"] != true {
+        out += &format!("coverage partial: {}\n", value["coverage"]["reasons"]);
+    }
+    if let Some(c) = value["nextCursor"].as_str() {
+        out += &format!("more: --cursor {c}\n");
+    }
+    Ok(out)
+}
+
+/// MCP `diff`: `old` against `file`, both admitted local paths.
+pub fn diff_tool(
+    call: &crate::contract::PreparedCall,
+) -> Result<figlens::search::diff::Request, Box<dyn Error>> {
+    Ok(figlens::search::diff::Request {
+        node: normalize_id(call.string("node").unwrap()),
+        limit: call.argument("limit").as_u64().unwrap() as usize,
+        cursor: call.string("cursor").map(str::to_owned),
+    })
+}
+
 /// MCP `usages` with `workspaceId`: one source's prepared index, never a build.
 pub fn workspace_usages_tool(
     call: &crate::contract::PreparedCall,
@@ -857,6 +939,33 @@ pub fn jobs_tool(
     })
 }
 
+/// MCP `changes`, and `watch` (only `ack`): recorded revisions of tracked scopes.
+pub fn changes_tool(
+    call: &crate::contract::PreparedCall,
+    roots: &[PathBuf],
+    storage_roots: &[PathBuf],
+) -> Result<Output, Box<dyn Error>> {
+    use figlens::workspace::changes;
+    let storage = tool_storage(call, roots, storage_roots)?;
+    let select = figlens::workspace::Select::Id(call.string("workspaceId").unwrap().to_owned());
+    let request = changes::Request {
+        source: call.string("sourceId"),
+        scope: call.string("scope"),
+        consumer: call.string("consumer"),
+        cursor: call.string("cursor"),
+        revision: call.string("revision"),
+        limit: call.argument("limit").as_u64().map(|l| l as usize),
+    };
+    let value = match call.name() {
+        "watch" => changes::ack(&storage, &select, &request)?,
+        _ => changes::changes(&storage, &select, &request)?,
+    };
+    Ok(Output::Json {
+        value,
+        pretty: false,
+    })
+}
+
 /// Jobs an index call submitted that this process owns and must run.
 pub struct Runs {
     pub storage: figlens::workspace::Storage,
@@ -905,11 +1014,18 @@ fn index_on(
             .clone()
             .ok_or_else(|| missing("workspace, workspaceId or file"))
     };
-    let unexpected = (scope.is_some() && !matches!(action, "prepare" | "refresh" | "rebuild"))
-        || (request.is_some() && !matches!(action, "prepare" | "refresh" | "rebuild"))
+    let unexpected = (scope.is_some()
+        && !matches!(
+            action,
+            "prepare" | "refresh" | "rebuild" | "track" | "untrack"
+        ))
+        || (request.is_some() && !matches!(action, "prepare" | "refresh" | "rebuild" | "track"))
         || (call.argument("replaceUnavailable") == true && action != "prepare")
         || (source_id.is_some()
-            && !matches!(action, "remove" | "relocate" | "refresh" | "rebuild"));
+            && !matches!(
+                action,
+                "remove" | "relocate" | "refresh" | "rebuild" | "track" | "untrack"
+            ));
     if unexpected {
         return Err(figlens::FigError::new(
             figlens::ErrorKind::InvalidArguments,
@@ -968,6 +1084,17 @@ fn index_on(
             let value = done.report.clone();
             outcome = Some(done);
             value
+        }
+        "track" => {
+            let scope = scope.as_deref().ok_or_else(|| missing("scope"))?;
+            let done = workspace::jobs::track(&storage, &chosen()?, source_id, scope, request)?;
+            let value = done.report.clone();
+            outcome = Some(done);
+            value
+        }
+        "untrack" => {
+            let scope = scope.as_deref().ok_or_else(|| missing("scope"))?;
+            workspace::jobs::untrack(&storage, &chosen()?, source_id, scope)?
         }
         "clear_cache" => workspace::clear_cache(&storage, &chosen()?)?,
         _ => workspace::reset(&storage, &chosen()?)?,

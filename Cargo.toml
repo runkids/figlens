@@ -16,6 +16,7 @@ include = ["src/**/*", "vendor/kiwi-schema/**/*", "skills/figlens/**/*", "script
 [dependencies]
 caseless = "0.2.2"
 flate2 = "1.1.10"
+hmac = "0.13.0"
 imagesize = "0.15.0"
 jpeg-encoder = "0.7.1"
 kiwi-schema = { version = "0.2.1", path = "vendor/kiwi-schema" }

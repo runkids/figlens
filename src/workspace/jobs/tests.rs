@@ -576,18 +576,42 @@ fn a_submit_never_joins_a_build_of_the_source_s_previous_registration() {
     );
 }
 
+/// The workspace's two sources, with storage that sees only the first.
+fn one_hidden(d: &TestDir) -> (Storage, Storage, Select, String, String) {
+    let (storage, select, _) = workspace(d, 2);
+    let (_, ws) = opened(&storage, &select, false).unwrap();
+    let paths: Vec<(String, String)> = ws
+        .conn
+        .prepare("SELECT source_id, path FROM sources ORDER BY path")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    let seen = std::fs::canonicalize(&paths[0].1).unwrap();
+    let confined = storage.clone().confined(&[seen]);
+    let [(shown, _), (hidden, _)] = <[_; 2]>::try_from(paths).unwrap();
+    (storage, confined, select, shown, hidden)
+}
+
 #[test]
 fn a_full_workspace_names_no_job_of_a_source_the_caller_cannot_see() {
     let d = TestDir::new();
-    let (storage, select, _) = workspace(&d, 1);
+    let (storage, confined, select, shown, hidden) = one_hidden(&d);
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
     for i in 0..MAX_ACTIVE {
-        queued(&storage, &select, &format!("{i}:0"));
+        submit(
+            &storage,
+            &mut ws,
+            "refresh",
+            &hidden,
+            &format!("{i}:0"),
+            None,
+        )
+        .unwrap();
     }
-    let elsewhere = std::fs::canonicalize(d.join("home")).unwrap();
-    let confined = storage.clone().confined(&[elsewhere]);
     let (_, mut ws) = opened(&confined, &select, true).unwrap();
-    let source = sources(&ws.conn)[0].clone();
-    let Err(error) = submit(&confined, &mut ws, "refresh", &source, "99:0", None) else {
+    let Err(error) = submit(&confined, &mut ws, "refresh", &shown, "99:0", None) else {
         panic!("admitted");
     };
     let recovery = error
@@ -596,6 +620,24 @@ fn a_full_workspace_names_no_job_of_a_source_the_caller_cannot_see() {
         .recovery()
         .unwrap();
     assert_eq!(recovery[0]["jobIds"], json!([]), "{recovery}");
+}
+
+#[test]
+fn a_submit_of_a_source_the_caller_cannot_see_is_refused_before_admitting_anything() {
+    let d = TestDir::new();
+    let (storage, confined, select, _, hidden) = one_hidden(&d);
+    // A request already admitted for the hidden source is not replayed to this caller either.
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    submit(&storage, &mut ws, "refresh", &hidden, "0:0", Some("r")).unwrap();
+    let (_, mut ws) = opened(&confined, &select, true).unwrap();
+    let count = |ws: &Opened| -> i64 {
+        ws.conn
+            .query_row("SELECT count(*) FROM jobs", [], |r| r.get(0))
+            .unwrap()
+    };
+    let before = count(&ws);
+    let refused = submit(&confined, &mut ws, "refresh", &hidden, "0:0", Some("r")).is_err();
+    assert_eq!((refused, count(&ws)), (true, before));
 }
 
 /// The logical size of the database in bytes, uncheckpointed pages included.
@@ -888,5 +930,114 @@ fn a_rebuild_joining_a_queued_refresh_makes_it_a_rebuild_through_its_failure() {
             &report["nextSteps"][0]["arguments"]["action"]
         ),
         (true, &json!("rebuild"), &json!("rebuild"))
+    );
+}
+
+#[test]
+fn revision_retention_deletes_and_expires_only_whole_groups() {
+    let dir = TestDir::new();
+    let (storage, select, _) = workspace(&dir, 1);
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    ws.conn
+        .execute_batch(
+            "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
+             VALUES ('s', '0:0', 'active', 1, 'v', 0);",
+        )
+        .unwrap();
+    // Five rows of 75 bytes a revision: the newest two fit the test's 1024 detail bytes.
+    let row = || search::diff::Row {
+        frame: "0:0".into(),
+        node: "0:1".into(),
+        kind: "FRAME".into(),
+        change: "changed",
+        facets: 1,
+        descendants: 0,
+    };
+    for gen_id in 2..=6 {
+        let planned = Planned {
+            epoch: 1,
+            from: gen_id - 1,
+            what: Ok(Ok(search::diff::Revision {
+                coverage: json!({"complete": true}),
+                summary: json!({"changes": 5}),
+                rows: (0..5).map(|_| row()).collect(),
+                truncated: false,
+            })),
+        };
+        let tx = ws.conn.transaction().unwrap();
+        tx.execute(
+            "INSERT OR IGNORE INTO facet_sets VALUES (?1, 'v', 1, 'null')",
+            [gen_id],
+        )
+        .unwrap();
+        let built = json!({"snapshot": "x"});
+        assert!(
+            record(
+                &tx,
+                "s",
+                "0:0",
+                gen_id,
+                Some(gen_id - 1),
+                &built,
+                Some(planned),
+                0
+            )
+            .unwrap()
+        );
+        tx.commit().unwrap();
+    }
+    let kept: Vec<(i64, String, i64)> = ws
+        .conn
+        .prepare(
+            "SELECT gen, detail, (SELECT COUNT(*) FROM revision_changes WHERE rev = id)
+             FROM revisions ORDER BY seq",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    // The newest deleted revision's seq marks the gap for checkpoints behind it, with the seq of
+    // the publication that deleted it.
+    let pruned: String = ws
+        .conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'pruned' || char(31) || 's' || char(31) || '0:0'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        (kept, pruned),
+        (
+            vec![
+                (4, "expired".into(), 0),
+                (5, "complete".into(), 5),
+                (6, "complete".into(), 5)
+            ],
+            "2 5".into()
+        )
+    );
+}
+
+#[test]
+fn an_active_scope_published_again_after_eviction_records_a_baseline() {
+    let dir = TestDir::new();
+    let (storage, select, _) = workspace(&dir, 1);
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    let tx = ws.conn.transaction().unwrap();
+    tx.execute_batch(
+        "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
+         VALUES ('s', '0:0', 'active', 1, 'v', 0);
+         INSERT INTO facet_sets VALUES (2, 'v', 1, 'null');",
+    )
+    .unwrap();
+    record(&tx, "s", "0:0", 2, None, &json!({"snapshot": "x"}), None, 0).unwrap();
+    let coverage: String = tx
+        .query_row("SELECT coverage FROM revisions", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Json>(&coverage).unwrap(),
+        json!({"basis": "baseline", "reason": "previous_unpublished"})
     );
 }

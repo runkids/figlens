@@ -16,6 +16,7 @@ await mkdir(path.join(project, 'src'), { recursive: true });
 process.env.PI_CODING_AGENT_DIR = path.join(output, 'agent');
 process.env.FIGLENS_BIN = binary;
 await copyFile(new URL('../samples/plugin-research/fixtures/mapping.fig', import.meta.url), path.join(project, 'mapping.fig'));
+await copyFile(path.join(project, 'mapping.fig'), path.join(project, 'mapping-old.fig'));
 await writeFile(path.join(project, 'src/Button.mjs'), 'export const Button = () => "button";\n');
 const execute = promisify(execFile);
 const flow = new Workflow(project, async args => JSON.parse((await execute(binary, args, { cwd: project })).stdout));
@@ -86,8 +87,14 @@ await check('packaged descriptor, bridge handshake and absolute design path', as
     assert.equal(searched.structuredContent.coverage.complete, true);
     const inspected = await callTool(connection, 'inspect', { file: path.join(project, 'mapping.fig'), node: searched.structuredContent.results[0].ref.nodeId });
     assert.equal(inspected.structuredContent.node.id, '0:1');
+    // Wiring only: two copies of one file are two sources with no changes.
+    const diffed = await callTool(connection, 'diff', { old: path.join(project, 'mapping-old.fig'), file: path.join(project, 'mapping.fig') });
+    assert.equal(diffed.isError, false);
+    assert.equal(diffed.structuredContent.coverage.complete, true);
+    assert.equal(diffed.structuredContent.coverage.changes, 0);
+    assert.notEqual(diffed.structuredContent.source.old.sourceId, diffed.structuredContent.source.new.sourceId);
     return { descriptorCwd: config.cwd, bridge: config.args[0], absoluteFrame: '0:1', relativePathRejected: true,
-      searchRef: searched.structuredContent.results[0].ref };
+      searchRef: searched.structuredContent.results[0].ref, diffedTwoCopies: diffed.structuredContent.source };
   } finally { await disconnectServer(connection); }
 });
 await check('first use through the packaged bridge: prepare, poll, search the published index, inspect, with native write approval', async () => {
@@ -126,6 +133,19 @@ await check('first use through the packaged bridge: prepare, poll, search the pu
     assert.equal(inspected.node.id, '0:1');
     const used = await content('usages', { workspaceId: prepared.workspaceId, node: '0:10' });
     assert.deepEqual(used.results.map(item => `${item.relation} ${item.ref.nodeId}`), ['instance_of 0:2', 'instance_of 0:3']);
+    // Following changes: track builds a baseline, and a consumer that acks it reads nothing new.
+    const settle = async job => {
+      for (const deadline = Date.now() + 30000; !['succeeded', 'failed', 'cancelled', 'interrupted'].includes(job.state) && Date.now() < deadline;) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+        job = await content('jobs', { action: 'status', jobId: job.jobId });
+      }
+      assert.equal(job.state, 'succeeded', JSON.stringify(job));
+    };
+    for (const tracked of (await content('index', { action: 'track', workspaceId: prepared.workspaceId, scope: '0:0' })).jobs) await settle(tracked);
+    const polled = await content('changes', { workspaceId: prepared.workspaceId, consumer: 'omp' });
+    assert.deepEqual(polled.revisions.map(revision => revision.kind), ['baseline'], JSON.stringify(polled).slice(0, 2000));
+    assert.equal((await content('watch', { action: 'ack', workspaceId: prepared.workspaceId, consumer: 'omp', cursor: polled.nextCursor })).advanced, true);
+    assert.deepEqual((await content('changes', { workspaceId: prepared.workspaceId, consumer: 'omp' })).revisions, []);
     // OMP approves every MCP tool at the write tier and shows the call's arguments; it has no per-action rule.
     const index = MCPTool.fromTools(connection, listed).find(tool => tool.mcpToolName === 'index');
     const reset = { action: 'reset', file };
@@ -134,13 +154,14 @@ await check('first use through the packaged bridge: prepare, poll, search the pu
     assert.equal(index.approval, 'write');
     const usages = MCPTool.fromTools(connection, listed).find(tool => tool.mcpToolName === 'usages');
     assert.equal(usages.approval, 'write');
+    for (const name of ['changes', 'watch']) assert.equal(MCPTool.fromTools(connection, listed).find(tool => tool.mcpToolName === name).approval, 'write', name);
     assert.equal(decisions.alwaysAsk, 'prompt');
     assert.equal(decisions.userDeny, 'deny');
     // The README states this: OMP's default yolo mode runs reset without asking.
     assert.equal(decisions.yolo, 'allow');
     assert.match(index.formatApprovalDetails(reset).join('\n'), /reset/);
     return { workspaceId: prepared.workspaceId, dispatched: prepared.job.state, job: job.state, polls, ref: found.results[0].ref,
-      inspected: inspected.node.id, usedBy: used.results.map(item => item.ref.nodeId), approvalTier: index.approval, usagesTier: usages.approval, resetDecisions: decisions };
+      inspected: inspected.node.id, usedBy: used.results.map(item => item.ref.nodeId), approvalTier: index.approval, usagesTier: usages.approval, trackedBaselineAcked: true, resetDecisions: decisions };
   } finally {
     await disconnectServer(connection);
     for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : process.env[name] = value;

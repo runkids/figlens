@@ -493,6 +493,29 @@ pub struct Index {
 }
 
 impl Index {
+    /// A complete index of no records.
+    fn empty() -> Index {
+        Index {
+            records: Vec::new(),
+            rids: Vec::new(),
+            total: 0,
+            terms: BTreeMap::new(),
+            pages: Vec::new(),
+            roots: Vec::new(),
+            above: Vec::new(),
+            lens: [0; 2],
+            stop: None,
+            hidden_content: 0,
+            unverified_links: 0,
+            unread_fields: 0,
+            text_bytes: 0,
+            generation: String::new(),
+            relations: false,
+            definitions: BTreeMap::new(),
+            reverse: Default::default(),
+        }
+    }
+
     /// Record `rid`, which a partial index must have loaded.
     fn record(&self, rid: u32) -> &Record {
         if self.rids.is_empty() {
@@ -558,6 +581,18 @@ fn build(tree: &Tree, scope: &str, bounds: Bounds) -> Index {
 }
 
 fn build_as(tree: &Tree, scope: &str, bounds: Bounds, relations: bool) -> Index {
+    build_with(tree, scope, bounds, relations, None)
+}
+
+/// `build_as` that also records each record's diff facets into `facets`, in record order (the
+/// explicit diff profile; search never asks for them).
+fn build_with(
+    tree: &Tree,
+    scope: &str,
+    bounds: Bounds,
+    relations: bool,
+    mut facets: Option<&mut Vec<diff::Facets>>,
+) -> Index {
     // A full build describes definitions within the caller's bounds: an eighth is kept back
     // from expansion and indexing, and whatever those leave unused is added to it. A text-only
     // build keeps nothing back.
@@ -586,25 +621,7 @@ fn build_as(tree: &Tree, scope: &str, bounds: Bounds, relations: bool) -> Index 
     let expansion = bounds.stop.take_if(|stop| *stop != Stop::Deadline);
     bounds.work += reserve.0;
     bounds.bytes += reserve.1;
-    let mut index = Index {
-        records: Vec::new(),
-        rids: Vec::new(),
-        total: 0,
-        terms: BTreeMap::new(),
-        pages: Vec::new(),
-        roots: Vec::new(),
-        above: Vec::new(),
-        lens: [0; 2],
-        stop: None,
-        hidden_content: 0,
-        unverified_links: 0,
-        unread_fields: 0,
-        text_bytes: 0,
-        generation: String::new(),
-        relations: false,
-        definitions: BTreeMap::new(),
-        reverse: Default::default(),
-    };
+    let mut index = Index::empty();
     // Stored ancestors give the scope its page, navigation root and inherited visibility.
     let mut chain = Vec::new();
     let mut cur = tree.nodes.get(scope).and_then(|n| parent_of(n));
@@ -769,6 +786,13 @@ fn build_as(tree: &Tree, scope: &str, bounds: Bounds, relations: bool) -> Index 
         ) {
             break;
         }
+        let facet = match facets.is_some() {
+            true => match diff::facets(tree, &id, ex.nodes.get(&id), &mut bounds) {
+                Some(f) => Some(f),
+                None => break,
+            },
+            false => None,
+        };
         index.text_bytes += text_len;
         lens[0] += u64::from(record_lens[0]);
         lens[1] += u64::from(record_lens[1]);
@@ -815,6 +839,9 @@ fn build_as(tree: &Tree, scope: &str, bounds: Bounds, relations: bool) -> Index 
             root,
             edges,
         });
+        if let (Some(out), Some(f)) = (facets.as_deref_mut(), facet) {
+            out.push(f);
+        }
         for child in kids.iter().rev() {
             stack.push((
                 child.clone(),
@@ -1590,17 +1617,24 @@ fn require_scope(tree: &Tree, scope: &str) -> Result<(), Box<dyn Error>> {
     if tree.nodes.contains_key(scope) {
         return Ok(());
     }
-    Err(if scope.starts_with('I') {
-        FigError::new(ErrorKind::UnsupportedNode, format!(
-            "node {scope} is an instance sublayer; search scopes are stored nodes, so search its stored instance or frame and filter the results"
-        ))
+    Err(missing_scope(scope))
+}
+
+fn missing_scope(scope: &str) -> Box<dyn Error> {
+    let e = if scope.starts_with('I') {
+        FigError::new(
+            ErrorKind::UnsupportedNode,
+            format!(
+                "node {scope} is an instance sublayer; search scopes are stored nodes, so search its stored instance or frame and filter the results"
+            ),
+        )
     } else {
         FigError::new(
             ErrorKind::NodeNotFound,
             format!("node {scope} not found; list ids with `figlens tree <file.fig> --depth 2`"),
         )
-    }
-    .into())
+    };
+    e.into()
 }
 
 /// The content identity of staged source bytes.
@@ -1616,6 +1650,27 @@ pub(crate) fn index_bytes(
     deadline: Instant,
 ) -> Result<Index, Box<dyn Error>> {
     decode_index(bytes, label, scope, deadline, true)
+}
+
+/// `index_bytes` of a scope with change tracking on: the same full build, plus the facets and
+/// selected-node context change tracking stores beside it. With `deleted_ok` (a scope whose
+/// baseline was recorded), a stored scope gone from the file builds empty, so its removal is
+/// recorded; any other missing scope is refused as an untracked build refuses it.
+pub(crate) fn index_bytes_tracked(
+    bytes: Vec<u8>,
+    label: &str,
+    scope: &str,
+    deadline: Instant,
+    deleted_ok: bool,
+) -> Result<(Index, diff::Tracked), Box<dyn Error>> {
+    let mut doc = Document::from_bytes(&bytes, label)?;
+    drop(bytes);
+    let message = doc.take_message()?;
+    let tree = Tree::new(&message);
+    if !deleted_ok || scope.starts_with('I') {
+        require_scope(&tree, scope)?;
+    }
+    Ok(diff::tracked(&tree, scope, deadline))
 }
 
 fn decode_index(
@@ -1800,6 +1855,7 @@ fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json
     Ok((index, source))
 }
 
+pub mod diff;
 pub(crate) mod store;
 pub mod usages;
 

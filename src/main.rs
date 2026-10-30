@@ -62,6 +62,14 @@ usage:
   figlens usages --workspace DIR|--file <file.fig>|--id ws_... <node>|<resource> [--source ID] [--storage DIR] [same options]
                                              the same over one source's prepared index of --scope,
                                              without parsing; a changed source is source_stale
+  figlens diff <old.fig> <new.fig> [--node ID] [--limit N] [--cursor C] [--json]
+                                             what changed between two saved revisions: one line per
+                                             changed top-level frame (added, removed, changed, kind_changed,
+                                             unknown) with counts per facet (text, layout, appearance,
+                                             properties, structure, bindings); --json adds per-node old/new
+                                             field values and edge changes; layers match by exact id and
+                                             type only, a same-name or same-place frame is only a possible
+                                             match; pages of 100 changes (1-500), a cursor rebuilds both
   figlens inspect <file.fig> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]
                                              compact layout/text summary, instances expanded;
                                              depth 1 (0-10), at most 200 nodes, 200 characters per text;
@@ -175,6 +183,19 @@ usage:
   figlens jobs status|cancel <jobId> [--storage DIR]
                                              an index job's state and progress, or stop it; cancel returns
                                              once the build stopped, and the previous index keeps serving
+  figlens index track|untrack <select> --scope NODE [--source ID] [--request-id ID]
+                                             record a published scope's design changes on each build of it
+                                             (track builds a baseline first), or stop; history stays
+  figlens changes <select> [--source ID] [--scope NODE] [--consumer NAME] [--cursor C] [--limit N] [--storage DIR]
+                                             recorded revisions after the cursor, the consumer's checkpoint
+                                             or the oldest kept, with tracking state; never writes.
+                                             --revision R [--cursor C]: one revision's changed nodes
+  figlens watch ack <select> --consumer NAME --cursor C [--source ID] [--scope NODE] [--storage DIR]
+                                             move the consumer's checkpoint for these filters to C; an
+                                             older C normally leaves it; a C issued before retention
+                                             deleted revisions it had not passed is event_gap; a
+                                             current recovery C moves a checkpoint behind such a
+                                             deletion back to C, so the kept revisions replay
   figlens update                               install the latest GitHub release over this binary
   figlens --help | --version
 
@@ -235,6 +256,7 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                     | "find"
                     | "search"
                     | "usages"
+                    | "diff"
                     | "inspect"
                     | "node"
                     | "nodes"
@@ -248,6 +270,8 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                     | "workflow"
                     | "cache"
                     | "index"
+                    | "changes"
+                    | "watch"
                     | "update"
             )
         )
@@ -313,6 +337,14 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             }
             return Ok(());
         }
+        Some("changes") => {
+            writeln!(out, "{}", changes(&args[1..], false)?)?;
+            return Ok(());
+        }
+        Some("watch") if args.get(1).is_some_and(|a| a == "ack") => {
+            writeln!(out, "{}", changes(&args[2..], true)?)?;
+            return Ok(());
+        }
         Some("jobs") => {
             let report = jobs(&args[1..])?;
             writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
@@ -326,6 +358,10 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
         Some("usages") if args.get(1).is_some_and(|a| a.starts_with("--")) => {
             let report = workspace_usages(&args[1..])?;
             writeln!(out, "{report}")?;
+            return Ok(());
+        }
+        Some("diff") => {
+            out.push_str(&command::diff_cli(&args[1..])?);
             return Ok(());
         }
         Some("verify") => {
@@ -929,7 +965,7 @@ mod signals {
 fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
     use figlens::workspace::{self, PrepareOptions, Select};
     let usage = || -> Box<dyn Error> {
-        "usage: figlens index prepare|status|add|refresh|remove|relocate|clear|rebuild|reset ...; see `figlens --help`"
+        "usage: figlens index prepare|status|add|refresh|remove|relocate|clear|rebuild|track|untrack|reset ...; see `figlens --help`"
             .into()
     };
     let action = args.first().ok_or_else(usage)?.as_str();
@@ -987,6 +1023,16 @@ fn index(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
             )?;
             finish_jobs(&storage, outcome)
         }
+        ("track", []) if !a.replace => {
+            let scope = normalize_id(a.scope.ok_or_else(usage)?);
+            let outcome =
+                workspace::jobs::track(&storage, &chosen()?, only_source()?, &scope, a.request)?;
+            finish_jobs(&storage, outcome)
+        }
+        ("untrack", []) if !a.replace && a.request.is_none() => {
+            let scope = normalize_id(a.scope.ok_or_else(usage)?);
+            workspace::jobs::untrack(&storage, &chosen()?, only_source()?, &scope)
+        }
         _ if scoped || !a.source.is_empty() => Err(usage()),
         ("status", []) => workspace::status(&storage, &chosen()?),
         ("add", [path]) => workspace::add(&storage, &chosen()?, Path::new(path)),
@@ -1029,6 +1075,59 @@ fn workspace_search(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>
     let request = command::search_request(&search_args)?;
     let only: Vec<String> = a.source.iter().map(|s| s.to_string()).collect();
     workspace::query::search(&storage, &select, &only, &request)
+}
+
+/// `figlens changes <select> [filters] [--consumer C] [--cursor X] [--revision R] [--limit N]`,
+/// or with `ack`, `figlens watch ack <select> --consumer C --cursor X [filters]`.
+fn changes(args: &[String], ack: bool) -> Result<serde_json::Value, Box<dyn Error>> {
+    use figlens::workspace::{self, Select, changes};
+    let usage = match ack {
+        true => {
+            "usage: figlens watch ack --workspace DIR|--file <file.fig>|--id ws_... --consumer NAME --cursor C [--source ID] [--scope NODE] [--storage DIR]"
+        }
+        false => {
+            "usage: figlens changes --workspace DIR|--file <file.fig>|--id ws_... [--source ID] [--scope NODE] [--consumer NAME] [--cursor C] [--revision R] [--limit N] [--storage DIR]"
+        }
+    };
+    let a = index_args(args, true)?;
+    if !a.positional.is_empty() || a.source.len() > 1 {
+        return Err(usage.into());
+    }
+    let mut flags = std::collections::HashMap::new();
+    for pair in a.search.chunks(2) {
+        let allowed: &[&str] = match ack {
+            true => &["--scope", "--consumer", "--cursor"],
+            false => &["--scope", "--consumer", "--cursor", "--revision", "--limit"],
+        };
+        if !allowed.contains(&pair[0].as_str()) || pair.len() < 2 {
+            return Err(format!("unknown flag {}; {usage}", pair[0]).into());
+        }
+        if flags.insert(pair[0].as_str(), pair[1].as_str()).is_some() {
+            return Err(format!("{} is given twice", pair[0]).into());
+        }
+    }
+    let limit = flags
+        .get("--limit")
+        .map(|l| {
+            l.parse::<usize>()
+                .map_err(|_| "--limit needs a whole number")
+        })
+        .transpose()?;
+    let storage = workspace::storage(a.storage.map(Path::new))?;
+    let select = Select::from_choice(a.workspace.map(Path::new), a.file.map(Path::new), a.id)?
+        .ok_or("choose the workspace with --workspace, --file or --id")?;
+    let request = changes::Request {
+        source: a.source.first().copied(),
+        scope: flags.get("--scope").copied(),
+        consumer: flags.get("--consumer").copied(),
+        cursor: flags.get("--cursor").copied(),
+        revision: flags.get("--revision").copied(),
+        limit,
+    };
+    match ack {
+        true => changes::ack(&storage, &select, &request),
+        false => changes::changes(&storage, &select, &request),
+    }
 }
 
 /// `figlens usages --workspace DIR|--file <file.fig>|--id ws_... <node>|<resource> [--source ID] [options]`:

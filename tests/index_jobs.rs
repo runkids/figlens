@@ -439,8 +439,12 @@ struct Mcp {
 
 impl Mcp {
     fn start(env: &Env, args: &[&str]) -> Self {
+        Self::held(env, args, None)
+    }
+
+    fn held(env: &Env, args: &[&str], hold: Option<(&str, &Path)>) -> Self {
         let mut child = env
-            .command(&[&["mcp"], args].concat(), None)
+            .command(&[&["mcp"], args].concat(), hold)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -530,6 +534,36 @@ fn usages_agree_stateless_over_mcp_and_from_a_prepared_scope_and_reject_a_stale_
     let stale = env.run(&["usages", "--file", file, "0:1", "--snapshot", "sha256:old"]);
     assert!(!stale.status.success());
     assert!(String::from_utf8_lossy(&stale.stderr).contains("now serves"));
+}
+
+#[test]
+fn a_schema_3_workspace_serves_usages_and_empty_changes_without_upgrading() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    let prepared = env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let db = prepared["paths"]["database"].as_str().unwrap().to_owned();
+    let version = || -> i64 {
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap()
+    };
+    // As the release before change tracking left it: relations, no tracking tables.
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE tracking; DROP TABLE facet_sets; DROP TABLE facets;
+             DROP TABLE revisions; DROP TABLE revision_changes; DROP TABLE consumers;
+             PRAGMA user_version = 3;",
+        )
+        .unwrap();
+    let usages = env.json(&["usages", "--file", file, "0:1", "--relation", "contains"]);
+    let changes = env.json(&["changes", "--file", file]);
+    assert_eq!(
+        (ids(&usages), changes["revisions"].clone(), version()),
+        (vec!["0:2"], json!([]), 3)
+    );
 }
 
 #[test]
@@ -1652,4 +1686,1409 @@ fn a_text_only_search_cache_upgrades_once_for_usages_and_keeps_search_cursors() 
         (vec!["0:2"], &changed["source"]["snapshotId"])
     );
     drop(mcp);
+}
+
+#[path = "../scripts/make-corpus.rs"]
+#[allow(dead_code)]
+mod corpus;
+
+#[test]
+fn diff_text_lists_a_page_points_at_the_next_and_names_the_missing_side() {
+    let env = Env::new();
+    let [old, new] = [("old.fig", false), ("new.fig", true)].map(|(name, revised)| {
+        let path = env.dir.join(name);
+        corpus::write(path.as_os_str(), revised).unwrap();
+        path.to_str().unwrap().to_owned()
+    });
+    let page = env.run(&["diff", &old, &new, "--limit", "1"]);
+    assert!(page.status.success());
+    let text = String::from_utf8_lossy(&page.stdout);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    assert!(
+        lines[0].contains(" changed: ")
+            || lines[0].contains(" added: ")
+            || lines[0].contains(" removed: "),
+        "{text}"
+    );
+    assert!(lines[1].starts_with("more: --cursor "), "{text}");
+    let same = env.run(&["diff", &old, &old]);
+    assert_eq!(String::from_utf8_lossy(&same.stdout), "no changes\n");
+    let missing = env.dir.join("missing.fig");
+    let gone = env.run(&["diff", &old, missing.to_str().unwrap()]);
+    assert!(!gone.status.success());
+    let stderr = String::from_utf8_lossy(&gone.stderr);
+    assert!(
+        stderr.contains("missing.fig") && !stderr.contains("old.fig"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn diff_of_two_revisions_pages_the_same_changes_over_the_cli_and_mcp() {
+    let env = Env::new();
+    let [old, new] = [("old.fig", false), ("new.fig", true)].map(|(name, revised)| {
+        let path = env.dir.join(name);
+        corpus::write(path.as_os_str(), revised).unwrap();
+        std::fs::canonicalize(path).unwrap()
+    });
+    let (old, new) = (old.to_str().unwrap(), new.to_str().unwrap());
+    let cli = env.json(&["diff", old, new, "--json"]);
+    let changes = |reply: &Value| {
+        let mut all: Vec<(String, String)> = reply["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|f| f["nodes"].as_array().unwrap())
+            .map(|n| {
+                (
+                    n["id"].as_str().unwrap().into(),
+                    n["change"].as_str().unwrap().into(),
+                )
+            })
+            .collect();
+        all.sort();
+        all
+    };
+    assert_eq!(
+        changes(&cli),
+        [
+            ("0:1", "changed"),
+            ("0:11", "changed"),
+            ("0:13", "removed"),
+            ("0:14", "added")
+        ]
+        .map(|(id, c)| (id.to_owned(), c.to_owned()))
+    );
+    assert_eq!(cli["coverage"]["complete"], true);
+    // One change per MCP page: the cached pair pages through the same list.
+    let mut mcp = Mcp::start(&env, &[]);
+    let (mut paged, mut cursor) = (Vec::new(), Value::Null);
+    loop {
+        let mut args = json!({"old": old, "file": new, "limit": 1});
+        if !cursor.is_null() {
+            args["cursor"] = cursor.clone();
+        }
+        let reply = mcp.call("diff", args)["structuredContent"].clone();
+        paged.extend(changes(&reply));
+        cursor = reply["nextCursor"].clone();
+        if cursor.is_null() {
+            break;
+        }
+    }
+    paged.sort();
+    assert_eq!(paged, changes(&cli));
+    // Stateless, like search: no database.
+    assert!(!env.home.join(".local/state/figlens").exists());
+}
+
+#[test]
+fn only_a_tracked_scope_s_build_stores_facets() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    let prepared = env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let db = prepared["paths"]["database"].as_str().unwrap().to_owned();
+    let count = |q: &str| {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.query_row(q, [], |r| r.get::<_, i64>(0)).unwrap()
+    };
+    assert_eq!(
+        count("SELECT count(*) FROM facet_sets") + count("SELECT count(*) FROM facets"),
+        0
+    );
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
+             SELECT source_id, '0:0', 'active', 1, 'v', 0 FROM sources",
+            [],
+        )
+        .unwrap();
+    let rebuilt = env.json(&["index", "rebuild", "--file", file]);
+    let gen_id = rebuilt["jobs"][0]["generation"].as_i64().unwrap();
+    assert_eq!(
+        [
+            count(&format!(
+                "SELECT count(*) FROM facet_sets WHERE gen = {gen_id}"
+            )),
+            count(&format!("SELECT count(*) FROM facets WHERE gen = {gen_id}")),
+        ],
+        [
+            1,
+            count(&format!(
+                "SELECT count(*) FROM records WHERE gen = {gen_id}"
+            ))
+        ]
+    );
+    // Facets live and go with their generation; none outlive it.
+    let again = env.json(&["index", "rebuild", "--file", file]);
+    let gen_id = again["jobs"][0]["generation"].as_i64().unwrap();
+    assert_eq!(
+        count("SELECT count(*) FROM facets WHERE gen NOT IN (SELECT gen FROM generations)"),
+        0
+    );
+    assert_eq!(count("SELECT max(gen) FROM facet_sets"), gen_id);
+}
+
+#[test]
+fn track_builds_a_baseline_with_facets_and_each_state_change_bumps_the_epoch() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    let prepared = env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let db = prepared["paths"]["database"].as_str().unwrap().to_owned();
+    // Whether the generation a reply's job built stored facets.
+    let faceted = |reply: &Value| {
+        let gen_id = reply["jobs"][0]["generation"].as_i64().unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let q = "SELECT EXISTS (SELECT 1 FROM facet_sets WHERE gen = ?1)";
+        conn.query_row(q, [gen_id], |r| r.get::<_, bool>(0))
+            .unwrap()
+    };
+    let track = |action: &str| env.json(&["index", action, "--file", file, "--scope", "0:0"]);
+    let state = |reply: &Value| {
+        (
+            reply["tracking"][0]["state"].clone(),
+            reply["tracking"][0]["epoch"].clone(),
+        )
+    };
+    let on = track("track");
+    assert_eq!(state(&on), (json!("baseline_pending"), json!(1)));
+    assert_eq!(on["jobs"][0]["state"], "succeeded");
+    assert!(faceted(&on));
+    // The baseline's publication made tracking active; tracking again changes nothing and
+    // builds nothing.
+    let again = track("track");
+    assert_eq!(
+        (state(&again), again["jobs"].clone()),
+        ((json!("active"), json!(1)), json!([]))
+    );
+    assert_eq!(state(&track("untrack")), (json!("disabled"), json!(2)));
+    assert!(!faceted(&env.json(&["index", "rebuild", "--file", file])));
+    let retracked = track("track");
+    assert_eq!(state(&retracked), (json!("baseline_pending"), json!(3)));
+    assert!(faceted(&retracked));
+    let out = env.run(&["index", "track", "--file", file, "--scope", "0:99"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no published scope 0:99"));
+}
+
+/// A corpus file prepared at scope 0:0 and tracked, with a save that replaces it and the
+/// workspace database's path.
+struct Tracked<'a> {
+    env: &'a Env,
+    path: PathBuf,
+    file: String,
+    db: String,
+}
+
+impl<'a> Tracked<'a> {
+    fn new(env: &'a Env) -> Self {
+        let path = env.dir.join("a.fig");
+        corpus::write(path.as_os_str(), false).unwrap();
+        let path = std::fs::canonicalize(path).unwrap();
+        let file = path.to_str().unwrap().to_owned();
+        let prepared = env.json(&["index", "prepare", &file, "--scope", "0:0"]);
+        let db = prepared["paths"]["database"].as_str().unwrap().to_owned();
+        let t = Self {
+            env,
+            path,
+            file,
+            db,
+        };
+        t.index("track");
+        t
+    }
+
+    fn index(&self, action: &str) -> Value {
+        self.env
+            .json(&["index", action, "--file", &self.file, "--scope", "0:0"])
+    }
+
+    /// Replaces the file, as Figma's save does.
+    fn save(&self, revised: bool) {
+        let next = self.env.dir.join("next.fig");
+        corpus::write(next.as_os_str(), revised).unwrap();
+        std::fs::rename(&next, &self.path).unwrap();
+    }
+
+    fn sql(&self, q: &str) {
+        rusqlite::Connection::open(&self.db)
+            .unwrap()
+            .execute_batch(q)
+            .unwrap();
+    }
+
+    /// Each revision: kind, coverage, change count, detail, whether it has a from generation,
+    /// its rows and how many facet sets its from generation still has.
+    fn revisions(&self) -> Vec<Value> {
+        let conn = rusqlite::Connection::open(&self.db).unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT r.kind, r.coverage, r.summary, r.detail, r.from_gen,
+                 (SELECT group_concat(node || '=' || change, ',') FROM
+                  (SELECT node, change FROM revision_changes WHERE rev = r.id ORDER BY node)),
+                 (SELECT COUNT(*) FROM facet_sets WHERE gen = r.from_gen)
+                 FROM revisions r ORDER BY seq",
+            )
+            .unwrap();
+        let text = |s: String| serde_json::from_str::<Value>(&s).unwrap();
+        stmt.query_map([], |r| {
+            Ok(json!([
+                r.get::<_, String>(0)?,
+                text(r.get(1)?),
+                text(r.get(2)?)["changes"],
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<i64>>(4)?.is_some(),
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, i64>(6)?
+            ]))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    }
+}
+
+#[test]
+fn a_tracked_scope_records_a_baseline_then_each_published_change_and_untracking_keeps_history() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let tracked = t.revisions();
+    t.index("untrack");
+    t.save(false);
+    t.index("refresh");
+    // The changes read like a live diff of the two saves; the replaced generation keeps no
+    // facets; an untracked save records nothing and the history stays.
+    assert_eq!(
+        (tracked.clone(), t.revisions()),
+        (
+            vec![
+                json!(["baseline", {"basis": "baseline", "reason": "tracking_started"}, null, "complete", false, null, 0]),
+                json!([
+                    "changes",
+                    tracked[1][1],
+                    4,
+                    "complete",
+                    true,
+                    "0:1=changed,0:11=changed,0:13=removed,0:14=added",
+                    0
+                ]),
+            ],
+            tracked.clone()
+        )
+    );
+    assert_eq!(tracked[1][1]["complete"], true);
+}
+
+#[test]
+fn a_failed_comparison_still_publishes_and_a_new_field_layout_is_a_baseline() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    // Unreadable facets of the generation being replaced: the save publishes, never unchanged.
+    t.sql("UPDATE facets SET blob = CAST('bogus' AS BLOB) WHERE gen = (SELECT gen FROM published)");
+    t.save(true);
+    t.index("refresh");
+    t.sql(
+        "UPDATE facet_sets SET facet_version = 'diff-v0:0' WHERE gen = (SELECT gen FROM published)",
+    );
+    t.save(false);
+    t.index("refresh");
+    let got: Vec<_> = t.revisions()[1..]
+        .iter()
+        .map(|r| {
+            (
+                r[0].clone(),
+                r[1]["reasons"][0]["reason"].clone(),
+                r[1]["reason"].clone(),
+                r[3].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (
+                json!("changes"),
+                json!("comparison_failed"),
+                json!(null),
+                json!("truncated")
+            ),
+            (
+                json!("baseline"),
+                json!(null),
+                json!("facet_version_changed"),
+                json!("complete")
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_tracking_change_after_the_comparison_records_a_baseline_not_a_gap() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    let gate = env.gate("compare.hold");
+    let mut owner = env.spawn(
+        &["index", "refresh", "--file", &t.file],
+        Some(("compare", &gate)),
+    );
+    let reached = PathBuf::from(format!("{}.reached", gate.display()));
+    wait_for("the comparison", || reached.exists());
+    t.sql("UPDATE tracking SET epoch = epoch + 1");
+    std::fs::remove_file(&gate).unwrap();
+    assert!(owner.wait().unwrap().success());
+    // The generation still publishes, as a baseline: the next comparison starts from it.
+    assert_eq!(
+        (
+            t.revisions().last().unwrap()[1]["reason"].clone(),
+            env.json(&["search", "--file", &t.file, "first"])["state"].clone()
+        ),
+        (json!("tracking_changed"), json!("ready"))
+    );
+}
+
+#[test]
+fn relocating_a_tracked_source_keeps_its_history_and_removing_it_deletes_it() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let moved = env.dir.join("moved.fig");
+    std::fs::copy(&t.path, &moved).unwrap();
+    let moved = std::fs::canonicalize(moved).unwrap();
+    let ws = env.json(&["index", "status", "--file", &t.file]);
+    let (id, source) = (
+        ws["workspaceId"].as_str().unwrap().to_owned(),
+        ws["sources"][0]["sourceId"].as_str().unwrap().to_owned(),
+    );
+    env.json(&[
+        "index",
+        "relocate",
+        "--id",
+        &id,
+        &source,
+        moved.to_str().unwrap(),
+    ]);
+    let relocated = t.revisions().len();
+    env.json(&["index", "remove", "--id", &id, &source]);
+    let count = |table: &str| {
+        rusqlite::Connection::open(&t.db)
+            .unwrap()
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(
+        (relocated, count("revisions"), count("tracking")),
+        (1, 0, 0)
+    );
+}
+
+#[test]
+fn tracking_during_a_build_that_read_it_off_is_refused_and_tracking_after_builds_the_baseline() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let gate = env.gate("write.hold");
+    let mut build = env.spawn(
+        &["index", "rebuild", "--file", file],
+        Some(("write", &gate)),
+    );
+    let reached = PathBuf::from(format!("{}.reached", gate.display()));
+    wait_for("the build to pass its tracking read", || reached.exists());
+    // A pending baseline enabled in the same millisecond the build was created (or by a clock
+    // stepped back), though the build was admitted before it and read tracking off.
+    let status = env.json(&["index", "status", "--file", file]);
+    rusqlite::Connection::open(status["paths"]["database"].as_str().unwrap())
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms,
+             enabled_seq) SELECT source_id, scope, 'baseline_pending', 1, '', created_ms, seq
+             FROM jobs WHERE state = 'running'",
+        )
+        .unwrap();
+    let refused = env.run(&["index", "track", "--file", file, "--scope", "0:0"]);
+    std::fs::remove_file(&gate).unwrap();
+    assert!(build.wait().unwrap().success());
+    let tracked = env.json(&["index", "track", "--file", file, "--scope", "0:0"]);
+    let state = env.json(&["index", "track", "--file", file, "--scope", "0:0"]);
+    assert_eq!(
+        (
+            String::from_utf8_lossy(&refused.stderr).contains("track after it ends"),
+            tracked["jobs"][0]["state"].clone(),
+            state["tracking"][0]["state"].clone()
+        ),
+        (true, json!("succeeded"), json!("active"))
+    );
+}
+
+#[test]
+fn tracking_after_a_build_s_owner_died_takes_the_build_over_as_the_baseline() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let gate = env.gate("write.hold");
+    let mut owner = env.spawn(
+        &["index", "rebuild", "--file", file],
+        Some(("write", &gate)),
+    );
+    let job = active_job(&env, &fig, "write");
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    wait_for("the orphaned worker to exit", || {
+        !worker_running(&env, &job)
+    });
+    std::fs::remove_file(&gate).unwrap();
+    // Stored as running though nobody runs it: waiting would never end.
+    let tracked = env.json(&["index", "track", "--file", file, "--scope", "0:0"]);
+    let state = env.json(&["index", "track", "--file", file, "--scope", "0:0"]);
+    assert_eq!(
+        (
+            tracked["jobs"][0]["state"].clone(),
+            state["tracking"][0]["state"].clone()
+        ),
+        (json!("succeeded"), json!("active"))
+    );
+}
+
+#[test]
+fn a_track_request_id_used_by_a_rebuild_is_refused_before_tracking_changes() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let scope = ["--scope", "0:0"];
+    env.json(
+        &[
+            &["index", "rebuild", "--file", file][..],
+            &scope,
+            &["--request-id", "x"],
+        ]
+        .concat(),
+    );
+    let refused = env.run(
+        &[
+            &["index", "track", "--file", file][..],
+            &scope,
+            &["--request-id", "x"],
+        ]
+        .concat(),
+    );
+    let untouched = env.json(&["index", "untrack", "--file", file, "--scope", "0:0"]);
+    let tracked = env.json(
+        &[
+            &["index", "track", "--file", file][..],
+            &scope,
+            &["--request-id", "y"],
+        ]
+        .concat(),
+    );
+    let replayed = env.json(
+        &[
+            &["index", "track", "--file", file][..],
+            &scope,
+            &["--request-id", "y"],
+        ]
+        .concat(),
+    );
+    assert_eq!(
+        (
+            String::from_utf8_lossy(&refused.stderr).contains("used for a different request"),
+            untouched["tracking"][0]["state"].clone(),
+            tracked["tracking"][0]["state"].clone(),
+            tracked["jobs"][0]["state"].clone(),
+            replayed["tracking"][0]["state"].clone(),
+        ),
+        (
+            true,
+            json!("untracked"),
+            json!("baseline_pending"),
+            json!("succeeded"),
+            json!("active")
+        )
+    );
+}
+
+#[test]
+fn a_repeated_track_while_its_baseline_build_runs_joins_it() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let gate = env.gate("write.hold");
+    let first = env.spawn(
+        &["index", "track", "--file", file, "--scope", "0:0"],
+        Some(("write", &gate)),
+    );
+    let reached = PathBuf::from(format!("{}.reached", gate.display()));
+    wait_for("the baseline build to pass its tracking read", || {
+        reached.exists()
+    });
+    let again = env.spawn(&["index", "track", "--file", file, "--scope", "0:0"], None);
+    std::thread::sleep(Duration::from_millis(300));
+    std::fs::remove_file(&gate).unwrap();
+    let [first, again] = [first, again].map(|c| {
+        let out = c.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    });
+    let status = env.json(&["index", "track", "--file", file, "--scope", "0:0"]);
+    assert_eq!(
+        (
+            again["jobs"][0]["jobId"] == first["jobs"][0]["jobId"],
+            status["tracking"][0]["state"].clone()
+        ),
+        (true, json!("active"))
+    );
+}
+
+impl Tracked<'_> {
+    fn changes(&self, more: &[&str]) -> Value {
+        let mut args = vec!["changes", "--file", &self.file];
+        args.extend(more);
+        self.env.json(&args)
+    }
+
+    fn fails(&self, args: &[&str]) -> String {
+        let out = self.env.run(args);
+        assert!(!out.status.success());
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    }
+}
+
+#[test]
+fn changes_pages_revisions_and_their_nodes_and_a_consumer_acks_its_place() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let all = t.changes(&[]);
+    let first = t.changes(&["--limit", "1"]);
+    let cursor = first["nextCursor"].as_str().unwrap();
+    let rest = t.changes(&["--cursor", cursor]);
+    let id = rest["revisions"][0]["revisionId"].as_str().unwrap();
+    let nodes = t.changes(&["--revision", id, "--limit", "3"]);
+    let more = t.changes(&[
+        "--revision",
+        id,
+        "--cursor",
+        nodes["nextCursor"].as_str().unwrap(),
+    ]);
+    let fresh = t.changes(&["--consumer", "bot"]);
+    let ack = |c: &str| {
+        env.json(&[
+            "watch",
+            "ack",
+            "--file",
+            &t.file,
+            "--consumer",
+            "bot",
+            "--cursor",
+            c,
+        ])
+    };
+    let acked = ack(cursor);
+    let after = t.changes(&["--consumer", "bot"]);
+    let again = ack(cursor);
+    assert_eq!(
+        (
+            all["revisions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["kind"].clone())
+                .collect::<Vec<_>>(),
+            (first["hasMore"].clone(), rest["hasMore"].clone()),
+            rest["revisions"][0]["from"] == first["revisions"][0]["revisionId"],
+            (
+                nodes["nodes"].as_array().unwrap().len(),
+                more["nodes"].as_array().unwrap().len(),
+                more["nextCursor"].clone()
+            ),
+            (
+                fresh["revisions"].as_array().unwrap().len(),
+                after["revisions"][0]["revisionId"].clone()
+            ),
+            (
+                acked["advanced"].clone(),
+                again["advanced"].clone(),
+                again["checkpoint"] == json!(cursor)
+            ),
+            (
+                all["tracking"][0]["state"].clone(),
+                all["tracking"][0]["refreshRequired"].clone(),
+                all["monitor"].clone()
+            ),
+        ),
+        (
+            vec![json!("baseline"), json!("changes")],
+            (json!(true), json!(false)),
+            true,
+            (3, 1, Value::Null),
+            (2, json!(id)),
+            (json!(true), json!(false), true),
+            (json!("active"), json!(false), json!({"state": "inactive"})),
+        )
+    );
+}
+
+#[test]
+fn a_cursor_for_other_filters_is_stale_and_a_position_retention_deleted_is_a_gap() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    t.save(false);
+    t.index("refresh");
+    let page = t.changes(&["--scope", "0:0", "--limit", "1"]);
+    let cursor = page["nextCursor"].as_str().unwrap();
+    let source = page["revisions"][0]["sourceId"].as_str().unwrap();
+    let unscoped = t.changes(&["--limit", "1"]);
+    let unscoped = unscoped["nextCursor"].as_str().unwrap();
+    let stale = t.fails(&["changes", "--file", &t.file, "--cursor", cursor]);
+    env.json(&[
+        "watch",
+        "ack",
+        "--file",
+        &t.file,
+        "--scope",
+        "0:0",
+        "--consumer",
+        "bot",
+        "--cursor",
+        cursor,
+    ]);
+    // Retention deleted the revision the cursor and the checkpoint name, and the next, unread.
+    t.sql(&format!(
+        "DELETE FROM revisions WHERE seq < (SELECT MAX(seq) FROM revisions);
+         UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'revision_seq';
+         INSERT INTO meta SELECT 'pruned' || char(31) || '{source}' || char(31) || '0:0',
+         (MAX(seq) - 1) || ' ' || (SELECT value FROM meta WHERE key = 'revision_seq') FROM revisions"
+    ));
+    let gap = t.fails(&[
+        "changes", "--file", &t.file, "--scope", "0:0", "--cursor", cursor,
+    ]);
+    let behind = t.fails(&[
+        "changes",
+        "--file",
+        &t.file,
+        "--scope",
+        "0:0",
+        "--consumer",
+        "bot",
+    ]);
+    // Another scope pruned past everything this one keeps must not hide what it keeps.
+    t.sql(&format!(
+        "UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'revision_seq';
+         INSERT INTO meta SELECT 'pruned' || char(31) || '{source}' || char(31) || '9:9',
+         '100' || ' ' || (SELECT value FROM meta WHERE key = 'revision_seq')"
+    ));
+    let mixed = t.fails(&["changes", "--file", &t.file, "--cursor", unscoped]);
+    // Each recovery runs exactly as given.
+    let resume = |stderr: &str| {
+        let r: Value = serde_json::from_str(stderr.lines().last().unwrap()).unwrap();
+        let a = &r["recovery"][0]["arguments"];
+        let mut args = vec![
+            "changes".to_owned(),
+            "--id".into(),
+            a["workspaceId"].as_str().unwrap().into(),
+        ];
+        for (key, flag) in [
+            ("sourceId", "--source"),
+            ("scope", "--scope"),
+            ("cursor", "--cursor"),
+        ] {
+            if let Some(v) = a[key].as_str() {
+                args.extend([flag.to_owned(), v.to_owned()]);
+            }
+        }
+        env.json(&args.iter().map(String::as_str).collect::<Vec<_>>())["revisions"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    assert_eq!(
+        (
+            stale.contains("other filters"),
+            behind.contains("deleted by retention"),
+            resume(&gap),
+            resume(&mixed),
+        ),
+        (true, true, 1, 1)
+    );
+}
+
+#[test]
+fn a_kept_cursor_before_another_scopes_deleted_revisions_is_a_gap_read_past_once() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let page = t.changes(&["--limit", "1"]);
+    let cursor = page["nextCursor"].as_str().unwrap();
+    let source = page["revisions"][0]["sourceId"].as_str().unwrap();
+    // Retention deleted another scope's revisions recorded after the cursor's, which is kept.
+    t.sql(&format!(
+        "UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'revision_seq';
+         INSERT INTO meta SELECT 'pruned' || char(31) || '{source}' || char(31) || '9:9',
+         '100' || ' ' || (SELECT value FROM meta WHERE key = 'revision_seq')"
+    ));
+    let gap = t.fails(&["changes", "--file", &t.file, "--cursor", cursor]);
+    // The recovery accepts that deletion: its pages read on past it, not into the gap again.
+    let r: Value = serde_json::from_str(gap.lines().last().unwrap()).unwrap();
+    let oldest = r["recovery"][0]["arguments"]["cursor"].as_str().unwrap();
+    let first = t.changes(&["--cursor", oldest, "--limit", "1"]);
+    let next = t.changes(&["--cursor", first["nextCursor"].as_str().unwrap()]);
+    assert_eq!(next["revisions"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn a_hidden_source_s_publication_changes_no_visible_cursor_or_ack() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let ack = |c: &str| {
+        env.json(&[
+            "watch",
+            "ack",
+            "--file",
+            &t.file,
+            "--consumer",
+            "bot",
+            "--cursor",
+            c,
+        ])
+    };
+    let before = t.changes(&[]);
+    let cursor = before["nextCursor"].as_str().unwrap();
+    ack(cursor);
+    // Another source's publication moves the global seq and prunes there.
+    t.sql(
+        "UPDATE meta SET value = CAST(value AS INTEGER) + 5 WHERE key = 'revision_seq';
+         INSERT INTO meta SELECT 'pruned' || char(31) || 'hidden' || char(31) || '0:0',
+         '3' || ' ' || (SELECT value FROM meta WHERE key = 'revision_seq')",
+    );
+    let after = t.changes(&[]);
+    let replay = ack(cursor);
+    assert_eq!(
+        (
+            after["nextCursor"] == before["nextCursor"],
+            cursor.len(),
+            replay["advanced"].clone(),
+            replay["checkpoint"] == json!(cursor),
+        ),
+        // `c1.`, the id and receipt, and the MAC, in hex: no counter.
+        (true, 3 + (16 + 16 + 16) * 2, json!(false), true)
+    );
+}
+
+#[test]
+fn a_stale_ack_behind_a_new_deletion_is_a_gap_and_writes_nothing() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let page = t.changes(&["--limit", "1"]);
+    let cursor = page["nextCursor"].as_str().unwrap();
+    let source = page["revisions"][0]["sourceId"].as_str().unwrap();
+    t.sql(&format!(
+        "UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'revision_seq';
+         INSERT INTO meta SELECT 'pruned' || char(31) || '{source}' || char(31) || '9:9',
+         '100' || ' ' || (SELECT value FROM meta WHERE key = 'revision_seq')"
+    ));
+    let refused = t.fails(&[
+        "watch",
+        "ack",
+        "--file",
+        &t.file,
+        "--consumer",
+        "bot",
+        "--cursor",
+        cursor,
+    ]);
+    let fresh = t.changes(&["--consumer", "bot"]);
+    assert_eq!(
+        (
+            refused.contains("deleted by retention"),
+            fresh["revisions"].as_array().unwrap().len()
+        ),
+        (true, 2)
+    );
+}
+
+#[test]
+fn a_current_cursor_before_a_checkpoint_behind_a_gap_moves_it_back_to_repeat_not_skip() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let ack = |consumer: &str, c: &str| {
+        env.json(&[
+            "watch",
+            "ack",
+            "--file",
+            &t.file,
+            "--consumer",
+            consumer,
+            "--cursor",
+            c,
+        ])
+    };
+    let all = t.changes(&[]);
+    ack("bot", all["nextCursor"].as_str().unwrap());
+    ack("tail", all["nextCursor"].as_str().unwrap());
+    let source = all["revisions"][0]["sourceId"].as_str().unwrap();
+    // Another scope's unread revisions after the checkpoint were deleted.
+    t.sql(&format!(
+        "UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'revision_seq';
+         INSERT INTO meta SELECT 'pruned' || char(31) || '{source}' || char(31) || '9:9',
+         '100' || ' ' || (SELECT value FROM meta WHERE key = 'revision_seq')"
+    ));
+    let gap = t.fails(&["changes", "--file", &t.file, "--consumer", "bot"]);
+    let r: Value = serde_json::from_str(gap.lines().last().unwrap()).unwrap();
+    let oldest = r["recovery"][0]["arguments"]["cursor"].as_str().unwrap();
+    // The first retained page lies before the checkpoint; any current cursor there, from the
+    // recovery or an unrelated read, moves the checkpoint back.
+    let first = t.changes(&["--cursor", oldest, "--limit", "1"]);
+    let unrelated = t.changes(&["--limit", "1"]);
+    let acked = ack("bot", unrelated["nextCursor"].as_str().unwrap());
+    let resumed = t.changes(&["--consumer", "bot"]);
+    // Reading the recovery up to the checkpoint and acking there ends its gap.
+    let through = t.changes(&["--cursor", oldest]);
+    let ended = ack("tail", through["nextCursor"].as_str().unwrap());
+    let caught_up = t.changes(&["--consumer", "tail"]);
+    let kept = all["revisions"].as_array().unwrap().len();
+    assert_eq!(
+        (
+            first["nextCursor"] == unrelated["nextCursor"],
+            acked["advanced"].clone(),
+            acked["checkpoint"] == first["nextCursor"],
+            resumed["revisions"].as_array().unwrap().len(),
+            (
+                ended["advanced"].clone(),
+                ended["checkpoint"] == through["nextCursor"]
+            ),
+            caught_up["revisions"].as_array().unwrap().len(),
+        ),
+        (true, json!(false), true, kept - 1, (json!(false), true), 0)
+    );
+}
+
+#[test]
+fn a_cursor_past_a_new_deletion_or_in_another_scope_reads_on() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let tail = t.changes(&[]);
+    let scoped = t.changes(&["--scope", "0:0"]);
+    let source = tail["revisions"][0]["sourceId"].as_str().unwrap();
+    let prune = |scope: &str, seq: u32| {
+        t.sql(&format!(
+            "UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'revision_seq';
+             INSERT INTO meta SELECT 'pruned' || char(31) || '{source}' || char(31) || '{scope}',
+             '{seq}' || ' ' || (SELECT value FROM meta WHERE key = 'revision_seq')"
+        ))
+    };
+    // A deletion behind every position read, then one in a scope `0:0` is a prefix of.
+    prune("9:9", 1);
+    let at_tail = t.changes(&["--cursor", tail["nextCursor"].as_str().unwrap()]);
+    prune("0:01", 100);
+    let in_scope = t.changes(&[
+        "--scope",
+        "0:0",
+        "--cursor",
+        scoped["nextCursor"].as_str().unwrap(),
+    ]);
+    assert_eq!(
+        (
+            at_tail["revisions"].as_array().unwrap().len(),
+            in_scope["revisions"].as_array().unwrap().len(),
+            // The other scope's mark is not this view's: its receipt is unchanged.
+            t.changes(&["--scope", "0:0"])["nextCursor"] == scoped["nextCursor"]
+        ),
+        (0, 0, true)
+    );
+}
+
+#[test]
+fn retention_marks_past_their_allowance_are_refused_and_hidden_ones_cost_nothing() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let source = t.changes(&[])["revisions"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let insert = |source: &str| {
+        t.sql(&format!(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1200)
+             INSERT INTO meta SELECT 'pruned' || char(31) || '{source}' || char(31) || i || ':'
+             || printf('%.900c', 'x'), '1 1' FROM n"
+        ))
+    };
+    insert("hidden");
+    let hidden = t.changes(&[]);
+    insert(&source);
+    let refused = t.fails(&["changes", "--file", &t.file]);
+    let narrower = t.changes(&["--scope", "0:0"]);
+    assert_eq!(
+        (
+            hidden["revisions"].as_array().unwrap().len(),
+            refused.contains("pass a narrower sourceId or scope"),
+            narrower["revisions"].as_array().unwrap().len(),
+        ),
+        (1, true, 1)
+    );
+}
+
+#[test]
+fn changes_and_ack_refuse_limits_and_consumers_out_of_range() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let page = t.changes(&[]);
+    let id = page["revisions"][0]["revisionId"].as_str().unwrap();
+    let cursor = page["nextCursor"].as_str().unwrap();
+    let long = "c".repeat(129);
+    let refused = [
+        t.fails(&["changes", "--file", &t.file, "--limit", "51"]),
+        t.fails(&[
+            "changes",
+            "--file",
+            &t.file,
+            "--revision",
+            id,
+            "--limit",
+            "501",
+        ]),
+        t.fails(&[
+            "watch",
+            "ack",
+            "--file",
+            &t.file,
+            "--consumer",
+            &long,
+            "--cursor",
+            cursor,
+        ]),
+    ];
+    assert_eq!(
+        refused
+            .each_ref()
+            .map(|e| e.contains("limit must be 1 to") || e.contains("pass consumer")),
+        [true; 3],
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn changes_names_a_scope_as_track_does() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let page = t.changes(&["--scope", "0-0"]);
+    assert_eq!(page["revisions"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn a_deleted_revision_reads_as_a_gap_and_a_checkpoint_on_it_as_null() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let page = t.changes(&[]);
+    let id = page["revisions"][0]["revisionId"].as_str().unwrap();
+    let ack = |c: &str| {
+        env.json(&[
+            "watch",
+            "ack",
+            "--file",
+            &t.file,
+            "--consumer",
+            "bot",
+            "--cursor",
+            c,
+        ])
+    };
+    ack(page["nextCursor"].as_str().unwrap());
+    let source = page["revisions"][0]["sourceId"].as_str().unwrap();
+    t.sql(&format!(
+        "DELETE FROM revisions;
+         UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'revision_seq';
+         INSERT INTO meta SELECT 'pruned' || char(31) || '{source}' || char(31) || '0:0',
+         '1' || ' ' || (SELECT value FROM meta WHERE key = 'revision_seq')"
+    ));
+    let detail = t.fails(&["changes", "--file", &t.file, "--revision", id]);
+    let r: Value = serde_json::from_str(detail.lines().last().unwrap()).unwrap();
+    let oldest = r["recovery"][0]["arguments"]["cursor"].as_str().unwrap();
+    assert_eq!(
+        (
+            detail.contains("deleted by retention"),
+            ack(oldest)["checkpoint"].clone()
+        ),
+        (true, Value::Null)
+    );
+}
+
+#[test]
+fn mcp_changes_shows_only_visible_sources_and_shares_cli_cursors() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let cli = t.changes(&["--limit", "1"]);
+    let ws = cli["workspaceId"].clone();
+    let (cursor, id) = (
+        cli["nextCursor"].clone(),
+        cli["revisions"][0]["revisionId"].clone(),
+    );
+    let other = env.dir.join("other");
+    std::fs::create_dir(&other).unwrap();
+    let other = std::fs::canonicalize(other).unwrap();
+    let root = std::fs::canonicalize(env.dir.join("")).unwrap();
+    let mut seen = Mcp::start(&env, &["--root", root.to_str().unwrap()]);
+    let next = seen.call("changes", json!({"workspaceId": ws, "cursor": cursor}));
+    let acked = seen.call(
+        "watch",
+        json!({"action": "ack", "workspaceId": ws, "consumer": "bot", "cursor": next["structuredContent"]["nextCursor"]}),
+    );
+    let mut hidden = Mcp::start(&env, &["--root", other.to_str().unwrap()]);
+    let empty = hidden.call("changes", json!({"workspaceId": ws}));
+    let stale = hidden.call("changes", json!({"workspaceId": ws, "cursor": cursor}));
+    let detail = hidden.call("changes", json!({"workspaceId": ws, "revision": id}));
+    let code = |r: &Value| r["_meta"]["figlens"]["code"].clone();
+    assert_eq!(
+        (
+            next["structuredContent"]["revisions"][0]["kind"].clone(),
+            acked["structuredContent"]["advanced"].clone(),
+            (
+                empty["structuredContent"]["revisions"].clone(),
+                empty["structuredContent"]["tracking"].clone()
+            ),
+            (code(&stale), code(&detail)),
+        ),
+        (
+            json!("changes"),
+            json!(true),
+            (json!([]), json!([])),
+            (json!("cursor_stale"), json!("invalid_arguments")),
+        )
+    );
+}
+
+#[test]
+fn a_consumer_checkpoint_is_kept_per_view_so_a_narrower_view_skips_nothing() {
+    let env = Env::new();
+    for d in ["project", "in", "out"] {
+        std::fs::create_dir(env.dir.join(d)).unwrap();
+    }
+    let dir = std::fs::canonicalize(env.dir.join("project")).unwrap();
+    let dir = dir.to_str().unwrap();
+    for name in ["in/a.fig", "out/b.fig"] {
+        let fig = env.fig(name);
+        env.json(&[
+            "index",
+            "prepare",
+            fig.to_str().unwrap(),
+            "--workspace",
+            dir,
+            "--scope",
+            "0:0",
+        ]);
+    }
+    env.json(&["index", "track", "--workspace", dir, "--scope", "0:0"]);
+    let all = env.json(&["changes", "--workspace", dir]);
+    env.json(&[
+        "watch",
+        "ack",
+        "--workspace",
+        dir,
+        "--consumer",
+        "bot",
+        "--cursor",
+        all["nextCursor"].as_str().unwrap(),
+    ]);
+    let inside = std::fs::canonicalize(env.dir.join("in")).unwrap();
+    let mut mcp = Mcp::start(&env, &["--root", inside.to_str().unwrap()]);
+    let narrow = mcp.call(
+        "changes",
+        json!({"workspaceId": all["workspaceId"], "consumer": "bot"}),
+    );
+    assert_eq!(
+        (
+            all["revisions"].as_array().unwrap().len(),
+            narrow["structuredContent"]["revisions"]
+                .as_array()
+                .unwrap()
+                .len()
+        ),
+        (2, 1)
+    );
+}
+
+#[test]
+fn tracking_every_source_builds_only_those_not_yet_tracked() {
+    let env = Env::new();
+    for d in ["project", "in", "out"] {
+        std::fs::create_dir(env.dir.join(d)).unwrap();
+    }
+    let dir = std::fs::canonicalize(env.dir.join("project")).unwrap();
+    let dir = dir.to_str().unwrap();
+    let mut ids = Vec::new();
+    for name in ["in/a.fig", "out/b.fig"] {
+        let fig = env.fig(name);
+        let prepared = env.json(&[
+            "index",
+            "prepare",
+            fig.to_str().unwrap(),
+            "--workspace",
+            dir,
+            "--scope",
+            "0:0",
+        ]);
+        ids.push(prepared["job"]["sourceId"].as_str().unwrap().to_owned());
+    }
+    let track = |more: &[&str]| {
+        let mut args = vec!["index", "track", "--workspace", dir, "--scope", "0:0"];
+        args.extend(more);
+        env.json(&args)
+    };
+    track(&["--source", &ids[0]]);
+    let both = track(&[]);
+    let refused = env.run(&[
+        "index",
+        "track",
+        "--workspace",
+        dir,
+        "--scope",
+        "9:9",
+        "--request-id",
+        "r1",
+    ]);
+    let built = |r: &Value| {
+        r["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|j| j["sourceId"].clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        (
+            built(&both),
+            String::from_utf8_lossy(&refused.stderr).contains("requestId names one job")
+        ),
+        (vec![json!(ids[1])], true)
+    );
+}
+
+#[test]
+fn a_poll_lists_at_most_a_hundred_tracked_scopes_and_says_so() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.sql(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100)
+         INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
+         SELECT source_id, '9:' || i, 'disabled', 1, '', 0 FROM sources, n",
+    );
+    let page = t.changes(&[]);
+    assert_eq!(
+        (
+            page["tracking"].as_array().unwrap().len(),
+            page["trackingTruncated"].clone()
+        ),
+        (100, json!(true))
+    );
+}
+
+/// A design inside an MCP root, tracked, and a path outside it to relocate the design to.
+fn inside_and_out(env: &Env) -> (String, String, String, String) {
+    let (inside, outside) = (env.dir.join("in"), env.dir.join("out"));
+    std::fs::create_dir(&inside).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    let path = inside.join("a.fig");
+    corpus::write(path.as_os_str(), false).unwrap();
+    let file = std::fs::canonicalize(&path).unwrap();
+    let file = file.to_str().unwrap().to_owned();
+    env.json(&["index", "prepare", &file, "--scope", "0:0"]);
+    env.json(&["index", "track", "--file", &file, "--scope", "0:0"]);
+    let root = std::fs::canonicalize(inside).unwrap();
+    let moved = std::fs::canonicalize(outside).unwrap().join("a.fig");
+    let source = env.json(&["index", "status", "--file", &file])["sources"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    (
+        file,
+        root.to_str().unwrap().to_owned(),
+        moved.to_str().unwrap().to_owned(),
+        source,
+    )
+}
+
+#[test]
+fn a_changes_read_relocated_out_of_its_root_meanwhile_reads_the_registry_it_authorized() {
+    let env = Env::new();
+    let (file, root, moved, source) = inside_and_out(&env);
+    let ws = env.json(&["changes", "--file", &file])["workspaceId"].clone();
+    let before = env.json(&["changes", "--file", &file])["revisions"].clone();
+    let gate = env.gate("changes.hold");
+    let mut mcp = Mcp::held(&env, &["--root", &root], Some(("changes", &gate)));
+    mcp.send(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "changes", "arguments": {"workspaceId": ws}}}));
+    let reached = PathBuf::from(format!("{}.reached", gate.display()));
+    wait_for("the read to choose its visible sources", || {
+        reached.exists()
+    });
+    std::fs::rename(&file, &moved).unwrap();
+    env.json(&["index", "relocate", &source, &moved, "--file", &file]);
+    // A revision published after the move. A real build would wait for this held reader to
+    // let the write-ahead log reset, so the row is written as its publication would.
+    let db = env.json(&["index", "status", "--file", &moved])["paths"]["database"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    rusqlite::Connection::open(db)
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO revisions SELECT randomblob(16), seq + 100, source_id, scope, epoch,
+             gen, from_gen, snapshot_id, kind, coverage, summary, detail, detail_rows,
+             detail_bytes, created_ms FROM revisions ORDER BY seq DESC LIMIT 1",
+        )
+        .unwrap();
+    let after = env.json(&["changes", "--file", &moved])["revisions"].clone();
+    std::fs::remove_file(&gate).unwrap();
+    let reply = loop {
+        let reply = mcp.read();
+        if reply["id"] == 1 {
+            break reply["result"]["structuredContent"].clone();
+        }
+    };
+    // The build recorded after the move is never served to a caller that cannot see it.
+    assert_eq!(
+        (
+            after.as_array().unwrap().len() > before.as_array().unwrap().len(),
+            reply["revisions"].clone(),
+        ),
+        (true, before)
+    );
+}
+
+#[test]
+fn a_clear_cache_keeps_what_a_source_moved_out_of_its_root_meanwhile_owns() {
+    let env = Env::new();
+    let (file, root, moved, source) = inside_and_out(&env);
+    // The baseline rebuild retired the first generation.
+    let ws = env.json(&["index", "status", "--file", &file])["workspaceId"].clone();
+    let db = env.json(&["index", "status", "--file", &file])["paths"]["database"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let retired = || -> i64 {
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM generations WHERE state = 'retired'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let kept = retired();
+    let gate = env.gate("clear.hold");
+    let mut mcp = Mcp::held(&env, &["--root", &root], Some(("clear_cache", &gate)));
+    mcp.send(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "index", "arguments": {"action": "clear_cache", "workspaceId": ws}}}));
+    let reached = PathBuf::from(format!("{}.reached", gate.display()));
+    wait_for("clear_cache to choose what it deletes", || reached.exists());
+    std::fs::rename(&file, &moved).unwrap();
+    env.json(&["index", "relocate", &source, &moved, "--file", &file]);
+    std::fs::remove_file(&gate).unwrap();
+    let reply = loop {
+        let reply = mcp.read();
+        if reply["id"] == 1 {
+            break reply["result"]["structuredContent"].clone();
+        }
+    };
+    assert_eq!(
+        (
+            kept > 0,
+            reply["partial"].clone(),
+            reply["removed"]["generations"].clone(),
+            retired()
+        ),
+        (true, json!(true), json!(0), kept)
+    );
+}
+
+#[test]
+fn a_retried_track_request_after_untrack_replays_its_job_and_never_tracks_again() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let track = |id: &str| {
+        env.json(&[
+            "index",
+            "track",
+            "--file",
+            file,
+            "--scope",
+            "0:0",
+            "--request-id",
+            id,
+        ])
+    };
+    let first = track("x");
+    env.json(&["index", "untrack", "--file", file, "--scope", "0:0"]);
+    let retried = track("x");
+    let fresh = track("y");
+    let outcome = |r: &Value| {
+        (
+            r["tracking"][0]["state"].clone(),
+            r["jobs"][0]["jobId"] == first["jobs"][0]["jobId"],
+        )
+    };
+    assert_eq!(
+        (outcome(&retried), outcome(&fresh)),
+        (
+            (json!("disabled"), true),
+            (json!("baseline_pending"), false)
+        )
+    );
+}
+
+#[test]
+fn a_tracked_scope_deleted_from_the_file_records_its_removal() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let scope =
+        |action: &str, node: &str| env.json(&["index", action, "--file", &t.file, "--scope", node]);
+    scope("refresh", "0:13");
+    scope("track", "0:13");
+    t.save(true);
+    scope("refresh", "0:13");
+    let revisions = env.json(&["changes", "--file", &t.file, "--scope", "0:13"])["revisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| json!([r["kind"], r["detail"], r["summary"]["kinds"]]))
+        .collect::<Vec<_>>();
+    // A scope never tracked, and missing, is still refused.
+    let refused = t.fails(&["index", "refresh", "--file", &t.file, "--scope", "0:99"]);
+    assert_eq!(
+        (revisions, refused.contains("ended \"failed\"")),
+        (
+            vec![
+                json!(["baseline", "complete", null]),
+                json!(["changes", "complete", {"removed": 1}])
+            ],
+            true
+        )
+    );
 }

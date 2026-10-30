@@ -19,7 +19,8 @@ pub fn usages(
     let ws_id = ws.held.id.clone();
     let rebuild = json!([{"action": "rebuild", "requires": "none", "tool": "index",
         "arguments": {"action": "rebuild", "workspaceId": ws_id}}]);
-    if ws.version < SCHEMA {
+    // Gated on the schema that introduced relations, not the current one: a read never upgrades.
+    if ws.version < 3 {
         return Err(FigError::new(
             ErrorKind::IndexIncompatible,
             format!("workspace {ws_id} has no relations index of this figlens yet; rebuild it, then query usages"),

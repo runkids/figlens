@@ -1,0 +1,47 @@
+# MCP contract reference
+
+Field reference linked from [mcp](mcp.md).
+
+`src/contract.rs` owns metadata, discovery, normalization and defaults. `prepare` returns a private-field, immutable `PreparedCall` required by `Command::from_tool`, once before admission/loading. Mathematical JSON integers (`2.0`) normalize; fractions, negative integers, overflow and nonfinite scales fail.
+
+| Parameter | Range / default |
+|---|---|
+| `tree.depth` | 0 through `2^53-1` (JSON-safe); omitted means every level; past 256 levels the call fails with `parse_budget_exceeded` ([layer depth](parsing.md#layer-depth)) |
+| `inspect.depth` | 0–10 / 1 |
+| `find.limit`, `search.limit` | 1–200 / 20 |
+| `usages.limit`, `usages.scope` | 1–200 / 50; `0:0` |
+| `changes.limit` | revisions 1–50 / 20; with `revision`, nodes 1–500 / 100 |
+| `export.scale` | finite and greater than 0 / 1 |
+| `export.quality` | 1–100 / 80 |
+| `export.maxKb` | 0 through `2^53-1`; omitted means no byte budget |
+| `export.maxSize` | 0 through `u32::MAX` / 1600; 0 disables the raster side cap |
+| `export.bounds` | `render` or `layout` / `render` |
+
+`tree`/`find`/`search` root defaults to `0:0`; booleans default false. `tree` `topFrames: true` ignores `depth` and returns the screens under the root (rule in the `discovery` topic): `id TYPE "name"` lines whose JSON-escaped names keep one id per line, or with `json` a flat array of entries without children plus `page` and innermost `section`. With `json`, children of a page or section (and every `topFrames` entry) add `firstText`. Search queries take at most 256 characters and 64 distinct terms (a CJK run of n characters is n-1 bigrams), types 16 names, scopes 1 KiB and cursors offset 100,000 (past it `hasMore` stays true without a `nextCursor`, so narrow the query); a page whose estimated copied names, paths and snippets exceed 8 MiB is refused with `response_budget_exceeded` before results are built (the serialized-reply cap above still applies), so lower `limit` or narrow `node`; `scripts/measure-search.py` measures cold CLI, MCP first and warm search cost and peak RSS on one approved input. File/output strings are nonempty; find queries contain non-whitespace. Export extensions follow the existing case-insensitive encoder selection, including `.jpeg`. Search type remains a free-form, case-insensitive plugin type, not an invented enum. Successful outputs and CLI parameter order remain unchanged.
+
+Tools reject unknown fields (`additionalProperties: false`), so a misspelled `nodeId` cannot fall back to `0:0`; workflow enumerates topics. **Breaking change:** MCP no longer translates arguments into CLI flags. Replace `depth: "0"` with `depth: 0`, `scale: "2x"` with `scale: 2`, and uncapped `maxSize: null`/`false` with `maxSize: 0` (omission means **1600**, not uncapped). Other optional null/non-boolean false values fail; boolean false is valid. Flag-like nodes are not CLI options. No legacy mode marker remains. Under `--root`, former legacy calls return `invalid_arguments`, not `permission_denied`. CLI is unchanged.
+
+Tool failures retain `isError: true` and text content; additive `_meta.figlens` carries stable `code` and corrective `nextStep`. Success payload schemas do not change:
+
+| Code | Meaning / next action |
+|---|---|
+| `invalid_arguments` | Missing/wrong/invalid tool parameters or unknown tool; consult `tools/list` |
+| `source_unreadable` | Local or remote source cannot be read/decoded; check valid local copy and authorized source access |
+| `node_not_found` | Resolve again with find/tree or inspect the containing instance; retain full IDs |
+| `unsupported_node` | Target exists but that operation cannot use it; use supported inspection/export or a drawable node as directed |
+| `parse_budget_exceeded` | A named finite parsing budget was crossed; use a smaller copy or report the limit |
+| `output_write_failed` | Bundle packing or export writing failed; create an authorized writable directory and check space/permissions |
+| `permission_denied` | Configured roots forbid the source/output; retain the restriction |
+| `workspace_busy` | Another process holds the workspace, or a lane is full; retry once clear, never kill it |
+| `storage_unavailable` | The workspace's storage is missing or offline; follow `_meta.figlens.recovery`: restore it, or with the user's confirmation recreate elsewhere |
+| `index_incompatible` | Another schema or index version; follow the recovery (`rebuild`, or that figlens version) |
+| `query_work_limit` | Over 10 sources or 100k records per search; run a listed narrower one |
+| `source_stale` | Every searched source changed since indexing; run the listed `refresh`, then search again |
+| `cursor_stale`/`cursor_expired` | Paged data was replaced or deleted, or a `changes` cursor was issued for another view; restart paging, for `changes` and `watch` without the cursor |
+| `event_gap` | Retention deleted `changes` revisions before they were read (or before a `watch` `ack` cursor accepted them); follow its recovery (from the oldest kept) and treat the scope as possibly changed |
+| `cancelled` | The job was cancelled; the previous index still serves |
+| `operation_failed` | Other existing operation error; inspect its diagnostic without assuming a more specific category |
+
+JSON parsing (`-32700`), invalid JSON-RPC envelopes (`-32600`), unknown methods (`-32601`) and a missing/non-string `tools/call` name (`-32602`) remain protocol errors. Business/argument failures inside a named tool call are tool results. Envelope-valid messages without `id` are ignored before preparation/I/O, even with unknown methods or invalid arguments. `id: null` gets a reply. Omitted `jsonrpc` remains accepted; prefer `"jsonrpc":"2.0"`.
+
+See the [GCS cookbook](gcs.md) for download versus parsed-tree caching and [bounded baseline](performance.md) for measurement limits. `scripts/mcp_smoke.py` shares its real subprocess session with GCS mock checks and measurement; no model, sockets or paid API are needed. The candidate installation matrix runs the same contract assertions through native and packaged wrapper stdio paths.
