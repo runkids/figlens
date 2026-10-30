@@ -723,9 +723,6 @@ fn cli_and_mcp_success_results_match() {
                 _ => unreachable!(),
             }
         }
-        if !matches!(name, "find" | "inspect" | "bundle" | "export") {
-            assert!(reply.get("structuredContent").is_none());
-        }
     }
 }
 

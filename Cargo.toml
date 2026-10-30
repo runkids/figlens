@@ -11,7 +11,7 @@ homepage = "https://github.com/runkids/figlens"
 readme = "README.md"
 keywords = ["figma", "fig", "design", "design-to-code", "cli"]
 categories = ["command-line-utilities", "parser-implementations", "multimedia::images"]
-include = ["src/**/*", "vendor/kiwi-schema/**/*", "skills/figlens/**/*", "scripts/make-first-success.rs", "scripts/probe-handoff.rs", "scripts/make-mapping-fixture.rs", "scripts/make-corpus.rs", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
+include = ["src/**/*", "vendor/kiwi-schema/**/*", "skills/figlens/**/*", "scripts/make-first-success.rs", "scripts/probe-handoff.rs", "scripts/make-mapping-fixture.rs", "scripts/make-corpus.rs", "scripts/make-token-fixture.rs", "scripts/probe-tokens.rs", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
 
 [dependencies]
 caseless = "0.2.2"
@@ -61,3 +61,11 @@ path = "scripts/make-mapping-fixture.rs"
 [[example]]
 name = "corpus-fixture"
 path = "scripts/make-corpus.rs"
+
+[[example]]
+name = "token-fixture"
+path = "scripts/make-token-fixture.rs"
+
+[[example]]
+name = "token-probe"
+path = "scripts/probe-tokens.rs"

@@ -11,6 +11,7 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 | `performance` | Measuring load time and memory, reading the perf baseline, changing cache or decode cost | `performance.md` |
 | `parsing` | Changing untrusted container/schema/value decoding or parsing budgets | `parsing.md` |
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields or variables | `fig-format.md` |
+| `tokens` | Changing DTCG variable export, validation or interoperability | `tokens.md` |
 | `discovery` | Changing find or inspect summaries (fields, limits, truncation, `--flat` lines), `tree --top-frames` screen lists or `export --match-dir` icon matching | `discovery.md` |
 | `search` | Changing search indexing, normalization, ranking, cursors, coverage or its budgets | `search.md`, `usages.md`, `library-usages.md` |
 | `diff` | Changing the diff engine (facets, matching, coverage, pair budgets, paging or its cursor) | `diff.md` |

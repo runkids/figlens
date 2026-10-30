@@ -45,6 +45,14 @@
         }
       ]
     },
+    "tokens": {
+      "description": "Changing DTCG variable export, validation or interoperability.",
+      "sources": [
+        {
+          "path": "wiki/tokens.md"
+        }
+      ]
+    },
     "discovery": {
       "description": "Changing find or inspect summaries (fields, limits, truncation, --flat lines), tree --top-frames screen lists or export --match-dir icon matching.",
       "sources": [
