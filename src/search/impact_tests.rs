@@ -1,7 +1,6 @@
 use super::super::tests::{bounds, instance, node, obj};
 use super::*;
 use crate::Tree;
-use crate::search::usages::Whole;
 use crate::search::{Index, WORK, build};
 use kiwi_schema::Value as K;
 use std::collections::HashMap;
@@ -26,13 +25,17 @@ fn index(extra: Vec<K<'static>>) -> Index {
         instance(41, 2, "Other button", 21, vec![]),
     ];
     nodes.extend(extra);
+    index_of(nodes)
+}
+
+fn index_of(nodes: Vec<K<'static>>) -> Index {
     let message = obj(vec![("nodeChanges", K::Array(nodes))]);
     build(&Tree::new(&message), "0:0", bounds(WORK))
 }
 
-/// Answers by (recipient, seed), `Unknown` when unlisted, and records every probe.
+/// Answers by (recipient, seed, facet), `Unknown` when unlisted, and records every probe.
 struct Fixed {
-    answers: HashMap<(&'static str, &'static str), Verdict>,
+    answers: HashMap<(&'static str, &'static str, u8), Verdict>,
     asked: Vec<(String, String, String, u8)>,
 }
 
@@ -40,17 +43,23 @@ impl Evidence for Fixed {
     fn compare(&mut self, probe: &Probe, _: &mut Bounds) -> Result<Verdict> {
         let (r, t, s) = (probe.recipient, probe.through, probe.seed);
         self.asked
-            .push((r.to_owned(), t.to_owned(), s.to_owned(), probe.facets));
+            .push((r.to_owned(), t.to_owned(), s.to_owned(), probe.facet));
         Ok(*self
             .answers
-            .get(&(probe.recipient, probe.seed))
+            .get(&(probe.recipient, probe.seed, probe.facet))
             .unwrap_or(&Verdict::Unknown))
     }
 }
 
+/// Answers about facet 1.
 fn fixed(answers: &[(&'static str, &'static str, Verdict)]) -> Fixed {
+    let answers: Vec<_> = answers.iter().map(|&(r, s, v)| (r, s, 1, v)).collect();
+    per_facet(&answers)
+}
+
+fn per_facet(answers: &[(&'static str, &'static str, u8, Verdict)]) -> Fixed {
     Fixed {
-        answers: answers.iter().map(|&(r, s, v)| ((r, s), v)).collect(),
+        answers: answers.iter().map(|&(r, s, f, v)| ((r, s, f), v)).collect(),
         asked: Vec::new(),
     }
 }
@@ -64,14 +73,7 @@ fn seed(node: &str, change: Change) -> Seed {
 }
 
 fn run(old: &Index, new: &Index, seeds: &[Seed], evidence: &mut Fixed, work: usize) -> Impact {
-    compute(
-        &mut Whole(old),
-        &mut Whole(new),
-        seeds,
-        evidence,
-        &mut bounds(work),
-    )
-    .unwrap()
+    compute(old, new, seeds, evidence, &mut bounds(work)).unwrap()
 }
 
 fn class<'a>(impact: &'a Impact, node: &str) -> Option<&'a Hit> {
@@ -189,7 +191,7 @@ fn an_unknown_diff_row_is_possible_never_direct() {
 fn a_bound_that_runs_out_leaves_the_impact_incomplete_not_unchanged() {
     let i = index(vec![]);
     let mut e = fixed(&[("0:31", "0:22", E)]);
-    let out = run(&i, &i, &[seed("0:22", Change::Changed)], &mut e, 500);
+    let out = run(&i, &i, &[seed("0:22", Change::Changed)], &mut e, 10);
     assert_eq!(
         (out.complete, out.reasons.contains_key("budget_unknown")),
         (false, true),
@@ -202,7 +204,7 @@ fn a_nested_layer_is_asked_about_through_its_component_with_its_seed_and_facets(
     let i = index(vec![]);
     let mut e = fixed(&[]);
     run(&i, &i, &[seed("0:22", Change::Changed)], &mut e, WORK);
-    let probe = ("0:31".to_owned(), "0:20".to_owned(), "0:22".to_owned(), 1);
+    let probe = ("0:31".to_owned(), "0:20".to_owned(), "0:22".to_owned(), 1u8);
     assert!(e.asked.contains(&probe), "{:?}", e.asked);
 }
 
@@ -225,4 +227,102 @@ fn a_masked_path_after_a_changed_one_leaves_the_layer_changed() {
     let seeds = [seed("0:32", Change::Changed), seed("0:33", Change::Changed)];
     let out = run(&i, &i, &seeds, &mut e, WORK);
     assert_eq!(classes(&out, &["0:40"]), [Some(Class::Effective)]);
+}
+
+#[test]
+fn one_changed_facet_never_marks_another_facet_changed() {
+    let i = index(vec![]);
+    let mut e = per_facet(&[("0:31", "0:22", 1, C), ("0:31", "0:22", 2, E)]);
+    let mut text_and_fill = seed("0:22", Change::Changed);
+    text_and_fill.facets = 1 | 2;
+    let out = run(&i, &i, &[text_and_fill], &mut e, WORK);
+    let hit = class(&out, "0:31").unwrap();
+    assert_eq!(
+        (hit.class, hit.changed, hit.equal),
+        (Class::Effective, 1, 2)
+    );
+}
+
+#[test]
+fn a_facet_walked_in_one_generation_is_still_walked_in_the_other() {
+    let walked = combos(1, OLD) | combos(2, NEW);
+    assert_ne!(walked & combos(1, NEW), combos(1, NEW));
+}
+
+#[test]
+fn unproven_layers_leave_the_impact_incomplete_with_their_reasons() {
+    let old = index(vec![instance(43, 2, "Old", 20, vec![])]);
+    let new = index(vec![]);
+    let out = run(
+        &old,
+        &new,
+        &[seed("0:22", Change::Changed)],
+        &mut fixed(&[]),
+        WORK,
+    );
+    let reasons: Vec<_> = out.reasons.keys().copied().collect();
+    assert_eq!(
+        (out.complete, reasons),
+        (false, vec!["comparison_unknown", "relation_unverified"])
+    );
+}
+
+#[test]
+fn proven_layers_alone_make_the_impact_complete() {
+    let i = index(vec![]);
+    let proven = [
+        "0:31",
+        "0:40",
+        "0:61",
+        "I0:40;0:31",
+        "I0:61;0:40",
+        "I0:61;0:40;0:31",
+    ];
+    let answers: Vec<_> = proven.iter().map(|&r| (r, "0:22", C)).collect();
+    let mut e = fixed(&answers);
+    let out = run(&i, &i, &[seed("0:22", Change::Changed)], &mut e, WORK);
+    assert!(out.complete, "{out:?}");
+}
+
+#[test]
+fn the_hit_cap_stops_before_keeping_more_layers_and_says_so() {
+    let mut extra: Vec<_> = (0..HITS as u32 + 10)
+        .map(|n| instance(10_000 + n, 2, "Many", 20, vec![]))
+        .collect();
+    extra.push(node(9, Some(2), "FRAME", "Pad", vec![]));
+    let i = index(extra);
+    let out = run(
+        &i,
+        &i,
+        &[seed("0:22", Change::Changed)],
+        &mut fixed(&[]),
+        WORK,
+    );
+    assert_eq!(
+        (
+            out.hits.len(),
+            out.complete,
+            out.reasons.contains_key("hit_limit")
+        ),
+        (HITS, false, true)
+    );
+}
+
+#[test]
+fn a_changed_component_set_reaches_its_members_and_their_instances() {
+    let set = ("isStateGroup", K::Bool(true));
+    let i = index(vec![
+        node(50, Some(1), "FRAME", "State", vec![set]),
+        node(51, Some(50), "SYMBOL", "State=On", vec![]),
+        instance(55, 2, "Toggle", 51, vec![]),
+    ]);
+    let out = run(
+        &i,
+        &i,
+        &[seed("0:50", Change::Changed)],
+        &mut fixed(&[]),
+        WORK,
+    );
+    let possible = Some(Class::Possible);
+    assert_eq!(classes(&out, &["0:51", "0:55"]), [possible, possible]);
 }

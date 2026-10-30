@@ -1101,6 +1101,20 @@ impl Reverse {
     }
 }
 
+/// The `(rid, edge)` positions pointing at `target`, from the reverse map a relations build
+/// prepaid.
+pub(crate) fn pointing_at<'a>(index: &'a Index, target: &str) -> &'a [(u32, u32)] {
+    Reverse::of(index)
+        .by_target
+        .get(target)
+        .map_or(&[], Vec::as_slice)
+}
+
+/// The rid of `node` in `index`, from the same prepaid map.
+pub(crate) fn rid_in(index: &Index, node: &str) -> Option<u32> {
+    Reverse::of(index).rids.get(node).copied()
+}
+
 pub(crate) struct Whole<'a>(pub &'a Index);
 
 impl Graph for Whole<'_> {
