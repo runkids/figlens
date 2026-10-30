@@ -2147,3 +2147,50 @@ fn an_overlong_library_style_key_near_the_byte_limit_stays_an_unsupported_edge()
         )
     );
 }
+
+#[test]
+fn an_overlong_image_hash_stays_an_unsupported_edge_and_a_short_one_is_kept() {
+    let doc = |hash: Vec<u8>| {
+        let fills = K::Array(vec![obj(vec![
+            ("type", K::Enum("PaintType", "IMAGE")),
+            ("image", obj(vec![("hash", K::Bytes(hash))])),
+        ])]);
+        obj(vec![(
+            "nodeChanges",
+            K::Array(vec![
+                node(0, None, "DOCUMENT", "Document", vec![]),
+                node(1, Some(0), "CANVAS", "Page", vec![]),
+                node(
+                    2,
+                    Some(1),
+                    "RECTANGLE",
+                    "Shape",
+                    vec![("fillPaints", fills)],
+                ),
+            ]),
+        )])
+    };
+    let edge = |message: &K| {
+        let index = build(&Tree::new(message), "0:0", bounds(WORK));
+        let mut r = req("0:2");
+        r.outgoing = true;
+        let out = run(&index, &r).unwrap();
+        let e = out["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["relation"] == "uses_image")
+            .cloned()
+            .unwrap();
+        (index.stop, e["state"].clone(), e["target"].is_null())
+    };
+    // Hex doubles the hash, so half of ID_BYTES plus one is already too long to keep.
+    let long = vec![0xab; super::super::store::ID_BYTES / 2 + 1];
+    assert_eq!(
+        (edge(&doc(vec![0xab, 0xcd])), edge(&doc(long))),
+        (
+            (None, json!("recorded"), false),
+            (None, json!("unsupported"), true)
+        )
+    );
+}
