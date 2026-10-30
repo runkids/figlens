@@ -193,16 +193,23 @@ const VALID: &str = "EXISTS (SELECT 1 FROM tracking t WHERE t.source_id = watch_
 /// them all, each with the mark of its latest lease start.
 static HELD: std::sync::Mutex<Vec<(Storage, String, u64)>> = std::sync::Mutex::new(Vec::new());
 static STARTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Set under `HELD` by `release_at_signal`: a start not yet in `HELD` then makes no lease.
+static CLOSING: AtomicBool = AtomicBool::new(false);
 
-fn remember_held(storage: &Storage, ws_id: &str) {
+/// False once `release_at_signal` ran, so the caller's lease is never made.
+fn remember_held(storage: &Storage, ws_id: &str) -> bool {
     let mark = STARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     if let Ok(mut held) = HELD.lock() {
+        if CLOSING.load(std::sync::atomic::Ordering::SeqCst) {
+            return false;
+        }
         match held.iter_mut().find(|(_, id, _)| id == ws_id) {
             Some(entry) => entry.2 = mark,
             None => held.push((storage.clone(), ws_id.to_owned(), mark)),
         }
     }
     wake();
+    true
 }
 
 /// Forgets the workspaces a renewal pass found done, unless a lease started in one since that
@@ -464,8 +471,15 @@ fn lease(
         ],
     )
     .map_err(sql)?;
+    // Held before the commit: `release_at_signal` either sees this workspace, its update then
+    // waiting for this commit, or refuses the start here and the lease rolls back.
+    if !remember_held(storage, &ws_id) {
+        return Err(fail(
+            ErrorKind::WorkspaceBusy,
+            "this server is stopping; start the watch from a running one".to_owned(),
+        ));
+    }
     tx.commit().map_err(sql)?;
-    remember_held(storage, &ws_id);
     Ok((
         lease_json(&ws_id, &lease, source_id, scope, expires),
         dir,
@@ -587,6 +601,15 @@ pub fn stop(storage: &Storage, select: &Select, lease_id: &str) -> Result<Json> 
         ));
     }
     Ok(json!({"workspaceId": ws_id, "leaseId": lease_id, "state": "ended", "reason": "stopped"}))
+}
+
+/// `release` for a process a signal is ending while its calls may still run: no start makes a
+/// lease after it.
+pub fn release_at_signal() {
+    if let Ok(_held) = HELD.lock() {
+        CLOSING.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    release();
 }
 
 /// At this process's exit: ends every lease it holds, in each workspace in one statement.

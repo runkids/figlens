@@ -4105,6 +4105,52 @@ impl Tracked<'_> {
 }
 
 #[test]
+fn evaluate_refuses_a_source_it_would_ignore_over_the_cli_and_mcp() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, _) = t.query("badge");
+    let source = t.changes(&[])["tracking"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let ws = env.json(&["index", "status", "--file", &t.file])["workspaceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let rows = "SELECT COUNT(*) FROM query_evaluations";
+    let before = t.count(rows);
+    let mut cli = Vec::new();
+    for given in ["nonexistent", source.as_str()] {
+        cli.push(t.fails(&[
+            "watch",
+            "evaluate",
+            "--file",
+            &t.file,
+            "--subscription",
+            &id,
+            "--source",
+            given,
+        ]));
+    }
+    let mut mcp = Mcp::start(&env, &[]);
+    let refused = mcp.call(
+        "watch",
+        json!({"action": "evaluate", "workspaceId": ws, "subscriptionId": id, "sourceId": "nonexistent"}),
+    );
+    drop(mcp);
+    assert!(
+        cli.iter().all(|e| e.contains("unknown flag --source")),
+        "{cli:?}"
+    );
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(
+        refused.to_string().contains("takes no sourceId"),
+        "{refused}"
+    );
+    assert_eq!(t.count(rows), before, "a refused evaluate stored one");
+}
+
+#[test]
 fn a_query_subscription_reads_stored_evaluations_and_only_evaluate_adds_one() {
     let env = Env::new();
     let t = Tracked::new(&env);

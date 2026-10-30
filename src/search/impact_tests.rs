@@ -49,6 +49,10 @@ impl Evidence for Fixed {
             .get(&(probe.recipient, probe.seed, probe.facet))
             .unwrap_or(&Verdict::Unknown))
     }
+
+    fn aliasing(&mut self, _: usize, _: &str, _: &mut Bounds) -> Option<Vec<String>> {
+        Some(Vec::new())
+    }
 }
 
 /// Answers about facet 1.

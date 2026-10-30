@@ -400,6 +400,8 @@ export function createAdapter(ctx, entry = import.meta.url) {
     }
     // Every other watch action writes checkpoints, subscriptions or leases into the workspace database, as a cancel writes its job.
     if (tool === 'watch' && !['list', 'status', 'start'].includes(input.action)) {
+      // The binary evaluates the subscription's own source, so a sourceId would only narrow the read asked here.
+      if (input.action === 'evaluate' && input.sourceId !== undefined) throw new Error("watch evaluate takes no sourceId: it evaluates the subscription's own source.");
       const found = await status(input);
       // A saved query or library question reads its source when saved and each time it is evaluated. A listed set
       // (sources without visible) reads exactly those ids; visible, or an id status does not list, asks every one.

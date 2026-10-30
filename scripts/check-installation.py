@@ -234,6 +234,8 @@ def main():
     parser.add_argument('--opencode-sdk', type=Path, help='Installed @opencode/client package root')
     parser.add_argument('--omp-sdk', type=Path)
     parser.add_argument('--bun', type=Path)
+    parser.add_argument('--host-watch-only', action='store_true',
+                        help='Run only the OpenCode/OMP watch and stale-context checks, on the public design')
     args = parser.parse_args()
     if bool(args.opencode_bin) != bool(args.opencode_sdk) or bool(args.omp_sdk) != bool(args.bun):
         parser.error('OpenCode requires both --opencode-bin/--opencode-sdk; OMP requires both --omp-sdk/--bun')
@@ -340,17 +342,18 @@ def main():
             pi['stdio'] = check_mcp([config['command'], *config['args']], consumer, wrapped_env, fixture, metadata['version'])
             first_use['piMcp'] = check_first_use([config['command'], *config['args']], work/'first-use-pi', fixture, wrapped_env)
             first_use['piLibrary'] = library([config['command'], *config['args']], 'library-pi', wrapped_env)
+        watch_only = [f'--watch-only={fixture}'] if args.host_watch_only else []
         if args.opencode_bin:
             hosts['opencode'] = json.loads(run([node, ROOT/'scripts/check-opencode-integration.mjs',
-                args.opencode_bin.resolve(), args.opencode_sdk.resolve(), installed, cache, work/'opencode', '--tui'],
+                args.opencode_bin.resolve(), args.opencode_sdk.resolve(), installed, cache, work/'opencode', '--tui', *watch_only],
                 consumer, env, timeout=240))
-            if args.pi_version:
+            if args.pi_version and not watch_only:
                 hosts['opencode']['piRoundTrip'] = json.loads(run([node, ROOT/'scripts/check-pi-integration.mjs',
                     sdk, installed, fixture, consumer, work/'opencode/project'], consumer, wrapped_env))['mappingRoundTrip']
         if args.omp_sdk:
             hosts['omp'] = json.loads(run([args.bun.resolve(), ROOT/'scripts/check-omp-integration.mjs',
-                args.omp_sdk.resolve(), work/'omp', cache, installed, '--tui'], consumer, env, timeout=240))
-            if args.pi_version:
+                args.omp_sdk.resolve(), work/'omp', cache, installed, '--tui', *watch_only], consumer, env, timeout=240))
+            if args.pi_version and not watch_only:
                 hosts['omp']['piRoundTrip'] = json.loads(run([node, ROOT/'scripts/check-pi-integration.mjs',
                     sdk, installed, fixture, consumer, work/'omp/project 空白'], consumer, wrapped_env))['mappingRoundTrip']
         print(json.dumps({'layer': 'B: candidate artifacts, injected local transport; not a published release',

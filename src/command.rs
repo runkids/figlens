@@ -1100,6 +1100,12 @@ pub fn changes_tool(
         ("watch", Some("stop")) => watch::stop(&storage, &select, needs("leaseId")?)?,
         ("watch", Some("status")) => watch::status(&storage, &select)?,
         ("watch", Some("subscribe")) => subs::subscribe(&storage, &select, &subscribe)?,
+        ("watch", Some("evaluate")) if request.source.is_some() => {
+            return Err(
+                "watch evaluate takes no sourceId: it evaluates the subscription's own source"
+                    .into(),
+            );
+        }
         ("watch", Some("evaluate")) => changes::evaluate(&storage, &select, request.subscription)?,
         ("watch", Some("list")) => subs::list(
             &storage,

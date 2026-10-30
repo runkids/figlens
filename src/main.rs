@@ -822,6 +822,17 @@ fn mcp(args: &[String]) -> Result<(), Box<dyn Error>> {
         };
         list.push(std::fs::canonicalize(dir).map_err(|e| format!("{arg} {dir}: {e}"))?);
     }
+    // A host may signal right after closing stdin (OMP does), before the reader sees the end:
+    // this server's leases end then too, instead of waiting to expire. The thread blocks until
+    // a signal, so a server that never watches wakes for nothing.
+    let waiter =
+        signals::waiter().map_err(|e| format!("figlens mcp: cannot catch signals: {e}"))?;
+    std::thread::spawn(move || {
+        if waiter.wait() {
+            figlens::workspace::watch::release_at_signal();
+            std::process::exit(143);
+        }
+    });
     // The reader thread needs a Send input; stdout stays locked on this thread.
     mcp::serve_with(
         std::io::BufReader::new(std::io::stdin()),
@@ -991,17 +1002,81 @@ mod signals {
     #[cfg(unix)]
     unsafe extern "C" {
         fn signal(signum: i32, handler: usize) -> usize;
+        fn write(fd: i32, buf: *const u8, count: usize) -> isize;
+        #[cfg_attr(target_os = "linux", link_name = "__errno_location")]
+        #[cfg_attr(not(target_os = "linux"), link_name = "__error")]
+        fn errno() -> *mut i32;
     }
+
+    /// The nonblocking write end of `Waiter`'s socket, once it exists.
+    #[cfg(unix)]
+    static WAKE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
     #[cfg(unix)]
     extern "C" fn interrupted(_: i32) {
-        INTERRUPTED.store(true, Ordering::Relaxed);
+        // Only the first signal writes, so repeats never fill the socket. Repeats are swallowed, not
+        // fatal: a wrapper forwards the host's group SIGTERM, which must not cut the release short.
+        if INTERRUPTED.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let fd = WAKE.load(Ordering::SeqCst);
+        if fd >= 0 {
+            // SAFETY: write(2) is async-signal-safe; nonblocking, so a full buffer drops the byte
+            // instead of blocking the handler, and one byte already wakes the waiter. The
+            // interrupted thread's errno is put back, as a handler must.
+            unsafe {
+                let saved = *errno();
+                write(fd, [1u8].as_ptr(), 1);
+                *errno() = saved;
+            }
+        }
+    }
+
+    /// Wakes once `catch`'s handler runs, and for nothing else.
+    #[cfg(unix)]
+    pub struct Waiter(std::os::unix::net::UnixStream);
+
+    /// Sets up the wakeup, then catches the signals: a failure leaves the default handlers.
+    #[cfg(unix)]
+    pub fn waiter() -> std::io::Result<Waiter> {
+        use std::os::fd::IntoRawFd;
+        // std opens both ends close-on-exec, so no child inherits them.
+        let (read, write) = std::os::unix::net::UnixStream::pair()?;
+        write.set_nonblocking(true)?;
+        WAKE.store(write.into_raw_fd(), Ordering::SeqCst);
+        catch();
+        Ok(Waiter(read))
+    }
+
+    #[cfg(unix)]
+    impl Waiter {
+        /// Blocks until a signal is caught; false if the wakeup failed, leaving the defaults
+        /// again so a signal still ends the process.
+        pub fn wait(mut self) -> bool {
+            use std::io::Read;
+            let mut byte = [0u8];
+            while !INTERRUPTED.load(Ordering::SeqCst) {
+                match self.0.read(&mut byte) {
+                    Ok(1) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    _ => {
+                        // SAFETY: SIG_DFL (0) for SIGINT and SIGTERM.
+                        unsafe {
+                            signal(2, 0);
+                            signal(15, 0);
+                        }
+                        return INTERRUPTED.load(Ordering::SeqCst);
+                    }
+                }
+            }
+            true
+        }
     }
 
     #[cfg(unix)]
     pub fn catch() {
         let handler = interrupted as extern "C" fn(i32) as usize;
-        // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
+        // SAFETY: the handler only swaps an atomic and writes one byte, both async-signal-safe.
         unsafe {
             signal(2, handler);
             signal(15, handler);
@@ -1016,15 +1091,49 @@ mod signals {
         }
     }
 
+    /// `wait`'s wakeup: Windows runs the handler on an ordinary thread, so it may lock.
+    #[cfg(windows)]
+    static WAKE: (std::sync::Mutex<()>, std::sync::Condvar) =
+        (std::sync::Mutex::new(()), std::sync::Condvar::new());
+
     #[cfg(windows)]
     unsafe extern "system" fn interrupted(_: u32) -> i32 {
-        INTERRUPTED.store(true, Ordering::Relaxed);
+        let _held = WAKE.0.lock();
+        INTERRUPTED.store(true, Ordering::SeqCst);
+        WAKE.1.notify_all();
         1
+    }
+
+    /// Wakes once `catch`'s handler runs, and for nothing else.
+    #[cfg(windows)]
+    pub struct Waiter;
+
+    #[cfg(windows)]
+    pub fn waiter() -> std::io::Result<Waiter> {
+        catch();
+        Ok(Waiter)
+    }
+
+    #[cfg(windows)]
+    impl Waiter {
+        /// Blocks until a signal is caught; false only if the lock was poisoned.
+        pub fn wait(self) -> bool {
+            let Ok(mut held) = WAKE.0.lock() else {
+                return false;
+            };
+            while !INTERRUPTED.load(Ordering::SeqCst) {
+                match WAKE.1.wait(held) {
+                    Ok(next) => held = next,
+                    Err(_) => return false,
+                }
+            }
+            true
+        }
     }
 
     #[cfg(windows)]
     pub fn catch() {
-        // SAFETY: registers a handler that only stores to an atomic.
+        // SAFETY: the handler runs on its own thread, so it may lock and notify.
         unsafe {
             windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(interrupted), 1);
         }
@@ -1355,6 +1464,10 @@ fn watch(action: &str, args: &[String]) -> Result<serde_json::Value, Box<dyn Err
     let a = index_args(args, true)?;
     if !a.positional.is_empty() || a.source.len() > 1 {
         return Err(usage.into());
+    }
+    // evaluate runs on the subscription's own source; a --source it would ignore is refused.
+    if action == "evaluate" && !a.source.is_empty() {
+        return Err(format!("unknown flag --source; {usage}").into());
     }
     let mut flags = std::collections::HashMap::new();
     for pair in a.search.chunks(2) {

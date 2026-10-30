@@ -13,6 +13,7 @@ assert.ok(sdk.startsWith(cwd + path.sep) && packaged.startsWith(cwd + path.sep),
 assert.equal(process.env.FIGLENS_BIN, undefined, 'The packaged extension must select its adjacent wrapper');
 const { loadExtensions, createExtensionRuntime } = await import(pathToFileURL(path.join(sdk, 'dist/core/extensions/loader.js')));
 const { loadSkills } = await import(pathToFileURL(path.join(sdk, 'dist/core/skills.js')));
+const { ExtensionRunner } = await import(pathToFileURL(path.join(sdk, 'dist/core/extensions/runner.js')));
 const runtime = createExtensionRuntime();
 const messages = [];
 const prompts = [];
@@ -57,15 +58,18 @@ try {
     assert.ok((await readFile(path.join(packaged, 'skills/figlens', name), 'utf8')).length > 100);
   }
   // Stale context: no message without a target; a subscription this session made is checked with the packaged binary.
-  const handle = async (event, payload) => {
-    let out;
-    for (const handler of extension.handlers.get(event) || []) out = await handler(payload, ctx) ?? out;
-    return out;
-  };
+  // The SDK's own runner dispatches each hook, as an agent session does before and during a run.
+  const runner = new ExtensionRunner(loaded.extensions, runtime, cwd, ctx.sessionManager, undefined);
+  const hookErrors = [];
+  runner.onError(error => hookErrors.push(error));
   // A user prompt runs the check; the note joins each model call through context, never the session.
   const turn = async () => {
-    assert.equal(await handle('before_agent_start', { type: 'before_agent_start', prompt: 'next', messageType: 'user' }), undefined);
-    return (await handle('context', { type: 'context', messages: [] }))?.messages.at(-1);
+    assert.deepEqual((await runner.emitBeforeAgentStart({ messageType: 'user', prompt: 'next', images: [] }, { cwd })).messages, []);
+    const prompt = { role: 'user', content: 'next', timestamp: 0 };
+    const sent = await runner.emitContext([prompt]);
+    assert.deepEqual(hookErrors, []);
+    assert.deepEqual(sent[0], prompt);
+    return sent[1];
   };
   assert.equal(await turn(), undefined, 'a session without a watch target added context');
   const cli = async args => JSON.parse((await promisify(execFile)(process.execPath, [path.join(packaged, 'bin/figlens.js'), ...args], { cwd })).stdout);
@@ -76,7 +80,7 @@ try {
   const sourceId = (await cli(['index', 'status', '--id', workspaceId])).sources[0].sourceId;
   const subscribe = { action: 'subscribe', workspaceId, consumer: `pi-check-${process.pid}`, sourceId, scope: '0:0' };
   const subscribed = await cli(['watch', 'subscribe', '--id', workspaceId, '--consumer', subscribe.consumer, '--source', sourceId, '--scope', '0:0']);
-  await handle('tool_result', { type: 'tool_result', toolName: 'mcp__figlens__watch', toolCallId: 'c1', input: subscribe,
+  await runner.emitToolResult({ type: 'tool_result', toolName: 'mcp__figlens__watch', toolCallId: 'c1', input: subscribe,
     content: [{ type: 'text', text: JSON.stringify(subscribed) }], isError: false, details: undefined });
   const subscriptionId = subscribed.subscription.subscriptionId;
   assert.deepEqual(entries.at(-1).data, [{ workspaceId, subscriptionId, consumer: subscribe.consumer }]);
@@ -88,13 +92,13 @@ try {
   assert.equal(first.display, false);
   assert.equal(facts(first)[0].tracking[0].refreshRequired, true, first.content);
   assert.deepEqual(entries.map(entry => entry.customType), ['figlens-watch-targets'], 'a notice entered the session');
-  await handle('session_start', { type: 'session_start' });
+  await runner.emit({ type: 'session_start' });
   assert.deepEqual(facts(await turn()), facts(first), 'a resumed session lost its target');
   await cli(['index', 'refresh', '--id', workspaceId, '--scope', '0:0']);
   const page = await cli(['changes', '--id', workspaceId, '--subscription', subscriptionId]);
   if (page.revisions.length) await cli(['watch', 'ack', '--id', workspaceId, '--subscription', subscriptionId, '--cursor', page.nextCursor]);
   assert.equal(await turn(), undefined, 'a refreshed and acknowledged subscription stayed stale');
-  const stale = { staleContext: { noTargetNoContext: true, refreshRequiredReported: true, noticeNotPersisted: true, resumedFromEntries: true, processedClears: true } };
+  const stale = { staleContext: { dispatchedBy: 'SDK ExtensionRunner', noTargetNoContext: true, refreshRequiredReported: true, noticeNotPersisted: true, resumedFromEntries: true, processedClears: true } };
   const pi = JSON.parse(await readFile(path.join(sdk, 'package.json'), 'utf8'));
   const pkg = JSON.parse(await readFile(path.join(packaged, 'package.json'), 'utf8'));
   let mappingRoundTrip;

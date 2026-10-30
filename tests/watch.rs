@@ -333,6 +333,92 @@ fn an_mcp_server_holds_its_lease_until_its_input_ends() {
     });
 }
 
+/// An MCP server holding one lease, with its input still open.
+#[cfg(unix)]
+fn leased_mcp(env: &Env) -> (Child, ChildStdin) {
+    let mut server = env
+        .command(&["mcp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut input = server.stdin.take().unwrap();
+    let mut output = BufReader::new(server.stdout.take().unwrap());
+    let mut call = |id: u64, method: &str, params: Value| -> Value {
+        let line =
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        writeln!(input, "{line}").unwrap();
+        let mut reply = String::new();
+        output.read_line(&mut reply).unwrap();
+        serde_json::from_str(&reply).unwrap()
+    };
+    call(
+        1,
+        "initialize",
+        serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}),
+    );
+    let index = call(
+        2,
+        "tools/call",
+        serde_json::json!({"name": "index", "arguments": {"action": "status", "file": env.file}}),
+    );
+    let ws = index["result"]["structuredContent"]["workspaceId"].clone();
+    let started = call(
+        3,
+        "tools/call",
+        serde_json::json!({"name": "watch",
+        "arguments": {"action": "start", "workspaceId": ws, "scope": "0:0"}}),
+    );
+    assert_eq!(started["result"]["structuredContent"]["state"], "active");
+    (server, input)
+}
+
+#[cfg(unix)]
+fn terminate(server: &Child) {
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &server.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+#[cfg(unix)]
+fn ended(env: &Env) -> (Value, Value) {
+    let status = env.status();
+    (
+        status["leases"][0]["state"].clone(),
+        status["leases"][0]["reason"].clone(),
+    )
+}
+
+#[cfg(unix)]
+#[test]
+fn an_mcp_server_signalled_before_its_input_ends_releases_its_lease() {
+    let env = Env::new();
+    let (mut server, input) = leased_mcp(&env);
+    // Input stays open: only the signal stops the server, as when a host signals before EOF lands.
+    terminate(&server);
+    assert_eq!(server.wait().unwrap().code(), Some(143));
+    assert_eq!(ended(&env), ("ended".into(), "released".into()));
+    drop(input);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_mcp_server_whose_input_ends_as_it_is_signalled_releases_its_lease() {
+    let env = Env::new();
+    let (mut server, input) = leased_mcp(&env);
+    drop(input);
+    terminate(&server);
+    // Either path may finish first; both end the same lease.
+    let code = server.wait().unwrap().code();
+    assert!(matches!(code, Some(0 | 143)), "{code:?}");
+    assert_eq!(ended(&env), ("ended".into(), "released".into()));
+}
+
 #[test]
 fn the_last_holder_closing_stdin_releases_its_lease_and_the_runner_exits() {
     let env = Env::new();

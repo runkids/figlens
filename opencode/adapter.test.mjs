@@ -564,6 +564,35 @@ test('CLI-path subscription reads ask read on exactly the subscription\'s source
   }
 });
 
+test('CLI-path evaluate refuses any sourceId before asking or running, and otherwise asks read on every source', async t => {
+  const { root, ctx, adapter } = await context(t);
+  const designs = ['one.fig', 'two.fig'].map(name => path.join(root, name));
+  for (const design of designs) await writeFile(design, '');
+  let denied, asked = [], ran = [];
+  ctx.permission.assert = async ({ action, resources }) => {
+    asked.push([action, ...resources]);
+    if (action === 'read' && resources.includes(denied)) throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  const current = await adapter.scope('session');
+  current.run = async args => {
+    ran.push(args[1]);
+    return { stdout: JSON.stringify({ state: 'ready', paths: { workspace: '/w', lock: '/w.lock' }, storage: { rule: 'default' },
+      roots: { config: { path: '/c' } }, sources: [{ sourceId: 's1', path: designs[0] }, { sourceId: 's2', path: designs[1] }] }) };
+  };
+  const evaluate = sourceId => adapter.cli(current, 'watch', { action: 'evaluate', workspaceId: 'ws_1', subscriptionId: 'sub_denied', sourceId });
+  // A fake, a matching and another valid source are all refused: none of them chooses what the binary reads.
+  for (const sourceId of ['nonexistent', 's1', 's2']) await assert.rejects(evaluate(sourceId), /takes no sourceId/);
+  assert.deepEqual([asked, ran], [[], []]);
+  denied = designs[1];
+  await assert.rejects(evaluate(undefined), /read denied/);
+  assert.deepEqual(ran, ['status'], 'a denied source ran no evaluate');
+  [denied, asked, ran] = [undefined, [], []];
+  await evaluate(undefined);
+  const read = asked.find(([action]) => action === 'read') ?? [];
+  assert.ok(designs.every(design => read.includes(design)), JSON.stringify(read));
+  assert.deepEqual(ran, ['status', 'evaluate']);
+});
+
 test('CLI-path prepare with an explicit storage asks edit on the state root the binary chose, not the remembered one', async t => {
   const { ctx, adapter } = await context(t);
   const asked = [], ran = [];

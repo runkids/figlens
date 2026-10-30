@@ -989,12 +989,60 @@ struct PairEvidence<'a> {
     pair: &'a Pair,
     ids: Option<[HashMap<&'a str, usize>; 2]>,
     orders: Option<[Vec<u32>; 2]>,
+    /// Per side, once built: `aliased_by`'s answer.
+    aliased: [Option<Option<AliasedBy<'a>>>; 2],
 }
 
 /// Estimated bytes of one id lookup or order entry kept for the probes.
 const LOOKUP: usize = 64;
 
+type AliasedBy<'a> = HashMap<&'a str, Vec<&'a str>>;
+
+/// Each alias or collection a side's variables name, to the variables naming it, built once per
+/// side and charged before it is kept; None when a variable's targets were unread, or the side
+/// stopped or hid layers, so it may hold a variable it never read.
+fn aliased_by<'a>(side: &'a Side, bounds: &mut Bounds) -> Option<AliasedBy<'a>> {
+    if side.index.stop.is_some() || side.index.hidden_content != 0 {
+        return None;
+    }
+    let mut by: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (r, f) in side.index.records.iter().zip(&side.facets) {
+        if !bounds.charge(1, 0) {
+            return None;
+        }
+        if r.kind != "VARIABLE" {
+            continue;
+        }
+        let aliases = f.aliases.as_ref()?;
+        if !bounds.charge(aliases.len(), aliases.len() * LOOKUP) {
+            return None;
+        }
+        for a in aliases {
+            // Several modes may alias one variable: it is listed once.
+            let ids = by.entry(a.as_str()).or_default();
+            if ids.last() != Some(&r.id.as_str()) {
+                ids.push(r.id.as_str());
+            }
+        }
+    }
+    Some(by)
+}
+
 impl super::impact::Evidence for PairEvidence<'_> {
+    fn aliasing(&mut self, at: usize, key: &str, bounds: &mut Bounds) -> Option<Vec<String>> {
+        if self.aliased[at].is_none() {
+            let side = [&self.pair.old, &self.pair.new][at];
+            self.aliased[at] = Some(aliased_by(side, bounds));
+        }
+        let by = self.aliased[at].as_ref().unwrap().as_ref()?;
+        let ids = by.get(key).map_or(&[][..], Vec::as_slice);
+        let bytes: usize = ids.iter().map(|id| id.len() + LOOKUP).sum();
+        if !bounds.charge(ids.len(), bytes) {
+            return None;
+        }
+        Some(ids.iter().map(|id| (*id).to_owned()).collect())
+    }
+
     fn compare(&mut self, probe: &Probe, bounds: &mut Bounds) -> Result<Verdict, Box<dyn Error>> {
         let (old, new) = (&self.pair.old, &self.pair.new);
         let records = old.index.records.len() + new.index.records.len();
@@ -2379,6 +2427,7 @@ fn revision_with(
         pair: &pair,
         ids: None,
         orders: None,
+        aliased: [None, None],
     };
     // A removed or added subtree is one row at its top, yet each layer below it that the other
     // side lacks was removed or added too: seed those, so a subscription on one reads it.

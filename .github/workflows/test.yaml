@@ -284,3 +284,69 @@ jobs:
             --opencode-sdk samples/plugin-research/hosts/opencode/node_modules/@opencode/client \
             --omp-sdk samples/plugin-research/hosts/omp/node_modules/@oh-my-pi/pi-coding-agent \
             --bun "$(command -v bun)"
+
+  # The OpenCode and OMP watch and stale-context checks on the public design, on the other OSes;
+  # the full host lane above, with the mapping fixture, stays on Linux.
+  host-watch:
+    needs: candidate
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            opencode: opencode-darwin-arm64.zip
+            binary: opencode
+            sha256: c71b1cd96541539ad38e2a75377d2f43d2a27567289a14371a182e9a0800db3d
+          - os: windows-latest
+            opencode: opencode-windows-x64.zip
+            binary: opencode.exe
+            sha256: a56307bdccdafd3fc5255556f3bf867703ea56dbeffaf00add4e9663edb3b974
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.3"
+      - uses: actions/download-artifact@v4
+        with:
+          name: installation-candidate
+          path: dist/candidate/
+      - name: Install isolated fixed host SDKs and verify OpenCode runtime bytes
+        shell: bash
+        env:
+          ASSET: ${{ matrix.opencode }}
+          SHA256: ${{ matrix.sha256 }}
+        run: |
+          npm install --prefix samples/plugin-research/hosts/omp --ignore-scripts --no-audit --no-fund @oh-my-pi/pi-coding-agent@18.13.2
+          npm install --prefix samples/plugin-research/hosts/opencode --ignore-scripts --no-audit --no-fund @opencode/plugin@2.2.0
+          curl --fail --location --output "samples/plugin-research/hosts/opencode/$ASSET" "https://github.com/anomalyco/opencode/releases/download/v2.2.0/$ASSET"
+          python -B -I - "samples/plugin-research/hosts/opencode/$ASSET" "$SHA256" samples/plugin-research/hosts/opencode <<'PY'
+          import hashlib, sys, zipfile
+          path, want, out = sys.argv[1:]
+          with open(path, 'rb') as f: got = hashlib.sha256(f.read()).hexdigest()
+          assert got == want, f'{path}: sha256 {got}, expected {want}'
+          with zipfile.ZipFile(path) as z: z.extractall(out)
+          PY
+          chmod +x samples/plugin-research/hosts/opencode/${{ matrix.binary }}
+      - name: Same candidate, OpenCode and OMP watch and stale context without models
+        shell: bash
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        # Python resolves bun: Git Bash on Windows would print a /c/... path Python cannot open.
+        run: |
+          python -B scripts/check-installation.py \
+            --artifacts dist/candidate --commit "$(git rev-parse HEAD)" --host-watch-only \
+            --opencode-bin samples/plugin-research/hosts/opencode/${{ matrix.binary }} \
+            --opencode-sdk samples/plugin-research/hosts/opencode/node_modules/@opencode/client \
+            --omp-sdk samples/plugin-research/hosts/omp/node_modules/@oh-my-pi/pi-coding-agent \
+            --bun "$(python -c 'import shutil; print(shutil.which("bun"))')"

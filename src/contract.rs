@@ -542,7 +542,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "sourceId",
                 "string",
                 false,
-                "start: the source to watch; ack: the sourceId filter of that changes call; subscribe: the source to follow; forget: only its views",
+                "start: the source to watch; ack: the sourceId filter of that changes call; subscribe: the source to follow; forget: only its views; evaluate takes none (it evaluates the subscription's own source)",
             ),
             (
                 "scope",
