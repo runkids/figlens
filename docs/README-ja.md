@@ -125,7 +125,7 @@ npx -y @runkids/figlens preview design.fig                        # ローカル
 npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 誰にでも送れるオフライン HTML スナップショット
 ```
 
-ページとレイヤーの閲覧、検索、計測、レイアウト・タイポグラフィ・variables・CSS の確認、任意のレイヤーのエクスポート、実装プロンプトのコピー、選択範囲の bundle のダウンロードができます。作成した画面のスクリーンショットをドロップすると、デザインに重ねて比較できます。詳細：[preview ガイド](../wiki/preview.md)。
+ページとレイヤーの閲覧、検索、ランク付き検索と選択範囲の正確な使用箇所（usages）の確認、計測、レイアウト・タイポグラフィ・variables・CSS の確認、任意のレイヤーのエクスポート、実装プロンプトのコピー、選択範囲の bundle のダウンロードができます。作成した画面のスクリーンショットをドロップすると、デザインに重ねて比較できます。詳細：[preview ガイド](../wiki/preview.md)。
 
 <a id="mcp-and-skill"></a>
 
@@ -211,7 +211,7 @@ Pi、OpenCode、OMP は、それぞれのオプトイン用エントリから同
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | レイヤー名とテキストの大文字小文字を区別しない検索。パス、サイズ、プレビュー。デフォルト 20 件（1-200） |
 | `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | インスタンスのオーバーライド、テキスト/ブーリアンプロパティ、スワップを適用したレイヤー名と全文のランク付き検索。正確なノード参照（`inspect` で使える `I…;…` サブレイヤー ID を含む）、一致理由、UTF-16 範囲、カバレッジ、カーソルによるページ送り。デフォルト 20 件（1-200）。非表示レイヤーと内部ページはそれぞれのフラグが必要。`<file>` の代わりに `--file`/`--workspace`/`--id` を使うと、workspace の準備済みインデックスを読みます（`index` を参照） |
 | `usages <file> <node\|resource> [--scope ID] [--relation R[,R]] [--out] [--snapshot S] [--include-hidden] [--limit N] [--cursor C]` | 保存済みの一つの範囲で、レイヤーまたはリソース（`VariableID:…`、`StyleKey:…`、`image:…`）の正確な関係を返します。ネストしたインスタンスとスワップも含みます。既定ではコンポーネント、セット、変数、スタイル、画像が使われている場所を、`--out` ではレイヤーが指す先を返します。各結果は正確な参照、関係、状態（`resolved`、`missing`、`unresolved` など）、根拠、証拠を持ち、名前は同一性として扱いません。総数は返さず、coverage が完全か部分的かを示します。既定 50 件（1-200）。`<file>` の代わりに `--file`/`--workspace`/`--id` を使うと、workspace で準備済みの `--scope` のインデックスを読みます |
-| `diff <old.fig> <new.fig> [--node ID] [--limit N] [--cursor C] [--json]` | 保存された二つのリビジョン間の変更：変更のあるトップレベル frame ごとに一行、facet（テキスト、レイアウト、外観、プロパティ、構造、バインディング）ごとの件数。`--json` で新旧のフィールド値と edge の変更も返します。レイヤーは完全一致する id と種類でのみ照合し、同名・同位置の frame はラベル付きの possible match に留まり、途中で止まった側は削除ではなく unknown と報告します。1 ページ 100 件（1-500） |
+| `diff <old.fig> <new.fig> [--node ID] [--limit N] [--cursor C] [--json]` | 保存された二つのリビジョン間の変更：変更のあるトップレベル frame ごとに一行、facet（テキスト、レイアウト、外観、プロパティ、構造、バインディング）ごとの件数。`--json` で新旧のフィールド値と edge の変更も返します。レイヤーは完全一致する id と種類でのみ照合し、同名・同位置の frame はラベル付きの possible match に留まり、途中で止まった側や、読めなかったフィールドだけが違うレイヤーは、削除や変更ではなく unknown と報告します。1 ページ 100 件（1-500） |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | 展開済みレイアウト/テキストのコンパクトな要約（最大 200 ノード）。`--images` でビットマップの寸法とクロップ範囲を追加。`--flat` は代わりに 1 ノード 1 行で出力（ノード基準の位置、サイズ、テキスト、フォント、塗り、線、角丸、auto-layout） |
 | `nodes <file> <node>` | REST nodes レスポンスのノードごとのオブジェクト（`document`、`components`、`componentSets`、`styles`）：展開済みインスタンスとオーバーライド、auto-layout、テキストスタイル、フィル、エフェクト、バインドされた variables、コンポーネントプロパティ、レンダリング bounds |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | 1 回のデコードで複数ノード：リストの id ごとに 1 行の JSON（`nodeId` 付きの `nodes` 出力、または `{nodeId, error}`） |

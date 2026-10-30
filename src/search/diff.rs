@@ -22,7 +22,7 @@ use crate::expand::{Bounds, Expanded, json_bytes, kiwi_bytes};
 use crate::{Document, ErrorKind, FigError, Tree, guid_key, to_json};
 
 /// Bumped whenever a field list, facet or digest stream changes; cursors carry it.
-const VERSION: &str = "diff-v5";
+const VERSION: &str = "diff-v7";
 /// Estimated heap of an expanded size or transform built as JSON (a map of at most six numbers).
 const OWNED_BYTES: usize = 512;
 pub(crate) const FACETS: [&str; 5] = ["text", "layout", "appearance", "properties", "structure"];
@@ -47,6 +47,8 @@ const FIELDS: [&[&str]; 4] = [
         "fontVariantNumericSpacing",
         "leadingTrim",
         "hyperlink",
+        // Laid-out lines and glyphs: REST line heights and drawn text read them.
+        "derivedTextData",
     ],
     &[
         "size",
@@ -117,6 +119,14 @@ const FIELDS: [&[&str]; 4] = [
         "variableResolvedType",
         "variableSetID",
         "variableSetModes",
+        "variableScopes",
+        "codeSyntax",
+        // Emitted component, set and style metadata.
+        "description",
+        "symbolDescription",
+        "styleType",
+        // Triggers and transitions; edges hold only their destinations.
+        "prototypeInteractions",
     ],
 ];
 /// Largest value one field may scan; a larger one is `unread`, like a usages binding field.
@@ -125,8 +135,10 @@ const VISITS: usize = 1 << 16;
 /// truncated; its digest still decides whether it changed.
 const FIELD_VALUE: usize = 512;
 const RECORD_VALUES: usize = 4 * 1024;
-/// Largest estimated field converted and digested; a larger one is `unread`.
+/// Largest estimated field converted and digested; a larger one is `unread`. Laid-out text
+/// holds about 400 bytes a glyph, so it gets room for a long text layer (`VISITS` still caps it).
 const FIELD_BYTES: usize = 64 * 1024;
+const DERIVED_TEXT_BYTES: usize = 4 * 1024 * 1024;
 /// Changes and candidate probes one pair may hold or spend, charged before they are kept.
 const PAIR_WORK: usize = 2_000_000;
 const PAIR_BYTES: usize = 64 * 1024 * 1024;
@@ -172,7 +184,7 @@ fn raw_bytes(v: &kiwi_schema::Value, h: &mut Sha256) {
             a.iter().for_each(|x| raw_bytes(x, h));
         }
         K::Object(_, o) => {
-            let mut keys: Vec<_> = o.iter().collect();
+            let mut keys: Vec<_> = o.iter().filter(|(k, _)| !UNCOMPARED.contains(k)).collect();
             keys.sort_by_key(|(k, _)| *k);
             keys.into_iter().for_each(|(_, x)| raw_bytes(x, h));
         }
@@ -180,11 +192,15 @@ fn raw_bytes(v: &kiwi_schema::Value, h: &mut Sha256) {
     }
 }
 
-/// Blob indexes in geometry and vector networks: numbers local to one file, so the digest takes
+/// Blob indexes in geometry, glyphs and vector networks: numbers local to one file, so the digest takes
 /// the bytes they name instead.
 const BLOB_KEYS: [&str; 2] = ["commandsBlob", "vectorNetworkBlob"];
+/// Bytes no output reads, left out of the comparison: the digest of the font file a text layout
+/// was measured with (`derivedTextData.fontMetaData[].fontDigest`). A re-derived instance holds
+/// it only as a `<N bytes>` placeholder, which would otherwise make every such text unread.
+const UNCOMPARED: [&str; 1] = ["fontDigest"];
 
-/// `v` without its blob indexes, pushed to `refs` in key order.
+/// `v` without its blob indexes, pushed to `refs` in key order, or its `UNCOMPARED` keys.
 fn unblob(v: &Json, refs: &mut Vec<u64>) -> Json {
     match v {
         Json::Array(a) => Json::Array(a.iter().map(|x| unblob(x, refs)).collect()),
@@ -195,6 +211,7 @@ fn unblob(v: &Json, refs: &mut Vec<u64>) -> Json {
                         refs.push(x.as_u64().unwrap_or(u64::MAX));
                         None
                     }
+                    false if UNCOMPARED.contains(&k.as_str()) => None,
                     false => Some((k.clone(), unblob(x, refs))),
                 })
                 .collect(),
@@ -203,24 +220,58 @@ fn unblob(v: &Json, refs: &mut Vec<u64>) -> Json {
     }
 }
 
-/// Whether `v` holds a `to_json` bytes placeholder, whose contents are gone.
+/// `value`'s estimated bytes and the visits that took, walking at most `VISITS` or `work`; a
+/// walk that used its whole allowance stopped there.
+fn estimate(value: &Value, work: usize) -> (usize, usize) {
+    let allowance = VISITS.min(work);
+    let mut left = allowance;
+    let bytes = match value {
+        Value::Json(v) => json_bytes(v, &mut left),
+        Value::Owned(v) => json_bytes(v, &mut left),
+        Value::Kiwi(v) => kiwi_bytes(v, &mut left),
+    };
+    (bytes, allowance - left)
+}
+
+/// Whether `v` holds a `to_json` bytes placeholder, whose contents are gone; an `UNCOMPARED`
+/// key's does not count, as `unblob` leaves it out.
 fn placeholder(v: &Json) -> bool {
     match v {
         Json::String(s) => s.starts_with('<') && s.ends_with(" bytes>"),
         Json::Array(a) => a.iter().any(placeholder),
-        Json::Object(o) => o.values().any(placeholder),
+        Json::Object(o) => o
+            .iter()
+            .any(|(k, x)| !UNCOMPARED.contains(&k.as_str()) && placeholder(x)),
         _ => false,
     }
 }
 
-/// Hashes what is written and counts it, keeping nothing.
-struct Digesting {
-    hash: Sha256,
-    len: usize,
+/// Bytes a kept field's record takes besides its key and value.
+const FIELD_META: usize = std::mem::size_of::<Field>();
+
+/// Bytes a kept value of serialized length `len` holds as JSON, which is larger than its text.
+/// It is at most `FIELD_VALUE` long, so its walk is short.
+fn held_value(v: &Json, len: usize) -> usize {
+    let mut left = usize::MAX;
+    json_bytes(v, &mut left).max(len)
 }
 
-impl std::io::Write for Digesting {
+/// Hashes what is written and counts it, keeping nothing. A visit per started 64 bytes of the
+/// whole stream is charged to `bounds` before each chunk is hashed, since escaping can make the
+/// stream longer than its estimate; a chunk it cannot pay for fails the write. Charging the
+/// stream's total, not each chunk, keeps small writes from paying more than one large one.
+struct Digesting<'b> {
+    hash: Sha256,
+    len: usize,
+    bounds: &'b mut Bounds,
+}
+
+impl std::io::Write for Digesting<'_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let visits = (self.len + buf.len()).div_ceil(64) - self.len.div_ceil(64);
+        if !self.bounds.charge(visits, 0) {
+            return Err(std::io::ErrorKind::OutOfMemory.into());
+        }
         self.hash.update(buf);
         self.len += buf.len();
         Ok(buf.len())
@@ -286,15 +337,21 @@ pub(super) fn facets(
             if !bounds.charge(0, 0) {
                 return None;
             }
-            let mut left = VISITS;
-            let estimate = match &value {
-                Value::Json(v) => json_bytes(v, &mut left),
-                Value::Owned(v) => json_bytes(v, &mut left),
-                Value::Kiwi(v) => kiwi_bytes(v, &mut left),
-            };
+            let (size, walked) = estimate(&value, bounds.work);
+            // Running out of the side's work stops the side, visits kept; only a walk that
+            // reached `VISITS` makes this one field unread.
+            if walked == bounds.work && walked < VISITS {
+                bounds.charge(walked, 0);
+                bounds.charge(1, 0);
+                return None;
+            }
             // Converting and hashing is paid for before it happens: a visit per 64 bytes.
-            let unread = left == 0 || estimate > FIELD_BYTES;
-            if !bounds.charge(VISITS - left + if unread { 0 } else { estimate / 64 }, 0) {
+            let cap = match *key {
+                "derivedTextData" => DERIVED_TEXT_BYTES,
+                _ => FIELD_BYTES,
+            };
+            let unread = walked == VISITS || size > cap;
+            if !bounds.charge(walked + if unread { 0 } else { size / 64 }, 0) {
                 return None;
             }
             // An override's bytes were already shown as `<N bytes>`; equal lengths prove nothing.
@@ -307,7 +364,7 @@ pub(super) fn facets(
                 };
             // A field kept unread retains its metadata, charged as a read one's is.
             if unread || gone {
-                if !bounds.charge(0, 64 + key.len()) {
+                if !bounds.charge(0, FIELD_META + key.len()) {
                     return None;
                 }
                 fields.push(Field {
@@ -320,9 +377,15 @@ pub(super) fn facets(
             }
             // Converting a stored value, and a geometry field's unblobbed copy, each allocate
             // about its estimate; both are paid for first.
-            let blobbed = ["fillGeometry", "strokeGeometry", "vectorData"].contains(key);
+            let blobbed = [
+                "fillGeometry",
+                "strokeGeometry",
+                "vectorData",
+                "derivedTextData",
+            ]
+            .contains(key);
             let copies = usize::from(matches!(value, Value::Kiwi(_))) + usize::from(blobbed);
-            if !bounds.charge(0, copies * estimate) {
+            if !bounds.charge(0, copies * size) {
                 return None;
             }
             let owned;
@@ -370,7 +433,7 @@ pub(super) fn facets(
                 blobs.extend(b);
             }
             if large {
-                if !bounds.charge(0, 64 + key.len()) {
+                if !bounds.charge(0, FIELD_META + key.len()) {
                     return None;
                 }
                 fields.push(Field {
@@ -385,31 +448,33 @@ pub(super) fn facets(
             let mut w = Digesting {
                 hash: Sha256::new(),
                 len: 0,
+                bounds,
             };
             w.hash.update(VERSION.as_bytes());
             w.hash.update(key.as_bytes());
             w.hash.update([0]);
             serde_json::to_writer(&mut w, json).ok()?;
-            w.hash.update((w.len as u64).to_le_bytes());
+            let Digesting { mut hash, len, .. } = w;
+            hash.update((len as u64).to_le_bytes());
             // Only bytes `to_json` dropped are added, so a stored value and an equal override
             // digest alike.
             if let (Value::Kiwi(v), true) = (&value, placeholder(json)) {
-                raw_bytes(v, &mut w.hash);
+                raw_bytes(v, &mut hash);
             }
             // Bytes and an array of bytes hash alike: their length, then each byte.
-            blobs.into_iter().for_each(|b| raw_bytes(b, &mut w.hash));
-            let fits = w.len <= FIELD_VALUE && kept + w.len <= RECORD_VALUES;
-            // Escaping can make the stream longer than the estimate; that work is charged too.
-            if !bounds.charge(w.len / 64, 64 + key.len() + if fits { w.len } else { 0 }) {
+            blobs.into_iter().for_each(|b| raw_bytes(b, &mut hash));
+            let fits = len <= FIELD_VALUE && kept + len <= RECORD_VALUES;
+            let held = FIELD_META + key.len() + if fits { held_value(json, len) } else { 0 };
+            if !bounds.charge(0, held) {
                 return None;
             }
             if fits {
-                kept += w.len;
+                kept += len;
             }
             fields.push(Field {
                 key,
                 facet: facet as u8,
-                digest: Some(w.hash.finalize().into()),
+                digest: Some(hash.finalize().into()),
                 value: fits.then(|| json.clone()),
             });
         }
@@ -440,7 +505,8 @@ enum Kind {
     Changed,
     /// Same id on both sides but another layer type: identity is not proven either way.
     Retyped,
-    /// Present on one side while the other stopped before reaching it.
+    /// Present on one side while the other stopped before reaching it, or on both with a
+    /// compared field unread and no proven difference.
     Unknown,
 }
 
@@ -494,9 +560,12 @@ struct Pair {
     unread: usize,
     /// Why the pair itself stopped short (`diff_work_limit`).
     stop: Option<&'static str>,
-    /// Per side, style and variable uses whose definition lies outside the compared records.
+    /// Per side, style, variable, main and set uses whose definition lies outside the compared
+    /// records.
     outside: [usize; 2],
     hashed: SystemTime,
+    /// Digest of the retained ordered result, which cursors bind (`result`).
+    result: String,
 }
 
 // shortcut: one old/new pair per process (two indexes with their facets), reused while both
@@ -736,8 +805,14 @@ fn differs(old: &Side, o: usize, oo: &[u32], new: &Side, n: usize, no: &[u32]) -
     if a.iter().chain(b).any(|x| x.digest.is_none()) {
         bits |= UNREAD;
     }
+    // A facet differs only where that is proven: a field present on one side only, or read on
+    // both with other digests. An unread value proves nothing either way.
     for facet in 0..FIELDS.len() as u8 {
-        if !in_facet(a, facet).eq(in_facet(b, facet)) {
+        let proven = in_facet(a, facet).count() != in_facet(b, facet).count()
+            || in_facet(a, facet)
+                .zip(in_facet(b, facet))
+                .any(|(x, y)| x.0 != y.0 || matches!((x.1, y.1), (Some(p), Some(q)) if p != q));
+        if proven {
             bits |= 1 << facet;
         }
     }
@@ -768,7 +843,8 @@ impl Collect {
         kind: Kind,
         facets: u8,
     ) -> bool {
-        if !self.budget.charge(1, 96) {
+        // A second visit for each change and frame pays for hashing it into `result`.
+        if !self.budget.charge(2, 96) {
             return false;
         }
         let index = &side.index;
@@ -790,7 +866,7 @@ impl Collect {
         if !self.at.contains_key(id) {
             if !self
                 .budget
-                .charge(1, 128 + id.len() + name.len() + page.len())
+                .charge(2, 128 + id.len() + name.len() + page.len())
             {
                 return false;
             }
@@ -854,6 +930,7 @@ fn compare(old: Side, new: Side, node: &str, work: usize) -> Pair {
             stop: Some("diff_work_limit"),
             outside: [0; 2],
             hashed: SystemTime::now(),
+            result: String::new(),
         };
     }
     let (oo, no) = (orders(&old.index), orders(&new.index));
@@ -884,16 +961,20 @@ fn compare(old: Side, new: Side, node: &str, work: usize) -> Pair {
                     + r.edges.len()
                     + new.index.records[n].edges.len();
                 c.budget.charge(work, 0) && {
-                    // A record that differs only where a field was unread is listed, never
-                    // taken for unchanged.
+                    // A record with a field unread and no proven difference is unknown: listed,
+                    // never taken for unchanged nor reported as changed.
                     let bits = differs(&old, o, &oo, &new, n, &no);
+                    let kind = match bits {
+                        UNREAD => Kind::Unknown,
+                        _ => Kind::Changed,
+                    };
                     bits == 0
                         || c.push(
                             &new,
                             &new_ids,
                             n,
                             (Some(o as u32), Some(n as u32)),
-                            Kind::Changed,
+                            kind,
                             bits,
                         )
                 }
@@ -988,7 +1069,7 @@ fn compare(old: Side, new: Side, node: &str, work: usize) -> Pair {
     let unread = changes.iter().filter(|c| c.facets & UNREAD != 0).count();
     // Pages list changes frame by frame, in first-seen frame order.
     changes.sort_by_key(|c| c.frame);
-    Pair {
+    let mut pair = Pair {
         old,
         new,
         node: node.to_owned(),
@@ -999,12 +1080,15 @@ fn compare(old: Side, new: Side, node: &str, work: usize) -> Pair {
         stop,
         outside,
         hashed: SystemTime::now(),
-    }
+        result: String::new(),
+    };
+    pair.result = result(&pair);
+    pair
 }
 
-/// Style, variable and main component uses on `s` whose definition is not one of its records:
-/// its values, or a main's property definitions, may change while every compared record stays
-/// the same. Each record and edge is charged before
+/// Style, variable, main component and component set uses on `s` whose definition is not one
+/// of its records: its values, or the property definitions a main or a variant inherits from
+/// its set, may change while every compared record stays the same. Each record and edge is charged before
 /// it is read.
 fn outside_uses(s: &Side, ids: &HashMap<&str, usize>, budget: &mut Bounds) -> Option<usize> {
     let mut n = 0;
@@ -1016,7 +1100,7 @@ fn outside_uses(s: &Side, ids: &HashMap<&str, usize>, budget: &mut Bounds) -> Op
             if !budget.charge(1, 0) {
                 return None;
             }
-            if let ("uses_style" | "binds_variable" | "instance_of", Some(t)) =
+            if let ("uses_style" | "binds_variable" | "instance_of" | "variant_of", Some(t)) =
                 (e.relation, e.target.as_deref())
                 && !matches!(e.state, "missing" | "unresolved")
             {
@@ -1122,6 +1206,47 @@ fn pair_frames(
     found
 }
 
+/// The retained ordered result a cursor's offset indexes into: a rebuild over the same sides that
+/// stopped elsewhere (the pair's own deadline or work) can change it.
+fn result(pair: &Pair) -> String {
+    let mut h = Sha256::new();
+    let n = |v: u64| v.to_le_bytes();
+    let text = |h: &mut Sha256, t: &str| {
+        h.update(n(t.len() as u64));
+        h.update(t);
+    };
+    // Each list is prefixed with its domain and count, so its rows cannot run into the next.
+    h.update(b"changes");
+    h.update(n(pair.changes.len() as u64));
+    for c in &pair.changes {
+        h.update(n(c.frame.into()));
+        h.update(n(c.old.map_or(u64::MAX, u64::from)));
+        h.update(n(c.new.map_or(u64::MAX, u64::from)));
+        h.update([c.kind as u8, c.facets]);
+        h.update(n(c.descendants.into()));
+    }
+    h.update(b"frames");
+    h.update(n(pair.frames.len() as u64));
+    for f in &pair.frames {
+        text(&mut h, &f.id);
+        h.update([f.change.map_or(u8::MAX, |k| k as u8)]);
+        f.counts.iter().for_each(|c| h.update(n((*c).into())));
+        match &f.possible {
+            Some((id, basis)) => {
+                h.update([1]);
+                text(&mut h, id);
+                text(&mut h, basis);
+            }
+            None => h.update([0]),
+        }
+    }
+    h.update(n(pair.possible as u64));
+    h.update(n(pair.unread as u64));
+    text(&mut h, pair.stop.unwrap_or(""));
+    pair.outside.iter().for_each(|o| h.update(n(*o as u64)));
+    hex(&h.finalize())
+}
+
 fn binding(pair: &Pair) -> String {
     let s = |s: &Side| {
         format!(
@@ -1129,7 +1254,13 @@ fn binding(pair: &Pair) -> String {
             s.source["sourceId"], s.source["snapshotId"], s.signature
         )
     };
-    format!("{VERSION}|{}|{}|{}", s(&pair.old), s(&pair.new), pair.node)
+    format!(
+        "{VERSION}|{}|{}|{}|{}",
+        s(&pair.old),
+        s(&pair.new),
+        pair.node,
+        pair.result
+    )
 }
 
 fn cursor(pair: &Pair, offset: usize) -> String {
@@ -1168,7 +1299,7 @@ pub(crate) fn facet_names(bits: u8) -> Vec<&'static str> {
 }
 
 fn summary(counts: &[u32; 8]) -> String {
-    let mut parts = vec![format!("{} changed", counts[7])];
+    let mut parts = vec![format!("{} listed", counts[7])];
     for (i, name) in FACETS
         .iter()
         .chain(["bindings", "unread"].iter())
@@ -1181,24 +1312,42 @@ fn summary(counts: &[u32; 8]) -> String {
     parts.join(", ")
 }
 
-/// Changed fields with old and new values, within `left` page value bytes.
-fn fields(pair: &Pair, c: &Change, left: &mut usize) -> Json {
+/// Page bytes one listed field takes besides its key and values: its facet and markers.
+const FIELD_ENVELOPE: usize = 96;
+/// Page bytes a changed record's edges take besides their entries: the lists, the omitted count
+/// and a swap marker.
+const EDGE_ENVELOPE: usize = 96;
+
+/// Changed or unread fields with old and new values, within `left` page value bytes; `None`
+/// when even their keys and markers do not fit.
+fn fields(pair: &Pair, c: &Change, left: &mut usize) -> Option<Json> {
     let (Some(o), Some(n)) = (c.old, c.new) else {
-        return Json::Null;
+        return Some(Json::Null);
     };
     let (a, b) = (
         &pair.old.facets[o as usize].fields,
         &pair.new.facets[n as usize].fields,
     );
+    let differing: Vec<_> = FIELDS
+        .iter()
+        .flat_map(|k| k.iter())
+        .map(|key| {
+            let x = a.iter().find(|f| f.key == *key);
+            (key, x, b.iter().find(|f| f.key == *key))
+        })
+        // Two unread digests are not equal values: a field unread on either side is listed.
+        .filter(|(_, x, y)| {
+            x.map(|f| f.digest) != y.map(|f| f.digest)
+                || [x, y].iter().any(|f| f.is_some_and(|f| f.digest.is_none()))
+        })
+        .collect();
+    let envelope: usize = differing
+        .iter()
+        .map(|(k, ..)| FIELD_ENVELOPE + k.len())
+        .sum();
+    *left = left.checked_sub(envelope)?;
     let mut out = Map::new();
-    for key in FIELDS.iter().flat_map(|k| k.iter()) {
-        let (x, y) = (
-            a.iter().find(|f| f.key == *key),
-            b.iter().find(|f| f.key == *key),
-        );
-        if x.map(|f| f.digest) == y.map(|f| f.digest) {
-            continue;
-        }
+    for (key, x, y) in differing {
         let mut value = |f: Option<&Field>| match f {
             None => json!({"present": false}),
             Some(Field { digest: None, .. }) => json!({"unread": true}),
@@ -1219,7 +1368,38 @@ fn fields(pair: &Pair, c: &Change, left: &mut usize) -> Json {
             json!({"facet": facet, "old": value(x), "new": value(y)}),
         );
     }
-    Json::Object(out)
+    Some(Json::Object(out))
+}
+
+/// The length of `s` as a JSON string, quotes included, as serde_json escapes it, if it is at
+/// most `room`: control characters grow to six bytes, so a name's raw length can understate its
+/// reply size sixfold. A string whose raw length already passes `room` is refused unscanned,
+/// and the scan stops once the length does, so it reads at most `room` bytes.
+fn escaped_within(s: &str, room: usize) -> Option<usize> {
+    let mut n = s.len() + 2;
+    if n > room {
+        return None;
+    }
+    for b in s.bytes() {
+        n += match b {
+            b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0x08 | 0x0c => 1,
+            0..=0x1f => 5,
+            _ => 0,
+        };
+        if n > room {
+            return None;
+        }
+    }
+    Some(n)
+}
+
+/// `room` less `fixed` and each of `strings` at its escaped length; `None` when they do not fit.
+fn fit(room: usize, fixed: usize, strings: &[&str]) -> Option<usize> {
+    let mut room = room.checked_sub(fixed)?;
+    for s in strings {
+        room -= escaped_within(s, room)?;
+    }
+    Some(room)
 }
 
 fn edge_key(e: &super::usages::Edge) -> (&str, Option<&str>, &str, &str) {
@@ -1255,16 +1435,19 @@ fn edges(pair: &Pair, c: &Change, left: &mut usize, work: &mut usize) -> Option<
     let mut omitted = 0;
     for (name, list, other) in [("removed", a, &sb), ("added", b, &sa)] {
         for e in list.iter().filter(|e| !other.contains(&edge_key(e))) {
-            let cost = 64
-                + e.relation.len()
-                + e.target.as_ref().map_or(0, String::len)
-                + e.state.len()
-                + e.evidence.len();
-            if cost > *left {
+            // A missing target is written as `null`, four bytes.
+            let target = e.target.as_deref();
+            let strings = [
+                e.relation,
+                target.unwrap_or_default(),
+                e.state,
+                e.evidence.as_str(),
+            ];
+            let Some(rest) = fit(*left, 64 + if target.is_none() { 2 } else { 0 }, &strings) else {
                 omitted += 1;
                 continue;
-            }
-            *left -= cost;
+            };
+            *left = rest;
             out[name].as_array_mut().unwrap().push(
                 json!({"relation": e.relation, "target": e.target, "state": e.state, "evidence": e.evidence}),
             );
@@ -1279,7 +1462,20 @@ fn edges(pair: &Pair, c: &Change, left: &mut usize, work: &mut usize) -> Option<
             .and_then(|e| e.target.clone())
     };
     if main(a) != main(b) {
-        out["swap"] = json!({"old": main(a), "new": main(b)});
+        let (old, new) = (main(a), main(b));
+        let nulls = 2 * usize::from(old.is_none()) + 2 * usize::from(new.is_none());
+        let sides = [
+            old.as_deref().unwrap_or_default(),
+            new.as_deref().unwrap_or_default(),
+        ];
+        // Ids that do not fit are marked; the page reserved `EDGE_ENVELOPE` for the marker.
+        out["swap"] = match fit(*left, 32 + nulls, &sides) {
+            Some(rest) => {
+                *left = rest;
+                json!({"old": old, "new": new})
+            }
+            None => json!({"truncated": true}),
+        };
     }
     Some(out)
 }
@@ -1316,12 +1512,35 @@ fn page_with(
         // Names and frame headers count against the page too; a full page ends early and the
         // cursor resumes at the next change, so none is dropped.
         let f = &pair.frames[c.frame as usize];
-        let header = match last == Some(c.frame) {
-            true => 0,
-            false => 192 + f.id.len() + f.name.len() + f.page.len(),
-        };
-        let cost = 96 + r.id.len() + r.kind.len() + r.name.len() + header;
-        if cost > left {
+        let (mut fixed, mut strings) = (96, vec![r.id.as_str(), &r.kind, &r.name]);
+        let names = facet_names(c.facets);
+        if c.kind == Kind::Changed {
+            fixed += 32;
+            strings.extend(&names);
+        }
+        if c.facets & UNREAD != 0 {
+            fixed += 16;
+        }
+        if c.kind == Kind::Changed && c.facets & EDGES != 0 {
+            fixed += EDGE_ENVELOPE;
+        }
+        if c.descendants > 0 {
+            fixed += 32;
+        }
+        let line = (last != Some(c.frame)).then(|| summary(&f.counts));
+        if let Some(line) = &line {
+            fixed += 192;
+            strings.extend([f.id.as_str(), &f.name, &f.page, line]);
+            if let Some((id, basis)) = &f.possible {
+                fixed += 64;
+                strings.extend([id.as_str(), basis]);
+            }
+        }
+        if c.kind == Kind::Retyped {
+            fixed += 64;
+            strings.push(&pair.old.index.records[c.old.unwrap() as usize].kind);
+        }
+        let Some(rest) = fit(left, fixed, &strings) else {
             if end > start {
                 break;
             }
@@ -1330,8 +1549,24 @@ fn page_with(
                 format!("change {} needs more than {PAGE_VALUES} bytes for its name and frame; inspect it on each side with `figlens inspect`", r.id),
             )
             .into());
-        }
-        left -= cost;
+        };
+        left = rest;
+        // Its fields' keys and markers are paid before its edges can spend the page; values that
+        // do not fit are marked truncated.
+        let field_list = match c.kind == Kind::Changed || c.facets & UNREAD != 0 {
+            true => match fields(pair, c, &mut left) {
+                Some(f) => Some(f),
+                None if end > start => break,
+                None => {
+                    return Err(FigError::new(
+                        ErrorKind::ResponseBudget,
+                        format!("the changed fields of {} need more than {PAGE_VALUES} bytes; inspect it on each side with `figlens inspect`", r.id),
+                    )
+                    .into())
+                }
+            },
+            false => None,
+        };
         // A changed record whose edges do not fit this page ends it before it, or fails when it
         // is the first: never listed without them.
         let edge_list = match c.kind == Kind::Changed && c.facets & EDGES != 0 {
@@ -1355,20 +1590,24 @@ fn page_with(
             node["oldKind"] = json!(pair.old.index.records[c.old.unwrap() as usize].kind);
         }
         if c.kind == Kind::Changed {
-            node["facets"] = json!(facet_names(c.facets));
+            node["facets"] = json!(names);
             if c.facets & UNREAD != 0 {
                 node["unread"] = json!(true);
             }
-            node["fields"] = fields(pair, c, &mut left);
+            node["fields"] = field_list.unwrap_or_default();
             if let Some(e) = edge_list {
                 node["edges"] = e;
             }
+        } else if c.facets & UNREAD != 0 {
+            node["unread"] = json!(true);
+            node["fields"] = field_list.unwrap_or_default();
         }
         if c.descendants > 0 {
             node["descendants"] = json!(c.descendants);
         }
         if last != Some(c.frame) {
-            let mut frame = json!({"id": f.id, "name": f.name, "page": f.page, "summary": summary(&f.counts), "nodes": []});
+            let mut frame =
+                json!({"id": f.id, "name": f.name, "page": f.page, "summary": line, "nodes": []});
             if let Some(k) = f.change {
                 frame["change"] = json!(k.name());
             }

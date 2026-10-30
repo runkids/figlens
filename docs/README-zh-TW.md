@@ -125,7 +125,7 @@ npx -y @runkids/figlens preview design.fig                        # 本機 viewe
 npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可寄給任何人的離線 HTML 快照
 ```
 
-可瀏覽頁面與圖層、搜尋、量測，檢視排版、字體、variables 與 CSS，匯出任何圖層，複製實作 prompt，或下載所選項目的 bundle。拖入你實作成果的截圖，即可疊在設計上比對。詳情：[預覽指南](../wiki/preview.md)。
+可瀏覽頁面與圖層、搜尋、排序搜尋與所選項目的精確用處（usages）、量測，檢視排版、字體、variables 與 CSS，匯出任何圖層，複製實作 prompt，或下載所選項目的 bundle。拖入你實作成果的截圖，即可疊在設計上比對。詳情：[預覽指南](../wiki/preview.md)。
 
 <a id="mcp-and-skill"></a>
 
@@ -211,7 +211,7 @@ Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，works
 | `find <file> <query> [--type TYPE] [--node ID] [--limit N]` | 不分大小寫搜尋圖層名稱與文字；路徑、尺寸與預覽。預設 20 筆結果（1-200） |
 | `search <file> <query> [--node ID] [--type T[,T]] [--limit N] [--cursor C] [--include-hidden] [--include-internal] [--mode text]` | 對圖層名稱與完整文字做排序搜尋，已套用 instance override、文字/布林屬性與 swap；回傳精確節點參照（包括可用於 `inspect` 的 `I…;…` 子圖層 id）、比對原因、UTF-16 範圍、涵蓋狀態與 cursor 分頁。預設 20 筆（1-200）；隱藏圖層與內部頁面需加對應 flag。以 `--file`/`--workspace`/`--id` 取代 `<file>` 時，讀取 workspace 已準備的索引（見 `index`） |
 | `usages <file> <node\|resource> [--scope ID] [--relation R[,R]] [--out] [--snapshot S] [--include-hidden] [--limit N] [--cursor C]` | 在一個已儲存範圍內回傳圖層或資源（`VariableID:…`、`StyleKey:…`、`image:…`）的精確關係，包括巢狀 instance 和 swap：預設回傳元件、元件集、變數、樣式或圖片被使用的位置，`--out` 回傳圖層指向的目標。每筆結果保留精確參照、關係、狀態（`resolved`、`missing`、`unresolved` 等）、依據與證據；名稱從不視為同一身分。不回傳總數，coverage 說明完整或部分。預設 50 筆（1-200）。用 `--file`/`--workspace`/`--id` 代替 `<file>` 時讀取 workspace 已準備好的 `--scope` 索引 |
-| `diff <old.fig> <new.fig> [--node ID] [--limit N] [--cursor C] [--json]` | 兩個已儲存版本之間的變更：每個有變更的頂層 frame 一行，依 facet（文字、版面、外觀、屬性、結構、綁定）計數；`--json` 另含新舊欄位值與 edge 變更。圖層只依完全相同的 id 與類型比對；同名或同位置的 frame 只標為 possible match，中途停止的一側回報 unknown，絕不當成刪除。每頁 100 筆（1-500） |
+| `diff <old.fig> <new.fig> [--node ID] [--limit N] [--cursor C] [--json]` | 兩個已儲存版本之間的變更：每個有變更的頂層 frame 一行，依 facet（文字、版面、外觀、屬性、結構、綁定）計數；`--json` 另含新舊欄位值與 edge 變更。圖層只依完全相同的 id 與類型比對；同名或同位置的 frame 只標為 possible match，中途停止的一側，或唯一差異是無法讀取的欄位的圖層，回報 unknown，絕不當成刪除或變更。每頁 100 筆（1-500） |
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | 精簡的展開後排版/文字摘要，最多 200 個節點。`--images` 會加上點陣圖尺寸與裁切範圍。`--flat` 改為每個節點一行：相對該節點的位置、尺寸、文字、字型、填色、描邊、圓角、auto-layout |
 | `nodes <file> <node>` | REST nodes 回應中單一節點的物件（`document`、`components`、`componentSets`、`styles`）：展開後的 instance 與 override、auto-layout、文字樣式、填色、效果、綁定的 variables、元件屬性、渲染邊界 |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | 一次解碼讀取多個節點：清單中每個 id 一行 JSON（帶 `nodeId` 的 `nodes` 輸出，或 `{nodeId, error}`） |
