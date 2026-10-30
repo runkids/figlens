@@ -118,6 +118,16 @@ test('a child ignoring stdin and SIGTERM is killed and its release reported unco
   assert.deepEqual([c.signals, end.state, end.reason], [['SIGTERM', 'SIGKILL'], 'unknown', 'release_unconfirmed']);
 });
 
+test('with group, a child ignoring stdin is signalled through its process group, never directly', async t => {
+  let c;
+  const sent = [];
+  t.mock.method(process, 'kill', (pid, signal) => { sent.push([pid, signal]); c.exit(null); return true; });
+  const holder = createHolder(() => (c = child({ start: c => { c.pid = 4242; c.say(active); } })), { exitMs: 10, group: true });
+  await holder.start([]);
+  await holder.stop('l1');
+  assert.deepEqual([sent, c.signals], [[[-4242, 'SIGTERM']], []]);
+});
+
 test('a child that exits without an end reply is not reported released', async () => {
   const holder = createHolder(() => child({ start: c => c.say(active), onStdinEnd: c => c.exit(0) }), { exitMs: 10 });
   await holder.start([]);

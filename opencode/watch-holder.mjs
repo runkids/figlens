@@ -9,8 +9,9 @@ const STDERR = 64 * 1024;
 // this host bounds its own children to the same count, starting or held, until each confirmed exit.
 const LIMIT = 16;
 
-// `group`: each child leads its own process group (spawned detached), so a signal reaches the native
-// `watch run` under the npm launcher too; figlens starts the shared runner in a group of its own.
+// `group`: each child leads its own process group (spawned detached), so a signal also reaches a
+// native `watch run` under a wrapper, as with a non-bundled `figlens` or `FIGLENS_BIN`; figlens
+// starts the shared runner in a group of its own.
 export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000, limit = LIMIT, group = false } = {}) {
   const held = new Map();
   // requestId -> its start, while that start is pending or its lease is held here. Once released,
