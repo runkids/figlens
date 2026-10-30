@@ -634,7 +634,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "relations": {"type": "array", "items": {"type": "string"}},
                 "scope": {"type": "object"},
                 "members": {"type": "object", "description": "COMPONENT_SET queries: the known member ids and whether they are complete"},
-                "results": {"type": "array", "items": {"type": "object"}, "description": "in: each location's ref, name, type, origin, hidden, page, scopeRoot, path, relation, state, basis, evidence and via (the member a set query matched); library queries: ref, name, type, relation, state, basis, evidence, hidden, internal, page and scopeRoot, no origin or path; out: target ref or resource, its definition and the edge fields"},
+                "results": {"type": "array", "items": {"type": "object"}, "description": "in: each location's ref, name, type, origin, hidden, page, scopeRoot, path, relation, state, basis, evidence and via (the member a set query matched); library queries: ref, name, type, relation, state, basis, evidence, hidden, internal, page and scopeRoot, no origin or path; out: target ref or resource, its definition and the edge fields, plus library {kind, namespace (null with unknownReason when no copy records one), key, basis cached_copy} on an instance_of, uses_style or binds_variable use whose cached library copy names it: the selector a library query takes"},
                 "coverage": {"type": "object", "description": "complete, layers.relations kinds and version, reasons; library queries: complete, sources (sourceId, path, state, snapshotId, freshness when ready, nextSteps) and reasons; never a total count"},
                 "hasMore": {"type": "boolean"},
                 "nextCursor": {"type": ["string", "null"]},
@@ -928,7 +928,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
     if tool == "usages" && key == "library" {
         p["properties"] = json!({
             "kind": {"type": "string", "enum": figlens::workspace::library::KINDS},
-            "namespace": {"type": "string", "minLength": 1, "description": "the library's sourceLibraryKey"},
+            "namespace": {"type": "string", "minLength": 1, "description": "the library's sourceLibraryKey, as an outgoing usages result's library names it"},
             "key": {"type": "string", "minLength": 1, "description": "the component, style or variable key"},
         });
         p["required"] = json!(["kind", "namespace", "key"]);

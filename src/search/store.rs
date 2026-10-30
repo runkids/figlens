@@ -826,6 +826,24 @@ impl Graph for Stored<'_> {
         out.sort_by(|a, b| (a.relation, a.seq).cmp(&(b.relation, b.seq)));
         Ok(out)
     }
+    fn library(&mut self, rid: u32) -> Result<Vec<Edge>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT rid, relation, seq, target, state, basis, evidence FROM edges
+             WHERE gen = ?1 AND rid = ?2 AND relation = ?3 ORDER BY seq",
+        )?;
+        let mut rows = stmt.query(params![self.gen_id, rid, usages::LIBRARY])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            if out.len() >= WORK {
+                return Err(bad());
+            }
+            // Measured in SQLite's buffer and charged before it is copied, as `add` does.
+            let size = 64 + text_len(row, 3)? + text_len(row, 6)?;
+            charge_query(&mut self.spent, size)?;
+            out.push(edge(row, 1)?);
+        }
+        Ok(out)
+    }
     fn load(&mut self, rids: &[u32]) -> Result<()> {
         let mut rids = rids.to_vec();
         // Each round reads one more ancestor level, so paths and parents are readable.

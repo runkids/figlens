@@ -93,7 +93,6 @@ await check('packaged descriptor, bridge handshake and absolute design path', as
     assert.equal(diffed.structuredContent.coverage.complete, true);
     assert.equal(diffed.structuredContent.coverage.changes, 0);
     assert.notEqual(diffed.structuredContent.source.old.sourceId, diffed.structuredContent.source.new.sourceId);
-    // Wiring only: the fixture records no library reference, so the question is unresolved and has no users.
     const prepared = await callTool(connection, 'index', { action: 'prepare', file: path.join(project, 'mapping.fig'), scope: '0:0' });
     assert.equal(prepared.isError, false);
     let job;
@@ -103,11 +102,16 @@ await check('packaged descriptor, bridge handshake and absolute design path', as
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     assert.equal(job.structuredContent?.state, 'succeeded', JSON.stringify(job));
-    const library = { kind: 'component', namespace: 'lib', key: 'k1' };
-    const used = await callTool(connection, 'usages', { workspaceId: prepared.structuredContent.workspaceId, library });
+    // The library reference comes from an instance's own outgoing usages, not from the fixture.
+    const workspaceId = prepared.structuredContent.workspaceId;
+    const out = await callTool(connection, 'usages', { workspaceId, node: '0:2', direction: 'out' });
+    const named = out.structuredContent?.results?.find(item => item.library)?.library;
+    assert.deepEqual(named, { kind: 'component', namespace: 'synthetic-library', key: 'synthetic-button', basis: 'cached_copy' }, JSON.stringify(out));
+    const library = { kind: named.kind, namespace: named.namespace, key: named.key };
+    const used = await callTool(connection, 'usages', { workspaceId, library });
     assert.equal(used.isError, false);
     assert.deepEqual(used.structuredContent.library, library);
-    assert.deepEqual(used.structuredContent.results, []);
+    assert.deepEqual(used.structuredContent.results.map(item => item.ref.nodeId), ['0:2', '0:3']);
     assert.deepEqual(used.structuredContent.definition, { state: 'unresolved', reason: 'library_source_unproven' });
     assert.equal(used.structuredContent.coverage.complete, true);
     assert.deepEqual(used.structuredContent.coverage.sources.map(source => source.state), ['ready']);

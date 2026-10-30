@@ -21,9 +21,11 @@ import tempfile
 import threading
 import time
 from installation import environment, run, toolchain
-from mcp_smoke import check_first_use, check_mcp, check_reuse
+from mcp_smoke import check_first_use, check_library, check_mcp, check_reuse
 
 ROOT = Path(__file__).resolve().parent.parent
+# The synthetic mapping fixture the host lanes use; generate it as wiki/integrations.md says.
+MAPPING = ROOT/'samples/plugin-research/fixtures/mapping.fig'
 
 
 def sha(path):
@@ -306,6 +308,10 @@ def main():
         # Each entry starts its own first use from clean roots, the way a host would launch it.
         first_use = {'nativeMcp': check_first_use([cache, 'mcp'], work/'first-use-native', fixture, env),
                      'wrapperMcp': check_first_use(wrapper + ['mcp'], work/'first-use-wrapper', fixture, wrapped_env)}
+        library = lambda command, name, env: (check_library(command, work/name, MAPPING, env) if MAPPING.is_file()
+                                              else 'skipped: no samples/plugin-research/fixtures/mapping.fig')
+        first_use['nativeLibrary'] = library([cache, 'mcp'], 'library-native', env)
+        first_use['wrapperLibrary'] = library(wrapper + ['mcp'], 'library-wrapper', wrapped_env)
         # The wrapper, as a second host, reuses the index the native first use enabled.
         first_use['crossHost'] = check_reuse(wrapper + ['mcp'], work/'first-use-native', wrapped_env)
         watch = check_watch(cache, fixture, consumer, env)
@@ -330,6 +336,7 @@ def main():
             config = pi['mcp']
             pi['stdio'] = check_mcp([config['command'], *config['args']], consumer, wrapped_env, fixture, metadata['version'])
             first_use['piMcp'] = check_first_use([config['command'], *config['args']], work/'first-use-pi', fixture, wrapped_env)
+            first_use['piLibrary'] = library([config['command'], *config['args']], 'library-pi', wrapped_env)
         if args.opencode_bin:
             hosts['opencode'] = json.loads(run([node, ROOT/'scripts/check-opencode-integration.mjs',
                 args.opencode_bin.resolve(), args.opencode_sdk.resolve(), installed, cache, work/'opencode', '--tui'],

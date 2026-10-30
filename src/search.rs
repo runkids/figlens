@@ -1856,8 +1856,10 @@ fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json
                 }
                 None => {
                     let label = path.display().to_string();
+                    // A full build also keeps library references, so a usages result can name
+                    // the one it uses; a text-only build reads none.
                     let index = Arc::new(decode_index(
-                        bytes, &label, scope, deadline, relations, false,
+                        bytes, &label, scope, deadline, relations, relations,
                     )?);
                     if stamp(&canonical)? != staged {
                         return Err(FigError::new(

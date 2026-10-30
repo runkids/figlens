@@ -149,6 +149,40 @@ def check_reuse(command, base, env):
     return {'reusedWorkspace': status['workspaceId']}
 
 
+def check_library(command, base, mapping, env):
+    """An agent names a library reference from tool output, then asks where it is used: stateless
+    and indexed outgoing usages of an instance agree on its cached copy's reference, and the
+    library question finds every instance. `mapping` is the synthetic mapping fixture."""
+    base.mkdir()
+    env = user_roots(base, env)
+    design = base/'mapping.fig'
+    shutil.copy2(mapping, design)
+    with session(command, base, env) as request:
+        request('initialize', {'protocolVersion': '2025-06-18', 'capabilities': {}, 'clientInfo': {'name': 'figlens-library', 'version': '1'}})
+        def call(name, arguments):
+            reply = request('tools/call', {'name': name, 'arguments': arguments})
+            assert reply['isError'] is False, reply
+            return reply['structuredContent']
+        def named(reply):
+            return next((r['library'] for r in reply['results'] if 'library' in r), None)
+        stateless = named(call('usages', {'file': str(design), 'node': '0:2', 'direction': 'out'}))
+        assert stateless and stateless['namespace'] and stateless['key'], stateless
+        job = call('index', {'action': 'prepare', 'file': str(design), 'scope': '0:0'})
+        workspace, job = job['workspaceId'], job['job']
+        deadline = time.monotonic() + 60
+        while job['state'] not in TERMINAL and time.monotonic() < deadline:
+            time.sleep(0.05)
+            job = call('jobs', {'action': 'status', 'jobId': job['jobId']})
+        assert job['state'] == 'succeeded', job
+        indexed = named(call('usages', {'workspaceId': workspace, 'node': '0:2', 'direction': 'out'}))
+        assert indexed == stateless, (indexed, stateless)
+        asked = {k: stateless[k] for k in ('kind', 'namespace', 'key')}
+        used = call('usages', {'workspaceId': workspace, 'library': asked})
+        assert [r['ref']['nodeId'] for r in used['results']] == ['0:2', '0:3'], used
+        assert used['coverage']['complete'] is True and used['definition']['state'] == 'unresolved', used
+    return {'named': stateless, 'usedBy': ['0:2', '0:3']}
+
+
 def check_first_use(command, base, fixture, env):
     """First use from a clean per-user state through a real MCP command, as an agent host runs it:
     prepare, poll, search the published index, inspect, a watch lease its input end releases, then

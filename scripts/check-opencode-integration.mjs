@@ -46,8 +46,11 @@ const firstUseCode = paths => ['index', 'jobs', 'search', 'inspect', 'usages'].e
   const found = await ${tool(paths, 'search')}({ workspaceId: prepared.workspaceId, query: 'Mapping review' });
   const node = found.results?.[0] && await ${tool(paths, 'inspect')}({ file: ${JSON.stringify(fixture)}, node: found.results[0].ref.nodeId });
   const used = await ${tool(paths, 'usages')}({ workspaceId: prepared.workspaceId, node: '0:10' });
-  const library = await ${tool(paths, 'usages')}({ workspaceId: prepared.workspaceId, library: { kind: 'component', namespace: 'lib', key: 'k1' } });
-  return { library: { results: library.results, definition: library.definition, complete: library.coverage?.complete }, usedBy: used.results?.map(item => item.relation + ' ' + item.ref.nodeId), usedSource: used.results?.[0]?.ref.sourceId === found.results?.[0]?.ref.sourceId, before: before.state, workspaceId: prepared.workspaceId, dispatched: prepared.job.state, job: job.state, polls,
+  // The library reference comes from an instance's own outgoing usages, not from the fixture.
+  const out = await ${tool(paths, 'usages')}({ workspaceId: prepared.workspaceId, node: '0:2', direction: 'out' });
+  const named = out.results?.find(item => item.library)?.library;
+  const library = named && await ${tool(paths, 'usages')}({ workspaceId: prepared.workspaceId, library: { kind: named.kind, namespace: named.namespace, key: named.key } });
+  return { library: { named, results: library?.results?.map(item => item.ref.nodeId), definition: library?.definition, complete: library?.coverage?.complete }, usedBy: used.results?.map(item => item.relation + ' ' + item.ref.nodeId), usedSource: used.results?.[0]?.ref.sourceId === found.results?.[0]?.ref.sourceId, before: before.state, workspaceId: prepared.workspaceId, dispatched: prepared.job.state, job: job.state, polls,
     ref: found.results?.[0]?.ref, sources: found.sources, complete: found.coverage?.complete, inspected: node?.node?.id };`;
 const firstUseSteps = [() => catalog(['index', 'jobs', 'search', 'inspect', 'usages']), firstUseCode];
 const resetSteps = [() => catalog(['index']), paths => tool(paths, 'index') && `
@@ -77,8 +80,16 @@ const cliSteps = [
   (status, prepared) => direct('figlens_changes', { workspaceId: prepared.workspaceId, consumer: 'smoke' }),
   // Two copies of one file, each read-checked before the binary compares them.
   () => direct('figlens_diff', { old: path.join(project, 'mapping-old.fig'), file: fixture }),
-  (status, prepared) => direct('figlens_usages', { workspaceId: prepared.workspaceId, library: { kind: 'component', namespace: 'lib', key: 'k1' }, scope: '0:1' }),
+  // The library reference comes from the instance's outgoing usages, then names the question.
+  (status, prepared) => direct('figlens_usages', { workspaceId: prepared.workspaceId, node: '0:2', scope: '0:1', direction: 'out' }),
+  (status, prepared, ...rest) => {
+    const named = rest[13]?.results?.find(item => item.library)?.library;
+    return named && direct('figlens_usages', { workspaceId: prepared.workspaceId, scope: '0:1',
+      library: { kind: named.kind, namespace: named.namespace, key: named.key } });
+  },
 ];
+// What the fixture's cached copy records; the lanes read it from tool output and compare.
+const LIBRARY = { kind: 'component', namespace: 'synthetic-library', key: 'synthetic-button', basis: 'cached_copy' };
 const deepId = `I${Array(60).fill('9:9').join(';')}`;
 let steps = searchSteps;
 // One scripted conversation at a time: each session starts the provider's state again.
@@ -228,8 +239,8 @@ try {
     // The Button component's instances, from the same published index and source as the search.
     assert.deepEqual(flow.usedBy, ['instance_of 0:2', 'instance_of 0:3'], JSON.stringify(flow));
     assert.equal(flow.usedSource, true);
-    // Wiring only: the fixture records no library reference, so the question is unresolved and has no users.
-    assert.deepEqual(flow.library, { results: [], definition: { state: 'unresolved', reason: 'library_source_unproven' }, complete: true }, JSON.stringify(flow));
+    // The Button main is a cached library copy: its reference, read from tool output, finds both instances.
+    assert.deepEqual(flow.library, { named: LIBRARY, results: ['0:2', '0:3'], definition: { state: 'unresolved', reason: 'library_source_unproven' }, complete: true }, JSON.stringify(flow));
     return { ...flow, sources: undefined, paths: paths.filter(item => /index|jobs|search|inspect|usages/.test(item)), provider: 'scripted loopback, not a model' };
   });
   await check('MCP reset asks the figlens_index permission: a deny rule keeps the database, an allow resets it', async () => {
@@ -358,10 +369,11 @@ try {
     assert.deepEqual(after?.revisions, [], (scripted.raw[13] ?? '').slice(0, 500));
     const diffed = value(scripted.raw[14] ?? '');
     assert.deepEqual([diffed?.coverage?.complete, diffed?.coverage?.changes], [true, 0], (scripted.raw[14] ?? '').slice(0, 500));
-    // Wiring only: the fixture records no library reference, so the question is unresolved and has no users.
-    const library = value(scripted.raw[15] ?? '');
-    assert.deepEqual([library?.results, library?.definition, library?.coverage?.complete],
-      [[], { state: 'unresolved', reason: 'library_source_unproven' }, true], (scripted.raw[15] ?? '').slice(0, 500));
+    const named = value(scripted.raw[15] ?? '')?.results?.find(item => item.library)?.library;
+    assert.deepEqual(named, LIBRARY, (scripted.raw[15] ?? '').slice(0, 500));
+    const library = value(scripted.raw[16] ?? '');
+    assert.deepEqual([library?.results?.map(item => item.ref.nodeId), library?.definition, library?.coverage?.complete],
+      [['0:2', '0:3'], { state: 'unresolved', reason: 'library_source_unproven' }, true], (scripted.raw[16] ?? '').slice(0, 500));
     return { pages: [first.results[0].ref.nodeId, second.results[0].ref.nodeId], refused: 'unknown relation', library: library.definition.reason, trackedBaselineAcked: true, diffedCopies: diffed.coverage.changes, usedBy: used.results.map(item => item.ref.nodeId), deepIdBytes: deepId.length, mcp: status.mcp.reason, before: before.state, job: job.state, ref: found.results[0].ref, inspected: node.node.id, tools: scripted.tools.filter(name => /^figlens_/.test(name)) };
   });
   await check('with a disabled MCP override figlens_watch holds a lease per session that records a save, and only its session, deletion or a reload ends it', async () => {

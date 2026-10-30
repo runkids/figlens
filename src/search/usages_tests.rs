@@ -2421,7 +2421,7 @@ fn library_references_keep_namespace_and_key_apart_and_never_borrow_a_namespace(
 }
 
 #[test]
-fn only_a_stored_generation_extracts_library_references_and_no_query_lists_them() {
+fn library_references_stay_off_record_edges_and_no_query_lists_them_as_a_relation() {
     let message = libraries_design();
     let tree = Tree::new(&message);
     let stateless = build(&tree, "0:0", bounds(WORK));
@@ -2469,6 +2469,73 @@ fn only_a_stored_generation_extracts_library_references_and_no_query_lists_them(
     );
     let fresh = build(&tree, "0:0", bounds(WORK));
     assert_eq!(out["coverage"], run(&fresh, &r).unwrap()["coverage"]);
+}
+
+#[test]
+fn a_cached_copy_use_names_its_library_reference_in_memory_and_stored_alike() {
+    let message = libraries_design();
+    let tree = Tree::new(&message);
+    let index = crate::search::build_with(&tree, "0:0", bounds(WORK), true, true, None);
+    let conn = stored(&index);
+    let named = |ns: Json, key: &str, kind: &str| {
+        let mut l = json!({"kind": kind, "namespace": ns, "key": key, "basis": "cached_copy"});
+        if ns.is_null() {
+            l["unknownReason"] = json!("namespace_unrecorded");
+        }
+        l
+    };
+    // A main's own namespace; none recorded; two copies that disagree; a style; a variable.
+    let cases = [
+        (
+            "0:20",
+            "instance_of",
+            named(json!("a/Component:b"), "c", "component"),
+        ),
+        ("0:22", "instance_of", named(Json::Null, "k", "component")),
+        ("0:40", "uses_style", named(Json::Null, "shared", "style")),
+        ("0:41", "uses_style", named(json!("x"), "solo", "style")),
+        (
+            "0:44",
+            "binds_variable",
+            named(json!("v"), "solo", "variable"),
+        ),
+    ];
+    for (node, relation, want) in cases {
+        let mut r = req(node);
+        r.outgoing = true;
+        let q = r.validate().unwrap();
+        let picked = |out: Json| -> Vec<Json> {
+            out["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| (e["relation"].clone(), e.get("library").cloned()))
+                .filter(|(rel, _)| rel != "contains")
+                .map(|(rel, l)| json!([rel, l]))
+                .collect()
+        };
+        let memory = picked(query(&mut Whole(&index), &q, &r, served_at(0)).unwrap());
+        let graph = &mut Stored {
+            conn: &conn,
+            gen_id: 1,
+            index: crate::search::store::load(&conn, 1, &[], &mut 0).unwrap(),
+            spent: 0,
+        };
+        let disk = picked(query(graph, &q, &r, served_at(1)).unwrap());
+        assert_eq!(
+            (&memory, &disk),
+            (&vec![json!([relation, want])], &memory),
+            "{node}"
+        );
+    }
+}
+
+fn served_at(gen_id: i64) -> Served<'static> {
+    static SOURCE: std::sync::OnceLock<Json> = std::sync::OnceLock::new();
+    Served {
+        source: SOURCE.get_or_init(source),
+        gen_id,
+    }
 }
 
 #[test]

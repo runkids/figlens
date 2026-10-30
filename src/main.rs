@@ -58,6 +58,8 @@ usage:
                                              variant_of, binds_variable, uses_style, uses_image,
                                              prototype_target, contains (asked for); in by default, --out
                                              for what it points at; state, basis and evidence per edge;
+                                             --out names a cached library copy's library {kind,
+                                             namespace, key}, the selector --library takes;
                                              coverage and cursor pages (50, 1-200), never a total
   figlens usages --workspace DIR|--file <file.fig>|--id ws_... <node>|<resource> [--source ID] [--storage DIR] [same options]
                                              the same over one source's prepared index of --scope,

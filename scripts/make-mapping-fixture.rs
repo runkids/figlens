@@ -63,6 +63,14 @@ fn node(id: u32, parent: Option<u32>, kind: &'static str, name: &str) -> Value<'
             object("SymbolData", vec![("symbolID", guid(10))]),
         ));
     }
+    // The main is a cached library copy, so a usages result can name its library reference.
+    if kind == "SYMBOL" {
+        fields.push(("componentKey", Value::String("synthetic-button".into())));
+        fields.push((
+            "sourceLibraryKey",
+            Value::String("synthetic-library".into()),
+        ));
+    }
     object("NodeChange", fields)
 }
 
@@ -141,6 +149,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 field("size", 2, 5, false),
                 field("transform", 4, 6, false),
                 field("symbolData", 5, 7, false),
+                field("componentKey", TYPE_STRING, 8, false),
+                field("sourceLibraryKey", TYPE_STRING, 9, false),
             ],
         ),
         Def::new(

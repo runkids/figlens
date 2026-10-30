@@ -1234,6 +1234,8 @@ pub(crate) trait Graph {
     ) -> Result<Inbound>;
     /// The edges of record `rid`, its parent as `contains`, in key order.
     fn outbound(&mut self, rid: u32) -> Result<Vec<Edge>>;
+    /// The library references record `rid` keeps apart from its edges, in seq order.
+    fn library(&mut self, rid: u32) -> Result<Vec<Edge>>;
     /// Makes records `rids` and their ancestors readable through `index`.
     fn load(&mut self, rids: &[u32]) -> Result<()>;
 }
@@ -1442,6 +1444,9 @@ impl Graph for Whole<'_> {
         out.sort_by(|a, b| (a.relation, a.seq).cmp(&(b.relation, b.seq)));
         Ok(out)
     }
+    fn library(&mut self, rid: u32) -> Result<Vec<Edge>> {
+        Ok(self.0.record(rid).library.clone())
+    }
     fn load(&mut self, _: &[u32]) -> Result<()> {
         Ok(())
     }
@@ -1619,7 +1624,16 @@ pub(crate) fn query(
         // Each target's definition is read once, and the reply budget is checked as it grows,
         // so repeated or large definitions never pile up copies past the budget.
         let mut defs: HashMap<&str, Option<Definition>> = HashMap::new();
-        let mut bytes = head;
+        // The library reference each cached-copy use names, read only when one could.
+        let refs = match hits.iter().any(|(_, e)| LIBRARY_OF.contains(&e.relation)) {
+            true => graph.library(rid)?,
+            false => Vec::new(),
+        };
+        let mut bytes = head
+            + refs
+                .iter()
+                .map(|r| 96 + r.target.as_ref().map_or(0, String::len))
+                .sum::<usize>();
         for (_, e) in &hits {
             let name = match e.target.as_deref() {
                 Some(t) => {
@@ -1640,7 +1654,11 @@ pub(crate) fn query(
             .iter()
             .map(|(_, e)| {
                 let d = e.target.as_deref().and_then(|t| defs[t].as_ref());
-                outgoing(e, d, source)
+                let mut out = outgoing(e, d, source);
+                if let Some(l) = library_of(e, &refs) {
+                    out["library"] = l;
+                }
+                out
             })
             .collect();
     } else {
@@ -1768,6 +1786,47 @@ pub(crate) fn query(
             "basis": "the set's members this index describes: every member in scope and each one an edge points at"});
     }
     Ok(out)
+}
+
+/// Relations whose target a cached library copy can name.
+const LIBRARY_OF: [&str; 3] = ["instance_of", "uses_style", "binds_variable"];
+
+/// The library reference `e` uses, from the record's own `uses_library` edge for the same copy
+/// or field and key; a copy that records no namespace, or copies that disagree, leave it null.
+fn library_of(e: &Edge, refs: &[Edge]) -> Option<Json> {
+    let target = e.target.as_deref()?;
+    let (kind, key) = match e.relation {
+        "instance_of" => ("component", None),
+        "uses_style" => ("style", Some(target.strip_prefix("StyleKey:")?)),
+        "binds_variable" => (
+            "variable",
+            Some(target.strip_prefix("VariableID:")?.split_once('/')?.0),
+        ),
+        _ => return None,
+    };
+    refs.iter().find_map(|r| {
+        let evidence: Json = serde_json::from_str(&r.evidence).ok()?;
+        let same = match key {
+            None => evidence["copy"] == target,
+            Some(_) => evidence["field"] == e.evidence.as_str(),
+        };
+        let Some(t) = r.target.as_deref() else {
+            // A reference too long to keep names no key; it is not guessed.
+            return (same && key.is_none()).then(|| {
+                json!({"kind": kind, "namespace": null,
+                "key": null, "basis": "cached_copy", "unknownReason": "reference_not_kept"})
+            });
+        };
+        let (k, ns, found): (String, Option<String>, String) = serde_json::from_str(t).ok()?;
+        if !same || k != kind || key.is_some_and(|key| key != found) {
+            return None;
+        }
+        let mut out = json!({"kind": kind, "namespace": ns, "key": found, "basis": "cached_copy"});
+        if ns.is_none() {
+            out["unknownReason"] = json!("namespace_unrecorded");
+        }
+        Some(out)
+    })
 }
 
 fn edge_fields(out: &mut Json, e: &Edge) {
