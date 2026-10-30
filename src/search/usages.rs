@@ -179,26 +179,43 @@ pub(crate) fn extract(
         return Some(out);
     };
     let mut fields = effective(tree, id, e, bounds, unread, false)?;
-    // A text range row applies where a character uses its styleID; as in `rest::text_overrides`,
-    // the last row of one styleID wins. Unused rows are blanked in place, so every relation read
-    // from the rows skips them and the rest keep their index. Charged per row first.
+    // A text range row applies where a character uses its styleID. Its style reference is the
+    // last row of that styleID, as in `rest::text_overrides`; its paints are the first row of
+    // that styleID with fill paints, as `render` draws them. Each row keeps only what it supplies
+    // and the rest are blanked in place, so every relation read from the rows keeps its index.
+    // Both passes are charged per row first.
     if let Some(text) = fields.get_mut("textData") {
         let uses = text["characterStyleIDs"].take();
         let uses = uses.as_array().map_or(&[][..], Vec::as_slice);
+        let active = |sid: Option<u64>| {
+            sid.is_some_and(|sid| {
+                uses.binary_search_by(|u| u.as_u64().cmp(&Some(sid)))
+                    .is_ok()
+            })
+        };
         if let Some(table) = text["styleOverrideTable"].as_array_mut() {
-            if !bounds.charge(table.len(), 16 * table.len()) {
+            if !bounds.charge(2 * table.len(), 33 * table.len()) {
                 return None;
             }
+            let mut painted = BTreeSet::new();
+            let paints: Vec<bool> = table
+                .iter()
+                .map(|row| {
+                    let sid = row["styleID"].as_u64();
+                    row["fillPaints"].is_array() && active(sid) && painted.insert(sid)
+                })
+                .collect();
             let mut seen = BTreeSet::new();
-            for row in table.iter_mut().rev() {
+            for (row, paints) in table.iter_mut().zip(paints).rev() {
                 let sid = row["styleID"].as_u64();
-                let used = seen.insert(sid)
-                    && sid.is_some_and(|sid| {
-                        uses.binary_search_by(|u| u.as_u64().cmp(&Some(sid)))
-                            .is_ok()
-                    });
-                if !used {
-                    *row = Json::Null;
+                let last = seen.insert(sid) && active(sid);
+                match (last, paints) {
+                    (true, true) => {}
+                    (true, false) => {
+                        row.as_object_mut().map(|r| r.remove("fillPaints"));
+                    }
+                    (false, true) => *row = json!({"fillPaints": row["fillPaints"].take()}),
+                    (false, false) => *row = Json::Null,
                 }
             }
         }
