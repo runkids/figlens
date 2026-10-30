@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, relationChoices, acceptReply, reasonCodes, mergePages, rowModel, groupUsages, localSearch} = require('../src/preview/viewer.js');
+const {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, relationChoices, acceptReply, reasonCodes, mergePages, rowModel, groupUsages, localSearch, sourceRef, pageOf} = require('../src/preview/viewer.js');
 
 test('prototype missing fields remain unspecified without click or navigation defaults', () => {
   const rows = prototypeRows({state:'recorded', sourceNodeId:'0:1', interactions:[
@@ -170,6 +170,15 @@ test('usages rows keep identity on ref.nodeId and show unknown targets as rows',
   assert.equal(m.state, 'external');
   assert.equal(rowModel({ref, name:'Same name'}).nodeId, 'I1:2;3:4');
   assert.equal(rowModel({target:null, relation:'instance_of', state:'missing'}).name, '(no target)');
+});
+test('result cards name the page core reports', () => {
+  assert.equal(rowModel({ref:{nodeId:'5:1'}, page:{id:'0:1', name:'Home'}}).page, 'Home');
+});
+test('handoff names its exact source, revision and listed page', () => {
+  assert.deepEqual(sourceRef({sourceId:'f', snapshotId:'s1'}, 3), {sourceId:'f', snapshotId:'s1', revision:3});
+  assert.equal(sourceRef(undefined, 3), null);
+  const catalog = {children:[{id:'0:9', internal:true, children:[{id:'1:2'}]}, {id:'0:1', name:'Home', children:[{id:'1:2'}]}]};
+  assert.equal(pageOf(catalog, 'I1:2;3:4').id, '0:1');
 });
 test('usages group members apart from results, and results by relation', () => {
   const g = groupUsages({source:{snapshotId:'s1'}, members:{nodeIds:['1:2','1:3'], complete:false}, results:[

@@ -76,6 +76,13 @@ const sameSource = (a, b) => !!a?.snapshotId && a.snapshotId === b?.snapshotId &
 // Every relation kind core reports, checked as this reply's effective relations.
 const relationChoices = reply => [...new Set([...Object.keys(reply.coverage?.layers?.relations?.kinds ?? {}), ...reply.relations])]
     .map(value => ({value, checked: reply.relations.includes(value)}));
+// The handoff's source: exact file identity plus the live revision it was checked at; null offline.
+const sourceRef = (source, revision) => source?.snapshotId ? {...source, revision} : null;
+// The listed page holding a layer; an expanded instance child is found through its instance.
+function pageOf(catalog, id) {
+    const real = id.startsWith('I') ? id.slice(1).split(';')[0] : id;
+    return catalog?.children?.find(p => !p.internal && flat(p).some(n => n.id === real));
+}
 const acceptReply = (seq, current, replySource, loadedSource) => seq === current && sameSource(replySource, loadedSource);
 // Coverage reasons, codes verbatim (with the relations a code names), without repeats.
 function reasonCodes(reply) {
@@ -102,7 +109,7 @@ function rowModel(row, source) {
         name: row.name ?? row.definition?.name ?? ref?.nodeId ?? resource ?? '(no target)',
         type: row.type ?? row.definition?.type ?? null, relation: row.relation ?? null, state: row.state ?? null,
         basis: row.basis ?? null, via: row.via ?? null, hidden: row.hidden === true,
-        origin: row.origin ?? null, scopeRoot: row.scopeRoot ?? null,
+        origin: row.origin ?? null, scopeRoot: row.scopeRoot ?? null, page: row.page?.name ?? null,
         path: (row.path || []).map(p => p.name || p.id).join(' / '),
     };
 }
@@ -130,7 +137,7 @@ function localSearch(roots, query, {types = [], hidden = false} = {}) {
     roots.forEach(n => walk(n, false));
     return {results: found.slice(0, 200).map(([n, off]) => ({name: n.name || n.id, type: n.type, ref: {nodeId: n.id}, hidden: off})), hasMore: found.length > 200};
 }
-if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, relationChoices, acceptReply, reasonCodes, mergePages, rowModel, groupUsages, localSearch};
+if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, relationChoices, acceptReply, reasonCodes, mergePages, rowModel, groupUsages, localSearch, sourceRef, pageOf};
 if (typeof document !== 'undefined') {
     const boot = JSON.parse(document.getElementById('boot').textContent);
     const $ = id => document.getElementById(id);
@@ -322,6 +329,8 @@ if (typeof document !== 'undefined') {
     function context() {
         return {
             scopeId: selected.id, referenceScopeId: rootId, exportArea: payload.area,
+            source: sourceRef(loadedSource, generation),
+            page: (p => p ? {id: p.id, name: p.name} : null)(pageOf(catalog, selected.id)),
             ...(selection.length > 1 && {selection: selection.map(n => ({id: n.id, name: n.name, type: n.type, box: n.absoluteBoundingBox}))}),
             node: selected, variables: payload.variables, components: payload.nodes.components,
             componentSets: payload.nodes.componentSets, styles: payload.nodes.styles,
@@ -921,8 +930,7 @@ if (typeof document !== 'undefined') {
         loading = true;
         if (catalog && !boot.snapshot) {
             // Like Figma, opening a layer from another page switches to that page.
-            const real = id.startsWith('I') ? id.slice(1).split(';')[0] : id;
-            const page = catalog.children?.find(p => !p.internal && flat(p).some(n => n.id === real));
+            const page = pageOf(catalog, id);
             if (page && page.id !== $('pages').value) {
                 $('pages').value = page.id;
                 pageList();
@@ -1532,6 +1540,8 @@ if (typeof document !== 'undefined') {
         let text = n ? `${n} shown${acc.hasMore ? ', more available' : ''}.` : `No matches in ${p.scope}.`;
         if (!n && partial) text += ' Coverage is partial, so absence is not established.';
         if (codes.length) text += ` ${partial ? 'Partial coverage' : 'Coverage notes'}: ${codes.join(', ')}.`;
+        const s = sourceRef(acc.source, generation);
+        if (s) text += ` Source ${s.sourceId}, snapshot ${s.snapshotId}, revision ${s.revision}.`;
         relState(name, partial ? 'partial' : n ? 'ok' : 'empty', text);
     }
     function relList(name, models) {
@@ -1539,7 +1549,7 @@ if (typeof document !== 'undefined') {
         for (const m of models) {
             const li = el('li'), open = button(m.name, () => relOpen(name, m));
             open.disabled = !m.nodeId;
-            li.append(open, el('span', [m.type, m.relation, m.state && `state ${m.state}`, m.basis, m.via && `via ${m.via}`, m.origin, m.scopeRoot && `in ${m.scopeRoot}`, m.hidden && 'hidden', m.resource && `resource ${m.resource}`, m.path].filter(Boolean).join(' · ')));
+            li.append(open, el('span', [m.type, m.relation, m.state && `state ${m.state}`, m.basis, m.via && `via ${m.via}`, m.origin, m.scopeRoot && `in ${m.scopeRoot}`, m.page && `page ${m.page}`, m.hidden && 'hidden', m.resource && `resource ${m.resource}`, m.path].filter(Boolean).join(' · ')));
             if (m.nodeId && !boot.snapshot) {
                 const copyBtn = button('Copy ID', () => relCopy(name, m, copyBtn));
                 li.append(copyBtn);
