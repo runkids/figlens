@@ -426,7 +426,8 @@ fn other_request(request: &str) -> Box<dyn Error> {
     )
 }
 
-/// Records `request_id` for a job it joined or took over, so a retry replays that job.
+/// Records `request_id` for a job it joined or took over, so a retry replays that job; `''`
+/// records a track that started none, so its retry replays without submitting.
 fn remember(tx: &Connection, request_id: Option<&str>, print: &str, job_id: &str) -> Result<()> {
     if let Some(request) = request_id {
         tx.execute(
@@ -641,8 +642,9 @@ pub(crate) fn submit(
         [KEPT],
     )
     .map_err(sql)?;
+    // A request that started no job (`''`) is retired where it is recorded.
     tx.execute(
-        "DELETE FROM requests WHERE job_id NOT IN (SELECT job_id FROM jobs)",
+        "DELETE FROM requests WHERE job_id <> '' AND job_id NOT IN (SELECT job_id FROM jobs)",
         [],
     )
     .map_err(sql)?;
@@ -2469,6 +2471,7 @@ fn set_tracking(
     }
     // A requestId first used by another request is refused before tracking changes; a retry of
     // this one replays its job and changes nothing, so after an untrack it never re-enables it.
+    let mut bound = None;
     if let (Some(Some(request)), [source_id]) = (on, sources.as_slice()) {
         let membership: String = tx
             .query_row(
@@ -2480,7 +2483,7 @@ fn set_tracking(
         let print = fingerprint("track", &ws.held.id, source_id, &membership, scope);
         match requested(&tx, request)? {
             Some((_, fp)) if fp != print => return Err(other_request(request)),
-            Some(_) => {
+            Some((job, _)) => {
                 let (state, epoch) = tx
                     .query_row(
                         "SELECT state, epoch FROM tracking WHERE source_id = ?1 AND scope = ?2",
@@ -2492,9 +2495,15 @@ fn set_tracking(
                     .unwrap_or(("untracked".into(), 0));
                 let row =
                     json!({"sourceId": source_id, "scope": scope, "state": state, "epoch": epoch});
-                return Ok((ws.held.id.clone(), json!([row]), vec![source_id.clone()]));
+                // A request that started no job replays as one again.
+                let started = (!job.is_empty()).then(|| source_id.clone());
+                return Ok((
+                    ws.held.id.clone(),
+                    json!([row]),
+                    started.into_iter().collect(),
+                ));
             }
-            None => {}
+            None => bound = Some((request, print)),
         }
     }
     let on = on.is_some();
@@ -2597,6 +2606,17 @@ fn set_tracking(
             .map_err(sql)?;
         let (state, epoch) = row.unwrap_or(("untracked".into(), 0));
         rows.push(json!({"sourceId": source_id, "scope": scope, "state": state, "epoch": epoch}));
+    }
+    // An already tracked scope starts no job, yet its requestId stays this request's, among
+    // the newest `KEPT` such as finished jobs are.
+    if let (Some((request, print)), true) = (bound, started.is_empty()) {
+        remember(&tx, Some(request), &print, "")?;
+        tx.execute(
+            "DELETE FROM requests WHERE job_id = '' AND rowid NOT IN
+             (SELECT rowid FROM requests WHERE job_id = '' ORDER BY rowid DESC LIMIT ?1)",
+            [KEPT],
+        )
+        .map_err(sql)?;
     }
     tx.commit().map_err(sql)?;
     Ok((ws.held.id.clone(), Json::Array(rows), started))

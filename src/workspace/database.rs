@@ -285,7 +285,8 @@ pub(crate) const V2: &str = "
         cancel INTEGER NOT NULL DEFAULT 0, gen INTEGER, created_ms INTEGER NOT NULL,
         heartbeat_ms INTEGER NOT NULL, finished_ms INTEGER, evicted TEXT,
         seq INTEGER NOT NULL DEFAULT 0) STRICT;
-    -- Further requestIds that joined or took over a job, so each replays it.
+    -- Further requestIds that joined or took over a job, so each replays it; '' for a track
+    -- that found its scope already tracked and started none.
     CREATE TABLE requests (request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
         job_id TEXT NOT NULL) STRICT;
     -- One active build per source and scope, whatever its kind: a second request joins it.
