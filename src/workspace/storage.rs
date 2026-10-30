@@ -911,6 +911,8 @@ pub(super) fn registered(path: &Path) -> std::result::Result<File, Box<dyn std::
     // Search-only directory handles, so a known file under an execute-only parent stays readable.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     const DIR: libc::c_int = libc::O_PATH | libc::O_DIRECTORY;
+    // O_SEARCH is in XNU from macOS 13, the floor zig 0.15.2 gives the shipped Darwin builds;
+    // lowering that floor would need a fallback here.
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     const DIR: libc::c_int = libc::O_SEARCH;
     let open = |at: libc::c_int, name: &std::ffi::OsStr, flags: libc::c_int| {
