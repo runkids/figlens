@@ -320,6 +320,7 @@ pub(crate) const V4: &str = "
         source_id TEXT NOT NULL, scope TEXT NOT NULL,
         state TEXT NOT NULL CHECK (state IN ('baseline_pending', 'active', 'disabled')),
         epoch INTEGER NOT NULL, facet_version TEXT NOT NULL, enabled_ms INTEGER NOT NULL,
+        enabled_seq INTEGER NOT NULL DEFAULT 0,
         baseline_gen INTEGER, PRIMARY KEY (source_id, scope)) STRICT;
     CREATE TABLE facet_sets (
         gen INTEGER PRIMARY KEY, facet_version TEXT NOT NULL, present INTEGER NOT NULL,

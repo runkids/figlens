@@ -2323,7 +2323,8 @@ fn set_tracking(
         let tracked = state.as_deref().is_some_and(|s| s != "disabled");
         let pending = !tracked || state.as_deref() == Some("baseline_pending");
         // Only a rebuild that reads tracking on records the baseline: one not yet at parse, where
-        // it reads tracking, or one submitted after a pending baseline was enabled. Any other
+        // it reads tracking, or one admitted after a pending baseline was enabled (a larger job
+        // `seq`, which only grows: never the clock). Any other
         // running job (a refresh may reuse an unfaceted snapshot) cannot, and joining it would
         // leave the baseline pending: track after it ends.
         let busy: Option<String> = match on && pending {
@@ -2333,7 +2334,7 @@ fn set_tracking(
                      AND t.scope = j.scope AND t.state = 'baseline_pending'
                      WHERE j.source_id = ?1 AND j.scope = ?2 AND j.state = 'running'
                      AND NOT (j.kind = 'rebuild' AND (j.stage IN ('stage', 'hash')
-                     OR IFNULL(j.created_ms >= t.enabled_ms, 0)))",
+                     OR IFNULL(j.seq > t.enabled_seq, 0)))",
                     [source_id, scope],
                     |r| r.get(0),
                 )
@@ -2354,10 +2355,12 @@ fn set_tracking(
         }
         if on && !tracked {
             tx.execute(
-                "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
-                 VALUES (?1, ?2, 'baseline_pending', 1, ?3, ?4)
+                "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms,
+                 enabled_seq) VALUES (?1, ?2, 'baseline_pending', 1, ?3, ?4,
+                 (SELECT IFNULL(MAX(seq), 0) FROM jobs))
                  ON CONFLICT (source_id, scope) DO UPDATE SET state = 'baseline_pending',
-                 epoch = epoch + 1, facet_version = ?3, enabled_ms = ?4, baseline_gen = NULL",
+                 epoch = epoch + 1, facet_version = ?3, enabled_ms = ?4,
+                 enabled_seq = excluded.enabled_seq, baseline_gen = NULL",
                 params![source_id, scope, search::diff::facet_version(), now_ms()],
             )
             .map_err(sql)?;

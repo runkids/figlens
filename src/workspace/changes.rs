@@ -29,6 +29,7 @@ pub struct Request<'a> {
 struct View {
     workspace: String,
     sources: Vec<String>,
+    source: Option<String>,
     scope: Option<String>,
     filter: String,
     key: Option<String>,
@@ -63,6 +64,7 @@ fn view(storage: &Storage, ws: &Opened, req: &Request) -> Result<View> {
     Ok(View {
         workspace: ws.held.id.clone(),
         sources,
+        source: req.source.map(str::to_owned),
         scope: req.scope.map(str::to_owned),
         filter,
         key,
@@ -143,11 +145,11 @@ fn pruned(conn: &Connection, v: &View) -> Result<i64> {
         .unwrap_or(0))
 }
 
-/// The position after `id`: its seq, the oldest kept for [`OLDEST`], or `event_gap` when the
-/// revision is no longer kept.
+/// The position after `id`: its seq, before every revision kept for [`OLDEST`], or `event_gap`
+/// when the revision is no longer kept.
 fn position(conn: &Connection, v: &View, id: &[u8]) -> Result<i64> {
     if id == OLDEST {
-        return pruned(conn, v);
+        return Ok(0);
     }
     conn.query_row(
         "SELECT seq FROM revisions WHERE id = ?1
@@ -161,13 +163,20 @@ fn position(conn: &Connection, v: &View, id: &[u8]) -> Result<i64> {
 }
 
 fn gap(v: &View) -> Box<dyn Error> {
-    let oldest = cursor(v, "c1", &OLDEST);
+    // The cursor is bound to these filters, so the recovery repeats them.
+    let mut arguments = json!({"workspaceId": v.workspace, "cursor": cursor(v, "c1", &OLDEST)});
+    if let Some(source) = &v.source {
+        arguments["sourceId"] = json!(source);
+    }
+    if let Some(scope) = &v.scope {
+        arguments["scope"] = json!(scope);
+    }
     FigError::new(
         ErrorKind::EventGap,
         "revisions after this position were deleted by retention before they were read; read changes again from the oldest kept, and treat the scope as possibly changed",
     )
     .with_recovery(json!([{"action": "changes", "requires": "none", "tool": "changes",
-        "arguments": {"workspaceId": v.workspace, "cursor": oldest}}]))
+        "arguments": arguments}]))
     .into()
 }
 

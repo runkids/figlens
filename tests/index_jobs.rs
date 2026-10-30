@@ -2067,6 +2067,17 @@ fn tracking_during_a_build_that_read_it_off_is_refused_and_tracking_after_builds
     );
     let reached = PathBuf::from(format!("{}.reached", gate.display()));
     wait_for("the build to pass its tracking read", || reached.exists());
+    // A pending baseline enabled in the same millisecond the build was created (or by a clock
+    // stepped back), though the build was admitted before it and read tracking off.
+    let status = env.json(&["index", "status", "--file", file]);
+    rusqlite::Connection::open(status["paths"]["database"].as_str().unwrap())
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms,
+             enabled_seq) SELECT source_id, scope, 'baseline_pending', 1, '', created_ms, seq
+             FROM jobs WHERE state = 'running'",
+        )
+        .unwrap();
     let refused = env.run(&["index", "track", "--file", file, "--scope", "0:0"]);
     std::fs::remove_file(&gate).unwrap();
     assert!(build.wait().unwrap().success());
@@ -2220,6 +2231,8 @@ fn a_cursor_for_other_filters_is_stale_and_a_position_retention_deleted_is_a_gap
     let page = t.changes(&["--scope", "0:0", "--limit", "1"]);
     let cursor = page["nextCursor"].as_str().unwrap();
     let source = page["revisions"][0]["sourceId"].as_str().unwrap();
+    let unscoped = t.changes(&["--limit", "1"]);
+    let unscoped = unscoped["nextCursor"].as_str().unwrap();
     let stale = t.fails(&["changes", "--file", &t.file, "--cursor", cursor]);
     env.json(&[
         "watch",
@@ -2251,19 +2264,42 @@ fn a_cursor_for_other_filters_is_stale_and_a_position_retention_deleted_is_a_gap
         "--consumer",
         "bot",
     ]);
-    let recovery: Value = serde_json::from_str(gap.lines().last().unwrap()).unwrap();
-    let oldest = recovery["recovery"][0]["arguments"]["cursor"]
-        .as_str()
-        .unwrap();
-    let resumed = t.changes(&["--scope", "0:0", "--cursor", oldest]);
+    // Another scope pruned past everything this one keeps must not hide what it keeps.
+    t.sql(&format!(
+        "INSERT INTO meta VALUES ('pruned' || char(31) || '{source}' || char(31) || '9:9', '100')"
+    ));
+    let mixed = t.fails(&["changes", "--file", &t.file, "--cursor", unscoped]);
+    // Each recovery runs exactly as given.
+    let resume = |stderr: &str| {
+        let r: Value = serde_json::from_str(stderr.lines().last().unwrap()).unwrap();
+        let a = &r["recovery"][0]["arguments"];
+        let mut args = vec![
+            "changes".to_owned(),
+            "--id".into(),
+            a["workspaceId"].as_str().unwrap().into(),
+        ];
+        for (key, flag) in [
+            ("sourceId", "--source"),
+            ("scope", "--scope"),
+            ("cursor", "--cursor"),
+        ] {
+            if let Some(v) = a[key].as_str() {
+                args.extend([flag.to_owned(), v.to_owned()]);
+            }
+        }
+        env.json(&args.iter().map(String::as_str).collect::<Vec<_>>())["revisions"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
     assert_eq!(
         (
             stale.contains("other filters"),
-            gap.contains("deleted by retention"),
             behind.contains("deleted by retention"),
-            resumed["revisions"][0]["kind"].clone(),
+            resume(&gap),
+            resume(&mixed),
         ),
-        (true, true, true, json!("changes"))
+        (true, true, 1, 1)
     );
 }
 
