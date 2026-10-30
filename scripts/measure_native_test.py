@@ -91,6 +91,15 @@ class MeasureNativeTest(unittest.TestCase):
                           native.polling({'cpuExact': True, 'cpuMsPer60s': 400, 'pollingCpuMsPer60s': 100})['status']],
                          ['pass', 'estimate'])
 
+    def test_revisions_reads_every_page(self):
+        class Workspace:
+            source = 'design.fig'
+            def cli(self, *args):
+                start = int(args[args.index('--cursor') + 1]) if '--cursor' in args else 0
+                rows = [{'revisionId': str(i)} for i in range(start, min(start + 50, 120))]
+                return {'revisions': rows, 'hasMore': start + 50 < 120, 'nextCursor': str(start + 50)}
+        self.assertEqual([r['revisionId'] for r in native.revisions(Workspace())], [str(i) for i in range(120)])
+
     def test_a_reaped_worker_counts_once(self):
         row = lambda ppid, cpu, child: {'ppid': ppid, 'cpuMs': cpu, 'childCpuMs': child, 'readBytes': 0,
                                         'writeBytes': 0, 'physReadBytes': 0, 'physWriteBytes': 0}

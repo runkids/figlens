@@ -423,8 +423,14 @@ class Workspace:
 
 
 def revisions(ws):
-    # shortcut: one page holds the baseline and 49 saves; follow nextCursor if a run ever saves more.
-    return ws.cli('changes', '--file', ws.source, '--scope', '0:0', '--limit', '50')['revisions']
+    """Every revision of the tracked scope, oldest first, page after page."""
+    rows, cursor = [], []
+    while True:
+        page = ws.cli('changes', '--file', ws.source, '--scope', '0:0', '--limit', '50', *cursor)
+        rows += page['revisions']
+        if not page['hasMore']:
+            return rows
+        cursor = ['--cursor', page['nextCursor']]
 
 
 def landed(rows, seen, saved, records):
@@ -603,9 +609,13 @@ def viewer(binary, design, n, parent):
                 body = urllib.request.urlopen(base + route, timeout=120).read()
                 return (time.perf_counter() - start) * 1000, body
             catalog_ms, catalog = get('catalog')
-            route = f'usages/{json.loads(catalog)["generation"]}?' + urllib.parse.urlencode({'target': '0:10'})
+            # The preview's initial node does not scope its relations routes; without `scope` they cover 0:0.
+            query = urllib.parse.urlencode({'target': '0:10', 'scope': AREA})
+            route = f'usages/{json.loads(catalog)["generation"]}?{query}'
             first_ms, body = get(route)
-            results = len(json.loads(body)['results'])
+            first = json.loads(body)
+            assert first['scope']['nodeId'] == AREA, first['scope']
+            results = len(first['results'])
             assert results, 'viewer usages are empty'
             warm = [get(route)[0] for _ in range(n)]
         finally:
