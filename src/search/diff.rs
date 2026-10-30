@@ -167,8 +167,9 @@ pub(crate) struct Field {
 /// A record's effective fields in `FIELDS` order; absent fields are not listed.
 pub(crate) struct Facets {
     fields: Vec<Field>,
-    /// The variables a variable's values alias (`variableDataValues`), one per aliasing mode;
-    /// `None` when that field was unread, so where they lead is unknown.
+    /// The variables a variable's values alias (`variableDataValues`), one per aliasing mode,
+    /// then its collection (`variableSetID`), whose first mode by sort position is the default
+    /// REST resolves in; `None` when either field was unread, so where they lead is unknown.
     aliases: Option<Vec<String>>,
 }
 
@@ -385,7 +386,7 @@ pub(super) fn facets(
                 if !bounds.charge(0, FIELD_META + key.len()) {
                     return None;
                 }
-                if *key == "variableDataValues" {
+                if matches!(*key, "variableDataValues" | "variableSetID") {
                     aliases = None;
                 }
                 fields.push(Field {
@@ -520,6 +521,22 @@ pub(super) fn facets(
                     ids.extend(crate::rest::variable_id(r));
                 }
                 aliases = Some(ids);
+            }
+            if *key == "variableSetID" {
+                // Named as `rest` matches a collection: its library key, else its guid.
+                let made = json["assetRef"]["key"]
+                    .as_str()
+                    .map_or("::".len() + 40, str::len);
+                if !bounds.charge(1, std::mem::size_of::<String>() + 2 * made) {
+                    return None;
+                }
+                let id = json["assetRef"]["key"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .or_else(|| crate::rest::guid(&json["guid"]));
+                if let Some(a) = &mut aliases {
+                    a.extend(id);
+                }
             }
             fields.push(Field {
                 key,
@@ -1139,8 +1156,9 @@ fn compare(old: Side, new: Side, node: &str, work: usize) -> Pair {
 /// Style, variable, main component and component set uses on `s` whose definition is not one
 /// of its records: its values, or the property definitions a main or a variant inherits from
 /// its set, may change while every compared record stays the same. So may a variable a compared
-/// variable aliases, which REST resolution follows across pages; one whose values were unread
-/// counts as one such use. Each record, edge and alias is charged before it is read.
+/// variable aliases, which REST resolution follows across pages, and its collection, whose mode
+/// order picks the default mode; one whose values or collection were unread counts as one such
+/// use. Each record, edge and dependency is charged before it is read.
 fn outside_uses(s: &Side, ids: &HashMap<&str, usize>, budget: &mut Bounds) -> Option<usize> {
     let mut n = 0;
     for (r, f) in s.index.records.iter().zip(&s.facets) {
@@ -1879,10 +1897,11 @@ pub(crate) fn save_facets(
             // A kept value is at most `FIELD_VALUE` bytes.
             .map(|x| 96 + if x.value.is_some() { FIELD_VALUE } else { 0 })
             .sum::<usize>()
+            // Each id at its escaped upper bound: six bytes a character.
             + f.aliases
                 .iter()
                 .flatten()
-                .map(|a| 12 + a.len())
+                .map(|a| 12 + 6 * a.len())
                 .sum::<usize>()
     };
     let (total, mut done) = (tracked.facets.len(), 0);

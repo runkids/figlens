@@ -1752,6 +1752,72 @@ fn a_long_library_alias_key_is_paid_for_by_its_length_and_a_short_side_stops_fir
     }
 }
 
+/// Page 1 holds a card filled from two-mode variable 61; page 2 holds its collection 64, whose
+/// first mode by sort position is `first` (70 or 71).
+fn collected(first: u32) -> K<'static> {
+    let mode = |id: u32, at: &str| {
+        obj(vec![
+            ("id", guid(id)),
+            ("sortPosition", K::String(at.to_owned())),
+        ])
+    };
+    let modes = match first {
+        70 => vec![mode(70, "a"), mode(71, "b")],
+        _ => vec![mode(70, "b"), mode(71, "a")],
+    };
+    let entry = |m: u32, v: f32| obj(vec![("modeID", guid(m)), ("variableData", float(v))]);
+    let mut all = aliased(
+        vec![node(
+            61,
+            Some(1),
+            "VARIABLE",
+            "V",
+            vec![
+                (
+                    "variableDataValues",
+                    obj(vec![(
+                        "entries",
+                        K::Array(vec![entry(70, 1.0), entry(71, 2.0)]),
+                    )]),
+                ),
+                ("variableSetID", obj(vec![("guid", guid(64))])),
+            ],
+        )],
+        8.0,
+    );
+    if let K::Object(_, o) = &mut all
+        && let Some(K::Array(nodes)) = o.get_mut("nodeChanges")
+    {
+        nodes.push(node(
+            64,
+            Some(2),
+            "VARIABLE_SET",
+            "Theme",
+            vec![("variableSetModes", K::Array(modes))],
+        ));
+    }
+    all
+}
+
+#[test]
+fn a_collection_on_another_page_makes_a_page_diff_partial_and_the_whole_file_compares_it() {
+    let out = scoped(collected(70), collected(71), "0:1");
+    assert_eq!(
+        (nodes(&out), &out["coverage"]["reasons"]),
+        (vec![], &not_compared(1))
+    );
+    let out = run(collected(70), collected(71));
+    assert_eq!(
+        (nodes(&out), &out["coverage"]["complete"]),
+        (vec![("0:64".into(), "changed".into())], &json!(true))
+    );
+}
+
+#[test]
+fn stored_generations_keep_a_variable_s_collection_like_the_live_trees() {
+    outside_parity(collected(70), collected(71), "0:1");
+}
+
 #[test]
 fn numeric_variants_trim_links_mask_type_and_grids_are_compared() {
     let link = |url: &str| obj(vec![("url", K::String(url.to_owned()))]);
