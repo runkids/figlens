@@ -1666,7 +1666,16 @@ fn library_workspace(
     let conn = connection(&dir);
     let me = owner(&dir).unwrap();
     let mut out = Vec::new();
-    for source in sources(&conn) {
+    // In the order the query pages them, which two sources added in different milliseconds can
+    // make differ from source_id order.
+    let ordered: Vec<String> = conn
+        .prepare("SELECT source_id FROM sources ORDER BY added_at_ms, source_id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    for source in ordered {
         let job_id = job(&conn, &source, "0:0", "running", &me, 1);
         let built = work(&dir, &job_id, &me, 1).unwrap();
         publish(&storage, &select.id().unwrap(), &job_id, &me, 1, &built).unwrap();
