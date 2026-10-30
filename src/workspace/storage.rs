@@ -134,6 +134,19 @@ pub fn storage(explicit: Option<&Path>) -> Result<Storage> {
     )
 }
 
+/// Storage whose roots sit under `home`, for tests outside this module.
+#[cfg(test)]
+pub(crate) fn test_storage(home: &Path) -> Storage {
+    let home = home.as_os_str().to_owned();
+    resolve(
+        None,
+        &|n| (n == "HOME").then(|| home.clone()),
+        false,
+        &|| None,
+    )
+    .unwrap()
+}
+
 pub(super) fn resolve(
     explicit: Option<&Path>,
     env: &dyn Fn(&str) -> Option<OsString>,
@@ -474,6 +487,22 @@ impl Place {
 }
 
 impl Storage {
+    /// `<config>/models.json`, the configured model profiles (#94); `None` before the first.
+    pub fn models(&self) -> Result<Option<Json>> {
+        let path = self.defaults.config.path.join("models.json");
+        Ok(if plain(&path, false)? {
+            Some(read_small(&path)?)
+        } else {
+            None
+        })
+    }
+
+    /// Replaces `<config>/models.json`. A concurrent writer fails on its `.part`, never tears it.
+    pub fn set_models(&self, record: &Json) -> Result<()> {
+        create_durable(&self.defaults.config.path)?;
+        write_small(&self.defaults.config.path.join("models.json"), record)
+    }
+
     pub(super) fn locations(&self) -> PathBuf {
         self.defaults.config.path.join("workspaces")
     }

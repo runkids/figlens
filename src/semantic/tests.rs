@@ -2,7 +2,7 @@ use super::*;
 use crate::test_support::TestDir;
 
 /// The `fake-embed` example `cargo test` builds next to this test binary.
-fn fake() -> PathBuf {
+pub(super) fn fake() -> PathBuf {
     let deps = std::env::current_exe().unwrap();
     let dir = deps.parent().unwrap().parent().unwrap().join("examples");
     dir.join(format!("fake-embed{}", std::env::consts::EXE_SUFFIX))
@@ -58,16 +58,18 @@ fn chunks_cover_long_text_to_its_end() {
 }
 
 #[test]
-fn sums_refuse_a_changed_file_or_an_escaping_name() {
+fn pinned_files_refuse_a_changed_file() {
     let dir = TestDir::new();
     std::fs::write(dir.join("w"), "weights").unwrap();
-    let good = format!("{}  w\n", crate::search::hex(&Sha256::digest("weights")));
-    std::fs::write(dir.join("SHA256SUMS"), &good).unwrap();
-    assert_eq!(verify_sums(&dir.join("")).unwrap().len(), 1);
+    let digest = crate::search::hex(&Sha256::digest("weights"));
+    assert_eq!(
+        verify_files(&dir.join(""), &[("w", &digest)])
+            .unwrap()
+            .len(),
+        1
+    );
     std::fs::write(dir.join("w"), "other").unwrap();
-    assert!(verify_sums(&dir.join("")).is_err());
-    std::fs::write(dir.join("SHA256SUMS"), good.replace(" w", " ../w")).unwrap();
-    assert!(verify_sums(&dir.join("")).is_err());
+    assert!(verify_files(&dir.join(""), &[("w", &digest)]).is_err());
 }
 
 #[test]
@@ -149,9 +151,14 @@ fn profile_id_changes_with_any_model_file() {
     let dir = TestDir::new();
     let write = |body: &str| {
         std::fs::write(dir.join("w"), body).unwrap();
-        let line = format!("{}  w\n", crate::search::hex(&Sha256::digest(body)));
-        std::fs::write(dir.join("SHA256SUMS"), line).unwrap();
-        Profile::probe(&fake(), &dir.join(""), &AtomicBool::new(false)).unwrap()
+        let digest = crate::search::hex(&Sha256::digest(body));
+        Profile::probe(
+            &fake(),
+            &dir.join(""),
+            &[("w", &digest)],
+            &AtomicBool::new(false),
+        )
+        .unwrap()
     };
     let a = write("one");
     assert_eq!((a.dim, &a.contract["model"]), (8, &json!("fake")));

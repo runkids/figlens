@@ -278,6 +278,10 @@ impl Runtime {
         self.stdin = None;
     }
 
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     pub fn alive(&mut self) -> bool {
         self.stdin.is_some() && matches!(self.child.try_wait(), Ok(None))
     }
@@ -400,37 +404,22 @@ fn sha256_file(path: &Path) -> Result<String> {
     Ok(crate::search::hex(&hash.finalize()))
 }
 
-/// Verifies every file `SHA256SUMS` lists in `dir` and returns `(name, digest)` sorted. Names
-/// stay inside `dir`: no absolute paths, `..` or empty components.
-pub fn verify_sums(dir: &Path) -> Result<Vec<(String, String)>> {
-    let sums = std::fs::read_to_string(dir.join("SHA256SUMS"))
-        .map_err(|e| fail(format!("{}: {e}", dir.join("SHA256SUMS").display())))?;
-    let mut files = Vec::new();
-    for line in sums.lines().filter(|l| !l.trim().is_empty()) {
-        let (digest, name) = line
-            .split_once(char::is_whitespace)
-            .map(|(d, n)| (d, n.trim_start().trim_start_matches('*')))
-            .ok_or_else(|| fail(format!("SHA256SUMS line is not `<digest> <file>`: {line}")))?;
-        let safe = !name.is_empty()
-            && Path::new(name)
-                .components()
-                .all(|c| matches!(c, std::path::Component::Normal(_)));
-        if !safe || digest.len() != 64 {
+/// Checks each `(file, sha256)` in `dir` and returns them sorted. Every name is a fixed
+/// relative path from a pinned profile, so nothing outside `dir` is read.
+pub fn verify_files(dir: &Path, files: &[(&str, &str)]) -> Result<Vec<(String, String)>> {
+    let mut checked = Vec::new();
+    for (name, digest) in files {
+        let got = sha256_file(&dir.join(name))?;
+        if got != *digest {
             return Err(fail(format!(
-                "SHA256SUMS names an unsafe file or digest: {line}"
+                "{name} in {} is not the pinned file (sha256 {got}, expected {digest})",
+                dir.display()
             )));
         }
-        let got = sha256_file(&dir.join(name))?;
-        if !got.eq_ignore_ascii_case(digest) {
-            return Err(fail(format!("{name}: checksum mismatch")));
-        }
-        files.push((name.to_owned(), got));
+        checked.push((name.to_string(), got));
     }
-    if files.is_empty() {
-        return Err(fail("SHA256SUMS lists no files"));
-    }
-    files.sort();
-    Ok(files)
+    checked.sort();
+    Ok(checked)
 }
 
 /// A configured local profile: the trusted child executable, its model directory and the
@@ -457,12 +446,17 @@ pub fn fingerprint(exe_sha: &str, files: &[(String, String)], contract: &Json) -
 impl Profile {
     /// Verifies the model files, starts the child once to read its contract and fingerprints
     /// the result. Nothing is downloaded: both paths must already exist locally.
-    pub fn probe(exe: &Path, model: &Path, cancel: &AtomicBool) -> Result<Profile> {
+    pub fn probe(
+        exe: &Path,
+        model: &Path,
+        files: &[(&str, &str)],
+        cancel: &AtomicBool,
+    ) -> Result<Profile> {
         let exe =
             std::fs::canonicalize(exe).map_err(|e| fail(format!("{}: {e}", exe.display())))?;
         let model =
             std::fs::canonicalize(model).map_err(|e| fail(format!("{}: {e}", model.display())))?;
-        let files = verify_sums(&model)?;
+        let files = verify_files(&model, files)?;
         let exe_sha = sha256_file(&exe)?;
         let rt = Runtime::start(&exe, &[&model], cancel)?;
         let (dim, contract) = (rt.dim, rt.hello.clone());
@@ -553,6 +547,8 @@ pub fn chunks(field: &'static str, text: &str) -> Vec<Chunk> {
         })
         .collect()
 }
+
+pub mod profile;
 
 #[cfg(test)]
 mod tests;
