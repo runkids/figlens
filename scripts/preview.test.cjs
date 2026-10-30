@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, relationChoices, acceptReply, reasonCodes, mergePages, rowModel, groupUsages, localSearch, sourceRef, pageOf, scopeCoverage} = require('../src/preview/viewer.js');
+const {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, freshRow, relationChoices, acceptReply, reasonCodes, semanticSummary, mergePages, rowModel, groupUsages, localSearch, sourceRef, pageOf, scopeCoverage} = require('../src/preview/viewer.js');
 
 test('prototype missing fields remain unspecified without click or navigation defaults', () => {
   const rows = prototypeRows({state:'recorded', sourceNodeId:'0:1', interactions:[
@@ -212,4 +212,34 @@ test('usages relation choices list every kind, checked as the reply ran', () => 
   const incoming = relationChoices({relations:['instance_of', 'uses_style'], coverage:{layers:{relations:{kinds}}}});
   assert.deepEqual(incoming.find(c => c.value === 'contains'), {value:'contains', checked:false});
   assert.equal(incoming.length, 3);
+});
+
+test('semantic coverage reasons are listed with the others, so a hybrid downgrade says why', () => {
+  assert.deepEqual(reasonCodes({coverage: {reasons: [], layers: {semantic: {state: 'unavailable', reasons: [{code: 'no_profile'}]}}}}), ['no_profile']);
+});
+
+test('the semantic line shows the running build and offers Enable only without a current index or with a ready model', () => {
+  const snap = 'sha256:a', current = {sources: [{indexed: [{scope: '0:1', current: true, snapshotId: snap}]}]};
+  const building = semanticSummary({scope: '0:1', job: {running: true, report: {kind: 'refresh', stage: 'parse', progress: {units: 3, total: 9}}}}, snap);
+  assert.deepEqual(building, {text: 'Indexing 0:1: text parse 3/9.', enable: false, running: true});
+  const none = semanticSummary({scope: '0:1', index: {}, models: {profiles: []}}, snap);
+  assert.equal(none.enable, true);
+  assert.match(none.text, /No index of 0:1 for this revision\. No local model configured/);
+  // An index of other bytes is not current for this revision.
+  assert.equal(semanticSummary({scope: '0:1', index: current, models: {profiles: []}}, 'sha256:b').enable, true);
+  const textOnly = semanticSummary({scope: '0:1', index: current, models: {profiles: [{name: 'bge-m3', state: 'unavailable', reason: 'runtime missing'}]}}, snap);
+  assert.deepEqual([textOnly.enable, textOnly.text], [false, 'Index of 0:1 ready. Local model bge-m3 unavailable: runtime missing.']);
+  assert.equal(semanticSummary({scope: '0:1', index: current, models: {profiles: [{name: 'bge-m3', state: 'ready'}]}}, snap).enable, true);
+  assert.match(semanticSummary({scope: '0:1', index: current, models: {profiles: []}, job: {running: false, report: {state: 'cancelled'}}}, snap).text, /Last build cancelled\./);
+  assert.deepEqual(semanticSummary({error: {message: 'Saved design changed'}}, snap), {text: 'Saved design changed', enable: false, running: false});
+});
+
+test('a relocated workspace row keeps its registered ref and stays fresh under the revision its reply was accepted for', () => {
+  const loaded = {sourceId: 'local:viewer', snapshotId: 'sha256:a'};
+  const row = rowModel({ref: {nodeId: '0:1', sourceId: 'local:registered', snapshotId: 'sha256:a'}}, loaded);
+  assert.deepEqual([row.sourceId, row.viewSourceId], ['local:registered', 'local:viewer']);
+  assert.equal(freshRow(loaded, row), true);
+  assert.equal(freshRow({...loaded, snapshotId: 'sha256:b'}, row), false);
+  // Text rows, whose refs name the loaded source, are judged as before.
+  assert.equal(freshRow(loaded, rowModel({ref: {nodeId: '0:1', sourceId: 'local:viewer', snapshotId: 'sha256:a'}}, loaded)), true);
 });

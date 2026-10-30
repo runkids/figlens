@@ -73,6 +73,8 @@ function relQuery(params) {
 // A reply is applied only if its request is still the newest and it describes the snapshot now loaded.
 // Exact identity is the pair: the same bytes under another source are another revision.
 const sameSource = (a, b) => !!a?.snapshotId && a.snapshotId === b?.snapshotId && a.sourceId === b?.sourceId;
+// A result row still names the loaded revision: the same bytes under the source its reply was accepted for.
+const freshRow = (source, m) => sameSource(source, {snapshotId: m.snapshotId, sourceId: m.viewSourceId ?? m.sourceId});
 // Every relation kind core reports, checked as this reply's effective relations.
 const relationChoices = reply => [...new Set([...Object.keys(reply.coverage?.layers?.relations?.kinds ?? {}), ...reply.relations])]
     .map(value => ({value, checked: reply.relations.includes(value)}));
@@ -93,7 +95,26 @@ const acceptReply = (seq, current, replySource, loadedSource) => seq === current
 // Coverage reasons, codes verbatim (with the relations a code names), without repeats.
 function reasonCodes(reply) {
     const text = r => typeof r === 'string' ? r : `${r.code}${r.relations?.length ? ` (${r.relations.join(', ')})` : ''}`;
-    return [...new Set([...(reply.coverage?.reasons || []), ...(reply.coverage?.layers?.relations?.reasons || [])].map(text))];
+    const layers = reply.coverage?.layers;
+    return [...new Set([...(reply.coverage?.reasons || []), ...(layers?.relations?.reasons || []), ...(layers?.semantic?.reasons || [])].map(text))];
+}
+// The semantic panel line for a `semantic/<revision>` reply: the viewer's build of the scope while it runs,
+// else whether this revision has a current index of it and whether a local model is ready. Enable is offered
+// when there is no current index, or a ready model may still need its layer built; never while one runs.
+function semanticSummary(s, snapshotId) {
+    if (s.error) return {text: s.error.message, enable: false, running: false};
+    const job = s.job?.report, running = s.job?.running === true;
+    if (running) {
+        const p = job?.progress, done = p?.total ? ` ${p.units}/${p.total}` : '';
+        return {text: `Indexing ${s.scope}: ${job?.kind === 'embed' ? 'model layer' : 'text'} ${job?.stage || job?.state || 'starting'}${done}.`, enable: false, running};
+    }
+    const indexed = (s.index?.sources || []).flatMap(x => x.indexed || []).some(i => i.scope === s.scope && i.current && i.snapshotId === snapshotId);
+    const profiles = s.models?.profiles || [], ready = profiles.find(p => p.state === 'ready');
+    const model = ready ? `Local model ${ready.name} ready.`
+        : profiles.length ? `Local model ${profiles[0].name} unavailable: ${profiles[0].reason}.`
+        : 'No local model configured: set one up through your agent’s figlens models tool; hybrid falls back to text.';
+    const ended = job?.error ? ` Last build failed: ${job.error.message}` : ['failed', 'cancelled', 'interrupted'].includes(job?.state) ? ` Last build ${job.state}.` : '';
+    return {text: `${indexed ? `Index of ${s.scope} ready.` : `No index of ${s.scope} for this revision.`} ${model}${ended}`, enable: !indexed || !!ready, running};
 }
 // A load-more page joined to the pages already shown: a page that was incomplete or named a reason keeps
 // saying so, since its results are still on screen. A first page (no cursor) starts over.
@@ -112,6 +133,8 @@ function rowModel(row, source) {
     const ref = row.ref || row.target?.ref, resource = row.resource ?? row.target?.resource ?? null;
     return {
         nodeId: ref?.nodeId ?? null, snapshotId: ref?.snapshotId ?? source?.snapshotId, sourceId: ref?.sourceId ?? source?.sourceId, resource,
+        // The loaded revision's source the reply was accepted under; a relocated workspace's refs keep their registered id.
+        viewSourceId: source?.sourceId ?? ref?.sourceId,
         name: row.name ?? row.definition?.name ?? ref?.nodeId ?? resource ?? '(no target)',
         type: row.type ?? row.definition?.type ?? null, relation: row.relation ?? null, state: row.state ?? null,
         basis: row.basis ?? null, via: row.via ?? null, hidden: row.hidden === true,
@@ -143,7 +166,7 @@ function localSearch(roots, query, {types = [], hidden = false} = {}) {
     roots.forEach(n => walk(n, false));
     return {results: found.slice(0, 200).map(([n, off]) => ({name: n.name || n.id, type: n.type, ref: {nodeId: n.id}, hidden: off})), hasMore: found.length > 200};
 }
-if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, relationChoices, acceptReply, reasonCodes, mergePages, rowModel, groupUsages, localSearch, sourceRef, pageOf, scopeCoverage};
+if (typeof module !== 'undefined') module.exports = {flat, clean, localBox, hits, prototypeRows, relQuery, sameSource, freshRow, relationChoices, acceptReply, reasonCodes, semanticSummary, mergePages, rowModel, groupUsages, localSearch, sourceRef, pageOf, scopeCoverage};
 if (typeof document !== 'undefined') {
     const boot = JSON.parse(document.getElementById('boot').textContent);
     const $ = id => document.getElementById(id);
@@ -1090,6 +1113,7 @@ if (typeof document !== 'undefined') {
             generation = next.generation;
             loadedSource = next.source;
             relReset();
+            semanticRefresh();
             $('pages').replaceChildren();
             for (const p of catalog.children || []) {
                 if (p.internal) continue;
@@ -1549,6 +1573,8 @@ if (typeof document !== 'undefined') {
         let text = n ? `${n} shown${acc.hasMore ? ', more available' : ''}.` : `No matches in ${p.scope}.`;
         if (!n && partial) text += ' Coverage is partial, so absence is not established.';
         if (codes.length) text += ` ${partial ? 'Partial coverage' : 'Coverage notes'}: ${codes.join(', ')}.`;
+        const layer = acc.coverage?.layers?.semantic?.state;
+        if (layer && layer !== 'ready') text += ` Semantic layer: ${layer}.`;
         const s = sourceRef(acc.source, generation);
         if (s) text += ` File ${s.path}, source ${s.sourceId}, snapshot ${s.snapshotId}, revision ${s.revision}.`;
         relState(name, partial ? 'partial' : n ? 'ok' : 'empty', text);
@@ -1596,7 +1622,7 @@ if (typeof document !== 'undefined') {
     async function relFresh(m) {
         if (boot.snapshot) return;
         const {source} = await (await api('revision')).json();
-        if (!sameSource(source, m)) throw new Error('Refused: stale reference — rerun search.');
+        if (!freshRow(source, m)) throw new Error('Refused: stale reference — rerun search.');
     }
     // Opening moves focus to the layer, as other results do; Escape there returns to the row that opened it.
     async function relOpen(name, m, row) {
@@ -1640,8 +1666,54 @@ if (typeof document !== 'undefined') {
         if (scoped && !selected) return relState('ranked', 'idle', 'Select a layer to search within it.');
         if (scoped && selected.id.startsWith('I')) return relState('ranked', 'idle', 'Search scopes are stored layers: select the instance that holds this layer, or search the whole file.');
         p.scope = scoped ? `selection “${selected.name || selected.id}”` : 'the whole file';
-        relRun('ranked', `search/${generation}?` + relQuery({q, scope: scoped ? selected.id : null, type: types, hidden, internal: $('rankedInternal').checked}));
+        const mode = $('rankedMode').value;
+        relRun('ranked', `search/${generation}?` + relQuery({q, scope: scoped ? selected.id : null, type: types, hidden, internal: $('rankedInternal').checked, mode: mode === 'text' ? null : mode}));
+        if (mode !== 'text') semanticRefresh();
     }
+    // Semantic readiness of the scope a ranked search would use, polled while the viewer's own build runs;
+    // only the newest request of the current revision is shown.
+    // The scope the Enable button names, kept so a click builds exactly what it says.
+    let semanticSeq = 0, semanticTimer, shownScope = null;
+    // Selection-only search needs a stored selected layer; it never widens to the whole file.
+    const rankedScope = () => !$('rankedSelection').checked ? '0:0' : selected && !selected.id.startsWith('I') ? selected.id : null;
+    async function semanticRefresh() {
+        clearTimeout(semanticTimer);
+        const on = !boot.snapshot && $('rankedMode').value !== 'text', scope = rankedScope();
+        const seq = ++semanticSeq, revision = generation;
+        $('semanticPanel').hidden = !on;
+        if (!on) return;
+        if (!scope) {
+            $('semanticState').textContent = 'Select a stored layer to search within it, or clear “Current selection only”.';
+            $('semanticEnable').hidden = true;
+            return;
+        }
+        try {
+            const s = await (await api(`semantic/${revision}?` + relQuery({scope}))).json();
+            if (seq !== semanticSeq || revision !== generation) return;
+            const v = semanticSummary(s, loadedSource?.snapshotId);
+            $('semanticState').textContent = v.text;
+            $('semanticEnable').hidden = !v.enable;
+            shownScope = scope;
+            const what = scope === '0:0' ? 'the whole file' : `layer ${scope}`;
+            $('semanticEnable').textContent = `Enable index of ${what}`;
+            if (v.enable) $('semanticState').textContent += ` Enable index stores a local figlens index of ${what} of ${loadedSource?.path ?? 'this file'}; with a local model it also builds the model layer here. Nothing is downloaded or sent anywhere, and a save stops the build.`;
+            if (v.running) semanticTimer = setTimeout(semanticRefresh, 1000);
+        } catch (e) { if (seq === semanticSeq) $('semanticState').textContent = e.message; }
+    }
+    $('rankedMode').onchange = semanticRefresh;
+    $('rankedSelection').addEventListener('change', semanticRefresh);
+    addEventListener('figlens:select', () => $('rankedSelection').checked && semanticRefresh());
+    // The one action that creates a workspace: the button names the scope and the line above it the file.
+    $('semanticEnable').onclick = async () => {
+        const scope = shownScope, revision = generation;
+        if (!scope) return;
+        try {
+            const r = await (await api(`enable/${revision}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({scope})})).json();
+            if (revision !== generation) return;
+            if (r.error) $('semanticState').textContent = `${r.error.kind ? r.error.kind + ': ' : ''}${r.error.message}`;
+            else semanticRefresh();
+        } catch (e) { $('semanticState').textContent = e.message; }
+    };
     function runUsages(more) {
         const p = rel.usages;
         if (more) return relRun('usages', p.base, p.acc.nextCursor);
@@ -1695,7 +1767,7 @@ if (typeof document !== 'undefined') {
     });
     if (boot.snapshot) {
         $('rankedNote').hidden = false;
-        $('rankedInternal').disabled = $('rankedSelection').disabled = true;
+        $('rankedInternal').disabled = $('rankedSelection').disabled = $('rankedMode').disabled = true;
         relState('usages', 'unavailable', 'Unavailable in offline snapshots');
         for (const id of ['usagesGo', 'usagesDir', 'usagesHidden']) $(id).disabled = true;
     }
@@ -1785,9 +1857,9 @@ if (typeof document !== 'undefined') {
             return source.filter(n => `${n.name || ''} ${n.text || n.characters || ''}`.toLowerCase().includes(q))
                 .slice(0, 200).map(n => ({id: n.id, name: n.name, type: n.type}));
         },
-        async rankedSearch(query, {scope, types, hidden, internal, limit, cursor} = {}) {
+        async rankedSearch(query, {scope, types, hidden, internal, limit, cursor, mode} = {}) {
             if (boot.snapshot) return {packagedOnly: true, ...localSearch(nodes.slice(0, 1), query, {types, hidden})};
-            return relGet(`search/${generation}?` + relQuery({q: query, scope, type: types, hidden, internal, limit, cursor}));
+            return relGet(`search/${generation}?` + relQuery({q: query, scope, type: types, hidden, internal, limit, cursor, mode}));
         },
         async usages(id, {resource, scope, relations, outgoing, hidden, limit, cursor, snapshot} = {}) {
             if (boot.snapshot) throw Object.assign(new Error('Unavailable in offline snapshots'), {unavailable: true});

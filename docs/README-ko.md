@@ -125,7 +125,7 @@ npx -y @runkids/figlens preview design.fig                        # 로컬 viewe
 npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 누구에게나 보낼 수 있는 오프라인 HTML 스냅샷
 ```
 
-페이지와 레이어를 탐색하고, 검색하고, 순위 검색과 선택 항목의 정확한 사용처(usages)를 확인하고, 거리를 측정하고, 레이아웃, 타이포그래피, 변수, CSS를 확인하고, 모든 레이어를 내보내고, 구현 프롬프트를 복사하거나 선택 영역의 bundle을 다운로드할 수 있습니다. 구현 결과의 스크린샷을 가져오면 디자인 위에 겹쳐 볼 수 있습니다. 자세한 내용: [미리보기 가이드](../wiki/preview.md).
+페이지와 레이어를 탐색하고, 검색하고, 순위 검색과 선택 항목의 정확한 사용처(usages)를 확인하고, 거리를 측정하고, 레이아웃, 타이포그래피, 변수, CSS를 확인하고, 모든 레이어를 내보내고, 구현 프롬프트를 복사하거나 선택 영역의 bundle을 다운로드할 수 있습니다. 선택적인 로컬 모델로 순위 검색을 시맨틱 또는 하이브리드로 전환할 수 있으며, 파일 인덱싱은 Enable index를 눌렀을 때만 이루어집니다. 구현 결과의 스크린샷을 가져오면 디자인 위에 겹쳐 볼 수 있습니다. 자세한 내용: [미리보기 가이드](../wiki/preview.md).
 
 <a id="mcp-and-skill"></a>
 
@@ -237,7 +237,7 @@ Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며
 | `verify <bundle>` | bundle(`.zip` 또는 압축을 푼 디렉터리)을 manifest와 대조: 검증·누락·변경된 파일, 누락된 asset, 프로젝트에서 확인할 폰트, 그리고 `findings`: 누락·미지원·미검증 handoff 입력마다 노드, 근거, 다음 조치 |
 | `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N] [--match-dir DIR]` | SVG, PNG, JPG, WebP, AVIF. `--max-kb`는 크기에 맞을 때까지 손실 품질을 낮춤. `--bounds layout`은 render bounds 대신 layout box로 내보냄. `--match-dir DIR`(SVG만, 하위 폴더 포함)은 같은 윤곽을 그리는 SVG(`matches`)와 점수가 붙은 비슷한 형태 최대 10개(`similar`)를 나열 |
 | `export <file> --frames <list> --out-dir <dir> [--format F] [--scale N] ...`, `--frames -` (stdin) | 한 번 디코딩해 여러 개 내보내기(기본 `png`): `<dir>/<nodeId>.<format>`에 쓰고 id마다 JSON 한 줄(`nodeId`가 붙은 `export` 출력 또는 `{nodeId, error}`) |
-| `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 로컬 읽기 전용 viewer. `--out`은 독립 오프라인 스냅샷 생성. 결과와 복사한 context는 페이지와, live에서는 불러온 파일 경로, source의 snapshot과 로컬 revision을 표시(오프라인에서는 알 수 없으며 경로는 포함하지 않음). context에는 참조 scope의 coverage도 담기며, 확인하지 않았으면 `complete: null` |
+| `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 디자인을 쓰지 않는 로컬 viewer. Enable index 후 시맨틱/하이브리드 검색 가능. `--out`은 독립 오프라인 스냅샷 생성. 결과와 복사한 context는 페이지와, live에서는 불러온 파일 경로, source의 snapshot과 로컬 revision을 표시(오프라인에서는 알 수 없으며 경로는 포함하지 않음). context에는 참조 scope의 coverage도 담기며, 확인하지 않았으면 `complete: null` |
 | `compare <file> <nodes.json> <node>` | 같은 frame의 REST 내보내기와 차이 비교 |
 | `node <file> <node>` | 원시 `.fig` 노드 하나 |
 | `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset\|track\|untrack\|embed` | 사용자별 figlens state 디렉터리 또는 workspace가 이후 기억하는 `--storage DIR` 아래의 로컬 workspace. `prepare <file> --scope NODE`로 해당 범위의 검색 인덱스를 한 번 만들면, 이후 `search --file <file>`(또는 `--workspace DIR`)은 다시 파싱하지 않고 workspace의 모든 소스를 함께 순위 매겨 답합니다. `refresh`는 변경된 파일을, `rebuild`는 전부(또는 `--source`/`--scope` 하나)를 다시 만들고, `clear`는 쓰지 않는 인덱스를 지웁니다. 새 인덱스가 준비될 때까지 이전 인덱스가 계속 쓰입니다. `reset`은 workspace 데이터베이스만 지우며 디자인, 내보내기, 기억된 위치는 건드리지 않습니다. `track --scope NODE`는 baseline 빌드부터 그 스코프의 변경을 기록하고, `untrack`은 기록을 남긴 채 중단합니다. `embed`는 게시된 스코프를 설정된 모델로 임베딩합니다(CPU와 메모리 사용). workspace 시맨틱 검색이 필요할 때만 실행하세요. |

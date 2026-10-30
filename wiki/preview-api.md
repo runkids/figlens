@@ -20,7 +20,7 @@ The page exposes `window.figlens` for browser-automation agents (Playwright, age
 | `deselect()`, `fit()`, `zoomTo(id or 'page')`, `setZoom(level)` | canvas control |
 | `layersAt(x, y)` | layers of the open frame under a page-coordinate point, topmost first |
 | `search(text)` | up to 200 matching layers across pages |
-| `rankedSearch(query, {scope, types, hidden, internal, limit, cursor})` | the `search/<revision>` reply; offline `{packagedOnly: true, results, hasMore}` over the packaged layers |
+| `rankedSearch(query, {scope, types, hidden, internal, limit, cursor, mode})` | the `search/<revision>` reply (`mode` `semantic`/`hybrid` needs the person's Enable index, see [semantic](semantic.md#viewer)); offline `{packagedOnly: true, results, hasMore}` over the packaged layers |
 | `usages(id, {resource, scope, relations, outgoing, hidden, limit, cursor, snapshot})` | the `usages/<revision>` reply; `snapshot` defaults to the loaded one; offline it rejects with `unavailable: true` |
 | `context()`, `prompt()` | the handoff context JSON and implementation prompt for the selection; context names its `page`, `source` (`path`, `sourceId`, `snapshotId`, `revision`; null offline, where `page` is null too and no path is embedded) and the reference scope's `coverage` (`scopeId`, `complete`, `warnings`, `reasons`) |
 | `exportImage({format, scale, quality})`, `bundle()` | `{mime, base64}` of a render (live only) or the real bundle |
