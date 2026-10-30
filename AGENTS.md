@@ -35,20 +35,21 @@ python3 scripts/ai-context.py check     # validate paths, headings, links, orpha
 
 | Topic | Use when |
 |---|---|
-| `mcp` | Changing MCP instructions, tool discovery or built-in workflow guidance |
+| `mcp` | Changing MCP instructions, tool discovery or workflow guidance |
 | `gcs` | Changing the `gs://` snapshot handoff, its download cache or refresh |
-| `performance` | Measuring load time and memory, reading the perf baseline, changing cache or decode cost |
+| `performance` | Measuring load time and memory, the perf baseline, cache or decode cost |
 | `parsing` | Changing untrusted container/schema/value decoding or parsing budgets |
 | `fig-format` | Changing decoding, instance expansion, emitted REST fields or variables |
 | `discovery` | Changing find/inspect summaries, `--flat` lines, `tree --top-frames` or `export --match-dir` |
 | `search` | Changing search indexing, ranking, cursors, coverage or budgets |
 | `diff` | Changing diff |
-| `workspace` | Changing local workspace roots, identity, ownership, the SQLite registry, locks or index actions |
+| `changes` | Changing change tracking, `changes` or `watch ack` |
+| `workspace` | Changing workspace roots, identity, ownership, registry, locks or index actions |
 | `index` | Changing index generations, jobs, publication or workspace search |
-| `bundle` | Changing the bundle zip, manifest, context.md, batch bundles, font inventory or `verify` |
+| `bundle` | Changing the bundle zip, manifest, context.md, batches, fonts or `verify` |
 | `render` | Changing SVG or raster output: text, glyphs, image fills/adjustments, effects, export areas |
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison |
-| `pi` | Changing the Pi extension, reviewed component mappings or its npm packaging |
+| `pi` | Changing the Pi extension, component mappings or npm packaging |
 | `integrations` | Changing OpenCode V2/OMP, shared package, permissions, installed-host acceptance |
 | `accuracy` | Measuring output against Figma's own exports, running `compare`, finding test files, the CI regression corpus |
 | `release` | Packaging, GitHub releases, Homebrew, npm, installers, `figlens update` |
