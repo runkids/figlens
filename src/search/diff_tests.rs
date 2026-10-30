@@ -954,3 +954,35 @@ fn numeric_variants_trim_links_mask_type_and_grids_are_compared() {
         assert_eq!(n["facets"], json!([facet]), "{key}");
     }
 }
+
+#[test]
+fn renaming_a_component_property_definition_is_a_properties_change() {
+    let def = |name: &str| {
+        (
+            "componentPropDefs",
+            K::Array(vec![obj(vec![
+                ("id", guid(70)),
+                ("name", K::String(name.to_owned())),
+                ("type", K::Enum("ComponentPropType", "BOOL")),
+                ("initialValue", obj(vec![("boolValue", K::Bool(true))])),
+            ])]),
+        )
+    };
+    let one = |name: &str| {
+        doc(vec![node(
+            20,
+            Some(1),
+            "COMPONENT",
+            "Button",
+            vec![def(name)],
+        )])
+    };
+    let out = run(one("Show icon"), one("Has icon"));
+    assert_eq!(
+        (nodes(&out), &out["frames"][0]["nodes"][0]["facets"]),
+        (
+            vec![("0:20".into(), "changed".into())],
+            &json!(["properties"])
+        )
+    );
+}

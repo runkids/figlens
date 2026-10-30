@@ -22,7 +22,7 @@ use crate::expand::{Bounds, Expanded, json_bytes, kiwi_bytes};
 use crate::{Document, ErrorKind, FigError, Tree, guid_key, to_json};
 
 /// Bumped whenever a field list, facet or digest stream changes; cursors carry it.
-const VERSION: &str = "diff-v3";
+const VERSION: &str = "diff-v4";
 pub(crate) const FACETS: [&str; 5] = ["text", "layout", "appearance", "properties", "structure"];
 /// Effective kiwi fields per facet; `structure` (name, kind, parent, order, hidden) is the
 /// record's own and bindings are edges, not fields.
@@ -101,6 +101,8 @@ const FIELDS: [&[&str]; 4] = [
         "variableModeBySetMap",
     ],
     &[
+        // A component's or set's property definitions name the instances' emitted properties.
+        "componentPropDefs",
         "componentPropAssignments",
         "componentPropRefs",
         "variantPropSpecs",
