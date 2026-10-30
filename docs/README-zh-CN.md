@@ -230,7 +230,7 @@ Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，works
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | 展开后的精简布局/文字摘要，最多 200 个节点。`--images` 会加上位图尺寸和裁切范围。`--flat` 改为每个节点一行：相对该节点的位置、尺寸、文字、字体、填充、描边、圆角、auto-layout |
 | `nodes <file> <node>` | REST nodes 响应中单个节点的对象（`document`、`components`、`componentSets`、`styles`）：展开的 instance 与覆写、auto-layout、文字样式、填充、效果、绑定变量、组件属性、渲染边界 |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | 一次解码读取多个节点：列表中每个 id 一行 JSON（带 `nodeId` 的 `nodes` 输出，或 `{nodeId, error}`） |
-| `variables <file> [node]` | 某个 frame 的绑定变量；不指定 node 则输出所有本地变量 |
+| `variables <file> [node]`<br>`variables <file.fig> --format dtcg --collection ID --mode ID --out FILE` | 默认的 REST 格式绑定变量／本地变量输出保持不变。DTCG 2025.10 导出须指定准确的 collection 和 mode ID，不可指定 node；仅支持颜色和无单位数值。请先创建输出目录；任何诊断都会使整个导出失败，输出文件保持不变。 |
 | `bundle <file> <node> <out.zip> [--states]` | 单个 frame 的设计 bundle；输出 `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]`, `--frames -` (stdin) | 一次解码，并行生成多个 bundle |
 | `verify <bundle>` | 按 manifest 检查 bundle（`.zip` 或解压后的目录）：已验证、缺失和被改动的文件，缺失的素材，需要在项目中确认的字体，以及 `findings`：每项缺失、不支持或未验证的 handoff 输入，附节点、证据和下一步 |

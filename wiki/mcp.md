@@ -12,6 +12,8 @@ For two selected variants, `inspect` accepts `compareVariant: "other-node-id"` (
 
 `inspect` accepts `flat: true` (CLI `--flat`): the content text is one line per node and `structuredContent` is `{flat, truncated}` without `node`, which is why the inspect output schema requires only `truncated`. `export` accepts `matchDir` (CLI `--match-dir`) for SVG output; it is admitted and rechecked under `--root` like `out`, and the reply adds `matches` and `similar` (paths relative to that folder; see [render](render.md)).
 
+`variables` adds `format: "rest" | "dtcg"` (default `"rest"`) and optional string fields `collection`, `mode`, `out`. REST preserves its existing node-scoped/all-local response and rejects these three export fields. DTCG requires all three, uses exact collection/mode IDs, and rejects `node`; inspect REST variables first, create the output parent directory, then request the export. It reads the live tree, not a workspace/search index. Conversion diagnostics are separate from the token tree: any diagnostic returns `isError: true` without changing the output. Existing root confinement, source-safe publication and complete-reply budgets apply. Pi, OpenCode and OMP use this shared MCP surface, with no dedicated token UI or converter. See [DTCG mapping and identity](fig-format.md#dtcg-token-export); review the result before replacing project tokens.
+
 The `workflow` tool lets a model retrieve detailed guidance without a separate skill installation:
 
 | `topic` | Use when |

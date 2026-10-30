@@ -21,6 +21,8 @@ pub mod index;
 mod instance_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tokens_tests;
 
 pub enum Command {
     Tree {
@@ -48,6 +50,11 @@ pub enum Command {
         flat: bool,
     },
     Variables(Option<String>),
+    Tokens {
+        collection: String,
+        mode: String,
+        out: PathBuf,
+    },
     Bundle {
         node: String,
         out: PathBuf,
@@ -145,6 +152,37 @@ fn require_target_root(tree: &Tree, id: &str) -> Result<(), Box<dyn Error>> {
 }
 
 impl Command {
+    /// Validate the opt-in export shape before source admission in MCP.
+    pub fn variables(
+        node: Option<String>,
+        format: Option<&str>,
+        collection: Option<String>,
+        mode: Option<String>,
+        out: Option<PathBuf>,
+    ) -> Result<Self, Box<dyn Error>> {
+        match format.unwrap_or("rest") {
+            "rest" if collection.is_none() && mode.is_none() && out.is_none() => {
+                Ok(Self::Variables(node))
+            }
+            "rest" => Err("collection, mode and out require format dtcg".into()),
+            "dtcg" if node.is_some() => {
+                Err("DTCG export selects a collection and mode, not a node".into())
+            }
+            "dtcg" => Ok(Self::Tokens {
+                collection: collection
+                    .filter(|s| !s.is_empty())
+                    .ok_or("DTCG export requires collection ID")?,
+                mode: mode
+                    .filter(|s| !s.is_empty())
+                    .ok_or("DTCG export requires mode ID")?,
+                out: out
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .ok_or("DTCG export requires out")?,
+            }),
+            _ => Err("variables format must be rest or dtcg".into()),
+        }
+    }
+
     /// CLI parsing stays after document loading, including node checks before trailing options.
     pub fn from_cli(name: &str, args: &[String], tree: &Tree) -> Result<Self, Box<dyn Error>> {
         let node = || args.first().cloned().ok_or(USAGE);
@@ -225,7 +263,34 @@ impl Command {
                     flat,
                 }
             }
-            "variables" => Self::Variables(args.first().cloned()),
+            "variables" => {
+                let (mut node, mut format, mut collection, mut mode, mut out) =
+                    (None, None, None, None, None);
+                let mut rest = args.iter();
+                while let Some(arg) = rest.next() {
+                    if arg.starts_with("--") {
+                        let value = rest.next().ok_or(format!("{arg} needs a value"))?.clone();
+                        match arg.as_str() {
+                            "--format" => format = Some(value),
+                            "--collection" => collection = Some(value),
+                            "--mode" => mode = Some(value),
+                            "--out" => out = Some(value),
+                            _ => return Err(USAGE.into()),
+                        }
+                    } else if node.is_none() {
+                        node = Some(arg.clone());
+                    } else {
+                        return Err(USAGE.into());
+                    }
+                }
+                Self::variables(
+                    node,
+                    format.as_deref(),
+                    collection,
+                    mode,
+                    out.map(Into::into),
+                )?
+            }
             "bundle" => {
                 let node = node()?;
                 let out = args.get(1).cloned().ok_or(USAGE)?;
@@ -304,7 +369,13 @@ impl Command {
                 compare_variant: string("compareVariant"),
                 flat: call.argument("flat") == true,
             },
-            "variables" => Self::Variables(string("node")),
+            "variables" => Self::variables(
+                string("node"),
+                call.string("format"),
+                string("collection"),
+                string("mode"),
+                output.map(Path::to_owned),
+            )?,
             "bundle" => {
                 let node = node()?;
                 require_target_root(tree, &normalize_id(&node))?;
@@ -489,6 +560,34 @@ impl Command {
                     None => None,
                 };
                 pretty(variables(tree, doc.as_ref().map(|d| &d["document"])))
+            }
+            Self::Tokens {
+                collection,
+                mode,
+                out,
+            } => {
+                let snapshot = variables(tree, None);
+                let mut tokens = figlens::tokens::convert(&snapshot, &collection, &mode)?;
+                tokens["$extensions"]["org.figlens"]["source"] =
+                    serde_json::to_value(fig.canonicalize()?)?;
+                figlens::output::write(fig, &out, |file| {
+                    use std::io::{BufWriter, Write};
+                    let mut writer = BufWriter::new(file);
+                    serde_json::to_writer_pretty(&mut writer, &tokens)?;
+                    writer.write_all(b"\n")?;
+                    writer.flush()?;
+                    Ok(())
+                })?;
+                let count = snapshot["variables"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|v| v["variableCollectionId"] == collection)
+                    .count();
+                compact(json!({
+                    "path": out.to_string_lossy(), "collectionId": collection, "modeId": mode,
+                    "tokenCount": count, "diagnostics": []
+                }))
             }
             Self::Bundle {
                 node,

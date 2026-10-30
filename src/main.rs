@@ -120,6 +120,11 @@ usage:
                                              nodeId, or {nodeId,error}
   figlens variables <file.fig> [node]          print the variables a frame binds (design/variables.json);
                                              without a node, every local variable
+  figlens variables <file.fig> --format dtcg --collection ID --mode ID --out FILE
+                                             write DTCG 2025.10 color/number/alias tokens for exact IDs
+                                             from variables; no node, workspace or index needed;
+                                             any diagnostic fails without publishing partial tokens;
+                                             prints {path,collectionId,modeId,tokenCount,diagnostics}
   figlens bundle <file.fig> <node> <out.zip> [--states]
                                              write a design bundle for a frame: nodes, variables,
                                              image/SVG assets, reference render and context.md, in one zip;
@@ -315,7 +320,11 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("figlens: {e}");
+            if let Some(error) = e.downcast_ref::<figlens::tokens::ConversionError>() {
+                eprintln!("{}", error.report);
+            } else {
+                eprintln!("figlens: {e}");
+            }
             // Structured recovery for agents: only actions that are implemented and apply.
             if let Some(recovery) = e
                 .downcast_ref::<figlens::FigError>()

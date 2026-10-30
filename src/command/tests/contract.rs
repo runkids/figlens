@@ -12,6 +12,9 @@ fn own(tool: &str, mut args: Value) -> Value {
     args.as_object_mut()
         .unwrap()
         .retain(|key, _| params.iter().any(|p| p.0 == key));
+    if tool == "variables" {
+        args.as_object_mut().unwrap().remove("out");
+    }
     args
 }
 
@@ -580,4 +583,43 @@ fn cli_library_takes_its_reference_and_definition_flags_and_no_node_options() {
     assert!(error.to_string().contains("go together"), "{error}");
     let error = crate::command::usages_request(&args(&["--library", "style"])).unwrap_err();
     assert!(error.to_string().contains("reads a workspace"), "{error}");
+}
+
+#[test]
+fn dtcg_selection_is_explicit_and_validated_before_source_io() {
+    let valid = json!({"file":"absent.fig", "format":"dtcg",
+        "collection":"VariableCollectionId:0:10", "mode":"0:11", "out":"out.tokens.json"});
+    assert!(check("variables", valid.clone()).is_ok());
+    for key in ["collection", "mode", "out"] {
+        let mut args = valid.clone();
+        args.as_object_mut().unwrap().remove(key);
+        let reply = call_tool(&json!({"name":"variables","arguments":args}), None);
+        assert_eq!(
+            reply["_meta"]["figlens"]["code"], "invalid_arguments",
+            "{reply}"
+        );
+    }
+    for extra in [
+        json!({"format":"rest"}),
+        json!({"format":"css"}),
+        json!({"node":"0:1"}),
+        json!({"collection":""}),
+        json!({"mode":""}),
+        json!({"out":""}),
+    ] {
+        let mut args = valid.clone();
+        args.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let reply = call_tool(&json!({"name":"variables","arguments":args}), None);
+        assert_eq!(
+            reply["_meta"]["figlens"]["code"], "invalid_arguments",
+            "{reply}"
+        );
+    }
+    for key in ["collection", "mode", "out"] {
+        let mut args = json!({"file":"absent.fig"});
+        args[key] = valid[key].clone();
+        assert!(check("variables", args).is_err());
+    }
 }
