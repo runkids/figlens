@@ -125,7 +125,7 @@ npx -y @runkids/figlens preview design.fig                        # 本地 viewe
 npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可发给任何人的离线 HTML 快照
 ```
 
-浏览页面和图层、搜索、排序搜索与所选内容的精确用处（usages）、测量，检查布局、字体样式、变量和 CSS，导出任意图层，复制实现提示词，或下载所选内容的 bundle。排序搜索可借助可选的本地模型切换为语义或混合模式，只有按下 Enable index 时，查看器才会为文件建立索引。导入你实现的截图，即可叠加在设计上比对。详情：[预览指南](../wiki/preview.md)。
+浏览页面和图层、搜索、排序搜索与所选内容的精确用处（usages）、测量，检查布局、字体样式、变量和 CSS，导出任意图层，复制实现提示词，或下载所选内容的 bundle。排序搜索可借助可选的本地模型切换为语义或混合模式，只有按下 Enable index 时，查看器才会为文件建立索引。导入你实现的截图，即可叠加在设计上比对。详情：[预览指南](../wiki/preview.md)。 Visual／Hybrid 可使用参考 PNG 或所选图层，并按像素裁剪。请明确启用视觉索引；查询图片不会保存。
 
 <a id="mcp-and-skill"></a>
 
@@ -237,7 +237,7 @@ Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，works
 | `verify <bundle>` | 按 manifest 检查 bundle（`.zip` 或解压后的目录）：已验证、缺失和被改动的文件，缺失的素材，需要在项目中确认的字体，以及 `findings`：每项缺失、不支持或未验证的 handoff 输入，附节点、证据和下一步 |
 | `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N] [--match-dir DIR]` | SVG、PNG、JPG、WebP 或 AVIF；不超过 4,194,304 像素的 PNG 自动进行无损优化，解码后的 RGBA 不变，若未变小则保留原始编码字节，更大的 PNG 使用常规编码；`--max-kb` 会降低有损质量直到符合大小（PNG 若仍超限则失败，不会回退为有损编码）；`--bounds layout` 按 layout box 而不是 render bounds 导出；`--match-dir DIR`（仅 SVG，含子文件夹）列出绘制相同轮廓的 SVG（`matches`），以及最多 10 个带分数的相似形状（`similar`） |
 | `export <file> --frames <list> --out-dir <dir> [--format F] [--scale N] ...`, `--frames -` (stdin) | 一次解码导出多个节点（默认 `png`）：写入 `<dir>/<nodeId>.<format>`，每个 id 一行 JSON（带 `nodeId` 的 `export` 输出，或 `{nodeId, error}`） |
-| `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 从不写入设计的本地 viewer；按 Enable index 后可用语义/混合搜索；`--out` 写出独立的离线快照；结果与复制的 context 会标明页面，live 时也标明已加载文件的路径、source 的 snapshot 与本地 revision（离线时未知，且绝不嵌入路径）；context 也带有参考 scope 的 coverage，未检查时为 `complete: null` |
+| `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 从不写入设计的本地 viewer；按 Enable index 后可用语义/混合搜索；`--out` 写出独立的离线快照；结果与复制的 context 会标明页面，live 时也标明已加载文件的路径、source 的 snapshot 与本地 revision（离线时未知，且绝不嵌入路径）；context 也带有参考 scope 的 coverage，未检查时为 `complete: null`. Visual／Hybrid 可使用参考 PNG 或所选图层，并按像素裁剪。请明确启用视觉索引；查询图片不会保存。 |
 | `compare <file> <nodes.json> <node>` | 与同一 frame 的 REST 导出做差异比较 |
 | `node <file> <node>` | 单个原始 `.fig` 节点 |
 | `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset\|track\|untrack\|embed` | 用户 figlens state 目录中的本地 workspace，或位于 workspace 之后会记住的 `--storage DIR` 下。`prepare <file> --scope NODE` 为该范围建立一次搜索索引；之后 `search --file <file>`（或 `--workspace DIR`）不再解析文件，跨 workspace 的所有来源统一排序作答。`refresh` 重建有变更的文件，`rebuild` 重建全部或单一 `--source`/`--scope`，`clear` 删除未使用的索引；新索引就绪前继续使用旧索引。`reset` 只删除 workspace 数据库，不会删除设计、导出或记住的位置。`track --scope NODE` 从 baseline 构建开始记录该范围的变更；`untrack` 停止记录并保留历史。 `embed` 用已配置的模型嵌入已发布的范围（占用 CPU 和内存）；仅在需要 workspace 语义搜索时运行。 |

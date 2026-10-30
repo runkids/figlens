@@ -172,8 +172,10 @@ usage:
                                              --out requires a node and writes an offline snapshot;
                                              live, it also runs ranked search and exact usages of
                                              the loaded revision (snapshots search their layers only);
-                                             its Semantic/Hybrid mode searches a local index that its
-                                             Enable index button builds (with a local model, see models);
+                                             Semantic/Visual/Hybrid searches an explicitly enabled index;
+                                             choose a PNG or selected layer, optionally crop or add text;
+                                             Enable visual index stores source renders, never query images;
+                                             local model setup: models status; Escape cancels a model query;
                                              results and copied context name the page and, live,
                                              the loaded file path, source snapshot and local
                                              revision (offline all are unknown; no path is

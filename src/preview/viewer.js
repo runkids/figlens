@@ -118,7 +118,7 @@ function semanticSummary(s, snapshotId, visual = false) {
         : profiles.length ? `Local model ${profiles[0].name} unavailable: ${profiles[0].reason}.`
         : visual ? 'No visual model configured: image hash matching works without one; configure a local image profile for broader similarity.' : 'No local model configured: set one up through your agent’s figlens models tool; hybrid falls back to text.';
     const ended = job?.error ? ` Last build failed: ${job.error.message}` : ['failed', 'cancelled', 'interrupted'].includes(job?.state) ? ` Last build ${job.state}.` : '';
-    return {text: `${indexed ? `Index of ${s.scope} ready.` : `No index of ${s.scope} for this revision.`} ${model}${ended}`, enable: visual || !indexed || !!ready, running};
+    return {text: `${indexed ? `${visual ? 'Text index' : 'Index'} of ${s.scope} ready.` : `No index of ${s.scope} for this revision.`} ${visual ? 'Image-layer coverage is shown with search results. ' : ''}${model}${ended}`, enable: visual || !indexed || !!ready, running};
 }
 // A load-more page joined to the pages already shown: a page that was incomplete or named a reason keeps
 // saying so, since its results are still on screen. A first page (no cursor) starts over.
@@ -150,6 +150,7 @@ function rowModel(row, source) {
         viewSourceId: source?.sourceId ?? ref?.sourceId,
         name: row.name ?? row.definition?.name ?? ref?.nodeId ?? resource ?? '(no target)',
         type: row.type ?? row.definition?.type ?? null, relation: row.relation ?? null, state: row.state ?? null,
+        visual: row.visual ?? null,
         basis: row.basis ?? (matchReasons(row) || null), via: row.via ?? null, hidden: row.hidden === true,
         origin: row.origin ?? null, scopeRoot: row.scopeRoot ?? null, page: row.page?.name ?? null,
         path: (row.path || []).map(p => p.name || p.id).join(' / '),
@@ -1620,6 +1621,21 @@ if (typeof document !== 'undefined') {
             const li = el('li'), open = button(m.name, () => relOpen(name, m, open));
             open.disabled = !m.nodeId;
             li.append(open, el('span', [m.type, m.relation, m.state && `state ${m.state}`, m.basis, m.via && `via ${m.via}`, m.origin, m.scopeRoot && `in ${m.scopeRoot}`, m.page && `page ${m.page}`, m.hidden && 'hidden', m.resource && `resource ${m.resource}`, m.path].filter(Boolean).join(' · ')));
+            if (m.visual) {
+                if (m.visual.state === 'rendered') {
+                    const img = el('img');
+                    img.width = img.height = 72; img.alt = `Stored visual preview of ${m.name}`;
+                    img.className = 'visual-result'; img.src = BLANK;
+                    img.dataset.src = `visual-thumb/${generation}/${m.nodeId}?` + relQuery({scope: rel[name].acc.scope?.nodeId || '0:0'});
+                    li.append(img);
+                    queueImage(img);
+                }
+                const warnings = (m.visual.diagnostics || []).map(d => d.reason || d.feature || 'render diagnostic');
+                if (m.visual.error) warnings.unshift(m.visual.error);
+                if (m.visual.state !== 'rendered') warnings.unshift(`Visual unit: ${m.visual.state}`);
+                if (m.visual.diagnosticsTruncated) warnings.push('More render diagnostics omitted');
+                if (warnings.length) li.append(el('p', warnings.join('; ')));
+            }
             if (m.nodeId && !boot.snapshot) {
                 const copyBtn = button('Copy ID', () => relCopy(name, m, copyBtn));
                 li.append(copyBtn);
