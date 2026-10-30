@@ -9,6 +9,9 @@ import { Targets, check, checkInput, failure, notice, reminder } from '../pi/sta
 
 const string = maxLength => ({ type: 'string', minLength: 1, maxLength });
 const selection = { file: string(4096), frame: string(200) };
+// A directory add cursor is `d1.<16 hex>.` plus its last canonical path in hex: 20 + 2 * PATH_MAX (4096).
+// shortcut: Windows long paths can exceed PATH_MAX; raise this if such a cursor is ever refused.
+const DIR_CURSOR = 20 + 2 * 4096;
 const object = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const texts = maxItems => ({ type: 'array', items: string(2000), maxItems });
 const bool = { type: 'boolean' }, path = string(4096), id = string(200);
@@ -18,7 +21,7 @@ const node = string((256 + 1) * 23);
 const CLI_TOOLS = [
   ['index', 'Local workspace indexes for search, as the figlens MCP index tool. prepare registers file (or a project workspace) and with scope builds exactly that stored scope (0:0 is the whole file), returning workspaceId and the finished job; status reports sources and storage; add, remove, relocate, refresh, rebuild and clear_cache manage sources and indexes; track starts recording the changes of one scope with a baseline build and untrack stops it, keeping its history; reset deletes this workspace database only after the user asked for it. A directory file registers 10 files per call and returns nextCursor; pass it as cursor for the next page; the CLI path refuses gs://. Errors carry recovery steps; recreation (replaceUnavailable) needs the user\'s confirmation.',
     { action: { enum: ['prepare', 'status', 'add', 'remove', 'relocate', 'refresh', 'rebuild', 'track', 'untrack', 'clear_cache', 'reset'] },
-      file: path, workspace: path, workspaceId: id, sourceId: id, scope: node, requestId: id, storage: path, replaceUnavailable: bool, cursor: string(4096) }, ['action']],
+      file: path, workspace: path, workspaceId: id, sourceId: id, scope: node, requestId: id, storage: path, replaceUnavailable: bool, cursor: string(DIR_CURSOR) }, ['action']],
   ['jobs', 'Status or cancellation of an index job by its jobId, as the figlens MCP jobs tool.',
     { action: { enum: ['status', 'cancel'] }, jobId: id, storage: path }, ['action', 'jobId']],
   ['search', 'Ranked search of layer names and effective text, as the figlens MCP search tool: give file to read a .fig now, or workspaceId to search its prepared indexes without parsing. Results carry exact ref.nodeId for figlens_inspect, matches and coverage; sources not ready list the index call that prepares them.',

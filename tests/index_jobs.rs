@@ -1052,6 +1052,33 @@ fn a_directory_add_over_mcp_stays_inside_its_roots_and_the_cli_dry_run_writes_no
 }
 
 #[test]
+fn add_only_flags_are_refused_by_every_other_index_action_before_it_writes() {
+    let env = Env::new();
+    let dir = project(&env);
+    let fig = dir.join("a.fig");
+    std::fs::copy("examples/first-success/design.fig", &fig).unwrap();
+    let (f, d) = (fig.to_str().unwrap(), dir.to_str().unwrap());
+    let refused = |args: &[&str]| !env.run(args).status.success();
+    for flag in [
+        &["--dry-run"][..],
+        &["--manifest", "m"],
+        &["--cursor", "d1.x.y"],
+    ] {
+        let prepare = [&["index", "prepare", f, "--workspace", d][..], flag].concat();
+        assert!(refused(&prepare), "{flag:?}");
+    }
+    assert!(!env.home.join(".local/state/figlens").exists());
+    let ws = env.json(&["index", "prepare", f, "--workspace", d]);
+    let ws = ws["workspaceId"].as_str().unwrap();
+    for action in ["refresh", "rebuild", "track", "untrack"] {
+        let args = ["index", action, "--id", ws, "--scope", "0:0", "--dry-run"];
+        assert!(refused(&args), "{action}");
+    }
+    let status = env.json(&["index", "status", "--id", ws]);
+    assert_eq!(status["sources"][0]["indexed"], json!([]), "{status}");
+}
+
+#[test]
 fn an_mcp_directory_add_continues_with_its_cursor_until_none_is_left() {
     let env = Env::new();
     let dir = project(&env);
