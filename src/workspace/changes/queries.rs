@@ -1,9 +1,12 @@
-//! Saved-query subscriptions: a consumer follows one workspace search over one visible source.
-//! Their events are the search's own evaluations, never revisions. An evaluation is computed
-//! outside any write and published under fences; `changes` only reads stored ones.
+//! Saved-query subscriptions: a consumer follows one workspace search over one visible source,
+//! or a search or library question (#93) over a fixed set of them. Their events are the
+//! question's own evaluations, never revisions. An evaluation is computed outside any write and
+//! published under fences; `changes` only reads stored ones.
 
+use super::subscriptions::SET;
 use super::*;
 use crate::search;
+use crate::workspace::library::{self, DefinitionRef};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The ranked window an evaluation keeps; changes past it are counted, never listed.
@@ -15,28 +18,91 @@ const BYTES: i64 = 8 * 1024 * 1024;
 /// fields (tracking, subscription) always fits.
 const ROW_BYTES: usize = PAGE_BYTES / 2;
 
-/// What a query subscription saved: the search as given, and its canonical form.
+/// The saved library question's version; an anchor of another one never reads as this one.
+const LIBRARY_VERSION: i64 = 1;
+
+/// What a query subscription saved: the search as given, or a library question, and its
+/// canonical form.
 pub(super) struct Saved {
     pub(super) query: String,
     pub(super) types: Vec<String>,
+    /// A library question in place of the search. Its definition's snapshot is the one subscribe
+    /// checked; each evaluation follows the same node id in that source's current publication.
+    pub(super) library: Option<library::Request>,
+    /// The fixed source set, sorted; `None` for one source.
+    pub(super) members: Option<Vec<String>>,
 }
 
 impl Saved {
-    pub(super) fn parse(anchor: &str) -> Result<Saved> {
+    pub(super) fn parse(anchor: &str, members: Option<Vec<String>>) -> Result<Saved> {
         let v: Json = serde_json::from_str(anchor).map_err(|_| stale())?;
+        let text = |v: &Json| v.as_str().map(str::to_owned).ok_or_else(stale);
+        if v.get("library").is_some() {
+            if v["version"] != LIBRARY_VERSION {
+                return Err(stale());
+            }
+            let (l, d) = (&v["library"], &v["definition"]);
+            let definition = match d.is_null() {
+                true => None,
+                false => Some(DefinitionRef {
+                    source_id: text(&d["sourceId"])?,
+                    snapshot_id: text(&d["snapshotId"])?,
+                    node_id: text(&d["nodeId"])?,
+                }),
+            };
+            return Ok(Saved {
+                query: String::new(),
+                types: Vec::new(),
+                library: Some(library::Request {
+                    kind: text(&l["kind"])?,
+                    namespace: l["namespace"].as_str().map(str::to_owned),
+                    key: text(&l["key"])?,
+                    definition,
+                    scope: String::new(),
+                    include_hidden: false,
+                    limit: TOP_K,
+                    cursor: None,
+                }),
+                members,
+            });
+        }
         Ok(Saved {
-            query: v["query"].as_str().ok_or_else(stale)?.to_owned(),
+            query: text(&v["query"])?,
             types: v["types"]
                 .as_array()
                 .ok_or_else(stale)?
                 .iter()
                 .filter_map(|t| t.as_str().map(str::to_owned))
                 .collect(),
+            library: None,
+            members,
         })
     }
 
     pub(super) fn anchor(&self) -> String {
-        json!({"query": self.query, "types": self.types}).to_string()
+        match &self.library {
+            None => json!({"query": self.query, "types": self.types}),
+            Some(l) => json!({"version": LIBRARY_VERSION,
+                "library": {"kind": l.kind, "namespace": l.namespace, "key": l.key},
+                "definition": l.definition.as_ref().map(|d| json!({"sourceId": d.source_id,
+                    "snapshotId": d.snapshot_id, "nodeId": d.node_id}))}),
+        }
+        .to_string()
+    }
+
+    /// The library question an evaluation asks of `scope`: the top-[`TOP_K`] uses, with the
+    /// definition at its source's snapshot in the publication `key` read.
+    fn asked(&self, l: &library::Request, scope: &str, key: &str) -> library::Request {
+        let mut l = l.clone();
+        l.scope = scope.to_owned();
+        l.limit = TOP_K;
+        if let Some(d) = &mut l.definition
+            && let Some((.., Some(snapshot))) =
+                members_of(key).into_iter().find(|m| m.0 == d.source_id)
+        {
+            d.snapshot_id = snapshot;
+        }
+        l
     }
 
     /// The workspace search this saved query runs over `scope`.
@@ -54,10 +120,134 @@ impl Saved {
 
     /// What one saved query is identified by: the search's own normalized phrase and terms,
     /// so two spellings search normalizes alike are one subscription.
+    /// A set's members are part of it, so one consumer may save the same search over two sets.
     pub(super) fn canonical(&self, scope: &str) -> Result<String> {
+        if let Some(l) = &self.library {
+            let d = l
+                .definition
+                .as_ref()
+                .map(|d| json!([d.source_id, d.node_id]));
+            return Ok(json!([
+                "library",
+                LIBRARY_VERSION,
+                scope,
+                l.kind,
+                l.namespace,
+                l.key,
+                d,
+                self.members
+            ])
+            .to_string());
+        }
         let q = self.request(scope).validate()?;
-        Ok(json!([scope, q.phrase(), q.terms(), self.types]).to_string())
+        Ok(match &self.members {
+            None => json!([scope, q.phrase(), q.terms(), self.types]),
+            Some(m) => json!([scope, q.phrase(), q.terms(), self.types, m]),
+        }
+        .to_string())
     }
+}
+
+/// A saved library question's definition, checked once at subscribe: a record of one of its
+/// sources at exactly the published snapshot the caller named. Never resolved from the key.
+pub(super) fn definition_holds(conn: &Connection, saved: &Saved, scope: &str) -> Result<()> {
+    let (Some(d), Some(members)) = (
+        saved.library.as_ref().and_then(|l| l.definition.as_ref()),
+        &saved.members,
+    ) else {
+        return Ok(());
+    };
+    let refused = |why: &str| {
+        fail(
+            ErrorKind::InvalidArguments,
+            format!(
+                "{why}: a saved library question's definition is a record of one of its sources at that source's published snapshot"
+            ),
+        )
+    };
+    // A source outside the set reads as unknown, whether or not it exists.
+    if !members.contains(&d.source_id) {
+        return Err(refused("definition_not_found"));
+    }
+    let snapshot: Option<Option<String>> = conn
+        .query_row(
+            "SELECT g.snapshot_id FROM published p JOIN generations g ON g.gen = p.gen
+             WHERE p.source_id = ?1 AND p.scope = ?2 AND EXISTS (SELECT 1 FROM records
+             INDEXED BY records_node WHERE gen = p.gen AND node_id = ?3)",
+            params![d.source_id, scope, d.node_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    match snapshot.flatten() {
+        None => Err(refused("definition_not_found")),
+        Some(s) if s != d.snapshot_id => Err(refused("definition_snapshot_stale")),
+        Some(_) => Ok(()),
+    }
+}
+
+/// One member of a set's publication: sourceId, generation (null when its scope is not
+/// published), membership and snapshot.
+type Member = (String, Option<i64>, String, Option<String>);
+
+fn members_of(key: &str) -> Vec<Member> {
+    serde_json::from_str(key).unwrap_or_default()
+}
+
+/// A set's publication as one key, its members in sourceId order; `None` when no member is
+/// published or one is gone.
+fn members_at(conn: &Connection, members: &[String], scope: &str) -> Result<Option<String>> {
+    let mut out = Vec::with_capacity(members.len());
+    for m in members {
+        let row: Option<(String, Option<i64>, Option<String>)> = conn
+            .query_row(
+                "SELECT s.membership, p.gen, g.snapshot_id FROM sources s
+                 LEFT JOIN published p ON p.source_id = s.source_id AND p.scope = ?2
+                 LEFT JOIN generations g ON g.gen = p.gen WHERE s.source_id = ?1",
+                [m, scope],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(sql)?;
+        let Some((membership, generation, snapshot)) = row else {
+            return Ok(None);
+        };
+        out.push((m.clone(), generation, membership, snapshot));
+    }
+    Ok(out
+        .iter()
+        .any(|m| m.1.is_some())
+        .then(|| json!(out).to_string()))
+}
+
+/// The publication a subscription's evaluations are bound to: its source's `(gen, membership)`,
+/// or for a set `(0, key)` of every member's.
+fn published(
+    conn: &Connection,
+    source: &str,
+    members: Option<&[String]>,
+    scope: &str,
+) -> Result<Option<(i64, String)>> {
+    match members {
+        None => publication(conn, source, scope),
+        Some(m) => Ok(members_at(conn, m, scope)?.map(|key| (0, key))),
+    }
+}
+
+/// Whether the caller sees every member of `members` (or `source` alone).
+fn sees_all(
+    storage: &Storage,
+    conn: &Connection,
+    source: &str,
+    members: Option<&[String]>,
+) -> Result<bool> {
+    let one = [source.to_owned()];
+    for s in members.unwrap_or(&one) {
+        if registry::visible_path(storage, conn, s)?.is_none() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// One evaluation before it is published: what it read and what it found.
@@ -69,15 +259,43 @@ pub(super) struct Eval {
     snapshot: String,
     ranking: String,
     coverage: Json,
-    refs: Vec<String>,
+    /// A node id; for a set `[sourceId, nodeId]`, and a library use adds its definitionMatch.
+    refs: Vec<Json>,
     more: bool,
+    /// A library question's uses, in source and document order rather than ranked.
+    library: bool,
     /// The query as search normalized it, which a subscription's identity is bound to.
     pub(super) canonical: String,
 }
 
-/// A publication as `changes` reads it: generation, membership, and the path, size and mtime
-/// of the file it was built from.
-type Published = (i64, String, String, Option<i64>, Option<i64>);
+/// A publication as `changes` reads it: generation and membership (a set's `(0, key)`), and the
+/// sourceId, path, size and mtime of each file it was built from.
+type Published = (i64, String, Vec<(String, String, Option<i64>, Option<i64>)>);
+
+/// The publication `sub` is evaluated against now, with its files; `None` when unpublished.
+fn current(conn: &Connection, sub: &subscriptions::Sub, scope: &str) -> Result<Option<Published>> {
+    let one = [sub.source.clone()];
+    let members = sub.members.as_deref().filter(|_| sub.is_set());
+    let Some((generation, membership)) = published(conn, &sub.source, members, scope)? else {
+        return Ok(None);
+    };
+    let mut files = Vec::new();
+    for source in members.unwrap_or(&one) {
+        let file = conn
+            .query_row(
+                "SELECT s.path, n.bytes, n.mtime_ns FROM published p
+                 JOIN sources s ON s.source_id = p.source_id JOIN generations g ON g.gen = p.gen
+                 LEFT JOIN snapshots n ON n.source_id = p.source_id AND n.snapshot_id = g.snapshot_id
+                 WHERE p.source_id = ?1 AND p.scope = ?2",
+                [source, scope],
+                |r| Ok((source.clone(), r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(sql)?;
+        files.extend(file);
+    }
+    Ok(Some((generation, membership, files)))
+}
 
 /// The generation `source`'s `scope` is published at now, and the source's membership.
 fn publication(conn: &Connection, source: &str, scope: &str) -> Result<Option<(i64, String)>> {
@@ -95,9 +313,11 @@ fn publication(conn: &Connection, source: &str, scope: &str) -> Result<Option<(i
 type Outcome = std::result::Result<Eval, Json>;
 
 /// The saved search, run with the workspace search's own validation, ranking and budgets over
-/// `source`'s published `scope`, outside any write, with the publication it read. `Err(reply)`
-/// says why there is nothing to evaluate now (not published, stale, unreadable). `cancel`
-/// interrupts the search; it then fails with `Cancelled`.
+/// `source`'s published `scope` (or the saved set's, whose members the caller has seen),
+/// outside any write, with the publication it read. A library question runs the library query
+/// with its caps instead. `Err(reply)` says why there is nothing to evaluate now (not
+/// published, stale, unreadable). `cancel` interrupts the search; it then fails with
+/// `Cancelled` (a library question is not interrupted; its scan cap bounds it).
 pub(super) fn compute(
     storage: &Storage,
     select: &Select,
@@ -108,9 +328,10 @@ pub(super) fn compute(
     cancel: Option<&AtomicBool>,
 ) -> Result<(Option<(i64, String)>, Outcome)> {
     let (_, ws) = opened(storage, select, false)?;
+    let members = saved.members.as_deref();
     // Publications only move forward, so the same one before and after the search is the one
     // it read.
-    let read = publication(&ws.conn, source, scope)?;
+    let read = published(&ws.conn, source, members, scope)?;
     let Some((generation, membership)) = read.clone() else {
         return Ok((
             None,
@@ -122,8 +343,12 @@ pub(super) fn compute(
         ));
     };
     let canonical = saved.canonical(scope)?;
-    let only = [source.to_owned()];
-    let reply = match query::search_with(storage, select, &only, &saved.request(scope), cancel) {
+    let only = members.map_or_else(|| vec![source.to_owned()], <[String]>::to_vec);
+    let reply = match &saved.library {
+        None => query::search_with(storage, select, &only, &saved.request(scope), cancel),
+        Some(l) => library::library_in(storage, select, &only, &saved.asked(l, scope, &membership)),
+    };
+    let reply = match reply {
         Ok(reply) => reply,
         Err(e) => {
             // A stale, unreadable or too large index: nothing to evaluate until its recovery runs.
@@ -134,6 +359,7 @@ pub(super) fn compute(
                         | ErrorKind::SourceUnreadable
                         | ErrorKind::QueryWorkLimit
                         | ErrorKind::IndexIncompatible
+                        | ErrorKind::ResponseBudget
                 )
             }) else {
                 return Err(e);
@@ -145,40 +371,71 @@ pub(super) fn compute(
             ));
         }
     };
-    if publication(&ws.conn, source, scope)? != read {
+    if published(&ws.conn, source, members, scope)? != read {
         return Ok((read, Err(pending("newer_publication", &ws.held.id, sub))));
     }
-    if reply["state"] != "ready" {
+    // A library reply has no state: its coverage names each source's.
+    if saved.library.is_none() && reply["state"] != "ready" {
         return Ok((
             read,
             Err(json!({"state": "unavailable", "reason": reply["state"],
             "sources": reply["sources"], "nextSteps": reply["nextSteps"]})),
         ));
     }
+    // Exact refs: in a set a node id alone is ambiguous, so each carries its sourceId.
     let refs = reply["results"]
         .as_array()
         .map(|r| {
             r.iter()
-                .filter_map(|h| h["ref"]["nodeId"].as_str().map(str::to_owned))
+                .filter_map(|h| {
+                    let node = h["ref"]["nodeId"].as_str()?;
+                    Some(match (&saved.library, members) {
+                        (Some(_), _) => json!([h["ref"]["sourceId"], node, h["definitionMatch"]]),
+                        (None, Some(_)) => json!([h["ref"]["sourceId"], node]),
+                        (None, None) => json!(node),
+                    })
+                })
                 .collect()
         })
         .unwrap_or_default();
     let coverage = &reply["coverage"];
+    let codes = coverage["reasons"]
+        .as_array()
+        .map(|r| r.iter().map(|c| c["code"].clone()).collect::<Vec<_>>());
+    let (ranking, coverage) = match &saved.library {
+        None => (
+            reply["ranking"].to_string(),
+            json!({"complete": coverage["complete"], "text": coverage["layers"]["text"]["state"],
+                "reasons": codes}),
+        ),
+        // Only direct uses are read: a definition's own library dependencies are not followed,
+        // so a change in them is never claimed as covered.
+        Some(_) => (
+            search::corpus_ranking().to_string(),
+            json!({"complete": coverage["complete"], "reasons": codes,
+                "definition": {"state": reply["definition"]["state"],
+                    "reason": reply["definition"]["reason"]},
+                "transitive": "not_followed"}),
+        ),
+    };
     Ok((
         read,
         Ok(Eval {
-            source: source.to_owned(),
+            source: if members.is_some() { SET } else { source }.to_owned(),
             generation,
             membership,
-            snapshot: reply["sources"][0]["snapshotId"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned(),
-            ranking: reply["ranking"].to_string(),
-            coverage: json!({"complete": coverage["complete"], "text": coverage["layers"]["text"]["state"],
-            "reasons": coverage["reasons"].as_array().map(|r| r.iter().map(|c| c["code"].clone()).collect::<Vec<_>>())}),
+            snapshot: match members {
+                Some(_) => String::new(),
+                None => reply["sources"][0]["snapshotId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            },
+            ranking,
+            coverage,
             refs,
             more: reply["hasMore"] == true,
+            library: saved.library.is_some(),
             canonical,
         }),
     ))
@@ -192,7 +449,7 @@ struct Last {
     snapshot: String,
     ranking: String,
     coverage: String,
-    refs: Vec<String>,
+    refs: Vec<Json>,
 }
 
 impl Last {
@@ -244,70 +501,175 @@ fn last(conn: &Connection, ws: &str, sub: &str) -> Result<Option<Last>> {
     .transpose()
 }
 
+/// The members whose snapshot changed since `l`, and whether only their generation did for the
+/// rest: a set's `source_changed` names them.
+fn moved(l: &Last, e: &Eval) -> (Vec<String>, bool) {
+    let before = members_of(&l.membership);
+    let (mut changed, mut rebuilt) = (Vec::new(), false);
+    for (id, generation, _, snapshot) in members_of(&e.membership) {
+        match before.iter().find(|m| m.0 == id) {
+            Some(m) if m.3 == snapshot => rebuilt |= m.1 != generation,
+            _ => changed.push(id),
+        }
+    }
+    (changed, rebuilt)
+}
+
 /// Why this evaluation differs from the last one. Only new bytes are a source change; a new
-/// generation of the same bytes is a rebuild.
+/// generation of the same bytes is a rebuild. One source's membership is `corpus_changed`; a
+/// set's is a member's membership or publication, or, for a ranked search of several members,
+/// a member's new bytes, since they share the ranking's statistics.
 fn causes(last: Option<&Last>, e: &Eval) -> Vec<&'static str> {
     let Some(l) = last else {
         return vec!["initial"];
     };
     let mut out = Vec::new();
-    if l.snapshot != e.snapshot {
-        out.push("source_changed");
-    } else if l.generation != e.generation {
-        out.push("index_rebuilt");
-    }
+    let set = e.source == SET;
+    let corpus = if set {
+        let (changed, rebuilt) = moved(l, e);
+        if !changed.is_empty() {
+            out.push("source_changed");
+        } else if rebuilt {
+            out.push("index_rebuilt");
+        }
+        let shape = |key: &str| -> Vec<(String, bool, String)> {
+            members_of(key)
+                .into_iter()
+                .map(|m| (m.0, m.1.is_some(), m.2))
+                .collect()
+        };
+        shape(&l.membership) != shape(&e.membership)
+            || (!e.library && !changed.is_empty() && members_of(&e.membership).len() > 1)
+    } else {
+        if l.snapshot != e.snapshot {
+            out.push("source_changed");
+        } else if l.generation != e.generation {
+            out.push("index_rebuilt");
+        }
+        l.membership != e.membership
+    };
     if serde_json::from_str::<Json>(&l.coverage).ok().as_ref() != Some(&e.coverage) {
         out.push("coverage_changed");
     }
     if l.ranking != e.ranking {
         out.push("ranking_changed");
     }
-    if l.membership != e.membership {
+    if corpus {
         out.push("corpus_changed");
     }
     out
 }
 
+/// A ref's identity: its source (a set's) and node id.
+fn identity(r: &Json) -> (Option<&str>, &str) {
+    match r {
+        Json::String(node) => (None, node),
+        _ => (r[0].as_str(), r[1].as_str().unwrap_or_default()),
+    }
+}
+
 /// Movement within the top-[`TOP_K`] window: entering or leaving it, or moving inside it, does
 /// not prove a result was added to or removed from the whole result set.
 fn delta(last: Option<&Last>, e: &Eval) -> Json {
-    // One subscription follows one sourceId, which relocate keeps: its nodes compare across a
-    // move; a removed source deletes the subscription with it.
+    // One subscription follows one sourceId (or a set of them), which relocate keeps: its nodes
+    // compare across a move; a removed source deletes or disables the subscription with it.
     let before = last.map_or(&[][..], |l| l.refs.as_slice());
-    let pos = |refs: &[String], id: &str| refs.iter().position(|r| r == id);
+    let pos = |refs: &[Json], r: &Json| refs.iter().position(|x| identity(x) == identity(r));
     // Exact refs: a left result names the old snapshot it ranked in, never the new one.
-    let node = |snapshot: &str, id: &String| json!({"sourceId": e.source, "snapshotId": snapshot, "nodeId": id});
+    let snapshot = |membership: &str, single: &str, r: &Json| match identity(r).0 {
+        None => Some(single.to_owned()),
+        Some(source) => members_of(membership)
+            .into_iter()
+            .find(|m| m.0 == source)
+            .and_then(|m| m.3),
+    };
+    let node = |snapshot: Option<String>, r: &Json| {
+        let (source, id) = identity(r);
+        json!({"sourceId": source.unwrap_or(&e.source), "snapshotId": snapshot, "nodeId": id})
+    };
     let entered: Vec<Json> = e
         .refs
         .iter()
         .filter(|r| pos(before, r).is_none())
-        .map(|r| node(&e.snapshot, r))
+        .map(|r| node(snapshot(&e.membership, &e.snapshot, r), r))
         .collect();
     let left: Vec<Json> = last.map_or_else(Vec::new, |l| {
         l.refs
             .iter()
             .filter(|r| pos(&e.refs, r).is_none())
-            .map(|r| node(&l.snapshot, r))
+            .map(|r| node(snapshot(&l.membership, &l.snapshot, r), r))
             .collect()
     });
-    // Positions under two rankings are not comparable: only membership of the window is.
-    let comparable = last.is_none_or(|l| l.ranking == e.ranking);
-    let moved = comparable.then(|| {
+    // Positions under two rankings are not comparable: only membership of the window is. A
+    // library question's order is the document's, not a rank.
+    let comparable = !e.library && last.is_none_or(|l| l.ranking == e.ranking);
+    let moved_in = comparable.then(|| {
         e.refs
             .iter()
             .enumerate()
             .filter_map(|(to, r)| {
                 pos(before, r)
                     .filter(|from| *from != to)
-                    .map(|from| json!({"nodeId": r, "from": from + 1, "to": to + 1}))
+                    .map(|from| json!({"nodeId": identity(r).1, "from": from + 1, "to": to + 1}))
             })
             .collect::<Vec<_>>()
     });
     // Publications between the two evaluations are coalesced: `from` names the one compared.
-    json!({"from": last.map(|l| search::hex(&l.id)),
-        "fromSnapshotId": last.map(|l| &l.snapshot), "snapshotId": e.snapshot,
-        "enteredTopK": entered, "leftTopK": left, "rankChanged": moved,
-        "rankComparable": comparable})
+    let mut out = json!({"from": last.map(|l| search::hex(&l.id)),
+        "enteredTopK": entered, "leftTopK": left, "rankChanged": moved_in,
+        "rankComparable": comparable});
+    if e.source == SET {
+        let snapshots = |key: &str| -> Vec<Json> {
+            members_of(key)
+                .into_iter()
+                .map(|m| json!({"sourceId": m.0, "snapshotId": m.3}))
+                .collect()
+        };
+        out["sources"] = json!(snapshots(&e.membership));
+        out["fromSources"] = last.map_or(Json::Null, |l| json!(snapshots(&l.membership)));
+        out["changedSourceIds"] = json!(last.map_or_else(Vec::new, |l| moved(l, e).0));
+    } else {
+        out["fromSnapshotId"] = json!(last.map(|l| &l.snapshot));
+        out["snapshotId"] = json!(e.snapshot);
+    }
+    // A use whose cached copy now compares otherwise with the definition.
+    if e.library {
+        out["definitionMatchChanged"] = json!(
+            e.refs
+                .iter()
+                .filter_map(|r| {
+                    let old = &before[pos(before, r)?][2];
+                    (old != &r[2]).then(|| {
+                        let (source, id) = identity(r);
+                        json!({"sourceId": source, "nodeId": id, "from": old, "to": r[2]})
+                    })
+                })
+                .collect::<Vec<_>>()
+        );
+    }
+    out
+}
+
+/// The state of a subscription an authoritative event disabled: nothing of it is evaluated or
+/// read again; only a fresh subscription follows the question again.
+pub(super) fn disabled(ws: &str, sub: &str, why: &str) -> Json {
+    json!({"state": "disabled", "disabled": serde_json::from_str::<Json>(why).unwrap_or(Json::Null),
+        "message": "this subscription was disabled and its evaluations deleted; unsubscribe it, then subscribe again",
+        "nextSteps": [{"tool": "watch", "arguments": {"action": "unsubscribe", "workspaceId": ws, "subscriptionId": sub}}]})
+}
+
+/// Whether `l` and `e` read the same bytes under the same memberships, generations aside.
+fn same_bytes(l: &Last, e: &Eval) -> bool {
+    if e.source != SET {
+        return l.snapshot == e.snapshot && l.membership == e.membership;
+    }
+    let strip = |key: &str| -> Vec<(String, String, Option<String>)> {
+        members_of(key)
+            .into_iter()
+            .map(|m| (m.0, m.2, m.3))
+            .collect()
+    };
+    strip(&l.membership) == strip(&e.membership)
 }
 
 pub(super) fn pending(reason: &str, ws: &str, sub: &str) -> Json {
@@ -325,29 +687,27 @@ pub(super) fn record(
     sub: &str,
     e: &Eval,
 ) -> Result<Json> {
-    let held: Option<(String, String, String)> = tx
-        .query_row(
-            "SELECT source_id, scope, target FROM subscriptions WHERE id = ?1 AND kind = 'query'
-             AND filter_version = ?2",
-            params![sub, subscriptions::FILTER_VERSION],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()
-        .map_err(sql)?;
-    // Removed or moved out of view since it was computed.
-    let Some((source, scope, target)) = held else {
+    let Some((source, scope, target, members, off)) = holding(tx, sub, true)? else {
         return Err(subscriptions::unknown(sub));
     };
-    if registry::visible_path(storage, tx, &source)?.is_none() {
+    // Removed or moved out of view since it was computed.
+    if !sees_all(storage, tx, &source, members.as_deref())? {
         return Err(subscriptions::unknown(sub));
+    }
+    if let Some(why) = off {
+        return Ok(disabled(ws, sub, &why));
     }
     // Search now normalizes the saved text differently: this subscription can never match.
     if target != e.canonical {
+        let mut again = json!({"action": "subscribe", "workspaceId": ws, "sourceId": source});
+        if let Some(m) = &members {
+            again = json!({"action": "subscribe", "workspaceId": ws, "sources": m.join(",")});
+        }
         return Ok(json!({"state": "unavailable", "reason": "query_changed",
             "nextSteps": [{"tool": "watch", "arguments": {"action": "unsubscribe", "workspaceId": ws, "subscriptionId": sub}},
-            {"tool": "watch", "arguments": {"action": "subscribe", "workspaceId": ws, "sourceId": source}}]}));
+            {"tool": "watch", "arguments": again}]}));
     }
-    let now = publication(tx, &source, &scope)?;
+    let now = published(tx, &source, members.as_deref(), &scope)?;
     // A publication or relocation since it was computed: evaluate again, never store this one.
     if now.as_ref() != Some(&(e.generation, e.membership.clone())) {
         return Ok(pending("newer_publication", ws, sub));
@@ -362,15 +722,14 @@ pub(super) fn record(
     // A rebuild that changed nothing this search used is no event: the evaluation is rebound
     // to the new generation, so it neither reads as pending nor evicts a real change.
     if let Some(l) = &last
-        && l.snapshot == e.snapshot
-        && l.membership == e.membership
+        && same_bytes(l, e)
         && l.ranking == e.ranking
         && l.refs == e.refs
         && serde_json::from_str::<Json>(&l.coverage).ok().as_ref() == Some(&e.coverage)
     {
         tx.execute(
-            "UPDATE query_evaluations SET gen = ?2 WHERE id = ?1",
-            params![l.id, e.generation],
+            "UPDATE query_evaluations SET gen = ?2, membership = ?3 WHERE id = ?1",
+            params![l.id, e.generation, e.membership],
         )
         .map_err(sql)?;
         return Ok(json!({"state": "current"}));
@@ -515,6 +874,10 @@ pub fn evaluate(storage: &Storage, select: &Select, id: Option<&str>) -> Result<
                 format!("subscription {id} follows changes, not a saved query"),
             )
         })?;
+        if let Some(why) = &sub.disabled {
+            return Ok(json!({"workspaceId": ws.held.id, "subscriptionId": id,
+                "evaluation": disabled(&ws.held.id, id, why)}));
+        }
         let scope = sub.scope.clone().unwrap_or_else(|| "0:0".into());
         (sub.source, scope, saved, ws.held.id.clone())
     };
@@ -558,21 +921,16 @@ pub(crate) fn note(
     at: (i64, &str, &str),
     why: &Json,
 ) -> Result<bool> {
-    let held: Option<(String, String)> = conn
-        .query_row(
-            "SELECT source_id, scope FROM subscriptions WHERE id = ?1 AND kind = 'query'",
-            [sub],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .map_err(sql)?;
-    let Some((source, scope)) = held else {
+    let Some((source, scope, _, members, off)) = holding(conn, sub, false)? else {
         return Err(subscriptions::unknown(sub));
     };
-    if registry::visible_path(storage, conn, &source)?.is_none() {
+    if !sees_all(storage, conn, &source, members.as_deref())? {
         return Err(subscriptions::unknown(sub));
     }
-    if publication(conn, &source, &scope)? != Some((at.0, at.1.to_owned())) {
+    // A disabled subscription keeps nothing new.
+    if off.is_some()
+        || published(conn, &source, members.as_deref(), &scope)? != Some((at.0, at.1.to_owned()))
+    {
         return Ok(false);
     }
     let mut why = why.clone();
@@ -592,6 +950,28 @@ pub(crate) fn note(
     )
     .map_err(sql)?;
     Ok(true)
+}
+
+/// A query subscription's source, scope, target, set and disabled reason, read inside a write
+/// (the workspace is at the current schema); `filtered` requires the current filter version. A
+/// set whose members cannot be read is gone.
+type Held = (String, String, String, Option<Vec<String>>, Option<String>);
+
+fn holding(conn: &Connection, sub: &str, filtered: bool) -> Result<Option<Held>> {
+    let row: Option<Held> = conn
+        .query_row(
+            "SELECT source_id, scope, target, sources, disabled FROM subscriptions
+             WHERE id = ?1 AND kind = 'query' AND (NOT ?3 OR filter_version = ?2)",
+            params![sub, subscriptions::FILTER_VERSION, filtered],
+            |r| {
+                let members: Option<String> = r.get(3)?;
+                let members = members.and_then(|m| serde_json::from_str(&m).ok());
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, members, r.get(4)?))
+            },
+        )
+        .optional()
+        .map_err(sql)?;
+    Ok(row.filter(|h| h.0 != SET || h.3.is_some()))
 }
 
 /// Whether an evaluation outcome is a failure worth noting: not stored, current or pending.
@@ -623,6 +1003,8 @@ pub struct Continuation {
     /// `target`'s search outcome, kept while its subscriptions are recorded so no later turn
     /// runs that search again.
     outcome: Option<Outcome>,
+    /// The publication that outcome read: the source's, or its set's whole key.
+    read: Option<(i64, String)>,
 }
 
 /// One bounded turn of the runner's saved-query work on a published scope.
@@ -633,13 +1015,32 @@ pub struct Turn {
 }
 
 /// Subscriptions on `source`'s `scope` with neither a latest evaluation nor a noted failure at
-/// publication `(?4 gen, ?5 membership, ?6 ranking)`: the work a publication leaves.
-const STALE: &str = "s.kind = 'query' AND s.source_id = ?1 AND s.scope = ?2
-    AND NOT EXISTS (SELECT 1 FROM query_evaluations e WHERE e.sub = s.id
+/// publication `(?4 gen, ?5 membership, ?6 ranking)`: the work a publication leaves. A set is
+/// due when one of its members is `source` and neither its latest evaluation nor its note holds
+/// that member at this publication, and only while every member is among the runner's visible
+/// sources `?10`; a disabled one never is.
+const STALE: &str = "s.kind = 'query' AND s.source_id IN (?1, '*') AND s.scope = ?2
+    AND s.disabled IS NULL AND CASE WHEN s.source_id = ?1 THEN
+      NOT EXISTS (SELECT 1 FROM query_evaluations e WHERE e.sub = s.id
         AND e.seq = (SELECT MAX(seq) FROM query_evaluations WHERE sub = s.id)
         AND e.gen = ?4 AND e.membership = ?5 AND e.ranking = ?6)
-    AND NOT IFNULL(CASE WHEN json_valid(s.eval_failure) THEN s.eval_failure ->> 'gen' = ?4
-        AND s.eval_failure ->> 'membership' = ?5 AND s.eval_failure ->> 'ranking' = ?6 END, 0)";
+      AND NOT IFNULL(CASE WHEN json_valid(s.eval_failure) THEN s.eval_failure ->> 'gen' = ?4
+        AND s.eval_failure ->> 'membership' = ?5 AND s.eval_failure ->> 'ranking' = ?6 END, 0)
+    WHEN json_valid(s.sources) THEN
+      EXISTS (SELECT 1 FROM json_each(s.sources) WHERE value = ?1)
+      AND NOT EXISTS (SELECT 1 FROM json_each(s.sources)
+        WHERE value NOT IN (SELECT value FROM json_each(?10)))
+      AND NOT EXISTS (SELECT 1 FROM query_evaluations e WHERE e.sub = s.id
+        AND e.seq = (SELECT MAX(seq) FROM query_evaluations WHERE sub = s.id)
+        AND e.ranking = ?6 AND CASE WHEN json_valid(e.membership) THEN EXISTS
+          (SELECT 1 FROM json_each(e.membership) m WHERE m.value ->> 0 = ?1
+           AND m.value ->> 1 = ?4 AND m.value ->> 2 = ?5) ELSE 0 END)
+      AND NOT IFNULL(CASE WHEN json_valid(s.eval_failure) THEN
+        CASE WHEN json_valid(s.eval_failure ->> 'membership') THEN
+          s.eval_failure ->> 'ranking' = ?6 AND EXISTS (SELECT 1
+          FROM json_each(s.eval_failure ->> 'membership') m WHERE m.value ->> 0 = ?1
+          AND m.value ->> 1 = ?4 AND m.value ->> 2 = ?5) END END, 0)
+    ELSE 0 END";
 
 /// The runner's hook on `source`'s published `scope`, one bounded turn at a time: at most one
 /// saved search, computed outside any write, and one write recording its outcome for at most
@@ -662,10 +1063,11 @@ pub fn evaluate_published(
         next,
         report: json!({"workspaceId": ws_id, "computed": computed, "subscriptions": states}),
     };
-    // Nothing of a hidden or removed source is loaded, not even its subscriptions.
+    // Nothing of a hidden or removed source is loaded, not even its subscriptions; a workspace
+    // before schema 8 was never published by this runner, so nothing is due in it.
     let published = match registry::visible_path(storage, &ws.conn, source)? {
-        Some(_) => publication(&ws.conn, source, scope)?,
-        None => None,
+        Some(_) if ws.version >= 8 => publication(&ws.conn, source, scope)?,
+        _ => None,
     };
     let Some((generation, membership)) = published.clone() else {
         return Ok(turn(None, 0, Vec::new()));
@@ -676,6 +1078,8 @@ pub fn evaluate_published(
         .filter(|c| c.at.as_ref() == Some(&at))
         .unwrap_or_default();
     c.at = Some(at);
+    // A set is due here only while the runner sees every member.
+    let visible = json!(jobs::chosen(storage, &ws, None)?).to_string();
     // Due subscriptions of search `target` after `after`, at most `limit`, each id checked
     // against its cap before it is copied.
     let due = |conn: &Connection, target: &str, after: &str, limit: usize| -> Result<Vec<String>> {
@@ -695,7 +1099,8 @@ pub fn evaluate_published(
                 ranking,
                 SAVED_BYTES,
                 after,
-                limit as i64
+                limit as i64,
+                visible
             ],
             |r| r.get::<_, Option<String>>(0),
         )
@@ -723,7 +1128,10 @@ pub fn evaluate_published(
                         generation,
                         membership,
                         ranking,
-                        SAVED_BYTES
+                        SAVED_BYTES,
+                        "",
+                        0,
+                        visible
                     ],
                     |r| r.get::<_, Option<String>>(0),
                 )
@@ -740,12 +1148,15 @@ pub fn evaluate_published(
             return Ok(turn(None, 0, Vec::new()));
         };
         let target = target.ok_or_else(damaged)?;
-        // The anchor of the search's oldest due subscription stands for all of them.
-        let anchor: Option<String> = ws
+        // The anchor (and set) of the search's oldest due subscription stands for all of them:
+        // the target names both.
+        let anchor: Option<(Option<String>, Option<String>, bool)> = ws
             .conn
             .query_row(
                 &format!(
-                    "SELECT CASE WHEN length(CAST(s.anchor AS BLOB)) <= ?7 THEN s.anchor END
+                    "SELECT CASE WHEN length(CAST(s.anchor AS BLOB)) <= ?7 THEN s.anchor END,
+                     CASE WHEN length(CAST(s.sources AS BLOB)) <= ?7 THEN s.sources END,
+                     s.source_id = '*'
                      FROM subscriptions s WHERE {STALE} AND s.target = ?3 ORDER BY s.id LIMIT 1"
                 ),
                 params![
@@ -755,21 +1166,48 @@ pub fn evaluate_published(
                     generation,
                     membership,
                     ranking,
-                    SAVED_BYTES
+                    SAVED_BYTES,
+                    "",
+                    0,
+                    visible
                 ],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
-            .map_err(sql)?
-            .flatten();
-        let outcome = anchor
-            .ok_or_else(damaged)
-            .and_then(|a| Saved::parse(&a))
+            .map_err(sql)?;
+        let saved = match anchor {
+            Some((Some(a), m, set)) => {
+                let members = m.and_then(|m| serde_json::from_str::<Vec<String>>(&m).ok());
+                match set && members.is_none() {
+                    true => Err(damaged()),
+                    false => Saved::parse(&a, members),
+                }
+            }
+            _ => Err(damaged()),
+        };
+        // The publication this search must read: the source's, or its set's with this source
+        // at the publication the turn serves.
+        let pre = match &saved {
+            Ok(s) => self::published(&ws.conn, source, s.members.as_deref(), scope)?,
+            Err(_) => published.clone(),
+        };
+        let holds = match &saved {
+            Ok(s) if s.members.is_some() => pre.as_ref().is_some_and(|(_, key)| {
+                members_of(key)
+                    .iter()
+                    .any(|m| m.0 == source && m.1 == Some(generation) && m.2 == membership)
+            }),
+            _ => pre == published,
+        };
+        if !holds {
+            return Ok(turn(Some(Continuation::default()), 0, Vec::new()));
+        }
+        let outcome = saved
             .and_then(|saved| compute(storage, select, "", source, scope, &saved, Some(cancel)));
         let outcome = match outcome {
             // Cancelled, whatever stopped it: nothing is noted and the turn resumes as it was.
             _ if cancel.load(Ordering::SeqCst) => return Ok(turn(Some(c), 0, Vec::new())),
-            Ok((read, _)) if read != published => {
+            Ok((read, _)) if read != pre => {
                 return Ok(turn(Some(Continuation::default()), 0, Vec::new()));
             }
             Ok((_, Err(why))) if why["state"] == "pending" => {
@@ -782,6 +1220,7 @@ pub fn evaluate_published(
         c.target = target;
         c.after = String::new();
         c.outcome = Some(outcome);
+        c.read = pre;
     }
     if cancel.load(Ordering::SeqCst) {
         return Ok(turn(Some(c), computed, Vec::new()));
@@ -795,7 +1234,8 @@ pub fn evaluate_published(
         rusqlite::Transaction::new_unchecked(&ws.conn, rusqlite::TransactionBehavior::Immediate)
             .map_err(sql)?;
     let ids = due(&tx, &c.target, &c.after, FANOUT)?;
-    let at = (generation, membership.as_str(), ranking.as_str());
+    let read = c.read.clone().unwrap_or((generation, membership.clone()));
+    let at = (read.0, read.1.as_str(), ranking.as_str());
     let (mut states, mut newer) = (Vec::new(), false);
     for id in &ids {
         // Cancelled once the write began: dropping `tx` rolls back every record of this turn.
@@ -929,6 +1369,16 @@ pub(super) fn poll(
             format!("limit must be 1 to {PAGE_MAX}"),
         ));
     }
+    // Disabled: its evaluations are gone and none is read, nor a cursor issued.
+    if let Some(why) = &sub.disabled {
+        let (tracked, truncated) = tracking(conn, v)?;
+        return Ok(
+            json!({"workspaceId": v.workspace, "evaluations": [], "nextCursor": null,
+            "hasMore": false, "evaluation": disabled(&v.workspace, &sub.id, why),
+            "tracking": tracked, "trackingTruncated": truncated, "monitor": {"state": "inactive"},
+            "subscription": subscriptions::describe(conn, sub)?}),
+        );
+    }
     let pruned = pruned(conn, &sub.id)?;
     let now = receipt(v, pruned)?;
     let after = match req.cursor {
@@ -946,7 +1396,7 @@ pub(super) fn poll(
             // 160 covers the reply's own keys.
             "SELECT id, seq, 160 + length(CAST(id AS BLOB)) + length(CAST(snapshot_id AS BLOB))
              + length(CAST(coverage AS BLOB)) + length(CAST(causes AS BLOB))
-             + length(CAST(delta AS BLOB))
+             + length(CAST(delta AS BLOB)) + length(CAST(membership AS BLOB))
              FROM query_evaluations WHERE sub = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3",
         )
         .map_err(sql)?;
@@ -991,7 +1441,7 @@ pub(super) fn poll(
     let mut page = Vec::with_capacity(admitted.len());
     let mut stmt = conn
         .prepare(
-            "SELECT id, snapshot_id, coverage, causes, total, delta, created_ms
+            "SELECT id, snapshot_id, coverage, causes, total, delta, created_ms, membership
              FROM query_evaluations WHERE sub = ?1 AND seq > ?2 AND seq <= ?3 ORDER BY seq",
         )
         .map_err(sql)?;
@@ -1020,33 +1470,32 @@ pub(super) fn poll(
             )
             .into());
         };
-        page.push(
-            json!({"evaluationId": search::hex(&id), "snapshotId": text(1)?,
+        let mut item = json!({"evaluationId": search::hex(&id), "snapshotId": text(1)?,
             "coverage": coverage, "causes": causes,
             "total": r.get::<_, Option<i64>>(4).map_err(sql)?, "topK": TOP_K, "delta": delta,
-            "createdAtMs": r.get::<_, i64>(6).map_err(sql)?}),
-        );
+            "createdAtMs": r.get::<_, i64>(6).map_err(sql)?});
+        // A set's evaluation read each member's own snapshot.
+        if sub.is_set() {
+            item["snapshotId"] = Json::Null;
+            item["sources"] = json!(
+                members_of(&text(7)?)
+                    .into_iter()
+                    .map(|m| json!({"sourceId": m.0, "snapshotId": m.3}))
+                    .collect::<Vec<_>>()
+            );
+        }
+        page.push(item);
     }
     let scope = sub.scope.as_deref().unwrap_or("0:0");
-    // The publication and the file behind it: a save, deletion or lost access since that build
+    // The publication and the files behind it: a save, deletion or lost access since that build
     // leaves the evaluation current only for the index, not the file.
-    let published: Option<Published> = conn
-        .query_row(
-            "SELECT p.gen, s.membership, s.path, n.bytes, n.mtime_ns FROM published p
-             JOIN sources s ON s.source_id = p.source_id JOIN generations g ON g.gen = p.gen
-             LEFT JOIN snapshots n ON n.source_id = p.source_id AND n.snapshot_id = g.snapshot_id
-             WHERE p.source_id = ?1 AND p.scope = ?2",
-            [&sub.source, scope],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-        )
-        .optional()
-        .map_err(sql)?;
+    let published = current(conn, sub, scope)?;
     // Only the publication it was evaluated at is read, never its stored window.
     let ranking = search::corpus_ranking().to_string();
     let state = match published {
         None => json!({"state": "unavailable", "reason": "scope_not_published"}),
         // Compared in SQL: nothing of the stored row is copied out.
-        Some((generation, membership, path, bytes, mtime))
+        Some((generation, membership, files))
             if conn
                 .query_row(
                     "SELECT gen = ?2 AND membership = ?3 AND ranking = ?4 FROM query_evaluations
@@ -1058,14 +1507,20 @@ pub(super) fn poll(
                 .map_err(sql)?
                 == Some(true) =>
         {
-            let refresh = refresh_required(&path, bytes, mtime);
+            let stale: Vec<Json> = files
+                .iter()
+                .filter(|(_, path, bytes, mtime)| refresh_required(path, *bytes, *mtime))
+                .map(|(source, ..)| json!({"tool": "index", "arguments": {"action": "refresh",
+                    "workspaceId": v.workspace, "sourceId": source, "scope": scope}}))
+                .collect();
+            let refresh = !stale.is_empty();
             let mut out = json!({"state": if refresh { "current_for_index" } else { "current" },
                 "refreshRequired": refresh});
             if refresh {
-                out["nextSteps"] = json!([{"tool": "index", "arguments": {"action": "refresh",
-                    "workspaceId": v.workspace, "sourceId": sub.source, "scope": scope}},
-                {"tool": "watch", "arguments": {"action": "evaluate",
-                    "workspaceId": v.workspace, "subscriptionId": sub.id}}]);
+                let mut steps = stale;
+                steps.push(json!({"tool": "watch", "arguments": {"action": "evaluate",
+                    "workspaceId": v.workspace, "subscriptionId": sub.id}}));
+                out["nextSteps"] = json!(steps);
             }
             out
         }
@@ -1099,6 +1554,15 @@ pub(super) fn poll(
 
 /// `watch ack` of a query subscription: its checkpoint moves to the evaluation the cursor names.
 pub(super) fn ack(tx: &Connection, v: &View, sub: &subscriptions::Sub, text: &str) -> Result<Json> {
+    if sub.disabled.is_some() {
+        return Err(FigError::new(
+            ErrorKind::InvalidArguments,
+            format!("subscription {} is disabled; unsubscribe it, then subscribe again", sub.id),
+        )
+        .with_recovery(json!([{"action": "unsubscribe", "requires": "write", "tool": "watch",
+            "arguments": {"action": "unsubscribe", "workspaceId": v.workspace, "subscriptionId": sub.id}}]))
+        .into());
+    }
     let (id, receipt) = read_position(v, text)?;
     let seq = at(tx, v, &sub.id, &id, &receipt)?;
     let before: i64 = tx
@@ -1151,8 +1615,9 @@ mod tests {
             snapshot: "n".into(),
             ranking: "r".into(),
             coverage: json!({"complete": true}),
-            refs: vec![id.repeat(4096); TOP_K],
+            refs: vec![json!(id.repeat(4096)); TOP_K],
             more: false,
+            library: false,
             canonical: "c".into(),
         };
         let reason = |o: Outcome| o.err().map(|why| why["reason"].clone());
@@ -1193,7 +1658,7 @@ mod tests {
 
     #[test]
     fn a_relocated_source_keeps_its_nodes_across_the_new_membership() {
-        let refs = |ids: &[&str]| ids.iter().map(|i| i.to_string()).collect::<Vec<_>>();
+        let refs = |ids: &[&str]| ids.iter().map(|i| json!(i)).collect::<Vec<_>>();
         let last = Last {
             id: vec![0; 16],
             generation: 1,
@@ -1212,6 +1677,7 @@ mod tests {
             coverage: json!({}),
             refs: refs(&["1:2", "1:1"]),
             more: false,
+            library: false,
             canonical: String::new(),
         };
         let count = |d: &Json, k: &str| d[k].as_array().map(|a| a.len());

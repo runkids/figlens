@@ -820,9 +820,13 @@ pub fn library_tool(
                 snapshot_id: field(definition, "snapshotId").unwrap(),
                 node_id: normalize_id(&field(definition, "nodeId").unwrap()),
             }),
-        scope: normalize_id(call.string("scope").unwrap()),
+        // watch subscribe takes no limit and defaults its own scope.
+        scope: normalize_id(call.string("scope").unwrap_or("0:0")),
         include_hidden: call.argument("includeHidden") == true,
-        limit: call.argument("limit").as_u64().unwrap() as usize,
+        limit: call
+            .argument("limit")
+            .as_u64()
+            .map_or(figlens::search::usages::DEFAULT_LIMIT, |l| l as usize),
         cursor: call.string("cursor").map(str::to_owned),
     };
     request.validate()?;
@@ -1072,6 +1076,11 @@ pub fn changes_tool(
             .into_iter()
             .flatten()
             .collect(),
+        sources: call.string("sources"),
+        library: match call.argument("library").is_object() {
+            true => Some(library_tool(call)?),
+            false => None,
+        },
     };
     use changes::subscriptions as subs;
     let needs = |name: &str| -> Result<&str, Box<dyn Error>> {

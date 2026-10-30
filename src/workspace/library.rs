@@ -123,6 +123,28 @@ pub fn library(
     source: Option<&str>,
     req: &Request,
 ) -> Result<Json> {
+    ask(storage, select, source, None, req)
+}
+
+/// The same question over the fixed set `only`, as a saved library question reads it: a member
+/// outside the caller's roots is left out unnamed (`authorization_restricted`), never a source
+/// outside the set.
+pub(crate) fn library_in(
+    storage: &Storage,
+    select: &Select,
+    only: &[String],
+    req: &Request,
+) -> Result<Json> {
+    ask(storage, select, None, Some(only), req)
+}
+
+fn ask(
+    storage: &Storage,
+    select: &Select,
+    source: Option<&str>,
+    only: Option<&[String]>,
+    req: &Request,
+) -> Result<Json> {
     req.validate()?;
     let (_, ws) = opened(storage, select, false)?;
     let ws_id = ws.held.id.clone();
@@ -136,7 +158,10 @@ pub fn library(
         .into());
     }
     let tx = ws.conn.unchecked_transaction().map_err(sql)?;
-    let rows = super::query::rows(&tx, &req.scope)?;
+    let mut rows = super::query::rows(&tx, &req.scope)?;
+    if let Some(only) = only {
+        rows.retain(|r| only.contains(&r.id));
+    }
     // A file whose source moved no longer names this workspace; a library question reads every
     // source, so it is asked again by workspaceId, never of the moved file.
     // Only the relocation error carries a recovery; any other one stands as it is.
@@ -275,6 +300,7 @@ pub fn library(
             req.scope,
             req.include_hidden,
             source,
+            only,
             versions,
             restricted,
             bound

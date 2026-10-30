@@ -418,6 +418,12 @@ pub(crate) const V8: &str = "
         digest BLOB, PRIMARY KEY (gen, rid, facet)) STRICT, WITHOUT ROWID;
     PRAGMA user_version = 8;";
 
+/// Schema 8 too, applied with `V8`: a saved question's fixed source set (`source_id` '*', its
+/// members in `sources`) and why an authoritative event disabled it.
+pub(crate) const V8_SETS: &str = "
+    ALTER TABLE subscriptions ADD COLUMN sources TEXT;
+    ALTER TABLE subscriptions ADD COLUMN disabled TEXT;";
+
 /// Upgrades schemas 1 to 7 to the current one in one transaction, keeping every source, index,
 /// job and the incarnation. The caller holds the workspace lock exclusively.
 pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
@@ -447,6 +453,7 @@ pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
     }
     if version <= 7 {
         tx.execute_batch(V8).map_err(sql)?;
+        tx.execute_batch(V8_SETS).map_err(sql)?;
     }
     tx.commit().map_err(sql)
 }
@@ -495,6 +502,7 @@ pub(super) fn initialize(
     tx.execute_batch(SUBSCRIPTIONS).map_err(sql)?;
     tx.execute_batch(IMPACTS).map_err(sql)?;
     tx.execute_batch(V8).map_err(sql)?;
+    tx.execute_batch(V8_SETS).map_err(sql)?;
     if let Some(binding) = binding {
         tx.execute(
             "INSERT INTO meta (key, value) VALUES ('binding', ?1)",

@@ -219,6 +219,15 @@ usage:
                                              are evaluated now, on watch evaluate and by a watch
                                              runner serving the scope; changes reads the
                                              evaluations, never computes one
+          [--sources visible|ID[,ID]]        instead of --source: the saved question reads this fixed
+                                             set (at most 10; visible is resolved now, never widened);
+                                             causes name changed sources, corpus_changed a member's
+                                             relocation, publication or shared statistics; removing a
+                                             member disables it: unsubscribe, then subscribe again
+          [--library KIND [--namespace NS] --key KEY [--definition-source ID --definition-snapshot S
+           --definition-node ID]]            or save a library question: its uses' definitionMatch,
+                                             the definition followed by node id; transitive library
+                                             dependencies are not followed
   figlens watch evaluate <select> --subscription ID
                                              store a query subscription's evaluation of the scope's
                                              current index, unless it is already evaluated
@@ -1308,7 +1317,7 @@ fn watch(action: &str, args: &[String]) -> Result<serde_json::Value, Box<dyn Err
     use figlens::workspace::{self, Select, changes::subscriptions as subs};
     let (usage, allowed): (&str, &[&str]) = match action {
         "subscribe" => (
-            "usage: figlens watch subscribe <select> --consumer NAME --source ID [--scope NODE] [--node ID|--query TEXT [--type T[,T]]] [--owner NAME] [--storage DIR]",
+            "usage: figlens watch subscribe <select> --consumer NAME --source ID|--sources visible|ID[,ID] [--scope NODE] [--node ID|--query TEXT [--type T[,T]]|--library KIND [--namespace NS] --key KEY [--definition-source ID --definition-snapshot SNAP --definition-node ID]] [--owner NAME] [--storage DIR]",
             &[
                 "--consumer",
                 "--scope",
@@ -1316,6 +1325,13 @@ fn watch(action: &str, args: &[String]) -> Result<serde_json::Value, Box<dyn Err
                 "--owner",
                 "--query",
                 "--type",
+                "--sources",
+                "--library",
+                "--namespace",
+                "--key",
+                "--definition-source",
+                "--definition-snapshot",
+                "--definition-node",
             ],
         ),
         "evaluate" => (
@@ -1368,6 +1384,22 @@ fn watch(action: &str, args: &[String]) -> Result<serde_json::Value, Box<dyn Err
                     .into_iter()
                     .flatten()
                     .collect(),
+                sources: flag("--sources"),
+                library: match flag("--library") {
+                    None => None,
+                    Some(_) => Some(command::library_request(
+                        &a.search
+                            .chunks(2)
+                            .filter(|p| {
+                                p[0].starts_with("--library")
+                                    || ["--namespace", "--key"].contains(&p[0].as_str())
+                                    || p[0].starts_with("--definition-")
+                            })
+                            .flatten()
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                    )?),
+                },
             },
         ),
         "evaluate" => workspace::changes::evaluate(&storage, &select, flag("--subscription")),

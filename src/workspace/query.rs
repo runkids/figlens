@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The supported query envelope: ready sources one workspace search reads together, and the
 /// records of their generations in total. Checked from stored counts before any is loaded.
-const QUERY_SOURCES: usize = 10;
+pub(super) const QUERY_SOURCES: usize = 10;
 const QUERY_RECORDS: usize = 100_000;
 
 /// One registered source as the query found it.
