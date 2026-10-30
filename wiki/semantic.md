@@ -29,6 +29,7 @@ Code: `src/workspace/query.rs` (`search_mode`, `model_layers`), `src/workspace/m
 
 - `figlens models list|status`, `models configure bge-m3 --model DIR [--runtime FILE]`, `models remove bge-m3` (MCP `models`: `action`, `profile`, `modelDir`). The profile is stored in `models.json` under the config root (same XDG/`%LOCALAPPDATA%` rules as other state). `remove` forgets the profile and keeps the files.
 - One documented profile: `bge-m3` = BAAI/bge-m3 revision `5617a9f61b028005a4858fdac845db406aefb181` (MIT); `config.json`, `pytorch_model.bin` and `tokenizer.json` are pinned by SHA-256. figlens never downloads: the user fetches that revision. `configure` hashes the files and starts the runtime once offline; the executable and model files are re-hashed before every runtime start.
+- `models status` always reports `configRoot` (where `models.json` lives) and `defaultRuntime` `{path, available}` (the `figlens-embed` beside figlens; presence only), with or without a profile.
 - Runtime: `figlens-embed`, looked up next to the figlens executable unless `--runtime` is given. CPU only, about 2.5 GiB RSS (diagnostic, not a cap). Ctrl-C (CLI) or `notifications/cancelled` (MCP) stops a running semantic search or `configure` and its child.
 - MCP `configure` runs only the `figlens-embed` beside figlens, and `modelDir` and each pinned file must lie inside the server's roots.
 

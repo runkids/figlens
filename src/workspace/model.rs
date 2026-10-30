@@ -347,15 +347,25 @@ fn embed_work(
             let texts: Vec<String> = batch.iter().map(|&i| extracted.texts[i].clone()).collect();
             let got = match embed(&texts) {
                 Ok(v) if v.len() == texts.len() => v,
-                // A refused batch is retried one text at a time, so only a refused text (one
-                // over the model's token limit, say) stays uncovered.
-                _ => texts
-                    .iter()
-                    .map(|t| match embed(std::slice::from_ref(t)) {
-                        Ok(mut v) if v.len() == 1 => v.remove(0),
-                        _ => Vec::new(),
-                    })
-                    .collect(),
+                Ok(_) => return Err(fail("the model returned the wrong number of vectors")),
+                // A refused batch is retried one text at a time, so only a text the model
+                // refuses (one over its token limit) is stored as uncovered; any other error
+                // fails the job, which a later embed retries.
+                Err(e) if e.is::<semantic::Refused>() => {
+                    let mut one = Vec::with_capacity(texts.len());
+                    for t in &texts {
+                        one.push(match embed(std::slice::from_ref(t)) {
+                            Ok(mut v) if v.len() == 1 => v.remove(0),
+                            Ok(_) => {
+                                return Err(fail("the model returned the wrong number of vectors"));
+                            }
+                            Err(e) if e.is::<semantic::Refused>() => Vec::new(),
+                            Err(e) => return Err(e),
+                        });
+                    }
+                    one
+                }
+                Err(e) => return Err(e),
             };
             let mut rows = Vec::with_capacity(batch.len());
             for (&i, v) in batch.iter().zip(got) {

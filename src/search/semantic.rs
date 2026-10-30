@@ -446,6 +446,18 @@ pub(crate) fn score(
     (order, excluded)
 }
 
+/// Estimated bytes a cached full generation and its layer keep: records, texts, chunk
+/// mappings and the vectors read so far.
+pub(crate) fn cached_bytes(index: &Index, layer: &Layer) -> usize {
+    let vectors: usize = layer
+        .vectors
+        .iter()
+        .map(|v| v.as_ref().map_or(0, |v| 24 + 4 * v.len()))
+        .sum();
+    let texts: usize = layer.texts.iter().map(|t| 24 + t.len()).sum();
+    index.records.len() * 256 + 2 * index.text_bytes + texts + UNIT * layer.units.len() + vectors
+}
+
 /// `coverage.layers.semantic` of one layer.
 pub(crate) fn layer_coverage(layer: &Layer, profile_id: &str, excluded: [usize; 2]) -> Json {
     let embedded = layer.vectors.iter().filter(|v| v.is_some()).count();

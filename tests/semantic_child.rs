@@ -73,6 +73,9 @@ fn model_worker(dir: &str, job: &str) -> bool {
         log("load".into());
         let embed: figlens::workspace::model::Embed = Box::new(move |texts: &[String]| {
             log(format!("batch {}", texts.len()));
+            if std::env::var_os("SEMANTIC_EMBED_FAIL").is_some() {
+                return Err("transient runtime failure".into());
+            }
             Ok(texts.iter().map(|t| bag(t, "ok")).collect())
         });
         Ok((hello(), embed))
@@ -690,6 +693,30 @@ fn held_embed(dir: &test_support::TestDir, ws: &str) -> (std::process::Child, Pa
     (child, hold)
 }
 
+fn a_transient_model_error_fails_the_embed_without_refusing_texts() {
+    let dir = test_support::TestDir::new();
+    let (prepared, _) = indexed(&dir, true);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe { std::env::set_var("SEMANTIC_EMBED_FAIL", "1") };
+    let out = figlens(&["index", "embed", "--id", ws, "--scope", "0:0"])
+        .output()
+        .unwrap();
+    unsafe { std::env::remove_var("SEMANTIC_EMBED_FAIL") };
+    assert!(String::from_utf8_lossy(&out.stdout).contains("failed") || !out.status.success());
+    let conn = db(&prepared);
+    assert_eq!(count(&conn, "SELECT count(*) FROM model_vectors"), 0);
+    let again = cli(&["index", "embed", "--id", ws, "--scope", "0:0"]);
+    assert_eq!(again["jobs"][0]["state"], "succeeded");
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT count(*) FROM model_layers WHERE state = 'ready' AND refused = 0"
+        ),
+        1
+    );
+}
+
 fn workspace_semantic_search_pages_a_built_layer() {
     let dir = test_support::TestDir::new();
     let (prepared, fig) = indexed(&dir, true);
@@ -1067,6 +1094,10 @@ fn main() {
         (
             "workspace_semantic_search_pages_a_built_layer",
             workspace_semantic_search_pages_a_built_layer,
+        ),
+        (
+            "a_transient_model_error_fails_the_embed_without_refusing_texts",
+            a_transient_model_error_fails_the_embed_without_refusing_texts,
         ),
         (
             "one_process_keeps_two_workspaces_layers_apart",

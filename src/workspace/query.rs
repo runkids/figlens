@@ -607,8 +607,12 @@ static LAYERS: std::sync::Mutex<Layers> = std::sync::Mutex::new(Vec::new());
 
 /// The cache key of generation `gen_id` of the database `incarnation`.
 fn layer_key(incarnation: &str, gen_id: i64) -> String {
-    format!("{incarnation}/{gen_id}")
+    format!("{incarnation}/{gen_id}/{}", super::model::POLICY)
 }
+
+/// Bytes every cached layer together may keep, the search byte budget: entries this query does
+/// not use are evicted oldest first past it.
+const LAYERS_BYTES: usize = 512 * 1024 * 1024;
 
 /// Makes sure `cache` holds every loaded source's full generation and layer under `p`, reads
 /// the vectors its layer still lacks in batches, and returns the sources' combined
@@ -719,6 +723,20 @@ fn model_layers(
         cov["sourceId"] = source["sourceId"].clone();
         cov["job"] = built.map_or(Json::Null, |b| b["jobId"].clone());
         sources.push(cov);
+    }
+    let used = |c: &(String, String, Index, search::semantic::Layer)| {
+        c.1 == p.id && loaded.iter().any(|l| layer_key(incarnation, l.2) == c.0)
+    };
+    let mut total: usize = cache
+        .iter()
+        .map(|c| search::semantic::cached_bytes(&c.2, &c.3))
+        .sum();
+    while total > LAYERS_BYTES {
+        let Some(old) = cache.iter().position(|c| !used(c)) else {
+            break;
+        };
+        total -= search::semantic::cached_bytes(&cache[old].2, &cache[old].3);
+        cache.remove(old);
     }
     Ok(
         json!({"state": if ready { "ready" } else if sources.iter().any(|s| s["state"] != "pending") { "partial" } else { "pending" },

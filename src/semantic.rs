@@ -108,6 +108,19 @@ impl Kind {
     }
 }
 
+/// A text the model can never embed as given (over its token limit, empty or oversized): the
+/// one refusal kept as a permanent uncovered chunk. Any other error stays retryable.
+#[derive(Debug)]
+pub struct Refused(pub String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Error for Refused {}
+
 /// Checks one batch before it reaches a child.
 fn check_batch(texts: &[String]) -> Result<()> {
     if texts.is_empty() || texts.len() > MAX_BATCH {
@@ -208,7 +221,7 @@ fn answer(
         .and_then(|a| a.iter().map(|t| t.as_str().map(str::to_owned)).collect());
     let run = || -> Result<Vec<Vec<f32>>> {
         let texts = texts.ok_or("texts is an array of strings")?;
-        check_batch(&texts)?;
+        check_batch(&texts).map_err(|e| Refused(e.to_string()))?;
         let vectors = embed(kind, &texts)?;
         if vectors.len() != texts.len() {
             return Err(fail("embedder returned the wrong number of vectors"));
@@ -220,7 +233,7 @@ fn answer(
     };
     match run() {
         Ok(vectors) => json!({"id": id, "vectors": vectors}),
-        Err(e) => json!({"id": id, "error": e.to_string()}),
+        Err(e) => json!({"id": id, "error": e.to_string(), "refused": e.is::<Refused>()}),
     }
 }
 
@@ -412,8 +425,12 @@ impl Runtime {
         if reply["id"] != id {
             return Err(self.dead("reply answers another request"));
         }
+        // Only a declared refusal is the input's fault; any other error is the runtime's.
         if let Some(e) = reply["error"].as_str() {
-            return Err(Stop::Refused(e.to_owned()));
+            return Err(match reply["refused"] == true {
+                true => Stop::Refused(e.to_owned()),
+                false => Stop::Failed(e.to_owned()),
+            });
         }
         let parsed: Option<Vec<Vec<f32>>> = serde_json::from_value(reply["vectors"].take()).ok();
         let vectors = match parsed {
