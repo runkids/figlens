@@ -3701,10 +3701,10 @@ fn a_schema_6_workspace_reads_impact_as_null_and_records_it_once_a_build_upgrade
     let t = Tracked::new(&env);
     t.save(true);
     t.index("refresh");
-    // As schema 6 left it: revisions recorded before impact was.
+    // As schema 6 left it: revisions recorded before impact was, and no fingerprints (schema 8).
     t.sql(
         "DROP TABLE revision_impacts; ALTER TABLE revisions DROP COLUMN impact;
-         PRAGMA user_version = 6;",
+         DROP TABLE fingerprints; PRAGMA user_version = 6;",
     );
     let version = || -> i64 {
         rusqlite::Connection::open(&t.db)
@@ -3740,7 +3740,7 @@ fn a_schema_6_workspace_reads_impact_as_null_and_records_it_once_a_build_upgrade
             vec![json!("change"); 4],
             6,
             vec![Value::Null, Value::Null, json!(true)],
-            7
+            8
         )
     );
 }

@@ -2324,13 +2324,13 @@ fn each_use_compares_its_cached_copy_with_the_selected_definition() {
 }
 
 #[test]
-fn a_schema_3_workspace_is_refused_read_only_with_a_rebuild_not_misread() {
+fn a_schema_7_workspace_is_refused_read_only_with_a_rebuild_not_misread() {
     use crate::workspace::library::{Request, library};
     let d = TestDir::new();
     let (storage, select, conn, srcs) = library_workspace(&d, 2);
     let def = component_ref(&conn, &srcs[1].1, srcs[1].2);
-    // As an older figlens left it: no fingerprints table, which a read never adds.
-    conn.execute_batch("DROP TABLE fingerprints; PRAGMA user_version = 3;")
+    // As the release before fingerprints left it: no such table, which a read never adds.
+    conn.execute_batch("DROP TABLE fingerprints; PRAGMA user_version = 7;")
         .unwrap();
     let ask = Request {
         definition: Some(def.clone()),
