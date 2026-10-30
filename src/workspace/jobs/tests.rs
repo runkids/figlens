@@ -964,3 +964,25 @@ fn revision_retention_deletes_and_expires_only_whole_groups() {
         ]
     );
 }
+
+#[test]
+fn an_active_scope_published_again_after_eviction_records_a_baseline() {
+    let dir = TestDir::new();
+    let (storage, select, _) = workspace(&dir, 1);
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    let tx = ws.conn.transaction().unwrap();
+    tx.execute_batch(
+        "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
+         VALUES ('s', '0:0', 'active', 1, 'v', 0);
+         INSERT INTO facet_sets VALUES (2, 'v', 1, 'null');",
+    )
+    .unwrap();
+    record(&tx, "s", "0:0", 2, None, &json!({"snapshot": "x"}), None, 0).unwrap();
+    let coverage: String = tx
+        .query_row("SELECT coverage FROM revisions", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Json>(&coverage).unwrap(),
+        json!({"basis": "baseline", "reason": "previous_unpublished"})
+    );
+}

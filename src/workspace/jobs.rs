@@ -1422,6 +1422,8 @@ fn record(
     };
     let what = match (state.as_str(), planned) {
         ("baseline_pending", _) => Err("tracking_started"),
+        // An evicted scope published again has nothing to compare with: never a silent gap.
+        ("active", None) if expected.is_none() => Err("previous_unpublished"),
         ("active", Some(p)) if p.epoch == epoch && Some(p.from) == expected => match p.what {
             Ok(compared) => Ok(compared),
             Err(reason) => Err(reason),
@@ -2309,14 +2311,18 @@ fn set_tracking(
             .map_err(sql)?;
         let tracked = state.as_deref().is_some_and(|s| s != "disabled");
         let pending = !tracked || state.as_deref() == Some("baseline_pending");
-        // A running job that may already have read tracking off (a rebuild reads it once its
-        // stage reaches parse; a refresh may reuse an unfaceted snapshot) cannot be the
-        // baseline, and joining it would leave the baseline pending: track after it ends.
+        // Only a rebuild that reads tracking on records the baseline: one not yet at parse, where
+        // it reads tracking, or one submitted after a pending baseline was enabled. Any other
+        // running job (a refresh may reuse an unfaceted snapshot) cannot, and joining it would
+        // leave the baseline pending: track after it ends.
         let busy: Option<String> = match on && pending {
             true => tx
                 .query_row(
-                    "SELECT job_id FROM jobs WHERE source_id = ?1 AND scope = ?2
-                     AND state = 'running' AND (kind != 'rebuild' OR stage NOT IN ('stage', 'hash'))",
+                    "SELECT j.job_id FROM jobs j LEFT JOIN tracking t ON t.source_id = j.source_id
+                     AND t.scope = j.scope AND t.state = 'baseline_pending'
+                     WHERE j.source_id = ?1 AND j.scope = ?2 AND j.state = 'running'
+                     AND NOT (j.kind = 'rebuild' AND (j.stage IN ('stage', 'hash')
+                     OR IFNULL(j.created_ms >= t.enabled_ms, 0)))",
                     [source_id, scope],
                     |r| r.get(0),
                 )
@@ -2327,7 +2333,7 @@ fn set_tracking(
         if let Some(job_id) = busy {
             return Err(FigError::new(
                 ErrorKind::WorkspaceBusy,
-                format!("a build of source {source_id} scope {scope} is running without change tracking; track after it ends"),
+                format!("a build of source {source_id} scope {scope} is running that cannot record the baseline (it may have read tracking off or reuse an unchanged snapshot); track after it ends"),
             )
             .with_recovery(json!([{"action": "wait", "requires": "none", "tool": "jobs",
                 "arguments": {"action": "status", "jobId": job_id}},

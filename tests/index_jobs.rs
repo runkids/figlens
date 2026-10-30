@@ -2081,3 +2081,40 @@ fn tracking_during_a_build_that_read_it_off_is_refused_and_tracking_after_builds
         (true, json!("succeeded"), json!("active"))
     );
 }
+
+#[test]
+fn a_repeated_track_while_its_baseline_build_runs_joins_it() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    let gate = env.gate("write.hold");
+    let first = env.spawn(
+        &["index", "track", "--file", file, "--scope", "0:0"],
+        Some(("write", &gate)),
+    );
+    let reached = PathBuf::from(format!("{}.reached", gate.display()));
+    wait_for("the baseline build to pass its tracking read", || {
+        reached.exists()
+    });
+    let again = env.spawn(&["index", "track", "--file", file, "--scope", "0:0"], None);
+    std::thread::sleep(Duration::from_millis(300));
+    std::fs::remove_file(&gate).unwrap();
+    let [first, again] = [first, again].map(|c| {
+        let out = c.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    });
+    let status = env.json(&["index", "track", "--file", file, "--scope", "0:0"]);
+    assert_eq!(
+        (
+            again["jobs"][0]["jobId"] == first["jobs"][0]["jobId"],
+            status["tracking"][0]["state"].clone()
+        ),
+        (true, json!("active"))
+    );
+}
