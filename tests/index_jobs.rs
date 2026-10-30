@@ -4999,6 +4999,31 @@ fn cli_subscribe_refuses_library_flags_without_library() {
 }
 
 #[test]
+fn an_owner_unsubscribe_removes_its_source_set_subscription_and_names_it() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let set = t.watch(
+        "subscribe",
+        &[
+            "--consumer",
+            "bot",
+            "--sources",
+            "visible",
+            "--query",
+            "badge",
+            "--owner",
+            "task",
+        ],
+    )["subscription"]["subscriptionId"]
+        .clone();
+    let dropped = t.watch("unsubscribe", &["--consumer", "bot", "--owner", "task"]);
+    assert_eq!(
+        json!([dropped["removed"], dropped["subscriptionIds"]]),
+        json!([1, [set]])
+    );
+}
+
+#[test]
 fn cli_and_mcp_save_questions_over_a_source_set_and_name_the_source_that_changed() {
     let env = Env::new();
     let t = Tracked::new(&env);
