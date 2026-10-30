@@ -77,6 +77,7 @@ const cliSteps = [
   (status, prepared) => direct('figlens_changes', { workspaceId: prepared.workspaceId, consumer: 'smoke' }),
   // Two copies of one file, each read-checked before the binary compares them.
   () => direct('figlens_diff', { old: path.join(project, 'mapping-old.fig'), file: fixture }),
+  (status, prepared) => direct('figlens_usages', { workspaceId: prepared.workspaceId, library: { kind: 'component', namespace: 'lib', key: 'k1' }, scope: '0:1' }),
 ];
 const deepId = `I${Array(60).fill('9:9').join(';')}`;
 let steps = searchSteps;
@@ -357,7 +358,11 @@ try {
     assert.deepEqual(after?.revisions, [], (scripted.raw[13] ?? '').slice(0, 500));
     const diffed = value(scripted.raw[14] ?? '');
     assert.deepEqual([diffed?.coverage?.complete, diffed?.coverage?.changes], [true, 0], (scripted.raw[14] ?? '').slice(0, 500));
-    return { pages: [first.results[0].ref.nodeId, second.results[0].ref.nodeId], refused: 'unknown relation', trackedBaselineAcked: true, diffedCopies: diffed.coverage.changes, usedBy: used.results.map(item => item.ref.nodeId), deepIdBytes: deepId.length, mcp: status.mcp.reason, before: before.state, job: job.state, ref: found.results[0].ref, inspected: node.node.id, tools: scripted.tools.filter(name => /^figlens_/.test(name)) };
+    // Wiring only: the fixture records no library reference, so the question is unresolved and has no users.
+    const library = value(scripted.raw[15] ?? '');
+    assert.deepEqual([library?.results, library?.definition, library?.coverage?.complete],
+      [[], { state: 'unresolved', reason: 'library_source_unproven' }, true], (scripted.raw[15] ?? '').slice(0, 500));
+    return { pages: [first.results[0].ref.nodeId, second.results[0].ref.nodeId], refused: 'unknown relation', library: library.definition.reason, trackedBaselineAcked: true, diffedCopies: diffed.coverage.changes, usedBy: used.results.map(item => item.ref.nodeId), deepIdBytes: deepId.length, mcp: status.mcp.reason, before: before.state, job: job.state, ref: found.results[0].ref, inspected: node.node.id, tools: scripted.tools.filter(name => /^figlens_/.test(name)) };
   });
   await check('with a disabled MCP override figlens_watch holds a lease per session that records a save, and only its session, deletion or a reload ends it', async () => {
     const cli = args => JSON.parse(execFileSync(binary, args, { cwd: project, env, encoding: 'utf8' }));

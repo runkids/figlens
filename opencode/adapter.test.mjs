@@ -219,6 +219,13 @@ test('CLI path runs the MCP index, jobs, search, usages, diff, changes, watch an
     [{ file: '/a.fig', sourceId: 's', node: '1:2' }, /file or workspaceId, not both/], [{ file: '/a.fig', node: '1:2', resource: 'image:a' }, /node or resource, not both/],
     [{ file: '/a.fig', resource: '1:2' }, /pass a layer id as node/], [{ file: '/a.fig', node: 'StyleKey:k' }, /as resource/]])
     assert.throws(() => cliArgs('usages', input), message);
+  const library = { kind: 'component', namespace: 'lib', key: 'k1' };
+  assert.deepEqual(cliArgs('usages', { workspaceId: 'ws_1', sourceId: 's', library, scope: '0:1', includeHidden: true, limit: 5, cursor: 'c' }),
+    ['usages', '--id', 'ws_1', '--source', 's', '--library', 'component', '--namespace', 'lib', '--key', 'k1', '--scope', '0:1', '--include-hidden', '--limit', '5', '--cursor', 'c']);
+  for (const extra of [{ node: '1:2' }, { resource: 'image:a' }, { snapshotId: 'snap' }, { relation: 'uses_style' }, { direction: 'in' }])
+    assert.throws(() => cliArgs('usages', { workspaceId: 'ws_1', library, ...extra }), new RegExp(`library takes no ${Object.keys(extra)[0]}`));
+  assert.throws(() => cliArgs('usages', { file: '/a.fig', library }), /library takes no file/);
+  assert.throws(() => cliArgs('usages', { workspaceId: 'ws_1', library: { kind: 'component', key: 'k1' } }), /needs namespace/);
 });
 
 test('CLI-path writes ask edit where the binary places the workspace; only reset and recreation ask figlens_index', async t => {

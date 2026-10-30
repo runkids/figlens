@@ -53,6 +53,14 @@ export function cliArgs(tool, input) {
   }
   if (tool === 'usages') {
     const target = corpus();
+    // As MCP: a library question reads a prepared workspace, and its reference replaces node, resource and their edge fields.
+    if (input.library !== undefined) {
+      const extra = ['file', 'node', 'resource', 'snapshotId', 'relation', 'direction'].find(key => input[key] !== undefined);
+      if (extra) throw new Error(`usages with library takes no ${extra}: library replaces node and resource, and snapshotId, relation and direction apply only to them`);
+      return ['usages', ...target, '--library', required(input.library, 'kind'), '--namespace', required(input.library, 'namespace'),
+        '--key', required(input.library, 'key'), ...flag('--scope', input.scope), ...flag('--include-hidden', input.includeHidden),
+        ...flag('--limit', input.limit), ...flag('--cursor', input.cursor)];
+    }
     if (!input.node === !input.resource) throw new Error('usages needs node or resource, not both');
     // The CLI tells a resource from a layer by its prefix, so a mislabelled target would silently switch kinds; same messages as the core.
     const resource = /^(VariableID:|StyleKey:|image:)/.test(input.node ?? input.resource);
