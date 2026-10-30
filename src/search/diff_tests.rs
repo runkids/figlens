@@ -1133,31 +1133,34 @@ fn renaming_a_component_property_definition_is_a_properties_change() {
     );
 }
 
+/// A main component outside frame `0:10` with one Boolean definition, and an instance of it in
+/// the frame.
+fn used(name: &str, default: bool) -> K<'static> {
+    doc(vec![
+        node(
+            20,
+            Some(1),
+            "COMPONENT",
+            "Button",
+            vec![(
+                "componentPropDefs",
+                K::Array(vec![obj(vec![
+                    ("id", guid(70)),
+                    ("name", K::String(name.to_owned())),
+                    ("type", K::Enum("ComponentPropType", "BOOL")),
+                    ("initialValue", obj(vec![("boolValue", K::Bool(default))])),
+                ])]),
+            )],
+        ),
+        node(10, Some(1), "FRAME", "Home", vec![]),
+        instance(11, 10, "Button", 20, vec![]),
+    ])
+}
+
 #[test]
 fn a_main_outside_the_scope_makes_coverage_partial_when_its_property_definitions_change() {
     // Only the instance is in scope; its main's Boolean definition is renamed and its default
     // flipped, which changes the instance's emitted componentProperties.
-    let used = |name: &str, default: bool| {
-        doc(vec![
-            node(
-                20,
-                Some(1),
-                "COMPONENT",
-                "Button",
-                vec![(
-                    "componentPropDefs",
-                    K::Array(vec![obj(vec![
-                        ("id", guid(70)),
-                        ("name", K::String(name.to_owned())),
-                        ("type", K::Enum("ComponentPropType", "BOOL")),
-                        ("initialValue", obj(vec![("boolValue", K::Bool(default))])),
-                    ])]),
-                )],
-            ),
-            node(10, Some(1), "FRAME", "Home", vec![]),
-            instance(11, 10, "Button", 20, vec![]),
-        ])
-    };
     let out = scoped(used("Show icon", true), used("Has icon", false), "0:10");
     assert_eq!(
         (
@@ -1238,7 +1241,13 @@ fn stored_generations_diff_exactly_like_the_live_trees() {
 
 #[test]
 fn stored_generations_report_an_outside_definition_like_the_live_trees() {
-    let (old, new) = (styled(12.0), styled(16.0));
+    outside_parity(styled(12.0), styled(16.0));
+    outside_parity(used("Show icon", true), used("Has icon", false));
+}
+
+/// Diffs `old` and `new` from stored generations of frame `0:10` and asserts the same partial
+/// coverage reasons as the live trees.
+fn outside_parity(old: K<'static>, new: K<'static>) {
     let (a, b) = (Tree::new(&old), Tree::new(&new));
     let mut r = req(LIMIT, None);
     r.node = "0:10".into();
