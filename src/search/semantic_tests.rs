@@ -302,7 +302,7 @@ fn best(index: &Index, layer: &Layer, query: &str) -> (String, &'static str, u32
         limit: DEFAULT_LIMIT,
         cursor: None,
     };
-    let (order, _) = score(index, layer, &embed(query), &req);
+    let (order, _) = score(index, layer, &embed(query), &req, &AtomicBool::new(false)).unwrap();
     let (rid, _, field, chunk) = order[0];
     (index.record(rid).id.clone(), field_name(field), chunk)
 }
