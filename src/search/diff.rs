@@ -82,6 +82,10 @@ const FIELDS: [&[&str]; 4] = [
         "effects",
         "opacity",
         "blendMode",
+        // A page's background, which page exports draw.
+        "backgroundEnabled",
+        "backgroundColor",
+        "backgroundOpacity",
         "mask",
         "maskType",
         "visible",
@@ -306,6 +310,13 @@ pub(super) fn facets(
                 });
                 continue;
             }
+            // Converting a stored value, and a geometry field's unblobbed copy, each allocate
+            // about its estimate; both are paid for first.
+            let blobbed = ["fillGeometry", "strokeGeometry", "vectorData"].contains(key);
+            let copies = usize::from(matches!(value, Value::Kiwi(_))) + usize::from(blobbed);
+            if !bounds.charge(0, copies * estimate) {
+                return None;
+            }
             let owned;
             let json = match &value {
                 Value::Json(v) => *v,
@@ -317,7 +328,7 @@ pub(super) fn facets(
             };
             let mut refs = Vec::new();
             let unblobbed;
-            let json = match ["fillGeometry", "strokeGeometry", "vectorData"].contains(key) {
+            let json = match blobbed {
                 true => {
                     unblobbed = unblob(json, &mut refs);
                     &unblobbed

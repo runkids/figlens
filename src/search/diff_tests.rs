@@ -403,13 +403,91 @@ fn an_unread_field_is_charged_its_metadata_like_a_read_one() {
         let before = b.bytes;
         let f = facets(&tree, id, ex.nodes.get(id), &mut b).unwrap();
         assert!(f.fields.iter().any(|f| f.digest.is_none()), "{id}");
-        // Each field pays its metadata, and a kept value its serialized length; nothing else.
+        // Each field pays its metadata, and a kept value its serialized length; the malformed
+        // blob is found only after its stored geometry was converted and copied, which it pays.
+        let converted = tree
+            .nodes
+            .get(id)
+            .and_then(|n| n.get("fillGeometry"))
+            .map_or(0, |g| 2 * crate::expand::kiwi_bytes(g, &mut VISITS.clone()));
         let kept: usize = f
             .fields
             .iter()
             .map(|f| 64 + f.key.len() + f.value.as_ref().map_or(0, |v| v.to_string().len()))
             .sum();
-        assert_eq!(before - b.bytes, kept, "{id}");
+        assert_eq!(before - b.bytes, kept + converted, "{id}");
+    }
+}
+
+#[test]
+fn a_stored_field_pays_for_its_conversion_before_it_is_converted() {
+    // Past what one value keeps, so only the conversion needs the bytes.
+    let long = text(&"x".repeat(FIELD_BYTES / 4));
+    let message = doc(vec![node(10, Some(1), "TEXT", "T", vec![long])]);
+    let tree = Tree::new(&message);
+    let mut b = super::super::tests::bounds(WORK);
+    b.bytes = 1024;
+    assert!(facets(&tree, "0:10", None, &mut b).is_none());
+    assert_eq!(b.stop, Some(crate::expand::Stop::Bytes));
+}
+
+#[test]
+fn each_page_background_setting_is_an_appearance_change() {
+    let red = |r: f32| {
+        let channel = |k, v| (k, K::Float(v));
+        obj(vec![
+            channel("r", r),
+            channel("g", 0.0),
+            channel("b", 0.0),
+            channel("a", 1.0),
+        ])
+    };
+    let page = |fields: Vec<(&'static str, K<'static>)>| {
+        obj(vec![(
+            "nodeChanges",
+            K::Array(vec![
+                node(0, None, "DOCUMENT", "Document", vec![]),
+                node(1, Some(0), "CANVAS", "Page", fields),
+            ]),
+        )])
+    };
+    let base = || {
+        vec![
+            ("backgroundColor", red(1.0)),
+            ("backgroundEnabled", K::Bool(true)),
+            ("backgroundOpacity", K::Float(1.0)),
+        ]
+    };
+    let with = |key: &'static str, value: K<'static>| {
+        let mut fields = base();
+        fields.iter_mut().find(|(k, _)| *k == key).unwrap().1 = value;
+        fields
+    };
+    for (setting, changed) in [
+        ("backgroundColor", with("backgroundColor", red(0.0))),
+        (
+            "backgroundEnabled",
+            with("backgroundEnabled", K::Bool(false)),
+        ),
+        (
+            "backgroundOpacity",
+            with("backgroundOpacity", K::Float(0.5)),
+        ),
+    ] {
+        let out = run(page(base()), page(changed));
+        let changes: Vec<_> = out["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|f| f["nodes"].as_array().unwrap())
+            .map(|n| (n["id"].clone(), n["change"].clone(), n["facets"].clone()))
+            .collect();
+        assert_eq!(
+            changes,
+            [(json!("0:1"), json!("changed"), json!(["appearance"]))],
+            "{setting}: {out}"
+        );
+        assert_eq!(out["coverage"]["complete"], true, "{setting}");
     }
 }
 
