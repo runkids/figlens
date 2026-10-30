@@ -13,7 +13,10 @@ export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } =
     const waiting = [];
     let stderr = '';
     const exited = new Promise(resolve => {
-      child.once('error', error => resolve({ error }));
+      // A spawned child's error (such as a failed kill) is not an exit: only close is. Only a
+      // spawn that never made a process resolves on error. The listener stays, so no later
+      // error can crash the host.
+      child.on('error', error => { if (child.pid === undefined) resolve({ error }); });
       // close, not exit: stdout is drained by then, so an end line is never lost.
       child.once('close', code => resolve({ code }));
     });
@@ -42,8 +45,12 @@ export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } =
   }
 
   function unconfirmed(leaseId, exited) {
-    return { leaseId, state: 'unknown', reason: exited ? 'release_unconfirmed' : 'holder_not_exited',
-      recovery: 'the lease lapses within its 30 s TTL; check watch status before starting it again' };
+    return exited
+      ? { leaseId, state: 'unknown', reason: 'release_unconfirmed',
+        recovery: 'the lease lapses within its 30 s TTL; check watch status before starting it again' }
+      // Its child may still renew the lease, so no TTL is promised; it stays held for a retry.
+      : { leaseId, state: 'unknown', reason: 'holder_not_exited',
+        recovery: 'its holder process has not exited and may still renew the lease; stop it again, or end that process, then check watch status' };
   }
 
   async function start(args) {
@@ -84,8 +91,8 @@ export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } =
   async function stop(leaseId) {
     const lease = held.get(leaseId);
     if (!lease) return null;
-    held.delete(leaseId);
     const exited = await shutdown(lease.out);
+    if (exited && held.get(leaseId) === lease) held.delete(leaseId);
     const end = exited ? await within(lease.end, exitMs) : null;
     return end && end !== 'timeout' ? end : unconfirmed(leaseId, exited);
   }
@@ -94,7 +101,7 @@ export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } =
   async function stopAll() {
     closing = true;
     const leases = [...held.values()].map(l => l.out);
-    await Promise.all([...held.keys()].map(stop), ...[...owned].filter(out => !leases.includes(out)).map(shutdown));
+    await Promise.all([...[...held.keys()].map(stop), ...[...owned].filter(out => !leases.includes(out)).map(shutdown)]);
   }
 
   return { start, stop, stopAll, get leases() { return [...held.keys()]; } };

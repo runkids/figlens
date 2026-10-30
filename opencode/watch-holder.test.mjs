@@ -7,9 +7,9 @@ import { createHolder } from './watch-holder.mjs';
 // A stand-in for one `figlens watch run` child: `script` drives it as the real one would.
 function child(script) {
   const c = new EventEmitter();
-  Object.assign(c, { stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), exitCode: null, signals: [] });
+  Object.assign(c, { pid: 1, stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), exitCode: null, signals: [] });
   c.exit = code => { if (c.exitCode === null) { c.exitCode = code; c.stdout.end(); c.emit('exit', code); setImmediate(() => c.emit('close', code)); } };
-  c.kill = signal => { c.signals.push(signal); if (!script.ignores?.includes(signal)) c.exit(null); };
+  c.kill = signal => { c.signals.push(signal); if (script.kill) script.kill(c, signal); else if (!script.ignores?.includes(signal)) c.exit(null); };
   c.say = value => c.stdout.write(`${JSON.stringify(value)}\n`);
   c.stdin.on('finish', () => script.onStdinEnd?.(c));
   queueMicrotask(() => script.start(c));
@@ -78,18 +78,36 @@ test('a malformed start reply stops the child it spawned', async () => {
 });
 
 test('a spawn that only emits error is refused, not left pending', async () => {
-  const holder = createHolder(() => child({ start: c => c.emit('error', new Error('ENOENT')) }), { exitMs: 10 });
+  const holder = createHolder(() => child({ start: c => { c.pid = undefined; c.emit('error', new Error('ENOENT')); } }), { exitMs: 10 });
   await assert.rejects(holder.start([]), /could not start: ENOENT/);
 });
 
-test('cleanup while a start awaits its reply stops that child and admits no lease', async () => {
-  let c;
-  const holder = createHolder(() => (c = child({ start: () => {}, onStdinEnd: c => c.exit(0) })));
+test('cleanup while a start awaits its reply returns only after that child closed', async () => {
+  let c, closed = false;
+  const holder = createHolder(() => (c = child({ start: c => c.once('close', () => { closed = true; }),
+    onStdinEnd: c => setTimeout(() => c.exit(0), 20) })));
   const starting = holder.start([]);
   await new Promise(resolve => setImmediate(resolve));
   await holder.stopAll();
+  const atReturn = closed;
   await assert.rejects(starting);
-  assert.deepEqual([c.exitCode, holder.leases], [0, []]);
+  assert.deepEqual([atReturn, holder.leases], [true, []]);
+});
+
+test('an error on SIGTERM is not taken as exit: the child is killed and stays owned until it closes', async () => {
+  let c;
+  const holder = createHolder(() => (c = child({ start: c => c.say(active),
+    kill: (c, signal) => signal === 'SIGTERM' ? c.emit('error', new Error('EPERM')) : c.exit(null) })), { exitMs: 10 });
+  await holder.start([]);
+  const end = await holder.stop('l1');
+  assert.deepEqual([c.signals, end.reason, holder.leases], [['SIGTERM', 'SIGKILL'], 'release_unconfirmed', []]);
+});
+
+test('a child that never closes keeps its lease held, with no TTL promised', async () => {
+  const holder = createHolder(() => child({ start: c => c.say(active), kill: () => {} }), { exitMs: 10 });
+  await holder.start([]);
+  const end = await holder.stop('l1');
+  assert.deepEqual([end.reason, /TTL/.test(end.recovery), holder.leases], ['holder_not_exited', false, ['l1']]);
 });
 
 test('a child ignoring stdin and SIGTERM is killed and its release reported unconfirmed', async () => {
