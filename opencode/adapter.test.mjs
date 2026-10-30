@@ -534,9 +534,11 @@ test('CLI-path subscription reads ask read on exactly the subscription\'s source
   const session = async id => Object.assign(await adapter.scope(id), { run });
   const run = async args => {
     ran.push(args[0] === 'changes' ? 'changes' : args[1]);
-    // The list pages: the second page holds the rest.
-    if (args[1] === 'list') return { stdout: JSON.stringify(args.includes('--after')
-      ? { subscriptions: subscriptions.slice(1), next: null } : { subscriptions: subscriptions.slice(0, 1), next: 'one' }) };
+    // The list reads only the named subscription.
+    if (args[1] === 'list') {
+      const id = args[args.indexOf('--subscription') + 1];
+      return { stdout: JSON.stringify({ subscriptions: subscriptions.filter(s => s.subscriptionId === id), next: null }) };
+    }
     return { stdout: JSON.stringify({ state: 'ready', paths: { workspace: '/w', lock: '/w.lock' }, storage: { rule: 'default' },
       roots: { config: { path: '/c' } }, sources: [{ sourceId: 'A', path: a }, { sourceId: 'B', path: b }] }) };
   };
@@ -549,9 +551,17 @@ test('CLI-path subscription reads ask read on exactly the subscription\'s source
     { subscriptionId: 'unreadable' }, { subscriptionId: 'unseen', sourceId: 'A' }]) {
     ran = [];
     await assert.rejects(evaluate(more), /read denied/);
-    assert.ok(asked.at(-1).includes(b) && !ran.includes('evaluate'), JSON.stringify([more, asked.at(-1), ran]));
+    // One indexed list read per call, never a page walk.
+    assert.ok(asked.at(-1).includes(b) && !ran.includes('evaluate') && ran.filter(r => r === 'list').length === 1,
+      JSON.stringify([more, asked.at(-1), ran]));
   }
   assert.deepEqual(asked.at(-1), [a, realA, b, realB], 'an unseen subscription asks every source');
+  // search and usages ignore a subscriptionId, so it never narrows their ask: B is asked, and nothing runs.
+  for (const tool of ['search', 'usages']) {
+    ran = [];
+    await assert.rejects(adapter.cli(await session(tool), tool, { workspaceId: 'ws_1', query: 'badge', node: '1:1', subscriptionId: 'one' }), /read denied/);
+    assert.deepEqual([asked.at(-1), ran], [[a, realA, b, realB], ['status']], tool);
+  }
 });
 
 test('CLI-path prepare with an explicit storage asks edit on the state root the binary chose, not the remembered one', async t => {

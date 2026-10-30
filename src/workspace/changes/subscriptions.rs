@@ -607,12 +607,14 @@ pub fn subscribe(storage: &Storage, select: &Select, req: &Subscribe) -> Result<
     Ok(reply)
 }
 
-/// The caller's visible subscriptions, one page at a time in id order.
+/// The caller's visible subscriptions, one page at a time in id order; `id` reads only that
+/// one, by its key, under the same visibility rule (empty when it is unknown to this caller).
 pub fn list(
     storage: &Storage,
     select: &Select,
     consumer: Option<&str>,
     after: Option<&str>,
+    id: Option<&str>,
 ) -> Result<Json> {
     let (_, ws) = opened(storage, select, false)?;
     // Schema 6 introduced subscriptions; a read never upgrades.
@@ -625,7 +627,7 @@ pub fn list(
     let mut stmt = tx
         .prepare(&format!(
             "SELECT {} FROM subscriptions WHERE (?1 IS NULL OR consumer = ?1)
-             AND id > ?2 AND {} ORDER BY id LIMIT ?4",
+             AND id > ?2 AND (?5 IS NULL OR id = ?5) AND {} ORDER BY id LIMIT ?4",
             columns(ws.version),
             seen(3, ws.version)
         ))
@@ -636,7 +638,8 @@ pub fn list(
                 consumer,
                 after.unwrap_or(""),
                 json!(sources).to_string(),
-                LIST_PAGE as i64 + 1
+                LIST_PAGE as i64 + 1,
+                id
             ],
             row,
         )

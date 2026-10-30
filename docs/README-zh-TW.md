@@ -235,7 +235,7 @@ Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，works
 | `watch subscribe --file <file>\|--id ID\|--workspace DIR --consumer NAME --source ID --query TEXT [--type T[,T]] [--scope NODE]` | 儲存對一個來源 scope 的搜尋：立即評估其前 50 名；`changes --subscription` 只讀取已儲存的評估，從不計算 |
 | `watch subscribe --file <file>\|--id ID\|--workspace DIR --consumer NAME --sources visible\|ID[,ID] --query TEXT\|--library KIND --key KEY [--namespace NS] [--definition-source ID --definition-snapshot SNAP --definition-node NODE]` | 對最多 10 個來源的固定集合儲存搜尋，或儲存程式庫項目的使用處及其 `definitionMatch`（`visible` 於此時解析，之後新增的來源不會加入）：`delta.changedSourceIds` 列出位元組有變的來源，`corpus_changed` 表示集合有變，`coverage.transitive` 為 `not_followed`，`delta.notFollowedSourceIds` 列出沒有使用處的已變更來源（其下游未重新檢查）；移除成員會停用它（先 unsubscribe，再重新 subscribe） |
 | `watch evaluate --file <file>\|--id ID\|--workspace DIR --subscription ID` | 依 scope 目前的索引評估並儲存查詢訂閱，已評估則不做任何事；該 scope 正在 watch 時，每次發布後會自動進行 |
-| `watch list --file <file>\|--id ID\|--workspace DIR [--consumer NAME] [--after ID]` | 分頁列出可見的訂閱及其狀態 |
+| `watch list --file <file>\|--id ID\|--workspace DIR [--consumer NAME] [--after ID] [--subscription ID]` | 分頁列出可見的訂閱及其狀態；`--subscription` 只讀取該訂閱（不可見時為空） |
 | `watch unsubscribe --file <file>\|--id ID\|--workspace DIR --subscription ID\|--consumer C --owner NAME` | 刪除一個訂閱及其檢查點，或某個 owner 的暫時訂閱；tracking 與歷史保留 |
 | `watch forget --file <file>\|--id ID\|--workspace DIR --consumer NAME [--source ID] [--scope NODE]` | 刪除 consumer 的原始檢查點；每個 consumer 最多保留 64 個訂閱與檢查點，整個 workspace 4096 個，不會自動淘汰 |
 | `mcp` | 透過 stdio 的本機 MCP 伺服器 |

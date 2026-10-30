@@ -1101,9 +1101,13 @@ pub fn changes_tool(
         ("watch", Some("status")) => watch::status(&storage, &select)?,
         ("watch", Some("subscribe")) => subs::subscribe(&storage, &select, &subscribe)?,
         ("watch", Some("evaluate")) => changes::evaluate(&storage, &select, request.subscription)?,
-        ("watch", Some("list")) => {
-            subs::list(&storage, &select, request.consumer, call.string("after"))?
-        }
+        ("watch", Some("list")) => subs::list(
+            &storage,
+            &select,
+            request.consumer,
+            call.string("after"),
+            request.subscription,
+        )?,
         ("watch", Some("unsubscribe")) => subs::unsubscribe(
             &storage,
             &select,

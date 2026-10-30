@@ -2491,7 +2491,8 @@ fn a_saved_search_over_a_source_set_is_fixed_when_subscribed_and_evaluated_by_ea
     std::fs::copy(FIXTURE, &late).unwrap();
     crate::workspace::registry::add(&storage, &select, &late).unwrap();
     let held =
-        crate::workspace::changes::subscriptions::list(&storage, &select, Some("a"), None).unwrap();
+        crate::workspace::changes::subscriptions::list(&storage, &select, Some("a"), None, None)
+            .unwrap();
     assert_eq!(
         (
             &saved["subscription"]["sources"],
@@ -2794,7 +2795,7 @@ fn a_not_followed_member_outside_a_readers_roots_is_never_shown_to_that_reader()
             .unwrap_err()
             .to_string(),
     ];
-    let listed = subscriptions::list(&narrow, &select, None, None).unwrap();
+    let listed = subscriptions::list(&narrow, &select, None, None, None).unwrap();
     let (own, page) = newest(&narrow, &select, &mine);
     let text = format!("{refused:?}{listed}{page}");
     assert_eq!(
@@ -2891,7 +2892,7 @@ fn a_missing_not_followed_member_leaves_no_stored_id_for_a_reader_who_never_saw_
             |r| r.get(0),
         )
         .unwrap();
-    let listed = subscriptions::list(&rest, &select, None, None).unwrap();
+    let listed = subscriptions::list(&rest, &select, None, None, None).unwrap();
     let page = changes::changes(&rest, &select, &req).unwrap();
     let evaluated = changes::evaluate(&rest, &select, Some(&sub)).unwrap();
     assert_eq!(
@@ -2909,6 +2910,44 @@ fn a_missing_not_followed_member_leaves_no_stored_id_for_a_reader_who_never_saw_
             &json!({"reason": "source_removed"}),
             false
         )
+    );
+}
+
+#[test]
+fn list_by_subscription_reads_only_that_row_under_the_set_visibility_rule() {
+    use crate::workspace::changes::subscriptions;
+    let d = TestDir::new();
+    let (storage, select, _conn, srcs) = library_workspace(&d, 2);
+    let narrow = storage.clone().confined(std::slice::from_ref(&srcs[0].0));
+    let one = subscription_id(
+        &subscribe_set(&storage, &select, "a", &srcs[0].1, Some("badge"), None).unwrap(),
+    );
+    let set = subscription_id(
+        &subscribe_set(&storage, &select, "a", "visible", Some("badge"), None).unwrap(),
+    );
+    let only = |storage: &Storage, id: &str| {
+        subscriptions::list(storage, &select, None, None, Some(id)).unwrap()["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| (s["subscriptionId"].clone(), s["sources"].clone()))
+            .collect::<Vec<_>>()
+    };
+    let mut ids = vec![srcs[0].1.clone(), srcs[1].1.clone()];
+    ids.sort();
+    assert_eq!(
+        [
+            only(&narrow, &one),
+            only(&storage, &set),
+            only(&narrow, &set),
+            only(&storage, "sub_unknown"),
+        ],
+        [
+            vec![(json!(one), json!([srcs[0].1]))],
+            vec![(json!(set), json!(ids))],
+            vec![],
+            vec![],
+        ]
     );
 }
 
@@ -2950,7 +2989,7 @@ fn a_set_is_unknown_to_a_narrower_caller_and_disabled_only_when_a_member_is_remo
     };
     let unseen = (
         changes::changes(&narrow, &select, &req).is_err(),
-        subscriptions::list(&narrow, &select, None, None).unwrap()["subscriptions"].clone(),
+        subscriptions::list(&narrow, &select, None, None, None).unwrap()["subscriptions"].clone(),
         changes::evaluate(&narrow, &select, Some(&sub)).is_err(),
     );
     let stored = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
@@ -3012,11 +3051,11 @@ fn a_disabled_set_names_no_removed_member_and_is_seen_by_whoever_sees_every_rema
     };
     // A remaining member outside the caller's roots still hides the set.
     let hidden = (
-        subscriptions::list(&one, &select, None, None).unwrap()["subscriptions"].clone(),
+        subscriptions::list(&one, &select, None, None, None).unwrap()["subscriptions"].clone(),
         changes::changes(&one, &select, &req).is_err(),
         subscriptions::unsubscribe(&one, &select, Some(&sub), None, None).is_err(),
     );
-    let listed = subscriptions::list(&rest, &select, None, None).unwrap();
+    let listed = subscriptions::list(&rest, &select, None, None, None).unwrap();
     let page = changes::changes(&rest, &select, &req).unwrap();
     let removed = subscriptions::unsubscribe(&rest, &select, Some(&sub), None, None).unwrap();
     let mut remaining = vec![srcs[0].1.clone(), srcs[2].1.clone()];
@@ -3078,11 +3117,11 @@ fn an_unreadable_set_reads_as_disabled_and_only_a_caller_seeing_every_source_rem
         })
         .collect();
     let unseen = (
-        subscriptions::list(&narrow, &select, None, None).unwrap()["subscriptions"].clone(),
+        subscriptions::list(&narrow, &select, None, None, None).unwrap()["subscriptions"].clone(),
         subscriptions::unsubscribe(&narrow, &select, Some(&subs[0]), None, None).is_err(),
     );
     let listed: Vec<Json> =
-        subscriptions::list(&storage, &select, None, None).unwrap()["subscriptions"]
+        subscriptions::list(&storage, &select, None, None, None).unwrap()["subscriptions"]
             .as_array()
             .unwrap()
             .iter()

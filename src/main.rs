@@ -231,8 +231,9 @@ usage:
   figlens watch evaluate <select> --subscription ID
                                              store a query subscription's evaluation of the scope's
                                              current index, unless it is already evaluated
-  figlens watch list <select> [--consumer NAME] [--after ID]
-                                             visible subscriptions and their state, a page at a time
+  figlens watch list <select> [--consumer NAME] [--after ID] [--subscription ID]
+                                             visible subscriptions and their state, a page at a time;
+                                             --subscription reads only that one (empty if unknown)
   figlens watch unsubscribe <select> --subscription ID|--consumer C --owner NAME
                                              remove one subscription, or an owner's temporary ones
   figlens watch forget <select> --consumer NAME [--source ID] [--scope NODE]
@@ -1339,8 +1340,8 @@ fn watch(action: &str, args: &[String]) -> Result<serde_json::Value, Box<dyn Err
             &["--subscription"],
         ),
         "list" => (
-            "usage: figlens watch list <select> [--consumer NAME] [--after ID] [--storage DIR]",
-            &["--consumer", "--after"],
+            "usage: figlens watch list <select> [--consumer NAME] [--after ID] [--subscription ID] [--storage DIR]",
+            &["--consumer", "--after", "--subscription"],
         ),
         "unsubscribe" => (
             "usage: figlens watch unsubscribe <select> --subscription ID|--consumer NAME --owner NAME [--storage DIR]",
@@ -1411,7 +1412,13 @@ fn watch(action: &str, args: &[String]) -> Result<serde_json::Value, Box<dyn Err
             },
         ),
         "evaluate" => workspace::changes::evaluate(&storage, &select, flag("--subscription")),
-        "list" => subs::list(&storage, &select, flag("--consumer"), flag("--after")),
+        "list" => subs::list(
+            &storage,
+            &select,
+            flag("--consumer"),
+            flag("--after"),
+            flag("--subscription"),
+        ),
         "unsubscribe" => subs::unsubscribe(
             &storage,
             &select,

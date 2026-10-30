@@ -235,7 +235,7 @@ Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며
 | `watch subscribe --file <file>\|--id ID\|--workspace DIR --consumer NAME --source ID --query TEXT [--type T[,T]] [--scope NODE]` | 한 소스의 scope에 대한 검색을 저장합니다. 상위 50개를 바로 평가하며, `changes --subscription`은 저장된 평가를 읽기만 하고 계산하지 않습니다 |
 | `watch subscribe --file <file>\|--id ID\|--workspace DIR --consumer NAME --sources visible\|ID[,ID] --query TEXT\|--library KIND --key KEY [--namespace NS] [--definition-source ID --definition-snapshot SNAP --definition-node NODE]` | 최대 10개 소스의 고정 집합에 대해 검색 또는 라이브러리 항목의 사용처와 `definitionMatch`를 저장합니다(`visible`은 지금 확정되며 나중에 추가된 소스는 포함되지 않음). `delta.changedSourceIds`는 바이트가 바뀐 소스, `corpus_changed`는 집합 변경을 나타내고 `coverage.transitive`는 `not_followed`이며 `delta.notFollowedSourceIds`는 사용처가 없는 변경된 소스(그 하위 의존은 다시 확인되지 않음)를 나타냅니다. 멤버를 제거하면 비활성화됩니다(unsubscribe 후 다시 subscribe) |
 | `watch evaluate --file <file>\|--id ID\|--workspace DIR --subscription ID` | 쿼리 구독을 scope의 현재 인덱스로 평가해 저장합니다. 이미 평가되었으면 아무것도 하지 않습니다. scope를 watch 중이면 게시할 때마다 자동으로 합니다 |
-| `watch list --file <file>\|--id ID\|--workspace DIR [--consumer NAME] [--after ID]` | 보이는 구독과 상태를 페이지 단위로 나열합니다 |
+| `watch list --file <file>\|--id ID\|--workspace DIR [--consumer NAME] [--after ID] [--subscription ID]` | 보이는 구독과 상태를 페이지 단위로 나열합니다. `--subscription`은 그 구독만 읽습니다(보이지 않으면 비어 있음) |
 | `watch unsubscribe --file <file>\|--id ID\|--workspace DIR --subscription ID\|--consumer C --owner NAME` | 구독 하나와 그 체크포인트, 또는 owner의 임시 구독을 삭제합니다. 트래킹과 기록은 남습니다 |
 | `watch forget --file <file>\|--id ID\|--workspace DIR --consumer NAME [--source ID] [--scope NODE]` | consumer의 원시 체크포인트를 삭제합니다. consumer당 구독과 체크포인트는 최대 64개, 워크스페이스 전체 4096개이며 자동으로 밀려나지 않습니다 |
 | `mcp` | stdio를 사용하는 로컬 MCP 서버 |

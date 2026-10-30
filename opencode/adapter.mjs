@@ -382,21 +382,22 @@ export function createAdapter(ctx, entry = import.meta.url) {
       const paths = sources.filter(source => !only || only.includes(source.sourceId)).map(source => source.path);
       await current.authorize('read', [...new Set((await Promise.all(paths.map(async file => [file, await realpath(file).catch(() => file)]))).flat())]);
     };
-    // A subscription's evaluation reads its own source or set, which the read-only watch list names without any
-    // evaluation; one not listed to this caller, or with an unreadable set, is asked on every source. A caller's
-    // sourceId is asked too but never narrows the ask.
+    // A subscription's evaluation reads its own source or set, which one read-only `watch list --subscription` names
+    // without any evaluation; one not listed to this caller, or with an unreadable set, is asked on every source. A
+    // caller's sourceId is asked too but never narrows the ask.
     const subscribed = async () => {
-      for (let after; ;) {
-        const { subscriptions, next } = await invoke(cliArgs('watch', { action: 'list', workspaceId: input.workspaceId, storage: input.storage, after }));
-        const sub = subscriptions?.find(s => s.subscriptionId === input.subscriptionId);
-        const ids = sub?.sources ?? (sub?.sourceId ? [sub.sourceId] : []);
-        if (sub) return ids.length ? [...ids, ...(input.sourceId ? [input.sourceId] : [])] : null;
-        if (!next) return null;
-        after = next;
-      }
+      const { subscriptions } = await invoke(cliArgs('watch', { action: 'list', workspaceId: input.workspaceId, storage: input.storage,
+        subscriptionId: input.subscriptionId }));
+      const sub = subscriptions?.find(s => s.subscriptionId === input.subscriptionId);
+      const ids = sub?.sources ?? (sub?.sourceId ? [sub.sourceId] : []);
+      return ids.length ? [...ids, ...(input.sourceId ? [input.sourceId] : [])] : null;
     };
+    // Only changes and watch evaluate read a subscription's sources; search and usages ignore a subscriptionId.
     const readSelected = async found => readSources(found, input.subscriptionId ? await subscribed() : undefined);
-    if (['search', 'usages', 'changes'].includes(tool) && !input.file) await readSelected(await status(input));
+    if (['search', 'usages', 'changes'].includes(tool) && !input.file) {
+      const found = await status(input);
+      await (tool === 'changes' ? readSelected(found) : readSources(found));
+    }
     // Every other watch action writes checkpoints, subscriptions or leases into the workspace database, as a cancel writes its job.
     if (tool === 'watch' && !['list', 'status', 'start'].includes(input.action)) {
       const found = await status(input);

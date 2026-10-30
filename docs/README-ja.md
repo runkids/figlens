@@ -235,7 +235,7 @@ Pi、OpenCode、OMP は、それぞれのオプトイン用エントリから同
 | `watch subscribe --file <file>\|--id ID\|--workspace DIR --consumer NAME --source ID --query TEXT [--type T[,T]] [--scope NODE]` | 1 つのソースの scope に対する検索を保存します。上位 50 件をすぐ評価し、`changes --subscription` は保存済みの評価を読むだけで計算しません |
 | `watch subscribe --file <file>\|--id ID\|--workspace DIR --consumer NAME --sources visible\|ID[,ID] --query TEXT\|--library KIND --key KEY [--namespace NS] [--definition-source ID --definition-snapshot SNAP --definition-node NODE]` | 最大 10 ソースの固定セットに対して検索、またはライブラリ項目の使用箇所とその `definitionMatch` を保存します（`visible` はこの時点で解決され、後から追加されたソースは含まれません）。`delta.changedSourceIds` はバイトが変わったソース、`corpus_changed` はセットの変化を示し、`coverage.transitive` は `not_followed` で、`delta.notFollowedSourceIds` は使用箇所を持たない変更ソース（依存先は再確認されていません）を示します。メンバーを削除すると無効になります（unsubscribe してから再度 subscribe） |
 | `watch evaluate --file <file>\|--id ID\|--workspace DIR --subscription ID` | クエリサブスクリプションを scope の現在のインデックスで評価して保存します。評価済みなら何もしません。scope を watch 中なら公開のたびに自動で行います |
-| `watch list --file <file>\|--id ID\|--workspace DIR [--consumer NAME] [--after ID]` | 見えるサブスクリプションと状態をページ単位で一覧します |
+| `watch list --file <file>\|--id ID\|--workspace DIR [--consumer NAME] [--after ID] [--subscription ID]` | 見えるサブスクリプションと状態をページ単位で一覧します。`--subscription` はそのサブスクリプションだけを読みます（見えなければ空） |
 | `watch unsubscribe --file <file>\|--id ID\|--workspace DIR --subscription ID\|--consumer C --owner NAME` | サブスクリプション 1 件とそのチェックポイント、または owner の一時的なものを削除します。トラッキングと履歴は残ります |
 | `watch forget --file <file>\|--id ID\|--workspace DIR --consumer NAME [--source ID] [--scope NODE]` | consumer の素のチェックポイントを削除します。consumer ごとにサブスクリプションとチェックポイントは最大 64、ワークスペース全体で 4096 で、自動で追い出されることはありません |
 | `mcp` | stdio 経由のローカル MCP サーバー |
