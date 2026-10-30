@@ -463,7 +463,29 @@ fn usages_library_is_a_workspace_question_apart_from_node_questions() {
         (request.kind.as_str(), request.scope.as_str(), request.limit),
         ("component", "0:0", 7)
     );
+    // A key alone, and a definition selected by its exact ref.
+    let call = check(
+        "usages",
+        ask(
+            json!({"library": {"kind": "component", "key": "k1", "definition":
+            {"sourceId": "s2", "snapshotId": "sha256:a", "nodeId": "1-2"}}}),
+        ),
+    )
+    .unwrap_or_else(|f| panic!("{}", f.metadata()));
+    let request = crate::command::library_tool(&call).unwrap();
+    let d = request.definition.unwrap();
+    assert_eq!(
+        (request.namespace, d.source_id, d.snapshot_id, d.node_id),
+        (None, "s2".into(), "sha256:a".into(), "1:2".into())
+    );
+    let definition =
+        |d: Value| json!({"library": {"kind": "component", "key": "k1", "definition": d}});
     for bad in [
+        definition(json!({"sourceId": "s2", "snapshotId": "sha256:a"})),
+        definition(
+            json!({"sourceId": "s2", "snapshotId": "sha256:a", "nodeId": "1:2", "name": "x"}),
+        ),
+        definition(json!({"sourceId": "", "snapshotId": "sha256:a", "nodeId": "1:2"})),
         json!({"workspaceId": null, "file": "a.fig"}),
         json!({"node": "0:1"}),
         json!({"resource": "image:00"}),
@@ -504,7 +526,12 @@ fn cli_library_takes_three_flags_and_no_node_options() {
     .unwrap();
     assert_eq!(
         (request.kind, request.namespace, request.key, request.scope),
-        ("style".into(), "lib".into(), "k1".into(), "1:2".into())
+        (
+            "style".into(),
+            Some("lib".into()),
+            "k1".into(),
+            "1:2".into()
+        )
     );
     assert!(request.include_hidden && request.limit == 3);
     for extra in [
@@ -523,6 +550,33 @@ fn cli_library_takes_three_flags_and_no_node_options() {
         crate::command::library_request(&args(&["--library", "style", "--namespace", "lib"]))
             .is_err()
     );
+    let selected = crate::command::library_request(&args(&[
+        "--library",
+        "component",
+        "--key",
+        "k1",
+        "--definition-source",
+        "s2",
+        "--definition-snapshot",
+        "sha256:a",
+        "--definition-node",
+        "1-2",
+    ]))
+    .unwrap();
+    assert_eq!(
+        (selected.namespace, selected.definition.map(|d| d.node_id)),
+        (None, Some("1:2".into()))
+    );
+    let error = crate::command::library_request(&args(&[
+        "--library",
+        "component",
+        "--key",
+        "k1",
+        "--definition-node",
+        "1:2",
+    ]))
+    .unwrap_err();
+    assert!(error.to_string().contains("go together"), "{error}");
     let error = crate::command::usages_request(&args(&["--library", "style"])).unwrap_err();
     assert!(error.to_string().contains("reads a workspace"), "{error}");
 }

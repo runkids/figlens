@@ -211,7 +211,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "library",
                 "object",
                 false,
-                "with workspaceId, a library reference instead of a node or resource: {kind: component, style or variable, namespace, key}, as an out result's library names it; lists the layers in every visible source (or sourceId) whose cached copy records it",
+                "with workspaceId, a library reference instead of a node or resource: {kind: component, style or variable, namespace, key}, as an out result's library names it; lists the layers in every visible source (or sourceId) whose cached copy records it. Optional definition {sourceId, snapshotId, nodeId} selects the definition by exact ref; without namespace only copies that record none are listed",
             ),
             (
                 "scope",
@@ -928,13 +928,35 @@ pub fn property(tool: &str, param: &Param) -> Value {
     if tool == "usages" && key == "library" {
         p["properties"] = json!({
             "kind": {"type": "string", "enum": figlens::workspace::library::KINDS},
-            "namespace": {"type": "string", "minLength": 1, "description": "the library's sourceLibraryKey, as an outgoing usages result's library names it"},
+            "namespace": {"type": "string", "minLength": 1, "description": "the library's sourceLibraryKey, as an outgoing usages result's library names it; omitted, only copies that record none are listed and the answer is never complete"},
             "key": {"type": "string", "minLength": 1, "description": "the component, style or variable key"},
+            "definition": {"type": "object", "description": "the definition you select, as an exact ref an earlier reply gave: checked visible, ready at that snapshot and of the kind, then reported selected with keyEvidence unverified, never resolved from the key",
+                "properties": {"sourceId": {"type": "string", "minLength": 1}, "snapshotId": {"type": "string", "minLength": 1}, "nodeId": {"type": "string", "minLength": 1}},
+                "required": ["sourceId", "snapshotId", "nodeId"], "additionalProperties": false},
         });
-        p["required"] = json!(["kind", "namespace", "key"]);
+        p["required"] = json!(["kind", "key"]);
         p["additionalProperties"] = json!(false);
     }
     p
+}
+
+/// `value` against an object schema of string and object fields: every required field present,
+/// no other one, each string non-empty and within its enum.
+fn object_fits(value: &Value, schema: &Value) -> bool {
+    let (Some(fields), Some(props)) = (value.as_object(), schema["properties"].as_object()) else {
+        return false;
+    };
+    let required = schema["required"].as_array().into_iter().flatten();
+    required
+        .filter_map(Value::as_str)
+        .all(|r| fields.contains_key(r))
+        && fields.iter().all(|(name, v)| match props.get(name) {
+            None => false,
+            Some(p) if p["type"] == "object" => object_fits(v, p),
+            Some(p) => v.as_str().is_some_and(|text| {
+                !text.is_empty() && p["enum"].as_array().is_none_or(|e| e.contains(v))
+            }),
+        })
 }
 
 fn integer(value: &Value) -> Option<u64> {
@@ -1020,25 +1042,7 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
             }
             "boolean" if !value.is_boolean() => return Err(bad()),
             // Only usages' library takes an object; its schema lists every field.
-            "object" => {
-                let fields = value.as_object().ok_or_else(bad)?;
-                let props = schema["properties"].as_object().unwrap();
-                if fields.len() != props.len()
-                    || props.iter().any(|(name, p)| {
-                        !fields
-                            .get(name)
-                            .and_then(Value::as_str)
-                            .is_some_and(|text| {
-                                !text.is_empty()
-                                    && p["enum"]
-                                        .as_array()
-                                        .is_none_or(|e| e.contains(&fields[name]))
-                            })
-                    })
-                {
-                    return Err(bad());
-                }
-            }
+            "object" if !object_fits(value, &schema) => return Err(bad()),
             "string" => {
                 let text = value.as_str().ok_or_else(bad)?;
                 if (schema["minLength"] == 1 && text.is_empty())

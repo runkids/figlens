@@ -64,12 +64,16 @@ usage:
   figlens usages --workspace DIR|--file <file.fig>|--id ws_... <node>|<resource> [--source ID] [--storage DIR] [same options]
                                              the same over one source's prepared index of --scope,
                                              without parsing; a changed source is source_stale
-  figlens usages --workspace DIR|--file <file.fig>|--id ws_... --library KIND --namespace NS --key KEY
+  figlens usages --workspace DIR|--file <file.fig>|--id ws_... --library KIND [--namespace NS] --key KEY
+          [--definition-source ID --definition-snapshot S --definition-node N]
           [--source ID] [--storage DIR] [--scope ID] [--include-hidden] [--limit N] [--cursor C]
                                              layers that use one library component, style or variable
                                              (KIND), as each source's cached copy records it, across
                                              every visible source's prepared --scope (--source: one);
-                                             the definition stays unresolved; per-source coverage
+                                             the definition stays unresolved unless --definition-*
+                                             selects one by exact ref (checked, keyEvidence unverified);
+                                             without --namespace only copies naming none, never
+                                             complete; per-source coverage
   figlens diff <old.fig> <new.fig> [--node ID] [--limit N] [--cursor C] [--json]
                                              what changed between two saved revisions: one line per
                                              changed top-level frame (added, removed, changed, kind_changed,

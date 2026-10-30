@@ -1,7 +1,8 @@
 //! Uses of one library component, style or variable (#93) across every visible source's
 //! published index of one scope, as each file's cached copies record the reference. Reads only,
 //! like usages: one SQLite read transaction, no parse, no build. The definition is never
-//! resolved to a source, since a file's own definitions carry no key.
+//! resolved from the key, since a file's own definitions carry none; a caller may select one by
+//! its exact ref, which is checked but stays unverified as the key's definition.
 
 use sha2::{Digest, Sha256};
 
@@ -20,12 +21,23 @@ const PAGE_BYTES: usize = 3 * 1024 * 1024;
 #[derive(Clone, Debug)]
 pub struct Request {
     pub kind: String,
-    pub namespace: String,
+    /// `None` asks for the copies that record no namespace, and never implies one.
+    pub namespace: Option<String>,
     pub key: String,
+    /// The caller's exact ref of the definition to compare against, checked on every page.
+    pub definition: Option<DefinitionRef>,
     pub scope: String,
     pub include_hidden: bool,
     pub limit: usize,
     pub cursor: Option<String>,
+}
+
+/// A definition the caller selects: one node of one source's snapshot.
+#[derive(Clone, Debug)]
+pub struct DefinitionRef {
+    pub source_id: String,
+    pub snapshot_id: String,
+    pub node_id: String,
 }
 
 impl Request {
@@ -45,10 +57,22 @@ impl Request {
                 store::ID_BYTES
             )));
         }
-        if self.namespace.is_empty() || self.key.is_empty() {
-            return Err(invalid("library needs a namespace and a key".into()));
+        if self.key.is_empty() || self.namespace.as_deref() == Some("") {
+            return Err(invalid(
+                "library needs a key, and a namespace when one is given".into(),
+            ));
         }
-        if self.target(Some(&self.namespace)).len() > store::ID_BYTES {
+        if let Some(d) = &self.definition
+            && [&d.source_id, &d.snapshot_id, &d.node_id]
+                .iter()
+                .any(|v| v.is_empty() || v.len() > store::ID_BYTES)
+        {
+            return Err(invalid(format!(
+                "library definition takes sourceId, snapshotId and nodeId of 1 to {} bytes",
+                store::ID_BYTES
+            )));
+        }
+        if self.target(self.namespace.as_deref()).len() > store::ID_BYTES {
             return Err(invalid(format!(
                 "library namespace and key take at most {} bytes together",
                 store::ID_BYTES
@@ -62,8 +86,15 @@ impl Request {
 
     /// The question as tool arguments, for a recovery that repeats it.
     pub(crate) fn arguments(&self) -> Json {
-        let mut asked = json!({"library": {"kind": self.kind, "namespace": self.namespace,
-            "key": self.key}, "scope": self.scope, "limit": self.limit});
+        let mut asked = json!({"library": {"kind": self.kind, "key": self.key},
+            "scope": self.scope, "limit": self.limit});
+        if let Some(ns) = &self.namespace {
+            asked["library"]["namespace"] = json!(ns);
+        }
+        if let Some(d) = &self.definition {
+            asked["library"]["definition"] = json!({"sourceId": d.source_id,
+                "snapshotId": d.snapshot_id, "nodeId": d.node_id});
+        }
         if self.include_hidden {
             asked["includeHidden"] = json!(true);
         }
@@ -138,6 +169,10 @@ pub fn library(
     // Invisible sources are dropped before anything about them is read or named; visibility is
     // decided again on every page, and the cursor binds the sources it saw.
     let total = rows.len();
+    // A selected definition's source is only told apart as unknown or not visible; nothing
+    // else about one this caller may not see is read.
+    let wanted = req.definition.as_ref().map(|d| d.source_id.as_str());
+    let known = wanted.is_some_and(|id| rows.iter().any(|r| r.id == id));
     let mut visible: Vec<_> = rows
         .into_iter()
         .filter(|r| storage.sees(Path::new(&r.path)))
@@ -145,13 +180,14 @@ pub fn library(
     // Sources this caller may not see are left out unnamed, so the reply cannot be complete.
     let restricted = source.is_none() && visible.len() < total;
     if let Some(id) = source {
-        visible.retain(|r| r.id == id);
-        if visible.is_empty() {
+        if !visible.iter().any(|r| r.id == id) {
             return Err(fail(
                 ErrorKind::InvalidArguments,
                 format!("workspace {ws_id} has no source {id}"),
             ));
         }
+        // The definition's source keeps its readiness check, though its uses are not listed.
+        visible.retain(|r| r.id == id || Some(r.id.as_str()) == wanted);
     }
     let versions = store::versions();
     let mut sources = Vec::new();
@@ -216,14 +252,27 @@ pub fn library(
             step,
         });
     }
+    let (definition, definition_gen) = selected(&tx, req, &sources, known)?;
+    if let Some(id) = source {
+        sources.retain(|s| s.id == id);
+    }
+    // Each paged generation with its source: every listed one, then the definition's.
+    let mut generations: Vec<(&str, Option<i64>)> =
+        sources.iter().map(|s| (s.id.as_str(), s.gen_id)).collect();
+    if let Some(d) = &req.definition {
+        generations.push((d.source_id.as_str(), definition_gen));
+    }
     // The cursor binds the question and every source it covered, so a changed reference, scope,
-    // filter, figlens, visibility or readiness cannot continue it. It also carries each source's
-    // generation, so a reindexed source is stale and a deleted generation expired.
+    // filter, figlens, visibility or readiness cannot continue it, nor a definition now selected
+    // otherwise. It also carries each source's generation and the definition's, so a reindexed
+    // source is stale and a deleted generation expired.
     let fingerprint = {
         let bound: Vec<Json> = sources.iter().map(|s| json!([s.id, s.state])).collect();
         let asked = json!([
-            "l1",
-            req.target(Some(&req.namespace)),
+            "l2",
+            req.target(req.namespace.as_deref()),
+            req.arguments()["library"]["definition"],
+            definition,
             req.scope,
             req.include_hidden,
             source,
@@ -242,11 +291,11 @@ pub fn library(
             )
         };
         // One generation id per source at most; checked before splitting it.
-        if c.len() > 64 + 21 * sources.len() {
+        if c.len() > 64 + 21 * generations.len() {
             return Err(bad());
         }
         let parts: Vec<&str> = c.splitn(6, '.').collect();
-        let ["l1", fp, at, rid, seq, paged] = parts[..] else {
+        let ["l2", fp, at, rid, seq, paged] = parts[..] else {
             return Err(bad());
         };
         // Changed filters, visibility or readiness are stale before any generation is looked up.
@@ -258,16 +307,16 @@ pub fn library(
             .into());
         }
         let paged: Vec<&str> = paged.split('-').collect();
-        if paged.len() != sources.len() {
+        if paged.len() != generations.len() {
             return Err(bad());
         }
         let (mut changed, mut gone) = (false, false);
-        for (s, g) in sources.iter().zip(paged) {
+        for (&(id, gen_id), g) in generations.iter().zip(paged) {
             let old = match g {
                 "n" => None,
                 g => Some(g.parse::<i64>().map_err(|_| bad())?),
             };
-            if old == s.gen_id {
+            if old == gen_id {
                 continue;
             }
             changed = true;
@@ -276,7 +325,7 @@ pub fn library(
                 gone |= tx
                     .query_row(
                         "SELECT 1 FROM generations WHERE gen = ?1 AND source_id = ?2",
-                        params![old, s.id],
+                        params![old, id],
                         |_| Ok(()),
                     )
                     .optional()
@@ -335,7 +384,7 @@ pub fn library(
             ),
         ));
     }
-    let exact = req.target(Some(&req.namespace));
+    let exact = req.target(req.namespace.as_deref());
     let unknown = req.target(None);
     let mut results = Vec::new();
     let mut scanned = 0usize;
@@ -516,7 +565,15 @@ pub fn library(
             waiting.iter().map(|s| s.to_string()).collect(),
         ),
         ("index_partial", partial),
-        ("namespace_unknown", unnamed),
+        // Asked without a namespace, the copies naming none are the answer, not a gap.
+        (
+            "namespace_unknown",
+            if req.namespace.is_some() {
+                unnamed
+            } else {
+                Vec::new()
+            },
+        ),
         ("hidden_excluded", hidden),
     ] {
         if !ids.is_empty() {
@@ -526,25 +583,88 @@ pub fn library(
     if restricted {
         reasons.push(json!({"code": "authorization_restricted"}));
     }
+    // Copies with no namespace may name any library: they are never this one's complete uses.
+    if req.namespace.is_none() {
+        reasons.push(json!({"code": "namespace_required"}));
+    }
     // Hidden matches are left out as asked, which is not incompleteness.
     let complete = reasons.iter().all(|r| r["code"] == "hidden_excluded");
     Ok(json!({
         "workspaceId": ws_id,
         "library": {"kind": req.kind, "namespace": req.namespace, "key": req.key},
-        "definition": {"state": "unresolved", "reason": "library_source_unproven"},
+        "definition": definition,
         "scope": {"nodeId": req.scope},
         "results": results,
         "coverage": {"complete": complete, "sources": coverage_sources, "reasons": reasons},
         "hasMore": more,
         "nextCursor": match (more, last) {
             (true, Some((i, r, q))) => {
-                let paged: Vec<String> = sources
+                let paged: Vec<String> = generations
                     .iter()
-                    .map(|s| s.gen_id.map_or("n".into(), |g| g.to_string()))
+                    .map(|(_, g)| g.map_or("n".into(), |g| g.to_string()))
                     .collect();
-                json!(format!("l1.{fingerprint}.{i}.{r}.{q}.{}", paged.join("-")))
+                json!(format!("l2.{fingerprint}.{i}.{r}.{q}.{}", paged.join("-")))
             }
             _ => Json::Null,
         },
     }))
+}
+
+/// The caller's definition ref as this read sees it, with the generation it was checked in. It
+/// is `selected` only when its source is visible and ready at exactly that snapshot and the node
+/// is a record of the published scope of the asked kind; otherwise unresolved, never another
+/// node by name or id. A selection names the caller's choice; the key's evidence stays unverified.
+fn selected(
+    tx: &rusqlite::Transaction,
+    req: &Request,
+    sources: &[Source],
+    known: bool,
+) -> Result<(Json, Option<i64>)> {
+    let unresolved = |reason: &str| json!({"state": "unresolved", "reason": reason});
+    let Some(d) = &req.definition else {
+        let reason = match req.namespace {
+            Some(_) => "library_source_unproven",
+            None => "namespace_required",
+        };
+        return Ok((unresolved(reason), None));
+    };
+    let Some(s) = sources.iter().find(|s| s.id == d.source_id) else {
+        let reason = match known {
+            true => "authorization_restricted",
+            false => "definition_not_found",
+        };
+        return Ok((unresolved(reason), None));
+    };
+    let Some(gen_id) = s.gen_id else {
+        return Ok((unresolved("source_not_ready"), None));
+    };
+    if s.snapshot.as_deref() != Some(d.snapshot_id.as_str()) {
+        return Ok((unresolved("definition_snapshot_stale"), Some(gen_id)));
+    }
+    let kind: Option<String> = tx
+        .query_row(
+            "SELECT kind FROM records INDEXED BY records_node WHERE gen = ?1 AND node_id = ?2
+             LIMIT 1",
+            params![gen_id, d.node_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    let fits = match (req.kind.as_str(), kind.as_deref()) {
+        (_, None) => return Ok((unresolved("definition_not_found"), Some(gen_id))),
+        ("component", Some(k)) => matches!(k, "COMPONENT" | "COMPONENT_SET"),
+        ("variable", Some(k)) => k == "VARIABLE",
+        // A record does not keep whether its node is a style, so that is left unverified.
+        _ => true,
+    };
+    if !fits {
+        return Ok((unresolved("definition_kind_mismatch"), Some(gen_id)));
+    }
+    let mut out = json!({"state": "selected", "basis": "caller_ref",
+        "ref": {"sourceId": d.source_id, "snapshotId": d.snapshot_id, "nodeId": d.node_id},
+        "keyEvidence": "unverified"});
+    if req.kind == "style" {
+        out["kindEvidence"] = json!("unverified");
+    }
+    Ok((out, Some(gen_id)))
 }

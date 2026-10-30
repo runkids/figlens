@@ -741,19 +741,22 @@ pub fn usages_request(args: &[String]) -> Result<figlens::search::usages::Reques
     Ok(request)
 }
 
-/// CLI `--library KIND --namespace NS --key KEY` and its options, after the workspace selector.
+/// CLI `--library KIND [--namespace NS] --key KEY` and its options, after the workspace
+/// selector; `--definition-source/-snapshot/-node` select a definition, all three or none.
 pub fn library_request(
     args: &[String],
 ) -> Result<figlens::workspace::library::Request, Box<dyn Error>> {
     let mut request = figlens::workspace::library::Request {
         kind: String::new(),
-        namespace: String::new(),
+        namespace: None,
         key: String::new(),
+        definition: None,
         scope: "0:0".into(),
         include_hidden: false,
         limit: figlens::search::usages::DEFAULT_LIMIT,
         cursor: None,
     };
+    let mut definition: [Option<String>; 3] = Default::default();
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -765,7 +768,10 @@ pub fn library_request(
                 let value = rest.next().ok_or(format!("{arg} needs a value"))?;
                 match arg.as_str() {
                     "--library" => request.kind = value.clone(),
-                    "--namespace" => request.namespace = value.clone(),
+                    "--namespace" => request.namespace = Some(value.clone()),
+                    "--definition-source" => definition[0] = Some(value.clone()),
+                    "--definition-snapshot" => definition[1] = Some(value.clone()),
+                    "--definition-node" => definition[2] = Some(normalize_id(value)),
                     "--key" => request.key = value.clone(),
                     "--scope" => request.scope = normalize_id(value),
                     "--limit" => request.limit = value.parse().unwrap_or(0),
@@ -775,6 +781,22 @@ pub fn library_request(
             }
         }
     }
+    request.definition = match definition {
+        [None, None, None] => None,
+        [Some(source_id), Some(snapshot_id), Some(node_id)] => {
+            Some(figlens::workspace::library::DefinitionRef {
+                source_id,
+                snapshot_id,
+                node_id,
+            })
+        }
+        _ => {
+            return Err(
+                "--definition-source, --definition-snapshot and --definition-node go together"
+                    .into(),
+            );
+        }
+    };
     request.validate()?;
     Ok(request)
 }
@@ -783,11 +805,21 @@ pub fn library_request(
 pub fn library_tool(
     call: &crate::contract::PreparedCall,
 ) -> Result<figlens::workspace::library::Request, Box<dyn Error>> {
-    let field = |key: &str| call.argument("library")[key].as_str().unwrap().to_owned();
+    let library = call.argument("library");
+    let field = |v: &serde_json::Value, key: &str| v[key].as_str().map(str::to_owned);
+    let definition = &library["definition"];
     let request = figlens::workspace::library::Request {
-        kind: field("kind"),
-        namespace: field("namespace"),
-        key: field("key"),
+        kind: field(library, "kind").unwrap(),
+        namespace: field(library, "namespace"),
+        key: field(library, "key").unwrap(),
+        // The schema requires all three of a definition's fields.
+        definition: definition
+            .is_object()
+            .then(|| figlens::workspace::library::DefinitionRef {
+                source_id: field(definition, "sourceId").unwrap(),
+                snapshot_id: field(definition, "snapshotId").unwrap(),
+                node_id: normalize_id(&field(definition, "nodeId").unwrap()),
+            }),
         scope: normalize_id(call.string("scope").unwrap()),
         include_hidden: call.argument("includeHidden") == true,
         limit: call.argument("limit").as_u64().unwrap() as usize,

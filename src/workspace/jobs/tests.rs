@@ -1708,8 +1708,9 @@ fn uses(conn: &Connection, gen_id: i64, target: &str) {
 fn reference(key: &str, cursor: Option<&Json>) -> crate::workspace::library::Request {
     crate::workspace::library::Request {
         kind: "component".into(),
-        namespace: "ns".into(),
+        namespace: Some("ns".into()),
         key: key.into(),
+        definition: None,
         scope: "0:0".into(),
         include_hidden: false,
         limit: 1,
@@ -2049,4 +2050,182 @@ fn a_revoked_root_or_a_new_generation_ends_a_library_cursor() {
 
 fn kind_of_error(r: Result<Json>) -> ErrorKind {
     r.unwrap_err().downcast_ref::<FigError>().unwrap().kind()
+}
+
+/// Makes the first visible record of `gen_id` a component and returns its exact ref.
+fn component_ref(
+    conn: &Connection,
+    source: &str,
+    gen_id: i64,
+) -> crate::workspace::library::DefinitionRef {
+    let node_id: String = conn
+        .query_row(
+            "UPDATE records SET kind = 'COMPONENT' WHERE gen = ?1 AND rid = (SELECT min(rid)
+             FROM records WHERE gen = ?1 AND hidden = 0) RETURNING node_id",
+            [gen_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let snapshot_id = conn
+        .query_row(
+            "SELECT snapshot_id FROM generations WHERE gen = ?1",
+            [gen_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    crate::workspace::library::DefinitionRef {
+        source_id: source.into(),
+        snapshot_id,
+        node_id,
+    }
+}
+
+#[test]
+fn a_selected_definition_is_checked_on_its_exact_ref_and_never_resolved() {
+    use crate::workspace::library::{DefinitionRef, Request, library};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let def = component_ref(&conn, &srcs[1].1, srcs[1].2);
+    let ask = |storage: &Storage, source: Option<&str>, kind: &str, def: DefinitionRef| {
+        let req = Request {
+            kind: kind.into(),
+            definition: Some(def),
+            ..reference("k", None)
+        };
+        library(storage, &select, source, &req).unwrap()
+    };
+    let with = |f: fn(&mut DefinitionRef)| {
+        let mut d = def.clone();
+        f(&mut d);
+        d
+    };
+    let selected = ask(&storage, None, "component", def.clone());
+    assert_eq!(
+        selected["definition"],
+        json!({"state": "selected", "basis": "caller_ref", "keyEvidence": "unverified",
+            "ref": {"sourceId": def.source_id, "snapshotId": def.snapshot_id, "nodeId": def.node_id}})
+    );
+    // Narrowed to another source, the definition's own source is still checked.
+    let narrowed = ask(&storage, Some(&srcs[0].1), "component", def.clone());
+    assert_eq!(
+        (library_ids(&narrowed), &narrowed["definition"]["state"]),
+        (vec![srcs[0].1.clone()], &json!("selected"))
+    );
+    // Only the first file is under the caller's roots now: the second is neither named nor read.
+    let narrow = storage.clone().confined(std::slice::from_ref(&srcs[0].0));
+    let hidden = ask(&narrow, None, "component", def.clone());
+    let text = hidden.to_string();
+    assert!(!text.contains(&srcs[1].1) && !text.contains(srcs[1].0.to_str().unwrap()));
+    let reasons: Vec<Json> = [
+        ask(&storage, None, "variable", def.clone()),
+        ask(
+            &storage,
+            None,
+            "component",
+            with(|d| d.snapshot_id = "sha256:old".into()),
+        ),
+        ask(
+            &storage,
+            None,
+            "component",
+            with(|d| d.node_id = "9:9".into()),
+        ),
+        ask(
+            &storage,
+            None,
+            "component",
+            with(|d| d.source_id = "src_none".into()),
+        ),
+        hidden,
+    ]
+    .iter()
+    .map(|out| out["definition"].clone())
+    .collect();
+    let unresolved = |r: &str| json!({"state": "unresolved", "reason": r});
+    assert_eq!(
+        reasons,
+        [
+            unresolved("definition_kind_mismatch"),
+            unresolved("definition_snapshot_stale"),
+            unresolved("definition_not_found"),
+            unresolved("definition_not_found"),
+            unresolved("authorization_restricted"),
+        ]
+    );
+}
+
+#[test]
+fn a_key_only_library_question_lists_copies_naming_no_namespace_and_is_never_complete() {
+    use crate::workspace::library::{Request, library};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    uses(&conn, srcs[1].2, r#"["component",null,"k"]"#);
+    let key_only = Request {
+        namespace: None,
+        limit: 10,
+        ..reference("k", None)
+    };
+    let out = library(&storage, &select, None, &key_only).unwrap();
+    assert_eq!(
+        (
+            library_ids(&out),
+            &out["definition"],
+            &out["coverage"]["complete"],
+            &out["coverage"]["reasons"]
+        ),
+        (
+            vec![srcs[1].1.clone()],
+            &json!({"state": "unresolved", "reason": "namespace_required"}),
+            &json!(false),
+            &json!([{"code": "namespace_required"}])
+        )
+    );
+}
+
+#[test]
+fn a_cursor_ends_when_the_selected_definition_s_source_is_reindexed_or_collected() {
+    use crate::workspace::library::{Request, library};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    // Two uses in the first source, so its page of one has a cursor; the definition is the
+    // second source's, whose uses this narrowed question does not list.
+    uses(&conn, srcs[0].2, r#"["component","ns","k"]"#);
+    let def = component_ref(&conn, &srcs[1].1, srcs[1].2);
+    let ask = |cursor: Option<&Json>| Request {
+        definition: Some(def.clone()),
+        ..reference("k", cursor)
+    };
+    let first = library(&storage, &select, Some(&srcs[0].1), &ask(None)).unwrap();
+    let cursor = Some(&first["nextCursor"]);
+    assert!(
+        library(&storage, &select, Some(&srcs[0].1), &ask(cursor)).is_ok(),
+        "{first}"
+    );
+    // The definition's source is republished at a new generation with the same records.
+    conn.execute(
+        "INSERT INTO generations (source_id, membership, scope, snapshot_id, versions, job_id, state,
+         complete, records, info, created_ms) SELECT source_id, membership, scope, snapshot_id,
+         versions, job_id, state, complete, records, info, created_ms FROM generations WHERE gen = ?1",
+        [srcs[1].2],
+    )
+    .unwrap();
+    let new = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO records SELECT ?1, rid, node_id, name, kind, text, norm0, norm1, len0, len1,
+         parent, source, text_source, hidden, page, root FROM records WHERE gen = ?2",
+        params![new, srcs[1].2],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE published SET gen = ?1 WHERE source_id = ?2",
+        params![new, srcs[1].1],
+    )
+    .unwrap();
+    let again = || library(&storage, &select, Some(&srcs[0].1), &ask(cursor));
+    assert_eq!(kind_of_error(again()), ErrorKind::CursorStale);
+    for table in ["edges", "records", "generations"] {
+        conn.execute(&format!("DELETE FROM {table} WHERE gen = ?1"), [srcs[1].2])
+            .unwrap();
+    }
+    assert_eq!(kind_of_error(again()), ErrorKind::CursorExpired);
 }
