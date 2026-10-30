@@ -727,6 +727,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "subscriptions": {"type": "array", "items": {"type": "object"}, "description": "list: one page, as subscription"},
                 "next": {"type": ["string", "null"], "description": "list: pass as after for the next page"},
                 "removed": {"type": "integer", "description": "unsubscribe, forget: rows removed"},
+                "subscriptionIds": {"type": "array", "items": {"type": "string"}, "description": "unsubscribe: the removed subscriptions' ids"},
                 "keptUnknownOwnership": {"type": "integer", "description": "forget: views written before their sources were recorded, kept because this caller does not see every source"},
             }),
             ["workspaceId"].as_slice(),

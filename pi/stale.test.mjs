@@ -39,6 +39,21 @@ test('unsubscribe and forget end exactly the targets they end', () => {
   assert.deepEqual(targets.list, []);
 });
 
+test('an owner unsubscribe also ends a subscription this session acked by id alone', () => {
+  const acked = { workspaceId: ws, subscriptionId: 'a' };
+  const targets = new Targets([acked, { workspaceId: ws, subscriptionId: 'b' }, { workspaceId: ws, subscriptionId: 'a', storage: '/other' },
+    { workspaceId: ws, consumer: 'c' }]);
+  const unsubscribe = { action: 'unsubscribe', workspaceId: ws, consumer: 'c', owner: 'task' };
+  // A failed call, a reply that removed nothing and an unreadable reply end nothing.
+  assert.equal(targets.observe('figlens_watch', unsubscribe, reply({ workspaceId: ws, removed: 1, subscriptionIds: ['a'] }), true), false);
+  assert.equal(targets.observe('figlens_watch', unsubscribe, reply({ workspaceId: ws, removed: 0, subscriptionIds: [] })), false);
+  assert.equal(targets.observe('figlens_watch', unsubscribe, 'not json'), false);
+  assert.ok(targets.observe('figlens_watch', unsubscribe, reply({ workspaceId: ws, removed: 1, subscriptionIds: ['a'] })));
+  assert.deepEqual(targets.list, [{ workspaceId: ws, subscriptionId: 'b' }, { workspaceId: ws, subscriptionId: 'a', storage: '/other' },
+    { workspaceId: ws, consumer: 'c' }]);
+  assert.ok(new Targets([acked]).observe('figlens_watch', unsubscribe, JSON.stringify({ removed: 1, subscriptionIds: ['a'] })), 'a CLI reply string');
+});
+
 test('a session keeps at most KEPT targets, counts the rest and restores from its newest entry', () => {
   const targets = new Targets(Array.from({ length: KEPT + 2 }, (_, i) => ({ workspaceId: ws, consumer: `c${i}` })));
   assert.equal(targets.list.length, KEPT);

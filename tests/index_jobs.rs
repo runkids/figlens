@@ -3159,7 +3159,7 @@ fn full_checkpoints_are_refused_not_evicted_and_unsubscribe_and_forget_remove_on
     assert_eq!(
         (
             refused.contains("unsubscribe or forget"),
-            dropped["removed"].clone(),
+            json!([dropped["removed"], dropped["subscriptionIds"]]),
             forgotten["removed"].clone(),
             ids,
             gone.contains("no subscription"),
@@ -3167,7 +3167,7 @@ fn full_checkpoints_are_refused_not_evicted_and_unsubscribe_and_forget_remove_on
         ),
         (
             true,
-            json!(1),
+            json!([1, [temporary]]),
             json!(62),
             vec![json!(durable)],
             true,
@@ -3226,10 +3226,10 @@ fn one_consumer_never_shares_a_target_across_owners_and_an_owner_s_cleanup_stays
         (
             again["initialPosition"].clone(),
             String::from_utf8_lossy(&collision.stderr).contains("under another owner"),
-            dropped["removed"].clone(),
+            json!([dropped["removed"], dropped["subscriptionIds"]]),
             left,
         ),
-        (json!("existing"), true, json!(0), 2)
+        (json!("existing"), true, json!([0, []]), 2)
     );
 }
 
