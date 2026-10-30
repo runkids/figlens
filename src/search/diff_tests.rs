@@ -1045,6 +1045,67 @@ fn an_unread_field_alone_is_unknown_and_proves_no_facet_change() {
 }
 
 #[test]
+fn a_field_unread_on_either_side_is_listed_with_its_markers() {
+    let giant = "x".repeat(FIELD_BYTES + 1);
+    let one = |s: Option<&str>, fill_red: f64| {
+        let mut fields = vec![fill(fill_red)];
+        fields.extend(s.map(text));
+        doc(vec![node(10, Some(1), "TEXT", "T", fields)])
+    };
+    let listed = |a: K<'static>, b: K<'static>| {
+        let out = run(a, b);
+        let n = &out["frames"][0]["nodes"][0];
+        (n["change"].clone(), n["fields"]["textData"].clone())
+    };
+    let marker = |old: Json, new: Json| json!({"facet": "text", "old": old, "new": new});
+    let (unread, absent) = (json!({"unread": true}), json!({"present": false}));
+    let small = json!({"value": {"characters": "small"}});
+    let cases = [
+        (
+            Some(&*giant),
+            Some(&*giant),
+            "unknown",
+            marker(unread.clone(), unread.clone()),
+        ),
+        (
+            Some(&*giant),
+            Some("small"),
+            "unknown",
+            marker(unread.clone(), small.clone()),
+        ),
+        (
+            Some("small"),
+            Some(&*giant),
+            "unknown",
+            marker(small, unread.clone()),
+        ),
+        (
+            None,
+            Some(&*giant),
+            "changed",
+            marker(absent, unread.clone()),
+        ),
+    ];
+    for (i, (old, new, change, field)) in cases.into_iter().enumerate() {
+        assert_eq!(
+            listed(one(old, 1.0), one(new, 1.0)),
+            (json!(change), field),
+            "case {i}"
+        );
+    }
+    // Beside a proven change, the field unread on both sides is still listed.
+    let both = run(one(Some(&giant), 1.0), one(Some(&giant), 0.0));
+    let fields = &both["frames"][0]["nodes"][0]["fields"];
+    assert_eq!(
+        (
+            fields["textData"].clone(),
+            fields["fillPaints"]["facet"].clone()
+        ),
+        (marker(unread.clone(), unread), json!("appearance"))
+    );
+}
+
+#[test]
 fn emitted_metadata_scopes_code_syntax_and_prototype_settings_are_properties() {
     let one = |key: &'static str, v: &str| {
         doc(vec![node(

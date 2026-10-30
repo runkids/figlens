@@ -1330,8 +1330,8 @@ const FIELD_ENVELOPE: usize = 96;
 /// and a swap marker.
 const EDGE_ENVELOPE: usize = 96;
 
-/// Changed fields with old and new values, within `left` page value bytes; `None` when even
-/// their keys and markers do not fit.
+/// Changed or unread fields with old and new values, within `left` page value bytes; `None`
+/// when even their keys and markers do not fit.
 fn fields(pair: &Pair, c: &Change, left: &mut usize) -> Option<Json> {
     let (Some(o), Some(n)) = (c.old, c.new) else {
         return Some(Json::Null);
@@ -1347,7 +1347,11 @@ fn fields(pair: &Pair, c: &Change, left: &mut usize) -> Option<Json> {
             let x = a.iter().find(|f| f.key == *key);
             (key, x, b.iter().find(|f| f.key == *key))
         })
-        .filter(|(_, x, y)| x.map(|f| f.digest) != y.map(|f| f.digest))
+        // Two unread digests are not equal values: a field unread on either side is listed.
+        .filter(|(_, x, y)| {
+            x.map(|f| f.digest) != y.map(|f| f.digest)
+                || [x, y].iter().any(|f| f.is_some_and(|f| f.digest.is_none()))
+        })
         .collect();
     let envelope: usize = differing
         .iter()
