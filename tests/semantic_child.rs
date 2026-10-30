@@ -31,12 +31,15 @@ fn child(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", json!({"protocol": semantic::PROTOCOL, "dim": DIM}));
         std::thread::sleep(Duration::from_secs(3600));
     }
-    // A vision child: one vector per image; `image-hang` never answers, `image-nan` and
-    // `image-dim` answer like `nan` and `dim`.
+    // A vision child: one vector per image; `image-hang` never answers, `image-fail` reports a
+    // model error, and `image-nan` and `image-dim` answer like `nan` and `dim`.
     if mode.starts_with("image") {
         return semantic::serve_images(&hello(), |images| {
             if mode == "image-hang" {
                 std::thread::sleep(Duration::from_secs(3600));
+            }
+            if mode == "image-fail" {
+                return Err("the model failed".into());
             }
             Ok(images
                 .iter()
@@ -209,6 +212,15 @@ fn runtime_refuses_non_finite_or_wrong_dimension_image_vectors() {
     }
 }
 
+/// A model error is transient, not a refusal of the input: the child keeps serving.
+fn an_image_model_failure_is_not_a_refusal() {
+    let mut rt = start("image-fail");
+    let got = rt.embed_images(&[image(4)], &AtomicBool::new(false));
+    assert!(matches!(got, Err(Stop::Failed(_))), "{got:?}");
+    assert!(rt.alive());
+    rt.stop();
+}
+
 fn a_text_child_refuses_images_and_keeps_serving() {
     let mut rt = start("ok");
     let no = AtomicBool::new(false);
@@ -308,7 +320,17 @@ fn a_pinned_siglip_child_matches_the_in_process_model() {
         (768, Some("image"))
     );
     let images = [image(0), image(200)];
+    // A cold start (re-hash the pinned files, start the child, load the model) is what each
+    // switch between a text and an image profile costs in the one warm slot.
+    let begun = Instant::now();
     let child = profile::with_runtime(&p, &no, |rt| rt.embed_images(&images, &no)).unwrap();
+    let cold = begun.elapsed();
+    let begun = Instant::now();
+    profile::with_runtime(&p, &no, |rt| rt.embed_images(&images, &no)).unwrap();
+    println!(
+        "siglip cold start + 2 images {cold:?}; warm 2 images {:?}",
+        begun.elapsed()
+    );
     let direct = figlens::search::visual::model::Model::load(&dir)
         .unwrap()
         .embed(&images)
@@ -1345,6 +1367,10 @@ fn main() {
         (
             "cancel_kills_a_hung_vision_child",
             cancel_kills_a_hung_vision_child,
+        ),
+        (
+            "an_image_model_failure_is_not_a_refusal",
+            an_image_model_failure_is_not_a_refusal,
         ),
         (
             "runtime_refuses_non_finite_or_wrong_dimension_image_vectors",
