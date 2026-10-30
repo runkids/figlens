@@ -97,6 +97,62 @@ await check('packaged descriptor, bridge handshake and absolute design path', as
       searchRef: searched.structuredContent.results[0].ref, diffedTwoCopies: diffed.structuredContent.source };
   } finally { await disconnectServer(connection); }
 });
+await check('first use through the packaged bridge: prepare, poll, search the published index, inspect, with native write approval', async () => {
+  await load('discovery/omp-plugins.ts');
+  const { loadCapability } = await load('capability/index.ts');
+  const discovered = await loadCapability('mcps', { cwd: project, agentDir: process.env.PI_CODING_AGENT_DIR, providers: ['omp-plugins'],
+    extensionRoots: { explicit: [path.resolve(packageInput)], configured: [], configuredLevel: 'project', mode: 'explicit-only' } });
+  const { connectToServer, listTools, callTool, disconnectServer } = await load('mcp/client.ts');
+  const { MCPTool } = await load('mcp/tool-bridge.ts');
+  const { resolveApproval } = await load('tools/approval.ts');
+  const state = path.join(output, 'state');
+  const saved = { XDG_STATE_HOME: process.env.XDG_STATE_HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
+  process.env.XDG_STATE_HOME = state;
+  process.env.XDG_CONFIG_HOME = path.join(output, 'config');
+  const connection = await connectToServer('figlens', discovered.items.find(item => item.name === 'figlens'));
+  try {
+    const listed = await listTools(connection);
+    const file = path.join(project, 'mapping.fig');
+    const content = async (name, args) => {
+      const reply = await callTool(connection, name, args);
+      assert.equal(reply.isError, false, JSON.stringify(reply).slice(0, 2000));
+      return reply.structuredContent;
+    };
+    await content('search', { file, query: 'Mapping review' });
+    await assert.rejects(readdir(path.join(state, 'figlens')), { code: 'ENOENT' }, 'connecting, listing and stateless search created figlens state');
+    const prepared = await content('index', { action: 'prepare', file, scope: '0:0' });
+    let job = prepared.job, polls = 0;
+    for (const deadline = Date.now() + 30000; !['succeeded', 'failed', 'cancelled', 'interrupted'].includes(job.state) && Date.now() < deadline; polls++) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      job = await content('jobs', { action: 'status', jobId: job.jobId });
+    }
+    assert.equal(job.state, 'succeeded', JSON.stringify(job));
+    const found = await content('search', { workspaceId: prepared.workspaceId, query: 'Mapping review' });
+    assert.deepEqual(found.sources.map(source => source.state), ['ready']);
+    const inspected = await content('inspect', { file, node: found.results[0].ref.nodeId });
+    assert.equal(inspected.node.id, '0:1');
+    const used = await content('usages', { workspaceId: prepared.workspaceId, node: '0:10' });
+    assert.deepEqual(used.results.map(item => `${item.relation} ${item.ref.nodeId}`), ['instance_of 0:2', 'instance_of 0:3']);
+    // OMP approves every MCP tool at the write tier and shows the call's arguments; it has no per-action rule.
+    const index = MCPTool.fromTools(connection, listed).find(tool => tool.mcpToolName === 'index');
+    const reset = { action: 'reset', file };
+    const decide = (mode, policy) => resolveApproval(index, reset, mode, policy).policy;
+    const decisions = { alwaysAsk: decide('always-ask'), userDeny: decide('yolo', { [index.name]: 'deny' }), yolo: decide('yolo') };
+    assert.equal(index.approval, 'write');
+    const usages = MCPTool.fromTools(connection, listed).find(tool => tool.mcpToolName === 'usages');
+    assert.equal(usages.approval, 'write');
+    assert.equal(decisions.alwaysAsk, 'prompt');
+    assert.equal(decisions.userDeny, 'deny');
+    // The README states this: OMP's default yolo mode runs reset without asking.
+    assert.equal(decisions.yolo, 'allow');
+    assert.match(index.formatApprovalDetails(reset).join('\n'), /reset/);
+    return { workspaceId: prepared.workspaceId, dispatched: prepared.job.state, job: job.state, polls, ref: found.results[0].ref,
+      inspected: inspected.node.id, usedBy: used.results.map(item => item.ref.nodeId), approvalTier: index.approval, usagesTier: usages.approval, resetDecisions: decisions };
+  } finally {
+    await disconnectServer(connection);
+    for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : process.env[name] = value;
+  }
+});
 await check('native disabled and remote overrides retain priority over the package descriptor', async () => {
   await load('discovery/builtin.ts');
   const { loadCapability, invalidate } = await load('capability/index.ts');

@@ -15,6 +15,7 @@ const HELP = [
   "",
   "Ask OMP directly: **\"Build the List views screen from ./design.fig using this project's components.\"**",
   "OMP can find and read the design through MCP. No open command or node ID is needed.",
+  "Asking OMP to find copy or a screen searches the .fig directly and stores nothing. For repeated searches, ask it to enable an index for a design and scope: it prepares a local index once (no setup command), reports the job until ready, then reuses it across restarts and hosts. Resetting that index needs your explicit request. Asking where a component, variable, style or image is used lists its exact usages the same way: from the .fig directly, or from that index once enabled.",
   "",
   "Optional shortcuts:",
   "- `/figlens open [description]` — tell OMP what you know: a file, screen name, purpose or visible text. OMP finds it or asks a recognizable follow-up.",

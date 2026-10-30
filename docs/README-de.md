@@ -103,6 +103,8 @@ Installationsanleitungen: [OpenCode V2](../opencode/README.md) · [OMP](../omp/R
 
 Starte Pi neu oder führe `/reload` aus und bitte dann in normalen Worten um einen Bildschirm. Pi findet den Frame, liest ihn über den automatisch registrierten MCP-Server und baut mit deinem Stack. Keine Node-IDs, keine globale CLI.
 
+Eine Frage nach Text oder einem Screen durchsucht die `.fig` direkt und speichert nichts. Für wiederholte Suchen bitte Pi, für ein Design und einen Bereich einen Index zu aktivieren: Es bereitet einmal einen lokalen Index vor (ohne Setup-Befehl), meldet den Job, bis er fertig ist, und nutzt ihn nach Neustarts und in anderen Hosts weiter. Den Index zurückzusetzen erfordert deine ausdrückliche Anweisung. Die Frage, wo eine Komponente, Variable, ein Style oder Bild verwendet wird, listet die exakten Usages auf dieselbe Weise: direkt aus der `.fig` oder, sobald aktiviert, aus diesem Index. Details: [lokaler Index](#local-index).
+
 - `/figlens plan <request>` erstellt nur einen Plan und ändert die Anwendung nicht.
 - `/figlens yolo <request>` plant, baut, prüft und räumt den eigenen temporären Plan auf.
 - `/figlens preview [description]` öffnet den lokalen Viewer.
@@ -196,7 +198,7 @@ Lebenszyklus: `refresh` baut nur Bereiche neu, deren `.fig`-Bytes sich geändert
 
 Daten: Die SQLite-Datenbank enthält registrierte lokale Pfade, Layer-Namen und effektiven Text der gewählten Bereiche, Such-Postings, exakte Beziehungen (Verschachtelung, Instanzen, Varianten, Variablen-/Style-/Bild-Bindungen, Prototyp-Ziele) und die Definitionen, auf die sie zeigen, Hashes, Generationen und Jobs. Die ursprüngliche `.fig` bleibt unverändert, wo sie ist; ihre Rohbytes werden nicht in der Datenbank gespeichert.
 
-Pi, OpenCode und OMP nutzen denselben Index über ihren eigenen Opt-in-Einstieg; der Workspace wird über Neustarts und Hosts hinweg wiederverwendet. Nicht implementiert: Dateiüberwachung, Usages-Tools in Pi, OpenCode und OMP, Vektoren, Events und Subscriptions.
+Pi, OpenCode und OMP nutzen denselben Index über ihren eigenen Opt-in-Einstieg; der Workspace wird über Neustarts und Hosts hinweg wiederverwendet. Nicht implementiert: Dateiüberwachung, Vektoren, Events und Subscriptions.
 
 <a id="commands"></a>
 
