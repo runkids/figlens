@@ -2016,7 +2016,12 @@ fn stored(conn: &rusqlite::Connection, gen_id: i64, source: Json) -> Result<Side
     // `[origin, inherited]`.
     let (origin, inherited) = match serde_json::from_str::<Json>(&origin)? {
         Json::Array(mut a) if a.len() == 2 => {
-            let n = a[1].as_u64().ok_or_else(bad)? as usize;
+            // At most every step of the walk and one more.
+            let n = a[1]
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .filter(|n| *n <= DEPTH + 1)
+                .ok_or_else(bad)?;
             (a.swap_remove(0), n)
         }
         _ => return Err(bad()),

@@ -2173,6 +2173,14 @@ fn tampered_or_other_layout_facets_are_refused_not_compared() {
     conn.execute("UPDATE facet_sets SET facet_version = 'diff-v0:0'", [])
         .unwrap();
     assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
+    // An inherited-mode count past the walk's bound is refused, not added.
+    let conn = saved(&[&tree], "0:0");
+    conn.execute(
+        "UPDATE facet_sets SET origin = '[null, 18446744073709551615]'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
 }
 
 #[test]
