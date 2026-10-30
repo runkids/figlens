@@ -1,7 +1,7 @@
 // Real OMP loader, runner and approval wrapper; scripted dialog answers, no model.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { copyFile, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -227,6 +227,66 @@ await check('first use through the packaged bridge: prepare, poll, search the pu
       inspected: inspected.node.id, usedBy: used.results.map(item => item.ref.nodeId), approvalTier: index.approval, usagesTier: usages.approval, trackedBaselineAcked: true, watchLeaseOnDisconnect: disconnectEnded, resetDecisions: decisions };
   } finally {
     if (connected) await disconnectServer(connection);
+    for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : process.env[name] = value;
+  }
+});
+await check('directory registration through the packaged bridge: prepare one design, then add the directory page by page, under write approval', async () => {
+  await load('discovery/omp-plugins.ts');
+  const { loadCapability } = await load('capability/index.ts');
+  const discovered = await loadCapability('mcps', { cwd: project, agentDir: process.env.PI_CODING_AGENT_DIR, providers: ['omp-plugins'],
+    extensionRoots: { explicit: [path.resolve(packageInput)], configured: [], configuredLevel: 'project', mode: 'explicit-only' } });
+  const { connectToServer, listTools, callTool, disconnectServer } = await load('mcp/client.ts');
+  const { MCPTool } = await load('mcp/tool-bridge.ts');
+  const { resolveApproval } = await load('tools/approval.ts');
+  // One page more than an add registers, so its nextCursor is followed once.
+  const designs = path.join(project, 'designs');
+  await mkdir(designs);
+  const files = Array.from({ length: 11 }, (_, n) => path.join(designs, `d${String(n + 1).padStart(2, '0')}.fig`));
+  for (const file of files) await copyFile(path.join(project, 'mapping.fig'), file);
+  const saved = { XDG_STATE_HOME: process.env.XDG_STATE_HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
+  process.env.XDG_STATE_HOME = path.join(output, 'directory-state');
+  process.env.XDG_CONFIG_HOME = path.join(output, 'directory-config');
+  const connection = await connectToServer('figlens', discovered.items.find(item => item.name === 'figlens'));
+  try {
+    const listed = await listTools(connection);
+    const content = async (name, args) => {
+      const reply = await callTool(connection, name, args);
+      assert.equal(reply.isError, false, JSON.stringify(reply).slice(0, 2000));
+      return reply.structuredContent;
+    };
+    const prepared = await content('index', { action: 'prepare', workspace: project, file: files[0], scope: '0:0' });
+    let job = prepared.job;
+    for (const deadline = Date.now() + 30000; !['succeeded', 'failed', 'cancelled', 'interrupted'].includes(job.state) && Date.now() < deadline;) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      job = await content('jobs', { action: 'status', jobId: job.jobId });
+    }
+    assert.equal(job.state, 'succeeded', JSON.stringify(job));
+    const pages = [];
+    let cursor = null;
+    do {
+      const add = { action: 'add', workspaceId: prepared.workspaceId, file: designs, ...(cursor ? { cursor } : {}) };
+      pages.push((await content('index', add)).directory);
+      cursor = pages.at(-1).nextCursor;
+    } while (cursor && pages.length < 3);
+    const status = await content('index', { action: 'status', workspaceId: prepared.workspaceId });
+    const canonical = await Promise.all(files.map(file => realpath(file)));
+    const listedSources = pages.flatMap(page => [...page.existing, ...page.added]);
+    assert.equal(cursor, null, JSON.stringify(pages));
+    assert.deepEqual(pages.map(page => page.existing.length + page.added.length), [10, 1], JSON.stringify(pages));
+    // The prepared design is found registered with its id, never added twice.
+    assert.deepEqual(pages[0].existing.map(source => source.sourceId), [prepared.job.sourceId]);
+    assert.deepEqual(listedSources.map(source => source.path), canonical);
+    const pairs = sources => sources.map(source => `${source.sourceId} ${source.path}`).sort();
+    assert.deepEqual(pairs(status.sources), pairs(listedSources));
+    // The add is an index call at OMP's write tier: always-ask prompts with the directory shown, and the default yolo runs it, as it runs reset.
+    const index = MCPTool.fromTools(connection, listed).find(tool => tool.mcpToolName === 'index');
+    const add = { action: 'add', workspaceId: prepared.workspaceId, file: designs };
+    assert.equal(resolveApproval(index, add, 'always-ask').policy, 'prompt');
+    assert.equal(resolveApproval(index, add, 'yolo').policy, 'allow');
+    assert.ok(index.formatApprovalDetails(add).join('\n').includes(designs));
+    return { workspaceId: prepared.workspaceId, pages: pages.map(page => page.added.length), sources: status.sources.length, approval: index.approval };
+  } finally {
+    await disconnectServer(connection);
     for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : process.env[name] = value;
   }
 });

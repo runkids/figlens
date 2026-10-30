@@ -193,6 +193,51 @@ def check_library(command, base, mapping, env):
     return {'named': stateless, 'usedBy': [n for _, n in refs], 'sources': len(sources)}
 
 
+DIRECTORY_FILES = 11  # one page more than an add registers, so the cursor is followed once
+
+
+def check_directory(command, base, fixture, env):
+    """From clean roots, an agent prepares one design of a project, then registers the project's
+    design directory through the same `index` tool, following nextCursor until none is left; the
+    replies' sources are exactly the registered ones, at their canonical paths."""
+    base.mkdir()
+    env = user_roots(base, env)
+    designs = base/'project/designs'
+    designs.mkdir(parents=True)
+    files = [designs/f'd{n:02}.fig' for n in range(1, DIRECTORY_FILES + 1)]
+    for path in files:
+        shutil.copy2(fixture, path)
+    with session(command, base, env) as request:
+        request('initialize', {'protocolVersion': '2025-06-18', 'capabilities': {}, 'clientInfo': {'name': 'figlens-directory', 'version': '1'}})
+        def call(name, arguments):
+            reply = request('tools/call', {'name': name, 'arguments': arguments})
+            assert reply['isError'] is False, reply
+            return reply['structuredContent']
+        prepared = call('index', {'action': 'prepare', 'workspace': str(base/'project'), 'file': str(files[0]), 'scope': '0:0'})
+        workspace, job = prepared['workspaceId'], prepared['job']
+        deadline = time.monotonic() + 60
+        while job['state'] not in TERMINAL and time.monotonic() < deadline:
+            time.sleep(0.05)
+            job = call('jobs', {'action': 'status', 'jobId': job['jobId']})
+        assert job['state'] == 'succeeded', job
+        pages, cursor = [], None
+        while len(pages) < 3:
+            add = {'action': 'add', 'workspaceId': workspace, 'file': str(designs)}
+            pages.append(call('index', dict(add, cursor=cursor) if cursor else add)['directory'])
+            cursor = pages[-1]['nextCursor']
+            if cursor is None:
+                break
+        status = call('index', {'action': 'status', 'workspaceId': workspace})
+    listed = [s for page in pages for s in page['existing'] + page['added']]
+    assert cursor is None and [len(p['existing'] + p['added']) for p in pages] == [10, 1], pages
+    # The prepared design is found registered with its id, never added twice.
+    assert [s['sourceId'] for s in pages[0]['existing']] == [prepared['job']['sourceId']], pages[0]
+    # samefile, since Windows reports canonical paths with a \\?\ prefix realpath leaves off.
+    assert len(listed) == len(files) and all(os.path.samefile(s['path'], f) for s, f in zip(listed, files)), listed
+    assert sorted((s['sourceId'], s['path']) for s in status['sources']) == sorted((s['sourceId'], s['path']) for s in listed), status
+    return {'workspaceId': workspace, 'pages': [len(p['added']) for p in pages], 'sources': len(status['sources'])}
+
+
 def check_first_use(command, base, fixture, env):
     """First use from a clean per-user state through a real MCP command, as an agent host runs it:
     prepare, poll, search the published index, inspect, a watch lease its input end releases, then
