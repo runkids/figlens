@@ -119,7 +119,7 @@ elif os.name == 'nt':
                 path, size = ctypes.create_unicode_buffer(32768), wintypes.DWORD(32768)
                 times, io = (ctypes.c_uint64 * 4)(), (ctypes.c_uint64 * 6)()
                 if (kernel32.QueryFullProcessImageNameW(handle, 0, path, ctypes.byref(size))
-                        and os.path.normcase(path.value) == os.path.normcase(exe)
+                        and os.path.samefile(path.value, exe)  # TEMP may hold an 8.3 short name
                         and kernel32.GetProcessTimes(handle, *[ctypes.byref(times, 8 * i) for i in range(4)])
                         and kernel32.GetProcessIoCounters(handle, io)):
                     rss, peak = search.windows_memory(handle.value)
@@ -266,6 +266,20 @@ class Tree:
         return {'treePeakSampledBytes': self.peak, 'samples': self.samples,
                 'largestProcessPeakBytes': max((r['peak'] for r in self.procs.values()), default=None),
                 'limited': 'tree' if pids is None else 'process', 'peakRss': within(peak, LIMITS[limit])}
+
+
+def visible(exe, binary):
+    """Fail fast unless the process table sees a running candidate; otherwise every RSS, idle and
+    role figure would silently read zero."""
+    probe = subprocess.Popen([binary, 'mcp'], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        start = time.monotonic()
+        while probe.pid not in table(exe):
+            assert time.monotonic() - start < 10, 'the process table does not see the candidate'
+            time.sleep(0.05)
+    finally:
+        probe.stdin.close()
+        probe.wait(timeout=30)
 
 
 def gone(pid):
@@ -612,6 +626,7 @@ def main():
     # A runner that outlived its attempt may still hold files on Windows; the report matters more.
     with tempfile.TemporaryDirectory(prefix='figlens-native-', ignore_cleanup_errors=True) as temp:
         binary, provenance = candidate(args.artifacts.resolve(), Path(temp))
+        visible(os.path.realpath(binary), binary)
         assert provenance['commit'] == args.commit, 'candidate is from another commit'
         with Tree(os.path.realpath(binary)) as tree:
             # Cold stateless CLI and warm MCP search/usages of the area scope, stateless and workspace.
