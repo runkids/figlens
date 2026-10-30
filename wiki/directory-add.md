@@ -37,7 +37,7 @@ Past the 4096-entry budget, the entries read follow the OS's order, so the pages
 
 ## Hosts
 
-MCP replies `directory {path, added, existing, skipped, notFig, truncated, nextCursor}` under the index output schema and takes `cursor` for `add` only. Pi and OMP call that MCP tool and need no code. The OpenCode CLI path asks `read` on the directory, then on every file `--dry-run` lists, before the status and `edit` asks of any add, which carries the dry run's `--manifest`; a `cursor` goes to both, so each page is asked on its own; see [integrations](integrations.md).
+MCP replies `directory {path, added, existing, skipped, notFig, truncated, nextCursor}` under the index output schema and takes `cursor` for `add` only. Pi and OMP call that MCP tool and need no code. The OpenCode CLI path detects the directory on the unnormalized path the binary reads (a `..` after a link goes where the link leads), asks `read` on it, then on every file `--dry-run` lists, before the status and `edit` asks of any add, which carries the dry run's `--manifest`; a `cursor` goes to both, so each page is asked on its own; see [integrations](integrations.md).
 
 ## Tests
 

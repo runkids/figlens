@@ -428,6 +428,7 @@ dependencies = [
  "imagesize",
  "jpeg-encoder",
  "kiwi-schema",
+ "libc",
  "ravif",
  "rayon",
  "resvg",

@@ -80,10 +80,20 @@ export class Targets {
     const action = input.action ?? 'ack';
     const storage = text(input.storage);
     const here = t => t.workspaceId === input.workspaceId && t.storage === storage;
+    const reply = () => {
+      const body = typeof content === 'string' ? content : content?.find?.(part => part.type === 'text')?.text;
+      try { return JSON.parse(body ?? 'null'); } catch { return null; }
+    };
     let ends;
-    if (action === 'unsubscribe') ends = input.subscriptionId
-      ? t => t.subscriptionId === input.subscriptionId
-      : t => t.subscriptionId && t.consumer === input.consumer && t.owner === input.owner;
+    if (action === 'unsubscribe' && input.subscriptionId) ends = t => t.subscriptionId === input.subscriptionId;
+    else if (action === 'unsubscribe') {
+      // The reply's removed ids end exactly those, including one an ack recorded by id alone, and nothing a hidden
+      // source kept; only a reply without them falls back to the subscribed consumer and owner.
+      const ids = reply()?.subscriptionIds;
+      const removed = new Set(Array.isArray(ids) ? ids.filter(text) : []);
+      ends = Array.isArray(ids) ? t => removed.has(t.subscriptionId)
+        : t => t.subscriptionId && t.consumer === input.consumer && t.owner === input.owner;
+    }
     // forget without a source or scope removes every view of that consumer, as the binary does.
     if (action === 'forget') ends = t => !t.subscriptionId && t.consumer === input.consumer
       && (!text(input.sourceId) || t.sourceId === input.sourceId) && (!text(input.scope) || t.scope === input.scope);
@@ -95,9 +105,7 @@ export class Targets {
     if (action !== 'subscribe' && action !== 'ack') return false;
     let subscriptionId = text(input.subscriptionId);
     if (action === 'subscribe') {
-      const reply = typeof content === 'string' ? content : content?.find?.(part => part.type === 'text')?.text;
-      try { subscriptionId = text(JSON.parse(reply ?? 'null')?.subscription?.subscriptionId); }
-      catch { subscriptionId = undefined; }
+      subscriptionId = text(reply()?.subscription?.subscriptionId);
       // A subscribe whose reply names no subscription records nothing rather than a broader consumer view.
       if (!subscriptionId) return false;
     }

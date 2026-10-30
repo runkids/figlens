@@ -35,7 +35,8 @@ const BACKOFF: Duration = Duration::from_secs(5);
 pub(crate) enum Probe<S> {
     Stamp(S),
     Missing,
-    /// Locked or access denied: transient until `UNREADABLE`.
+    /// Locked or access denied, or now leading elsewhere through a link (never followed):
+    /// transient until `UNREADABLE`.
     Busy,
 }
 
@@ -1738,6 +1739,8 @@ pub fn serve(storage: &Storage, ws_id: &str) -> Result<()> {
                         continue;
                     }
                     let probe = match crate::search::stamp(&w.path) {
+                        // A link swapped in for the authorized path is never followed.
+                        Ok(_) if !super::storage::leads_to_itself(&w.path) => Probe::Busy,
                         Ok(stamp) => Probe::Stamp(stamp),
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Probe::Missing,
                         Err(_) => Probe::Busy,

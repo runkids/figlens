@@ -1312,6 +1312,57 @@ fn mcp_adds_a_gs_object_without_roots_and_refuses_it_under_roots_before_gcloud()
     assert_eq!(other["isError"], true, "{other}");
 }
 
+#[cfg(unix)]
+#[test]
+fn a_queued_refresh_never_reads_a_registered_path_replaced_by_a_link_meanwhile() {
+    let env = Env::new();
+    let dir = env.dir.join("project");
+    std::fs::create_dir(&dir).unwrap();
+    let dir = std::fs::canonicalize(dir).unwrap();
+    let fig = dir.join("a.fig");
+    std::fs::copy("examples/first-success/design.fig", &fig).unwrap();
+    let prepared = env.json(&["index", "prepare", fig.to_str().unwrap(), "--scope", "0:0"]);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    env.json(&["index", "track", "--id", ws, "--scope", "0:0"]);
+    // The refresh is admitted, then the file is swapped for a link to other bytes before its
+    // worker reads.
+    let gate = env.dir.join("start.hold");
+    std::fs::write(&gate, "").unwrap();
+    let refresh = env
+        .command(
+            &["index", "refresh", "--id", ws, "--scope", "0:0"],
+            Some(("start", &gate)),
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for("the worker to start", || {
+        env.dir.join("start.hold.reached").exists()
+    });
+    let other = env.dir.join("other.fig");
+    corpus::write(other.as_os_str(), true).unwrap();
+    let other = std::fs::canonicalize(other).unwrap();
+    let link = dir.join("link.tmp");
+    std::os::unix::fs::symlink(&other, &link).unwrap();
+    std::fs::rename(&link, &fig).unwrap();
+    std::fs::remove_file(&gate).unwrap();
+    let out = refresh.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !out.status.success() && stdout.contains("now leads elsewhere through a link"),
+        "{stdout}"
+    );
+    let changes = env.json(&["changes", "--id", ws, "--scope", "0:0"]);
+    let kinds: Vec<_> = changes["revisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["kind"].clone())
+        .collect();
+    assert_eq!(kinds, [json!("baseline")]);
+}
+
 #[test]
 fn an_unusable_workspace_lists_stateless_search_of_the_named_file() {
     let env = Env::new();
@@ -3957,7 +4008,7 @@ fn full_checkpoints_are_refused_not_evicted_and_unsubscribe_and_forget_remove_on
     assert_eq!(
         (
             refused.contains("unsubscribe or forget"),
-            dropped["removed"].clone(),
+            json!([dropped["removed"], dropped["subscriptionIds"]]),
             forgotten["removed"].clone(),
             ids,
             gone.contains("no subscription"),
@@ -3965,7 +4016,7 @@ fn full_checkpoints_are_refused_not_evicted_and_unsubscribe_and_forget_remove_on
         ),
         (
             true,
-            json!(1),
+            json!([1, [temporary]]),
             json!(62),
             vec![json!(durable)],
             true,
@@ -4024,10 +4075,10 @@ fn one_consumer_never_shares_a_target_across_owners_and_an_owner_s_cleanup_stays
         (
             again["initialPosition"].clone(),
             String::from_utf8_lossy(&collision.stderr).contains("under another owner"),
-            dropped["removed"].clone(),
+            json!([dropped["removed"], dropped["subscriptionIds"]]),
             left,
         ),
-        (json!("existing"), true, json!(0), 2)
+        (json!("existing"), true, json!([0, []]), 2)
     );
 }
 
@@ -5467,6 +5518,31 @@ fn cli_subscribe_refuses_library_flags_without_library() {
             .iter()
             .all(|e| e.contains("applies only with --library")),
         "{refused:?}"
+    );
+}
+
+#[test]
+fn an_owner_unsubscribe_removes_its_source_set_subscription_and_names_it() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let set = t.watch(
+        "subscribe",
+        &[
+            "--consumer",
+            "bot",
+            "--sources",
+            "visible",
+            "--query",
+            "badge",
+            "--owner",
+            "task",
+        ],
+    )["subscription"]["subscriptionId"]
+        .clone();
+    let dropped = t.watch("unsubscribe", &["--consumer", "bot", "--owner", "task"]);
+    assert_eq!(
+        json!([dropped["removed"], dropped["subscriptionIds"]]),
+        json!([1, [set]])
     );
 }
 
