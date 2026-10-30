@@ -38,7 +38,7 @@ The portable skill routes explicit plans and careful reconstruction to that refe
 
 ## Packaging and verification
 
-Cross-host package boundaries, shared staging and installed-adapter rules live in [integrations](integrations.md). Pi retains its own SDK, TUI and runtime MCP registration; the private root supports source discovery. Edit maintained sources, never generated `npm/` copies.
+Cross-host package boundaries, shared staging and installed-adapter rules live in [integrations](integrations.md), and their installed lanes in [host acceptance](host-acceptance.md). Pi retains its own SDK, TUI and runtime MCP registration; the private root supports source discovery. Edit maintained sources, never generated `npm/` copies.
 
 In the published package the extension invokes its adjacent `bin/figlens.js` through the current Node executable. This keeps the native binary version aligned and needs no PATH/global install. Source checkouts use `figlens` on PATH, or `FIGLENS_BIN`. MCP and slash commands use the same launcher. The existing publish workflow and npm Trusted Publisher release the CLI and extension together; no new npm package or credentials are required.
 

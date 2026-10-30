@@ -151,3 +151,36 @@ test('a requestId replay shares its start: one child, a changed watch refused, a
   await assert.rejects(holder.start(['--id', 'ws_1', '--scope', '0:1', '--request-id', 'r']), /names a different watch/);
   assert.deepEqual([spawned, leases, holder.leases], [1, [active, active], ['l1']]);
 });
+
+test('starts past the limit fail without spawning, and a confirmed exit frees a place', async () => {
+  let spawned = 0;
+  const holder = createHolder(() => { const leaseId = `l${++spawned}`; return child({
+    start: c => c.say({ ...active, leaseId }),
+    onStdinEnd: c => c.exit(0),
+  }); }, { limit: 2 });
+  const results = await Promise.allSettled([holder.start([]), holder.start([]), holder.start([])]);
+  const refused = results.filter(result => result.status === 'rejected').map(result => result.reason.message);
+  await holder.stop('l1');
+  await holder.start([]);
+  assert.deepEqual([refused.length, /already holds or is starting 2/.test(refused[0]), spawned], [1, true, 3]);
+});
+
+test('a replay whose shared start its owner cancelled starts afresh', async () => {
+  let spawned = 0;
+  const holder = createHolder(() => { spawned++; return child({ start: c => { if (spawned > 1) c.say(active); }, onStdinEnd: c => c.exit(0) }); });
+  const args = ['--request-id', 'r'];
+  const owner = new AbortController();
+  const first = holder.start(args, owner.signal);
+  const replay = holder.start(args);
+  await new Promise(resolve => setImmediate(resolve));
+  owner.abort(new Error('owner cancelled'));
+  await assert.rejects(first, /owner cancelled/);
+  assert.deepEqual([await replay, spawned], [active, 2]);
+});
+
+test('one requestId in two workspaces is two watches, as figlens keeps it per workspace', async () => {
+  let spawned = 0;
+  const holder = createHolder(() => { const leaseId = `l${++spawned}`; return child({ start: c => c.say({ ...active, leaseId }) }); });
+  const [a, b] = [await holder.start(['--id', 'ws_1', '--scope', '0:0', '--request-id', 'r']), await holder.start(['--id', 'ws_2', '--scope', '0:0', '--request-id', 'r'])];
+  assert.deepEqual([a.leaseId, b.leaseId, spawned], ['l1', 'l2', 2]);
+});

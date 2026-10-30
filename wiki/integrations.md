@@ -1,6 +1,6 @@
 # Host integrations
 
-Load this for OpenCode V2, OMP, cross-host ownership, the shared npm package or installed-adapter acceptance. Pi-specific UI and mapping rules remain in [pi.md](pi.md); native MCP contracts remain in [mcp.md](mcp.md).
+Load this for OpenCode V2, OMP, cross-host ownership, or the shared npm package; installed-host lanes are in [host acceptance](host-acceptance.md). Pi-specific UI and mapping rules remain in [pi.md](pi.md); native MCP contracts remain in [mcp.md](mcp.md).
 
 ## Package and shared behavior
 

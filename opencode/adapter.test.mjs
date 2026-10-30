@@ -555,6 +555,7 @@ else if (command === 'watch' && action === 'run') {
   if (request && fs.existsSync(request)) { say({ leaseId: fs.readFileSync(request, 'utf8'), state: 'ended', reason: 'released' }); process.exit(1); }
   const leaseId = 'l' + fs.readFileSync('runs', 'utf8').split('\\n').length;
   say({ leaseId, state: 'active' });
+  if (process.argv.includes('stubborn')) { fs.writeFileSync('stubborn', String(process.pid)); setInterval(() => {}, 1000); return; }
   process.stdin.on('end', () => { fs.appendFileSync('released', leaseId + '\\n'); if (request) fs.writeFileSync(request, leaseId); say({ leaseId, state: 'ended', reason: 'released' }); process.exit(0); });
   process.stdin.resume();
 } else throw new Error('Unexpected command');`);
@@ -612,6 +613,16 @@ test('CLI-path watch start replays a requestId within its session, and only ther
   await assert.rejects(start(await adapter.scope('b')), /read denied/, "a replay's call asks read again, so a revoked grant fails closed");
   assert.deepEqual([concurrent, repeat, foreign.leaseId !== first.leaseId, spawned, ended, (await lines('runs')).length],
     [first, first, true, 2, { leaseId: first.leaseId, state: 'ended', reason: 'released' }, 3]);
+});
+
+test('CLI-path watch stop signals the native holder under the launcher when it ignores its stdin', { skip: process.platform === 'win32' }, async t => {
+  const { adapter, lines } = await watching(t);
+  const a = await adapter.scope('a');
+  const lease = await adapter.cli(a, 'watch', { action: 'start', workspaceId: 'ws_1', scope: '0:0', requestId: 'stubborn' });
+  const [pid] = await lines('stubborn');
+  const end = await adapter.cli(a, 'watch', { action: 'stop', leaseId: lease.leaseId });
+  const alive = () => { try { process.kill(Number(pid), 0); return true; } catch { return false; } };
+  assert.deepEqual([end.state, end.reason, alive()], ['unknown', 'release_unconfirmed', false]);
 });
 
 test('CLI-path watch start spawns nothing when read on the design is denied', async t => {

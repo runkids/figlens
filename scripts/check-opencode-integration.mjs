@@ -382,7 +382,9 @@ try {
       assert.equal(seen?.revisions?.filter(revision => revision.kind === 'changes').length, before + 1, JSON.stringify(seen).slice(0, 500));
       assert.deepEqual(stopped, { leaseId: lease.leaseId, state: 'ended', reason: 'released' });
       // Another session cannot stop a lease it did not start; deleting the owner releases it.
-      const [owned] = await converse('Watch the review frame.', [start]);
+      const request = () => direct('figlens_watch', { action: 'start', workspaceId, scope: '0:1', requestId: 'acceptance' });
+      const [owned, replayed] = await converse('Watch the review frame.', [request, request]);
+      assert.equal(replayed?.leaseId, owned?.leaseId, `a requestId replays its lease in its session: ${JSON.stringify(replayed).slice(0, 500)}`);
       const owner = converse.session;
       const [refused] = await converse('Stop that watch.', [() => direct('figlens_watch', { action: 'stop', leaseId: owned.leaseId })]);
       assert.match(JSON.stringify(refused), /not a lease this session holds/);
@@ -394,7 +396,7 @@ try {
       assert.equal(reloaded?.state, 'active', JSON.stringify(reloaded));
       await client.location.reload();
       await until('the reload to release its lease', () => !active().length);
-      return { deniedReadStartsNothing: true, statusWithoutEdit: true, saveRecorded: true, ownStop: stopped.reason, otherSessionRefused: true, deletionReleases: true, reloadReleases: true };
+      return { deniedReadStartsNothing: true, statusWithoutEdit: true, saveRecorded: true, ownStop: stopped.reason, requestIdReplayed: true, otherSessionRefused: true, deletionReleases: true, reloadReleases: true };
     } finally { await writeFile(fixture, original); }
   });
 } finally {

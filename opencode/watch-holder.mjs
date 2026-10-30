@@ -5,7 +5,13 @@ import { createInterface } from 'node:readline';
 // and shared, so only the child itself is ever signalled, and only when it outlives `exitMs`.
 const STDERR = 64 * 1024;
 
-export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } = {}) {
+// Each child is its own process to figlens, so its per-process cap (16 leases) bounds none of them;
+// this host bounds its own children to the same count, starting or held, until each confirmed exit.
+const LIMIT = 16;
+
+// `group`: each child leads its own process group (spawned detached), so a signal reaches the native
+// `watch run` under the npm launcher too; figlens starts the shared runner in a group of its own.
+export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000, limit = LIMIT, group = false } = {}) {
   const held = new Map();
   // requestId -> its start, while that start is pending or its lease is held here. Once released,
   // a replay reaches figlens again, which reports the ended lease and never restarts it.
@@ -27,7 +33,8 @@ export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } =
     });
     let done = false;
     exited.then(() => { done = true; while (waiting.length) waiting.shift()(null); });
-    if (child.stdout) createInterface({ input: child.stdout }).on('line', line => (waiting.length ? waiting.shift()(line) : next.push(line)));
+    // Only a start and an end line are read, so a few unread lines are kept and the rest dropped.
+    if (child.stdout) createInterface({ input: child.stdout }).on('line', line => (waiting.length ? waiting.shift()(line) : next.length < 4 && next.push(line)));
     // Only its start failure is read from stderr, so no more than its head is kept.
     child.stderr?.on('data', chunk => { if (stderr.length < STDERR) stderr = (stderr + chunk).slice(0, STDERR); });
     const line = () => next.length ? Promise.resolve(next.shift())
@@ -44,7 +51,7 @@ export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } =
   async function shutdown(out) {
     try { out.child.stdin?.end(); } catch {}
     for (const signal of [null, 'SIGTERM', 'SIGKILL']) {
-      if (signal) try { out.child.kill(signal); } catch {}
+      if (signal) try { group ? process.kill(-out.child.pid, signal) : out.child.kill(signal); } catch {}
       if (await within(out.exited, exitMs) !== 'timeout') return true;
     }
     return false;
@@ -66,12 +73,14 @@ export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } =
     signal?.throwIfAborted();
     const at = args.indexOf('--request-id');
     if (at < 0) return begin(args, signal);
-    const id = args[at + 1], key = JSON.stringify(args);
+    // figlens keeps a requestId per workspace, so it is keyed with the arguments that pick one.
+    const picks = args.filter((arg, i) => !['--source', '--scope'].includes(arg) && !['--source', '--scope'].includes(args[i - 1]));
+    const id = JSON.stringify(picks), key = JSON.stringify(args);
     let request = requests.get(id);
-    if (request && request.key !== key) throw new Error(`requestId ${id} names a different watch; start with a new requestId`);
+    if (request && request.key !== key) throw new Error(`requestId ${args[at + 1]} names a different watch; start with a new requestId`);
     if (!request) {
       // The first start owns the child, so its cancel waits for begin to release it.
-      request = { key, reply: begin(args, signal) };
+      request = { key, signal, reply: begin(args, signal) };
       requests.set(id, request);
       request.reply.then(reply => { if (held.has(reply.leaseId)) held.get(reply.leaseId).request = id; else requests.delete(id); },
         () => requests.delete(id));
@@ -81,11 +90,16 @@ export function createHolder(spawnRun, { firstLineMs = 30000, exitMs = 10000 } =
     let cancel;
     const cancelled = new Promise((_, reject) => { cancel = () => reject(signal.reason); signal?.addEventListener('abort', cancel, { once: true }); });
     try { return await Promise.race([request.reply, cancelled]); }
-    finally { signal?.removeEventListener('abort', cancel); }
+    catch (error) {
+      // The start it shared was cancelled by its own caller, not this one: start afresh.
+      if (request.signal?.aborted && !signal?.aborted) return start(args, signal);
+      throw error;
+    } finally { signal?.removeEventListener('abort', cancel); }
   }
 
   // `signal` cancels a start still waiting for its reply: its child is released and awaited.
   async function begin(args, signal) {
+    if (owned.size >= limit) throw new Error(`this session already holds or is starting ${limit} watch leases; stop one with figlens_watch stop first`);
     let out;
     try { out = watch(spawnRun(['watch', 'run', ...args])); }
     catch (error) { throw new Error(`figlens watch run could not start: ${error.message}`); }

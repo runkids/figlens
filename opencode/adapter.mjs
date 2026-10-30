@@ -109,10 +109,12 @@ export function createAdapter(ctx, entry = import.meta.url) {
     const current = owners.get(sessionID);
     if (!current) return;
     current.lifetime.abort();
-    await Promise.all([...current.commands].map(stop => stop()));
-    // This session's leases only; the shared runner and other holders' leases are left alone.
-    for (const end of await current.holder.stopAll())
-      if (end.state !== 'ended') console.error('figlens watch lease not released:', JSON.stringify(end));
+    try { await Promise.all([...current.commands].map(stop => stop())); }
+    finally {
+      // This session's leases only; the shared runner and other holders' leases are left alone.
+      for (const end of await current.holder.stopAll())
+        if (end.state !== 'ended') console.error('figlens watch lease not released:', JSON.stringify(end));
+    }
     await current.viewer.close();
     owners.delete(sessionID);
   }
@@ -127,7 +129,10 @@ export function createAdapter(ctx, entry = import.meta.url) {
     let current = owners.get(sessionID);
     if (!current) {
       current = { viewer: new Viewer(command, prefix), lifetime: new AbortController(), commands: new Set(),
-        holder: createHolder(args => spawn(command, [...prefix, ...args], { cwd: root, stdio: 'pipe', windowsHide: true })) };
+        // shortcut: on Windows only the launcher is signalled, since taskkill /T would also reach the shared
+        // runner; stdin EOF still releases the native child. Upgrade if a Windows holder outlives its signals.
+        holder: createHolder(args => spawn(command, [...prefix, ...args], { cwd: root, stdio: 'pipe', windowsHide: true, detached: process.platform !== 'win32' }),
+          { group: process.platform !== 'win32' }) };
       owners.set(sessionID, current);
     }
     const combined = AbortSignal.any([lifetime.signal, current.lifetime.signal, ...(signal ? [signal] : [])]);
@@ -290,7 +295,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
     if (tool === 'watch' && input.action === 'stop') {
       const leaseId = required(input, 'leaseId');
       const end = await current.holder.stop(leaseId);
-      if (!end) throw new Error(`${leaseId} is not a lease this session holds; only its own leases can be stopped here. figlens_watch status lists the workspace's leases.`);
+      if (!end) throw new Error(`${leaseId} is not a lease this session holds, or it already ended; only its own live leases can be stopped here. figlens_watch status lists the workspace's leases.`);
       return end;
     }
     // Invalid or conflicting arguments fail before any permission prompt.
