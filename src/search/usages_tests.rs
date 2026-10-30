@@ -2625,3 +2625,131 @@ fn a_library_scan_that_runs_out_stops_the_build() {
     assert_eq!(libraries(&tree, &mut tight), None);
     assert_eq!(tight.stop, Some(crate::expand::Stop::Work));
 }
+
+/// A Button component at `base` (label text `base + 1`, a filled box `base + 2`) placed at `x`
+/// under `parent`; `extra` goes on the root, `fill` on the box.
+fn button(
+    base: u32,
+    parent: u32,
+    x: f32,
+    label: &str,
+    fill: K<'static>,
+    extra: Vec<(&'static str, K<'static>)>,
+) -> Vec<K<'static>> {
+    let f = K::Float;
+    let at = obj(vec![
+        ("m00", f(1.0)),
+        ("m01", f(0.0)),
+        ("m02", f(x)),
+        ("m10", f(0.0)),
+        ("m11", f(1.0)),
+        ("m12", f(0.0)),
+    ]);
+    let mut root = vec![
+        ("transform", at),
+        ("size", obj(vec![("x", f(80.0)), ("y", f(32.0))])),
+        ("horizontalConstraint", K::Enum("ConstraintType", "MIN")),
+    ];
+    root.extend(extra);
+    vec![
+        node(base, Some(parent), "SYMBOL", "Button", root),
+        node(
+            base + 1,
+            Some(base),
+            "TEXT",
+            "Label",
+            vec![super::super::tests::text(label)],
+        ),
+        node(
+            base + 2,
+            Some(base),
+            "RECTANGLE",
+            "Box",
+            vec![("fillPaints", K::Array(vec![fill]))],
+        ),
+    ]
+}
+
+fn red(r: f32) -> K<'static> {
+    let f = K::Float;
+    obj(vec![
+        ("type", K::Enum("PaintType", "SOLID")),
+        (
+            "color",
+            obj(vec![
+                ("r", f(r)),
+                ("g", f(0.0)),
+                ("b", f(0.0)),
+                ("a", f(1.0)),
+            ]),
+        ),
+    ])
+}
+
+/// The library's Button at `0:10` and a consumer's cached copy of it at `0:50` (other ids,
+/// another place and constraint), used by an instance; each built as a stored generation and
+/// compared from its stored rows.
+fn copy_matches(copy_label: &str, copy_fill: K<'static>) -> &'static str {
+    use crate::search::{Library, build_with, fingerprint, store};
+    let design = |nodes: Vec<K<'static>>| {
+        let mut all = vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Components", vec![]),
+        ];
+        all.extend(nodes);
+        obj(vec![("nodeChanges", K::Array(all))])
+    };
+    let library = design(button(10, 1, 0.0, "Go", red(1.0), vec![]));
+    let s = |v: &str| K::String(v.into());
+    let cached = vec![("componentKey", s("k")), ("sourceLibraryKey", s("ns"))];
+    let mut copy = button(50, 1, 300.0, copy_label, copy_fill, cached);
+    if let K::Object(_, o) = &mut copy[0] {
+        o.insert("horizontalConstraint", K::Enum("ConstraintType", "MAX"));
+    }
+    copy.push(instance(60, 1, "Use", 50, vec![]));
+    let consumer = design(copy);
+    let print = |message: &K<'static>, node: &str| {
+        let tree = Tree::new(message);
+        let index = build_with(&tree, "0:0", bounds(WORK), true, Library::Stored, None);
+        store::print(&stored(&index), 1, node).unwrap().unwrap()
+    };
+    // The consumer's use names the copy it compares, never the instance itself.
+    let tree = Tree::new(&consumer);
+    let index = build_with(&tree, "0:0", bounds(WORK), true, Library::Stored, None);
+    assert!(index.records.iter().any(|r| r.id == "0:60"
+        && r.library.iter().any(|e| e.evidence == r#"{"copy":"0:50"}"#)));
+    fingerprint::compare(&print(&library, "0:10"), &print(&consumer, "0:50"))
+}
+
+#[test]
+fn a_cached_copy_under_other_ids_and_another_place_equals_its_definition() {
+    assert_eq!(copy_matches("Go", red(1.0)), "equal");
+}
+
+#[test]
+fn a_child_text_or_fill_change_under_unchanged_root_fields_is_a_mismatch() {
+    assert_eq!(
+        [copy_matches("Stop", red(1.0)), copy_matches("Go", red(0.5))],
+        ["definition_mismatch"; 2]
+    );
+}
+
+#[test]
+fn a_fill_bound_to_a_file_local_variable_is_unknown() {
+    let alias = obj(vec![
+        ("dataType", K::Enum("VariableDataType", "ALIAS")),
+        ("value", obj(vec![("alias", obj(vec![("guid", guid(7))]))])),
+    ]);
+    let mut bound = red(1.0);
+    if let K::Object(_, o) = &mut bound {
+        o.insert("colorVar", alias);
+    }
+    assert_eq!(copy_matches("Go", bound), "unknown");
+}
+
+#[test]
+fn a_facet_over_its_read_cap_is_unknown() {
+    // The same label on both sides, but a copy's too long to digest is never called equal.
+    let long = "Go ".repeat(30_000);
+    assert_eq!(copy_matches(&long, red(1.0)), "unknown");
+}

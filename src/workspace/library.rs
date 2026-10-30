@@ -9,8 +9,8 @@ use sha2::{Digest, Sha256};
 use rusqlite::params;
 
 use super::*;
-use crate::search::store;
 use crate::search::usages::{LIBRARY, MAX_LIMIT, SCAN, scan_limit};
+use crate::search::{fingerprint, store};
 
 pub const KINDS: [&str; 3] = ["component", "style", "variable"];
 /// Serialized bytes of one page's results; a page past it ends early. MCP sends a reply as text
@@ -383,6 +383,16 @@ pub fn library(
             ),
         ));
     }
+    // A selected definition's fingerprint, captured by its source's build; `Some(None)` when that
+    // generation holds none, so no use is compared. Its reasons are charged with the coverage.
+    let baseline = match (&req.definition, definition_gen, &definition["state"]) {
+        (Some(d), Some(gen_id), state) if state == "selected" => {
+            copied += 256 + d.source_id.len() + req.scope.len() + ws_id.len();
+            Some(store::print(&tx, gen_id, &d.node_id)?)
+        }
+        _ => None,
+    };
+    let (mut mismatched, mut uncompared) = (0usize, 0usize);
     let exact = req.target(req.namespace.as_deref());
     let unknown = req.target(None);
     let mut results = Vec::new();
@@ -525,19 +535,40 @@ pub fn library(
             }
             let (r, q): (i64, i64) = (row.get(0).map_err(sql)?, row.get(1).map_err(sql)?);
             let evidence: String = row.get(3).map_err(sql)?;
-            let item = json!({
+            let evidence =
+                serde_json::from_str::<Json>(&evidence).unwrap_or_else(|_| json!(evidence));
+            // The use's cached copy as this source's build fingerprinted it, never the use's own
+            // overrides; only a component use names one copy.
+            let matched = match &baseline {
+                None => None,
+                Some(None) => Some("unknown"),
+                Some(Some(d)) => match evidence["copy"]
+                    .as_str()
+                    .filter(|_| req.kind == "component")
+                {
+                    Some(copy) => Some(
+                        store::print(&tx, gen_id, copy)?
+                            .map_or("unknown", |c| fingerprint::compare(d, &c)),
+                    ),
+                    None => Some("unknown"),
+                },
+            };
+            let mut item = json!({
                 "ref": {"sourceId": s.id, "snapshotId": s.snapshot,
                     "nodeId": node},
                 "name": row.get::<_, String>(5).map_err(sql)?,
                 "type": row.get::<_, String>(6).map_err(sql)?,
                 "relation": LIBRARY, "basis": "cached_copy",
                 "state": row.get::<_, String>(2).map_err(sql)?,
-                "evidence": serde_json::from_str::<Json>(&evidence).unwrap_or_else(|_| json!(evidence)),
+                "evidence": evidence,
                 "hidden": row.get::<_, bool>(7).map_err(sql)?,
                 "internal": page.is_some_and(|p| p.2),
                 "page": page.map(|p| json!({"id": p.0, "name": p.1})),
                 "scopeRoot": root,
             });
+            if let Some(m) = matched {
+                item["definitionMatch"] = json!(m);
+            }
             let size = serde_json::to_vec(&item).map_err(|e| e.to_string())?.len();
             if copied + size > PAGE_BYTES {
                 if results.is_empty() {
@@ -547,6 +578,8 @@ pub fn library(
                 break;
             }
             copied += size;
+            mismatched += usize::from(matched == Some("definition_mismatch"));
+            uncompared += usize::from(matches!(baseline, Some(None)));
             results.push(item);
             last = Some((i, r, q));
         }
@@ -579,6 +612,16 @@ pub fn library(
             reasons.push(json!({"code": code, "sourceIds": ids}));
         }
     }
+    if let (Some(None), Some(d)) = (&baseline, &req.definition) {
+        reasons.push(
+            json!({"code": "definition_not_compared", "count": uncompared,
+            "nextSteps": [{"tool": "index", "arguments": {"action": "refresh",
+                "workspaceId": ws_id, "sourceId": d.source_id, "scope": req.scope}}]}),
+        );
+    }
+    if mismatched > 0 {
+        reasons.push(json!({"code": "definition_mismatch", "count": mismatched}));
+    }
     if restricted {
         reasons.push(json!({"code": "authorization_restricted"}));
     }
@@ -587,7 +630,10 @@ pub fn library(
         reasons.push(json!({"code": "namespace_required"}));
     }
     // Hidden matches are left out as asked, which is not incompleteness.
-    let complete = reasons.iter().all(|r| r["code"] == "hidden_excluded");
+    // So are differences from a selected definition, which are findings.
+    let complete = reasons
+        .iter()
+        .all(|r| r["code"] == "hidden_excluded" || r["code"] == "definition_mismatch");
     Ok(json!({
         "workspaceId": ws_id,
         "library": {"kind": req.kind, "namespace": req.namespace, "key": req.key},

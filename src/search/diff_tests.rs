@@ -2548,6 +2548,7 @@ fn a_probe_of_a_retyped_or_unread_record_is_unknown() {
     assert_eq!(probe(&pair, "0:10", 1 << 2, WORK).0, Verdict::Unknown);
     // A field read on one side only is no proof of equality.
     let field = |digest| Field {
+        local: false,
         key: "fillPaints",
         facet: 2,
         digest,

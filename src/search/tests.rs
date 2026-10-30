@@ -1118,9 +1118,10 @@ pub(super) fn stored(index: &Index) -> rusqlite::Connection {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(&format!(
         "CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
-         added_at_ms INTEGER NOT NULL) STRICT; {} {}",
+         added_at_ms INTEGER NOT NULL) STRICT; {} {} {}",
         crate::workspace::V2,
-        crate::workspace::V3
+        crate::workspace::V3,
+        crate::workspace::V8
     ))
     .unwrap();
     conn.execute(

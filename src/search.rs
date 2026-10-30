@@ -504,6 +504,9 @@ pub struct Index {
     definitions: BTreeMap<String, usages::Definition>,
     /// Reverse lookups over a whole index, built on its first usages query or impact walk.
     reverse: std::sync::OnceLock<usages::Reverse>,
+    /// Definition and cached-copy fingerprints by record, kept by stored generations only
+    /// (`fingerprint`); never loaded back.
+    fingerprints: Vec<(u32, [fingerprint::Print; 4])>,
 }
 
 impl Index {
@@ -528,6 +531,7 @@ impl Index {
             relations: false,
             definitions: BTreeMap::new(),
             reverse: Default::default(),
+            fingerprints: Vec::new(),
         }
     }
 
@@ -674,6 +678,10 @@ fn build_with(
     };
     let libraries = libraries.unwrap_or_default();
     let keep_library = relations && library != Library::Skip && !library_unread;
+    // A stored generation fingerprints its definitions and cached copies with their subtrees.
+    let fingerprint = relations && library == Library::Stored;
+    let mut inputs: Vec<Option<fingerprint::Input>> = Vec::new();
+    let mut defines = Vec::new();
     let mut index = Index::empty();
     index.library_unread = library_unread;
     // Stored ancestors give the scope its page, navigation root and inherited visibility.
@@ -758,6 +766,7 @@ fn build_with(
             _ => 0,
         };
         let retained = 256
+            + if fingerprint { 64 } else { 0 }
             + id.len()
             + listed
             + name.len()
@@ -851,13 +860,36 @@ fn build_with(
             },
             false => None,
         };
+        let unexpanded = hidden && children.is_none() && hides_content(tree, &ex, &id, &kind);
+        let defining = fingerprint
+            && !ex.nodes.contains_key(&id)
+            && fingerprint::applicable(&kind, tree.nodes.get(&id).copied());
+        let inside =
+            fingerprint && (defining || parent.is_some_and(|p| inputs[p as usize].is_some()));
+        let input = match inside {
+            true => match diff::facets(tree, &id, ex.nodes.get(&id), &mut bounds) {
+                Some(facets) => Some(fingerprint::Input {
+                    facets,
+                    hidden: own_hidden,
+                    unexpanded,
+                }),
+                None => break,
+            },
+            false => None,
+        };
         index.text_bytes += text_len;
         lens[0] += u64::from(record_lens[0]);
         lens[1] += u64::from(record_lens[1]);
-        if hidden && children.is_none() && hides_content(tree, &ex, &id, &kind) {
+        if unexpanded {
             index.hidden_content += 1;
         }
         let record = index.records.len() as u32;
+        if fingerprint {
+            if defining {
+                defines.push(record);
+            }
+            inputs.push(input);
+        }
         let (page, root) = if kind == "CANVAS" {
             index.pages.push(Page {
                 id: id.clone(),
@@ -921,8 +953,15 @@ fn build_with(
         deadline: bounds.deadline,
         stop: None,
     };
+    let cut = index.stop.is_some() || bounds.stop.is_some();
     if relations {
         index.definitions = usages::definitions(tree, &index.records, &mut own).unwrap_or_default();
+    }
+    if fingerprint {
+        let expansion = expansion.is_some();
+        index.fingerprints =
+            fingerprint::prints(&index.records, &inputs, &defines, cut, expansion, &mut own)
+                .unwrap_or_default();
     }
     index.relations = relations;
     bounds.stop = bounds.stop.or(own.stop);
@@ -1946,6 +1985,7 @@ fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json
 }
 
 pub mod diff;
+pub(crate) mod fingerprint;
 pub(crate) mod impact;
 pub(crate) mod store;
 pub mod usages;

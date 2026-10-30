@@ -666,6 +666,7 @@ fn drop_gen(conn: &Connection, gen_id: i64) -> rusqlite::Result<()> {
         "definitions",
         "facets",
         "facet_sets",
+        "fingerprints",
         "generations",
     ] {
         conn.execute(&format!("DELETE FROM {table} WHERE gen = ?1"), [gen_id])?;

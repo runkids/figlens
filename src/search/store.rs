@@ -13,6 +13,7 @@ use serde_json::{Value as Json, json};
 
 use rusqlite::OptionalExtension;
 
+use super::fingerprint::{self, Print};
 use super::usages::{self, Definition, Edge, Graph, Key, RELATIONS, STATES};
 use super::{
     BYTES, DEPTH, Index, IndexTerm, MAX_MARKS, NEVER, Page, Posting, RANKING, Record, TEXT_BYTES,
@@ -137,7 +138,10 @@ pub(crate) fn save(
 ) -> Result<()> {
     // JSON escaping can grow names past what `load` reads back; refuse before writing anything.
     let info = info_json(index, INFO_BYTES)?;
-    let total = index.records.len() + index.terms.len() + index.definitions.len();
+    let total = index.records.len()
+        + index.terms.len()
+        + index.definitions.len()
+        + index.fingerprints.len();
     let mut done = 0;
     let record_bytes = |r: &Record| {
         let text = r.text.as_ref().map_or(0, String::len);
@@ -240,6 +244,30 @@ pub(crate) fn save(
             )?;
             for (id, d) in chunk {
                 stmt.execute(params![gen_id, id, d.name, d.kind, d.set, d.page])?;
+            }
+        }
+        tx.commit()?;
+        done += chunk.len();
+        between(conn, done, total)?;
+    }
+    let print_bytes = |_: &(u32, [Print; 4])| 4 * fingerprint::ROW_BYTES;
+    for chunk in batches(&index.fingerprints, print_bytes) {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        guard(&tx)?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO fingerprints (gen, rid, facet, state, digest) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for (rid, print) in chunk {
+                for (facet, (state, digest)) in fingerprint::FACETS.iter().zip(print) {
+                    stmt.execute(params![
+                        gen_id,
+                        rid,
+                        facet,
+                        state,
+                        digest.map(|d| d.to_vec())
+                    ])?;
+                }
             }
         }
         tx.commit()?;
@@ -495,6 +523,7 @@ pub(crate) fn load_with(
         definitions: BTreeMap::new(),
         relations: true,
         reverse: Default::default(),
+        fingerprints: Vec::new(),
     };
     let mut wanted: Vec<u32> = survivors.into_iter().collect();
     if total > 0 {
@@ -865,6 +894,51 @@ impl Graph for Stored<'_> {
         }
         Ok(())
     }
+}
+
+/// The kind and fingerprint of stored node `node` in generation `gen_id`, its first record by
+/// rid; `None` when it is no record or was not fingerprinted. Rows are checked as they are read.
+pub(crate) fn print(
+    conn: &Connection,
+    gen_id: i64,
+    node: &str,
+) -> Result<Option<(String, [Print; 4])>> {
+    let found: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT rid, kind FROM records INDEXED BY records_node WHERE gen = ?1 AND node_id = ?2
+             ORDER BY rid LIMIT 1",
+            params![gen_id, node],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((rid, kind)) = found else {
+        return Ok(None);
+    };
+    let mut stmt = conn.prepare_cached(
+        "SELECT facet, state, digest FROM fingerprints WHERE gen = ?1 AND rid = ?2 LIMIT 5",
+    )?;
+    let mut rows = stmt.query(params![gen_id, rid])?;
+    let (mut print, mut seen) = ([("unread", None); 4], 0);
+    while let Some(row) = rows.next()? {
+        let at = fingerprint::FACETS
+            .iter()
+            .position(|f| row.get_ref(0).ok().and_then(|v| v.as_str().ok()) == Some(*f))
+            .ok_or_else(bad)?;
+        let state = known(&fingerprint::STATES, row.get(1)?)?.ok_or_else(bad)?;
+        let digest: Option<Vec<u8>> = row.get(2)?;
+        let digest = match (state, digest) {
+            ("read", Some(d)) => Some(<[u8; 32]>::try_from(d.as_slice()).map_err(|_| bad())?),
+            (_, None) if state != "read" => None,
+            _ => return Err(bad()),
+        };
+        print[at] = (state, digest);
+        seen |= 1 << at;
+    }
+    Ok(match seen {
+        0 => None,
+        0b1111 => Some((kind, print)),
+        _ => return Err(bad()),
+    })
 }
 
 #[cfg(test)]

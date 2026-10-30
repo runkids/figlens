@@ -410,7 +410,15 @@ pub(crate) const IMPACTS: &str = "
         PRIMARY KEY (rev, ord)) STRICT, WITHOUT ROWID;
     PRAGMA user_version = 7;";
 
-/// Upgrades schemas 1 to 6 to the current one in one transaction, keeping every source, index,
+/// Schema 8: each generation's definition and cached-copy fingerprints (#93), added beside the
+/// rest and collected with them.
+pub(crate) const V8: &str = "
+    CREATE TABLE fingerprints (
+        gen INTEGER NOT NULL, rid INTEGER NOT NULL, facet TEXT NOT NULL, state TEXT NOT NULL,
+        digest BLOB, PRIMARY KEY (gen, rid, facet)) STRICT, WITHOUT ROWID;
+    PRAGMA user_version = 8;";
+
+/// Upgrades schemas 1 to 7 to the current one in one transaction, keeping every source, index,
 /// job and the incarnation. The caller holds the workspace lock exclusively.
 pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
     let tx = conn
@@ -436,6 +444,9 @@ pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
     }
     if version <= 6 {
         tx.execute_batch(IMPACTS).map_err(sql)?;
+    }
+    if version <= 7 {
+        tx.execute_batch(V8).map_err(sql)?;
     }
     tx.commit().map_err(sql)
 }
@@ -483,6 +494,7 @@ pub(super) fn initialize(
     tx.execute_batch(V5).map_err(sql)?;
     tx.execute_batch(SUBSCRIPTIONS).map_err(sql)?;
     tx.execute_batch(IMPACTS).map_err(sql)?;
+    tx.execute_batch(V8).map_err(sql)?;
     if let Some(binding) = binding {
         tx.execute(
             "INSERT INTO meta (key, value) VALUES ('binding', ?1)",

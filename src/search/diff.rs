@@ -29,7 +29,7 @@ const OWNED_BYTES: usize = 512;
 pub(crate) const FACETS: [&str; 5] = ["text", "layout", "appearance", "properties", "structure"];
 /// Effective kiwi fields per facet; `structure` (name, kind, parent, order, hidden) is the
 /// record's own and bindings are edges, not fields.
-const FIELDS: [&[&str]; 4] = [
+pub(crate) const FIELDS: [&[&str]; 4] = [
     &[
         "textData",
         "fontSize",
@@ -157,17 +157,20 @@ pub const MAX_LIMIT: usize = 500;
 
 /// One effective field of one record.
 pub(crate) struct Field {
-    key: &'static str,
-    facet: u8,
+    pub(crate) key: &'static str,
+    pub(crate) facet: u8,
     /// SHA-256 of the field's key and length-delimited JSON; `None` when it was unread.
-    digest: Option<[u8; 32]>,
+    pub(crate) digest: Option<[u8; 32]>,
+    /// Whether the read value holds a file-local GUID (a variable, mode, property or node id),
+    /// which no other file shares; library fingerprints read such a field as unsupported.
+    pub(crate) local: bool,
     /// The value, when it fit `FIELD_VALUE` and the record's `RECORD_VALUES`.
     value: Option<Json>,
 }
 
 /// A record's effective fields in `FIELDS` order; absent fields are not listed.
 pub(crate) struct Facets {
-    fields: Vec<Field>,
+    pub(crate) fields: Vec<Field>,
     /// The variables a variable's values alias (`variableDataValues`), one per aliasing mode,
     /// then its collection (`variableSetID`), whose first mode by sort position is the default
     /// REST resolves in; `None` when either field was unread, so where they lead is unknown.
@@ -248,6 +251,17 @@ fn placeholder(v: &Json) -> bool {
         Json::Object(o) => o
             .iter()
             .any(|(k, x)| !UNCOMPARED.contains(&k.as_str()) && placeholder(x)),
+        _ => false,
+    }
+}
+
+/// Whether `v` holds a GUID object, as `to_json` writes one.
+fn guid(v: &Json) -> bool {
+    match v {
+        Json::Array(a) => a.iter().any(guid),
+        Json::Object(o) => {
+            (o.contains_key("sessionID") && o.contains_key("localID")) || o.values().any(guid)
+        }
         _ => false,
     }
 }
@@ -394,6 +408,7 @@ pub(super) fn facets(
                     key,
                     facet: facet as u8,
                     digest: None,
+                    local: false,
                     value: None,
                 });
                 continue;
@@ -463,6 +478,7 @@ pub(super) fn facets(
                     key,
                     facet: facet as u8,
                     digest: None,
+                    local: false,
                     value: None,
                 });
                 continue;
@@ -543,6 +559,7 @@ pub(super) fn facets(
                 key,
                 facet: facet as u8,
                 digest: Some(hash.finalize().into()),
+                local: guid(json),
                 value: fits.then(|| json.clone()),
             });
         }
@@ -1995,6 +2012,7 @@ fn decode(text: &str, spent: &mut usize) -> Result<Facets, Box<dyn Error>> {
             key,
             facet,
             digest,
+            local: false,
             value,
         });
     }

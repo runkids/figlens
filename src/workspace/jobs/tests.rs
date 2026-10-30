@@ -1737,6 +1737,9 @@ fn library_uses_page_across_sources_and_never_resolve_the_definition() {
     uses(&conn, srcs[0].2, r#"["component","ns/k",""]"#);
     let first = library(&storage, &select, None, &reference("k", None)).unwrap();
     assert_eq!(library_ids(&first), [srcs[0].1.clone()]);
+    // Without a selected definition nothing is compared or reported about one.
+    let text = first.to_string();
+    assert!(!text.contains("definitionMatch") && !text.contains("definition_"));
     assert_eq!(
         first["definition"],
         json!({"state": "unresolved", "reason": "library_source_unproven"})
@@ -2117,6 +2120,7 @@ fn a_selected_definition_is_checked_on_its_exact_ref_and_never_resolved() {
     let hidden = ask(&narrow, None, "component", def.clone());
     let text = hidden.to_string();
     assert!(!text.contains(&srcs[1].1) && !text.contains(srcs[1].0.to_str().unwrap()));
+    assert!(!text.contains("definitionMatch") && !text.contains("definition_not_compared"));
     let reasons: Vec<Json> = [
         ask(&storage, None, "variable", def.clone()),
         ask(
@@ -2253,4 +2257,99 @@ fn a_cursor_ends_when_the_selected_definition_s_source_is_reindexed_or_collected
             .unwrap();
     }
     assert_eq!(kind_of_error(again()), ErrorKind::CursorExpired);
+}
+
+/// Sets the fingerprint of `node` in `gen_id` to `digest` on every facet, as a component.
+fn fingerprinted(conn: &Connection, gen_id: i64, node: &str, digest: &[u8]) {
+    conn.execute(
+        "UPDATE records SET kind = 'COMPONENT' WHERE gen = ?1 AND node_id = ?2",
+        params![gen_id, node],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO fingerprints (gen, rid, facet, state, digest)
+         SELECT ?1, rid, f.value, 'read', ?3 FROM records,
+         json_each('[\"text\",\"layout\",\"appearance\",\"properties\"]') f
+         WHERE gen = ?1 AND node_id = ?2",
+        params![gen_id, node, digest],
+    )
+    .unwrap();
+}
+
+fn matches(out: &Json) -> Vec<&Json> {
+    let results = out["results"].as_array().unwrap();
+    results.iter().map(|r| &r["definitionMatch"]).collect()
+}
+
+#[test]
+fn each_use_compares_its_cached_copy_with_the_selected_definition() {
+    use crate::workspace::library::{Request, library};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let def = component_ref(&conn, &srcs[1].1, srcs[1].2);
+    // Each source's use names a cached copy at the definition's node id, fingerprinted alike.
+    conn.execute(
+        "UPDATE edges SET evidence = json_object('copy', ?1) WHERE relation = 'uses_library'",
+        [&def.node_id],
+    )
+    .unwrap();
+    for (_, _, gen_id) in &srcs {
+        fingerprinted(&conn, *gen_id, &def.node_id, &[1; 32]);
+    }
+    let ask = Request {
+        definition: Some(def.clone()),
+        limit: 10,
+        ..reference("k", None)
+    };
+    let same = library(&storage, &select, None, &ask).unwrap();
+    assert_eq!(
+        (matches(&same), &same["coverage"]["complete"]),
+        (vec![&json!("equal"); 2], &json!(true))
+    );
+    // The first source's copy now differs: a finding, not incompleteness.
+    fingerprinted(&conn, srcs[0].2, &def.node_id, &[2; 32]);
+    let differ = library(&storage, &select, None, &ask).unwrap();
+    assert_eq!(
+        (
+            matches(&differ),
+            &differ["coverage"]["reasons"],
+            &differ["coverage"]["complete"]
+        ),
+        (
+            vec![&json!("definition_mismatch"), &json!("equal")],
+            &json!([{"code": "definition_mismatch", "count": 1}]),
+            &json!(true)
+        )
+    );
+}
+
+#[test]
+fn a_definition_its_build_did_not_fingerprint_compares_no_use_and_asks_to_index_it() {
+    use crate::workspace::library::{Request, library};
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let def = component_ref(&conn, &srcs[1].1, srcs[1].2);
+    conn.execute("DELETE FROM fingerprints WHERE gen = ?1", [srcs[1].2])
+        .unwrap();
+    let ask = Request {
+        definition: Some(def.clone()),
+        limit: 10,
+        ..reference("k", None)
+    };
+    let out = library(&storage, &select, None, &ask).unwrap();
+    let ws = select.id().unwrap();
+    assert_eq!(
+        (
+            matches(&out),
+            &out["coverage"]["reasons"],
+            &out["coverage"]["complete"]
+        ),
+        (
+            vec![&json!("unknown"); 2],
+            &json!([{"code": "definition_not_compared", "count": 2,
+                "nextSteps": [{"tool": "index", "arguments": {"action": "refresh",
+                    "workspaceId": ws, "sourceId": def.source_id, "scope": "0:0"}}]}]),
+            &json!(false)
+        )
+    );
 }
