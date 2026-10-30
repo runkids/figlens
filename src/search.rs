@@ -608,9 +608,18 @@ pub(crate) enum Library {
     /// A stored generation's: a scan that runs out stops the build, so coverage says so.
     Stored,
     /// A stateless full build's, so outgoing usages can name them: a scan that does not fit what
-    /// is left keeps none instead of stopping the build (`Index::library_unread`); one that fits
-    /// is charged like any other work.
+    /// is left keeps none instead of stopping the build (`Index::library_unread`), and what it
+    /// spent stays charged either way (`named_libraries`).
     Named,
+}
+
+/// A stateless build's library scan: what it spent stays spent, but running out keeps no
+/// references and leaves `bounds` unstopped so the build goes on with what is left.
+fn named_libraries(tree: &Tree, bounds: &mut Bounds) -> Option<usages::Libraries> {
+    let stop = bounds.stop;
+    let found = usages::libraries(tree, bounds);
+    bounds.stop = stop;
+    found
 }
 
 /// `build_as` that also records each record's diff facets into `facets`, in record order (the
@@ -653,18 +662,13 @@ fn build_with(
     bounds.work += reserve.0;
     bounds.bytes += reserve.1;
     // Only a full build reads library references; for a stored one a spent budget stops at the
-    // first record, a stateless one tries the scan on a copy and keeps none when it runs out.
+    // first record, a stateless one keeps none when it runs out and builds on what is left.
     let (libraries, library_unread) = match (relations, library) {
         (true, Library::Stored) => (usages::libraries(tree, &mut bounds), false),
         (true, Library::Named) => {
-            let mut trial = bounds;
-            match usages::libraries(tree, &mut trial) {
-                Some(l) => {
-                    bounds = trial;
-                    (Some(l), false)
-                }
-                None => (None, true),
-            }
+            let l = named_libraries(tree, &mut bounds);
+            let unread = l.is_none();
+            (l, unread)
         }
         _ => (None, false),
     };

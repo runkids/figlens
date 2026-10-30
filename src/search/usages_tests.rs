@@ -2549,6 +2549,30 @@ fn a_cached_copy_use_names_its_library_reference_in_memory_and_stored_alike() {
 }
 
 #[test]
+fn a_stateless_library_scan_that_runs_out_of_bytes_keeps_what_it_spent() {
+    let message = libraries_design();
+    let tree = Tree::new(&message);
+    let with = |bytes| {
+        let mut b = bounds(WORK);
+        b.bytes = bytes;
+        let found = crate::search::named_libraries(&tree, &mut b);
+        (found, b)
+    };
+    // The most bytes that still stop the scan, so it stops after reading at least one copy.
+    let fits = (0..1 << 16).find(|&b| with(b).0.is_some()).unwrap();
+    let (found, left) = with(fits - 1);
+    assert_eq!(
+        (
+            found,
+            left.stop,
+            left.work < WORK - tree.nodes.len(),
+            left.bytes < fits - 1
+        ),
+        (None, None, true, true)
+    );
+}
+
+#[test]
 fn a_stateless_library_scan_that_does_not_fit_names_nothing_instead_of_stopping_the_build() {
     use crate::search::{Library, build_with};
     let message = libraries_design();
