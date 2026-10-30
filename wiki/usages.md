@@ -25,7 +25,7 @@ Library references and the cross-source library query (#93) are in [library usag
 ## Query and paging
 
 - One result is one edge. A layer with two edges (fills and strokes bound to one variable) returns two results.
-- Order and cursor key: `(rid, relation, seq)`, rid in document order. Cursor `u1.<fingerprint>.<snapshot>.<gen>.<rid>.<relation>.<seq>`. Another snapshot or generation → `cursor_stale` (workspace: a deleted generation, or a cursor older than the one-hour lease `search::CURSOR_LEASE_MS`, → `cursor_expired`); another query → `invalid_arguments`.
+- Order and cursor key: `(rid, relation, seq)`, rid in document order. Cursor `u1.<fingerprint>.<snapshot>.<gen>.<rid>.<relation>.<seq>`. Another snapshot or generation → `cursor_stale` (workspace: a deleted generation → `cursor_expired`; it has no time lease); another query → `invalid_arguments`.
 - A COMPONENT_SET query returns `members` (≤ 200, `complete` says whether more exist) and the instances of the set and its members, each with `via`.
 - No totals. `coverage.complete` is false after a budget stop or truncated members. Hidden instance content that was never expanded is a reason, not incompleteness. Hidden layers are left out unless requested; the page's own scan notes each hidden match it passes over, so the page whose range (or, last, whose tail) held one says `hidden_locations_excluded`, whatever the limit and with no second scan, so an empty page never reads as "unused". `layers.relations` stays `partial` with `relation_unavailable: library_identity`.
 - `snapshotId` pins the revision: a mismatch is `source_stale` with `use_current_snapshot`.
