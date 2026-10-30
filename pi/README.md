@@ -103,6 +103,8 @@ pi install /absolute/path/to/figlens
 
 **Finding usages.** Ask Pi where a component, variable, style or image is used: the agent calls the MCP `usages` tool with the exact layer or resource id, on the `.fig` directly (stateless) or, once an index is enabled, by `workspaceId`, the result's `sourceId` and the prepared scope; it never prepares, widens or resets an index for it. Results carry exact refs, a `snapshotId` and coverage; a hidden-layer exclusion or a source that changed is reported, not read as "unused". It changes nothing, so it needs no confirmation.
 
+**Comparing revisions.** Ask Pi what changed between two saved copies of a design: the agent calls the MCP `diff` tool with `old` and `file` (local paths) and pages with `nextCursor`. Layers match by exact id and type only; `unknown` means a side stopped or left that layer unexpanded, not that it was removed. It reads both files and writes nothing.
+
 **Agent tools.** The MCP `workflow` tool exposes on-demand build, audit, image, planning and opt-in YOLO guides from the same skill sources used by the commands above. For an existing UI, ask Pi to compare it with the design; the shared skill routes to `workflow(topic="audit")`, with no separate audit command. Static review and screenshot comparison are reported separately; fixes require a fix request. It returns guidance only; the current agent performs the authorized work with its project/browser tools. Besides the design tools (`tree`, `find`, `search`, `usages`, `inspect`, `nodes`, `variables`, `bundle`, `export`), the extension adds:
 
 | Tool | Purpose |
