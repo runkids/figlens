@@ -694,7 +694,8 @@ pub fn unsubscribe(
             .map_err(sql)?;
     let sources = jobs::chosen(storage, &ws, None)?;
     let ws_id = ws.held.id.clone();
-    let removed = match (id, consumer, owner) {
+    // The removed ids, so a host holding one by id alone drops it too; one consumer holds at most PER_CONSUMER.
+    let removed: Vec<String> = match (id, consumer, owner) {
         (Some(id), None, None) => {
             let n = tx
                 .execute(
@@ -708,16 +709,19 @@ pub fn unsubscribe(
             if n == 0 {
                 return Err(unknown(id));
             }
-            n
+            vec![id.to_owned()]
         }
         (None, Some(consumer), Some(owner)) => tx
-            .execute(
-                &format!(
-                    "DELETE FROM subscriptions WHERE consumer = ?1 AND owner = ?2 AND {}",
-                    seen(3, ws.version)
-                ),
-                params![consumer, owner, json!(sources).to_string()],
-            )
+            .prepare(&format!(
+                "DELETE FROM subscriptions WHERE consumer = ?1 AND owner = ?2 AND {} RETURNING id",
+                seen(3, ws.version)
+            ))
+            .map_err(sql)?
+            .query_map(params![consumer, owner, json!(sources).to_string()], |r| {
+                r.get(0)
+            })
+            .map_err(sql)?
+            .collect::<rusqlite::Result<_>>()
             .map_err(sql)?,
         _ => {
             return Err(fail(
@@ -727,7 +731,7 @@ pub fn unsubscribe(
         }
     };
     tx.commit().map_err(sql)?;
-    Ok(json!({"workspaceId": ws_id, "removed": removed}))
+    Ok(json!({"workspaceId": ws_id, "removed": removed.len(), "subscriptionIds": removed}))
 }
 
 /// Removes a consumer's raw checkpoint views (not subscriptions), optionally for one source
