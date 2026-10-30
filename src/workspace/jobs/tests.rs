@@ -2957,6 +2957,98 @@ fn a_listed_set_is_bounded_before_any_member_is_resolved() {
     assert!(refused.iter().all(|e| e.contains("at most")), "{refused:?}");
 }
 
+/// One runner turn of `storage` on `source`'s `0:0`: searches computed and whether more is due.
+fn turn(storage: &Storage, select: &Select, source: &str) -> (u64, bool) {
+    let go = std::sync::atomic::AtomicBool::new(false);
+    let t =
+        crate::workspace::changes::evaluate_published(storage, select, source, "0:0", None, &go)
+            .unwrap();
+    (t.report["computed"].as_u64().unwrap(), t.next.is_some())
+}
+
+#[test]
+fn a_non_member_publication_leaves_a_set_untouched() {
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    subscribe_set(&storage, &select, "a", &srcs[0].1, Some("badge"), None).unwrap();
+    republish(&conn, srcs[1].2, "sha256:other");
+    let stored: i64 = conn
+        .query_row("SELECT count(*) FROM query_evaluations", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        (turn(&storage, &select, &srcs[1].1), stored),
+        ((0, false), 1)
+    );
+}
+
+#[test]
+fn a_runner_that_cannot_see_every_member_never_evaluates_the_set() {
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    subscribe_set(&storage, &select, "a", "visible", Some("badge"), None).unwrap();
+    republish(&conn, srcs[0].2, "sha256:new");
+    let narrow = storage.clone().confined(std::slice::from_ref(&srcs[0].0));
+    let narrower = turn(&narrow, &select, &srcs[0].1);
+    // The same publication is due for a runner that sees the whole set.
+    assert_eq!(
+        (narrower, turn(&storage, &select, &srcs[0].1).0),
+        ((0, false), 1)
+    );
+}
+
+#[test]
+fn a_removed_member_added_again_never_revives_a_disabled_set() {
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 2);
+    let saved = subscribe_set(&storage, &select, "a", "visible", Some("badge"), None).unwrap();
+    let sub = saved["subscription"]["subscriptionId"].as_str().unwrap();
+    crate::workspace::registry::remove(&storage, &select, &srcs[1].1).unwrap();
+    crate::workspace::registry::add(&storage, &select, &srcs[1].0).unwrap();
+    let back: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sources WHERE source_id = ?1",
+            [&srcs[1].1],
+            |r| r.get(0),
+        )
+        .unwrap();
+    republish(&conn, srcs[0].2, "sha256:new");
+    let after = turn(&storage, &select, &srcs[0].1);
+    assert_eq!(
+        (
+            back,
+            after,
+            evaluations(&storage, &select, sub)["evaluation"]["state"].clone()
+        ),
+        (1, (0, false), json!("disabled"))
+    );
+}
+
+#[test]
+fn ack_on_a_disabled_subscription_is_refused() {
+    let d = TestDir::new();
+    let (storage, select, conn, _) = library_workspace(&d, 2);
+    let saved = subscribe_set(&storage, &select, "a", "visible", Some("badge"), None).unwrap();
+    let sub = saved["subscription"]["subscriptionId"].as_str().unwrap();
+    let cursor = evaluations(&storage, &select, sub)["nextCursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    conn.execute(
+        "UPDATE subscriptions SET disabled = '{\"reason\":\"source_removed\"}' WHERE id = ?1",
+        [sub],
+    )
+    .unwrap();
+    let req = crate::workspace::changes::Request {
+        subscription: Some(sub),
+        cursor: Some(&cursor),
+        ..Default::default()
+    };
+    let err = crate::workspace::changes::ack(&storage, &select, &req)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("is disabled"), "{err}");
+}
+
 #[test]
 fn a_subscribe_that_meets_its_disabled_subscription_asks_to_unsubscribe_first() {
     let d = TestDir::new();
