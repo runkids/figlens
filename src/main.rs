@@ -992,7 +992,8 @@ mod signals {
 
     #[cfg(unix)]
     extern "C" fn interrupted(_: i32) {
-        // Only the first signal writes, so repeats never fill the socket.
+        // Only the first signal writes, so repeats never fill the socket. Repeats are swallowed, not
+        // fatal: a wrapper forwards the host's group SIGTERM, which must not cut the release short.
         if INTERRUPTED.swap(true, Ordering::SeqCst) {
             return;
         }
