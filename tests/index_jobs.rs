@@ -4771,7 +4771,20 @@ fn a_tracked_scope_publishes_definition_fingerprints_as_an_untracked_build_does(
 fn a_library_evaluation_over_a_transiently_stale_source_is_unavailable_not_stored() {
     let env = Env::new();
     let t = Tracked::new(&env);
-    t.changes(&[]);
+    // A build still running would stamp the touched time, so each step waits for jobs to finish.
+    let idle = || {
+        wait_for("jobs to finish", || {
+            let conn = rusqlite::Connection::open(&t.db).unwrap();
+            conn.query_row(
+                "SELECT count(*) FROM jobs WHERE state IN ('queued', 'running')",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+                == 0
+        })
+    };
+    idle();
     // Same bytes, newer modification time: stale until a refresh reuses its generation.
     let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
     std::fs::File::options()
@@ -4796,6 +4809,7 @@ fn a_library_evaluation_over_a_transiently_stale_source_is_unavailable_not_store
         ],
     );
     t.index("refresh");
+    idle();
     let id = library["subscription"]["subscriptionId"].as_str().unwrap();
     let evaluated = t.watch("evaluate", &["--subscription", id]);
     assert_eq!(
