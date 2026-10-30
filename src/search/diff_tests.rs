@@ -1852,6 +1852,104 @@ fn modes_a_frame_inherits_from_above_it_make_its_diff_partial() {
     assert_eq!(out["coverage"]["complete"], json!(true));
 }
 
+/// Page 1 holds color variable 61 (red in mode 70, blue in 71), its collection 64, a component
+/// 20 whose card is filled from it and an instance 30 of it, whose copy REST resolves again in
+/// the modes in effect; the document above the page selects `mode` of collection 64.
+fn document_moded(mode: u32) -> K<'static> {
+    let color = |r: f32, b: f32| {
+        obj(vec![
+            ("dataType", K::Enum("VariableDataType", "COLOR")),
+            (
+                "value",
+                obj(vec![(
+                    "colorValue",
+                    obj(vec![
+                        ("r", K::Float(r)),
+                        ("g", K::Float(0.0)),
+                        ("b", K::Float(b)),
+                        ("a", K::Float(1.0)),
+                    ]),
+                )]),
+            ),
+        ])
+    };
+    let entry = |m: u32, data| obj(vec![("modeID", guid(m)), ("variableData", data)]);
+    let mode_of = |id: u32, at: &str| {
+        obj(vec![
+            ("id", guid(id)),
+            ("sortPosition", K::String(at.to_owned())),
+        ])
+    };
+    let paint = obj(vec![
+        ("type", K::Enum("PaintType", "SOLID")),
+        ("colorVar", alias(61)),
+    ]);
+    let mut message = doc(vec![
+        node(
+            64,
+            Some(1),
+            "VARIABLE_SET",
+            "Theme",
+            vec![(
+                "variableSetModes",
+                K::Array(vec![mode_of(70, "a"), mode_of(71, "b")]),
+            )],
+        ),
+        node(
+            61,
+            Some(1),
+            "VARIABLE",
+            "Brand",
+            vec![
+                (
+                    "variableDataValues",
+                    obj(vec![(
+                        "entries",
+                        K::Array(vec![entry(70, color(1.0, 0.0)), entry(71, color(0.0, 1.0))]),
+                    )]),
+                ),
+                ("variableSetID", obj(vec![("guid", guid(64))])),
+            ],
+        ),
+        node(20, Some(1), "SYMBOL", "Chip", vec![]),
+        node(
+            21,
+            Some(20),
+            "RECTANGLE",
+            "Card",
+            vec![("fillPaints", K::Array(vec![paint]))],
+        ),
+        instance(30, 1, "Use", 20, vec![]),
+    ]);
+    let selected = obj(vec![
+        ("variableSetID", obj(vec![("guid", guid(64))])),
+        ("variableModeID", guid(mode)),
+    ]);
+    if let K::Object(_, o) = &mut message
+        && let Some(K::Array(nodes)) = o.get_mut("nodeChanges")
+        && let K::Object(_, document) = &mut nodes[0]
+    {
+        document.insert(
+            "variableModeBySetMap",
+            obj(vec![("entries", K::Array(vec![selected]))]),
+        );
+    }
+    message
+}
+
+#[test]
+fn a_document_mode_switch_changes_a_page_s_rest_fills_and_leaves_its_diff_partial() {
+    let (red, blue) = (document_moded(70), document_moded(71));
+    let rest = |m: &K<'static>| crate::rest::resolve_nodes(&Tree::new(m), "0:1").unwrap();
+    eprintln!("RED {}", rest(&red)["document"]["children"]);
+    assert_ne!(rest(&red), rest(&blue));
+    let out = scoped(red, blue, "0:1");
+    assert_eq!(
+        (nodes(&out), &out["coverage"]["reasons"]),
+        (vec![], &not_compared(1))
+    );
+}
+
 #[test]
 fn stored_generations_keep_inherited_modes_like_the_live_trees() {
     outside_parity(moded_page(), moded_page(), "0:10");
