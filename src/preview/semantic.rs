@@ -7,9 +7,9 @@ use std::sync::atomic::AtomicBool;
 
 /// The one index build this viewer owns at a time: the scope the user enabled for a revision.
 #[derive(Default)]
-pub(super) struct Indexing(Mutex<Option<Owned>>);
+pub(super) struct Indexing(pub(super) Mutex<Option<Owned>>);
 
-struct Owned {
+pub(super) struct Owned {
     scope: String,
     cancel: Arc<AtomicBool>,
     /// The latest job report, or the error that ended the run.
@@ -169,6 +169,11 @@ impl Revision<'_> {
     fn enable(&self, revision: &str, scope: &str) -> Result<Value> {
         let scope = self.indexed_scope(revision, Some(scope))?;
         let mut owned = self.indexing.0.lock().map_err(|_| "indexing poisoned")?;
+        // Checked under the lock the revision's end takes to stop the build: a request that
+        // outlived its revision never admits a build the next revision would inherit.
+        if self.cancel.load(Ordering::SeqCst) {
+            return Err(STALE.into());
+        }
         if let Some(o) = owned.as_ref()
             && !o.thread.is_finished()
         {

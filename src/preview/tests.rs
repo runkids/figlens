@@ -374,6 +374,18 @@ fn only_a_same_origin_json_post_within_its_cap_reaches_a_state_change() {
 }
 
 #[test]
+fn an_enable_that_outlived_its_revision_starts_no_build() {
+    served(|r| {
+        // The revision ended (a save or a stop) while this request was still being read.
+        r.cancel.store(true, Ordering::SeqCst);
+        let (_, out) = r.post("enable/1", br#"{"scope":"0:1"}"#).unwrap();
+        let reply: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(reply["error"]["message"], STALE, "{reply}");
+        assert!(r.indexing.0.lock().unwrap().is_none());
+    });
+}
+
+#[test]
 fn enable_takes_one_stored_scope_of_the_current_revision() {
     served(|r| {
         let refused = |rev: &str, body: &str| {

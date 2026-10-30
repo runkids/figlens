@@ -9,6 +9,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+#[path = "../src/test_support.rs"]
+#[allow(dead_code)]
+mod test_support;
+
 const FIG: &str = "examples/first-success/design.fig";
 
 struct Viewer {
@@ -121,19 +125,10 @@ impl Drop for Viewer {
     }
 }
 
-fn dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "figlens-preview-semantic-{name}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::path::absolute(dir).unwrap()
-}
-
 #[test]
 fn text_search_and_semantic_status_create_no_workspace() {
-    let root = dir("readonly");
+    let owned = test_support::TestDir::new();
+    let root = std::path::absolute(owned.join("")).unwrap();
     let viewer = Viewer::start(&root, &[]);
     let found = viewer.get("search/1?q=First+success");
     assert_eq!(found["results"][0]["ref"]["nodeId"], "0:1", "{found}");
@@ -155,7 +150,8 @@ fn text_search_and_semantic_status_create_no_workspace() {
 
 #[test]
 fn enable_indexes_only_the_chosen_scope_and_modes_follow_the_profile() {
-    let root = dir("enable");
+    let owned = test_support::TestDir::new();
+    let root = std::path::absolute(owned.join("")).unwrap();
     let viewer = Viewer::start(&root, &[]);
     // A GET never changes state; a POST names exactly one stored scope of this revision.
     assert!(viewer.get("enable/1?scope=0:1").is_string());
@@ -199,7 +195,8 @@ fn enable_indexes_only_the_chosen_scope_and_modes_follow_the_profile() {
 #[cfg(debug_assertions)]
 #[test]
 fn a_save_cancels_the_build_the_viewer_owns_before_the_new_revision_serves() {
-    let root = dir("save");
+    let owned = test_support::TestDir::new();
+    let root = std::path::absolute(owned.join("")).unwrap();
     let hold = root.join("hold");
     std::fs::write(&hold, "").unwrap();
     let held = PathBuf::from(format!("parse:{}", hold.display()));
@@ -249,7 +246,8 @@ fn a_save_cancels_the_build_the_viewer_owns_before_the_new_revision_serves() {
 #[cfg(all(unix, debug_assertions))]
 #[test]
 fn a_signal_cancels_the_build_the_viewer_owns_before_it_exits() {
-    let root = dir("signal");
+    let owned = test_support::TestDir::new();
+    let root = std::path::absolute(owned.join("")).unwrap();
     let hold = root.join("hold");
     std::fs::write(&hold, "").unwrap();
     let held = PathBuf::from(format!("parse:{}", hold.display()));
