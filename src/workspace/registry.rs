@@ -537,10 +537,16 @@ pub fn remove(storage: &Storage, select: &Select, source_id: &str) -> Result<Jso
         // Its change history goes with it; a relocate keeps the id and so keeps the history.
         for q in [
             "DELETE FROM revision_changes WHERE rev IN (SELECT id FROM revisions WHERE source_id = ?1)",
+            "DELETE FROM revision_impacts WHERE rev IN (SELECT id FROM revisions WHERE source_id = ?1)",
             "DELETE FROM revisions WHERE source_id = ?1",
             "DELETE FROM tracking WHERE source_id = ?1",
             "DELETE FROM consumers WHERE substr(filter, 1, length(?1) + 1) = ?1 || char(31)",
+            "DELETE FROM subscriptions WHERE source_id = ?1",
             "DELETE FROM meta WHERE substr(key, 1, length(?1) + 8) = 'pruned' || char(31) || ?1 || char(31)",
+            // Its watch leases end at once, kept until GC so their requestIds replay as ended.
+            "UPDATE watch_leases SET ended = 'source_removed', authorized_path = NULL
+             WHERE source_id = ?1 AND ended IS NULL",
+            "DELETE FROM watch_monitor WHERE source_id = ?1",
         ] {
             tx.execute(q, [source_id]).map_err(sql)?;
         }
@@ -698,6 +704,17 @@ pub fn reset(storage: &Storage, select: &Select) -> Result<Json> {
                 [],
             )
             .map_err(sql)?;
+        // Watch leases end too, so the runner (which holds a shared lock) exits before the
+        // exclusive lock below gives up; their holders forget the workspace at next renewal.
+        if ws.version >= 5 {
+            ws.conn
+                .execute(
+                    "UPDATE watch_leases SET ended = 'reset', authorized_path = NULL
+                     WHERE ended IS NULL",
+                    [],
+                )
+                .map_err(sql)?;
+        }
     }
     let Some(held) = acquire(&place.roots.state.path, select, true)? else {
         return Ok(report(

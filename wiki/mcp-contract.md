@@ -10,7 +10,7 @@ Field reference linked from [mcp](mcp.md).
 | `inspect.depth` | 0–10 / 1 |
 | `find.limit`, `search.limit` | 1–200 / 20 |
 | `usages.limit`, `usages.scope` | 1–200 / 50; `0:0` |
-| `changes.limit` | revisions 1–50 / 20; with `revision`, nodes 1–500 / 100 |
+| `changes.limit` | revisions 1–50 / 20; with `revision`, entries (changes, then impact) 1–500 / 100; with a query `subscriptionId`, evaluations 1–50 / 20 |
 | `export.scale` | finite and greater than 0 / 1 |
 | `export.quality` | 1–100 / 80 |
 | `export.maxKb` | 0 through `2^53-1`; omitted means no byte budget |
@@ -32,7 +32,7 @@ Tool failures retain `isError: true` and text content; additive `_meta.figlens` 
 | `parse_budget_exceeded` | A named finite parsing budget was crossed; use a smaller copy or report the limit |
 | `output_write_failed` | Bundle packing or export writing failed; create an authorized writable directory and check space/permissions |
 | `permission_denied` | Configured roots forbid the source/output; retain the restriction |
-| `workspace_busy` | Another process holds the workspace, or a lane is full; retry once clear, never kill it |
+| `workspace_busy` | Another process holds the workspace, or a lane or checkpoint quota is full; retry once clear (a quota: follow `recovery`), never kill it |
 | `storage_unavailable` | The workspace's storage is missing or offline; follow `_meta.figlens.recovery`: restore it, or with the user's confirmation recreate elsewhere |
 | `index_incompatible` | Another schema or index version; follow the recovery (`rebuild`, or that figlens version) |
 | `query_work_limit` | Over 10 sources or 100k records per search; run a listed narrower one |

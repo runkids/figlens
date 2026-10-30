@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
-const { asset } = require("./target.js");
+const path = require("node:path");
+const { asset, cachedBinary } = require("./target.js");
 
 test("maps each released platform to its archive and binary", () => {
   assert.deepStrictEqual(
@@ -14,4 +15,8 @@ test("maps each released platform to its archive and binary", () => {
 
 test("rejects a platform with no build", () => {
   assert.throws(() => asset("freebsd", "x64", "1.2.3"), /no build for freebsd\/x64/);
+});
+
+test("names the cached binary the launcher installs for a version", () => {
+  assert.strictEqual(cachedBinary("/c", "win32", "arm64", "1.2.3"), path.join("/c", "npm", "1.2.3", "figlens.exe"));
 });

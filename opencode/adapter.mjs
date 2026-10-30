@@ -1,9 +1,10 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readlink, realpath, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { homedir, tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
@@ -13,6 +14,7 @@ import { buildRequest } from '../pi/requests.mjs';
 
 const execute = promisify(execFile);
 import { HELP } from './rpc.mjs';
+import { createHolder } from './watch-holder.mjs';
 
 // Under Bun-built hosts such as OpenCode, process.execPath is the host binary, which cannot run the Node launcher.
 export function launcherRuntime(versions = process.versions, execPath = process.execPath) {
@@ -21,6 +23,16 @@ export function launcherRuntime(versions = process.versions, execPath = process.
 
 const MANAGED_MCP = 'figlensmcp';
 
+// AbortSignal.any arrived in Node 20.3; the npm package still runs on Node 18.
+// shortcut: the fallback's listeners stay on long-lived signals until they abort, fine for Node 18 only.
+const anySignal = AbortSignal.any ? signals => AbortSignal.any(signals) : signals => {
+  const combined = new AbortController();
+  for (const signal of signals) {
+    if (signal.aborted) return AbortSignal.abort(signal.reason);
+    signal.addEventListener('abort', () => combined.abort(signal.reason), { once: true, signal: combined.signal });
+  }
+  return combined.signal;
+};
 const flag = (name, value) => value === undefined || value === false ? [] : value === true ? [name] : [name, String(value)];
 const required = (input, name) => {
   if (typeof input[name] !== 'string' || !input[name]) throw new Error(`${input.action ?? 'This call'} needs ${name}.`);
@@ -62,9 +74,16 @@ export function cliArgs(tool, input) {
   }
   // As the MCP changes and watch tools, which read one workspace by its id.
   const filters = () => ['--id', required(input, 'workspaceId'), ...flag('--source', input.sourceId), ...flag('--scope', input.scope), ...storage];
-  if (tool === 'changes') return ['changes', ...filters(), ...flag('--consumer', input.consumer), ...flag('--cursor', input.cursor),
-    ...flag('--revision', input.revision), ...flag('--limit', input.limit)];
-  if (tool === 'watch') return ['watch', input.action, ...filters(), '--consumer', required(input, 'consumer'), '--cursor', required(input, 'cursor')];
+  if (tool === 'changes') return ['changes', ...filters(), ...flag('--consumer', input.consumer), ...flag('--subscription', input.subscriptionId),
+    ...flag('--cursor', input.cursor), ...flag('--revision', input.revision), ...flag('--limit', input.limit)];
+  // A start is a held `watch run` (see createHolder), which takes the scope and requestId.
+  if (tool === 'watch' && input.action === 'start') return ['watch', 'run', '--id', required(input, 'workspaceId'), ...flag('--source', input.sourceId),
+    '--scope', required(input, 'scope'), ...storage, ...flag('--request-id', input.requestId)];
+  // The CLI refuses a flag the action does not take.
+  if (tool === 'watch') return ['watch', input.action, ...filters(), ...flag('--consumer', input.consumer),
+    ...flag('--subscription', input.subscriptionId), ...(input.action === 'ack' ? ['--cursor', required(input, 'cursor')] : flag('--cursor', input.cursor)),
+    ...flag('--node', input.node), ...flag('--query', input.query), ...flag('--type', input.type), ...flag('--owner', input.owner),
+    ...flag('--after', input.after)];
   // Every given selector and scope field reaches the CLI, which refuses conflicting selectors and fields an
   // action does not take, so none is dropped into a broader operation. A file is the operand of prepare, add
   // and relocate, else it selects the workspace; a sourceId is the operand of remove and relocate.
@@ -89,7 +108,16 @@ export function createAdapter(ctx, entry = import.meta.url) {
   const command = process.env.FIGLENS_BIN || (bundled ? launcherRuntime() : 'figlens');
   const prefix = bundled ? [wrapper] : [];
   const cacheRoot = path.join(process.env.XDG_CACHE_HOME || (process.platform === 'win32' && process.env.LOCALAPPDATA) || path.join(homedir(), '.cache'), 'figlens');
-  const commandLine = args => [command, ...prefix, ...args].map(value => `'${value.replaceAll("'", "'\\''")}'`).join(' ');
+  const commandLine = (args, argv = [command, ...prefix]) => [...argv, ...args].map(value => `'${value.replaceAll("'", "'\\''")}'`).join(' ');
+  // A lease holder runs the launcher's cached native binary itself, so stopping the child stops the holder
+  // on every platform (the launcher would leave it running); a prior `index status` installed and checked it.
+  const holding = () => {
+    if (!bundled) return [command, ...prefix];
+    const require = createRequire(entry);
+    const native = require('../target.js').cachedBinary(cacheRoot, process.platform, process.arch, require('../package.json').version);
+    if (!existsSync(native)) throw new Error(`figlens's cached binary is missing at ${native}; run figlens_index status to install it, then start again`);
+    return [native];
+  };
   const owners = new Map();
   const lifetime = new AbortController();
   let managedMcp = false, cliPath = false;
@@ -103,9 +131,16 @@ export function createAdapter(ctx, entry = import.meta.url) {
     const current = owners.get(sessionID);
     if (!current) return;
     current.lifetime.abort();
-    await Promise.all([...current.commands].map(stop => stop()));
-    await current.viewer.close();
-    owners.delete(sessionID);
+    // A command that fails to stop still lets its session release, close and drop; its error follows.
+    const stops = await Promise.allSettled([...current.commands].map(stop => stop()));
+    try {
+      // This session's leases only; the shared runner and other holders' leases are left alone.
+      for (const end of await current.holder.stopAll())
+        if (end.state !== 'ended') console.error('figlens watch lease not released:', JSON.stringify(end));
+      await current.viewer.close();
+    } finally { owners.delete(sessionID); }
+    const failed = stops.find(stop => stop.status === 'rejected');
+    if (failed) throw failed.reason;
   }
   async function scope(sessionID, signal) {
     lifetime.signal.throwIfAborted();
@@ -117,10 +152,15 @@ export function createAdapter(ctx, entry = import.meta.url) {
     }
     let current = owners.get(sessionID);
     if (!current) {
-      current = { viewer: new Viewer(command, prefix), lifetime: new AbortController(), commands: new Set() };
+      current = { viewer: new Viewer(command, prefix), lifetime: new AbortController(), commands: new Set(),
+        holder: createHolder(args => {
+          const [run, ...first] = holding();
+          return spawn(run, [...first, ...args], { cwd: root, stdio: 'pipe', windowsHide: true, detached: process.platform !== 'win32' });
+        },
+          { group: process.platform !== 'win32' }) };
       owners.set(sessionID, current);
     }
-    const combined = AbortSignal.any([lifetime.signal, current.lifetime.signal, ...(signal ? [signal] : [])]);
+    const combined = anySignal([lifetime.signal, current.lifetime.signal, ...(signal ? [signal] : [])]);
     const admitted = new Set();
     async function authorize(action, resources) {
       combined.throwIfAborted();
@@ -134,7 +174,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
       const argv = [...prefix, ...args];
       if (bundled) await authorize('edit', [cacheRoot]);
       await authorize('bash', [commandLine(args)]);
-      const signal = timeout ? AbortSignal.any([combined, AbortSignal.timeout(timeout)]) : combined;
+      const signal = timeout ? anySignal([combined, AbortSignal.timeout(timeout)]) : combined;
       const execution = execute(command, argv, { cwd: root, detached: process.platform !== 'win32', maxBuffer: 64 * 1024 * 1024 });
       let stopping;
       const abort = () => {
@@ -276,6 +316,13 @@ export function createAdapter(ctx, entry = import.meta.url) {
     return null;
   };
   async function cli(current, tool, input) {
+    // Only a lease this session's holder started can be stopped here; it releases it through its own child.
+    if (tool === 'watch' && input.action === 'stop') {
+      const leaseId = required(input, 'leaseId');
+      const end = await current.holder.stop(leaseId);
+      if (!end) throw new Error(`${leaseId} is not a lease this session holds, or it already ended; only its own live leases can be stopped here. figlens_watch status lists the workspace's leases.`);
+      return end;
+    }
     // Invalid or conflicting arguments fail before any permission prompt.
     const args = cliArgs(tool, input);
     const invoke = async (args, text = false) => {
@@ -333,8 +380,23 @@ export function createAdapter(ctx, entry = import.meta.url) {
       await current.authorize('read', [...new Set((await Promise.all(paths.map(async file => [file, await realpath(file).catch(() => file)]))).flat())]);
     };
     if (['search', 'usages', 'changes'].includes(tool) && !input.file) await readSources(await status(input));
-    // An ack writes the consumer's checkpoint into the workspace database, as a cancel writes its job.
-    if (tool === 'watch') await edit(place(await status(input)));
+    // Every other watch action writes checkpoints, subscriptions or leases into the workspace database, as a cancel writes its job.
+    if (tool === 'watch' && !['list', 'status', 'start'].includes(input.action)) {
+      // The binary evaluates the subscription's own source, so a sourceId would only narrow the read asked here.
+      if (input.action === 'evaluate' && input.sourceId !== undefined) throw new Error("watch evaluate takes no sourceId: it evaluates the subscription's own source.");
+      const found = await status(input);
+      // A saved query runs a workspace search on its source when saved and each time it is evaluated.
+      if ((input.action === 'subscribe' && input.query !== undefined) || input.action === 'evaluate') await readSources(found);
+      await edit(place(found));
+    }
+    // A lease makes the shared runner read its source on every save, so start also asks read on it.
+    if (tool === 'watch' && input.action === 'start') {
+      const found = await status(input);
+      await readSources(found);
+      await edit(place(found));
+      await current.authorize('bash', [commandLine(args, holding())]);
+      return current.holder.start(args.slice(2), current.signal);
+    }
     if (tool === 'jobs' && input.action === 'cancel') {
       const { workspaceId } = await invoke(cliArgs('jobs', { ...input, action: 'status' }));
       if (!workspaceId) throw missing("a job's workspace");

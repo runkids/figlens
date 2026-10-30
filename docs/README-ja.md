@@ -198,7 +198,7 @@ MCP：`index` の prepare は job を返します。`succeeded` になるまで 
 
 データ：SQLite データベースには、登録されたローカルパス、選択した範囲のレイヤー名と実効テキスト、検索 postings、正確な関係（包含、インスタンス、バリアント、変数/スタイル/画像の参照、プロトタイプの遷移先）とその参照先の定義、ハッシュ、世代、job が入ります。元の `.fig` はその場所で変更されず、その生バイトはデータベースに保存されません。
 
-Pi、OpenCode、OMP は、それぞれのオプトイン用エントリから同じインデックスを使い、workspace は再起動やホストをまたいで再利用されます。未実装：ファイル監視、ベクトル、イベント、サブスクリプション。
+Pi、OpenCode、OMP は、それぞれのオプトイン用エントリから同じインデックスを使い、workspace は再起動やホストをまたいで再利用されます。未実装：ファイルイベント（watch はファイルをポーリングし、holder の実行中だけ動きます）、ベクトル、プッシュイベント。
 
 <a id="commands"></a>
 
@@ -226,8 +226,16 @@ Pi、OpenCode、OMP は、それぞれのオプトイン用エントリから同
 | `node <file> <node>` | `.fig` の生ノード 1 つ |
 | `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset\|track\|untrack` | ユーザーごとの figlens state ディレクトリ、または workspace が以後記憶する `--storage DIR` の下にあるローカル workspace。`prepare <file> --scope NODE` でその範囲の検索インデックスを一度だけ作成し、以後 `search --file <file>`（または `--workspace DIR`）は再解析せず、workspace の全ソースをまとめてランク付けして答えます。`refresh` は変更されたファイル、`rebuild` はすべて（または `--source`/`--scope` の一つ）を再作成し、`clear` は使われていないインデックスを削除します。新しいインデックスができるまで以前のものが使われます。`reset` は workspace データベースだけを削除し、デザイン、エクスポート、記憶された場所には触れません。`track --scope NODE` は baseline ビルドからそのスコープの変更を記録し、`untrack` は履歴を残したまま停止します。 |
 | `jobs status\|cancel <jobId>` | インデックス作成の状態表示または取り消し。`cancel` は作成が止まってから戻ります |
-| `changes --file <file>\|--id ID\|--workspace DIR [--source ID] [--scope NODE] [--consumer NAME\|--cursor C] [--revision R] [--limit N]` | 追跡中のスコープで記録された変更を古い順に返します。公開されたビルドごとに 1 リビジョン（baseline または changes）で、カバレッジと変更種別・ファセットごとの件数を含みます。`--revision` でそのリビジョンの変更ノードをページングします。`tracking` は変更を記録するために `index refresh` が必要なスコープを示します。読み取りのみ |
-| `watch ack --file <file>\|--id ID\|--workspace DIR --consumer NAME --cursor C [--source ID] [--scope NODE]` | 同じフィルターで処理した最後の `changes` ページの `nextCursor` まで、コンシューマーのチェックポイントを進めます。繰り返しても安全で、通常は前にしか進みません。ただし削除の後ろに残ったチェックポイントは、現在のリカバリーカーソルで戻され、保持されたリビジョンを読み直します。まだ通過していないリビジョンを保持期間の削除より前に発行したカーソルは `event_gap` になり、何も書き込みません |
+| `changes --file <file>\|--id ID\|--workspace DIR [--source ID] [--scope NODE] [--consumer NAME\|--subscription ID\|--cursor C] [--revision R] [--limit N]` | 追跡中のスコープで記録された変更を古い順に返します。公開されたビルドごとに 1 リビジョン（baseline または changes）で、カバレッジと変更種別・ファセットごとの件数を含みます。changes リビジョンには変更が及ぶレイヤーの `impact` 要約があります（スキーマ 7 より前は null）。`--revision` でそのリビジョンの変更ノード、続いて impact が列挙するレイヤーをページングします（`entry` がどちらかを示します）。`tracking` は変更を記録するために `index refresh` が必要なスコープを示します。読み取りのみ |
+| `watch ack --file <file>\|--id ID\|--workspace DIR --consumer NAME\|--subscription ID --cursor C [--source ID] [--scope NODE]` | 同じフィルターで処理した最後の `changes` ページの `nextCursor` まで、コンシューマーのチェックポイントを進めます。繰り返しても安全で、通常は前にしか進みません。ただし削除の後ろに残ったチェックポイントは、現在のリカバリーカーソルで戻され、保持されたリビジョンを読み直します。まだ通過していないリビジョンを保持期間の削除より前に発行したカーソルは `event_gap` になり、何も書き込みません |
+| `watch run --file <file>\|--id ID\|--workspace DIR --scope NODE [--source ID] [--request-id R]` | 追跡中の scope の lease をフォアグラウンドで保持します。workspace 共有の runner が保存のたびに更新し（250 ms ごとにポーリング、60 s ごとに内容を確認）、`index refresh` なしで `changes` に新しい revision が出ます。lease を出力し、stdin が閉じたとき、Ctrl-C や SIGTERM、または scope の追跡解除で終了行を 1 行出力します。MCP の `watch` `start` と `stop` はサーバーの実行中 lease を保持します。更新されない lease は 30 s で終わり、最後の lease の後に runner は終了します |
+| `watch status --file <file>\|--id ID\|--workspace DIR` | workspace の lease（`active`、`unauthorized`、`untracked`、`expired`、`ended`）と runner（`running`、`stopping`、`stopped`、`unknown`、配置付き）。書き込みはしません |
+| `watch subscribe --file <file>\|--id ID\|--workspace DIR --consumer NAME --source ID [--scope NODE] [--node ID] [--owner NAME]` | ソース、スコープ、または特定のレイヤー（`--node`）を最新リビジョンから専用のチェックポイントで追跡します。`changes --subscription` で読み、`watch ack --subscription` で確定します。存在しないか曖昧なレイヤーは `target_missing` または `identity_uncertain` になり、同名のレイヤーで代用しません。`--owner` を付けるとそのタスク限りの一時的なものになります |
+| `watch subscribe --file <file>\|--id ID\|--workspace DIR --consumer NAME --source ID --query TEXT [--type T[,T]] [--scope NODE]` | 1 つのソースの scope に対する検索を保存します。上位 50 件をすぐ評価し、`changes --subscription` は保存済みの評価を読むだけで計算しません |
+| `watch evaluate --file <file>\|--id ID\|--workspace DIR --subscription ID` | クエリサブスクリプションを scope の現在のインデックスで評価して保存します。評価済みなら何もしません。scope を watch 中なら公開のたびに自動で行います |
+| `watch list --file <file>\|--id ID\|--workspace DIR [--consumer NAME] [--after ID]` | 見えるサブスクリプションと状態をページ単位で一覧します |
+| `watch unsubscribe --file <file>\|--id ID\|--workspace DIR --subscription ID\|--consumer C --owner NAME` | サブスクリプション 1 件とそのチェックポイント、または owner の一時的なものを削除します。トラッキングと履歴は残ります |
+| `watch forget --file <file>\|--id ID\|--workspace DIR --consumer NAME [--source ID] [--scope NODE]` | consumer の素のチェックポイントを削除します。consumer ごとにサブスクリプションとチェックポイントは最大 64、ワークスペース全体で 4096 で、自動で追い出されることはありません |
 | `mcp` | stdio 経由のローカル MCP サーバー |
 | `update` | バイナリを最新リリースに置き換え |
 

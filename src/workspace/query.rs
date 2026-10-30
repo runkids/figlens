@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::search::{self, Index, Part, Request};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The supported query envelope: ready sources one workspace search reads together, and the
 /// records of their generations in total. Checked from stored counts before any is loaded.
@@ -34,7 +35,55 @@ fn mtime_ns(t: SystemTime) -> i64 {
 /// one corpus. Sources that are not ready are listed with their state and next step; stale
 /// indexes are not served. Every request re-resolves the workspace's location and binding.
 pub fn search(storage: &Storage, select: &Select, only: &[String], req: &Request) -> Result<Json> {
-    search_index(storage, select, only, req).map_err(|e| with_fallback(storage, select, req, e))
+    search_with(storage, select, only, req, None)
+}
+
+/// `search`, ended with `Cancelled` once `cancel` is set: SQLite is interrupted in its
+/// statement and the loading and ranking loops stop, so a runner can end a search in progress.
+pub(crate) fn search_with(
+    storage: &Storage,
+    select: &Select,
+    only: &[String],
+    req: &Request,
+    cancel: Option<&AtomicBool>,
+) -> Result<Json> {
+    search_index(storage, select, only, req, cancel)
+        .map_err(|e| with_fallback(storage, select, req, e))
+}
+
+/// Runs `work` while a watcher interrupts SQLite through `handle` once `cancel` is set, and
+/// returns `Cancelled` whenever it was set, whatever stopped the work. SQLite drops an interrupt
+/// that finds no statement running, so the watcher repeats it until `work` returns; it ends as
+/// soon as `work` returns, panics included, and is joined before this returns.
+pub(crate) fn interruptible<T>(
+    handle: rusqlite::InterruptHandle,
+    cancel: &AtomicBool,
+    work: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let cancelled = || {
+        cancel
+            .load(Ordering::SeqCst)
+            .then(|| FigError::new(ErrorKind::Cancelled, "search cancelled").into())
+    };
+    if let Some(e) = cancelled() {
+        return Err(e);
+    }
+    let (done, wait) = std::sync::mpsc::channel::<()>();
+    let out = std::thread::scope(|s| {
+        s.spawn(move || {
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                wait.recv_timeout(Duration::from_millis(10))
+            {
+                if cancel.load(Ordering::SeqCst) {
+                    handle.interrupt();
+                }
+            }
+        });
+        let out = work();
+        drop(done);
+        out
+    });
+    cancelled().map_or(out, Err)
 }
 
 /// A workspace that cannot be used now still leaves the named `.fig` searchable directly; that
@@ -101,9 +150,28 @@ fn search_index(
     select: &Select,
     only: &[String],
     req: &Request,
+    cancel: Option<&AtomicBool>,
 ) -> Result<Json> {
     let q = req.validate()?;
     let (_, ws) = opened(storage, select, false)?;
+    match cancel {
+        None => searched(storage, select, only, req, q, ws, &search::NEVER),
+        Some(flag) => interruptible(ws.conn.get_interrupt_handle(), flag, || {
+            searched(storage, select, only, req, q, ws, flag)
+        }),
+    }
+}
+
+fn searched(
+    storage: &Storage,
+    select: &Select,
+    only: &[String],
+    req: &Request,
+    q: search::Prepared,
+    ws: Opened,
+    cancel: &AtomicBool,
+) -> Result<Json> {
+    let stop = || cancel.load(Ordering::Relaxed);
     let ws_id = ws.held.id.clone();
     let dir = ws.held.dir.clone();
     if ws.version < 2 {
@@ -180,6 +248,9 @@ fn search_index(
     // Record text copied by every generation and ancestor load of this query.
     let mut spent = 0usize;
     for row in &rows {
+        if stop() {
+            return Err(fail(ErrorKind::Cancelled, "search cancelled"));
+        }
         let mut state = json!({"sourceId": row.id, "path": row.path});
         let job: Option<(String, String, String, i64)> = tx
             .query_row(
@@ -264,7 +335,7 @@ fn search_index(
                     records as usize > QUERY_RECORDS,
                 ));
             }
-            let index = search::store::load(&tx, gen_id, q.terms(), &mut spent)
+            let index = search::store::load_with(&tx, gen_id, q.terms(), &mut spent, cancel)
                 .map_err(|e| unreadable_index(&ws_id, &row.id, e))?;
             let identity = json!({"sourceId": row.id, "membership": row.membership,
                 "snapshotId": row.snapshot, "gen": gen_id, "versions": versions});
@@ -336,7 +407,7 @@ fn search_index(
         return Ok(out);
     }
     let key = json!(loaded.iter().map(|l| &l.3).collect::<Vec<_>>());
-    let ranked = search::corpus_rank(&parts(&loaded), &q, req, &key)?;
+    let ranked = search::corpus_rank(&parts(&loaded), &q, req, &key, cancel)?;
     // Only the shown page reads its records' ancestors, one tree level per query.
     let mut wanted: Vec<Vec<u32>> = vec![Vec::new(); loaded.len()];
     for (part, rid) in ranked.shown() {
@@ -344,9 +415,9 @@ fn search_index(
     }
     for ((index, _, gen_id, identity), mut rids) in loaded.iter_mut().zip(wanted) {
         while !rids.is_empty() {
-            search::store::add(&tx, *gen_id, index, &rids, &mut spent).map_err(|e| {
-                unreadable_index(&ws_id, identity["sourceId"].as_str().unwrap_or(""), e)
-            })?;
+            search::store::add_with(&tx, *gen_id, index, &rids, &mut spent, cancel).map_err(
+                |e| unreadable_index(&ws_id, identity["sourceId"].as_str().unwrap_or(""), e),
+            )?;
             rids = rids
                 .iter()
                 .filter_map(|r| search::parent(index, *r))

@@ -962,6 +962,7 @@ fn revision_retention_deletes_and_expires_only_whole_groups() {
                 summary: json!({"changes": 5}),
                 rows: (0..5).map(|_| row()).collect(),
                 truncated: false,
+                impact: Default::default(),
             })),
         };
         let tx = ws.conn.transaction().unwrap();
@@ -1039,5 +1040,636 @@ fn an_active_scope_published_again_after_eviction_records_a_baseline() {
     assert_eq!(
         serde_json::from_str::<Json>(&coverage).unwrap(),
         json!({"basis": "baseline", "reason": "previous_unpublished"})
+    );
+}
+
+#[test]
+fn a_revision_at_the_high_water_size_keeps_its_rows_in_pages_cleanup_freed() {
+    let dir = TestDir::new();
+    let (storage, select, _) = workspace(&dir, 1);
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    // The file grows past the cap, then frees it all: its size stays, its pages are reusable.
+    ws.conn
+        .execute_batch(&format!(
+            "INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
+             VALUES ('s', '0:0', 'active', 1, 'v', 0);
+             CREATE TABLE filler (b BLOB); INSERT INTO filler VALUES (zeroblob({DISK_CAP}));
+             DELETE FROM filler;"
+        ))
+        .unwrap();
+    assert!(used(&ws.conn) > DISK_CAP);
+    let row = search::diff::Row {
+        frame: "0:0".into(),
+        node: "0:1".into(),
+        kind: "FRAME".into(),
+        change: "changed",
+        facets: 1,
+        descendants: 0,
+    };
+    let planned = Planned {
+        epoch: 1,
+        from: 1,
+        what: Ok(Ok(search::diff::Revision {
+            coverage: json!({"complete": true}),
+            summary: json!({"changes": 1}),
+            rows: vec![row],
+            truncated: false,
+            impact: Default::default(),
+        })),
+    };
+    let tx = ws.conn.transaction().unwrap();
+    tx.execute("INSERT INTO facet_sets VALUES (2, 'v', 1, 'null')", [])
+        .unwrap();
+    record(
+        &tx,
+        "s",
+        "0:0",
+        2,
+        Some(1),
+        &json!({"snapshot": "x"}),
+        Some(planned),
+        0,
+    )
+    .unwrap();
+    let detail: String = tx
+        .query_row("SELECT detail FROM revisions", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(detail, "complete");
+}
+
+/// Records generation `gen_id` of tracked scope `0:0` of `source`, replacing `gen_id - 1`.
+fn recorded(tx: &Connection, source: &str, gen_id: i64, mut planned: Planned) {
+    planned.from = gen_id - 1;
+    tx.execute_batch(&format!(
+        "INSERT OR IGNORE INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
+         VALUES ('{source}', '0:0', 'active', 1, 'v', 0);
+         INSERT INTO facet_sets VALUES ({gen_id}, 'v', 1, 'null');"
+    ))
+    .unwrap();
+    let built = json!({"snapshot": "x"});
+    record(
+        tx,
+        source,
+        "0:0",
+        gen_id,
+        Some(gen_id - 1),
+        &built,
+        Some(planned),
+        0,
+    )
+    .unwrap();
+}
+
+/// A compared revision of one changed row whose impact reached `hits`, incomplete for `reasons`.
+fn impacted(reasons: &[(&'static str, u64)], hits: Vec<search::impact::Hit>) -> Planned {
+    let row = search::diff::Row {
+        frame: "0:0".into(),
+        node: "0:1".into(),
+        kind: "FRAME".into(),
+        change: "changed",
+        facets: 1,
+        descendants: 0,
+    };
+    Planned {
+        epoch: 1,
+        from: 0,
+        what: Ok(Ok(search::diff::Revision {
+            coverage: json!({"complete": true}),
+            summary: json!({"changes": 1}),
+            rows: vec![row],
+            truncated: false,
+            impact: search::impact::Impact {
+                complete: reasons.is_empty(),
+                reasons: reasons.iter().copied().collect(),
+                hits,
+            },
+        })),
+    }
+}
+
+fn hit(node: &str, class: search::impact::Class) -> search::impact::Hit {
+    search::impact::Hit {
+        node: node.into(),
+        class,
+        side: 3,
+        changed: 1,
+        unknown: 2,
+        equal: 4,
+        via: Some(("instance_of", "0:9".into())),
+        frames: [Some("0:0".into()), Some("0:5".into())],
+    }
+}
+
+/// A hit's entry exactly as a detail page serializes it, and the frames stored beside it.
+fn entry_bytes(h: &search::impact::Hit) -> usize {
+    let via = h.via.as_ref().map(|(r, t)| (*r, t.as_str()));
+    let verdicts = [h.changed, h.unknown, h.equal];
+    let entry = search::impact::entry(&h.node, h.class.name(), h.side, verdicts, via);
+    entry.to_string().len() + h.frames.iter().flatten().map(String::len).sum::<usize>()
+}
+
+/// The stored impact summary, listed classes, detail and detail bytes of generation `gen_id`.
+fn impact_of(conn: &Connection, gen_id: i64) -> (Json, Vec<String>, String, i64) {
+    let (impact, detail, bytes, id): (String, String, i64, Vec<u8>) = conn
+        .query_row(
+            "SELECT impact, detail, detail_bytes, id FROM revisions WHERE gen = ?1",
+            [gen_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    let classes = conn
+        .prepare(
+            "SELECT class || ' ' || old_frame || ' ' || new_frame FROM revision_impacts
+             WHERE rev = ?1 ORDER BY ord",
+        )
+        .unwrap()
+        .query_map([id], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    (
+        serde_json::from_str(&impact).unwrap(),
+        classes,
+        detail,
+        bytes,
+    )
+}
+
+#[test]
+fn a_revision_lists_each_class_it_reached_charged_at_its_escaped_size() {
+    use search::impact::Class::*;
+    let dir = TestDir::new();
+    let (storage, select, _) = workspace(&dir, 1);
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    let tx = ws.conn.transaction().unwrap();
+    // A quote and a control character are stored as their escapes in the entry.
+    let hits = vec![
+        hit("0:1", Direct),
+        hit("0:2", Effective),
+        hit("0:3", EffectiveUnchanged),
+        hit("0:\"4\u{1}", Possible),
+    ];
+    let entries: usize = hits.iter().map(entry_bytes).sum();
+    recorded(&tx, "s", 2, impacted(&[], hits));
+    let (impact, classes, detail, bytes) = impact_of(&tx, 2);
+    // The change row's estimate, each entry as a detail page serializes it with its stored
+    // frames, and the summary.
+    let row = 64 + "0:0".len() + "0:1".len() + "FRAME".len();
+    assert_eq!(
+        (impact.clone(), classes, detail, bytes),
+        (
+            json!({"complete": true, "reasons": [],
+                "listed": {"direct": 1, "effective": 1, "effective_unchanged": 1, "possible": 1}}),
+            // Each with its old and new frame, in that order.
+            ["direct", "effective", "effective_unchanged", "possible"]
+                .map(|c| format!("{c} 0:0 0:5"))
+                .to_vec(),
+            "complete".into(),
+            (row + entries + impact.to_string().len()) as i64
+        )
+    );
+}
+
+#[test]
+fn a_revision_and_its_impact_roll_back_together() {
+    let dir = TestDir::new();
+    let (storage, select, _) = workspace(&dir, 1);
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    let tx = ws.conn.transaction().unwrap();
+    let hits = vec![hit("0:1", search::impact::Class::Direct)];
+    recorded(&tx, "s", 2, impacted(&[], hits));
+    drop(tx);
+    let count = |t: &str| -> i64 {
+        ws.conn
+            .query_row(&format!("SELECT count(*) FROM {t}"), [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!((count("revisions"), count("revision_impacts")), (0, 0));
+}
+
+#[test]
+fn an_impact_whose_escapes_pass_the_detail_budget_lists_nothing_and_keeps_its_reasons() {
+    let dir = TestDir::new();
+    let (storage, select, _) = workspace(&dir, 1);
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    let tx = ws.conn.transaction().unwrap();
+    // Its copy fits the budget; escaped six times over, its entry does not.
+    let control = "\u{1}".repeat(search::diff::REVISION_BYTES / 2);
+    let hits = vec![hit(&control, search::impact::Class::Possible)];
+    recorded(
+        &tx,
+        "s",
+        2,
+        impacted(&[("source_comparison_partial", 1)], hits),
+    );
+    let (impact, classes, detail, _) = impact_of(&tx, 2);
+    assert_eq!(
+        (impact, classes.len(), detail),
+        (
+            json!({"complete": false, "listed": {}, "reasons": [
+                {"reason": "impact_truncated", "count": 1},
+                {"reason": "source_comparison_partial", "count": 1}]}),
+            0,
+            "truncated".into()
+        )
+    );
+}
+
+#[test]
+fn change_rows_at_the_detail_budget_make_room_for_the_impact_summary() {
+    // Eight rows the diff admits, filling the budget exactly.
+    let node = "1".repeat(search::diff::REVISION_BYTES / 8 - 64 - "0:0".len() - "FRAME".len());
+    let room = |reserve| {
+        let mut rows: Vec<_> = (0..8)
+            .map(|_| search::diff::Row {
+                frame: "0:0".into(),
+                node: node.clone(),
+                kind: "FRAME".into(),
+                change: "changed",
+                facets: 1,
+                descendants: 0,
+            })
+            .collect();
+        let dropped = make_room(&mut rows, reserve);
+        let used: usize = rows.iter().map(row_cost).sum();
+        (
+            rows.len(),
+            dropped,
+            used + reserve <= search::diff::REVISION_BYTES,
+        )
+    };
+    assert_eq!((room(0), room(1)), ((8, false, true), (7, true, true)));
+}
+
+#[test]
+fn an_impact_that_would_pass_the_disk_cap_is_left_out_as_truncated() {
+    let dir = TestDir::new();
+    let (storage, select, _) = workspace(&dir, 1);
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    ws.conn
+        .execute_batch(&format!(
+            "CREATE TABLE filler (b BLOB); INSERT INTO filler VALUES (zeroblob({DISK_CAP}));"
+        ))
+        .unwrap();
+    let tx = ws.conn.transaction().unwrap();
+    let hits = vec![
+        hit("0:1", search::impact::Class::Direct),
+        hit("0:2", search::impact::Class::Possible),
+    ];
+    recorded(&tx, "s", 2, impacted(&[], hits));
+    let (impact, classes, detail, bytes) = impact_of(&tx, 2);
+    assert_eq!(
+        (impact.clone(), classes.len(), detail, bytes),
+        (
+            json!({"complete": false, "listed": {},
+                "reasons": [{"reason": "impact_truncated", "count": 2}]}),
+            0,
+            "truncated".into(),
+            impact.to_string().len() as i64
+        )
+    );
+}
+
+#[test]
+fn an_expired_revision_drops_its_listed_impact_with_its_rows_and_keeps_the_summary() {
+    let dir = TestDir::new();
+    let (storage, select, _) = workspace(&dir, 1);
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    let tx = ws.conn.transaction().unwrap();
+    // Two revisions of about 700 bytes each: the older passes the 1 KiB detail retention.
+    let long = "1".repeat(600);
+    for gen_id in [2, 3] {
+        let hits = vec![hit(&long, search::impact::Class::Possible)];
+        recorded(&tx, "s", gen_id, impacted(&[], hits));
+    }
+    let (old, kept) = (impact_of(&tx, 2), impact_of(&tx, 3));
+    assert_eq!(
+        (old.0, old.1.len(), old.2, kept.1.len(), kept.2),
+        (
+            json!({"complete": true, "listed": {"possible": 1}, "reasons": []}),
+            0,
+            "expired".into(),
+            1,
+            "complete".into()
+        )
+    );
+}
+
+#[test]
+fn a_detail_cursor_resumes_in_its_section_and_an_older_one_reads_change_rows() {
+    let dir = TestDir::new();
+    let (storage, select, _) = workspace(&dir, 1);
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    let source = sources(&ws.conn)[0].clone();
+    let tx = ws.conn.transaction().unwrap();
+    let hits = ["0:2", "0:3"].map(|n| hit(n, search::impact::Class::Possible));
+    recorded(&tx, &source, 2, impacted(&[], hits.to_vec()));
+    let id: Vec<u8> = tx
+        .query_row("SELECT id FROM revisions", [], |r| r.get(0))
+        .unwrap();
+    tx.commit().unwrap();
+    let revision = crate::search::hex(&id);
+    let read = |cursor: Option<&str>| {
+        let req = crate::workspace::changes::Request {
+            revision: Some(&revision),
+            cursor,
+            limit: Some(1),
+            ..Default::default()
+        };
+        crate::workspace::changes::changes(&storage, &select, &req)
+    };
+    let ids = |page: &Json| {
+        (
+            page["nodes"][0]["entry"].clone(),
+            page["nodes"][0]["id"].clone(),
+        )
+    };
+    let first = read(None).unwrap();
+    let second = read(first["nextCursor"].as_str()).unwrap();
+    let third = read(second["nextCursor"].as_str()).unwrap();
+    let signed = |tag: &str, payload: &[u8]| {
+        let req = crate::workspace::changes::Request {
+            revision: Some(&revision),
+            ..Default::default()
+        };
+        crate::workspace::changes::sign(&storage, &select, &req, tag, payload)
+    };
+    // A cursor issued before impact names a change row: after row 0, the impact list follows.
+    let d1 = signed("d1", &[&id[..], &0i64.to_be_bytes()].concat());
+    let older = read(d1.as_str()).unwrap();
+    let section = signed("d2", &[&id[..], &[2], &0i64.to_be_bytes()].concat());
+    let other = signed("d2", &[&[0; 16][..], &[1], &0i64.to_be_bytes()].concat());
+    let kind = |r: Result<Json>| {
+        r.unwrap_err()
+            .downcast_ref::<FigError>()
+            .map(FigError::kind)
+    };
+    assert_eq!(
+        (
+            [ids(&first), ids(&second), ids(&third)],
+            third["nextCursor"].clone(),
+            ids(&older),
+            kind(read(section.as_str())),
+            kind(read(other.as_str()))
+        ),
+        (
+            [
+                (json!("change"), json!("0:1")),
+                (json!("impact"), json!("0:2")),
+                (json!("impact"), json!("0:3"))
+            ],
+            Json::Null,
+            (json!("impact"), json!("0:2")),
+            Some(ErrorKind::CursorStale),
+            Some(ErrorKind::CursorStale)
+        )
+    );
+}
+
+#[test]
+fn a_publication_evaluates_each_saved_search_once_in_bounded_turns() {
+    use crate::workspace::changes::{evaluate_published, subscriptions};
+    use std::sync::atomic::AtomicBool;
+    let d = TestDir::new();
+    let (storage, select, dir) = workspace(&d, 1);
+    let me = owner(&dir).unwrap();
+    let conn = connection(&dir);
+    let source = sources(&conn)[0].clone();
+    let build = |attempt| {
+        // The fixture's own prepare job holds the scope; each build here is a fresh one.
+        conn.execute("DELETE FROM jobs", []).unwrap();
+        let job_id = job(&conn, &source, "0:0", "running", &me, attempt);
+        let built = work(&dir, &job_id, &me, attempt).unwrap();
+        let ws_id = job_id.split('.').next().unwrap();
+        publish(&storage, ws_id, &job_id, &me, attempt, &built).unwrap();
+    };
+    build(1);
+    let save = |consumer, query| {
+        let req = subscriptions::Subscribe {
+            consumer: Some(consumer),
+            source: Some(&source),
+            scope: None,
+            node: None,
+            owner: None,
+            query: Some(query),
+            types: Vec::new(),
+        };
+        subscriptions::subscribe(&storage, &select, &req).unwrap();
+    };
+    // One more subscriber of badge than a write records, two spellings of one search by two
+    // consumers, and one other search.
+    let many: Vec<String> = (0..33).map(|i| format!("c{i:02}")).collect();
+    for c in &many {
+        save(c, "badge");
+    }
+    save("a", "First success");
+    save("b", "first  SUCCESS");
+    save("a", "card");
+    let (go, stop) = (AtomicBool::new(false), AtomicBool::new(true));
+    let turn = |from, cancel| {
+        let t = evaluate_published(&storage, &select, &source, "0:0", from, cancel).unwrap();
+        let n = t.report["subscriptions"].as_array().unwrap().len();
+        (
+            (t.report["computed"].as_u64().unwrap(), n, t.next.is_some()),
+            t.next,
+        )
+    };
+    // Turns from `from` until nothing is due, at most ten.
+    let drain = |mut from| {
+        let mut seen = Vec::new();
+        while seen.len() < 10 {
+            let (got, next) = turn(from, &go);
+            seen.push(got);
+            if next.is_none() {
+                break;
+            }
+            from = next;
+        }
+        seen
+    };
+    // Every subscription is current after subscribe: nothing is due until a publication.
+    let (idle, _) = turn(None, &go);
+    // Same bytes publish no new generation here, so the evaluations are made stale instead, as
+    // a publication they were not evaluated at leaves them.
+    let stale = |ranking: &str| {
+        conn.execute("UPDATE query_evaluations SET ranking = ?1", [ranking])
+            .unwrap();
+    };
+    stale("older");
+    let (cancelled, from) = turn(None, &stop);
+    let (badge, from) = turn(from, &go);
+    // A relocation between turns: the kept badge search belongs to another publication, so
+    // the work restarts at the first search, which is badge again.
+    conn.execute_batch(
+        "UPDATE sources SET membership = 'moved'; UPDATE generations SET membership = 'moved'",
+    )
+    .unwrap();
+    let rest = drain(from);
+    let again = turn(None, &go).0;
+    // A damaged search is noted once per publication, not rerun by every later discovery.
+    conn.execute(
+        "UPDATE subscriptions SET anchor = '{' WHERE anchor LIKE '%card%'",
+        [],
+    )
+    .unwrap();
+    stale("oldest");
+    let damaged = drain(None);
+    let after = turn(None, &go).0;
+    let note: String = conn
+        .query_row(
+            "SELECT eval_failure ->> '$.evaluation.state' FROM subscriptions WHERE anchor = '{'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    // Searches in canonical order: badge in two writes from one search, card, first success.
+    let order = vec![
+        (1, 32, true),
+        (0, 1, true),
+        (1, 1, true),
+        (1, 2, true),
+        (0, 0, false),
+    ];
+    assert_eq!(
+        (
+            idle,
+            cancelled,
+            badge,
+            rest,
+            again,
+            damaged,
+            after,
+            note.as_str()
+        ),
+        (
+            (0, 0, false),
+            (0, 0, true),
+            (1, 32, true),
+            order.clone(),
+            (0, 0, false),
+            order,
+            (0, 0, false),
+            "failed"
+        )
+    );
+    // Behind another writer: a turn fails busy at once, and one cancelled while it waits
+    // writes nothing; its continuation then records the rest without searching again.
+    use std::sync::atomic::Ordering;
+    stale("held");
+    let (_, from) = turn(None, &go);
+    let holder = connection(&dir);
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let started = std::time::Instant::now();
+    let busy = evaluate_published(&storage, &select, &source, "0:0", from.clone(), &go)
+        .err()
+        .and_then(|e| e.downcast_ref::<FigError>().map(FigError::kind));
+    let waited = started.elapsed();
+    let flag = AtomicBool::new(false);
+    let held = std::thread::scope(|s| {
+        let turn = s.spawn(|| {
+            evaluate_published(&storage, &select, &source, "0:0", from.clone(), &flag).unwrap()
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        flag.store(true, Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        holder.execute_batch("COMMIT").unwrap();
+        let t = turn.join().unwrap();
+        (
+            t.report["subscriptions"].as_array().unwrap().len(),
+            t.next.is_some(),
+        )
+    });
+    let resumed = turn(from, &go).0;
+    assert_eq!(
+        (busy, waited < LOCK_WAIT, held, resumed),
+        (
+            Some(ErrorKind::WorkspaceBusy),
+            true,
+            (0, true),
+            (0, 1, true)
+        )
+    );
+    // A failure is noted only at the current publication of a visible source: one met before
+    // a relocation never replaces the newer note, and a missing or hidden one is unknown.
+    let sub: String = conn
+        .query_row(
+            "SELECT id FROM subscriptions WHERE consumer = 'c00'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let (generation, membership): (i64, String) = conn
+        .query_row(
+            "SELECT p.gen, s.membership FROM published p JOIN sources s USING (source_id)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let ranking = crate::search::corpus_ranking().to_string();
+    let noted = |storage: &Storage, membership: &str, reason: &str| {
+        crate::workspace::changes::note(
+            &conn,
+            storage,
+            &sub,
+            (generation, membership, &ranking),
+            &json!({"state": "unavailable", "reason": reason}),
+        )
+        .unwrap()
+    };
+    conn.execute_batch(
+        "UPDATE sources SET membership = 'again'; UPDATE generations SET membership = 'again'",
+    )
+    .unwrap();
+    let newer = noted(&storage, "again", "newer");
+    let older = noted(&storage, &membership, "older");
+    let gone = crate::workspace::changes::note(
+        &conn,
+        &storage,
+        "missing",
+        (generation, "again", &ranking),
+        &json!({"state": "unavailable"}),
+    )
+    .is_err();
+    let elsewhere = std::path::absolute(d.join("elsewhere")).unwrap();
+    let hidden = Storage {
+        visible: Some(vec![elsewhere]),
+        ..storage
+    };
+    let unseen = crate::workspace::changes::note(
+        &conn,
+        &hidden,
+        &sub,
+        (generation, "again", &ranking),
+        &json!({"state": "unavailable", "reason": "unseen"}),
+    )
+    .is_err();
+    let kept: String = conn
+        .query_row(
+            "SELECT eval_failure ->> '$.evaluation.reason' FROM subscriptions WHERE id = ?1",
+            [&sub],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        (newer, older, gone, unseen, kept.as_str()),
+        (true, false, true, true, "newer")
+    );
+}
+
+#[test]
+fn a_submit_never_joins_a_build_that_is_being_cancelled() {
+    let d = TestDir::new();
+    let (storage, select, _) = workspace(&d, 1);
+    queued(&storage, &select, "0:0");
+    let (_, mut ws) = opened(&storage, &select, true).unwrap();
+    // As a closing runner's cancel leaves its own build running until its worker sees it.
+    ws.conn.execute("UPDATE jobs SET cancel = 1", []).unwrap();
+    let source = sources(&ws.conn)[0].clone();
+    let Err(error) = submit(&storage, &mut ws, "refresh", &source, "0:0", None) else {
+        panic!("joined a cancelled build");
+    };
+    assert_eq!(
+        error.downcast_ref::<FigError>().unwrap().kind(),
+        ErrorKind::WorkspaceBusy
     );
 }

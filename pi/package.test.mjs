@@ -30,13 +30,13 @@ test('the existing CLI npm package includes the maintained Pi entry and its adja
     assert.ok(files.includes(`skills/figlens/${file}`));
     assert.equal(readFileSync(path.join(root, 'npm/skills/figlens', file), 'utf8'), readFileSync(path.join(root, 'skills/figlens', file), 'utf8'));
   }
-  for (const file of ['index.ts', 'workflow.mjs', 'viewer.mjs', 'requests.mjs', 'package.json', 'README.md']) {
+  for (const file of ['index.ts', 'workflow.mjs', 'viewer.mjs', 'requests.mjs', 'stale.mjs', 'package.json', 'README.md']) {
     assert.ok(files.includes(`pi/${file}`));
     assert.equal(readFileSync(path.join(root, 'npm/pi', file), 'utf8'), readFileSync(path.join(root, 'pi', file), 'utf8'));
   }
   for (const [directory, names] of Object.entries({
     omp: ['index.ts', 'review.mjs', 'mcp.cjs', 'package.json', 'README.md'],
-    opencode: ['index.mjs', 'tui.mjs', 'adapter.mjs', 'rpc.mjs', 'review-rpc.mjs', 'review-ui.mjs', 'package.json', 'README.md'],
+    opencode: ['index.mjs', 'tui.mjs', 'adapter.mjs', 'rpc.mjs', 'review-rpc.mjs', 'review-ui.mjs', 'watch-holder.mjs', 'package.json', 'README.md'],
   })) {
     for (const file of names) {
       assert.ok(files.includes(`${directory}/${file}`));

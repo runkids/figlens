@@ -628,7 +628,7 @@ fn search_mode(mode: &str) -> Result<(), Box<dyn Error>> {
     .into())
 }
 
-fn search_types(value: &str) -> impl Iterator<Item = String> + '_ {
+pub fn search_types(value: &str) -> impl Iterator<Item = String> + '_ {
     value
         .split(',')
         .map(|t| t.trim().to_uppercase())
@@ -939,7 +939,8 @@ pub fn jobs_tool(
     })
 }
 
-/// MCP `changes`, and `watch` (only `ack`): recorded revisions of tracked scopes.
+/// MCP `changes` and `watch`: recorded revisions, saved-query evaluations, checkpoints and
+/// subscriptions.
 pub fn changes_tool(
     call: &crate::contract::PreparedCall,
     roots: &[PathBuf],
@@ -955,9 +956,65 @@ pub fn changes_tool(
         cursor: call.string("cursor"),
         revision: call.string("revision"),
         limit: call.argument("limit").as_u64().map(|l| l as usize),
+        subscription: call.string("subscriptionId"),
     };
-    let value = match call.name() {
-        "watch" => changes::ack(&storage, &select, &request)?,
+    let subscribe = changes::subscriptions::Subscribe {
+        consumer: request.consumer,
+        source: request.source,
+        scope: request.scope,
+        node: call.string("node"),
+        owner: call.string("owner"),
+        query: call.string("query"),
+        types: call
+            .string("type")
+            .map(search_types)
+            .into_iter()
+            .flatten()
+            .collect(),
+    };
+    use changes::subscriptions as subs;
+    let needs = |name: &str| -> Result<&str, Box<dyn Error>> {
+        call.string(name).ok_or_else(|| {
+            format!("watch {} needs {name}", call.string("action").unwrap_or("")).into()
+        })
+    };
+    use figlens::workspace::watch;
+    let value = match (call.name(), call.string("action")) {
+        ("watch", Some("start")) => watch::start(
+            &storage,
+            &select,
+            call.string("sourceId"),
+            needs("scope")?,
+            call.string("requestId"),
+        )?,
+        ("watch", Some("stop")) => watch::stop(&storage, &select, needs("leaseId")?)?,
+        ("watch", Some("status")) => watch::status(&storage, &select)?,
+        ("watch", Some("subscribe")) => subs::subscribe(&storage, &select, &subscribe)?,
+        ("watch", Some("evaluate")) if request.source.is_some() => {
+            return Err(
+                "watch evaluate takes no sourceId: it evaluates the subscription's own source"
+                    .into(),
+            );
+        }
+        ("watch", Some("evaluate")) => changes::evaluate(&storage, &select, request.subscription)?,
+        ("watch", Some("list")) => {
+            subs::list(&storage, &select, request.consumer, call.string("after"))?
+        }
+        ("watch", Some("unsubscribe")) => subs::unsubscribe(
+            &storage,
+            &select,
+            request.subscription,
+            request.consumer,
+            subscribe.owner,
+        )?,
+        ("watch", Some("forget")) => subs::forget(
+            &storage,
+            &select,
+            request.consumer,
+            request.source,
+            request.scope,
+        )?,
+        ("watch", _) => changes::ack(&storage, &select, &request)?,
         _ => changes::changes(&storage, &select, &request)?,
     };
     Ok(Output::Json {

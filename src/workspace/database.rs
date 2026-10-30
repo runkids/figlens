@@ -347,7 +347,70 @@ pub(crate) const V4: &str = "
     INSERT INTO meta (key, value) VALUES ('cursor_secret', lower(hex(randomblob(32))));
     PRAGMA user_version = 4;";
 
-/// Upgrades schemas 1 to 3 to the current one in one transaction, keeping every source, index,
+/// Schema 5: temporary watch leases (#92), each a holder process's interest in one tracked
+/// source and scope; the single runner that keeps them fresh, fenced by `attempt`; and each
+/// watched source's last persisted monitor state. An ended lease keeps its row (with no path)
+/// until the runner's GC, so its requestId replays as ended instead of starting it again.
+/// `jobs.shared` marks an attempt another caller joined (or replayed, or took over), so the
+/// runner cancels only attempts nobody else waits for.
+pub(crate) const V5: &str = "
+    CREATE TABLE watch_leases (
+        lease_id TEXT PRIMARY KEY, holder TEXT NOT NULL, source_id TEXT NOT NULL,
+        scope TEXT NOT NULL, incarnation TEXT NOT NULL, epoch INTEGER NOT NULL, authorized_path TEXT,
+        request_id TEXT UNIQUE, fingerprint TEXT NOT NULL, renewed_ms INTEGER NOT NULL,
+        expires_ms INTEGER NOT NULL, ended TEXT) STRICT;
+    CREATE INDEX watch_leases_holder ON watch_leases (holder, expires_ms);
+    CREATE TABLE watch_runner (
+        one INTEGER PRIMARY KEY CHECK (one = 1), token TEXT NOT NULL, attempt INTEGER NOT NULL,
+        placement TEXT NOT NULL, started_ms INTEGER NOT NULL, beat_ms INTEGER NOT NULL,
+        closing INTEGER NOT NULL DEFAULT 0) STRICT;
+    CREATE TABLE watch_monitor (
+        source_id TEXT PRIMARY KEY, state TEXT NOT NULL, stamp_checked_ms INTEGER,
+        content_verified_ms INTEGER, last_job_id TEXT, last_error TEXT,
+        written_ms INTEGER NOT NULL) STRICT;
+    ALTER TABLE jobs ADD COLUMN shared INTEGER NOT NULL DEFAULT 0;
+    PRAGMA user_version = 5;";
+
+/// Schema 6: durable change subscriptions, each its own checkpoint, and the visible sources a
+/// raw consumer checkpoint was written under, so `watch forget` removes only rows it may see.
+pub(crate) const SUBSCRIPTIONS: &str = "
+    CREATE TABLE subscriptions (
+        id TEXT PRIMARY KEY, consumer TEXT NOT NULL, source_id TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('source', 'scope', 'node', 'query')),
+        target TEXT NOT NULL, anchor TEXT NOT NULL,
+        lifetime TEXT NOT NULL CHECK (lifetime IN ('durable', 'temporary')), owner TEXT,
+        filter_version INTEGER NOT NULL, after_seq INTEGER NOT NULL, floor INTEGER NOT NULL,
+        created_ms INTEGER NOT NULL, read_ms INTEGER NOT NULL,
+        pruned_seq INTEGER NOT NULL DEFAULT 0,
+        eval_failure TEXT,
+        UNIQUE (consumer, source_id, scope, kind, target)) STRICT;
+    CREATE TABLE query_evaluations (
+        id BLOB PRIMARY KEY CHECK (length(id) = 16),
+        sub TEXT NOT NULL REFERENCES subscriptions (id) ON DELETE CASCADE, seq INTEGER NOT NULL,
+        gen INTEGER NOT NULL, snapshot_id TEXT NOT NULL, membership TEXT NOT NULL,
+        ranking TEXT NOT NULL, coverage TEXT NOT NULL, causes TEXT NOT NULL, refs TEXT NOT NULL,
+        total INTEGER, delta TEXT NOT NULL, bytes INTEGER NOT NULL, created_ms INTEGER NOT NULL,
+        UNIQUE (sub, seq)) STRICT;
+    CREATE INDEX subscriptions_owner ON subscriptions (owner) WHERE owner IS NOT NULL;
+    CREATE INDEX subscriptions_query ON subscriptions (source_id, scope, kind, target, id);
+    ALTER TABLE consumers ADD COLUMN sources TEXT;
+    PRAGMA user_version = 6;";
+
+/// Schema 7: a revision's impact (#92), the layers its changes reach. `revisions.impact` is its
+/// summary (NULL for a baseline or a revision recorded before schema 7, never an empty
+/// complete impact) and `revision_impacts` the reached layers it listed, kept and expired with
+/// the revision's change rows.
+pub(crate) const IMPACTS: &str = "
+    ALTER TABLE revisions ADD COLUMN impact TEXT;
+    CREATE TABLE revision_impacts (
+        rev BLOB NOT NULL, ord INTEGER NOT NULL, node TEXT NOT NULL, class TEXT NOT NULL,
+        side INTEGER NOT NULL, changed INTEGER NOT NULL, unknown INTEGER NOT NULL,
+        equal INTEGER NOT NULL, relation TEXT, target TEXT, old_frame TEXT, new_frame TEXT,
+        PRIMARY KEY (rev, ord)) STRICT, WITHOUT ROWID;
+    PRAGMA user_version = 7;";
+
+/// Upgrades schemas 1 to 6 to the current one in one transaction, keeping every source, index,
 /// job and the incarnation. The caller holds the workspace lock exclusively.
 pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
     let tx = conn
@@ -364,6 +427,15 @@ pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
     }
     if version <= 3 {
         tx.execute_batch(V4).map_err(sql)?;
+    }
+    if version <= 4 {
+        tx.execute_batch(V5).map_err(sql)?;
+    }
+    if version <= 5 {
+        tx.execute_batch(SUBSCRIPTIONS).map_err(sql)?;
+    }
+    if version <= 6 {
+        tx.execute_batch(IMPACTS).map_err(sql)?;
     }
     tx.commit().map_err(sql)
 }
@@ -408,6 +480,9 @@ pub(super) fn initialize(
     tx.execute_batch(V2).map_err(sql)?;
     tx.execute_batch(V3).map_err(sql)?;
     tx.execute_batch(V4).map_err(sql)?;
+    tx.execute_batch(V5).map_err(sql)?;
+    tx.execute_batch(SUBSCRIPTIONS).map_err(sql)?;
+    tx.execute_batch(IMPACTS).map_err(sql)?;
     if let Some(binding) = binding {
         tx.execute(
             "INSERT INTO meta (key, value) VALUES ('binding', ?1)",

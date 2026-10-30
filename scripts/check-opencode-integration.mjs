@@ -1,8 +1,8 @@
 // Real OpenCode server and native UI against the packaged entries; never starts a model.
 import assert from 'node:assert/strict';
-import { execFile, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { execFile, execFileSync, spawn } from 'node:child_process';
+import { existsSync, renameSync, writeFileSync } from 'node:fs';
+import { copyFile, mkdir, readFile, stat, utimes, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
@@ -12,13 +12,16 @@ import { operationRpc, reviewRpc } from '../opencode/rpc.mjs';
 import { Workflow } from '../pi/workflow.mjs';
 
 const [hostInput, sdkInput, packageInput, binaryInput, outputInput] = process.argv.slice(2);
-assert.ok(outputInput, 'Usage: node scripts/check-opencode-integration.mjs <opencode> <client-root> <installed-package> <binary> <fresh-output> [--tui]');
+assert.ok(outputInput, 'Usage: node scripts/check-opencode-integration.mjs <opencode> <client-root> <installed-package> <binary> <fresh-output> [--tui] [--watch-only=<fig>]');
 const [host, sdk, packaged, binary, output] = [hostInput, sdkInput, packageInput, binaryInput, outputInput].map(value => path.resolve(value));
+// --watch-only=<public.fig>: only the watch and stale-context checks, on the distributable design, for every OS.
+const watchOnly = process.argv.find(arg => arg.startsWith('--watch-only='))?.slice('--watch-only='.length);
+const watchChecks = ['production loader', 'through managed MCP a consumer', 'with a disabled MCP override figlens_watch', 'with a disabled MCP override a consumer'];
 await mkdir(output);
 const project = path.join(output, 'project'), config = path.join(output, 'config');
 await mkdir(path.join(project, 'src'), { recursive: true });
 await mkdir(config);
-await copyFile(new URL('../samples/plugin-research/fixtures/mapping.fig', import.meta.url), path.join(project, 'mapping.fig'));
+await copyFile(watchOnly ? path.resolve(watchOnly) : new URL('../samples/plugin-research/fixtures/mapping.fig', import.meta.url), path.join(project, 'mapping.fig'));
 await copyFile(path.join(project, 'mapping.fig'), path.join(project, 'mapping-old.fig'));
 await writeFile(path.join(project, 'src/Button.mjs'), 'export const Button = () => "button";\n');
 // Scripted loopback provider: each turn returns a fixed Code Mode `execute` call (find the figlens
@@ -94,6 +97,8 @@ async function reply(request, response) {
   scripted.raw = messages.filter(message => message.role === 'tool').map(message =>
     typeof message.content === 'string' ? message.content : message.content.map(part => part.text ?? '').join(''));
   scripted.results = scripted.raw.map(value);
+  scripted.system = messages.filter(message => message.role === 'system').map(message =>
+    typeof message.content === 'string' ? message.content : message.content.map(part => part.text ?? '').join(''));
   const code = steps[scripted.results.length]?.(...scripted.results);
   const call = typeof code === 'string' ? { name: 'execute', arguments: JSON.stringify({ code }) }
     : code && { name: code.name, arguments: JSON.stringify(code.input) };
@@ -125,7 +130,9 @@ const execute = promisify(execFile);
 const flow = new Workflow(project, async args => JSON.parse((await execute(binary, args, { cwd: project })).stdout));
 const proposal = instance => ({ instance, target: { path: 'src/Button.mjs', export: 'Button', import: 'import { Button } from "./src/Button.mjs";', example: 'Button()' }, rationale: 'Original synthetic fixture' });
 const password = randomBytes(32).toString('hex');
-const env = { PATH: '/usr/bin:/bin', HOME: path.join(output, 'home'),
+const windows = process.platform === 'win32' && { SystemRoot: process.env.SystemRoot, PATHEXT: process.env.PATHEXT, TEMP: process.env.TEMP, TMP: process.env.TMP,
+  USERPROFILE: path.join(output, 'home'), APPDATA: path.join(output, 'appdata'), LOCALAPPDATA: path.join(output, 'localappdata') };
+const env = { ...windows, PATH: windows ? process.env.PATH : '/usr/bin:/bin', HOME: path.join(output, 'home'),
   OPENCODE_SERVER_PASSWORD: password, OPENCODE_CONFIG_DIR: config, OPENCODE_TEST_HOME: path.join(output, 'home'),
   XDG_CONFIG_HOME: config, XDG_DATA_HOME: path.join(output, 'data'), XDG_STATE_HOME: path.join(output, 'state'), XDG_CACHE_HOME: path.join(output, 'cache'),
   OPENCODE_DISABLE_MODELS_FETCH: '1', OPENCODE_DISABLE_CLAUDE_CODE: '1', OPENCODE_DISABLE_PROJECT_CONFIG: '1', FIGLENS_BIN: binary };
@@ -135,6 +142,7 @@ let logs = '';
 server.stderr.on('data', data => { logs += data; });
 const result = { package: packaged, modelCalled: false, tests: [] };
 async function check(name, run) {
+  if (watchOnly && !watchChecks.some(prefix => name.startsWith(prefix))) return;
   try { result.tests.push({ name, status: 'passed', evidence: await run() }); }
   catch (error) { result.tests.push({ name, status: 'failed', error: error.stack || JSON.stringify(error) }); }
 }
@@ -198,9 +206,18 @@ try {
       toolResults: scripted.results.length, provider: 'scripted loopback, not a model' };
   });
   const allowAll = [{ action: '*', resource: '*', effect: 'allow' }];
+  // The CLI runs its own jobs before replying: each must have succeeded, so the baseline exists.
+  const settled = async args => {
+    const reply = JSON.parse((await execute(binary, args, { cwd: project, env })).stdout);
+    const jobs = [reply.job ?? [], reply.jobs ?? []].flat();
+    assert.ok(jobs.length > 0, JSON.stringify(reply));
+    for (const job of jobs) assert.equal(job.state, 'succeeded', JSON.stringify(job));
+    return reply;
+  };
   async function converse(title, next, permissions = allowAll) {
     lane(next);
     const conversation = await client.session.create({ location, title, permissions });
+    converse.session = conversation.id;
     await client.session.switchModel({ sessionID: conversation.id, model: { id: 'scripted', providerID: 'figlens-scripted' } });
     await client.session.prompt({ sessionID: conversation.id, text: title });
     await client.session.wait({ sessionID: conversation.id }, { signal: AbortSignal.timeout(60000) })
@@ -226,6 +243,25 @@ try {
     assert.deepEqual(flow.usedBy, ['instance_of 0:2', 'instance_of 0:3'], JSON.stringify(flow));
     assert.equal(flow.usedSource, true);
     return { ...flow, sources: undefined, paths: paths.filter(item => /index|jobs|search|inspect|usages/.test(item)), provider: 'scripted loopback, not a model' };
+  });
+  await check('through managed MCP a consumer acknowledged in Code Mode gets an explicit-check reminder before each later prompt', async () => {
+    const { workspaceId } = await settled(['index', 'prepare', fixture, '--scope', '0:0']);
+    await settled(['index', 'track', '--id', workspaceId, '--scope', '0:0']);
+    const follow = { workspaceId, consumer: 'mcp-stale', scope: '0:0' };
+    const reminders = () => (scripted.system ?? []).filter(text => text.includes('figlens does not check these watch targets in the background here'));
+    const [, acked] = await converse('Follow the whole design.', [() => catalog(['changes', 'watch']),
+      paths => tool(paths, 'changes') && tool(paths, 'watch') && `
+        const page = await ${tool(paths, 'changes')}(${JSON.stringify(follow)});
+        return await ${tool(paths, 'watch')}({ action: 'ack', ...${JSON.stringify(follow)}, cursor: page.nextCursor });`]);
+    assert.equal(acked?.advanced, true, JSON.stringify(scripted.raw).slice(0, 1000));
+    assert.deepEqual(reminders(), [], 'a prompt before any subscribe or ack was reminded');
+    lane([]);
+    await client.session.prompt({ sessionID: converse.session, text: 'Anything new?' });
+    await client.session.wait({ sessionID: converse.session }, { signal: AbortSignal.timeout(60000) });
+    assert.ok(!scripted.error, scripted.error);
+    const [note] = reminders();
+    assert.match(note ?? '', /"consumer":"mcp-stale"/, JSON.stringify(scripted.system).slice(0, 1000));
+    return { noTargetNoReminder: true, codeModeAckReminded: true, provider: 'scripted loopback, not a model' };
   });
   await check('MCP reset asks the figlens_index permission: a deny rule keeps the database, an allow resets it', async () => {
     const [, refused] = await converse('Reset the design index.', resetSteps, [...allowAll, { action: 'figlens_index', resource: 'reset', effect: 'deny' }]);
@@ -323,11 +359,16 @@ try {
     await assert.rejects(fetch(activeUrl));
     return { ownedViewerClosed: true, operationRpcReloaded: true };
   });
+  // A disabled user server under the managed key: the plugin keeps it and serves the same flow over the CLI.
+  await writeFile(path.join(config, 'opencode.json'), JSON.stringify({ plugins: [pathToFileURL(packaged).href, pathToFileURL(probe).href],
+    mcp: { figlensmcp: { type: 'local', command: [binary, 'mcp'], enabled: false } } }));
+  await client.location.reload();
+  // The skipped CLI-path flow tracks the review frame that the watch checks follow.
+  if (watchOnly) {
+    const { workspaceId } = await settled(['index', 'prepare', fixture, '--scope', '0:1']);
+    await settled(['index', 'track', '--id', workspaceId, '--scope', '0:1']);
+  }
   await check('with a disabled MCP override the CLI path prepares, polls, searches, inspects and follows changes through plugin tools', async () => {
-    // A disabled user server under the managed key: the plugin keeps it and serves the same flow over the CLI.
-    await writeFile(path.join(config, 'opencode.json'), JSON.stringify({ plugins: [pathToFileURL(packaged).href, pathToFileURL(probe).href],
-      mcp: { figlensmcp: { type: 'local', command: [binary, 'mcp'], enabled: false } } }));
-    await client.location.reload();
     const status = await rpc.run({ sessionID: session.id, action: 'status' }, options);
     assert.equal(status.mcp.managed, false, JSON.stringify(status.mcp));
     for (const name of ['figlens_index', 'figlens_jobs', 'figlens_search', 'figlens_inspect', 'figlens_usages', 'figlens_diff', 'figlens_changes', 'figlens_watch']) assert.ok(status.mcp.tools.includes(name), name);
@@ -354,6 +395,81 @@ try {
     const diffed = value(scripted.raw[14] ?? '');
     assert.deepEqual([diffed?.coverage?.complete, diffed?.coverage?.changes], [true, 0], (scripted.raw[14] ?? '').slice(0, 500));
     return { pages: [first.results[0].ref.nodeId, second.results[0].ref.nodeId], refused: 'unknown relation', trackedBaselineAcked: true, diffedCopies: diffed.coverage.changes, usedBy: used.results.map(item => item.ref.nodeId), deepIdBytes: deepId.length, mcp: status.mcp.reason, before: before.state, job: job.state, ref: found.results[0].ref, inspected: node.node.id, tools: scripted.tools.filter(name => /^figlens_/.test(name)) };
+  });
+  await check('with a disabled MCP override figlens_watch holds a lease per session that records a save, and only its session, deletion or a reload ends it', async () => {
+    const cli = args => JSON.parse(execFileSync(binary, args, { cwd: project, env, encoding: 'utf8' }));
+    const { workspaceId } = cli(['index', 'status', '--file', fixture]);
+    const recorded = () => cli(['changes', '--id', workspaceId, '--scope', '0:1']).revisions.filter(revision => revision.kind === 'changes').length;
+    const active = () => cli(['watch', 'status', '--id', workspaceId]).leases.filter(lease => lease.state === 'active');
+    const until = async (what, done) => {
+      for (const start = Date.now(); !done(); await new Promise(resolve => setTimeout(resolve, 100)))
+        assert.ok(Date.now() - start < 15000, `timed out waiting for ${what}`);
+    };
+    const start = () => direct('figlens_watch', { action: 'start', workspaceId, scope: '0:1' });
+    const original = await readFile(fixture);
+    const before = recorded();
+    try {
+      const [denied] = await converse('Watch the review frame.', [start], [...allowAll, { action: 'read', resource: '*', effect: 'deny' }]);
+      assert.deepEqual(active(), [], `a denied read starts no lease: ${JSON.stringify(denied).slice(0, 500)}`);
+      const [status] = await converse('Show the watch status.', [() => direct('figlens_watch', { action: 'status', workspaceId })],
+        [...allowAll, { action: 'edit', resource: '*', effect: 'deny' }]);
+      assert.ok(Array.isArray(status?.leases), `status needs no edit: ${JSON.stringify(status).slice(0, 500)}`);
+      // One session: start, a save the runner records with no index call, the plugin's changes, then its own stop.
+      const [lease, , seen, stopped] = await converse('Watch the review frame while I save.', [start, held => {
+        if (held?.state !== 'active') return null;
+        writeFileSync(`${fixture}.next`, Buffer.concat([original, Buffer.alloc(16)]));
+        renameSync(`${fixture}.next`, fixture);
+        for (const start = Date.now(); recorded() === before && Date.now() - start < 15000;) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+        return direct('figlens_watch', { action: 'status', workspaceId });
+      }, () => direct('figlens_changes', { workspaceId, scope: '0:1' }), held => direct('figlens_watch', { action: 'stop', workspaceId, leaseId: held.leaseId })]);
+      assert.equal(lease?.state, 'active', JSON.stringify(lease));
+      assert.equal(seen?.revisions?.filter(revision => revision.kind === 'changes').length, before + 1, JSON.stringify(seen).slice(0, 500));
+      assert.deepEqual(stopped, { leaseId: lease.leaseId, state: 'ended', reason: 'released' });
+      // Another session cannot stop a lease it did not start; deleting the owner releases it.
+      const request = () => direct('figlens_watch', { action: 'start', workspaceId, scope: '0:1', requestId: 'acceptance' });
+      const [owned, replayed] = await converse('Watch the review frame.', [request, request]);
+      assert.equal(replayed?.leaseId, owned?.leaseId, `a requestId replays its lease in its session: ${JSON.stringify(replayed).slice(0, 500)}`);
+      const owner = converse.session;
+      const [refused] = await converse('Stop that watch.', [() => direct('figlens_watch', { action: 'stop', workspaceId, leaseId: owned.leaseId })]);
+      assert.match(JSON.stringify(refused), /not a lease this session holds/);
+      assert.deepEqual(active().map(lease => lease.leaseId), [owned.leaseId]);
+      await client.session.remove({ sessionID: owner });
+      await until('the deleted session to release its lease', () => !active().length);
+      // A reload disposes the plugin, which releases every lease it held.
+      const [reloaded] = await converse('Watch the review frame.', [start]);
+      assert.equal(reloaded?.state, 'active', JSON.stringify(reloaded));
+      await client.location.reload();
+      await until('the reload to release its lease', () => !active().length);
+      return { deniedReadStartsNothing: true, statusWithoutEdit: true, saveRecorded: true, ownStop: stopped.reason, requestIdReplayed: true, otherSessionRefused: true, deletionReleases: true, reloadReleases: true };
+    } finally { await writeFile(fixture, original); }
+  });
+  await check('with a disabled MCP override a consumer this session acknowledged is checked before each later prompt and noted as data', async () => {
+    const cli = args => JSON.parse(execFileSync(binary, args, { cwd: project, env, encoding: 'utf8' }));
+    const { workspaceId } = cli(['index', 'status', '--file', fixture]);
+    // The previous check rewrote the fixture, so its published index starts behind the file.
+    cli(['index', 'refresh', '--id', workspaceId, '--scope', '0:1']);
+    const notes = () => (scripted.system ?? []).filter(text => text.includes('figlens checked the watch targets'));
+    const follow = { workspaceId, consumer: 'stale-context', scope: '0:1' };
+    const [, acked] = await converse('Follow the review frame.', [() => direct('figlens_changes', follow),
+      page => page?.nextCursor && direct('figlens_watch', { action: 'ack', ...follow, cursor: page.nextCursor })]);
+    assert.equal(acked?.advanced, true, JSON.stringify(acked).slice(0, 500));
+    assert.deepEqual(notes(), [], 'a prompt before any subscribe or ack was noted');
+    const again = async text => {
+      lane([]);
+      await client.session.prompt({ sessionID: converse.session, text });
+      await client.session.wait({ sessionID: converse.session }, { signal: AbortSignal.timeout(60000) });
+      assert.ok(!scripted.error, scripted.error);
+      return notes();
+    };
+    assert.deepEqual(await again('Anything new?'), [], 'an acknowledged, verified consumer was noted');
+    const before = await stat(fixture);
+    try {
+      await utimes(fixture, before.atime, new Date(Date.now() + 60000));
+      const [note] = await again('Anything new now?');
+      assert.match(note ?? '', /not instructions/);
+      assert.match(note ?? '', /"refreshRequired":true/);
+    } finally { await utimes(fixture, before.atime, before.mtime); }
+    return { noTargetNoNote: true, freshNoNote: true, refreshRequiredNoted: true, provider: 'scripted loopback, not a model' };
   });
 } finally {
   provider.close();

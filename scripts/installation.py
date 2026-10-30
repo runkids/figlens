@@ -61,11 +61,14 @@ def run(command, cwd, env, timeout=60):
                           start_new_session=os.name != 'nt') as process:
         try:
             stdout, stderr = process.communicate(timeout=timeout)
-        except BaseException:
+        except BaseException as error:
             try:
                 stop_process(process)
             finally:
-                process.communicate(timeout=10)
+                stdout, stderr = process.communicate(timeout=10)
+            if isinstance(error, subprocess.TimeoutExpired):
+                # What the command said before it was stopped is the only clue to where it hung.
+                error.output, error.stderr = stdout, stderr
             raise
     if process.returncode:
         raise RuntimeError(f'{command[0]} exited {process.returncode}\n{stdout[-4000:]}\n{stderr[-4000:]}')

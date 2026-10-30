@@ -396,6 +396,88 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 /// Writes the corpus, or its `revise`d revision, to a new file at `output`.
 pub fn write(output: &std::ffi::OsStr, revised: bool) -> Result<(), Box<dyn Error>> {
+    write_with(output, if revised { revise } else { |_| {} })
+}
+
+/// Writes the corpus with only the Chip component's fill changed, for impact tests: both chip
+/// instances, inside the Components frame, keep fills of their own.
+#[allow(dead_code, reason = "only tests write it")]
+pub fn write_restyled(output: &std::ffi::OsStr) -> Result<(), Box<dyn Error>> {
+    write_with(output, |nodes| {
+        for n in nodes.iter_mut() {
+            let chip = matches!(
+                n.get("guid").and_then(|g| g.get("localID")),
+                Some(Value::UInt(50))
+            );
+            if let (true, Value::Object(_, fields)) = (chip, n) {
+                fields.insert("fillPaints", solid([200, 0, 0]));
+            }
+        }
+    })
+}
+
+/// Writes the corpus with only the Chip component's `Dot` child restyled, which neither chip
+/// instance overrides: both reach the change through the component.
+#[allow(dead_code, reason = "only tests write it")]
+pub fn write_dot_restyled(output: &std::ffi::OsStr) -> Result<(), Box<dyn Error>> {
+    write_with(output, restyle_dot)
+}
+
+/// `write_dot_restyled` with the second chip instance gone, so its link to the component
+/// exists only in the old file.
+#[allow(dead_code, reason = "only tests write it")]
+pub fn write_dot_restyled_chip_removed(output: &std::ffi::OsStr) -> Result<(), Box<dyn Error>> {
+    write_with(output, |nodes| {
+        restyle_dot(nodes);
+        nodes.retain(|n| local_id(n) != 42);
+    })
+}
+
+/// `write_dot_restyled` with the second chip instance moved into the Effects frame, so it
+/// is held by another top-level frame on each side.
+#[allow(dead_code, reason = "only tests write it")]
+pub fn write_dot_restyled_chip_moved(output: &std::ffi::OsStr) -> Result<(), Box<dyn Error>> {
+    write_with(output, |nodes| {
+        restyle_dot(nodes);
+        for n in nodes.iter_mut().filter(|n| local_id(n) == 42) {
+            if let Value::Object(_, fields) = n {
+                fields.insert(
+                    "parentIndex",
+                    obj(
+                        "ParentIndex",
+                        vec![("guid", guid(3)), ("position", Value::String("042".into()))],
+                    ),
+                );
+            }
+        }
+    })
+}
+
+/// Writes the corpus without the Auto layout frame and the layers inside it, so the change is
+/// one removed subtree reported at its top.
+#[allow(dead_code, reason = "only tests write it")]
+pub fn write_auto_layout_removed(output: &std::ffi::OsStr) -> Result<(), Box<dyn Error>> {
+    write_with(output, |nodes| {
+        nodes.retain(|n| ![1, 11, 12, 13].contains(&local_id(n)));
+    })
+}
+
+fn local_id(n: &V) -> u32 {
+    match n.get("guid").and_then(|g| g.get("localID")) {
+        Some(Value::UInt(id)) => *id,
+        _ => u32::MAX,
+    }
+}
+
+fn restyle_dot(nodes: &mut Vec<V>) {
+    for n in nodes.iter_mut().filter(|n| local_id(n) == 51) {
+        if let Value::Object(_, fields) = n {
+            fields.insert("fillPaints", solid([200, 0, 0]));
+        }
+    }
+}
+
+fn write_with(output: &std::ffi::OsStr, edit: fn(&mut Vec<V>)) -> Result<(), Box<dyn Error>> {
     // Definition order gives each user type its index.
     const DEFS: [&str; 20] = [
         "GUID",
@@ -580,9 +662,7 @@ pub fn write(output: &std::ffi::OsStr, revised: bool) -> Result<(), Box<dyn Erro
     );
     let schema = Schema::new(defs);
     let mut nodes = nodes();
-    if revised {
-        revise(&mut nodes);
-    }
+    edit(&mut nodes);
     let message = obj("Message", vec![("nodeChanges", Value::Array(nodes))]);
     let mut canvas = b"fig-kiwi".to_vec();
     canvas.extend(106u32.to_le_bytes());

@@ -913,6 +913,57 @@ fn mcp_roots_do_not_serve_a_source_later_replaced_by_a_link_out_of_them() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_queued_refresh_never_reads_a_registered_path_replaced_by_a_link_meanwhile() {
+    let env = Env::new();
+    let dir = env.dir.join("project");
+    std::fs::create_dir(&dir).unwrap();
+    let dir = std::fs::canonicalize(dir).unwrap();
+    let fig = dir.join("a.fig");
+    std::fs::copy("examples/first-success/design.fig", &fig).unwrap();
+    let prepared = env.json(&["index", "prepare", fig.to_str().unwrap(), "--scope", "0:0"]);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    env.json(&["index", "track", "--id", ws, "--scope", "0:0"]);
+    // The refresh is admitted, then the file is swapped for a link to other bytes before its
+    // worker reads.
+    let gate = env.dir.join("start.hold");
+    std::fs::write(&gate, "").unwrap();
+    let refresh = env
+        .command(
+            &["index", "refresh", "--id", ws, "--scope", "0:0"],
+            Some(("start", &gate)),
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for("the worker to start", || {
+        env.dir.join("start.hold.reached").exists()
+    });
+    let other = env.dir.join("other.fig");
+    corpus::write(other.as_os_str(), true).unwrap();
+    let other = std::fs::canonicalize(other).unwrap();
+    let link = dir.join("link.tmp");
+    std::os::unix::fs::symlink(&other, &link).unwrap();
+    std::fs::rename(&link, &fig).unwrap();
+    std::fs::remove_file(&gate).unwrap();
+    let out = refresh.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !out.status.success() && stdout.contains("now leads elsewhere through a link"),
+        "{stdout}"
+    );
+    let changes = env.json(&["changes", "--id", ws, "--scope", "0:0"]);
+    let kinds: Vec<_> = changes["revisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["kind"].clone())
+        .collect();
+    assert_eq!(kinds, [json!("baseline")]);
+}
+
 #[test]
 fn an_unusable_workspace_lists_stateless_search_of_the_named_file() {
     let env = Env::new();
@@ -2312,8 +2363,14 @@ fn changes_pages_revisions_and_their_nodes_and_a_consumer_acks_its_place() {
             rest["revisions"][0]["from"] == first["revisions"][0]["revisionId"],
             (
                 nodes["nodes"].as_array().unwrap().len(),
-                more["nodes"].as_array().unwrap().len(),
-                more["nextCursor"].clone()
+                more["nodes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|n| (n["entry"].clone(), n["sides"].clone()))
+                    .collect::<Vec<_>>(),
+                more["nextCursor"].clone(),
+                rest["revisions"][0]["impact"].clone()
             ),
             (
                 fresh["revisions"].as_array().unwrap().len(),
@@ -2334,7 +2391,20 @@ fn changes_pages_revisions_and_their_nodes_and_a_consumer_acks_its_place() {
             vec![json!("baseline"), json!("changes")],
             (json!(true), json!(false)),
             true,
-            (3, 1, Value::Null),
+            // The last change row, then the layers its changes reach: the added and removed
+            // ones on the side they exist in.
+            (
+                3,
+                vec![
+                    (json!("change"), Value::Null),
+                    (json!("impact"), json!(["old", "new"])),
+                    (json!("impact"), json!(["old", "new"])),
+                    (json!("impact"), json!(["old"])),
+                    (json!("impact"), json!(["new"]))
+                ],
+                Value::Null,
+                json!({"complete": true, "listed": {"direct": 4}, "reasons": []})
+            ),
             (2, json!(id)),
             (json!(true), json!(false), true),
             (json!("active"), json!(false), json!({"state": "inactive"})),
@@ -2906,6 +2976,1152 @@ fn a_poll_lists_at_most_a_hundred_tracked_scopes_and_says_so() {
     );
 }
 
+impl Tracked<'_> {
+    fn watch(&self, action: &str, more: &[&str]) -> Value {
+        let mut args = vec!["watch", action, "--file", &self.file];
+        args.extend(more);
+        self.env.json(&args)
+    }
+
+    fn subscribe(&self, more: &[&str]) -> String {
+        let source = self.changes(&[])["tracking"][0]["sourceId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut args = vec!["--consumer", "bot", "--source", &source];
+        args.extend(more);
+        self.watch("subscribe", &args)["subscription"]["subscriptionId"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    fn kinds(&self, page: &Value) -> Vec<Value> {
+        page["revisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["kind"].clone())
+            .collect()
+    }
+}
+
+#[test]
+fn a_subscription_starts_at_the_tail_and_keeps_its_own_checkpoint_apart_from_the_consumer_s() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let id = t.subscribe(&[]);
+    let again = t.subscribe(&[]);
+    let at_start = t.changes(&["--subscription", &id]);
+    t.save(true);
+    t.index("refresh");
+    let page = t.changes(&["--subscription", &id]);
+    let cursor = page["nextCursor"].as_str().unwrap();
+    let acked = t.watch("ack", &["--subscription", &id, "--cursor", cursor]);
+    let after = t.changes(&["--subscription", &id]);
+    // The consumer's raw checkpoint is its own: never moved by the subscription's ack.
+    let raw = t.changes(&["--consumer", "bot"]);
+    let mixed = t.fails(&[
+        "changes",
+        "--file",
+        &t.file,
+        "--subscription",
+        &id,
+        "--consumer",
+        "bot",
+    ]);
+    assert_eq!(
+        (
+            again == id,
+            t.kinds(&at_start),
+            t.kinds(&page),
+            acked["advanced"].clone(),
+            t.kinds(&after),
+            t.kinds(&raw),
+            mixed.contains("pass none of them"),
+        ),
+        (
+            true,
+            vec![],
+            vec![json!("changes")],
+            json!(true),
+            vec![],
+            vec![json!("baseline"), json!("changes")],
+            true
+        )
+    );
+}
+
+#[test]
+fn a_node_subscription_reads_only_revisions_that_change_that_node_and_never_a_missing_one() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let id = t.changes(&[])["revisions"][1]["revisionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let nodes = t.changes(&["--revision", &id, "--limit", "500"]);
+    let touched: Vec<String> = nodes["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|n| [n["id"].clone(), n["frame"].clone()])
+        .filter_map(|v| v.as_str().map(str::to_owned))
+        .collect();
+    let changed = touched[0].clone();
+    let untouched: String = rusqlite::Connection::open(&t.db)
+        .unwrap()
+        .query_row(
+            "SELECT r.node_id FROM records r JOIN published p ON p.gen = r.gen
+             WHERE r.node_id NOT IN (SELECT value FROM json_each(?1)) LIMIT 1",
+            [json!(touched).to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let on_changed = t.subscribe(&["--node", &changed]);
+    let on_untouched = t.subscribe(&["--node", &untouched]);
+    // Saving the first revision again changes the same layers back.
+    t.save(false);
+    t.index("refresh");
+    let source = t.changes(&[])["tracking"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let missing = t.fails(&[
+        "watch",
+        "subscribe",
+        "--file",
+        &t.file,
+        "--consumer",
+        "bot",
+        "--source",
+        &source,
+        "--node",
+        "999:999",
+    ]);
+    let page = t.changes(&["--subscription", &on_changed]);
+    assert_eq!(
+        (
+            t.kinds(&page),
+            page["subscription"]["state"].clone(),
+            t.kinds(&t.changes(&["--subscription", &on_untouched])),
+            missing.contains("target_missing"),
+        ),
+        (vec![json!("changes")], json!("active"), vec![], true)
+    );
+}
+
+#[test]
+fn full_checkpoints_are_refused_not_evicted_and_unsubscribe_and_forget_remove_only_their_rows() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let durable = t.subscribe(&[]);
+    let temporary = t.subscribe(&["--scope", "0:0", "--owner", "task"]);
+    // Raw checkpoint views written before their sources were recorded, filling the consumer.
+    t.sql(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 62)
+         INSERT INTO consumers (consumer, filter, after_seq, floor, updated_ms)
+         SELECT 'bot', 'x' || char(31) || i || char(31), 0, 0, 0 FROM n",
+    );
+    let source = t.changes(&[])["tracking"][0]["sourceId"].clone();
+    let refused = t.fails(&[
+        "watch",
+        "subscribe",
+        "--file",
+        &t.file,
+        "--consumer",
+        "bot",
+        "--source",
+        source.as_str().unwrap(),
+        "--node",
+        "0:1",
+    ]);
+    let dropped = t.watch("unsubscribe", &["--consumer", "bot", "--owner", "task"]);
+    let forgotten = t.watch("forget", &["--consumer", "bot"]);
+    let listed = t.watch("list", &["--consumer", "bot"]);
+    let ids: Vec<Value> = listed["subscriptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["subscriptionId"].clone())
+        .collect();
+    let gone = t.fails(&[
+        "watch",
+        "unsubscribe",
+        "--file",
+        &t.file,
+        "--subscription",
+        &temporary,
+    ]);
+    let tracked = t.changes(&[])["tracking"][0]["state"].clone();
+    assert_eq!(
+        (
+            refused.contains("unsubscribe or forget"),
+            json!([dropped["removed"], dropped["subscriptionIds"]]),
+            forgotten["removed"].clone(),
+            ids,
+            gone.contains("no subscription"),
+            tracked,
+        ),
+        (
+            true,
+            json!([1, [temporary]]),
+            json!(62),
+            vec![json!(durable)],
+            true,
+            json!("active")
+        )
+    );
+}
+
+#[test]
+fn one_consumer_never_shares_a_target_across_owners_and_an_owner_s_cleanup_stays_in_its_consumer() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let source = t.changes(&[])["tracking"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let subscribe = |consumer: &str, more: &[&str]| {
+        let mut args = vec![
+            "watch",
+            "subscribe",
+            "--file",
+            &t.file,
+            "--consumer",
+            consumer,
+        ];
+        args.extend(["--source", &source]);
+        args.extend(more);
+        args.iter().map(|a| a.to_string()).collect::<Vec<_>>()
+    };
+    let run = |args: Vec<String>| env.run(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    env.json(
+        &subscribe("bot", &[])
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    let again = env.json(
+        &subscribe("bot", &[])
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    let collision = run(subscribe("bot", &["--owner", "task"]));
+    env.json(
+        &subscribe("other", &["--owner", "task"])
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    let dropped = t.watch("unsubscribe", &["--consumer", "bot", "--owner", "task"]);
+    let left = t.watch("list", &[])["subscriptions"]
+        .as_array()
+        .unwrap()
+        .len();
+    assert_eq!(
+        (
+            again["initialPosition"].clone(),
+            String::from_utf8_lossy(&collision.stderr).contains("under another owner"),
+            json!([dropped["removed"], dropped["subscriptionIds"]]),
+            left,
+        ),
+        (json!("existing"), true, json!([0, []]), 2)
+    );
+}
+
+#[test]
+fn forget_removes_a_checkpoint_view_whose_source_was_removed_since() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let page = t.changes(&["--consumer", "bot"]);
+    t.watch(
+        "ack",
+        &[
+            "--consumer",
+            "bot",
+            "--cursor",
+            page["nextCursor"].as_str().unwrap(),
+        ],
+    );
+    let source = page["tracking"][0]["sourceId"].as_str().unwrap().to_owned();
+    let id = page["workspaceId"].as_str().unwrap().to_owned();
+    env.json(&["index", "remove", "--id", &id, &source]);
+    let forgotten = env.json(&["watch", "forget", "--id", &id, "--consumer", "bot"]);
+    assert_eq!(forgotten["removed"], json!(1), "{forgotten}");
+}
+
+#[test]
+fn a_node_subscription_reads_a_revision_whose_comparison_was_incomplete() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let source = t.changes(&[])["tracking"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let untouched = t.subscribe(&["--node", "0:12"]);
+    // A partial comparison whose retained rows name only other layers: detail is complete, the
+    // comparison is not, so the layer may have changed unseen.
+    t.sql(&format!(
+        "INSERT INTO revisions (id, seq, source_id, scope, epoch, gen, from_gen, snapshot_id,
+         kind, coverage, summary, detail, detail_rows, detail_bytes, created_ms)
+         SELECT randomblob(16), seq + 100, source_id, scope, epoch, gen, from_gen, snapshot_id,
+         kind, '{{\"complete\":false}}', summary, 'complete', 0, 0, created_ms
+         FROM revisions WHERE source_id = '{source}' ORDER BY seq DESC LIMIT 1"
+    ));
+    let page = t.changes(&["--subscription", &untouched]);
+    assert_eq!(page["revisions"].as_array().unwrap().len(), 1, "{page}");
+}
+
+#[test]
+fn a_frame_subscription_reads_a_complete_revision_that_reaches_it_only_through_impact() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let frame = t.subscribe(&["--node", "0:4"]);
+    // Only the Chip component, outside the Components frame, changes its fill; both chips in
+    // the frame keep fills of their own.
+    let next = env.dir.join("next.fig");
+    corpus::write_restyled(next.as_os_str()).unwrap();
+    std::fs::rename(&next, &t.path).unwrap();
+    t.index("refresh");
+    let page = t.changes(&["--subscription", &frame]);
+    let revision = &page["revisions"][0];
+    let id = revision["revisionId"].as_str().unwrap();
+    let detail = t.changes(&["--revision", id, "--limit", "500"]);
+    let entries = detail["nodes"].as_array().unwrap();
+    let in_frame = entries
+        .iter()
+        .filter(|n| n["entry"] == "change" && n["frame"] == "0:4")
+        .count();
+    let mut chips: Vec<(Value, Value)> = entries
+        .iter()
+        .filter(|n| n["entry"] == "impact" && ["0:41", "0:42"].contains(&n["id"].as_str().unwrap()))
+        .map(|n| (n["id"].clone(), n["class"].clone()))
+        .collect();
+    chips.sort_by_key(|c| c.0.to_string());
+    assert_eq!(
+        (
+            page["revisions"].as_array().unwrap().len(),
+            revision["impact"]["complete"].clone(),
+            in_frame,
+            chips
+        ),
+        (
+            1,
+            json!(true),
+            0,
+            vec![
+                (json!("0:41"), json!("effective_unchanged")),
+                (json!("0:42"), json!("effective_unchanged"))
+            ]
+        ),
+        "{detail}"
+    );
+}
+
+/// Follows each node, replaces the file with `write`'s output and refreshes; then how many
+/// revisions each subscription reads, the newest revision's stored entries and the old and new
+/// top-level frames stored for its impact hit on `0:42`.
+fn follow_through(
+    env: &Env,
+    nodes: &[&str],
+    write: fn(&std::ffi::OsStr) -> Result<(), Box<dyn std::error::Error>>,
+) -> (Vec<usize>, Value, Value) {
+    let t = Tracked::new(env);
+    let subs: Vec<String> = nodes.iter().map(|n| t.subscribe(&["--node", n])).collect();
+    let next = env.dir.join("next.fig");
+    write(next.as_os_str()).unwrap();
+    std::fs::rename(&next, &t.path).unwrap();
+    t.index("refresh");
+    let counts = subs
+        .iter()
+        .map(|s| {
+            t.changes(&["--subscription", s])["revisions"]
+                .as_array()
+                .unwrap()
+                .len()
+        })
+        .collect();
+    let all = t.changes(&[]);
+    let id = all["revisions"].as_array().unwrap().last().unwrap()["revisionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let frames = rusqlite::Connection::open(&t.db)
+        .unwrap()
+        .query_row(
+            "SELECT json_array(old_frame, new_frame) FROM revision_impacts WHERE node = '0:42'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .map_or(Value::Null, |f| serde_json::from_str(&f).unwrap());
+    (
+        counts,
+        t.changes(&["--revision", &id, "--limit", "500"]),
+        frames,
+    )
+}
+
+fn impact_entry(detail: &Value, id: &str) -> Value {
+    detail["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["entry"] == "impact" && n["id"] == id)
+        .map_or(Value::Null, |n| json!([n["class"], n["sides"]]))
+}
+
+#[test]
+fn a_node_subscription_inside_a_removed_then_re_added_frame_reads_both_revisions() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    // 0:12 lies inside frame 0:1, which each save removes or adds whole; 0:31 is elsewhere.
+    let subs: Vec<String> = ["0:12", "0:31"]
+        .iter()
+        .map(|n| t.subscribe(&["--node", n]))
+        .collect();
+    let save = |removed: bool| {
+        let next = env.dir.join("next.fig");
+        match removed {
+            true => corpus::write_auto_layout_removed(next.as_os_str()),
+            false => corpus::write(next.as_os_str(), false),
+        }
+        .unwrap();
+        std::fs::rename(&next, &t.path).unwrap();
+        t.index("refresh");
+        let counts: Vec<usize> = subs
+            .iter()
+            .map(|s| {
+                t.changes(&["--subscription", s])["revisions"]
+                    .as_array()
+                    .unwrap()
+                    .len()
+            })
+            .collect();
+        let all = t.changes(&[]);
+        let id = all["revisions"].as_array().unwrap().last().unwrap()["revisionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let detail = t.changes(&["--revision", &id, "--limit", "500"]);
+        (counts, impact_entry(&detail, "0:12"))
+    };
+    assert_eq!(
+        (save(true), save(false)),
+        (
+            (vec![1, 0], json!(["direct", ["old"]])),
+            (vec![2, 0], json!(["direct", ["new"]]))
+        )
+    );
+}
+
+#[test]
+fn node_subscriptions_follow_a_component_child_change_to_the_instance_and_its_frame() {
+    let env = Env::new();
+    // The Dot child changes; neither chip overrides it. The Chip main 0:50 holds the change
+    // itself; frame 0:1 and layer 0:12 are unrelated.
+    let (counts, detail, _) = follow_through(
+        &env,
+        &["0:41", "0:4", "0:50", "0:1", "0:12"],
+        corpus::write_dot_restyled,
+    );
+    // The instance's own facets are unchanged, while its expanded Dot child's appearance is not:
+    // a recorded change in the frame, whose REST fill differs between the two files.
+    let dot = detail["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["entry"] == "change" && n["id"] == "I0:41;0:51")
+        .map_or(Value::Null, |n| {
+            json!([n["change"], n["facets"], n["frame"]])
+        });
+    let fills = |write: fn(&std::ffi::OsStr) -> Result<(), Box<dyn std::error::Error>>,
+                 name: &str| {
+        let path = env.dir.join(name);
+        write(path.as_os_str()).unwrap();
+        fn find<'a>(v: &'a Value, id: &str) -> Option<&'a Value> {
+            if v["id"] == id {
+                return Some(v);
+            }
+            match v {
+                Value::Object(m) => m.values().find_map(|c| find(c, id)),
+                Value::Array(a) => a.iter().find_map(|c| find(c, id)),
+                _ => None,
+            }
+        }
+        let rest = env.json(&["nodes", path.to_str().unwrap(), "0:41"]);
+        find(&rest, "I0:41;0:51").unwrap()["fills"].clone()
+    };
+    let before = fills(|p| corpus::write(p, false), "old-dot.fig");
+    let after = fills(corpus::write_dot_restyled, "new-dot.fig");
+    assert_eq!(
+        (counts, impact_entry(&detail, "0:41"), dot, before == after),
+        (
+            vec![1, 1, 1, 0, 0],
+            json!(["effective_unchanged", ["old", "new"]]),
+            json!(["changed", ["appearance"], "0:4"]),
+            false
+        ),
+        "{detail}"
+    );
+}
+
+#[test]
+fn a_removed_instance_keeps_its_old_frame_and_its_own_subscription_reading_the_revision() {
+    let env = Env::new();
+    // Chip 0:42 is gone from the new file: its link to the component exists on the old side
+    // only. Its removal leaves the appearance verdict unknown, so the impact is incomplete and
+    // every node subscription reads the revision (0:12), as it cannot be ruled out.
+    let (counts, detail, frames) = follow_through(
+        &env,
+        &["0:4", "0:42", "0:12"],
+        corpus::write_dot_restyled_chip_removed,
+    );
+    assert_eq!(
+        (counts, impact_entry(&detail, "0:42"), frames),
+        (
+            vec![1, 1, 1],
+            json!(["direct", ["old"]]),
+            json!(["0:4", null])
+        ),
+        "{detail}"
+    );
+}
+
+#[test]
+fn only_the_frames_holding_an_affected_instance_on_either_side_read_a_component_change() {
+    let env = Env::new();
+    // Chip 0:42 moves from Components (0:4) into Effects (0:3).
+    let (counts, detail, frames) = follow_through(
+        &env,
+        &["0:1", "0:2", "0:3", "0:4"],
+        corpus::write_dot_restyled_chip_moved,
+    );
+    assert_eq!(
+        (counts, frames),
+        (vec![0, 0, 1, 1], json!(["0:4", "0:3"])),
+        "{detail}"
+    );
+}
+
+#[test]
+fn a_node_subscription_reads_revisions_whose_impact_reaches_that_node_or_is_incomplete() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let source = t.changes(&[])["tracking"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let reached = t.subscribe(&["--node", "0:12"]);
+    // A complete revision that changes other layers and reaches 0:12 through an instance.
+    t.sql(&format!(
+        "INSERT INTO revisions (id, seq, source_id, scope, epoch, gen, from_gen, snapshot_id,
+         kind, coverage, summary, detail, detail_rows, detail_bytes, created_ms, impact)
+         SELECT x'000102030405060708090a0b0c0d0e0f', seq + 100, source_id, scope, epoch, gen,
+         from_gen, snapshot_id, kind, '{{\"complete\":true}}', summary, 'complete', 0, 0,
+         created_ms, impact FROM revisions WHERE source_id = '{source}' ORDER BY seq DESC LIMIT 1;
+         INSERT INTO revision_impacts VALUES (x'000102030405060708090a0b0c0d0e0f', 0, '0:12',
+         'effective', 3, 1, 0, 0, 'instance_of', '0:11', NULL, NULL);"
+    ));
+    // And a complete one whose only hit is a child of each followed frame: moved, it is held
+    // by one frame before and another after.
+    let framed = t.subscribe(&["--node", "0:11"]);
+    let moved = t.subscribe(&["--node", "0:14"]);
+    t.sql(&format!(
+        "INSERT INTO revisions (id, seq, source_id, scope, epoch, gen, from_gen, snapshot_id,
+         kind, coverage, summary, detail, detail_rows, detail_bytes, created_ms, impact)
+         SELECT randomblob(16), seq + 1, source_id, scope, epoch, gen, from_gen,
+         snapshot_id, kind, '{{\"complete\":true}}', summary, 'complete', 0, 0, created_ms,
+         '{{\"complete\":true,\"reasons\":[],\"listed\":{{\"effective\":1}}}}'
+         FROM revisions WHERE source_id = '{source}' ORDER BY seq DESC LIMIT 1;
+         INSERT INTO revision_impacts SELECT id, 0, '0:99', 'effective', 3, 1, 0, 0,
+         'instance_of', '0:30', '0:11', '0:14' FROM revisions ORDER BY seq DESC LIMIT 1;"
+    ));
+    let count = |sub: &str| {
+        t.changes(&["--subscription", sub])["revisions"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    assert_eq!((count(&framed), count(&moved)), (1, 1));
+    // And a complete one reaching nothing it names, whose impact could not rule it out.
+    t.sql(&format!(
+        "INSERT INTO revisions (id, seq, source_id, scope, epoch, gen, from_gen, snapshot_id,
+         kind, coverage, summary, detail, detail_rows, detail_bytes, created_ms, impact)
+         SELECT randomblob(16), seq + 1, source_id, scope, epoch, gen, from_gen, snapshot_id,
+         kind, coverage, summary, 'complete', 0, 0, created_ms,
+         '{{\"complete\":false,\"reasons\":[{{\"reason\":\"depth_limit\",\"count\":1}}],\"listed\":{{}}}}'
+         FROM revisions WHERE source_id = '{source}' ORDER BY seq DESC LIMIT 1"
+    ));
+    let page = t.changes(&["--subscription", &reached]);
+    assert_eq!(page["revisions"].as_array().unwrap().len(), 2, "{page}");
+}
+
+#[test]
+fn a_node_subscription_reads_a_revision_recorded_before_impact_was() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let source = t.changes(&[])["tracking"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let followed = t.subscribe(&["--node", "0:12"]);
+    // A complete revision naming none of 0:12, as schema 7 keeps one recorded before it: its
+    // impact is unknown, never an empty complete one, so it cannot rule the node out.
+    t.sql(&format!(
+        "INSERT INTO revisions (id, seq, source_id, scope, epoch, gen, from_gen, snapshot_id,
+         kind, coverage, summary, detail, detail_rows, detail_bytes, created_ms, impact)
+         SELECT randomblob(16), seq + 1, source_id, scope, epoch, gen, from_gen, snapshot_id,
+         'changes', '{{\"complete\":true}}', summary, 'complete', 0, 0, created_ms, NULL
+         FROM revisions WHERE source_id = '{source}' ORDER BY seq DESC LIMIT 1"
+    ));
+    let page = t.changes(&["--subscription", &followed]);
+    assert_eq!(page["revisions"].as_array().unwrap().len(), 1, "{page}");
+}
+
+#[test]
+fn a_revision_s_detail_pages_one_entry_at_a_time_across_its_changes_and_impact() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let id = t.changes(&[])["revisions"][1]["revisionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let whole = t.changes(&["--revision", &id, "--limit", "500"])["nodes"].clone();
+    let (mut paged, mut cursor) = (Vec::new(), None::<String>);
+    loop {
+        let mut args = vec!["--revision", &id, "--limit", "1"];
+        if let Some(c) = &cursor {
+            args.extend(["--cursor", c]);
+        }
+        let page = t.changes(&args);
+        paged.extend(page["nodes"].as_array().unwrap().iter().cloned());
+        match page["nextCursor"].as_str() {
+            Some(c) => cursor = Some(c.to_owned()),
+            None => break,
+        }
+    }
+    let entries: Vec<Value> = paged.iter().map(|n| n["entry"].clone()).collect();
+    assert_eq!(
+        (json!(paged) == whole, entries),
+        (
+            true,
+            ["change"; 4]
+                .into_iter()
+                .chain(["impact"; 4])
+                .map(|e| json!(e))
+                .collect()
+        )
+    );
+}
+
+#[test]
+fn a_schema_6_workspace_reads_impact_as_null_and_records_it_once_a_build_upgrades_it() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    // As schema 6 left it: revisions recorded before impact was.
+    t.sql(
+        "DROP TABLE revision_impacts; ALTER TABLE revisions DROP COLUMN impact;
+         PRAGMA user_version = 6;",
+    );
+    let version = || -> i64 {
+        rusqlite::Connection::open(&t.db)
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap()
+    };
+    let impacts = |page: &Value| -> Vec<Value> {
+        page["revisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["impact"]["complete"].clone())
+            .collect()
+    };
+    let before = t.changes(&[]);
+    let id = before["revisions"][1]["revisionId"].as_str().unwrap();
+    let detail = t.changes(&["--revision", id, "--limit", "500"]);
+    let entries: Vec<Value> = detail["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["entry"].clone())
+        .collect();
+    let read = version();
+    t.save(false);
+    t.index("refresh");
+    let after = t.changes(&[]);
+    assert_eq!(
+        (impacts(&before), entries, read, impacts(&after), version()),
+        (
+            vec![Value::Null; 2],
+            vec![json!("change"); 4],
+            6,
+            vec![Value::Null, Value::Null, json!(true)],
+            7
+        )
+    );
+}
+
+#[test]
+fn a_subscribe_reply_describes_its_source_as_authorized_though_it_is_relocated_meanwhile() {
+    let env = Env::new();
+    let (inside, outside) = (env.dir.join("in"), env.dir.join("out"));
+    std::fs::create_dir(&inside).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    corpus::write(inside.join("a.fig").as_os_str(), false).unwrap();
+    let file = std::fs::canonicalize(inside.join("a.fig")).unwrap();
+    let file = file.to_str().unwrap();
+    env.json(&["index", "prepare", file, "--scope", "0:0"]);
+    env.json(&["index", "track", "--file", file, "--scope", "0:0"]);
+    let status = env.json(&["index", "status", "--file", file]);
+    let (ws, source) = (
+        status["workspaceId"].clone(),
+        status["sources"][0]["sourceId"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+    );
+    let moved = std::fs::canonicalize(&outside).unwrap().join("a.fig");
+    let root = std::fs::canonicalize(&inside).unwrap();
+    let gate = env.gate("subscribe.hold");
+    let mut mcp = Mcp::held(
+        &env,
+        &["--root", root.to_str().unwrap()],
+        Some(("subscribe", &gate)),
+    );
+    mcp.send(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "watch",
+        "arguments": {"action": "subscribe", "workspaceId": ws, "consumer": "bot", "sourceId": source}}}));
+    let reached = PathBuf::from(format!("{}.reached", gate.display()));
+    wait_for("subscribe to write its row", || reached.exists());
+    // The move out of the root waits for the subscribe's write and gives up while it is held.
+    std::fs::rename(file, &moved).unwrap();
+    let relocate = env.run(&[
+        "index",
+        "relocate",
+        &source,
+        moved.to_str().unwrap(),
+        "--file",
+        file,
+    ]);
+    std::fs::remove_file(&gate).unwrap();
+    let reply = loop {
+        let reply = mcp.read();
+        if reply["id"] == 1 {
+            break reply["result"]["structuredContent"].clone();
+        }
+    };
+    assert_eq!(
+        (
+            relocate.status.success(),
+            reply["subscription"]["state"].clone(),
+            reply["tracking"][0]["sourceId"].clone(),
+        ),
+        (false, json!("active"), json!(source))
+    );
+}
+
+impl Tracked<'_> {
+    fn count(&self, q: &str) -> i64 {
+        rusqlite::Connection::open(&self.db)
+            .unwrap()
+            .query_row(q, [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// A saved query subscription to `query` and its subscribe reply.
+    fn query(&self, query: &str) -> (String, Value) {
+        let source = self.changes(&[])["tracking"][0]["sourceId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let reply = self.watch(
+            "subscribe",
+            &["--consumer", "bot", "--source", &source, "--query", query],
+        );
+        let id = reply["subscription"]["subscriptionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        (id, reply)
+    }
+}
+
+#[test]
+fn evaluate_refuses_a_source_it_would_ignore_over_the_cli_and_mcp() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, _) = t.query("badge");
+    let source = t.changes(&[])["tracking"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let ws = env.json(&["index", "status", "--file", &t.file])["workspaceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let rows = "SELECT COUNT(*) FROM query_evaluations";
+    let before = t.count(rows);
+    let mut cli = Vec::new();
+    for given in ["nonexistent", source.as_str()] {
+        cli.push(t.fails(&[
+            "watch",
+            "evaluate",
+            "--file",
+            &t.file,
+            "--subscription",
+            &id,
+            "--source",
+            given,
+        ]));
+    }
+    let mut mcp = Mcp::start(&env, &[]);
+    let refused = mcp.call(
+        "watch",
+        json!({"action": "evaluate", "workspaceId": ws, "subscriptionId": id, "sourceId": "nonexistent"}),
+    );
+    drop(mcp);
+    assert!(
+        cli.iter().all(|e| e.contains("unknown flag --source")),
+        "{cli:?}"
+    );
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(
+        refused.to_string().contains("takes no sourceId"),
+        "{refused}"
+    );
+    assert_eq!(t.count(rows), before, "a refused evaluate stored one");
+}
+
+#[test]
+fn a_query_subscription_reads_stored_evaluations_and_only_evaluate_adds_one() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, subscribed) = t.query("badge");
+    t.save(true);
+    t.index("refresh");
+    let rows = "SELECT COUNT(*) FROM query_evaluations";
+    let before = t.count(rows);
+    let waiting = t.changes(&["--subscription", &id]);
+    let unchanged = t.count(rows);
+    let evaluated = t.watch("evaluate", &["--subscription", &id]);
+    let again = t.watch("evaluate", &["--subscription", &id]);
+    let page = t.changes(&["--subscription", &id]);
+    let cursor = page["nextCursor"].as_str().unwrap().to_owned();
+    let acked = t.watch("ack", &["--subscription", &id, "--cursor", &cursor]);
+    let after = t.changes(&["--subscription", &id]);
+    t.watch("unsubscribe", &["--subscription", &id]);
+    assert_eq!(
+        json!([
+            subscribed["evaluation"]["causes"],
+            subscribed["initialPosition"],
+            waiting["evaluation"]["state"],
+            [before, unchanged],
+            evaluated["evaluation"]["causes"],
+            evaluated["evaluation"]["delta"]["enteredTopK"]
+                .as_array()
+                .unwrap()
+                .len(),
+            again["evaluation"]["state"],
+            page["evaluations"].as_array().unwrap().len(),
+            acked["advanced"],
+            after["evaluations"].as_array().unwrap().len(),
+            t.count(rows)
+        ]),
+        json!([
+            ["initial"],
+            "initial_evaluation",
+            "pending",
+            [1, 1],
+            ["source_changed"],
+            1,
+            "current",
+            2,
+            true,
+            0,
+            0
+        ])
+    );
+}
+
+#[test]
+fn a_rebuild_that_changes_no_result_adds_no_evaluation_and_reads_current() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, _) = t.query("auto layout");
+    t.index("rebuild");
+    let evaluated = t.watch("evaluate", &["--subscription", &id]);
+    let page = t.changes(&["--subscription", &id]);
+    assert_eq!(
+        json!([
+            evaluated["evaluation"]["state"],
+            page["evaluation"]["state"],
+            t.count("SELECT COUNT(*) FROM query_evaluations")
+        ]),
+        json!(["current", "current", 1])
+    );
+}
+
+#[test]
+fn spellings_search_normalizes_alike_are_one_query_subscription_and_type_needs_a_query() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (first, _) = t.query("auto layout");
+    let (again, repeat) = t.query("  AUTO   Layout ");
+    let source = t.changes(&[])["tracking"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let refused = t.fails(&[
+        "watch",
+        "subscribe",
+        "--file",
+        &t.file,
+        "--consumer",
+        "bot",
+        "--source",
+        &source,
+        "--type",
+        "TEXT",
+    ]);
+    assert_eq!(
+        (
+            first == again,
+            repeat["created"].clone(),
+            repeat.get("evaluation").is_none(),
+            refused.contains("pass query with it")
+        ),
+        (true, json!(false), true, true)
+    );
+}
+
+#[test]
+fn evaluations_past_retention_are_an_event_gap_and_past_the_byte_quota_are_refused() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, _) = t.query("badge");
+    // Fifteen more kept evaluations: the next one deletes the oldest the checkpoint is before.
+    t.sql(
+        "WITH RECURSIVE n(i) AS (SELECT 2 UNION ALL SELECT i + 1 FROM n WHERE i < 16)
+         INSERT INTO query_evaluations (id, sub, seq, gen, snapshot_id, membership, ranking,
+         coverage, causes, refs, total, delta, bytes, created_ms)
+         SELECT randomblob(16), sub, i, gen, snapshot_id, membership, ranking, coverage, causes,
+         refs, total, delta, bytes, created_ms FROM query_evaluations, n",
+    );
+    t.save(true);
+    t.index("refresh");
+    t.watch("evaluate", &["--subscription", &id]);
+    let gap = t
+        .env
+        .run(&["changes", "--file", &t.file, "--subscription", &id]);
+    t.sql("UPDATE query_evaluations SET bytes = 8 * 1024 * 1024");
+    t.save(false);
+    t.index("refresh");
+    let refused = t.env.run(&[
+        "watch",
+        "evaluate",
+        "--file",
+        &t.file,
+        "--subscription",
+        &id,
+    ]);
+    assert_eq!(
+        (
+            t.count("SELECT COUNT(*) FROM query_evaluations"),
+            String::from_utf8_lossy(&gap.stderr).contains("deleted by retention"),
+            String::from_utf8_lossy(&refused.stderr).contains("evaluations already hold"),
+        ),
+        (16, true, true)
+    );
+}
+
+#[test]
+fn mcp_saves_a_typed_query_evaluates_it_and_a_confined_caller_cannot_read_it() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let polled = t.changes(&[]);
+    let (ws, source) = (
+        polled["workspaceId"].clone(),
+        polled["tracking"][0]["sourceId"].clone(),
+    );
+    let mut mcp = Mcp::start(&env, &[]);
+    let subscribed = mcp.call(
+        "watch",
+        json!({"action": "subscribe", "workspaceId": ws, "consumer": "bot", "sourceId": source,
+            "query": "badge", "type": "rectangle"}),
+    )["structuredContent"]
+        .clone();
+    let id = subscribed["subscription"]["subscriptionId"].clone();
+    t.save(true);
+    t.index("refresh");
+    let evaluated = mcp.call(
+        "watch",
+        json!({"action": "evaluate", "workspaceId": ws, "subscriptionId": id}),
+    )["structuredContent"]
+        .clone();
+    let elsewhere = env.dir.join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let elsewhere = std::fs::canonicalize(elsewhere).unwrap();
+    let mut confined = Mcp::start(&env, &["--root", elsewhere.to_str().unwrap()]);
+    let hidden = confined.call("changes", json!({"workspaceId": ws, "subscriptionId": id}));
+    assert_eq!(
+        json!([
+            subscribed["subscription"]["types"],
+            evaluated["evaluation"]["delta"]["enteredTopK"][0]["snapshotId"]
+                == evaluated["evaluation"]["delta"]["snapshotId"],
+            evaluated["evaluation"]["delta"]["fromSnapshotId"]
+                != evaluated["evaluation"]["delta"]["snapshotId"],
+            hidden["content"][0]["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("no subscription")),
+        ]),
+        json!([["RECTANGLE"], true, true, true])
+    );
+}
+
+#[test]
+fn a_query_evaluation_is_current_only_for_its_index_once_the_file_changes_or_goes() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, _) = t.query("badge");
+    let fresh = t.changes(&["--subscription", &id])["evaluation"].clone();
+    t.save(true);
+    let saved = t.changes(&["--subscription", &id])["evaluation"].clone();
+    std::fs::remove_file(&t.path).unwrap();
+    let gone = t.changes(&["--subscription", &id])["evaluation"].clone();
+    assert_eq!(
+        json!([
+            fresh["state"],
+            saved["state"],
+            saved["nextSteps"][0]["arguments"]["action"],
+            gone["state"]
+        ]),
+        json!([
+            "current",
+            "current_for_index",
+            "refresh",
+            "current_for_index"
+        ])
+    );
+}
+
+#[test]
+fn a_damaged_stored_evaluation_is_invalid_data_and_a_new_ranking_compares_no_positions() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, _) = t.query("auto layout");
+    t.sql("UPDATE query_evaluations SET ranking = 'older'");
+    t.index("rebuild");
+    let evaluated = t.watch("evaluate", &["--subscription", &id]);
+    // A damaged later row ends the page before it; read first, it fails with an ack past it.
+    t.sql("UPDATE query_evaluations SET delta = '{' WHERE seq = 2");
+    let before = t.changes(&["--subscription", &id]);
+    let cursor = before["nextCursor"].as_str().unwrap();
+    let damaged = t.fails(&[
+        "changes",
+        "--file",
+        &t.file,
+        "--subscription",
+        &id,
+        "--cursor",
+        cursor,
+    ]);
+    assert_eq!(
+        json!([
+            evaluated["evaluation"]["causes"],
+            evaluated["evaluation"]["delta"]["rankChanged"],
+            evaluated["evaluation"]["delta"]["rankComparable"],
+            before["evaluations"].as_array().unwrap().len(),
+            before["hasMore"],
+            damaged.contains("is damaged") && damaged.contains("ack")
+        ]),
+        json!([
+            ["index_rebuilt", "ranking_changed"],
+            null,
+            false,
+            1,
+            true,
+            true
+        ])
+    );
+}
+
+#[test]
+fn a_query_subscription_follows_a_relocated_source_and_compares_its_same_nodes() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, _) = t.query("badge");
+    let moved = env.dir.join("moved.fig");
+    std::fs::copy(&t.path, &moved).unwrap();
+    let moved = std::fs::canonicalize(moved).unwrap();
+    let moved = moved.to_str().unwrap();
+    let ws = env.json(&["index", "status", "--file", &t.file]);
+    let (wid, source) = (
+        ws["workspaceId"].as_str().unwrap(),
+        ws["sources"][0]["sourceId"].as_str().unwrap(),
+    );
+    env.json(&["index", "relocate", "--id", wid, source, moved]);
+    env.json(&["index", "refresh", "--file", moved, "--scope", "0:0"]);
+    let e =
+        env.json(&["watch", "evaluate", "--id", wid, "--subscription", &id])["evaluation"].clone();
+    assert_eq!(
+        json!([
+            e["state"],
+            e["causes"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("corpus_changed")),
+            e["delta"]["enteredTopK"],
+            e["delta"]["leftTopK"],
+            e["delta"]["rankComparable"]
+        ]),
+        json!(["evaluated", true, [], [], true]),
+        "{e}"
+    );
+}
+
+#[test]
+fn an_understated_stored_size_never_admits_an_oversized_evaluation() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, _) = t.query("badge");
+    t.sql("UPDATE query_evaluations SET bytes = 1, delta = '\"' || zeroblob(300000) || '\"'");
+    let refused = t.fails(&["changes", "--file", &t.file, "--subscription", &id]);
+    assert!(refused.contains("takes more than"), "{refused}");
+}
+
+#[test]
+fn a_last_evaluation_whose_columns_together_pass_the_row_cap_is_damaged_not_read() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, _) = t.query("badge");
+    // Neither column alone passes 128 KiB; together they do.
+    t.sql("UPDATE query_evaluations SET coverage = '\"' || zeroblob(70000) || '\"', refs = '[\"' || zeroblob(70000) || '\"]'");
+    t.index("rebuild");
+    let refused = t.fails(&[
+        "watch",
+        "evaluate",
+        "--file",
+        &t.file,
+        "--subscription",
+        &id,
+    ]);
+    assert!(refused.contains("is damaged"), "{refused}");
+}
+
 /// A design inside an MCP root, tracked, and a path outside it to relocate the design to.
 fn inside_and_out(env: &Env) -> (String, String, String, String) {
     let (inside, outside) = (env.dir.join("in"), env.dir.join("out"));
@@ -2958,7 +4174,7 @@ fn a_changes_read_relocated_out_of_its_root_meanwhile_reads_the_registry_it_auth
         .execute_batch(
             "INSERT INTO revisions SELECT randomblob(16), seq + 100, source_id, scope, epoch,
              gen, from_gen, snapshot_id, kind, coverage, summary, detail, detail_rows,
-             detail_bytes, created_ms FROM revisions ORDER BY seq DESC LIMIT 1",
+             detail_bytes, created_ms, impact FROM revisions ORDER BY seq DESC LIMIT 1",
         )
         .unwrap();
     let after = env.json(&["changes", "--file", &moved])["revisions"].clone();
@@ -3146,5 +4362,30 @@ fn a_tracked_scope_deleted_from_the_file_records_its_removal() {
             ],
             true
         )
+    );
+}
+
+#[test]
+fn a_failed_evaluation_stays_reported_by_changes_until_a_later_publication() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let (id, _) = t.query("badge");
+    // Not evaluated at this publication, and its search fails: the file is gone.
+    t.sql("UPDATE query_evaluations SET ranking = 'older'");
+    std::fs::remove_file(&t.path).unwrap();
+    let evaluated = t.watch("evaluate", &["--subscription", &id])["evaluation"].clone();
+    let read = t.changes(&["--subscription", &id])["evaluation"].clone();
+    assert_eq!(
+        (
+            evaluated["reason"].clone(),
+            read["state"].clone(),
+            read["reason"].clone()
+        ),
+        (
+            json!("search_failed"),
+            json!("unavailable"),
+            json!("search_failed")
+        ),
+        "{evaluated} {read}"
     );
 }

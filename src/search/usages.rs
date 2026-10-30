@@ -1117,7 +1117,7 @@ pub(crate) struct Reverse {
 
 impl Reverse {
     // A full build prepays these lookups' visits and estimated copies with each record, edge
-    // and definition, so they stay within the build's bounds.
+    // and definition, so they stay within the build's bounds; `prepare` pays for any other.
     fn of(index: &Index) -> &Reverse {
         index.reverse.get_or_init(|| {
             let mut out = Reverse::default();
@@ -1144,6 +1144,51 @@ impl Reverse {
             out
         })
     }
+}
+
+/// Builds `index`'s reverse map for `pointing_at` and `rid_in`, first paying `bounds` what a
+/// relations build estimates for it: a loaded index never paid that, and a fresh build that
+/// did is charged again, since an unbuilt map cannot tell which it is. False, with nothing
+/// built, when it does not fit; an index whose map is already built costs nothing more.
+pub(crate) fn prepare(index: &Index, bounds: &mut Bounds) -> bool {
+    if index.reverse.get().is_none() {
+        // Visits are paid from lengths before each scan, twice: this estimate and the build.
+        for r in &index.records {
+            if !bounds.charge(2 * (1 + r.edges.len()), 0) {
+                return false;
+            }
+            let targets = r.edges.iter().filter_map(|e| e.target.as_ref());
+            let bytes = 64 + r.id.len() + targets.map(|t| 56 + t.len()).sum::<usize>();
+            if !bounds.charge(0, bytes) {
+                return false;
+            }
+        }
+        for (id, d) in &index.definitions {
+            if !bounds.charge(2, 0) {
+                return false;
+            }
+            if let Some(set) = &d.set
+                && !bounds.charge(0, 64 + id.len() + set.len())
+            {
+                return false;
+            }
+        }
+    }
+    Reverse::of(index);
+    true
+}
+
+/// The `(rid, edge)` positions pointing at `target`, from the reverse map `prepare` built.
+pub(crate) fn pointing_at<'a>(index: &'a Index, target: &str) -> &'a [(u32, u32)] {
+    Reverse::of(index)
+        .by_target
+        .get(target)
+        .map_or(&[], Vec::as_slice)
+}
+
+/// The rid of `node` in `index`, from the same map.
+pub(crate) fn rid_in(index: &Index, node: &str) -> Option<u32> {
+    Reverse::of(index).rids.get(node).copied()
 }
 
 pub(crate) struct Whole<'a>(pub &'a Index);

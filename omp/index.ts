@@ -8,6 +8,7 @@ import { Container, Image, Markdown } from '@oh-my-pi/pi-tui';
 import { Workflow } from '../pi/workflow.mjs';
 import { Viewer } from '../pi/viewer.mjs';
 import { buildRequest } from '../pi/requests.mjs';
+import { ENTRY, Targets, reminder, restore as restoreTargets } from '../pi/stale.mjs';
 import { reviewMappings } from './review.mjs';
 
 const HELP = [
@@ -15,7 +16,7 @@ const HELP = [
   "",
   "Ask OMP directly: **\"Build the List views screen from ./design.fig using this project's components.\"**",
   "OMP can find and read the design through MCP. No open command or node ID is needed.",
-  "Asking OMP to find copy or a screen searches the .fig directly and stores nothing. For repeated searches, ask it to enable an index for a design and scope: it prepares a local index once (no setup command), reports the job until ready, then reuses it across restarts and hosts. Resetting that index needs your explicit request. Asking where a component, variable, style or image is used lists its exact usages the same way: from the .fig directly, or from that index once enabled. Asking it to follow the changes of a design tracks a scope of that index and lists what changed since the last change it handled.",
+  "Asking OMP to find copy or a screen searches the .fig directly and stores nothing. For repeated searches, ask it to enable an index for a design and scope: it prepares a local index once (no setup command), reports the job until ready, then reuses it across restarts and hosts. Resetting that index needs your explicit request. Asking where a component, variable, style or image is used lists its exact usages the same way: from the .fig directly, or from that index once enabled. Asking it to follow the changes of a design tracks a scope of that index and lists what changed since the last change it handled; asking it to watch that scope picks up each save while its figlens server runs.",
   "",
   "Optional shortcuts:",
   "- `/figlens open [description]` — tell OMP what you know: a file, screen name, purpose or visible text. OMP finds it or asks a recognizable follow-up.",
@@ -181,6 +182,22 @@ export default function figlens(pi: ExtensionAPI) {
 
   pi.on('session_switch', closeOwners);
   pi.on('session_shutdown', closeOwners);
+  // Watch targets this session subscribed to or acknowledged, kept in the session branch. The figlens MCP server
+  // here comes from OMP's MCP configuration, whose --root folders an extension cannot read, so a hook cannot run
+  // changes with that tool's authority: OMP only reminds the agent to call changes itself.
+  let targets = new Targets();
+  const restore = async (_event: unknown, ctx: ExtensionContext) => { targets = restoreTargets(ctx.sessionManager.getBranch()); };
+  pi.on('session_start', restore);
+  pi.on('session_switch', restore);
+  pi.on('session_tree', restore);
+  pi.on('tool_result', async event => {
+    if (targets.observe(event.toolName, event.input, event.content, event.isError)) pi.appendEntry(ENTRY, [...targets.list]);
+  });
+  // The reminder joins each model call without entering the session, so it leaves no copy behind.
+  pi.on('context', async event => {
+    const text = reminder(targets.list);
+    return text ? { messages: [...event.messages, { role: 'custom', customType: 'figlens', content: text, display: false, timestamp: Date.now() }] } : undefined;
+  });
 
   const COMMANDS = {
     open: 'Find a design from a file, screen name, purpose or visible text',

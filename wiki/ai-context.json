@@ -132,10 +132,18 @@
       ]
     },
     "integrations": {
-      "description": "Changing OpenCode V2/OMP entries, shared host packaging, permissions, ownership or installed-adapter acceptance.",
+      "description": "Changing OpenCode V2/OMP entries, shared host packaging, permissions or ownership.",
       "sources": [
         {
           "path": "wiki/integrations.md"
+        }
+      ]
+    },
+    "host-acceptance": {
+      "description": "Running or changing the installed-host lanes for OpenCode, OMP and Pi.",
+      "sources": [
+        {
+          "path": "wiki/host-acceptance.md"
         }
       ]
     },
@@ -159,10 +167,21 @@
       ]
     },
     "changes": {
-      "description": "Changing change tracking, its revisions, changes reads or watch ack checkpoints.",
+      "description": "Changing change tracking, its revisions, changes reads, watch ack checkpoints or host stale-context notes.",
       "sources": [
         {
           "path": "wiki/changes.md"
+        },
+        {
+          "path": "wiki/stale-context.md"
+        }
+      ]
+    },
+    "watch": {
+      "description": "Changing watch leases, the shared watch runner, its detector or the changes monitor.",
+      "sources": [
+        {
+          "path": "wiki/watch.md"
         }
       ]
     },
@@ -171,6 +190,14 @@
       "sources": [
         {
           "path": "wiki/workspace.md"
+        }
+      ]
+    },
+    "subscriptions": {
+      "description": "Changing watch subscriptions, their filters, consumer checkpoint bounds or forget.",
+      "sources": [
+        {
+          "path": "wiki/subscriptions.md"
         }
       ]
     },

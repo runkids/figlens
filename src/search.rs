@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -33,6 +34,8 @@ pub(crate) const MAX_SOURCES: usize = 16;
 const SOURCE_BYTES: u64 = 512 * 1024 * 1024;
 /// Expanding a 179 MB held-out file charged 7.1M; each override value walked counts once.
 const WORK: usize = 10_000_000;
+/// The cancel flag of a search nobody cancels.
+pub(crate) static NEVER: AtomicBool = AtomicBool::new(false);
 const BYTES: usize = 512 * 1024 * 1024;
 const TEXT_BYTES: usize = 64 * 1024 * 1024;
 const DEPTH: usize = 256;
@@ -107,6 +110,10 @@ pub struct Prepared {
 impl Prepared {
     pub(crate) fn terms(&self) -> &[String] {
         &self.terms
+    }
+
+    pub(crate) fn phrase(&self) -> &str {
+        &self.phrase
     }
 
     /// The generations of the sources a workspace cursor paged.
@@ -488,7 +495,7 @@ pub struct Index {
     /// Edge targets and component-set members described for usages; a partial index holds the
     /// ones a query read.
     definitions: BTreeMap<String, usages::Definition>,
-    /// Reverse lookups over a whole index, built on its first usages query.
+    /// Reverse lookups over a whole index, built on its first usages query or impact walk.
     reverse: std::sync::OnceLock<usages::Reverse>,
 }
 
@@ -940,7 +947,12 @@ fn idf(n: usize, df: u32) -> f64 {
 /// then corpus order and document order. Record counts, document frequencies and field lengths
 /// are summed over the whole corpus before any record is scored, so one source's hits are never
 /// ranked alone and merged afterwards; one index ranks exactly as it always did.
-fn retrieve(corpus: &[&Index], q: &Prepared, req: &Request) -> (Vec<Hit>, bool, [usize; 2]) {
+fn retrieve(
+    corpus: &[&Index],
+    q: &Prepared,
+    req: &Request,
+    cancel: &AtomicBool,
+) -> (Vec<Hit>, bool, [usize; 2]) {
     let n: usize = corpus.iter().map(|i| i.total).sum();
     let lens = corpus
         .iter()
@@ -959,7 +971,7 @@ fn retrieve(corpus: &[&Index], q: &Prepared, req: &Request) -> (Vec<Hit>, bool, 
         .collect();
     let mut excluded = [0usize; 2];
     let mut hits: Vec<Hit> = Vec::new();
-    for (source, index) in corpus.iter().enumerate() {
+    'rank: for (source, index) in corpus.iter().enumerate() {
         let mut lists: Vec<(&IndexTerm, u32)> = Vec::new();
         for (term, &df) in q.terms.iter().zip(&df) {
             match index.terms.get(term) {
@@ -977,6 +989,10 @@ fn retrieve(corpus: &[&Index], q: &Prepared, req: &Request) -> (Vec<Hit>, bool, 
         for (i, (term, df)) in lists.iter().enumerate() {
             let idf = idf(n, *df);
             for p in &term.postings {
+                // A cancelled ranking stops whole; its caller reports `Cancelled`.
+                if cancel.load(Ordering::Relaxed) {
+                    break 'rank;
+                }
                 if i > 0 && !acc.contains_key(&p.record) {
                     continue;
                 }
@@ -991,6 +1007,9 @@ fn retrieve(corpus: &[&Index], q: &Prepared, req: &Request) -> (Vec<Hit>, bool, 
             acc.retain(|_, (_, last)| *last == i);
         }
         for (record, (score, _)) in acc {
+            if cancel.load(Ordering::Relaxed) {
+                break 'rank;
+            }
             let r = index.record(record);
             if !req.types.is_empty() && !req.types.contains(&r.kind) {
                 continue;
@@ -1318,7 +1337,7 @@ fn reply(index: &Index, q: &Prepared, req: &Request, source: Json) -> Result<Jso
             "search cursor belongs to another query, filter set, source, snapshot or index generation; search again without cursor",
         ));
     }
-    let (hits, more, excluded) = retrieve(&[index], q, req);
+    let (hits, more, excluded) = retrieve(&[index], q, req, &NEVER);
     let over = || -> Box<dyn Error> {
         FigError::new(
             ErrorKind::ResponseBudget,
@@ -1429,6 +1448,7 @@ pub(crate) fn corpus_rank(
     q: &Prepared,
     req: &Request,
     key: &Json,
+    cancel: &AtomicBool,
 ) -> Result<Ranked, Box<dyn Error>> {
     let corpus: Vec<&Index> = parts.iter().map(|p| p.index).collect();
     let n: usize = corpus.iter().map(|i| i.total).sum();
@@ -1471,7 +1491,10 @@ pub(crate) fn corpus_rank(
             "search cursor belongs to another query, filter set or workspace search; search again without cursor",
         ));
     }
-    let (hits, more, excluded) = retrieve(&corpus, q, req);
+    let (hits, more, excluded) = retrieve(&corpus, q, req, cancel);
+    if cancel.load(Ordering::SeqCst) {
+        return Err(FigError::new(ErrorKind::Cancelled, "search cancelled").into());
+    }
     Ok(Ranked {
         hits,
         more,
@@ -1481,6 +1504,12 @@ pub(crate) fn corpus_rank(
 }
 
 /// The reply for a ranked page; every part has the shown records and their ancestors.
+/// The ranking a workspace search reports and a saved query's evaluations are bound to.
+pub(crate) fn corpus_ranking() -> Json {
+    json!({"version": RANKING, "tokenizer": tokenizer(), "weights": {"name": WEIGHTS[0], "text": WEIGHTS[1]},
+        "k1": K1, "b": B, "order": ["exact-name", "name-phrase", "text-phrase", "score", "source-order", "document-order"]})
+}
+
 pub(crate) fn corpus_page(
     parts: &[Part],
     q: &Prepared,
@@ -1518,8 +1547,7 @@ pub(crate) fn corpus_page(
     Ok(json!({
         "query": {"text": req.query, "normalized": q.phrase, "mode": "text", "terms": q.terms},
         "scope": {"nodeId": req.scope, "name": scope.map(|r| r.name.as_str())},
-        "ranking": {"version": RANKING, "tokenizer": tokenizer(), "weights": {"name": WEIGHTS[0], "text": WEIGHTS[1]},
-            "k1": K1, "b": B, "order": ["exact-name", "name-phrase", "text-phrase", "score", "source-order", "document-order"]},
+        "ranking": corpus_ranking(),
         "results": results,
         "coverage": corpus_coverage(parts, req, excluded),
         "hasMore": more,
@@ -1533,7 +1561,11 @@ pub(crate) fn corpus_page(
 pub(crate) type Stamp = (SystemTime, u64);
 
 pub(crate) fn stamp(path: &Path) -> std::io::Result<Stamp> {
-    let meta = std::fs::metadata(path)?;
+    stamp_of(&std::fs::metadata(path)?)
+}
+
+/// The stamp of `meta`, a regular file's.
+fn stamp_of(meta: &std::fs::Metadata) -> std::io::Result<Stamp> {
     if !meta.is_file() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -1545,16 +1577,27 @@ pub(crate) fn stamp(path: &Path) -> std::io::Result<Stamp> {
 
 /// The source's bytes, read once within `SOURCE_BYTES` while its size and time stayed put.
 pub(crate) fn stage(path: &Path) -> Result<(Vec<u8>, Stamp), Box<dyn Error>> {
+    // Stamped first too: opening a FIFO or device can block indefinitely.
+    stage_with(|| Ok(stamp(path).and_then(|_| std::fs::File::open(path))?))
+}
+
+/// `stage` of the file `open` returns, by that file's own size and time, and again by the one it
+/// returns after the read, so a save replacing the file meanwhile is retried.
+pub(crate) fn stage_with(
+    open: impl Fn() -> Result<std::fs::File, Box<dyn Error>>,
+) -> Result<(Vec<u8>, Stamp), Box<dyn Error>> {
     for _ in 0..3 {
-        let before = stamp(path)?;
+        let mut file = open()?;
+        let before = stamp_of(&file.metadata()?)?;
         if before.1 > SOURCE_BYTES {
             return Err(crate::parse::exceeded("source bytes", SOURCE_BYTES).into());
         }
         let mut bytes = Vec::with_capacity(before.1 as usize);
-        std::fs::File::open(path)?
-            .take(SOURCE_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 == before.1 && stamp(path)? == before {
+        (&mut file).take(SOURCE_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 == before.1
+            && stamp_of(&file.metadata()?)? == before
+            && stamp_of(&open()?.metadata()?)? == before
+        {
             return Ok((bytes, before));
         }
     }
@@ -1856,6 +1899,7 @@ fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json
 }
 
 pub mod diff;
+pub(crate) mod impact;
 pub(crate) mod store;
 pub mod usages;
 

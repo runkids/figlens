@@ -8,14 +8,18 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Workflow } from '../pi/workflow.mjs';
 
 const [sdkInput, outputInput, binaryInput, packageInput] = process.argv.slice(2);
-assert.ok(sdkInput && outputInput && binaryInput && packageInput, 'Usage: bun scripts/check-omp-integration.mjs <omp-root> <fresh-output> <binary> <installed-package> [--tui]');
+assert.ok(sdkInput && outputInput && binaryInput && packageInput, 'Usage: bun scripts/check-omp-integration.mjs <omp-root> <fresh-output> <binary> <installed-package> [--tui] [--watch-only=<fig>]');
 const sdk = path.resolve(sdkInput), output = path.resolve(outputInput), binary = path.resolve(binaryInput);
+// --watch-only=<public.fig>: only the bridge's first use (watch lease, track, ack) and stale context, on the distributable design, for every OS.
+const watchOnly = process.argv.find(arg => arg.startsWith('--watch-only='))?.slice('--watch-only='.length);
+const watchChecks = ['real OMP loader', 'first use through the packaged bridge', 'stale context'];
+const frameName = watchOnly ? 'First success' : 'Mapping review';
 await mkdir(output);
 const project = path.join(output, 'project 空白');
 await mkdir(path.join(project, 'src'), { recursive: true });
 process.env.PI_CODING_AGENT_DIR = path.join(output, 'agent');
 process.env.FIGLENS_BIN = binary;
-await copyFile(new URL('../samples/plugin-research/fixtures/mapping.fig', import.meta.url), path.join(project, 'mapping.fig'));
+await copyFile(watchOnly ? path.resolve(watchOnly) : new URL('../samples/plugin-research/fixtures/mapping.fig', import.meta.url), path.join(project, 'mapping.fig'));
 await copyFile(path.join(project, 'mapping.fig'), path.join(project, 'mapping-old.fig'));
 await writeFile(path.join(project, 'src/Button.mjs'), 'export const Button = () => "button";\n');
 const execute = promisify(execFile);
@@ -41,7 +45,7 @@ const ui = {
   notify: message => notices.push(message), setStatus() {},
 };
 runner.initialize({ sendMessage: message => shown.push(message), sendUserMessage: () => { throw new Error('No model dispatch in this probe'); },
-  appendEntry() {}, getActiveTools: () => [], getAllTools: () => [], setActiveTools: async () => {}, getCommands: () => [],
+  appendEntry: (customType, data) => session.appendCustomEntry(customType, data), getActiveTools: () => [], getAllTools: () => [], setActiveTools: async () => {}, getCommands: () => [],
 }, { getModel: () => undefined, isIdle: () => true, abort() {}, hasPendingMessages: () => false,
   shutdown() {}, getContextUsage: () => undefined, compact: async () => {}, getSystemPrompt: () => [] },
 { waitForIdle: async () => {} }, ui, 'tui');
@@ -51,6 +55,7 @@ const settings = policy => Settings.isolated({ 'tools.approvalMode': 'always-ask
 const invoke = (name, policy, signal, params = {}) => tools[name].execute('installed', params, signal, undefined, { settings: settings(policy) });
 const proposal = { instance: '0:2', target: { path: 'src/Button.mjs', export: 'Button', import: 'import { Button } from \"./src/Button.mjs\";', example: 'Button()' }, rationale: 'Original synthetic component fixture' };
 async function check(name, run) {
+  if (watchOnly && !watchChecks.some(prefix => name.startsWith(prefix))) return;
   try { result.tests.push({ name, status: 'passed', evidence: await run() }); }
   catch (error) { result.tests.push({ name, status: 'failed', error: String(error.stack || error) }); }
 }
@@ -110,6 +115,7 @@ await check('first use through the packaged bridge: prepare, poll, search the pu
   process.env.XDG_STATE_HOME = state;
   process.env.XDG_CONFIG_HOME = path.join(output, 'config');
   const connection = await connectToServer('figlens', discovered.items.find(item => item.name === 'figlens'));
+  let connected = true;
   try {
     const listed = await listTools(connection);
     const file = path.join(project, 'mapping.fig');
@@ -118,7 +124,7 @@ await check('first use through the packaged bridge: prepare, poll, search the pu
       assert.equal(reply.isError, false, JSON.stringify(reply).slice(0, 2000));
       return reply.structuredContent;
     };
-    await content('search', { file, query: 'Mapping review' });
+    await content('search', { file, query: frameName });
     await assert.rejects(readdir(path.join(state, 'figlens')), { code: 'ENOENT' }, 'connecting, listing and stateless search created figlens state');
     const prepared = await content('index', { action: 'prepare', file, scope: '0:0' });
     let job = prepared.job, polls = 0;
@@ -127,12 +133,13 @@ await check('first use through the packaged bridge: prepare, poll, search the pu
       job = await content('jobs', { action: 'status', jobId: job.jobId });
     }
     assert.equal(job.state, 'succeeded', JSON.stringify(job));
-    const found = await content('search', { workspaceId: prepared.workspaceId, query: 'Mapping review' });
+    const found = await content('search', { workspaceId: prepared.workspaceId, query: frameName });
     assert.deepEqual(found.sources.map(source => source.state), ['ready']);
     const inspected = await content('inspect', { file, node: found.results[0].ref.nodeId });
     assert.equal(inspected.node.id, '0:1');
-    const used = await content('usages', { workspaceId: prepared.workspaceId, node: '0:10' });
-    assert.deepEqual(used.results.map(item => `${item.relation} ${item.ref.nodeId}`), ['instance_of 0:2', 'instance_of 0:3']);
+    // The public design has no component instances, so only the mapping design checks usages.
+    const used = watchOnly ? { results: [] } : await content('usages', { workspaceId: prepared.workspaceId, node: '0:10' });
+    if (!watchOnly) assert.deepEqual(used.results.map(item => `${item.relation} ${item.ref.nodeId}`), ['instance_of 0:2', 'instance_of 0:3']);
     // Following changes: track builds a baseline, and a consumer that acks it reads nothing new.
     const settle = async job => {
       for (const deadline = Date.now() + 30000; !['succeeded', 'failed', 'cancelled', 'interrupted'].includes(job.state) && Date.now() < deadline;) {
@@ -160,10 +167,27 @@ await check('first use through the packaged bridge: prepare, poll, search the pu
     // The README states this: OMP's default yolo mode runs reset without asking.
     assert.equal(decisions.yolo, 'allow');
     assert.match(index.formatApprovalDetails(reset).join('\n'), /reset/);
-    return { workspaceId: prepared.workspaceId, dispatched: prepared.job.state, job: job.state, polls, ref: found.results[0].ref,
-      inspected: inspected.node.id, usedBy: used.results.map(item => item.ref.nodeId), approvalTier: index.approval, usagesTier: usages.approval, trackedBaselineAcked: true, resetDecisions: decisions };
-  } finally {
+    // A lease the bridge's server holds ends released when OMP disconnects it, read by the CLI afterwards.
+    const lease = await content('watch', { action: 'start', workspaceId: prepared.workspaceId, scope: '0:0' });
+    assert.equal(lease.state, 'active', JSON.stringify(lease));
     await disconnectServer(connection);
+    connected = false;
+    const ended = async () => JSON.parse((await execute(binary, ['watch', 'status', '--id', prepared.workspaceId], { cwd: project })).stdout)
+      .leases.filter(item => item.leaseId === lease.leaseId).map(item => [item.state, item.reason]);
+    // OMP signals the server on POSIX, which ends its leases released. On Windows it kills the bridge with
+    // TerminateProcess, so the native server is released only if it reads stdin's end first; otherwise
+    // the lease lapses as a crash's does. The report names which one happened.
+    const crashExpiry = process.platform === 'win32';
+    let released = await ended();
+    for (const deadline = Date.now() + (crashExpiry ? 40000 : 10000); !['ended', 'expired'].includes(released[0]?.[0]) && Date.now() < deadline; released = await ended())
+      await new Promise(resolve => setTimeout(resolve, 100));
+    if (crashExpiry && released[0]?.[0] === 'expired') assert.equal(released.length, 1);
+    else assert.deepEqual(released, [['ended', 'released']]);
+    const disconnectEnded = released[0][0] === 'expired' ? 'expired (Windows kill, crash fallback)' : 'released';
+    return { workspaceId: prepared.workspaceId, dispatched: prepared.job.state, job: job.state, polls, ref: found.results[0].ref,
+      inspected: inspected.node.id, usedBy: used.results.map(item => item.ref.nodeId), approvalTier: index.approval, usagesTier: usages.approval, trackedBaselineAcked: true, watchLeaseOnDisconnect: disconnectEnded, resetDecisions: decisions };
+  } finally {
+    if (connected) await disconnectServer(connection);
     for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : process.env[name] = value;
   }
 });
@@ -260,6 +284,24 @@ await check('unverified MCP shortcuts do not dispatch and preserve local state',
   assert.ok(shown.at(-1).content.includes('MCP shortcut unavailable'));
   assert.deepEqual(await readFile(flow.guide), before);
   return { modelCalled: false, existingGuideUnchanged: true };
+});
+await check('stale context: a watch target this session acknowledged gets an explicit-check reminder, kept across a switch', async () => {
+  const turn = async () => (await runner.emitContext([]))?.at(-1);
+  assert.equal(await turn(), undefined, 'a session without a watch target added context');
+  const input = { action: 'ack', workspaceId: 'ws_check', consumer: 'omp', scope: '0:0', cursor: 'c' };
+  for (const isError of [true, false]) await runner.emitToolResult({ type: 'tool_result', toolName: 'mcp__figlens_watch', toolCallId: 'stale',
+    input, content: [{ type: 'text', text: JSON.stringify({ advanced: true }) }], isError, details: undefined });
+  const first = await turn();
+  assert.equal(first.display, false);
+  assert.match(first.content, /checked only when you call it/);
+  assert.match(first.content, /"workspaceId":"ws_check","consumer":"omp","scope":"0:0"/);
+  assert.deepEqual((await runner.emitBeforeAgentStart('next', undefined, []))?.messages ?? [], [], 'a reminder entered the session');
+  await runner.emit({ type: 'session_start' });
+  assert.equal((await turn())?.content, first.content, 'the session branch lost its target');
+  await runner.emitToolResult({ type: 'tool_result', toolName: 'mcp__figlens_watch', toolCallId: 'forget',
+    input: { action: 'forget', workspaceId: 'ws_check', consumer: 'omp', scope: '0:0' }, content: [], isError: false, details: undefined });
+  assert.equal(await turn(), undefined);
+  return { noTargetNoContext: true, failedCallIgnored: true, reminderOnly: true, notPersisted: true, restoredFromSession: true, forgetClears: true };
 });
 await check('real viewer is owned and removed on session switch', async () => {
   const preview = await invoke('figlens_preview', { figlens_preview: 'allow' }, undefined, { file: path.join(project, 'mapping.fig') });

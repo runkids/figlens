@@ -1470,3 +1470,118 @@ fn a_schema_3_workspace_upgrades_to_change_tracking_keeping_its_rows() {
         [SCHEMA, 1, 1, 0, 64]
     );
 }
+
+#[test]
+fn a_cancelled_search_is_interrupted_in_its_statement_and_reported_cancelled() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let conn = Connection::open_in_memory().unwrap();
+    let cancel = AtomicBool::new(false);
+    let kind = |e: Box<dyn Error>| e.downcast_ref::<FigError>().map(FigError::kind);
+    // A statement that takes far longer than the test unless SQLite is interrupted, yet ends.
+    // Whether a statement ran to its end: an interrupted one did not, whatever is reported.
+    let ended = std::sync::Mutex::new(Vec::new());
+    let long = || {
+        let out = conn.query_row(
+            "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 300000000)
+             SELECT count(*) FROM c",
+            [],
+            |r| r.get::<_, i64>(0),
+        );
+        ended.lock().unwrap().push(out.is_ok());
+        out.map_err(sql)
+    };
+    // Cancelled while the statement runs.
+    let sqlite = std::thread::scope(|s| {
+        s.spawn(|| {
+            std::thread::sleep(Duration::from_millis(50));
+            cancel.store(true, Ordering::SeqCst);
+        });
+        query::interruptible(conn.get_interrupt_handle(), &cancel, long)
+    });
+    // Cancelled between statements, while SQLite is idle: the next statement is still stopped.
+    let idle = AtomicBool::new(false);
+    let gap = query::interruptible(conn.get_interrupt_handle(), &idle, || {
+        idle.store(true, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(50));
+        long()
+    });
+    // Rust work the flag stopped fails its own way, and is still reported as cancelled.
+    let flag = AtomicBool::new(false);
+    let rust = query::interruptible(conn.get_interrupt_handle(), &flag, || -> Result<()> {
+        flag.store(true, Ordering::SeqCst);
+        Err(fail(
+            ErrorKind::IndexIncompatible,
+            "the index cannot be read",
+        ))
+    });
+    // A search cancelled before it starts reads nothing.
+    let f = Fixture::new();
+    let a = std::fs::canonicalize(f.fig("a.fig")).unwrap();
+    prepare(&f.storage, &a, None).unwrap();
+    let select = Select::Locator(Locator::source(&a).unwrap());
+    let req = crate::search::Request {
+        query: "card".into(),
+        scope: "0:0".into(),
+        types: Vec::new(),
+        include_hidden: false,
+        include_internal: false,
+        limit: 20,
+        cursor: None,
+    };
+    let early = query::search_with(&f.storage, &select, &[], &req, Some(&AtomicBool::new(true)));
+    let normal = query::search_with(
+        &f.storage,
+        &select,
+        &[],
+        &req,
+        Some(&AtomicBool::new(false)),
+    )
+    .unwrap();
+    let cancelled = Some(ErrorKind::Cancelled);
+    assert_eq!(
+        (
+            kind(sqlite.unwrap_err()),
+            kind(gap.unwrap_err()),
+            kind(rust.unwrap_err()),
+            kind(early.unwrap_err())
+        ),
+        (cancelled, cancelled, cancelled, cancelled)
+    );
+    assert_eq!(*ended.lock().unwrap(), [false, false]);
+    let plain = query::search(&f.storage, &select, &[], &req).unwrap();
+    assert_eq!(normal["results"], plain["results"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_registered_source_opens_only_without_following_a_link_at_it_or_above_it() {
+    let dir = TestDir::new();
+    let root = std::fs::canonicalize(dir.join("")).unwrap();
+    let (sub, denied) = (root.join("sub"), root.join("denied"));
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::create_dir_all(&denied).unwrap();
+    let path = sub.join("a.fig");
+    std::fs::write(&path, b"allowed").unwrap();
+    std::fs::write(denied.join("a.fig"), b"denied").unwrap();
+    let read = |p: &Path| {
+        storage::registered(p).map(|mut f| {
+            let mut s = String::new();
+            f.read_to_string(&mut s).unwrap();
+            s
+        })
+    };
+    assert_eq!(read(&path).unwrap(), "allowed");
+    let refused = |p: &Path| {
+        read(p)
+            .unwrap_err()
+            .to_string()
+            .contains("now leads elsewhere through a link")
+    };
+    // The file swapped for a link, then its directory swapped for one.
+    std::fs::rename(&path, root.join("kept")).unwrap();
+    std::os::unix::fs::symlink(denied.join("a.fig"), &path).unwrap();
+    assert!(refused(&path));
+    std::fs::rename(&sub, root.join("sub.kept")).unwrap();
+    std::os::unix::fs::symlink(&denied, &sub).unwrap();
+    assert!(refused(&path));
+}

@@ -42,7 +42,7 @@ test('concurrent first use keeps the verified binary while an MCP process is usi
       require(name) {
         if (name === 'node:fs') return localFs;
         if (name === 'node:child_process') return { spawnSync };
-        if (name === '../target.js') return { asset: () => ({ archive: 'test.zip', binary: 'figlens.exe' }) };
+        if (name === '../target.js') return { asset: () => ({ archive: 'test.zip', binary: 'figlens.exe' }), cachedBinary: (cache, platform, arch, version) => path.join(cache, 'npm', version, 'figlens.exe') };
         if (name === '../package.json') return { version };
         return require(name);
       },
@@ -79,7 +79,7 @@ function installer(root, failure, env = {}) {
     Buffer,
     require(name) {
       if (name === '../package.json') return { version };
-      if (name === '../target.js') return { asset: () => ({ archive: 'test.zip', binary: 'figlens.exe' }) };
+      if (name === '../target.js') return { asset: () => ({ archive: 'test.zip', binary: 'figlens.exe' }), cachedBinary: (cache, platform, arch, version) => path.join(cache, 'npm', version, 'figlens.exe') };
       if (name === 'node:child_process') return { spawnSync(command, _args, options) {
         if (command === 'tar' || command.endsWith('\\tar.exe')) {
           state.extractor = command;

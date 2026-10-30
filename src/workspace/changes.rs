@@ -20,6 +20,14 @@ const MARK_BYTES: usize = 4 * PAGE_BYTES;
 /// The cursor of "the oldest revision kept": a zero revision id.
 const OLDEST: [u8; 16] = [0; 16];
 
+mod queries;
+pub mod subscriptions;
+
+#[cfg(test)]
+pub(crate) use queries::note;
+pub use queries::{Continuation, evaluate, evaluate_published};
+
+#[derive(Default)]
 pub struct Request<'a> {
     pub source: Option<&'a str>,
     pub scope: Option<&'a str>,
@@ -27,6 +35,8 @@ pub struct Request<'a> {
     pub cursor: Option<&'a str>,
     pub revision: Option<&'a str>,
     pub limit: Option<usize>,
+    /// A subscription's own filters and checkpoint, in place of consumer, source and scope.
+    pub subscription: Option<&'a str>,
 }
 
 /// The sources a reply may name, and what its cursors are bound to.
@@ -38,17 +48,39 @@ struct View {
     filter: String,
     key: Option<String>,
     bind: Vec<u8>,
+    sub: Option<subscriptions::Sub>,
+    /// Schema 7 records impact; an older workspace is read as it is, never upgraded.
+    impacts: bool,
 }
 
 fn view(storage: &Storage, ws: &Opened, req: &Request) -> Result<View> {
-    let sources = jobs::chosen(storage, ws, req.source)?;
+    let sub = match req.subscription {
+        Some(_) if req.consumer.is_some() || req.source.is_some() || req.scope.is_some() => {
+            return Err(fail(
+                ErrorKind::InvalidArguments,
+                "subscriptionId carries its own consumer, sourceId and scope; pass none of them with it",
+            ));
+        }
+        Some(id) => Some(subscriptions::visible(storage, ws, id)?),
+        None => None,
+    };
+    let source = sub.as_ref().map_or(req.source, |s| Some(s.source.as_str()));
+    let sources = jobs::chosen(storage, ws, source)?;
     // Named as `index track` names it: `1-2` is `1:2`.
-    let scope = req.scope.map(crate::normalize_id);
+    let scope = match &sub {
+        Some(s) => s.scope.clone(),
+        None => req.scope.map(crate::normalize_id),
+    };
     // A checkpoint is kept per view too: progress over more sources must not skip a narrower
-    // view's revisions.
+    // view's revisions. A subscription's cursors are bound to it and its filter version.
     let filter = format!(
-        "{}\u{1f}{}\u{1f}{}",
-        req.source.unwrap_or(""),
+        "{}{}\u{1f}{}\u{1f}{}",
+        sub.as_ref().map_or(String::new(), |s| format!(
+            "sub\u{1f}{}\u{1f}{}\u{1f}",
+            s.id,
+            subscriptions::FILTER_VERSION
+        )),
+        source.unwrap_or(""),
         scope.as_deref().unwrap_or(""),
         crate::search::hex(&Sha256::digest(sources.join("\u{1f}")))
     );
@@ -69,11 +101,13 @@ fn view(storage: &Storage, ws: &Opened, req: &Request) -> Result<View> {
     Ok(View {
         workspace: ws.held.id.clone(),
         sources,
-        source: req.source.map(str::to_owned),
+        source: source.map(str::to_owned),
         scope,
         filter,
         key,
         bind,
+        sub,
+        impacts: ws.version >= 7,
     })
 }
 
@@ -93,6 +127,19 @@ fn cursor(v: &View, tag: &str, payload: &[u8]) -> Json {
         )),
         None => Json::Null,
     }
+}
+
+/// A cursor `tag` over `payload` as the view of `req` issues it, so tests can forge older ones.
+#[cfg(test)]
+pub(crate) fn sign(
+    storage: &Storage,
+    select: &Select,
+    req: &Request,
+    tag: &str,
+    payload: &[u8],
+) -> Json {
+    let (_, ws) = opened(storage, select, false).unwrap();
+    cursor(&view(storage, &ws, req).unwrap(), tag, payload)
 }
 
 fn stale() -> Box<dyn Error> {
@@ -246,11 +293,16 @@ fn gap(conn: &Connection, v: &View) -> Box<dyn Error> {
     // The cursor is bound to these filters, so the recovery repeats them.
     let mut arguments =
         json!({"workspaceId": v.workspace, "cursor": position_cursor(v, &OLDEST, &now)});
-    if let Some(source) = &v.source {
-        arguments["sourceId"] = json!(source);
-    }
-    if let Some(scope) = &v.scope {
-        arguments["scope"] = json!(scope);
+    match &v.sub {
+        Some(sub) => arguments["subscriptionId"] = json!(sub.id),
+        None => {
+            if let Some(source) = &v.source {
+                arguments["sourceId"] = json!(source);
+            }
+            if let Some(scope) = &v.scope {
+                arguments["scope"] = json!(scope);
+            }
+        }
     }
     FigError::new(
         ErrorKind::EventGap,
@@ -279,9 +331,21 @@ pub fn changes(storage: &Storage, select: &Select, req: &Request) -> Result<Json
             "hasMore": false, "tracking": [], "monitor": {"state": "inactive"}}),
         );
     }
-    match req.revision {
-        Some(revision) => detail(&tx, &v, req, revision),
-        None => poll(&tx, &v, req),
+    match (req.revision, &v.sub) {
+        (Some(_), Some(sub)) if sub.is_query() => Err(fail(
+            ErrorKind::InvalidArguments,
+            "a query subscription records evaluations, not revisions; read it without revision",
+        )),
+        (Some(revision), _) => detail(&tx, &v, req, revision),
+        (None, sub) => {
+            let mut reply = match sub {
+                Some(sub) if sub.is_query() => queries::poll(&tx, &v, sub, req)?,
+                _ => poll(&tx, &v, req)?,
+            };
+            reply["monitor"] =
+                super::watch::monitor(&tx, &ws.held.dir, &v.sources, v.scope.as_deref())?;
+            Ok(reply)
+        }
     }
 }
 
@@ -294,6 +358,13 @@ fn poll(conn: &Connection, v: &View, req: &Request) -> Result<Json> {
         ));
     }
     let (after, marks) = match (req.cursor, req.consumer) {
+        (None, _) if let Some(sub) = &v.sub => {
+            let marks = marks(conn, v, Some(sub.floor))?;
+            if sub.after_seq < marks.since_floor {
+                return Err(gap(conn, v));
+            }
+            (sub.after_seq, marks)
+        }
         (Some(c), _) => {
             let (id, held) = read_position(v, c)?;
             let at = position(conn, v, &id)?;
@@ -323,14 +394,32 @@ fn poll(conn: &Connection, v: &View, req: &Request) -> Result<Json> {
         (None, None) => (0, marks(conn, v, None)?),
     };
     let now = marks.receipt;
+    // A node is followed through the layers a change reaches, and the top-level frames holding
+    // them on either side, as well as the changed ones, and through any revision whose impact
+    // is incomplete or was recorded before impact was, since it cannot rule the node out.
+    let (impact, reached) = match v.impacts {
+        true => (
+            "r.impact",
+            "OR (r.kind = 'changes' AND r.impact IS NULL)
+             OR json_extract(r.impact, '$.complete') IS 0 OR EXISTS
+             (SELECT 1 FROM revision_impacts i WHERE i.rev = r.id
+             AND (i.node = ?5 OR i.old_frame = ?5 OR i.new_frame = ?5))",
+        ),
+        false => ("NULL", ""),
+    };
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT r.id, r.source_id, r.scope, r.kind, r.snapshot_id, r.coverage, r.summary,
              r.detail, r.detail_rows, (SELECT p.id FROM revisions p WHERE p.source_id = r.source_id
-             AND p.scope = r.scope AND p.gen = r.from_gen AND p.seq < r.seq)
+             AND p.scope = r.scope AND p.gen = r.from_gen AND p.seq < r.seq), {impact}
              FROM revisions r WHERE r.seq > ?1 AND r.source_id IN (SELECT value FROM json_each(?2))
-             AND (?3 IS NULL OR r.scope = ?3) ORDER BY r.seq LIMIT ?4",
-        )
+             AND (?3 IS NULL OR r.scope = ?3)
+             AND (?5 IS NULL OR r.kind = 'baseline' OR r.detail <> 'complete'
+             OR json_extract(r.coverage, '$.complete') IS NOT 1 OR EXISTS
+             (SELECT 1 FROM revision_changes c WHERE c.rev = r.id AND (c.node = ?5 OR c.frame = ?5))
+             {reached})
+             ORDER BY r.seq LIMIT ?4",
+        ))
         .map_err(sql)?;
     let rows = stmt
         .query_map(
@@ -338,7 +427,8 @@ fn poll(conn: &Connection, v: &View, req: &Request) -> Result<Json> {
                 after,
                 json!(v.sources).to_string(),
                 v.scope,
-                limit as i64 + 1
+                limit as i64 + 1,
+                v.sub.as_ref().and_then(subscriptions::Sub::node),
             ],
             |r| {
                 let text = |i| r.get::<_, String>(i);
@@ -352,7 +442,10 @@ fn poll(conn: &Connection, v: &View, req: &Request) -> Result<Json> {
                         "snapshotId": r.get::<_, Option<String>>(4)?,
                         "coverage": serde_json::from_str::<Json>(&text(5)?).unwrap_or(Json::Null),
                         "summary": serde_json::from_str::<Json>(&text(6)?).unwrap_or(Json::Null),
-                        "detail": text(7)?, "detailRows": r.get::<_, i64>(8)?}),
+                        "detail": text(7)?, "detailRows": r.get::<_, i64>(8)?,
+                        // Null when nothing was compared or it was recorded before impact was.
+                        "impact": r.get::<_, Option<String>>(10)?
+                            .and_then(|t| serde_json::from_str::<Json>(&t).ok())}),
                 ))
             },
         )
@@ -371,16 +464,18 @@ fn poll(conn: &Connection, v: &View, req: &Request) -> Result<Json> {
     }
     let has_more = page.len() < rows.len();
     let (tracked, truncated) = tracking(conn, v)?;
-    Ok(json!({
+    let mut reply = json!({
         "workspaceId": v.workspace,
         "revisions": page,
         "nextCursor": last.map_or(Json::Null, |id| position_cursor(v, id, &now)),
         "hasMore": has_more,
         "tracking": tracked,
         "trackingTruncated": truncated,
-        // The watch monitor (B2) runs apart from tracking: recording happens on each build.
-        "monitor": {"state": "inactive"},
-    }))
+    });
+    if let Some(sub) = &v.sub {
+        reply["subscription"] = subscriptions::describe(conn, sub)?;
+    }
+    Ok(reply)
 }
 
 /// Tracking state of the view's sources, with whether the file changed since its last build:
@@ -425,19 +520,24 @@ fn tracking(conn: &Connection, v: &View) -> Result<(Json, bool)> {
     let rows = rows
         .into_iter()
         .map(|(mut row, path, bytes, mtime)| {
-            // An empty page never proves the file unchanged: only a build records a change.
-            let stamp = crate::search::stamp(Path::new(&path)).ok();
-            row["refreshRequired"] = json!(stamp.is_none_or(|(at, len)| {
-                Some(len as i64) != bytes
-                    || Some(
-                        at.duration_since(SystemTime::UNIX_EPOCH)
-                            .map_or(0, |d| d.as_nanos() as i64),
-                    ) != mtime
-            }));
+            row["refreshRequired"] = json!(refresh_required(&path, bytes, mtime));
             row
         })
         .collect();
     Ok((rows, truncated))
+}
+
+/// Whether the file at `path` differs from the verified snapshot's size and mtime, or cannot
+/// be read: an empty page never proves the file unchanged, only a build records a change.
+fn refresh_required(path: &str, bytes: Option<i64>, mtime: Option<i64>) -> bool {
+    let stamp = crate::search::stamp(Path::new(path)).ok();
+    stamp.is_none_or(|(at, len)| {
+        Some(len as i64) != bytes
+            || Some(
+                at.duration_since(SystemTime::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos() as i64),
+            ) != mtime
+    })
 }
 
 fn detail(conn: &Connection, v: &View, req: &Request, revision: &str) -> Result<Json> {
@@ -473,16 +573,62 @@ fn detail(conn: &Connection, v: &View, req: &Request, revision: &str) -> Result<
         None if marks(conn, v, None)?.newest > 0 => return Err(gap(conn, v)),
         None => return Err(missing()),
     };
-    let after = match req.cursor {
-        Some(c) => {
+    // A `d2.` cursor names its section, change rows (0) then the impact list (1), and the last
+    // position read in it; a `d1.` cursor, issued before impact, is a change row position.
+    let (section, after) = match req.cursor {
+        Some(c) if c.starts_with("d1.") => {
             let p = payload(v, "d1", c, 24)?;
             if p[..16] != id[..] {
                 return Err(stale());
             }
-            i64::from_be_bytes(p[16..].try_into().unwrap())
+            (0, i64::from_be_bytes(p[16..].try_into().unwrap()))
         }
-        None => -1,
+        Some(c) => {
+            let p = payload(v, "d2", c, 25)?;
+            if p[..16] != id[..] || p[16] > 1 {
+                return Err(stale());
+            }
+            (p[16], i64::from_be_bytes(p[17..].try_into().unwrap()))
+        }
+        None => (0, -1),
     };
+    let mut entries = Vec::new();
+    if section == 0 {
+        entries = changed(conn, &id, after, limit + 1)?;
+    }
+    if v.impacts && entries.len() <= limit {
+        let after = if section == 1 { after } else { -1 };
+        entries.extend(impacted(conn, &id, after, limit + 1 - entries.len())?);
+    }
+    let (mut page, mut used, mut last) = (Vec::new(), 0, None);
+    for (at, node) in entries.iter().take(limit) {
+        let size = node.to_string().len();
+        if !page.is_empty() && used + size > PAGE_BYTES {
+            break;
+        }
+        used += size;
+        page.push(node.clone());
+        last = Some(*at);
+    }
+    let next = match (page.len() < entries.len(), last) {
+        (true, Some((section, ord))) => {
+            cursor(v, "d2", &[&id[..], &[section], &ord.to_be_bytes()].concat())
+        }
+        _ => Json::Null,
+    };
+    Ok(
+        json!({"workspaceId": v.workspace, "revisionId": revision, "detail": state,
+        "nodes": page, "nextCursor": next}),
+    )
+}
+
+/// Up to `limit` change rows of revision `id` after row `after`, each with its position.
+fn changed(
+    conn: &Connection,
+    id: &[u8],
+    after: i64,
+    limit: usize,
+) -> Result<Vec<((u8, i64), Json)>> {
     let mut stmt = conn
         .prepare(
             "SELECT ord, frame, node, kind, change, facets, descendants FROM revision_changes
@@ -490,10 +636,10 @@ fn detail(conn: &Connection, v: &View, req: &Request, revision: &str) -> Result<
         )
         .map_err(sql)?;
     let rows = stmt
-        .query_map(params![id, after, limit as i64 + 1], |r| {
+        .query_map(params![id, after, limit as i64], |r| {
             let facets: u8 = r.get(5)?;
             let descendants: i64 = r.get(6)?;
-            let mut node = json!({"frame": r.get::<_, Option<String>>(1)?,
+            let mut node = json!({"entry": "change", "frame": r.get::<_, Option<String>>(1)?,
                 "id": r.get::<_, String>(2)?, "kind": r.get::<_, String>(3)?,
                 "change": r.get::<_, String>(4)?});
             if node["change"] == "changed" {
@@ -505,29 +651,43 @@ fn detail(conn: &Connection, v: &View, req: &Request, revision: &str) -> Result<
             if descendants > 0 {
                 node["descendants"] = json!(descendants);
             }
-            Ok((r.get::<_, i64>(0)?, node))
+            Ok(((0, r.get::<_, i64>(0)?), node))
         })
         .map_err(sql)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(sql)?;
-    let (mut page, mut used, mut last) = (Vec::new(), 0, None);
-    for (ord, node) in rows.iter().take(limit) {
-        let size = node.to_string().len();
-        if !page.is_empty() && used + size > PAGE_BYTES {
-            break;
-        }
-        used += size;
-        page.push(node.clone());
-        last = Some(*ord);
-    }
-    let next = match page.len() < rows.len() {
-        true => cursor(v, "d1", &[&id[..], &last.unwrap().to_be_bytes()].concat()),
-        false => Json::Null,
-    };
-    Ok(
-        json!({"workspaceId": v.workspace, "revisionId": revision, "detail": state,
-        "nodes": page, "nextCursor": next}),
-    )
+    Ok(rows)
+}
+
+/// Up to `limit` listed layers of revision `id`'s impact after position `after`.
+fn impacted(
+    conn: &Connection,
+    id: &[u8],
+    after: i64,
+    limit: usize,
+) -> Result<Vec<((u8, i64), Json)>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT ord, node, class, side, changed, unknown, equal, relation, target
+             FROM revision_impacts WHERE rev = ?1 AND ord > ?2 ORDER BY ord LIMIT ?3",
+        )
+        .map_err(sql)?;
+    let rows = stmt
+        .query_map(params![id, after, limit as i64], |r| {
+            let (relation, target): (Option<String>, Option<String>) = (r.get(7)?, r.get(8)?);
+            let entry = crate::search::impact::entry(
+                &r.get::<_, String>(1)?,
+                &r.get::<_, String>(2)?,
+                r.get(3)?,
+                [r.get(4)?, r.get(5)?, r.get(6)?],
+                relation.as_deref().zip(target.as_deref()),
+            );
+            Ok(((1, r.get::<_, i64>(0)?), entry))
+        })
+        .map_err(sql)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(sql)?;
+    Ok(rows)
 }
 
 /// Moves `consumer`'s checkpoint for these filters forward to `cursor`; an older or equal
@@ -538,6 +698,7 @@ pub fn ack(storage: &Storage, select: &Select, req: &Request) -> Result<Json> {
     let consumer = req
         .consumer
         .filter(|c| !c.is_empty() && c.len() <= 128)
+        .or(req.subscription.map(|_| ""))
         .ok_or_else(|| {
             fail(
                 ErrorKind::InvalidArguments,
@@ -557,15 +718,39 @@ pub fn ack(storage: &Storage, select: &Select, req: &Request) -> Result<Json> {
             .map_err(sql)?;
     let v = view(storage, &ws, req)?;
     let (id, held) = read_position(&v, text)?;
+    if let Some(sub) = &v.sub
+        && sub.is_query()
+    {
+        let reply = queries::ack(&tx, &v, sub, text)?;
+        tx.commit().map_err(sql)?;
+        return Ok(reply);
+    }
     let seq = position(&tx, &v, &id)?;
-    let before: Option<(i64, i64)> = tx
-        .query_row(
-            "SELECT after_seq, floor FROM consumers WHERE consumer = ?1 AND filter = ?2",
-            [consumer, &v.filter],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .map_err(sql)?;
+    let consumer = v.sub.as_ref().map_or(consumer, |s| s.consumer.as_str());
+    let before: Option<(i64, i64)> = match &v.sub {
+        // Read again inside this write; a source removal since deletes it.
+        Some(s) => Some(
+            tx.query_row(
+                "SELECT after_seq, floor FROM subscriptions WHERE id = ?1",
+                [&s.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(sql)?
+            .ok_or_else(stale)?,
+        ),
+        None => tx
+            .query_row(
+                "SELECT after_seq, floor FROM consumers WHERE consumer = ?1 AND filter = ?2",
+                [consumer, &v.filter],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(sql)?,
+    };
+    if before.is_none() {
+        subscriptions::admit(&tx, &v.workspace, consumer)?;
+    }
     let marks = marks(&tx, &v, before.map(|(_, floor)| floor))?;
     // A stale receipt behind a deletion cannot accept it; nothing is written.
     if missed(&marks, &held, seq) {
@@ -575,14 +760,24 @@ pub fn ack(storage: &Storage, select: &Select, req: &Request) -> Result<Json> {
     // before it: the consumer then repeats revisions, never skips them.
     let reset = before.is_some_and(|(b, _)| seq < b && b < marks.since_floor);
     // Either way the cursor saw every deletion so far, so the private floor moves to now.
-    tx.execute(
-        "INSERT INTO consumers (consumer, filter, after_seq, floor, updated_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (consumer, filter) DO UPDATE SET
-         after_seq = CASE WHEN ?6 THEN excluded.after_seq ELSE MAX(after_seq, excluded.after_seq) END,
-         floor = MAX(floor, excluded.floor), updated_ms = excluded.updated_ms
-         WHERE ?6 OR excluded.after_seq > after_seq OR excluded.floor > floor",
-        params![consumer, v.filter, seq, floor(&tx)?, now_ms(), reset],
-    )
+    match &v.sub {
+        Some(s) => tx.execute(
+            "UPDATE subscriptions SET
+             after_seq = CASE WHEN ?4 THEN ?2 ELSE MAX(after_seq, ?2) END,
+             floor = MAX(floor, ?3), read_ms = ?5 WHERE id = ?1",
+            params![s.id, seq, floor(&tx)?, reset, now_ms()],
+        ),
+        // The visible sources it was written under let `watch forget` authorize its removal.
+        None => tx.execute(
+            "INSERT INTO consumers (consumer, filter, after_seq, floor, updated_ms, sources)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?7) ON CONFLICT (consumer, filter) DO UPDATE SET
+             after_seq = CASE WHEN ?6 THEN excluded.after_seq ELSE MAX(after_seq, excluded.after_seq) END,
+             floor = MAX(floor, excluded.floor), updated_ms = excluded.updated_ms,
+             sources = excluded.sources
+             WHERE ?6 OR excluded.after_seq > after_seq OR excluded.floor > floor",
+            params![consumer, v.filter, seq, floor(&tx)?, now_ms(), reset, json!(v.sources).to_string()],
+        ),
+    }
     .map_err(sql)?;
     // Progress is the visible position only, never a private floor refresh.
     let advanced = seq > before.map_or(0, |(b, _)| b);
@@ -590,7 +785,23 @@ pub fn ack(storage: &Storage, select: &Select, req: &Request) -> Result<Json> {
         Some((b, _)) if !reset => b.max(seq),
         _ => seq,
     };
-    let held: Option<Vec<u8>> = tx
+    // The stored floor now accepts every mark, so the current receipt is honest.
+    let checkpoint = held_cursor(&tx, &v, at, &marks.receipt)?;
+    tx.commit().map_err(sql)?;
+    let mut reply = json!({"workspaceId": v.workspace, "consumer": consumer,
+        "advanced": advanced, "checkpoint": checkpoint});
+    if let Some(s) = &v.sub {
+        reply["subscriptionId"] = json!(s.id);
+    }
+    Ok(reply)
+}
+
+/// The cursor after seq `at` in this view, or null when that revision is no longer kept.
+fn held_cursor(conn: &Connection, v: &View, at: i64, receipt: &[u8; 16]) -> Result<Json> {
+    if at == 0 {
+        return Ok(position_cursor(v, &OLDEST, receipt));
+    }
+    let held: Option<Vec<u8>> = conn
         .query_row(
             "SELECT id FROM revisions WHERE seq = ?1
              AND source_id IN (SELECT value FROM json_each(?2)) AND (?3 IS NULL OR scope = ?3)",
@@ -599,13 +810,5 @@ pub fn ack(storage: &Storage, select: &Select, req: &Request) -> Result<Json> {
         )
         .optional()
         .map_err(sql)?;
-    tx.commit().map_err(sql)?;
-    Ok(
-        json!({"workspaceId": v.workspace, "consumer": consumer, "advanced": advanced,
-        "checkpoint": match (at, held) {
-            // The stored floor now accepts every mark, so the current receipt is honest.
-            (0, _) => Some(position_cursor(&v, &OLDEST, &marks.receipt)),
-            (_, held) => held.map(|id| position_cursor(&v, &id, &marks.receipt)),
-        }}),
-    )
+    Ok(held.map_or(Json::Null, |id| position_cursor(v, &id, receipt)))
 }

@@ -5,6 +5,7 @@ import { createAdapter, indexGrant } from './adapter.mjs';
 import { registerReview } from './review-rpc.mjs';
 import { operationRpc, reviewRpc } from './rpc.mjs';
 import { WorkflowAuthorizationError } from '../pi/workflow.mjs';
+import { Targets, check, checkInput, failure, notice, reminder } from '../pi/stale.mjs';
 
 const string = maxLength => ({ type: 'string', minLength: 1, maxLength });
 const selection = { file: string(4096), frame: string(200) };
@@ -29,12 +30,13 @@ const CLI_TOOLS = [
       direction: { enum: ['in', 'out'] }, snapshotId: id, includeHidden: bool, limit: { type: 'integer', minimum: 1, maximum: 200 }, cursor: string(4096) }],
   ['diff', 'What changed between two saved revisions of a design (old, file), as the figlens MCP diff tool: layers match by exact id and type only, unknown means a side stopped or left that layer unexpanded, not removed. Page with nextCursor for the same pair and node.',
     { old: path, file: path, node, limit: { type: 'integer', minimum: 1, maximum: 500 }, cursor: string(4096) }, ['old', 'file']],
-  ['changes', 'Recorded design changes of the scopes index track follows, as the figlens MCP changes tool; never writes or builds. Pages revisions oldest first after cursor, else after consumer\'s checkpoint, else from the oldest kept; revision pages one revision\'s changed nodes; limit is 1-50 revisions, or 1-500 nodes with revision. tracking says when a scope needs refresh to record a change; event_gap means retention deleted unread revisions: follow its recovery.',
-    { workspaceId: id, sourceId: id, scope: node, consumer: string(128), cursor: string(4096), revision: id,
+  ['changes', 'Recorded design changes of the scopes index track follows, as the figlens MCP changes tool; never writes or builds. A query subscription\'s subscriptionId pages its stored search evaluations instead, with no revision pages: evaluation current, current_for_index (the file changed since that index: refresh, then evaluate), pending, or unavailable (also when its evaluation at this publication failed, with that reason); a stored evaluation too large or damaged to page fails with a recovery that acks past it. Pages revisions oldest first after cursor, else after subscriptionId\'s or consumer\'s checkpoint, else from the oldest kept; each changes revision\'s impact summarizes the layers its changes reach (null before it was recorded); revision pages one revision\'s changed nodes, then its impact\'s listed layers, each marked by entry; limit is 1-50 revisions, or 1-500 entries with revision. tracking says when a scope needs refresh to record a change; event_gap means retention deleted unread revisions: follow its recovery.',
+    { workspaceId: id, sourceId: id, scope: node, consumer: string(128), subscriptionId: id, cursor: string(4096), revision: id,
       limit: { type: 'integer', minimum: 1, maximum: 500 }, storage: path }, ['workspaceId']],
-  ['watch', 'Moves a change consumer\'s checkpoint, as the figlens MCP watch tool: ack with the nextCursor of the last figlens_changes page it handled, with the same sourceId and scope. An older cursor normally leaves it, so a retry is safe; a cursor issued before retention deleted revisions it had not passed is event_gap and writes nothing: follow its recovery. A current recovery cursor moves a checkpoint behind such a deletion back to it, so the kept revisions replay; advanced is true only for forward progress, and the returned checkpoint is the one held.',
-    { action: { enum: ['ack'] }, workspaceId: id, consumer: string(128), cursor: string(4096), sourceId: id, scope: node, storage: path },
-    ['action', 'workspaceId', 'consumer', 'cursor']],
+  ['watch', 'Watching tracked scopes, change consumers and subscriptions, as the figlens MCP watch tool. start holds a lease on a tracked scope (sourceId when the workspace has several) for this session: the workspace\'s shared runner refreshes it on each save, so figlens_changes shows new revisions without an index call; it asks read on that design and edit on the workspace. A requestId replays this session\'s live or pending start and reports its ended lease (kept 1 h, newest 1024), never restarting it; the same requestId with other arguments is refused. stop ends a lease this session started (leaseId); deleting the session or unloading the plugin ends them all and logs any release it could not confirm. status lists the workspace\'s leases and runner, read-only. ack moves a consumer\'s checkpoint (same sourceId and scope), or a subscription\'s (subscriptionId), to the nextCursor of the last figlens_changes page it handled. An older cursor normally leaves it, so a retry is safe; a cursor issued before retention deleted revisions it had not passed is event_gap and writes nothing: follow its recovery. A current recovery cursor moves a checkpoint behind such a deletion back to it, so the kept revisions replay; advanced is true only for forward progress, and the returned checkpoint is the one held. subscribe follows a source, scope or exact node (never a same-name layer: target_missing or identity_uncertain) from now, with its own checkpoint; owner makes it temporary for that task. subscribe with query (and type) saves a search of one source\'s scope instead and stores its top-50 evaluation, and evaluate (no sourceId: it evaluates the subscription\'s own source) stores a newer one after a publication, and a watch lease on that scope makes its runner store it unasked (unavailable evaluation_too_large past 128 KiB), and figlens_changes only reads them; delta refs are exact sourceId/snapshotId/nodeId, rankChanged is null when rankComparable is false, and nodes compare by sourceId, which relocate keeps. list shows visible subscriptions; unsubscribe removes one (or an owner\'s temporary ones) and forget a consumer\'s raw checkpoints; neither untracks.',
+    { action: { enum: ['start', 'stop', 'status', 'ack', 'subscribe', 'evaluate', 'list', 'unsubscribe', 'forget'] }, workspaceId: id, consumer: string(128), cursor: string(4096),
+      sourceId: id, scope: node, subscriptionId: id, node, query: string(2000), type: id, owner: string(128), after: id, leaseId: id, requestId: id, storage: path },
+    ['action', 'workspaceId']],
   ['inspect', 'Compact expanded node summary of a .fig node or exact instance sublayer, as the figlens MCP inspect tool.',
     { file: path, node, depth: { type: 'integer', minimum: 0, maximum: 10 }, images: bool, states: bool, flat: bool, compareVariant: node }, ['file', 'node']],
 ];
@@ -118,9 +120,40 @@ export default Plugin.define({ id: 'figlens', async setup(ctx) {
     const grant = !adapter.cliPath && call.tool === `${adapter.mcpName}_index` && indexGrant(call.input ?? {});
     if (grant) await (await adapter.scope(call.sessionID)).authorize('figlens_index', [grant]);
   }));
+  // Watch targets each session subscribed to or acknowledged, held in memory: after an OpenCode restart a session
+  // is checked again from its next subscribe or ack. On the CLI path the check is adapter.cli's changes, asking the
+  // same read and bash permissions as the agent's own call; an MCP server's --root folders are not visible here,
+  // so through MCP the session is only reminded to call changes itself.
+  const watched = new Map(), notes = new Map();
+  registrations.push(await ctx.tool.hook('execute.after', call => {
+    const targets = watched.get(call.sessionID) ?? new Targets();
+    if (targets.observe(call.tool, call.input, call.result?.content, call.status !== 'completed')) watched.set(call.sessionID, targets);
+  }));
+  registrations.push(await ctx.session.hook('prompt', async input => {
+    notes.delete(input.sessionID);
+    const targets = watched.get(input.sessionID);
+    if (!targets?.list.length) return;
+    let text = reminder(targets.list);
+    if (adapter.cliPath) {
+      // One check at a time, so at most one read permission question is open while the deadline runs; each
+      // scope carries the batch signal, so the deadline also stops its CLI child.
+      text = notice(await check(targets.turn(), async (target, signal) => {
+        try { return await adapter.cli(await adapter.scope(input.sessionID, signal), 'changes', checkInput(target)); }
+        catch (error) { throw error.cause?.stderr ? failure(error.cause.stderr) : error; }
+      }, adapter.signal, { parallel: 1 }), targets.dropped);
+    }
+    if (text) notes.set(input.sessionID, text);
+  }));
+  // The note stays in each model call of that prompt's turn; the next prompt checks again.
+  registrations.push(await ctx.session.hook('context', input => {
+    const text = notes.get(input.sessionID);
+    if (text) input.system.push({ type: 'text', text });
+  }));
   const events = (async () => {
     try {
       for await (const event of ctx.event.subscribe({ types: ['session.deleted'], signal: adapter.signal })) {
+        watched.delete(event.data.sessionID);
+        notes.delete(event.data.sessionID);
         await adapter.close(event.data.sessionID);
       }
     } catch (error) {

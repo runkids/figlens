@@ -476,7 +476,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "changes",
-        "Recorded design changes of the scopes index track follows; never writes or builds. Each revision is one published build of a tracked scope: kind baseline (tracking started, or nothing comparable before it, with a reason) or changes, with coverage, exact summary counts per change kind and facet, and detail complete, truncated or expired. Pages run oldest first after cursor, else after the consumer's checkpoint (moved by watch ack), else from the oldest kept. Pass revision to page that revision's changed nodes instead. tracking lists each tracked scope's state, lastRevisionId and refreshRequired (the file changed since its last build: refresh the scope to record it; an empty page never proves the file unchanged); monitor is the watch monitor, separate from tracking. A cursor is bound to the filters, the visible sources and the workspace incarnation: any other use is cursor_stale. event_gap means retention deleted revisions before they were read: follow its recovery and treat the scope as possibly changed.",
+        "Recorded design changes of the scopes index track follows; never writes or builds. A query subscription's subscriptionId instead pages its stored search evaluations (evaluations, evaluation, tracking; no revision pages); ack them the same way. Its evaluation is current, current_for_index (the file changed or is gone since that index: refresh, then evaluate), pending with an evaluate step, or unavailable (also when its last evaluate at this publication failed, with that reason, until a later publication); a stored evaluation too large or damaged to page fails with a recovery that acks past it. Each revision is one published build of a tracked scope: kind baseline (tracking started, or nothing comparable before it, with a reason) or changes, with coverage, exact summary counts per change kind and facet, and detail complete, truncated or expired. A changes revision's impact says which layers its changes reach: complete, reasons with counts (impact_truncated: layers left out of its detail) and listed, the count per class (direct, effective, effective_unchanged, possible; a class judges the layer's own fields, not its children, which have their own changes) of the layers its detail listed when recorded, never a total (an expired detail no longer keeps them); it is null for a baseline or a revision recorded before impact, never an empty complete one. A node subscription also reads revisions whose changes reach that layer or a layer of that top-level frame, or whose impact is incomplete. Pages run oldest first after cursor, else after the consumer's checkpoint (moved by watch ack), else from the oldest kept. Pass revision to page that revision's changed nodes, then the layers its impact lists, instead; each entry's entry field says which (change or impact). tracking lists each tracked scope's state, lastRevisionId and refreshRequired (the file changed since its last build: refresh the scope to record it; an empty page never proves the file unchanged); monitor is the watch monitor, separate from tracking. A cursor is bound to the filters, the visible sources and the workspace incarnation: any other use is cursor_stale. event_gap means retention deleted revisions before they were read: follow its recovery and treat the scope as possibly changed.",
         &[
             ("workspaceId", "string", true, "ws_... from the index tool"),
             ("sourceId", "string", false, "only this source's revisions"),
@@ -489,51 +489,105 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
             ),
             ("cursor", "string", false, "nextCursor of the previous page"),
             (
+                "subscriptionId",
+                "string",
+                false,
+                "read with this subscription's filters and its own checkpoint; pass no sourceId, scope or consumer with it",
+            ),
+            (
                 "revision",
                 "string",
                 false,
-                "a revisionId: page its changed nodes instead",
+                "a revisionId: page its changed nodes, then its impact's listed layers, instead",
             ),
             (
                 "limit",
                 "integer",
                 false,
-                "revisions per page, 1-50 (default 20); with revision, nodes per page, 1-500 (default 100)",
+                "revisions per page, 1-50 (default 20); with revision, entries per page, 1-500 (default 100)",
             ),
             STORAGE,
         ],
     ),
     (
         "watch",
-        "Change-tracking consumers. ack moves consumer's checkpoint for these filters (sourceId, scope) forward to cursor, the nextCursor of the last changes page it handled with the same filters; an older or equal cursor normally leaves it, so a retry is safe. A cursor issued before retention deleted revisions it had not passed is event_gap, writing nothing: follow its recovery. A current recovery cursor before a checkpoint that is behind such a deletion moves the checkpoint back to it, so the kept revisions replay. Replies with advanced, true only when the checkpoint moved forward, and the checkpoint now held, which is authoritative.",
+        "Watching tracked scopes and change-tracking consumers. start: this server holds a lease on tracked scope of one source (sourceId when the workspace has several) and the workspace's shared runner refreshes it on each save, so changes shows new revisions without an index call; the server renews its leases every 10 s and ends them when it exits, and an unrenewed lease ends after 30 s. A requestId replays this server's live lease and reports an ended one as ended (untracked when its scope was untracked or retracked since), never restarting it, for 1 h after the end among the newest 1024 ended leases; past that it is unknown and starts a new lease. A requestId of a lease another running process holds is refused. stop ends one lease this server holds (leaseId). status lists the workspace's leases and runner, read-only. ack moves consumer's checkpoint for these filters (sourceId, scope), or a subscription's own (subscriptionId), forward to cursor, the nextCursor of the last changes page it handled with the same filters; an older or equal cursor normally leaves it, so a retry is safe. A cursor issued before retention deleted revisions it had not passed is event_gap, writing nothing: follow its recovery. A current recovery cursor before a checkpoint that is behind such a deletion moves the checkpoint back to it, so the kept revisions replay. Replies with advanced, true only when the checkpoint moved forward, and the checkpoint now held, which is authoritative. subscribe follows one source, scope or exact node (node: a layer id that must name one layer kind in the published index, else target_missing or identity_uncertain, never a same-name layer) from its newest visible revision; a repeat returns the same subscription; owner marks it temporary for that task. subscribe with query (and type) saves a workspace search of one source's scope (default 0:0) and stores its first evaluation of the top 50; evaluate stores a newer one after a publication, and a watch lease on that scope makes its runner store it unasked; changes with its subscriptionId reads the stored evaluations (causes such as source_changed only for new file bytes or index_rebuilt; enteredTopK and leftTopK are exact sourceId/snapshotId/nodeId refs in the new and old snapshot, rankChanged positions are null when rankComparable is false, all within the top-50 window, not the whole result set; nodes compare by sourceId, which relocate keeps; total only when the search counted every hit) and reports evaluation pending with an evaluate step, never computing one; an evaluation past 128 KiB is unavailable evaluation_too_large, nothing stored. list pages the visible subscriptions with their state. unsubscribe removes one subscription and its checkpoint (or, with owner, that owner's temporary ones); forget removes a consumer's raw checkpoint views. Neither untracks or deletes history. A consumer holds at most 64 subscriptions and checkpoints, a workspace 4096: past that, workspace_busy names list, unsubscribe and forget; nothing is evicted.",
         &[
-            ("action", "string", true, "ack"),
+            (
+                "action",
+                "string",
+                true,
+                "start, stop, status, ack, subscribe, evaluate, list, unsubscribe or forget",
+            ),
             ("workspaceId", "string", true, "ws_... from the index tool"),
             (
                 "consumer",
                 "string",
-                true,
-                "the consumer's name, 1-128 bytes",
+                false,
+                "the consumer's name, 1-128 bytes: ack without subscriptionId, subscribe and forget need it; list narrows to it",
             ),
             (
                 "cursor",
                 "string",
-                true,
-                "nextCursor from changes with the same filters",
+                false,
+                "ack: nextCursor from changes with the same filters",
             ),
             (
                 "sourceId",
                 "string",
                 false,
-                "the sourceId filter of that changes call",
+                "start: the source to watch; ack: the sourceId filter of that changes call; subscribe: the source to follow; forget: only its views; evaluate takes none (it evaluates the subscription's own source)",
             ),
             (
                 "scope",
                 "string",
                 false,
-                "the scope filter of that changes call",
+                "start: the tracked scope to watch; ack: the scope filter of that changes call; subscribe: only this scope; forget: only its views",
+            ),
+            (
+                "subscriptionId",
+                "string",
+                false,
+                "ack, evaluate or unsubscribe this subscription",
+            ),
+            (
+                "query",
+                "string",
+                false,
+                "subscribe: save this workspace search of the scope instead of following revisions",
+            ),
+            (
+                "type",
+                "string",
+                false,
+                "subscribe with query: only these node types, comma-separated, as search takes them",
+            ),
+            (
+                "node",
+                "string",
+                false,
+                "subscribe: follow this exact layer",
+            ),
+            (
+                "owner",
+                "string",
+                false,
+                "subscribe: a task-owned temporary subscription; unsubscribe (with consumer): remove that owner's temporary ones",
+            ),
+            (
+                "after",
+                "string",
+                false,
+                "list: the next of the previous page",
             ),
             STORAGE,
+            (
+                "requestId",
+                "string",
+                false,
+                "start: replays this request's lease",
+            ),
+            ("leaseId", "string", false, "stop: the lease to end"),
         ],
     ),
 ];
@@ -633,26 +687,50 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
         "changes" => (
             serde_json::json!({
                 "workspaceId": {"type": "string"},
-                "revisions": {"type": "array", "items": {"type": "object"}, "description": "oldest first: revisionId, sourceId, scope, kind (baseline or changes), from (the previous revisionId, null for a baseline or when deleted), snapshotId, coverage (a baseline's reason), summary (changes, kinds, facets, possibleMatches), detail (complete, truncated or expired), detailRows"},
+                "revisions": {"type": "array", "items": {"type": "object"}, "description": "oldest first: revisionId, sourceId, scope, kind (baseline or changes), from (the previous revisionId, null for a baseline or when deleted), snapshotId, coverage (a baseline's reason), summary (changes, kinds, facets, possibleMatches), detail (complete, truncated or expired), detailRows, impact (null, or complete, reasons [{reason, count}], listed per class)"},
                 "nextCursor": {"type": ["string", "null"], "description": "pass as cursor for the next page, or to watch ack once handled"},
                 "hasMore": {"type": "boolean"},
                 "tracking": {"type": "array", "items": {"type": "object"}, "description": "each tracked scope of the visible sources: sourceId, scope, state (baseline_pending, active or disabled), lastRevisionId, lastCheckedAtMs (when its last build verified the file), refreshRequired (the file's size or mtime differs from that build's)"},
                 "trackingTruncated": {"type": "boolean", "description": "true when more tracked scopes exist than tracking lists"},
-                "monitor": {"type": "object", "description": "the watch monitor's state, separate from tracking"},
+                "monitor": {"type": "object", "description": "the watch monitor's state, separate from tracking: inactive when no lease covers the view, partial when some tracked scope of the view has none, else watching or the first problem (unauthorized, source_busy, source_missing, source_unreadable, refresh_failed, stale); source_busy then source_unreadable also when the source path now leads elsewhere through a link, which is never read: relocate the source"},
                 "revisionId": {"type": "string", "description": "with revision"},
-                "detail": {"type": "string", "description": "with revision: complete, truncated (rows past the cap were not kept) or expired"},
-                "nodes": {"type": "array", "items": {"type": "object"}, "description": "with revision: frame, id, kind, change, facets, unread, descendants"},
+                "detail": {"type": "string", "description": "with revision: complete, truncated (rows or impact entries past the cap were not kept) or expired (neither is kept)"},
+                "nodes": {"type": "array", "items": {"type": "object"}, "description": "with revision: its change rows (entry change: frame, id, kind, change, facets, unread, descendants), then its impact's listed layers (entry impact: id, class, sides, facets {changed, unknown, equal}, via {relation, target} or null)"},
+                "subscription": {"type": "object", "description": "with subscriptionId: as watch subscribe describes it"},
+                "evaluations": {"type": "array", "items": {"type": "object"}, "description": "a query subscription's stored evaluations, oldest first: evaluationId, snapshotId, coverage, causes (initial, source_changed, index_rebuilt, coverage_changed, ranking_changed, corpus_changed), total (null unless every hit was counted), topK, delta (from evaluationId, fromSnapshotId, snapshotId; enteredTopK and leftTopK as exact sourceId/snapshotId/nodeId refs in the new and old snapshot; rankChanged within the window, null when rankComparable is false), createdAtMs"},
+                "evaluation": {"type": "object", "description": "a query subscription: state current, current_for_index (the file changed or is unreadable since that index: refresh, then evaluate), pending (with reason and an evaluate step) or unavailable"},
             }),
             ["workspaceId", "nextCursor"].as_slice(),
         ),
         "watch" => (
             serde_json::json!({
                 "workspaceId": {"type": "string"},
+                "leaseId": {"type": "string", "description": "start, stop: the lease"},
+                "sourceId": {"type": "string", "description": "start: the leased source"},
+                "scope": {"type": "string", "description": "start: the leased scope"},
+                "state": {"type": "string", "description": "start, stop: active, or ended with a reason"},
+                "reason": {"type": "string", "description": "start, stop: why an ended lease ended (stopped, released, expired, start_failed, reset, source_removed)"},
+                "expiresAtMs": {"type": "integer", "description": "start: when the lease ends unless renewed"},
+                "renewEveryMs": {"type": "integer", "description": "start: how often the holder renews; MCP renews for you"},
+                "runner": {"type": "object", "description": "start, status: the workspace's runner: state running, stopping, stopped or unknown; placement independent, or in_host_job when a Windows job object kept it inside the host and it ends with that job"},
+                "leases": {"type": "array", "items": {"type": "object"}, "description": "status: leaseId, sourceId, scope, state (active, unauthorized, untracked, expired or ended, with reason), expiresAtMs, mine; live leases first, then the newest ended ones"},
+                "truncated": {"type": "boolean", "description": "status: true when older ended leases are left out"},
                 "consumer": {"type": "string"},
-                "advanced": {"type": "boolean", "description": "true only when the visible checkpoint moved forward"},
-                "checkpoint": {"type": ["string", "null"], "description": "a cursor at the checkpoint now held; null when retention deleted that revision"},
+                "advanced": {"type": "boolean", "description": "ack: true only when the visible checkpoint moved forward"},
+                "checkpoint": {"type": ["string", "null"], "description": "ack, subscribe: a cursor at the checkpoint now held; null when retention deleted that revision"},
+                "subscriptionId": {"type": "string", "description": "ack of a subscription"},
+                "subscription": {"type": "object", "description": "subscribe: subscriptionId, consumer, sourceId, scope, kind (source, scope, node or query), node, nodeKind, query, types, topK, state (active, target_missing or identity_uncertain), lifetime (durable or temporary), filterVersion"},
+                "evaluation": {"type": "object", "description": "subscribe with query, evaluate: state evaluated (evaluationId, causes, delta), current, pending (reason, nextSteps) or unavailable (reason such as query_changed, search_failed or evaluation_too_large, nextSteps)"},
+                "created": {"type": "boolean", "description": "subscribe: false when the same subscription already existed"},
+                "initialPosition": {"type": "string", "description": "subscribe: tail (the newest revision it can see), initial_evaluation (a query, before its first evaluation) or existing"},
+                "tracking": {"type": "array", "items": {"type": "object"}, "description": "subscribe: the followed scopes' tracking state"},
+                "subscriptions": {"type": "array", "items": {"type": "object"}, "description": "list: one page, as subscription"},
+                "next": {"type": ["string", "null"], "description": "list: pass as after for the next page"},
+                "removed": {"type": "integer", "description": "unsubscribe, forget: rows removed"},
+                "subscriptionIds": {"type": "array", "items": {"type": "string"}, "description": "unsubscribe: the removed subscriptions' ids"},
+                "keptUnknownOwnership": {"type": "integer", "description": "forget: views written before their sources were recorded, kept because this caller does not see every source"},
             }),
-            ["workspaceId", "consumer", "advanced", "checkpoint"].as_slice(),
+            ["workspaceId"].as_slice(),
         ),
         "inspect" => (
             serde_json::json!({
@@ -823,7 +901,17 @@ pub fn property(tool: &str, param: &Param) -> Value {
         p["enum"] = json!(["status", "cancel"]);
     }
     if tool == "watch" && key == "action" {
-        p["enum"] = json!(["ack"]);
+        p["enum"] = json!([
+            "start",
+            "stop",
+            "status",
+            "ack",
+            "subscribe",
+            "evaluate",
+            "list",
+            "unsubscribe",
+            "forget"
+        ]);
     }
     if tool == "search" && key == "mode" {
         p["enum"] = json!(["text"]);
@@ -995,9 +1083,9 @@ pub fn tools() -> Value {
             "jobs" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": false,
                 "openWorldHint": false}),
             "changes" => tool["annotations"] = json!({"readOnlyHint": true, "openWorldHint": false}),
-            // ack only moves a checkpoint forward.
-            "watch" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": false,
-                "idempotentHint": true, "openWorldHint": false}),
+            // unsubscribe and forget delete checkpoints; start makes a new lease each time.
+            "watch" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": true,
+                "idempotentHint": false, "openWorldHint": false}),
             _ => {}
         }
         tool
@@ -1123,8 +1211,15 @@ impl Failure {
             .as_ref()
             .and_then(|r| r[0]["action"].as_str())
             .is_some_and(|a| a.starts_with("restore_"));
+        // A stored evaluation that cannot be paged is passed or dropped, not fixed at the file.
+        let stored = self.recovery.as_ref().is_some_and(|r| {
+            r[0]["tool"] == "watch"
+                && matches!(r[0]["action"].as_str(), Some("ack" | "unsubscribe"))
+        });
         let next = if storage {
             "The figlens storage named in the error is missing or denied; ask the user to restore it (never change permissions yourself), then retry; recreate_elsewhere only after the user confirms."
+        } else if stored {
+            "A stored saved-query evaluation is damaged or too large to page; follow recovery (ack past it, or unsubscribe); the design file is not at fault."
         } else {
             next
         };

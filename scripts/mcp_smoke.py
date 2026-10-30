@@ -151,8 +151,8 @@ def check_reuse(command, base, env):
 
 def check_first_use(command, base, fixture, env):
     """First use from a clean per-user state through a real MCP command, as an agent host runs it:
-    prepare, poll, search the published index, inspect, then restart, concurrency, cleanup and
-    storage failures. `base` is a fresh directory holding every root and design copy."""
+    prepare, poll, search the published index, inspect, a watch lease its input end releases, then
+    restart, concurrency, cleanup and storage failures. `base` is a fresh directory holding every root and design copy."""
     base.mkdir()
     env = user_roots(base, env)
     # An absolute XDG_STATE_HOME takes precedence over %LOCALAPPDATA%, also on Windows.
@@ -187,7 +187,7 @@ def check_first_use(command, base, fixture, env):
         assert tools['index']['annotations']['destructiveHint'] is True and tools['index']['annotations']['readOnlyHint'] is False, tools['index']
         assert tools['jobs']['annotations']['readOnlyHint'] is False, tools['jobs']
         assert tools['changes']['annotations']['readOnlyHint'] is True, tools['changes']
-        assert tools['watch']['annotations']['destructiveHint'] is False, tools['watch']
+        assert tools['watch']['annotations']['destructiveHint'] is True, tools['watch']
         call(first, 'find', {'file': str(design), 'query': 'First success'})
         call(first, 'search', {'file': str(design), 'query': 'First success'})
         contains = {'node': '0:1', 'relation': 'contains', 'direction': 'out'}
@@ -210,8 +210,22 @@ def check_first_use(command, base, fixture, env):
         assert [revision['kind'] for revision in polled['revisions']] == ['baseline'], polled
         assert call(second, 'watch', {'action': 'ack', 'workspaceId': workspace, 'consumer': 'smoke', 'cursor': polled['nextCursor']})['advanced'] is True
         assert call(first, 'changes', {'workspaceId': workspace, 'consumer': 'smoke'})['revisions'] == []
+        # A saved query stores its first evaluation; evaluate is current until a publication, and changes reads it.
+        source = polled['tracking'][0]['sourceId']
+        saved = call(second, 'watch', {'action': 'subscribe', 'workspaceId': workspace, 'consumer': 'smoke',
+                                       'sourceId': source, 'query': 'First success'})
+        assert saved['evaluation']['state'] == 'evaluated' and saved['evaluation']['causes'] == ['initial'], saved
+        subscription = saved['subscription']['subscriptionId']
+        assert call(first, 'watch', {'action': 'evaluate', 'workspaceId': workspace, 'subscriptionId': subscription})['evaluation']['state'] == 'current'
+        read = call(first, 'changes', {'workspaceId': workspace, 'subscriptionId': subscription})
+        assert len(read['evaluations']) == 1 and read['evaluation']['state'] == 'current', read
         ref = call(first, 'search', {'workspaceId': workspace, 'query': 'First success'})['results'][0]['ref']['nodeId']
         assert call(first, 'inspect', {'file': str(design), 'node': ref})['node']['id'] == ref
+        # A lease this host holds, which only its own input end releases.
+        lease = call(first, 'watch', {'action': 'start', 'workspaceId': workspace, 'scope': '0:0'})
+        assert lease['state'] == 'active', lease
+        assert [l['mine'] for l in call(second, 'watch', {'action': 'status', 'workspaceId': workspace})['leases']
+                if l['leaseId'] == lease['leaseId']] == [False], 'another host saw the lease as its own'
         finished = call(first, 'jobs', {'action': 'cancel', 'jobId': jobs[0]['jobId']})
         assert finished['state'] == 'succeeded', finished
         prepared = call(first, 'index', dict(prepare, file=str(other)))
@@ -232,6 +246,8 @@ def check_first_use(command, base, fixture, env):
     with session(command, base, env) as request:
         request('initialize', {'protocolVersion': '2025-06-18', 'capabilities': {}, 'clientInfo': {'name': 'figlens-first-use', 'version': '1'}})
         assert call(request, 'index', {'action': 'status', 'workspaceId': workspace})['state'] == 'initialized'
+        ended = [l for l in call(request, 'watch', {'action': 'status', 'workspaceId': workspace})['leases'] if l['leaseId'] == lease['leaseId']]
+        assert [(l['state'], l.get('reason')) for l in ended] == [('ended', 'released')], ended
         assert search(request, workspace) == ('ready', '0:1')
         call(request, 'index', {'action': 'clear_cache', 'workspaceId': workspace})
         assert search(request, workspace) == ('ready', '0:1'), 'clear_cache removed the published index'
@@ -256,7 +272,7 @@ def check_first_use(command, base, fixture, env):
         lost = call(request, 'index', {'action': 'status', 'file': str(moved)}, error='storage_unavailable')
         assert 'restore_storage' in json.dumps(lost['recovery']), lost
         assert len(list((state/'workspaces').glob('*/index.sqlite'))) == databases, 'a lost remembered root moved to the default state'
-        result = {'concurrentFirstUseJoined': True, 'cancelled': True, 'trackedBaselineAcked': True, 'frameScope': '0:1', 'restartReused': True, 'clearCacheKeptIndex': True, 'rebuild': True,
+        result = {'concurrentFirstUseJoined': True, 'cancelled': True, 'trackedBaselineAcked': True, 'watchLeaseReleasedOnInputEnd': True, 'frameScope': '0:1', 'restartReused': True, 'clearCacheKeptIndex': True, 'rebuild': True,
                   'resetReprepared': True, 'otherWorkspaceKept': True, 'missingRememberedRoot': 'storage_unavailable'}
         # chmod does not model a Windows ACL, and root ignores it.
         if os.name == 'nt' or os.geteuid() == 0:

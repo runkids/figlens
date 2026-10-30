@@ -186,16 +186,41 @@ usage:
   figlens index track|untrack <select> --scope NODE [--source ID] [--request-id ID]
                                              record a published scope's design changes on each build of it
                                              (track builds a baseline first), or stop; history stays
-  figlens changes <select> [--source ID] [--scope NODE] [--consumer NAME] [--cursor C] [--limit N] [--storage DIR]
-                                             recorded revisions after the cursor, the consumer's checkpoint
-                                             or the oldest kept, with tracking state; never writes.
-                                             --revision R [--cursor C]: one revision's changed nodes
-  figlens watch ack <select> --consumer NAME --cursor C [--source ID] [--scope NODE] [--storage DIR]
+  figlens changes <select> [--source ID] [--scope NODE] [--consumer NAME|--subscription ID] [--cursor C] [--limit N] [--storage DIR]
+                                             recorded revisions after the cursor, the consumer's or subscription's
+                                             checkpoint or the oldest kept, with tracking state; never writes;
+                                             each with its impact (the layers its changes reach).
+                                             --revision R [--cursor C]: one revision's changed nodes,
+                                             then its impact's listed layers;
+                                             a query --subscription pages its stored evaluations
+  figlens watch ack <select> --consumer NAME|--subscription ID --cursor C [--source ID] [--scope NODE] [--storage DIR]
                                              move the consumer's checkpoint for these filters to C; an
                                              older C normally leaves it; a C issued before retention
                                              deleted revisions it had not passed is event_gap; a
                                              current recovery C moves a checkpoint behind such a
                                              deletion back to C, so the kept revisions replay
+  figlens watch subscribe <select> --consumer NAME --source ID [--scope NODE] [--node ID] [--owner NAME]
+                                             follow a source, scope or exact layer from its newest
+                                             revision, with its own checkpoint (read with changes
+                                             --subscription); --owner makes it temporary for that task
+          [--query TEXT [--type T[,T]]]      or a saved search of the scope (default 0:0): its top 50
+                                             are evaluated now, on watch evaluate and by a watch
+                                             runner serving the scope; changes reads the
+                                             evaluations, never computes one
+  figlens watch evaluate <select> --subscription ID
+                                             store a query subscription's evaluation of the scope's
+                                             current index, unless it is already evaluated
+  figlens watch list <select> [--consumer NAME] [--after ID]
+                                             visible subscriptions and their state, a page at a time
+  figlens watch unsubscribe <select> --subscription ID|--consumer C --owner NAME
+                                             remove one subscription, or an owner's temporary ones
+  figlens watch forget <select> --consumer NAME [--source ID] [--scope NODE]
+                                             remove a consumer's raw checkpoints; neither untracks
+  figlens watch run <select> --scope NODE [--source ID] [--request-id R]
+                                             hold a lease on a tracked scope while this runs: a shared
+                                             background runner refreshes it on each save; prints the
+                                             lease, then its end line on stdin EOF or Ctrl-C
+  figlens watch status <select>              the workspace's leases and runner; never writes
   figlens update                               install the latest GitHub release over this binary
   figlens --help | --version
 
@@ -321,6 +346,22 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                 Ok(())
             };
         }
+        Some("__watch-launch") => {
+            let rest: Vec<std::ffi::OsString> = args[1..].iter().map(Into::into).collect();
+            writeln!(out, "{}", figlens::workspace::watch::launch(&rest)?)?;
+            return Ok(());
+        }
+        Some("__watch-runner") => {
+            let (id, storage) = match &args[1..] {
+                [id] => (id, None),
+                [id, flag, dir] if flag == "--storage" => (id, Some(Path::new(dir))),
+                _ => return Err(USAGE.into()),
+            };
+            // Its holders, not a terminal's Ctrl-C, decide when it ends.
+            signals::ignore();
+            let storage = figlens::workspace::storage(storage)?;
+            return figlens::workspace::watch::serve(&storage, id);
+        }
         Some("index") => {
             let report = index(&args[1..])?;
             writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
@@ -341,8 +382,23 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             writeln!(out, "{}", changes(&args[1..], false)?)?;
             return Ok(());
         }
+        Some("watch") if args.get(1).is_some_and(|a| a == "run") => {
+            return watch_run(&args[2..]);
+        }
+        Some("watch") if args.get(1).is_some_and(|a| a == "status") => {
+            writeln!(out, "{}", watch_status(&args[2..])?)?;
+            return Ok(());
+        }
         Some("watch") if args.get(1).is_some_and(|a| a == "ack") => {
             writeln!(out, "{}", changes(&args[2..], true)?)?;
+            return Ok(());
+        }
+        Some("watch")
+            if args.get(1).is_some_and(|a| {
+                ["subscribe", "evaluate", "list", "unsubscribe", "forget"].contains(&a.as_str())
+            }) =>
+        {
+            writeln!(out, "{}", watch(&args[1], &args[2..])?)?;
             return Ok(());
         }
         Some("jobs") => {
@@ -744,6 +800,17 @@ fn mcp(args: &[String]) -> Result<(), Box<dyn Error>> {
         };
         list.push(std::fs::canonicalize(dir).map_err(|e| format!("{arg} {dir}: {e}"))?);
     }
+    // A host may signal right after closing stdin (OMP does), before the reader sees the end:
+    // this server's leases end then too, instead of waiting to expire. The thread blocks until
+    // a signal, so a server that never watches wakes for nothing.
+    let waiter =
+        signals::waiter().map_err(|e| format!("figlens mcp: cannot catch signals: {e}"))?;
+    std::thread::spawn(move || {
+        if waiter.wait() {
+            figlens::workspace::watch::release_at_signal();
+            std::process::exit(143);
+        }
+    });
     // The reader thread needs a Send input; stdout stays locked on this thread.
     mcp::serve_with(
         std::io::BufReader::new(std::io::stdin()),
@@ -913,17 +980,81 @@ mod signals {
     #[cfg(unix)]
     unsafe extern "C" {
         fn signal(signum: i32, handler: usize) -> usize;
+        fn write(fd: i32, buf: *const u8, count: usize) -> isize;
+        #[cfg_attr(target_os = "linux", link_name = "__errno_location")]
+        #[cfg_attr(not(target_os = "linux"), link_name = "__error")]
+        fn errno() -> *mut i32;
     }
+
+    /// The nonblocking write end of `Waiter`'s socket, once it exists.
+    #[cfg(unix)]
+    static WAKE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
     #[cfg(unix)]
     extern "C" fn interrupted(_: i32) {
-        INTERRUPTED.store(true, Ordering::Relaxed);
+        // Only the first signal writes, so repeats never fill the socket. Repeats are swallowed, not
+        // fatal: a wrapper forwards the host's group SIGTERM, which must not cut the release short.
+        if INTERRUPTED.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let fd = WAKE.load(Ordering::SeqCst);
+        if fd >= 0 {
+            // SAFETY: write(2) is async-signal-safe; nonblocking, so a full buffer drops the byte
+            // instead of blocking the handler, and one byte already wakes the waiter. The
+            // interrupted thread's errno is put back, as a handler must.
+            unsafe {
+                let saved = *errno();
+                write(fd, [1u8].as_ptr(), 1);
+                *errno() = saved;
+            }
+        }
+    }
+
+    /// Wakes once `catch`'s handler runs, and for nothing else.
+    #[cfg(unix)]
+    pub struct Waiter(std::os::unix::net::UnixStream);
+
+    /// Sets up the wakeup, then catches the signals: a failure leaves the default handlers.
+    #[cfg(unix)]
+    pub fn waiter() -> std::io::Result<Waiter> {
+        use std::os::fd::IntoRawFd;
+        // std opens both ends close-on-exec, so no child inherits them.
+        let (read, write) = std::os::unix::net::UnixStream::pair()?;
+        write.set_nonblocking(true)?;
+        WAKE.store(write.into_raw_fd(), Ordering::SeqCst);
+        catch();
+        Ok(Waiter(read))
+    }
+
+    #[cfg(unix)]
+    impl Waiter {
+        /// Blocks until a signal is caught; false if the wakeup failed, leaving the defaults
+        /// again so a signal still ends the process.
+        pub fn wait(mut self) -> bool {
+            use std::io::Read;
+            let mut byte = [0u8];
+            while !INTERRUPTED.load(Ordering::SeqCst) {
+                match self.0.read(&mut byte) {
+                    Ok(1) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    _ => {
+                        // SAFETY: SIG_DFL (0) for SIGINT and SIGTERM.
+                        unsafe {
+                            signal(2, 0);
+                            signal(15, 0);
+                        }
+                        return INTERRUPTED.load(Ordering::SeqCst);
+                    }
+                }
+            }
+            true
+        }
     }
 
     #[cfg(unix)]
     pub fn catch() {
         let handler = interrupted as extern "C" fn(i32) as usize;
-        // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
+        // SAFETY: the handler only swaps an atomic and writes one byte, both async-signal-safe.
         unsafe {
             signal(2, handler);
             signal(15, handler);
@@ -938,15 +1069,49 @@ mod signals {
         }
     }
 
+    /// `wait`'s wakeup: Windows runs the handler on an ordinary thread, so it may lock.
+    #[cfg(windows)]
+    static WAKE: (std::sync::Mutex<()>, std::sync::Condvar) =
+        (std::sync::Mutex::new(()), std::sync::Condvar::new());
+
     #[cfg(windows)]
     unsafe extern "system" fn interrupted(_: u32) -> i32 {
-        INTERRUPTED.store(true, Ordering::Relaxed);
+        let _held = WAKE.0.lock();
+        INTERRUPTED.store(true, Ordering::SeqCst);
+        WAKE.1.notify_all();
         1
+    }
+
+    /// Wakes once `catch`'s handler runs, and for nothing else.
+    #[cfg(windows)]
+    pub struct Waiter;
+
+    #[cfg(windows)]
+    pub fn waiter() -> std::io::Result<Waiter> {
+        catch();
+        Ok(Waiter)
+    }
+
+    #[cfg(windows)]
+    impl Waiter {
+        /// Blocks until a signal is caught; false only if the lock was poisoned.
+        pub fn wait(self) -> bool {
+            let Ok(mut held) = WAKE.0.lock() else {
+                return false;
+            };
+            while !INTERRUPTED.load(Ordering::SeqCst) {
+                match WAKE.1.wait(held) {
+                    Ok(next) => held = next,
+                    Err(_) => return false,
+                }
+            }
+            true
+        }
     }
 
     #[cfg(windows)]
     pub fn catch() {
-        // SAFETY: registers a handler that only stores to an atomic.
+        // SAFETY: the handler runs on its own thread, so it may lock and notify.
         unsafe {
             windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(interrupted), 1);
         }
@@ -1077,16 +1242,112 @@ fn workspace_search(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>
     workspace::query::search(&storage, &select, &only, &request)
 }
 
+const WATCH_RUN: &str = "usage: figlens watch run --workspace DIR|--file <file.fig>|--id ws_... --scope NODE [--source ID] [--request-id R] [--storage DIR]";
+
+/// The workspace a `watch` command names, with its storage.
+fn watch_select(
+    a: &IndexArgs,
+) -> Result<(figlens::workspace::Storage, figlens::workspace::Select), Box<dyn Error>> {
+    use figlens::workspace::{self, Select};
+    let storage = workspace::storage(a.storage.map(Path::new))?;
+    let select = Select::from_choice(a.workspace.map(Path::new), a.file.map(Path::new), a.id)?
+        .ok_or("choose the workspace with --workspace, --file or --id")?;
+    Ok((storage, select))
+}
+
+/// `watch run`: holds one lease in the foreground, renewing it, until Ctrl-C, SIGTERM or the
+/// end of stdin; then releases it. Prints the lease, then the release, as they happen.
+fn watch_run(args: &[String]) -> Result<(), Box<dyn Error>> {
+    use figlens::workspace::watch;
+    use std::sync::atomic::Ordering;
+    let a = index_args(args, false)?;
+    let (Some(scope), true) = (a.scope, a.positional.is_empty() && a.source.len() <= 1) else {
+        return Err(WATCH_RUN.into());
+    };
+    let (storage, select) = watch_select(&a)?;
+    signals::catch();
+    let lease = watch::start(
+        &storage,
+        &select,
+        a.source.first().copied(),
+        scope,
+        a.request,
+    )?;
+    let mut out = std::io::stdout();
+    if let Err(e) = writeln!(out, "{lease}").and_then(|()| out.flush()) {
+        // Nobody reads this lease: end it now rather than leave it to expire.
+        watch::release();
+        return Err(e.into());
+    }
+    if lease["state"] != "active" {
+        return Err(format!("lease {} ended ({})", lease["leaseId"], lease["reason"]).into());
+    }
+    // The end of stdin is the portable way a host stops it; a signal is the other.
+    std::thread::spawn(|| {
+        let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+        signals::INTERRUPTED.store(true, Ordering::Relaxed);
+    });
+    let tick = std::time::Duration::from_millis(100);
+    let mut renew_at = std::time::Instant::now() + watch::RENEW;
+    while !signals::INTERRUPTED.load(Ordering::Relaxed) {
+        if std::time::Instant::now() >= renew_at {
+            renew_at = std::time::Instant::now() + watch::RENEW;
+            // A failed renewal keeps the lease until it expires; the next one retries.
+            let _ = watch::renew();
+            if !watch::holding() {
+                // Ended elsewhere (stopped, source removed, untracked or the workspace reset).
+                let reason = watch::status(&storage, &select)
+                    .ok()
+                    .and_then(|s| {
+                        s["leases"]
+                            .as_array()?
+                            .iter()
+                            .find(|l| l["leaseId"] == lease["leaseId"])
+                            .cloned()
+                    })
+                    // An expired row has no reason; its state says why.
+                    .map_or("workspace_gone".into(), |l| {
+                        l.get("reason").unwrap_or(&l["state"]).clone()
+                    });
+                writeln!(
+                    out,
+                    "{}",
+                    serde_json::json!({"leaseId": lease["leaseId"], "state": "ended", "reason": reason})
+                )?;
+                return Ok(());
+            }
+        }
+        std::thread::sleep(tick);
+    }
+    watch::release();
+    writeln!(
+        out,
+        "{}",
+        serde_json::json!({"leaseId": lease["leaseId"], "state": "ended", "reason": "released"})
+    )?;
+    Ok(())
+}
+
+/// `watch status`: the workspace's leases, runner and monitors, read-only.
+fn watch_status(args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
+    let a = index_args(args, false)?;
+    if !a.positional.is_empty() || a.scope.is_some() || !a.source.is_empty() {
+        return Err("usage: figlens watch status --workspace DIR|--file <file.fig>|--id ws_... [--storage DIR]".into());
+    }
+    let (storage, select) = watch_select(&a)?;
+    figlens::workspace::watch::status(&storage, &select)
+}
+
 /// `figlens changes <select> [filters] [--consumer C] [--cursor X] [--revision R] [--limit N]`,
 /// or with `ack`, `figlens watch ack <select> --consumer C --cursor X [filters]`.
 fn changes(args: &[String], ack: bool) -> Result<serde_json::Value, Box<dyn Error>> {
     use figlens::workspace::{self, Select, changes};
     let usage = match ack {
         true => {
-            "usage: figlens watch ack --workspace DIR|--file <file.fig>|--id ws_... --consumer NAME --cursor C [--source ID] [--scope NODE] [--storage DIR]"
+            "usage: figlens watch ack --workspace DIR|--file <file.fig>|--id ws_... --consumer NAME|--subscription ID --cursor C [--source ID] [--scope NODE] [--storage DIR]"
         }
         false => {
-            "usage: figlens changes --workspace DIR|--file <file.fig>|--id ws_... [--source ID] [--scope NODE] [--consumer NAME] [--cursor C] [--revision R] [--limit N] [--storage DIR]"
+            "usage: figlens changes --workspace DIR|--file <file.fig>|--id ws_... [--source ID] [--scope NODE] [--consumer NAME] [--subscription ID] [--cursor C] [--revision R] [--limit N] [--storage DIR]"
         }
     };
     let a = index_args(args, true)?;
@@ -1096,8 +1357,15 @@ fn changes(args: &[String], ack: bool) -> Result<serde_json::Value, Box<dyn Erro
     let mut flags = std::collections::HashMap::new();
     for pair in a.search.chunks(2) {
         let allowed: &[&str] = match ack {
-            true => &["--scope", "--consumer", "--cursor"],
-            false => &["--scope", "--consumer", "--cursor", "--revision", "--limit"],
+            true => &["--scope", "--consumer", "--subscription", "--cursor"],
+            false => &[
+                "--scope",
+                "--consumer",
+                "--subscription",
+                "--cursor",
+                "--revision",
+                "--limit",
+            ],
         };
         if !allowed.contains(&pair[0].as_str()) || pair.len() < 2 {
             return Err(format!("unknown flag {}; {usage}", pair[0]).into());
@@ -1123,10 +1391,102 @@ fn changes(args: &[String], ack: bool) -> Result<serde_json::Value, Box<dyn Erro
         cursor: flags.get("--cursor").copied(),
         revision: flags.get("--revision").copied(),
         limit,
+        subscription: flags.get("--subscription").copied(),
     };
     match ack {
         true => changes::ack(&storage, &select, &request),
         false => changes::changes(&storage, &select, &request),
+    }
+}
+
+/// `figlens watch subscribe|evaluate|list|unsubscribe|forget <select> [flags]`: durable subscriptions
+/// and checkpoint views.
+fn watch(action: &str, args: &[String]) -> Result<serde_json::Value, Box<dyn Error>> {
+    use figlens::workspace::{self, Select, changes::subscriptions as subs};
+    let (usage, allowed): (&str, &[&str]) = match action {
+        "subscribe" => (
+            "usage: figlens watch subscribe <select> --consumer NAME --source ID [--scope NODE] [--node ID|--query TEXT [--type T[,T]]] [--owner NAME] [--storage DIR]",
+            &[
+                "--consumer",
+                "--scope",
+                "--node",
+                "--owner",
+                "--query",
+                "--type",
+            ],
+        ),
+        "evaluate" => (
+            "usage: figlens watch evaluate <select> --subscription ID [--storage DIR]",
+            &["--subscription"],
+        ),
+        "list" => (
+            "usage: figlens watch list <select> [--consumer NAME] [--after ID] [--storage DIR]",
+            &["--consumer", "--after"],
+        ),
+        "unsubscribe" => (
+            "usage: figlens watch unsubscribe <select> --subscription ID|--consumer NAME --owner NAME [--storage DIR]",
+            &["--subscription", "--consumer", "--owner"],
+        ),
+        _ => (
+            "usage: figlens watch forget <select> --consumer NAME [--source ID] [--scope NODE] [--storage DIR]",
+            &["--consumer", "--scope"],
+        ),
+    };
+    let a = index_args(args, true)?;
+    if !a.positional.is_empty() || a.source.len() > 1 {
+        return Err(usage.into());
+    }
+    // evaluate runs on the subscription's own source; a --source it would ignore is refused.
+    if action == "evaluate" && !a.source.is_empty() {
+        return Err(format!("unknown flag --source; {usage}").into());
+    }
+    let mut flags = std::collections::HashMap::new();
+    for pair in a.search.chunks(2) {
+        if !allowed.contains(&pair[0].as_str()) || pair.len() < 2 {
+            return Err(format!("unknown flag {}; {usage}", pair[0]).into());
+        }
+        if flags.insert(pair[0].as_str(), pair[1].as_str()).is_some() {
+            return Err(format!("{} is given twice", pair[0]).into());
+        }
+    }
+    let storage = workspace::storage(a.storage.map(Path::new))?;
+    let select = Select::from_choice(a.workspace.map(Path::new), a.file.map(Path::new), a.id)?
+        .ok_or("choose the workspace with --workspace, --file or --id")?;
+    let (source, flag) = (a.source.first().copied(), |k: &str| flags.get(k).copied());
+    match action {
+        "subscribe" => subs::subscribe(
+            &storage,
+            &select,
+            &subs::Subscribe {
+                consumer: flag("--consumer"),
+                source,
+                scope: flag("--scope"),
+                node: flag("--node"),
+                owner: flag("--owner"),
+                query: flag("--query"),
+                types: flag("--type")
+                    .map(command::search_types)
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+            },
+        ),
+        "evaluate" => workspace::changes::evaluate(&storage, &select, flag("--subscription")),
+        "list" => subs::list(&storage, &select, flag("--consumer"), flag("--after")),
+        "unsubscribe" => subs::unsubscribe(
+            &storage,
+            &select,
+            flag("--subscription"),
+            flag("--consumer"),
+            flag("--owner"),
+        ),
+        _ => subs::forget(
+            &storage,
+            &select,
+            flag("--consumer"),
+            source,
+            flag("--scope"),
+        ),
     }
 }
 

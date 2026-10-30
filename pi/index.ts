@@ -9,13 +9,14 @@ import { Container, Image, Input, Markdown, SelectList, fuzzyFilter, truncateToW
 import { Workflow } from './workflow.mjs';
 import { Viewer } from './viewer.mjs';
 import { buildRequest } from './requests.mjs';
+import { ENTRY, Targets, bounded, changesArgs, check, failure, notice, reader, restore as restoreTargets } from './stale.mjs';
 
 const HELP = [
   "## figlens",
   "",
   "Ask Pi directly: **\"Build the List views screen from ./design.fig using this project's components.\"**",
   "Pi can find and read the design through MCP. No open command or node ID is needed.",
-  "Asking Pi to find copy or a screen searches the .fig directly and stores nothing. For repeated searches, ask it to enable an index for a design and scope: it prepares a local index once (no setup command), reports the job until ready, then reuses it across restarts and hosts. Resetting that index needs your explicit request. Asking where a component, variable, style or image is used lists its exact usages the same way: from the .fig directly, or from that index once enabled. Asking it to follow the changes of a design tracks a scope of that index and lists what changed since the last change it handled.",
+  "Asking Pi to find copy or a screen searches the .fig directly and stores nothing. For repeated searches, ask it to enable an index for a design and scope: it prepares a local index once (no setup command), reports the job until ready, then reuses it across restarts and hosts. Resetting that index needs your explicit request. Asking where a component, variable, style or image is used lists its exact usages the same way: from the .fig directly, or from that index once enabled. Asking it to follow the changes of a design tracks a scope of that index and lists what changed since the last change it handled; asking it to watch that scope picks up each save while its figlens server runs.",
   "",
   "Optional shortcuts:",
   "- `/figlens open [description]` — tell Pi what you know: a file, screen name, purpose or visible text. Pi finds it or asks a recognizable follow-up.",
@@ -254,7 +255,48 @@ export default function figlens(pi: ExtensionAPI) {
     const active = (await project(ctx).read()).state.active;
     if (active && ctx.mode === 'tui') ctx.ui.setStatus('figlens', `figlens · ${active.frame}`);
   });
-  pi.on('session_shutdown', async () => { await viewer.close(); });
+  // Watch targets this session subscribed to or acknowledged, kept in the session branch so a resumed session
+  // checks them again. The check runs the same binary as the figlens MCP server registered above, which has no
+  // --root, so it reads with that tool's authority; it never acks, builds or starts a watch.
+  let targets = new Targets();
+  let note: string | undefined;
+  let checks = new AbortController();
+  // Readers still running; a shutdown or session change waits for them to exit (each is bounded).
+  const reading = new Set<Promise<unknown>>();
+  const stopChecks = async () => { checks.abort(); await Promise.allSettled([...reading]); };
+  pi.on('session_shutdown', async () => { await stopChecks(); await viewer.close(); });
+  const restore = async (_event: unknown, ctx: ExtensionContext) => {
+    await stopChecks();
+    checks = new AbortController();
+    targets = restoreTargets(ctx.sessionManager.getBranch());
+    note = undefined;
+    if (ctx.mode === 'tui') ctx.ui.setStatus('figlens-changes', undefined);
+  };
+  pi.on('session_start', restore);
+  pi.on('session_tree', restore);
+  pi.on('tool_result', async event => {
+    if (targets.observe(event.toolName, event.input, event.content, event.isError)) pi.appendEntry(ENTRY, [...targets.list]);
+  });
+  // Each user prompt checks again; programmatic runs keep the last note.
+  pi.on('before_agent_start', async (event, ctx) => {
+    if (event.messageType === 'custom') return;
+    note = targets.list.length ? notice(await check(targets.turn(), async (target, signal) => {
+      // pi.exec buffers a whole reply, so the check reads through a byte-bounded child of the native binary instead.
+      const [command, ...first] = reader();
+      const run = bounded(command, [...first, ...changesArgs(target)], { cwd: ctx.cwd, signal });
+      reading.add(run);
+      run.then(() => reading.delete(run), () => reading.delete(run));
+      const execution = await run;
+      if (execution.code !== 0) throw failure(execution.stderr);
+      return JSON.parse(execution.stdout);
+    }, AbortSignal.any([checks.signal, ...(ctx.signal ? [ctx.signal] : [])])), targets.dropped) : undefined;
+    if (ctx.mode === 'tui') ctx.ui.setStatus('figlens-changes', note ? 'figlens · design context may be stale' : undefined);
+  });
+  // The note joins each model call of this run without entering the session, so a processed or revoked
+  // target leaves no copy behind, compaction cannot drop it, and the next prompt replaces it.
+  pi.on('context', async event => note
+    ? { messages: [...event.messages, { role: 'custom', customType: 'figlens', content: note, display: false, timestamp: Date.now() }] }
+    : undefined);
 
   const COMMANDS = {
     open: 'Find a design from a file, screen name, purpose or visible text',

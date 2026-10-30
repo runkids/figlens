@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, link, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -9,7 +9,15 @@ import { cliArgs, createAdapter, indexGrant, launcherRuntime } from './adapter.m
 
 async function context(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'figlens-opencode-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  // One hook, so every adapter's children exit before root goes: Windows cannot remove a running
+  // image or a live cwd, and a failed hook skips every later one.
+  const owned = [];
+  const own = adapter => (owned.push(adapter), adapter);
+  t.after(async () => {
+    await Promise.all(owned.map(adapter => adapter.dispose()));
+    // Windows can hold a just-closed image busy a moment; rm retries only EBUSY-like errors.
+    await rm(root, { recursive: true, force: true, maxRetries: 5 });
+  });
   const writes = [];
   const ctx = { location: { directory: root },
     session: { get: async () => ({ location: { directory: root } }), wait: async () => {}, prompt: async input => writes.push(input) },
@@ -17,9 +25,8 @@ async function context(t) {
     tool: { list: async () => [] },
     permission: { assert: async () => {} },
   };
-  const adapter = createAdapter(ctx);
-  t.after(() => adapter.dispose());
-  return { root, ctx, adapter, writes };
+  const adapter = own(createAdapter(ctx));
+  return { root, ctx, adapter, writes, own };
 }
 
 test('OpenCode preserves existing local, remote and disabled MCP settings and blocks unverified dispatch', async t => {
@@ -35,7 +42,7 @@ test('OpenCode preserves existing local, remote and disabled MCP settings and bl
 });
 
 test('OpenCode shortcuts wait until the managed MCP tools reach the tool registry', async t => {
-  const { root, ctx, writes } = await context(t);
+  const { root, ctx, writes, own } = await context(t);
   const override = process.env.FIGLENS_BIN;
   delete process.env.FIGLENS_BIN;
   t.after(() => {
@@ -47,8 +54,7 @@ test('OpenCode shortcuts wait until the managed MCP tools reach the tool registr
   let lists = 0;
   // Connected from the start; the server's tools appear only on the third registry read.
   ctx.tool.list = async () => ++lists < 3 ? [] : [{ id: 'figlensmcp_search', name: 'search', options: { namespace: 'figlensmcp' } }];
-  const adapter = createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href);
-  t.after(() => adapter.dispose());
+  const adapter = own(createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href));
   adapter.configureMcp({ get: () => undefined, set: () => {} });
   await adapter.commandHandler({ sessionID: 'session', prompt: { text: 'open the hero' } });
   assert.equal(lists, 3);
@@ -90,8 +96,21 @@ test('OpenCode gives each session an independent viewer lifetime', async t => {
   assert.equal(b.signal.aborted, true);
 });
 
+test('OpenCode closes a session\'s viewer and owner even when one of its commands fails to stop', async t => {
+  const { adapter } = await context(t);
+  const a = await adapter.scope('a');
+  let viewerClosed = false;
+  const closeViewer = a.viewer.close.bind(a.viewer);
+  a.viewer.close = async () => { viewerClosed = true; await closeViewer(); };
+  a.commands.add(() => Promise.reject(new Error('stop failed')));
+  await assert.rejects(adapter.close('a'), /stop failed/);
+  const again = await adapter.scope('a');
+  assert.deepEqual([viewerClosed, again.viewer === a.viewer, again.signal.aborted], [true, false, false]);
+  await adapter.dispose();
+});
+
 test('selection never exports through symlinked preview or guide directories', async t => {
-  const { root, ctx } = await context(t);
+  const { root, ctx, own } = await context(t);
   const external = await mkdtemp(path.join(tmpdir(), 'figlens-external-preview-'));
   t.after(() => rm(external, { recursive: true, force: true }));
   const override = process.env.FIGLENS_BIN;
@@ -108,8 +127,7 @@ else throw new Error('Unexpected command');`);
   ctx.permission.assert = async ({ action, resources }) => {
     if (action === 'edit' && resources.some(resource => resource.startsWith(external))) throw new Error('External edit denied');
   };
-  const adapter = createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href);
-  t.after(() => adapter.dispose());
+  const adapter = own(createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href));
   const directory = path.join(root, '.figlens');
   for (const linked of ['previews', '.figlens']) {
     if (linked === 'previews') await mkdir(directory);
@@ -124,7 +142,7 @@ else throw new Error('Unexpected command');`);
 });
 
 test('cancelling a bundled export stops its native child before cleanup', async t => {
-  const { root, ctx } = await context(t);
+  const { root, ctx, own } = await context(t);
   const override = process.env.FIGLENS_BIN;
   delete process.env.FIGLENS_BIN;
   t.after(() => {
@@ -139,8 +157,7 @@ else if (process.argv[2] === 'export') {
   setTimeout(() => fs.writeFileSync(process.argv[5], 'late reference'), 500);
 } else throw new Error('Unexpected command');`);
   await writeFile(path.join(root, 'design.fig'), 'Synthetic snapshot');
-  const adapter = createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href);
-  t.after(() => adapter.dispose());
+  const adapter = own(createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href));
   for (const cancel of ['rpc', 'session']) {
     const controller = new AbortController();
     const pending = adapter.operation({ sessionID: cancel, action: 'select', file: 'design.fig', node: '0:1' }, controller.signal);
@@ -184,7 +201,19 @@ test('CLI path runs the MCP index, jobs, search, usages, diff, changes, watch an
   assert.deepEqual(cliArgs('watch', { action: 'ack', workspaceId: 'ws_1', scope: '1:2', consumer: 'ci', cursor: 'c1.x' }),
     ['watch', 'ack', '--id', 'ws_1', '--scope', '1:2', '--consumer', 'ci', '--cursor', 'c1.x']);
   assert.throws(() => cliArgs('watch', { action: 'ack', workspaceId: 'ws_1', consumer: 'ci' }), /needs cursor/);
-  assert.throws(() => cliArgs('watch', { action: 'ack', workspaceId: 'ws_1', cursor: 'c1.x' }), /needs consumer/);
+  assert.deepEqual(cliArgs('watch', { action: 'subscribe', workspaceId: 'ws_1', sourceId: 's', consumer: 'ci', node: '1:2', owner: 't' }),
+    ['watch', 'subscribe', '--id', 'ws_1', '--source', 's', '--consumer', 'ci', '--node', '1:2', '--owner', 't']);
+  assert.deepEqual(cliArgs('watch', { action: 'subscribe', workspaceId: 'ws_1', sourceId: 's', consumer: 'ci', query: 'Pay now', type: 'TEXT' }),
+    ['watch', 'subscribe', '--id', 'ws_1', '--source', 's', '--consumer', 'ci', '--query', 'Pay now', '--type', 'TEXT']);
+  assert.deepEqual(cliArgs('watch', { action: 'evaluate', workspaceId: 'ws_1', subscriptionId: 'sub_1' }),
+    ['watch', 'evaluate', '--id', 'ws_1', '--subscription', 'sub_1']);
+  assert.deepEqual(cliArgs('watch', { action: 'start', workspaceId: 'ws_1', sourceId: 's', scope: '0:0', storage: '/s', requestId: 'r' }),
+    ['watch', 'run', '--id', 'ws_1', '--source', 's', '--scope', '0:0', '--storage', '/s', '--request-id', 'r']);
+  assert.throws(() => cliArgs('watch', { action: 'start', workspaceId: 'ws_1' }), /needs scope/);
+  assert.deepEqual(cliArgs('watch', { action: 'status', workspaceId: 'ws_1' }), ['watch', 'status', '--id', 'ws_1']);
+  assert.deepEqual(cliArgs('watch', { action: 'unsubscribe', workspaceId: 'ws_1', subscriptionId: 'sub_1' }),
+    ['watch', 'unsubscribe', '--id', 'ws_1', '--subscription', 'sub_1']);
+  assert.deepEqual(cliArgs('changes', { workspaceId: 'ws_1', subscriptionId: 'sub_1' }), ['changes', '--id', 'ws_1', '--subscription', 'sub_1']);
   assert.throws(() => cliArgs('changes', { scope: '1:2' }), /needs workspaceId/);
   assert.deepEqual(cliArgs('index', { action: 'untrack', file: '/d.fig', scope: '1:2' }), ['index', 'untrack', '--file', '/d.fig', '--scope', '1:2']);
   assert.deepEqual(cliArgs('jobs', { action: 'cancel', jobId: 'j' }), ['jobs', 'cancel', 'j']);
@@ -423,6 +452,55 @@ test('CLI-path design reads ask read on the requested and canonical path, and bu
   assert.deepEqual(timeouts, [['status', undefined], ['refresh', 0]]);
 });
 
+test('CLI-path saved queries ask read on the sources they search, so a denied read runs no subscribe or evaluate', async t => {
+  const { root, ctx, adapter } = await context(t);
+  const asked = [], ran = [];
+  ctx.permission.assert = async ({ action, resources }) => {
+    asked.push([action, ...resources]);
+    if (action === 'read') throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  const design = path.join(root, 'design.fig');
+  await writeFile(design, '');
+  const current = await adapter.scope('session');
+  current.run = async args => {
+    ran.push(args[1]);
+    return { stdout: JSON.stringify({ state: 'ready', paths: { workspace: '/w', lock: '/w.lock' }, storage: { rule: 'default' },
+      roots: { config: { path: '/c' } }, sources: [{ sourceId: 's', path: design }] }) };
+  };
+  await assert.rejects(adapter.cli(current, 'watch', { action: 'subscribe', workspaceId: 'ws_1', consumer: 'c', sourceId: 's', query: 'badge' }), /read denied/);
+  await assert.rejects(adapter.cli(current, 'watch', { action: 'evaluate', workspaceId: 'ws_1', subscriptionId: 'sub_1' }), /read denied/);
+  assert.deepEqual([asked.map(([action]) => action), ran], [['read', 'read'], ['status', 'status']]);
+});
+
+test('CLI-path evaluate refuses any sourceId before asking or running, and otherwise asks read on every source', async t => {
+  const { root, ctx, adapter } = await context(t);
+  const designs = ['one.fig', 'two.fig'].map(name => path.join(root, name));
+  for (const design of designs) await writeFile(design, '');
+  let denied, asked = [], ran = [];
+  ctx.permission.assert = async ({ action, resources }) => {
+    asked.push([action, ...resources]);
+    if (action === 'read' && resources.includes(denied)) throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  const current = await adapter.scope('session');
+  current.run = async args => {
+    ran.push(args[1]);
+    return { stdout: JSON.stringify({ state: 'ready', paths: { workspace: '/w', lock: '/w.lock' }, storage: { rule: 'default' },
+      roots: { config: { path: '/c' } }, sources: [{ sourceId: 's1', path: designs[0] }, { sourceId: 's2', path: designs[1] }] }) };
+  };
+  const evaluate = sourceId => adapter.cli(current, 'watch', { action: 'evaluate', workspaceId: 'ws_1', subscriptionId: 'sub_denied', sourceId });
+  // A fake, a matching and another valid source are all refused: none of them chooses what the binary reads.
+  for (const sourceId of ['nonexistent', 's1', 's2']) await assert.rejects(evaluate(sourceId), /takes no sourceId/);
+  assert.deepEqual([asked, ran], [[], []]);
+  denied = designs[1];
+  await assert.rejects(evaluate(undefined), /read denied/);
+  assert.deepEqual(ran, ['status'], 'a denied source ran no evaluate');
+  [denied, asked, ran] = [undefined, [], []];
+  await evaluate(undefined);
+  const read = asked.find(([action]) => action === 'read') ?? [];
+  assert.ok(designs.every(design => read.includes(design)), JSON.stringify(read));
+  assert.deepEqual(ran, ['status', 'evaluate']);
+});
+
 test('CLI-path prepare with an explicit storage asks edit on the state root the binary chose, not the remembered one', async t => {
   const { ctx, adapter } = await context(t);
   const asked = [], ran = [];
@@ -546,6 +624,120 @@ test('CLI-path track runs until its baseline job finishes, and untrack asks only
   await adapter.cli(current, 'index', { action: 'untrack', workspaceId: 'ws_1', scope: '0:1' });
   assert.deepEqual(timeouts, [['index status', undefined], ['index track', 0], ['index status', undefined], ['index untrack', undefined]]);
   assert.deepEqual(asked, [['read', '/a.fig'], ['edit', '/w', '/w.lock', '/c']]);
+});
+
+// A bundled package whose native CLI answers status and holds `watch run` leases as the real one does.
+async function watching(t) {
+  const { root, ctx, own } = await context(t);
+  const override = process.env.FIGLENS_BIN;
+  delete process.env.FIGLENS_BIN;
+  t.after(() => {
+    if (override === undefined) delete process.env.FIGLENS_BIN; else process.env.FIGLENS_BIN = override;
+  });
+  await mkdir(path.join(root, 'package/bin'), { recursive: true });
+  await writeFile(path.join(root, 'package/bin/figlens.js'), `require('node:child_process').spawnSync(process.execPath, [require('node:path').join(__dirname, 'native.cjs'), ...process.argv.slice(2)], { stdio: 'inherit' });`);
+  const native = `const fs = require('node:fs');
+const say = value => console.log(JSON.stringify(value));
+const [command, action] = process.argv.slice(2);
+if (command === 'index' && action === 'status') say({ paths: { workspace: '/w', lock: '/w.lock' }, roots: { config: { path: '/c' } }, sources: [{ sourceId: 's1', path: '/a.fig' }] });
+else if (command === 'watch' && action === 'status') say({ leases: [], runner: { state: 'stopped' } });
+else if (command === 'watch' && action === 'run') {
+  fs.appendFileSync('runs', process.argv.slice(4).join(' ') + '\\n');
+  const request = process.argv.includes('--request-id') ? 'ended-' + process.argv[process.argv.indexOf('--request-id') + 1] : null;
+  if (request && fs.existsSync(request)) { say({ leaseId: fs.readFileSync(request, 'utf8'), state: 'ended', reason: 'released' }); process.exit(1); }
+  const leaseId = 'l' + fs.readFileSync('runs', 'utf8').split('\\n').length;
+  say({ leaseId, state: 'active' });
+  if (process.argv.includes('stubborn')) { fs.writeFileSync('stubborn', String(process.pid)); setInterval(() => {}, 1000); return; }
+  process.stdin.on('end', () => { fs.appendFileSync('released', leaseId + '\\n'); if (request) fs.writeFileSync(request, leaseId); say({ leaseId, state: 'ended', reason: 'released' }); process.exit(0); });
+  process.stdin.resume();
+} else throw new Error('Unexpected command');`;
+  await writeFile(path.join(root, 'package/bin/native.cjs'), native);
+  // The launcher's cached binary, which a lease holder runs directly.
+  await copyFile(new URL('../npm/target.js', import.meta.url), path.join(root, 'package/target.js'));
+  await writeFile(path.join(root, 'package/package.json'), JSON.stringify({ version: '0.0.0-test' }));
+  const cache = path.join(root, 'cache');
+  const cached = path.join(cache, 'figlens/npm/0.0.0-test', process.platform === 'win32' ? 'figlens.exe' : 'figlens');
+  await mkdir(path.dirname(cached), { recursive: true });
+  // A copy of node stands in for it on every OS: run as `watch run ...` in the holder's cwd, it runs this script.
+  try { await link(process.execPath, cached); } catch { await copyFile(process.execPath, cached); }
+  await writeFile(path.join(root, 'watch'), `process.argv.splice(2, 0, 'watch');\n${native}`);
+  const saved = process.env.XDG_CACHE_HOME;
+  process.env.XDG_CACHE_HOME = cache;
+  t.after(() => { if (saved === undefined) delete process.env.XDG_CACHE_HOME; else process.env.XDG_CACHE_HOME = saved; });
+  const adapter = own(createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href));
+  const lines = async name => (await readFile(path.join(root, name), 'utf8').catch(() => '')).split('\n').filter(Boolean);
+  return { root, ctx, adapter, lines };
+}
+
+test('CLI-path watch start holds a lease for its session after asking read on the design and edit on the workspace', async t => {
+  const { root, ctx, adapter, lines } = await watching(t);
+  const asked = [];
+  ctx.permission.assert = async ({ action, resources }) => { asked.push([action, resources[0]]); };
+  // The workspace as the adapter asks for it: resolved against the session root, so a drive on Windows.
+  const workspace = path.resolve(await realpath(root), '/w');
+  const a = await adapter.scope('a');
+  const start = { action: 'start', workspaceId: 'ws_1', sourceId: 's1', scope: '0:0', storage: '/s', requestId: 'r' };
+  const lease = await adapter.cli(a, 'watch', start);
+  // Besides the bundled launcher's own cache edit.
+  const asks = asked.filter(([action, resource]) => action !== 'bash' && !resource.endsWith('figlens')).map(([action, resource]) => `${action} ${resource}`);
+  // A fresh session, so no earlier grant hides an edit ask.
+  const before = asked.length;
+  await adapter.cli(await adapter.scope('b'), 'watch', { action: 'status', workspaceId: 'ws_1' });
+  assert.deepEqual([lease.state, await lines('runs'), asks, asked.slice(before).filter(([action, resource]) => action === 'edit' && resource === workspace)],
+    ['active', ['--id ws_1 --source s1 --scope 0:0 --storage /s --request-id r'], ['read /a.fig', `edit ${workspace}`], []],
+    'status asks no edit on the workspace');
+});
+
+test('CLI-path watch stop ends only a lease this session started, and closing a session releases its own', async t => {
+  const { adapter, lines } = await watching(t);
+  const [a, b] = [await adapter.scope('a'), await adapter.scope('b')];
+  const start = current => adapter.cli(current, 'watch', { action: 'start', workspaceId: 'ws_1', scope: '0:0' });
+  const first = await start(a);
+  await start(b);
+  await assert.rejects(adapter.cli(b, 'watch', { action: 'stop', leaseId: first.leaseId }), /not a lease this session holds/);
+  const end = await adapter.cli(a, 'watch', { action: 'stop', leaseId: first.leaseId });
+  await start(a);
+  await adapter.close('a');
+  assert.deepEqual([end, await lines('released')], [{ leaseId: 'l2', state: 'ended', reason: 'released' }, ['l2', 'l4']],
+    "b's lease l3 outlives a's close");
+});
+
+test('CLI-path watch start replays a requestId within its session, and only there, after asking again', async t => {
+  const { ctx, adapter, lines } = await watching(t);
+  const [a, b] = [await adapter.scope('a'), await adapter.scope('b')];
+  const start = (current, scope = '0:0') => adapter.cli(current, 'watch', { action: 'start', workspaceId: 'ws_1', scope, requestId: 'r' });
+  const [first, concurrent] = await Promise.all([start(a), start(a)]);
+  const repeat = await start(a);
+  await assert.rejects(start(a, '0:1'), /requestId r names a different watch/);
+  const foreign = await start(b);
+  const spawned = (await lines('runs')).length;
+  await adapter.cli(a, 'watch', { action: 'stop', leaseId: first.leaseId });
+  const ended = await start(a);
+  ctx.permission.assert = async ({ action }) => {
+    if (action === 'read') throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  await assert.rejects(start(await adapter.scope('b')), /read denied/, "a replay's call asks read again, so a revoked grant fails closed");
+  assert.deepEqual([concurrent, repeat, foreign.leaseId !== first.leaseId, spawned, ended, (await lines('runs')).length],
+    [first, first, true, 2, { leaseId: first.leaseId, state: 'ended', reason: 'released' }, 3]);
+});
+
+test('CLI-path watch holds the cached native binary itself, so stop ends it even when it ignores its stdin', async t => {
+  const { adapter, lines } = await watching(t);
+  const a = await adapter.scope('a');
+  const lease = await adapter.cli(a, 'watch', { action: 'start', workspaceId: 'ws_1', scope: '0:0', requestId: 'stubborn' });
+  const [pid] = await lines('stubborn');
+  const end = await adapter.cli(a, 'watch', { action: 'stop', leaseId: lease.leaseId });
+  const alive = () => { try { process.kill(Number(pid), 0); return true; } catch { return false; } };
+  assert.deepEqual([end.state, end.reason, alive(), (await lines('runs')).length], ['unknown', 'release_unconfirmed', false, 1]);
+});
+
+test('CLI-path watch start spawns nothing when read on the design is denied', async t => {
+  const { ctx, adapter, lines } = await watching(t);
+  ctx.permission.assert = async ({ action }) => {
+    if (action === 'read') throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  await assert.rejects(adapter.cli(await adapter.scope('a'), 'watch', { action: 'start', workspaceId: 'ws_1', scope: '0:0' }), /read denied/);
+  assert.deepEqual(await lines('runs'), []);
 });
 
 test('every shipped OpenCode module parses, including the entry tests cannot import without the host', async () => {

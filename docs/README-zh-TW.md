@@ -198,7 +198,7 @@ MCP：`index` 的 prepare 會回傳一個 job；輪詢 `jobs` 直到 `succeeded`
 
 資料：SQLite 資料庫保存已註冊的本機路徑、所選範圍的圖層名稱與有效文字、搜尋 postings、精確關係（包含、實例、變體、變數/樣式/圖片綁定、原型目標）及其指向的定義、雜湊、generation 和 job。原始 `.fig` 留在原處且保持不變；其原始位元組不會存入資料庫。
 
-Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，workspace 可跨重啟和宿主重複使用。尚未實作：檔案監看、向量、事件與訂閱。
+Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，workspace 可跨重啟和宿主重複使用。尚未實作：檔案事件（watch 以輪詢讀取檔案，且只在有 holder 執行時進行）、向量與推送事件。
 
 <a id="commands"></a>
 
@@ -226,8 +226,16 @@ Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，works
 | `node <file> <node>` | 單一原始 `.fig` 節點 |
 | `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset\|track\|untrack` | 使用者 figlens state 目錄中的本機 workspace，或位於 workspace 之後會記住的 `--storage DIR` 下。`prepare <file> --scope NODE` 為該範圍建立一次搜尋索引；之後 `search --file <file>`（或 `--workspace DIR`）不再解析檔案，跨 workspace 的所有來源統一排序作答。`refresh` 重建有變更的檔案，`rebuild` 重建全部或單一 `--source`/`--scope`，`clear` 刪除未使用的索引；新索引就緒前繼續使用舊索引。`reset` 只刪除 workspace 資料庫，不會刪除設計、匯出或記住的位置。`track --scope NODE` 從 baseline 建置開始記錄該範圍的變更；`untrack` 停止記錄並保留歷史。 |
 | `jobs status\|cancel <jobId>` | 查看或取消索引建置；`cancel` 在建置停止後才返回 |
-| `changes --file <file>\|--id ID\|--workspace DIR [--source ID] [--scope NODE] [--consumer NAME\|--cursor C] [--revision R] [--limit N]` | 已追蹤範圍記錄的變更，從最舊開始：每次發布的建置一個修訂（baseline 或 changes），含涵蓋狀況及依變更類型與 facet 的計數；`--revision` 分頁列出該修訂變更的節點；`tracking` 指出哪些範圍需要 `index refresh` 才能記錄變更。唯讀 |
-| `watch ack --file <file>\|--id ID\|--workspace DIR --consumer NAME --cursor C [--source ID] [--scope NODE]` | 把 consumer 的檢查點移到它以相同篩選條件處理完的最後一頁 `changes` 的 `nextCursor`；重複執行是安全的，而且只會前進；唯一例外是目前的 recovery cursor 會把落在刪除之後的檢查點退回，以重讀保留的 revision；在保留策略刪除它尚未經過的 revision 之前發出的 cursor 會得到 `event_gap`，不寫入任何內容 |
+| `changes --file <file>\|--id ID\|--workspace DIR [--source ID] [--scope NODE] [--consumer NAME\|--subscription ID\|--cursor C] [--revision R] [--limit N]` | 已追蹤範圍記錄的變更，從最舊開始：每次發布的建置一個修訂（baseline 或 changes），含涵蓋狀況及依變更類型與 facet 的計數；每個 changes 修訂都有 `impact` 摘要，說明變更波及的圖層（schema 7 之前為 null）；`--revision` 分頁列出該修訂變更的節點，再列出 impact 列出的圖層（`entry` 標明是哪一種）；`tracking` 指出哪些範圍需要 `index refresh` 才能記錄變更。唯讀 |
+| `watch ack --file <file>\|--id ID\|--workspace DIR --consumer NAME\|--subscription ID --cursor C [--source ID] [--scope NODE]` | 把 consumer 的檢查點移到它以相同篩選條件處理完的最後一頁 `changes` 的 `nextCursor`；重複執行是安全的，而且只會前進；唯一例外是目前的 recovery cursor 會把落在刪除之後的檢查點退回，以重讀保留的 revision；在保留策略刪除它尚未經過的 revision 之前發出的 cursor 會得到 `event_gap`，不寫入任何內容 |
+| `watch run --file <file>\|--id ID\|--workspace DIR --scope NODE [--source ID] [--request-id R]` | 在前景持有一個已追蹤 scope 的 lease：workspace 共用的 runner 在每次存檔時更新它（每 250 ms 輪詢，每 60 s 驗證內容），所以 `changes` 不需 `index refresh` 就會出現新的 revision。先輸出 lease，在 stdin 關閉、收到 Ctrl-C 或 SIGTERM，或 scope 被取消追蹤時輸出一行結束訊息。MCP `watch` 的 `start` 與 `stop` 在伺服器執行期間持有 lease；未續約的 lease 30 s 後結束，最後一個 lease 結束後 runner 會退出 |
+| `watch status --file <file>\|--id ID\|--workspace DIR` | workspace 的 lease（`active`、`unauthorized`、`untracked`、`expired`、`ended`）與 runner（`running`、`stopping`、`stopped`、`unknown`，附放置方式）；從不寫入 |
+| `watch subscribe --file <file>\|--id ID\|--workspace DIR --consumer NAME --source ID [--scope NODE] [--node ID] [--owner NAME]` | 從最新修訂開始追蹤一個來源、scope 或確切圖層（`--node`），使用它自己的檢查點，用 `changes --subscription` 讀取、`watch ack --subscription` 確認；不存在或有歧義的圖層為 `target_missing` 或 `identity_uncertain`，絕不換成同名圖層；`--owner` 讓它只在該任務內暫時存在 |
+| `watch subscribe --file <file>\|--id ID\|--workspace DIR --consumer NAME --source ID --query TEXT [--type T[,T]] [--scope NODE]` | 儲存對一個來源 scope 的搜尋：立即評估其前 50 名；`changes --subscription` 只讀取已儲存的評估，從不計算 |
+| `watch evaluate --file <file>\|--id ID\|--workspace DIR --subscription ID` | 依 scope 目前的索引評估並儲存查詢訂閱，已評估則不做任何事；該 scope 正在 watch 時，每次發布後會自動進行 |
+| `watch list --file <file>\|--id ID\|--workspace DIR [--consumer NAME] [--after ID]` | 分頁列出可見的訂閱及其狀態 |
+| `watch unsubscribe --file <file>\|--id ID\|--workspace DIR --subscription ID\|--consumer C --owner NAME` | 刪除一個訂閱及其檢查點，或某個 owner 的暫時訂閱；tracking 與歷史保留 |
+| `watch forget --file <file>\|--id ID\|--workspace DIR --consumer NAME [--source ID] [--scope NODE]` | 刪除 consumer 的原始檢查點；每個 consumer 最多保留 64 個訂閱與檢查點，整個 workspace 4096 個，不會自動淘汰 |
 | `mcp` | 透過 stdio 的本機 MCP 伺服器 |
 | `update` | 將執行檔換成最新發行版 |
 

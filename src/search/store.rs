@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{ErrorKind, FigError};
 use rusqlite::{Connection, params};
@@ -14,8 +15,8 @@ use rusqlite::OptionalExtension;
 
 use super::usages::{self, Definition, Edge, Graph, KINDS, Key, RELATIONS, STATES};
 use super::{
-    BYTES, DEPTH, Index, IndexTerm, MAX_MARKS, Page, Posting, RANKING, Record, TEXT_BYTES, WORK,
-    tokenizer,
+    BYTES, DEPTH, Index, IndexTerm, MAX_MARKS, NEVER, Page, Posting, RANKING, Record, TEXT_BYTES,
+    WORK, tokenizer,
 };
 
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -100,9 +101,10 @@ fn read_varint(data: &[u8], at: &mut usize) -> Result<u64> {
 }
 
 /// The postings of one term, record IDs checked against the generation's `total`.
-fn postings(blob: &[u8], total: usize) -> Result<Vec<Posting>> {
+fn postings(blob: &[u8], total: usize, cancel: &AtomicBool) -> Result<Vec<Posting>> {
     let (mut at, mut record, mut out) = (0, None::<u32>, Vec::new());
     while at < blob.len() {
+        stopped(cancel)?;
         let delta = u32::try_from(read_varint(blob, &mut at)?)?;
         let next = match record {
             None => Some(delta),
@@ -332,6 +334,14 @@ const INFO_BYTES: usize = 64 * 1024 * 1024;
 /// (at most 21 bytes) plus a separator and prefix per nested instance, up to `MAX_DEPTH` deep.
 pub(crate) const ID_BYTES: usize = (crate::expand::MAX_DEPTH + 1) * 23;
 
+/// An error once `cancel` is set; the cancellable search reports it as `Cancelled`.
+fn stopped(cancel: &AtomicBool) -> Result<()> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(FigError::new(ErrorKind::Cancelled, "search cancelled").into());
+    }
+    Ok(())
+}
+
 fn bad() -> Box<dyn Error> {
     "invalid stored index; rebuild the index".into()
 }
@@ -364,6 +374,17 @@ pub(crate) fn load(
     terms: &[String],
     spent: &mut usize,
 ) -> Result<Index> {
+    load_with(conn, gen_id, terms, spent, &NEVER)
+}
+
+/// `load`, stopped with an error once `cancel` is set, checked per term, posting and record.
+pub(crate) fn load_with(
+    conn: &Connection,
+    gen_id: i64,
+    terms: &[String],
+    spent: &mut usize,
+    cancel: &AtomicBool,
+) -> Result<Index> {
     let (info, total): (Option<String>, i64) = conn.query_row(
         "SELECT info, records FROM generations WHERE gen = ?1",
         [gen_id],
@@ -382,6 +403,7 @@ pub(crate) fn load(
     let mut found = BTreeMap::new();
     let mut survivors: Option<BTreeSet<u32>> = None;
     for term in terms {
+        stopped(cancel)?;
         if found.contains_key(term) {
             continue;
         }
@@ -395,7 +417,7 @@ pub(crate) fn load(
                     if df as usize > total || len as u64 > 16 * total as u64 + 16 {
                         return Err(rusqlite::Error::IntegralValueOutOfRange(1, len));
                     }
-                    let list = postings(r.get_ref(2)?.as_blob()?, total)
+                    let list = postings(r.get_ref(2)?.as_blob()?, total, cancel)
                         .map_err(|_| rusqlite::Error::InvalidQuery)?;
                     Ok((df, list))
                 },
@@ -476,7 +498,7 @@ pub(crate) fn load(
     if total > 0 {
         wanted.push(0);
     }
-    add(conn, gen_id, &mut index, &wanted, spent)?;
+    add_with(conn, gen_id, &mut index, &wanted, spent, cancel)?;
     Ok(index)
 }
 
@@ -489,6 +511,18 @@ pub(crate) fn add(
     index: &mut Index,
     rids: &[u32],
     spent: &mut usize,
+) -> Result<()> {
+    add_with(conn, gen_id, index, rids, spent, &NEVER)
+}
+
+/// `add`, stopped with an error once `cancel` is set, checked per row read.
+pub(crate) fn add_with(
+    conn: &Connection,
+    gen_id: i64,
+    index: &mut Index,
+    rids: &[u32],
+    spent: &mut usize,
+    cancel: &AtomicBool,
 ) -> Result<()> {
     let missing: BTreeSet<u32> = rids
         .iter()
@@ -507,6 +541,7 @@ pub(crate) fn add(
     let mut rows = stmt.query(params![gen_id, list])?;
     let mut count = 0usize;
     while let Some(row) = rows.next()? {
+        stopped(cancel)?;
         count += 1;
         if count > WORK {
             return Err(bad());
@@ -528,6 +563,7 @@ pub(crate) fn add(
     let mut rows = stmt.query(params![gen_id, list])?;
     let mut loaded: Vec<(u32, Record)> = Vec::new();
     while let Some(row) = rows.next()? {
+        stopped(cancel)?;
         let rid: u32 = row.get(0)?;
         // Name, text and both normalized fields, measured in SQLite's buffer before any copy.
         let size = [2, 4, 5, 6]
@@ -848,7 +884,7 @@ mod tests {
             varint(&mut blob, delta);
             varint(&mut blob, packed);
         }
-        let list = postings(&blob, 304).unwrap();
+        let list = postings(&blob, 304, &NEVER).unwrap();
         assert_eq!(
             list.iter()
                 .map(|p| (p.record, p.tf, p.field))
@@ -864,7 +900,7 @@ mod tests {
         for n in [u64::from(u32::MAX), 0, 1, 0] {
             varint(&mut wrap, n);
         }
-        assert!(postings(&wrap, usize::MAX).is_err());
-        assert!(postings(&blob, 303).is_err());
+        assert!(postings(&wrap, usize::MAX, &NEVER).is_err());
+        assert!(postings(&blob, 303, &NEVER).is_err());
     }
 }

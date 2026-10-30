@@ -14,6 +14,7 @@ use std::time::{Instant, SystemTime};
 use serde_json::{Map, Value as Json, json};
 use sha2::{Digest, Sha256};
 
+use super::impact::{Change as Seeded, Impact, Probe, Seed, Verdict};
 use super::{
     BYTES, DEADLINE, DEPTH, Index, REHASH, Stamp, WORK, build_with, hex, missing_scope,
     require_scope, snapshot_id, source_id, stage, stamp,
@@ -841,6 +842,47 @@ fn orders(index: &Index) -> Vec<u32> {
         .collect()
 }
 
+/// Sets each hit's top-level frame (or page) on the sides it was reached in, so a frame filter
+/// finds a layer only its impact names. The id maps the probes did not build and each copy are
+/// paid first; a hit it cannot place counts as `frames_unknown`, never as a complete impact.
+fn place(evidence: &mut PairEvidence, impact: &mut super::impact::Impact, bounds: &mut Bounds) {
+    let pair = evidence.pair;
+    let records = pair.old.index.records.len() + pair.new.index.records.len();
+    if evidence.ids.is_none() && bounds.charge(records, records * LOOKUP) {
+        evidence.ids = Some([by_id(&pair.old), by_id(&pair.new)]);
+    }
+    let mut unplaced = 0;
+    for h in &mut impact.hits {
+        let mut placed = true;
+        for (i, side) in [&pair.old, &pair.new].into_iter().enumerate() {
+            if h.side & (1 << i) == 0 {
+                continue;
+            }
+            let at = evidence
+                .ids
+                .as_ref()
+                .and_then(|ids| ids[i].get(h.node.as_str()));
+            let frame = at.map(|&r| frame_of(&side.index, &side.index.records[r]));
+            match frame {
+                Some(f) if bounds.charge(1, f.len()) => h.frames[i] = Some(f.to_owned()),
+                _ => placed = false,
+            }
+        }
+        unplaced += u64::from(!placed);
+    }
+    if unplaced > 0 {
+        *impact.reasons.entry("frames_unknown").or_default() += unplaced;
+    }
+}
+
+/// The top-level frame holding `r`, or its page for a layer directly on one.
+fn frame_of<'a>(index: &'a Index, r: &super::Record) -> &'a str {
+    match r.root {
+        Some(root) => index.roots[root as usize].as_str(),
+        None => r.page.map_or("", |p| index.pages[p as usize].id.as_str()),
+    }
+}
+
 fn by_id(s: &Side) -> HashMap<&str, usize> {
     s.index
         .records
@@ -898,6 +940,140 @@ fn in_facet(f: &[Field], facet: u8) -> impl Iterator<Item = (&str, Option<[u8; 3
         .map(|x| (x.key, x.digest))
 }
 
+/// A field facet of two records of the same id and kind differs only where that is proven: a
+/// field present on one side only, or read on both with other digests. An unread value proves
+/// nothing either way.
+fn proven(a: &[Field], b: &[Field], facet: u8) -> bool {
+    in_facet(a, facet).count() != in_facet(b, facet).count()
+        || in_facet(a, facet)
+            .zip(in_facet(b, facet))
+            .any(|(x, y)| x.0 != y.0 || matches!((x.1, y.1), (Some(p), Some(q)) if p != q))
+}
+
+/// What one field facet proves: `Some(true)` a difference, `Some(false)` every field read on
+/// both sides and equal, `None` neither (no field at all, or one unread).
+fn proof(a: &[Field], b: &[Field], facet: u8) -> Option<bool> {
+    if proven(a, b, facet) {
+        return Some(true);
+    }
+    let mut all = in_facet(a, facet).chain(in_facet(b, facet)).peekable();
+    (all.peek().is_some() && all.all(|(_, d)| d.is_some())).then_some(false)
+}
+
+/// Answers impact probes from a compared pair while both generations are loaded: the proof
+/// `differs` uses, for one facet of the record both sides hold under the probe's id.
+struct PairEvidence<'a> {
+    pair: &'a Pair,
+    ids: Option<[HashMap<&'a str, usize>; 2]>,
+    orders: Option<[Vec<u32>; 2]>,
+    /// Per side, once built: `aliased_by`'s answer.
+    aliased: [Option<Option<AliasedBy<'a>>>; 2],
+}
+
+/// Estimated bytes of one id lookup or order entry kept for the probes.
+const LOOKUP: usize = 64;
+
+type AliasedBy<'a> = HashMap<&'a str, Vec<&'a str>>;
+
+/// Each alias or collection a side's variables name, to the variables naming it, built once per
+/// side and charged before it is kept; None when a variable's targets were unread, or the side
+/// stopped or hid layers, so it may hold a variable it never read.
+fn aliased_by<'a>(side: &'a Side, bounds: &mut Bounds) -> Option<AliasedBy<'a>> {
+    if side.index.stop.is_some() || side.index.hidden_content != 0 {
+        return None;
+    }
+    let mut by: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (r, f) in side.index.records.iter().zip(&side.facets) {
+        if !bounds.charge(1, 0) {
+            return None;
+        }
+        if r.kind != "VARIABLE" {
+            continue;
+        }
+        let aliases = f.aliases.as_ref()?;
+        if !bounds.charge(aliases.len(), aliases.len() * LOOKUP) {
+            return None;
+        }
+        for a in aliases {
+            // Several modes may alias one variable: it is listed once.
+            let ids = by.entry(a.as_str()).or_default();
+            if ids.last() != Some(&r.id.as_str()) {
+                ids.push(r.id.as_str());
+            }
+        }
+    }
+    Some(by)
+}
+
+impl super::impact::Evidence for PairEvidence<'_> {
+    fn aliasing(&mut self, at: usize, key: &str, bounds: &mut Bounds) -> Option<Vec<String>> {
+        if self.aliased[at].is_none() {
+            let side = [&self.pair.old, &self.pair.new][at];
+            self.aliased[at] = Some(aliased_by(side, bounds));
+        }
+        let by = self.aliased[at].as_ref().unwrap().as_ref()?;
+        let ids = by.get(key).map_or(&[][..], Vec::as_slice);
+        let bytes: usize = ids.iter().map(|id| id.len() + LOOKUP).sum();
+        if !bounds.charge(ids.len(), bytes) {
+            return None;
+        }
+        Some(ids.iter().map(|id| (*id).to_owned()).collect())
+    }
+
+    fn compare(&mut self, probe: &Probe, bounds: &mut Bounds) -> Result<Verdict, Box<dyn Error>> {
+        let (old, new) = (&self.pair.old, &self.pair.new);
+        let records = old.index.records.len() + new.index.records.len();
+        if self.ids.is_none() {
+            if !bounds.charge(records, records * LOOKUP) {
+                return Ok(Verdict::Unknown);
+            }
+            self.ids = Some([by_id(old), by_id(new)]);
+        }
+        let ids = self.ids.as_ref().unwrap();
+        let (Some(&o), Some(&n)) = (ids[0].get(probe.recipient), ids[1].get(probe.recipient))
+        else {
+            return Ok(Verdict::Unknown);
+        };
+        // A retyped record proves nothing, and a probe names exactly one facet.
+        if old.index.records[o].kind != new.index.records[n].kind || probe.facet.count_ones() != 1 {
+            return Ok(Verdict::Unknown);
+        }
+        let facet = probe.facet.trailing_zeros() as u8;
+        let proven = if usize::from(facet) < FIELDS.len() {
+            let (a, b) = (&old.facets[o].fields, &new.facets[n].fields);
+            if !bounds.charge(a.len() + b.len(), 0) {
+                return Ok(Verdict::Unknown);
+            }
+            proof(a, b, facet)
+        } else if probe.facet == 1 << 4 {
+            // Positions are among indexed siblings, which a stopped or partly hidden side may
+            // lack, and a root's parent is its stored origin.
+            let known = |s: &Side| {
+                s.index.stop.is_none() && s.index.hidden_content == 0 && s.origin.is_ok()
+            };
+            if !known(old) || !known(new) {
+                return Ok(Verdict::Unknown);
+            }
+            if self.orders.is_none() {
+                if !bounds.charge(records, records * LOOKUP) {
+                    return Ok(Verdict::Unknown);
+                }
+                self.orders = Some([orders(&old.index), orders(&new.index)]);
+            }
+            let orders = self.orders.as_ref().unwrap();
+            Some(structure(old, o, &orders[0]) != structure(new, n, &orders[1]))
+        } else {
+            // Edges and unread bits are not a field facet the pair proves per record.
+            None
+        };
+        Ok(match proven {
+            Some(true) => Verdict::Changed,
+            Some(false) => Verdict::Equal,
+            None => Verdict::Unknown,
+        })
+    }
+}
+
 /// The facet bits on which two records of the same id and kind differ.
 fn differs(old: &Side, o: usize, oo: &[u32], new: &Side, n: usize, no: &[u32]) -> u8 {
     let mut bits = 0;
@@ -905,14 +1081,8 @@ fn differs(old: &Side, o: usize, oo: &[u32], new: &Side, n: usize, no: &[u32]) -
     if a.iter().chain(b).any(|x| x.digest.is_none()) {
         bits |= UNREAD;
     }
-    // A facet differs only where that is proven: a field present on one side only, or read on
-    // both with other digests. An unread value proves nothing either way.
     for facet in 0..FIELDS.len() as u8 {
-        let proven = in_facet(a, facet).count() != in_facet(b, facet).count()
-            || in_facet(a, facet)
-                .zip(in_facet(b, facet))
-                .any(|(x, y)| x.0 != y.0 || matches!((x.1, y.1), (Some(p), Some(q)) if p != q));
-        if proven {
+        if proven(a, b, facet) {
             bits |= 1 << facet;
         }
     }
@@ -950,18 +1120,10 @@ impl Collect {
         let index = &side.index;
         let r = &index.records[rid];
         let page = r.page.map_or("", |p| index.pages[p as usize].id.as_str());
-        let (id, name) = match r.root {
-            Some(root) => {
-                let id = index.roots[root as usize].as_str();
-                (
-                    id,
-                    ids.get(id).map_or("", |&i| index.records[i].name.as_str()),
-                )
-            }
-            None => (
-                page,
-                r.page.map_or("", |p| index.pages[p as usize].name.as_str()),
-            ),
+        let id = frame_of(index, r);
+        let name = match r.root {
+            Some(_) => ids.get(id).map_or("", |&i| index.records[i].name.as_str()),
+            None => r.page.map_or("", |p| index.pages[p as usize].name.as_str()),
         };
         if !self.at.contains_key(id) {
             if !self
@@ -1831,8 +1993,8 @@ fn encode(f: &Facets) -> String {
 
 /// The inverse of `encode`, refusing a key outside `FIELDS`, out of order, or a bad digest. The
 /// text is charged to `spent` before it is parsed, and each field as the live build charged it
-/// (64 bytes, its key and a kept value's JSON) before it is kept, then each alias as the live
-/// build charges its copy.
+/// (`FIELD_META`, its key and a kept value's held size) before it is kept, then each alias as
+/// the live build charges its copy.
 fn decode(text: &str, spent: &mut usize) -> Result<Facets, Box<dyn Error>> {
     let mut keys = FIELDS
         .iter()
@@ -2110,6 +2272,9 @@ pub(crate) struct Revision {
     pub summary: Json,
     pub rows: Vec<Row>,
     pub truncated: bool,
+    /// The layers the kept rows reach, computed while both generations are loaded; complete
+    /// only when the comparison was and every change is a seed.
+    pub impact: Impact,
 }
 
 /// Compares stored generations `old` and `new` of `scope` as a live diff of them would, keeping at most
@@ -2121,6 +2286,26 @@ pub(crate) fn revision(
     scope: &str,
     bytes: usize,
 ) -> Result<Revision, Box<dyn Error>> {
+    // Its own bounds, sized as the pair's: the walk reads the indexes the pair already holds.
+    let bounds = Bounds {
+        work: PAIR_WORK,
+        bytes: PAIR_BYTES,
+        depth: DEPTH,
+        deadline: Instant::now() + DEADLINE,
+        stop: None,
+    };
+    revision_with(conn, old, new, scope, bytes, bounds)
+}
+
+/// `revision` with the impact walk's bounds, which also pay for its seeds.
+fn revision_with(
+    conn: &rusqlite::Connection,
+    old: (i64, Json),
+    new: (i64, Json),
+    scope: &str,
+    bytes: usize,
+    mut bounds: Bounds,
+) -> Result<Revision, Box<dyn Error>> {
     let pair = compare(
         stored(conn, old.0, old.1)?,
         stored(conn, new.0, new.1)?,
@@ -2129,6 +2314,9 @@ pub(crate) fn revision(
     );
     let (mut kinds, mut facets) = ([0u32; 5], vec![0u32; FACETS.len() + 1]);
     let (mut rows, mut used, mut truncated) = (Vec::new(), 0, false);
+    let (mut seeds, mut omitted) = (Vec::new(), 0u64);
+    // Seeded subtree tops by side (0 old, 1 new) and record, with their change.
+    let mut collapsed: HashMap<(usize, usize), Seeded> = HashMap::new();
     for c in &pair.changes {
         kinds[c.kind as usize] += 1;
         for (i, n) in facets.iter_mut().enumerate() {
@@ -2144,9 +2332,39 @@ pub(crate) fn revision(
         let cost = 64 + frame.len() + r.id.len() + r.kind.len();
         if truncated || rows.len() == REVISION_ROWS || used + cost > bytes {
             truncated = true;
+            omitted += 1;
             continue;
         }
         used += cost;
+        // A kept row whose seed copy does not fit stays a row, but its impact is not walked.
+        if bounds.stop.is_some() || !bounds.charge(1, std::mem::size_of::<Seed>() + r.id.len()) {
+            omitted += 1;
+        } else {
+            let change = match c.kind {
+                Kind::Added => Seeded::Added,
+                Kind::Removed => Seeded::Removed,
+                Kind::Changed => Seeded::Changed,
+                Kind::Retyped | Kind::Unknown => Seeded::Unknown,
+            };
+            // A top whose map entry cannot be paid leaves the layers below it unseeded.
+            let entry = 2 * std::mem::size_of::<((usize, usize), Seeded)>();
+            if c.descendants > 0 && !bounds.charge(0, entry) {
+                omitted += u64::from(c.descendants);
+            } else if c.descendants > 0 {
+                collapsed.insert(
+                    (
+                        usize::from(c.new.is_some()),
+                        c.new.or(c.old).unwrap() as usize,
+                    ),
+                    change,
+                );
+            }
+            seeds.push(Seed {
+                node: r.id.clone(),
+                change,
+                facets: c.facets & !UNREAD,
+            });
+        }
         rows.push(Row {
             frame: frame.clone(),
             node: r.id.clone(),
@@ -2174,8 +2392,78 @@ pub(crate) fn revision(
     ]
     .map(Kind::name);
     let facet_names: Vec<&str> = FACETS.iter().copied().chain(["bindings"]).collect();
+    let coverage = coverage(&pair);
+    let mut evidence = PairEvidence {
+        pair: &pair,
+        ids: None,
+        orders: None,
+        aliased: [None, None],
+    };
+    // A removed or added subtree is one row at its top, yet each layer below it that the other
+    // side lacks was removed or added too: seed those, so a subscription on one reads it.
+    if !collapsed.is_empty() {
+        let records = pair.old.index.records.len() + pair.new.index.records.len();
+        // Paid before either pass: the id lookups, then one visit and one `under` slot per record.
+        let slots = records * (LOOKUP + std::mem::size_of::<Option<Seeded>>());
+        if bounds.stop.is_some() || !bounds.charge(2 * records, slots) {
+            omitted += collapsed.len() as u64;
+        } else {
+            let ids = [by_id(&pair.old), by_id(&pair.new)];
+            for (s, side) in [&pair.old, &pair.new].into_iter().enumerate() {
+                // Parents precede their children, so one pass carries each top down.
+                let mut under: Vec<Option<Seeded>> = vec![None; side.index.records.len()];
+                for (i, r) in side.index.records.iter().enumerate() {
+                    if let Some(&top) = collapsed.get(&(s, i)) {
+                        under[i] = Some(top);
+                        continue;
+                    }
+                    let Some(change) = r
+                        .parent
+                        .filter(|&p| p != 0)
+                        .and_then(|p| under[p as usize])
+                        .filter(|_| !ids[1 - s].contains_key(r.id.as_str()))
+                    else {
+                        continue;
+                    };
+                    under[i] = Some(change);
+                    if bounds.stop.is_some()
+                        || !bounds.charge(1, std::mem::size_of::<Seed>() + r.id.len())
+                    {
+                        omitted += 1;
+                        continue;
+                    }
+                    seeds.push(Seed {
+                        node: r.id.clone(),
+                        change,
+                        facets: 0,
+                    });
+                }
+            }
+            evidence.ids = Some(ids);
+        }
+    }
+    let mut impact = super::impact::compute(
+        &pair.old.index,
+        &pair.new.index,
+        &seeds,
+        &mut evidence,
+        &mut bounds,
+    )?;
+    // A partial comparison or an unseeded change may reach layers the walk never saw, even
+    // when it found none.
+    if coverage["complete"] != true {
+        *impact
+            .reasons
+            .entry("source_comparison_partial")
+            .or_default() += 1;
+    }
+    if omitted > 0 {
+        *impact.reasons.entry("seeds_truncated").or_default() += omitted;
+    }
+    place(&mut evidence, &mut impact, &mut bounds);
+    impact.complete = impact.reasons.is_empty();
     Ok(Revision {
-        coverage: coverage(&pair),
+        coverage,
         summary: json!({
             "changes": pair.changes.len(),
             "kinds": named(&kind_names, &kinds),
@@ -2184,6 +2472,7 @@ pub(crate) fn revision(
         }),
         rows,
         truncated,
+        impact,
     })
 }
 

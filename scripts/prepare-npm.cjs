@@ -4,9 +4,9 @@ const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const output = process.argv[2] ? path.resolve(process.argv[2]) : path.join(root, 'npm');
 for (const [directory, files] of Object.entries({
-  pi: ['index.ts', 'workflow.mjs', 'viewer.mjs', 'requests.mjs', 'package.json', 'README.md'],
+  pi: ['index.ts', 'workflow.mjs', 'viewer.mjs', 'requests.mjs', 'stale.mjs', 'package.json', 'README.md'],
   omp: ['index.ts', 'review.mjs', 'mcp.cjs', 'package.json', 'README.md'],
-  opencode: ['index.mjs', 'tui.mjs', 'adapter.mjs', 'rpc.mjs', 'review-rpc.mjs', 'review-ui.mjs', 'package.json', 'README.md'],
+  opencode: ['index.mjs', 'tui.mjs', 'adapter.mjs', 'rpc.mjs', 'review-rpc.mjs', 'review-ui.mjs', 'watch-holder.mjs', 'package.json', 'README.md'],
 })) {
   mkdirSync(path.join(output, directory), { recursive: true });
   for (const file of files) copyFileSync(path.join(root, directory, file), path.join(output, directory, file));
