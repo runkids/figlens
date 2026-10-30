@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
 /// How records become model inputs; a new policy is a new layer, never mixed with an old one.
-pub const POLICY: &str = "chunks-400-name-text-1";
+pub const POLICY: &str = "chunks-400-name-text-properties-scope-1";
 /// Texts one statement reads or writes.
 const BATCH: usize = 500;
 
@@ -304,6 +304,7 @@ fn embed_work(
     let mut index = store::load_with(&conn, gen_id, &[], &mut spent, &never)?;
     let all: Vec<u32> = (0..records as u32).collect();
     store::add_with(&conn, gen_id, &mut index, &all, &mut spent, &never)?;
+    store::add_properties(&conn, gen_id, &mut index, &mut spent, &never)?;
     stage(&conn, "extract")?;
     let bounds = Bounds {
         work: LAYER_WORK,

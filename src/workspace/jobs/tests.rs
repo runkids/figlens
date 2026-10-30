@@ -2329,7 +2329,7 @@ fn a_cursor_ends_when_the_selected_definition_s_source_is_reindexed_or_collected
     let new = conn.last_insert_rowid();
     conn.execute(
         "INSERT INTO records SELECT ?1, rid, node_id, name, kind, text, norm0, norm1, len0, len1,
-         parent, source, text_source, hidden, page, root FROM records WHERE gen = ?2",
+         parent, source, text_source, hidden, page, root, props FROM records WHERE gen = ?2",
         params![new, srcs[1].2],
     )
     .unwrap();
@@ -3573,7 +3573,7 @@ fn republish_with_other_statistics(conn: &Connection, source: &str, gen_id: i64)
     let new = conn.last_insert_rowid();
     conn.execute(
         "INSERT INTO records SELECT ?1, rid, node_id, name, kind, text, norm0, norm1, len0, len1,
-         parent, source, text_source, hidden, page, root FROM records WHERE gen = ?2",
+         parent, source, text_source, hidden, page, root, props FROM records WHERE gen = ?2",
         params![new, gen_id],
     )
     .unwrap();

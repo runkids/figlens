@@ -299,6 +299,11 @@ fn warm_runtime_is_reused_across_requests() {
 
 /// Configures a fake profile in a fresh config root and returns the storage.
 fn configured(dir: &test_support::TestDir) -> figlens::workspace::Storage {
+    configured_with(dir, "weights")
+}
+
+/// `configured` with model file contents `body`: another body is another profile.
+fn configured_with(dir: &test_support::TestDir, body: &str) -> figlens::workspace::Storage {
     // SAFETY: this harness runs one test at a time on the main thread.
     unsafe {
         std::env::set_var(
@@ -307,7 +312,7 @@ fn configured(dir: &test_support::TestDir) -> figlens::workspace::Storage {
         )
     };
     let storage = figlens::workspace::storage(None).unwrap();
-    let (model, files) = model(dir, "weights");
+    let (model, files) = model(dir, body);
     let files: &'static [(&str, &str)] = Box::leak(
         files
             .into_iter()
@@ -1159,6 +1164,138 @@ fn status_names_a_changed_or_missing_runtime_and_how_to_configure_again() {
     assert_eq!(code()["code"], "runtime_missing");
 }
 
+/// The fixture's text `READY` and its siblings share the scope `Examples / First success / Card`;
+/// no name or text holds it.
+const SCOPE: &str = "Examples / First success / Card";
+
+fn scope_context_alone_finds_a_layer_and_names_the_scope_field() {
+    let dir = test_support::TestDir::new();
+    let (prepared, fig) = indexed(&dir, true);
+    let storage = figlens::workspace::storage(None).unwrap();
+    let no = AtomicBool::new(false);
+    let stateless = figlens::search::semantic::search(
+        Path::new(FIG),
+        &request(SCOPE, 1, None),
+        Mode::Semantic,
+        &storage,
+        &no,
+    )
+    .unwrap();
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    cli(&["index", "embed", "--id", ws, "--scope", "0:0"]);
+    let stored = cli(&[
+        "search",
+        "--file",
+        fig.to_str().unwrap(),
+        "--mode",
+        "semantic",
+        "--limit",
+        "1",
+        "--",
+        SCOPE,
+    ]);
+    for got in [&stateless, &stored] {
+        let first = &got["results"][0];
+        assert_eq!(
+            (&first["ref"]["nodeId"], &first["matches"]),
+            (
+                &json!("0:3"),
+                &json!([{"field": "scope", "chunk": 0, "basis": "semantic"}])
+            ),
+            "{got}"
+        );
+        let layer = &got["coverage"]["layers"]["semantic"];
+        assert_eq!(
+            (&layer["state"], &layer["inputs"]),
+            (
+                &json!("ready"),
+                &json!(["name", "text", "properties", "scope"])
+            )
+        );
+    }
+}
+
+fn an_old_policy_layer_is_pending_and_embedding_again_reuses_unchanged_vectors() {
+    let dir = test_support::TestDir::new();
+    let (prepared, fig) = indexed(&dir, true);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    let log = std::path::absolute(dir.join("embed.log")).unwrap();
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe { std::env::set_var("SEMANTIC_EMBED_LOG", &log) };
+    cli(&["index", "embed", "--id", ws, "--scope", "0:0"]);
+    // As a name-and-text layer left it: its policy, and no vector of a scope-only text.
+    let scope_only = ["Examples / First success", SCOPE];
+    let path = prepared["paths"]["database"].as_str().unwrap();
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(
+        "UPDATE model_layers SET policy = 'chunks-400-name-text-1';
+         UPDATE model_refs SET policy = 'chunks-400-name-text-1';",
+    )
+    .unwrap();
+    for text in scope_only {
+        let hash = Sha256::digest(text).to_vec();
+        conn.execute("DELETE FROM model_vectors WHERE text_hash = ?1", [&hash])
+            .unwrap();
+        conn.execute("DELETE FROM model_refs WHERE text_hash = ?1", [&hash])
+            .unwrap();
+    }
+    let fig = fig.to_str().unwrap();
+    let pending = cli(&["search", "--file", fig, "task", "--mode", "semantic"]);
+    assert_eq!(
+        pending["coverage"]["layers"]["semantic"]["state"],
+        "pending"
+    );
+    assert!(
+        pending["nextSteps"].to_string().contains("\"embed\""),
+        "{pending}"
+    );
+    let before = std::fs::read_to_string(&log).unwrap();
+    let again = cli(&["index", "embed", "--id", ws, "--scope", "0:0"]);
+    assert_eq!(again["jobs"][0]["state"], "succeeded");
+    // Only the two scope texts reach the model; every other chunk keeps its stored vector.
+    let after = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(&after[before.len()..], "load\nbatch 2\n");
+    let ready = cli(&["search", "--file", fig, "task", "--mode", "semantic"]);
+    assert_eq!(ready["coverage"]["layers"]["semantic"]["state"], "ready");
+    // SAFETY: as above.
+    unsafe { std::env::remove_var("SEMANTIC_EMBED_LOG") };
+}
+
+fn changes_show_the_model_layer_and_a_profile_change_records_no_revision() {
+    let dir = test_support::TestDir::new();
+    let (prepared, fig) = indexed(&dir, true);
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    let fig = fig.to_str().unwrap();
+    cli(&["index", "track", "--file", fig, "--scope", "0:0"]);
+    let conn = db(&prepared);
+    let generation = count(&conn, "SELECT gen FROM published WHERE scope = '0:0'");
+    let model =
+        || cli(&["changes", "--file", fig, "--scope", "0:0"])["tracking"][0]["model"].clone();
+    let first = figlens::semantic::profile::active(&figlens::workspace::storage(None).unwrap())
+        .unwrap()
+        .unwrap()
+        .id;
+    let policy = figlens::workspace::model::POLICY;
+    let layer = |state: &str, profile: &serde_json::Value| json!({"state": state, "profileId": profile, "policy": policy, "generation": generation});
+    assert_eq!(model(), layer("pending", &json!(first)));
+    cli(&["index", "embed", "--id", ws, "--scope", "0:0"]);
+    assert_eq!(model(), layer("ready", &json!(first)));
+    let revisions = count(&conn, "SELECT count(*) FROM revisions");
+    // Another profile: its layer is not embedded yet, which is coverage, not a design change.
+    let storage = configured_with(&dir, "other weights");
+    let second = figlens::semantic::profile::active(&storage)
+        .unwrap()
+        .unwrap()
+        .id;
+    assert_ne!(second, first);
+    assert_eq!(model(), layer("pending", &json!(second)));
+    figlens::semantic::profile::remove(&storage, "fake").unwrap();
+    let mut gone = layer("unavailable", &serde_json::Value::Null);
+    gone["reason"] = json!("no_profile");
+    assert_eq!(model(), gone);
+    assert_eq!(count(&conn, "SELECT count(*) FROM revisions"), revisions);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if let [_, worker, dir, job] = args.as_slice()
@@ -1183,6 +1320,18 @@ fn main() {
         return;
     }
     let tests: Vec<(&str, fn())> = vec![
+        (
+            "scope_context_alone_finds_a_layer_and_names_the_scope_field",
+            scope_context_alone_finds_a_layer_and_names_the_scope_field,
+        ),
+        (
+            "an_old_policy_layer_is_pending_and_embedding_again_reuses_unchanged_vectors",
+            an_old_policy_layer_is_pending_and_embedding_again_reuses_unchanged_vectors,
+        ),
+        (
+            "changes_show_the_model_layer_and_a_profile_change_records_no_revision",
+            changes_show_the_model_layer_and_a_profile_change_records_no_revision,
+        ),
         (
             "runtime_embeds_and_keeps_serving_after_a_refusal",
             runtime_embeds_and_keeps_serving_after_a_refusal,

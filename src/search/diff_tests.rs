@@ -2172,10 +2172,11 @@ fn saved(trees: &[&Tree], scope: &str) -> rusqlite::Connection {
     conn.execute_batch(&format!(
         "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
          CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
-         added_at_ms INTEGER NOT NULL) STRICT; {} {} {}",
+         added_at_ms INTEGER NOT NULL) STRICT; {} {} {} {}",
         crate::workspace::V2,
         crate::workspace::V3,
-        crate::workspace::V4
+        crate::workspace::V4,
+        crate::workspace::V10
     ))
     .unwrap();
     for (i, tree) in trees.iter().enumerate() {

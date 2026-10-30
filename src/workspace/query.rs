@@ -671,6 +671,9 @@ fn model_layers(
                 let mut index = search::store::load_with(tx, *gen_id, &[], spent, cancel)?;
                 let all: Vec<u32> = (0..records.max(0) as u32).collect();
                 search::store::add_with(tx, *gen_id, &mut index, &all, spent, cancel)?;
+                if version >= 10 {
+                    search::store::add_properties(tx, *gen_id, &mut index, spent, cancel)?;
+                }
                 let layer = search::semantic::Layer::new(
                     &index,
                     json!([key, p.id]),
@@ -729,6 +732,6 @@ fn model_layers(
     }
     Ok(
         json!({"state": if ready { "ready" } else if sources.iter().any(|s| s["state"] != "pending") { "partial" } else { "pending" },
-        "profileId": p.id, "policy": super::model::POLICY, "inputs": ["name", "text"], "sources": sources}),
+        "profileId": p.id, "policy": super::model::POLICY, "inputs": search::semantic::INPUTS, "sources": sources}),
     )
 }

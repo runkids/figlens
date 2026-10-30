@@ -4515,6 +4515,7 @@ fn a_schema_6_workspace_reads_impact_as_null_and_records_it_once_a_build_upgrade
          DROP TABLE fingerprints; ALTER TABLE subscriptions DROP COLUMN sources;
          ALTER TABLE subscriptions DROP COLUMN disabled; DROP INDEX sources_remote;
          ALTER TABLE sources DROP COLUMN remote; ALTER TABLE sources DROP COLUMN generation; DROP TABLE model_vectors; DROP TABLE model_refs; DROP TABLE model_layers; DROP INDEX jobs_embed; ALTER TABLE jobs DROP COLUMN profile_id;
+         ALTER TABLE records DROP COLUMN props;
          PRAGMA user_version = 6;",
     );
     let version = || -> i64 {
@@ -4574,6 +4575,7 @@ fn a_92_generation_refreshed_under_new_relations_is_a_baseline_keeping_history_a
          ALTER TABLE sources DROP COLUMN remote; ALTER TABLE sources DROP COLUMN generation;
          UPDATE generations SET versions = replace(versions, '\"relations-6\"', '\"relations-5\"');
          DROP TABLE model_vectors; DROP TABLE model_refs; DROP TABLE model_layers; DROP INDEX jobs_embed; ALTER TABLE jobs DROP COLUMN profile_id;
+         ALTER TABLE records DROP COLUMN props;
          PRAGMA user_version = 7;",
     );
     let before = t.revisions();

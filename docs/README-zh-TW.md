@@ -209,8 +209,8 @@ Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，works
 實驗性功能。`figlens search <file> <query> --mode semantic|hybrid` 以本機模型依語意為圖層排序。預設的 `--mode text` 不變，也不需要模型。
 
 - **一次性設定。** 請自行下載 BAAI/bge-m3 的 `5617a9f61b028005a4858fdac845db406aefb181` 修訂版（MIT；`config.json`、`pytorch_model.bin`、`tokenizer.json`），figlens 從不下載。`figlens models configure bge-m3 --model DIR [--runtime FILE]` 以 SHA-256 驗證檔案，離線啟動一次 `figlens-embed` 執行環境（未給 `--runtime` 時在 figlens 執行檔旁尋找），並把設定記錄在設定目錄的 `models.json`。`models list|status` 可查看，`models remove bge-m3` 會忘記該設定但保留檔案。
-- **模式。** `semantic` 依每個圖層最相符的名稱或文字片段排序。`hybrid` 融合文字與語意兩種排名（Reciprocal Rank Fusion）。沒有設定時，`semantic` 以 `mode_unavailable` 失敗，`hybrid` 回傳文字結果並說明原因。`coverage.layers.semantic` 回報 `ready`、`partial` 或 `unavailable`；部分結果的頁面沒有 `nextCursor`。模型只用 CPU（約 2.5 GiB 記憶體），Ctrl-C 可停止。
-- **限制。** 只嵌入圖層名稱與有效文字。使用 `--workspace`/`--id` 搜尋時，讀取每個來源已儲存的模型層，不會嵌入設計文字；該層由 `figlens index embed` 建立（MCP 伺服器會在文字建置後排入佇列）。沒有該層的來源為 `pending`，頁面為部分結果。在此功能凍結的測試集上，模型未達到同義詞與用途查詢的品質門檻（top-1 錯誤率 0.25，門檻 0.20），請把結果當作線索。
+- **模式。** `semantic` 依每個圖層在名稱、文字、元件屬性或所在範圍中最相符的片段排序。`hybrid` 融合文字與語意兩種排名（Reciprocal Rank Fusion）。沒有設定時，`semantic` 以 `mode_unavailable` 失敗，`hybrid` 回傳文字結果並說明原因。`coverage.layers.semantic` 回報 `ready`、`partial` 或 `unavailable`；部分結果的頁面沒有 `nextCursor`。模型只用 CPU（約 2.5 GiB 記憶體），Ctrl-C 可停止。
+- **限制。** 嵌入圖層名稱、有效文字、實例的元件屬性值（無法精確解析的值會略過並計數）以及每個圖層所在頁面與容器的名稱。使用 `--workspace`/`--id` 搜尋時，讀取每個來源已儲存的模型層，不會嵌入設計文字；該層由 `figlens index embed` 建立（MCP 伺服器會在文字建置後排入佇列）。沒有該層的來源為 `pending`，頁面為部分結果。在此功能凍結的測試集上，模型未達到同義詞與用途查詢的品質門檻（top-1 錯誤率 0.25，門檻 0.20），請把結果當作線索。
 - **MCP。** `models` 工具（`list`、`status`、`configure`、`remove`）以及 `search` 的 `mode`；`configure` 只執行 figlens 旁的 `figlens-embed`，模型目錄與檔案必須位於伺服器的 root 之內。取消呼叫會停止執行中的搜尋或設定。
 
 <a id="commands"></a>

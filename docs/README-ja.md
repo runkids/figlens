@@ -209,8 +209,8 @@ Pi、OpenCode、OMP は、それぞれのオプトイン用エントリから同
 実験的機能です。`figlens search <file> <query> --mode semantic|hybrid` はローカルモデルでレイヤーを意味で順位付けします。既定の `--mode text` は変わらず、モデルは不要です。
 
 - **初回設定。** BAAI/bge-m3 のリビジョン `5617a9f61b028005a4858fdac845db406aefb181`（MIT。`config.json`、`pytorch_model.bin`、`tokenizer.json`）は自分でダウンロードしてください。figlens はダウンロードしません。`figlens models configure bge-m3 --model DIR [--runtime FILE]` は SHA-256 でファイルを検証し、`figlens-embed` ランタイムをオフラインで一度起動（`--runtime` がなければ figlens の実行ファイルの隣を探します）して、設定ディレクトリの `models.json` にプロファイルを記録します。`models list|status` で確認でき、`models remove bge-m3` はプロファイルを削除してファイルは残します。
-- **モード。** `semantic` は各レイヤーを名前またはテキストの最良のチャンクで順位付けします。`hybrid` はテキストとセマンティックの順位を統合します（Reciprocal Rank Fusion）。プロファイルがないと `semantic` は `mode_unavailable` で失敗し、`hybrid` はテキスト結果を返して理由を示します。`coverage.layers.semantic` は `ready`、`partial`、`unavailable` を報告し、部分的なページに `nextCursor` はありません。モデルは CPU で動作し（メモリ約 2.5 GiB）、Ctrl-C で停止できます。
-- **制限。** 埋め込み対象はレイヤー名と有効なテキストのみです。`--workspace`/`--id` の検索は各ソースの保存済みモデルレイヤーを読み、デザインのテキストを埋め込むことはありません。レイヤーは `figlens index embed` で作成します（MCP サーバーはテキストビルドの後にキューに入れます）。未作成のソースは `pending` で、ページは部分的になります。この機能の固定テストセットでは、同義語・用途クエリの品質基準を満たしませんでした（top-1 誤り率 0.25、基準 0.20）。結果は参考として扱ってください。
+- **モード。** `semantic` は各レイヤーを名前、テキスト、コンポーネントプロパティ、スコープのうち最良のチャンクで順位付けします。`hybrid` はテキストとセマンティックの順位を統合します（Reciprocal Rank Fusion）。プロファイルがないと `semantic` は `mode_unavailable` で失敗し、`hybrid` はテキスト結果を返して理由を示します。`coverage.layers.semantic` は `ready`、`partial`、`unavailable` を報告し、部分的なページに `nextCursor` はありません。モデルは CPU で動作し（メモリ約 2.5 GiB）、Ctrl-C で停止できます。
+- **制限。** 埋め込み対象はレイヤー名、有効なテキスト、インスタンスのコンポーネントプロパティ値（正確に解決できない値は除外して件数を報告）、各レイヤーのページ名とコンテナ名です。`--workspace`/`--id` の検索は各ソースの保存済みモデルレイヤーを読み、デザインのテキストを埋め込むことはありません。レイヤーは `figlens index embed` で作成します（MCP サーバーはテキストビルドの後にキューに入れます）。未作成のソースは `pending` で、ページは部分的になります。この機能の固定テストセットでは、同義語・用途クエリの品質基準を満たしませんでした（top-1 誤り率 0.25、基準 0.20）。結果は参考として扱ってください。
 - **MCP。** `models` ツール（`list`、`status`、`configure`、`remove`）と `search` の `mode`。`configure` は figlens の隣の `figlens-embed` だけを実行し、モデルのディレクトリとファイルはサーバーの root 内になければなりません。呼び出しをキャンセルすると、実行中の検索やセットアップが止まります。
 
 <a id="commands"></a>

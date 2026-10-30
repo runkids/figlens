@@ -209,8 +209,8 @@ Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며
 실험적 기능입니다. `figlens search <file> <query> --mode semantic|hybrid`는 로컬 모델로 레이어를 의미 기준으로 순위 매깁니다. 기본값 `--mode text`는 그대로이며 모델이 필요 없습니다.
 
 - **최초 1회 설정.** BAAI/bge-m3 리비전 `5617a9f61b028005a4858fdac845db406aefb181`(MIT, `config.json`, `pytorch_model.bin`, `tokenizer.json`)를 직접 내려받으세요. figlens는 내려받지 않습니다. `figlens models configure bge-m3 --model DIR [--runtime FILE]`는 파일을 SHA-256으로 검증하고, `figlens-embed` 런타임을 오프라인으로 한 번 실행(`--runtime`이 없으면 figlens 실행 파일 옆에서 찾음)한 뒤 설정 디렉터리의 `models.json`에 프로파일을 기록합니다. `models list|status`로 확인하고, `models remove bge-m3`는 프로파일을 지우되 파일은 남깁니다.
-- **모드.** `semantic`은 각 레이어를 가장 잘 맞는 이름 또는 텍스트 청크로 순위 매깁니다. `hybrid`는 텍스트와 시맨틱 순위를 합칩니다(Reciprocal Rank Fusion). 프로파일이 없으면 `semantic`은 `mode_unavailable`로 실패하고, `hybrid`는 텍스트 결과와 이유를 반환합니다. `coverage.layers.semantic`은 `ready`, `partial`, `unavailable`을 보고하며, 부분 페이지에는 `nextCursor`가 없습니다. 모델은 CPU에서 실행되며(메모리 약 2.5 GiB) Ctrl-C로 멈춥니다.
-- **제한.** 레이어 이름과 유효 텍스트만 임베딩합니다. `--workspace`/`--id` 검색은 각 소스의 저장된 모델 레이어를 읽으며 디자인 텍스트를 임베딩하지 않습니다. 레이어는 `figlens index embed`로 만듭니다(MCP 서버는 텍스트 빌드 뒤에 큐에 넣습니다). 없는 소스는 `pending`이고 페이지는 부분 결과입니다. 이 기능의 고정 테스트 세트에서 모델은 동의어·목적 질의의 품질 기준을 넘지 못했습니다(top-1 오답률 0.25, 기준 0.20). 결과는 참고용으로 보세요.
+- **모드.** `semantic`은 각 레이어를 이름, 텍스트, 컴포넌트 속성, 범위 중 가장 잘 맞는 청크로 순위 매깁니다. `hybrid`는 텍스트와 시맨틱 순위를 합칩니다(Reciprocal Rank Fusion). 프로파일이 없으면 `semantic`은 `mode_unavailable`로 실패하고, `hybrid`는 텍스트 결과와 이유를 반환합니다. `coverage.layers.semantic`은 `ready`, `partial`, `unavailable`을 보고하며, 부분 페이지에는 `nextCursor`가 없습니다. 모델은 CPU에서 실행되며(메모리 약 2.5 GiB) Ctrl-C로 멈춥니다.
+- **제한.** 레이어 이름, 유효 텍스트, 인스턴스의 컴포넌트 속성 값(정확히 해석할 수 없는 값은 제외하고 개수를 보고), 각 레이어의 페이지와 컨테이너 이름을 임베딩합니다. `--workspace`/`--id` 검색은 각 소스의 저장된 모델 레이어를 읽으며 디자인 텍스트를 임베딩하지 않습니다. 레이어는 `figlens index embed`로 만듭니다(MCP 서버는 텍스트 빌드 뒤에 큐에 넣습니다). 없는 소스는 `pending`이고 페이지는 부분 결과입니다. 이 기능의 고정 테스트 세트에서 모델은 동의어·목적 질의의 품질 기준을 넘지 못했습니다(top-1 오답률 0.25, 기준 0.20). 결과는 참고용으로 보세요.
 - **MCP.** `models` 도구(`list`, `status`, `configure`, `remove`)와 `search`의 `mode`가 있습니다. `configure`는 figlens 옆의 `figlens-embed`만 실행하며, 모델 디렉터리와 파일은 서버 root 안에 있어야 합니다. 호출을 취소하면 실행 중인 검색이나 설정이 멈춥니다.
 
 <a id="commands"></a>
