@@ -346,7 +346,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
     const args = cliArgs(tool, input);
     const invoke = async (args, text = false) => {
       // A model configure hashes its pinned files and waits for the runtime to start, as long as a build.
-      const build = ['index prepare', 'index refresh', 'index rebuild', 'index track', 'index embed', 'models configure'].includes(args.slice(0, 2).join(' '));
+      const build = ['index prepare', 'index refresh', 'index rebuild', 'index track', 'index embed', 'index visual', 'models configure'].includes(args.slice(0, 2).join(' '));
       try { const { stdout } = await current.run(args, build ? 0 : undefined); return text ? { flat: stdout } : JSON.parse(stdout); }
       catch (error) {
         // The CLI explains a failure on stderr; a partial reset or failed job also prints its report.
@@ -402,7 +402,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
       if (typeof directory.manifest !== 'string') throw missing("a directory's manifest");
       args.push('--manifest', directory.manifest);
     }
-    // Workspace search, usages and changes, refresh, rebuild, track and embed read the registered designs' content, which this session may deny.
+    // Workspace search, usages and changes, refresh, rebuild, track, embed and visual read the registered designs' content, which this session may deny.
     // `only` names the sources read; null reads every one.
     const readSources = async ({ state, sources }, only = input.sourceId ? [input.sourceId] : null) => {
       // A workspace that does not exist yet reads no design; the command then fails as the MCP tool does.
@@ -496,8 +496,8 @@ export function createAdapter(ctx, entry = import.meta.url) {
           return { paths: { workspace: fix.path, lock: fix.lock }, roots: fix.roots };
         });
         if (!found.roots?.config) throw missing('its config root');
-        // An embed sends the published text of those sources to the local model child, so it reads them too.
-        if (['refresh', 'rebuild', 'track', 'embed'].includes(input.action)) await readSources(found);
+        // An embed sends the published text of those sources to the local model child, and a visual job renders them, so both read them too.
+        if (['refresh', 'rebuild', 'track', 'embed', 'visual'].includes(input.action)) await readSources(found);
         if (grant) await current.authorize('figlens_index', [grant]);
         // Every write also takes a location lock or record under the config root (a build's publish, relocation's alias).
         await edit([...place(found), found.roots.config.path]);

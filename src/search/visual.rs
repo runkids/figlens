@@ -221,6 +221,19 @@ pub fn units<'a>(
     })
 }
 
+/// The units of a stored scope: its default units, plus the scope root itself when it lies
+/// below the page, so a visual job never widens a subscope to the whole file.
+pub fn scope_units<'a>(index: &'a Index, bounds: &mut Bounds) -> Result<Units<'a>, Box<dyn Error>> {
+    let selected: Vec<String> = index
+        .records
+        .first()
+        .filter(|r| !matches!(r.kind.as_str(), "DOCUMENT" | "CANVAS"))
+        .map(|r| r.id.clone())
+        .into_iter()
+        .collect();
+    units(index, &selected, bounds)
+}
+
 /// One unit in the generation's document order. Raster comparison never proves node identity.
 #[derive(Clone, Debug)]
 pub struct Hit {

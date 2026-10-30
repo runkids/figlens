@@ -349,6 +349,7 @@ mod registry;
 mod storage;
 pub mod usages;
 pub mod visual;
+pub mod visual_job;
 
 use database::*;
 use storage::*;

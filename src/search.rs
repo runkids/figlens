@@ -1871,6 +1871,16 @@ pub(crate) fn index_tree(
     profiled(tree, scope, deadline, true, Library::Skip)
 }
 
+/// `index_tree` as a stored build makes it (`index_bytes`), so a visual job's records line up
+/// with the published generation built from the same bytes.
+pub(crate) fn index_stored(
+    tree: &Tree,
+    scope: &str,
+    deadline: Instant,
+) -> Result<Index, Box<dyn Error>> {
+    profiled(tree, scope, deadline, true, Library::Stored)
+}
+
 fn profiled(
     tree: &Tree,
     scope: &str,

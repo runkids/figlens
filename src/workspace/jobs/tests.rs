@@ -426,7 +426,7 @@ fn jobs_submitted_in_one_millisecond_build_in_submission_order() {
     )
     .unwrap();
     assert!(
-        !my_turn(&conn, &dir, &second, false).unwrap(),
+        !my_turn(&conn, &dir, &second, "").unwrap(),
         "{first} goes first"
     );
 }
@@ -612,7 +612,7 @@ fn a_taken_over_job_queues_behind_another_owner_s_job_so_no_two_owners_wait_on_e
     };
     assert!(a2.owned);
     // B runs its job first; A waits for it, then runs its own in the order it admitted them.
-    assert!(my_turn(&conn, &dir, &b1, false).unwrap());
+    assert!(my_turn(&conn, &dir, &b1, "").unwrap());
 }
 
 #[test]
@@ -3689,10 +3689,18 @@ fn a_schema_9_upgrade_keeps_model_rows_sources_and_incarnation() {
     let source = sources(&conn).remove(0);
     let job_id = job(&conn, &source, "0:1", "running", "holder", 1);
     let gen_id = building(&conn, &job_id);
-    super::super::model::save(&conn, gen_id, "profile", &[([1; 32], vec![1, 2, 3, 4])]).unwrap();
+    super::super::model::save(
+        &conn,
+        gen_id,
+        "profile",
+        super::super::model::POLICY,
+        &[([1; 32], vec![1, 2, 3, 4])],
+    )
+    .unwrap();
     let incarnation = meta(&conn, "incarnation").unwrap();
     conn.execute_batch(
-        "DROP TABLE visual_units; DROP TABLE visual_rasters; PRAGMA user_version = 9;",
+        "DROP TABLE visual_units; DROP TABLE visual_rasters; DROP INDEX jobs_visual;
+         PRAGMA user_version = 9;",
     )
     .unwrap();
     drop(conn);

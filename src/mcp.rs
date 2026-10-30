@@ -617,7 +617,7 @@ fn cancel_running(pending: &Pending) {
 fn submits(req: &Value) -> bool {
     matches!(
         req["params"]["arguments"]["action"].as_str(),
-        Some("prepare" | "refresh" | "rebuild" | "track" | "embed")
+        Some("prepare" | "refresh" | "rebuild" | "track" | "embed" | "visual")
     )
 }
 
@@ -759,8 +759,9 @@ pub fn serve_with(
         // until input ends.
         scope.spawn(move || figlens::workspace::watch::renew_until(stop));
         // Build lane: this server's jobs, one at a time; they stop when input ends or a reply
-        // cannot be written. A text build that publishes queues its model layer's embed on the
-        // model lane, so no text build waits behind the model; each send counts as a build.
+        // cannot be written. A text build that publishes queues its model layer's embed, and the
+        // visual job of a scope that had a visual layer, on the model lane, so no text build
+        // waits behind the model; each send counts as a build.
         scope.spawn(move || {
             for runs in build_rx {
                 if runs.model {
@@ -779,12 +780,10 @@ pub fn serve_with(
                         stop,
                         &mut |_| {},
                     );
-                    if let Some(id) = report
-                        .ok()
-                        .filter(|_| !stop.load(Ordering::SeqCst))
-                        .and_then(|r| figlens::workspace::jobs::embed_after(&runs.storage, &r))
-                    {
-                        embeds.push(id);
+                    if let Some(r) = report.ok().filter(|_| !stop.load(Ordering::SeqCst)) {
+                        use figlens::workspace::jobs::{embed_after, visual_after};
+                        embeds.extend(embed_after(&runs.storage, &r));
+                        embeds.extend(visual_after(&runs.storage, &r));
                     }
                 }
                 if !embeds.is_empty() {
@@ -802,7 +801,7 @@ pub fn serve_with(
                 builds.fetch_sub(1, Ordering::SeqCst);
             }
         });
-        // Model lane: this server's embed jobs, one at a time, beside its text builds.
+        // Model lane: this server's embed and visual jobs, one at a time, beside its text builds.
         scope.spawn(move || {
             for runs in model_rx {
                 for job in &runs.jobs {
