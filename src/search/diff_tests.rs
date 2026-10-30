@@ -1941,7 +1941,6 @@ fn document_moded(mode: u32) -> K<'static> {
 fn a_document_mode_switch_changes_a_page_s_rest_fills_and_leaves_its_diff_partial() {
     let (red, blue) = (document_moded(70), document_moded(71));
     let rest = |m: &K<'static>| crate::rest::resolve_nodes(&Tree::new(m), "0:1").unwrap();
-    eprintln!("RED {}", rest(&red)["document"]["children"]);
     assert_ne!(rest(&red), rest(&blue));
     let out = scoped(red, blue, "0:1");
     assert_eq!(
