@@ -615,9 +615,11 @@ pub fn library(
     if let (Some(None), Some(d), Some(gen_id)) = (&baseline, &req.definition, definition_gen) {
         let mut reason = json!({"code": "definition_not_compared", "count": uncompared});
         // Only a generation built before fingerprints gains one by rebuilding; in a newer one
-        // the selected node is not a kind that takes one.
+        // the selected node is not a kind that takes one, and a build its budgets stopped
+        // stops again.
         let built: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM fingerprints WHERE gen = ?1)",
+            "SELECT EXISTS(SELECT 1 FROM fingerprints WHERE gen = ?1)
+             OR EXISTS(SELECT 1 FROM generations WHERE gen = ?1 AND stop IS NOT NULL)",
             params![gen_id],
             |r| r.get(0),
         )?;
