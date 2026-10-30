@@ -955,13 +955,25 @@ fn revision_retention_deletes_and_expires_only_whole_groups() {
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
+    // The newest deleted revision's seq marks the gap for checkpoints behind it.
+    let pruned: String = ws
+        .conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'pruned' || char(31) || 's' || char(31) || '0:0'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(
-        kept,
-        [
-            (4, "expired".into(), 0),
-            (5, "complete".into(), 5),
-            (6, "complete".into(), 5)
-        ]
+        (kept, pruned),
+        (
+            vec![
+                (4, "expired".into(), 0),
+                (5, "complete".into(), 5),
+                (6, "complete".into(), 5)
+            ],
+            "2".into()
+        )
     );
 }
 

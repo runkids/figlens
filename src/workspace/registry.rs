@@ -539,6 +539,8 @@ pub fn remove(storage: &Storage, select: &Select, source_id: &str) -> Result<Jso
             "DELETE FROM revision_changes WHERE rev IN (SELECT id FROM revisions WHERE source_id = ?1)",
             "DELETE FROM revisions WHERE source_id = ?1",
             "DELETE FROM tracking WHERE source_id = ?1",
+            "DELETE FROM consumers WHERE substr(filter, 1, length(?1) + 1) = ?1 || char(31)",
+            "DELETE FROM meta WHERE substr(key, 1, length(?1) + 8) = 'pruned' || char(31) || ?1 || char(31)",
         ] {
             tx.execute(q, [source_id]).map_err(sql)?;
         }

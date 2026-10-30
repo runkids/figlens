@@ -424,6 +424,7 @@ version = "0.9.3"
 dependencies = [
  "caseless",
  "flate2",
+ "hmac",
  "imagesize",
  "jpeg-encoder",
  "kiwi-schema",

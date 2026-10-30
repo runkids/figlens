@@ -470,7 +470,7 @@ struct Change {
 }
 
 const EDGES: u8 = 1 << 5;
-const UNREAD: u8 = 1 << 6;
+pub(crate) const UNREAD: u8 = 1 << 6;
 
 /// A top-level frame (or a page, for layers directly on it) with changes.
 struct Frame {
@@ -1156,6 +1156,17 @@ fn offset(pair: &Pair, cursor: &str) -> Result<usize, Box<dyn Error>> {
     }
 }
 
+/// The facets set in a change's bits, `bindings` for its edges.
+pub(crate) fn facet_names(bits: u8) -> Vec<&'static str> {
+    FACETS
+        .iter()
+        .chain(["bindings"].iter())
+        .enumerate()
+        .filter(|(i, _)| bits & (1 << i) != 0)
+        .map(|(_, n)| *n)
+        .collect()
+}
+
 fn summary(counts: &[u32; 8]) -> String {
     let mut parts = vec![format!("{} changed", counts[7])];
     for (i, name) in FACETS
@@ -1344,14 +1355,7 @@ fn page_with(
             node["oldKind"] = json!(pair.old.index.records[c.old.unwrap() as usize].kind);
         }
         if c.kind == Kind::Changed {
-            let names: Vec<_> = FACETS
-                .iter()
-                .chain(["bindings"].iter())
-                .enumerate()
-                .filter(|(i, _)| c.facets & (1 << i) != 0)
-                .map(|(_, n)| *n)
-                .collect();
-            node["facets"] = json!(names);
+            node["facets"] = json!(facet_names(c.facets));
             if c.facets & UNREAD != 0 {
                 node["unread"] = json!(true);
             }

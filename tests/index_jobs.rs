@@ -2118,3 +2118,197 @@ fn a_repeated_track_while_its_baseline_build_runs_joins_it() {
         (true, json!("active"))
     );
 }
+
+impl Tracked<'_> {
+    fn changes(&self, more: &[&str]) -> Value {
+        let mut args = vec!["changes", "--file", &self.file];
+        args.extend(more);
+        self.env.json(&args)
+    }
+
+    fn fails(&self, args: &[&str]) -> String {
+        let out = self.env.run(args);
+        assert!(!out.status.success());
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    }
+}
+
+#[test]
+fn changes_pages_revisions_and_their_nodes_and_a_consumer_acks_its_place() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let all = t.changes(&[]);
+    let first = t.changes(&["--limit", "1"]);
+    let cursor = first["nextCursor"].as_str().unwrap();
+    let rest = t.changes(&["--cursor", cursor]);
+    let id = rest["revisions"][0]["revisionId"].as_str().unwrap();
+    let nodes = t.changes(&["--revision", id, "--limit", "3"]);
+    let more = t.changes(&[
+        "--revision",
+        id,
+        "--cursor",
+        nodes["nextCursor"].as_str().unwrap(),
+    ]);
+    let fresh = t.changes(&["--consumer", "bot"]);
+    let ack = |c: &str| {
+        env.json(&[
+            "watch",
+            "ack",
+            "--file",
+            &t.file,
+            "--consumer",
+            "bot",
+            "--cursor",
+            c,
+        ])
+    };
+    let acked = ack(cursor);
+    let after = t.changes(&["--consumer", "bot"]);
+    let again = ack(cursor);
+    assert_eq!(
+        (
+            all["revisions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["kind"].clone())
+                .collect::<Vec<_>>(),
+            (first["hasMore"].clone(), rest["hasMore"].clone()),
+            rest["revisions"][0]["from"] == first["revisions"][0]["revisionId"],
+            (
+                nodes["nodes"].as_array().unwrap().len(),
+                more["nodes"].as_array().unwrap().len(),
+                more["nextCursor"].clone()
+            ),
+            (
+                fresh["revisions"].as_array().unwrap().len(),
+                after["revisions"][0]["revisionId"].clone()
+            ),
+            (
+                acked["advanced"].clone(),
+                again["advanced"].clone(),
+                again["checkpoint"] == json!(cursor)
+            ),
+            (
+                all["tracking"][0]["state"].clone(),
+                all["tracking"][0]["refreshRequired"].clone(),
+                all["monitor"].clone()
+            ),
+        ),
+        (
+            vec![json!("baseline"), json!("changes")],
+            (json!(true), json!(false)),
+            true,
+            (3, 1, Value::Null),
+            (2, json!(id)),
+            (json!(true), json!(false), true),
+            (json!("active"), json!(false), json!({"state": "inactive"})),
+        )
+    );
+}
+
+#[test]
+fn a_cursor_for_other_filters_is_stale_and_a_position_retention_deleted_is_a_gap() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    t.save(false);
+    t.index("refresh");
+    let page = t.changes(&["--scope", "0:0", "--limit", "1"]);
+    let cursor = page["nextCursor"].as_str().unwrap();
+    let source = page["revisions"][0]["sourceId"].as_str().unwrap();
+    let stale = t.fails(&["changes", "--file", &t.file, "--cursor", cursor]);
+    env.json(&[
+        "watch",
+        "ack",
+        "--file",
+        &t.file,
+        "--scope",
+        "0:0",
+        "--consumer",
+        "bot",
+        "--cursor",
+        cursor,
+    ]);
+    // Retention deleted the revision the cursor and the checkpoint name, and the next, unread.
+    t.sql(&format!(
+        "DELETE FROM revisions WHERE seq < (SELECT MAX(seq) FROM revisions);
+         INSERT INTO meta SELECT 'pruned' || char(31) || '{source}' || char(31) || '0:0',
+         CAST(MAX(seq) - 1 AS TEXT) FROM revisions"
+    ));
+    let gap = t.fails(&[
+        "changes", "--file", &t.file, "--scope", "0:0", "--cursor", cursor,
+    ]);
+    let behind = t.fails(&[
+        "changes",
+        "--file",
+        &t.file,
+        "--scope",
+        "0:0",
+        "--consumer",
+        "bot",
+    ]);
+    let recovery: Value = serde_json::from_str(gap.lines().last().unwrap()).unwrap();
+    let oldest = recovery["recovery"][0]["arguments"]["cursor"]
+        .as_str()
+        .unwrap();
+    let resumed = t.changes(&["--scope", "0:0", "--cursor", oldest]);
+    assert_eq!(
+        (
+            stale.contains("other filters"),
+            gap.contains("deleted by retention"),
+            behind.contains("deleted by retention"),
+            resumed["revisions"][0]["kind"].clone(),
+        ),
+        (true, true, true, json!("changes"))
+    );
+}
+
+#[test]
+fn mcp_changes_shows_only_visible_sources_and_shares_cli_cursors() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let cli = t.changes(&["--limit", "1"]);
+    let ws = cli["workspaceId"].clone();
+    let (cursor, id) = (
+        cli["nextCursor"].clone(),
+        cli["revisions"][0]["revisionId"].clone(),
+    );
+    let other = env.dir.join("other");
+    std::fs::create_dir(&other).unwrap();
+    let other = std::fs::canonicalize(other).unwrap();
+    let root = std::fs::canonicalize(env.dir.join("")).unwrap();
+    let mut seen = Mcp::start(&env, &["--root", root.to_str().unwrap()]);
+    let next = seen.call("changes", json!({"workspaceId": ws, "cursor": cursor}));
+    let acked = seen.call(
+        "watch",
+        json!({"action": "ack", "workspaceId": ws, "consumer": "bot", "cursor": next["structuredContent"]["nextCursor"]}),
+    );
+    let mut hidden = Mcp::start(&env, &["--root", other.to_str().unwrap()]);
+    let empty = hidden.call("changes", json!({"workspaceId": ws}));
+    let stale = hidden.call("changes", json!({"workspaceId": ws, "cursor": cursor}));
+    let detail = hidden.call("changes", json!({"workspaceId": ws, "revision": id}));
+    let code = |r: &Value| r["_meta"]["figlens"]["code"].clone();
+    assert_eq!(
+        (
+            next["structuredContent"]["revisions"][0]["kind"].clone(),
+            acked["structuredContent"]["advanced"].clone(),
+            (
+                empty["structuredContent"]["revisions"].clone(),
+                empty["structuredContent"]["tracking"].clone()
+            ),
+            (code(&stale), code(&detail)),
+        ),
+        (
+            json!("changes"),
+            json!(true),
+            (json!([]), json!([])),
+            (json!("cursor_stale"), json!("invalid_arguments")),
+        )
+    );
+}

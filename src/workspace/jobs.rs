@@ -1540,6 +1540,16 @@ fn record(
     // keep their summary and read as `expired`.
     let old = "SELECT id FROM revisions WHERE source_id = ?1 AND scope = ?2
                ORDER BY seq DESC LIMIT -1 OFFSET ?3";
+    // The newest deleted, so a checkpoint behind it reads as `event_gap`.
+    tx.execute(
+        &format!(
+            "INSERT INTO meta (key, value) SELECT 'pruned' || char(31) || ?1 || char(31) || ?2,
+             CAST(MAX(seq) AS TEXT) FROM revisions WHERE id IN ({old}) HAVING COUNT(*) > 0
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value"
+        ),
+        params![source, scope, REVISIONS],
+    )
+    .map_err(sql)?;
     tx.execute(
         &format!("DELETE FROM revision_changes WHERE rev IN ({old})"),
         params![source, scope, REVISIONS],
@@ -1789,6 +1799,7 @@ pub(crate) fn kind_code(kind: ErrorKind) -> &'static str {
         ErrorKind::SourceStale => "source_stale",
         ErrorKind::CursorStale => "cursor_stale",
         ErrorKind::CursorExpired => "cursor_expired",
+        ErrorKind::EventGap => "event_gap",
         ErrorKind::Cancelled => "cancelled",
         ErrorKind::QueryWorkLimit => "query_work_limit",
     }
@@ -2064,7 +2075,7 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
 }
 
 /// The visible sources `only` names (every visible source when empty), in registry order.
-fn chosen(storage: &Storage, ws: &Opened, only: Option<&str>) -> Result<Vec<String>> {
+pub(super) fn chosen(storage: &Storage, ws: &Opened, only: Option<&str>) -> Result<Vec<String>> {
     let mut stmt = ws
         .conn
         .prepare("SELECT source_id, path FROM sources ORDER BY added_at_ms, source_id")

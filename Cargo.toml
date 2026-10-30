@@ -21,6 +21,7 @@ jpeg-encoder = "0.7.1"
 kiwi-schema = { version = "0.2.1", path = "vendor/kiwi-schema" }
 rayon = "1.12.0"
 # Bundled: the native binaries carry SQLite, so users install nothing.
+hmac = "0.13.0"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 # No `asm`: it needs nasm in every cross-build.
 ravif = { version = "0.13.0", default-features = false, features = ["threading"] }

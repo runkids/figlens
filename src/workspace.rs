@@ -338,6 +338,7 @@ fn now_ms() -> i64 {
 
 // ---- Application roots ----
 
+pub mod changes;
 mod database;
 pub mod jobs;
 pub mod query;

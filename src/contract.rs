@@ -474,6 +474,68 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
             STORAGE,
         ],
     ),
+    (
+        "changes",
+        "Recorded design changes of the scopes index track follows; never writes or builds. Each revision is one published build of a tracked scope: kind baseline (tracking started, or nothing comparable before it, with a reason) or changes, with coverage, exact summary counts per change kind and facet, and detail complete, truncated or expired. Pages run oldest first after cursor, else after the consumer's checkpoint (moved by watch ack), else from the oldest kept. Pass revision to page that revision's changed nodes instead. tracking lists each tracked scope's state, lastRevisionId and refreshRequired (the file changed since its last build: refresh the scope to record it; an empty page never proves the file unchanged); monitor is the watch monitor, separate from tracking. A cursor is bound to the filters, the visible sources and the workspace incarnation: any other use is cursor_stale. event_gap means retention deleted revisions before they were read: follow its recovery and treat the scope as possibly changed.",
+        &[
+            ("workspaceId", "string", true, "ws_... from the index tool"),
+            ("sourceId", "string", false, "only this source's revisions"),
+            ("scope", "string", false, "only this scope's revisions"),
+            (
+                "consumer",
+                "string",
+                false,
+                "without cursor, start after this consumer's checkpoint",
+            ),
+            ("cursor", "string", false, "nextCursor of the previous page"),
+            (
+                "revision",
+                "string",
+                false,
+                "a revisionId: page its changed nodes instead",
+            ),
+            (
+                "limit",
+                "integer",
+                false,
+                "revisions per page, 1-50 (default 20); with revision, nodes per page, 1-500 (default 100)",
+            ),
+            STORAGE,
+        ],
+    ),
+    (
+        "watch",
+        "Change-tracking consumers. ack moves consumer's checkpoint for these filters (sourceId, scope) forward to cursor, the nextCursor of the last changes page it handled with the same filters; an older or equal cursor changes nothing, so a retry is safe. Replies with advanced and the checkpoint held.",
+        &[
+            ("action", "string", true, "ack"),
+            ("workspaceId", "string", true, "ws_... from the index tool"),
+            (
+                "consumer",
+                "string",
+                true,
+                "the consumer's name, 1-128 bytes",
+            ),
+            (
+                "cursor",
+                "string",
+                true,
+                "nextCursor from changes with the same filters",
+            ),
+            (
+                "sourceId",
+                "string",
+                false,
+                "the sourceId filter of that changes call",
+            ),
+            (
+                "scope",
+                "string",
+                false,
+                "the scope filter of that changes call",
+            ),
+            STORAGE,
+        ],
+    ),
 ];
 
 /// The MCP outputSchema of the tools whose CLI command prints one JSON object.
@@ -566,6 +628,29 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "nextSteps": {"type": "array", "items": {"type": "object"}},
             }),
             ["jobId", "state"].as_slice(),
+        ),
+        "changes" => (
+            serde_json::json!({
+                "workspaceId": {"type": "string"},
+                "revisions": {"type": "array", "items": {"type": "object"}, "description": "oldest first: revisionId, sourceId, scope, kind (baseline or changes), from (the previous revisionId, null for a baseline or when deleted), snapshotId, coverage (a baseline's reason), summary (changes, kinds, facets, possibleMatches), detail (complete, truncated or expired), detailRows"},
+                "nextCursor": {"type": ["string", "null"], "description": "pass as cursor for the next page, or to watch ack once handled"},
+                "hasMore": {"type": "boolean"},
+                "tracking": {"type": "array", "items": {"type": "object"}, "description": "each tracked scope of the visible sources: sourceId, scope, state (baseline_pending, active or disabled), lastRevisionId, lastCheckedAtMs, refreshRequired"},
+                "monitor": {"type": "object", "description": "the watch monitor's state, separate from tracking"},
+                "revisionId": {"type": "string", "description": "with revision"},
+                "detail": {"type": "string", "description": "with revision: complete, truncated (rows past the cap were not kept) or expired"},
+                "nodes": {"type": "array", "items": {"type": "object"}, "description": "with revision: frame, id, kind, change, facets, unread, descendants"},
+            }),
+            ["workspaceId", "nextCursor"].as_slice(),
+        ),
+        "watch" => (
+            serde_json::json!({
+                "workspaceId": {"type": "string"},
+                "consumer": {"type": "string"},
+                "advanced": {"type": "boolean", "description": "false when the cursor was not past the checkpoint"},
+                "checkpoint": {"type": ["string", "null"], "description": "a cursor at the checkpoint now held"},
+            }),
+            ["workspaceId", "consumer", "advanced", "checkpoint"].as_slice(),
         ),
         "inspect" => (
             serde_json::json!({
@@ -686,7 +771,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
         ("inspect", "depth") => Some((0, 10)),
         ("tree", "depth") => Some((0, JSON_SAFE.min(usize::MAX as u64))),
         ("find" | "search" | "usages", "limit") => Some((1, 200)),
-        ("diff", "limit") => Some((1, 500)),
+        ("diff" | "changes", "limit") => Some((1, 500)),
         ("export", "quality") => Some((1, 100)),
         ("export", "maxKb") => Some((0, JSON_SAFE.min((usize::MAX / 1024) as u64))),
         ("export", "maxSize") => Some((0, u64::from(u32::MAX))),
@@ -734,6 +819,9 @@ pub fn property(tool: &str, param: &Param) -> Value {
     }
     if tool == "jobs" && key == "action" {
         p["enum"] = json!(["status", "cancel"]);
+    }
+    if tool == "watch" && key == "action" {
+        p["enum"] = json!(["ack"]);
     }
     if tool == "search" && key == "mode" {
         p["enum"] = json!(["text"]);
@@ -904,6 +992,10 @@ pub fn tools() -> Value {
             // cancel changes a job.
             "jobs" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": false,
                 "openWorldHint": false}),
+            "changes" => tool["annotations"] = json!({"readOnlyHint": true, "openWorldHint": false}),
+            // ack only moves a checkpoint forward.
+            "watch" => tool["annotations"] = json!({"readOnlyHint": false, "destructiveHint": false,
+                "idempotentHint": true, "openWorldHint": false}),
             _ => {}
         }
         tool
@@ -1009,6 +1101,10 @@ impl Failure {
             ErrorKind::CursorExpired => (
                 "cursor_expired",
                 "The index this cursor paged was deleted; search again without cursor.",
+            ),
+            ErrorKind::EventGap => (
+                "event_gap",
+                "Revisions after this position were deleted before they were read; follow recovery to read changes from the oldest kept, and treat the scope as possibly changed.",
             ),
             ErrorKind::Cancelled => (
                 "cancelled",

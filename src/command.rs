@@ -939,6 +939,33 @@ pub fn jobs_tool(
     })
 }
 
+/// MCP `changes`, and `watch` (only `ack`): recorded revisions of tracked scopes.
+pub fn changes_tool(
+    call: &crate::contract::PreparedCall,
+    roots: &[PathBuf],
+    storage_roots: &[PathBuf],
+) -> Result<Output, Box<dyn Error>> {
+    use figlens::workspace::changes;
+    let storage = tool_storage(call, roots, storage_roots)?;
+    let select = figlens::workspace::Select::Id(call.string("workspaceId").unwrap().to_owned());
+    let request = changes::Request {
+        source: call.string("sourceId"),
+        scope: call.string("scope"),
+        consumer: call.string("consumer"),
+        cursor: call.string("cursor"),
+        revision: call.string("revision"),
+        limit: call.argument("limit").as_u64().map(|l| l as usize),
+    };
+    let value = match call.name() {
+        "watch" => changes::ack(&storage, &select, &request)?,
+        _ => changes::changes(&storage, &select, &request)?,
+    };
+    Ok(Output::Json {
+        value,
+        pretty: false,
+    })
+}
+
 /// Jobs an index call submitted that this process owns and must run.
 pub struct Runs {
     pub storage: figlens::workspace::Storage,
