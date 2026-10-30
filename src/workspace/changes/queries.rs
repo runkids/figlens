@@ -274,7 +274,7 @@ type Published = (i64, String, Vec<(String, String, Option<i64>, Option<i64>)>);
 /// The publication `sub` is evaluated against now, with its files; `None` when unpublished.
 fn current(conn: &Connection, sub: &subscriptions::Sub, scope: &str) -> Result<Option<Published>> {
     let one = [sub.source.clone()];
-    let members = sub.members.as_deref().filter(|_| sub.is_set());
+    let members = sub.members.as_deref();
     let Some((generation, membership)) = published(conn, &sub.source, members, scope)? else {
         return Ok(None);
     };
@@ -1061,15 +1061,17 @@ pub struct Turn {
 /// publication `(?4 gen, ?5 membership, ?6 ranking)`: the work a publication leaves. A set is
 /// due when one of its members is `source` and neither its latest evaluation nor its note holds
 /// that member at this publication, and only while every member is among the runner's visible
-/// sources `?10`; a disabled one never is.
-const STALE: &str = "s.kind = 'query' AND s.source_id IN (?1, '*') AND s.scope = ?2
+/// sources `?10`; a disabled or unreadable one never is.
+fn due_sql() -> String {
+    format!(
+        "s.kind = 'query' AND s.source_id IN (?1, '{SET}') AND s.scope = ?2
     AND s.disabled IS NULL AND CASE WHEN s.source_id = ?1 THEN
       NOT EXISTS (SELECT 1 FROM query_evaluations e WHERE e.sub = s.id
         AND e.seq = (SELECT MAX(seq) FROM query_evaluations WHERE sub = s.id)
         AND e.gen = ?4 AND e.membership = ?5 AND e.ranking = ?6)
       AND NOT IFNULL(CASE WHEN json_valid(s.eval_failure) THEN s.eval_failure ->> 'gen' = ?4
         AND s.eval_failure ->> 'membership' = ?5 AND s.eval_failure ->> 'ranking' = ?6 END, 0)
-    WHEN json_valid(s.sources) THEN
+    WHEN {} THEN
       EXISTS (SELECT 1 FROM json_each(s.sources) WHERE value = ?1)
       AND NOT EXISTS (SELECT 1 FROM json_each(s.sources)
         WHERE value NOT IN (SELECT value FROM json_each(?10)))
@@ -1083,7 +1085,10 @@ const STALE: &str = "s.kind = 'query' AND s.source_id IN (?1, '*') AND s.scope =
           s.eval_failure ->> 'ranking' = ?6 AND EXISTS (SELECT 1
           FROM json_each(s.eval_failure ->> 'membership') m WHERE m.value ->> 0 = ?1
           AND m.value ->> 1 = ?4 AND m.value ->> 2 = ?5) END END, 0)
-    ELSE 0 END";
+    ELSE 0 END",
+        subscriptions::readable("s.sources")
+    )
+}
 
 /// The runner's hook on `source`'s published `scope`, one bounded turn at a time: at most one
 /// saved search, computed outside any write, and one write recording its outcome for at most
@@ -1123,12 +1128,13 @@ pub fn evaluate_published(
     c.at = Some(at);
     // A set is due here only while the runner sees every member.
     let visible = json!(jobs::chosen(storage, &ws, None)?).to_string();
+    let due_sql = due_sql();
     // Due subscriptions of search `target` after `after`, at most `limit`, each id checked
     // against its cap before it is copied.
     let due = |conn: &Connection, target: &str, after: &str, limit: usize| -> Result<Vec<String>> {
         conn.prepare(&format!(
             "SELECT CASE WHEN length(CAST(s.id AS BLOB)) <= ?7 THEN s.id END
-             FROM subscriptions s WHERE {STALE} AND s.target = ?3 AND s.id > ?8
+             FROM subscriptions s WHERE {due_sql} AND s.target = ?3 AND s.id > ?8
              ORDER BY s.id LIMIT ?9"
         ))
         .map_err(sql)?
@@ -1161,7 +1167,7 @@ pub fn evaluate_published(
                 .query_row(
                     &format!(
                         "SELECT CASE WHEN length(CAST(s.target AS BLOB)) <= ?7 THEN s.target END
-                         FROM subscriptions s WHERE {STALE} AND s.target > ?3
+                         FROM subscriptions s WHERE {due_sql} AND s.target > ?3
                          ORDER BY s.target LIMIT 1"
                     ),
                     params![
@@ -1199,8 +1205,8 @@ pub fn evaluate_published(
                 &format!(
                     "SELECT CASE WHEN length(CAST(s.anchor AS BLOB)) <= ?7 THEN s.anchor END,
                      CASE WHEN length(CAST(s.sources AS BLOB)) <= ?7 THEN s.sources END,
-                     s.source_id = '*'
-                     FROM subscriptions s WHERE {STALE} AND s.target = ?3 ORDER BY s.id LIMIT 1"
+                     s.source_id = '{SET}'
+                     FROM subscriptions s WHERE {due_sql} AND s.target = ?3 ORDER BY s.id LIMIT 1"
                 ),
                 params![
                     source,

@@ -67,7 +67,7 @@ impl Sub {
 }
 
 /// The `source_id` of a saved question over a fixed source set; never a real sourceId.
-pub(super) const SET: &str = "*";
+pub(crate) const SET: &str = "*";
 
 /// The most a stored set takes; past it, or as anything but an array of at most
 /// `query::QUERY_SOURCES` sourceIds, it is unreadable.
@@ -83,7 +83,7 @@ pub(super) fn members(text: Option<String>) -> Option<Vec<String>> {
 }
 
 /// SQL: whether column `col` holds a set [`members`] reads.
-fn readable(col: &str) -> String {
+pub(super) fn readable(col: &str) -> String {
     format!(
         "CASE WHEN length(CAST({col} AS BLOB)) <= {SET_BYTES} AND json_valid({col})
          THEN json_type({col}) = 'array' AND json_array_length({col}) <= {}
@@ -124,7 +124,7 @@ pub(super) fn seen(n: usize, version: i64) -> String {
         return format!("({one})");
     }
     format!(
-        "({one} OR (subscriptions.source_id = '*' AND NOT EXISTS (SELECT 1 FROM sources x
+        "({one} OR (subscriptions.source_id = '{SET}' AND NOT EXISTS (SELECT 1 FROM sources x
            WHERE x.source_id NOT IN (SELECT value FROM json_each(?{n}))
            AND CASE WHEN {} THEN x.source_id IN
              (SELECT value FROM json_each(subscriptions.sources)) ELSE 1 END)))",
