@@ -156,22 +156,22 @@ pub(super) fn visual_step(ws_id: &str, source_id: &Json, scope: &str, why: &str)
         "sourceId": source_id, "scope": scope}, "why": why})
 }
 
-/// The stored raster of `node` in source `row`'s published generation `gen_id`, cropped. The
-/// reference must name the snapshot that generation indexed; a node without a stored unit
+/// The stored raster of the referenced node in generation `gen_id` of its source, uncropped.
+/// The reference must name the snapshot that generation indexed; a node without a stored unit
 /// raster names the step that builds it.
 pub(super) fn referenced(
     tx: &rusqlite::Transaction,
     ws_id: &str,
     gen_id: i64,
     snapshot: Option<&str>,
-    query: &ImageQuery,
+    input: &Input,
     scope: &str,
 ) -> Result<QueryImage> {
     let Input::Ref {
         source_id,
         snapshot_id,
         node_id,
-    } = &query.input
+    } = input
     else {
         unreachable!("only references are resolved here");
     };
@@ -194,21 +194,16 @@ pub(super) fn referenced(
         Some(rid) => super::visual::image(tx, gen_id, rid)?,
         None => None,
     };
-    let Some(image) = image else {
-        return Err(FigError::new(
+    image.ok_or_else(|| {
+        FigError::new(
             ErrorKind::InvalidArguments,
             format!("node {node_id} of source {source_id} has no stored visual raster: it is not a visual unit of this scope, or the visual layer is not built"),
         )
         .with_recovery(json!([{"action": "index_visual", "requires": "none",
             "tool": "index", "arguments": {"action": "visual", "workspaceId": ws_id,
             "sourceId": source_id, "scope": scope}}]))
-        .into());
-    };
-    match query.crop {
-        None => Ok(image),
-        // A crop is in the stored 256-pixel raster's coordinates.
-        Some(crop) => QueryImage::from_png(&image.png()?, Some(crop)),
-    }
+        .into()
+    })
 }
 
 /// The state a generation's visual layer under `profile` was published in: the hash layer is
