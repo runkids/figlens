@@ -803,9 +803,10 @@ fn mcp(args: &[String]) -> Result<(), Box<dyn Error>> {
     // A host may signal right after closing stdin (OMP does), before the reader sees the end:
     // this server's leases end then too, instead of waiting to expire. The thread blocks until
     // a signal, so a server that never watches wakes for nothing.
-    signals::catch();
-    std::thread::spawn(|| {
-        if signals::wait() {
+    let waiter =
+        signals::waiter().map_err(|e| format!("figlens mcp: cannot catch signals: {e}"))?;
+    std::thread::spawn(move || {
+        if waiter.wait() {
             figlens::workspace::watch::release_at_signal();
             std::process::exit(143);
         }
@@ -979,41 +980,66 @@ mod signals {
     #[cfg(unix)]
     unsafe extern "C" {
         fn signal(signum: i32, handler: usize) -> usize;
-        fn pipe(fds: *mut i32) -> i32;
-        fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
         fn write(fd: i32, buf: *const u8, count: usize) -> isize;
     }
 
-    /// The write end of `wait`'s pipe, once it exists.
+    /// The nonblocking write end of `Waiter`'s socket, once it exists.
     #[cfg(unix)]
     static WAKE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
     #[cfg(unix)]
     extern "C" fn interrupted(_: i32) {
-        INTERRUPTED.store(true, Ordering::SeqCst);
+        // Only the first signal writes, so repeats never fill the socket.
+        if INTERRUPTED.swap(true, Ordering::SeqCst) {
+            return;
+        }
         let fd = WAKE.load(Ordering::SeqCst);
         if fd >= 0 {
-            // SAFETY: write(2) is async-signal-safe; the byte only wakes `wait`.
+            // SAFETY: write(2) is async-signal-safe; nonblocking, so a full buffer drops the byte
+            // instead of blocking the handler, and one byte already wakes the waiter.
             unsafe { write(fd, [1u8].as_ptr(), 1) };
         }
     }
 
-    /// Blocks until `catch`'s handler runs, waking for nothing else; false if it cannot wait.
+    /// Wakes once `catch`'s handler runs, and for nothing else.
     #[cfg(unix)]
-    pub fn wait() -> bool {
-        let mut fds = [-1; 2];
-        // SAFETY: pipe(2) fills two descriptors this process then owns.
-        if unsafe { pipe(fds.as_mut_ptr()) } != 0 {
-            return false;
+    pub struct Waiter(std::os::unix::net::UnixStream);
+
+    /// Sets up the wakeup, then catches the signals: a failure leaves the default handlers.
+    #[cfg(unix)]
+    pub fn waiter() -> std::io::Result<Waiter> {
+        use std::os::fd::IntoRawFd;
+        // std opens both ends close-on-exec, so no child inherits them.
+        let (read, write) = std::os::unix::net::UnixStream::pair()?;
+        write.set_nonblocking(true)?;
+        WAKE.store(write.into_raw_fd(), Ordering::SeqCst);
+        catch();
+        Ok(Waiter(read))
+    }
+
+    #[cfg(unix)]
+    impl Waiter {
+        /// Blocks until a signal is caught; false if the wakeup failed, leaving the defaults
+        /// again so a signal still ends the process.
+        pub fn wait(mut self) -> bool {
+            use std::io::Read;
+            let mut byte = [0u8];
+            while !INTERRUPTED.load(Ordering::SeqCst) {
+                match self.0.read(&mut byte) {
+                    Ok(1) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    _ => {
+                        // SAFETY: SIG_DFL (0) for SIGINT and SIGTERM.
+                        unsafe {
+                            signal(2, 0);
+                            signal(15, 0);
+                        }
+                        return INTERRUPTED.load(Ordering::SeqCst);
+                    }
+                }
+            }
+            true
         }
-        WAKE.store(fds[1], Ordering::SeqCst);
-        // A signal before the store set only the flag; one after it also writes the byte.
-        let mut byte = 0u8;
-        while !INTERRUPTED.load(Ordering::SeqCst) {
-            // SAFETY: reads at most one byte into `byte`; a signal interrupting it is rechecked.
-            unsafe { read(fds[0], &mut byte, 1) };
-        }
-        true
     }
 
     #[cfg(unix)]
@@ -1047,19 +1073,31 @@ mod signals {
         1
     }
 
-    /// Blocks until `catch`'s handler runs, waking for nothing else.
+    /// Wakes once `catch`'s handler runs, and for nothing else.
     #[cfg(windows)]
-    pub fn wait() -> bool {
-        let Ok(mut held) = WAKE.0.lock() else {
-            return false;
-        };
-        while !INTERRUPTED.load(Ordering::SeqCst) {
-            match WAKE.1.wait(held) {
-                Ok(next) => held = next,
-                Err(_) => return false,
+    pub struct Waiter;
+
+    #[cfg(windows)]
+    pub fn waiter() -> std::io::Result<Waiter> {
+        catch();
+        Ok(Waiter)
+    }
+
+    #[cfg(windows)]
+    impl Waiter {
+        /// Blocks until a signal is caught; false only if the lock was poisoned.
+        pub fn wait(self) -> bool {
+            let Ok(mut held) = WAKE.0.lock() else {
+                return false;
+            };
+            while !INTERRUPTED.load(Ordering::SeqCst) {
+                match WAKE.1.wait(held) {
+                    Ok(next) => held = next,
+                    Err(_) => return false,
+                }
             }
+            true
         }
-        true
     }
 
     #[cfg(windows)]
