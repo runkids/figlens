@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
 /// How records become model inputs; a new policy is a new layer, never mixed with an old one.
-pub const POLICY: &str = "chunks-400-name-text-1";
+pub const POLICY: &str = "chunks-400-name-text-properties-scope-1";
 /// Texts one statement reads or writes.
 const BATCH: usize = 500;
 
@@ -320,6 +320,7 @@ fn embed_work(
     let mut index = store::load_with(&conn, gen_id, &[], &mut spent, &never)?;
     let all: Vec<u32> = (0..records as u32).collect();
     store::add_with(&conn, gen_id, &mut index, &all, &mut spent, &never)?;
+    store::add_properties(&conn, gen_id, &mut index, &mut spent, &never)?;
     stage(&conn, "extract")?;
     let bounds = Bounds {
         work: LAYER_WORK,
@@ -332,9 +333,11 @@ fn embed_work(
     drop(index);
     let hashes: Vec<[u8; 32]> = extracted.texts.iter().map(|t| text_hash(t)).collect();
     let stored = vectors(&conn, &profile_id, &hashes).map_err(sql)?;
+    // A layer missing property inputs is never ready; a rebuild of the scope adds them.
     let stop = extracted
         .stop
-        .or((extracted.over > 0).then_some("semantic_capacity"));
+        .or((extracted.over > 0).then_some("semantic_capacity"))
+        .or((extracted.unindexed > 0).then_some(crate::search::semantic::NOT_INDEXED));
     let mut counts = json!({"chunks": extracted.units.len(), "texts": hashes.len(),
         "embedded": stored.values().filter(|v| !v.is_empty()).count(),
         "refused": stored.values().filter(|v| v.is_empty()).count(), "stop": stop});

@@ -1048,8 +1048,9 @@ fn metadata_that_escapes_past_the_read_limit_is_never_published() {
     // `V8` also extends `subscriptions`, which only needs to exist here.
     conn.execute_batch(&format!(
         "CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
-         added_at_ms INTEGER NOT NULL) STRICT; {}",
-        crate::workspace::V2
+         added_at_ms INTEGER NOT NULL) STRICT; {} {}",
+        crate::workspace::V2,
+        crate::workspace::V11
     ))
     .unwrap();
     conn.execute(
@@ -1126,10 +1127,11 @@ pub(super) fn stored(index: &Index) -> rusqlite::Connection {
     conn.execute_batch(&format!(
         "CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
          added_at_ms INTEGER NOT NULL) STRICT; CREATE TABLE subscriptions (id TEXT) STRICT;
-         {} {} {}",
+         {} {} {} {}",
         crate::workspace::V2,
         crate::workspace::V3,
-        crate::workspace::V8
+        crate::workspace::V8,
+        crate::workspace::V11
     ))
     .unwrap();
     conn.execute(

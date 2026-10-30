@@ -1,5 +1,6 @@
 //! Semantic and hybrid search over one stored scope (#94). The model layer embeds each
-//! record's name and effective text, chunked without truncation, once per source snapshot,
+//! record's name, effective text, an instance's effective component properties and its observed
+//! scope (page and container names), chunked without truncation, once per source snapshot,
 //! scope and profile; identical chunk texts share one vector. Retrieval is an exact scan, and
 //! hybrid fuses the lexical and semantic rankings with `semantic::FUSION`. Semantic matches
 //! name their field and chunk, never a text span.
@@ -14,8 +15,14 @@ pub const MAX_TEXTS: usize = 50_000;
 /// Embedding time one request may spend; an unfinished layer resumes on the next request.
 const BUILD: Duration = Duration::from_secs(30);
 const SEMANTIC_RANKING: &str = "semantic-exact-1";
-/// What the layer embeds; property values and scope summaries are not model inputs yet.
-const INPUTS: [&str; 2] = ["name", "text"];
+/// What the layer embeds, by field.
+pub(crate) const INPUTS: [&str; 4] = ["name", "text", "properties", "scope"];
+/// Model-only fields beside the text index's `NAME` and `TEXT`.
+const PROPERTIES: u8 = 2;
+const SCOPE: u8 = 3;
+/// The coverage reason of a layer over instances whose properties were not indexed; only a
+/// rebuild of the scope adds them, never another embed.
+pub(crate) const NOT_INDEXED: &str = "properties_not_indexed";
 /// Bytes one chunk mapping keeps beside its text.
 const UNIT: usize = 24;
 /// Extraction budget of one layer: work (one per chunk), bytes and time.
@@ -23,7 +30,141 @@ pub(crate) const LAYER_WORK: usize = 1_000_000;
 pub(crate) const LAYER_BYTES: usize = 512 * 1024 * 1024;
 
 fn field_name(field: u8) -> &'static str {
-    if field == NAME { "name" } else { "text" }
+    INPUTS[field as usize]
+}
+
+/// Component property definitions a build converted, by main, with their estimated size: each
+/// main is read once.
+pub(super) type Defs = HashMap<String, (usize, Option<crate::rest::PropDefs>)>;
+
+/// The effective component properties of instance `id` (`e` when it is an expanded sublayer),
+/// `(name, value)`, resolved by `rest::PropDefs` exactly as REST `componentProperties`; an
+/// instance swap's value is the swapped component's name. A value is `None` when it cannot be
+/// resolved exactly: no value, a swap target outside the file, or an expanded sublayer whose
+/// REST resolution differs from the one expansion applied (another main, a swapped main whose
+/// own assignments are not kept, or merged assignments). Every conversion is charged to
+/// `bounds` before it is made, and a main's definitions are converted once into `defs`; `None`
+/// when a charge does not fit.
+pub(super) fn properties(
+    tree: &Tree,
+    id: &str,
+    e: Option<&crate::expand::Expanded>,
+    defs: &mut Defs,
+    bounds: &mut Bounds,
+) -> Option<Vec<(String, Option<String>)>> {
+    use crate::expand::{json_bytes, kiwi_bytes};
+    use crate::rest::{PropDefs, guid};
+    let node = tree.nodes[e.map_or(id, |e| e.source.as_str())];
+    // A field of the node REST reads: an expanded sublayer's own props win over its source's.
+    let own = e.and_then(|e| e.props.get("componentPropAssignments"));
+    let followed = e.and_then(|e| e.main.as_ref());
+    // The main's id fields and the assignments, converted below: estimated and paid first.
+    let mut left = bounds.work;
+    let mut bytes = 64;
+    bytes += own.map_or(0, |v| json_bytes(v, &mut left));
+    bytes += node
+        .get("componentPropAssignments")
+        .map_or(0, |v| kiwi_bytes(v, &mut left));
+    // A merged list copies both again.
+    if !bounds.charge(1 + bounds.work - left, 2 * bytes) {
+        return None;
+    }
+    let pick = |f: &str, sub: &str| match e.and_then(|e| e.props.get(f)) {
+        Some(v) if sub.is_empty() => v.clone(),
+        Some(v) => v[sub].clone(),
+        None => node
+            .get(f)
+            .and_then(|v| if sub.is_empty() { Some(v) } else { v.get(sub) })
+            .map_or(Json::Null, crate::to_json),
+    };
+    let main =
+        guid(&pick("overriddenSymbolID", "")).or_else(|| guid(&pick("symbolData", "symbolID")));
+    // What expansion applied where it may differ from REST: `Mismatch` when it followed another
+    // main, `Swapped` when the swapped main's own assignments are not kept, `Merged` with the
+    // values of the source's own assignments followed by the override's.
+    enum Doubt {
+        None,
+        Mismatch,
+        Swapped,
+        Merged(Json),
+    }
+    let doubt = match (e, followed) {
+        (None, _) => Doubt::None,
+        (Some(_), None) if main.is_none() => Doubt::None,
+        (Some(_), Some((f, how))) if main.as_ref() == Some(f) => match (*how, own) {
+            ("swap", _) => Doubt::Swapped,
+            (_, Some(over)) => {
+                let mut merged = match node.get("componentPropAssignments").map(crate::to_json) {
+                    Some(Json::Array(a)) => a,
+                    _ => Vec::new(),
+                };
+                merged.extend(over.as_array().into_iter().flatten().cloned());
+                Doubt::Merged(Json::Array(merged))
+            }
+            (_, None) => Doubt::None,
+        },
+        (Some(_), _) => Doubt::Mismatch,
+    };
+    let Some(main) = (match doubt {
+        Doubt::Mismatch => followed.map(|f| f.0.clone()).or(main),
+        _ => main,
+    }) else {
+        return Some(Vec::new());
+    };
+    if !defs.contains_key(&main) {
+        let mut left = bounds.work;
+        let cost = PropDefs::bytes(tree, &main, &mut left);
+        if !bounds.charge(1 + bounds.work - left, 64 + main.len() + cost) {
+            return None;
+        }
+        defs.insert(main.clone(), (cost, PropDefs::read(tree, &main)));
+    }
+    let (cost, read) = &defs[&main];
+    let Some(read) = read else {
+        return Some(Vec::new());
+    };
+    // Each resolution copies at most the definitions' names and values beside the assignments'.
+    let copies = if matches!(doubt, Doubt::Merged(_)) {
+        2
+    } else {
+        1
+    };
+    if !bounds.charge(0, copies * cost) {
+        return None;
+    }
+    let applied = match &doubt {
+        Doubt::Merged(list) => Some(read.resolve(list)),
+        _ => None,
+    };
+    let assignments = pick("componentPropAssignments", "");
+    let found = read.resolve(&assignments);
+    let mut out = Vec::with_capacity(found.len());
+    for (key, prop) in found {
+        let variant = prop["type"] == "VARIANT";
+        let name = match variant {
+            true => key.as_str(),
+            false => key.rsplit_once('#').map_or(key.as_str(), |(n, _)| n),
+        };
+        let unknown = match &doubt {
+            Doubt::Mismatch => true,
+            Doubt::Swapped => !variant,
+            _ => applied
+                .as_ref()
+                .is_some_and(|a| a.get(&key).map(|a| &a["value"]) != Some(&prop["value"])),
+        };
+        let value = match (&prop["value"], prop["type"].as_str()) {
+            _ if unknown => None,
+            (Json::String(id), Some("INSTANCE_SWAP")) => {
+                tree.nodes.get(id).map(|n| kiwi_name(n).to_owned())
+            }
+            (Json::String(v), _) => Some(v.clone()),
+            (Json::Bool(b), _) => Some(b.to_string()),
+            (Json::Number(n), _) => Some(n.to_string()),
+            _ => None,
+        };
+        out.push((name.to_owned(), value));
+    }
+    Some(out)
 }
 
 /// One index's model layer under one profile: its chunks and unique texts, then their vectors.
@@ -39,11 +180,18 @@ pub(crate) struct Layer {
     pub(crate) over: usize,
     /// The bound extraction stopped at, leaving later records out.
     pub(crate) stop: Option<&'static str>,
+    /// Component property values that could not be resolved exactly, so are not embedded.
+    pub(crate) unknown: usize,
+    /// Instances whose properties were not indexed (a generation stored before schema 11): the
+    /// layer lacks their property input until the scope is rebuilt.
+    pub(crate) unindexed: usize,
 }
 
 impl Layer {
     /// Extracts the chunks of every record, charging each copy and mapping to `bounds` before
     /// it is made and checking `cancel` per chunk; a spent bound leaves the layer partial.
+    /// A record's scope is its page and the names of its containers below it, top-down, read
+    /// from its parent's in one pass (records number parents before children).
     pub(crate) fn new(
         index: &Index,
         key: Json,
@@ -51,7 +199,7 @@ impl Layer {
         bounds: &mut Bounds,
         cancel: &AtomicBool,
     ) -> Result<Layer, Stop> {
-        let mut slot: HashMap<&str, usize> = HashMap::new();
+        let mut slot: HashMap<String, usize> = HashMap::new();
         let mut layer = Layer {
             key,
             units: Vec::new(),
@@ -59,16 +207,85 @@ impl Layer {
             vectors: Vec::new(),
             over: 0,
             stop: None,
+            unknown: 0,
+            unindexed: 0,
         };
         let rids: Vec<u32> = if index.rids.is_empty() {
             (0..index.records.len() as u32).collect()
         } else {
             index.rids.clone()
         };
+        // Stored ancestors from the scope's page down.
+        let base = index
+            .pages
+            .first()
+            .and_then(|p| index.above.iter().position(|(id, _)| *id == p.id))
+            .map_or(String::new(), |at| {
+                index.above[at..]
+                    .iter()
+                    .map(|(_, n)| n.as_str())
+                    .filter(|n| !n.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            });
+        if !bounds.charge(0, base.len()) {
+            return Ok(layer.stopped(bounds));
+        }
+        // The open ancestors, each with the scope its children get once one asks.
+        let mut open: Vec<(u32, Option<String>)> = Vec::new();
         'records: for rid in rids {
             let r = index.record(rid);
-            for (field, text) in [(NAME, Some(r.name.as_str())), (TEXT, r.text.as_deref())] {
-                for (i, chunk) in model::chunks(text.unwrap_or_default()).enumerate() {
+            while open.last().is_some_and(|(at, _)| Some(*at) != r.parent) {
+                open.pop();
+            }
+            if let Some(n) = open.len().checked_sub(1)
+                && open[n].1.is_none()
+            {
+                let p = index.record(open[n].0);
+                let above = match n {
+                    0 => base.as_str(),
+                    _ => open[n - 1].1.as_deref().unwrap_or_default(),
+                };
+                let line = match (p.kind.as_str(), above, p.name.as_str()) {
+                    ("DOCUMENT", ..) | (_, _, "") => above.to_owned(),
+                    (_, "", name) if bounds.charge(0, name.len()) => name.to_owned(),
+                    (_, above, name) if bounds.charge(0, above.len() + 3 + name.len()) => {
+                        format!("{above} / {name}")
+                    }
+                    _ => break 'records,
+                };
+                open[n].1 = Some(line);
+            }
+            let scope = match open.last() {
+                Some((_, line)) => line.as_deref().unwrap_or_default(),
+                None => base.as_str(),
+            };
+            if r.props.is_none() && r.kind == "INSTANCE" {
+                layer.unindexed += 1;
+            }
+            let all = r.props.as_deref().unwrap_or_default();
+            let known = || {
+                all.iter()
+                    .filter_map(|(name, value)| Some((name, value.as_ref()?)))
+            };
+            // Paid before the line is joined: each entry is `name: value`, then `; `.
+            let len: usize = known().map(|(n, v)| n.len() + v.len() + 4).sum();
+            if !bounds.charge(0, len) {
+                break 'records;
+            }
+            layer.unknown += all.len() - known().count();
+            let props = known()
+                .map(|(n, v)| format!("{n}: {v}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            let fields = [
+                (NAME, r.name.as_str()),
+                (TEXT, r.text.as_deref().unwrap_or_default()),
+                (PROPERTIES, props.as_str()),
+                (SCOPE, scope),
+            ];
+            for (field, text) in fields {
+                for (i, chunk) in model::chunks(text).enumerate() {
                     if cancel.load(Ordering::Relaxed) {
                         return Err(Stop::Cancelled);
                     }
@@ -84,7 +301,7 @@ impl Layer {
                         Some(at) => Some(at),
                         None if next == MAX_TEXTS => None,
                         None => {
-                            slot.insert(chunk, next);
+                            slot.insert(chunk.to_owned(), next);
                             layer.texts.push(chunk.to_owned());
                             Some(next)
                         }
@@ -95,15 +312,21 @@ impl Layer {
                     }
                 }
             }
+            open.push((rid, None));
         }
-        layer.stop = bounds.stop.map(|stop| match stop {
+        Ok(layer.stopped(bounds))
+    }
+
+    /// The layer with the bound extraction stopped at and a slot for each text's vector.
+    fn stopped(mut self, bounds: &Bounds) -> Layer {
+        self.stop = bounds.stop.map(|stop| match stop {
             crate::expand::Stop::Work => "work_limit",
             crate::expand::Stop::Bytes => "byte_limit",
             crate::expand::Stop::Depth => "depth_limit",
             crate::expand::Stop::Deadline => "deadline",
         });
-        layer.vectors = vec![None; layer.texts.len()];
-        Ok(layer)
+        self.vectors = vec![None; self.texts.len()];
+        self
     }
 
     /// Embeds missing texts until done, `BUILD` passes or `cancel`. A refused batch is retried
@@ -197,7 +420,8 @@ pub fn search(
         (Ok(None), _) => Err(down("no_profile", None)),
         (Err(e), _) => Err(down("profile_unreadable", Some(e.to_string()))),
     };
-    let (index, source) = loaded(path, &req.scope, false)?;
+    // A full build: only it keeps the component properties the layer embeds.
+    let (index, source) = loaded(path, &req.scope, true)?;
     reply_with(&index, &q, req, mode, profile, source, cancel)
 }
 
@@ -515,7 +739,14 @@ pub(crate) fn cached_bytes(index: &Index, layer: &Layer) -> usize {
             .iter()
             .map(|(a, b)| 48 + a.len() + b.len())
             .sum::<usize>();
-    records + meta + texts + UNIT * layer.units.len() + vectors
+    // Model property inputs a loaded record keeps (schema 11), beside its other strings.
+    let props: usize = index
+        .records
+        .iter()
+        .flat_map(|r| r.props.iter().flatten())
+        .map(|(n, v)| 48 + n.len() + v.as_ref().map_or(0, String::len))
+        .sum();
+    records + meta + props + texts + UNIT * layer.units.len() + vectors
 }
 
 /// `coverage.layers.semantic` of one layer.
@@ -526,8 +757,11 @@ pub(crate) fn layer_coverage(layer: &Layer, profile_id: &str, excluded: [usize; 
         .iter()
         .filter(|v| v.as_ref().is_some_and(Vec::is_empty))
         .count();
-    let complete =
-        embedded == layer.texts.len() && refused == 0 && layer.over == 0 && layer.stop.is_none();
+    let complete = embedded == layer.texts.len()
+        && refused == 0
+        && layer.over == 0
+        && layer.stop.is_none()
+        && layer.unindexed == 0;
     let mut reasons = Vec::new();
     if embedded < layer.texts.len() {
         reasons.push(json!({"code": "semantic_layer_building", "counts": {"embeddedTexts": embedded, "texts": layer.texts.len()}}));
@@ -541,12 +775,15 @@ pub(crate) fn layer_coverage(layer: &Layer, profile_id: &str, excluded: [usize; 
             "maxTexts": MAX_TEXTS, "maxChunks": model::MAX_SCAN}}),
         );
     }
+    if layer.unindexed > 0 {
+        reasons.push(json!({"code": NOT_INDEXED, "counts": {"records": layer.unindexed}}));
+    }
     if let Some(code) = layer.stop {
         reasons.push(json!({"code": code, "counts": {"chunks": layer.units.len()},
             "limits": {"work": LAYER_WORK, "bytes": LAYER_BYTES, "deadlineMs": DEADLINE.as_millis() as u64}}));
     }
     json!({"state": if complete { "ready" } else { "partial" }, "profileId": profile_id,
-        "inputs": INPUTS, "chunks": layer.units.len(), "texts": layer.texts.len(),
+        "inputs": INPUTS, "unknownProperties": layer.unknown, "chunks": layer.units.len(), "texts": layer.texts.len(),
         "embeddedTexts": embedded, "excluded": {"hidden": excluded[0], "internal": excluded[1]},
         "reasons": reasons})
 }
@@ -769,6 +1006,10 @@ pub(crate) fn decorate(out: &mut Json, mode: Mode, decor: Decor) {
         out["nextCursor"] = Json::Null;
     }
 }
+
+#[cfg(test)]
+#[path = "semantic_tests.rs"]
+mod input_tests;
 
 #[cfg(test)]
 mod tests {

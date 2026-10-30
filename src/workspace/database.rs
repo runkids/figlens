@@ -476,7 +476,13 @@ pub(crate) const V10: &str = "
     CREATE INDEX visual_units_raster ON visual_units (raster_key);
     PRAGMA user_version = 10;";
 
-/// Upgrades schemas 1 to 9 to the current one in one transaction, keeping every source, index,
+/// Schema 11: each instance record's effective component properties (#94), a JSON list of
+/// `[name, value or null]`, a model input only (NULL when not indexed).
+pub(crate) const V11: &str = "
+    ALTER TABLE records ADD COLUMN props TEXT;
+    PRAGMA user_version = 11;";
+
+/// Upgrades schemas 1 to 10 to the current one in one transaction, keeping every source, index,
 /// job and the incarnation. The caller holds the workspace lock exclusively.
 pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
     let tx = conn
@@ -511,6 +517,9 @@ pub(super) fn upgrade(conn: &mut Connection) -> Result<()> {
     }
     if version <= 9 {
         tx.execute_batch(V10).map_err(sql)?;
+    }
+    if version <= 10 {
+        tx.execute_batch(V11).map_err(sql)?;
     }
     tx.commit().map_err(sql)
 }
@@ -561,6 +570,7 @@ pub(super) fn initialize(
     tx.execute_batch(V8).map_err(sql)?;
     tx.execute_batch(V9).map_err(sql)?;
     tx.execute_batch(V10).map_err(sql)?;
+    tx.execute_batch(V11).map_err(sql)?;
     if let Some(binding) = binding {
         tx.execute(
             "INSERT INTO meta (key, value) VALUES ('binding', ?1)",

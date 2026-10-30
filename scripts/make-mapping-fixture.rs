@@ -1,5 +1,7 @@
 //! Original synthetic mapping fixture; not a Figma export or format-accuracy oracle.
-use kiwi_schema::{Def, DefKind, Field, Schema, TYPE_FLOAT, TYPE_STRING, TYPE_UINT, Value};
+use kiwi_schema::{
+    Def, DefKind, Field, Schema, TYPE_BOOL, TYPE_FLOAT, TYPE_STRING, TYPE_UINT, Value,
+};
 use std::{error::Error, io::Write};
 
 fn object(name: &'static str, fields: Vec<(&'static str, Value<'static>)>) -> Value<'static> {
@@ -137,6 +139,104 @@ fn screens(count: u32, revised: bool, library: bool) -> impl Iterator<Item = Val
         }))
 }
 
+/// `--properties`: the kiwi definitions of text and boolean component properties, from index
+/// `at`: TextValue, ComponentPropValue, ComponentPropDef, ComponentPropAssignment, its type enum.
+fn property_defs(at: i32, field: &dyn Fn(&str, i32, u32, bool) -> Field) -> Vec<Def> {
+    vec![
+        Def::new(
+            "TextValue".into(),
+            DefKind::Message,
+            vec![field("characters", TYPE_STRING, 1, false)],
+        ),
+        Def::new(
+            "ComponentPropValue".into(),
+            DefKind::Message,
+            vec![
+                field("boolValue", TYPE_BOOL, 1, false),
+                field("textValue", at, 2, false),
+            ],
+        ),
+        Def::new(
+            "ComponentPropDef".into(),
+            DefKind::Message,
+            vec![
+                field("id", 0, 1, false),
+                field("name", TYPE_STRING, 2, false),
+                field("type", at + 4, 3, false),
+                field("initialValue", at + 1, 4, false),
+            ],
+        ),
+        Def::new(
+            "ComponentPropAssignment".into(),
+            DefKind::Message,
+            vec![
+                field("defID", 0, 1, false),
+                field("value", at + 1, 2, false),
+            ],
+        ),
+        Def::new(
+            "ComponentPropType".into(),
+            DefKind::Enum,
+            ["BOOL", "TEXT"]
+                .into_iter()
+                .enumerate()
+                .map(|(i, name)| field(name, 0, i as u32, false))
+                .collect(),
+        ),
+    ]
+}
+
+/// `--properties`: `Button` defines a text `Label` (default "Button") and a boolean `Show icon`
+/// (default true); `First button` overrides both, `Second button` keeps the defaults.
+fn add_properties(nodes: &mut [Value<'static>]) {
+    let text = |s: &str| {
+        object(
+            "ComponentPropValue",
+            vec![(
+                "textValue",
+                object("TextValue", vec![("characters", Value::String(s.into()))]),
+            )],
+        )
+    };
+    let flag = |b| object("ComponentPropValue", vec![("boolValue", Value::Bool(b))]);
+    let def = |id, name: &str, kind, initial| {
+        object(
+            "ComponentPropDef",
+            vec![
+                ("id", guid(id)),
+                ("name", Value::String(name.into())),
+                ("type", Value::Enum("ComponentPropType", kind)),
+                ("initialValue", initial),
+            ],
+        )
+    };
+    let assign = |id, value| {
+        object(
+            "ComponentPropAssignment",
+            vec![("defID", guid(id)), ("value", value)],
+        )
+    };
+    for n in nodes.iter_mut() {
+        let Value::Object(_, fields) = n else {
+            continue;
+        };
+        match fields.get("guid").and_then(|g| g.get("localID")) {
+            Some(Value::UInt(10)) => {
+                let defs = vec![
+                    def(90, "Label", "TEXT", text("Button")),
+                    def(91, "Show icon", "BOOL", flag(true)),
+                ];
+                fields.insert("componentPropDefs", Value::Array(defs));
+            }
+            Some(Value::UInt(2)) => {
+                let list = vec![assign(90, text("Pay now")), assign(91, flag(false))];
+                fields.insert("componentPropAssignments", Value::Array(list));
+            }
+            _ => {}
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut flag = |name: &str| {
@@ -144,6 +244,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         found.map(|i| args.remove(i)).is_some()
     };
     let library = flag("--library");
+    let properties = flag("--properties");
     let revised = flag("--revised");
     let scale = match args.iter().position(|a| a == "--scale") {
         Some(i) if i + 1 < args.len() => {
@@ -154,8 +255,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         None => None,
     };
     let [output] = <[String; 1]>::try_from(args).map_err(
-        |_| "usage: mapping-fixture [--library] [--scale <screens> [--revised]] <new-output.fig>",
+        |_| "usage: mapping-fixture [--library] [--properties] [--scale <screens> [--revised]] <new-output.fig>",
     )?;
+    // `--properties` appends its definitions after the others, starting at this index.
+    let props = 8 + i32::from(scale.is_some());
     let field = |name: &str, type_id, value, is_array| Field {
         name: name.into(),
         type_id,
@@ -239,6 +342,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .filter(|_| library),
             )
             .chain(scale.map(|_| field("textData", 8, 10, false)))
+            .chain(
+                [
+                    field("componentPropDefs", props + 2, 11, true),
+                    field("componentPropAssignments", props + 3, 12, true),
+                ]
+                .into_iter()
+                .filter(|_| properties),
+            )
             .collect(),
         ),
         Def::new(
@@ -251,6 +362,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         let characters = vec![field("characters", TYPE_STRING, 1, false)];
         defs.push(Def::new("TextData".into(), DefKind::Message, characters));
     }
+    if properties {
+        defs.extend(property_defs(props, &field));
+    }
     let schema = Schema::new(defs);
     let mut nodes = vec![
         node(0, None, "DOCUMENT", "Mapping fixture", library),
@@ -262,6 +376,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         node(11, Some(10), "RECTANGLE", "Surface", library),
     ];
     nodes.extend(screens(scale.unwrap_or(0), revised, library));
+    if properties {
+        add_properties(&mut nodes);
+    }
     let message = object("Message", vec![("nodeChanges", Value::Array(nodes))]);
     let mut canvas = b"fig-kiwi".to_vec();
     canvas.extend(1u32.to_le_bytes());

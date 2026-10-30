@@ -51,6 +51,10 @@ struct View {
     sub: Option<subscriptions::Sub>,
     /// Schema 7 records impact; an older workspace is read as it is, never upgraded.
     impacts: bool,
+    /// Schema 9 records model layers.
+    layers: bool,
+    /// The active model profile's id, or why it could not be read.
+    profile: std::result::Result<Option<String>, String>,
 }
 
 fn view(storage: &Storage, ws: &Opened, req: &Request) -> Result<View> {
@@ -113,6 +117,10 @@ fn view(storage: &Storage, ws: &Opened, req: &Request) -> Result<View> {
         bind,
         sub,
         impacts: ws.version >= 7,
+        layers: ws.version >= 9,
+        profile: crate::semantic::profile::active(storage)
+            .map(|p| p.map(|p| p.id))
+            .map_err(|e| e.to_string()),
     })
 }
 
@@ -490,7 +498,7 @@ fn tracking(conn: &Connection, v: &View) -> Result<(Json, bool)> {
         .prepare(
             "SELECT t.source_id, t.scope, t.state, (SELECT id FROM revisions r
              WHERE r.source_id = t.source_id AND r.scope = t.scope ORDER BY seq DESC LIMIT 1),
-             s.path, n.bytes, n.mtime_ns, n.verified_ms FROM tracking t
+             s.path, n.bytes, n.mtime_ns, n.verified_ms, p.gen FROM tracking t
              JOIN sources s ON s.source_id = t.source_id
              LEFT JOIN published p ON p.source_id = t.source_id AND p.scope = t.scope
              LEFT JOIN generations g ON g.gen = p.gen
@@ -514,6 +522,7 @@ fn tracking(conn: &Connection, v: &View) -> Result<(Json, bool)> {
                     path,
                     bytes,
                     mtime,
+                    r.get::<_, Option<i64>>(8)?,
                 ))
             },
         )
@@ -524,12 +533,42 @@ fn tracking(conn: &Connection, v: &View) -> Result<(Json, bool)> {
     rows.truncate(TRACKING);
     let rows = rows
         .into_iter()
-        .map(|(mut row, path, bytes, mtime)| {
+        .map(|(mut row, path, bytes, mtime, gen_id)| {
             row["refreshRequired"] = json!(refresh_required(&path, bytes, mtime));
-            row
+            row["model"] = model_layer(conn, v, gen_id)?;
+            Ok(row)
         })
-        .collect();
+        .collect::<Result<_>>()?;
     Ok((rows, truncated))
+}
+
+/// The model layer of a tracked scope's published generation under the active profile, read
+/// from `model_layers` (#94): `ready`, `partial` (building or unfinished), `pending` (not
+/// embedded under this profile and policy) or `unavailable` (no readable profile). Coverage
+/// only: a layer or profile change never records a revision.
+fn model_layer(conn: &Connection, v: &View, gen_id: Option<i64>) -> Result<Json> {
+    let (profile, reason) = match &v.profile {
+        Ok(Some(id)) => (Some(id.as_str()), None),
+        Ok(None) => (None, Some("no_profile")),
+        Err(_) => (None, Some("profile_unreadable")),
+    };
+    let state = match (profile, gen_id) {
+        (None, _) => "unavailable",
+        (Some(id), Some(gen_id)) if v.layers => {
+            match super::model::layer(conn, gen_id, id).map_err(sql)? {
+                Some(l) if l["state"] == "ready" => "ready",
+                Some(_) => "partial",
+                None => "pending",
+            }
+        }
+        _ => "pending",
+    };
+    let mut out = json!({"state": state, "profileId": profile,
+        "policy": super::model::POLICY, "generation": gen_id});
+    if let Some(code) = reason {
+        out["reason"] = json!(code);
+    }
+    Ok(out)
 }
 
 /// Whether the file at `path` differs from the verified snapshot's size and mtime, or cannot

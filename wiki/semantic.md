@@ -4,11 +4,19 @@ Optional, experimental local semantic ranking over the same stored scope as [sea
 
 ## Modes and reply
 
-- `--mode text|semantic|hybrid` (MCP `mode`). `text` is the default and is unchanged. `semantic` ranks layers by the best name or text chunk per layer (exact scan, no ANN). `hybrid` fuses the text and semantic rankings with Reciprocal Rank Fusion, `sum(1/(60+rank))`, ranking version `rrf-60-1`, 1000 candidates per channel.
-- Semantic matches carry `{field: name|text, chunk, basis: "semantic"}` and no text spans. In hybrid, lexical matches get `basis: "lexical"`.
+- `--mode text|semantic|hybrid` (MCP `mode`). `text` is the default and is unchanged. `semantic` ranks layers by their best chunk of any input (exact scan, no ANN). `hybrid` fuses the text and semantic rankings with Reciprocal Rank Fusion, `sum(1/(60+rank))`, ranking version `rrf-60-1`, 1000 candidates per channel.
+- Semantic matches carry `{field: name|text|properties|scope, chunk, basis: "semantic"}` and no text spans. In hybrid, lexical matches get `basis: "lexical"`.
 - The reply adds `query.requestedMode`/`usedModes`, `profileId` and `ranking.version`/`channels`/`candidatesPerChannel`.
-- `coverage.layers.semantic` is `{state: ready|partial|pending|failed|unavailable, profileId, inputs: [name, text], chunks, texts, embeddedTexts, excluded, reasons}`. Reason codes: `semantic_layer_building`, `chunk_refused`, `semantic_capacity`, `work_limit`/`byte_limit`/`depth_limit`/`deadline`, `no_profile`, `profile_unreadable`, `runtime_failed`. A partial layer, or a hybrid page downgraded to text, has `nextCursor: null`.
+- `coverage.layers.semantic` is `{state: ready|partial|pending|failed|unavailable, profileId, inputs: [name, text, properties, scope], unknownProperties, chunks, texts, embeddedTexts, excluded, reasons}`. Reason codes: `semantic_layer_building`, `chunk_refused`, `semantic_capacity`, `work_limit`/`byte_limit`/`depth_limit`/`deadline`, `no_profile`, `profile_unreadable`, `runtime_failed`. A partial layer, or a hybrid page downgraded to text, has `nextCursor: null`.
 - No profile: `semantic` fails with `mode_unavailable` (recovery names the `models` tool); `hybrid` returns the text results with `usedModes: ["text"]` and the reason.
+
+## Inputs
+
+Policy `chunks-400-name-text-properties-scope-1` (`workspace::model::POLICY`): each record's name, effective text, `properties` and `scope`, each cut by `semantic::chunks` (400 characters, never truncated).
+
+- `properties`: an instance's effective component properties as `name: value` joined by `; `, resolved by `rest::PropDefs`, as REST `componentProperties` is (a main's definitions are converted once per build, each charged before its copy): text and boolean values, variants from `variantPropSpecs`, an instance swap as the swapped component's name. A value that cannot be resolved exactly is left out and counted in `unknownProperties`, never guessed: no value, a swap target outside the file, or an expanded sublayer where REST and expansion disagree (another main, a swapped main, or merged own and override assignments giving another value). Only stored and stateless full builds pay for them, charged to the build's `Bounds` first; stateless semantic search uses the full build; a text-only build reads none, so text search is unchanged.
+- `scope`: the record's page and container names top-down, `Page / Frame / Group`, from its parent's line in one pass over records in order; it is what the index observed, never a guessed purpose. Siblings share one text and so one vector.
+- Schema 11 stores them in `records.props`: a list for every record of a build (`[]` when it has none), NULL for a generation stored before it, read as not indexed. `store::versions()` is unchanged, so such a generation keeps serving text; its layer lists `properties_not_indexed` and is never ready, and workspace search names `index rebuild` of the scope instead of another embed. Reads of a schema 9 or 10 workspace never select the column. A new policy is a new layer: an older layer reads `pending` with the `index embed` step, and re-embedding reuses every stored vector of an unchanged chunk text (vectors are keyed by profile and text).
 
 ## Layer
 
@@ -16,7 +24,7 @@ Stateless search: the semantic layer is built per process for one source snapsho
 
 ## Workspace layer
 
-Code: `src/workspace/query.rs` (`search_mode`, `model_layers`), `src/workspace/model.rs`, `src/workspace/jobs.rs` (embed job), schema 9 in `src/workspace/database.rs`.
+Code: `src/workspace/query.rs` (`search_mode`, `model_layers`), `src/workspace/model.rs`, `src/workspace/jobs.rs` (embed job), schemas 9 and 11 in `src/workspace/database.rs`.
 
 - Workspace search (`--workspace`/`--file`/`--id`, MCP `workspaceId`) supports `semantic` and `hybrid`. It reads each ready source's stored model layer under the active profile and never embeds design text; only the query is embedded, by the warm local runtime. Filters apply before ranking, all sources share one vector space, and hybrid uses the same RRF. Semantic without a profile is `mode_unavailable`; hybrid answers as text with the reason.
 - A source whose layer was never built is `pending` in `coverage.layers.semantic.sources[].state` with an `index embed` next step. A layer still building or partial, or missing vectors, makes the page partial with `nextCursor: null`; ready layers page normally.
@@ -50,7 +58,7 @@ Image queries use the fixed POST routes in [preview search](preview-search.md), 
 
 ## Known gaps
 
-- Only the name and the effective text are model inputs: no component property values or scope summaries.
-- No layer-ready or profile-change event is recorded: `changes` and subscriptions see design revisions only; read model readiness from `coverage.layers.semantic` and `jobs status`.
+- Text search does not index property values (`component_property_values_not_indexed` stays); only the model layer embeds them.
+- No layer-ready or profile-change event is recorded. `changes` lists each tracked scope's `model` (`state`, `profileId`, `policy`, `generation`) read from `model_layers` at poll time, so a profile change is coverage, never a revision. Subscriptions see design revisions only; no query subscription evaluates semantic mode.
 - On the frozen #94 suite the pinned profile missed the pre-set synonym/purpose wrong-top-1 gate (0.25 against 0.20). The feature stays optional and experimental.
 - Pi, OpenCode and OMP use the MCP contract; their guidance lives in the served skill ([mcp](mcp.md)).

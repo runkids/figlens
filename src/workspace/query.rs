@@ -1248,6 +1248,9 @@ fn model_layers(
                 let mut index = search::store::load_with(tx, *gen_id, &[], spent, cancel)?;
                 let all: Vec<u32> = (0..records.max(0) as u32).collect();
                 search::store::add_with(tx, *gen_id, &mut index, &all, spent, cancel)?;
+                if version >= 11 {
+                    search::store::add_properties(tx, *gen_id, &mut index, spent, cancel)?;
+                }
                 search::semantic::keep_text_only(&mut index);
                 let layer = search::semantic::Layer::new(
                     &index,
@@ -1300,7 +1303,15 @@ fn model_layers(
             }
             Some(_) => "partial",
         };
-        if state != "ready" {
+        // An index stored before schema 11 lacks property inputs: only a rebuild adds them, so
+        // embedding it again would never finish the layer.
+        if layer.unindexed > 0 {
+            steps.push(
+                json!({"tool": "index", "arguments": {"action": "rebuild", "workspaceId": ws_id,
+                "sourceId": source["sourceId"], "scope": req.scope},
+                "why": "this source's index predates component property inputs; rebuild it, then embed"}),
+            );
+        } else if state != "ready" {
             let why = match state {
                 "pending" => "this source's model layer is not built for the configured profile",
                 "failed" => "this source's last embed job failed or was cancelled; embed again",
@@ -1333,6 +1344,6 @@ fn model_layers(
     }
     Ok(
         json!({"state": if ready { "ready" } else if sources.iter().any(|s| s["state"] != "pending") { "partial" } else { "pending" },
-        "profileId": p.id, "policy": super::model::POLICY, "inputs": ["name", "text"], "sources": sources}),
+        "profileId": p.id, "policy": super::model::POLICY, "inputs": search::semantic::INPUTS, "sources": sources}),
     )
 }
