@@ -472,9 +472,11 @@ pub(crate) struct Record {
     /// at a time, and `store::add` never loads them.
     library: Vec<usages::Edge>,
     /// An instance's effective component properties, `(name, value)`, a model input only
-    /// (`semantic::properties`); `None` is a value that cannot be resolved exactly. Kept by
-    /// stored and stateless full builds; `store::add_properties` loads them.
-    props: Vec<(String, Option<String>)>,
+    /// (`semantic::properties`); a `None` value cannot be resolved exactly. Stored and stateless
+    /// full builds keep them (empty for a layer that is no instance); `None` when not indexed: a
+    /// text-only build, or a generation stored before schema 11. `store::add_properties` loads
+    /// them.
+    props: Option<Vec<(String, Option<String>)>>,
 }
 
 struct Posting {
@@ -711,6 +713,7 @@ fn build_with(
     let keep_library = relations && library != Library::Skip && !library_unread;
     // Model inputs: only builds that may embed (stored and stateless full ones) pay for them.
     let model_inputs = relations && library != Library::Skip;
+    let mut defs = semantic::Defs::new();
     // A stored generation fingerprints its definitions and cached copies with their subtrees.
     let fingerprint = relations && library == Library::Stored;
     let mut inputs: Vec<Option<fingerprint::Input>> = Vec::new();
@@ -829,12 +832,15 @@ fn build_with(
         if !bounds.charge(1, retained) {
             break;
         }
-        let props = match model_inputs && kind == "INSTANCE" {
-            true => match semantic::properties(tree, &id, ex.nodes.get(&id), &mut bounds) {
-                Some(props) => props,
-                None => break,
-            },
-            false => Vec::new(),
+        let props = match (model_inputs, kind == "INSTANCE") {
+            (false, _) => None,
+            (true, false) => Some(Vec::new()),
+            (true, true) => {
+                match semantic::properties(tree, &id, ex.nodes.get(&id), &mut defs, &mut bounds) {
+                    Some(props) => Some(props),
+                    None => break,
+                }
+            }
         };
         let mut norm = [String::new(), String::new()];
         let mut record_lens = [0u32; 2];

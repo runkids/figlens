@@ -143,7 +143,8 @@ fn props(index: &Index, id: &str) -> Vec<(String, Option<String>)> {
         .find(|r| r.id == id)
         .unwrap()
         .props
-        .clone();
+        .clone()
+        .unwrap();
     p.sort();
     p
 }
@@ -155,7 +156,7 @@ fn known(pairs: &[(&str, Option<&str>)]) -> Vec<(String, Option<String>)> {
         .collect()
 }
 
-fn layer(index: &Index) -> Layer {
+fn layer_of(index: &Index) -> Layer {
     let no = AtomicBool::new(false);
     let mut b = bounds(LAYER_WORK);
     b.bytes = LAYER_BYTES;
@@ -201,7 +202,7 @@ fn overridden_instance_properties_are_model_inputs_with_exact_provenance() {
             ("State", Some("Default")),
         ])
     );
-    let layer = layer(&index);
+    let layer = layer_of(&index);
     // One chunk, in REST key order, without the unknown value.
     assert_eq!(
         units(&index, &layer, "0:3")
@@ -231,10 +232,43 @@ fn properties_survive_a_stored_generation_and_text_builds_never_pay_for_them() {
     store::add_properties(&conn, 1, &mut loaded, &mut spent, &never).unwrap();
     let of = |i: &Index| -> Vec<_> { i.records.iter().map(|r| r.props.clone()).collect() };
     assert_eq!(of(&loaded), of(&index));
-    assert!(of(&index).iter().any(|p| !p.is_empty()));
+    // Every record of a full build is indexed, a layer that is no instance as known empty.
+    assert!(of(&index).iter().all(Option::is_some));
+    assert!(of(&index).iter().flatten().any(|p| !p.is_empty()));
     // A text-only build reads no properties.
     let text = build_as(&tree, "0:0", bounds(WORK), false);
-    assert!(text.records.iter().all(|r| r.props.is_empty()));
+    assert!(text.records.iter().all(|r| r.props.is_none()));
+}
+
+#[test]
+fn a_layer_over_unindexed_properties_is_never_ready_and_says_so() {
+    let message = message();
+    let tree = Tree::new(&message);
+    let mut index = stored_build(&tree);
+    // As a generation stored before schema 11 loads: no property column.
+    for r in &mut index.records {
+        r.props = None;
+    }
+    let mut layer = layer_of(&index);
+    layer.vectors = layer.texts.iter().map(|t| Some(embed(t))).collect();
+    let cov = layer_coverage(&layer, "p", [0, 0]);
+    let instances = index
+        .records
+        .iter()
+        .filter(|r| r.kind == "INSTANCE")
+        .count();
+    assert_eq!(cov["state"], "partial");
+    assert_eq!(
+        cov["reasons"],
+        json!([{"code": NOT_INDEXED, "counts": {"records": instances}}])
+    );
+    // Known-empty properties (a fresh build of instances with none) are complete.
+    for r in &mut index.records {
+        r.props = Some(Vec::new());
+    }
+    let mut known = layer_of(&index);
+    known.vectors = known.texts.iter().map(|t| Some(embed(t))).collect();
+    assert_eq!(layer_coverage(&known, "p", [0, 0])["state"], "ready");
 }
 
 /// A deterministic word-bag embedding: each lowercase word adds one to its hashed dimension.
@@ -278,7 +312,7 @@ fn a_query_matching_only_a_property_value_or_the_scope_finds_that_layer() {
     let message = message();
     let tree = Tree::new(&message);
     let index = stored_build(&tree);
-    let mut layer = layer(&index);
+    let mut layer = layer_of(&index);
     layer.vectors = layer.texts.iter().map(|t| Some(embed(t))).collect();
     // Neither the instance's name nor any text holds these words.
     assert_eq!(
@@ -306,9 +340,9 @@ fn long_property_and_scope_inputs_are_chunked_to_their_end() {
     let long = format!("{} tail", "word ".repeat(model::CHUNK_CHARS));
     let at = |i: &Index, id: &str| i.records.iter().position(|r| r.id == id).unwrap();
     let (pay, footer) = (at(&index, "0:3"), at(&index, "0:7"));
-    index.records[pay].props = vec![("Label".into(), Some(long.clone()))];
+    index.records[pay].props = Some(vec![("Label".into(), Some(long.clone()))]);
     index.records[footer].name = long.clone();
-    let layer = layer(&index);
+    let layer = layer_of(&index);
     let joined = |field: &str| {
         let parts: Vec<_> = units(&index, &layer, "0:3")
             .into_iter()

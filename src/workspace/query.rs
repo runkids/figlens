@@ -705,7 +705,15 @@ fn model_layers(
             Some("ready") if cov["state"] == "ready" => "ready",
             Some(_) => "partial",
         };
-        if state != "ready" {
+        // An index stored before schema 11 lacks property inputs: only a rebuild adds them, so
+        // embedding it again would never finish the layer.
+        if layer.unindexed > 0 {
+            steps.push(
+                json!({"tool": "index", "arguments": {"action": "rebuild", "workspaceId": ws_id,
+                "sourceId": source["sourceId"], "scope": req.scope},
+                "why": "this source's index predates component property inputs; rebuild it, then embed"}),
+            );
+        } else if state != "ready" {
             let why = match state {
                 "pending" => "this source's model layer is not built for the configured profile",
                 _ => "this source's model layer is unfinished; embed again to complete it",

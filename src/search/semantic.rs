@@ -20,6 +20,9 @@ pub(crate) const INPUTS: [&str; 4] = ["name", "text", "properties", "scope"];
 /// Model-only fields beside the text index's `NAME` and `TEXT`.
 const PROPERTIES: u8 = 2;
 const SCOPE: u8 = 3;
+/// The coverage reason of a layer over instances whose properties were not indexed; only a
+/// rebuild of the scope adds them, never another embed.
+pub(crate) const NOT_INDEXED: &str = "properties_not_indexed";
 /// Bytes one chunk mapping keeps beside its text.
 const UNIT: usize = 24;
 /// Extraction budget of one layer: work (one per chunk), bytes and time.
@@ -30,24 +33,42 @@ fn field_name(field: u8) -> &'static str {
     INPUTS[field as usize]
 }
 
+/// Component property definitions a build converted, by main, with their estimated size: each
+/// main is read once.
+pub(super) type Defs = HashMap<String, (usize, Option<crate::rest::PropDefs>)>;
+
 /// The effective component properties of instance `id` (`e` when it is an expanded sublayer),
-/// `(name, value)`, resolved by `rest::component_properties` exactly as REST
-/// `componentProperties`; an instance swap's value is the swapped component's name. A value is
-/// `None` when it cannot be resolved exactly: no value, a swap target outside the file, or an
-/// expanded sublayer whose REST resolution differs from the one expansion applied (another
-/// main, a swapped main whose own assignments are not kept, or merged assignments). Charges its
-/// conversions and copies to `bounds` first; `None` when they do not fit.
+/// `(name, value)`, resolved by `rest::PropDefs` exactly as REST `componentProperties`; an
+/// instance swap's value is the swapped component's name. A value is `None` when it cannot be
+/// resolved exactly: no value, a swap target outside the file, or an expanded sublayer whose
+/// REST resolution differs from the one expansion applied (another main, a swapped main whose
+/// own assignments are not kept, or merged assignments). Every conversion is charged to
+/// `bounds` before it is made, and a main's definitions are converted once into `defs`; `None`
+/// when a charge does not fit.
 pub(super) fn properties(
     tree: &Tree,
     id: &str,
     e: Option<&crate::expand::Expanded>,
+    defs: &mut Defs,
     bounds: &mut Bounds,
 ) -> Option<Vec<(String, Option<String>)>> {
     use crate::expand::{json_bytes, kiwi_bytes};
-    use crate::rest::{component_properties, guid};
+    use crate::rest::{PropDefs, guid};
     let node = tree.nodes[e.map_or(id, |e| e.source.as_str())];
     // A field of the node REST reads: an expanded sublayer's own props win over its source's.
     let own = e.and_then(|e| e.props.get("componentPropAssignments"));
+    let followed = e.and_then(|e| e.main.as_ref());
+    // The main's id fields and the assignments, converted below: estimated and paid first.
+    let mut left = bounds.work;
+    let mut bytes = 64;
+    bytes += own.map_or(0, |v| json_bytes(v, &mut left));
+    bytes += node
+        .get("componentPropAssignments")
+        .map_or(0, |v| kiwi_bytes(v, &mut left));
+    // A merged list copies both again.
+    if !bounds.charge(1 + bounds.work - left, 2 * bytes) {
+        return None;
+    }
     let pick = |f: &str, sub: &str| match e.and_then(|e| e.props.get(f)) {
         Some(v) if sub.is_empty() => v.clone(),
         Some(v) => v[sub].clone(),
@@ -58,35 +79,6 @@ pub(super) fn properties(
     };
     let main =
         guid(&pick("overriddenSymbolID", "")).or_else(|| guid(&pick("symbolData", "symbolID")));
-    let followed = e.and_then(|e| e.main.as_ref());
-    // Bytes converted and copied: the definitions read and the assignments, twice over.
-    let mut left = bounds.work;
-    let defs = |m: &str, left: &mut usize| {
-        let field = |n: &kiwi_schema::Value, f: &str, left: &mut usize| {
-            n.get(f).map_or(0, |v| kiwi_bytes(v, left))
-        };
-        tree.nodes.get(m).map_or(0, |n| {
-            field(n, "componentPropDefs", left)
-                + field(n, "variantPropSpecs", left)
-                + crate::expand::parent_of(n)
-                    .and_then(|p| tree.nodes.get(&p))
-                    .map_or(0, |s| field(s, "componentPropDefs", left))
-        })
-    };
-    let mains = [main.as_deref(), followed.map(|f| f.0.as_str())];
-    let mut bytes = mains
-        .into_iter()
-        .flatten()
-        .map(|m| defs(m, &mut left))
-        .sum::<usize>();
-    bytes += own.map_or(0, |v| json_bytes(v, &mut left));
-    bytes += node
-        .get("componentPropAssignments")
-        .map_or(0, |v| kiwi_bytes(v, &mut left));
-    if !bounds.charge(1 + bounds.work - left, 2 * bytes) {
-        return None;
-    }
-    let assignments = pick("componentPropAssignments", "");
     // What expansion applied where it may differ from REST: `Mismatch` when it followed another
     // main, `Swapped` when the swapped main's own assignments are not kept, `Merged` with the
     // values of the source's own assignments followed by the override's.
@@ -119,11 +111,33 @@ pub(super) fn properties(
     }) else {
         return Some(Vec::new());
     };
+    if !defs.contains_key(&main) {
+        let mut left = bounds.work;
+        let cost = PropDefs::bytes(tree, &main, &mut left);
+        if !bounds.charge(1 + bounds.work - left, 64 + main.len() + cost) {
+            return None;
+        }
+        defs.insert(main.clone(), (cost, PropDefs::read(tree, &main)));
+    }
+    let (cost, read) = &defs[&main];
+    let Some(read) = read else {
+        return Some(Vec::new());
+    };
+    // Each resolution copies at most the definitions' names and values beside the assignments'.
+    let copies = if matches!(doubt, Doubt::Merged(_)) {
+        2
+    } else {
+        1
+    };
+    if !bounds.charge(0, copies * cost) {
+        return None;
+    }
     let applied = match &doubt {
-        Doubt::Merged(list) => Some(component_properties(tree, &main, list)),
+        Doubt::Merged(list) => Some(read.resolve(list)),
         _ => None,
     };
-    let found = component_properties(tree, &main, &assignments);
+    let assignments = pick("componentPropAssignments", "");
+    let found = read.resolve(&assignments);
     let mut out = Vec::with_capacity(found.len());
     for (key, prop) in found {
         let variant = prop["type"] == "VARIANT";
@@ -168,6 +182,9 @@ pub(crate) struct Layer {
     pub(crate) stop: Option<&'static str>,
     /// Component property values that could not be resolved exactly, so are not embedded.
     pub(crate) unknown: usize,
+    /// Instances whose properties were not indexed (a generation stored before schema 11): the
+    /// layer lacks their property input until the scope is rebuilt.
+    pub(crate) unindexed: usize,
 }
 
 impl Layer {
@@ -191,6 +208,7 @@ impl Layer {
             over: 0,
             stop: None,
             unknown: 0,
+            unindexed: 0,
         };
         let rids: Vec<u32> = if index.rids.is_empty() {
             (0..index.records.len() as u32).collect()
@@ -242,9 +260,12 @@ impl Layer {
                 Some((_, line)) => line.as_deref().unwrap_or_default(),
                 None => base.as_str(),
             };
+            if r.props.is_none() && r.kind == "INSTANCE" {
+                layer.unindexed += 1;
+            }
+            let all = r.props.as_deref().unwrap_or_default();
             let known = || {
-                r.props
-                    .iter()
+                all.iter()
                     .filter_map(|(name, value)| Some((name, value.as_ref()?)))
             };
             // Paid before the line is joined: each entry is `name: value`, then `; `.
@@ -252,7 +273,7 @@ impl Layer {
             if !bounds.charge(0, len) {
                 break 'records;
             }
-            layer.unknown += r.props.len() - known().count();
+            layer.unknown += all.len() - known().count();
             let props = known()
                 .map(|(n, v)| format!("{n}: {v}"))
                 .collect::<Vec<_>>()
@@ -670,7 +691,7 @@ pub(crate) fn cached_bytes(index: &Index, layer: &Layer) -> usize {
     let props: usize = index
         .records
         .iter()
-        .flat_map(|r| &r.props)
+        .flat_map(|r| r.props.iter().flatten())
         .map(|(n, v)| 48 + n.len() + v.as_ref().map_or(0, String::len))
         .sum();
     index.records.len() * 256
@@ -689,8 +710,11 @@ pub(crate) fn layer_coverage(layer: &Layer, profile_id: &str, excluded: [usize; 
         .iter()
         .filter(|v| v.as_ref().is_some_and(Vec::is_empty))
         .count();
-    let complete =
-        embedded == layer.texts.len() && refused == 0 && layer.over == 0 && layer.stop.is_none();
+    let complete = embedded == layer.texts.len()
+        && refused == 0
+        && layer.over == 0
+        && layer.stop.is_none()
+        && layer.unindexed == 0;
     let mut reasons = Vec::new();
     if embedded < layer.texts.len() {
         reasons.push(json!({"code": "semantic_layer_building", "counts": {"embeddedTexts": embedded, "texts": layer.texts.len()}}));
@@ -703,6 +727,9 @@ pub(crate) fn layer_coverage(layer: &Layer, profile_id: &str, excluded: [usize; 
             json!({"code": "semantic_capacity", "counts": {"chunks": layer.over,
             "maxTexts": MAX_TEXTS, "maxChunks": model::MAX_SCAN}}),
         );
+    }
+    if layer.unindexed > 0 {
+        reasons.push(json!({"code": NOT_INDEXED, "counts": {"records": layer.unindexed}}));
     }
     if let Some(code) = layer.stop {
         reasons.push(json!({"code": code, "counts": {"chunks": layer.units.len()},

@@ -48,14 +48,9 @@ pub(crate) fn batches<T>(items: &[T], size: impl Fn(&T) -> usize) -> impl Iterat
 /// never reused.
 pub(crate) fn versions() -> String {
     json!({"ranking": RANKING, "tokenizer": tokenizer(), "relations": RELATIONS,
-        "fingerprint": fingerprint::VERSION, "budgets": [WORK, BYTES, TEXT_BYTES, DEPTH, MAX_MARKS],
-        "properties": PROPERTIES})
+        "fingerprint": fingerprint::VERSION, "budgets": [WORK, BYTES, TEXT_BYTES, DEPTH, MAX_MARKS]})
     .to_string()
 }
-
-/// How records keep their component properties (`records.props`, schema 10); a generation
-/// built before them is rebuilt, so no model layer reads a record whose properties were not kept.
-const PROPERTIES: &str = "props-1";
 
 const TEXT_SOURCES: [&str; 3] = ["stored", "override", "component"];
 const STOPS: [&str; 6] = [
@@ -164,6 +159,7 @@ pub(crate) fn save(
             + r.norm[1].len()
             + r.props
                 .iter()
+                .flatten()
                 .map(|(n, v)| 8 + n.len() + v.as_ref().map_or(4, String::len))
                 .sum::<usize>()
             + 64
@@ -201,7 +197,7 @@ pub(crate) fn save(
                     r.hidden,
                     r.page,
                     r.root,
-                    (!r.props.is_empty()).then(|| json!(r.props).to_string())
+                    r.props.as_ref().map(|p| json!(p).to_string())
                 ])?;
                 for e in r.edges.iter().chain(&r.library) {
                     edge.execute(params![
@@ -631,7 +627,7 @@ pub(crate) fn add_with(
             root: row.get(14)?,
             edges: edges.remove(&rid).unwrap_or_default(),
             library: Vec::new(),
-            props: Vec::new(),
+            props: None,
         };
         if record.page.is_some_and(|p| p as usize >= index.pages.len())
             || record.root.is_some_and(|p| p as usize >= index.roots.len())
@@ -655,8 +651,9 @@ pub(crate) fn add_with(
     Ok(())
 }
 
-/// Loads the component properties (`records.props`, schema 10) of every loaded record of `index`,
-/// charged to `spent` before each copy; only a model layer reads them.
+/// Loads the component properties (`records.props`, schema 11) of every loaded record of
+/// `index`, charged to `spent` before each copy; only a model layer reads them. A NULL column (a
+/// generation stored before schema 11) leaves the record's properties not indexed.
 pub(crate) fn add_properties(
     conn: &Connection,
     gen_id: i64,
@@ -679,7 +676,7 @@ pub(crate) fn add_properties(
         // The text and the values parsed from it.
         charge_query(spent, 2 * text_len(row, 1)?)?;
         index.records[at].props =
-            serde_json::from_str(&need(text_at(row, 1, TEXT_BYTES)?)?).map_err(|_| bad())?;
+            Some(serde_json::from_str(&need(text_at(row, 1, TEXT_BYTES)?)?).map_err(|_| bad())?);
     }
     Ok(())
 }

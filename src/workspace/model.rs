@@ -333,9 +333,11 @@ fn embed_work(
     drop(index);
     let hashes: Vec<[u8; 32]> = extracted.texts.iter().map(|t| text_hash(t)).collect();
     let stored = vectors(&conn, &profile_id, &hashes).map_err(sql)?;
+    // A layer missing property inputs is never ready; a rebuild of the scope adds them.
     let stop = extracted
         .stop
-        .or((extracted.over > 0).then_some("semantic_capacity"));
+        .or((extracted.over > 0).then_some("semantic_capacity"))
+        .or((extracted.unindexed > 0).then_some(crate::search::semantic::NOT_INDEXED));
     let mut counts = json!({"chunks": extracted.units.len(), "texts": hashes.len(),
         "embedded": stored.values().filter(|v| !v.is_empty()).count(),
         "refused": stored.values().filter(|v| v.is_empty()).count(), "stop": stop});

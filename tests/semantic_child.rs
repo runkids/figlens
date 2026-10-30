@@ -844,6 +844,15 @@ fn mcp_end_of_input_stops_an_in_flight_semantic_search_and_its_child() {
 /// `profile` is false) and `FIG` prepared with scope `0:0` by the CLI. Returns the prepare
 /// report and the copied file.
 fn indexed(dir: &test_support::TestDir, profile: bool) -> (serde_json::Value, PathBuf) {
+    indexed_from(dir, profile, Path::new(FIG))
+}
+
+/// `indexed` of the design at `source`, copied first.
+fn indexed_from(
+    dir: &test_support::TestDir,
+    profile: bool,
+    source: &Path,
+) -> (serde_json::Value, PathBuf) {
     let root = std::path::absolute(dir.join("")).unwrap();
     for (var, sub) in [
         ("XDG_STATE_HOME", "state"),
@@ -858,7 +867,7 @@ fn indexed(dir: &test_support::TestDir, profile: bool) -> (serde_json::Value, Pa
         configured(dir);
     }
     let fig = root.join("design.fig");
-    std::fs::copy(FIG, &fig).unwrap();
+    std::fs::copy(source, &fig).unwrap();
     let report = cli(&["index", "prepare", fig.to_str().unwrap(), "--scope", "0:0"]);
     (report, fig)
 }
@@ -1846,6 +1855,184 @@ fn changes_show_the_model_layer_and_a_profile_change_records_no_revision() {
     assert_eq!(count(&conn, "SELECT count(*) FROM revisions"), revisions);
 }
 
+/// The mapping fixture with `--properties`, as `cargo test` builds the example: `First button`
+/// (0:2) overrides `Label` and `Show icon`, `Second button` (0:3) keeps their defaults.
+fn properties_fig(dir: &test_support::TestDir) -> PathBuf {
+    let example = Path::new(env!("CARGO_BIN_EXE_figlens"))
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join(format!("mapping-fixture{}", std::env::consts::EXE_SUFFIX));
+    let path = std::path::absolute(dir.join("properties.fig")).unwrap();
+    let made = std::process::Command::new(example)
+        .arg("--properties")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{made:?}");
+    path
+}
+
+/// The stored `records.props` of node `id` in the published generation of scope `0:0`.
+fn stored_props(conn: &rusqlite::Connection, id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT r.props FROM records r JOIN published p ON p.gen = r.gen AND p.scope = '0:0'
+         WHERE r.node_id = ?1",
+        [id],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+fn an_instance_property_override_is_stored_and_found_with_its_field() {
+    let dir = test_support::TestDir::new();
+    let (prepared, fig) = indexed_from(&dir, true, &properties_fig(&dir));
+    let conn = db(&prepared);
+    assert_eq!(
+        stored_props(&conn, "0:2").as_deref(),
+        Some(r#"[["Label","Pay now"],["Show icon","false"]]"#)
+    );
+    assert_eq!(
+        stored_props(&conn, "0:3").as_deref(),
+        Some(r#"[["Label","Button"],["Show icon","true"]]"#)
+    );
+    // A layer that is no instance is indexed as having none, not as unknown.
+    assert_eq!(stored_props(&conn, "0:1").as_deref(), Some("[]"));
+    let ws = prepared["workspaceId"].as_str().unwrap();
+    cli(&["index", "embed", "--id", ws, "--scope", "0:0"]);
+    // The fake model's vectors are equal only for equal character bags: the override's line.
+    let query = "Label: Pay now; Show icon: false";
+    let storage = figlens::workspace::storage(None).unwrap();
+    let no = AtomicBool::new(false);
+    let stateless = figlens::search::semantic::search(
+        &fig,
+        &request(query, 1, None),
+        Mode::Semantic,
+        &storage,
+        &no,
+    )
+    .unwrap();
+    let stored = cli(&[
+        "search",
+        "--file",
+        fig.to_str().unwrap(),
+        "--mode",
+        "semantic",
+        "--limit",
+        "1",
+        "--",
+        query,
+    ]);
+    for got in [&stateless, &stored] {
+        let first = &got["results"][0];
+        assert_eq!(
+            (&first["ref"]["nodeId"], &first["matches"]),
+            (
+                &json!("0:2"),
+                &json!([{"field": "properties", "chunk": 0, "basis": "semantic"}])
+            ),
+            "{got}"
+        );
+    }
+}
+
+/// A rebuild step for scope `0:0` among `reply`'s next steps, and no embed step.
+fn names_rebuild_not_embed(reply: &serde_json::Value) {
+    let steps = reply["nextSteps"].to_string();
+    assert!(
+        steps.contains("\"rebuild\"") && !steps.contains("\"embed\""),
+        "{reply}"
+    );
+}
+
+fn older_schema_workspaces_read_without_migrating_and_upgrade_keeping_their_data() {
+    for schema in [9, 10] {
+        let dir = test_support::TestDir::new();
+        let (prepared, fig) = indexed_from(&dir, true, &properties_fig(&dir));
+        let ws = prepared["workspaceId"].as_str().unwrap();
+        cli(&["index", "embed", "--id", ws, "--scope", "0:0"]);
+        let path = prepared["paths"]["database"].as_str().unwrap();
+        let conn = rusqlite::Connection::open(path).unwrap();
+        // As that schema left it: no property column, and before 10 no visual tables.
+        conn.execute_batch(
+            "ALTER TABLE records DROP COLUMN props;
+             INSERT INTO visual_rasters VALUES (x'01', 'p', x'02', x'03');",
+        )
+        .unwrap();
+        if schema == 9 {
+            conn.execute_batch(
+                "DROP TABLE visual_units; DROP TABLE visual_rasters; DROP INDEX jobs_visual;",
+            )
+            .unwrap();
+        }
+        conn.execute_batch(&format!("PRAGMA user_version = {schema};"))
+            .unwrap();
+        let one = |sql: &str| -> serde_json::Value {
+            conn.query_row(sql, [], |r| r.get::<_, rusqlite::types::Value>(0))
+                .map(|v| match v {
+                    rusqlite::types::Value::Integer(i) => json!(i),
+                    rusqlite::types::Value::Text(t) => json!(t),
+                    other => json!(format!("{other:?}")),
+                })
+                .unwrap()
+        };
+        let kept = |conn_one: &dyn Fn(&str) -> serde_json::Value| {
+            [
+                "SELECT count(*) FROM sources",
+                "SELECT value FROM meta WHERE key = 'incarnation'",
+                "SELECT group_concat(name || '|' || ifnull(text, ''), ',') FROM records",
+                "SELECT count(*) FROM model_vectors",
+                "SELECT count(*) FROM model_layers",
+            ]
+            .map(conn_one)
+        };
+        let before = kept(&one);
+        let rasters = (schema == 10).then(|| one("SELECT count(*) FROM visual_rasters"));
+        let fig = fig.to_str().unwrap();
+        // Read-only: text and semantic search answer without the column and migrate nothing.
+        let text = cli(&["search", "--file", fig, "button"]);
+        assert!(
+            text["results"].as_array().is_some_and(|r| !r.is_empty()),
+            "{text}"
+        );
+        let semantic = cli(&["search", "--file", fig, "button", "--mode", "semantic"]);
+        let layer = &semantic["coverage"]["layers"]["semantic"]["sources"][0];
+        assert_ne!(layer["state"], "ready", "{semantic}");
+        assert_eq!(
+            layer["reasons"][0]["code"], "properties_not_indexed",
+            "{semantic}"
+        );
+        names_rebuild_not_embed(&semantic);
+        assert_eq!(one("PRAGMA user_version"), json!(schema));
+        // A write upgrades in place, keeping every row; embedding an index stored before the
+        // column still ends partial and names the rebuild, never another embed.
+        cli(&["index", "embed", "--id", ws, "--scope", "0:0"]);
+        assert_eq!(one("PRAGMA user_version"), json!(11));
+        assert_eq!(kept(&one), before);
+        if let Some(rasters) = rasters {
+            assert_eq!(one("SELECT count(*) FROM visual_rasters"), rasters);
+        }
+        assert_eq!(
+            one("SELECT count(*) FROM records WHERE props IS NOT NULL"),
+            json!(0)
+        );
+        let again = cli(&["search", "--file", fig, "button", "--mode", "semantic"]);
+        assert_eq!(
+            again["coverage"]["layers"]["semantic"]["sources"][0]["state"],
+            "partial"
+        );
+        names_rebuild_not_embed(&again);
+        // The rebuild indexes the properties; one embed then completes the layer.
+        cli(&["index", "rebuild", "--id", ws, "--scope", "0:0"]);
+        cli(&["index", "embed", "--id", ws, "--scope", "0:0"]);
+        let ready = cli(&["search", "--file", fig, "button", "--mode", "semantic"]);
+        assert_eq!(
+            ready["coverage"]["layers"]["semantic"]["state"], "ready",
+            "{ready}"
+        );
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if let [_, worker, dir, job] = args.as_slice()
@@ -1899,6 +2086,14 @@ fn main() {
         (
             "each_search_selects_only_its_own_modality",
             each_search_selects_only_its_own_modality,
+        ),
+        (
+            "an_instance_property_override_is_stored_and_found_with_its_field",
+            an_instance_property_override_is_stored_and_found_with_its_field,
+        ),
+        (
+            "older_schema_workspaces_read_without_migrating_and_upgrade_keeping_their_data",
+            older_schema_workspaces_read_without_migrating_and_upgrade_keeping_their_data,
         ),
         (
             "scope_context_alone_finds_a_layer_and_names_the_scope_field",
