@@ -1521,13 +1521,20 @@ fn identical_bytes_in_two_sources_keep_their_ids_and_a_hidden_one_never_answers(
 /// The mapping fixture's library copy (component `synthetic-button` of `synthetic-library`), as
 /// `cargo test` builds the example next to the test binary.
 fn library_fig(dir: &Path) -> PathBuf {
+    library_fig_keyed(dir, "library.fig", "synthetic-button", "synthetic-library")
+}
+
+/// The same fixture with another component key and library namespace, written to `dir/name`.
+fn library_fig_keyed(dir: &Path, name: &str, key: &str, namespace: &str) -> PathBuf {
     let example = Path::new(BIN)
         .parent()
         .unwrap()
         .join("examples")
         .join(format!("mapping-fixture{}", std::env::consts::EXE_SUFFIX));
-    let path = dir.join("library.fig");
+    let path = dir.join(name);
     let made = Command::new(example)
+        .env("MAPPING_FIXTURE_COMPONENT_KEY", key)
+        .env("MAPPING_FIXTURE_LIBRARY_KEY", namespace)
         .arg("--library")
         .arg(&path)
         .output()
@@ -1654,6 +1661,69 @@ fn a_definition_chosen_before_its_source_was_rebuilt_is_stale_not_matched() {
         json!({"state": "unresolved", "reason": "definition_snapshot_stale"}),
         "{rebuilt}"
     );
+}
+
+/// Two differently keyed library sources of one workspace; returns the workspace dir and ids.
+fn keyed_library_sources(env: &Env, keyed: [(&str, &str); 2]) -> (String, [Value; 2]) {
+    let project = std::fs::canonicalize(env.dir.join("")).unwrap();
+    let dir = project.to_str().unwrap().to_owned();
+    let ids = keyed.map(|(key, namespace)| {
+        let sub = env.dir.join(key).join(namespace);
+        std::fs::create_dir_all(&sub).unwrap();
+        let fig = library_fig_keyed(&sub, "library.fig", key, namespace);
+        prepare_in(env, &fig, &dir)["source"]["sourceId"].clone()
+    });
+    (dir, ids)
+}
+
+fn owned_by_only(env: &Env, dir: &str, namespace: &str, key: &str, id: &Value) -> bool {
+    let reply = env.json(&[
+        "usages",
+        "--workspace",
+        dir,
+        "--library",
+        "component",
+        "--namespace",
+        namespace,
+        "--key",
+        key,
+    ]);
+    let found = owners(&reply);
+    !found.is_empty() && found.iter().all(|(s, _)| s == id)
+}
+
+#[test]
+fn a_library_key_answers_only_the_source_that_holds_it() {
+    let env = Env::new();
+    let (dir, [first, second]) = keyed_library_sources(
+        &env,
+        [("k1", "synthetic-library"), ("k2", "synthetic-library")],
+    );
+    assert!(owned_by_only(&env, &dir, "synthetic-library", "k1", &first));
+    assert!(owned_by_only(
+        &env,
+        &dir,
+        "synthetic-library",
+        "k2",
+        &second
+    ));
+}
+
+#[test]
+fn a_library_namespace_never_answers_another_namespaces_uses() {
+    let env = Env::new();
+    let (dir, [first, second]) = keyed_library_sources(
+        &env,
+        [("synthetic-button", "ns1"), ("synthetic-button", "ns2")],
+    );
+    assert!(owned_by_only(&env, &dir, "ns1", "synthetic-button", &first));
+    assert!(owned_by_only(
+        &env,
+        &dir,
+        "ns2",
+        "synthetic-button",
+        &second
+    ));
 }
 
 #[test]
