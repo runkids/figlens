@@ -1476,38 +1476,47 @@ fn encode(f: &Facets) -> String {
     Json::Array(rows.collect()).to_string()
 }
 
-/// The inverse of `encode`; `None` for a key outside `FIELDS`, out of order, or a bad digest.
-fn decode(text: &str) -> Option<Facets> {
+/// The inverse of `encode`, refusing a key outside `FIELDS`, out of order, or a bad digest. Each
+/// field is charged to `spent` as the live build charged it, 64 bytes, its key and a kept value's
+/// JSON, before it is kept.
+fn decode(text: &str, spent: &mut usize) -> Result<Facets, Box<dyn Error>> {
     let mut keys = FIELDS
         .iter()
         .enumerate()
         .flat_map(|(facet, keys)| keys.iter().map(move |k| (*k, facet as u8)));
-    let mut fields = Vec::new();
-    for row in serde_json::from_str::<Vec<Vec<Json>>>(text).ok()? {
-        let name = row.first()?.as_str()?;
-        let (key, facet) = keys.find(|(k, _)| *k == name)?;
-        let digest = match row.get(1)? {
-            Json::Null => None,
-            d => {
-                let d = d.as_str().filter(|d| d.len() == 64)?;
-                let mut out = [0; 32];
-                for (i, b) in out.iter_mut().enumerate() {
-                    *b = u8::from_str_radix(d.get(2 * i..2 * i + 2)?, 16).ok()?;
-                }
-                Some(out)
-            }
-        };
-        if row.len() > 3 || (digest.is_none() && row.len() == 3) {
-            return None;
+    let hex32 = |d: &Json| {
+        let d = d.as_str().filter(|d| d.len() == 64)?;
+        let mut out = [0; 32];
+        for (i, b) in out.iter_mut().enumerate() {
+            *b = u8::from_str_radix(d.get(2 * i..2 * i + 2)?, 16).ok()?;
         }
+        Some(out)
+    };
+    let mut fields = Vec::new();
+    for mut row in serde_json::from_str::<Vec<Vec<Json>>>(text).map_err(|_| bad())? {
+        let value = if row.len() == 3 { row.pop() } else { None };
+        let name = row.first().and_then(Json::as_str).ok_or_else(bad)?;
+        let (key, facet) = keys.find(|(k, _)| *k == name).ok_or_else(bad)?;
+        let digest = match row.get(1).ok_or_else(bad)? {
+            Json::Null => None,
+            d => Some(hex32(d).ok_or_else(bad)?),
+        };
+        if row.len() > 2 || (digest.is_none() && value.is_some()) {
+            return Err(bad());
+        }
+        let kept = match &value {
+            Some(v) => serde_json::to_vec(v)?.len(),
+            None => 0,
+        };
+        super::store::charge_query(spent, 64 + key.len() + kept)?;
         fields.push(Field {
             key,
             facet,
             digest,
-            value: row.get(2).cloned(),
+            value,
         });
     }
-    Some(Facets { fields })
+    Ok(Facets { fields })
 }
 
 /// Stores a tracked build's facets and selected-node context as generation `gen`'s, beside the
@@ -1632,12 +1641,15 @@ fn stored(conn: &rusqlite::Connection, gen_id: i64, source: Json) -> Result<Side
     let mut rows = stmt.query([gen_id])?;
     while let Some(row) = rows.next()? {
         let (rid, len): (i64, i64) = (row.get(0)?, row.get(1)?);
-        spent += len.max(0) as usize;
-        if rid != facets.len() as i64 || len as usize > FIELD_BYTES || spent > BYTES {
+        // One row per record: a surplus row is refused before it is read.
+        if rid != facets.len() as i64
+            || facets.len() >= index.records.len()
+            || len.max(0) as usize > FIELD_BYTES
+        {
             return Err(bad());
         }
         let text = std::str::from_utf8(row.get_ref(2)?.as_blob()?).map_err(|_| bad())?;
-        facets.push(decode(text).ok_or_else(bad)?);
+        facets.push(decode(text, &mut spent)?);
     }
     if facets.len() != index.records.len() || present != (index.total > 0) {
         return Err(bad());
@@ -1654,10 +1666,7 @@ fn stored(conn: &rusqlite::Connection, gen_id: i64, source: Json) -> Result<Side
     })
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "change publication, the next #92 step, reads it")
-)]
+#[cfg(test)]
 /// The first page of the exact diff between two stored generations of `req.node`, read inside
 /// the caller's read transaction; each side's `source` names its source and snapshot.
 pub(crate) fn stored_diff(

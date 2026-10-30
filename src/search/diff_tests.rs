@@ -1296,7 +1296,26 @@ fn tampered_or_other_layout_facets_are_refused_not_compared() {
     .unwrap();
     assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
     let conn = saved(&[&tree], "0:0");
+    conn.execute(
+        "INSERT INTO facets SELECT gen, MAX(rid) + 1, CAST('[]' AS BLOB) FROM facets",
+        [],
+    )
+    .unwrap();
+    assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
+    let conn = saved(&[&tree], "0:0");
     conn.execute("UPDATE facet_sets SET facet_version = 'diff-v0:0'", [])
         .unwrap();
     assert_eq!(run(&conn), Some(ErrorKind::IndexIncompatible));
+}
+
+#[test]
+fn stored_facets_charge_a_kept_field_as_the_live_build_does_not_its_shorter_text() {
+    // The text is shorter than the 64 bytes plus key the live build charged for its field.
+    let text = r#"[["fontSize",null]]"#;
+    let mut spent = BYTES - text.len();
+    let err = decode(text, &mut spent).err().unwrap();
+    assert_eq!(
+        err.downcast_ref::<FigError>().map(FigError::kind),
+        Some(ErrorKind::QueryWorkLimit)
+    );
 }

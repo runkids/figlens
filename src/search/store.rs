@@ -584,12 +584,12 @@ fn text_len(row: &rusqlite::Row, i: usize) -> rusqlite::Result<usize> {
 }
 
 /// Adds `size` to the bytes a query has copied, refusing past `BYTES`.
-fn charge_query(spent: &mut usize, size: usize) -> Result<()> {
+pub(super) fn charge_query(spent: &mut usize, size: usize) -> Result<()> {
     *spent = spent.saturating_add(size);
     if *spent > BYTES {
         return Err(FigError::new(
             ErrorKind::QueryWorkLimit,
-            format!("the records this search needs exceed {BYTES} bytes"),
+            format!("the records this search or comparison needs exceed {BYTES} bytes"),
         )
         .into());
     }
