@@ -457,6 +457,19 @@ fn a_field_estimate_walks_no_further_than_the_side_has_work_left() {
     b.work = 0;
     assert!(facets(&tree, "0:10", None, &mut b).is_none());
     assert_eq!(b.stop, Some(crate::expand::Stop::Work));
+    // With a little work left, a large field spends it all, then stops the side.
+    let wide = doc(vec![node(
+        10,
+        Some(1),
+        "TEXT",
+        "T",
+        vec![("fillPaints", K::Array(vec![K::Float(0.0); 5000]))],
+    )]);
+    let tree = Tree::new(&wide);
+    let mut b = super::super::tests::bounds(WORK);
+    b.work = 100;
+    assert!(facets(&tree, "0:10", None, &mut b).is_none());
+    assert_eq!((b.work, b.stop), (0, Some(crate::expand::Stop::Work)));
 }
 
 #[test]
@@ -844,6 +857,28 @@ fn a_re_derived_instance_text_with_font_digest_bytes_is_read_and_unchanged() {
 }
 
 #[test]
+fn a_stored_layout_differing_only_in_font_digest_is_unchanged() {
+    // Other bytes in the layout make it hashed raw; the digest is still left out.
+    let one = |digest: u8| {
+        let layout = obj(vec![
+            ("glyphBytes", K::Bytes(vec![7, 7])),
+            (
+                "fontMetaData",
+                K::Array(vec![obj(vec![("fontDigest", K::Bytes(vec![digest]))])]),
+            ),
+        ]);
+        doc(vec![node(
+            10,
+            Some(1),
+            "TEXT",
+            "T",
+            vec![text("Hi"), ("derivedTextData", layout)],
+        )])
+    };
+    assert_eq!(run(one(1), one(2))["frames"], json!([]));
+}
+
+#[test]
 fn an_unread_field_alone_is_unknown_and_proves_no_facet_change() {
     let one = |s: &str, fill_red: f64| {
         doc(vec![node(
@@ -867,6 +902,9 @@ fn an_unread_field_alone_is_unknown_and_proves_no_facet_change() {
     // Unread on both sides, or read on one and unread on the other: no facet is proven to differ.
     let unknown = (json!("unknown"), Json::Null, json!(true));
     assert_eq!(change(one(&giant, 1.0), one(&giant, 1.0)), unknown);
+    // It still names the field that was unread.
+    let out = run(one("small", 1.0), one(&giant, 1.0));
+    assert!(out["frames"][0]["nodes"][0]["fields"]["textData"].is_object());
     assert_eq!(change(one("small", 1.0), one(&giant, 1.0)), unknown);
     // A proven change elsewhere is a change that also says a field was unread.
     assert_eq!(

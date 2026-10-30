@@ -184,7 +184,7 @@ fn raw_bytes(v: &kiwi_schema::Value, h: &mut Sha256) {
             a.iter().for_each(|x| raw_bytes(x, h));
         }
         K::Object(_, o) => {
-            let mut keys: Vec<_> = o.iter().collect();
+            let mut keys: Vec<_> = o.iter().filter(|(k, _)| !UNCOMPARED.contains(k)).collect();
             keys.sort_by_key(|(k, _)| *k);
             keys.into_iter().for_each(|(_, x)| raw_bytes(x, h));
         }
@@ -319,7 +319,7 @@ pub(super) fn facets(
             if !bounds.charge(0, 0) {
                 return None;
             }
-            let (estimate, walked) = estimate(&value, bounds.work);
+            let (size, walked) = estimate(&value, bounds.work);
             // Running out of the side's work stops the side, visits kept; only a walk that
             // reached `VISITS` makes this one field unread.
             if walked == bounds.work && walked < VISITS {
@@ -332,8 +332,8 @@ pub(super) fn facets(
                 "derivedTextData" => DERIVED_TEXT_BYTES,
                 _ => FIELD_BYTES,
             };
-            let unread = walked == VISITS || estimate > cap;
-            if !bounds.charge(walked + if unread { 0 } else { estimate / 64 }, 0) {
+            let unread = walked == VISITS || size > cap;
+            if !bounds.charge(walked + if unread { 0 } else { size / 64 }, 0) {
                 return None;
             }
             // An override's bytes were already shown as `<N bytes>`; equal lengths prove nothing.
@@ -367,7 +367,7 @@ pub(super) fn facets(
             ]
             .contains(key);
             let copies = usize::from(matches!(value, Value::Kiwi(_))) + usize::from(blobbed);
-            if !bounds.charge(0, copies * estimate) {
+            if !bounds.charge(0, copies * size) {
                 return None;
             }
             let owned;
@@ -1483,6 +1483,7 @@ fn page_with(
             }
         } else if c.facets & UNREAD != 0 {
             node["unread"] = json!(true);
+            node["fields"] = fields(pair, c, &mut left);
         }
         if c.descendants > 0 {
             node["descendants"] = json!(c.descendants);
