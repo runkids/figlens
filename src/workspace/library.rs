@@ -148,7 +148,8 @@ fn ask(
     req.validate()?;
     let (_, ws) = opened(storage, select, false)?;
     let ws_id = ws.held.id.clone();
-    if ws.version < SCHEMA {
+    // Schema 8 introduced fingerprints; later migrations must not refuse it.
+    if ws.version < 8 {
         return Err(FigError::new(
             ErrorKind::IndexIncompatible,
             format!("workspace {ws_id} has no relations index of this figlens yet; rebuild it, then query usages"),
