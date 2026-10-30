@@ -429,6 +429,17 @@ fn hybrid_ranks_the_query_text_with_the_image_and_keeps_lexical_spans_lexical() 
         bases.contains(&"lexical") && bases.contains(&"normalized_pixels"),
         "{bases:?}"
     );
+    // Query text after -- stays text, even when it looks like an option.
+    let dashed = env.search(&["--image", path(&blue), "--", "--dark"]);
+    assert_eq!(
+        (
+            dashed["query"]["mode"].as_str(),
+            dashed["query"]["text"].as_str()
+        ),
+        (Some("hybrid"), Some("--dark")),
+        "{}",
+        dashed["query"]
+    );
     // Hybrid with an image and no text uses the visual channels alone.
     assert_eq!(
         env.search(&["--image", path(&blue), "--mode", "hybrid"])["query"]["usedModes"],
@@ -616,4 +627,39 @@ fn an_older_workspace_names_the_visual_step_instead_of_failing_on_missing_tables
             "schema {version}: {error}"
         );
     }
+}
+
+/// The real preparation: `index visual` renders the units, and an export of one of them finds it
+/// first in every source as an exact normalized-pixel copy.
+#[test]
+fn index_visual_layers_answer_an_export_of_their_own_unit() {
+    let env = Env::new();
+    let (design, a) = env.source("a.fig");
+    let (_, b) = env.source("b.fig");
+    let workspace = path(&env.workspace);
+    env.json(&[
+        "index",
+        "visual",
+        "--workspace",
+        workspace,
+        "--scope",
+        "0:0",
+    ]);
+    let shot = env.dir.join("screen.png");
+    env.json(&["export", path(&design), "0:1", path(&shot)]);
+    let reply = env.search(&["--image", path(&shot)]);
+    let mut top: Vec<(String, String)> = hits(&reply)[..2].to_vec();
+    top.sort();
+    let mut want = vec![(a, "0:1".to_owned()), (b, "0:1".to_owned())];
+    want.sort();
+    assert_eq!(top, want, "{reply}");
+    assert!(
+        reply["results"].as_array().unwrap()[..2]
+            .iter()
+            .all(|r| r["matches"][0]["basis"] == "normalized_pixels")
+    );
+    assert_eq!(
+        reply["coverage"]["layers"]["visual"]["hash"]["state"],
+        "ready"
+    );
 }

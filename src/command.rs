@@ -793,7 +793,8 @@ fn query(
 }
 
 /// CLI search arguments, checked before the source is downloaded or read. With `--image` or
-/// `--image-ref` the query text is optional.
+/// `--image-ref` the query text is optional: an image search whose first argument is an option
+/// has none.
 pub fn search_request(
     args: &[String],
 ) -> Result<(figlens::search::Request, Query), Box<dyn Error>> {
@@ -802,6 +803,15 @@ pub fn search_request(
         Some(first) if image_search && first.starts_with("--") => None,
         first => Some(first.cloned().ok_or(USAGE)?),
     };
+    let skip = usize::from(text.is_some());
+    search_options(text, &args[skip..])
+}
+
+/// `search_request` with the query text already separated (a workspace search's `--` operand).
+pub fn search_options(
+    text: Option<String>,
+    options: &[String],
+) -> Result<(figlens::search::Request, Query), Box<dyn Error>> {
     let (mut mode, mut path, mut reference, mut crop) = (None, None, None, None);
     let mut request = figlens::search::Request {
         query: text.clone().unwrap_or_default(),
@@ -812,7 +822,7 @@ pub fn search_request(
         limit: figlens::search::DEFAULT_LIMIT,
         cursor: None,
     };
-    let mut rest = args[usize::from(text.is_some())..].iter();
+    let mut rest = options.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
             "--include-hidden" => request.include_hidden = true,
