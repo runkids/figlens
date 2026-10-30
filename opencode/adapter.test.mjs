@@ -570,6 +570,52 @@ test('CLI-path subscription reads ask read on exactly the subscription\'s source
   }
 });
 
+test('CLI-path library questions also ask read on the definition\'s source, so a denied one runs no usages, subscribe, evaluate or changes', async t => {
+  const { root, ctx, adapter } = await context(t);
+  const [a, b] = [path.join(root, 'a.fig'), path.join(root, 'b.fig')];
+  await writeFile(a, '');
+  await writeFile(b, '');
+  const [realA, realB] = [await realpath(a), await realpath(b)];
+  const definition = { sourceId: 'B', snapshotId: 'snap', nodeId: '1:1' };
+  const library = { kind: 'component', key: 'k', definition };
+  const row = { sourceId: 'A', library: { kind: 'component', namespace: null, key: 'k' } };
+  // A row whose definition source was removed names it null, so it cannot narrow the ask.
+  const subscriptions = [{ ...row, subscriptionId: 'lib', definition: { sourceId: 'B', nodeId: '1:1', baselineSnapshotId: 'snap' } },
+    { ...row, subscriptionId: 'hidden', definition: { sourceId: null, nodeId: null, baselineSnapshotId: null } }];
+  const asked = [];
+  let ran = [], denied = b;
+  ctx.permission.assert = async ({ action, resources }) => {
+    if (action !== 'read') return;
+    asked.push(resources);
+    if (resources.includes(denied)) throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  const run = async args => {
+    ran.push(['changes', 'usages'].includes(args[0]) ? args[0] : args[1]);
+    if (args[1] === 'list') {
+      const id = args[args.indexOf('--subscription') + 1];
+      return { stdout: JSON.stringify({ subscriptions: subscriptions.filter(s => s.subscriptionId === id), next: null }) };
+    }
+    return { stdout: JSON.stringify({ state: 'ready', paths: { workspace: '/w', lock: '/w.lock' }, storage: { rule: 'default' },
+      roots: { config: { path: '/c' } }, sources: [{ sourceId: 'A', path: a }, { sourceId: 'B', path: b }] }) };
+  };
+  // Each case in its own session, so no earlier grant hides what it asks.
+  const call = async (tool, input) => adapter.cli(Object.assign(await adapter.scope(JSON.stringify([tool, input, denied])), { run }), tool, input);
+  const usages = { workspaceId: 'ws_1', sourceId: 'A', library };
+  for (const [tool, input] of [['usages', usages], ['usages', { ...usages, library: { ...library, definition: { ...definition, sourceId: 'Z' } } }],
+    ['watch', { action: 'subscribe', workspaceId: 'ws_1', consumer: 'c', sourceId: 'A', library }],
+    ['watch', { action: 'subscribe', workspaceId: 'ws_1', consumer: 'c', sources: 'A', library }],
+    ['watch', { action: 'evaluate', workspaceId: 'ws_1', subscriptionId: 'lib' }], ['changes', { workspaceId: 'ws_1', subscriptionId: 'lib' }],
+    ['changes', { workspaceId: 'ws_1', subscriptionId: 'hidden' }]]) {
+    ran = [];
+    await assert.rejects(call(tool, input), /read denied/);
+    // Only the read-only status and list ran.
+    assert.deepEqual([asked.at(-1), ran.filter(step => !['status', 'list'].includes(step))], [reads(a, realA, b, realB), []], JSON.stringify(input));
+  }
+  [denied, ran] = [undefined, []];
+  await call('usages', usages);
+  assert.deepEqual([asked.at(-1), ran], [reads(a, realA, b, realB), ['status', 'usages']]);
+});
+
 test('CLI-path evaluate refuses any sourceId before asking or running, and otherwise asks read on every source of an unlisted subscription', async t => {
   const { root, ctx, adapter } = await context(t);
   const designs = ['one.fig', 'two.fig'].map(name => path.join(root, name));
