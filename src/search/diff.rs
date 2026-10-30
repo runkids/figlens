@@ -2021,13 +2021,6 @@ pub(crate) struct Revision {
     pub truncated: bool,
     /// The layers the kept rows reach, computed while both generations are loaded; complete
     /// only when the comparison was and every change is a seed.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "recording it with the revision is the next #92 step"
-        )
-    )]
     pub impact: Impact,
 }
 

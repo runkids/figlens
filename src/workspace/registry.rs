@@ -537,6 +537,7 @@ pub fn remove(storage: &Storage, select: &Select, source_id: &str) -> Result<Jso
         // Its change history goes with it; a relocate keeps the id and so keeps the history.
         for q in [
             "DELETE FROM revision_changes WHERE rev IN (SELECT id FROM revisions WHERE source_id = ?1)",
+            "DELETE FROM revision_impacts WHERE rev IN (SELECT id FROM revisions WHERE source_id = ?1)",
             "DELETE FROM revisions WHERE source_id = ?1",
             "DELETE FROM tracking WHERE source_id = ?1",
             "DELETE FROM consumers WHERE substr(filter, 1, length(?1) + 1) = ?1 || char(31)",

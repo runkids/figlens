@@ -15,9 +15,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{ErrorKind, FigError};
 
-/// The workspace schema this binary writes. Schemas 1 to 5 are upgraded in place, keeping every
+/// The workspace schema this binary writes. Schemas 1 to 6 are upgraded in place, keeping every
 /// registered source and index; any newer version is left untouched.
-pub const SCHEMA: i64 = 6;
+pub const SCHEMA: i64 = 7;
 /// The version of a remembered workspace location record this binary writes; version 1 (no
 /// binding) is still read.
 const LOCATION: i64 = 2;

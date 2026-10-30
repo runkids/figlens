@@ -189,7 +189,9 @@ usage:
   figlens changes <select> [--source ID] [--scope NODE] [--consumer NAME] [--cursor C] [--limit N] [--storage DIR]
                                              recorded revisions after the cursor, the consumer's checkpoint
                                              or the oldest kept, with tracking state; never writes.
-                                             --revision R [--cursor C]: one revision's changed nodes;
+                                             each with its impact (the layers its changes reach).
+                                             --revision R [--cursor C]: one revision's changed nodes,
+                                             then its impact's listed layers;
                                              a query --subscription pages its stored evaluations
   figlens watch ack <select> --consumer NAME|--subscription ID --cursor C [--source ID] [--scope NODE] [--storage DIR]
                                              move the consumer's checkpoint for these filters to C; an

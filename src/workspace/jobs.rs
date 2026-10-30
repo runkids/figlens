@@ -6,6 +6,7 @@
 //! -> SQLite write transaction. A process's owner lock (`owners/<token>.lock`) lives as long as
 //! the process, so a job row is alive exactly while its owner process is.
 
+use std::collections::BTreeMap;
 use std::io::{Read as _, Write as _};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -1481,7 +1482,8 @@ fn record(
         ("active", _) => Err("tracking_changed"),
         _ => return Ok(false),
     };
-    let (kind, from, coverage, summary, mut rows, mut truncated) = match what {
+    // A baseline compares nothing, so it has no impact: never an empty complete one.
+    let (kind, from, coverage, summary, mut rows, mut truncated, impact, reached) = match what {
         Err(reason) => (
             "baseline",
             None,
@@ -1489,6 +1491,8 @@ fn record(
             json!({}),
             Vec::new(),
             false,
+            None,
+            Vec::new(),
         ),
         Ok(Ok(r)) => (
             "changes",
@@ -1497,6 +1501,8 @@ fn record(
             r.summary,
             r.rows,
             r.truncated,
+            Some((r.impact.complete, r.impact.reasons)),
+            r.impact.hits,
         ),
         // Never a false unchanged: the generation still publishes, the history stays.
         Ok(Err(why)) => (
@@ -1506,6 +1512,8 @@ fn record(
             json!({"changes": null}),
             Vec::new(),
             true,
+            Some((false, BTreeMap::from([("comparison_failed", 1)]))),
+            Vec::new(),
         ),
     };
     let row_bytes = |rows: &[search::diff::Row]| {
@@ -1513,11 +1521,53 @@ fn record(
             .map(|r| 64 + r.frame.len() + r.node.len() + r.kind.len())
             .sum::<usize>() as u64
     };
-    // Publication writes are not capped by SQLite: rows that would pass the disk cap are left out.
-    if used_bytes(tx)? + row_bytes(&rows) > DISK_CAP {
+    // Its impact summary as it will be stored: the hits left out read `impact_truncated`.
+    let noted = |kept: usize, by: &BTreeMap<&'static str, u64>| {
+        impact.as_ref().map(|(complete, reasons)| {
+            let mut reasons = reasons.clone();
+            let omitted = (reached.len() - kept) as u64;
+            if omitted > 0 {
+                *reasons.entry("impact_truncated").or_default() += omitted;
+            }
+            search::impact::summary(*complete && omitted == 0, &reasons, by).to_string()
+        })
+    };
+    let len = |t: &Option<String>| t.as_ref().map_or(0, |t| t.len() as u64);
+    // The reached layers listed beside the change rows, within one revision's detail budget
+    // less the summary at its largest (every class counting every hit, none kept): each pays
+    // its copy before it is made, then its entry's exact serialized size.
+    use search::impact::Class::{Direct, Effective, EffectiveUnchanged, Possible};
+    let every = [Direct, Effective, EffectiveUnchanged, Possible];
+    let most = every.map(|c| (c.name(), reached.len() as u64)).into();
+    let reserve = len(&noted(0, &most)) as usize;
+    let mut left = search::diff::REVISION_BYTES.saturating_sub(row_bytes(&rows) as usize + reserve);
+    let (mut kept, mut by, mut hit_bytes) = (0, BTreeMap::new(), 0);
+    for h in &reached {
+        let via = h.via.as_ref().map(|(r, t)| (*r, t.as_str()));
+        let copy = 64 + h.node.len() + via.map_or(0, |(r, t)| r.len() + t.len());
+        let fits = (copy <= left).then(|| {
+            let verdicts = [h.changed, h.unknown, h.equal];
+            search::impact::entry(&h.node, h.class.name(), h.side, verdicts, via)
+        });
+        let Some(n) = fits.and_then(|e| search::impact::serialized(&e, left)) else {
+            break;
+        };
+        left -= n;
+        kept += 1;
+        *by.entry(h.class.name()).or_insert(0) += 1;
+        hit_bytes += n as u64;
+    }
+    // Publication writes are not capped by SQLite: detail that would pass the disk cap is left out.
+    if used_bytes(tx)? + row_bytes(&rows) + hit_bytes + len(&noted(kept, &by)) > DISK_CAP {
         rows.clear();
+        (kept, hit_bytes) = (0, 0);
+        by.clear();
         truncated = true;
     }
+    truncated |= kept < reached.len();
+    let impact = noted(kept, &by);
+    let hits = &reached[..kept];
+    let detail_bytes = row_bytes(&rows) + hit_bytes + len(&impact);
     let seq: i64 = tx
         .query_row(
             "INSERT INTO meta (key, value) VALUES ('revision_seq', '1') ON CONFLICT (key)
@@ -1530,8 +1580,8 @@ fn record(
     let id: Vec<u8> = tx
         .query_row(
             "INSERT INTO revisions (id, seq, source_id, scope, epoch, gen, from_gen, snapshot_id,
-             kind, coverage, summary, detail, detail_rows, detail_bytes, created_ms)
-             VALUES (randomblob(16), ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             kind, coverage, summary, detail, detail_rows, detail_bytes, created_ms, impact)
+             VALUES (randomblob(16), ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              RETURNING id",
             params![
                 seq,
@@ -1546,8 +1596,9 @@ fn record(
                 summary.to_string(),
                 if truncated { "truncated" } else { "complete" },
                 rows.len() as i64,
-                row_bytes(&rows) as i64,
-                now
+                detail_bytes as i64,
+                now,
+                impact
             ],
             |r| r.get(0),
         )
@@ -1569,6 +1620,29 @@ fn record(
                 r.change,
                 r.facets,
                 r.descendants
+            ])
+            .map_err(sql)?;
+    }
+    let mut insert = tx
+        .prepare_cached(
+            "INSERT INTO revision_impacts (rev, ord, node, class, side, changed, unknown, equal,
+             relation, target) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        )
+        .map_err(sql)?;
+    for (ord, h) in hits.iter().enumerate() {
+        let (relation, target) = h.via.as_ref().map(|(r, t)| (*r, t.as_str())).unzip();
+        insert
+            .execute(params![
+                id,
+                ord as i64,
+                h.node,
+                h.class.name(),
+                h.side,
+                h.changed,
+                h.unknown,
+                h.equal,
+                relation,
+                target
             ])
             .map_err(sql)?;
     }
@@ -1596,11 +1670,13 @@ fn record(
         params![source, scope, REVISIONS],
     )
     .map_err(sql)?;
-    tx.execute(
-        &format!("DELETE FROM revision_changes WHERE rev IN ({old})"),
-        params![source, scope, REVISIONS],
-    )
-    .map_err(sql)?;
+    for table in ["revision_changes", "revision_impacts"] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE rev IN ({old})"),
+            params![source, scope, REVISIONS],
+        )
+        .map_err(sql)?;
+    }
     tx.execute(
         &format!("DELETE FROM revisions WHERE id IN ({old})"),
         params![source, scope, REVISIONS],
@@ -1609,11 +1685,13 @@ fn record(
     let over = "SELECT id FROM (SELECT id, SUM(detail_bytes) OVER (ORDER BY seq DESC) AS total
                 FROM revisions WHERE source_id = ?1 AND scope = ?2 AND detail != 'expired')
                 WHERE total > ?3";
-    tx.execute(
-        &format!("DELETE FROM revision_changes WHERE rev IN ({over})"),
-        params![source, scope, DETAIL_BYTES],
-    )
-    .map_err(sql)?;
+    for table in ["revision_changes", "revision_impacts"] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE rev IN ({over})"),
+            params![source, scope, DETAIL_BYTES],
+        )
+        .map_err(sql)?;
+    }
     tx.execute(
         &format!("UPDATE revisions SET detail = 'expired' WHERE id IN ({over})"),
         params![source, scope, DETAIL_BYTES],

@@ -3,15 +3,11 @@
 //! `Evidence`, whether a reached layer's effective value really differs in one facet. Nothing
 //! here compares fields, so a dependency alone never proves a change and an override alone
 //! never proves none.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "change publication, the next #92 step, calls it")
-)]
-
 use super::Index;
 use super::diff::UNREAD;
 use super::usages::{pointing_at, prepare, rid_in};
 use crate::expand::Bounds;
+use serde_json::{Value as Json, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 
@@ -72,7 +68,21 @@ pub(crate) enum Verdict {
 /// about the recipient's own record.
 pub(crate) struct Probe<'a> {
     pub recipient: &'a str,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only test evidence keys verdicts by path; PairEvidence answers per recipient"
+        )
+    )]
     pub through: &'a str,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only test evidence keys verdicts by path; PairEvidence answers per recipient"
+        )
+    )]
     pub seed: &'a str,
     pub facet: u8,
 }
@@ -119,6 +129,55 @@ pub(crate) struct Impact {
     /// `budget_unknown`, `hit_limit` or `queue_limit` with the seeds and steps still pending:
     /// a known pending count, not every omitted layer.
     pub reasons: BTreeMap<&'static str, u64>,
+}
+
+impl Class {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Class::Direct => "direct",
+            Class::Effective => "effective",
+            Class::EffectiveUnchanged => "effective_unchanged",
+            Class::Possible => "possible",
+        }
+    }
+}
+
+/// A listed layer as a revision's detail page shows it, from the columns a revision stores of
+/// a `Hit`: a revision is charged this entry's exact serialized size.
+pub(crate) fn entry(
+    node: &str,
+    class: &str,
+    side: u8,
+    [changed, unknown, equal]: [u8; 3],
+    via: Option<(&str, &str)>,
+) -> Json {
+    let sides: Vec<&str> = [(OLD, "old"), (NEW, "new")]
+        .into_iter()
+        .filter(|(b, _)| side & b != 0)
+        .map(|(_, n)| n)
+        .collect();
+    let names = super::diff::facet_names;
+    json!({"entry": "impact", "id": node, "class": class, "sides": sides,
+        "facets": {"changed": names(changed), "unknown": names(unknown), "equal": names(equal)},
+        "via": via.map(|(relation, target)| json!({"relation": relation, "target": target}))})
+}
+
+/// A revision's impact: whether it is complete, why not with counts, and how many layers of
+/// each class its detail lists. `listed` counts only the hits kept, never a total reached.
+pub(crate) fn summary(
+    complete: bool,
+    reasons: &BTreeMap<&'static str, u64>,
+    listed: &BTreeMap<&'static str, u64>,
+) -> Json {
+    json!({"complete": complete,
+        "reasons": reasons.iter().map(|(r, n)| json!({"reason": r, "count": n})).collect::<Vec<_>>(),
+        "listed": listed})
+}
+
+/// The serialized length of `v`, escaping included, when it is at most `cap` bytes.
+pub(crate) fn serialized(v: &Json, cap: usize) -> Option<usize> {
+    let mut w = super::store::Capped::new(cap);
+    serde_json::to_writer(&mut w, v).ok().map(|_| w.out.len())
 }
 
 /// One traversal step: the layers that depend on `target` may change in `facet` with `seed`.

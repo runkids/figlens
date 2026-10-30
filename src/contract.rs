@@ -476,7 +476,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "changes",
-        "Recorded design changes of the scopes index track follows; never writes or builds. A query subscription's subscriptionId instead pages its stored search evaluations (evaluations, evaluation, tracking; no revision pages); ack them the same way. Its evaluation is current, current_for_index (the file changed or is gone since that index: refresh, then evaluate), pending with an evaluate step, or unavailable (also when its last evaluate at this publication failed, with that reason, until a later publication); a stored evaluation too large or damaged to page fails with a recovery that acks past it. Each revision is one published build of a tracked scope: kind baseline (tracking started, or nothing comparable before it, with a reason) or changes, with coverage, exact summary counts per change kind and facet, and detail complete, truncated or expired. Pages run oldest first after cursor, else after the consumer's checkpoint (moved by watch ack), else from the oldest kept. Pass revision to page that revision's changed nodes instead. tracking lists each tracked scope's state, lastRevisionId and refreshRequired (the file changed since its last build: refresh the scope to record it; an empty page never proves the file unchanged); monitor is the watch monitor, separate from tracking. A cursor is bound to the filters, the visible sources and the workspace incarnation: any other use is cursor_stale. event_gap means retention deleted revisions before they were read: follow its recovery and treat the scope as possibly changed.",
+        "Recorded design changes of the scopes index track follows; never writes or builds. A query subscription's subscriptionId instead pages its stored search evaluations (evaluations, evaluation, tracking; no revision pages); ack them the same way. Its evaluation is current, current_for_index (the file changed or is gone since that index: refresh, then evaluate), pending with an evaluate step, or unavailable (also when its last evaluate at this publication failed, with that reason, until a later publication); a stored evaluation too large or damaged to page fails with a recovery that acks past it. Each revision is one published build of a tracked scope: kind baseline (tracking started, or nothing comparable before it, with a reason) or changes, with coverage, exact summary counts per change kind and facet, and detail complete, truncated or expired. A changes revision's impact says which layers its changes reach: complete, reasons with counts (impact_truncated: layers left out of its detail) and listed, the count per class (direct, effective, effective_unchanged, possible) of the layers its detail listed when recorded, never a total (an expired detail no longer keeps them); it is null for a baseline or a revision recorded before impact, never an empty complete one. A node subscription also reads revisions whose changes reach that layer, or whose impact is incomplete. Pages run oldest first after cursor, else after the consumer's checkpoint (moved by watch ack), else from the oldest kept. Pass revision to page that revision's changed nodes, then the layers its impact lists, instead; each entry's entry field says which (change or impact). tracking lists each tracked scope's state, lastRevisionId and refreshRequired (the file changed since its last build: refresh the scope to record it; an empty page never proves the file unchanged); monitor is the watch monitor, separate from tracking. A cursor is bound to the filters, the visible sources and the workspace incarnation: any other use is cursor_stale. event_gap means retention deleted revisions before they were read: follow its recovery and treat the scope as possibly changed.",
         &[
             ("workspaceId", "string", true, "ws_... from the index tool"),
             ("sourceId", "string", false, "only this source's revisions"),
@@ -498,13 +498,13 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "revision",
                 "string",
                 false,
-                "a revisionId: page its changed nodes instead",
+                "a revisionId: page its changed nodes, then its impact's listed layers, instead",
             ),
             (
                 "limit",
                 "integer",
                 false,
-                "revisions per page, 1-50 (default 20); with revision, nodes per page, 1-500 (default 100)",
+                "revisions per page, 1-50 (default 20); with revision, entries per page, 1-500 (default 100)",
             ),
             STORAGE,
         ],
@@ -687,15 +687,15 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
         "changes" => (
             serde_json::json!({
                 "workspaceId": {"type": "string"},
-                "revisions": {"type": "array", "items": {"type": "object"}, "description": "oldest first: revisionId, sourceId, scope, kind (baseline or changes), from (the previous revisionId, null for a baseline or when deleted), snapshotId, coverage (a baseline's reason), summary (changes, kinds, facets, possibleMatches), detail (complete, truncated or expired), detailRows"},
+                "revisions": {"type": "array", "items": {"type": "object"}, "description": "oldest first: revisionId, sourceId, scope, kind (baseline or changes), from (the previous revisionId, null for a baseline or when deleted), snapshotId, coverage (a baseline's reason), summary (changes, kinds, facets, possibleMatches), detail (complete, truncated or expired), detailRows, impact (null, or complete, reasons [{reason, count}], listed per class)"},
                 "nextCursor": {"type": ["string", "null"], "description": "pass as cursor for the next page, or to watch ack once handled"},
                 "hasMore": {"type": "boolean"},
                 "tracking": {"type": "array", "items": {"type": "object"}, "description": "each tracked scope of the visible sources: sourceId, scope, state (baseline_pending, active or disabled), lastRevisionId, lastCheckedAtMs (when its last build verified the file), refreshRequired (the file's size or mtime differs from that build's)"},
                 "trackingTruncated": {"type": "boolean", "description": "true when more tracked scopes exist than tracking lists"},
                 "monitor": {"type": "object", "description": "the watch monitor's state, separate from tracking: inactive when no lease covers the view, partial when some tracked scope of the view has none, else watching or the first problem (unauthorized, source_busy, source_missing, source_unreadable, stale)"},
                 "revisionId": {"type": "string", "description": "with revision"},
-                "detail": {"type": "string", "description": "with revision: complete, truncated (rows past the cap were not kept) or expired"},
-                "nodes": {"type": "array", "items": {"type": "object"}, "description": "with revision: frame, id, kind, change, facets, unread, descendants"},
+                "detail": {"type": "string", "description": "with revision: complete, truncated (rows or impact entries past the cap were not kept) or expired (neither is kept)"},
+                "nodes": {"type": "array", "items": {"type": "object"}, "description": "with revision: its change rows (entry change: frame, id, kind, change, facets, unread, descendants), then its impact's listed layers (entry impact: id, class, sides, facets {changed, unknown, equal}, via {relation, target} or null)"},
                 "subscription": {"type": "object", "description": "with subscriptionId: as watch subscribe describes it"},
                 "evaluations": {"type": "array", "items": {"type": "object"}, "description": "a query subscription's stored evaluations, oldest first: evaluationId, snapshotId, coverage, causes (initial, source_changed, index_rebuilt, coverage_changed, ranking_changed, corpus_changed), total (null unless every hit was counted), topK, delta (from evaluationId, fromSnapshotId, snapshotId; enteredTopK and leftTopK as exact sourceId/snapshotId/nodeId refs in the new and old snapshot; rankChanged within the window, null when rankComparable is false), createdAtMs"},
                 "evaluation": {"type": "object", "description": "a query subscription: state current, current_for_index (the file changed or is unreadable since that index: refresh, then evaluate), pending (with reason and an evaluate step) or unavailable"},

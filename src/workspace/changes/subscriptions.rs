@@ -94,7 +94,8 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Sub> {
 /// The subscription, reauthorized against the sources this caller may see before anything of
 /// it is read out: one on a hidden or removed source is reported as unknown.
 pub(super) fn visible(storage: &Storage, ws: &Opened, id: &str) -> Result<Sub> {
-    if ws.version < SCHEMA {
+    // Schema 6 introduced subscriptions; a read never upgrades.
+    if ws.version < 6 {
         return Err(unknown(id));
     }
     let sub = ws
@@ -374,7 +375,8 @@ pub fn list(
     after: Option<&str>,
 ) -> Result<Json> {
     let (_, ws) = opened(storage, select, false)?;
-    if ws.version < SCHEMA {
+    // Schema 6 introduced subscriptions; a read never upgrades.
+    if ws.version < 6 {
         return Ok(json!({"workspaceId": ws.held.id, "subscriptions": [], "next": null}));
     }
     // Visible sources and the rows come from one snapshot.

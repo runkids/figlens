@@ -2312,8 +2312,14 @@ fn changes_pages_revisions_and_their_nodes_and_a_consumer_acks_its_place() {
             rest["revisions"][0]["from"] == first["revisions"][0]["revisionId"],
             (
                 nodes["nodes"].as_array().unwrap().len(),
-                more["nodes"].as_array().unwrap().len(),
-                more["nextCursor"].clone()
+                more["nodes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|n| (n["entry"].clone(), n["sides"].clone()))
+                    .collect::<Vec<_>>(),
+                more["nextCursor"].clone(),
+                rest["revisions"][0]["impact"].clone()
             ),
             (
                 fresh["revisions"].as_array().unwrap().len(),
@@ -2334,7 +2340,20 @@ fn changes_pages_revisions_and_their_nodes_and_a_consumer_acks_its_place() {
             vec![json!("baseline"), json!("changes")],
             (json!(true), json!(false)),
             true,
-            (3, 1, Value::Null),
+            // The last change row, then the layers its changes reach: the added and removed
+            // ones on the side they exist in.
+            (
+                3,
+                vec![
+                    (json!("change"), Value::Null),
+                    (json!("impact"), json!(["old", "new"])),
+                    (json!("impact"), json!(["old", "new"])),
+                    (json!("impact"), json!(["old"])),
+                    (json!("impact"), json!(["new"]))
+                ],
+                Value::Null,
+                json!({"complete": true, "listed": {"direct": 4}, "reasons": []})
+            ),
             (2, json!(id)),
             (json!(true), json!(false), true),
             (json!("active"), json!(false), json!({"state": "inactive"})),
@@ -3209,6 +3228,128 @@ fn a_node_subscription_reads_a_revision_whose_comparison_was_incomplete() {
 }
 
 #[test]
+fn a_node_subscription_reads_revisions_whose_impact_reaches_that_node_or_is_incomplete() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let source = t.changes(&[])["tracking"][0]["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let reached = t.subscribe(&["--node", "0:12"]);
+    // A complete revision that changes other layers and reaches 0:12 through an instance.
+    t.sql(&format!(
+        "INSERT INTO revisions (id, seq, source_id, scope, epoch, gen, from_gen, snapshot_id,
+         kind, coverage, summary, detail, detail_rows, detail_bytes, created_ms, impact)
+         SELECT x'000102030405060708090a0b0c0d0e0f', seq + 100, source_id, scope, epoch, gen,
+         from_gen, snapshot_id, kind, '{{\"complete\":true}}', summary, 'complete', 0, 0,
+         created_ms, impact FROM revisions WHERE source_id = '{source}' ORDER BY seq DESC LIMIT 1;
+         INSERT INTO revision_impacts VALUES (x'000102030405060708090a0b0c0d0e0f', 0, '0:12',
+         'effective', 3, 1, 0, 0, 'instance_of', '0:11');"
+    ));
+    // And a complete one reaching nothing it names, whose impact could not rule it out.
+    t.sql(&format!(
+        "INSERT INTO revisions (id, seq, source_id, scope, epoch, gen, from_gen, snapshot_id,
+         kind, coverage, summary, detail, detail_rows, detail_bytes, created_ms, impact)
+         SELECT randomblob(16), seq + 1, source_id, scope, epoch, gen, from_gen, snapshot_id,
+         kind, coverage, summary, 'complete', 0, 0, created_ms,
+         '{{\"complete\":false,\"reasons\":[{{\"reason\":\"depth_limit\",\"count\":1}}],\"listed\":{{}}}}'
+         FROM revisions WHERE source_id = '{source}' ORDER BY seq DESC LIMIT 1"
+    ));
+    let page = t.changes(&["--subscription", &reached]);
+    assert_eq!(page["revisions"].as_array().unwrap().len(), 2, "{page}");
+}
+
+#[test]
+fn a_revision_s_detail_pages_one_entry_at_a_time_across_its_changes_and_impact() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    let id = t.changes(&[])["revisions"][1]["revisionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let whole = t.changes(&["--revision", &id, "--limit", "500"])["nodes"].clone();
+    let (mut paged, mut cursor) = (Vec::new(), None::<String>);
+    loop {
+        let mut args = vec!["--revision", &id, "--limit", "1"];
+        if let Some(c) = &cursor {
+            args.extend(["--cursor", c]);
+        }
+        let page = t.changes(&args);
+        paged.extend(page["nodes"].as_array().unwrap().iter().cloned());
+        match page["nextCursor"].as_str() {
+            Some(c) => cursor = Some(c.to_owned()),
+            None => break,
+        }
+    }
+    let entries: Vec<Value> = paged.iter().map(|n| n["entry"].clone()).collect();
+    assert_eq!(
+        (json!(paged) == whole, entries),
+        (
+            true,
+            ["change"; 4]
+                .into_iter()
+                .chain(["impact"; 4])
+                .map(|e| json!(e))
+                .collect()
+        )
+    );
+}
+
+#[test]
+fn a_schema_6_workspace_reads_impact_as_null_and_records_it_once_a_build_upgrades_it() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.save(true);
+    t.index("refresh");
+    // As schema 6 left it: revisions recorded before impact was.
+    t.sql(
+        "DROP TABLE revision_impacts; ALTER TABLE revisions DROP COLUMN impact;
+         PRAGMA user_version = 6;",
+    );
+    let version = || -> i64 {
+        rusqlite::Connection::open(&t.db)
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap()
+    };
+    let impacts = |page: &Value| -> Vec<Value> {
+        page["revisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["impact"]["complete"].clone())
+            .collect()
+    };
+    let before = t.changes(&[]);
+    let id = before["revisions"][1]["revisionId"].as_str().unwrap();
+    let detail = t.changes(&["--revision", id, "--limit", "500"]);
+    let entries: Vec<Value> = detail["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["entry"].clone())
+        .collect();
+    let read = version();
+    t.save(false);
+    t.index("refresh");
+    let after = t.changes(&[]);
+    assert_eq!(
+        (impacts(&before), entries, read, impacts(&after), version()),
+        (
+            vec![Value::Null; 2],
+            vec![json!("change"); 4],
+            6,
+            vec![Value::Null, Value::Null, json!(true)],
+            7
+        )
+    );
+}
+
+#[test]
 fn a_subscribe_reply_describes_its_source_as_authorized_though_it_is_relocated_meanwhile() {
     let env = Env::new();
     let (inside, outside) = (env.dir.join("in"), env.dir.join("out"));
@@ -3660,7 +3801,7 @@ fn a_changes_read_relocated_out_of_its_root_meanwhile_reads_the_registry_it_auth
         .execute_batch(
             "INSERT INTO revisions SELECT randomblob(16), seq + 100, source_id, scope, epoch,
              gen, from_gen, snapshot_id, kind, coverage, summary, detail, detail_rows,
-             detail_bytes, created_ms FROM revisions ORDER BY seq DESC LIMIT 1",
+             detail_bytes, created_ms, impact FROM revisions ORDER BY seq DESC LIMIT 1",
         )
         .unwrap();
     let after = env.json(&["changes", "--file", &moved])["revisions"].clone();

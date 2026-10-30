@@ -49,6 +49,8 @@ struct View {
     key: Option<String>,
     bind: Vec<u8>,
     sub: Option<subscriptions::Sub>,
+    /// Schema 7 records impact; an older workspace is read as it is, never upgraded.
+    impacts: bool,
 }
 
 fn view(storage: &Storage, ws: &Opened, req: &Request) -> Result<View> {
@@ -105,6 +107,7 @@ fn view(storage: &Storage, ws: &Opened, req: &Request) -> Result<View> {
         key,
         bind,
         sub,
+        impacts: ws.version >= 7,
     })
 }
 
@@ -124,6 +127,19 @@ fn cursor(v: &View, tag: &str, payload: &[u8]) -> Json {
         )),
         None => Json::Null,
     }
+}
+
+/// A cursor `tag` over `payload` as the view of `req` issues it, so tests can forge older ones.
+#[cfg(test)]
+pub(crate) fn sign(
+    storage: &Storage,
+    select: &Select,
+    req: &Request,
+    tag: &str,
+    payload: &[u8],
+) -> Json {
+    let (_, ws) = opened(storage, select, false).unwrap();
+    cursor(&view(storage, &ws, req).unwrap(), tag, payload)
 }
 
 fn stale() -> Box<dyn Error> {
@@ -378,18 +394,29 @@ fn poll(conn: &Connection, v: &View, req: &Request) -> Result<Json> {
         (None, None) => (0, marks(conn, v, None)?),
     };
     let now = marks.receipt;
+    // A node is followed through the layers a change reaches as well as the changed ones, and
+    // through any revision whose impact is incomplete, since it cannot rule the node out.
+    let (impact, reached) = match v.impacts {
+        true => (
+            "r.impact",
+            "OR json_extract(r.impact, '$.complete') IS 0 OR EXISTS
+             (SELECT 1 FROM revision_impacts i WHERE i.rev = r.id AND i.node = ?5)",
+        ),
+        false => ("NULL", ""),
+    };
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT r.id, r.source_id, r.scope, r.kind, r.snapshot_id, r.coverage, r.summary,
              r.detail, r.detail_rows, (SELECT p.id FROM revisions p WHERE p.source_id = r.source_id
-             AND p.scope = r.scope AND p.gen = r.from_gen AND p.seq < r.seq)
+             AND p.scope = r.scope AND p.gen = r.from_gen AND p.seq < r.seq), {impact}
              FROM revisions r WHERE r.seq > ?1 AND r.source_id IN (SELECT value FROM json_each(?2))
              AND (?3 IS NULL OR r.scope = ?3)
              AND (?5 IS NULL OR r.kind = 'baseline' OR r.detail <> 'complete'
              OR json_extract(r.coverage, '$.complete') IS NOT 1 OR EXISTS
-             (SELECT 1 FROM revision_changes c WHERE c.rev = r.id AND (c.node = ?5 OR c.frame = ?5)))
+             (SELECT 1 FROM revision_changes c WHERE c.rev = r.id AND (c.node = ?5 OR c.frame = ?5))
+             {reached})
              ORDER BY r.seq LIMIT ?4",
-        )
+        ))
         .map_err(sql)?;
     let rows = stmt
         .query_map(
@@ -412,7 +439,10 @@ fn poll(conn: &Connection, v: &View, req: &Request) -> Result<Json> {
                         "snapshotId": r.get::<_, Option<String>>(4)?,
                         "coverage": serde_json::from_str::<Json>(&text(5)?).unwrap_or(Json::Null),
                         "summary": serde_json::from_str::<Json>(&text(6)?).unwrap_or(Json::Null),
-                        "detail": text(7)?, "detailRows": r.get::<_, i64>(8)?}),
+                        "detail": text(7)?, "detailRows": r.get::<_, i64>(8)?,
+                        // Null when nothing was compared or it was recorded before impact was.
+                        "impact": r.get::<_, Option<String>>(10)?
+                            .and_then(|t| serde_json::from_str::<Json>(&t).ok())}),
                 ))
             },
         )
@@ -540,16 +570,62 @@ fn detail(conn: &Connection, v: &View, req: &Request, revision: &str) -> Result<
         None if marks(conn, v, None)?.newest > 0 => return Err(gap(conn, v)),
         None => return Err(missing()),
     };
-    let after = match req.cursor {
-        Some(c) => {
+    // A `d2.` cursor names its section, change rows (0) then the impact list (1), and the last
+    // position read in it; a `d1.` cursor, issued before impact, is a change row position.
+    let (section, after) = match req.cursor {
+        Some(c) if c.starts_with("d1.") => {
             let p = payload(v, "d1", c, 24)?;
             if p[..16] != id[..] {
                 return Err(stale());
             }
-            i64::from_be_bytes(p[16..].try_into().unwrap())
+            (0, i64::from_be_bytes(p[16..].try_into().unwrap()))
         }
-        None => -1,
+        Some(c) => {
+            let p = payload(v, "d2", c, 25)?;
+            if p[..16] != id[..] || p[16] > 1 {
+                return Err(stale());
+            }
+            (p[16], i64::from_be_bytes(p[17..].try_into().unwrap()))
+        }
+        None => (0, -1),
     };
+    let mut entries = Vec::new();
+    if section == 0 {
+        entries = changed(conn, &id, after, limit + 1)?;
+    }
+    if v.impacts && entries.len() <= limit {
+        let after = if section == 1 { after } else { -1 };
+        entries.extend(impacted(conn, &id, after, limit + 1 - entries.len())?);
+    }
+    let (mut page, mut used, mut last) = (Vec::new(), 0, None);
+    for (at, node) in entries.iter().take(limit) {
+        let size = node.to_string().len();
+        if !page.is_empty() && used + size > PAGE_BYTES {
+            break;
+        }
+        used += size;
+        page.push(node.clone());
+        last = Some(*at);
+    }
+    let next = match (page.len() < entries.len(), last) {
+        (true, Some((section, ord))) => {
+            cursor(v, "d2", &[&id[..], &[section], &ord.to_be_bytes()].concat())
+        }
+        _ => Json::Null,
+    };
+    Ok(
+        json!({"workspaceId": v.workspace, "revisionId": revision, "detail": state,
+        "nodes": page, "nextCursor": next}),
+    )
+}
+
+/// Up to `limit` change rows of revision `id` after row `after`, each with its position.
+fn changed(
+    conn: &Connection,
+    id: &[u8],
+    after: i64,
+    limit: usize,
+) -> Result<Vec<((u8, i64), Json)>> {
     let mut stmt = conn
         .prepare(
             "SELECT ord, frame, node, kind, change, facets, descendants FROM revision_changes
@@ -557,10 +633,10 @@ fn detail(conn: &Connection, v: &View, req: &Request, revision: &str) -> Result<
         )
         .map_err(sql)?;
     let rows = stmt
-        .query_map(params![id, after, limit as i64 + 1], |r| {
+        .query_map(params![id, after, limit as i64], |r| {
             let facets: u8 = r.get(5)?;
             let descendants: i64 = r.get(6)?;
-            let mut node = json!({"frame": r.get::<_, Option<String>>(1)?,
+            let mut node = json!({"entry": "change", "frame": r.get::<_, Option<String>>(1)?,
                 "id": r.get::<_, String>(2)?, "kind": r.get::<_, String>(3)?,
                 "change": r.get::<_, String>(4)?});
             if node["change"] == "changed" {
@@ -572,29 +648,43 @@ fn detail(conn: &Connection, v: &View, req: &Request, revision: &str) -> Result<
             if descendants > 0 {
                 node["descendants"] = json!(descendants);
             }
-            Ok((r.get::<_, i64>(0)?, node))
+            Ok(((0, r.get::<_, i64>(0)?), node))
         })
         .map_err(sql)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(sql)?;
-    let (mut page, mut used, mut last) = (Vec::new(), 0, None);
-    for (ord, node) in rows.iter().take(limit) {
-        let size = node.to_string().len();
-        if !page.is_empty() && used + size > PAGE_BYTES {
-            break;
-        }
-        used += size;
-        page.push(node.clone());
-        last = Some(*ord);
-    }
-    let next = match page.len() < rows.len() {
-        true => cursor(v, "d1", &[&id[..], &last.unwrap().to_be_bytes()].concat()),
-        false => Json::Null,
-    };
-    Ok(
-        json!({"workspaceId": v.workspace, "revisionId": revision, "detail": state,
-        "nodes": page, "nextCursor": next}),
-    )
+    Ok(rows)
+}
+
+/// Up to `limit` listed layers of revision `id`'s impact after position `after`.
+fn impacted(
+    conn: &Connection,
+    id: &[u8],
+    after: i64,
+    limit: usize,
+) -> Result<Vec<((u8, i64), Json)>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT ord, node, class, side, changed, unknown, equal, relation, target
+             FROM revision_impacts WHERE rev = ?1 AND ord > ?2 ORDER BY ord LIMIT ?3",
+        )
+        .map_err(sql)?;
+    let rows = stmt
+        .query_map(params![id, after, limit as i64], |r| {
+            let (relation, target): (Option<String>, Option<String>) = (r.get(7)?, r.get(8)?);
+            let entry = crate::search::impact::entry(
+                &r.get::<_, String>(1)?,
+                &r.get::<_, String>(2)?,
+                r.get(3)?,
+                [r.get(4)?, r.get(5)?, r.get(6)?],
+                relation.as_deref().zip(target.as_deref()),
+            );
+            Ok(((1, r.get::<_, i64>(0)?), entry))
+        })
+        .map_err(sql)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(sql)?;
+    Ok(rows)
 }
 
 /// Moves `consumer`'s checkpoint for these filters forward to `cursor`; an older or equal
