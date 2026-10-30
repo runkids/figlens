@@ -78,9 +78,14 @@ export function cliArgs(tool, input) {
   if (tool === 'watch' && input.action === 'start') return ['watch', 'run', '--id', required(input, 'workspaceId'), ...flag('--source', input.sourceId),
     '--scope', required(input, 'scope'), ...storage, ...flag('--request-id', input.requestId)];
   // The CLI refuses a flag the action does not take.
-  if (tool === 'watch') return ['watch', input.action, ...filters(), ...flag('--consumer', input.consumer),
+  // A saved library question's reference and exact definition ref, as the MCP library object carries them.
+  const library = input.library === undefined ? [] : ['--library', required(input.library, 'kind'),
+    ...flag('--namespace', input.library.namespace), '--key', required(input.library, 'key'),
+    ...(input.library.definition === undefined ? [] : ['--definition-source', required(input.library.definition, 'sourceId'),
+      '--definition-snapshot', required(input.library.definition, 'snapshotId'), '--definition-node', required(input.library.definition, 'nodeId')])];
+  if (tool === 'watch') return ['watch', input.action, ...filters(), ...flag('--sources', input.sources), ...flag('--consumer', input.consumer),
     ...flag('--subscription', input.subscriptionId), ...(input.action === 'ack' ? ['--cursor', required(input, 'cursor')] : flag('--cursor', input.cursor)),
-    ...flag('--node', input.node), ...flag('--query', input.query), ...flag('--type', input.type), ...flag('--owner', input.owner),
+    ...flag('--node', input.node), ...flag('--query', input.query), ...flag('--type', input.type), ...library, ...flag('--owner', input.owner),
     ...flag('--after', input.after)];
   // Every given selector and scope field reaches the CLI, which refuses conflicting selectors and fields an
   // action does not take, so none is dropped into a broader operation. A file is the operand of prepare, add

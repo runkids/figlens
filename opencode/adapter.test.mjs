@@ -201,6 +201,10 @@ test('CLI path runs the MCP index, jobs, search, usages, diff, changes, watch an
     ['watch', 'subscribe', '--id', 'ws_1', '--source', 's', '--consumer', 'ci', '--node', '1:2', '--owner', 't']);
   assert.deepEqual(cliArgs('watch', { action: 'subscribe', workspaceId: 'ws_1', sourceId: 's', consumer: 'ci', query: 'Pay now', type: 'TEXT' }),
     ['watch', 'subscribe', '--id', 'ws_1', '--source', 's', '--consumer', 'ci', '--query', 'Pay now', '--type', 'TEXT']);
+  assert.deepEqual(cliArgs('watch', { action: 'subscribe', workspaceId: 'ws_1', sources: 'visible', consumer: 'ci',
+    library: { kind: 'component', namespace: 'ns', key: 'k', definition: { sourceId: 's', snapshotId: 'sha256:a', nodeId: '1:2' } } }),
+    ['watch', 'subscribe', '--id', 'ws_1', '--sources', 'visible', '--consumer', 'ci', '--library', 'component', '--namespace', 'ns',
+      '--key', 'k', '--definition-source', 's', '--definition-snapshot', 'sha256:a', '--definition-node', '1:2']);
   assert.deepEqual(cliArgs('watch', { action: 'evaluate', workspaceId: 'ws_1', subscriptionId: 'sub_1' }),
     ['watch', 'evaluate', '--id', 'ws_1', '--subscription', 'sub_1']);
   assert.deepEqual(cliArgs('watch', { action: 'start', workspaceId: 'ws_1', sourceId: 's', scope: '0:0', storage: '/s', requestId: 'r' }),

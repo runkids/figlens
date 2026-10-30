@@ -4431,3 +4431,64 @@ fn a_tracked_scope_publishes_definition_fingerprints_as_an_untracked_build_does(
         .unwrap();
     assert!(prints > 0, "{prints}");
 }
+
+#[test]
+fn cli_and_mcp_save_questions_over_a_source_set_and_name_the_source_that_changed() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let polled = t.changes(&[]);
+    let (ws, source) = (
+        polled["workspaceId"].clone(),
+        polled["tracking"][0]["sourceId"].clone(),
+    );
+    let library = t.watch(
+        "subscribe",
+        &[
+            "--consumer",
+            "bot",
+            "--sources",
+            "visible",
+            "--library",
+            "component",
+            "--namespace",
+            "ns",
+            "--key",
+            "k",
+        ],
+    );
+    let mut mcp = Mcp::start(&env, &[]);
+    let saved = mcp.call(
+        "watch",
+        json!({"action": "subscribe", "workspaceId": ws, "consumer": "bot", "sources": "visible",
+            "query": "badge"}),
+    )["structuredContent"]
+        .clone();
+    t.save(true);
+    t.index("refresh");
+    let evaluated = mcp.call(
+        "watch",
+        json!({"action": "evaluate", "workspaceId": ws,
+            "subscriptionId": saved["subscription"]["subscriptionId"]}),
+    )["structuredContent"]
+        .clone();
+    assert_eq!(
+        json!([
+            library["subscription"]["sources"],
+            library["subscription"]["library"],
+            library["evaluation"]["state"],
+            saved["subscription"]["sources"],
+            saved["subscription"]["sourceId"],
+            evaluated["evaluation"]["causes"][0],
+            evaluated["evaluation"]["delta"]["changedSourceIds"],
+        ]),
+        json!([
+            [source],
+            {"kind": "component", "namespace": "ns", "key": "k"},
+            "evaluated",
+            [source],
+            null,
+            "source_changed",
+            [source],
+        ])
+    );
+}
