@@ -196,9 +196,9 @@ Moved the `.fig`? `index relocate` keeps `workspaceId`, `sourceId` and storage; 
 
 Several designs in one folder? `index add <dir> --workspace DIR` registers up to 10 `.fig` files under that directory in one step, skipping links that lead out of it; the reply lists `added`, `existing`, `skipped` and `truncated`, a repeat adds nothing, and each file still needs its own `prepare --scope`. A file moved inside the folder is a new source unless you `relocate` it. Pass the reply's `nextCursor` as `--cursor C` (MCP `cursor`) to add the next 10. Paged search and library cursors last one hour; after that they return `cursor_expired`, so search again.
 
-Data: the SQLite database holds registered local paths, the selected scopes' layer names and effective text, instances' component property values, search postings, exact relations (containment, instances, variants, variable/style/image bindings, prototype targets) and the definitions they point at, hashes, generations and jobs. The original `.fig` stays unchanged where it is; its raw bytes are not stored in the database.
+Data: the SQLite database holds registered local paths, the selected scopes' layer names and effective text, instances' component property values, search postings, exact relations (containment, instances, variants, variable/style/image bindings, prototype targets) and the definitions they point at, hashes, generations and jobs. The original `.fig` stays unchanged where it is; its raw bytes are not stored in the database. Semantic and vision model layers add the vectors they embed, and visual indexing you enable adds PNG renders of the indexed layers, even without a model; query images are never stored.
 
-Pi, OpenCode and OMP use the same index through their own opt-in entry, and the workspace is reused across restarts and hosts. Not implemented: file events (a watch polls the file, and only while a holder runs), vectors and push events.
+Pi, OpenCode and OMP use the same index through their own opt-in entry, and the workspace is reused across restarts and hosts. Not implemented: file events (a watch polls the file, and only while a holder runs) and push events.
 
 <a id="semantic-search"></a>
 

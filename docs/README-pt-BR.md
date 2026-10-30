@@ -198,9 +198,9 @@ Moveu o `.fig`? `index relocate` mantém `workspaceId`, `sourceId` e armazenamen
 
 Vários designs em uma pasta? `index add <dir> --workspace DIR` registra de uma vez até 10 arquivos `.fig` desse diretório e ignora links que saem dele; a resposta traz `added`, `existing`, `skipped` e `truncated`, repetir não adiciona nada, e cada arquivo ainda precisa do próprio `prepare --scope`. Um arquivo movido dentro da pasta é uma nova fonte, a menos que você use `relocate`. Passe o `nextCursor` da resposta como `--cursor C` (MCP `cursor`) para adicionar os 10 seguintes. Os cursores paginados de busca e de biblioteca duram uma hora; depois disso retornam `cursor_expired`, então busque de novo.
 
-Dados: o banco SQLite guarda caminhos locais registrados, nomes de camadas e texto efetivo dos escopos escolhidos, valores de propriedades de componente das instâncias, postings de busca, relações exatas (contenção, instâncias, variantes, vínculos de variáveis/estilos/imagens, destinos de protótipo) e as definições a que apontam, hashes, gerações e jobs. O `.fig` original permanece inalterado onde está; seus bytes brutos não são guardados no banco.
+Dados: o banco SQLite guarda caminhos locais registrados, nomes de camadas e texto efetivo dos escopos escolhidos, valores de propriedades de componente das instâncias, postings de busca, relações exatas (contenção, instâncias, variantes, vínculos de variáveis/estilos/imagens, destinos de protótipo) e as definições a que apontam, hashes, gerações e jobs. O `.fig` original permanece inalterado onde está; seus bytes brutos não são guardados no banco. Camadas de modelos semânticos e de visão acrescentam os vetores que incorporam, e a indexação visual que você ativar acrescenta renderizações PNG das camadas indexadas, mesmo sem modelo; imagens de consulta nunca são guardadas.
 
-Pi, OpenCode e OMP usam o mesmo índice por meio de sua própria entrada opt-in, e o workspace é reutilizado entre reinícios e hosts. Não implementado: eventos de arquivo (um watch consulta o arquivo, e só enquanto um holder roda), vetores e eventos push.
+Pi, OpenCode e OMP usam o mesmo índice por meio de sua própria entrada opt-in, e o workspace é reutilizado entre reinícios e hosts. Não implementado: eventos de arquivo (um watch consulta o arquivo, e só enquanto um holder roda) e eventos push.
 
 <a id="semantic-search"></a>
 

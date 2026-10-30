@@ -198,9 +198,9 @@ MCP：`index` 的 prepare 返回一个 job；轮询 `jobs` 直到 `succeeded`，
 
 一个文件夹里有多个设计？`index add <dir> --workspace DIR` 一次登记该目录下最多 10 个 `.fig` 文件，并跳过指向目录之外的链接；回复列出 `added`、`existing`、`skipped` 和 `truncated`，重复执行不会新增任何内容，每个文件仍需各自执行 `prepare --scope`。在文件夹内移动的文件会成为新来源，除非使用 `relocate`。 将回复中的 `nextCursor` 作为 `--cursor C`（MCP 为 `cursor`）传入，即可继续登记接下来的 10 个。分页的搜索与库游标有效期为一小时，过期后返回 `cursor_expired`，请重新搜索。
 
-数据：SQLite 数据库保存已注册的本地路径、所选范围的图层名称与有效文本、实例的组件属性值、搜索 postings、精确关系（包含、实例、变体、变量/样式/图片绑定、原型目标）及其指向的定义、哈希、generation 和 job。原始 `.fig` 留在原处且保持不变；其原始字节不会存入数据库。
+数据：SQLite 数据库保存已注册的本地路径、所选范围的图层名称与有效文本、实例的组件属性值、搜索 postings、精确关系（包含、实例、变体、变量/样式/图片绑定、原型目标）及其指向的定义、哈希、generation 和 job。原始 `.fig` 留在原处且保持不变；其原始字节不会存入数据库。 语义与视觉模型层会加入其嵌入的向量；你启用的视觉索引即使没有模型也会加入已索引图层的 PNG 渲染图；查询图片从不保存。
 
-Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，workspace 可跨重启和宿主复用。尚未实现：文件事件（watch 以轮询读取文件，且只在有 holder 运行时进行）、向量与推送事件。
+Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，workspace 可跨重启和宿主复用。尚未实现：文件事件（watch 以轮询读取文件，且只在有 holder 运行时进行）与推送事件。
 
 <a id="semantic-search"></a>
 
