@@ -1789,7 +1789,7 @@ pub(crate) fn index_bytes_tracked(
     if !deleted_ok || scope.starts_with('I') {
         require_scope(&tree, scope)?;
     }
-    Ok(diff::tracked(&tree, scope, deadline))
+    Ok(diff::tracked(&tree, scope, deadline, Library::Stored))
 }
 
 fn decode_index(

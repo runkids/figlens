@@ -755,7 +755,7 @@ fn side(
     if node.starts_with('I') {
         require_scope(&tree, node)?;
     }
-    let (index, tracked) = tracked(&tree, node, deadline);
+    let (index, tracked) = tracked(&tree, node, deadline, super::Library::Skip);
     if stamp(canonical)? != staged {
         return Err(FigError::new(
             ErrorKind::SourceUnreadable,
@@ -2097,8 +2097,14 @@ pub(crate) struct Tracked {
 }
 
 /// A full build of `node` that also keeps every record's facets and the node's own parent and
-/// position, all within one build's bounds; a node absent from `tree` builds empty.
-pub(crate) fn tracked(tree: &Tree, node: &str, deadline: Instant) -> (Index, Tracked) {
+/// position, all within one build's bounds; a node absent from `tree` builds empty. `library`
+/// is `Stored` for a stored generation, so a tracked scope keeps what an untracked one does.
+pub(crate) fn tracked(
+    tree: &Tree,
+    node: &str,
+    deadline: Instant,
+    library: super::Library,
+) -> (Index, Tracked) {
     let mut bounds = Bounds {
         work: WORK,
         bytes: BYTES,
@@ -2111,14 +2117,7 @@ pub(crate) fn tracked(tree: &Tree, node: &str, deadline: Instant) -> (Index, Tra
     let mut facets = Vec::new();
     let present = tree.nodes.contains_key(node);
     let index = match present {
-        true => build_with(
-            tree,
-            node,
-            bounds,
-            true,
-            super::Library::Skip,
-            Some(&mut facets),
-        ),
+        true => build_with(tree, node, bounds, true, library, Some(&mut facets)),
         false => Index::empty(),
     };
     let t = Tracked {

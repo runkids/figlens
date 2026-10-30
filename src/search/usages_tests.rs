@@ -2788,3 +2788,21 @@ fn a_facet_over_its_read_cap_is_unknown() {
     let long = "Go ".repeat(30_000);
     assert_eq!(copy_matches(&long, red(1.0)), "unknown");
 }
+
+#[test]
+fn a_tracked_stored_build_keeps_the_library_references_and_fingerprints_of_an_untracked_one() {
+    let message = libraries_design();
+    let tree = Tree::new(&message);
+    let stored = crate::search::Library::Stored;
+    let untracked = crate::search::build_with(&tree, "0:0", bounds(WORK), true, stored, None);
+    let deadline = std::time::Instant::now() + crate::search::DEADLINE;
+    let (tracked, _) = crate::search::diff::tracked(&tree, "0:0", deadline, stored);
+    assert_eq!(
+        (
+            library_edges(&tracked),
+            &tracked.fingerprints,
+            untracked.fingerprints.is_empty()
+        ),
+        (library_edges(&untracked), &untracked.fingerprints, false)
+    );
+}

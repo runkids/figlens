@@ -4412,3 +4412,20 @@ fn a_failed_evaluation_stays_reported_by_changes_until_a_later_publication() {
         "{evaluated} {read}"
     );
 }
+
+#[test]
+fn a_tracked_scope_publishes_definition_fingerprints_as_an_untracked_build_does() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    let conn = rusqlite::Connection::open(&t.db).unwrap();
+    // The published generation is the tracked build's: it has a facet set.
+    let prints: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM fingerprints f JOIN published p ON p.gen = f.gen
+             JOIN facet_sets s ON s.gen = p.gen",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(prints > 0, "{prints}");
+}

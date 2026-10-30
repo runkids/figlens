@@ -2186,7 +2186,12 @@ fn saved(trees: &[&Tree], scope: &str) -> rusqlite::Connection {
             rusqlite::params![gen_id, scope],
         )
         .unwrap();
-        let (index, tracked) = tracked(tree, scope, Instant::now() + DEADLINE);
+        let (index, tracked) = tracked(
+            tree,
+            scope,
+            Instant::now() + DEADLINE,
+            crate::search::Library::Skip,
+        );
         crate::search::store::save(
             &mut conn,
             gen_id,
