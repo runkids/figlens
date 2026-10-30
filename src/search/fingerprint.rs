@@ -19,7 +19,7 @@ use crate::expand::Bounds;
 pub(crate) const FACETS: [&str; 4] = ["text", "layout", "appearance", "properties"];
 pub(crate) const STATES: [&str; 3] = ["read", "unread", "unsupported"];
 /// Bumped whenever the fold changes; stored with `usages::RELATIONS`.
-const VERSION: &str = "fingerprint-1";
+pub(crate) const VERSION: &str = "fingerprint-1";
 /// A root's place in its parent, which a cached copy does not share with its definition: its
 /// transform and the fields instance expansion keeps as placement.
 fn placement(key: &str) -> bool {
