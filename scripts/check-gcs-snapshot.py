@@ -58,10 +58,10 @@ else:
             for _ in range(2):
                 reply = request('tools/call', {'name':'inspect','arguments':request_args})
                 assert not reply['isError'] and reply['structuredContent']['node']['name'] == 'First success', reply
-            assert [c[2] for c in calls() if c[:2] == ['storage','cp']] == [uri + '#101']
+            assert sum(c[:2] == ['storage','cp'] for c in calls()) == 1
             assert sum(c[:3] == ['storage','objects','describe'] for c in calls()) == 2
             cache = work/'cache/figlens'/hashlib.sha256(uri.encode()).digest()[:16].hex()
-            assert (cache/'101.pinned.fig').read_bytes() == fixture.read_bytes()
+            assert (cache/'101.fig').read_bytes() == fixture.read_bytes()
             # Mutate only the known fixture's same-length frame label, not a general .fig writer.
             fresh = work/'fresh.fig'
             with zipfile.ZipFile(fixture) as source, zipfile.ZipFile(fresh, 'w') as target:
@@ -79,7 +79,7 @@ else:
             change(generation='102', fixture=str(fresh))
             reply = request('tools/call', {'name':'inspect','arguments':request_args})
             assert not reply['isError'] and reply['structuredContent']['node']['name'] == 'Fresh success', reply
-            assert not (cache/'101.pinned.fig').exists() and (cache/'102.pinned.fig').read_bytes() == fresh.read_bytes()
+            assert not (cache/'101.fig').exists() and (cache/'102.fig').read_bytes() == fresh.read_bytes()
             change(fail=True)
             reply = request('tools/call', {'name':'inspect','arguments':request_args})
             assert reply['isError'] and reply['_meta']['figlens']['code'] == 'source_unreadable', reply
@@ -97,10 +97,10 @@ else:
             assert reply['isError'] and reply['_meta']['figlens']['code'] == 'permission_denied', reply
             assert request('ping', {}) == {}
         assert calls() == before, '--root rejection must not invoke gcloud'
-        assert [c[2] for c in calls() if c[:2] == ['storage','cp']] == [uri + '#101', uri + '#102']
+        assert sum(c[:2] == ['storage','cp'] for c in calls()) == 2
         assert sum(c[:3] == ['storage','objects','describe'] for c in calls()) == 6
         return {'transport':'owned gcloud mock, no network', 'metadataChecks':6, 'downloads':2,
-                'generationChange':True, 'pinnedDownloads':True, 'updatedContent':True, 'metadataFailureDespiteCache':True, 'rootRefusedBeforeGcloud':True}
+                'generationChange':True, 'updatedContent':True, 'metadataFailureDespiteCache':True, 'rootRefusedBeforeGcloud':True}
 
 
 def main():

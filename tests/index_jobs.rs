@@ -1137,6 +1137,45 @@ fn a_gs_object_registers_its_generation_pinned_download_under_one_source_id() {
 
 #[cfg(unix)]
 #[test]
+fn a_plain_read_of_a_newer_generation_keeps_a_registered_download_readable() {
+    let env = Env::new();
+    let log = gcloud(&env, "101");
+    let dir = project(&env);
+    let d = dir.to_str().unwrap();
+    prepare_in(&env, &env.fig("a.fig"), d);
+    let added = env.json(&["index", "add", OBJECT, "--workspace", d]);
+    let id = added["source"]["sourceId"].as_str().unwrap();
+    let before = calls(&log);
+    std::fs::write(env.dir.join("bin/generation"), "102").unwrap();
+    let find = env.run(&["find", OBJECT, "first"]);
+    assert!(
+        find.status.success(),
+        "{}",
+        String::from_utf8_lossy(&find.stderr)
+    );
+    // A plain read copies the object as it is, never pinned to a generation.
+    let read = calls(&log)[before.len()..].to_owned();
+    assert!(read.contains(&format!("storage cp {OBJECT} ")), "{read}");
+    assert!(!read.contains('#'), "{read}");
+    env.json(&[
+        "index",
+        "refresh",
+        "--workspace",
+        d,
+        "--source",
+        id,
+        "--scope",
+        "0:0",
+    ]);
+    let status = env.json(&["index", "status", "--workspace", d]);
+    assert_eq!(source(&status, id)["present"], true, "{status}");
+    assert_eq!(source(&status, id)["remote"]["generation"], "101");
+    let found = env.json(&["search", "--workspace", d, "first", "--source", id]);
+    assert_eq!(found["results"][0]["ref"]["sourceId"], id, "{found}");
+}
+
+#[cfg(unix)]
+#[test]
 fn only_an_explicit_add_reaches_gcloud_never_status_search_refresh_or_watch() {
     let env = Env::new();
     let log = gcloud(&env, "7");

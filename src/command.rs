@@ -1168,7 +1168,7 @@ pub fn index_add(
     match file.to_str().filter(|f| f.starts_with("gs://")) {
         Some(uri) => {
             let (local, generation) =
-                figlens::remote::fetch(uri).map_err(|e| crate::contract::source(uri, e))?;
+                figlens::remote::fetch(uri, true).map_err(|e| crate::contract::source(uri, e))?;
             figlens::workspace::add_remote(storage, select, uri, &local, &generation)
         }
         None => figlens::workspace::add(storage, select, file),
