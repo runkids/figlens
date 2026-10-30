@@ -41,8 +41,8 @@ class MeasureNativeTest(unittest.TestCase):
         series = [second] * 130
         series[30] = series[90] = {**second, 'cpuMs': 200, 'readBytes': 5_000_000, 'ended': True}
         cost = native.idle_cost(series, cpu_exact=True)
-        self.assertEqual((cost['verificationSeconds'], cost['pollingCpuMsPer60s'], cost['cpuMsPer60s'],
-                          cost['readBytesPer60s'], cost['ioExact']), (2, 120, 318, 5_000_590, False))
+        self.assertEqual((cost['excludedFromPolling'], cost['pollingCpuMsPer60s'], cost['cpuMsPer60s'],
+                          cost['readBytesPer60s'], cost['ioExact']), (3, 120, 318, 5_000_590, False))
 
     @unittest.skipUnless(os.name == 'nt', 'Windows job accounting')
     def test_a_job_keeps_an_ended_childs_cpu(self):
@@ -79,6 +79,12 @@ class MeasureNativeTest(unittest.TestCase):
         rows = [revision('old', 'sha256:a'), revision('new', 'sha256:b', stop='work')]
         self.assertEqual([native.landed(rows[:1], {'old'}, 'sha256:b', 9), native.landed(rows, {'old'}, 'sha256:b', 9)],
                          [None, {'revisionId': 'new', 'snapshotMatches': True, 'changes': 1, 'complete': False}])
+
+    def test_windows_cpu_ticks_still_count_as_polling(self):
+        second = {'readBytes': 0, 'writeBytes': 0, 'physReadBytes': None, 'physWriteBytes': None, 'ended': False}
+        series = [{**second, 'cpuMs': 16 if i % 2 else 0} for i in range(130)]
+        series[30] = series[90] = {**second, 'cpuMs': 250}
+        self.assertEqual(native.idle_cost(series, cpu_exact=True)['pollingCpuMsPer60s'], 484)
 
     def test_a_reaped_worker_counts_once(self):
         row = lambda ppid, cpu, child: {'ppid': ppid, 'cpuMs': cpu, 'childCpuMs': child, 'readBytes': 0,

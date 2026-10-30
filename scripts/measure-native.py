@@ -16,6 +16,7 @@ import ctypes
 import hashlib
 from importlib import import_module
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -23,7 +24,6 @@ import re
 import shutil
 import sqlite3
 from stat import S_ISREG
-import statistics
 import subprocess
 import sys
 import tarfile
@@ -363,13 +363,12 @@ def step(before, now):
 
 def idle_cost(series, cpu_exact):
     """Per-second `step`s → per-60-s costs. Full idle is the worst 60-s window, which holds a
-    scheduled content verification; polling only leaves out the seconds whose CPU stands out
-    (those verifications)."""
+    scheduled content verification. Polling leaves out the costliest second per started minute,
+    one per verification: a threshold would misread Windows' 15.6 ms CPU ticks as verifications."""
     cpu = [s['cpuMs'] for s in series]
-    floor = statistics.median(cpu) * 3 + 10
-    quiet = [c for c in cpu if c <= floor]
+    quiet = sorted(cpu)[:-math.ceil(len(cpu) / 60)]
     io = lambda k: None if any(s[k] is None for s in series) else windowed([s[k] for s in series])
-    return {'seconds': len(series), 'verificationSeconds': len(cpu) - len(quiet), 'cpuMsPer60s': windowed(cpu),
+    return {'seconds': len(series), 'excludedFromPolling': len(cpu) - len(quiet), 'cpuMsPer60s': windowed(cpu),
             'pollingCpuMsPer60s': round(sum(quiet) * 60 / len(quiet)), 'cpuExact': cpu_exact,
             'ioExact': cpu_exact and not any(s['ended'] for s in series),
             **{f'{k}Per60s': io(k) for k in IO}}
