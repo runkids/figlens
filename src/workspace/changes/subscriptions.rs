@@ -100,15 +100,20 @@ pub(super) fn sees_set(
     conn: &Connection,
     members: Option<&[String]>,
 ) -> Result<bool> {
+    // Only the members' rows are read; an unreadable set (null) reads every source.
     let mut stmt = conn
-        .prepare("SELECT source_id, path FROM sources")
+        .prepare(
+            "SELECT path FROM sources WHERE ?1 IS NULL
+             OR source_id IN (SELECT value FROM json_each(?1))",
+        )
         .map_err(sql)?;
     let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .query_map([members.map(|m| json!(m).to_string())], |r| {
+            r.get::<_, String>(0)
+        })
         .map_err(sql)?;
-    for row in rows {
-        let (id, path) = row.map_err(sql)?;
-        if members.is_none_or(|m| m.contains(&id)) && !storage.sees(Path::new(&path)) {
+    for path in rows {
+        if !storage.sees(Path::new(&path.map_err(sql)?)) {
             return Ok(false);
         }
     }
@@ -295,19 +300,17 @@ pub(super) fn describe(conn: &Connection, sub: &Sub) -> Result<Json> {
         out["sources"] = match &sub.members {
             None => Json::Null,
             Some(m) => {
-                let mut kept = Vec::new();
-                for id in m {
-                    if conn
-                        .query_row("SELECT 1 FROM sources WHERE source_id = ?1", [id], |_| {
-                            Ok(())
-                        })
-                        .optional()
-                        .map_err(sql)?
-                        .is_some()
-                    {
-                        kept.push(id);
-                    }
-                }
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT value FROM json_each(?1)
+                         WHERE value IN (SELECT source_id FROM sources) ORDER BY key",
+                    )
+                    .map_err(sql)?;
+                let kept = stmt
+                    .query_map([json!(m).to_string()], |r| r.get::<_, String>(0))
+                    .map_err(sql)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(sql)?;
                 json!(kept)
             }
         };

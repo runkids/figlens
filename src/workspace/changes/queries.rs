@@ -253,6 +253,8 @@ pub(super) struct Eval {
     source: String,
     generation: i64,
     membership: String,
+    /// A set's `membership`, parsed once; empty for one source.
+    members: Vec<Member>,
     snapshot: String,
     ranking: String,
     coverage: Json,
@@ -315,8 +317,10 @@ type Outcome = std::result::Result<Eval, Json>;
 /// `source`'s published `scope` (or the saved set's, whose members the caller has seen),
 /// outside any write, with the publication it read. A library question runs the library query
 /// with its caps instead. `Err(reply)` says why there is nothing to evaluate now (not
-/// published, stale, unreadable). `cancel` interrupts the search; it then fails with
-/// `Cancelled` (a library question is not interrupted; its scan cap bounds it).
+/// published, stale, unreadable). `read` is the publication the caller read before calling,
+/// the search's before fence. `cancel` interrupts the search; it then fails with `Cancelled`
+/// (a library question is not interrupted; its scan cap bounds it).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn compute(
     storage: &Storage,
     select: &Select,
@@ -324,13 +328,13 @@ pub(super) fn compute(
     source: &str,
     scope: &str,
     saved: &Saved,
+    read: &Option<(i64, String)>,
     cancel: Option<&AtomicBool>,
-) -> Result<(Option<(i64, String)>, Outcome)> {
+) -> Result<Outcome> {
     let (_, ws) = opened(storage, select, false)?;
     let members = saved.members.as_deref();
     // Publications only move forward, so the same one before and after the search is the one
     // it read.
-    let read = published(&ws.conn, source, members, scope)?;
     let Some((generation, membership)) = read.clone() else {
         // A set names each registered member lacking the scope, never its sentinel.
         let mut lacking = Vec::new();
@@ -357,12 +361,8 @@ pub(super) fn compute(
                     "workspaceId": ws.held.id, "sourceId": s, "scope": scope}})
             })
             .collect();
-        return Ok((
-            None,
-            Err(
-                json!({"state": "unavailable", "reason": "scope_not_published",
-                "nextSteps": steps}),
-            ),
+        return Ok(Err(
+            json!({"state": "unavailable", "reason": "scope_not_published", "nextSteps": steps}),
         ));
     };
     let canonical = saved.canonical(scope)?;
@@ -387,22 +387,20 @@ pub(super) fn compute(
             }) else {
                 return Err(e);
             };
-            return Ok((
-                read,
-                Err(json!({"state": "unavailable", "reason": "search_failed",
-                "message": f.to_string(), "nextSteps": f.recovery()})),
+            return Ok(Err(
+                json!({"state": "unavailable", "reason": "search_failed",
+                "message": f.to_string(), "nextSteps": f.recovery()}),
             ));
         }
     };
-    if published(&ws.conn, source, members, scope)? != read {
-        return Ok((read, Err(pending("newer_publication", &ws.held.id, sub))));
+    if published(&ws.conn, source, members, scope)? != *read {
+        return Ok(Err(pending("newer_publication", &ws.held.id, sub)));
     }
     // A library reply has no state: its coverage names each source's.
     if saved.library.is_none() && reply["state"] != "ready" {
-        return Ok((
-            read,
-            Err(json!({"state": "unavailable", "reason": reply["state"],
-            "sources": reply["sources"], "nextSteps": reply["nextSteps"]})),
+        return Ok(Err(
+            json!({"state": "unavailable", "reason": reply["state"],
+            "sources": reply["sources"], "nextSteps": reply["nextSteps"]}),
         ));
     }
     // Exact refs: in a set a node id alone is ambiguous, so each carries its sourceId.
@@ -441,32 +439,33 @@ pub(super) fn compute(
                 "transitive": "not_followed"}),
         ),
     };
-    Ok((
-        read,
-        Ok(Eval {
-            source: if members.is_some() { SET } else { source }.to_owned(),
-            generation,
-            membership,
-            snapshot: match members {
-                Some(_) => String::new(),
-                None => reply["sources"][0]["snapshotId"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned(),
-            },
-            ranking,
-            coverage,
-            refs,
-            more: reply["hasMore"] == true,
-            library: saved.library.is_some(),
-            definition: saved
-                .library
-                .as_ref()
-                .and_then(|l| l.definition.as_ref())
-                .map(|d| d.source_id.clone()),
-            canonical,
-        }),
-    ))
+    Ok(Ok(Eval {
+        source: if members.is_some() { SET } else { source }.to_owned(),
+        generation,
+        members: match members {
+            Some(_) => members_of(&membership),
+            None => Vec::new(),
+        },
+        membership,
+        snapshot: match members {
+            Some(_) => String::new(),
+            None => reply["sources"][0]["snapshotId"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+        },
+        ranking,
+        coverage,
+        refs,
+        more: reply["hasMore"] == true,
+        library: saved.library.is_some(),
+        definition: saved
+            .library
+            .as_ref()
+            .and_then(|l| l.definition.as_ref())
+            .map(|d| d.source_id.clone()),
+        canonical,
+    }))
 }
 
 /// The newest stored evaluation of a subscription, as published.
@@ -474,6 +473,8 @@ struct Last {
     id: Vec<u8>,
     generation: i64,
     membership: String,
+    /// A set's `membership`, parsed once; empty for one source.
+    members: Vec<Member>,
     snapshot: String,
     ranking: String,
     coverage: String,
@@ -502,7 +503,7 @@ fn last(conn: &Connection, ws: &str, sub: &str) -> Result<Option<Last>> {
         |r| {
             Ok((
                 r.get::<_, i64>(1)?,
-                (r.get(0)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get::<_, Option<String>>(6)?),
+                (r.get(0)?, r.get::<_, Option<String>>(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get::<_, Option<String>>(6)?),
             ))
         },
     )
@@ -524,7 +525,8 @@ fn last(conn: &Connection, ws: &str, sub: &str) -> Result<Option<Last>> {
             return Err(damaged().into());
         };
         let refs = serde_json::from_str(&refs).map_err(|_| damaged())?;
-        Ok(Last { id, generation, membership, snapshot, ranking, coverage, refs })
+        let members = members_of(&membership);
+        Ok(Last { id, generation, membership, members, snapshot, ranking, coverage, refs })
     })
     .transpose()
 }
@@ -532,12 +534,11 @@ fn last(conn: &Connection, ws: &str, sub: &str) -> Result<Option<Last>> {
 /// The members whose snapshot changed since `l`, and whether only their generation did for the
 /// rest: a set's `source_changed` names them.
 fn moved(l: &Last, e: &Eval) -> (Vec<String>, bool) {
-    let before = members_of(&l.membership);
     let (mut changed, mut rebuilt) = (Vec::new(), false);
-    for (id, generation, _, snapshot) in members_of(&e.membership) {
-        match before.iter().find(|m| m.0 == id) {
-            Some(m) if m.3 == snapshot => rebuilt |= m.1 != generation,
-            _ => changed.push(id),
+    for (id, generation, _, snapshot) in &e.members {
+        match l.members.iter().find(|m| m.0 == *id) {
+            Some(m) if m.3 == *snapshot => rebuilt |= m.1 != *generation,
+            _ => changed.push(id.clone()),
         }
     }
     (changed, rebuilt)
@@ -560,14 +561,14 @@ fn causes(last: Option<&Last>, e: &Eval) -> Vec<&'static str> {
         } else if rebuilt {
             out.push("index_rebuilt");
         }
-        let shape = |key: &str| -> Vec<(String, bool, String)> {
-            members_of(key)
-                .into_iter()
-                .map(|m| (m.0, m.1.is_some(), m.2))
+        let shape = |members: &[Member]| -> Vec<(String, bool, String)> {
+            members
+                .iter()
+                .map(|m| (m.0.clone(), m.1.is_some(), m.2.clone()))
                 .collect()
         };
-        shape(&l.membership) != shape(&e.membership)
-            || (!e.library && !changed.is_empty() && members_of(&e.membership).len() > 1)
+        shape(&l.members) != shape(&e.members)
+            || (!e.library && !changed.is_empty() && e.members.len() > 1)
     } else {
         if l.snapshot != e.snapshot {
             out.push("source_changed");
@@ -604,12 +605,12 @@ fn delta(last: Option<&Last>, e: &Eval) -> Json {
     let before = last.map_or(&[][..], |l| l.refs.as_slice());
     let pos = |refs: &[Json], r: &Json| refs.iter().position(|x| identity(x) == identity(r));
     // Exact refs: a left result names the old snapshot it ranked in, never the new one.
-    let snapshot = |membership: &str, single: &str, r: &Json| match identity(r).0 {
+    let snapshot = |members: &[Member], single: &str, r: &Json| match identity(r).0 {
         None => Some(single.to_owned()),
-        Some(source) => members_of(membership)
-            .into_iter()
+        Some(source) => members
+            .iter()
             .find(|m| m.0 == source)
-            .and_then(|m| m.3),
+            .and_then(|m| m.3.clone()),
     };
     let node = |snapshot: Option<String>, r: &Json| {
         let (source, id) = identity(r);
@@ -619,13 +620,13 @@ fn delta(last: Option<&Last>, e: &Eval) -> Json {
         .refs
         .iter()
         .filter(|r| pos(before, r).is_none())
-        .map(|r| node(snapshot(&e.membership, &e.snapshot, r), r))
+        .map(|r| node(snapshot(&e.members, &e.snapshot, r), r))
         .collect();
     let left: Vec<Json> = last.map_or_else(Vec::new, |l| {
         l.refs
             .iter()
             .filter(|r| pos(&e.refs, r).is_none())
-            .map(|r| node(snapshot(&l.membership, &l.snapshot, r), r))
+            .map(|r| node(snapshot(&l.members, &l.snapshot, r), r))
             .collect()
     });
     // Positions under two rankings are not comparable: only membership of the window is. A
@@ -647,14 +648,14 @@ fn delta(last: Option<&Last>, e: &Eval) -> Json {
         "enteredTopK": entered, "leftTopK": left, "rankChanged": moved_in,
         "rankComparable": comparable});
     if e.source == SET {
-        let snapshots = |key: &str| -> Vec<Json> {
-            members_of(key)
-                .into_iter()
+        let snapshots = |members: &[Member]| -> Vec<Json> {
+            members
+                .iter()
                 .map(|m| json!({"sourceId": m.0, "snapshotId": m.3}))
                 .collect()
         };
-        out["sources"] = json!(snapshots(&e.membership));
-        out["fromSources"] = last.map_or(Json::Null, |l| json!(snapshots(&l.membership)));
+        out["sources"] = json!(snapshots(&e.members));
+        out["fromSources"] = last.map_or(Json::Null, |l| json!(snapshots(&l.members)));
         out["changedSourceIds"] = json!(last.map_or_else(Vec::new, |l| moved(l, e).0));
     } else {
         out["fromSnapshotId"] = json!(last.map(|l| &l.snapshot));
@@ -707,13 +708,13 @@ fn same_bytes(l: &Last, e: &Eval) -> bool {
     if e.source != SET {
         return l.snapshot == e.snapshot && l.membership == e.membership;
     }
-    let strip = |key: &str| -> Vec<(String, String, Option<String>)> {
-        members_of(key)
-            .into_iter()
-            .map(|m| (m.0, m.2, m.3))
+    let strip = |members: &[Member]| -> Vec<(String, String, Option<String>)> {
+        members
+            .iter()
+            .map(|m| (m.0.clone(), m.2.clone(), m.3.clone()))
             .collect()
     };
-    strip(&l.membership) == strip(&e.membership)
+    strip(&l.members) == strip(&e.members)
 }
 
 pub(super) fn pending(reason: &str, ws: &str, sub: &str) -> Json {
@@ -909,7 +910,7 @@ pub fn evaluate(storage: &Storage, select: &Select, id: Option<&str>) -> Result<
             "pass subscriptionId: the query subscription to evaluate",
         )
     })?;
-    let (source, scope, saved, ws_id) = {
+    let (source, scope, saved, ws_id, read) = {
         let (_, ws) = opened(storage, select, false)?;
         let sub = subscriptions::visible(storage, &ws, id)?;
         let saved = sub.saved()?.ok_or_else(|| {
@@ -923,10 +924,11 @@ pub fn evaluate(storage: &Storage, select: &Select, id: Option<&str>) -> Result<
                 "evaluation": disabled(&ws.held.id, id, why)}));
         }
         let scope = sub.scope.clone().unwrap_or_else(|| "0:0".into());
-        (sub.source, scope, saved, ws.held.id.clone())
+        let read = published(&ws.conn, &sub.source, saved.members.as_deref(), &scope)?;
+        (sub.source, scope, saved, ws.held.id.clone(), read)
     };
     let ranking = search::corpus_ranking().to_string();
-    let (read, computed) = compute(storage, select, id, &source, &scope, &saved, None)?;
+    let computed = compute(storage, select, id, &source, &scope, &saved, &read, None)?;
     let (_, ws) = opened(storage, select, true)?;
     let tx =
         rusqlite::Transaction::new_unchecked(&ws.conn, rusqlite::TransactionBehavior::Immediate)
@@ -1061,11 +1063,15 @@ pub struct Turn {
 /// publication `(?4 gen, ?5 membership, ?6 ranking)`: the work a publication leaves. A set is
 /// due when one of its members is `source` and neither its latest evaluation nor its note holds
 /// that member at this publication, and only while every member is among the runner's visible
-/// sources `?10`; a disabled or unreadable one never is.
+/// sources `?10`; a disabled or unreadable one never is. A set's text holds a member verbatim
+/// unless it has an escape, so the `instr` pre-filter skips non-member sets before any JSON is
+/// parsed and drops none that holds `?1`.
 fn due_sql() -> String {
     format!(
         "s.kind = 'query' AND s.source_id IN (?1, '{SET}') AND s.scope = ?2
-    AND s.disabled IS NULL AND CASE WHEN s.source_id = ?1 THEN
+    AND s.disabled IS NULL
+    AND (s.source_id = ?1 OR instr(s.sources, ?1) > 0 OR instr(s.sources, '\\') > 0)
+    AND CASE WHEN s.source_id = ?1 THEN
       NOT EXISTS (SELECT 1 FROM query_evaluations e WHERE e.sub = s.id
         AND e.seq = (SELECT MAX(seq) FROM query_evaluations WHERE sub = s.id)
         AND e.gen = ?4 AND e.membership = ?5 AND e.ranking = ?6)
@@ -1237,8 +1243,10 @@ pub fn evaluate_published(
         // The publication this search must read: the source's, or its set's with this source
         // at the publication the turn serves.
         let pre = match &saved {
-            Ok(s) => self::published(&ws.conn, source, s.members.as_deref(), scope)?,
-            Err(_) => published.clone(),
+            Ok(s) if s.members.is_some() => {
+                self::published(&ws.conn, source, s.members.as_deref(), scope)?
+            }
+            _ => published.clone(),
         };
         let holds = match &saved {
             Ok(s) if s.members.is_some() => pre.as_ref().is_some_and(|(_, key)| {
@@ -1251,18 +1259,25 @@ pub fn evaluate_published(
         if !holds {
             return Ok(turn(Some(Continuation::default()), 0, Vec::new()));
         }
-        let outcome = saved
-            .and_then(|saved| compute(storage, select, "", source, scope, &saved, Some(cancel)));
+        let outcome = saved.and_then(|saved| {
+            compute(
+                storage,
+                select,
+                "",
+                source,
+                scope,
+                &saved,
+                &pre,
+                Some(cancel),
+            )
+        });
         let outcome = match outcome {
             // Cancelled, whatever stopped it: nothing is noted and the turn resumes as it was.
             _ if cancel.load(Ordering::SeqCst) => return Ok(turn(Some(c), 0, Vec::new())),
-            Ok((read, _)) if read != pre => {
+            Ok(Err(why)) if why["state"] == "pending" => {
                 return Ok(turn(Some(Continuation::default()), 0, Vec::new()));
             }
-            Ok((_, Err(why))) if why["state"] == "pending" => {
-                return Ok(turn(Some(Continuation::default()), 0, Vec::new()));
-            }
-            Ok((_, outcome)) => kept(&ws_id, outcome),
+            Ok(outcome) => kept(&ws_id, outcome),
             Err(e) => Err(failed(e)),
         };
         computed = 1;
@@ -1661,6 +1676,7 @@ mod tests {
             source: "s".into(),
             generation: 1,
             membership: "m".into(),
+            members: Vec::new(),
             snapshot: "n".into(),
             ranking: "r".into(),
             coverage: json!({"complete": true}),
@@ -1713,6 +1729,7 @@ mod tests {
             id: vec![0; 16],
             generation: 1,
             membership: "a".into(),
+            members: Vec::new(),
             snapshot: "old".into(),
             ranking: "r".into(),
             coverage: "{}".into(),
@@ -1722,6 +1739,7 @@ mod tests {
             source: "s".into(),
             generation: 2,
             membership: membership.into(),
+            members: Vec::new(),
             snapshot: "new".into(),
             ranking: "r".into(),
             coverage: json!({}),
