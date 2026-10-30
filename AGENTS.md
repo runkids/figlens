@@ -43,7 +43,7 @@ python3 scripts/ai-context.py check     # validate paths, headings, links, orpha
 | `discovery` | Changing find/inspect summaries or `--flat`, `tree --top-frames` or `export --match-dir` |
 | `search` | Changing search indexing, ranking, cursors, coverage or budgets |
 | `diff` | Changing diff |
-| `changes` | Changing change tracking, `changes` or `watch ack` |
+| `changes` | Tracking, `changes`, `watch ack` or stale notes |
 | `subscriptions` | Changing subscriptions or checkpoints |
 | `watch` | Changing leases or the runner |
 | `workspace` | Changing workspace roots, identity, ownership, registry, locks or index actions |

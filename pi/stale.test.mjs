@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CHECKED, ENTRY, KEPT, Targets, changesArgs, check, checkInput, failure, notice, reminder, restore } from './stale.mjs';
+import { CHECKED, ENTRY, KEPT, NOTICE_BYTES, SELECTOR_BYTES, Targets, bounded, changesArgs, check, checkInput, failure, notice, reminder, restore } from './stale.mjs';
 
 const ws = 'ws_1';
 const reply = value => [{ type: 'text', text: JSON.stringify(value) }];
@@ -123,4 +123,63 @@ test('the whole batch shares one deadline, one at a time when asked, and a cance
 test('the explicit-check reminder lists only the session targets', () => {
   assert.equal(reminder([]), undefined);
   assert.match(reminder([{ workspaceId: ws, consumer: 'c' }]), /checked only when you call it[\s\S]*"consumer":"c"/);
+});
+
+const utf8 = value => Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value));
+
+test('restored targets keep only bounded selector fields', () => {
+  const kept = new Targets([{ workspaceId: ws, consumer: 'c', extra: 'x'.repeat(100000), nested: { a: 1 } }]).list;
+  assert.deepEqual(kept, [{ workspaceId: ws, consumer: 'c' }]);
+  // A multibyte scope counts in UTF-8 bytes, not UTF-16 units.
+  assert.deepEqual(new Targets([{ workspaceId: ws, consumer: 'c', scope: '界'.repeat(SELECTOR_BYTES / 3) }]).list.length, 1);
+  assert.deepEqual(new Targets([{ workspaceId: ws, consumer: 'c', scope: '界'.repeat(SELECTOR_BYTES / 3 + 1) }]).list, []);
+  for (const scope of ['0:1\n--storage', '0:1\u0000', '0:1\u007f', '0:1\u0085', '0:1\u2028']) assert.deepEqual(new Targets([{ workspaceId: ws, consumer: 'c', scope }]).list, [], JSON.stringify(scope));
+  const long = new Targets();
+  assert.equal(long.observe('figlens_watch', { action: 'ack', workspaceId: ws, consumer: 'c'.repeat(SELECTOR_BYTES + 1), cursor: 'x' }, []), false);
+  assert.equal(long.dropped, 1, 'an over-long selector was dropped silently');
+});
+
+test('facts stay within their budget and the whole note within NOTICE_BYTES', async () => {
+  const target = { workspaceId: ws, consumer: 'c' };
+  const big = 'é'.repeat(20000);
+  const [failed] = (await check([target], async () => { throw Object.assign(new Error(big), { recovery: [{ action: 'changes', note: big }] }); })).facts;
+  assert.ok(utf8(failed) <= 4096, utf8(failed));
+  assert.equal(failed.recoveryOmitted, true);
+  assert.ok(utf8(failed.unchecked) <= 500);
+  const huge = { revisions: [{ revisionId: 'r1', kind: 'changes', summary: big, detail: big }],
+    tracking: Array.from({ length: 50 }, () => ({ sourceId: big.slice(0, 300), state: 'active', refreshRequired: true })) };
+  const [fact] = (await check([target], async () => huge)).facts;
+  assert.ok(utf8(fact) <= 4096, utf8(fact));
+  assert.equal(fact.factTruncated, true);
+  assert.deepEqual(fact.unread, { revisionId: 'r1' });
+  const wide = { workspaceId: '"'.repeat(SELECTOR_BYTES), consumer: '\\\\'.repeat(SELECTOR_BYTES / 2), sourceId: '"'.repeat(SELECTOR_BYTES), scope: '"'.repeat(SELECTOR_BYTES), storage: '"'.repeat(SELECTOR_BYTES) };
+  const [widest] = (await check([wide], async () => huge)).facts;
+  assert.ok(utf8(widest) <= 4096, utf8(widest));
+  const facts = Array.from({ length: 40 }, (_, i) => ({ target: { workspaceId: ws, consumer: `c${i}` }, unread: { revisionId: 'r'.repeat(400) } }));
+  const text = notice({ facts, unchecked: 0 });
+  const json = JSON.parse(text.split('```json\n')[1].split('\n```')[0]);
+  assert.ok(utf8(json) <= NOTICE_BYTES && json.length < facts.length);
+  assert.match(text, new RegExp(`${facts.length - json.length} more fact\\(s\\) were left out`));
+  const listed = reminder(Array.from({ length: 32 }, (_, i) => ({ workspaceId: ws, consumer: `${i}`.padEnd(500, 'c') })));
+  assert.ok(utf8(listed) <= NOTICE_BYTES + 1024);
+  assert.match(listed, /were left out to fit this note/);
+});
+
+test('a bounded run reads a reply but kills a child whose output passes the limit', async () => {
+  const ok = await bounded(process.execPath, ['-e', 'process.stdout.write("{}")'], { cwd: '.' });
+  assert.deepEqual([ok.code, ok.stdout], [0, '{}']);
+  await assert.rejects(bounded(process.execPath, ['-e', 'process.stdout.write("x".repeat(5000)); setInterval(() => {}, 1000)'], { cwd: '.', limit: 1024 }),
+    /reply exceeded the check budget/);
+  // A wrapper's own child dies with it: the run rejects at once instead of waiting on the grandchild.
+  const started = Date.now();
+  await assert.rejects(bounded(process.execPath, ['-e', 'require("child_process").spawnSync(process.execPath, ["-e", "process.stdout.write(\\"x\\".repeat(5000)); setTimeout(() => {}, 4000)"], { stdio: "inherit" })'],
+    { cwd: '.', limit: 1024 }), /reply exceeded/);
+  assert.ok(Date.now() - started < 2000);
+  const noisy = await bounded(process.execPath, ['-e', 'process.stderr.write("w".repeat(100000) + "\\n{\\"recovery\\":[]}\\n"); process.stdout.write("{}")'], { cwd: '.', limit: 1024 });
+  assert.deepEqual([noisy.stdout, noisy.stderr.trim().split("\n").at(-1)], ['{}', '{"recovery":[]}']);
+  await assert.rejects(bounded('/nonexistent/figlens', [], { cwd: '.' }), /ENOENT/);
+  const turn = new AbortController();
+  const running = bounded(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: '.', signal: turn.signal });
+  turn.abort(new Error('turn ended'));
+  await assert.rejects(running, /turn ended/);
 });
