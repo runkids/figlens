@@ -136,15 +136,29 @@ pub fn status(storage: &Storage) -> Result<Json> {
             let runtime = Path::new(r["runtime"].as_str().unwrap_or_default()).to_path_buf();
             let files = KNOWN.iter().find(|k| r["name"] == k.name).map_or(&[][..], |k| k.files);
             let missing: Vec<&str> = files.iter().map(|f| f.0).filter(|f| !model.join(f).is_file()).collect();
-            let (state, reason) = if !runtime.is_file() {
-                ("unavailable", Some(format!("runtime {} is missing", runtime.display())))
+            // The runtime is hashed again (an upgrade replaces it); model weights are not.
+            let changed = runtime.is_file()
+                && super::sha256_file(&runtime, &AtomicBool::new(false)).ok().as_ref()
+                    != r["stamps"]["runtime"].as_str().map(str::to_owned).as_ref();
+            let (state, code, reason) = if !runtime.is_file() {
+                ("unavailable", Some("runtime_missing"), Some(format!("runtime {} is missing", runtime.display())))
+            } else if changed {
+                ("unavailable", Some("runtime_changed"), Some(format!("runtime {} changed since configure (an upgrade replaces it)", runtime.display())))
             } else if !missing.is_empty() {
-                ("unavailable", Some(format!("{} missing from {}", missing.join(", "), model.display())))
+                ("unavailable", Some("model_missing"), Some(format!("{} missing from {}", missing.join(", "), model.display())))
             } else {
-                ("ready", None)
+                ("ready", None, None)
             };
+            // Configuring again with the same files and the shipped runtime makes it usable;
+            // its vectors stay apart under the new profile id.
+            let recovery = code.map(|_| {
+                json!([{"action": "configure", "tool": "models", "requires": "user_confirmation",
+                    "arguments": {"action": "configure", "profile": r["name"], "modelDir": r["model"]},
+                    "cli": format!("figlens models configure {} --model {}", r["name"].as_str().unwrap_or_default(), model.display()),
+                    "note": "uses the figlens-embed shipped beside figlens; reinstall figlens with its paired runtime if that is missing"}])
+            });
             json!({"name": r["name"], "profileId": r["profileId"], "model": r["model"], "runtime": r["runtime"],
-                "dim": r["dim"], "state": state, "reason": reason})
+                "dim": r["dim"], "state": state, "code": code, "reason": reason, "recovery": recovery})
         })
         .collect();
     let next = if profiles.is_empty() {
@@ -178,7 +192,7 @@ pub fn configure(
         return Err(fail(
             ErrorKind::InvalidArguments,
             format!(
-                "no model runtime at {}; install the figlens-embed that ships with figlens, or pass --runtime",
+                "no model runtime at {}; install figlens with the figlens-embed it ships beside it, then configure again",
                 runtime.display()
             ),
         ));

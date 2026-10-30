@@ -1082,6 +1082,58 @@ fn a_schema_8_workspace_reads_its_model_layer_as_pending() {
     assert_eq!(got["coverage"]["layers"]["semantic"]["state"], "pending");
 }
 
+fn status_names_a_changed_or_missing_runtime_and_how_to_configure_again() {
+    let dir = test_support::TestDir::new();
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe {
+        std::env::set_var(
+            "XDG_CONFIG_HOME",
+            std::path::absolute(dir.join("config")).unwrap(),
+        )
+    };
+    let storage = figlens::workspace::storage(None).unwrap();
+    let (model, files) = model(&dir, "weights");
+    let files: &'static [(&str, &str)] = Box::leak(
+        files
+            .into_iter()
+            .map(|(n, d)| (n, &*Box::leak(d.into_boxed_str())))
+            .collect(),
+    );
+    let k = profile::Known {
+        name: "fake",
+        model: "fake",
+        revision: "0",
+        license: "MIT",
+        files,
+    };
+    let runtime =
+        std::path::absolute(dir.join(&format!("runtime{}", std::env::consts::EXE_SUFFIX))).unwrap();
+    std::fs::copy(std::env::current_exe().unwrap(), &runtime).unwrap();
+    profile::configure(
+        &storage,
+        &k,
+        &model,
+        Some(&runtime),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let code = || profile::status(&storage).unwrap()["profiles"][0].clone();
+    assert_eq!(code()["state"], "ready");
+    // An upgrade replaces the runtime.
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&runtime)
+        .unwrap()
+        .write_all(b"\0")
+        .unwrap();
+    let changed = code();
+    assert_eq!(changed["code"], "runtime_changed");
+    assert_eq!(changed["recovery"][0]["arguments"]["action"], "configure");
+    std::fs::remove_file(&runtime).unwrap();
+    assert_eq!(code()["code"], "runtime_missing");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if let [_, worker, dir, job] = args.as_slice()
@@ -1186,6 +1238,10 @@ fn main() {
         (
             "the_watch_runner_embeds_a_scope_it_refreshed",
             the_watch_runner_embeds_a_scope_it_refreshed,
+        ),
+        (
+            "status_names_a_changed_or_missing_runtime_and_how_to_configure_again",
+            status_names_a_changed_or_missing_runtime_and_how_to_configure_again,
         ),
         #[cfg(unix)]
         (

@@ -615,7 +615,7 @@ impl Drop for Runtime {
     }
 }
 
-fn sha256_file(path: &Path, cancel: &AtomicBool) -> Result<String> {
+pub(crate) fn sha256_file(path: &Path, cancel: &AtomicBool) -> Result<String> {
     // Checked before open: opening a FIFO or device would block or read without end.
     if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
         return Err(fail(format!("{} is not a regular file", path.display())));

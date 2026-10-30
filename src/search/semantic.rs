@@ -161,6 +161,13 @@ fn unavailable(message: impl Into<String>) -> Box<dyn Error> {
         .into()
 }
 
+/// A model runtime that cannot run, with the status call that names its recovery.
+fn runtime_failed(message: String) -> FigError {
+    FigError::new(ErrorKind::OperationFailed, message)
+        .with_recovery(json!([{"action": "models_status", "tool": "models",
+            "arguments": {"action": "status"}, "requires": "none"}]))
+}
+
 /// The semantic layer's coverage when it cannot answer.
 fn down(code: &str, message: Option<String>) -> Json {
     json!({"state": "unavailable", "reasons": [{"code": code, "message": message}]})
@@ -239,7 +246,7 @@ fn reply_with(
                 return Err(FigError::new(ErrorKind::Cancelled, "search cancelled").into());
             }
             Err(e) if mode == Mode::Semantic => {
-                return Err(FigError::new(ErrorKind::OperationFailed, e.to_string()).into());
+                return Err(runtime_failed(e.to_string()).into());
             }
             Err(e) => (Vec::new(), down("runtime_failed", Some(e.to_string()))),
         },
@@ -560,7 +567,7 @@ pub(crate) fn workspace_rank(
         })
         .map_err(|e| match e {
             Stop::Cancelled => FigError::new(ErrorKind::Cancelled, "search cancelled"),
-            e => FigError::new(ErrorKind::OperationFailed, e.to_string()),
+            e => runtime_failed(e.to_string()),
         })?
         .remove(0),
     };
