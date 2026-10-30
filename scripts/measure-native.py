@@ -130,6 +130,45 @@ elif os.name == 'nt':
             ok = kernel32.Process32NextW(snap, ctypes.byref(entry))
         kernel32.CloseHandle(snap)
         return rows
+
+    class Job:
+        """A job object without limits for the idle holders. Its accounting is cumulative over
+        every process ever in it, ended ones included. It forbids breakaway, so a holder's
+        launcher starts the runner `in_host_job`, inside it, and the runner's workers inherit it."""
+        def __init__(self):
+            kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+            kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+            kernel32.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                                           wintypes.DWORD, ctypes.c_void_p]
+            self.handle = kernel32.CreateJobObjectW(None, None)
+            if not self.handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+
+        def start(self, command, **options):
+            """Start `command` suspended, put it in the job before it can start a child, then resume it."""
+            process = subprocess.Popen(command, creationflags=0x4, **options)  # CREATE_SUSPENDED
+            try:
+                if not kernel32.AssignProcessToJobObject(self.handle, int(process._handle)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                resume = ctypes.WinDLL('ntdll').NtResumeProcess  # Popen keeps no thread handle
+                resume.argtypes, resume.restype = [wintypes.HANDLE], ctypes.c_long
+                if resume(int(process._handle)):
+                    raise OSError('NtResumeProcess failed')
+            except BaseException:
+                process.kill()
+                process.wait()
+                raise
+            return process
+
+        def counters(self):
+            """JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION: (cpuMs, readBytes, writeBytes, processes, active)."""
+            info = (ctypes.c_uint64 * 12)()
+            if not kernel32.QueryInformationJobObject(self.handle, 8, info, ctypes.sizeof(info), None):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return (info[0] + info[1]) // 10_000, info[9], info[10], info[4] >> 32, info[5] & 0xFFFFFFFF
+
+        def close(self):
+            kernel32.CloseHandle(wintypes.HANDLE(self.handle))
 else:
     def table(exe):
         rows, tick = {}, os.sysconf('SC_CLK_TCK')
@@ -282,8 +321,8 @@ def step(before, now):
     """One second of a watched, unchanged source from two process tables. A process started
     within it counts from zero. One that ended was reaped by its candidate parent, whose
     reaped-children CPU then holds all of the child's CPU, so the part already counted from the
-    child is taken off. Windows has no reaped-children counter, and no OS keeps an ended child's
-    I/O, so a second in which a child ended has I/O as a lower bound (`ended`)."""
+    child is taken off. No reaped-children I/O counter exists, so a second in which a child ended
+    has I/O as a lower bound (`ended`). Windows uses `Job` accounting instead."""
     ended = [r for p, r in before.items() if p not in now]
     base = lambda p, k: (before.get(p) or {}).get(k) or 0
     cpu = sum(r['cpuMs'] + (r['childCpuMs'] or 0) - base(p, 'cpuMs') - base(p, 'childCpuMs') for p, r in now.items()) \
@@ -293,7 +332,7 @@ def step(before, now):
     return {'cpuMs': cpu, **io, 'ended': bool(ended) or reaped}
 
 
-def idle_cost(series, cpu_exact=os.name != 'nt'):
+def idle_cost(series, cpu_exact):
     """Per-second `step`s → per-60-s costs. Full idle is the worst 60-s window, which holds a
     scheduled content verification; polling only leaves out the seconds whose CPU stands out
     (those verifications)."""
@@ -329,10 +368,10 @@ class Workspace:
         shutil.copyfile(copy, self.base/'next.fig')
         os.replace(self.base/'next.fig', self.source)
 
-    def hold(self):
-        holder = subprocess.Popen([self.binary, 'watch', 'run', '--file', str(self.source), '--scope', '0:0'],
-                                  cwd=self.base, env=self.env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                  stderr=subprocess.DEVNULL, text=True, encoding='utf-8')
+    def hold(self, job=None):
+        holder = (job.start if job else subprocess.Popen)(
+            [self.binary, 'watch', 'run', '--file', str(self.source), '--scope', '0:0'], cwd=self.base, env=self.env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8')
         lease = json.loads(holder.stdout.readline())
         assert lease['state'] == 'active', lease
         return holder
@@ -351,19 +390,25 @@ def changes(ws):
 
 
 def idle(ws, exe, holders, seconds):
-    """`holders` leases on the unchanged source for `seconds`, after 5 s to settle."""
-    processes = [ws.hold() for _ in range(holders)]
+    """`holders` leases on the unchanged source for `seconds`, after 5 s to settle. On Windows the
+    holders run in a `Job`, whose cumulative accounting includes processes that ended."""
+    job = Job() if os.name == 'nt' else None
+    processes = []
     try:
+        processes += [ws.hold(job) for _ in range(holders)]
         time.sleep(5)
-        series, before = [], table(exe)
+        series, before = [], job.counters() if job else table(exe)
         for _ in range(seconds):
             time.sleep(1)
-            now = table(exe)
-            series.append(step(before, now))
+            now = job.counters() if job else table(exe)
+            series.append({'cpuMs': now[0] - before[0], 'readBytes': now[1] - before[1], 'writeBytes': now[2] - before[2],
+                           'physReadBytes': None, 'physWriteBytes': None, 'ended': False} if job else step(before, now))
             before = now
     finally:
         ws.release(*processes)
-    return {pid.pid for pid in processes}, idle_cost(series)
+        if job:
+            job.close()  # without a kill-on-close limit, closing ends no process
+    return {pid.pid for pid in processes}, idle_cost(series, cpu_exact=True)
 
 
 def watch(binary, design, revised, n, seconds, parent):

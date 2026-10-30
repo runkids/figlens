@@ -44,6 +44,17 @@ class MeasureNativeTest(unittest.TestCase):
         self.assertEqual((cost['verificationSeconds'], cost['pollingCpuMsPer60s'], cost['cpuMsPer60s'],
                           cost['readBytesPer60s'], cost['ioExact']), (2, 120, 318, 5_000_590, False))
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows job accounting')
+    def test_a_job_keeps_an_ended_childs_cpu(self):
+        job = native.Job()
+        try:
+            child = job.start([sys.executable, '-c', 'sum(range(20_000_000))'])
+            child.wait()
+            cpu, _, _, processes, active = job.counters()
+            self.assertEqual((cpu > 0, processes, active), (True, 1, 0))
+        finally:
+            job.close()
+
     def test_a_reaped_worker_counts_once(self):
         row = lambda ppid, cpu, child: {'ppid': ppid, 'cpuMs': cpu, 'childCpuMs': child, 'readBytes': 0,
                                         'writeBytes': 0, 'physReadBytes': 0, 'physWriteBytes': 0}
