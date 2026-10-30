@@ -63,41 +63,56 @@ impl Viewer {
         }
     }
 
-    fn get(&self, route: &str) -> Value {
+    fn response(&self, route: &str, post: Option<(&str, &[u8])>) -> (String, Vec<u8>) {
         let mut stream = TcpStream::connect(&self.authority).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(20)))
             .unwrap();
+        let headers = post
+            .map(|(mime, body)| {
+                format!(
+                    "Origin: http://{}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\n",
+                    self.authority,
+                    body.len()
+                )
+            })
+            .unwrap_or_default();
         write!(
             stream,
-            "GET /{}/{route} HTTP/1.1\r\nHost: {}\r\n\r\n",
-            self.token, self.authority
+            "{} /{}/{route} HTTP/1.1\r\nHost: {}\r\n{headers}\r\n",
+            if post.is_some() { "POST" } else { "GET" },
+            self.token,
+            self.authority
         )
         .unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
-        let body = response.split_once("\r\n\r\n").unwrap().1;
-        serde_json::from_str(body).unwrap_or_else(|_| Value::String(body.to_owned()))
+        if let Some((_, body)) = post {
+            stream.write_all(body).unwrap();
+        }
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        let split = response.windows(4).position(|s| s == b"\r\n\r\n").unwrap();
+        (
+            String::from_utf8(response[..split].to_vec()).unwrap(),
+            response[split + 4..].to_vec(),
+        )
+    }
+
+    fn json(&self, route: &str, post: Option<(&str, &[u8])>) -> Value {
+        let (_, body) = self.response(route, post);
+        serde_json::from_slice(&body)
+            .unwrap_or_else(|_| Value::String(String::from_utf8(body).unwrap()))
+    }
+
+    fn get(&self, route: &str) -> Value {
+        self.json(route, None)
     }
 
     /// The page's Enable index: a same-origin JSON POST.
     fn enable(&self, revision: u64, body: &str) -> Value {
-        let mut stream = TcpStream::connect(&self.authority).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(20)))
-            .unwrap();
-        write!(
-            stream,
-            "POST /{}/enable/{revision} HTTP/1.1\r\nHost: {a}\r\nOrigin: http://{a}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-            self.token,
-            body.len(),
-            a = self.authority
+        self.json(
+            &format!("enable/{revision}"),
+            Some(("application/json", body.as_bytes())),
         )
-        .unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
-        let body = response.split_once("\r\n\r\n").unwrap().1;
-        serde_json::from_str(body).unwrap_or_else(|_| Value::String(body.to_owned()))
     }
 
     /// Polls `semantic/<revision>?scope=` until the viewer's build has ended.
@@ -422,4 +437,73 @@ fn enable_awaits_a_build_another_process_runs_before_it_ends() {
     let state = viewer.settled(1, "0:0");
     assert_eq!(state["job"]["report"]["state"], "succeeded", "{state}");
     assert!(other.wait().unwrap().success());
+}
+
+#[test]
+fn visual_enable_thumbnail_image_and_ref_queries_are_one_revision_bound_workflow() {
+    let owned = test_support::TestDir::new();
+    let root = std::path::absolute(owned.join("")).unwrap();
+    let viewer = Viewer::start(&root, &[]);
+    let png = std::fs::read("scripts/corpus/first-success.png").unwrap();
+    let (headers, rendered) = viewer.response("image/1/0:1", None);
+    assert!(headers.contains("Content-Type: image/png"), "{headers}");
+    assert!(rendered.starts_with(b"\x89PNG\r\n\x1a\n"));
+    let before = viewer.json("image/1?mode=visual", Some(("image/png", &png)));
+    assert!(!before["error"].is_null(), "{before}");
+    assert!(!viewer.workspaces(), "query enabled indexing implicitly");
+    assert_eq!(
+        viewer.enable(1, r#"{"scope":"0:0","visual":true}"#)["started"],
+        true
+    );
+    let prepared = viewer.settled(1, "0:0");
+    assert_eq!(
+        prepared["job"]["report"]["state"], "succeeded",
+        "{prepared}"
+    );
+    assert_eq!(prepared["job"]["report"]["kind"], "visual", "{prepared}");
+
+    let (headers, thumb) = viewer.response("visual-thumb/1/0:1?scope=0:0", None);
+    assert!(
+        headers.contains("Content-Type: image/png"),
+        "{headers} {}",
+        String::from_utf8_lossy(&thumb)
+    );
+    let found = viewer.json("image/1?mode=visual", Some(("image/png", &thumb)));
+    assert_eq!(found["results"][0]["ref"]["nodeId"], "0:1", "{found}");
+    assert_eq!(
+        found["coverage"]["layers"]["visual"]["hash"]["state"],
+        "ready"
+    );
+    assert_eq!(found["results"][0]["visual"]["state"], "rendered");
+
+    let reference = br#"{"nodeId":"0:1"}"#;
+    let selected = viewer.json(
+        "image-ref/1?mode=visual&crop=0,0,128,128",
+        Some(("application/json", reference)),
+    );
+    assert_eq!(selected["results"][0]["ref"]["nodeId"], "0:1", "{selected}");
+    assert_eq!(selected["query"]["image"]["kind"], "ref", "{selected}");
+    let bad = viewer.json(
+        "image-ref/1?crop=255,0,2,1",
+        Some(("application/json", reference)),
+    );
+    assert!(!bad["error"].is_null(), "{bad}");
+    let path = viewer.json(
+        "image-ref/1",
+        Some((
+            "application/json",
+            br#"{"nodeId":"0:1","file":"/private/other.fig"}"#,
+        )),
+    );
+    assert!(!path["error"].is_null(), "{path}");
+
+    let file = std::fs::File::options()
+        .write(true)
+        .open(&viewer.design)
+        .unwrap();
+    file.set_modified(std::time::SystemTime::now() + Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(viewer.get("revision")["generation"], 2);
+    let stale = viewer.json("image-ref/1", Some(("application/json", reference)));
+    assert!(!stale["error"].is_null(), "{stale}");
 }

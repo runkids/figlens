@@ -12,6 +12,8 @@ A person selects a PNG or chooses **Use selected stored layer**, optionally ente
 
 A selected layer must already have a visual raster in a current published scope. Its preview is that cached 256 × 256 raster: crop coordinates address those pixels. PNG crop coordinates address the original PNG pixels. The server constructs a reference to the loaded file and snapshot, retaining its registered workspace source identity after relocation; a candidate filter does not choose the reference's source or scope. A missing raster gives an actionable preparation error.
 
+The PNG-query POST names only `image/<revision>`; existing `GET image/<revision>/<node>` renders keep their route and method.
+
 The person presses **Enable visual index** for the named file and scope. It prepares text first, then the visual job; source thumbnails and optional image vectors are derived local data. A missing image model keeps hash matching available and is disclosed. Search never enables indexing, downloads a model or sends data remotely. Save and exit stop the build the viewer owns; a joined external build remains externally owned.
 
 | Route | Body / result |

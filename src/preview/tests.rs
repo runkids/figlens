@@ -601,6 +601,12 @@ fn image_posts_have_a_separate_mime_and_declared_byte_cap() {
         post("image/1?mode=visual", &png, "PNG").unwrap().1,
         Some(b"PNG".to_vec())
     );
+    // A node render keeps its GET route; only the revision-only route accepts a query body.
+    assert_eq!(
+        parse("GET /secret/image/1/0:1 HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n").unwrap(),
+        "image/1/0:1"
+    );
+    assert!(post("image/1/0:1", &png, "PNG").is_err());
     assert!(post("image/1", &json, "{}").is_err());
     assert!(post("enable/1", &png, "PNG").is_err());
     assert!(post("image-ref/1", &png, "PNG").is_err());
@@ -625,11 +631,13 @@ fn cancellation_names_one_running_call_and_revision_end_stops_the_rest() {
     let calls = cancel::Requests::default();
     let ended = std::sync::atomic::AtomicBool::new(false);
     let first = calls.begin(Some("first"), &ended).unwrap();
-    let second = calls.begin(Some("second"), &ended).unwrap();
+    assert!(
+        calls.begin(Some("second"), &ended).is_err(),
+        "a model wait must not occupy every HTTP worker"
+    );
     assert!(calls.begin(Some("first"), &ended).is_err());
     assert!(calls.cancel("first").unwrap());
     assert!(first.cancel.load(Ordering::SeqCst));
-    assert!(!second.cancel.load(Ordering::SeqCst));
     assert!(!calls.cancel("missing").unwrap());
     assert!(
         calls.begin(Some("missing"), &ended).is_err(),
@@ -638,6 +646,11 @@ fn cancellation_names_one_running_call_and_revision_end_stops_the_rest() {
     assert!(calls.cancel("bad/id").is_err());
     drop(first);
     assert!(!calls.cancel("first").unwrap());
+    let second = calls.begin(Some("second"), &ended).unwrap();
+    assert!(
+        !second.cancel.load(Ordering::SeqCst),
+        "a later query does not inherit cancellation"
+    );
     ended.store(true, Ordering::SeqCst);
     calls.stop();
     assert!(second.cancel.load(Ordering::SeqCst));

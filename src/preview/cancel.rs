@@ -46,6 +46,14 @@ impl Requests {
         if calls.running.contains_key(&id) {
             return Err("requestId is already running".into());
         }
+        // One warm model child serves queries serially; leave HTTP workers free for cancel/status.
+        if !calls.running.is_empty() {
+            return Err(FigError::new(
+                crate::ErrorKind::WorkspaceBusy,
+                "another indexed query is still running; retry after it stops",
+            )
+            .into());
+        }
         let cancel = Arc::new(AtomicBool::new(false));
         calls.running.insert(id.clone(), cancel.clone());
         Ok(Running {

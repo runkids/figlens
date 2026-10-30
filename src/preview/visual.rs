@@ -78,14 +78,9 @@ impl Revision<'_> {
             return Err("select a stored layer of this revision".into());
         }
         let storage = workspace::storage(None)?;
-        let status = workspace::status(&storage, &self.select()?)?;
-        let source = status["sources"]
-            .as_array()
-            .and_then(|sources| sources.iter().find(|s| s["path"] == self.source["path"]))
-            .and_then(|s| s["sourceId"].as_str())
-            .ok_or("enable a visual index of this file first")?;
+        let source = self.indexed_source(&storage)?;
         Ok(Input::Ref {
-            source_id: source.to_owned(),
+            source_id: source,
             snapshot_id: self.source["snapshotId"]
                 .as_str()
                 .ok_or("no loaded snapshot")?
@@ -131,10 +126,11 @@ impl Revision<'_> {
             let call = self
                 .queries
                 .begin(one(&fields, "requestId"), &self.cancel)?;
+            let source = self.indexed_source(&storage)?;
             let out = workspace::query::search_image(
                 &storage,
                 &self.select()?,
-                &[],
+                &[source],
                 &req,
                 &image,
                 &call.cancel,

@@ -11,6 +11,7 @@ pub(super) struct Indexing(pub(super) Mutex<Option<Owned>>);
 
 pub(super) struct Owned {
     scope: String,
+    visual: bool,
     cancel: Arc<AtomicBool>,
     /// The latest job report, or the error that ended the run.
     state: Arc<Mutex<Value>>,
@@ -34,62 +35,104 @@ impl Indexing {
     }
 }
 
-/// The text build of `scope`, then, with a configured profile, its model layer: the jobs a CLI
-/// prepare and index embed submit, run to their end by this process, which owns them.
-fn build(file: &Path, scope: &str, cancel: &AtomicBool, state: &Mutex<Value>) -> Result<()> {
+/// Runs owned jobs and awaits joined ones without taking their ownership.
+fn phase(
+    storage: &workspace::Storage,
+    ws: &str,
+    outcome: workspace::Outcome,
+    cancel: &AtomicBool,
+    state: &Mutex<Value>,
+) -> Result<bool> {
     let note = |report: &Value| {
         if let Ok(mut s) = state.lock() {
             *s = report.clone();
         }
     };
+    note(&outcome.report);
+    for id in &outcome.run {
+        let report = jobs::run(storage, ws, id, cancel, &mut |r| note(r))?;
+        note(&report);
+        if report["state"] != "succeeded" {
+            return Ok(false);
+        }
+    }
+    let joined = outcome
+        .report
+        .get("job")
+        .into_iter()
+        .chain(outcome.report["jobs"].as_array().into_iter().flatten());
+    for job in joined {
+        let Some(id) = job["jobId"].as_str() else {
+            continue;
+        };
+        if outcome.run.iter().any(|owned| owned == id) {
+            continue;
+        }
+        loop {
+            if cancel.load(Ordering::SeqCst) {
+                return Ok(false);
+            }
+            let report = jobs::status(storage, id)?;
+            note(&report);
+            match report["state"].as_str() {
+                Some("queued" | "running") => std::thread::sleep(Duration::from_millis(100)),
+                Some("succeeded") => break,
+                _ => return Ok(false),
+            }
+        }
+    }
+    Ok(outcome.report["admission"] != "partial")
+}
+
+/// Registered identity of this file; a project binding must not widen a viewer query/build.
+fn source(storage: &workspace::Storage, select: &Select, path: &Value) -> Result<String> {
+    let status = workspace::status(storage, select)?;
+    status["sources"]
+        .as_array()
+        .and_then(|sources| sources.iter().find(|s| s["path"] == *path))
+        .and_then(|s| s["sourceId"].as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| "enable an index of this file first".into())
+}
+
+/// Explicitly prepare this file/scope, then its visual layer or optional text model layer.
+fn build(
+    file: &Path,
+    scope: &str,
+    visual: bool,
+    cancel: &AtomicBool,
+    state: &Mutex<Value>,
+) -> Result<()> {
     let storage = workspace::storage(None)?;
-    let options = PrepareOptions {
-        scope: Some(scope),
-        ..Default::default()
-    };
-    let prepared = workspace::prepare(&storage, file, None, options)?;
-    note(&prepared.report);
+    let prepared = workspace::prepare(
+        &storage,
+        file,
+        None,
+        PrepareOptions {
+            scope: Some(scope),
+            ..Default::default()
+        },
+    )?;
     let ws = prepared.report["workspaceId"]
         .as_str()
         .ok_or("prepare named no workspace")?
         .to_owned();
-    // A build another process runs is awaited, never owned or cancelled here, so the embed
-    // below reads the generation it publishes.
-    if prepared.run.is_empty()
-        && let Some(id) = prepared.report["job"]["jobId"].as_str()
-    {
-        loop {
-            let now = jobs::status(&storage, id)?;
-            note(&now);
-            match now["state"].as_str() {
-                Some("queued" | "running") if !cancel.load(Ordering::SeqCst) => {
-                    std::thread::sleep(Duration::from_millis(250))
-                }
-                Some("succeeded") => break,
-                _ => return Ok(()),
-            }
-        }
+    if !phase(&storage, &ws, prepared, cancel, state)? || cancel.load(Ordering::SeqCst) {
+        return Ok(());
     }
-    let mut runs = prepared.run;
-    let mut embedding = false;
-    loop {
-        for job in &runs {
-            let report = jobs::run(&storage, &ws, job, cancel, &mut |r| note(r))?;
-            note(&report);
-            if report["state"] != "succeeded" {
-                return Ok(());
-            }
-        }
-        if embedding
-            || cancel.load(Ordering::SeqCst)
-            || crate::semantic::profile::active(&storage)?.is_none()
-        {
-            return Ok(());
-        }
-        let embed = jobs::embed(&storage, &Select::Id(ws.clone()), None, Some(scope), None)?;
-        note(&embed.report);
-        (runs, embedding) = (embed.run, true);
+    if !visual && crate::semantic::profile::active(&storage)?.is_none() {
+        return Ok(());
     }
+    let select = Select::Id(ws.clone());
+    let path = json!(fs::canonicalize(file)?.display().to_string());
+    let source = source(&storage, &select, &path)?;
+    let layer = if visual {
+        jobs::visual(&storage, &select, Some(&source), Some(scope), None)?
+    } else {
+        jobs::embed(&storage, &select, Some(&source), Some(scope), None)?
+    };
+    phase(&storage, &ws, layer, cancel, state)?;
+    Ok(())
 }
 
 impl Revision<'_> {
@@ -115,6 +158,10 @@ impl Revision<'_> {
         )
     }
 
+    pub(super) fn indexed_source(&self, storage: &workspace::Storage) -> Result<String> {
+        source(storage, &self.select()?, &self.source["path"])
+    }
+
     /// A semantic or hybrid search of this file's workspace index, served only while that index
     /// holds exactly this revision's bytes; the reply then names them as `source`, as text's does.
     pub(super) fn indexed_search(
@@ -124,7 +171,9 @@ impl Revision<'_> {
         cancel: &AtomicBool,
     ) -> Result<Value> {
         let storage = workspace::storage(None)?;
-        let out = workspace::query::search_mode(&storage, &self.select()?, &[], req, mode, cancel)?;
+        let source = self.indexed_source(&storage)?;
+        let out =
+            workspace::query::search_mode(&storage, &self.select()?, &[source], req, mode, cancel)?;
         self.indexed_reply(out)
     }
 
@@ -165,7 +214,7 @@ impl Revision<'_> {
         let owned = self.indexing.0.lock().map_err(|_| "indexing poisoned")?;
         let job = owned.as_ref().filter(|o| o.scope == scope).map(|o| {
             let report = o.state.lock().map_or(Value::Null, |s| s.clone());
-            json!({"running": !o.thread.is_finished(), "report": report})
+            json!({"running": !o.thread.is_finished(), "visual": o.visual, "report": report})
         });
         Ok(
             json!({"scope": scope, "models": {"profiles": models["profiles"], "setup": models["setup"]},
@@ -197,17 +246,24 @@ impl Revision<'_> {
         let revision = route.strip_prefix("enable/").ok_or("unknown route")?;
         let reply = serde_json::from_slice::<serde_json::Map<String, Value>>(body)
             .map_err(|_| "takes a JSON object".into())
-            .and_then(
-                |o| match (o.len(), o.get("scope").and_then(Value::as_str)) {
-                    (1, Some(scope)) => self.enable(revision, scope),
-                    _ => Err("takes exactly one scope".into()),
-                },
-            )
+            .and_then(|o| {
+                let visual = match o.get("visual") {
+                    None => false,
+                    Some(Value::Bool(value)) => *value,
+                    _ => return Err("visual takes true or false".into()),
+                };
+                match (o.len(), o.get("scope").and_then(Value::as_str)) {
+                    (n, Some(scope)) if n == 1 + usize::from(o.contains_key("visual")) => {
+                        self.enable(revision, scope, visual)
+                    }
+                    _ => Err("takes exactly one scope and optional visual".into()),
+                }
+            })
             .unwrap_or_else(|e| refusal(&*e, &self.source));
         Ok(("application/json", reply.to_string().into_bytes()))
     }
 
-    fn enable(&self, revision: &str, scope: &str) -> Result<Value> {
+    fn enable(&self, revision: &str, scope: &str, visual: bool) -> Result<Value> {
         let scope = self.indexed_scope(revision, Some(scope))?;
         let mut owned = self.indexing.0.lock().map_err(|_| "indexing poisoned")?;
         // Checked under the lock the revision's end takes to stop the build: a request that
@@ -218,7 +274,7 @@ impl Revision<'_> {
         if let Some(o) = owned.as_ref()
             && !o.thread.is_finished()
         {
-            if o.scope == scope {
+            if o.scope == scope && o.visual == visual {
                 return Ok(json!({"started": false, "scope": scope}));
             }
             return Err(FigError::new(
@@ -237,7 +293,7 @@ impl Revision<'_> {
         let thread = std::thread::Builder::new()
             .name("preview-index".into())
             .spawn(move || {
-                if let Err(e) = build(&file, &run_scope, &stop, &report)
+                if let Err(e) = build(&file, &run_scope, visual, &stop, &report)
                     && let Ok(mut s) = report.lock()
                 {
                     *s = refusal(&*e, &Value::Null);
@@ -245,6 +301,7 @@ impl Revision<'_> {
             })?;
         *owned = Some(Owned {
             scope: scope.clone(),
+            visual,
             cancel,
             state,
             thread,

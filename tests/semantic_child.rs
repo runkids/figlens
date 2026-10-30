@@ -404,6 +404,7 @@ fn configured_vision(dir: &test_support::TestDir) -> String {
     let exe = std::env::current_exe().unwrap();
     let out =
         profile::configure(&storage, &k, &model, Some(&exe), &AtomicBool::new(false)).unwrap();
+    unsafe { std::env::remove_var("SEMANTIC_CHILD_MODE") };
     out["configured"]["profileId"].as_str().unwrap().to_owned()
 }
 
@@ -499,6 +500,8 @@ fn vision_ranks_when_ready_and_the_hash_takes_over_when_the_model_fails() {
             query.to_str().unwrap(),
         ])
     };
+    // SAFETY: this harness runs one test at a time on the main thread.
+    unsafe { std::env::set_var("SEMANTIC_CHILD_MODE", "image") };
     let reply = search();
     assert_eq!(
         reply["query"]["usedModes"],
@@ -1252,7 +1255,6 @@ fn a_cancelled_configure_reports_cancelled_and_records_nothing() {
         model: "fake",
         revision: "0",
         license: "MIT",
-        modality: "text",
         files,
     };
     let exe = std::env::current_exe().unwrap();
@@ -1382,31 +1384,6 @@ fn an_mcp_text_build_queues_and_runs_its_embed_on_the_model_lane() {
     drop(stdin);
     mcp.wait().unwrap();
     assert_eq!(ready(), 1);
-}
-
-/// Configures the fake child as the vision profile.
-fn configured_vision(dir: &test_support::TestDir) {
-    let storage = figlens::workspace::storage(None).unwrap();
-    let (model, files) = model(dir, "vision weights");
-    let files: &'static [(&str, &str)] = Box::leak(
-        files
-            .into_iter()
-            .map(|(n, d)| (n, &*Box::leak(d.into_boxed_str())))
-            .collect(),
-    );
-    let k = profile::Known {
-        name: "fake-vision",
-        modality: "image",
-        model: "fake",
-        revision: "0",
-        license: "MIT",
-        files,
-    };
-    let exe = std::env::current_exe().unwrap();
-    // SAFETY: this harness runs one test at a time on the main thread.
-    unsafe { std::env::set_var("SEMANTIC_CHILD_MODE", "image") };
-    profile::configure(&storage, &k, &model, Some(&exe), &AtomicBool::new(false)).unwrap();
-    unsafe { std::env::remove_var("SEMANTIC_CHILD_MODE") };
 }
 
 const VISUAL_POLICY: &str = figlens::workspace::visual::POLICY;

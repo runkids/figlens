@@ -457,9 +457,9 @@ const IDLE: &str = "idle connection";
 /// percent-encoded (3 bytes per byte), plus the other bounded parameters.
 const MAX_LINE: usize = 6 * search::store::ID_BYTES + 4096;
 
-/// Routes that change state take POST, never GET, so no prefetch, cache or link can trigger them.
-const POSTS: [&str; 4] = ["enable/", "image/", "image-ref/", "cancel/"];
-/// The largest POST body: a small JSON object.
+/// Fixed JSON body routes take POST, so no prefetch, cache or link can trigger them.
+const POSTS: [&str; 3] = ["enable/", "image-ref/", "cancel/"];
+/// JSON body cap; image queries use their separate PNG cap.
 const POST_BYTES: usize = 4096;
 
 /// The route of a bounded same-origin request, with the body of a POST.
@@ -538,7 +538,11 @@ fn request(stream: &TcpStream, authority: &str, token: &str) -> Result<(String, 
     if cross_site && !(route.is_empty() && navigate && document) {
         return Err("cross-site request rejected".into());
     }
-    if post != POSTS.iter().any(|p| route.starts_with(p)) {
+    // Image queries take a revision; existing image renders also take a node ID and stay GET.
+    let image_query = route
+        .strip_prefix("image/")
+        .is_some_and(|tail| !tail.split('?').next().unwrap_or_default().contains('/'));
+    if post != (image_query || POSTS.iter().any(|p| route.starts_with(p))) {
         return Err("method not allowed for this route".into());
     }
     if !post {
