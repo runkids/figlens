@@ -20,6 +20,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import traceback
 from installation import environment, run, toolchain
 from mcp_smoke import check_first_use, check_mcp, check_reuse
 
@@ -354,4 +355,6 @@ if __name__ == '__main__':
     try:
         main()
     except (AssertionError, OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
-        raise SystemExit(f'Installation smoke failed: {error}')
+        # A failed temporary cleanup (on Windows, a file still open) replaces the error behind it.
+        cause = ''.join(traceback.format_exception(error.__context__)) if error.__context__ else ''
+        raise SystemExit(f'{cause}Installation smoke failed: {error}')
