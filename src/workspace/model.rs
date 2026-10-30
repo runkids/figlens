@@ -312,7 +312,7 @@ fn embed_work(
         deadline: crate::search::deadline(),
         stop: None,
     };
-    let extracted = Layer::new(&index, Json::Null, profile.dim, bounds, &never)?;
+    let extracted = Layer::new(&index, Json::Null, profile.dim, &mut { bounds }, &never)?;
     drop(index);
     let hashes: Vec<[u8; 32]> = extracted.texts.iter().map(|t| text_hash(t)).collect();
     let stored = vectors(&conn, &profile_id, &hashes).map_err(sql)?;

@@ -36,5 +36,6 @@ Code: `src/workspace/query.rs` (`search_mode`, `model_layers`), `src/workspace/m
 
 - Only the name and the effective text are model inputs: no component property values or scope summaries.
 - The watch runner does not queue embeds yet; use `index embed`.
+- No layer-ready or profile-change event is recorded: `changes` and subscriptions see design revisions only; read model readiness from `coverage.layers.semantic` and `jobs status`.
 - On the frozen #94 suite the pinned profile missed the pre-set synonym/purpose wrong-top-1 gate (0.25 against 0.20). The feature stays optional and experimental.
 - Pi, OpenCode and OMP use the MCP contract; their guidance lives in the served skill ([mcp](mcp.md)).

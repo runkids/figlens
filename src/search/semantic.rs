@@ -48,7 +48,7 @@ impl Layer {
         index: &Index,
         key: Json,
         dim: usize,
-        mut bounds: Bounds,
+        bounds: &mut Bounds,
         cancel: &AtomicBool,
     ) -> Result<Layer, Stop> {
         let mut slot: HashMap<&str, usize> = HashMap::new();
@@ -375,7 +375,13 @@ fn ranked(
             deadline: Instant::now() + DEADLINE,
             stop: None,
         };
-        *guard = Some(Layer::new(index, key, profile.dim, bounds, cancel)?);
+        *guard = Some(Layer::new(
+            index,
+            key,
+            profile.dim,
+            &mut { bounds },
+            cancel,
+        )?);
     }
     let layer = guard.as_mut().expect("set above");
     layer.fill(profile, cancel)?;
@@ -528,14 +534,24 @@ pub(crate) fn workspace_rank(
     } else {
         Vec::new()
     };
-    let query = profile::with_runtime(profile, cancel, |rt| {
-        rt.embed(Kind::Query, std::slice::from_ref(&req.query), cancel)
-    })
-    .map_err(|e| match e {
-        Stop::Cancelled => FigError::new(ErrorKind::Cancelled, "search cancelled"),
-        e => FigError::new(ErrorKind::OperationFailed, e.to_string()),
-    })?
-    .remove(0);
+    // No stored vector anywhere: nothing to compare, so the model is not started for the query.
+    let any = sides.iter().any(|s| {
+        s.layer
+            .vectors
+            .iter()
+            .any(|v| v.as_ref().is_some_and(|v| !v.is_empty()))
+    });
+    let query = match any {
+        false => Vec::new(),
+        true => profile::with_runtime(profile, cancel, |rt| {
+            rt.embed(Kind::Query, std::slice::from_ref(&req.query), cancel)
+        })
+        .map_err(|e| match e {
+            Stop::Cancelled => FigError::new(ErrorKind::Cancelled, "search cancelled"),
+            e => FigError::new(ErrorKind::OperationFailed, e.to_string()),
+        })?
+        .remove(0),
+    };
     used.push("semantic");
     let mut semantic: Vec<((usize, u32), f32, u8, u32)> = Vec::new();
     let mut excluded = [0usize; 2];
@@ -692,7 +708,7 @@ mod tests {
         let long = "字".repeat(model::CHUNK_CHARS * 3);
         let idx = index(&long);
         let no = AtomicBool::new(false);
-        let all = Layer::new(&idx, json!(1), 8, bounds(LAYER_WORK, LAYER_BYTES), &no).unwrap();
+        let all = Layer::new(&idx, json!(1), 8, &mut bounds(LAYER_WORK, LAYER_BYTES), &no).unwrap();
         // Every record shares the same three text chunks; only names differ.
         assert!(all.stop.is_none());
         assert!(
@@ -702,9 +718,9 @@ mod tests {
                 .count()
                 == 1
         );
-        let cut = Layer::new(&idx, json!(1), 8, bounds(2, LAYER_BYTES), &no).unwrap();
+        let cut = Layer::new(&idx, json!(1), 8, &mut bounds(2, LAYER_BYTES), &no).unwrap();
         assert_eq!((cut.stop, cut.units.len()), (Some("work_limit"), 2));
-        let tiny = Layer::new(&idx, json!(1), 8, bounds(LAYER_WORK, 16), &no).unwrap();
+        let tiny = Layer::new(&idx, json!(1), 8, &mut bounds(LAYER_WORK, 16), &no).unwrap();
         assert_eq!((tiny.stop, tiny.texts.len()), (Some("byte_limit"), 0));
     }
 
@@ -715,7 +731,7 @@ mod tests {
             &idx,
             json!(1),
             8,
-            bounds(LAYER_WORK, LAYER_BYTES),
+            &mut bounds(LAYER_WORK, LAYER_BYTES),
             &AtomicBool::new(true),
         );
         assert!(matches!(got, Err(Stop::Cancelled)));

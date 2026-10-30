@@ -48,8 +48,8 @@ usage:
                                              --mode semantic ranks layers by meaning and hybrid fuses
                                              text and semantic ranks (RRF), both with a model set up by
                                              `figlens models configure`; without one semantic fails with
-                                             mode_unavailable and hybrid answers as text; experimental,
-                                             stateless search only (not --workspace/--id)
+                                             mode_unavailable and hybrid answers as text; experimental;
+                                             a workspace search reads the layer `index embed` stores
   figlens search --workspace DIR|--file <file.fig>|--id ws_... <query> [--source ID]... [--storage DIR] [same options]
                                            (put -- before a query that starts with -)
                                              the same search over a workspace's prepared indexes of

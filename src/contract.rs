@@ -658,7 +658,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "scope": {"type": "object"},
                 "ranking": {"type": "object", "description": "ranking and tokenizer versions, field weights and tie order"},
                 "results": {"type": "array", "items": {"type": "object"}},
-                "coverage": {"type": "object", "description": "complete, scannedRecords, totalRecords (null unless complete), layers.text.state ready|partial, layers.relations (per kind: ready or partial when built; stateless search builds contains, instance_of and variant_of and lists the others not_built, which says nothing about absence; library_identity relation_unavailable), reasons with counts, excluded hidden/internal matches, knownGaps and work limits"},
+                "coverage": {"type": "object", "description": "complete, scannedRecords, totalRecords (null unless complete), layers.text.state ready|partial, layers.semantic in semantic and hybrid modes (state ready|partial|pending|unavailable, profileId, counts, reasons; workspace searches per source), layers.relations (per kind: ready or partial when built; stateless search builds contains, instance_of and variant_of and lists the others not_built, which says nothing about absence; library_identity relation_unavailable), reasons with counts, excluded hidden/internal matches, knownGaps and work limits"},
                 "hasMore": {"type": "boolean"},
                 "nextCursor": {"type": ["string", "null"]},
                 "workspaceId": {"type": "string", "description": "workspace searches only"},
@@ -732,7 +732,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
             serde_json::json!({
                 "jobId": {"type": "string"},
                 "workspaceId": {"type": "string", "description": "the workspace the job builds in, for index status"},
-                "kind": {"type": "string", "description": "prepare, refresh or rebuild"},
+                "kind": {"type": "string", "description": "prepare, refresh, rebuild, track or embed (the model layer of a published scope)"},
                 "state": {"type": "string", "description": "queued, running, succeeded, failed, cancelled or interrupted (its owner exited)"},
                 "stage": {"type": ["string", "null"], "description": "null until the job starts"},
                 "progress": {"type": "object"},
