@@ -1014,7 +1014,14 @@ fn the_watch_runner_embeds_a_scope_it_refreshed() {
     use std::io::BufRead;
     let dir = test_support::TestDir::new();
     let (prepared, fig) = indexed(&dir, true);
-    cli(&["index", "track", "--file", fig.to_str().unwrap(), "--scope", "0:0"]);
+    cli(&[
+        "index",
+        "track",
+        "--file",
+        fig.to_str().unwrap(),
+        "--scope",
+        "0:0",
+    ]);
     let mut holder = figlens(&[
         "watch",
         "run",
