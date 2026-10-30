@@ -25,6 +25,7 @@ pub mod remote;
 pub mod render;
 pub mod rest;
 pub mod search;
+pub mod semantic;
 pub mod states;
 pub mod variables;
 pub mod verify;

@@ -59,5 +59,9 @@ name = "mapping-fixture"
 path = "scripts/make-mapping-fixture.rs"
 
 [[example]]
+name = "fake-embed"
+path = "scripts/fake-embed.rs"
+
+[[example]]
 name = "corpus-fixture"
 path = "scripts/make-corpus.rs"
