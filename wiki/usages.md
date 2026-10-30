@@ -16,7 +16,7 @@ Edges are extracted during the search build (`search::build` → `usages::extrac
 | `uses_image` | IMAGE fill/stroke hash, and per-range text / per-region vector fills (`styleOverrideTable`) of active rows only; a text range's fills come from the first row of its styleID that has `fillPaints`, as `render` draws them, not the last row REST keeps | `image:<hash>` | `recorded` |
 | `prototype_target` | `prototype::node` recorded actions | destination node | `resolved`, `missing`, `unsupported`, `unresolved` |
 
-Rules: a target that is not in the file stays as an explicit `missing`/`unresolved`/`external` edge, never dropped. A name is never identity: two components with one name keep separate instances. Inherited prototype links from a component definition are skipped until their inheritance is verified. Cross-file library identity is #93; a local copy of a library style is `external`, not resolved.
+Rules: a target that is not in the file stays as an explicit `missing`/`unresolved`/`external` edge, never dropped. A name is never identity: two components with one name keep separate instances. Inherited prototype links from a component definition are skipped until their inheritance is verified. Cross-file library identity is #93 (cached-copy uses: [library usages](library-usages.md)); a local copy of a library style is `external`, not resolved.
 
 Library references and the cross-source library query (#93) are in [library usages](library-usages.md).
 

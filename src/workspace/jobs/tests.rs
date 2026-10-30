@@ -1786,13 +1786,14 @@ fn a_library_use_says_where_it_is_without_opening_the_file() {
     let hit = &out["results"][0];
     assert_eq!(
         (
+            hit["hidden"].is_boolean(),
             hit["page"]["id"].is_string(),
             hit["scopeRoot"].is_string(),
             out["coverage"]["sources"][0]["path"]
                 .as_str()
                 .map(PathBuf::from),
         ),
-        (true, true, Some(srcs[0].0.clone()))
+        (true, true, true, Some(srcs[0].0.clone()))
     );
 }
 
@@ -1811,10 +1812,34 @@ fn a_first_library_use_too_large_for_a_page_is_refused_by_its_utf8_bytes() {
     use crate::workspace::library::library;
     let d = TestDir::new();
     let (storage, select, conn, srcs) = library_workspace(&d, 1);
-    // 1.5M characters, 4.5 MB: within the page counted in characters, over it in bytes.
-    rename_use(&conn, srcs[0].2, &"漢".repeat(1_500_000));
+    // 1.1M characters, 3.3 MB: within the page counted in characters, over it in bytes.
+    rename_use(&conn, srcs[0].2, &"漢".repeat(1_100_000));
     let out = library(&storage, &select, None, &reference("k", None));
     assert_eq!(kind_of_error(out), ErrorKind::ResponseBudget);
+}
+
+#[test]
+fn a_library_use_is_measured_as_it_is_sent_so_both_mcp_copies_fit() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, conn, srcs) = library_workspace(&d, 1);
+    // 2 MB stored, 4 MB once each quote is escaped: past the page as sent.
+    rename_use(&conn, srcs[0].2, &"\"".repeat(2_000_000));
+    let out = library(&storage, &select, None, &reference("k", None));
+    assert_eq!(kind_of_error(out), ErrorKind::ResponseBudget);
+}
+
+#[test]
+fn a_library_question_needs_a_scope() {
+    use crate::workspace::library::library;
+    let d = TestDir::new();
+    let (storage, select, _conn, _srcs) = library_workspace(&d, 1);
+    let request = crate::workspace::library::Request {
+        scope: String::new(),
+        ..reference("k", None)
+    };
+    let out = library(&storage, &select, None, &request);
+    assert_eq!(kind_of_error(out), ErrorKind::InvalidArguments);
 }
 
 #[test]
@@ -1822,7 +1847,7 @@ fn a_later_library_use_too_large_for_the_page_starts_the_next_one() {
     use crate::workspace::library::library;
     let d = TestDir::new();
     let (storage, select, conn, srcs) = library_workspace(&d, 2);
-    rename_use(&conn, srcs[1].2, &"a".repeat(4 * 1024 * 1024 - 64));
+    rename_use(&conn, srcs[1].2, &"a".repeat(3 * 1024 * 1024 - 64));
     let request = crate::workspace::library::Request {
         limit: 2,
         ..reference("k", None)
