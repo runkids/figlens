@@ -1243,6 +1243,7 @@ fn model_layers(
                 let mut index = search::store::load_with(tx, *gen_id, &[], spent, cancel)?;
                 let all: Vec<u32> = (0..records.max(0) as u32).collect();
                 search::store::add_with(tx, *gen_id, &mut index, &all, spent, cancel)?;
+                search::semantic::keep_text_only(&mut index);
                 let layer = search::semantic::Layer::new(
                     &index,
                     json!([key, p.id]),
