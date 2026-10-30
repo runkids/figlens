@@ -1190,6 +1190,7 @@ fn result(pair: &Pair) -> String {
         f.counts.iter().for_each(|c| h.update(n((*c).into())));
         match &f.possible {
             Some((id, basis)) => {
+                h.update([1]);
                 text(&mut h, id);
                 text(&mut h, basis);
             }
