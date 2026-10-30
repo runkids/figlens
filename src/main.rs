@@ -1014,13 +1014,15 @@ fn finish_jobs(
                 }
                 Some("interrupted") => {
                     // Retried as the same kind: a rebuild of an unchanged scope must not
-                    // become a refresh that reuses it.
+                    // become a refresh that reuses it, nor an embed a text refresh.
                     let select = Select::Id(ws.clone());
                     let (source, scope) = (now["sourceId"].as_str(), now["scope"].as_str());
-                    let again = if now["kind"] == "rebuild" {
-                        jobs::rebuild_scope(storage, &select, source, scope, None)?
-                    } else {
-                        figlens::workspace::refresh(storage, &select, source, scope, None)?
+                    let again = match now["kind"].as_str() {
+                        Some("rebuild") => {
+                            jobs::rebuild_scope(storage, &select, source, scope, None)?
+                        }
+                        Some("embed") => jobs::embed(storage, &select, source, scope, None)?,
+                        _ => figlens::workspace::refresh(storage, &select, source, scope, None)?,
                     };
                     // Another process may have taken it over first; then keep waiting.
                     if let Some(id) = again.run.first() {

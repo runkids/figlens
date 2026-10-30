@@ -991,6 +991,25 @@ fn one_process_keeps_two_workspaces_layers_apart() {
     assert_eq!(refs(&got), refs(&alone));
 }
 
+fn a_workspace_hybrid_without_a_model_pages_without_a_cursor() {
+    let dir = test_support::TestDir::new();
+    indexed(&dir, false);
+    let other = std::path::absolute(dir.join("corpus.fig")).unwrap();
+    corpus::write(other.as_os_str(), false).unwrap();
+    let other = other.to_str().unwrap();
+    cli(&["index", "prepare", other, "--scope", "0:0"]);
+    // Three layers say "chip": a text page of one would have more.
+    let got = cli(&[
+        "search", "--file", other, "chip", "--mode", "hybrid", "--limit", "1",
+    ]);
+    assert_eq!(got["query"]["usedModes"], json!(["text"]));
+    assert_eq!(
+        (got["hasMore"].as_bool(), got["nextCursor"].is_null()),
+        (Some(true), true)
+    );
+    assert_eq!(got["coverage"]["complete"], false);
+}
+
 fn a_schema_8_workspace_reads_its_model_layer_as_pending() {
     let dir = test_support::TestDir::new();
     let (prepared, fig) = indexed(&dir, true);
@@ -1106,6 +1125,10 @@ fn main() {
         (
             "a_schema_8_workspace_reads_its_model_layer_as_pending",
             a_schema_8_workspace_reads_its_model_layer_as_pending,
+        ),
+        (
+            "a_workspace_hybrid_without_a_model_pages_without_a_cursor",
+            a_workspace_hybrid_without_a_model_pages_without_a_cursor,
         ),
         #[cfg(unix)]
         (

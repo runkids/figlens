@@ -249,7 +249,11 @@ pub fn with_runtime<T>(
         *warm = None;
         profile
             .unchanged(cancel)
-            .map_err(|e| Stop::Failed(format!("{e}; run models configure again")))?;
+            .map_err(|e| match e.downcast::<Stop>() {
+                Ok(stop) if matches!(*stop, Stop::Cancelled) => Stop::Cancelled,
+                Ok(stop) => Stop::Failed(format!("{stop}; run models configure again")),
+                Err(e) => Stop::Failed(format!("{e}; run models configure again")),
+            })?;
         let rt = Runtime::start(&profile.exe, &[&profile.model], cancel).map_err(|e| match e
             .downcast::<Stop>()
         {

@@ -452,6 +452,9 @@ fn searched(
             out["query"]["usedModes"] = json!(["text"]);
             out["coverage"]["layers"]["semantic"] =
                 json!({"state": "unavailable", "reasons": [reason]});
+            // The next page could rank with the model again, so this text page is not replayable.
+            out["coverage"]["complete"] = json!(false);
+            out["nextCursor"] = Json::Null;
         }
         (None, None) => {}
     }
