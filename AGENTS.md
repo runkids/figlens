@@ -1,6 +1,6 @@
 # AGENTS.md — figlens
 
-Reads saved Figma `.fig` files offline: no API rate limits, login or running Figma. Designers keep working in Figma; figlens owns the read path. A Rust crate (`src/`) and native `figlens` CLI. Task details load per topic rather than putting the whole wiki in context.
+Reads Figma `.fig` files offline: no API rate limits, login or running Figma. Rust crate (`src/`) and native `figlens` CLI. Load task details by topic.
 
 ## Language
 
