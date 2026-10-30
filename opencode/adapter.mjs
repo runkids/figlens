@@ -4,6 +4,7 @@ import { mkdir, readFile, readlink, realpath, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { homedir, tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
@@ -95,7 +96,16 @@ export function createAdapter(ctx, entry = import.meta.url) {
   const command = process.env.FIGLENS_BIN || (bundled ? launcherRuntime() : 'figlens');
   const prefix = bundled ? [wrapper] : [];
   const cacheRoot = path.join(process.env.XDG_CACHE_HOME || (process.platform === 'win32' && process.env.LOCALAPPDATA) || path.join(homedir(), '.cache'), 'figlens');
-  const commandLine = args => [command, ...prefix, ...args].map(value => `'${value.replaceAll("'", "'\\''")}'`).join(' ');
+  const commandLine = (args, argv = [command, ...prefix]) => [...argv, ...args].map(value => `'${value.replaceAll("'", "'\\''")}'`).join(' ');
+  // A lease holder runs the launcher's cached native binary itself, so stopping the child stops the holder
+  // on every platform (the launcher would leave it running); a prior `index status` installed and checked it.
+  const holding = () => {
+    if (!bundled) return [command, ...prefix];
+    const require = createRequire(entry);
+    const native = require('../target.js').cachedBinary(cacheRoot, process.platform, process.arch, require('../package.json').version);
+    if (!existsSync(native)) throw new Error(`figlens's cached binary is missing at ${native}; run figlens_index status to install it, then start again`);
+    return [native];
+  };
   const owners = new Map();
   const lifetime = new AbortController();
   let managedMcp = false, cliPath = false;
@@ -129,9 +139,10 @@ export function createAdapter(ctx, entry = import.meta.url) {
     let current = owners.get(sessionID);
     if (!current) {
       current = { viewer: new Viewer(command, prefix), lifetime: new AbortController(), commands: new Set(),
-        // shortcut: on Windows only the launcher is signalled, since taskkill /T would also reach the shared
-        // runner; stdin EOF still releases the native child. Upgrade if a Windows holder outlives its signals.
-        holder: createHolder(args => spawn(command, [...prefix, ...args], { cwd: root, stdio: 'pipe', windowsHide: true, detached: process.platform !== 'win32' }),
+        holder: createHolder(args => {
+          const [run, ...first] = holding();
+          return spawn(run, [...first, ...args], { cwd: root, stdio: 'pipe', windowsHide: true, detached: process.platform !== 'win32' });
+        },
           { group: process.platform !== 'win32' }) };
       owners.set(sessionID, current);
     }
@@ -360,8 +371,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
       const found = await status(input);
       await readSources(found);
       await edit(place(found));
-      if (bundled) await current.authorize('edit', [cacheRoot]);
-      await current.authorize('bash', [commandLine(args)]);
+      await current.authorize('bash', [commandLine(args, holding())]);
       return current.holder.start(args.slice(2), current.signal);
     }
     if (tool === 'jobs' && input.action === 'cancel') {

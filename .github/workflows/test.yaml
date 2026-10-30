@@ -80,6 +80,9 @@ jobs:
           node-version: "24"
       - name: Pi viewer process lifecycle
         run: node --test pi/viewer.test.mjs
+      - name: OpenCode watch holder process lifecycle
+        shell: bash
+        run: node --test opencode/watch-holder.test.mjs && node --test --test-name-pattern="CLI-path watch" opencode/adapter.test.mjs
       - name: Test
         shell: bash
         run: |

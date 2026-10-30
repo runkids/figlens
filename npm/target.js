@@ -1,3 +1,5 @@
+const path = require("node:path");
+
 // The release archive for a Node platform and arch (see scripts/build-dist.sh).
 const OS = { darwin: "apple-darwin", linux: "unknown-linux-musl", win32: "pc-windows-gnu" };
 const ARCH = { arm64: "aarch64", x64: "x86_64" };
@@ -15,4 +17,9 @@ function asset(platform, arch, version) {
   };
 }
 
-module.exports = { asset };
+// Where the launcher caches this version's checked binary under the `figlens` cache directory.
+function cachedBinary(cache, platform, arch, version) {
+  return path.join(cache, "npm", version, asset(platform, arch, version).binary);
+}
+
+module.exports = { asset, cachedBinary };

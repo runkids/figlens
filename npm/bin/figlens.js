@@ -6,7 +6,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { asset } = require("../target.js");
+const { asset, cachedBinary } = require("../target.js");
 const { version } = require("../package.json");
 
 const cacheRoot =
@@ -14,8 +14,8 @@ const cacheRoot =
   (process.platform === "win32" ? process.env.LOCALAPPDATA : null) ||
   path.join(os.homedir(), ".cache");
 const { archive, binary } = asset(process.platform, process.arch, version);
-const dir = path.join(cacheRoot, "figlens", "npm", version);
-const bin = path.join(dir, binary);
+const bin = cachedBinary(path.join(cacheRoot, "figlens"), process.platform, process.arch, version);
+const dir = path.dirname(bin);
 
 async function download(url) {
   const res = await fetch(url);

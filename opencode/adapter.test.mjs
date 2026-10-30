@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, link, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -544,7 +544,7 @@ async function watching(t) {
   });
   await mkdir(path.join(root, 'package/bin'), { recursive: true });
   await writeFile(path.join(root, 'package/bin/figlens.js'), `require('node:child_process').spawnSync(process.execPath, [require('node:path').join(__dirname, 'native.cjs'), ...process.argv.slice(2)], { stdio: 'inherit' });`);
-  await writeFile(path.join(root, 'package/bin/native.cjs'), `const fs = require('node:fs');
+  const native = `const fs = require('node:fs');
 const say = value => console.log(JSON.stringify(value));
 const [command, action] = process.argv.slice(2);
 if (command === 'index' && action === 'status') say({ paths: { workspace: '/w', lock: '/w.lock' }, roots: { config: { path: '/c' } }, sources: [{ sourceId: 's1', path: '/a.fig' }] });
@@ -558,7 +558,20 @@ else if (command === 'watch' && action === 'run') {
   if (process.argv.includes('stubborn')) { fs.writeFileSync('stubborn', String(process.pid)); setInterval(() => {}, 1000); return; }
   process.stdin.on('end', () => { fs.appendFileSync('released', leaseId + '\\n'); if (request) fs.writeFileSync(request, leaseId); say({ leaseId, state: 'ended', reason: 'released' }); process.exit(0); });
   process.stdin.resume();
-} else throw new Error('Unexpected command');`);
+} else throw new Error('Unexpected command');`;
+  await writeFile(path.join(root, 'package/bin/native.cjs'), native);
+  // The launcher's cached binary, which a lease holder runs directly.
+  await copyFile(new URL('../npm/target.js', import.meta.url), path.join(root, 'package/target.js'));
+  await writeFile(path.join(root, 'package/package.json'), JSON.stringify({ version: '0.0.0-test' }));
+  const cache = path.join(root, 'cache');
+  const cached = path.join(cache, 'figlens/npm/0.0.0-test', process.platform === 'win32' ? 'figlens.exe' : 'figlens');
+  await mkdir(path.dirname(cached), { recursive: true });
+  // A copy of node stands in for it on every OS: run as `watch run ...` in the holder's cwd, it runs this script.
+  try { await link(process.execPath, cached); } catch { await copyFile(process.execPath, cached); }
+  await writeFile(path.join(root, 'watch'), `process.argv.splice(2, 0, 'watch');\n${native}`);
+  const saved = process.env.XDG_CACHE_HOME;
+  process.env.XDG_CACHE_HOME = cache;
+  t.after(() => { if (saved === undefined) delete process.env.XDG_CACHE_HOME; else process.env.XDG_CACHE_HOME = saved; });
   const adapter = createAdapter(ctx, pathToFileURL(path.join(root, 'package/opencode/index.mjs')).href);
   t.after(() => adapter.dispose());
   const lines = async name => (await readFile(path.join(root, name), 'utf8').catch(() => '')).split('\n').filter(Boolean);
@@ -615,14 +628,14 @@ test('CLI-path watch start replays a requestId within its session, and only ther
     [first, first, true, 2, { leaseId: first.leaseId, state: 'ended', reason: 'released' }, 3]);
 });
 
-test('CLI-path watch stop signals the native holder under the launcher when it ignores its stdin', { skip: process.platform === 'win32' }, async t => {
+test('CLI-path watch holds the cached native binary itself, so stop ends it even when it ignores its stdin', async t => {
   const { adapter, lines } = await watching(t);
   const a = await adapter.scope('a');
   const lease = await adapter.cli(a, 'watch', { action: 'start', workspaceId: 'ws_1', scope: '0:0', requestId: 'stubborn' });
   const [pid] = await lines('stubborn');
   const end = await adapter.cli(a, 'watch', { action: 'stop', leaseId: lease.leaseId });
   const alive = () => { try { process.kill(Number(pid), 0); return true; } catch { return false; } };
-  assert.deepEqual([end.state, end.reason, alive()], ['unknown', 'release_unconfirmed', false]);
+  assert.deepEqual([end.state, end.reason, alive(), (await lines('runs')).length], ['unknown', 'release_unconfirmed', false, 1]);
 });
 
 test('CLI-path watch start spawns nothing when read on the design is denied', async t => {

@@ -304,6 +304,8 @@ def main():
         # The wrapper, as a second host, reuses the index the native first use enabled.
         first_use['crossHost'] = check_reuse(wrapper + ['mcp'], work/'first-use-native', wrapped_env)
         watch = check_watch(cache, fixture, consumer, env)
+        # The installed OpenCode adapter holds a CLI-path lease with that cached binary itself, on this OS.
+        watch['opencodeHolder'] = json.loads(run([node, ROOT/'scripts/check-opencode-holder.mjs', installed, cache, fixture], consumer, env))
         # Cold MCP startup must keep extraction/installation output off its protocol stdout.
         mcp_cache = work/'mcp-cache'
         mcp_env = dict(wrapped_env, XDG_CACHE_HOME=str(mcp_cache), LOCALAPPDATA=str(mcp_cache))
