@@ -59,6 +59,11 @@ def check_index(binary, fixture, cwd, env):
     assert built['job']['state'] == 'succeeded', built
     searched = json.loads(run([binary, 'search', '--file', source, 'First success'], cwd, env))
     assert searched['state'] == 'ready' and searched['results'][0]['ref']['nodeId'] == '0:1', searched
+    # Wiring only: the fixture records no library reference, so the question is unresolved and has no users.
+    used = json.loads(run([binary, 'usages', '--file', source, '--library', 'component', '--namespace', 'lib', '--key', 'k1'], cwd, env))
+    assert used['library'] == {'kind': 'component', 'namespace': 'lib', 'key': 'k1'} and used['results'] == [], used
+    assert used['definition'] == {'state': 'unresolved', 'reason': 'library_source_unproven'}, used
+    assert used['coverage']['complete'] is True and [s['state'] for s in used['coverage']['sources']] == ['ready'], used
     job = json.loads(run([binary, 'jobs', 'status', built['job']['jobId']], cwd, env))
     assert job['state'] == 'succeeded', job
     # A removed remembered root is recreated by an equivalent spelling: on Windows the ordinary
@@ -70,7 +75,7 @@ def check_index(binary, fixture, cwd, env):
     assert os.path.samefile(Path(recreated['paths']['database']).parents[2], custom/'state'), recreated
     assert sha(source) == before, 'index changed the source .fig'
     assert not (base/'state').exists(), 'a second database appeared in the default state root'
-    return {'customPrepare': True, 'rediscovered': True, 'resetNewIncarnation': True, 'indexedSearch': True,
+    return {'customPrepare': True, 'rediscovered': True, 'resetNewIncarnation': True, 'indexedSearch': True, 'libraryUsages': True,
             'removedRootRecreated': True, 'sourceUnchanged': True}
 
 

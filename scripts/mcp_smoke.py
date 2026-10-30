@@ -203,6 +203,12 @@ def check_first_use(command, base, fixture, env):
         assert search(first, workspace) == ('ready', '0:1')
         used = call(first, 'usages', {'workspaceId': workspace, **contains})
         assert used['coverage']['complete'] and used['results'][0]['target']['ref']['nodeId'] == '0:10', used
+        # Wiring only: the fixture records no library reference, so the question is unresolved and has no users.
+        library = {'kind': 'component', 'namespace': 'lib', 'key': 'k1'}
+        answer = call(first, 'usages', {'workspaceId': workspace, 'library': library})
+        assert answer['library'] == library and answer['results'] == [], answer
+        assert answer['definition'] == {'state': 'unresolved', 'reason': 'library_source_unproven'}, answer
+        assert answer['coverage']['complete'] is True and [s['state'] for s in answer['coverage']['sources']] == ['ready'], answer
         # Tracking records a baseline; a consumer that acks it reads nothing new after it.
         for job in call(first, 'index', {'action': 'track', 'workspaceId': workspace, 'scope': '0:0'})['jobs']:
             settle(first, job)

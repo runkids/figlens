@@ -93,8 +93,27 @@ await check('packaged descriptor, bridge handshake and absolute design path', as
     assert.equal(diffed.structuredContent.coverage.complete, true);
     assert.equal(diffed.structuredContent.coverage.changes, 0);
     assert.notEqual(diffed.structuredContent.source.old.sourceId, diffed.structuredContent.source.new.sourceId);
+    // Wiring only: the fixture records no library reference, so the question is unresolved and has no users.
+    const prepared = await callTool(connection, 'index', { action: 'prepare', file: path.join(project, 'mapping.fig'), scope: '0:0' });
+    assert.equal(prepared.isError, false);
+    let job;
+    for (let tries = 0; tries < 100; tries++) {
+      job = (await callTool(connection, 'jobs', { action: 'status', jobId: prepared.structuredContent.job.jobId })).structuredContent;
+      if (job.state !== 'queued' && job.state !== 'running') break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.equal(job.state, 'succeeded');
+    const library = { kind: 'component', namespace: 'lib', key: 'k1' };
+    const used = await callTool(connection, 'usages', { workspaceId: prepared.structuredContent.workspaceId, library });
+    assert.equal(used.isError, false);
+    assert.deepEqual(used.structuredContent.library, library);
+    assert.deepEqual(used.structuredContent.results, []);
+    assert.deepEqual(used.structuredContent.definition, { state: 'unresolved', reason: 'library_source_unproven' });
+    assert.equal(used.structuredContent.coverage.complete, true);
+    assert.deepEqual(used.structuredContent.coverage.sources.map(source => source.state), ['ready']);
     return { descriptorCwd: config.cwd, bridge: config.args[0], absoluteFrame: '0:1', relativePathRejected: true,
-      searchRef: searched.structuredContent.results[0].ref, diffedTwoCopies: diffed.structuredContent.source };
+      searchRef: searched.structuredContent.results[0].ref, diffedTwoCopies: diffed.structuredContent.source,
+      libraryUsages: used.structuredContent.definition };
   } finally { await disconnectServer(connection); }
 });
 await check('first use through the packaged bridge: prepare, poll, search the published index, inspect, with native write approval', async () => {

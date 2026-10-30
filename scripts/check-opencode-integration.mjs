@@ -46,7 +46,8 @@ const firstUseCode = paths => ['index', 'jobs', 'search', 'inspect', 'usages'].e
   const found = await ${tool(paths, 'search')}({ workspaceId: prepared.workspaceId, query: 'Mapping review' });
   const node = found.results?.[0] && await ${tool(paths, 'inspect')}({ file: ${JSON.stringify(fixture)}, node: found.results[0].ref.nodeId });
   const used = await ${tool(paths, 'usages')}({ workspaceId: prepared.workspaceId, node: '0:10' });
-  return { usedBy: used.results?.map(item => item.relation + ' ' + item.ref.nodeId), usedSource: used.results?.[0]?.ref.sourceId === found.results?.[0]?.ref.sourceId, before: before.state, workspaceId: prepared.workspaceId, dispatched: prepared.job.state, job: job.state, polls,
+  const library = await ${tool(paths, 'usages')}({ workspaceId: prepared.workspaceId, library: { kind: 'component', namespace: 'lib', key: 'k1' } });
+  return { library: { results: library.results, definition: library.definition, complete: library.coverage?.complete }, usedBy: used.results?.map(item => item.relation + ' ' + item.ref.nodeId), usedSource: used.results?.[0]?.ref.sourceId === found.results?.[0]?.ref.sourceId, before: before.state, workspaceId: prepared.workspaceId, dispatched: prepared.job.state, job: job.state, polls,
     ref: found.results?.[0]?.ref, sources: found.sources, complete: found.coverage?.complete, inspected: node?.node?.id };`;
 const firstUseSteps = [() => catalog(['index', 'jobs', 'search', 'inspect', 'usages']), firstUseCode];
 const resetSteps = [() => catalog(['index']), paths => tool(paths, 'index') && `
@@ -226,6 +227,8 @@ try {
     // The Button component's instances, from the same published index and source as the search.
     assert.deepEqual(flow.usedBy, ['instance_of 0:2', 'instance_of 0:3'], JSON.stringify(flow));
     assert.equal(flow.usedSource, true);
+    // Wiring only: the fixture records no library reference, so the question is unresolved and has no users.
+    assert.deepEqual(flow.library, { results: [], definition: { state: 'unresolved', reason: 'library_source_unproven' }, complete: true }, JSON.stringify(flow));
     return { ...flow, sources: undefined, paths: paths.filter(item => /index|jobs|search|inspect|usages/.test(item)), provider: 'scripted loopback, not a model' };
   });
   await check('MCP reset asks the figlens_index permission: a deny rule keeps the database, an allow resets it', async () => {
