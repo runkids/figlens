@@ -391,7 +391,7 @@ pub fn plugin_type(node: &Value) -> String {
 }
 
 /// Placement fields an expanded node keeps even when its child lacks them.
-const PLACEMENT: [&str; 5] = [
+pub(crate) const PLACEMENT: [&str; 5] = [
     "stackChildPrimaryGrow",
     "stackChildAlignSelf",
     "stackPositioning",

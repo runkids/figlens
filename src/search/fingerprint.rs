@@ -5,7 +5,7 @@
 //! build indexes. Each of `FACETS` folds, in document order over the root and its indexed
 //! subtree, every record's depth below the root, kind, name and own visibility, then the digest
 //! of each of its `diff::FIELDS` fields in that facet (diff's bounded per-field digests). The
-//! root's placement in its parent (`PLACEMENT`) and every file-local id are left out: a field
+//! root's placement in its parent (`placement`) and every file-local id are left out: a field
 //! whose value holds a GUID cannot be mapped to a confirmed library key, so it makes its facet
 //! `unsupported`, never stripped. A field over diff's caps, hidden content left unexpanded, a
 //! subtree the build cut short or an expansion stop make it `unread`.
@@ -20,15 +20,12 @@ pub(crate) const FACETS: [&str; 4] = ["text", "layout", "appearance", "propertie
 pub(crate) const STATES: [&str; 3] = ["read", "unread", "unsupported"];
 /// Bumped whenever the fold changes; stored with `usages::RELATIONS`.
 const VERSION: &str = "fingerprint-1";
-/// A root's place in its parent, which a cached copy does not share with its definition.
-const PLACEMENT: [&str; 6] = [
-    "transform",
-    "horizontalConstraint",
-    "verticalConstraint",
-    "stackPositioning",
-    "stackChildPrimaryGrow",
-    "stackChildAlignSelf",
-];
+/// A root's place in its parent, which a cached copy does not share with its definition: its
+/// transform and the fields instance expansion keeps as placement.
+fn placement(key: &str) -> bool {
+    key == "transform" || crate::expand::PLACEMENT.contains(&key)
+}
+
 /// Retained bytes of one stored facet row.
 pub(super) const ROW_BYTES: usize = 96;
 
@@ -108,7 +105,7 @@ pub(super) fn prints(
             }
             for f in &input.facets.fields {
                 let i = f.facet as usize;
-                if i >= FACETS.len() || (end == root && PLACEMENT.contains(&f.key)) {
+                if i >= FACETS.len() || (end == root && placement(f.key)) {
                     continue;
                 }
                 match f.digest {
