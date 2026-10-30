@@ -2348,3 +2348,72 @@ fn mcp_changes_shows_only_visible_sources_and_shares_cli_cursors() {
         )
     );
 }
+
+#[test]
+fn a_consumer_checkpoint_is_kept_per_view_so_a_narrower_view_skips_nothing() {
+    let env = Env::new();
+    for d in ["project", "in", "out"] {
+        std::fs::create_dir(env.dir.join(d)).unwrap();
+    }
+    let dir = std::fs::canonicalize(env.dir.join("project")).unwrap();
+    let dir = dir.to_str().unwrap();
+    for name in ["in/a.fig", "out/b.fig"] {
+        let fig = env.fig(name);
+        env.json(&[
+            "index",
+            "prepare",
+            fig.to_str().unwrap(),
+            "--workspace",
+            dir,
+            "--scope",
+            "0:0",
+        ]);
+    }
+    env.json(&["index", "track", "--workspace", dir, "--scope", "0:0"]);
+    let all = env.json(&["changes", "--workspace", dir]);
+    env.json(&[
+        "watch",
+        "ack",
+        "--workspace",
+        dir,
+        "--consumer",
+        "bot",
+        "--cursor",
+        all["nextCursor"].as_str().unwrap(),
+    ]);
+    let inside = std::fs::canonicalize(env.dir.join("in")).unwrap();
+    let mut mcp = Mcp::start(&env, &["--root", inside.to_str().unwrap()]);
+    let narrow = mcp.call(
+        "changes",
+        json!({"workspaceId": all["workspaceId"], "consumer": "bot"}),
+    );
+    assert_eq!(
+        (
+            all["revisions"].as_array().unwrap().len(),
+            narrow["structuredContent"]["revisions"]
+                .as_array()
+                .unwrap()
+                .len()
+        ),
+        (2, 1)
+    );
+}
+
+#[test]
+fn a_poll_lists_at_most_a_hundred_tracked_scopes_and_says_so() {
+    let env = Env::new();
+    let t = Tracked::new(&env);
+    t.sql(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100)
+         INSERT INTO tracking (source_id, scope, state, epoch, facet_version, enabled_ms)
+         SELECT source_id, '9:' || i, 'disabled', 1, '', 0 FROM sources, n",
+    );
+    let page = t.changes(&[]);
+    assert_eq!(
+        (
+            page["tracking"].as_array().unwrap().len(),
+            page["trackingTruncated"].clone()
+        ),
+        (100, json!(true))
+    );
+}

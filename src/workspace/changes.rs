@@ -13,6 +13,8 @@ const PAGE_MAX: usize = 50;
 const DETAIL: usize = 100;
 const DETAIL_MAX: usize = 500;
 const PAGE_BYTES: usize = 256 * 1024;
+/// Tracked scopes listed in a poll; past it `trackingTruncated`.
+const TRACKING: usize = 100;
 /// The cursor of "the oldest revision kept": a zero revision id.
 const OLDEST: [u8; 16] = [0; 16];
 
@@ -38,10 +40,13 @@ struct View {
 
 fn view(storage: &Storage, ws: &Opened, req: &Request) -> Result<View> {
     let sources = jobs::chosen(storage, ws, req.source)?;
+    // A checkpoint is kept per view too: progress over more sources must not skip a narrower
+    // view's revisions.
     let filter = format!(
-        "{}\u{1f}{}",
+        "{}\u{1f}{}\u{1f}{}",
         req.source.unwrap_or(""),
-        req.scope.unwrap_or("")
+        req.scope.unwrap_or(""),
+        crate::search::hex(&Sha256::digest(sources.join("\u{1f}")))
     );
     let key = match ws.version >= SCHEMA {
         true => Some(
@@ -55,12 +60,7 @@ fn view(storage: &Storage, ws: &Opened, req: &Request) -> Result<View> {
         ),
         false => None,
     };
-    let bind = [
-        ws.incarnation.as_bytes(),
-        filter.as_bytes(),
-        &Sha256::digest(sources.join("\u{1f}")),
-    ]
-    .join(&0x1f);
+    let bind = [ws.incarnation.as_bytes(), filter.as_bytes()].join(&0x1f);
     Ok(View {
         workspace: ws.held.id.clone(),
         sources,
@@ -101,8 +101,8 @@ fn payload(v: &View, tag: &str, text: &str, len: usize) -> Result<Vec<u8>> {
     let raw = text
         .strip_prefix(tag)
         .and_then(|t| t.strip_prefix('.'))
+        .filter(|t| t.len() == (len + 16) * 2)
         .and_then(unhex)
-        .filter(|b| b.len() == len + 16)
         .ok_or_else(stale)?;
     let (payload, tail) = raw.split_at(len);
     mac(v, payload)
@@ -275,19 +275,22 @@ fn poll(conn: &Connection, v: &View, req: &Request) -> Result<Json> {
         last = Some(id);
     }
     let has_more = page.len() < rows.len();
+    let (tracked, truncated) = tracking(conn, v)?;
     Ok(json!({
         "workspaceId": v.workspace,
         "revisions": page,
         "nextCursor": last.map_or(Json::Null, |id| cursor(v, "c1", id)),
         "hasMore": has_more,
-        "tracking": tracking(conn, v)?,
+        "tracking": tracked,
+        "trackingTruncated": truncated,
         // The watch monitor (B2) runs apart from tracking: recording happens on each build.
         "monitor": {"state": "inactive"},
     }))
 }
 
-/// Tracking state of the view's sources, with whether the file changed since its last build.
-fn tracking(conn: &Connection, v: &View) -> Result<Json> {
+/// Tracking state of the view's sources, with whether the file changed since its last build:
+/// at most [`TRACKING`] scopes, and whether more were left out.
+fn tracking(conn: &Connection, v: &View) -> Result<(Json, bool)> {
     let mut stmt = conn
         .prepare(
             "SELECT t.source_id, t.scope, t.state, (SELECT id FROM revisions r
@@ -298,28 +301,33 @@ fn tracking(conn: &Connection, v: &View) -> Result<Json> {
              LEFT JOIN generations g ON g.gen = p.gen
              LEFT JOIN snapshots n ON n.source_id = t.source_id AND n.snapshot_id = g.snapshot_id
              WHERE t.source_id IN (SELECT value FROM json_each(?1)) AND (?2 IS NULL OR t.scope = ?2)
-             ORDER BY s.added_at_ms, t.source_id, t.scope",
+             ORDER BY s.added_at_ms, t.source_id, t.scope LIMIT ?3",
         )
         .map_err(sql)?;
-    let rows = stmt
-        .query_map(params![json!(v.sources).to_string(), v.scope], |r| {
-            let last: Option<Vec<u8>> = r.get(3)?;
-            let path: String = r.get(4)?;
-            let (bytes, mtime): (Option<i64>, Option<i64>) = (r.get(5)?, r.get(6)?);
-            Ok((
-                json!({"sourceId": r.get::<_, String>(0)?, "scope": r.get::<_, String>(1)?,
+    let mut rows = stmt
+        .query_map(
+            params![json!(v.sources).to_string(), v.scope, TRACKING as i64 + 1],
+            |r| {
+                let last: Option<Vec<u8>> = r.get(3)?;
+                let path: String = r.get(4)?;
+                let (bytes, mtime): (Option<i64>, Option<i64>) = (r.get(5)?, r.get(6)?);
+                Ok((
+                    json!({"sourceId": r.get::<_, String>(0)?, "scope": r.get::<_, String>(1)?,
                     "state": r.get::<_, String>(2)?,
                     "lastRevisionId": last.map(|l| crate::search::hex(&l)),
                     "lastCheckedAtMs": r.get::<_, Option<i64>>(7)?}),
-                path,
-                bytes,
-                mtime,
-            ))
-        })
+                    path,
+                    bytes,
+                    mtime,
+                ))
+            },
+        )
         .map_err(sql)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(sql)?;
-    Ok(rows
+    let truncated = rows.len() > TRACKING;
+    rows.truncate(TRACKING);
+    let rows = rows
         .into_iter()
         .map(|(mut row, path, bytes, mtime)| {
             // An empty page never proves the file unchanged: only a build records a change.
@@ -333,7 +341,8 @@ fn tracking(conn: &Connection, v: &View) -> Result<Json> {
             }));
             row
         })
-        .collect())
+        .collect();
+    Ok((rows, truncated))
 }
 
 fn detail(conn: &Connection, v: &View, req: &Request, revision: &str) -> Result<Json> {
@@ -350,8 +359,9 @@ fn detail(conn: &Connection, v: &View, req: &Request, revision: &str) -> Result<
             format!("workspace {} has no revision {revision}", v.workspace),
         )
     };
-    let id = unhex(revision)
-        .filter(|id| id.len() == 16)
+    let id = Some(revision)
+        .filter(|r| r.len() == 32)
+        .and_then(unhex)
         .ok_or_else(missing)?;
     let state: String = conn
         .query_row(
@@ -462,9 +472,12 @@ pub fn ack(storage: &Storage, select: &Select, req: &Request) -> Result<Json> {
         )
         .map_err(sql)?;
     let held: Option<Vec<u8>> = tx
-        .query_row("SELECT id FROM revisions WHERE seq = ?1", [at], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT id FROM revisions WHERE seq = ?1
+             AND source_id IN (SELECT value FROM json_each(?2)) AND (?3 IS NULL OR scope = ?3)",
+            params![at, json!(v.sources).to_string(), v.scope],
+            |r| r.get(0),
+        )
         .optional()
         .map_err(sql)?;
     tx.commit().map_err(sql)?;
