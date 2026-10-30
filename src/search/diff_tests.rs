@@ -91,10 +91,7 @@ fn changed_text_fill_and_size_are_reported_per_facet_and_unchanged_layers_are_no
         ]
     );
     let frame = &out["frames"][0];
-    assert_eq!(
-        frame["summary"],
-        "3 changed, text 1, layout 1, appearance 1"
-    );
+    assert_eq!(frame["summary"], "3 listed, text 1, layout 1, appearance 1");
     let title = &frame["nodes"][1];
     assert_eq!(title["facets"], json!(["text"]));
     assert_eq!(
@@ -902,8 +899,9 @@ fn an_unread_field_alone_is_unknown_and_proves_no_facet_change() {
     // Unread on both sides, or read on one and unread on the other: no facet is proven to differ.
     let unknown = (json!("unknown"), Json::Null, json!(true));
     assert_eq!(change(one(&giant, 1.0), one(&giant, 1.0)), unknown);
-    // It still names the field that was unread.
+    // It still names the field that was unread, and the frame lists it without calling it changed.
     let out = run(one("small", 1.0), one(&giant, 1.0));
+    assert_eq!(out["frames"][0]["summary"], "1 listed, unread 1");
     assert!(out["frames"][0]["nodes"][0]["fields"]["textData"].is_object());
     assert_eq!(change(one("small", 1.0), one(&giant, 1.0)), unknown);
     // A proven change elsewhere is a change that also says a field was unread.

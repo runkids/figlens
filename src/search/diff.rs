@@ -1279,7 +1279,7 @@ fn offset(pair: &Pair, cursor: &str) -> Result<usize, Box<dyn Error>> {
 }
 
 fn summary(counts: &[u32; 8]) -> String {
-    let mut parts = vec![format!("{} changed", counts[7])];
+    let mut parts = vec![format!("{} listed", counts[7])];
     for (i, name) in FACETS
         .iter()
         .chain(["bindings", "unread"].iter())
