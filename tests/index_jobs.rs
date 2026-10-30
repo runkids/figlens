@@ -5291,6 +5291,102 @@ fn a_tracked_scope_publishes_definition_fingerprints_as_an_untracked_build_does(
 }
 
 #[test]
+fn a_ranked_set_evaluation_with_a_transiently_stale_member_is_unavailable_not_stored() {
+    let env = Env::new();
+    let project = env.dir.join("project");
+    std::fs::create_dir(&project).unwrap();
+    let dir = std::fs::canonicalize(project).unwrap();
+    let dir = dir.to_str().unwrap();
+    let figs = ["a.fig", "b.fig"].map(|name| env.fig(name));
+    for fig in &figs {
+        env.json(&[
+            "index",
+            "prepare",
+            fig.to_str().unwrap(),
+            "--workspace",
+            dir,
+            "--scope",
+            "0:0",
+        ]);
+    }
+    let status = env.json(&["index", "status", "--workspace", dir]);
+    let db = status["paths"]["database"].as_str().unwrap().to_owned();
+    let b = std::fs::canonicalize(&figs[1]).unwrap();
+    let b_id = status["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["path"] == b.to_str().unwrap())
+        .unwrap()["sourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // A build still running would stamp the touched time, so each step waits for jobs to finish.
+    let idle = || {
+        wait_for("jobs to finish", || {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.query_row(
+                "SELECT count(*) FROM jobs WHERE state IN ('queued', 'running')",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+                == 0
+        })
+    };
+    idle();
+    // b keeps its bytes but not its modification time: the search stays ready over a alone.
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+    std::fs::File::options()
+        .write(true)
+        .open(&figs[1])
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    let saved = env.json(&[
+        "watch",
+        "subscribe",
+        "--workspace",
+        dir,
+        "--consumer",
+        "bot",
+        "--sources",
+        "visible",
+        "--query",
+        "first",
+    ]);
+    env.json(&[
+        "index",
+        "refresh",
+        "--workspace",
+        dir,
+        "--source",
+        &b_id,
+        "--scope",
+        "0:0",
+    ]);
+    idle();
+    let id = saved["subscription"]["subscriptionId"].as_str().unwrap();
+    let evaluated = env.json(&[
+        "watch",
+        "evaluate",
+        "--workspace",
+        dir,
+        "--subscription",
+        id,
+    ]);
+    assert_eq!(
+        [
+            &saved["evaluation"]["state"],
+            &saved["evaluation"]["reason"],
+            &evaluated["evaluation"]["state"]
+        ],
+        [&json!("unavailable"), &json!("stale"), &json!("evaluated")],
+        "{saved} {evaluated}"
+    );
+}
+
+#[test]
 fn a_library_evaluation_over_a_transiently_stale_source_is_unavailable_not_stored() {
     let env = Env::new();
     let t = Tracked::new(&env);

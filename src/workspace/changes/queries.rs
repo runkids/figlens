@@ -402,19 +402,26 @@ pub(super) fn compute(
             "sources": reply["sources"], "nextSteps": reply["nextSteps"]}),
         ));
     }
-    // A library reply has no state: a member its coverage names not ready leaves its uses out, so
-    // storing it would keep that window as current after a refresh reuses the generation.
-    if saved.library.is_some() {
-        let sources = &reply["coverage"]["sources"];
-        if let Some(s) = sources
-            .as_array()
-            .and_then(|s| s.iter().find(|s| s["state"] != "ready"))
-        {
-            return Ok(Err(
-                json!({"state": "unavailable", "reason": s["state"], "sources": sources,
-                "nextSteps": s["nextSteps"]}),
-            ));
-        }
+    // A ready set search or a library reply (which has no state) can still leave a member out, as
+    // one stale only by its mtime; storing that would keep the partial window current after a
+    // refresh reuses the generation. So every member must be ready, where each reply names it.
+    let sources = match saved.library {
+        Some(_) => &reply["coverage"]["sources"],
+        None => &reply["sources"],
+    };
+    if let Some(s) = sources
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["state"] != "ready"))
+    {
+        let steps = if s["nextSteps"].is_null() {
+            &reply["nextSteps"]
+        } else {
+            &s["nextSteps"]
+        };
+        return Ok(Err(
+            json!({"state": "unavailable", "reason": s["state"], "sources": sources,
+            "nextSteps": steps}),
+        ));
     }
     // Exact refs: in a set a node id alone is ambiguous, so each carries its sourceId.
     let refs = reply["results"]
