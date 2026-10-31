@@ -153,7 +153,7 @@ usage:
                                              per frame ({nodeId,path,warnings} or {nodeId,error});
                                              --jobs limits concurrent frames (0/default: all cores), not rendering
   figlens export <file.fig> <node> <out> [--bounds layout|render] [--scale N] [--quality 1-100]
-          [--max-kb N] [--max-size N] [--match-dir DIR]
+          [--max-kb N] [--max-size N] [--match-dir DIR] [--hide ID[,ID...]]
                                             render a node to out.png|jpg|webp|avif|svg (default 1x,
                                              quality 80); SVG keeps vectors, scale/quality do not apply;
                                              PNGs up to 4,194,304 pixels are losslessly optimized;
@@ -170,7 +170,10 @@ usage:
                                              matches lists those drawing the same outlines, ignoring position,
                                              paint and path syntax; similar lists up to 10 {file,score} (0.8-1)
                                              drawing a similar shape, stroked or at another size, to confirm
-                                             by eye (1 for the same outlines at another size)
+                                             by eye (1 for the same outlines at another size);
+                                             --hide draws those layers inside the node as hidden over
+                                             the same area (prints hidden): diff it with the plain
+                                             export to see how much a warned layer shows
   figlens export <file.fig> --frames <list|-> --out-dir <dir> [--format png|jpg|webp|avif|svg] ...
                                              one decode, many exports (default png, same options):
                                              writes <dir>/<nodeId>.<format> (`:` as `-`), prints one
@@ -890,7 +893,9 @@ fn export_batch(
     // Bad options fail once, before any file is written, instead of on every line.
     let export_format = figlens::export::Format::from_ext(&format)
         .ok_or("--format takes png, jpg, webp, avif or svg")?;
-    let (layout, scale, quality, max_kb, max_size, match_dir) = command::export_options(&options)?;
+    // `--hide` is not forwarded: its layers sit inside one exported node.
+    let (layout, scale, quality, max_kb, max_size, match_dir, _) =
+        command::export_options(&options)?;
     // Every export compares against the folder as it was before the batch wrote anything.
     let match_index = command::match_index(match_dir, export_format)?;
     std::fs::create_dir_all(&dir)?;
@@ -906,6 +911,7 @@ fn export_batch(
             max_kb,
             max_size,
             match_index: match_index.clone(),
+            hide: Vec::new(),
         };
         let output = export.execute(tree, fig).map_err(|e| e.to_string())?;
         Ok(output.json().cloned().unwrap_or_default())

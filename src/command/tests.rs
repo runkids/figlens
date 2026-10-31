@@ -859,6 +859,66 @@ fn hidden_layers_are_refused_by_every_export_format_through_cli_and_mcp() {
 }
 
 #[test]
+fn hide_draws_layers_hidden_over_the_same_area_through_cli_and_mcp() {
+    let dir = TestDir::new();
+    let file = "examples/first-success/design.fig";
+    let export = |out: &str, extra: &[&str]| {
+        let mut args = vec!["export", file, "0:1", out];
+        args.extend(extra);
+        let mut text = String::new();
+        run(args.into_iter().map(str::to_owned).collect(), &mut text)
+            .map(|()| serde_json::from_str::<serde_json::Value>(&text).unwrap())
+    };
+    let (plain, hidden) = (dir.join("plain.png"), dir.join("hidden.png"));
+    let base = export(plain.to_str().unwrap(), &[]).unwrap();
+    let without = export(hidden.to_str().unwrap(), &["--hide", "0:2"]).unwrap();
+    assert_eq!(without["hidden"], serde_json::json!(["0:2"]));
+    assert_eq!(
+        (&without["width"], &without["height"]),
+        (&base["width"], &base["height"])
+    );
+    assert_ne!(
+        std::fs::read(&plain).unwrap(),
+        std::fs::read(&hidden).unwrap()
+    );
+    let mcp = dir.join("mcp.png");
+    let reply = call_tool(
+        &serde_json::json!({"name": "export", "arguments": {
+            "file": file, "node": "0:1", "out": mcp, "hide": "0:2", "maxSize": 0,
+        }}),
+        None,
+    );
+    assert_eq!(
+        reply["structuredContent"]["hidden"],
+        serde_json::json!(["0:2"]),
+        "{reply}"
+    );
+    assert_eq!(
+        std::fs::read(&mcp).unwrap(),
+        std::fs::read(&hidden).unwrap()
+    );
+    let refused = dir.join("refused.png");
+    for id in ["0:1", "0:10", "9:9"] {
+        let error = export(refused.to_str().unwrap(), &["--hide", id]).unwrap_err();
+        assert!(
+            error.to_string().contains("is not a layer inside node 0:1"),
+            "{error}"
+        );
+    }
+    assert!(!refused.exists());
+    let reply = call_tool(
+        &serde_json::json!({"name": "export", "arguments": {
+            "file": file, "node": "0:1", "out": refused, "hide": "",
+        }}),
+        None,
+    );
+    assert_eq!(
+        reply["_meta"]["figlens"]["code"], "invalid_arguments",
+        "{reply}"
+    );
+}
+
+#[test]
 fn svg_exports_directly_through_cli_and_mcp() {
     let fixture = Fixture::new();
     let out = fixture.0.join("frame.svg");

@@ -62,10 +62,13 @@
       ]
     },
     "bundle": {
-      "description": "Changing the bundle zip, manifest, context.md, batch bundles, font inventory or verify.",
+      "description": "Changing the bundle zip, manifest, context.md, batch bundles, font inventory, render warnings or verify.",
       "sources": [
         {
           "path": "wiki/bundle.md"
+        },
+        {
+          "path": "wiki/render-diagnostics.md"
         }
       ]
     },

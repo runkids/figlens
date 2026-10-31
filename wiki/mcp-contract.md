@@ -15,6 +15,7 @@ Field reference linked from [mcp](mcp.md).
 | `export.quality` | 1–100 / 80 |
 | `export.maxKb` | 0 through `2^53-1`; omitted means no byte budget |
 | `export.maxSize` | 0 through `u32::MAX` / 1600; 0 disables the raster side cap |
+| `export.hide` | nonempty comma-separated ids of layers inside `node`; each must be inside it |
 | `export.bounds` | `render` or `layout` / `render` |
 | `variables.format` | `rest` (default) or `dtcg`; DTCG requires nonempty `collection`, `mode`, `out` and forbids `node`; REST rejects export selectors/output |
 

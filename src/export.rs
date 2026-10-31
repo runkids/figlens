@@ -50,6 +50,8 @@ pub struct Image {
 /// Renders node `id` over its render bounds, or its layout box when `layout`, and encodes it.
 /// SVG keeps its original dimensions and ignores quality. Also returns `layoutBox`, `renderBox`
 /// and `warnings`: the drawn area past the layout box, then the subtree's render diagnostics.
+/// Layers in `hide` draw as if hidden in Figma, over the same area, so the two exports compare
+/// pixel for pixel; `hidden` lists them.
 #[allow(clippy::too_many_arguments)]
 pub fn export(
     tree: &Tree,
@@ -61,8 +63,21 @@ pub fn export(
     quality: u8,
     max_bytes: Option<usize>,
     max_px: Option<u32>,
+    hide: &[String],
 ) -> Result<(Image, Map<String, Json>), Box<dyn Error>> {
-    let prepared = Prepared::new(tree, fig, id)?;
+    let mut prepared = Prepared::new(tree, fig, id)?;
+    for layer in hide {
+        let found = (layer != id)
+            .then(|| find_mut(&mut prepared.document["document"], layer))
+            .flatten()
+            .ok_or_else(|| {
+                crate::FigError::new(
+                    crate::ErrorKind::InvalidArguments,
+                    format!("hide {layer} is not a layer inside node {id}"),
+                )
+            })?;
+        found["visible"] = Json::Bool(false);
+    }
     let (image, mut report) = prepared_export(
         tree, &prepared, id, format, layout, scale, quality, max_bytes, max_px,
     )?;
@@ -72,7 +87,20 @@ pub fn export(
     if let Some(Json::Array(warnings)) = report.get_mut("warnings") {
         warnings.extend(skipped.into_iter().map(Json::from));
     }
+    if !hide.is_empty() {
+        report.insert("hidden".into(), hide.into());
+    }
     Ok((image, report))
+}
+
+fn find_mut<'j>(n: &'j mut Json, id: &str) -> Option<&'j mut Json> {
+    if n["id"] == id {
+        return Some(n);
+    }
+    n.get_mut("children")?
+        .as_array_mut()?
+        .iter_mut()
+        .find_map(|c| find_mut(c, id))
 }
 
 /// Shared renderer path for file exports and immutable snapshot thumbnails.
@@ -717,7 +745,7 @@ mod tests {
         let warnings = |id: &str| {
             let fig = Path::new("unread.fig");
             let (_, report) =
-                export(&tree, fig, id, Format::Svg, false, 1.0, 80, None, None).unwrap();
+                export(&tree, fig, id, Format::Svg, false, 1.0, 80, None, None, &[]).unwrap();
             report["warnings"].clone()
         };
         let frame = warnings("1:1");

@@ -321,6 +321,7 @@ fn snapshot_units_reuse_export_pixels_and_keep_render_evidence() {
         100,
         Some(MAX_BYTES),
         Some(1024),
+        &[],
     )
     .unwrap();
     let expected = QueryImage::from_png(&image.bytes, None).unwrap();

@@ -461,6 +461,12 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 false,
                 "SVG output only: a folder of SVG files, subfolders included, to compare with the export, to find an icon the project already has; matches lists the files (relative paths) that draw the same outlines once both are moved to the origin, ignoring paint, ids and path syntax; similar lists up to 10 others with a similar shape (drawn with strokes, or the same outlines at another size, which score 1) as {file, score} from 0.8, best first; confirm a similar file by looking at both",
             ),
+            (
+                "hide",
+                "string",
+                false,
+                "comma-separated ids of layers inside node to draw as hidden, over the same area (reply lists hidden); compare with the plain export to see how much a layer a warning names actually shows before redoing an asset",
+            ),
         ],
     ),
     (
@@ -993,6 +999,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
             | "bundle"
             | "cursor"
             | "matchDir"
+            | "hide"
             | "collection"
             | "mode"
     ) {

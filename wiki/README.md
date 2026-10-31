@@ -22,7 +22,7 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 | `watch` | Changing watch leases, the shared watch runner, its detector or the changes monitor | `watch.md` |
 | `workspace` | Changing local workspace roots, identity, ownership, the SQLite registry, locks or index actions | `workspace.md`, `directory-add.md` |
 | `index` | Changing durable index generations, index jobs (refresh, rebuild, clear_cache, cancel), publication fences or workspace search | `index-jobs.md` |
-| `bundle` | Changing the bundle zip, manifest, context.md, batch bundles, font inventory or `verify` | `bundle.md` |
+| `bundle` | Changing the bundle zip, manifest, context.md, batch bundles, font inventory, render warnings or `verify` | `bundle.md`, `render-diagnostics.md` |
 | `render` | Changing SVG or raster output: text and glyphs, image fills, effects, export areas, image adjustments | `render.md` |
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison | `preview.md` |
 | `pi` | Changing the Pi extension, reviewed component mappings or its npm packaging | `pi.md` |
