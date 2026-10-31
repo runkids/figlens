@@ -108,7 +108,25 @@ fn relative(path: &str) -> bool {
             .all(|c| matches!(c, Component::Normal(_)))
 }
 
+/// The report without a local font lookup.
 pub fn verify(path: &Path) -> Result<Json, Box<dyn Error>> {
+    check(path, &[])
+}
+
+/// The report with faces looked up in this machine's font folders and, first, `project`.
+pub fn verify_with_fonts(path: &Path, project: Option<&Path>) -> Result<Json, Box<dyn Error>> {
+    let mut roots = vec![];
+    if let Some(dir) = project {
+        if !dir.is_dir() {
+            return Err(format!("fonts: {} is not a directory", dir.display()).into());
+        }
+        roots.push((dir.to_owned(), true));
+    }
+    roots.extend(crate::fonts::system_dirs().into_iter().map(|d| (d, false)));
+    check(path, &roots)
+}
+
+fn check(path: &Path, font_roots: &[(PathBuf, bool)]) -> Result<Json, Box<dyn Error>> {
     let mut bundle = Bundle::open(path)?;
     let manifest = bundle
         .json("manifest.json")?
@@ -189,9 +207,7 @@ pub fn verify(path: &Path) -> Result<Json, Box<dyn Error>> {
         Some(nodes) => crate::bundle::fonts(&nodes["document"])["faces"].take(),
         None => json!([]),
     };
-    for face in fonts.as_array_mut().into_iter().flatten() {
-        face["status"] = json!("unverified");
-    }
+    let lookup = look_up(&mut fonts, font_roots);
     let mut files =
         json!({"verified": verified, "missing": missing, "changed": changed, "invalid": invalid});
     let unexamined: Vec<_> = [
@@ -215,10 +231,16 @@ pub fn verify(path: &Path) -> Result<Json, Box<dyn Error>> {
         states: states.as_ref(),
         fonts: &fonts,
     });
-    unverified.extend([
-        "Font faces: the bundle has no font files and figlens cannot see the project's fonts. Load each face in the running project with document.fonts.load and the design text and check the returned faces; document.fonts.check alone can pass on a fallback.".to_owned(),
+    let browser = "Load each face in the running project with document.fonts.load and the design text and check the returned faces; document.fonts.check alone can pass on a fallback.";
+    unverified.push(if lookup.searched.is_empty() {
+        format!("Font faces: the bundle has no font files and figlens cannot see the project's fonts. {browser}")
+    } else {
+        let local = items(&fonts).filter(|f| f["status"] == "local_file").count();
+        format!("Font faces: the bundle has no font files. {local} of {} faces matched a font file on this machine (local_file: found by name only, so not proof that the project loads it or that its licence allows shipping it). {browser}", items(&fonts).count())
+    });
+    unverified.push(
         "Browser delivery: check the deployed asset URLs, decoding and rendered dimensions in the running project.".to_owned(),
-    ]);
+    );
     let total: u64 = counts.values().sum();
     fit(&mut all, MAX_FINDINGS, FINDINGS_BYTES);
     // Every other list also comes from the bundle; each keeps its total when cut.
@@ -253,11 +275,65 @@ pub fn verify(path: &Path) -> Result<Json, Box<dyn Error>> {
             "files": files,
             "missingAssets": missing_assets,
             "fonts": fonts,
+            "fontLookup": {"searched": lookup.searched, "filesRead": lookup.files_read, "truncated": lookup.truncated},
             "unverified": unverified,
             "findings": all,
             "findingsSummary": summary,
             "truncated": truncated,
     }))
+}
+
+/// Marks every face `unverified`, or `local_file` with `localFiles` (and `fontFace` for a match
+/// inside the project folder) when `roots` hold a font file with its name.
+fn look_up(fonts: &mut Json, roots: &[(PathBuf, bool)]) -> crate::fonts::Summary {
+    let text = |f: &Json, k: &str| f[k].as_str().unwrap_or("").to_owned();
+    let owned: Vec<_> = items(fonts)
+        .map(|f| {
+            (
+                text(f, "family"),
+                text(f, "style"),
+                text(f, "postScriptName"),
+            )
+        })
+        .collect();
+    let wants: Vec<_> = owned
+        .iter()
+        .map(|(family, style, post_script_name)| crate::fonts::Want {
+            family,
+            style,
+            post_script_name,
+        })
+        .collect();
+    let (hits, summary) = crate::fonts::lookup(roots, &wants);
+    let project = roots.iter().find(|r| r.1).map(|r| r.0.as_path());
+    for ((face, hits), want) in fonts
+        .as_array_mut()
+        .into_iter()
+        .flatten()
+        .zip(hits)
+        .zip(&wants)
+    {
+        face["status"] = json!(if hits.is_empty() {
+            "unverified"
+        } else {
+            "local_file"
+        });
+        face["localFiles"] = hits
+            .iter()
+            .map(|h| json!({"path": h.path, "matchedBy": h.by, "inProject": h.project}))
+            .collect();
+        let weight = face["weight"].as_f64().map(|w| w as u64);
+        // The first project file a browser can load (not a collection).
+        let snippet = project.and_then(|root| {
+            hits.iter()
+                .filter(|h| h.project)
+                .find_map(|hit| crate::fonts::font_face(want, weight, hit, root))
+        });
+        if let Some(snippet) = snippet {
+            face["fontFace"] = json!(snippet);
+        }
+    }
+    summary
 }
 
 /// Findings returned at most; `findingsSummary` keeps the complete counts.
@@ -476,9 +552,9 @@ fn findings(i: &Inputs) -> Findings {
     for face in items(i.fonts) {
         let nodes: Vec<_> = items(&face["nodeIds"]).collect();
         out.add(("font", "unverified"), "design/nodes.json", (&nodes, nodes.len()),
-            || json!({"family": face["family"], "style": face["style"], "weight": face["weight"], "postScriptName": face["postScriptName"]}),
+            || json!({"family": face["family"], "style": face["style"], "weight": face["weight"], "postScriptName": face["postScriptName"], "localFiles": face["localFiles"]}),
             "Text metrics and appearance depend on this face, and the bundle has no font files.",
-            "Locate the licensed face in the project or system. In the running page, call document.fonts.load with the face's weight, style and family and the design text, then check the returned faces; document.fonts.check alone can pass on a fallback. Use a documented fallback until it loads.");
+            "Locate the licensed face in the project or system (evidence.localFiles lists files found by name on this machine, if any). In the running page, call document.fonts.load with the face's weight, style and family and the design text, then check the returned faces; document.fonts.check alone can pass on a fallback. Use a documented fallback until it loads.");
     }
     if resolved > 0 {
         out.add(("variable", "unverified"), "design/variables.json", none, || json!({"variableCount": resolved}),

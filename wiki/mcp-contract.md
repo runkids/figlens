@@ -50,3 +50,9 @@ Tool failures retain `isError: true` and text content; additive `_meta.figlens` 
 JSON parsing (`-32700`), invalid JSON-RPC envelopes (`-32600`), unknown methods (`-32601`) and a missing/non-string `tools/call` name (`-32602`) remain protocol errors. Business/argument failures inside a named tool call are tool results. Envelope-valid messages without `id` are ignored before preparation/I/O, even with unknown methods or invalid arguments. `id: null` gets a reply. Omitted `jsonrpc` remains accepted; prefer `"jsonrpc":"2.0"`.
 
 See the [GCS cookbook](gcs.md) for download versus parsed-tree caching and [bounded baseline](performance.md) for measurement limits. `scripts/mcp_smoke.py` shares its real subprocess session with GCS mock checks and measurement; no model, sockets or paid API are needed. The candidate installation matrix runs the same contract assertions through native and packaged wrapper stdio paths.
+
+## verify font lookup
+
+`verify` takes `bundle` and an optional absolute `fonts` folder of project font files. Only `fonts` is admitted and rechecked under `--root`, like `matchDir`; the platform's user and system font folders are read (name tables only) regardless of roots, and a link in `fonts` must resolve inside it.
+
+Each `fonts` entry gains `status` (`local_file` or `unverified`; neither shows the browser loads the face), `localFiles` (up to 3 `{path, matchedBy: postScriptName|family+style|filename, inProject}`) and, for a match inside `fonts`, `fontFace`, a ready `@font-face` (nothing is copied; licensing is the user's call). `fontLookup {searched, filesRead, truncated}` is always present: `truncated: true` means a scan budget stopped the search or a valid font was skipped for a per-font cap, so an `unverified` face may still have a file. The `font/unverified` finding stays and carries `evidence.localFiles`. Budgets and matching rules: [bundle](bundle.md#readiness-check-2026-10-28).
