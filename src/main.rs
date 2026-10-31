@@ -129,7 +129,9 @@ usage:
                                              without a node, every local variable
   figlens variables <file.fig> --format dtcg --collection ID --mode ID --out FILE
                                              write DTCG 2025.10 color/number/alias tokens for exact IDs
-                                             from variables; no node, workspace or index needed;
+                                             from variables (a library collection exports from its
+                                             copies cached in the file, marked libraryCopy);
+                                             no node, workspace or index needed;
                                              any diagnostic fails without publishing partial tokens;
                                              prints {path,collectionId,modeId,tokenCount,diagnostics}
   figlens bundle <file.fig> <node> <out.zip> [--states]

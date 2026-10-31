@@ -962,25 +962,29 @@ pub(crate) fn definitions(
             if !bounds.charge(1, 0) {
                 return None;
             }
-            if tree
-                .nodes
-                .get(id)
-                .is_some_and(|n| plugin_type(n) == "VARIABLE")
-            {
-                if !bounds.charge(0, 64 + id.len()) {
+            let Some(node) = tree.nodes.get(id).filter(|n| plugin_type(n) == "VARIABLE") else {
+                continue;
+            };
+            if !bounds.charge(0, 64 + 2 * id.len()) {
+                return None;
+            }
+            variables.push((format!("VariableID:{id}"), id.as_str()));
+            // A library's cached copy is also bound as `VariableID:<key>/<version>`.
+            if let (Some(key), Some(version)) = (text(node, "key"), text(node, "version")) {
+                if !bounds.charge(0, 64 + key.len() + version.len() + id.len()) {
                     return None;
                 }
-                variables.push(format!("VariableID:{id}"));
+                variables.push((format!("VariableID:{key}/{version}"), id.as_str()));
             }
         }
     }
     let mut out = BTreeMap::new();
     let mut sets = Vec::new();
-    for target in wanted
+    for (target, node_id) in wanted
         .into_iter()
-        .chain(variables.iter().map(String::as_str))
+        .map(|t| (t, t.strip_prefix("VariableID:").unwrap_or(t)))
+        .chain(variables.iter().map(|(t, id)| (t.as_str(), *id)))
     {
-        let node_id = target.strip_prefix("VariableID:").unwrap_or(target);
         let Some(node) = tree.nodes.get(node_id) else {
             continue;
         };
@@ -1563,6 +1567,10 @@ pub(crate) fn query(
     };
     let state = match (&rid, &definition) {
         (Some(_), _) => "indexed",
+        // A library variable named from its cached copy is still the library's.
+        (None, Some(_)) if target.starts_with("VariableID:") && target.contains('/') => {
+            graph.targeted(target)?.unwrap_or("external")
+        }
         (None, Some(_)) => "outside_scope",
         (None, None) => match graph.targeted(target)? {
             Some(s) => s,

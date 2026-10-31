@@ -566,10 +566,20 @@ impl Command {
                 mode,
                 out,
             } => {
-                let snapshot = variables(tree, None);
+                let mut snapshot = variables(tree, None);
+                let local = snapshot["collections"]
+                    .as_array()
+                    .is_some_and(|c| c.iter().any(|c| c["id"] == collection.as_str()));
+                // Otherwise a library collection, from the copies cached in this file.
+                if !local {
+                    snapshot = figlens::variables::in_collection(tree, &collection);
+                }
                 let mut tokens = figlens::tokens::convert(&snapshot, &collection, &mode)?;
                 tokens["$extensions"]["org.figlens"]["source"] =
                     serde_json::to_value(fig.canonicalize()?)?;
+                if !local {
+                    tokens["$extensions"]["org.figlens"]["libraryCopy"] = json!(true);
+                }
                 figlens::output::write(fig, &out, |file| {
                     use std::io::{BufWriter, Write};
                     let mut writer = BufWriter::new(file);

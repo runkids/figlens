@@ -232,7 +232,7 @@ Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，works
 | `inspect <file> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]` | 精簡的展開後排版/文字摘要，最多 200 個節點。`--images` 會加上點陣圖尺寸與裁切範圍。`--flat` 改為每個節點一行：相對該節點的位置、尺寸、文字、字型、填色、描邊、圓角、auto-layout |
 | `nodes <file> <node>` | REST nodes 回應中單一節點的物件（`document`、`components`、`componentSets`、`styles`）：展開後的 instance 與 override、auto-layout、文字樣式、填色、效果、綁定的 variables、元件屬性、渲染邊界 |
 | `nodes <file> --frames <list>`, `--frames -` (stdin), `--ids <node>...` | 一次解碼讀取多個節點：清單中每個 id 一行 JSON（帶 `nodeId` 的 `nodes` 輸出，或 `{nodeId, error}`） |
-| `variables <file> [node]`<br>`variables <file.fig> --format dtcg --collection ID --mode ID --out FILE` | 預設的 REST 格式綁定變數／本機變數輸出維持不變。DTCG 2025.10 匯出須指定精確的 collection 與 mode ID，不可指定 node；僅支援顏色與無單位數值。請先建立輸出目錄；任何診斷都會使整次匯出失敗，輸出檔案維持不變。 |
+| `variables <file> [node]`<br>`variables <file.fig> --format dtcg --collection ID --mode ID --out FILE` | 預設的 REST 格式綁定變數／本機變數輸出維持不變。DTCG 2025.10 匯出須指定精確的 collection 與 mode ID，不可指定 node；僅支援顏色與無單位數值。請先建立輸出目錄；任何診斷都會使整次匯出失敗，輸出檔案維持不變。library collection 會從檔案中快取的副本匯出（`libraryCopy: true`）。 |
 | `bundle <file> <node> <out.zip> [--states]` | 單一 frame 的設計 bundle；輸出 `{nodeId, path, warnings}` |
 | `bundle <file> --frames <list> --out-dir <dir> [--jobs N] [--states]`, `--frames -` (stdin) | 一次解碼，平行產生多個 bundle |
 | `verify <bundle>` | 依 manifest 檢查 bundle（`.zip` 或解開後的目錄）：已驗證、缺少與被改動的檔案、缺少的素材，需在專案中確認的字型，以及 `findings`：每項缺少、不支援或未驗證的 handoff 輸入，附節點、證據與下一步 |

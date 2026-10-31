@@ -2806,3 +2806,53 @@ fn a_tracked_stored_build_keeps_the_library_references_and_fingerprints_of_an_un
         (library_edges(&untracked), &untracked.fingerprints, false)
     );
 }
+
+#[test]
+fn a_library_variable_resource_is_named_from_its_cached_copy() {
+    let s = |v: &str| K::String(v.into());
+    let r = obj(vec![("key", s("vk")), ("version", s("1:2"))]);
+    let alias = obj(vec![
+        ("dataType", K::Enum("VariableDataType", "ALIAS")),
+        ("value", obj(vec![("alias", obj(vec![("assetRef", r)]))])),
+    ]);
+    let paint = obj(vec![
+        ("type", K::Enum("PaintType", "SOLID")),
+        ("colorVar", alias),
+    ]);
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(
+                2,
+                Some(1),
+                "RECTANGLE",
+                "Tint",
+                vec![("fillPaints", K::Array(vec![paint]))],
+            ),
+            node(9, Some(0), "CANVAS", "Internal", vec![]),
+            node(
+                90,
+                Some(9),
+                "VARIABLE",
+                "color/text/brand",
+                vec![("key", s("vk")), ("version", s("1:2"))],
+            ),
+        ]),
+    )]);
+    let index = build(&Tree::new(&message), "0:0", bounds(WORK));
+    let out = run(&index, &req("VariableID:vk/1:2")).unwrap();
+    assert_eq!(
+        (
+            &out["definition"]["name"],
+            &out["definition"]["state"],
+            ids(&out)
+        ),
+        (
+            &json!("color/text/brand"),
+            &json!("external"),
+            vec!["0:2".to_owned()]
+        )
+    );
+}
