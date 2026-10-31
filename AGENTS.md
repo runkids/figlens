@@ -15,7 +15,7 @@ Reads Figma `.fig` files offline: no API rate limits, login or running Figma. Ru
 - **Check CLI, MCP, Pi, OpenCode and OMP together.** For every feature or optimization, assess each interface, complete affected behavior/contracts/guidance/tests, and explain why any interface needs no change. A new feature or changed command also updates `--help`, every README locale, a served skill section and its wiki topic; see `review`.
 - **Helper files go in the repo.** Helper scripts go in `scripts/`; private designs, Figma exports and run outputs go in the gitignored `samples/`. The original public fixture below and the reviewed regression baselines in `scripts/corpus/` are the exceptions.
 - **Review before every PR.** Run the `figlens-code-review` passes on the pinned diff and fix verified findings before opening or updating a PR, docs- and wiki-only changes included; see `review`.
-- **Open PRs as drafts.** Drafts skip CI; request `@codex review`, fix findings there, then mark ready to run CI; see `review`.
+- **Open PRs as drafts** (Release Please's excepted). Drafts skip CI; request `@codex review`, fix findings there, then mark ready to run CI; see `review`.
 - **Open issues by the rules.** English, `<scope>: <summary>` titles, one type label plus `area:` labels, no private design details; see `review`.
 - **Own PR follow-up.** Check AI reviews and CI, fix verified findings, then request and check `@codex review` on the updated head; see `review`.
 
@@ -23,7 +23,7 @@ Reads Figma `.fig` files offline: no API rate limits, login or running Figma. Ru
 
 - Never commit private design files or Figma exports; `samples/` stays gitignored. Only the original synthetic `examples/first-success/design.fig` is distributable, with its [provenance and update procedure](examples/first-success/README.md).
 - Shipped binaries build only from `Dockerfile.dist`'s digest-pinned base image; never point the release at a mutable tag.
-- The release tag, `Cargo.toml` and `npm/package.json` carry one version.
+- The release tag, `Cargo.toml`, `Cargo.lock`, `npm/package.json` and the host plugin manifests carry one version.
 
 ## Load Context Per Task
 
@@ -60,17 +60,13 @@ python3 scripts/ai-context.py check     # validate paths, headings, links, orpha
 | `host-acceptance` | Installed-host lanes |
 | `accuracy` | Measuring output against Figma's exports, `compare`/`compare-image`, test files, the CI regression corpus |
 | `release` | Packaging, GitHub releases, Homebrew, npm, installers, `figlens update` |
-| `review` | Delivering features/optimizations across CLI, MCP and Pi; reviews, PR follow-up and opening issues |
+| `review` | Delivering features/optimizations across all interfaces; reviews, PR follow-up and opening issues |
 | `direction` | Deciding what to build next, or revisiting a past decision |
 | `ai-context` | Adding, moving or splitting docs and topics; `check` failures |
 
 Pick the closest topic; load a second only when a task crosses two seams.
 
-When no topic fits, read `wiki/README.md`. To add a topic:
-1. Put the content in `wiki/`.
-2. Map it in `wiki/ai-context.json`.
-3. List it in both tables.
-4. Run `check`.
+When no topic fits, read `wiki/README.md`; to add a topic, load `ai-context`.
 
 If a topic goes over budget, split it rather than raising the cap. Skills are workflow adapters that load topics. They are not the source of truth.
 
@@ -100,7 +96,7 @@ Keep libdeflate's Zig SIMD guards; see `release`.
 docker compose run --rm dev cargo test
 docker compose run --rm dev sh -c 'cargo fmt --check && cargo clippy --all-targets -- -D warnings'
 (cd npm && node --test)
-npm test                             # Pi workflow and npm package contents
+npm test                             # Pi, OpenCode and OMP tests, npm package contents
 python3 scripts/ai-context.py check    # doc/topic changes; also runs in CI
 docker compose run --rm dev python3 -B scripts/corpus-check.py ...  # output changes; setup and --update in `accuracy`
 ```

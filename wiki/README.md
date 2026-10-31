@@ -31,7 +31,7 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 | `host-acceptance` | Running or changing installed-host lanes (OpenCode, OMP, Pi) | `host-acceptance.md` |
 | `accuracy` | Measuring output against Figma's own exports, running `compare` or `compare-image`, finding test files, the CI regression corpus | `accuracy.md`, `compare-image.md` |
 | `release` | Packaging, installation acceptance, GitHub releases, Homebrew and npm | `release.md`, `installation.md` |
-| `review` | Delivering features/optimizations across CLI, MCP and Pi; reviews, PR follow-up and opening issues | `review.md` |
+| `review` | Delivering features/optimizations across CLI, MCP, Pi, OpenCode and OMP; reviews, PR follow-up and opening issues | `review.md` |
 | `direction` | Deciding what to build next, or revisiting a past decision | `direction.md`, `handoff-research.md` |
 | `ai-context` | Maintaining this router: add, move or split docs, fix `check` | `ai-context.md` |
 

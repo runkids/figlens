@@ -4,6 +4,7 @@
     "rootInstructionsMaxBytes": 8192,
     "defaultTopicMaxBytes": 16384
   },
+  "skipDirs": ["samples"],
   "topics": {
     "parsing": {
       "description": "Changing untrusted container/schema/value decoding or parsing budgets.",
