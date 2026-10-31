@@ -113,7 +113,9 @@ usage:
                                              --flat prints one line per node instead (not with the above):
                                              id TYPE \"name\" @x,y WxH relative to the node, then hidden, rot,
                                              component, text, font=family size/weight/lineHeight, fill,
-                                             stroke=paint/weight, r, H|V gap or GRID, pad=top,right,bottom,left
+                                             stroke=paint/weight, r, shadow|inner-shadow=x,y,blur[,spread],color,
+                                             blur, bg-blur, H|V gap or GRID, pad=top,right,bottom,left,
+                                             align=main/cross and size=w/h (fixed|fill) unless min and hug,
                                              or spacing=derived, and opacity when set; children=N and
                                              `… N more` mark omissions
   figlens nodes <file.fig> <node>              print a frame as the per-node object of a Figma REST

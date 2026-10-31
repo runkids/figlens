@@ -340,7 +340,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "flat",
                 "boolean",
                 false,
-                "one line per node instead of node JSON, for scanning a screen against an implementation: id, type, name, @x,y WxH relative to the inspected node, then hidden, rot, component, text, font=family size/weight/lineHeight, fill, stroke=paint/weight, r, H|V gap or GRID (grid gaps are not decoded), pad=top,right,bottom,left (or spacing=derived without auto-layout), opacity when set; children=N and '… N more' mark omitted nodes; same depth and node limits; not combinable with images, states or compareVariant; default false",
+                "one line per node instead of node JSON, for scanning a screen against an implementation: id, type, name, @x,y WxH relative to the inspected node, then hidden, rot, component, text, font=family size/weight/lineHeight, fill, stroke=paint/weight, r, visible effects (shadow|inner-shadow=x,y,blur[,spread],color, blur=, bg-blur=), H|V gap or GRID (grid gaps are not decoded), pad=top,right,bottom,left, align=main/cross unless both min, size=w/h (fixed|fill|hug) unless both hug (or spacing=derived without auto-layout), opacity when set; children=N and '… N more' mark omitted nodes; same depth and node limits; not combinable with images, states or compareVariant; default false",
             ),
         ],
     ),
