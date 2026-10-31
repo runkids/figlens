@@ -210,6 +210,15 @@ fn checked_path(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, contract::Fai
     {
         return Ok(path);
     }
+    if let Some(folder) = missing_folder(path, roots) {
+        return Err(contract::Failure::new(
+            ErrorKind::OutputWrite,
+            format!(
+                "folder {} does not exist; create it, then repeat the call",
+                folder.display()
+            ),
+        ));
+    }
     let folders: Vec<_> = roots.iter().map(|r| r.display().to_string()).collect();
     Err(contract::Failure::new(
         ErrorKind::PermissionDenied,
@@ -218,6 +227,29 @@ fn checked_path(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, contract::Fai
             folders.join(", ")
         ),
     ))
+}
+
+/// The missing folder `path` would go in, when its nearest existing ancestor is inside a root:
+/// a folder to create, not a roots violation. `..` is refused, as it may lead out of the root.
+fn missing_folder(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
+    let folder = std::path::absolute(path).ok()?.parent()?.to_owned();
+    if folder
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
+        return None;
+    }
+    let existing = folder
+        .ancestors()
+        .find(|a| std::fs::symlink_metadata(a).is_ok())?;
+    if existing == folder {
+        return None;
+    }
+    let existing = std::fs::canonicalize(existing).ok()?;
+    roots
+        .iter()
+        .any(|root| existing.starts_with(root))
+        .then_some(folder)
 }
 
 #[cfg(test)]

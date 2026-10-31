@@ -37,7 +37,18 @@ fn destination(out: &Path) -> io::Result<PathBuf> {
                 let name = out
                     .file_name()
                     .ok_or_else(|| io::Error::other("output needs a filename"))?;
-                return Ok(fs::canonicalize(parent)?.join(name));
+                let folder = fs::canonicalize(parent).map_err(|e| {
+                    let reason = if e.kind() == io::ErrorKind::NotFound {
+                        "does not exist; create it first".to_owned()
+                    } else {
+                        e.to_string()
+                    };
+                    io::Error::new(
+                        e.kind(),
+                        format!("output folder {}: {reason}", parent.display()),
+                    )
+                })?;
+                return Ok(folder.join(name));
             }
             Err(error) => return Err(error),
         }
@@ -120,6 +131,19 @@ pub fn write(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn a_missing_output_folder_is_named() {
+        let dir = crate::test_support::TestDir::new();
+        let source = dir.join("a.fig");
+        let error = write(&source, &dir.join("missing/x.png"), |_| Ok(()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("missing") && error.contains("does not exist; create it first"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn failed_and_panicking_writers_preserve_existing_outputs_and_clean_owned_files() {
