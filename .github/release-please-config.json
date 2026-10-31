@@ -21,6 +21,7 @@
   ],
   "packages": {
     ".": {
+      "release-as": "0.10.1",
       "extra-files": [{ "type": "json", "path": "npm/package.json", "jsonpath": "$.version" }]
     }
   }
