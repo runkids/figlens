@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
 /// How records become model inputs; a new policy is a new layer, never mixed with an old one.
-pub const POLICY: &str = "chunks-400-name-text-1";
+pub const POLICY: &str = "chunks-400-name-text-properties-scope-1";
 /// Texts one statement reads or writes.
 const BATCH: usize = 500;
 
@@ -63,13 +63,14 @@ pub fn vectors(
     Ok(found)
 }
 
-/// Stores one embedded batch of layer (`gen`, `profile`, `POLICY`): each text's vector (empty
+/// Stores one embedded batch of layer (`gen`, `profile`, `policy`): each input's vector (empty
 /// when refused) and the layer's reference to it. The caller commits it with the layer's
 /// progress in one transaction, after checking its fence.
 pub fn save(
     conn: &Connection,
     gen_id: i64,
     profile: &str,
+    policy: &str,
     batch: &[([u8; 32], Vec<u8>)],
 ) -> rusqlite::Result<()> {
     let mut vector = conn.prepare_cached(
@@ -80,16 +81,19 @@ pub fn save(
     )?;
     for (hash, bytes) in batch {
         vector.execute(params![profile, hash, bytes])?;
-        reference.execute(params![gen_id, profile, POLICY, hash])?;
+        reference.execute(params![gen_id, profile, policy, hash])?;
     }
     Ok(())
 }
 
-/// Records the layer's progress; `state` is `building`, `ready`, `partial` or `failed`.
+/// Records layer (`gen`, `profile`, `policy`)'s progress; `state` is `building`, `ready`,
+/// `partial` or `failed`.
+#[allow(clippy::too_many_arguments)]
 pub fn set_layer(
     conn: &Connection,
     gen_id: i64,
     profile: &str,
+    policy: &str,
     state: &str,
     counts: &Json,
     job_id: &str,
@@ -103,7 +107,7 @@ pub fn set_layer(
         params![
             gen_id,
             profile,
-            POLICY,
+            policy,
             state,
             counts["chunks"].as_i64().unwrap_or(0),
             counts["texts"].as_i64().unwrap_or(0),
@@ -250,8 +254,18 @@ fn embed_work(
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(sql)?;
         fence(&tx)?;
-        save(&tx, gen_id, &profile_id, rows).map_err(|e| full(sql(e)))?;
-        set_layer(&tx, gen_id, &profile_id, state, counts, job_id, now_ms()).map_err(sql)?;
+        save(&tx, gen_id, &profile_id, POLICY, rows).map_err(|e| full(sql(e)))?;
+        set_layer(
+            &tx,
+            gen_id,
+            &profile_id,
+            POLICY,
+            state,
+            counts,
+            job_id,
+            now_ms(),
+        )
+        .map_err(sql)?;
         let done = state != "building";
         tx.execute(
             "UPDATE jobs SET done = ?2, total = ?3,
@@ -306,6 +320,7 @@ fn embed_work(
     let mut index = store::load_with(&conn, gen_id, &[], &mut spent, &never)?;
     let all: Vec<u32> = (0..records as u32).collect();
     store::add_with(&conn, gen_id, &mut index, &all, &mut spent, &never)?;
+    store::add_properties(&conn, gen_id, &mut index, &mut spent, &never)?;
     stage(&conn, "extract")?;
     let bounds = Bounds {
         work: LAYER_WORK,
@@ -318,9 +333,11 @@ fn embed_work(
     drop(index);
     let hashes: Vec<[u8; 32]> = extracted.texts.iter().map(|t| text_hash(t)).collect();
     let stored = vectors(&conn, &profile_id, &hashes).map_err(sql)?;
+    // A layer missing property inputs is never ready; a rebuild of the scope adds them.
     let stop = extracted
         .stop
-        .or((extracted.over > 0).then_some("semantic_capacity"));
+        .or((extracted.over > 0).then_some("semantic_capacity"))
+        .or((extracted.unindexed > 0).then_some(crate::search::semantic::NOT_INDEXED));
     let mut counts = json!({"chunks": extracted.units.len(), "texts": hashes.len(),
         "embedded": stored.values().filter(|v| !v.is_empty()).count(),
         "refused": stored.values().filter(|v| v.is_empty()).count(), "stop": stop});
@@ -408,8 +425,8 @@ mod tests {
     fn vectors_outlive_one_generation_only_while_another_references_them() {
         let conn = db();
         let (a, b) = (text_hash("a"), text_hash("b"));
-        save(&conn, 1, "p", &[(a, vec![1]), (b, vec![2])]).unwrap();
-        save(&conn, 2, "p", &[(a, vec![1])]).unwrap();
+        save(&conn, 1, "p", POLICY, &[(a, vec![1]), (b, vec![2])]).unwrap();
+        save(&conn, 2, "p", POLICY, &[(a, vec![1])]).unwrap();
         conn.execute("DELETE FROM model_refs WHERE gen = 1", [])
             .unwrap();
         collect(&conn).unwrap();
@@ -425,7 +442,7 @@ mod tests {
         let conn = db();
         assert!(layer(&conn, 1, "p").unwrap().is_none());
         let counts = json!({"chunks": 3, "texts": 2, "embedded": 1, "refused": 0});
-        set_layer(&conn, 1, "p", "building", &counts, "job", 5).unwrap();
+        set_layer(&conn, 1, "p", POLICY, "building", &counts, "job", 5).unwrap();
         let got = layer(&conn, 1, "p").unwrap().unwrap();
         assert_eq!(
             (got["state"].as_str(), got["embeddedTexts"].as_i64()),

@@ -117,6 +117,8 @@ struct AdmittedCall {
     project: Option<PathBuf>,
     /// The earlier revision a diff reads beside `source`.
     old: Option<PathBuf>,
+    /// A search's local query image: read for the call, never written.
+    image: Option<PathBuf>,
     /// Its token in the server's pending calls, removed when the call is dropped; `None` for a
     /// call admitted outside a server.
     live: Option<Live>,
@@ -296,7 +298,13 @@ fn admit_value(req: Value, roots: &[PathBuf]) -> Admission {
                     }
                     file => file.map(|path| checked_path(Path::new(path), roots)).transpose()?,
                 };
-                Ok(AdmittedCall { id:id.clone(), call, source, output, input, match_dir, project, old, live: None })
+                let image = match call.string("image") {
+                    Some(image) if image.contains("://") => {
+                        return Err(contract::Failure::argument("image takes a local PNG path; no URL is read"));
+                    }
+                    image => image.map(|path| checked_path(Path::new(path), roots)).transpose()?,
+                };
+                Ok(AdmittedCall { id:id.clone(), call, source, output, input, match_dir, project, old, image, live: None })
             });
             return match admitted {
                 Ok(call) => Admission::Call(Box::new(call)),
@@ -362,9 +370,13 @@ impl AdmittedCall {
                 "jobs" => command::jobs_tool(&self.call, roots, storage_roots),
                 "models" => command::models_tool(&self.call, roots, self.cancel()),
                 "changes" | "watch" => command::changes_tool(&self.call, roots, storage_roots),
-                "search" => {
-                    command::workspace_search_tool(&self.call, roots, storage_roots, self.cancel())
-                }
+                "search" => command::workspace_search_tool(
+                    &self.call,
+                    roots,
+                    storage_roots,
+                    self.image.as_deref(),
+                    self.cancel(),
+                ),
                 "usages" => command::workspace_usages_tool(&self.call, roots, storage_roots),
                 _ => command::index_tool(
                     &self.call,
@@ -405,6 +417,7 @@ impl AdmittedCall {
             .chain(self.match_dir.as_deref())
             .chain(self.project.as_deref())
             .chain(self.old.as_deref())
+            .chain(self.image.as_deref())
         {
             // Recheck current filesystem state, not raw arguments or a permanent authorization lease.
             checked_path(path, roots)?;
@@ -460,9 +473,15 @@ impl AdmittedCall {
                         .and_then(|request| command::usages(&path, &request, ""))
                         .map_err(contract::Failure::from_error);
                 }
-                return command::search_tool(&self.call)
-                    .and_then(|(request, mode)| {
-                        command::search(&path, &request, mode, "", self.cancel())
+                return command::search_tool(&self.call, self.image.as_deref())
+                    .and_then(|(request, query)| match query {
+                        command::Query::Text(mode) => {
+                            command::search(&path, &request, mode, "", self.cancel())
+                        }
+                        command::Query::Image(_) => Err(command::image_needs_workspace(
+                            self.call.string("file").unwrap_or_default(),
+                            &request.scope,
+                        )),
                     })
                     .map_err(contract::Failure::from_error);
             }
@@ -617,7 +636,7 @@ fn cancel_running(pending: &Pending) {
 fn submits(req: &Value) -> bool {
     matches!(
         req["params"]["arguments"]["action"].as_str(),
-        Some("prepare" | "refresh" | "rebuild" | "track" | "embed")
+        Some("prepare" | "refresh" | "rebuild" | "track" | "embed" | "visual")
     )
 }
 
@@ -759,8 +778,9 @@ pub fn serve_with(
         // until input ends.
         scope.spawn(move || figlens::workspace::watch::renew_until(stop));
         // Build lane: this server's jobs, one at a time; they stop when input ends or a reply
-        // cannot be written. A text build that publishes queues its model layer's embed on the
-        // model lane, so no text build waits behind the model; each send counts as a build.
+        // cannot be written. A text build that publishes queues its model layer's embed, and the
+        // visual job of a scope that had a visual layer, on the model lane, so no text build
+        // waits behind the model; each send counts as a build.
         scope.spawn(move || {
             for runs in build_rx {
                 if runs.model {
@@ -770,7 +790,7 @@ pub fn serve_with(
                     }
                     continue;
                 }
-                let mut embeds = Vec::new();
+                let mut model_jobs = Vec::new();
                 for job in &runs.jobs {
                     let report = figlens::workspace::jobs::run(
                         &runs.storage,
@@ -779,20 +799,18 @@ pub fn serve_with(
                         stop,
                         &mut |_| {},
                     );
-                    if let Some(id) = report
-                        .ok()
-                        .filter(|_| !stop.load(Ordering::SeqCst))
-                        .and_then(|r| figlens::workspace::jobs::embed_after(&runs.storage, &r))
-                    {
-                        embeds.push(id);
+                    if let Some(r) = report.ok().filter(|_| !stop.load(Ordering::SeqCst)) {
+                        use figlens::workspace::jobs::{embed_after, visual_after};
+                        model_jobs.extend(embed_after(&runs.storage, &r));
+                        model_jobs.extend(visual_after(&runs.storage, &r));
                     }
                 }
-                if !embeds.is_empty() {
+                if !model_jobs.is_empty() {
                     builds.fetch_add(1, Ordering::SeqCst);
                     let model = command::Runs {
                         storage: runs.storage.clone(),
                         workspace_id: runs.workspace_id.clone(),
-                        jobs: embeds,
+                        jobs: model_jobs,
                         model: true,
                     };
                     if to_model.send(model).is_err() {
@@ -802,7 +820,7 @@ pub fn serve_with(
                 builds.fetch_sub(1, Ordering::SeqCst);
             }
         });
-        // Model lane: this server's embed jobs, one at a time, beside its text builds.
+        // Model lane: this server's embed and visual jobs, one at a time, beside its text builds.
         scope.spawn(move || {
             for runs in model_rx {
                 for job in &runs.jobs {

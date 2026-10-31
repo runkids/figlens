@@ -28,6 +28,19 @@ impl Prepared {
         Ok(Self { document, images })
     }
 
+    /// Read paints from the same immutable bytes that supplied the decoded tree.
+    pub fn from_snapshot(tree: &Tree, bytes: &[u8], id: &str) -> Result<Self, Box<dyn Error>> {
+        let document = crate::rest::resolve_render_nodes(tree, id)?;
+        let mut refs = Vec::new();
+        collect_refs(&document["document"], &mut refs);
+        let images = if refs.is_empty() {
+            HashMap::new()
+        } else {
+            read_images(crate::open_zip_bytes(bytes)?, refs)?
+        };
+        Ok(Self { document, images })
+    }
+
     pub fn node(&self) -> &Json {
         &self.document["document"]
     }
@@ -61,13 +74,19 @@ pub(crate) fn images(
     fig: &Path,
     document: &Json,
 ) -> Result<HashMap<String, Vec<u8>>, Box<dyn Error>> {
-    let mut images = HashMap::new();
     let mut refs = Vec::new();
     collect_refs(document, &mut refs);
     if refs.is_empty() {
-        return Ok(images);
+        return Ok(HashMap::new());
     }
-    let mut zip = crate::open_zip(fig)?;
+    read_images(crate::open_zip(fig)?, refs)
+}
+
+fn read_images<R: std::io::Read + std::io::Seek>(
+    mut zip: zip::ZipArchive<R>,
+    refs: Vec<String>,
+) -> Result<HashMap<String, Vec<u8>>, Box<dyn Error>> {
+    let mut images = HashMap::new();
     let mut remaining = crate::parse::IMAGE_TOTAL_BYTES;
     for r in refs {
         if let Ok(f) = zip.by_name(&format!("images/{r}")) {

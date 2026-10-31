@@ -44,7 +44,24 @@ const MAX_MARKS: usize = 1024;
 /// Bytes one snippet may copy, its context and matched span together.
 const SNIPPET_BYTES: usize = 2048;
 /// Names, ids and paths one page of results may copy; the MCP reply cap, so CLI and MCP agree.
-const REPLY_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const REPLY_BYTES: usize = 8 * 1024 * 1024;
+
+/// The serialized size of `value`, counted without building the text.
+pub(crate) fn json_bytes(value: &Json) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, value).expect("counting cannot fail");
+    count.0
+}
 const DEADLINE: Duration = Duration::from_secs(15);
 /// Same-stamp reuse lasts at most this long before the bytes are hashed again.
 const REHASH: Duration = Duration::from_secs(60);
@@ -147,6 +164,15 @@ pub(crate) fn cursor_lease_ended(issued_ms: i64, now_ms: i64) -> bool {
 impl Request {
     /// Checks the query, filters, limit and cursor syntax; cheap, so callers run it before I/O.
     pub fn validate(&self) -> Result<Prepared, Box<dyn Error>> {
+        self.validate_inner(false)
+    }
+
+    /// Image queries share every filter/cursor budget but may have no accompanying text.
+    pub fn validate_image(&self) -> Result<Prepared, Box<dyn Error>> {
+        self.validate_inner(true)
+    }
+
+    fn validate_inner(&self, image: bool) -> Result<Prepared, Box<dyn Error>> {
         if self.query.chars().count() > MAX_QUERY_CHARS {
             return Err(invalid(format!(
                 "search query takes at most {MAX_QUERY_CHARS} characters"
@@ -160,7 +186,7 @@ impl Request {
                 terms.push(token.term);
             }
         }
-        if terms.is_empty() {
+        if terms.is_empty() && (!image || !self.query.is_empty()) {
             return Err(invalid(
                 "search needs a query with letters, digits, CJK characters or emoji",
             ));
@@ -471,6 +497,12 @@ pub(crate) struct Record {
     /// stateless full builds (`Library`); only `usages::Graph::library` reads them, one record
     /// at a time, and `store::add` never loads them.
     library: Vec<usages::Edge>,
+    /// An instance's effective component properties, `(name, value)`, a model input only
+    /// (`semantic::properties`); a `None` value cannot be resolved exactly. Stored and stateless
+    /// full builds keep them (empty for a layer that is no instance); `None` when not indexed: a
+    /// text-only build, or a generation stored before schema 11. `store::add_properties` loads
+    /// them.
+    props: Option<Vec<(String, Option<String>)>>,
 }
 
 struct Posting {
@@ -705,6 +737,12 @@ fn build_with(
     };
     let libraries = libraries.unwrap_or_default();
     let keep_library = relations && library != Library::Skip && !library_unread;
+    // Model inputs: only builds that may embed (stored and stateless full ones) pay for them.
+    // Stored builds keep the model's property inputs, and so does a stateless semantic text
+    // build that asks as one (`Library::Stored` with no relations reads no library); usages and
+    // text search never pay for them. They share the build's bounds: a stop is a partial index.
+    let model_inputs = library == Library::Stored;
+    let mut defs = semantic::Defs::new();
     // A stored generation fingerprints its definitions and cached copies with their subtrees.
     let fingerprint = relations && library == Library::Stored;
     let mut inputs: Vec<Option<fingerprint::Input>> = Vec::new();
@@ -823,6 +861,16 @@ fn build_with(
         if !bounds.charge(1, retained) {
             break;
         }
+        let props = match (model_inputs, kind == "INSTANCE") {
+            (false, _) => None,
+            (true, false) => Some(Vec::new()),
+            (true, true) => {
+                match semantic::properties(tree, &id, ex.nodes.get(&id), &mut defs, &mut bounds) {
+                    Some(props) => Some(props),
+                    None => break,
+                }
+            }
+        };
         let mut norm = [String::new(), String::new()];
         let mut record_lens = [0u32; 2];
         let mut tf: HashMap<String, [u16; 2]> = HashMap::new();
@@ -963,6 +1011,7 @@ fn build_with(
             root,
             edges,
             library,
+            props,
         });
         if let (Some(out), Some(f)) = (facets.as_deref_mut(), facet) {
             out.push(f);
@@ -1054,7 +1103,7 @@ fn hides_content(tree: &Tree, ex: &Expansion, id: &str, kind: &str) -> bool {
 
 // ---- Retrieval ----
 
-struct Hit {
+pub(crate) struct Hit {
     /// Position of the hit's index in the corpus.
     source: usize,
     record: u32,
@@ -1065,6 +1114,26 @@ struct Hit {
 fn idf(n: usize, df: u32) -> f64 {
     let (n, df) = (n as f64, f64::from(df));
     (1.0 + (n - df + 0.5) / (df + 0.5)).ln()
+}
+
+/// Why `req`'s filters leave a record out; hidden and internal ones are counted as excluded.
+pub(crate) enum Filtered {
+    Type,
+    Hidden,
+    Internal,
+}
+
+/// `req`'s type, hidden and internal filters on loaded record `rid`, in that order; `None` keeps it.
+pub(crate) fn filtered(index: &Index, rid: u32, req: &Request) -> Option<Filtered> {
+    let r = index.record(rid);
+    if !req.types.is_empty() && !req.types.contains(&r.kind) {
+        return Some(Filtered::Type);
+    }
+    if r.hidden && !req.include_hidden {
+        return Some(Filtered::Hidden);
+    }
+    let internal = r.page.is_some_and(|p| index.pages[p as usize].internal);
+    (internal && !req.include_internal).then_some(Filtered::Internal)
 }
 
 /// Ranked page of `req` over every index of `corpus` together: candidates must contain every
@@ -1135,19 +1204,19 @@ fn retrieve(
             if cancel.load(Ordering::Relaxed) {
                 break 'rank;
             }
+            match filtered(index, record, req) {
+                Some(Filtered::Type) => continue,
+                Some(Filtered::Hidden) => {
+                    excluded[0] += 1;
+                    continue;
+                }
+                Some(Filtered::Internal) => {
+                    excluded[1] += 1;
+                    continue;
+                }
+                None => {}
+            }
             let r = index.record(record);
-            if !req.types.is_empty() && !req.types.contains(&r.kind) {
-                continue;
-            }
-            let internal = r.page.is_some_and(|p| index.pages[p as usize].internal);
-            if r.hidden && !req.include_hidden {
-                excluded[0] += 1;
-                continue;
-            }
-            if internal && !req.include_internal {
-                excluded[1] += 1;
-                continue;
-            }
             let [name, text] = &r.norm;
             let tier = if *name == q.phrase {
                 3
@@ -1548,7 +1617,7 @@ fn corpus_coverage(parts: &[Part], req: &Request, excluded: [usize; 2]) -> Json 
 pub(crate) struct Ranked {
     hits: Vec<Hit>,
     more: bool,
-    excluded: [usize; 2],
+    pub(crate) excluded: [usize; 2],
     fingerprint: String,
 }
 
@@ -1742,38 +1811,49 @@ struct Cached {
     hashed: SystemTime,
     /// What text search reads: a text-only build, or a full one that indexed the same corpus.
     text: Option<Arc<Index>>,
+    /// The text build also kept the model's property inputs (semantic search asked for it).
+    text_inputs: bool,
     /// What usages reads: a full build. It can stop earlier than the text one under the same
     /// bounds, so it replaces the text one only when it indexed the same text corpus.
     full: Option<Arc<Index>>,
 }
 
 impl Cached {
-    /// The index that answers `relations` (usages) or text search, if this entry holds one.
-    fn pick(&self, relations: bool) -> Option<Arc<Index>> {
-        if relations {
-            self.full.clone()
-        } else {
-            self.text.clone()
+    /// The index that answers `relations` (usages), semantic search's property `inputs`, or
+    /// text search, if this entry holds one.
+    fn pick(&self, relations: bool, inputs: bool) -> Option<Arc<Index>> {
+        match (relations, inputs) {
+            (true, _) => self.full.clone(),
+            (false, true) => self.text.clone().filter(|_| self.text_inputs),
+            // A property-input build that stopped spent part of its bounds on properties, so it
+            // can hold less text than text search's own build: only a complete one serves it.
+            (false, false) => self
+                .text
+                .clone()
+                .filter(|t| !self.text_inputs || t.stop.is_none()),
         }
     }
 
-    /// Keeps `index` in its slot; a full build whose text corpus matches the text one serves
-    /// both, so the entry never holds two copies of one corpus.
-    fn keep(&mut self, index: Arc<Index>) {
+    /// Keeps `index`, built with property `inputs` or not, in its slot; a full build whose
+    /// text corpus matches the text one serves both, so the entry never holds two copies of one
+    /// corpus. A text build that kept property inputs is never swapped for one without them.
+    fn keep(&mut self, index: Arc<Index>, inputs: bool) {
         let shares = |a: &Index, b: &Index| a.generation == b.generation && a.stop == b.stop;
         if index.relations {
             // A stopped full build may hold less text than a text-only one would.
             let serves = match &self.text {
-                Some(t) => shares(t, &index),
+                Some(t) => shares(t, &index) && !self.text_inputs,
                 None => index.stop.is_none(),
             };
             if serves {
                 self.text = Some(index.clone());
+                self.text_inputs = false;
             }
             self.full = Some(index);
         } else {
-            let full = self.full.as_ref().filter(|f| shares(f, &index));
+            let full = self.full.as_ref().filter(|f| !inputs && shares(f, &index));
             self.text = Some(full.cloned().unwrap_or(index));
+            self.text_inputs = inputs;
         }
     }
 }
@@ -1871,6 +1951,16 @@ pub(crate) fn index_tree(
     profiled(tree, scope, deadline, true, Library::Skip)
 }
 
+/// `index_tree` as a stored build makes it (`index_bytes`), so a visual job's records line up
+/// with the published generation built from the same bytes.
+pub(crate) fn index_stored(
+    tree: &Tree,
+    scope: &str,
+    deadline: Instant,
+) -> Result<Index, Box<dyn Error>> {
+    profiled(tree, scope, deadline, true, Library::Stored)
+}
+
 fn profiled(
     tree: &Tree,
     scope: &str,
@@ -1932,7 +2022,7 @@ fn ms(t: SystemTime) -> u64 {
 /// hashes the bytes again once `REHASH` has passed, since a save can keep the stamp.
 pub fn search(path: &Path, req: &Request) -> Result<Json, Box<dyn Error>> {
     req.validate()?;
-    let (index, source) = loaded(path, &req.scope, false)?;
+    let (index, source) = loaded(path, &req.scope, false, false)?;
     search_index(&index, req, source)
 }
 
@@ -1940,14 +2030,20 @@ pub fn search(path: &Path, req: &Request) -> Result<Json, Box<dyn Error>> {
 /// index search uses; nothing is stored.
 pub fn usages(path: &Path, req: &usages::Request) -> Result<Json, Box<dyn Error>> {
     req.validate()?;
-    let (index, source) = loaded(path, &req.scope, true)?;
+    let (index, source) = loaded(path, &req.scope, true, false)?;
     usages_index(&index, req, source)
 }
 
 /// The index of `scope` and its source identity, from the process cache while it is fresh.
 /// `relations` asks for a full build: a cached text-only one is replaced by one, once, and a
-/// cached full one also serves text search.
-fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json), Box<dyn Error>> {
+/// cached full one also serves text search. `inputs` (semantic search) asks for a text build
+/// that also kept the model's property inputs; it replaces a text one and serves text search.
+pub(crate) fn loaded(
+    path: &Path,
+    scope: &str,
+    relations: bool,
+    inputs: bool,
+) -> Result<(Arc<Index>, Json), Box<dyn Error>> {
     let deadline = Instant::now() + DEADLINE;
     let canonical = std::fs::canonicalize(path)?;
     let source_id = source_id(&canonical);
@@ -1956,7 +2052,7 @@ fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json
         cache
             .as_ref()
             .filter(|c| c.path == canonical && c.stamp == now && c.scope == scope)
-            .and_then(|c| Some((c.snapshot.clone(), c.pick(relations)?, c.hashed)))
+            .and_then(|c| Some((c.snapshot.clone(), c.pick(relations, inputs)?, c.hashed)))
     });
     let fresh = |hashed: SystemTime| hashed.elapsed().is_ok_and(|age| age < REHASH);
     let (snapshot, index, hashed, reused) = match cached {
@@ -1983,9 +2079,10 @@ fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json
                     let label = path.display().to_string();
                     // A full build also keeps library references when they fit, so a usages
                     // result can name the one it uses; a text-only build reads none.
-                    let library = match relations {
-                        true => Library::Named,
-                        false => Library::Skip,
+                    let library = match (relations, inputs) {
+                        (true, _) => Library::Named,
+                        (false, true) => Library::Stored,
+                        (false, false) => Library::Skip,
                     };
                     let index = Arc::new(decode_index(
                         bytes, &label, scope, deadline, relations, library,
@@ -2016,11 +2113,12 @@ fn loaded(path: &Path, scope: &str, relations: bool) -> Result<(Arc<Index>, Json
                                 snapshot: snapshot.clone(),
                                 hashed,
                                 text: None,
+                                text_inputs: false,
                                 full: None,
                             });
                         }
                         if let Some(c) = cache.as_mut() {
-                            c.keep(index.clone());
+                            c.keep(index.clone(), inputs);
                         }
                     }
                     (snapshot, index, hashed, false)
@@ -2040,6 +2138,7 @@ pub(crate) mod impact;
 pub mod semantic;
 pub(crate) mod store;
 pub mod usages;
+pub mod visual;
 
 #[cfg(test)]
 mod tests;

@@ -68,8 +68,16 @@ export function cliArgs(tool, input) {
     const flags = [...flag('--node', input.node), ...flag('--type', input.type), ...flag('--limit', input.limit),
       ...flag('--cursor', input.cursor), ...flag('--include-hidden', input.includeHidden),
       ...flag('--include-internal', input.includeInternal), ...flag('--mode', input.mode)];
+    const image = input.image !== undefined || input.imageRef !== undefined;
+    if (input.mode === 'visual' && !image) throw new Error('mode visual takes image or imageRef');
+    if (input.crop !== undefined && !image) throw new Error('crop applies to a query image; give image or imageRef');
+    flags.push(...flag('--image', input.image),
+      ...flag('--image-ref', input.imageRef && JSON.stringify(input.imageRef)),
+      ...flag('--crop', input.crop && [input.crop.x, input.crop.y, input.crop.width, input.crop.height].join(',')));
+    // An image search takes the query text as an option; any other needs it.
+    const query = image ? input.query ?? '' : required(input, 'query');
     // Workspace search reads everything after -- as the query, so a query may start with '-'.
-    return input.file ? ['search', ...target, required(input, 'query'), ...flags] : ['search', ...target, ...flags, '--', required(input, 'query')];
+    return input.file ? ['search', ...target, ...(query ? [query] : []), ...flags] : ['search', ...target, ...flags, '--', query];
   }
   if (tool === 'usages') {
     const target = corpus();
@@ -346,7 +354,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
     const args = cliArgs(tool, input);
     const invoke = async (args, text = false) => {
       // A model configure hashes its pinned files and waits for the runtime to start, as long as a build.
-      const build = ['index prepare', 'index refresh', 'index rebuild', 'index track', 'index embed', 'models configure'].includes(args.slice(0, 2).join(' '));
+      const build = ['index prepare', 'index refresh', 'index rebuild', 'index track', 'index embed', 'index visual', 'models configure'].includes(args.slice(0, 2).join(' '));
       try { const { stdout } = await current.run(args, build ? 0 : undefined); return text ? { flat: stdout } : JSON.parse(stdout); }
       catch (error) {
         // The CLI explains a failure on stderr; a partial reset or failed job also prints its report.
@@ -402,7 +410,7 @@ export function createAdapter(ctx, entry = import.meta.url) {
       if (typeof directory.manifest !== 'string') throw missing("a directory's manifest");
       args.push('--manifest', directory.manifest);
     }
-    // Workspace search, usages and changes, refresh, rebuild, track and embed read the registered designs' content, which this session may deny.
+    // Workspace search, usages and changes, refresh, rebuild, track, embed and visual read the registered designs' content, which this session may deny.
     // `only` names the sources read; null reads every one.
     const readSources = async ({ state, sources }, only = input.sourceId ? [input.sourceId] : null) => {
       // A workspace that does not exist yet reads no design; the command then fails as the MCP tool does.
@@ -431,9 +439,14 @@ export function createAdapter(ctx, entry = import.meta.url) {
     const readSelected = async found => readSources(found, input.subscriptionId ? await subscribed(found) : undefined);
     if (['search', 'usages', 'changes'].includes(tool) && !input.file) {
       const found = await status(input);
+      // A referenced node is read from its own source's stored render, whichever sources the search narrows to.
+      const referenced = tool === 'search' && input.sourceId && input.imageRef ? [input.sourceId, input.imageRef.sourceId] : undefined;
       await (tool === 'changes' ? readSelected(found)
-        : readSources(found, tool === 'usages' ? withDefinition(found, input.sourceId ? [input.sourceId] : null, input.library?.definition) : undefined));
+        : readSources(found, tool === 'usages' ? withDefinition(found, input.sourceId ? [input.sourceId] : null, input.library?.definition) : referenced));
     }
+    // A local query image is read by the binary for this call, as the session's own read of it.
+    if (tool === 'search' && input.image !== undefined)
+      await current.authorize('read', await both([input.image]));
     // Every other watch action writes checkpoints, subscriptions or leases into the workspace database, as a cancel writes its job.
     if (tool === 'watch' && !['list', 'status', 'start'].includes(input.action)) {
       // The binary evaluates the subscription's own source, so a sourceId would only narrow the read asked here.
@@ -496,8 +509,8 @@ export function createAdapter(ctx, entry = import.meta.url) {
           return { paths: { workspace: fix.path, lock: fix.lock }, roots: fix.roots };
         });
         if (!found.roots?.config) throw missing('its config root');
-        // An embed sends the published text of those sources to the local model child, so it reads them too.
-        if (['refresh', 'rebuild', 'track', 'embed'].includes(input.action)) await readSources(found);
+        // An embed sends the published text of those sources to the local model child, and a visual job renders them, so both read them too.
+        if (['refresh', 'rebuild', 'track', 'embed', 'visual'].includes(input.action)) await readSources(found);
         if (grant) await current.authorize('figlens_index', [grant]);
         // Every write also takes a location lock or record under the config root (a build's publish, relocation's alias).
         await edit([...place(found), found.roots.config.path]);

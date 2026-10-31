@@ -722,7 +722,7 @@ fn search_mode(mode: &str) -> Result<Mode, Box<dyn Error>> {
     Mode::parse(mode).ok_or_else(|| {
         figlens::FigError::new(
             figlens::ErrorKind::InvalidArguments,
-            format!("search mode takes text, semantic or hybrid, not {mode:?}"),
+            format!("search mode takes text, semantic or hybrid, or visual with --image or --image-ref, not {mode:?}"),
         )
         .into()
     })
@@ -735,11 +735,86 @@ pub fn search_types(value: &str) -> impl Iterator<Item = String> + '_ {
         .filter(|t| !t.is_empty())
 }
 
-/// CLI search arguments, checked before the source is downloaded or read.
-pub fn search_request(args: &[String]) -> Result<(figlens::search::Request, Mode), Box<dyn Error>> {
-    let mut mode = Mode::Text;
+/// What a search ranks with: text in a mode, or a query image (with optional text).
+pub enum Query {
+    Text(Mode),
+    Image(figlens::workspace::visual_search::ImageQuery),
+}
+
+/// The query image of a search, if any: a local path or a source reference, never both; a
+/// crop needs one of them. `mode` and `text` must fit an image search.
+fn image_query(
+    path: Option<PathBuf>,
+    reference: Option<figlens::workspace::visual_search::Input>,
+    crop: Option<figlens::search::visual::Crop>,
+    mode: Option<&str>,
+    text: &str,
+) -> Result<Option<figlens::workspace::visual_search::ImageQuery>, Box<dyn Error>> {
+    use figlens::workspace::visual_search::{ImageQuery, Input};
+    let invalid = |m: &str| -> Box<dyn Error> {
+        figlens::FigError::new(figlens::ErrorKind::InvalidArguments, m).into()
+    };
+    let input = match (path, reference) {
+        (Some(_), Some(_)) => {
+            return Err(invalid(
+                "give a query image path or an image reference, not both",
+            ));
+        }
+        (Some(path), None) => Input::Path(path),
+        (None, Some(reference)) => reference,
+        (None, None) if crop.is_some() => {
+            return Err(invalid(
+                "crop applies to a query image; give --image or --image-ref",
+            ));
+        }
+        (None, None) => return Ok(None),
+    };
+    Ok(Some(ImageQuery::new(input, crop, mode, text)?))
+}
+
+/// The request with its query: an image search validates as one (text optional), any other
+/// in its text mode.
+fn query(
+    request: &figlens::search::Request,
+    image: Option<figlens::workspace::visual_search::ImageQuery>,
+    mode: Option<&str>,
+) -> Result<Query, Box<dyn Error>> {
+    Ok(match image {
+        Some(image) => {
+            request.validate_image()?;
+            Query::Image(image)
+        }
+        None => {
+            let mode = search_mode(mode.unwrap_or("text"))?;
+            request.validate()?;
+            Query::Text(mode)
+        }
+    })
+}
+
+/// CLI search arguments, checked before the source is downloaded or read. With `--image` or
+/// `--image-ref` the query text is optional: an image search whose first argument is an option
+/// has none.
+pub fn search_request(
+    args: &[String],
+) -> Result<(figlens::search::Request, Query), Box<dyn Error>> {
+    let image_search = args.iter().any(|a| a == "--image" || a == "--image-ref");
+    let text = match args.first() {
+        Some(first) if image_search && first.starts_with("--") => None,
+        first => Some(first.cloned().ok_or(USAGE)?),
+    };
+    let skip = usize::from(text.is_some());
+    search_options(text, &args[skip..])
+}
+
+/// `search_request` with the query text already separated (a workspace search's `--` operand).
+pub fn search_options(
+    text: Option<String>,
+    options: &[String],
+) -> Result<(figlens::search::Request, Query), Box<dyn Error>> {
+    let (mut mode, mut path, mut reference, mut crop) = (None, None, None, None);
     let mut request = figlens::search::Request {
-        query: args.first().cloned().ok_or(USAGE)?,
+        query: text.clone().unwrap_or_default(),
         scope: "0:0".into(),
         types: Vec::new(),
         include_hidden: false,
@@ -747,7 +822,7 @@ pub fn search_request(args: &[String]) -> Result<(figlens::search::Request, Mode
         limit: figlens::search::DEFAULT_LIMIT,
         cursor: None,
     };
-    let mut rest = args[1..].iter();
+    let mut rest = options.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
             "--include-hidden" => request.include_hidden = true,
@@ -759,23 +834,36 @@ pub fn search_request(args: &[String]) -> Result<(figlens::search::Request, Mode
                     "--type" => request.types.extend(search_types(value)),
                     "--limit" => request.limit = value.parse().unwrap_or(0),
                     "--cursor" => request.cursor = Some(value.clone()),
-                    "--mode" => mode = search_mode(value)?,
+                    "--mode" => mode = Some(value.clone()),
+                    "--image" => {
+                        path = Some(
+                            std::fs::canonicalize(value)
+                                .map_err(|e| format!("--image {value}: {e}"))?,
+                        )
+                    }
+                    "--image-ref" => {
+                        let value = serde_json::from_str(value).map_err(|_| "--image-ref takes a JSON object {\"sourceId\", \"snapshotId\", \"nodeId\"}")?;
+                        reference = Some(figlens::workspace::visual_search::reference(&value)?)
+                    }
+                    "--crop" => crop = Some(figlens::workspace::visual_search::crop(value)?),
                     _ => return Err(USAGE.into()),
                 }
             }
         }
     }
-    request.validate()?;
-    Ok((request, mode))
+    let image = image_query(path, reference, crop, mode.as_deref(), &request.query)?;
+    let query = query(&request, image, mode.as_deref())?;
+    Ok((request, query))
 }
 
-/// The same request from schema-checked MCP arguments.
+/// The same request from schema-checked MCP arguments; `image` is the admitted canonical path
+/// of the `image` argument.
 pub fn search_tool(
     call: &crate::contract::PreparedCall,
-) -> Result<(figlens::search::Request, Mode), Box<dyn Error>> {
-    let mode = search_mode(call.string("mode").unwrap())?;
+    image: Option<&Path>,
+) -> Result<(figlens::search::Request, Query), Box<dyn Error>> {
     let request = figlens::search::Request {
-        query: call.string("query").ok_or(USAGE)?.to_owned(),
+        query: call.string("query").unwrap_or_default().to_owned(),
         scope: normalize_id(call.string("node").unwrap()),
         types: call
             .string("type")
@@ -788,8 +876,39 @@ pub fn search_tool(
         limit: call.argument("limit").as_u64().unwrap() as usize,
         cursor: call.string("cursor").map(str::to_owned),
     };
-    request.validate()?;
-    Ok((request, mode))
+    let reference = match call.argument("imageRef") {
+        serde_json::Value::Null => None,
+        value => Some(figlens::workspace::visual_search::reference(value)?),
+    };
+    let crop = match call.argument("crop") {
+        serde_json::Value::Null => None,
+        value => Some(figlens::workspace::visual_search::crop_value(value)?),
+    };
+    let mode = call.string("mode");
+    let image = image_query(
+        image.map(Path::to_path_buf),
+        reference,
+        crop,
+        mode,
+        &request.query,
+    )?;
+    let query = query(&request, image, mode)?;
+    Ok((request, query))
+}
+
+/// An image search reads a workspace's stored visual layers: a single `.fig` has none, and a
+/// search never creates a workspace, so it names the steps that build one.
+pub fn image_needs_workspace(file: &str, scope: &str) -> Box<dyn Error> {
+    figlens::FigError::new(
+        figlens::ErrorKind::InvalidArguments,
+        "an image search reads a workspace's visual layer: prepare the .fig, build its visual layer, then search the workspace",
+    )
+    .with_recovery(serde_json::json!([
+        {"action": "prepare", "requires": "none", "tool": "index",
+            "arguments": {"action": "prepare", "file": file, "scope": scope}},
+        {"action": "index_visual", "requires": "none", "tool": "index",
+            "arguments": {"action": "visual", "file": file, "scope": scope}}]))
+    .into()
 }
 
 /// CLI usages arguments after the source: the node or resource, then options; checked before
@@ -1111,6 +1230,7 @@ pub fn workspace_search_tool(
     call: &crate::contract::PreparedCall,
     roots: &[PathBuf],
     storage_roots: &[PathBuf],
+    image: Option<&Path>,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<Output, Box<dyn Error>> {
     let storage = tool_storage(call, roots, storage_roots)?;
@@ -1120,12 +1240,17 @@ pub fn workspace_search_tool(
         .map(str::to_owned)
         .into_iter()
         .collect();
-    let (request, mode) = search_tool(call)?;
+    let (request, query) = search_tool(call, image)?;
     // Text search keeps its old behavior: it is not one of the calls a server stop cancels.
-    let value = match mode {
-        Mode::Text => figlens::workspace::query::search(&storage, &select, &only, &request)?,
-        _ => figlens::workspace::query::search_mode(
+    let value = match query {
+        Query::Text(Mode::Text) => {
+            figlens::workspace::query::search(&storage, &select, &only, &request)?
+        }
+        Query::Text(mode) => figlens::workspace::query::search_mode(
             &storage, &select, &only, &request, mode, cancel,
+        )?,
+        Query::Image(image) => figlens::workspace::query::search_image(
+            &storage, &select, &only, &request, &image, cancel,
         )?,
     };
     Ok(Output::Json {
@@ -1310,7 +1435,7 @@ pub struct Runs {
     pub storage: figlens::workspace::Storage,
     pub workspace_id: String,
     pub jobs: Vec<String>,
-    /// Model (embed) jobs, run apart from text builds so none waits behind one.
+    /// Model (embed and visual) jobs, run apart from text builds so none waits behind one.
     pub model: bool,
 }
 
@@ -1369,7 +1494,7 @@ fn index_on(
         workspace_id: value["workspaceId"].as_str().unwrap_or_default().to_owned(),
         storage,
         jobs,
-        model: action == "embed",
+        model: matches!(action, "embed" | "visual"),
     });
     Ok((
         Output::Json {

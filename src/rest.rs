@@ -507,64 +507,6 @@ impl Builder<'_, '_> {
         );
     }
 
-    /// REST `componentProperties` of an instance of `main`: variant values from the main's
-    /// name specs, other properties from the instance's assignments or the definition's default.
-    fn component_properties(&self, k: &Obj, main: &str) -> Obj {
-        let mut out = Obj::new();
-        let Some(m) = self.tree.nodes.get(main).map(|n| to_json(n)) else {
-            return out;
-        };
-        // Variants define their properties on the component set and point at them.
-        let set = parent_id(self.tree, main).map(|p| to_json(self.tree.nodes[&p]));
-        let set_defs: HashMap<String, &Json> = set
-            .iter()
-            .flat_map(|s| s["componentPropDefs"].as_array().into_iter().flatten())
-            .filter_map(|d| Some((guid(&d["id"])?, d)))
-            .collect();
-        let assigned: HashMap<String, &Json> = at(k, "componentPropAssignments")
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|a| Some((guid(&a["defID"])?, a)))
-            .collect();
-        for own in m["componentPropDefs"].as_array().into_iter().flatten() {
-            let def = semantics::resolve_definition(own, &set_defs);
-            let (Some(def_id), Some(own_id)) = (guid(&def["id"]), guid(&own["id"])) else {
-                continue;
-            };
-            let kind = match def["type"].as_str() {
-                Some("BOOL") => "BOOLEAN",
-                Some("VARIANT") | None => continue,
-                Some(other) => other,
-            };
-            let value = assigned
-                .get(&own_id)
-                .or(assigned.get(&def_id))
-                .and_then(|a| prop_value(a))
-                .or_else(|| prop_value(def));
-            let mut prop = json!({ "type": kind, "value": value });
-            if let Some(list) = def["preferredValues"]["instanceSwapValues"].as_array() {
-                prop["preferredValues"] = list
-                    .iter()
-                    .map(|v| json!({ "type": v["type"], "key": v["key"] }))
-                    .collect();
-            }
-            out.insert(
-                format!("{}#{def_id}", def["name"].as_str().unwrap_or("")),
-                prop,
-            );
-        }
-        for spec in m["variantPropSpecs"].as_array().into_iter().flatten() {
-            if let Some(def) = guid(&spec["propDefId"]).and_then(|id| set_defs.get(&id)) {
-                out.insert(
-                    def["name"].as_str().unwrap_or("").to_owned(),
-                    json!({ "value": spec["value"], "type": "VARIANT", "boundVariables": {} }),
-                );
-            }
-        }
-        out
-    }
-
     /// `rendered`: no ancestor hides this node or consumes it as a boolean operand;
     /// `clip`: the page region its clipping ancestors leave visible.
     fn node(
@@ -649,7 +591,9 @@ impl Builder<'_, '_> {
             list.sort_by_cached_key(|a| variable_order(a["id"].as_str().unwrap_or("")));
         }
         if let Some(main) = out.get("componentId").and_then(Json::as_str) {
-            let props = self.component_properties(&kiwi, main);
+            let props = PropDefs::read(self.tree, main).map_or_else(Obj::new, |d| {
+                d.resolve(at(&kiwi, "componentPropAssignments"))
+            });
             if !props.is_empty() {
                 out.insert("componentProperties".into(), Json::Object(props));
             }
@@ -857,6 +801,125 @@ pub(crate) fn guid(v: &Json) -> Option<String> {
         v["sessionID"].as_u64()?,
         v["localID"].as_u64()?
     ))
+}
+
+/// The definition fields REST `componentProperties` reads for instances of one main, converted
+/// once: its own `componentPropDefs` and `variantPropSpecs`, and its component set's
+/// `componentPropDefs` (variants define their properties there and point at them).
+pub(crate) struct PropDefs {
+    own: Json,
+    specs: Json,
+    set: Json,
+}
+
+impl PropDefs {
+    /// The fields of `main`, `None` when it is not in the file.
+    pub(crate) fn read(tree: &Tree, main: &str) -> Option<PropDefs> {
+        let m = tree.nodes.get(main)?;
+        let field = |n: &kiwi_schema::Value, f: &str| n.get(f).map_or(Json::Null, to_json);
+        Some(PropDefs {
+            own: field(m, "componentPropDefs"),
+            specs: field(m, "variantPropSpecs"),
+            set: parent_id(tree, main)
+                .map_or(Json::Null, |p| field(tree.nodes[&p], "componentPropDefs")),
+        })
+    }
+
+    /// `crate::expand::kiwi_bytes` of what `read` converts, estimated without converting it.
+    pub(crate) fn bytes(tree: &Tree, main: &str, left: &mut usize) -> usize {
+        use crate::expand::kiwi_bytes;
+        let field = |n: &kiwi_schema::Value, f: &str, left: &mut usize| {
+            n.get(f).map_or(0, |v| kiwi_bytes(v, left))
+        };
+        tree.nodes.get(main).map_or(0, |m| {
+            field(m, "componentPropDefs", left)
+                + field(m, "variantPropSpecs", left)
+                + parent_id(tree, main)
+                    .map_or(0, |p| field(tree.nodes[&p], "componentPropDefs", left))
+        })
+    }
+
+    /// REST `componentProperties` of an instance whose `componentPropAssignments` are
+    /// `assignments` (a later entry wins per definition): variant values from the main's name
+    /// specs, other properties from the assignments or the definition's default.
+    pub(crate) fn resolve(&self, assignments: &Json) -> Obj {
+        self.resolve_with(assignments, |_, _| true)
+            .expect("an unbounded resolution never stops")
+    }
+
+    /// `resolve`, showing `before` each lookup GUID, then each resolved definition with its
+    /// chosen assignment (or variant spec), before copying them; `None` once it refuses.
+    /// Many definitions can share one parent, so each copy is paid where it is made.
+    pub(crate) fn resolve_with(
+        &self,
+        assignments: &Json,
+        mut before: impl FnMut(&Json, Option<&Json>) -> bool,
+    ) -> Option<Obj> {
+        let mut out = Obj::new();
+        let mut set_defs = HashMap::new();
+        for d in self.set.as_array().into_iter().flatten() {
+            if !before(&d["id"], None) {
+                return None;
+            }
+            if let Some(id) = guid(&d["id"]) {
+                set_defs.insert(id, d);
+            }
+        }
+        let mut assigned = HashMap::new();
+        for a in assignments.as_array().into_iter().flatten() {
+            if !before(&a["defID"], None) {
+                return None;
+            }
+            if let Some(id) = guid(&a["defID"]) {
+                assigned.insert(id, a);
+            }
+        }
+        for own in self.own.as_array().into_iter().flatten() {
+            if !before(&own["id"], Some(&own["parentPropDefId"])) {
+                return None;
+            }
+            let def = semantics::resolve_definition(own, &set_defs);
+            let (Some(def_id), Some(own_id)) = (guid(&def["id"]), guid(&own["id"])) else {
+                continue;
+            };
+            let kind = match def["type"].as_str() {
+                Some("BOOL") => "BOOLEAN",
+                Some("VARIANT") | None => continue,
+                Some(other) => other,
+            };
+            let chosen = assigned.get(&own_id).or(assigned.get(&def_id)).copied();
+            if !before(def, chosen) {
+                return None;
+            }
+            let value = chosen.and_then(prop_value).or_else(|| prop_value(def));
+            let mut prop = json!({ "type": kind, "value": value });
+            if let Some(list) = def["preferredValues"]["instanceSwapValues"].as_array() {
+                prop["preferredValues"] = list
+                    .iter()
+                    .map(|v| json!({ "type": v["type"], "key": v["key"] }))
+                    .collect();
+            }
+            out.insert(
+                format!("{}#{def_id}", def["name"].as_str().unwrap_or("")),
+                prop,
+            );
+        }
+        for spec in self.specs.as_array().into_iter().flatten() {
+            if !before(&spec["propDefId"], None) {
+                return None;
+            }
+            if let Some(def) = guid(&spec["propDefId"]).and_then(|id| set_defs.get(&id)) {
+                if !before(def, Some(spec)) {
+                    return None;
+                }
+                out.insert(
+                    def["name"].as_str().unwrap_or("").to_owned(),
+                    json!({ "value": spec["value"], "type": "VARIANT", "boundVariables": {} }),
+                );
+            }
+        }
+        Some(out)
+    }
 }
 
 /// Visual, text and auto-layout fields of one node; `parent` is the parent's kiwi object.

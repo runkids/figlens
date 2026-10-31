@@ -56,6 +56,9 @@ fn live_original_image_route_obeys_the_image_budget() {
         bundles: AtomicUsize::new(0),
         source: Value::Null,
         indexes: Mutex::default(),
+        queries: cancel::Requests::default(),
+        indexing: &semantic::Indexing::default(),
+        cancel: std::sync::atomic::AtomicBool::new(false),
     };
     let error = revision.respond("asset/1/0:1/a1b2").unwrap_err();
     assert!(
@@ -91,6 +94,9 @@ fn served_tree<T>(tree: &Tree, check: impl FnOnce(&Revision) -> T) -> T {
         bundles: AtomicUsize::new(0),
         source,
         indexes: Mutex::default(),
+        queries: cancel::Requests::default(),
+        indexing: &semantic::Indexing::default(),
+        cancel: std::sync::atomic::AtomicBool::new(false),
     };
     check(&revision)
 }
@@ -318,12 +324,86 @@ fn a_deep_effective_result_opens_and_queries_by_its_exact_id() {
 }
 
 fn parse(input: &str) -> Result<String> {
+    Ok(parse_with_body(input)?.0)
+}
+
+fn parse_with_body(input: &str) -> Result<(String, Option<Vec<u8>>)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let mut client = TcpStream::connect(listener.local_addr()?)?;
     let (server, _) = listener.accept()?;
     client.write_all(input.as_bytes())?;
     client.shutdown(std::net::Shutdown::Write)?;
     request(&server, "127.0.0.1:1234", "secret")
+}
+
+/// A POST of `body` to `route` with `extra` header lines, as the page sends it unless `extra` says otherwise.
+fn post(route: &str, extra: &str, body: &str) -> Result<(String, Option<Vec<u8>>)> {
+    parse_with_body(&format!(
+        "POST /secret/{route} HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n{extra}Content-Length: {}\r\n\r\n{body}",
+        body.len()
+    ))
+}
+
+#[test]
+fn only_a_same_origin_json_post_within_its_cap_reaches_a_state_change() {
+    let page = "Origin: http://127.0.0.1:1234\r\nContent-Type: application/json\r\nSec-Fetch-Site: same-origin\r\n";
+    let body = r#"{"scope":"0:1"}"#;
+    let ok = post("enable/1", page, body).unwrap();
+    assert_eq!(ok, ("enable/1".to_owned(), Some(body.as_bytes().to_vec())));
+    for (extra, why) in [
+        ("Content-Type: application/json\r\n", "no origin"),
+        (
+            "Origin: http://evil.test\r\nContent-Type: application/json\r\n",
+            "another origin",
+        ),
+        ("Origin: http://127.0.0.1:1234\r\n", "not JSON"),
+        (
+            "Origin: http://127.0.0.1:1234\r\nContent-Type: application/json\r\nSec-Fetch-Site: same-site\r\n",
+            "same-site",
+        ),
+    ] {
+        assert!(post("enable/1", extra, body).is_err(), "{why}");
+    }
+    assert!(
+        post("enable/1", page, &"x".repeat(POST_BYTES + 1)).is_err(),
+        "over the cap"
+    );
+    // A body shorter than declared never completes.
+    assert!(parse_with_body(&format!("POST /secret/enable/1 HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n{page}Content-Length: 40\r\n\r\n{body}")).is_err());
+    // A state change is never a GET, and data routes are never a POST.
+    assert!(parse("GET /secret/enable/1 HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n").is_err());
+    assert!(post("search/1?q=x", page, body).is_err());
+}
+
+#[test]
+fn an_enable_that_outlived_its_revision_starts_no_build() {
+    served(|r| {
+        // The revision ended (a save or a stop) while this request was still being read.
+        r.cancel.store(true, Ordering::SeqCst);
+        let (_, out) = r.post("enable/1", br#"{"scope":"0:1"}"#).unwrap();
+        let reply: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(reply["error"]["message"], STALE, "{reply}");
+        assert!(r.indexing.0.lock().unwrap().is_none());
+    });
+}
+
+#[test]
+fn enable_takes_one_stored_scope_of_the_current_revision() {
+    served(|r| {
+        let refused = |rev: &str, body: &str| {
+            let (_, out) = r.post(&format!("enable/{rev}"), body.as_bytes()).unwrap();
+            serde_json::from_slice::<Value>(&out).unwrap()["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        };
+        assert!(refused("1", "[]").contains("JSON object"));
+        assert!(refused("1", r#"{}"#).contains("exactly one scope"));
+        assert!(refused("1", r#"{"scope":"0:1","x":1}"#).contains("exactly one scope"));
+        assert!(refused("1", r#"{"scope":"9:9"}"#).contains("stored layer"));
+        assert!(refused("1", r#"{"scope":"I0:2;0:3"}"#).contains("stored layer"));
+        assert_eq!(refused("2", r#"{"scope":"0:1"}"#), STALE);
+    });
 }
 
 #[test]
@@ -510,4 +590,69 @@ fn routes_only_accept_exact_instance_ids() {
         assert!(!valid_id(id));
     }
     assert!(!valid_id(&"1".repeat(search::store::ID_BYTES + 1)));
+}
+
+#[test]
+fn image_posts_have_a_separate_mime_and_declared_byte_cap() {
+    let origin = "Origin: http://127.0.0.1:1234\r\n";
+    let png = format!("{origin}Content-Type: image/png\r\n");
+    let json = format!("{origin}Content-Type: application/json\r\n");
+    assert_eq!(
+        post("image/1?mode=visual", &png, "PNG").unwrap().1,
+        Some(b"PNG".to_vec())
+    );
+    // A node render keeps its GET route; only the revision-only route accepts a query body.
+    assert_eq!(
+        parse("GET /secret/image/1/0:1 HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n").unwrap(),
+        "image/1/0:1"
+    );
+    assert!(post("image/1/0:1", &png, "PNG").is_err());
+    assert!(post("image/1", &json, "{}").is_err());
+    assert!(post("enable/1", &png, "PNG").is_err());
+    assert!(post("image-ref/1", &png, "PNG").is_err());
+    assert!(post("image-ref/1", &json, r#"{"nodeId":"0:1"}"#).is_ok());
+    assert!(post("image/1", "Content-Type: image/png\r\n", "PNG").is_err());
+    assert!(
+        post(
+            "image/1",
+            &format!("{png}Sec-Fetch-Site: cross-site\r\n"),
+            "PNG"
+        )
+        .is_err()
+    );
+    assert!(parse("GET /secret/image/1 HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n").is_err());
+    let over = search::visual::MAX_BYTES + 1;
+    assert!(parse_with_body(&format!("POST /secret/image/1 HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n{png}Content-Length: {over}\r\n\r\n")).is_err());
+    assert!(parse_with_body(&format!("POST /secret/image/1 HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n{png}Content-Length: 20\r\n\r\nPNG")).is_err());
+}
+
+#[test]
+fn cancellation_names_one_running_call_and_revision_end_stops_the_rest() {
+    let calls = cancel::Requests::default();
+    let ended = std::sync::atomic::AtomicBool::new(false);
+    let first = calls.begin(Some("first"), &ended).unwrap();
+    assert!(
+        calls.begin(Some("second"), &ended).is_err(),
+        "a model wait must not occupy every HTTP worker"
+    );
+    assert!(calls.begin(Some("first"), &ended).is_err());
+    assert!(calls.cancel("first").unwrap());
+    assert!(first.cancel.load(Ordering::SeqCst));
+    assert!(!calls.cancel("missing").unwrap());
+    assert!(
+        calls.begin(Some("missing"), &ended).is_err(),
+        "an early cancel must stop a queued call"
+    );
+    assert!(calls.cancel("bad/id").is_err());
+    drop(first);
+    assert!(!calls.cancel("first").unwrap());
+    let second = calls.begin(Some("second"), &ended).unwrap();
+    assert!(
+        !second.cancel.load(Ordering::SeqCst),
+        "a later query does not inherit cancellation"
+    );
+    ended.store(true, Ordering::SeqCst);
+    calls.stop();
+    assert!(second.cancel.load(Ordering::SeqCst));
+    assert!(calls.begin(Some("late"), &ended).is_err());
 }

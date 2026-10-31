@@ -157,6 +157,11 @@ pub(crate) fn save(
             + text
             + r.norm[0].len()
             + r.norm[1].len()
+            + r.props
+                .iter()
+                .flatten()
+                .map(|(n, v)| 8 + n.len() + v.as_ref().map_or(4, String::len))
+                .sum::<usize>()
             + 64
             + edges
     };
@@ -166,8 +171,8 @@ pub(crate) fn save(
         {
             let mut record = tx.prepare_cached(
                 "INSERT INTO records (gen, rid, node_id, name, kind, text, norm0, norm1, len0, len1,
-                 parent, source, text_source, hidden, page, root) VALUES
-                 (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                 parent, source, text_source, hidden, page, root, props) VALUES
+                 (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             )?;
             let mut edge = tx.prepare_cached(
                 "INSERT INTO edges (gen, rid, relation, seq, target, state, basis, evidence)
@@ -191,7 +196,8 @@ pub(crate) fn save(
                     r.text_source,
                     r.hidden,
                     r.page,
-                    r.root
+                    r.root,
+                    r.props.as_ref().map(|p| json!(p).to_string())
                 ])?;
                 for e in r.edges.iter().chain(&r.library) {
                     edge.execute(params![
@@ -621,6 +627,7 @@ pub(crate) fn add_with(
             root: row.get(14)?,
             edges: edges.remove(&rid).unwrap_or_default(),
             library: Vec::new(),
+            props: None,
         };
         if record.page.is_some_and(|p| p as usize >= index.pages.len())
             || record.root.is_some_and(|p| p as usize >= index.roots.len())
@@ -641,6 +648,38 @@ pub(crate) fn add_with(
         .collect();
     all.sort_unstable_by_key(|(rid, _)| *rid);
     (index.rids, index.records) = all.into_iter().unzip();
+    Ok(())
+}
+
+/// Loads the component properties (`records.props`, schema 11) of every loaded record of
+/// `index`, charged to `spent` before each copy; only a model layer reads them. A NULL column (a
+/// generation stored before schema 11) leaves the record's properties not indexed.
+pub(crate) fn add_properties(
+    conn: &Connection,
+    gen_id: i64,
+    index: &mut Index,
+    spent: &mut usize,
+    cancel: &AtomicBool,
+) -> Result<()> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT rid, props FROM records WHERE gen = ?1 AND props IS NOT NULL ORDER BY rid",
+    )?;
+    let mut rows = stmt.query([gen_id])?;
+    while let Some(row) = rows.next()? {
+        stopped(cancel)?;
+        let rid: u32 = row.get(0)?;
+        let at = match index.rids.is_empty() {
+            true => Some(rid as usize).filter(|&at| at < index.records.len()),
+            false => index.rids.binary_search(&rid).ok(),
+        };
+        let Some(at) = at else { continue };
+        // The text and the values parsed from it, each entry (at least `["",null]`, 9 bytes)
+        // held as a name and an optional value: 48 bytes, as `cached_bytes` counts it.
+        let len = text_len(row, 1)?;
+        charge_query(spent, 2 * len + 48 * (len / 9 + 1))?;
+        index.records[at].props =
+            Some(serde_json::from_str(&need(text_at(row, 1, TEXT_BYTES)?)?).map_err(|_| bad())?);
+    }
     Ok(())
 }
 

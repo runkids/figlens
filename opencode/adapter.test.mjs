@@ -243,6 +243,16 @@ test('CLI path runs the MCP index, jobs, search, usages, diff, changes, watch, i
   assert.deepEqual(cliArgs('inspect', { file: '/d.fig', node: '1:2', compareVariant: '1:3' }), ['inspect', '/d.fig', '1:2', '--compare-variant', '1:3']);
   for (const input of [{ file: '/a.fig', workspaceId: 'ws_p', sourceId: 'b', query: 'Pay' }, { file: '/a.fig', storage: '/s', query: 'Pay' }, { query: 'Pay' }])
     assert.throws(() => cliArgs('search', input), /file or workspaceId, not both/);
+  // An image search: the query text is optional, the reference and crop become flags, and visual needs an image.
+  assert.deepEqual(cliArgs('search', { workspaceId: 'ws_1', image: '/q.png', crop: { x: 1, y: 2, width: 3, height: 4 } }),
+    ['search', '--id', 'ws_1', '--image', '/q.png', '--crop', '1,2,3,4', '--', '']);
+  assert.deepEqual(cliArgs('search', { workspaceId: 'ws_1', imageRef: { sourceId: 's', snapshotId: 'sha256:x', nodeId: '1:2' }, query: 'Pay', mode: 'hybrid' }),
+    ['search', '--id', 'ws_1', '--mode', 'hybrid', '--image-ref', '{"sourceId":"s","snapshotId":"sha256:x","nodeId":"1:2"}', '--', 'Pay']);
+  assert.throws(() => cliArgs('search', { workspaceId: 'ws_1', mode: 'visual' }), /mode visual takes image or imageRef/);
+  assert.deepEqual(cliArgs('search', { workspaceId: 'ws_1', query: 'Pay', mode: 'hybrid' }),
+    ['search', '--id', 'ws_1', '--mode', 'hybrid', '--', 'Pay']);
+  assert.throws(() => cliArgs('search', { workspaceId: 'ws_1', query: 'Pay', crop: { x: 0, y: 0, width: 1, height: 1 } }), /crop applies to a query image/);
+  assert.throws(() => cliArgs('search', { workspaceId: 'ws_1' }), /needs query/);
   assert.throws(() => cliArgs('index', { action: 'remove', workspaceId: 'ws_1' }), /needs sourceId/);
   assert.deepEqual(cliArgs('usages', { file: '/d.fig', node: 'I1:2;3:4', relation: 'instance_of,uses_style', direction: 'out', includeHidden: true, limit: 5 }),
     ['usages', '/d.fig', 'I1:2;3:4', '--relation', 'instance_of,uses_style', '--out', '--include-hidden', '--limit', '5']);
@@ -848,6 +858,39 @@ test('CLI-path workspace search, usages, changes, rebuild and track ask read on 
   assert.deepEqual(ran, ['status', 'status', 'status', 'status', 'status'], 'only the read-only status ran');
 });
 
+test('CLI-path image search asks read on the referenced source and on the local query image before running', async t => {
+  const { root, ctx, adapter } = await context(t);
+  const asked = [], ran = [];
+  // Every source read is allowed; the query image read is denied.
+  ctx.permission.assert = async ({ action, resources }) => {
+    asked.push([action, ...resources]);
+    if (resources.some(r => r.endsWith('.png'))) throw Object.assign(new Error('read denied'), { _tag: 'Permission.DeclinedError' });
+  };
+  const current = await adapter.scope('image session');
+  current.run = async args => {
+    ran.push(args[0] === 'index' ? args[1] : args[0]);
+    return { stdout: JSON.stringify({ paths: { workspace: '/w', lock: '/w.lock' }, storage: { rule: 'default' }, roots: { config: { path: '/c' } },
+      sources: [{ sourceId: 's1', path: '/a.fig' }, { sourceId: 's2', path: '/b.fig' }] }) };
+  };
+  const image = path.join(root, 'q.png');
+  await writeFile(image, '');
+  await assert.rejects(adapter.cli(current, 'search', { workspaceId: 'ws_1', sourceId: 's1', image }), /read denied/);
+  // A reference to another source's node reads that source too, though the search narrows to s1; the
+  // session already granted /a.fig, so only /b.fig is asked.
+  const reference = { sourceId: 's2', snapshotId: 'sha256:x', nodeId: '1:2' };
+  assert.equal((await adapter.cli(current, 'search', { workspaceId: 'ws_1', sourceId: 's1', imageRef: reference })).sources.length, 2);
+  assert.deepEqual(asked, [['read', '/a.fig'], ['read', image, await realpath(image)].filter((v, i, a) => a.indexOf(v) === i), ['read', '/b.fig']]);
+  assert.deepEqual(ran, ['status', 'status', 'search'], 'the denied image search never ran');
+  // A project-relative image is resolved against the project root, and a link leaving it asks its destination too.
+  const away = await mkdtemp(path.join(tmpdir(), 'figlens-away-'));
+  t.after(() => rm(away, { recursive: true, force: true }));
+  await writeFile(path.join(away, 'private.png'), '');
+  await symlink(path.join(away, 'private.png'), path.join(root, 'link.png'));
+  asked.length = 0;
+  await assert.rejects(adapter.cli(current, 'search', { workspaceId: 'ws_1', sourceId: 's1', image: 'link.png' }), /read denied/);
+  assert.deepEqual(asked.at(-1), ['read', path.join(await realpath(root), 'link.png'), await realpath(path.join(away, 'private.png'))]);
+});
+
 test('CLI-path diff asks read on each design on its own and runs only after both are allowed', async t => {
   const { ctx, adapter } = await context(t);
   const asked = [], ran = [];
@@ -914,6 +957,20 @@ test('CLI-path embed reads the sources it sends to the local model, asks edit li
   };
   await adapter.cli(current, 'index', { action: 'embed', workspaceId: 'ws_1', sourceId: 's', scope: '0:1' });
   assert.deepEqual(timeouts, [['index status --id ws_1', undefined], ['index embed --id ws_1 --source s --scope 0:1', 0]]);
+  assert.deepEqual(asked, [['read', '/a.fig'], ['edit', '/w', '/w.lock', '/c']]);
+});
+
+test('CLI-path visual reads the sources it renders, asks edit like a build and runs until its jobs finish', async t => {
+  const { ctx, adapter } = await context(t);
+  const asked = [], timeouts = [];
+  ctx.permission.assert = async ({ action, resources }) => { asked.push([action, ...resources]); };
+  const current = await adapter.scope('session');
+  current.run = async (args, timeout) => {
+    timeouts.push([args.join(' '), timeout]);
+    return { stdout: JSON.stringify({ paths: { workspace: '/w', lock: '/w.lock' }, roots: { config: { path: '/c' } }, sources: [{ sourceId: 's', path: '/a.fig' }] }) };
+  };
+  await adapter.cli(current, 'index', { action: 'visual', workspaceId: 'ws_1', sourceId: 's', scope: '0:1' });
+  assert.deepEqual(timeouts, [['index status --id ws_1', undefined], ['index visual --id ws_1 --source s --scope 0:1', 0]]);
   assert.deepEqual(asked, [['read', '/a.fig'], ['edit', '/w', '/w.lock', '/c']]);
 });
 
