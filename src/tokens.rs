@@ -496,11 +496,16 @@ pub fn convert_mapped(
             ));
         }
         let (mut chain, mut seen) = (Vec::new(), HashSet::new());
+        // A memoized failure this walk joined, kept by index rather than stored again.
+        let mut joined = None;
         let mut current = first;
         let result = loop {
             let id = current["id"].as_str().unwrap_or("");
             if let Some(known) = memo.get(id) {
-                break known.clone().map_err(|i| failures[i].clone());
+                break known.clone().map_err(|i| {
+                    joined = Some(i);
+                    failures[i].clone()
+                });
             }
             if !seen.insert(id) {
                 break Err((
@@ -558,8 +563,9 @@ pub fn convert_mapped(
             current = next;
         };
         let mut result = result;
-        let failure = match &result {
-            Err(failure) if !chain.is_empty() => {
+        let failure = match (&result, joined) {
+            (Err(_), Some(i)) => i,
+            (Err(failure), None) if !chain.is_empty() => {
                 failures.push(failure.clone());
                 failures.len() - 1
             }

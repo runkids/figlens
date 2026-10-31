@@ -560,3 +560,23 @@ fn an_oversized_unresolved_target_id_fails_without_being_copied() {
     assert!(codes(&error).contains(&"resource_limit"));
     assert!(!error.report.to_string().contains(&huge));
 }
+
+#[test]
+fn branches_joining_a_failed_alias_share_its_failure() {
+    // accent -> blue -> base fails; a second branch, other -> blue, joins it.
+    let mut input = two_collections("prims", &["base"]);
+    input["variables"][3]["valuesByMode"]["base"] = alias("missing");
+    input["variables"].as_array_mut().unwrap().push(json!({
+        "id": "other", "name": "other", "variableCollectionId": "prims",
+        "resolvedType": "COLOR", "valuesByMode": { "base": alias("blue") },
+    }));
+    input["variables"].as_array_mut().unwrap().push(variable(
+        "second",
+        "second",
+        "COLOR",
+        alias("other"),
+        alias("other"),
+    ));
+    let error = convert(&input, "collection", "light").unwrap_err();
+    assert_eq!(codes(&error), ["missing_alias", "missing_alias"]);
+}
