@@ -591,3 +591,263 @@ fn library_aliases_are_named_from_cached_copies() {
             .contains("\"variableName\":\"color/bg/old\"")
     );
 }
+
+fn named(
+    id: u32,
+    parent: u32,
+    kind: &'static str,
+    name: &str,
+    extra: Vec<(&'static str, K<'static>)>,
+) -> K<'static> {
+    let mut fields = vec![("name", K::String(name.into()))];
+    fields.extend(extra);
+    node(id, parent, kind, fields)
+}
+
+fn at(x: f32, y: f32) -> K<'static> {
+    obj(vec![("m02", K::Float(x)), ("m12", K::Float(y))])
+}
+
+#[test]
+fn plain_frames_report_changed_fields_root_delta_and_added_children() {
+    let message = message(vec![
+        named(
+            20,
+            1,
+            "FRAME",
+            "Empty",
+            vec![("size", size(100.0)), ("transform", at(10.0, 20.0))],
+        ),
+        named(
+            21,
+            1,
+            "FRAME",
+            "Filled",
+            vec![("size", size(150.0)), ("transform", at(10.0, 50.0))],
+        ),
+        named(
+            70,
+            20,
+            "TEXT",
+            "Title",
+            vec![("textData", text("No items"))],
+        ),
+        named(71, 21, "TEXT", "Title", vec![("textData", text("3 items"))]),
+        named(
+            72,
+            20,
+            "RECTANGLE",
+            "Bg",
+            vec![("fillPaints", paint("red")), ("size", size(10.0))],
+        ),
+        named(
+            73,
+            21,
+            "RECTANGLE",
+            "Bg",
+            vec![("fillPaints", paint("blue")), ("size", size(30.0))],
+        ),
+        named(74, 20, "RECTANGLE", "Icon", vec![]),
+        named(
+            75,
+            21,
+            "RECTANGLE",
+            "Icon",
+            vec![("visible", K::Bool(false))],
+        ),
+        named(76, 21, "RECTANGLE", "Badge", vec![]),
+    ]);
+    let tree = Tree::new(&message);
+    let result = compare_nodes(&tree, "0:20", "0:21", Path::new("test.fig")).unwrap();
+    assert!(result.get("componentSetId").is_none());
+    assert_eq!(result["state"], "differences-recorded");
+    let delta = &result["rootDelta"];
+    assert_eq!(
+        (&delta["width"], &delta["height"], &delta["x"], &delta["y"]),
+        (&json!(50.0), &json!(0.0), &json!(0.0), &json!(30.0))
+    );
+    let fields = |name: &str| -> Vec<String> {
+        let pair = result["pairedNodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == name)
+            .unwrap();
+        pair["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["field"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(fields("Title"), ["textData.characters"]);
+    assert_eq!(fields("Bg"), ["size", "fillPaints"]);
+    assert_eq!(fields("Icon"), ["visible"]);
+    let unpaired = result["unpairedNodes"].as_array().unwrap();
+    assert_eq!(unpaired.len(), 1);
+    assert_eq!(unpaired[0]["name"], "Badge");
+    assert_eq!(unpaired[0]["reason"], "no-counterpart");
+}
+
+#[test]
+fn duplicate_names_are_unpaired_as_ambiguous_never_guessed() {
+    let message = message(vec![
+        named(20, 1, "FRAME", "A", vec![]),
+        named(21, 1, "FRAME", "B", vec![]),
+        named(70, 20, "TEXT", "Row", vec![("textData", text("one"))]),
+        named(71, 20, "TEXT", "Row", vec![("textData", text("two"))]),
+        named(72, 21, "TEXT", "Row", vec![("textData", text("one"))]),
+        named(73, 21, "TEXT", "Only", vec![]),
+    ]);
+    let tree = Tree::new(&message);
+    let result = compare_nodes(&tree, "0:20", "0:21", Path::new("test.fig")).unwrap();
+    assert!(result["pairedNodes"].as_array().unwrap().is_empty());
+    let reasons: Vec<_> = result["unpairedNodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| (n["name"].as_str().unwrap(), n["reason"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        reasons
+            .iter()
+            .filter(|r| **r == ("Row", "ambiguous-name"))
+            .count(),
+        3
+    );
+    assert!(reasons.contains(&("Only", "no-counterpart")));
+    assert_ne!(result["state"], "no-differences-in-compared-fields");
+}
+
+#[test]
+fn frame_comparison_is_bounded_and_rejects_bad_selections() {
+    let mut extra = vec![
+        named(20, 1, "FRAME", "A", vec![]),
+        named(21, 1, "FRAME", "B", vec![]),
+    ];
+    extra.extend((0..250).map(|i| named(100 + i, 20, "RECTANGLE", &format!("R{i}"), vec![])));
+    let message = message(extra);
+    let tree = Tree::new(&message);
+    let result = compare_nodes(&tree, "0:20", "0:21", Path::new("test.fig")).unwrap();
+    assert_eq!(result["truncated"], true);
+    assert!(result["coverage"]["scannedLeft"].as_u64().unwrap() <= MAX_NODES as u64);
+    for (a, b) in [("0:20", "0:20"), ("0:20", "9:9"), ("9:9", "0:20")] {
+        assert!(
+            compare_nodes(&tree, a, b, Path::new("test.fig")).is_err(),
+            "{a} {b}"
+        );
+    }
+    // Variants of one set still compare through the general entry point.
+    assert!(compare_nodes(&tree, "0:10", "0:11", Path::new("test.fig")).is_ok());
+}
+
+fn paired_by(result: &Value) -> Vec<(String, String)> {
+    result["pairedNodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            (
+                p["rightNodeId"].as_str().unwrap().to_owned(),
+                p["pairedBy"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn instance_of(id: u32, parent: u32, name: &str, main: u32) -> K<'static> {
+    let symbol = obj(vec![("symbolID", crate::states::tests::guid(main))]);
+    named(id, parent, "INSTANCE", name, vec![("symbolData", symbol)])
+}
+
+#[test]
+fn instances_of_one_main_component_pair_when_unique_even_if_renamed() {
+    let message = message(vec![
+        named(20, 1, "FRAME", "A", vec![]),
+        named(21, 1, "FRAME", "B", vec![]),
+        named(70, 20, "TEXT", "Title", vec![("textData", text("x"))]),
+        named(71, 21, "TEXT", "Title", vec![("textData", text("x"))]),
+        instance_of(72, 20, "Btn", 900),
+        instance_of(73, 21, "Button", 900),
+    ]);
+    let tree = Tree::new(&message);
+    let result = compare_nodes(&tree, "0:20", "0:21", Path::new("test.fig")).unwrap();
+    let mut by = paired_by(&result);
+    by.sort();
+    assert_eq!(
+        by,
+        [
+            ("0:71".to_owned(), "name".to_owned()),
+            ("0:73".to_owned(), "component".to_owned())
+        ]
+    );
+    assert!(result["unpairedNodes"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn repeated_siblings_pair_by_order_only_with_equal_counts() {
+    let rows = |third: bool| {
+        let mut v = vec![
+            named(20, 1, "FRAME", "A", vec![]),
+            named(21, 1, "FRAME", "B", vec![]),
+            named(70, 20, "TEXT", "Row", vec![("textData", text("one"))]),
+            named(71, 20, "TEXT", "Row", vec![("textData", text("two"))]),
+            named(72, 21, "TEXT", "Row", vec![("textData", text("one"))]),
+            named(73, 21, "TEXT", "Row", vec![("textData", text("three"))]),
+        ];
+        if third {
+            v.push(named(74, 21, "TEXT", "Row", vec![]));
+        }
+        v
+    };
+    let message = message(rows(false));
+    let tree = Tree::new(&message);
+    let result = compare_nodes(&tree, "0:20", "0:21", Path::new("test.fig")).unwrap();
+    assert_eq!(
+        paired_by(&result),
+        [
+            ("0:72".to_owned(), "order".to_owned()),
+            ("0:73".to_owned(), "order".to_owned())
+        ]
+    );
+    let changed: Vec<_> = result["pairedNodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| !p["changes"].as_array().unwrap().is_empty())
+        .map(|p| p["rightNodeId"].as_str().unwrap())
+        .collect();
+    assert_eq!(changed, ["0:73"]);
+    let message = super::tests::message(rows(true));
+    let tree = Tree::new(&message);
+    let result = compare_nodes(&tree, "0:20", "0:21", Path::new("test.fig")).unwrap();
+    assert!(result["pairedNodes"].as_array().unwrap().is_empty());
+    assert!(
+        result["unpairedNodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|n| n["reason"] == "ambiguous-name")
+    );
+}
+
+#[test]
+fn a_node_is_never_compared_with_its_ancestor_or_descendant() {
+    let message = message(vec![
+        named(20, 1, "FRAME", "A", vec![]),
+        named(70, 20, "FRAME", "Inner", vec![]),
+        named(71, 70, "TEXT", "Deep", vec![]),
+    ]);
+    let tree = Tree::new(&message);
+    for (a, b) in [
+        ("0:20", "0:70"),
+        ("0:70", "0:20"),
+        ("0:20", "0:71"),
+        ("0:71", "0:20"),
+    ] {
+        let error = compare_nodes(&tree, a, b, Path::new("test.fig"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ancestor"), "{a} {b}: {error}");
+    }
+}

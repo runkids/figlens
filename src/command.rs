@@ -47,6 +47,7 @@ pub enum Command {
         images: bool,
         states: bool,
         compare_variant: Option<String>,
+        compare: Option<String>,
         /// One line per node instead of JSON.
         flat: bool,
         full_text: bool,
@@ -261,7 +262,7 @@ impl Command {
                 let node = node()?;
                 let (mut depth, mut images, mut states, mut flat) = (1, false, false, false);
                 let (mut full_text, mut colors) = (false, false);
-                let mut compare_variant = None;
+                let (mut compare_variant, mut compare) = (None, None);
                 let mut rest = args[1..].iter();
                 while let Some(flag) = rest.next() {
                     match flag.as_str() {
@@ -280,6 +281,9 @@ impl Command {
                                     .clone(),
                             )
                         }
+                        "--compare" => {
+                            compare = Some(rest.next().ok_or("--compare needs a node ID")?.clone())
+                        }
                         _ => return Err(USAGE.into()),
                     }
                 }
@@ -289,6 +293,7 @@ impl Command {
                     images,
                     states,
                     compare_variant,
+                    compare,
                     flat,
                     full_text,
                     colors,
@@ -413,6 +418,7 @@ impl Command {
                 images: call.argument("images") == true,
                 states: call.argument("states") == true,
                 compare_variant: string("compareVariant"),
+                compare: string("compare"),
                 flat: call.argument("flat") == true,
                 full_text: call.argument("fullText") == true,
                 colors: call.argument("colors") == true,
@@ -578,15 +584,16 @@ impl Command {
                 images,
                 states,
                 compare_variant,
+                compare,
                 flat,
                 full_text,
                 colors,
             } => {
                 let id = normalize_id(&node);
                 if flat {
-                    if images || states || compare_variant.is_some() {
+                    if images || states || compare_variant.is_some() || compare.is_some() {
                         return Err(
-                            "--flat cannot be combined with --images, --states or --compare-variant"
+                            "--flat cannot be combined with --images, --states, --compare-variant or --compare"
                                 .into(),
                         );
                     }
@@ -598,6 +605,7 @@ impl Command {
                     });
                 }
                 let compare_variant = compare_variant.as_deref().map(normalize_id);
+                let compare = compare.as_deref().map(normalize_id);
                 compact(discover::inspect(
                     tree,
                     &id,
@@ -606,6 +614,7 @@ impl Command {
                     images,
                     states,
                     compare_variant.as_deref(),
+                    compare.as_deref(),
                     full_text,
                     colors,
                 )?)

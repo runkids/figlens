@@ -241,6 +241,7 @@ test('CLI path runs the MCP index, jobs, search, usages, diff, changes, watch, i
   assert.deepEqual(cliArgs('diff', { old: '/a.fig', file: '/b.fig' }), ['diff', '/a.fig', '/b.fig', '--json']);
   assert.throws(() => cliArgs('diff', { file: '/b.fig' }), /needs old/);
   assert.deepEqual(cliArgs('inspect', { file: '/d.fig', node: '1:2', compareVariant: '1:3' }), ['inspect', '/d.fig', '1:2', '--compare-variant', '1:3']);
+  assert.deepEqual(cliArgs('inspect', { file: '/d.fig', node: '1:2', compare: '1:4' }), ['inspect', '/d.fig', '1:2', '--compare', '1:4']);
   for (const input of [{ file: '/a.fig', workspaceId: 'ws_p', sourceId: 'b', query: 'Pay' }, { file: '/a.fig', storage: '/s', query: 'Pay' }, { query: 'Pay' }])
     assert.throws(() => cliArgs('search', input), /file or workspaceId, not both/);
   // An image search: the query text is optional, the reference and crop become flags, and visual needs an image.

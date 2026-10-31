@@ -161,12 +161,19 @@ pub fn inspect(
     images: bool,
     states: bool,
     compare_variant: Option<&str>,
+    compare: Option<&str>,
     full_text: bool,
     colors: bool,
 ) -> Result<Value, Box<dyn Error>> {
     if depth > 10 {
         return Err("--depth takes 0-10 for inspect".into());
     }
+    if compare_variant.is_some() && compare.is_some() {
+        return Err("--compare-variant and --compare cannot be combined".into());
+    }
+    let general = compare
+        .map(|other| figlens::states::compare_nodes(tree, id, other, fig))
+        .transpose()?;
     let comparison = compare_variant
         .map(|other| figlens::states::compare_variants(tree, id, other, fig))
         .transpose()?;
@@ -188,6 +195,9 @@ pub fn inspect(
     }
     if let Some(comparison) = comparison {
         result["variantComparison"] = comparison;
+    }
+    if let Some(comparison) = general {
+        result["comparison"] = comparison;
     }
     Ok(result)
 }
@@ -993,6 +1003,7 @@ mod tests {
             false,
             false,
             None,
+            None,
             false,
             false,
         )
@@ -1007,6 +1018,7 @@ mod tests {
             Path::new("test.fig"),
             false,
             false,
+            None,
             None,
             false,
             false,
