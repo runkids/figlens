@@ -520,3 +520,49 @@ fn long_bound_variable_names_are_cut_and_charged() {
             .contains("variable_name_limit")
     );
 }
+
+#[test]
+fn library_aliases_are_named_from_cached_copies() {
+    let s = |v: &str| K::String(v.into());
+    let alias = obj(vec![(
+        "assetRef",
+        obj(vec![("key", s("vk")), ("version", s("3:4"))]),
+    )]);
+    let fill = K::Array(vec![obj(vec![
+        ("type", K::Enum("Paint", "SOLID")),
+        (
+            "colorVar",
+            obj(vec![
+                ("dataType", K::Enum("VariableDataType", "ALIAS")),
+                ("value", obj(vec![("alias", alias)])),
+            ]),
+        ),
+    ])]);
+    let message = message(vec![
+        node(10, 40, "SYMBOL", vec![]),
+        node(11, 40, "SYMBOL", vec![("fillPaints", fill)]),
+        node(
+            90,
+            1,
+            "VARIABLE",
+            vec![
+                ("name", s("color/bg/brand")),
+                ("key", s("vk")),
+                ("version", s("3:4")),
+            ],
+        ),
+    ]);
+    let tree = Tree::new(&message);
+    let result = compare_variants(&tree, "0:10", "0:11", Path::new("test.fig")).unwrap();
+    let fill = result["rootChanges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["field"] == "fillPaints")
+        .unwrap();
+    let var = &fill["after"]["value"][0]["colorVar"];
+    assert_eq!(
+        (&var["variableId"], &var["variableName"]),
+        (&json!("VariableID:vk/3:4"), &json!("color/bg/brand"))
+    );
+}

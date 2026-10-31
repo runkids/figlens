@@ -1,5 +1,5 @@
 //! Compare stored definitions without guessing descendant correspondence or expanding instances.
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::path::Path;
 
@@ -229,38 +229,44 @@ fn collect(tree: &Tree, root: &str, budget: &mut Budget) -> Vec<Value> {
 /// Descendants that are the only node of their name and type under a paired parent on each
 /// side, from the roots down, as (left, right) indexes; names that were cut short never pair.
 fn pairs(tree: &Tree, a: &[Value], b: &[Value]) -> Vec<(usize, usize)> {
-    let index = |nodes: &[Value]| -> std::collections::HashMap<String, usize> {
-        nodes
+    // Each scanned node's scanned children by (type, name), with how many share that key;
+    // built from the at most MAX_NODES scanned nodes, never from a full child list.
+    let children = |nodes: &[Value]| {
+        let at: HashMap<&str, usize> = nodes
             .iter()
             .enumerate()
-            .filter_map(|(i, n)| Some((n["nodeId"].as_str()?.to_owned(), i)))
-            .collect()
-    };
-    let (left, right) = (index(a), index(b));
-    // Each side's scanned children by (type, name), with how many share that key.
-    let children = |nodes: &[Value], at: &std::collections::HashMap<String, usize>, i: usize| {
-        let mut keys: BTreeMap<String, (usize, usize)> = BTreeMap::new();
-        let id = nodes[i]["nodeId"].as_str().unwrap_or("");
-        for child in tree.children.get(id).into_iter().flatten() {
-            let Some(&c) = at.get(child) else { continue };
-            if nodes[c]["nameTruncated"] == true {
+            .filter_map(|(i, n)| Some((n["nodeId"].as_str()?, i)))
+            .collect();
+        let mut keys: HashMap<usize, BTreeMap<String, (usize, usize)>> = HashMap::new();
+        for (c, node) in nodes.iter().enumerate().skip(1) {
+            let parent = node["nodeId"]
+                .as_str()
+                .and_then(|id| tree.nodes.get(id))
+                .and_then(|raw| raw.get("parentIndex")?.get("guid"))
+                .and_then(definition_id)
+                .and_then(|p| at.get(p.as_str()).copied());
+            let Some(parent) = parent else { continue };
+            if node["nameTruncated"] == true {
                 continue;
             }
-            let key = json!([nodes[c]["type"], nodes[c]["name"]]).to_string();
-            let entry = keys.entry(key).or_insert((c, 0));
-            entry.1 += 1;
+            let key = json!([node["type"], node["name"]]).to_string();
+            keys.entry(parent)
+                .or_default()
+                .entry(key)
+                .or_insert((c, 0))
+                .1 += 1;
         }
         keys
     };
+    let (left, right) = (children(a), children(b));
     let mut out = Vec::new();
     let mut queue = vec![(0, 0)];
     while let Some((l, r)) = queue.pop() {
-        if l >= a.len() || r >= b.len() {
+        let (Some(ours), Some(theirs)) = (left.get(&l), right.get(&r)) else {
             continue;
-        }
-        let theirs = children(b, &right, r);
-        for (key, (lc, count)) in children(a, &left, l) {
-            if let Some(&(rc, 1)) = theirs.get(&key)
+        };
+        for (key, &(lc, count)) in ours {
+            if let Some(&(rc, 1)) = theirs.get(key)
                 && count == 1
             {
                 out.push((lc, rc));
@@ -276,14 +282,9 @@ fn pairs(tree: &Tree, a: &[Value], b: &[Value]) -> Vec<(usize, usize)> {
 /// A field whose aliases could not all be named becomes unsupported, so names on one side
 /// only never read as a difference.
 fn name_variables(tree: &Tree, nodes: &mut [Value], budget: &mut Budget) {
-    fn walk(
-        value: &mut Value,
-        vars: &mut Option<crate::rest::Vars>,
-        tree: &Tree,
-        budget: &mut Budget,
-    ) -> bool {
+    fn walk(value: &mut Value, names: &mut Names, budget: &mut Budget) -> bool {
         match value {
-            Value::Array(items) => items.iter_mut().all(|v| walk(v, vars, tree, budget)),
+            Value::Array(items) => items.iter_mut().all(|v| walk(v, names, budget)),
             Value::Object(map) => {
                 let alias = &map.get("value").unwrap_or(&Value::Null)["alias"];
                 // Normalized values hold a local guid's numbers as floats.
@@ -300,8 +301,7 @@ fn name_variables(tree: &Tree, nodes: &mut [Value], budget: &mut Budget) {
                     if !budget.step() {
                         return false;
                     }
-                    let vars = vars.get_or_insert_with(|| crate::rest::variables(tree));
-                    let name = crate::variables::name(vars, &id).map(|n| budget.name(n));
+                    let name = names.get(&id).map(|n| budget.name(n));
                     let bytes = id.len()
                         + name
                             .as_ref()
@@ -321,24 +321,60 @@ fn name_variables(tree: &Tree, nodes: &mut [Value], budget: &mut Budget) {
                     );
                     map.insert("variableId".into(), json!(id));
                 }
-                map.values_mut().all(|v| walk(v, vars, tree, budget))
+                map.values_mut().all(|v| walk(v, names, budget))
             }
             _ => true,
         }
     }
-    let mut vars = None;
+    let mut names = Names {
+        tree,
+        library: None,
+    };
     for node in nodes {
         for cell in node["fields"]
             .as_object_mut()
             .into_iter()
             .flat_map(|f| f.values_mut())
         {
-            if cell["state"] == "recorded" && !walk(&mut cell["value"], &mut vars, tree, budget) {
+            if cell["state"] == "recorded" && !walk(&mut cell["value"], &mut names, budget) {
                 cell["state"] = "unsupported".into();
                 cell["reason"] = "variable_name_limit".into();
                 cell.as_object_mut().unwrap().remove("value");
             }
         }
+    }
+}
+
+/// Variable names borrowed from the stored VARIABLE nodes, a library's cached copies by key
+/// and version; that index holds only references and is built on the first library alias.
+fn is_variable(raw: &K) -> bool {
+    matches!(raw.get("type"), Some(K::Enum(_, "VARIABLE")))
+}
+
+struct Names<'t, 'a> {
+    tree: &'t Tree<'a>,
+    library: Option<HashMap<(&'a str, &'a str), &'a str>>,
+}
+
+impl<'a> Names<'_, 'a> {
+    fn get(&mut self, id: &str) -> Option<&'a str> {
+        let id = id.strip_prefix("VariableID:")?;
+        let Some((key, version)) = id.split_once('/') else {
+            let raw = *self.tree.nodes.get(id)?;
+            return super::string(raw, "name").filter(|_| is_variable(raw));
+        };
+        let tree = self.tree;
+        let library = self.library.get_or_insert_with(|| {
+            tree.nodes
+                .values()
+                .filter(|raw| is_variable(raw))
+                .filter_map(|raw| {
+                    let text = |f| super::string(raw, f);
+                    Some(((text("key")?, text("version")?), text("name")?))
+                })
+                .collect()
+        });
+        library.get(&(key, version)).copied()
     }
 }
 
