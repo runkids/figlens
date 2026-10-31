@@ -8,7 +8,7 @@ Client `args` pass `--root DIR` and `--storage-root DIR` after `mcp`; these are 
 
 ## Roots in a checked-in config
 
-A project config committed to Git cannot hold one machine's absolute paths, and a relative `--root` resolves against whatever directory the client starts the server in. When designs are git-ignored and kept only in the main checkout, shared by its linked worktrees, a relative `figma` root does not even exist inside a worktree. Point the client at a script in the repository that resolves the roots with Git, then starts figlens:
+A config committed to Git cannot hold one machine's absolute paths, and a relative `--root` resolves against the client's start directory. When git-ignored designs live only in the main checkout, a relative `figma` root does not exist inside a linked worktree. Point the client at a script in the repository that resolves the roots with Git, then starts figlens:
 
 <!-- x-release-please-start-version -->
 ```sh

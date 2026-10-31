@@ -60,7 +60,7 @@
 | Kimi Code | 在会话中运行 `/plugins install https://github.com/runkids/figlens`，然后运行 `/reload` |
 <!-- x-release-please-end -->
 
-重启宿主或开启新会话，确认已列出 figlens tools。Plugin 安装会 clone 整个仓库（约 50 MB）。Antigravity 只加载 skill 的前 24 KB；完整指引由 server 的 `workflow` tool 提供。暂不支持 Muse。[宿主对照表与验证范围](wiki/host-plugins.md)
+重启宿主或开启新会话，确认已列出 figlens tools。Plugin 安装会 clone 整个仓库（约 7 MB）。Antigravity 只加载 skill 的前 24 KB；完整指引由 server 的 `workflow` tool 提供。暂不支持 Muse。[宿主对照表与验证范围](wiki/host-plugins.md)
 
 <a id="setup-mcp"></a>
 

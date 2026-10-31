@@ -60,7 +60,7 @@
 | Kimi Code | セッション内で `/plugins install https://github.com/runkids/figlens`、その後 `/reload` |
 <!-- x-release-please-end -->
 
-ホストを再起動するか新しいセッションを開始し、figlens のツールが表示されることを確認してください。プラグインのインストールはリポジトリ全体（約 50 MB）を clone します。Antigravity は skill の先頭 24 KB しか読み込みません。完全なガイダンスはサーバーの `workflow` ツールが提供します。Muse はまだサポートしていません。[ホスト対応表と検証範囲](wiki/host-plugins.md)
+ホストを再起動するか新しいセッションを開始し、figlens のツールが表示されることを確認してください。プラグインのインストールはリポジトリ全体（約 7 MB）を clone します。Antigravity は skill の先頭 24 KB しか読み込みません。完全なガイダンスはサーバーの `workflow` ツールが提供します。Muse はまだサポートしていません。[ホスト対応表と検証範囲](wiki/host-plugins.md)
 
 <a id="setup-mcp"></a>
 

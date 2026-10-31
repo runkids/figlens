@@ -60,7 +60,7 @@ One install adds the figlens skill and MCP server to your agent (Node.js 18+). T
 | Kimi Code | `/plugins install https://github.com/runkids/figlens` in a session, then `/reload` |
 <!-- x-release-please-end -->
 
-Restart the host or start a new session, then check that the figlens tools are listed. A plugin install clones the whole repository (about 50 MB). Antigravity loads only the first 24 KB of the skill; the server's `workflow` tool serves the full guidance. Muse is not supported yet. [Host matrix and what was verified](wiki/host-plugins.md)
+Restart the host or start a new session, then check that the figlens tools are listed. A plugin install clones the whole repository (about 7 MB). Antigravity loads only the first 24 KB of the skill; the server's `workflow` tool serves the full guidance. Muse is not supported yet. [Host matrix and what was verified](wiki/host-plugins.md)
 
 <a id="setup-mcp"></a>
 

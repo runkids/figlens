@@ -60,7 +60,7 @@ Una sola instalación añade el skill de figlens y el servidor MCP a tu agente (
 | Kimi Code | `/plugins install https://github.com/runkids/figlens` en una sesión y luego `/reload` |
 <!-- x-release-please-end -->
 
-Reinicia el host o abre una sesión nueva y comprueba que aparecen las herramientas de figlens. La instalación de un plugin clona todo el repositorio (unos 50 MB). Antigravity carga solo los primeros 24 KB del skill; la herramienta `workflow` del servidor ofrece la guía completa. Muse aún no está soportado. [Tabla de hosts y qué se verificó](wiki/host-plugins.md)
+Reinicia el host o abre una sesión nueva y comprueba que aparecen las herramientas de figlens. La instalación de un plugin clona todo el repositorio (unos 7 MB). Antigravity carga solo los primeros 24 KB del skill; la herramienta `workflow` del servidor ofrece la guía completa. Muse aún no está soportado. [Tabla de hosts y qué se verificó](wiki/host-plugins.md)
 
 <a id="setup-mcp"></a>
 
