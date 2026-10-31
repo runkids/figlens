@@ -51,7 +51,7 @@ assert.match((await completions('yo'))[0].description, /implement.*verify/i);
 assert.ok((await completions('')).every(item => item.description), 'every subcommand completion has a description');
 assert.deepEqual(await completions('yolo a request'), []);
 await command('help');
-assert.match(messages.pop().content, /`\/figlens yolo \[request\]`.*temporary plan/);
+assert.match(messages.pop().content, /`\/figlens yolo \[request\]`.*temporary plan, scratch exports and processes/);
 
 const request = 'Plan only the "hero image" in ./design files/shop.fig, node 12:8.\nWrite the plan in French; plan only, with all other pages out of scope.';
 const yoloRequest = '  Implement only the "hero image" in ./design files/shop.fig, node 12:8.\nUse this project\'s components; report in French.  \n';

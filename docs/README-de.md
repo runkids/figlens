@@ -106,7 +106,7 @@ Starte Pi neu oder führe `/reload` aus und bitte dann in normalen Worten um ein
 Eine Frage nach Text oder einem Screen durchsucht die `.fig` direkt und speichert nichts. Für wiederholte Suchen bitte Pi, für ein Design und einen Bereich einen Index zu aktivieren: Es bereitet einmal einen lokalen Index vor (ohne Setup-Befehl), meldet den Job, bis er fertig ist, und nutzt ihn nach Neustarts und in anderen Hosts weiter. Den Index zurückzusetzen erfordert deine ausdrückliche Anweisung. Die Frage, wo eine Komponente, Variable, ein Style oder Bild verwendet wird, listet die exakten Usages auf dieselbe Weise: direkt aus der `.fig` oder, sobald aktiviert, aus diesem Index. Bittest du Pi, den Änderungen eines Designs zu folgen, verfolgt es diesen Bereich (und bereitet den Index bei Bedarf vor) und meldet, was sich seit der letzten Prüfung geändert hat; eine Frage zu zwei gespeicherten Kopien beantwortet `diff`, ohne etwas zu starten. Details: [lokaler Index](#local-index).
 
 - `/figlens plan <request>` erstellt nur einen Plan und ändert die Anwendung nicht.
-- `/figlens yolo <request>` plant, baut, prüft und räumt den eigenen temporären Plan auf.
+- `/figlens yolo <request>` plant, baut, prüft und räumt den eigenen temporären Plan, Arbeitsexporte und gestartete Prozesse auf.
 - `/figlens preview [description]` öffnet den lokalen Viewer.
 - `/figlens review` genehmigt wiederverwendbare Komponenten-Zuordnungen, die der Agent vorgeschlagen hat.
 

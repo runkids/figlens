@@ -37,7 +37,7 @@ Looping GIF at 3× the edited video’s playback speed. Click it for the full 78
 | Command | Does |
 |---|---|
 | `/figlens plan [request]` | Inspect the design and relevant code, write a plan. No edits |
-| `/figlens yolo [request]` | Plan, implement, verify, then remove its own temporary plan |
+| `/figlens yolo [request]` | Plan, implement, verify, then clean up its own temporary plan and exports |
 | `/figlens open [description]` | Find a design from a file, screen name, purpose or visible text |
 | `/figlens preview [description]` | Start the local viewer and return its link |
 | `/figlens map` | Propose reusable component matches for the current design |
@@ -63,7 +63,7 @@ A small region gets a small plan; several pages get an outline with the next sli
 /figlens yolo Implement only the task-board header from ./design.fig. Follow existing components and styles. Compare it with the design and run the relevant project checks.
 ```
 
-Loads the [YOLO workflow](../skills/figlens/references/yolo.md): temporary plan, implementation, checks, corrections, then cleanup of that run's plan only. Failed, interrupted or blocked work keeps its plan. Existing plans and notes stay intact. Host permissions still apply; read the final report for the actual verification outcome.
+Loads the [YOLO workflow](../skills/figlens/references/yolo.md): temporary plan, implementation, checks, corrections, then cleanup of that run's own files and processes only: its plan, the scratch files in its export directory (the verification summary and final screenshot stay) and the dev servers or browser sessions it started. Design departures, such as darker text for contrast, are listed in the report. Failed, interrupted or blocked work keeps its plan and exports. Existing plans and notes stay intact. Host permissions still apply; read the final report for the actual verification outcome.
 
 ### Preview
 

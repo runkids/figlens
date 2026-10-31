@@ -33,7 +33,7 @@ Export `design.fig` with Figma's **File > Save local copy** and place it in the 
 | Plan, implement, check and correct | `/figlens yolo <request>` |
 | Browse a saved design | `/figlens preview ./design.fig` |
 
-The packaged skill guides the agent to follow existing project conventions, check fonts and image delivery, compare the running UI with the design and fix confirmed differences. It reports remaining gaps and checks it could not run. YOLO asks the agent to remove only its run-created temporary plan after successful verification; existing plans and failed or blocked work are preserved. These are agent instructions, not a guarantee of model behavior or visual fidelity.
+The packaged skill guides the agent to follow existing project conventions, check fonts and image delivery, compare the running UI with the design and fix confirmed differences. It reports remaining gaps and checks it could not run. YOLO asks the agent to remove only its run-created temporary plan and scratch exports, and stop the processes it started, after successful verification; existing plans, other `.figlens` files and failed or blocked work are preserved. These are agent instructions, not a guarantee of model behavior or visual fidelity.
 
 [Pi walkthrough](https://github.com/runkids/figlens/tree/main/pi) · [Pi package catalog](https://pi.dev/packages/@runkids/figlens)
 
