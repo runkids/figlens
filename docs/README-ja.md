@@ -259,7 +259,7 @@ Pi、OpenCode、OMP は、それぞれのオプトイン用エントリから同
 
 関連するコンポーネント variants には `inspect --states` または `bundle --states` を使用します（MCP は `states: true`、既定は false、設定変更は不要）。証拠にはソース、不明点、省略のマーカーが残ります。Bundle には `design/states.json` と `context.md` の要約が追加されます。範囲と制限は[状態の証拠](../wiki/states.md)を参照してください。
 
-同じ component set の 2 つの variants は `inspect <file> <variantA> --compare-variant <variantB>`（MCP `compareVariant`）で比較できます。`variantComparison` は保存フィールドと値集合の差、ソース ID、不明点を返します。子ノードの対応関係は推測しません。[比較の制限](../wiki/states.md#compare-two-variants)を参照してください。
+同じ component set の 2 つの variants は `inspect <file> <variantA> --compare-variant <variantB>`（MCP `compareVariant`）で比較できます。`variantComparison` は保存フィールドと値集合の差、ソース ID、不明点を返します。子ノードは両側に同じ名前と型の子が 1 つずつしかない場合だけ対応付け（`pairedNodes`、ペアごとの差分付き）、バインドされた variables は名前を示します。[比較の制限](../wiki/states.md#compare-two-variants)を参照してください。
 
 node 引数には `12:345`、`12-345`、または `?node-id=` 付きの Figma URL を指定できます。`<file>` には `gs://bucket/object` も指定でき、`gcloud` ログインでダウンロードしてキャッシュします。固定オブジェクトでの受け渡し、必要なアクセス権、更新の制限は [GCS スナップショットガイド](../wiki/gcs.md)を参照してください。CLI は呼び出しごとにファイルをデコードします。MCP が再利用するのは最後に読み取った変更のないローカルファイルだけです。リモート入力は毎回解析し直します。CLI の全使用法は `figlens --help` または `figlens inspect --help`（`-h` も可）で確認できます。`index add gs://bucket/object` はその世代のピン留めしたコピーを登録し、`remote {uri, generation}` を返します。gcloud を実行するのは add だけです。
 
