@@ -154,7 +154,8 @@ pub fn inspect_flat(tree: &Tree, id: &str, depth: usize) -> Result<(String, bool
 }
 
 /// `id TYPE "name" @x,y WxH` (position relative to the inspected root), then whichever of
-/// hidden, rotation, component, text, font, fill, stroke, radius, auto-layout and opacity apply.
+/// hidden, rotation, component, text, font, fill, stroke, radius, effects, auto-layout,
+/// alignment, sizing and opacity apply.
 /// `children=N` marks children cut by depth; a `… N more` line marks those cut by the node limit.
 fn flat_lines(
     out: &mut String,
@@ -219,23 +220,24 @@ fn flat_lines(
             n("lineHeightPx")
         ));
     }
-    // Visible paints: solid colors as hex (with /alpha below 1), others by type.
+    // A color as hex, with /alpha below 1.
+    let color = |c: &Value, opacity: f64| {
+        let a = c["a"].as_f64().unwrap_or(1.0) * opacity;
+        let alpha = if a < 1.0 {
+            format!("/{}", num(a))
+        } else {
+            String::new()
+        };
+        format!("{}{alpha}", hex(c))
+    };
+    // Visible paints: solid colors as hex, others by type.
     let paints = |list: &Value| {
         list.as_array()
             .into_iter()
             .flatten()
             .filter(|p| figlens::render::visible(p))
             .map(|p| match p["type"].as_str() {
-                Some("SOLID") => {
-                    let a = p["color"]["a"].as_f64().unwrap_or(1.0)
-                        * p["opacity"].as_f64().unwrap_or(1.0);
-                    let alpha = if a < 1.0 {
-                        format!("/{}", num(a))
-                    } else {
-                        String::new()
-                    };
-                    format!("{}{alpha}", hex(&p["color"]))
-                }
+                Some("SOLID") => color(&p["color"], p["opacity"].as_f64().unwrap_or(1.0)),
                 kind => kind.unwrap_or("?").to_owned(),
             })
             .collect::<Vec<_>>()
@@ -269,6 +271,36 @@ fn flat_lines(
     } else if let Some(r) = node["cornerRadius"].as_f64() {
         add(format!("r={}", num(r)));
     }
+    // Visible effects: shadow=x,y,blur[,spread],color; blurs by radius.
+    for e in node["effects"].as_array().into_iter().flatten() {
+        if e["visible"] == false {
+            continue;
+        }
+        let n = |k: &Value| num(k.as_f64().unwrap_or(0.0));
+        let kind = e["type"].as_str().unwrap_or("?");
+        add(match kind {
+            "DROP_SHADOW" | "INNER_SHADOW" => {
+                let spread = e["spread"]
+                    .as_f64()
+                    .map_or(String::new(), |s| format!(",{}", num(s)));
+                format!(
+                    "{}={},{},{}{spread},{}",
+                    if kind == "DROP_SHADOW" {
+                        "shadow"
+                    } else {
+                        "inner-shadow"
+                    },
+                    n(&e["offset"]["x"]),
+                    n(&e["offset"]["y"]),
+                    n(&e["radius"]),
+                    color(&e["color"], 1.0)
+                )
+            }
+            "LAYER_BLUR" => format!("blur={}", n(&e["radius"])),
+            "BACKGROUND_BLUR" => format!("bg-blur={}", n(&e["radius"])),
+            other => other.to_lowercase(),
+        });
+    }
     if let Some(mode) = node["layoutMode"].as_str() {
         let n = |k: &str| num(node[k].as_f64().unwrap_or(0.0));
         // REST leaves grid gaps out (they are not decoded), so a grid gets no gap rather than 0.
@@ -288,6 +320,23 @@ fn flat_lines(
             n("paddingBottom"),
             n("paddingLeft")
         ));
+    }
+    // REST leaves out MIN alignment and HUG sizing, so only other values print.
+    let (main, cross) = (
+        &node["primaryAxisAlignItems"],
+        &node["counterAxisAlignItems"],
+    );
+    if !main.is_null() || !cross.is_null() {
+        let a = |v: &Value| v.as_str().unwrap_or("MIN").to_lowercase().replace('_', "-");
+        add(format!("align={}/{}", a(main), a(cross)));
+    }
+    let (w, h) = (
+        &node["layoutSizingHorizontal"],
+        &node["layoutSizingVertical"],
+    );
+    if [w, h].iter().any(|v| v.is_string() && *v != "HUG") {
+        let s = |v: &Value| v.as_str().unwrap_or("?").to_lowercase();
+        add(format!("size={}/{}", s(w), s(h)));
     }
     if derived_spacing(node) {
         add("spacing=derived".into());
@@ -555,6 +604,30 @@ mod tests {
         let (mut out, mut truncated) = (String::new(), false);
         flat_lines(&mut out, &node, (0.0, 0.0), 0, 0, &mut 1, &mut truncated);
         assert_eq!(out, "1:1 FRAME \"g\" GRID pad=4,0,0,0\n");
+    }
+
+    #[test]
+    fn flat_lines_show_alignment_sizing_and_visible_effects() {
+        let node = json!({"id":"1:1","type":"FRAME","name":"bar","layoutMode":"HORIZONTAL","itemSpacing":20,
+            "primaryAxisAlignItems":"SPACE_BETWEEN","counterAxisAlignItems":"CENTER",
+            "layoutSizingHorizontal":"FIXED","layoutSizingVertical":"HUG",
+            "effects":[
+                {"type":"DROP_SHADOW","visible":true,"radius":24,"offset":{"x":0,"y":8},"color":{"r":0.1176,"g":0.3373,"b":0.902,"a":0.1}},
+                {"type":"INNER_SHADOW","visible":true,"radius":2,"spread":1,"offset":{"x":0,"y":1},"color":{"r":0,"g":0,"b":0,"a":1}},
+                {"type":"LAYER_BLUR","visible":false,"radius":4},
+                {"type":"BACKGROUND_BLUR","visible":true,"radius":12}],
+            "children":[{"id":"1:2","type":"TEXT","name":"t","layoutSizingHorizontal":"HUG","layoutSizingVertical":"HUG",
+                "counterAxisAlignItems":null}]});
+        let (mut out, mut truncated) = (String::new(), false);
+        flat_lines(&mut out, &node, (0.0, 0.0), 0, 1, &mut 3, &mut truncated);
+        assert_eq!(
+            out,
+            concat!(
+                "1:1 FRAME \"bar\" shadow=0,8,24,#1e56e6/0.1 inner-shadow=0,1,2,1,#000000 bg-blur=12 ",
+                "H gap=20 pad=0,0,0,0 align=space-between/center size=fixed/hug\n",
+                "  1:2 TEXT \"t\"\n",
+            )
+        );
     }
 
     #[test]
