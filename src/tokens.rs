@@ -728,7 +728,8 @@ pub fn convert_mapped(
             let source = &mut token["$extensions"]["org.figlens"]["aliasOf"];
             *source = json!({
                 "variableId": id,
-                "name": target["name"],
+                // Checked as a string in resolve_foreign; anything else is not copied.
+                "name": target["name"].as_str().unwrap_or(""),
                 "collectionId": owner,
                 "modeId": mode_of(owner, id).unwrap_or_default(),
             });
