@@ -27,6 +27,7 @@ The wiki holds procedures, reference and decisions, and no task needs all of it 
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison | `preview.md` |
 | `pi` | Changing the Pi extension, reviewed component mappings or its npm packaging | `pi.md` |
 | `integrations` | Changing OpenCode V2/OMP, shared package or permissions | `integrations.md` |
+| `plugins` | Changing per-host plugin manifests or adding a host | `host-plugins.md` |
 | `host-acceptance` | Running or changing installed-host lanes (OpenCode, OMP, Pi) | `host-acceptance.md` |
 | `accuracy` | Measuring output against Figma's own exports, running `compare`, finding test files, the CI regression corpus | `accuracy.md` |
 | `release` | Packaging, installation acceptance, GitHub releases, Homebrew and npm | `release.md`, `installation.md` |

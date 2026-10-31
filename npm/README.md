@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/runkids/figlens/main/assets/logo.png" alt="figlens" width="220">
+  <img src="https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/logo.png" alt="figlens" width="220">
 </p>
 
 # Figma designs your coding agent can read
@@ -39,11 +39,11 @@ The packaged skill guides the agent to follow existing project conventions, chec
 
 ## See Pi build the screen
 
-[![Pi plans a local design and builds React beside the live browser](https://raw.githubusercontent.com/runkids/figlens/main/assets/taskflow-demo.gif)](https://github.com/runkids/figlens/blob/main/assets/taskflow-demo.mp4)
+[![Pi plans a local design and builds React beside the live browser](https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/taskflow-demo.gif)](https://github.com/runkids/figlens/blob/v0.10.1/assets/taskflow-demo.mp4)
 
 Looping GIF at 3× the edited video’s playback speed. Click it for the full 78-second video.
 
-[Watch the 78-second demo](https://github.com/runkids/figlens/blob/main/assets/taskflow-demo.mp4). Pi uses `/figlens plan` to read one Cloth dashboard frame from a local `.fig`, builds it with React and Tailwind CSS, then checks and corrects the running UI. The video shows Pi and the live browser together, followed by the actual component structure. Edited time-lapse; video length is not a performance benchmark or a promise of pixel-perfect output. [Design credit, source and recording notes](https://github.com/runkids/figlens/blob/main/wiki/accuracy.md#taskflow-react-and-tailwind-demo).
+[Watch the 78-second demo](https://github.com/runkids/figlens/blob/v0.10.1/assets/taskflow-demo.mp4). Pi uses `/figlens plan` to read one Cloth dashboard frame from a local `.fig`, builds it with React and Tailwind CSS, then checks and corrects the running UI. The video shows Pi and the live browser together, followed by the actual component structure. Edited time-lapse; video length is not a performance benchmark or a promise of pixel-perfect output. [Design credit, source and recording notes](https://github.com/runkids/figlens/blob/main/wiki/accuracy.md#taskflow-react-and-tailwind-demo).
 
 ## OpenCode V2 and OMP
 
@@ -55,21 +55,27 @@ The integrations share the CLI launcher, skill and component mapping file. Resta
 
 Connect the local MCP server to your client:
 
+<!-- x-release-please-start-version -->
 ```json
-{ "mcpServers": { "figlens": { "command": "npx", "args": ["-y", "@runkids/figlens", "mcp"] } } }
+{ "mcpServers": { "figlens": { "command": "npx", "args": ["-y", "@runkids/figlens@0.10.1", "mcp"] } } }
 ```
+<!-- x-release-please-end -->
 
 For Claude Code on macOS/Linux:
 
+<!-- x-release-please-start-version -->
 ```sh
-claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
+claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens@0.10.1 mcp
 ```
+<!-- x-release-please-end -->
 
 For Codex CLI on macOS/Linux:
 
+<!-- x-release-please-start-version -->
 ```sh
-codex mcp add figlens -- npx -y @runkids/figlens mcp
+codex mcp add figlens -- npx -y @runkids/figlens@0.10.1 mcp
 ```
+<!-- x-release-please-end -->
 
 Start a new session and check `/mcp`. The MCP `workflow` tool includes on-demand guidance for design reading, project reuse, existing-UI audits, image preparation, scoped planning and explicitly requested autonomous implementation. It shares the [portable skill's](https://github.com/runkids/figlens#mcp-and-skill) sources; no separate skill install is required for MCP use. The agent carries out the task with its own project/browser tools and host permissions; reading a guide does not execute the workflow.
 

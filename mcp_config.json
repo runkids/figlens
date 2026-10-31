@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "figlens": {
+      "command": "npx",
+      "args": ["-y", "@runkids/figlens@0.10.1", "mcp"]
+    }
+  }
+}

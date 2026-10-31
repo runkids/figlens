@@ -56,6 +56,7 @@ python3 scripts/ai-context.py check     # validate paths, headings, links, orpha
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison |
 | `pi` | Changing the Pi extension, component mappings or npm packaging |
 | `integrations` | Changing OpenCode V2/OMP, packaging or permissions |
+| `plugins` | Per-host plugin manifests |
 | `host-acceptance` | Installed-host lanes |
 | `accuracy` | Measuring output against Figma's exports, `compare`, test files, the CI regression corpus |
 | `release` | Packaging, GitHub releases, Homebrew, npm, installers, `figlens update` |

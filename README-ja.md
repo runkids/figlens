@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="figlens" width="220">
+  <img src="https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/logo.png" alt="figlens" width="220">
 </p>
 
 <h1 align="center">coding agent が Figma ファイルを読む。<br>Figma アプリも、ログインも、API 制限も不要。</h1>
@@ -35,6 +35,7 @@
 
 | セットアップ | 対象 | ガイドの入手元 |
 |---|---|---|
+| [プラグイン](#setup-plugin) | Claude Code, Codex, Antigravity, Cursor, Kimi Code | プラグイン同梱の skill とサーバーの `workflow` ツール |
 | [MCP](#setup-mcp) | Claude Code、Cursor、Codex、Gemini CLI などの MCP クライアント | サーバーの `workflow` ツール |
 | [Pi](#setup-pi) | Pi 1.3.0+ | パッケージに同梱の skill |
 | [OpenCode V2](#setup-opencode) | OpenCode V2 2.2.0 | 同梱の skill |
@@ -43,34 +44,58 @@
 
 **通常と上級。** 通常の利用にセットアップは不要です。`figlens search design.fig "query"` は `.fig` を読むだけで何も作りません。任意のローカルインデックスは依頼したときだけ作成され（`figlens index prepare design.fig --scope 0:0`）、再起動やホストをまたいで再利用されます。[通常の検索と任意のローカルインデックス](docs/README-ja.md#local-index)を参照してください。 任意・実験的：`--mode semantic` または `hybrid` は、自分で用意したローカルモデルで意味による順位付けを行います。[任意のセマンティック検索](docs/README-ja.md#semantic-search)を参照。
 
+<a id="setup-plugin"></a>
+
+### プラグイン
+
+1 回のインストールで figlens の skill と MCP サーバーをエージェントに追加します（Node.js 18+）。サーバーはプラグインのリリースに固定される（`npx -y @runkids/figlens@<version> mcp`）ため、skill とバイナリのバージョンは常に一致します。新しいバージョンにするにはプラグインを更新してください。
+
+<!-- x-release-please-start-version -->
+| ホスト | インストール |
+|---|---|
+| Claude Code | `claude plugin marketplace add runkids/figlens`, `claude plugin install figlens@figlens` |
+| Codex | `codex plugin marketplace add runkids/figlens`, `codex plugin add figlens@figlens` |
+| Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/v0.10.1` |
+| Cursor | `git clone --depth 1 --branch v0.10.1 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens` の後、ウィンドウを再読み込み |
+| Kimi Code | セッション内で `/plugins install https://github.com/runkids/figlens/tree/v0.10.1`、その後 `/reload` |
+<!-- x-release-please-end -->
+
+ホストを再起動するか新しいセッションを開始し、figlens のツールが表示されることを確認してください。プラグインはリリースタグ時点のリポジトリをコピーします（約 7 MB。Codex は Git 履歴も保持し約 60 MB）。Antigravity は skill の先頭 24 KB しか読み込みません。完全なガイダンスはサーバーの `workflow` ツールが提供します。Muse はまだサポートしていません。[ホスト対応表と検証範囲](wiki/host-plugins.md)
+
 <a id="setup-mcp"></a>
 
 ### MCP
 
 **Claude Code**（Node.js 18+、macOS/Linux）：
 
+<!-- x-release-please-start-version -->
 ```sh
-claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
+claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens@0.10.1 mcp
 ```
+<!-- x-release-please-end -->
 
 **Codex CLI**（Node.js 18+、macOS/Linux）：
 
+<!-- x-release-please-start-version -->
 ```sh
-codex mcp add figlens -- npx -y @runkids/figlens mcp
+codex mcp add figlens -- npx -y @runkids/figlens@0.10.1 mcp
 ```
+<!-- x-release-please-end -->
 
 **任意の MCP クライアント：**
 
+<!-- x-release-please-start-version -->
 ```json
 {
   "mcpServers": {
     "figlens": {
       "command": "npx",
-      "args": ["-y", "@runkids/figlens", "mcp"]
+      "args": ["-y", "@runkids/figlens@0.10.1", "mcp"]
     }
   }
 }
 ```
+<!-- x-release-please-end -->
 
 Node.js がない場合は、スタンドアロン版のバイナリ（[CLI](#setup-cli)）をインストールし、`"command": "figlens", "args": ["mcp"]` を使います。新しいセッションを開き、figlens のツールが一覧に表示されることを確認します（Claude Code では `/mcp`）。skill を別途インストールする必要はありません。`mcp` の後に `--root <dir>` を付けると、figlens が読み書きできるフォルダーを制限できます。
 
@@ -89,13 +114,14 @@ Node.js がない場合は、スタンドアロン版のバイナリ（[CLI](#se
 
 デザイン／出力用ルート 2 つと、保存先の許可ルート 2 つの例：
 
+<!-- x-release-please-start-version -->
 ```json
 {
   "mcpServers": {
     "figlens": {
       "command": "npx",
       "args": [
-        "-y", "@runkids/figlens", "mcp",
+        "-y", "@runkids/figlens@0.10.1", "mcp",
         "--root", "/absolute/designs",
         "--root", "/absolute/project",
         "--storage-root", "/absolute/storage-a",
@@ -105,6 +131,7 @@ Node.js がない場合は、スタンドアロン版のバイナリ（[CLI](#se
   }
 }
 ```
+<!-- x-release-please-end -->
 
 `figlens mcp --storage` オプションはありません。実際の保存先は `index` ツールの `storage` 引数（許可された保存先ルート内の絶対パス）、または CLI `figlens index prepare design.fig --storage /absolute/storage-a` で選択します。`prepare` 後は workspace の場所が記憶され、再起動やホストをまたいで `storage` や `--storage-root` を再指定せず再利用できます。未指定時はユーザーごとの既定ディレクトリを使うため、保存先フラグは不要です。
 
@@ -182,10 +209,12 @@ skillshare sync
 
 同じツールで、それらのエージェントの figlens MCP 接続も設定できます：
 
+<!-- x-release-please-start-version -->
 ```sh
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.10.1 mcp
 skillshare sync mcp --global
 ```
+<!-- x-release-please-end -->
 
 skill のその他のインストール方法：
 
@@ -210,11 +239,11 @@ Report missing assets and any checks you could not run.
 
 ## デモ：Pi が .fig から React の画面を作る
 
-[![Pi plans from a local .fig, builds a React screen and checks it beside a live browser](assets/taskflow-demo.gif)](assets/taskflow-demo.mp4)
+[![Pi plans from a local .fig, builds a React screen and checks it beside a live browser](https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/taskflow-demo.gif)](https://github.com/runkids/figlens/blob/v0.10.1/assets/taskflow-demo.mp4)
 
 GIF は編集済み動画をさらに 3 倍速でループ再生します。クリックすると 78 秒の動画全編を見られます。
 
-**[78 秒の動画](assets/taskflow-demo.mp4)。** Pi が `/figlens plan` を実行し、ローカルの `.fig` からダッシュボードの frame を読み、React と Tailwind CSS で作り、動作中の UI を確認して修正します。編集済みのタイムラプスであり、ベンチマークでもピクセル単位の一致の保証でもありません。デザイン：[Task Flow by Eymen Eid](https://www.figma.com/community/file/1224268866120711793) · [収録メモ](wiki/accuracy.md#taskflow-react-and-tailwind-demo)。
+**[78 秒の動画](https://github.com/runkids/figlens/blob/v0.10.1/assets/taskflow-demo.mp4)。** Pi が `/figlens plan` を実行し、ローカルの `.fig` からダッシュボードの frame を読み、React と Tailwind CSS で作り、動作中の UI を確認して修正します。編集済みのタイムラプスであり、ベンチマークでもピクセル単位の一致の保証でもありません。デザイン：[Task Flow by Eymen Eid](https://www.figma.com/community/file/1224268866120711793) · [収録メモ](wiki/accuracy.md#taskflow-react-and-tailwind-demo)。
 
 **[.fig から編集可能な HTML/CSS へ](examples/task-list/README.md)：** 条件を揃えたタスクリストの検証では、figlens を使った 6 回すべての試行で、表示される 19 箇所のテキストを実際の DOM テキストとして、4 つのアイコンも保持しました。Docker のネットワークを無効にした状態でも CLI と MCP の抽出に成功しました。設定手順、測定値、独立した画像比較は事例ページに掲載しています。
 

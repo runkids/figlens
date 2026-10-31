@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="figlens" width="220">
+  <img src="https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/logo.png" alt="figlens" width="220">
 </p>
 
 <h1 align="center">讓 coding agent 直接讀 Figma 檔案。<br>不用開 Figma、不用登入、沒有 API 額度限制。</h1>
@@ -35,6 +35,7 @@
 
 | 方式 | 適用對象 | 指引來源 |
 |---|---|---|
+| [Plugin](#setup-plugin) | Claude Code, Codex, Antigravity, Cursor, Kimi Code | plugin 內附的 skill 與 server 的 `workflow` tool |
 | [MCP](#setup-mcp) | Claude Code、Cursor、Codex、Gemini CLI 等 MCP client | server 的 `workflow` tool |
 | [Pi](#setup-pi) | Pi 1.3.0+ | 套件內附的 skill |
 | [OpenCode V2](#setup-opencode) | OpenCode V2 2.2.0 | 套件內附的 skill |
@@ -43,34 +44,58 @@
 
 **一般與進階。** 一般使用不需要任何設定：`figlens search design.fig "query"` 只讀取 `.fig`，不會建立任何東西。選用的本機索引只在你要求時建立（`figlens index prepare design.fig --scope 0:0`），之後跨重啟和宿主重複使用。請見[一般搜尋與選用的本機索引](docs/README-zh-TW.md#local-index)。 選用且屬實驗性功能：`--mode semantic` 或 `hybrid` 使用你自行設定的本機模型依語意排序，請見[選用的語意搜尋](docs/README-zh-TW.md#semantic-search)。
 
+<a id="setup-plugin"></a>
+
+### Plugin
+
+一次安裝就把 figlens skill 和 MCP server 加進 agent（需要 Node.js 18+）。Server 固定在 plugin 對應的版本（`npx -y @runkids/figlens@<version> mcp`），所以 skill 和執行檔版本永遠一致；要換新版本就更新 plugin。
+
+<!-- x-release-please-start-version -->
+| 宿主 | 安裝 |
+|---|---|
+| Claude Code | `claude plugin marketplace add runkids/figlens`, `claude plugin install figlens@figlens` |
+| Codex | `codex plugin marketplace add runkids/figlens`, `codex plugin add figlens@figlens` |
+| Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/v0.10.1` |
+| Cursor | `git clone --depth 1 --branch v0.10.1 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens`，再重新載入視窗 |
+| Kimi Code | 在 session 中執行 `/plugins install https://github.com/runkids/figlens/tree/v0.10.1`，再執行 `/reload` |
+<!-- x-release-please-end -->
+
+重新啟動宿主或開新的 session，確認 figlens tools 已列出。Plugin 安裝會複製該 release tag 的 repository：約 7 MB，Codex 另外保留 Git 歷史（約 60 MB）。Antigravity 只載入 skill 的前 24 KB；完整指引由 server 的 `workflow` tool 提供。目前還不支援 Muse。[宿主對照表與驗證範圍](wiki/host-plugins.md)
+
 <a id="setup-mcp"></a>
 
 ### MCP
 
 **Claude Code**（Node.js 18+、macOS/Linux）：
 
+<!-- x-release-please-start-version -->
 ```sh
-claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
+claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens@0.10.1 mcp
 ```
+<!-- x-release-please-end -->
 
 **Codex CLI**（Node.js 18+、macOS/Linux）：
 
+<!-- x-release-please-start-version -->
 ```sh
-codex mcp add figlens -- npx -y @runkids/figlens mcp
+codex mcp add figlens -- npx -y @runkids/figlens@0.10.1 mcp
 ```
+<!-- x-release-please-end -->
 
 **任何 MCP client：**
 
+<!-- x-release-please-start-version -->
 ```json
 {
   "mcpServers": {
     "figlens": {
       "command": "npx",
-      "args": ["-y", "@runkids/figlens", "mcp"]
+      "args": ["-y", "@runkids/figlens@0.10.1", "mcp"]
     }
   }
 }
 ```
+<!-- x-release-please-end -->
 
 沒有 Node.js 時，先安裝獨立執行檔（見 [CLI](#setup-cli)），再改用 `"command": "figlens", "args": ["mcp"]`。開啟新的 session，確認看得到 figlens 工具（Claude Code 用 `/mcp`）。不必另外安裝 skill。在 `mcp` 後面加上 `--root <dir>`，可以限制 figlens 能讀寫的資料夾。
 
@@ -89,13 +114,14 @@ codex mcp add figlens -- npx -y @runkids/figlens mcp
 
 兩個設計／輸出範圍與兩個 storage 允許範圍的範例：
 
+<!-- x-release-please-start-version -->
 ```json
 {
   "mcpServers": {
     "figlens": {
       "command": "npx",
       "args": [
-        "-y", "@runkids/figlens", "mcp",
+        "-y", "@runkids/figlens@0.10.1", "mcp",
         "--root", "/absolute/designs",
         "--root", "/absolute/project",
         "--storage-root", "/absolute/storage-a",
@@ -105,6 +131,7 @@ codex mcp add figlens -- npx -y @runkids/figlens mcp
   }
 }
 ```
+<!-- x-release-please-end -->
 
 沒有 `figlens mcp --storage` 這個選項。實際位置由 `index` tool 的 `storage` 參數指定（允許的 storage 範圍內的絕對路徑），或使用 CLI `figlens index prepare design.fig --storage /absolute/storage-a`。`prepare` 後會記住該 workspace 的位置，跨重啟、跨 host 重用，不必再傳 `storage` 或 `--storage-root`。未自訂位置時，使用每位使用者的預設目錄，不必設定 storage 旗標。
 
@@ -182,10 +209,12 @@ skillshare sync
 
 同一個工具也能幫這些 agent 設定 figlens 的 MCP 連線：
 
+<!-- x-release-please-start-version -->
 ```sh
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.10.1 mcp
 skillshare sync mcp --global
 ```
+<!-- x-release-please-end -->
 
 其他安裝 skill 的方式：
 
@@ -210,11 +239,11 @@ Agent 會找到 frame，將設計資料、素材與參考圖打包成 bundle，�
 
 ## 示範：Pi 從 .fig 做出 React 畫面
 
-[![Pi 從本機 .fig 規劃、做出 React 畫面，並與即時瀏覽器並排檢查](assets/taskflow-demo.gif)](assets/taskflow-demo.mp4)
+[![Pi 從本機 .fig 規劃、做出 React 畫面，並與即時瀏覽器並排檢查](https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/taskflow-demo.gif)](https://github.com/runkids/figlens/blob/v0.10.1/assets/taskflow-demo.mp4)
 
 GIF 以剪輯版影片的 3 倍速度循環播放；點擊可觀看完整 78 秒影片。
 
-**[78 秒影片](assets/taskflow-demo.mp4)。** Pi 執行 `/figlens plan`，從本機 `.fig` 讀取儀表板 frame，用 React 與 Tailwind CSS 實作，再檢查並修正執行中的 UI。這是剪輯過的縮時影片，不是基準測試，也不保證像素級一致。設計稿：[Eymen Eid 的 Task Flow](https://www.figma.com/community/file/1224268866120711793) · [錄製筆記](wiki/accuracy.md#taskflow-react-and-tailwind-demo)。
+**[78 秒影片](https://github.com/runkids/figlens/blob/v0.10.1/assets/taskflow-demo.mp4)。** Pi 執行 `/figlens plan`，從本機 `.fig` 讀取儀表板 frame，用 React 與 Tailwind CSS 實作，再檢查並修正執行中的 UI。這是剪輯過的縮時影片，不是基準測試，也不保證像素級一致。設計稿：[Eymen Eid 的 Task Flow](https://www.figma.com/community/file/1224268866120711793) · [錄製筆記](wiki/accuracy.md#taskflow-react-and-tailwind-demo)。
 
 **[從 .fig 到可編輯 HTML/CSS](examples/task-list/README.md)：** 在受控的任務清單實驗中，6 次使用 figlens 的嘗試都保留了全部 19 處可見文字為真正的 DOM 文字，以及全部 4 個圖示。CLI 與 MCP 擷取也通過了停用 Docker 網路的驗證。案例頁提供設定步驟、量測與獨立圖片比對。
 

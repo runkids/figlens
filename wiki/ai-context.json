@@ -150,6 +150,14 @@
         }
       ]
     },
+    "plugins": {
+      "description": "Changing the per-host plugin manifests (Claude Code, Codex, Antigravity, Cursor, Kimi Code), their pinned MCP server or a new host.",
+      "sources": [
+        {
+          "path": "wiki/host-plugins.md"
+        }
+      ]
+    },
     "host-acceptance": {
       "description": "Running or changing the installed-host lanes for OpenCode, OMP and Pi.",
       "sources": [

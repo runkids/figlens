@@ -110,7 +110,7 @@ pi install npm:@runkids/figlens
 - `/figlens preview [description]` 打开本地 viewer。
 - `/figlens review` 批准 agent 提出的可复用组件映射。
 
-![向 Pi 要一个画面，让它找到设计、用你的技术栈构建并检查结果](../assets/pi-workflow.svg)
+![向 Pi 要一个画面，让它找到设计、用你的技术栈构建并检查结果](https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/pi-workflow.svg)
 
 完整流程、命令和限制：[pi/README.md](../pi/README.md)。
 
@@ -118,7 +118,7 @@ pi install npm:@runkids/figlens
 
 ## 无需 Figma 浏览设计
 
-[![在本地检查 MCP Apps 设计的图层树、布局和组件属性](../assets/preview-inspector.png)](../assets/pi-demo.mp4)
+[![在本地检查 MCP Apps 设计的图层树、布局和组件属性](https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/preview-inspector.png)](https://github.com/runkids/figlens/blob/v0.10.1/assets/pi-demo.mp4)
 
 ```sh
 npx -y @runkids/figlens preview design.fig                        # 本地 viewer，Ctrl+C 停止
@@ -144,13 +144,17 @@ npm install -g @runkids/figlens
 npx skills add runkids/figlens --skill figlens
 ```
 
+**Plugin。** Claude Code、Codex、Antigravity、Cursor 和 Kimi Code 可以把 skill 和 MCP server 作为一个 plugin 一起安装；见 [Plugin 设置](../README-zh-CN.md#setup-plugin)。
+
 **skillshare。** 用 [skillshare](https://github.com/runkids/skillshare) 在一处统一管理 Claude Code、Codex 和 Cursor 的 skill 与 MCP 连接：
 
+<!-- x-release-please-start-version -->
 ```sh
 skillshare install github.com/runkids/figlens/skills/figlens
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.10.1 mcp
 skillshare sync && skillshare sync mcp --global
 ```
+<!-- x-release-please-end -->
 
 **安装说明。** npm launcher 会在首次使用时下载匹配的原生可执行文件，对照 release 的 SHA-256 校验和进行验证并缓存。用安装脚本装的通过 `figlens update` 更新；Homebrew 装的通过 `brew upgrade figlens` 更新。可执行文件覆盖 macOS（Apple silicon、Intel）、Linux（arm64、x86_64、静态 musl）和 Windows（x86_64）。每种安装方式都会把[可选的语义搜索](#semantic-search)所用的运行时 `figlens-embed` 放在 `figlens` 旁边；在你配置模型之前，它不会加载任何模型。
 
