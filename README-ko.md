@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="figlens" width="220">
+  <img src="https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/logo.png" alt="figlens" width="220">
 </p>
 
 <h1 align="center">코딩 에이전트가 Figma 파일을 읽습니다.<br>Figma 앱도, 로그인도, API 할당량도 필요 없습니다.</h1>
@@ -50,14 +50,15 @@
 
 한 번 설치하면 figlens skill과 MCP 서버가 에이전트에 추가됩니다(Node.js 18+). 서버는 플러그인 릴리스에 고정되므로(`npx -y @runkids/figlens@<version> mcp`) skill과 바이너리 버전이 항상 일치합니다. 새 버전으로 바꾸려면 플러그인을 업데이트하세요.
 
+<!-- x-release-please-start-version -->
 | 호스트 | 설치 |
 |---|---|
 | Claude Code | `claude plugin marketplace add runkids/figlens`, `claude plugin install figlens@figlens` |
 | Codex | `codex plugin marketplace add runkids/figlens`, `codex plugin add figlens@figlens` |
-| Antigravity | `agy plugin install https://github.com/runkids/figlens` |
-| Cursor | `git clone https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens` 후 창을 다시 로드 |
-| Kimi Code | 세션에서 `/plugins install https://github.com/runkids/figlens/tree/main` 실행 후 `/reload` |
-| Hermes Agent | MCP만: `hermes mcp add figlens --command npx --args -y @runkids/figlens mcp` |
+| Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/v0.10.1` |
+| Cursor | `git clone --depth 1 --branch v0.10.1 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens` 후 창을 다시 로드 |
+| Kimi Code | 세션에서 `/plugins install https://github.com/runkids/figlens` 실행 후 `/reload` |
+<!-- x-release-please-end -->
 
 호스트를 다시 시작하거나 새 세션을 열고 figlens 도구가 표시되는지 확인하세요. 플러그인 설치는 저장소 전체(약 50 MB)를 clone합니다. Antigravity는 skill의 처음 24 KB만 로드하며, 전체 지침은 서버의 `workflow` 도구가 제공합니다. Muse는 아직 지원하지 않습니다. [호스트 표와 검증 범위](wiki/host-plugins.md)
 
@@ -67,28 +68,34 @@
 
 **Claude Code** (Node.js 18+, macOS/Linux):
 
+<!-- x-release-please-start-version -->
 ```sh
-claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
+claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens@0.10.1 mcp
 ```
+<!-- x-release-please-end -->
 
 **Codex CLI** (Node.js 18+, macOS/Linux):
 
+<!-- x-release-please-start-version -->
 ```sh
-codex mcp add figlens -- npx -y @runkids/figlens mcp
+codex mcp add figlens -- npx -y @runkids/figlens@0.10.1 mcp
 ```
+<!-- x-release-please-end -->
 
 **모든 MCP 클라이언트:**
 
+<!-- x-release-please-start-version -->
 ```json
 {
   "mcpServers": {
     "figlens": {
       "command": "npx",
-      "args": ["-y", "@runkids/figlens", "mcp"]
+      "args": ["-y", "@runkids/figlens@0.10.1", "mcp"]
     }
   }
 }
 ```
+<!-- x-release-please-end -->
 
 Node.js가 없다면 독립 바이너리([CLI](#setup-cli))를 설치하고 `"command": "figlens", "args": ["mcp"]`를 사용하세요. 새 세션을 열고 figlens 도구가 목록에 나타나는지 확인하세요(Claude Code에서는 `/mcp`). skill을 따로 설치할 필요는 없습니다. `mcp` 뒤에 `--root <dir>`를 붙이면 figlens가 읽고 쓸 수 있는 폴더를 제한할 수 있습니다.
 
@@ -107,13 +114,14 @@ Node.js가 없다면 독립 바이너리([CLI](#setup-cli))를 설치하고 `"co
 
 디자인/출력 루트 두 개와 허용된 저장소 루트 두 개의 예:
 
+<!-- x-release-please-start-version -->
 ```json
 {
   "mcpServers": {
     "figlens": {
       "command": "npx",
       "args": [
-        "-y", "@runkids/figlens", "mcp",
+        "-y", "@runkids/figlens@0.10.1", "mcp",
         "--root", "/absolute/designs",
         "--root", "/absolute/project",
         "--storage-root", "/absolute/storage-a",
@@ -123,6 +131,7 @@ Node.js가 없다면 독립 바이너리([CLI](#setup-cli))를 설치하고 `"co
   }
 }
 ```
+<!-- x-release-please-end -->
 
 `figlens mcp --storage` 옵션은 없습니다. 실제 위치는 `index` tool의 `storage` 인수(허용된 저장소 루트 내 절대 경로) 또는 CLI `figlens index prepare design.fig --storage /absolute/storage-a`로 선택합니다. `prepare` 후에는 workspace 위치를 기억하므로 재시작이나 호스트 변경 후에도 `storage`나 `--storage-root` 없이 재사용합니다. 사용자 지정 위치가 없으면 사용자별 기본 디렉터리를 사용하며 저장소 플래그는 필요 없습니다.
 
@@ -200,10 +209,12 @@ skillshare sync
 
 같은 도구로 해당 에이전트들의 figlens MCP 연결도 설정할 수 있습니다:
 
+<!-- x-release-please-start-version -->
 ```sh
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.10.1 mcp
 skillshare sync mcp --global
 ```
+<!-- x-release-please-end -->
 
 skill을 설치하는 다른 방법:
 
@@ -228,11 +239,11 @@ Report missing assets and any checks you could not run.
 
 ## 데모: Pi가 .fig로 React 화면 구현하기
 
-[![Pi가 로컬 .fig로 계획하고, React 화면을 구현하고, 실시간 브라우저 옆에서 확인합니다](assets/taskflow-demo.gif)](assets/taskflow-demo.mp4)
+[![Pi가 로컬 .fig로 계획하고, React 화면을 구현하고, 실시간 브라우저 옆에서 확인합니다](https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/taskflow-demo.gif)](https://github.com/runkids/figlens/blob/v0.10.1/assets/taskflow-demo.mp4)
 
 GIF는 편집 영상보다 3배 빠르게 반복 재생됩니다. 클릭하면 전체 78초 영상을 볼 수 있습니다.
 
-**[78초 영상](assets/taskflow-demo.mp4).** Pi가 `/figlens plan`을 실행해 로컬 `.fig`의 dashboard frame을 읽고, React와 Tailwind CSS로 구현한 뒤, 실행 중인 UI를 확인하고 수정합니다. 편집된 타임랩스이며 벤치마크나 pixel-perfect 보장이 아닙니다. 디자인: [Task Flow by Eymen Eid](https://www.figma.com/community/file/1224268866120711793) · [녹화 설명](wiki/accuracy.md#taskflow-react-and-tailwind-demo).
+**[78초 영상](https://github.com/runkids/figlens/blob/v0.10.1/assets/taskflow-demo.mp4).** Pi가 `/figlens plan`을 실행해 로컬 `.fig`의 dashboard frame을 읽고, React와 Tailwind CSS로 구현한 뒤, 실행 중인 UI를 확인하고 수정합니다. 편집된 타임랩스이며 벤치마크나 pixel-perfect 보장이 아닙니다. 디자인: [Task Flow by Eymen Eid](https://www.figma.com/community/file/1224268866120711793) · [녹화 설명](wiki/accuracy.md#taskflow-react-and-tailwind-demo).
 
 **[.fig에서 편집 가능한 HTML/CSS로](examples/task-list/README.md):** 조건을 통제한 작업 목록 실험에서 figlens 기반 시도 6회 모두 화면의 텍스트 19곳을 실제 DOM 텍스트로 유지하고 아이콘 4개도 보존했습니다. Docker 네트워크를 비활성화한 상태에서도 CLI와 MCP 추출에 성공했습니다. 설정 절차, 측정값, 독립 이미지 비교는 사례 페이지에서 확인할 수 있습니다.
 

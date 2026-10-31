@@ -1,4 +1,4 @@
-"""Host plugin manifests stay in lockstep with the npm package and point at real files."""
+"""Host plugin manifests and install docs stay in lockstep with the npm package and its release tag."""
 import json
 import re
 import unittest
@@ -8,6 +8,8 @@ ROOT = Path(__file__).resolve().parent.parent
 HOST_FILES = ['.claude-plugin/plugin.json', '.claude-plugin/marketplace.json', '.codex-plugin/plugin.json',
               '.codex-plugin/mcp.json', '.agents/plugins/marketplace.json', '.cursor-plugin/plugin.json',
               '.kimi-plugin/plugin.json', '.antigravity-plugin/plugin.json', 'mcp_config.json']
+LOCALES = ['', *(f'-{l}' for l in ('de', 'es', 'fr', 'ja', 'ko', 'pt-BR', 'zh-CN', 'zh-TW'))]
+DOC_FILES = [*(f'README{l}.md' for l in LOCALES), *(f'docs/README{l}.md' for l in LOCALES), 'npm/README.md', 'wiki/mcp.md']
 
 
 def load(path):
@@ -39,14 +41,14 @@ class HostPluginsTest(unittest.TestCase):
     extra = load('.github/release-please-config.json')['packages']['.']['extra-files']
 
     def test_release_bumps_every_version_and_pinned_package(self):
-        bumped = {(e['path'], e['jsonpath']) for e in self.extra}
+        bumped = {(e['path'], e['jsonpath']) for e in self.extra if e['type'] == 'json'}
         for path, jsonpath in bumped:
             value = resolve(load(path), jsonpath)
-            self.assertIn(value, (self.version, f'@runkids/figlens@{self.version}'), f'{path} {jsonpath}')
+            self.assertIn(value, (self.version, f'v{self.version}', f'@runkids/figlens@{self.version}'), f'{path} {jsonpath}')
         for path in HOST_FILES:
             data = load(path)
             pinned = [s for s in strings(data) if s.startswith('@runkids/figlens')]
-            versions = ['version' in data, *(('plugins' in data and 'version' in p) for p in data.get('plugins', []))]
+            versions = ['version' in data, *(('version' in p) + ('ref' in p['source']) for p in data.get('plugins', []))]
             paths = {jp for p, jp in bumped if p == path}
             self.assertEqual(len(paths), len(pinned) + sum(versions), f'{path}: an unbumped version or package')
 
@@ -56,9 +58,34 @@ class HostPluginsTest(unittest.TestCase):
             for key in ('skills', 'mcpServers'):
                 if isinstance(data.get(key), str):
                     self.assertTrue((ROOT / data[key]).exists(), f'{path} {key}')
-            for plugin in data.get('plugins', []):
-                source = plugin['source'] if isinstance(plugin['source'], str) else plugin['source']['url']
-                self.assertTrue((ROOT / source / 'skills/figlens/SKILL.md').is_file(), path)
+        self.assertTrue((ROOT / 'skills/figlens/SKILL.md').is_file())
+
+    def test_marketplaces_install_the_skill_from_the_release_tag(self):
+        # A source without the tag would pair the dev-tree skill with the pinned server.
+        for path in ('.claude-plugin/marketplace.json', '.agents/plugins/marketplace.json'):
+            source = load(path)['plugins'][0]['source']
+            self.assertIsInstance(source, dict, path)
+            self.assertIn('runkids/figlens', source.get('repo', source.get('url', '')), path)
+            self.assertEqual(source.get('ref'), f'v{self.version}', path)
+            self.assertIn({'type': 'json', 'path': path, 'jsonpath': '$.plugins[0].source.ref'}, self.extra, path)
+
+    def test_docs_pin_the_release_inside_release_markers(self):
+        generic = {e['path'] for e in self.extra if e['type'] == 'generic'}
+        pinned = re.compile(r'@runkids/figlens@(\S+?)["` ]|figlens/tree/v(\S+?)`|--branch v(\S+) ')
+        unpinned = re.compile(r'@runkids/figlens(" *, *"mcp"| mcp\b)')
+        for path in DOC_FILES:
+            inside = False
+            for number, line in enumerate((ROOT / path).read_text().split('\n'), 1):
+                inside = (inside or 'x-release-please-start-version' in line) and 'x-release-please-end' not in line
+                self.assertIsNone(unpinned.search(line), f'{path}:{number} unpinned npx command')
+                if inside:  # release-please rewrites the first version on every marked line
+                    self.assertEqual(set(re.findall(r'\d+\.\d+\.\d+', line)) - {self.version}, set(), f'{path}:{number}')
+                for match in pinned.finditer(line):
+                    if match[0].startswith('@runkids/figlens@<'):
+                        continue
+                    self.assertEqual(next(filter(None, match.groups())), self.version, f'{path}:{number}')
+                    self.assertTrue(inside, f'{path}:{number} outside release-please markers')
+                    self.assertIn(path, generic, path)
 
 
 if __name__ == '__main__':

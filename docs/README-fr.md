@@ -110,7 +110,7 @@ Demander un texte ou un écran cherche directement dans le `.fig` et n'enregistr
 - `/figlens preview [description]` ouvre le viewer local.
 - `/figlens review` approuve les mappings de composants réutilisables proposés par l’agent.
 
-![Demandez un écran à Pi, laissez-le trouver le design, construire avec votre stack et vérifier le résultat](../assets/pi-workflow.svg)
+![Demandez un écran à Pi, laissez-le trouver le design, construire avec votre stack et vérifier le résultat](https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/pi-workflow.svg)
 
 Guide complet, commandes et limites : [pi/README.md](../pi/README.md).
 
@@ -118,7 +118,7 @@ Guide complet, commandes et limites : [pi/README.md](../pi/README.md).
 
 ## Parcourir un design sans Figma
 
-[![Inspecter localement le design MCP Apps, avec son arbre de calques, sa mise en page et les propriétés des composants](../assets/preview-inspector.png)](../assets/pi-demo.mp4)
+[![Inspecter localement le design MCP Apps, avec son arbre de calques, sa mise en page et les propriétés des composants](https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/preview-inspector.png)](https://github.com/runkids/figlens/blob/v0.10.1/assets/pi-demo.mp4)
 
 ```sh
 npx -y @runkids/figlens preview design.fig                        # viewer local, Ctrl+C pour arrêter
@@ -148,11 +148,13 @@ npx skills add runkids/figlens --skill figlens
 
 **skillshare.** Gérez le skill et la connexion MCP pour Claude Code, Codex et Cursor depuis un seul endroit avec [skillshare](https://github.com/runkids/skillshare) :
 
+<!-- x-release-please-start-version -->
 ```sh
 skillshare install github.com/runkids/figlens/skills/figlens
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.10.1 mcp
 skillshare sync && skillshare sync mcp --global
 ```
+<!-- x-release-please-end -->
 
 **Notes d’installation.** Le lanceur npm télécharge le binaire natif correspondant à la première utilisation, le vérifie avec les checksums SHA-256 de la release et le met en cache. Les installations par script se mettent à jour avec `figlens update`, celles de Homebrew avec `brew upgrade figlens`. Les binaires couvrent macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl statique) et Windows (x86_64). Chaque méthode d’installation place aussi `figlens-embed`, le runtime de la [recherche sémantique optionnelle](#semantic-search), à côté de `figlens` ; il ne charge aucun modèle tant que vous n’en configurez pas.
 

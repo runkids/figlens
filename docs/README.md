@@ -110,7 +110,7 @@ Asking to find copy or a screen in a design searches the `.fig` directly and sto
 - `/figlens preview [description]` opens the local viewer.
 - `/figlens review` approves reusable component mappings the agent proposed.
 
-![Ask Pi for a screen, let it find the design, build with your stack, and check the result](../assets/pi-workflow.svg)
+![Ask Pi for a screen, let it find the design, build with your stack, and check the result](https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/pi-workflow.svg)
 
 Full walkthrough, commands and limits: [pi/README.md](../pi/README.md).
 
@@ -118,7 +118,7 @@ Full walkthrough, commands and limits: [pi/README.md](../pi/README.md).
 
 ## Browse a design without Figma
 
-[![Inspect the MCP Apps design locally, with its layer tree, layout and component properties](../assets/preview-inspector.png)](../assets/pi-demo.mp4)
+[![Inspect the MCP Apps design locally, with its layer tree, layout and component properties](https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/preview-inspector.png)](https://github.com/runkids/figlens/blob/v0.10.1/assets/pi-demo.mp4)
 
 ```sh
 npx -y @runkids/figlens preview design.fig                        # local viewer, Ctrl+C to stop
@@ -146,11 +146,13 @@ npx skills add runkids/figlens --skill figlens
 
 **skillshare.** Manage the skill and the MCP connection across Claude Code, Codex and Cursor from one place with [skillshare](https://github.com/runkids/skillshare):
 
+<!-- x-release-please-start-version -->
 ```sh
 skillshare install github.com/runkids/figlens/skills/figlens
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.10.1 mcp
 skillshare sync && skillshare sync mcp --global
 ```
+<!-- x-release-please-end -->
 
 **Install notes.** The npm launcher downloads the matching native binary on first use, verifies it against the release's SHA-256 checksums and caches it. Script installs update with `figlens update`; Homebrew installs with `brew upgrade figlens`. Binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, static musl) and Windows (x86_64). Every install path also puts `figlens-embed`, the runtime for the [optional semantic search](#semantic-search), beside `figlens`; it loads no model until you configure one.
 

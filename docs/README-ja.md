@@ -110,7 +110,7 @@ Pi を再起動するか `/reload` を実行し、普通の言葉で画面を依
 - `/figlens preview [description]` はローカル viewer を開きます。
 - `/figlens review` はエージェントが提案した再利用可能なコンポーネントのマッピングを承認します。
 
-![Ask Pi for a screen, let it find the design, build with your stack, and check the result](../assets/pi-workflow.svg)
+![Ask Pi for a screen, let it find the design, build with your stack, and check the result](https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/pi-workflow.svg)
 
 詳しい手順、コマンド、制限：[pi/README.md](../pi/README.md)。
 
@@ -118,7 +118,7 @@ Pi を再起動するか `/reload` を実行し、普通の言葉で画面を依
 
 ## Figma なしでデザインを閲覧する
 
-[![Inspect the MCP Apps design locally, with its layer tree, layout and component properties](../assets/preview-inspector.png)](../assets/pi-demo.mp4)
+[![Inspect the MCP Apps design locally, with its layer tree, layout and component properties](https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/preview-inspector.png)](https://github.com/runkids/figlens/blob/v0.10.1/assets/pi-demo.mp4)
 
 ```sh
 npx -y @runkids/figlens preview design.fig                        # ローカル viewer、Ctrl+C で停止
@@ -148,11 +148,13 @@ npx skills add runkids/figlens --skill figlens
 
 **skillshare。** [skillshare](https://github.com/runkids/skillshare) を使うと、Claude Code、Codex、Cursor 全体の skill と MCP 接続を 1 か所で管理できます。
 
+<!-- x-release-please-start-version -->
 ```sh
 skillshare install github.com/runkids/figlens/skills/figlens
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.10.1 mcp
 skillshare sync && skillshare sync mcp --global
 ```
+<!-- x-release-please-end -->
 
 **インストールの注意。** npm ランチャーは初回使用時に対応するネイティブバイナリをダウンロードし、リリースの SHA-256 チェックサムで検証してキャッシュします。スクリプトでインストールした場合は `figlens update`、Homebrew の場合は `brew upgrade figlens` で更新します。バイナリは macOS（Apple silicon、Intel）、Linux（arm64、x86_64、静的 musl）、Windows（x86_64）に対応しています。どのインストール方法でも、[任意のセマンティック検索](#semantic-search)のランタイム `figlens-embed` が `figlens` の隣に置かれます。モデルを設定するまでモデルは読み込みません。
 
