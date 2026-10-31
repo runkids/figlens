@@ -247,6 +247,111 @@ fn swap_target_names_are_charged_before_they_are_copied() {
     );
 }
 
+/// A set whose definitions are `parent`, a variant of it whose own definitions are `refs`
+/// references to parent definition 90 and whose specs are `specs` references to 80, and an
+/// instance of the variant with `assigned`.
+fn shared_parent(
+    parent: Vec<K<'static>>,
+    refs: u32,
+    specs: u32,
+    assigned: Vec<K<'static>>,
+) -> K<'static> {
+    let own = (0..refs)
+        .map(|i| obj(vec![("id", guid(1000 + i)), ("parentPropDefId", guid(90))]))
+        .collect();
+    let specs = (0..specs)
+        .map(|_| {
+            obj(vec![
+                ("propDefId", guid(80)),
+                ("value", K::String("On".into())),
+            ])
+        })
+        .collect();
+    obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(
+                40,
+                Some(1),
+                "FRAME",
+                "Set",
+                vec![
+                    ("isStateGroup", K::Bool(true)),
+                    ("componentPropDefs", K::Array(parent)),
+                ],
+            ),
+            node(
+                41,
+                Some(40),
+                "SYMBOL",
+                "State=On",
+                vec![
+                    ("componentPropDefs", K::Array(own)),
+                    ("variantPropSpecs", K::Array(specs)),
+                ],
+            ),
+            instance(3, 1, "Instance", 41, vec![assignments(assigned)]),
+        ]),
+    )])
+}
+
+#[test]
+fn definitions_sharing_one_large_parent_are_charged_per_copy() {
+    let big = "x".repeat(64 * 1024);
+    let small = || text_value("small");
+    let preferred = (0..2000)
+        .map(|i| {
+            obj(vec![
+                ("type", K::Enum("Kind", "COMPONENT")),
+                ("key", K::String(format!("{i:0>32}"))),
+            ])
+        })
+        .collect();
+    let swap = obj(vec![
+        ("id", guid(90)),
+        ("name", K::String("Icon".into())),
+        ("type", K::Enum("ComponentPropType", "INSTANCE_SWAP")),
+        ("initialValue", swap_value(1)),
+        (
+            "preferredValues",
+            obj(vec![("instanceSwapValues", K::Array(preferred))]),
+        ),
+    ]);
+    let cases = [
+        // A large default, copied once per reference.
+        (
+            vec![def(90, "Label", "TEXT", text_value(&big))],
+            256,
+            0,
+            vec![],
+        ),
+        // A small default whose one large assignment through the parent applies to every reference.
+        (
+            vec![def(90, "Label", "TEXT", small())],
+            256,
+            0,
+            vec![assign(90, text_value(&big))],
+        ),
+        // A large variant name, copied once per spec.
+        (vec![def(80, &big, "VARIANT", small())], 0, 256, vec![]),
+        // Large preferred values, copied once per reference.
+        (vec![swap], 256, 0, vec![]),
+    ];
+    for (i, (parent, refs, specs, assigned)) in cases.into_iter().enumerate() {
+        let message = shared_parent(parent, refs, specs, assigned);
+        let tree = Tree::new(&message);
+        let mut b = bounds(WORK);
+        b.bytes = 4 * 1024 * 1024;
+        let got = properties(&tree, "0:3", None, &mut Defs::new(), &mut b);
+        assert!(got.is_none(), "case {i} copied past its bytes");
+        // With room for every copy, the resolution is REST's: one property, however many refs.
+        let got = properties(&tree, "0:3", None, &mut Defs::new(), &mut bounds(WORK)).unwrap();
+        assert_eq!(got.len(), 1, "case {i}");
+    }
+}
+
 #[test]
 fn properties_survive_a_stored_generation_and_text_builds_never_pay_for_them() {
     let message = message();

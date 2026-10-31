@@ -843,6 +843,18 @@ impl PropDefs {
     /// `assignments` (a later entry wins per definition): variant values from the main's name
     /// specs, other properties from the assignments or the definition's default.
     pub(crate) fn resolve(&self, assignments: &Json) -> Obj {
+        self.resolve_with(assignments, |_, _| true)
+            .expect("an unbounded resolution never stops")
+    }
+
+    /// `resolve`, showing `before` each resolved definition with the assignment chosen for it
+    /// (a variant spec for a variant) before any of them is copied; `None` once it refuses.
+    /// Many definitions can share one parent, so each copy is paid where it is made.
+    pub(crate) fn resolve_with(
+        &self,
+        assignments: &Json,
+        mut before: impl FnMut(&Json, Option<&Json>) -> bool,
+    ) -> Option<Obj> {
         let mut out = Obj::new();
         let set_defs: HashMap<String, &Json> = self
             .set
@@ -867,11 +879,11 @@ impl PropDefs {
                 Some("VARIANT") | None => continue,
                 Some(other) => other,
             };
-            let value = assigned
-                .get(&own_id)
-                .or(assigned.get(&def_id))
-                .and_then(|a| prop_value(a))
-                .or_else(|| prop_value(def));
+            let chosen = assigned.get(&own_id).or(assigned.get(&def_id)).copied();
+            if !before(def, chosen) {
+                return None;
+            }
+            let value = chosen.and_then(prop_value).or_else(|| prop_value(def));
             let mut prop = json!({ "type": kind, "value": value });
             if let Some(list) = def["preferredValues"]["instanceSwapValues"].as_array() {
                 prop["preferredValues"] = list
@@ -886,13 +898,16 @@ impl PropDefs {
         }
         for spec in self.specs.as_array().into_iter().flatten() {
             if let Some(def) = guid(&spec["propDefId"]).and_then(|id| set_defs.get(&id)) {
+                if !before(def, Some(spec)) {
+                    return None;
+                }
                 out.insert(
                     def["name"].as_str().unwrap_or("").to_owned(),
                     json!({ "value": spec["value"], "type": "VARIANT", "boundVariables": {} }),
                 );
             }
         }
-        out
+        Some(out)
     }
 }
 
