@@ -59,6 +59,14 @@ The comparison walks only the two stored definition subtrees, including stored h
 
 Limits precede copying: at most 200 stored nodes per side, 10,000 shared node/value work items, depth 16 and 4 KiB per readable field value, 64 KiB of shared input projections and 128 KiB of output. Node names retain the inventory's 256-character preview; IDs are not shortened. `truncated` and `reasons` disclose scan/output limits; `unknownFields` discloses malformed or oversized values. Normal inspect still resolves the selected primary subtree after this bounded analysis, so these are comparison limits rather than whole-request memory/time guarantees. No speed or Figma accuracy improvement is claimed.
 
+## Compare any two nodes
+
+```sh
+figlens inspect design.fig 12:8 --compare 15:3
+```
+
+MCP: `inspect` with `compare: "15:3"`. It serves comparing frames that are not variants of one set (empty vs filled state, mobile vs desktop, two screens sharing a header), so it was added beside `compareVariant`, not by widening it: `compareVariant` keeps its same-set admission and `variantComparison`, and the two cannot be combined or used with `--flat`. Both run `states::comparison::compare`, so the field list, pairing rule, variable naming, limits and `notCompared` are the ones above. Differences: any two different stored nodes qualify (frames, components, instances; a missing ID is `NodeNotFound`), the reply is `comparison` with no `componentSetId`, and it adds `rootDelta` (right minus left of the stored width, height and parent-relative x, y, rounded to 4 places; absent unless both roots record all four) and a `reason` on each `unpairedNodes` entry: `ambiguous-name` (the type and name is shared by several scanned siblings on either side of a paired parent, so nothing is guessed), `name-truncated`, or `no-counterpart` (no sibling of that type and name, or an unpaired parent). Instances are compared by their stored fields only; their expanded children and overrides are not read, and no pairing by shared main component is attempted.
+
 ## Verification boundary
 
 Original synthetic tests cover explicit relations, unrelated same-name frames, multidimensional properties, standalone/missing components, hidden coverage, nested property swaps, source-scoped IDs, false/empty properties, independent limits, and CLI/MCP parity with images and states enabled together. Existing instance tests retain text/image overrides and bundle structure/reference checks. No private designs, external specifications or prototype graph are read by these checks.

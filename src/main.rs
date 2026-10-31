@@ -104,7 +104,7 @@ usage:
                                              match; pages of 100 changes (1-500), a cursor rebuilds both;
                                              a side stopped at a limit prints `stopped early`, never
                                              `no changes`; narrow it with --node
-  figlens inspect <file.fig> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]
+  figlens inspect <file.fig> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--compare ID] [--flat]
                                              [--full-text] [--colors]
                                              compact layout/text summary, instances expanded;
                                              depth 1 (0-10), at most 200 nodes, 200 characters per text;
@@ -115,6 +115,9 @@ usage:
                                              --compare-variant compares two stored variants in the same set
                                              (a child pairs only when it is its name and type's
                                              only one on both sides; bound variables are named);
+                                             --compare ID does the same for any two nodes of the file
+                                             (frames, breakpoints, states), adds rootDelta, and marks
+                                             shared names unpaired as ambiguous-name;
                                              --full-text returns each text in full (up to 10000 characters);
                                              --colors adds solidFills (hex, opacity, bound variable) for visible
                                              solid fills, also on --flat; no gradients, images or strokes;

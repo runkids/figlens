@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::{Tree, expand::plugin_type, guid_key};
 
 mod comparison;
-pub use comparison::compare_variants;
+pub use comparison::{compare_nodes, compare_variants};
 
 const MAX_WORK: usize = 10_000;
 const MAX_INSTANCES: usize = 200;

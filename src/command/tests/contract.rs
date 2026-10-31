@@ -246,6 +246,21 @@ fn compare_variant_is_an_optional_nonempty_string() {
     }
     let schema = contract::output_schema("inspect").unwrap();
     assert_eq!(schema["properties"]["variantComparison"]["type"], "object");
+    assert_eq!(schema["properties"]["comparison"]["type"], "object");
+    assert!(
+        check(
+            "inspect",
+            json!({"file":"absent.fig","node":"0:10","compare":""})
+        )
+        .is_err()
+    );
+    assert!(
+        check(
+            "inspect",
+            json!({"file":"absent.fig","node":"0:10","compare":"0:11"})
+        )
+        .is_ok()
+    );
 }
 
 #[test]

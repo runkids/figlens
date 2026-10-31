@@ -1163,6 +1163,28 @@ fn variant_comparison_cli_and_mcp_match_without_changing_existing_outputs() {
 }
 
 #[test]
+fn compare_takes_any_two_nodes_and_matches_across_cli_and_mcp() {
+    let f = Fixture::new();
+    let cli: Value =
+        serde_json::from_str(&f.cli("inspect", &["0:10", "--compare", "0-2"]).unwrap()).unwrap();
+    let mcp = f.tool("inspect", json!({"node":"0:10","compare":"0:2"}));
+    assert_eq!(mcp["isError"], false, "{mcp}");
+    assert_eq!(mcp["structuredContent"], cli);
+    assert_eq!(cli["comparison"]["leftNodeId"], "0:10");
+    assert_eq!(cli["comparison"]["rightNodeId"], "0:2");
+    assert!(cli.get("variantComparison").is_none());
+    for args in [
+        vec!["0:10", "--compare", "0:10"],
+        vec!["0:10", "--compare", "9:9"],
+        vec!["0:10", "--compare", "0:2", "--compare-variant", "0:41"],
+        vec!["0:10", "--compare", "0:2", "--flat"],
+        vec!["0:10", "--compare"],
+    ] {
+        assert!(f.cli("inspect", &args).is_err(), "{args:?}");
+    }
+}
+
+#[test]
 fn emitted_instance_ids_select_the_same_structure_assets_and_pixels() {
     let f = Fixture::new();
     let found = f.tool("find", json!({"query": "Screen"}));

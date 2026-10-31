@@ -226,10 +226,15 @@ fn collect(tree: &Tree, root: &str, budget: &mut Budget) -> Vec<Value> {
     nodes
 }
 
+/// (side, index) of nodes left unpaired because several siblings share their type and name.
+type Ambiguous = HashSet<(bool, usize)>;
+
 /// Descendants that are the only node of their name and type under a paired parent on each
 /// side, from the roots down, as (left, right) indexes; names that were cut short never pair.
-fn pairs(tree: &Tree, a: &[Value], b: &[Value]) -> Vec<(usize, usize)> {
-    // Each scanned node's scanned children by (type, name), with how many share that key;
+/// Also the (side, index) of every node left unpaired because its (type, name) is shared by
+/// several siblings on either side of a paired parent.
+fn pairs(tree: &Tree, a: &[Value], b: &[Value]) -> (Vec<(usize, usize)>, Ambiguous) {
+    // Each scanned node's scanned children by (type, name), with the indexes sharing that key;
     // built from the at most MAX_NODES scanned nodes, never from a full child list.
     let children = |nodes: &[Value]| {
         let at: HashMap<&str, usize> = nodes
@@ -237,7 +242,7 @@ fn pairs(tree: &Tree, a: &[Value], b: &[Value]) -> Vec<(usize, usize)> {
             .enumerate()
             .filter_map(|(i, n)| Some((n["nodeId"].as_str()?, i)))
             .collect();
-        let mut keys: HashMap<usize, BTreeMap<String, (usize, usize)>> = HashMap::new();
+        let mut keys: HashMap<usize, BTreeMap<String, Vec<usize>>> = HashMap::new();
         for (c, node) in nodes.iter().enumerate().skip(1) {
             let parent = node["nodeId"]
                 .as_str()
@@ -253,28 +258,33 @@ fn pairs(tree: &Tree, a: &[Value], b: &[Value]) -> Vec<(usize, usize)> {
             keys.entry(parent)
                 .or_default()
                 .entry(key)
-                .or_insert((c, 0))
-                .1 += 1;
+                .or_default()
+                .push(c);
         }
         keys
     };
     let (left, right) = (children(a), children(b));
-    let mut out = Vec::new();
+    let (mut out, mut ambiguous) = (Vec::new(), HashSet::new());
     let mut queue = vec![(0, 0)];
     while let Some((l, r)) = queue.pop() {
         let (Some(ours), Some(theirs)) = (left.get(&l), right.get(&r)) else {
             continue;
         };
-        for (key, &(lc, count)) in ours {
-            if let Some(&(rc, 1)) = theirs.get(key)
-                && count == 1
-            {
-                out.push((lc, rc));
-                queue.push((lc, rc));
+        for (key, lcs) in ours {
+            match (lcs.as_slice(), theirs.get(key).map(Vec::as_slice)) {
+                (&[lc], Some(&[rc])) => {
+                    out.push((lc, rc));
+                    queue.push((lc, rc));
+                }
+                (_, Some(rcs)) => {
+                    ambiguous.extend(lcs.iter().map(|&i| (false, i)));
+                    ambiguous.extend(rcs.iter().map(|&i| (true, i)));
+                }
+                _ => {}
             }
         }
     }
-    out
+    (out, ambiguous)
 }
 
 /// Names each variable alias in recorded values by its id and, when the file holds it or a
@@ -480,6 +490,65 @@ pub fn compare_variants(
         )
         .into());
     }
+    compare(tree, left, right, file, Some(set))
+}
+
+/// Compare any two different stored nodes of one file (frames, components, instances) with
+/// the variant comparison's pairing and field diff; adds `rootDelta` for size and position.
+pub fn compare_nodes(
+    tree: &Tree,
+    left: &str,
+    right: &str,
+    file: &Path,
+) -> Result<Value, Box<dyn Error>> {
+    if left.len() > MAX_ID_BYTES || right.len() > MAX_ID_BYTES {
+        return Err(FigError::new(
+            ErrorKind::InvalidArguments,
+            "node ID exceeds the comparison limit",
+        )
+        .into());
+    }
+    for id in [left, right] {
+        if !tree.nodes.contains_key(id) {
+            return Err(
+                FigError::new(ErrorKind::NodeNotFound, format!("node {id} not found")).into(),
+            );
+        }
+    }
+    if left == right {
+        return Err(FigError::new(
+            ErrorKind::InvalidArguments,
+            "select two different nodes to compare",
+        )
+        .into());
+    }
+    compare(tree, left, right, file, None)
+}
+
+/// Stored width, height and parent-relative x, y of a node, when it records all four.
+fn frame(raw: &K) -> Option<[f64; 4]> {
+    let n = |path: &str, key: &str| match raw_field(raw, path) {
+        Ok(Some(v)) => match v.get(key) {
+            Some(K::Float(f)) => Some(f64::from(*f)),
+            _ => None,
+        },
+        _ => None,
+    };
+    Some([
+        n("size", "x")?,
+        n("size", "y")?,
+        n("transform", "m02")?,
+        n("transform", "m12")?,
+    ])
+}
+
+fn compare(
+    tree: &Tree,
+    left: &str,
+    right: &str,
+    file: &Path,
+    set: Option<String>,
+) -> Result<Value, Box<dyn Error>> {
     let file = file.canonicalize().unwrap_or_else(|_| file.to_owned());
     let source = file.to_string_lossy();
     let mut input = Budget {
@@ -495,15 +564,23 @@ pub fn compare_variants(
     };
     name_variables(&mut a, &mut names, &mut input);
     name_variables(&mut b, &mut names, &mut input);
-    let matched = pairs(tree, &a, &b);
+    let (matched, ambiguous) = pairs(tree, &a, &b);
     let paired = [
         matched.iter().map(|p| p.0).collect::<HashSet<_>>(),
         matched.iter().map(|p| p.1).collect::<HashSet<_>>(),
     ];
     let mut result = json!({"source":{"file":(source.len() <= MAX_ID_BYTES).then_some(source.as_ref())},
-        "leftNodeId":left,"rightNodeId":right,"componentSetId":set,"interpretation":"stored-field-comparison",
+        "leftNodeId":left,"rightNodeId":right,"interpretation":"stored-field-comparison",
         "verification":"not-compared-with-figma","businessConditions":"not-inferred","numberPrecision":4,"fields":FIELDS,
         "notCompared":["canvas-position","child-order-and-ambiguous-correspondence","instance-expansion","resolved-variables","text-style-ranges","vector-region-paints","geometry-and-pixels","prototype-and-business-conditions"]});
+    if let Some(set) = &set {
+        result["componentSetId"] = set.as_str().into();
+    } else if let [Some(l), Some(r)] =
+        [left, right].map(|id| tree.nodes.get(id).and_then(|n| frame(n)))
+    {
+        let d = |i: usize| ((r[i] - l[i]) * 1e4).round() / 1e4;
+        result["rootDelta"] = json!({"width":d(0),"height":d(1),"x":d(2),"y":d(3),"basis":"right minus left, stored size and parent-relative position"});
+    }
     let header = serde_json::to_vec(&result).expect("JSON header").len();
     let input_complete = input.reasons.is_empty();
     let mut output = Budget {
@@ -519,13 +596,18 @@ pub fn compare_variants(
     let mut unknown = Vec::new();
     let mut unpaired = Vec::new();
     let mut nested = 0;
-    for ((root, nodes), paired) in [(left, &a), (right, &b)].into_iter().zip(&paired) {
+    for (side, ((root, nodes), paired)) in [(left, &a), (right, &b)]
+        .into_iter()
+        .zip(&paired)
+        .enumerate()
+    {
         for (index, node) in nodes.iter().enumerate() {
             if node["type"] == "INSTANCE" {
                 nested += 1;
             }
             if index != 0 && !paired.contains(&index) {
-                output.push(&mut unpaired, json!({"variantNodeId":root,"nodeId":node["nodeId"],"name":node["name"],"nameTruncated":node["nameTruncated"],"type":node["type"],"state":"not-paired"}));
+                output.push(&mut unpaired, json!({"variantNodeId":root,"nodeId":node["nodeId"],"name":node["name"],"nameTruncated":node["nameTruncated"],"type":node["type"],"state":"not-paired",
+                    "reason":if ambiguous.contains(&(side == 1, index)) {"ambiguous-name"} else if node["nameTruncated"] == true {"name-truncated"} else {"no-counterpart"}}));
             }
             for cell in node["fields"]
                 .as_object()

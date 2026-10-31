@@ -337,6 +337,12 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "compare node with this other stored variant in the same component set; adds bounded raw-field differences, per-pair changes for children whose name and type are unique on both sides, other descendants' value multisets, exact sources and bound variable names; no alternate rendering or business inference",
             ),
             (
+                "compare",
+                "string",
+                false,
+                "compare node with any other stored node of the file (another frame, breakpoint or state; no component set needed) with the same bounded raw-field differences, per-pair changes, unpaired nodes and exact sources as compareVariant, plus rootDelta (size and parent-relative position); children pair only when their name and type are unique on both sides, shared names are reported unpaired as ambiguous-name; instances are not expanded; adds comparison",
+            ),
+            (
                 "fullText",
                 "boolean",
                 false,
@@ -904,6 +910,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "images": {"type": "object", "description": "optional source image evidence when images=true"},
                 "states": {"type": "object", "description": "optional variants and prototype field evidence when states=true; independent truncation, source file, node/override provenance and unknown markers; no inferred business logic"},
                 "variantComparison": {"type":"object", "description":"optional same-set definition comparison when compareVariant is supplied; raw fields, paired children, descendant value multisets, unpaired nodes, unknowns and independent truncation; not a pixel comparison"},
+                "comparison": {"type":"object", "description":"optional any-two-nodes definition comparison when compare is supplied; same shape as variantComparison without componentSetId, plus rootDelta and a reason on each unpaired node (ambiguous-name, name-truncated, no-counterpart); not a pixel comparison"},
                 "handoffDiagnostics": {"type":"object", "description":"optional known stored semantics not emitted by the projection; counts cover the selected expanded subtree independently of summary depth, with at most five example IDs per feature and explicit coverage limits"},
             }),
             ["truncated"].as_slice(),
@@ -1054,6 +1061,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
             | "out"
             | "query"
             | "compareVariant"
+            | "compare"
             | "bundle"
             | "cursor"
             | "matchDir"
