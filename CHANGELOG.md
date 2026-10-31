@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.10.0](https://github.com/runkids/figlens/compare/v0.9.3...v0.10.0) (2026-10-31)
+
+
+### New Features
+
+* **bundle:** read the --frames list from stdin with - ([#118](https://github.com/runkids/figlens/issues/118)) ([2bbc95f](https://github.com/runkids/figlens/commit/2bbc95f2f670bfebc63b781995bc53fd0e55eeb6))
+* **changes:** compare design revisions and retain opt-in history ([#132](https://github.com/runkids/figlens/issues/132)) ([b6437a5](https://github.com/runkids/figlens/commit/b6437a5f650f6c0a5c794c55a86f0bc3c7d7a0c2))
+* **changes:** watch saved designs and report affected scopes ([#137](https://github.com/runkids/figlens/issues/137)) ([890f8da](https://github.com/runkids/figlens/commit/890f8da9519222bd18dd77d95240ca3ef18afb06))
+* **index:** add local workspace storage and lifecycle ([#90](https://github.com/runkids/figlens/issues/90) part 1) ([#119](https://github.com/runkids/figlens/issues/119)) ([0b6d8a6](https://github.com/runkids/figlens/commit/0b6d8a6fd42ec1fbd47dcadd3116ba6e0938e94a))
+* **index:** durable opt-in workspace search, rebuild and cancellable jobs ([#90](https://github.com/runkids/figlens/issues/90) part 2) ([#127](https://github.com/runkids/figlens/issues/127)) ([d187d2d](https://github.com/runkids/figlens/commit/d187d2d0f3496bf462e43bc4a61b978b968bc0ef))
+* **index:** register directories and gs:// objects, lease query cursors ([#139](https://github.com/runkids/figlens/issues/139)) ([e7b7b86](https://github.com/runkids/figlens/commit/e7b7b8680d7cdd6e5573ccde4861f65f17cdf29e))
+* **inspect,export:** flat per-node lines and project icon matching ([#114](https://github.com/runkids/figlens/issues/114)) ([e7c5c76](https://github.com/runkids/figlens/commit/e7c5c76962a87a3cea7e143c1e6d22be9871e457))
+* **inspect:** mark derived spacing under parents without auto-layout ([#112](https://github.com/runkids/figlens/issues/112)) ([7d6c075](https://github.com/runkids/figlens/commit/7d6c0752d6b5e3f45aa63c8c79ba086e42392bdd))
+* **library:** library usages and saved questions across sources ([#93](https://github.com/runkids/figlens/issues/93), first slice) ([#138](https://github.com/runkids/figlens/issues/138)) ([2b85531](https://github.com/runkids/figlens/commit/2b8553165101c5c1ef5c9059fbe71bb98ef00437))
+* **preview:** name page, source and snapshot on results and handoff ([#140](https://github.com/runkids/figlens/issues/140)) ([cc6467a](https://github.com/runkids/figlens/commit/cc6467afecae34d72c29c10d2027567cbcb6a4bb))
+* **preview:** name the live file and the reference scope's coverage in handoff ([#143](https://github.com/runkids/figlens/issues/143)) ([887d589](https://github.com/runkids/figlens/commit/887d589ac4589cc00fd455f70255585356f39c29))
+* **search:** add optional local semantic search and its runtime ([#152](https://github.com/runkids/figlens/issues/152)) ([30a8bcf](https://github.com/runkids/figlens/commit/30a8bcfe00ea4766348b87c28ccc2b1a8a8f5896))
+* **search:** add visual and hybrid search across hosts and viewer ([#157](https://github.com/runkids/figlens/issues/157)) ([dbd6e27](https://github.com/runkids/figlens/commit/dbd6e271df488d012435370670ef8457838ce7aa))
+* **search:** find effective instance content with bounded ranked retrieval ([#102](https://github.com/runkids/figlens/issues/102)) ([3240c51](https://github.com/runkids/figlens/commit/3240c515a6baffc18252755eec501fc023e61e46))
+* **tree:** give top-level nodes their first visible text ([#121](https://github.com/runkids/figlens/issues/121)) ([bf039c8](https://github.com/runkids/figlens/commit/bf039c84077ffb51421f58efed25c498d3a618a8))
+* **tree:** list every screen for frame lists with --top-frames ([#116](https://github.com/runkids/figlens/issues/116)) ([dd29b83](https://github.com/runkids/figlens/commit/dd29b832cfd1df5373d0c820407404408815cf84))
+* **usages:** expose exact design relationships across hosts ([#129](https://github.com/runkids/figlens/issues/129)) ([bcf2122](https://github.com/runkids/figlens/commit/bcf2122b1c583cd994bb4d99ad5a214763926ba1))
+* **variables:** export DTCG tokens from local snapshots ([#147](https://github.com/runkids/figlens/issues/147)) ([c0d23c7](https://github.com/runkids/figlens/commit/c0d23c7e6ecda04cc8848cf43c9ca85078a8f2ad))
+
+
+### Bug Fixes
+
+* bound layer recursion so deep files fail instead of aborting ([#124](https://github.com/runkids/figlens/issues/124)) ([9198a58](https://github.com/runkids/figlens/commit/9198a5863d8cf1c78e5ae9cecae950eea8e751ce))
+* **bundle:** warn about SVG transform and ids in context.md and MCP export ([#106](https://github.com/runkids/figlens/issues/106)) ([5036993](https://github.com/runkids/figlens/commit/503699330cf590a2dcb7992a322d459a02b89968))
+* **diff:** count inherited variable modes and keep no-op track request ids ([#136](https://github.com/runkids/figlens/issues/136)) ([b4be0ae](https://github.com/runkids/figlens/commit/b4be0ae86694bcf0e54d04617e006e51ee2ca63d))
+* **opencode:** wait for MCP tools to reach the registry before shortcuts ([#126](https://github.com/runkids/figlens/issues/126)) ([b1792ff](https://github.com/runkids/figlens/commit/b1792ffd625e847b9f90346f262feb81ad73bec1))
+* **pi:** retry network-level failures while waiting for the viewer ([#115](https://github.com/runkids/figlens/issues/115)) ([dc257f6](https://github.com/runkids/figlens/commit/dc257f64a95e1a916a131d2cec8413f63a1947ed))
+* **preview:** return keyboard focus to the Relations result that opened a layer ([#145](https://github.com/runkids/figlens/issues/145)) ([0c44c95](https://github.com/runkids/figlens/commit/0c44c9561aa4f45bf5cd0300448c639d2b077777))
+* **render:** draw STRETCH image fills once instead of repeating past the edges ([#110](https://github.com/runkids/figlens/issues/110)) ([6488aa8](https://github.com/runkids/figlens/commit/6488aa8d285f757a11ac0cd83b99ab9f94d529a2))
+* **render:** embed each image once per SVG instead of once per fill ([#135](https://github.com/runkids/figlens/issues/135)) ([c715aad](https://github.com/runkids/figlens/commit/c715aaddbd451881a605c4e45537de6182da731f))
+
+
+### Performance
+
+* **export:** optimize PNG output losslessly ([#154](https://github.com/runkids/figlens/issues/154)) ([a06e851](https://github.com/runkids/figlens/commit/a06e851e4222659134e26a599a138d2eb4b75b67))
+* **search:** hex-encode digests without a format! per byte ([#144](https://github.com/runkids/figlens/issues/144)) ([5b8d5cb](https://github.com/runkids/figlens/commit/5b8d5cbdf6b6703d474f5382fb9a334a9bcef46e))
+* **watch:** compare tracked builds in the index worker ([#158](https://github.com/runkids/figlens/issues/158)) ([b64fc90](https://github.com/runkids/figlens/commit/b64fc901c2d7cca2a511053ecffe280699c58e13))
+* **watch:** cut stable-save-to-event latency on the detector, facet and owner paths ([#149](https://github.com/runkids/figlens/issues/149)) ([ee1fa8f](https://github.com/runkids/figlens/commit/ee1fa8f7b2a4d1cf306f3938242e18938b145a5b))
+
 ## [0.9.3](https://github.com/runkids/figlens/compare/v0.9.2...v0.9.3) (2026-10-29)
 
 
