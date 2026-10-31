@@ -109,6 +109,8 @@ struct AdmittedCall {
     call: contract::PreparedCall,
     source: Option<Source>,
     output: Option<PathBuf>,
+    /// An export_batch's checked `out` paths, in item order.
+    outputs: Vec<PathBuf>,
     /// A bundle to verify: read, never loaded as a design.
     input: Option<PathBuf>,
     /// An export's folder of SVGs to compare against.
@@ -324,6 +326,12 @@ fn admit_value(req: Value, roots: &[PathBuf]) -> Admission {
                     None => None,
                 };
                 let output = call.string("out").map(|out| checked_output(Path::new(out), roots)).transpose()?;
+                let outputs = match call.name() {
+                    "export_batch" => call.argument("items").as_array().unwrap().iter()
+                        .map(|item| checked_output(Path::new(item["out"].as_str().unwrap()), roots))
+                        .collect::<Result<_, _>>()?,
+                    _ => Vec::new(),
+                };
                 let input = call.string("bundle").map(|path| checked_path(Path::new(path), roots)).transpose()?;
                 let match_dir = call.string("matchDir").map(|path| checked_path(Path::new(path), roots)).transpose()?;
                 let project = call.string("workspace").map(|path| checked_path(Path::new(path), roots)).transpose()?;
@@ -341,7 +349,7 @@ fn admit_value(req: Value, roots: &[PathBuf]) -> Admission {
                     }
                     image => image.map(|path| checked_path(Path::new(path), roots)).transpose()?,
                 };
-                Ok(AdmittedCall { id:id.clone(), call, source, output, input, match_dir, project, old, image, live: None })
+                Ok(AdmittedCall { id:id.clone(), call, source, output, outputs, input, match_dir, project, old, image, live: None })
             });
             return match admitted {
                 Ok(call) => Admission::Call(Box::new(call)),
@@ -450,6 +458,7 @@ impl AdmittedCall {
             .local()
             .into_iter()
             .chain(self.output.as_deref())
+            .chain(self.outputs.iter().map(PathBuf::as_path))
             .chain(self.input.as_deref())
             .chain(self.match_dir.as_deref())
             .chain(self.project.as_deref())
@@ -523,6 +532,14 @@ impl AdmittedCall {
                     .map_err(contract::Failure::from_error);
             }
             let run = |tree: &Tree, path: &Path| {
+                if name == "export_batch" {
+                    let items = command::export_items(self.call.argument("items"), 1600)?;
+                    let value = command::export_batch(tree, path, &items, &self.outputs)?;
+                    return Ok(command::Output::Json {
+                        value,
+                        pretty: false,
+                    });
+                }
                 command::Command::from_tool(
                     &self.call,
                     tree,

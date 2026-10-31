@@ -183,6 +183,14 @@ usage:
                                              the same area (prints hidden): diff it with the plain
                                              export to see where that layer changes the result (no
                                              difference does not prove skipped rendering harmless)
+  figlens export <file.fig> --batch <items.json|->
+                                             one decode, many exports, each with its own options: a JSON
+                                             array (- reads stdin) of 1-64 {node,out,bounds?,scale?,quality?,
+                                             maxKb?,maxSize?} (MCP export_batch's items; format from out's
+                                             extension, no matchDir); a malformed item or a repeated out fails
+                                             the command before any write; prints {count,failed,items}: per
+                                             item node, path and the export output, or node, path and error
+                                             (an item's failure does not stop the others)
   figlens export <file.fig> --frames <list|-> --out-dir <dir> [--format png|jpg|webp|avif|svg] ...
                                              one decode, many exports (default png, same options):
                                              writes <dir>/<nodeId>.<format> (`:` as `-`), prints one
@@ -645,6 +653,18 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                 &node_list(&args[2..])?,
                 &mut std::io::stdout().lock(),
             )?;
+        }
+        "export" if args.get(2).map(String::as_str) == Some("--batch") => {
+            let source = args.get(3).filter(|_| args.len() == 4).ok_or(USAGE)?;
+            let list = if source == "-" {
+                std::io::read_to_string(std::io::stdin())?
+            } else {
+                std::fs::read_to_string(source)?
+            };
+            let items = command::export_items(&serde_json::from_str(&list)?, 0)?;
+            let paths: Vec<PathBuf> = items.iter().map(|i| i.out().into()).collect();
+            let manifest = command::export_batch(&tree, &path, &items, &paths)?;
+            out.push_str(&serde_json::to_string_pretty(&manifest)?);
         }
         "export" if args.get(2).map(String::as_str) == Some("--frames") => {
             export_batch(&tree, &path, &args[2..], &mut std::io::stdout().lock())?;

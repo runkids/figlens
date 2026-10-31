@@ -601,3 +601,63 @@ fn verify_of_quote_heavy_evidence_fits_the_whole_reply_budget() {
         (&json!(false), &json!(true), &json!(20))
     );
 }
+
+#[test]
+fn export_batch_checks_every_path_and_the_cap_before_writing_and_reports_items() {
+    let inside = TestDir::new();
+    let outside = TestDir::new();
+    let file = fixture(&inside, "design.fig");
+    let roots = [inside.join("").canonicalize().unwrap()];
+    let batch = |id, items: Value| {
+        rooted_reply(
+            &call(
+                json!(id),
+                "export_batch",
+                json!({"file":file,"items":items}),
+            ),
+            &roots,
+        )["result"]
+            .clone()
+    };
+    let (a, b) = (inside.join("a.png"), inside.join("b.svg"));
+    let stray = outside.join("c.png");
+    let denied = batch(
+        1,
+        json!([{"node":"0:1","out":a},{"node":"0:2","out":stray}]),
+    );
+    assert_eq!(denied["_meta"]["figlens"]["code"], "permission_denied");
+    assert!(!a.exists() && !stray.exists());
+    let items: Vec<_> = (0..65)
+        .map(|i| json!({"node":"0:1","out":inside.join(&format!("{i}.png"))}))
+        .collect();
+    let capped = batch(2, json!(items));
+    assert_eq!(capped["_meta"]["figlens"]["code"], "invalid_arguments");
+    assert!(!inside.join("0.png").exists());
+    let twice = batch(
+        3,
+        json!([{"node":"0:1","out":a},{"node":"0:2","out":inside.join("./a.png")}]),
+    );
+    assert_eq!(twice["isError"], true, "{twice}");
+    assert!(!a.exists());
+    let reply = batch(
+        4,
+        json!([{"node":"0:1","out":a},{"node":"9:9","out":inside.join("x.png")},{"node":"0:2","out":b},{"node":"0:4","out":inside.join("t.png")}]),
+    );
+    assert_eq!(reply["isError"], false, "{reply}");
+    let manifest = &reply["structuredContent"];
+    assert_eq!(manifest["failed"], 1);
+    assert_eq!(manifest["items"][0]["path"], a.to_string_lossy().as_ref());
+    assert_eq!(
+        manifest["items"][0]["bytes"],
+        std::fs::metadata(&a).unwrap().len()
+    );
+    assert!(manifest["items"][1]["error"].is_string());
+    assert!(!inside.join("x.png").exists() && b.exists());
+    // READY's text is narrower than its layout box: export's warning stays in the manifest.
+    assert!(
+        manifest["items"][3]["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("differs from the layout box")
+    );
+}

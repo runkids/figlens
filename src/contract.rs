@@ -488,6 +488,19 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
         ],
     ),
     (
+        "export_batch",
+        "Export many nodes of one file in a single call, one file per item; use it instead of repeated export calls for a screen's icons and photos. Each item takes the options export takes (node, out, bounds, scale, quality, maxKb, maxSize; the format follows out's extension) except matchDir. Create the output directories first. At most 64 items, distinct out paths, all inside the configured roots; a malformed item or a path outside the roots fails the whole call before anything is written. Items then export in order: one that fails (a missing or hidden node, a file over maxKb) is reported with its error and the others still export, so check each entry's error. Returns a manifest, no inline images: per item node, path, width, height, bytes, quality, layoutBox, renderBox and warnings, or node, path and error; warnings say when the drawn area reaches past the layout box (a badge or shadow), as export's do. Once the files written reach 256 MiB, the remaining items fail with a budget error; export them in another call.",
+        &[
+            FILE,
+            (
+                "items",
+                "array",
+                true,
+                "1-64 objects {node, out, bounds?, scale?, quality?, maxKb?, maxSize?}, each as the export tool's parameters of those names",
+            ),
+        ],
+    ),
+    (
         "index",
         "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes; add of a directory registers up to 10 .fig files under it in one step, in path order, never through a link leading out of it, and replies directory {added, existing, skipped, notFig, truncated, nextCursor}; pass nextCursor as cursor to add the next 10; a repeat adds nothing, and a moved file is a new source unless relocated); refresh rebuilds changed scopes and rebuild every indexed scope even when unchanged (sourceId and scope narrow both), while the previous index keeps serving; track starts recording one scope's changes, read with the changes tool, with a baseline build, and untrack stops it, keeping its history; embed runs the configured local model (models tool) over published scopes for semantic search, as jobs beside the text builds (mode_unavailable without a profile), and a text build this server runs queues it after publishing; visual (scope required, never widened to the whole file) renders that published scope's screens and components, and the scope node below a page, for image search, and embeds them when a vision profile is configured (hash-only otherwise), as a job on the model lane beside text builds; called again it resumes a partial layer, retrying units that failed; a scope that had a visual layer is rendered again after a text build this server runs republishes it, and no other scope is rendered implicitly; a reply that could not admit every job has admission partial and deferred items, each with the nextStep that builds it later; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
         &[
@@ -903,6 +916,14 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
             }),
             ["path", "width", "height", "bytes", "quality"].as_slice(),
         ),
+        "export_batch" => (
+            serde_json::json!({
+                "count": { "type": "integer" },
+                "failed": { "type": "integer", "description": "items with an error; the others were written" },
+                "items": { "type": "array", "items": { "type": "object" }, "description": "in request order: node, path and either the export fields (width, height, bytes, quality, layoutBox, renderBox, warnings) or error" },
+            }),
+            ["count", "failed", "items"].as_slice(),
+        ),
         "bundle" => (
             serde_json::json!({
                 "nodeId": { "type": "string" },
@@ -959,6 +980,11 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
     };
     Some(serde_json::json!({ "type": "object", "properties": properties, "required": required }))
 }
+
+/// The `export` parameters an `export_batch` item takes (`matchDir` is single-export only).
+pub const EXPORT_ITEM_KEYS: [&str; 7] = [
+    "node", "out", "bounds", "scale", "quality", "maxKb", "maxSize",
+];
 
 fn default(tool: &str, key: &str) -> Option<Value> {
     match (tool, key) {
@@ -1026,6 +1052,19 @@ pub fn property(tool: &str, param: &Param) -> Value {
     }
     if key == "query" {
         p["pattern"] = json!(r"\S");
+    }
+    if tool == "export_batch" && key == "items" {
+        p["minItems"] = json!(1);
+        p["maxItems"] = json!(crate::command::MAX_EXPORT_ITEMS);
+        p["items"] = json!({
+            "type": "object",
+            "properties": TOOLS.iter().find(|t| t.0 == "export").unwrap().2.iter()
+                .filter(|param| EXPORT_ITEM_KEYS.contains(&param.0))
+                .map(|param| (param.0.to_owned(), property("export", param)))
+                .collect::<serde_json::Map<_, _>>(),
+            "required": ["node", "out"],
+            "additionalProperties": false,
+        });
     }
     if tool == "export" && key == "scale" {
         p["exclusiveMinimum"] = json!(0);
@@ -1143,7 +1182,7 @@ fn object_fits(value: &Value, schema: &Value) -> bool {
         })
 }
 
-fn integer(value: &Value) -> Option<u64> {
+pub(crate) fn integer(value: &Value) -> Option<u64> {
     if let Some(n) = value.as_u64() {
         return Some(n);
     }
@@ -1250,6 +1289,9 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
         return Err(Failure::argument(
             "out must end in .png, .jpg, .jpeg, .webp, .avif or .svg",
         ));
+    }
+    if tool == "export_batch" {
+        crate::command::export_items(&checked["items"], 1600).map_err(Failure::argument)?;
     }
     let call = PreparedCall {
         name,

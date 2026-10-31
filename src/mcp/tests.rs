@@ -68,6 +68,7 @@ fn mcp_lists_every_tool() {
             "bundle",
             "verify",
             "export",
+            "export_batch",
             "index",
             "jobs",
             "models",

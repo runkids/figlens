@@ -12,6 +12,9 @@ fn own(tool: &str, mut args: Value) -> Value {
     args.as_object_mut()
         .unwrap()
         .retain(|key, _| params.iter().any(|p| p.0 == key));
+    if tool == "export_batch" {
+        args["items"] = json!([{"node": "0:1", "out": "out.png"}]);
+    }
     if tool == "variables" {
         args.as_object_mut().unwrap().remove("out");
     }
