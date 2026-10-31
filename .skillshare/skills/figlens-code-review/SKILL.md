@@ -17,7 +17,7 @@ Review one change in five independent passes, verify every finding, and report t
 
 Load `python3 scripts/ai-context.py review` for the pre-PR and AI-review follow-up procedure. After an authorized PR fix, push verified changes, request `@codex review` and inspect the completed review of that head; the topic owns this workflow.
 
-**Scope**: read-only by default. With `fix`, apply only verified findings that do not change intended behavior, then run the checks in `AGENTS.md` Verification. Never commit, push, or comment on GitHub unless the user asks.
+**Scope**: read-only by default. With `fix`, apply only verified findings that do not change intended behavior, then run the checks in `AGENTS.md` Verification. Commit, push or comment on GitHub only within a PR workflow the user authorized.
 
 ## Step 1: Pin the diff
 
@@ -43,7 +43,7 @@ Launch one subagent per pass in a single message, using your tool's default suba
 1. **Correctness**: bugs the change introduces. Wrong output, panics or stack overflows on unusual `.fig` input, broken error paths, anything written to stdout that corrupts JSON or the MCP protocol, path escapes when writing bundles or exports, and unchecked downloads in install or update paths. Ignore style.
 2. **Rules**: breaches of `AGENTS.md` and the loaded topics, such as a format change without measured evidence, Rust run outside Docker, a stale doc left behind, a design file committed, or versions out of step. Cite the file and rule.
 3. **Spec**: requirements missing or partial, behavior nobody asked for, and requirements implemented wrongly. Quote the spec line for each.
-4. **Consumers**: for each concept from Step 2, grep every place that describes or exposes it and report each one the diff did not update: the CLI `USAGE` text in `src/main.rs`, the MCP `TOOLS` table in `src/contract.rs`, the Pi tools and commands in `pi/index.ts`, `README.md` (Commands, bundle layout, known gaps), `skills/figlens/SKILL.md`, the wiki topics, `npm/` and `scripts/install*`, and the tests beside the changed code. Also report a new branch in decoding or rendering with no test.
+4. **Consumers**: for each concept from Step 2, grep every place that describes or exposes it and report each one the diff did not update: the CLI `USAGE` text in `src/main.rs`, the MCP `TOOLS` table in `src/contract.rs`, the Pi tools and commands in `pi/index.ts`, the OpenCode (`opencode/`) and OMP (`omp/`) entries, `docs/README.md` and every `docs/README-*.md` locale (Commands, bundle layout, known gaps), `skills/figlens/SKILL.md`, the wiki topics, `npm/` and `scripts/install*`, and the tests beside the changed code. Also report a new branch in decoding or rendering with no test.
 5. **Cleanup**: code that re-implements an existing helper (name it), complexity a simpler form would remove, wasted work on hot paths (decoding, expansion, rendering per node), and fixes applied as a special case where the shared mechanism should change. Labelled as judgement calls.
 
 ## Step 4: Verify
