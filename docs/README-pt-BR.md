@@ -106,7 +106,7 @@ Reinicie o Pi ou execute `/reload` e peça uma tela em linguagem natural. O Pi e
 Pedir um texto ou uma tela busca direto no `.fig` e não salva nada. Para buscas repetidas, peça ao Pi para ativar um índice de um design e escopo: ele prepara um índice local uma vez (sem comando de configuração), acompanha o job até ficar pronto e o reutiliza após reinícios e em outros hosts. Redefinir esse índice exige um pedido explícito seu. Perguntar onde um componente, variável, estilo ou imagem é usado lista seus usages exatos do mesmo jeito: direto do `.fig` ou, depois de ativado, desse índice. Pedir ao Pi para acompanhar as mudanças de um design faz o track desse escopo, preparando o índice se preciso, e informa o que mudou desde a última verificação; uma pergunta sobre duas cópias salvas é respondida com `diff`, sem iniciar nada. Detalhes: [índice local](#local-index).
 
 - `/figlens plan <request>` cria apenas um plano; não modifica a aplicação.
-- `/figlens yolo <request>` planeja, constrói, confere e limpa o próprio plano temporário.
+- `/figlens yolo <request>` planeja, constrói, confere e limpa o próprio plano temporário, os exports de rascunho e os processos que iniciou.
 - `/figlens preview [description]` abre o viewer local.
 - `/figlens review` aprova mapeamentos de componentes reutilizáveis propostos pelo agent.
 

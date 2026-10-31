@@ -29,7 +29,7 @@ npx @runkids/figlens --help                                                     
 
 For comparing existing UI with a design, visual acceptance or correcting layout differences, read [the audit workflow](references/audit.md). A review-only request stays read-only; fix only when requested. CLI and MCP expose the same guide as `workflow audit` and `workflow(topic="audit")`; Pi uses the shared skill and MCP guide without a separate audit command.
 
-For an explicit request to plan, implement, self-check and clean up the temporary plan autonomously, read [the YOLO workflow](references/yolo.md). Pi and a ready OpenCode integration offer `/figlens yolo <request>`; other agents follow the same skill workflow from the user's request. Keep this opt-in intent distinct from plan-only requests and ordinary design questions.
+For an explicit request to plan, implement, self-check and clean up its own temporary plan, scratch exports and processes autonomously, read [the YOLO workflow](references/yolo.md). Pi and a ready OpenCode integration offer `/figlens yolo <request>`; other agents follow the same skill workflow from the user's request. Keep this opt-in intent distinct from plan-only requests and ordinary design questions.
 
 For an explicit implementation plan or a request to carefully reproduce a design, read [the planning workflow](references/planning.md). Scale it to the requested region, component, state, page or pages. Plan-only requests end with the plan; an already authorized build continues into implementation. Pi and a ready OpenCode integration offer `/figlens plan <request>` as a plan-only shortcut, without open or a saved selection. Keep ordinary design questions and asset exports on the direct path below.
 

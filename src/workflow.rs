@@ -226,11 +226,20 @@ mod tests {
         let yolo = read("yolo").unwrap();
         assert!(yolo.contains("after implementation and the applicable acceptance checks succeed"));
         assert!(
-            yolo.contains("unexpected edits") && yolo.contains("leaves the working plan available")
+            yolo.contains("unexpected edits")
+                && yolo
+                    .contains("leaves the working plan and the run's export directory available")
         );
         assert!(
             yolo.contains("Start no watch lease, subscription or tracking unless the user asked")
                 && yolo.contains("never `forget`, another owner's or an ownerless one")
         );
+        // Cleanup is scoped to what the run created: its export directory and its processes.
+        assert!(
+            yolo.contains("never loose in `.figlens/exports/`")
+                && yolo.contains("Delete nothing outside that directory")
+                && yolo.contains("this run started, and only those")
+        );
+        assert!(details.contains("a plan-only run deletes none of them"));
     }
 }
