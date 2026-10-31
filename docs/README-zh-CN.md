@@ -262,7 +262,7 @@ Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，works
 
 比较同一 component set 的两个 variants：`inspect <file> <variantA> --compare-variant <variantB>`（MCP `compareVariant`）。`variantComparison` 列出原始字段及值集合差异，保留来源和未知标记；只有两侧都恰有一个同名同类型子节点时才配对（`pairedNodes`，附逐对差异），并标出绑定变量的名称。详见[比较限制](../wiki/states.md#compare-two-variants)。
 
-要比较同一文件中的任意两个节点（空白与已填内容的画面、手机与桌面断点、共用页头的两个画面），请使用 `inspect <file> <nodeA> --compare <nodeB>`（MCP `compare`）。`comparison` 格式相同，另有 `rootDelta`（尺寸与相对于父级的位置）；名称与类型相同的子节点不会配对，并标注 `reason: ambiguous-name`，instance 不会展开。`--compare-variant` 仍要求同一个 component set。
+要比较同一文件中的任意两个节点（空白与已填内容的画面、手机与桌面断点、共用页头的两个画面），请使用 `inspect <file> <nodeA> --compare <nodeB>`（MCP `compare`）。`comparison` 格式相同，另有 `rootDelta`（尺寸与相对于父级的位置）；子节点依唯一名称、主组件、同数量同名分组内的堆叠顺序配对（`pairedBy` 标明方式），其余不配对并标注 `reason: ambiguous-name`；instance 不会展开，节点也不能与自己的祖先比较。`--compare-variant` 仍要求同一个 component set。
 
 node 参数接受 `12:345`、`12-345`，或带 `?node-id=` 的 Figma URL。`<file>` 也可以是 `gs://bucket/object`，通过你的 `gcloud` 登录下载并缓存。固定 object 交接、所需访问权限与更新限制，请参阅 [GCS 快照操作说明](../wiki/gcs.md)。每次 CLI 调用都会解码文件；MCP 只复用最后读取且未变更的本地文件，远程输入仍会重新解析。运行 `figlens --help` 或 `figlens inspect --help`（也可用 `-h`）查看完整 CLI 用法。`index add gs://bucket/object` 会登记该 generation 的固定副本并报告 `remote {uri, generation}`；只有 add 会运行 gcloud。
 

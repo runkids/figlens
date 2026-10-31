@@ -229,20 +229,31 @@ fn collect(tree: &Tree, root: &str, budget: &mut Budget) -> Vec<Value> {
 /// (side, index) of nodes left unpaired because several siblings share their type and name.
 type Ambiguous = HashSet<(bool, usize)>;
 
-/// Descendants that are the only node of their name and type under a paired parent on each
-/// side, from the roots down, as (left, right) indexes; names that were cut short never pair.
-/// Also the (side, index) of every node left unpaired because its (type, name) is shared by
-/// several siblings on either side of a paired parent.
-fn pairs(tree: &Tree, a: &[Value], b: &[Value]) -> (Vec<(usize, usize)>, Ambiguous) {
-    // Each scanned node's scanned children by (type, name), with the indexes sharing that key;
-    // built from the at most MAX_NODES scanned nodes, never from a full child list.
+/// Groups `items` by `key`, in sibling order.
+fn group<K: Ord>(items: &[usize], key: impl Fn(usize) -> K) -> BTreeMap<K, Vec<usize>> {
+    let mut groups: BTreeMap<K, Vec<usize>> = BTreeMap::new();
+    for &i in items {
+        groups.entry(key(i)).or_default().push(i);
+    }
+    groups
+}
+
+/// Descendants matched under already matched parents, from the roots down, as (left, right,
+/// how) with scanned-node indexes; names that were cut short never pair. Per parent, in turn:
+/// `name` (the only child of its type and name on each side), `component` (the only remaining
+/// instance of one main component on each side), `order` (remaining children sharing type,
+/// name and main component, in equal numbers on both sides, by stacking order). Also the
+/// (side, index) of nodes left over because several siblings share their type and name.
+fn pairs(tree: &Tree, a: &[Value], b: &[Value]) -> (Vec<(usize, usize, &'static str)>, Ambiguous) {
+    // Each scanned node's scanned children in sibling order; built from the at most MAX_NODES
+    // scanned nodes, never from a full child list.
     let children = |nodes: &[Value]| {
         let at: HashMap<&str, usize> = nodes
             .iter()
             .enumerate()
             .filter_map(|(i, n)| Some((n["nodeId"].as_str()?, i)))
             .collect();
-        let mut keys: HashMap<usize, BTreeMap<String, Vec<usize>>> = HashMap::new();
+        let mut kids: HashMap<usize, Vec<usize>> = HashMap::new();
         for (c, node) in nodes.iter().enumerate().skip(1) {
             let parent = node["nodeId"]
                 .as_str()
@@ -250,39 +261,60 @@ fn pairs(tree: &Tree, a: &[Value], b: &[Value]) -> (Vec<(usize, usize)>, Ambiguo
                 .and_then(|raw| raw.get("parentIndex")?.get("guid"))
                 .and_then(definition_id)
                 .and_then(|p| at.get(p.as_str()).copied());
-            let Some(parent) = parent else { continue };
-            if node["nameTruncated"] == true {
-                continue;
+            if let Some(parent) = parent
+                && node["nameTruncated"] != true
+            {
+                kids.entry(parent).or_default().push(c);
             }
-            let key = json!([node["type"], node["name"]]).to_string();
-            keys.entry(parent)
-                .or_default()
-                .entry(key)
-                .or_default()
-                .push(c);
         }
-        keys
+        kids
     };
+    let main = |nodes: &[Value], i: usize| {
+        let raw = tree.nodes.get(nodes[i]["nodeId"].as_str()?)?;
+        definition_id(raw.get("symbolData")?.get("symbolID")?)
+    };
+    let name = |nodes: &[Value], i: usize| json!([nodes[i]["type"], nodes[i]["name"]]).to_string();
     let (left, right) = (children(a), children(b));
     let (mut out, mut ambiguous) = (Vec::new(), HashSet::new());
     let mut queue = vec![(0, 0)];
     while let Some((l, r)) = queue.pop() {
-        let (Some(ours), Some(theirs)) = (left.get(&l), right.get(&r)) else {
+        let (Some(ls), Some(rs)) = (left.get(&l), right.get(&r)) else {
             continue;
         };
-        for (key, lcs) in ours {
-            match (lcs.as_slice(), theirs.get(key).map(Vec::as_slice)) {
-                (&[lc], Some(&[rc])) => {
-                    out.push((lc, rc));
-                    queue.push((lc, rc));
+        let (mut ls, mut rs) = (ls.clone(), rs.clone());
+        let mut found = Vec::new();
+        for how in ["name", "component", "order"] {
+            let key = |n: &[Value], i: usize| match how {
+                "name" => name(n, i),
+                "component" => main(n, i).unwrap_or_default(),
+                _ => format!("{}\u{0}{:?}", name(n, i), main(n, i)),
+            };
+            let (lg, rg) = (group(&ls, |i| key(a, i)), group(&rs, |i| key(b, i)));
+            for (k, lcs) in &lg {
+                // Instances only for `component`: an empty key is a node with no main.
+                let Some(rcs) = rg.get(k).filter(|_| !k.is_empty()) else {
+                    continue;
+                };
+                let equal = lcs.len() == rcs.len();
+                if (how == "order" && equal) || (how != "order" && lcs.len() == 1 && rcs.len() == 1)
+                {
+                    found.extend(lcs.iter().zip(rcs).map(|(&lc, &rc)| (lc, rc, how)));
                 }
-                (_, Some(rcs)) => {
-                    ambiguous.extend(lcs.iter().map(|&i| (false, i)));
-                    ambiguous.extend(rcs.iter().map(|&i| (true, i)));
-                }
-                _ => {}
+            }
+            let (lp, rp): (HashSet<_>, HashSet<_>) =
+                found.iter().map(|&(lc, rc, _)| (lc, rc)).unzip();
+            ls.retain(|i| !lp.contains(i));
+            rs.retain(|i| !rp.contains(i));
+        }
+        let (lg, rg) = (group(&ls, |i| name(a, i)), group(&rs, |i| name(b, i)));
+        for (k, lcs) in &lg {
+            if let Some(rcs) = rg.get(k) {
+                ambiguous.extend(lcs.iter().map(|&i| (false, i)));
+                ambiguous.extend(rcs.iter().map(|&i| (true, i)));
             }
         }
+        queue.extend(found.iter().map(|&(lc, rc, _)| (lc, rc)));
+        out.extend(found);
     }
     (out, ambiguous)
 }
@@ -522,6 +554,26 @@ pub fn compare_nodes(
         )
         .into());
     }
+    for (node, other) in [(left, right), (right, left)] {
+        let mut at = node.to_owned();
+        // Bounded by the node count, so a corrupt parent cycle ends the walk.
+        for _ in 0..tree.nodes.len() {
+            let parent = tree
+                .nodes
+                .get(at.as_str())
+                .and_then(|raw| raw.get("parentIndex")?.get("guid"))
+                .and_then(definition_id);
+            let Some(parent) = parent else { break };
+            if parent == other {
+                return Err(FigError::new(
+                    ErrorKind::InvalidArguments,
+                    format!("node {other} is an ancestor of {node}; compare unrelated nodes"),
+                )
+                .into());
+            }
+            at = parent;
+        }
+    }
     compare(tree, left, right, file, None)
 }
 
@@ -655,10 +707,10 @@ fn compare(
         }
     }
     let mut pair_list = Vec::new();
-    for &(l, r) in &matched {
+    for &(l, r, how) in &matched {
         let (before, after) = (&a[l], &b[r]);
         output.push(&mut pair_list, json!({"leftNodeId":before["nodeId"],"rightNodeId":after["nodeId"],
-            "name":before["name"],"type":before["type"],"basis":"only-child-with-this-name-and-type-under-paired-parents",
+            "name":before["name"],"type":before["type"],"pairedBy":how,"basis":"under-paired-parents: name = only child of this name and type; component = only instance of this main component; order = equal-sized group of one name, type and main component, by stacking order",
             "changes":changes(before, after)}));
     }
     let pair_changed = pair_list

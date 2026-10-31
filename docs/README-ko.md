@@ -262,7 +262,7 @@ Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며
 
 같은 component set의 두 variants는 `inspect <file> <variantA> --compare-variant <variantB>`(MCP `compareVariant`)로 비교합니다. `variantComparison`은 저장된 필드와 값 집합의 차이, 출처 ID, 알 수 없는 항목을 반환하며 자식 노드는 양쪽에 같은 이름과 타입의 자식이 하나씩만 있을 때만 짝짓고(`pairedNodes`, 쌍별 변경 포함), 바인딩된 variables는 이름을 표시합니다. [비교 제한](../wiki/states.md#compare-two-variants)을 참조하세요.
 
-한 파일의 임의의 두 노드(빈 화면과 채워진 화면, 모바일과 데스크톱 브레이크포인트, 헤더를 공유하는 두 화면 등)는 `inspect <file> <nodeA> --compare <nodeB>`(MCP `compare`)로 비교할 수 있습니다. `comparison`은 같은 형태에 `rootDelta`(크기와 부모 기준 위치)를 더해 반환합니다. 이름과 타입이 같은 자식은 `reason: ambiguous-name`과 함께 짝지어지지 않으며 인스턴스는 펼쳐지지 않습니다. `--compare-variant`는 여전히 같은 component set이 필요합니다.
+한 파일의 임의의 두 노드(빈 화면과 채워진 화면, 모바일과 데스크톱 브레이크포인트, 헤더를 공유하는 두 화면 등)는 `inspect <file> <nodeA> --compare <nodeB>`(MCP `compare`)로 비교할 수 있습니다. `comparison`은 같은 형태에 `rootDelta`(크기와 부모 기준 위치)를 더해 반환합니다. 자식은 고유한 이름, 메인 컴포넌트, 같은 개수의 동명 그룹 안의 쌓임 순서 순으로 짝지어지며(`pairedBy`가 방법을 알려 줍니다) 나머지는 `reason: ambiguous-name`과 함께 짝지어지지 않습니다. 인스턴스는 펼쳐지지 않고 노드와 그 조상은 비교할 수 없습니다. `--compare-variant`는 여전히 같은 component set이 필요합니다.
 
 노드 인수는 `12:345`, `12-345`, `?node-id=`가 있는 Figma URL을 받을 수 있습니다. `<file>`에 `gs://bucket/object`도 지정할 수 있으며 `gcloud` 로그인으로 다운로드하고 캐시합니다. 고정 객체를 통한 전달, 필요한 접근 권한과 갱신 제한은 [GCS 스냅샷 가이드](../wiki/gcs.md)를 참고하세요. CLI 호출은 매번 파일을 디코딩합니다. MCP는 마지막으로 읽은 변경 없는 로컬 파일만 재사용합니다. 원격 입력은 다시 파싱합니다. 전체 CLI 사용법은 `figlens --help` 또는 `figlens inspect --help`(`-h`도 가능)를 실행하세요. `index add gs://bucket/object`는 해당 generation의 고정된 사본을 등록하고 `remote {uri, generation}`을 보고하며, gcloud는 add만 실행합니다.
 

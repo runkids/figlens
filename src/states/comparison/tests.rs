@@ -740,3 +740,114 @@ fn frame_comparison_is_bounded_and_rejects_bad_selections() {
     // Variants of one set still compare through the general entry point.
     assert!(compare_nodes(&tree, "0:10", "0:11", Path::new("test.fig")).is_ok());
 }
+
+fn paired_by(result: &Value) -> Vec<(String, String)> {
+    result["pairedNodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            (
+                p["rightNodeId"].as_str().unwrap().to_owned(),
+                p["pairedBy"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn instance_of(id: u32, parent: u32, name: &str, main: u32) -> K<'static> {
+    let symbol = obj(vec![("symbolID", crate::states::tests::guid(main))]);
+    named(id, parent, "INSTANCE", name, vec![("symbolData", symbol)])
+}
+
+#[test]
+fn instances_of_one_main_component_pair_when_unique_even_if_renamed() {
+    let message = message(vec![
+        named(20, 1, "FRAME", "A", vec![]),
+        named(21, 1, "FRAME", "B", vec![]),
+        named(70, 20, "TEXT", "Title", vec![("textData", text("x"))]),
+        named(71, 21, "TEXT", "Title", vec![("textData", text("x"))]),
+        instance_of(72, 20, "Btn", 900),
+        instance_of(73, 21, "Button", 900),
+    ]);
+    let tree = Tree::new(&message);
+    let result = compare_nodes(&tree, "0:20", "0:21", Path::new("test.fig")).unwrap();
+    let mut by = paired_by(&result);
+    by.sort();
+    assert_eq!(
+        by,
+        [
+            ("0:71".to_owned(), "name".to_owned()),
+            ("0:73".to_owned(), "component".to_owned())
+        ]
+    );
+    assert!(result["unpairedNodes"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn repeated_siblings_pair_by_order_only_with_equal_counts() {
+    let rows = |third: bool| {
+        let mut v = vec![
+            named(20, 1, "FRAME", "A", vec![]),
+            named(21, 1, "FRAME", "B", vec![]),
+            named(70, 20, "TEXT", "Row", vec![("textData", text("one"))]),
+            named(71, 20, "TEXT", "Row", vec![("textData", text("two"))]),
+            named(72, 21, "TEXT", "Row", vec![("textData", text("one"))]),
+            named(73, 21, "TEXT", "Row", vec![("textData", text("three"))]),
+        ];
+        if third {
+            v.push(named(74, 21, "TEXT", "Row", vec![]));
+        }
+        v
+    };
+    let message = message(rows(false));
+    let tree = Tree::new(&message);
+    let result = compare_nodes(&tree, "0:20", "0:21", Path::new("test.fig")).unwrap();
+    assert_eq!(
+        paired_by(&result),
+        [
+            ("0:72".to_owned(), "order".to_owned()),
+            ("0:73".to_owned(), "order".to_owned())
+        ]
+    );
+    let changed: Vec<_> = result["pairedNodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| !p["changes"].as_array().unwrap().is_empty())
+        .map(|p| p["rightNodeId"].as_str().unwrap())
+        .collect();
+    assert_eq!(changed, ["0:73"]);
+    let message = super::tests::message(rows(true));
+    let tree = Tree::new(&message);
+    let result = compare_nodes(&tree, "0:20", "0:21", Path::new("test.fig")).unwrap();
+    assert!(result["pairedNodes"].as_array().unwrap().is_empty());
+    assert!(
+        result["unpairedNodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|n| n["reason"] == "ambiguous-name")
+    );
+}
+
+#[test]
+fn a_node_is_never_compared_with_its_ancestor_or_descendant() {
+    let message = message(vec![
+        named(20, 1, "FRAME", "A", vec![]),
+        named(70, 20, "FRAME", "Inner", vec![]),
+        named(71, 70, "TEXT", "Deep", vec![]),
+    ]);
+    let tree = Tree::new(&message);
+    for (a, b) in [
+        ("0:20", "0:70"),
+        ("0:70", "0:20"),
+        ("0:20", "0:71"),
+        ("0:71", "0:20"),
+    ] {
+        let error = compare_nodes(&tree, a, b, Path::new("test.fig"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ancestor"), "{a} {b}: {error}");
+    }
+}

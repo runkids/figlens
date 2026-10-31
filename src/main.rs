@@ -117,7 +117,7 @@ usage:
                                              only one on both sides; bound variables are named);
                                              --compare ID does the same for any two nodes of the file
                                              (frames, breakpoints, states), adds rootDelta, and marks
-                                             shared names unpaired as ambiguous-name;
+                                             children it cannot pair unpaired as ambiguous-name;
                                              --full-text returns each text in full (up to 10000 characters);
                                              --colors adds solidFills (hex, opacity, bound variable) for visible
                                              solid fills, also on --flat; no gradients, images or strokes;

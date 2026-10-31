@@ -340,7 +340,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "compare",
                 "string",
                 false,
-                "compare node with any other stored node of the file (another frame, breakpoint or state; no component set needed) with the same bounded raw-field differences, per-pair changes, unpaired nodes and exact sources as compareVariant, plus rootDelta (size and parent-relative position); children pair only when their name and type are unique on both sides, shared names are reported unpaired as ambiguous-name; instances are not expanded; adds comparison",
+                "compare node with any other stored node of the file (another frame, breakpoint or state; no component set needed) with the same bounded raw-field differences, per-pair changes, unpaired nodes and exact sources as compareVariant, plus rootDelta (size and parent-relative position); children pair by unique name, then unique main component, then stacking order in equal-sized same-name groups (pairedBy), the rest are reported unpaired as ambiguous-name; instances are not expanded; an ancestor or descendant is rejected; adds comparison",
             ),
             (
                 "fullText",
