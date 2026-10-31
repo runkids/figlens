@@ -113,17 +113,21 @@ fn compose(topic: &str, preamble: &str) -> Result<String, String> {
         );
         text = text.replace(&format!("({file}"), &format!("(workflow:{topic}"));
     }
-    // Only the search topic serves this section in full, so its links name that topic.
-    for anchor in ["search-and-local-index", "where-it-is-used"] {
+    // A link to a section this topic serves stays on the page.
+    for heading in headings {
+        let anchor = heading.to_lowercase().replace(' ', "-");
+        text = text.replace(&format!("(workflow:build#{anchor}"), &format!("(#{anchor}"));
+    }
+    // Only these topics serve these sections in full, so their links name them.
+    for (anchor, owner) in [
+        ("search-and-local-index", "search"),
+        ("where-it-is-used", "search"),
+        ("images-and-slices", "images"),
+    ] {
         for from in [format!("(#{anchor}"), format!("(workflow:build#{anchor}")] {
-            text = text.replace(&from, &format!("(workflow:search#{anchor}"));
+            text = text.replace(&from, &format!("(workflow:{owner}#{anchor}"));
         }
     }
-    // Images and slices is served by the images topic, not build.
-    text = text.replace(
-        "(workflow:build#images-and-slices",
-        "(workflow:images#images-and-slices",
-    );
     Ok(text)
 }
 
@@ -252,7 +256,7 @@ mod tests {
         );
         // Cleanup is scoped to what the run created: its export directory and its processes.
         assert!(
-            yolo.contains("never loose in `.figlens/exports/`")
+            yolo.contains("`.figlens/exports/<scope>/`, never loose in it")
                 && yolo.contains("Delete nothing outside that directory")
                 && yolo.contains("this run started, and only those")
         );
@@ -263,6 +267,8 @@ mod tests {
                 && yolo.contains("## Verification evidence\n")
                 && !yolo.contains("## Search and local index\n")
                 && yolo.contains("](workflow:images#images-and-slices)")
+                && yolo.contains("](#component-mappings)")
+                && !yolo.contains("](workflow:build#")
         );
         assert!(yolo.contains("**Proven by a tool:**") && yolo.contains("**Not verified:**"));
     }
