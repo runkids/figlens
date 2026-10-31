@@ -55,9 +55,9 @@ Une seule installation ajoute le skill figlens et le serveur MCP à votre agent 
 |---|---|
 | Claude Code | `claude plugin marketplace add runkids/figlens`, `claude plugin install figlens@figlens` |
 | Codex | `codex plugin marketplace add runkids/figlens`, `codex plugin add figlens@figlens` |
-| Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/v0.10.1` |
-| Cursor | `git clone --depth 1 --branch v0.10.1 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens`, puis rechargez la fenêtre |
-| Kimi Code | `/plugins install https://github.com/runkids/figlens/tree/v0.10.1` dans une session, puis `/reload` |
+| Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/v0.11.0` |
+| Cursor | `git clone --depth 1 --branch v0.11.0 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens`, puis rechargez la fenêtre |
+| Kimi Code | `/plugins install https://github.com/runkids/figlens/tree/v0.11.0` dans une session, puis `/reload` |
 <!-- x-release-please-end -->
 
 Redémarrez l'hôte ou ouvrez une nouvelle session, puis vérifiez que les outils figlens sont listés. L'installation d'un plugin copie le dépôt au tag de la version : environ 7 Mo, plus l'historique Git (environ 60 Mo) dans Codex. Antigravity ne charge que les 24 premiers Ko du skill ; l'outil `workflow` du serveur fournit le guide complet. Muse n'est pas encore pris en charge. [Tableau des hôtes et ce qui a été vérifié](wiki/host-plugins.md)
@@ -70,7 +70,7 @@ Redémarrez l'hôte ou ouvrez une nouvelle session, puis vérifiez que les outil
 
 <!-- x-release-please-start-version -->
 ```sh
-claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens@0.10.1 mcp
+claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens@0.11.0 mcp
 ```
 <!-- x-release-please-end -->
 
@@ -78,7 +78,7 @@ claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlen
 
 <!-- x-release-please-start-version -->
 ```sh
-codex mcp add figlens -- npx -y @runkids/figlens@0.10.1 mcp
+codex mcp add figlens -- npx -y @runkids/figlens@0.11.0 mcp
 ```
 <!-- x-release-please-end -->
 
@@ -90,7 +90,7 @@ codex mcp add figlens -- npx -y @runkids/figlens@0.10.1 mcp
   "mcpServers": {
     "figlens": {
       "command": "npx",
-      "args": ["-y", "@runkids/figlens@0.10.1", "mcp"]
+      "args": ["-y", "@runkids/figlens@0.11.0", "mcp"]
     }
   }
 }
@@ -121,7 +121,7 @@ Exemple avec deux racines de design/sortie et deux racines de stockage autorisé
     "figlens": {
       "command": "npx",
       "args": [
-        "-y", "@runkids/figlens@0.10.1", "mcp",
+        "-y", "@runkids/figlens@0.11.0", "mcp",
         "--root", "/absolute/designs",
         "--root", "/absolute/project",
         "--storage-root", "/absolute/storage-a",
@@ -211,7 +211,7 @@ Le même outil peut aussi configurer la connexion MCP de figlens pour ces agents
 
 <!-- x-release-please-start-version -->
 ```sh
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.10.1 mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.11.0 mcp
 skillshare sync mcp --global
 ```
 <!-- x-release-please-end -->

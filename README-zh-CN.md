@@ -55,9 +55,9 @@
 |---|---|
 | Claude Code | `claude plugin marketplace add runkids/figlens`, `claude plugin install figlens@figlens` |
 | Codex | `codex plugin marketplace add runkids/figlens`, `codex plugin add figlens@figlens` |
-| Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/v0.10.1` |
-| Cursor | `git clone --depth 1 --branch v0.10.1 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens`，然后重新加载窗口 |
-| Kimi Code | 在会话中运行 `/plugins install https://github.com/runkids/figlens/tree/v0.10.1`，然后运行 `/reload` |
+| Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/v0.11.0` |
+| Cursor | `git clone --depth 1 --branch v0.11.0 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens`，然后重新加载窗口 |
+| Kimi Code | 在会话中运行 `/plugins install https://github.com/runkids/figlens/tree/v0.11.0`，然后运行 `/reload` |
 <!-- x-release-please-end -->
 
 重启宿主或开启新会话，确认已列出 figlens tools。Plugin 安装会复制该 release tag 的仓库：约 7 MB，Codex 另外保留 Git 历史（约 60 MB）。Antigravity 只加载 skill 的前 24 KB；完整指引由 server 的 `workflow` tool 提供。暂不支持 Muse。[宿主对照表与验证范围](wiki/host-plugins.md)
@@ -70,7 +70,7 @@
 
 <!-- x-release-please-start-version -->
 ```sh
-claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens@0.10.1 mcp
+claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens@0.11.0 mcp
 ```
 <!-- x-release-please-end -->
 
@@ -78,7 +78,7 @@ claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlen
 
 <!-- x-release-please-start-version -->
 ```sh
-codex mcp add figlens -- npx -y @runkids/figlens@0.10.1 mcp
+codex mcp add figlens -- npx -y @runkids/figlens@0.11.0 mcp
 ```
 <!-- x-release-please-end -->
 
@@ -90,7 +90,7 @@ codex mcp add figlens -- npx -y @runkids/figlens@0.10.1 mcp
   "mcpServers": {
     "figlens": {
       "command": "npx",
-      "args": ["-y", "@runkids/figlens@0.10.1", "mcp"]
+      "args": ["-y", "@runkids/figlens@0.11.0", "mcp"]
     }
   }
 }
@@ -121,7 +121,7 @@ codex mcp add figlens -- npx -y @runkids/figlens@0.10.1 mcp
     "figlens": {
       "command": "npx",
       "args": [
-        "-y", "@runkids/figlens@0.10.1", "mcp",
+        "-y", "@runkids/figlens@0.11.0", "mcp",
         "--root", "/absolute/designs",
         "--root", "/absolute/project",
         "--storage-root", "/absolute/storage-a",
@@ -211,7 +211,7 @@ skillshare sync
 
 <!-- x-release-please-start-version -->
 ```sh
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.10.1 mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.11.0 mcp
 skillshare sync mcp --global
 ```
 <!-- x-release-please-end -->

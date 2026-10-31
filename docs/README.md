@@ -149,7 +149,7 @@ npx skills add runkids/figlens --skill figlens
 <!-- x-release-please-start-version -->
 ```sh
 skillshare install github.com/runkids/figlens/skills/figlens
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.10.1 mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.11.0 mcp
 skillshare sync && skillshare sync mcp --global
 ```
 <!-- x-release-please-end -->

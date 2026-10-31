@@ -57,7 +57,7 @@ Connect the local MCP server to your client:
 
 <!-- x-release-please-start-version -->
 ```json
-{ "mcpServers": { "figlens": { "command": "npx", "args": ["-y", "@runkids/figlens@0.10.1", "mcp"] } } }
+{ "mcpServers": { "figlens": { "command": "npx", "args": ["-y", "@runkids/figlens@0.11.0", "mcp"] } } }
 ```
 <!-- x-release-please-end -->
 
@@ -65,7 +65,7 @@ For Claude Code on macOS/Linux:
 
 <!-- x-release-please-start-version -->
 ```sh
-claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens@0.10.1 mcp
+claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens@0.11.0 mcp
 ```
 <!-- x-release-please-end -->
 
@@ -73,7 +73,7 @@ For Codex CLI on macOS/Linux:
 
 <!-- x-release-please-start-version -->
 ```sh
-codex mcp add figlens -- npx -y @runkids/figlens@0.10.1 mcp
+codex mcp add figlens -- npx -y @runkids/figlens@0.11.0 mcp
 ```
 <!-- x-release-please-end -->
 
