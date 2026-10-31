@@ -1,6 +1,6 @@
 # Diff
 
-`figlens diff <old.fig> <new.fig>` and MCP `diff` (`old`, `file`) compare one stored scope (`--node`/`node`, default `0:0`) of two saved revisions (#81). The engine is `src/search/diff.rs`; durable changes (#92) are to reuse it, not build another.
+`figlens diff <old.fig> <new.fig>` and MCP `diff` (`old`, `file`) compare one stored scope (`--node`/`node`, default `0:0`) of two saved revisions (#81). The engine is `src/search/diff.rs`; durable changes (#92) are to reuse it, not build another. Text output prints `no changes` only when no side stopped at a limit; otherwise `stopped early (<sides>)` with a `--node` hint (#162), as a whole-file diff of a large file used to say `no changes` above a `work_limit` coverage line.
 
 ## Build
 

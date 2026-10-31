@@ -1,5 +1,5 @@
 //! Compare stored definitions without guessing descendant correspondence or expanding instances.
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::path::Path;
 
@@ -226,9 +226,222 @@ fn collect(tree: &Tree, root: &str, budget: &mut Budget) -> Vec<Value> {
     nodes
 }
 
-fn groups(nodes: &[Value], path: &str) -> BTreeMap<String, Value> {
+/// Descendants that are the only node of their name and type under a paired parent on each
+/// side, from the roots down, as (left, right) indexes; names that were cut short never pair.
+fn pairs(tree: &Tree, a: &[Value], b: &[Value]) -> Vec<(usize, usize)> {
+    // Each scanned node's scanned children by (type, name), with how many share that key;
+    // built from the at most MAX_NODES scanned nodes, never from a full child list.
+    let children = |nodes: &[Value]| {
+        let at: HashMap<&str, usize> = nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| Some((n["nodeId"].as_str()?, i)))
+            .collect();
+        let mut keys: HashMap<usize, BTreeMap<String, (usize, usize)>> = HashMap::new();
+        for (c, node) in nodes.iter().enumerate().skip(1) {
+            let parent = node["nodeId"]
+                .as_str()
+                .and_then(|id| tree.nodes.get(id))
+                .and_then(|raw| raw.get("parentIndex")?.get("guid"))
+                .and_then(definition_id)
+                .and_then(|p| at.get(p.as_str()).copied());
+            let Some(parent) = parent else { continue };
+            if node["nameTruncated"] == true {
+                continue;
+            }
+            let key = json!([node["type"], node["name"]]).to_string();
+            keys.entry(parent)
+                .or_default()
+                .entry(key)
+                .or_insert((c, 0))
+                .1 += 1;
+        }
+        keys
+    };
+    let (left, right) = (children(a), children(b));
+    let mut out = Vec::new();
+    let mut queue = vec![(0, 0)];
+    while let Some((l, r)) = queue.pop() {
+        let (Some(ours), Some(theirs)) = (left.get(&l), right.get(&r)) else {
+            continue;
+        };
+        for (key, &(lc, count)) in ours {
+            if let Some(&(rc, 1)) = theirs.get(key)
+                && count == 1
+            {
+                out.push((lc, rc));
+                queue.push((lc, rc));
+            }
+        }
+    }
+    out
+}
+
+/// Names each variable alias in recorded values by its id and, when the file holds it or a
+/// library's cached copy, its name; names are cut like layer names and charged to `budget`.
+/// A field whose aliases could not all be named becomes unsupported, so names on one side
+/// only never read as a difference.
+fn name_variables(nodes: &mut [Value], names: &mut Names, budget: &mut Budget) {
+    fn walk(value: &mut Value, names: &mut Names, budget: &mut Budget) -> bool {
+        match value {
+            Value::Array(items) => items.iter_mut().all(|v| walk(v, names, budget)),
+            Value::Object(map) => {
+                let alias = &map.get("value").unwrap_or(&Value::Null)["alias"];
+                // Normalized values hold a local guid's numbers as floats.
+                let local = || match (
+                    alias["guid"]["sessionID"].as_f64(),
+                    alias["guid"]["localID"].as_f64(),
+                ) {
+                    (Some(s), Some(l)) => Some(format!("VariableID:{}:{}", s as u64, l as u64)),
+                    _ => None,
+                };
+                if map.get("dataType").and_then(Value::as_str) == Some("ALIAS")
+                    && let Some(id) = crate::rest::variable_id(alias).or_else(local)
+                {
+                    if !budget.step() {
+                        return false;
+                    }
+                    let Ok(name) = names.get(&id, budget) else {
+                        return false;
+                    };
+                    let name = name.map(|n| budget.name(n));
+                    let bytes = id.len()
+                        + name
+                            .as_ref()
+                            .map_or(0, |n| n["name"].as_str().unwrap_or("").len());
+                    if bytes > budget.bytes {
+                        budget.stop("byte_limit");
+                        return false;
+                    }
+                    budget.bytes -= bytes;
+                    map.insert(
+                        "variableNameTruncated".into(),
+                        json!(name.as_ref().is_some_and(|n| n["nameTruncated"] == true)),
+                    );
+                    map.insert(
+                        "variableName".into(),
+                        name.map_or(Value::Null, |n| n["name"].clone()),
+                    );
+                    map.insert("variableId".into(), json!(id));
+                }
+                map.values_mut().all(|v| walk(v, names, budget))
+            }
+            _ => true,
+        }
+    }
+    for node in nodes {
+        for cell in node["fields"]
+            .as_object_mut()
+            .into_iter()
+            .flat_map(|f| f.values_mut())
+        {
+            if cell["state"] == "recorded" && !walk(&mut cell["value"], names, budget) {
+                cell["state"] = "unsupported".into();
+                cell["reason"] = "variable_name_limit".into();
+                cell.as_object_mut().unwrap().remove("value");
+            }
+        }
+    }
+}
+
+/// Variable names borrowed from the stored VARIABLE nodes, a library's cached copies by key
+/// and version; that index holds only references and is built on the first library alias.
+fn is_variable(raw: &K) -> bool {
+    matches!(raw.get("type"), Some(K::Enum(_, "VARIABLE")))
+}
+
+/// Cached library variable copies by key: (version, name) in tree order.
+type Library<'a> = HashMap<&'a str, Vec<(&'a str, &'a str)>>;
+
+/// Variable names borrowed from the stored VARIABLE nodes. Library aliases resolve through
+/// cached copies by key, the alias's version first and then the others in tree order, as
+/// `variables` does; that index holds references, is built once on the first library alias
+/// from the canvases' top-level nodes (where Figma keeps variables), and charges each visit.
+struct Names<'t, 'a> {
+    tree: &'t Tree<'a>,
+    library: Option<Option<Library<'a>>>,
+}
+
+impl<'a> Names<'_, 'a> {
+    /// `Err` when the budget ran out before the name could be looked up.
+    fn get(&mut self, id: &str, budget: &mut Budget) -> Result<Option<&'a str>, ()> {
+        let Some(id) = id.strip_prefix("VariableID:") else {
+            return Ok(None);
+        };
+        let Some((key, version)) = id.split_once('/') else {
+            let raw = self.tree.nodes.get(id).copied();
+            return Ok(raw
+                .filter(|raw| is_variable(raw))
+                .and_then(|raw| super::string(raw, "name")));
+        };
+        let tree = self.tree;
+        let library = self.library.get_or_insert_with(|| {
+            let mut index = Library::new();
+            for canvas in tree.children.get("0:0").into_iter().flatten() {
+                for id in tree.children.get(canvas).into_iter().flatten() {
+                    if !budget.step() {
+                        return None;
+                    }
+                    let Some(raw) = tree.nodes.get(id).copied().filter(|raw| is_variable(raw))
+                    else {
+                        continue;
+                    };
+                    let text = |f| super::string(raw, f);
+                    if let (Some(key), Some(name)) = (text("key"), text("name")) {
+                        index
+                            .entry(key)
+                            .or_default()
+                            .push((text("version").unwrap_or(""), name));
+                    }
+                }
+            }
+            Some(index)
+        });
+        let copies = library.as_ref().ok_or(())?.get(key);
+        Ok(copies.and_then(|list| {
+            list.iter()
+                .find(|(v, _)| *v == version)
+                .or(list.first())
+                .map(|(_, name)| *name)
+        }))
+    }
+}
+
+/// Stored field changes between two nodes compared as one, unsupported values left out.
+fn changes(before: &Value, after: &Value) -> Vec<Value> {
+    let absent = |n: &Value, path: &str| json!({"sourceNodeId":n["nodeId"],"sourceField":path,"state":"absent"});
+    FIELDS
+        .iter()
+        .filter_map(|path| {
+            let cell = |n: &Value| match &n["fields"][path] {
+                Value::Null => absent(n, path),
+                cell => cell.clone(),
+            };
+            let (b, a) = (cell(before), cell(after));
+            (b["state"] != "unsupported"
+                && a["state"] != "unsupported"
+                && (b["state"] != a["state"] || b["value"] != a["value"]))
+                .then(|| json!({"field":path,"before":b,"after":a}))
+        })
+        .collect()
+}
+
+/// The descendants in `nodes` that no pairing covers.
+fn without_pair<'a>(
+    nodes: &'a [Value],
+    paired: &HashSet<usize>,
+) -> impl Iterator<Item = &'a Value> {
+    nodes
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter(move |(i, _)| !paired.contains(i))
+        .map(|(_, n)| n)
+}
+
+fn groups(nodes: &[Value], path: &str, paired: &HashSet<usize>) -> BTreeMap<String, Value> {
     let mut groups = BTreeMap::new();
-    for node in nodes.iter().skip(1) {
+    for node in without_pair(nodes, paired) {
         let cell = &node["fields"][path];
         if cell["state"] != "recorded" {
             continue;
@@ -274,12 +487,23 @@ pub fn compare_variants(
         bytes: MAX_BYTES / 2 - 2,
         reasons: Default::default(),
     };
-    let a = collect(tree, left, &mut input);
-    let b = collect(tree, right, &mut input);
+    let mut a = collect(tree, left, &mut input);
+    let mut b = collect(tree, right, &mut input);
+    let mut names = Names {
+        tree,
+        library: None,
+    };
+    name_variables(&mut a, &mut names, &mut input);
+    name_variables(&mut b, &mut names, &mut input);
+    let matched = pairs(tree, &a, &b);
+    let paired = [
+        matched.iter().map(|p| p.0).collect::<HashSet<_>>(),
+        matched.iter().map(|p| p.1).collect::<HashSet<_>>(),
+    ];
     let mut result = json!({"source":{"file":(source.len() <= MAX_ID_BYTES).then_some(source.as_ref())},
         "leftNodeId":left,"rightNodeId":right,"componentSetId":set,"interpretation":"stored-field-comparison",
         "verification":"not-compared-with-figma","businessConditions":"not-inferred","numberPrecision":4,"fields":FIELDS,
-        "notCompared":["canvas-position","child-order-and-correspondence","instance-expansion","resolved-variables","text-style-ranges","vector-region-paints","geometry-and-pixels","prototype-and-business-conditions"]});
+        "notCompared":["canvas-position","child-order-and-ambiguous-correspondence","instance-expansion","resolved-variables","text-style-ranges","vector-region-paints","geometry-and-pixels","prototype-and-business-conditions"]});
     let header = serde_json::to_vec(&result).expect("JSON header").len();
     let input_complete = input.reasons.is_empty();
     let mut output = Budget {
@@ -295,12 +519,12 @@ pub fn compare_variants(
     let mut unknown = Vec::new();
     let mut unpaired = Vec::new();
     let mut nested = 0;
-    for (root, nodes) in [(left, &a), (right, &b)] {
+    for ((root, nodes), paired) in [(left, &a), (right, &b)].into_iter().zip(&paired) {
         for (index, node) in nodes.iter().enumerate() {
             if node["type"] == "INSTANCE" {
                 nested += 1;
             }
-            if index != 0 {
+            if index != 0 && !paired.contains(&index) {
                 output.push(&mut unpaired, json!({"variantNodeId":root,"nodeId":node["nodeId"],"name":node["name"],"nameTruncated":node["nameTruncated"],"type":node["type"],"state":"not-paired"}));
             }
             for cell in node["fields"]
@@ -328,8 +552,8 @@ pub fn compare_variants(
                 json!({"field":path,"before":before,"after":after}),
             );
         }
-        let before = groups(&a, path);
-        let after = groups(&b, path);
+        let before = groups(&a, path, &paired[0]);
+        let after = groups(&b, path, &paired[1]);
         if before.len() != after.len()
             || before.iter().any(|(key, g)| {
                 after
@@ -339,14 +563,27 @@ pub fn compare_variants(
             })
         {
             let complete = input_complete
-                && a.iter().skip(1).chain(b.iter().skip(1)).all(|n| {
-                    n["fields"][path]["state"] != "unsupported"
-                        && n["fields"]["type"]["state"] != "unsupported"
-                });
+                && without_pair(&a, &paired[0])
+                    .chain(without_pair(&b, &paired[1]))
+                    .all(|n| {
+                        n["fields"][path]["state"] != "unsupported"
+                            && n["fields"]["type"]["state"] != "unsupported"
+                    });
             output.push(&mut collections,json!({"field":path,"state":if complete {"differences-recorded"} else {"unknown"},"scope":"stored-descendant-value-multiset","pairing":"not-inferred","before":before.into_values().collect::<Vec<_>>(),"after":after.into_values().collect::<Vec<_>>()}));
         }
     }
+    let mut pair_list = Vec::new();
+    for &(l, r) in &matched {
+        let (before, after) = (&a[l], &b[r]);
+        output.push(&mut pair_list, json!({"leftNodeId":before["nodeId"],"rightNodeId":after["nodeId"],
+            "name":before["name"],"type":before["type"],"basis":"only-child-with-this-name-and-type-under-paired-parents",
+            "changes":changes(before, after)}));
+    }
+    let pair_changed = pair_list
+        .iter()
+        .any(|p| p["changes"].as_array().is_some_and(|c| !c.is_empty()));
     result["state"] = if !roots.is_empty()
+        || pair_changed
         || collections
             .iter()
             .any(|c| c["state"] == "differences-recorded")
@@ -363,6 +600,7 @@ pub fn compare_variants(
     }
     .into();
     result["rootChanges"] = roots.into();
+    result["pairedNodes"] = pair_list.into();
     result["collectionChanges"] = collections.into();
     result["unpairedNodes"] = unpaired.into();
     result["unknownFields"] = unknown.into();

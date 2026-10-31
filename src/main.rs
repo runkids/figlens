@@ -101,7 +101,9 @@ usage:
                                              properties, structure, bindings); --json adds per-node old/new
                                              field values and edge changes; layers match by exact id and
                                              type only, a same-name or same-place frame is only a possible
-                                             match; pages of 100 changes (1-500), a cursor rebuilds both
+                                             match; pages of 100 changes (1-500), a cursor rebuilds both;
+                                             a side stopped at a limit prints `stopped early`, never
+                                             `no changes`; narrow it with --node
   figlens inspect <file.fig> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]
                                              compact layout/text summary, instances expanded;
                                              depth 1 (0-10), at most 200 nodes, 200 characters per text;
@@ -109,7 +111,9 @@ usage:
                                              childSpacing: derived marks gaps that are coordinates, not auto-layout;
                                              --images adds source pixels/bytes and source-pixel crop rectangles;
                                              --states lists related component variants and evidence gaps;
-                                             --compare-variant compares two stored variants in the same set;
+                                             --compare-variant compares two stored variants in the same set
+                                             (a child pairs only when it is its name and type's
+                                             only one on both sides; bound variables are named);
                                              --flat prints one line per node instead (not with the above):
                                              id TYPE \"name\" @x,y WxH relative to the node, then hidden, rot,
                                              component, text, font=family size/weight/lineHeight, fill,
@@ -131,7 +135,9 @@ usage:
                                              without a node, every local variable
   figlens variables <file.fig> --format dtcg --collection ID --mode ID --out FILE
                                              write DTCG 2025.10 color/number/alias tokens for exact IDs
-                                             from variables; no node, workspace or index needed;
+                                             from variables (a library collection exports from its
+                                             copies cached in the file, marked libraryCopy);
+                                             no node, workspace or index needed;
                                              any diagnostic fails without publishing partial tokens;
                                              prints {path,collectionId,modeId,tokenCount,diagnostics}
   figlens bundle <file.fig> <node> <out.zip> [--states]
@@ -157,7 +163,8 @@ usage:
                                              --bounds layout exports the node's own box instead of
                                              what it draws (shadows, outside strokes, overflow);
                                              prints {path,width,height,bytes,quality,layoutBox,
-                                             renderBox,warnings}; warnings say when the boxes differ;
+                                             renderBox,warnings}; warnings say when the boxes differ and
+                                             name skipped or approximated rendering, as bundle's do;
                                              --match-dir (SVG only) compares with the .svg files under DIR
                                              (subfolders included) to find an icon the project already has:
                                              matches lists those drawing the same outlines, ignoring position,
@@ -199,8 +206,8 @@ usage:
                                              with --root, files and outputs must be under one of the folders;
                                              a custom index storage must be under a --storage-root
   figlens workflow <topic>                     print built-in agent guidance, the same text as MCP workflow:
-                                             build, audit, images, plan, planning-details or yolo; a
-                                             workflow:<topic> link means `figlens workflow <topic>`
+                                             build, audit, images, search, plan, planning-details or
+                                             yolo; a workflow:<topic> link means `figlens workflow <topic>`
   figlens cache [clear]                        show, or clear, the preview render cache
                                              (prints {path,bytes} or {path,freed})
   figlens index prepare <file.fig> [--workspace DIR] [--storage DIR] [--scope NODE] [--request-id ID]

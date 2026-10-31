@@ -566,10 +566,21 @@ impl Command {
                 mode,
                 out,
             } => {
-                let snapshot = variables(tree, None);
+                // A library collection id carries `<key>/<version>`, a local one a guid. Presence in
+                // the local snapshot cannot tell them apart: it also holds what local aliases reach.
+                let local = !collection.contains('/');
+                let snapshot = if local {
+                    variables(tree, None)
+                } else {
+                    // From the library's copies cached in this file.
+                    figlens::variables::in_collection(tree, &collection)
+                };
                 let mut tokens = figlens::tokens::convert(&snapshot, &collection, &mode)?;
                 tokens["$extensions"]["org.figlens"]["source"] =
                     serde_json::to_value(fig.canonicalize()?)?;
+                if !local {
+                    tokens["$extensions"]["org.figlens"]["libraryCopy"] = json!(true);
+                }
                 figlens::output::write(fig, &out, |file| {
                     use std::io::{BufWriter, Write};
                     let mut writer = BufWriter::new(file);
@@ -1121,6 +1132,11 @@ pub fn diff_cli(args: &[String]) -> Result<String, Box<dyn Error>> {
     if json {
         return Ok(format!("{value}\n"));
     }
+    Ok(diff_text(&value))
+}
+
+/// The text form of a diff reply: one line per changed frame, then coverage and paging.
+fn diff_text(value: &Value) -> String {
     let mut out = String::new();
     for f in value["frames"].as_array().into_iter().flatten() {
         let change = f["change"].as_str().unwrap_or("changed");
@@ -1139,7 +1155,21 @@ pub fn diff_cli(args: &[String]) -> Result<String, Box<dyn Error>> {
         }
         out.push('\n');
     }
-    if value["frames"].as_array().is_some_and(Vec::is_empty) && value["nextCursor"].is_null() {
+    // A side that stopped at a limit was not read to the end, so finding nothing proves nothing.
+    let stopped = value["coverage"]["reasons"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["reason"].as_str().is_some_and(|r| r.ends_with("_limit")))
+        .map(|r| r["side"].as_str().unwrap_or("comparison"))
+        .collect::<Vec<_>>();
+    if !stopped.is_empty() {
+        out += &format!(
+            "stopped early ({}): not everything was compared; narrow it with --node <frame or page>\n",
+            stopped.join(", ")
+        );
+    } else if value["frames"].as_array().is_some_and(Vec::is_empty) && value["nextCursor"].is_null()
+    {
         out += "no changes\n";
     }
     if value["coverage"]["complete"] != true {
@@ -1148,7 +1178,7 @@ pub fn diff_cli(args: &[String]) -> Result<String, Box<dyn Error>> {
     if let Some(c) = value["nextCursor"].as_str() {
         out += &format!("more: --cursor {c}\n");
     }
-    Ok(out)
+    out
 }
 
 /// MCP `diff`: `old` against `file`, both admitted local paths.

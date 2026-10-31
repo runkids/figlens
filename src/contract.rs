@@ -34,12 +34,12 @@ const WORKSPACE_ID: Param = (
 pub const TOOLS: &[(&str, &str, &[Param])] = &[
     (
         "workflow",
-        "Read built-in figlens skill guidance for this agent: build for design-to-code and project reuse, audit for comparing existing UI with a design and correcting confirmed differences, images for website asset preparation, plan for scoped implementation planning, planning-details for page/multi-page work or unresolved design dependencies, yolo for explicitly requested autonomous implementation and temporary-plan cleanup. Returns the requested guide only; no design file, project read/write, implementation, verification or cleanup is performed. Ordinary design questions and exports can use the design tools directly.",
+        "Read built-in figlens skill guidance for this agent: build for design-to-code and project reuse, audit for comparing existing UI with a design and correcting confirmed differences, images for website asset preparation, search for an index, usages and following changes, plan for scoped implementation planning, planning-details for page/multi-page work or unresolved design dependencies, yolo for explicitly requested autonomous implementation and temporary-plan cleanup. Returns the requested guide only; no design file, project read/write, implementation, verification or cleanup is performed. Ordinary design questions and exports can use the design tools directly.",
         &[(
             "topic",
             "string",
             true,
-            "Guide to read: build, audit, images, plan, planning-details or yolo.",
+            "Guide to read: build, audit, images, search, plan, planning-details or yolo.",
         )],
     ),
     (
@@ -334,7 +334,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "compareVariant",
                 "string",
                 false,
-                "compare node with this other stored variant in the same component set; adds bounded raw-field and descendant-multiset differences, exact sources and unknown pairing; no alternate rendering or business inference",
+                "compare node with this other stored variant in the same component set; adds bounded raw-field differences, per-pair changes for children whose name and type are unique on both sides, other descendants' value multisets, exact sources and bound variable names; no alternate rendering or business inference",
             ),
             (
                 "flat",
@@ -370,7 +370,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "collection",
                 "string",
                 false,
-                "exact collection ID from variables; required only for dtcg",
+                "exact collection ID from variables: a local one, or a library one the file has cached copies of (exported from them, marked libraryCopy); required only for dtcg",
             ),
             (
                 "mode",
@@ -425,7 +425,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "export",
-        "Export a node to SVG, PNG, JPG, WebP or AVIF. Create the output directory first. Returns metadata and, for raster formats, an inline image. PNG suits inline references: up to 4,194,304 pixels it is losslessly optimized with exact decoded RGBA, keeping original encoded bytes unless smaller; larger PNGs keep regular encoding. For website assets, follow the target project's existing image pipeline; otherwise start with WebP for bitmaps, sized for display dimensions and DPR using scale/maxSize and quality/maxKb. SVG embeds original images and can be large; keep it for vector artwork. When inlining or optimizing SVG, keep its root transform and unique ids (SVGO: prefixIds, not cleanupIds). The export covers what the node draws; bounds: layout exports the layout box, and warnings report when the two differ. scale, quality and maxSize affect raster formats only; maxSize defaults to 1600. Check returned dimensions/bytes and isError; read content on failure.",
+        "Export a node to SVG, PNG, JPG, WebP or AVIF. Create the output directory first. Returns metadata and, for raster formats, an inline image. PNG suits inline references: up to 4,194,304 pixels it is losslessly optimized with exact decoded RGBA, keeping original encoded bytes unless smaller; larger PNGs keep regular encoding. For website assets, follow the target project's existing image pipeline; otherwise start with WebP for bitmaps, sized for display dimensions and DPR using scale/maxSize and quality/maxKb. SVG embeds original images and can be large; keep it for vector artwork. When inlining or optimizing SVG, keep its root transform and unique ids (SVGO: prefixIds, not cleanupIds). The export covers what the node draws; bounds: layout exports the layout box, and warnings report when the two differ and any known skipped or approximated rendering in the subtree, as bundle warnings do. scale, quality and maxSize affect raster formats only; maxSize defaults to 1600. Check returned dimensions/bytes and isError; read content on failure.",
         &[
             FILE,
             NODE,
@@ -858,7 +858,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "truncated": {"type": "boolean"},
                 "images": {"type": "object", "description": "optional source image evidence when images=true"},
                 "states": {"type": "object", "description": "optional variants and prototype field evidence when states=true; independent truncation, source file, node/override provenance and unknown markers; no inferred business logic"},
-                "variantComparison": {"type":"object", "description":"optional same-set definition comparison when compareVariant is supplied; raw fields, descendant value multisets, unpaired nodes, unknowns and independent truncation; not a pixel comparison"},
+                "variantComparison": {"type":"object", "description":"optional same-set definition comparison when compareVariant is supplied; raw fields, paired children, descendant value multisets, unpaired nodes, unknowns and independent truncation; not a pixel comparison"},
                 "handoffDiagnostics": {"type":"object", "description":"optional known stored semantics not emitted by the projection; counts cover the selected expanded subtree independently of summary depth, with at most five example IDs per feature and explicit coverage limits"},
             }),
             ["truncated"].as_slice(),
@@ -872,7 +872,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "quality": { "type": "integer", "description": "the quality used; --max-kb may lower it" },
                 "layoutBox": { "type": ["object", "null"], "description": "absoluteBoundingBox in page coordinates" },
                 "renderBox": { "type": ["object", "null"], "description": "absoluteRenderBounds in page coordinates" },
-                "warnings": { "type": "array", "items": { "type": "string" }, "description": "empty unless the drawn area differs from the layout box; then how far it reaches past each side, what draws there when known, and which box was exported" },
+                "warnings": { "type": "array", "items": { "type": "string" }, "description": "first, when the drawn area differs from the layout box, how far it reaches past each side, what draws there when known, and which box was exported; then one `Render <state> at node <id> (<field>): <reason>` line per known skipped or approximated rendering in the subtree, as in bundle warnings; empty when neither applies" },
                 "matches": { "type": "array", "items": { "type": "string" }, "description": "with matchDir: files there (relative paths) that draw the same outlines" },
                 "similar": { "type": "array", "items": { "type": "object" }, "description": "with matchDir: up to 10 other files with a similar shape as {file, score}, score 0.8-1, best first; not proof of the same icon" },
             }),

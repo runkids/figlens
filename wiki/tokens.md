@@ -2,7 +2,7 @@
 
 Use this for conversion, selection, diagnostics and interoperability; variable decoding remains in [fig-format](fig-format.md).
 
-`variables <file> [node]` keeps its REST-shaped output and decoder unchanged. Explicit `variables <file.fig> --format dtcg --collection ID --mode ID --out FILE` converts the live tree's variables snapshot, not the search index; no workspace or index is required. Inspect REST variables first and supply exact collection and mode IDs. DTCG requires all three options and forbids a node; REST forbids collection/mode/output options. Create the output parent directory first. No default mode or cross-collection mode mapping is guessed.
+`variables <file> [node]` keeps its REST-shaped output and decoder unchanged. Explicit `variables <file.fig> --format dtcg --collection ID --mode ID --out FILE` converts the live tree's variables snapshot, not the search index; no workspace or index is required. Inspect REST variables first and supply exact collection and mode IDs. A collection the file does not define, such as a library collection `variables <file> <node>` lists, is exported from the library's copies cached in the file and marked `$extensions.org.figlens.libraryCopy: true`: the values saved with this file, which may lag the published library (#161). Before, it failed with `unknown_collection` although figlens itself had listed the id. DTCG requires all three options and forbids a node; REST forbids collection/mode/output options. Create the output parent directory first. No default mode or cross-collection mode mapping is guessed.
 
 ## Mapping and validation
 

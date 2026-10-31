@@ -163,7 +163,7 @@ irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 |
 
 `npx` runs the binary of the package version it resolves. Script installs update with `figlens update`; Homebrew installs with `brew upgrade figlens`. Binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64) and Windows (x86_64).
 
-An agent that uses the CLI reads its guidance with `figlens workflow build` (also `audit`, `images`, `plan`, `planning-details` and the opt-in `yolo`), which always matches the binary's version, or from the [agent skill](#setup-skill).
+An agent that uses the CLI reads its guidance with `figlens workflow build` (also `audit`, `images`, `search`, `plan`, `planning-details` and the opt-in `yolo`), which always matches the binary's version, or from the [agent skill](#setup-skill).
 
 [CLI reference](docs/README.md#commands)
 
@@ -252,7 +252,7 @@ One frame, one zip. Structure to build from, assets to use, a picture to check a
 - **Fonts and text:** font files are not bundled; overridden text can retain Figma's saved layout. Use licensed project fonts and compare the result.
 - **Support coverage:** follow [rendering improvements](https://github.com/runkids/figlens/issues/36) and [handoff semantics](https://github.com/runkids/figlens/issues/37) in the issue tracker. See [current semantic coverage](wiki/semantics.md).
 - **Check the output.** Read bundle `warnings`, `missing-assets.json` and unresolved variables in `context.md`, then compare the implementation with the design.
-- Known visible rendering limitations appear in node `_figlens.renderDiagnostics`, bounded `inspect` summaries and bundle `warnings`; `missing-assets.json` lists only asset failures. No warnings does not establish pixel fidelity.
+- Known visible rendering limitations appear in node `_figlens.renderDiagnostics`, bounded `inspect` summaries and bundle and `export` `warnings`; `missing-assets.json` lists only asset failures. No warnings does not establish pixel fidelity.
 
 ## Help figlens grow
 

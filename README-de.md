@@ -163,7 +163,7 @@ irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 |
 
 `npx` führt das Binary der aufgelösten Paketversion aus. Skript-Installationen aktualisierst du mit `figlens update`, Homebrew-Installationen mit `brew upgrade figlens`. Binaries gibt es für macOS (Apple silicon, Intel), Linux (arm64, x86_64) und Windows (x86_64).
 
-Ein Agent, der die CLI nutzt, liest seine Anleitung mit `figlens workflow build` (außerdem `audit`, `images`, `plan`, `planning-details` und das nur auf ausdrücklichen Wunsch genutzte `yolo`), die immer zur Version des Binarys passt, oder aus dem [Agent-Skill](#setup-skill).
+Ein Agent, der die CLI nutzt, liest seine Anleitung mit `figlens workflow build` (außerdem `audit`, `images`, `search`, `plan`, `planning-details` und das nur auf ausdrücklichen Wunsch genutzte `yolo`), die immer zur Version des Binarys passt, oder aus dem [Agent-Skill](#setup-skill).
 
 [CLI-Referenz](docs/README-de.md#commands)
 
@@ -252,7 +252,7 @@ Ein Frame, eine Zip. Struktur zum Bauen, Assets zum Verwenden, ein Bild zum Abgl
 - **Schriften und Text:** Schriftdateien sind nicht enthalten; überschriebener Text kann Figmas gespeichertes Layout behalten. Verwende lizenzierte Projektschriften und vergleiche das Ergebnis.
 - **Unterstützungsumfang:** [Rendering-Verbesserungen](https://github.com/runkids/figlens/issues/36) und [Handoff-Semantik](https://github.com/runkids/figlens/issues/37) werden im Issue-Tracker verfolgt. Siehe die [aktuelle semantische Abdeckung](wiki/semantics.md).
 - **Prüfe die Ausgabe.** Lies die Bundle-`warnings`, `missing-assets.json` und ungelöste Variablen in `context.md` und vergleiche dann die Implementierung mit dem Design.
-- Bekannte sichtbare Render-Grenzen stehen in `_figlens.renderDiagnostics` der Knoten, begrenzten `inspect`-Zusammenfassungen und Bundle-`warnings`; `missing-assets.json` enthält nur Asset-Fehler. Auch ohne Warnungen ist Pixeltreue nicht garantiert.
+- Bekannte sichtbare Render-Grenzen stehen in `_figlens.renderDiagnostics` der Knoten, begrenzten `inspect`-Zusammenfassungen und den `warnings` von Bundle und `export`; `missing-assets.json` enthält nur Asset-Fehler. Auch ohne Warnungen ist Pixeltreue nicht garantiert.
 
 ## Hilf figlens zu wachsen
 

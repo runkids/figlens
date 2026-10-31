@@ -81,19 +81,39 @@ fn variant_comparison_keeps_root_changes_and_unpaired_descendant_multisets() {
     assert!(changes.iter().any(|c| c["field"] == "size"));
     assert!(changes.iter().any(|c| c["field"] == "fillPaints"));
     assert!(!result.to_string().contains("m02"));
-    let collections = result["collectionChanges"].as_array().unwrap();
-    let texts = collections
+    // The only TEXT named Label on each side pairs; its changes are reported per pair.
+    let pairs = result["pairedNodes"].as_array().unwrap();
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(
+        (&pairs[0]["leftNodeId"], &pairs[0]["rightNodeId"]),
+        (&json!("0:70"), &json!("0:71"))
+    );
+    let pair = pairs[0]["changes"].as_array().unwrap();
+    let texts = pair
         .iter()
         .find(|c| c["field"] == "textData.characters")
         .unwrap();
-    assert_eq!(texts["before"][0]["value"], "Submit");
-    assert_eq!(texts["before"][0]["sources"][0]["sourceNodeId"], "0:70");
-    assert_eq!(texts["after"][0]["value"], "Loading");
-    assert_eq!(texts["pairing"], "not-inferred");
-    assert!(collections.iter().any(|c| c["field"] == "visible"));
+    assert_eq!(
+        (&texts["before"]["value"], &texts["after"]["value"]),
+        (&json!("Submit"), &json!("Loading"))
+    );
+    assert_eq!(
+        pair.iter().find(|c| c["field"] == "visible").unwrap()["before"]["state"],
+        "absent"
+    );
+    let collections = result["collectionChanges"].as_array().unwrap();
+    assert!(
+        !collections
+            .iter()
+            .any(|c| c["field"] == "textData.characters")
+    );
     assert!(collections.iter().any(|c| c["field"] == "size"));
-    assert!(collections.iter().any(|c| c["field"] == "fillPaints"));
-    assert_eq!(result["unpairedNodes"].as_array().unwrap().len(), 4);
+    let fills = collections
+        .iter()
+        .find(|c| c["field"] == "fillPaints")
+        .unwrap();
+    assert_eq!(fills["pairing"], "not-inferred");
+    assert_eq!(result["unpairedNodes"].as_array().unwrap().len(), 2);
     assert!(
         result["unpairedNodes"]
             .as_array()
@@ -384,4 +404,190 @@ fn image_hash_bytes_are_preserved_and_canvas_translation_is_ignored() {
     };
     let before = field(tree.nodes["0:10"], "fillPaints", "0:10", &mut budget);
     assert_eq!(before["value"][0]["image"]["hash"], "0102");
+}
+
+#[test]
+fn ambiguous_names_stay_unpaired_and_bound_variables_are_named() {
+    let named = |name: &str| ("name", K::String(name.into()));
+    let bound = |variable: u32| {
+        K::Array(vec![obj(vec![
+            ("type", K::Enum("Paint", "SOLID")),
+            (
+                "colorVar",
+                obj(vec![
+                    ("dataType", K::Enum("VariableDataType", "ALIAS")),
+                    (
+                        "value",
+                        obj(vec![(
+                            "alias",
+                            obj(vec![(
+                                "guid",
+                                obj(vec![
+                                    ("sessionID", K::UInt(0)),
+                                    ("localID", K::UInt(variable)),
+                                ]),
+                            )]),
+                        )]),
+                    ),
+                ]),
+            ),
+        ])])
+    };
+    let message = message(vec![
+        node(10, 40, "SYMBOL", vec![("fillPaints", bound(90))]),
+        node(11, 40, "SYMBOL", vec![("fillPaints", bound(91))]),
+        node(70, 10, "TEXT", vec![named("Label")]),
+        node(71, 10, "TEXT", vec![named("Label")]),
+        node(72, 11, "TEXT", vec![named("Label")]),
+        node(90, 1, "VARIABLE", vec![named("color/bg/brand-soft")]),
+        node(91, 1, "VARIABLE", vec![named("color/bg/brand")]),
+    ]);
+    let tree = Tree::new(&message);
+    let result = compare_variants(&tree, "0:10", "0:11", Path::new("test.fig")).unwrap();
+    assert_eq!(result["pairedNodes"], json!([]));
+    assert_eq!(result["unpairedNodes"].as_array().unwrap().len(), 3);
+    let fill = result["rootChanges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["field"] == "fillPaints")
+        .unwrap();
+    let var = |side: &str| fill[side]["value"][0]["colorVar"].clone();
+    assert_eq!(
+        (&var("before")["variableId"], &var("before")["variableName"]),
+        (&json!("VariableID:0:90"), &json!("color/bg/brand-soft"))
+    );
+    assert_eq!(var("after")["variableName"], "color/bg/brand");
+    assert_eq!(var("after")["variableNameTruncated"], false);
+}
+
+#[test]
+fn long_bound_variable_names_are_cut_and_charged() {
+    let long = "v".repeat(MAX_VALUE_BYTES);
+    let alias = |variable: u32| {
+        K::Array(vec![obj(vec![
+            ("type", K::Enum("Paint", "SOLID")),
+            (
+                "colorVar",
+                obj(vec![
+                    ("dataType", K::Enum("VariableDataType", "ALIAS")),
+                    (
+                        "value",
+                        obj(vec![(
+                            "alias",
+                            obj(vec![(
+                                "guid",
+                                obj(vec![
+                                    ("sessionID", K::UInt(0)),
+                                    ("localID", K::UInt(variable)),
+                                ]),
+                            )]),
+                        )]),
+                    ),
+                ]),
+            ),
+        ])])
+    };
+    let mut nodes = vec![
+        node(10, 40, "SYMBOL", vec![]),
+        node(11, 40, "SYMBOL", vec![]),
+        node(90, 1, "VARIABLE", vec![("name", K::String(long.clone()))]),
+    ];
+    nodes.extend((100..300).map(|id| {
+        node(
+            id,
+            10 + id % 2,
+            "RECTANGLE",
+            vec![("fillPaints", alias(90))],
+        )
+    }));
+    let message = message(nodes);
+    let tree = Tree::new(&message);
+    let result = compare_variants(&tree, "0:10", "0:11", Path::new("test.fig")).unwrap();
+    assert!(!result.to_string().contains(&long));
+    assert!(
+        result
+            .to_string()
+            .contains("\"variableNameTruncated\":true")
+    );
+    assert!(serde_json::to_vec(&result).unwrap().len() <= MAX_BYTES);
+    assert_eq!(result["truncated"], true);
+    // Identical bindings never become a difference because only one side was named.
+    assert_ne!(result["state"], "differences-recorded");
+    assert!(
+        result["unknownFields"]
+            .to_string()
+            .contains("variable_name_limit")
+    );
+}
+
+#[test]
+fn library_aliases_are_named_from_cached_copies() {
+    let s = |v: &str| K::String(v.into());
+    let fill_of = |key: &str, version: &str| {
+        let alias = obj(vec![(
+            "assetRef",
+            obj(vec![("key", s(key)), ("version", s(version))]),
+        )]);
+        K::Array(vec![obj(vec![
+            ("type", K::Enum("Paint", "SOLID")),
+            (
+                "colorVar",
+                obj(vec![
+                    ("dataType", K::Enum("VariableDataType", "ALIAS")),
+                    ("value", obj(vec![("alias", alias)])),
+                ]),
+            ),
+        ])])
+    };
+    let fill = fill_of("vk", "3:4");
+    let message = message(vec![
+        node(10, 40, "SYMBOL", vec![]),
+        node(11, 40, "SYMBOL", vec![("fillPaints", fill)]),
+        node(
+            90,
+            1,
+            "VARIABLE",
+            vec![
+                ("name", s("color/bg/brand")),
+                ("key", s("vk")),
+                ("version", s("3:4")),
+            ],
+        ),
+    ]);
+    let tree = Tree::new(&message);
+    let result = compare_variants(&tree, "0:10", "0:11", Path::new("test.fig")).unwrap();
+    let fill = result["rootChanges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["field"] == "fillPaints")
+        .unwrap();
+    let var = &fill["after"]["value"][0]["colorVar"];
+    assert_eq!(
+        (&var["variableId"], &var["variableName"]),
+        (&json!("VariableID:vk/3:4"), &json!("color/bg/brand"))
+    );
+    // Another cached version of the key still names the alias, as `variables` resolves it.
+    let other = super::tests::message(vec![
+        node(10, 40, "SYMBOL", vec![]),
+        node(11, 40, "SYMBOL", vec![("fillPaints", fill_of("vk", "3:4"))]),
+        node(
+            90,
+            1,
+            "VARIABLE",
+            vec![
+                ("name", s("color/bg/old")),
+                ("key", s("vk")),
+                ("version", s("1:1")),
+            ],
+        ),
+    ]);
+    let tree = Tree::new(&other);
+    let result = compare_variants(&tree, "0:10", "0:11", Path::new("test.fig")).unwrap();
+    assert!(
+        result
+            .to_string()
+            .contains("\"variableName\":\"color/bg/old\"")
+    );
 }

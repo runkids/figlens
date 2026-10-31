@@ -35,7 +35,7 @@ These roots allow scratch output in `.figlens/` and reading the shared designs, 
 
 `inspect` and `bundle` accept optional `states: true` (CLI `--states`) for a bounded, source-scoped list of explicitly related component variants. The agent supplies this per-call argument when related states are requested; no MCP configuration change is needed. Inspect adds `states`; bundle adds `design/states.json`, a manifest pointer and a bounded context summary. Independent inventory truncation/coverage must be checked; supported prototype fields retain exact sources and unknown markers, without business inference. Both reuse their selected effective subtree and do not render alternate variants. See [related variants](states.md) for evidence, batch usage and limits.
 
-For two selected variants, `inspect` accepts `compareVariant: "other-node-id"` (CLI `--compare-variant ID`) and adds `variantComparison`. Both IDs must be stored component definitions in the same set. It compares bounded raw root fields and descendant value multisets, retains exact sources/unknowns and leaves descendants unpaired. It performs no alternate expansion/rendering and changes no bundle or preview controls. See [variant comparison](states.md#compare-two-variants).
+For two selected variants, `inspect` accepts `compareVariant: "other-node-id"` (CLI `--compare-variant ID`) and adds `variantComparison`. Both IDs must be stored component definitions in the same set. It compares bounded raw root fields and descendant value multisets, retains exact sources/unknowns, pairs a child only when its name and type are unique on both sides, and names bound variables. It performs no alternate expansion/rendering and changes no bundle or preview controls. See [variant comparison](states.md#compare-two-variants).
 
 `inspect` accepts `flat: true` (CLI `--flat`): the content text is one line per node and `structuredContent` is `{flat, truncated}` without `node`, which is why the inspect output schema requires only `truncated`. `export` accepts `matchDir` (CLI `--match-dir`) for SVG output; it is admitted and rechecked under `--root` like `out`, and the reply adds `matches` and `similar` (paths relative to that folder; see [render](render.md)).
 
@@ -48,6 +48,7 @@ The `workflow` tool lets a model retrieve detailed guidance without a separate s
 | `build` | Implement a design with the project's components, tokens and architecture, then compare and correct the running UI |
 | `audit` | Compare existing UI with a design, report evidence and coverage, and correct confirmed differences only when requested |
 | `images` | Prepare website assets using the project's image pipeline and verify dimensions, crops, bytes and delivery |
+| `search` | Check for or enable an index, maintain it, semantic and image search, `usages`, following changes; build and audit carry only its decision table (#164: audit 34.6 → 11.3 KB, build 50.5 → 27.3 KB) |
 | `plan` | Plan an implementation or carefully reproduce a design; stop at the plan for plan-only or plan-first requests |
 | `planning-details` | Detail page/multi-page scope or a specific unresolved design/project dependency |
 | `yolo` | The user explicitly requests autonomous implementation and cleanup of this run's temporary plan after successful checks |

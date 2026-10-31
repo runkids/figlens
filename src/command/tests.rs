@@ -1369,3 +1369,32 @@ fn cli_index_rejects_bad_arguments_before_touching_storage() {
             .contains("--workspace needs a value")
     );
 }
+
+#[test]
+fn diff_text_says_a_stopped_side_was_not_compared_instead_of_no_changes() {
+    let reply = |reasons: serde_json::Value| {
+        serde_json::json!({"frames": [], "nextCursor": null,
+            "coverage": {"complete": reasons.as_array().unwrap().is_empty(), "reasons": reasons}})
+    };
+    let stopped = super::diff_text(&reply(serde_json::json!([
+        {"reason": "work_limit", "side": "old"},
+        {"reason": "hidden_content_not_expanded", "side": "new", "count": 2},
+        {"reason": "work_limit", "side": "new"}
+    ])));
+    assert!(!stopped.contains("no changes"), "{stopped}");
+    assert!(
+        stopped.starts_with("stopped early (old, new):") && stopped.contains("--node"),
+        "{stopped}"
+    );
+    let partial = super::diff_text(&reply(
+        serde_json::json!([{"reason": "definition_not_compared", "side": "new", "count": 1}]),
+    ));
+    assert!(
+        partial.starts_with("no changes\ncoverage partial:"),
+        "{partial}"
+    );
+    assert_eq!(
+        super::diff_text(&reply(serde_json::json!([]))),
+        "no changes\n"
+    );
+}

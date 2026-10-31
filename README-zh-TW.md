@@ -163,7 +163,7 @@ irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 |
 
 `npx` 會執行它解析到的套件版本所對應的執行檔。用安裝腳本裝的以 `figlens update` 更新；Homebrew 裝的以 `brew upgrade figlens` 更新。執行檔支援 macOS（Apple silicon、Intel）、Linux（arm64、x86_64）與 Windows（x86_64）。
 
-使用 CLI 的 agent 可以執行 `figlens workflow build` 讀取指引（另有 `audit`、`images`、`plan`、`planning-details` 與需明確啟用的 `yolo`），內容永遠與執行檔版本一致；也可以改用 [agent skill](#setup-skill)。
+使用 CLI 的 agent 可以執行 `figlens workflow build` 讀取指引（另有 `audit`、`images`、`search`、`plan`、`planning-details` 與需明確啟用的 `yolo`），內容永遠與執行檔版本一致；也可以改用 [agent skill](#setup-skill)。
 
 [CLI 參考](docs/README-zh-TW.md#commands)
 
@@ -252,7 +252,7 @@ GIF 以剪輯版影片的 3 倍速度循環播放；點擊可觀看完整 78 秒
 - **字型與文字：** 不包含字型檔；被覆寫的文字可能保留 Figma 儲存的排版。請使用有授權的專案字型並比對結果。
 - **支援範圍：** [渲染改進](https://github.com/runkids/figlens/issues/36)與[交接語意](https://github.com/runkids/figlens/issues/37)已開 issue 追蹤。另見[目前語意支援範圍](wiki/semantics.md)。
 - **請檢查輸出。** 閱讀 bundle 的 `warnings`、`missing-assets.json`，以及 `context.md` 中未解析的 variables，再將實作與設計比對。
-- 已知可見渲染限制會列在節點 `_figlens.renderDiagnostics`、有數量上限的 `inspect` 摘要及 bundle `warnings`；`missing-assets.json` 只列素材失敗。沒有警告不代表像素一致。
+- 已知可見渲染限制會列在節點 `_figlens.renderDiagnostics`、有數量上限的 `inspect` 摘要及 bundle 與 `export` 的 `warnings`；`missing-assets.json` 只列素材失敗。沒有警告不代表像素一致。
 
 ## 幫助 figlens 成長
 

@@ -163,7 +163,7 @@ irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 |
 
 `npx` exécute le binaire de la version du paquet qu'il résout. Les installations par script se mettent à jour avec `figlens update`, celles de Homebrew avec `brew upgrade figlens`. Les binaires couvrent macOS (Apple silicon, Intel), Linux (arm64, x86_64) et Windows (x86_64).
 
-Un agent qui utilise la CLI lit son guide avec `figlens workflow build` (ainsi que `audit`, `images`, `plan`, `planning-details` et `yolo`, réservé à une demande explicite), toujours aligné sur la version du binaire, ou via le [skill](#setup-skill).
+Un agent qui utilise la CLI lit son guide avec `figlens workflow build` (ainsi que `audit`, `images`, `search`, `plan`, `planning-details` et `yolo`, réservé à une demande explicite), toujours aligné sur la version du binaire, ou via le [skill](#setup-skill).
 
 [Référence de la CLI](docs/README-fr.md#commands)
 
@@ -252,7 +252,7 @@ Une frame, un zip. Une structure pour construire, des assets à utiliser, une im
 - **Polices et texte :** les fichiers de polices ne sont pas inclus ; un texte avec override peut conserver la mise en page enregistrée par Figma. Utilisez des polices autorisées du projet et comparez le résultat.
 - **Couverture :** les [améliorations du rendu](https://github.com/runkids/figlens/issues/36) et la [sémantique de transmission](https://github.com/runkids/figlens/issues/37) sont suivies dans les issues. Consultez la [couverture sémantique actuelle](wiki/semantics.md).
 - **Vérifiez la sortie.** Lisez les `warnings` du bundle, `missing-assets.json` et les variables non résolues dans `context.md`, puis comparez l’implémentation au design.
-- Les limites de rendu visibles connues figurent dans `_figlens.renderDiagnostics` des nœuds, les résumés bornés de `inspect` et les `warnings` du bundle ; `missing-assets.json` ne contient que les échecs de ressources. L’absence d’avertissements ne garantit pas la fidélité des pixels.
+- Les limites de rendu visibles connues figurent dans `_figlens.renderDiagnostics` des nœuds, les résumés bornés de `inspect` et les `warnings` du bundle et d’`export` ; `missing-assets.json` ne contient que les échecs de ressources. L’absence d’avertissements ne garantit pas la fidélité des pixels.
 
 ## Aidez figlens à grandir
 

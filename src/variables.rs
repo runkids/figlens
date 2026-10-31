@@ -28,13 +28,43 @@ pub fn variables(tree: &Tree, document: Option<&Json>) -> Json {
             }
         }
     }
+    resolve(&vars, ids)
+}
+
+/// Every variable of collection `id`, local or a library's copies cached in the file, in
+/// collection order, plus the variables they alias.
+pub fn in_collection(tree: &Tree, id: &str) -> Json {
+    let vars = file_variables(tree);
+    let mut members: Vec<&Json> = vars
+        .values()
+        .flatten()
+        .filter(|v| {
+            v["type"] == "VARIABLE" && collection_id(&v["variableSetID"]).as_deref() == Some(id)
+        })
+        .collect();
+    members.sort_by_key(|v| v["sortPosition"].as_str().unwrap_or("").to_owned());
+    let mut ids = Vec::new();
+    for v in members {
+        // A cached copy is bound by its library key and version, as `lookup` reads it back.
+        let own = match (v["key"].as_str(), v["version"].as_str()) {
+            (Some(key), Some(version)) => Some(format!("VariableID:{key}/{version}")),
+            _ => guid(&v["guid"]).map(|g| format!("VariableID:{g}")),
+        };
+        push(&mut ids, own);
+    }
+    resolve(&vars, ids)
+}
+
+/// The snapshots of `ids` and of every variable they alias, their collections, and the ids
+/// the file cannot resolve.
+fn resolve(vars: &Vars, mut ids: Vec<String>) -> Json {
     let (mut found, mut missing, mut collections) = (Vec::new(), Vec::new(), Vec::<Json>::new());
     // Aliases can point at further aliases, so the list grows while it is read.
     let mut i = 0;
     while i < ids.len() {
         let id = ids[i].clone();
         i += 1;
-        let Some(v) = lookup(&vars, &id) else {
+        let Some(v) = lookup(vars, &id) else {
             missing.push(json!(id));
             continue;
         };
@@ -43,7 +73,7 @@ pub fn variables(tree: &Tree, document: Option<&Json>) -> Json {
         let set = &v["variableSetID"];
         let set_id = collection_id(set);
         // Without its collection a variable has no modes, so the plugin counts it as unresolved.
-        let Some(set_node) = copies(&vars, set).into_iter().next() else {
+        let Some(set_node) = copies(vars, set).into_iter().next() else {
             missing.push(json!(id));
             continue;
         };
@@ -273,6 +303,84 @@ mod tests {
         let mut ids = vec!["VariableID:1:2".to_owned()];
         aliases(&doc, &mut ids);
         assert_eq!(ids, ["VariableID:1:2", "VariableID:1:3", "VariableID:1:1"]);
+    }
+
+    #[test]
+    fn a_library_collection_exports_from_its_cached_copies() {
+        use kiwi_schema::Value as K;
+        use std::collections::HashMap;
+        let obj = |fields: Vec<(&'static str, K<'static>)>| {
+            K::Object("Test", fields.into_iter().collect())
+        };
+        let s = |v: &'static str| K::String(v.into());
+        let mode = || obj(vec![("sessionID", K::UInt(1)), ("localID", K::UInt(2))]);
+        let set = obj(vec![
+            ("type", K::Enum("NodeType", "VARIABLE_SET")),
+            ("name", s("Brand")),
+            ("key", s("sk")),
+            (
+                "variableSetModes",
+                K::Array(vec![obj(vec![("id", mode()), ("name", s("Light"))])]),
+            ),
+        ]);
+        let color = obj(vec![
+            ("r", K::Float(1.0)),
+            ("g", K::Float(0.0)),
+            ("b", K::Float(0.0)),
+            ("a", K::Float(1.0)),
+        ]);
+        let variable = obj(vec![
+            ("type", K::Enum("NodeType", "VARIABLE")),
+            ("name", s("color/text/brand")),
+            ("key", s("vk")),
+            ("version", s("3:4")),
+            (
+                "variableSetID",
+                obj(vec![(
+                    "assetRef",
+                    obj(vec![("key", s("sk")), ("version", s("9:9"))]),
+                )]),
+            ),
+            (
+                "variableResolvedType",
+                K::Enum("VariableResolvedDataType", "COLOR"),
+            ),
+            (
+                "variableDataValues",
+                obj(vec![(
+                    "entries",
+                    K::Array(vec![obj(vec![
+                        ("modeID", mode()),
+                        (
+                            "variableData",
+                            obj(vec![
+                                ("dataType", K::Enum("VariableDataType", "COLOR")),
+                                ("value", obj(vec![("colorValue", color)])),
+                            ]),
+                        ),
+                    ])]),
+                )]),
+            ),
+        ]);
+        let page = obj(vec![("type", K::Enum("NodeType", "CANVAS"))]);
+        let tree = Tree {
+            nodes: HashMap::from([
+                ("0:1".into(), &page),
+                ("1:1".into(), &set),
+                ("1:2".into(), &variable),
+            ]),
+            children: HashMap::from([
+                ("0:0".into(), vec!["0:1".into()]),
+                ("0:1".into(), vec!["1:1".into(), "1:2".into()]),
+            ]),
+            blobs: Vec::new(),
+        };
+        let id = "VariableCollectionId:sk/9:9";
+        assert_eq!(variables(&tree, None)["collections"], json!([]));
+        let snapshot = in_collection(&tree, id);
+        assert_eq!(snapshot["variables"][0]["id"], "VariableID:vk/3:4");
+        let tokens = crate::tokens::convert(&snapshot, id, "1:2").unwrap();
+        assert_eq!(tokens["color"]["text"]["brand"]["$type"], "color");
     }
 
     #[test]

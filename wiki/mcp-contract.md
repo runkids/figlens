@@ -33,7 +33,7 @@ Tool failures retain `isError: true` and text content; additive `_meta.figlens` 
 | `node_not_found` | Resolve again with find/tree or inspect the containing instance; retain full IDs |
 | `unsupported_node` | Target exists but that operation cannot use it; use supported inspection/export or a drawable node as directed |
 | `parse_budget_exceeded` | A named finite parsing budget was crossed; use a smaller copy or report the limit |
-| `output_write_failed` | Bundle packing or export writing failed; create an authorized writable directory and check space/permissions |
+| `output_write_failed` | Bundle packing or export writing failed, or an output's folder inside a root does not exist yet (the message names it, #160); create an authorized writable directory and check space/permissions |
 | `permission_denied` | Configured roots forbid the source/output; retain the restriction |
 | `workspace_busy` | Another process holds the workspace, or a lane or checkpoint quota is full; retry once clear (a quota: follow `recovery`), never kill it |
 | `storage_unavailable` | The workspace's storage is missing or offline; follow `_meta.figlens.recovery`: restore it, or with the user's confirmation recreate elsewhere |

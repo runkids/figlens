@@ -163,7 +163,7 @@ irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 |
 
 `npx` は解決したパッケージバージョンのバイナリを実行します。スクリプトでインストールした場合は `figlens update`、Homebrew の場合は `brew upgrade figlens` で更新します。バイナリは macOS（Apple silicon、Intel）、Linux（arm64、x86_64）、Windows（x86_64）に対応しています。
 
-CLI を使うエージェントは `figlens workflow build`（ほかに `audit`、`images`、`plan`、`planning-details`、明示的に依頼された場合のみの `yolo`）でガイドを読みます。内容は常にバイナリのバージョンと一致します。[skill](#setup-skill) から読むこともできます。
+CLI を使うエージェントは `figlens workflow build`（ほかに `audit`、`images`、`search`、`plan`、`planning-details`、明示的に依頼された場合のみの `yolo`）でガイドを読みます。内容は常にバイナリのバージョンと一致します。[skill](#setup-skill) から読むこともできます。
 
 [CLI リファレンス](docs/README-ja.md#commands)
 
@@ -252,7 +252,7 @@ GIF は編集済み動画をさらに 3 倍速でループ再生します。ク�
 - **フォントとテキスト：** フォントファイルは含まれません。オーバーライドされたテキストは Figma の保存済みレイアウトを保持することがあります。利用許諾のあるプロジェクトのフォントを使い、結果を比較してください。
 - **対応範囲：** [レンダリングの改善](https://github.com/runkids/figlens/issues/36)と[ハンドオフのセマンティクス](https://github.com/runkids/figlens/issues/37)は issue で追跡しています。[現在のセマンティクス対応範囲](wiki/semantics.md)も参照してください。
 - **出力を確認してください。** bundle の `warnings`、`missing-assets.json`、`context.md` 内の未解決の variables を読み、実装をデザインと比較してください。
-- 既知の可視レンダリング制限はノードの `_figlens.renderDiagnostics`、件数制限のある `inspect` 要約、bundle の `warnings` に表示されます。`missing-assets.json` は素材の失敗のみを記録します。警告がなくてもピクセル一致は保証されません。
+- 既知の可視レンダリング制限はノードの `_figlens.renderDiagnostics`、件数制限のある `inspect` 要約、bundle と `export` の `warnings` に表示されます。`missing-assets.json` は素材の失敗のみを記録します。警告がなくてもピクセル一致は保証されません。
 
 ## figlens を育てる
 
