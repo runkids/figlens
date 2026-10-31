@@ -334,7 +334,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "compareVariant",
                 "string",
                 false,
-                "compare node with this other stored variant in the same component set; adds bounded raw-field and descendant-multiset differences, exact sources and unknown pairing; no alternate rendering or business inference",
+                "compare node with this other stored variant in the same component set; adds bounded raw-field differences, per-pair changes for children whose name and type are unique on both sides, other descendants' value multisets, exact sources and bound variable names; no alternate rendering or business inference",
             ),
             (
                 "flat",
@@ -858,7 +858,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "truncated": {"type": "boolean"},
                 "images": {"type": "object", "description": "optional source image evidence when images=true"},
                 "states": {"type": "object", "description": "optional variants and prototype field evidence when states=true; independent truncation, source file, node/override provenance and unknown markers; no inferred business logic"},
-                "variantComparison": {"type":"object", "description":"optional same-set definition comparison when compareVariant is supplied; raw fields, descendant value multisets, unpaired nodes, unknowns and independent truncation; not a pixel comparison"},
+                "variantComparison": {"type":"object", "description":"optional same-set definition comparison when compareVariant is supplied; raw fields, paired children, descendant value multisets, unpaired nodes, unknowns and independent truncation; not a pixel comparison"},
                 "handoffDiagnostics": {"type":"object", "description":"optional known stored semantics not emitted by the projection; counts cover the selected expanded subtree independently of summary depth, with at most five example IDs per feature and explicit coverage limits"},
             }),
             ["truncated"].as_slice(),

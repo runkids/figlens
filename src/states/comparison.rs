@@ -226,9 +226,131 @@ fn collect(tree: &Tree, root: &str, budget: &mut Budget) -> Vec<Value> {
     nodes
 }
 
-fn groups(nodes: &[Value], path: &str) -> BTreeMap<String, Value> {
+/// Descendants that are the only node of their name and type under a paired parent on each
+/// side, from the roots down, as (left, right) indexes; names that were cut short never pair.
+fn pairs(tree: &Tree, a: &[Value], b: &[Value]) -> Vec<(usize, usize)> {
+    let index = |nodes: &[Value]| -> std::collections::HashMap<String, usize> {
+        nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| Some((n["nodeId"].as_str()?.to_owned(), i)))
+            .collect()
+    };
+    let (left, right) = (index(a), index(b));
+    // Each side's scanned children by (type, name), with how many share that key.
+    let children = |nodes: &[Value], at: &std::collections::HashMap<String, usize>, i: usize| {
+        let mut keys: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        let id = nodes[i]["nodeId"].as_str().unwrap_or("");
+        for child in tree.children.get(id).into_iter().flatten() {
+            let Some(&c) = at.get(child) else { continue };
+            if nodes[c]["nameTruncated"] == true {
+                continue;
+            }
+            let key = json!([nodes[c]["type"], nodes[c]["name"]]).to_string();
+            let entry = keys.entry(key).or_insert((c, 0));
+            entry.1 += 1;
+        }
+        keys
+    };
+    let mut out = Vec::new();
+    let mut queue = vec![(0, 0)];
+    while let Some((l, r)) = queue.pop() {
+        if l >= a.len() || r >= b.len() {
+            continue;
+        }
+        let theirs = children(b, &right, r);
+        for (key, (lc, count)) in children(a, &left, l) {
+            if let Some(&(rc, 1)) = theirs.get(&key)
+                && count == 1
+            {
+                out.push((lc, rc));
+                queue.push((lc, rc));
+            }
+        }
+    }
+    out
+}
+
+/// Names each variable alias in recorded values by its id and, when the file holds it or a
+/// library's cached copy, its name.
+fn name_variables(tree: &Tree, nodes: &mut [Value]) {
+    fn walk(value: &mut Value, vars: &mut Option<crate::rest::Vars>, tree: &Tree) {
+        match value {
+            Value::Array(items) => items.iter_mut().for_each(|v| walk(v, vars, tree)),
+            Value::Object(map) => {
+                let alias = &map.get("value").unwrap_or(&Value::Null)["alias"];
+                // Normalized values hold a local guid's numbers as floats.
+                let local = || match (
+                    alias["guid"]["sessionID"].as_f64(),
+                    alias["guid"]["localID"].as_f64(),
+                ) {
+                    (Some(s), Some(l)) => Some(format!("VariableID:{}:{}", s as u64, l as u64)),
+                    _ => None,
+                };
+                if map.get("dataType").and_then(Value::as_str) == Some("ALIAS")
+                    && let Some(id) = crate::rest::variable_id(alias).or_else(local)
+                {
+                    let vars = vars.get_or_insert_with(|| crate::rest::variables(tree));
+                    map.insert(
+                        "variableName".into(),
+                        json!(crate::variables::name(vars, &id)),
+                    );
+                    map.insert("variableId".into(), json!(id));
+                }
+                map.values_mut().for_each(|v| walk(v, vars, tree));
+            }
+            _ => {}
+        }
+    }
+    let mut vars = None;
+    for node in nodes {
+        for cell in node["fields"]
+            .as_object_mut()
+            .into_iter()
+            .flat_map(|f| f.values_mut())
+        {
+            if cell["state"] == "recorded" {
+                walk(&mut cell["value"], &mut vars, tree);
+            }
+        }
+    }
+}
+
+/// Stored field changes between two nodes compared as one, unsupported values left out.
+fn changes(before: &Value, after: &Value) -> Vec<Value> {
+    let absent = |n: &Value, path: &str| json!({"sourceNodeId":n["nodeId"],"sourceField":path,"state":"absent"});
+    FIELDS
+        .iter()
+        .filter_map(|path| {
+            let cell = |n: &Value| match &n["fields"][path] {
+                Value::Null => absent(n, path),
+                cell => cell.clone(),
+            };
+            let (b, a) = (cell(before), cell(after));
+            (b["state"] != "unsupported"
+                && a["state"] != "unsupported"
+                && (b["state"] != a["state"] || b["value"] != a["value"]))
+                .then(|| json!({"field":path,"before":b,"after":a}))
+        })
+        .collect()
+}
+
+/// The descendants in `nodes` that no pairing covers.
+fn without_pair<'a>(
+    nodes: &'a [Value],
+    paired: &HashSet<usize>,
+) -> impl Iterator<Item = &'a Value> {
+    nodes
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter(move |(i, _)| !paired.contains(i))
+        .map(|(_, n)| n)
+}
+
+fn groups(nodes: &[Value], path: &str, paired: &HashSet<usize>) -> BTreeMap<String, Value> {
     let mut groups = BTreeMap::new();
-    for node in nodes.iter().skip(1) {
+    for node in without_pair(nodes, paired) {
         let cell = &node["fields"][path];
         if cell["state"] != "recorded" {
             continue;
@@ -274,12 +396,19 @@ pub fn compare_variants(
         bytes: MAX_BYTES / 2 - 2,
         reasons: Default::default(),
     };
-    let a = collect(tree, left, &mut input);
-    let b = collect(tree, right, &mut input);
+    let mut a = collect(tree, left, &mut input);
+    let mut b = collect(tree, right, &mut input);
+    name_variables(tree, &mut a);
+    name_variables(tree, &mut b);
+    let matched = pairs(tree, &a, &b);
+    let paired = [
+        matched.iter().map(|p| p.0).collect::<HashSet<_>>(),
+        matched.iter().map(|p| p.1).collect::<HashSet<_>>(),
+    ];
     let mut result = json!({"source":{"file":(source.len() <= MAX_ID_BYTES).then_some(source.as_ref())},
         "leftNodeId":left,"rightNodeId":right,"componentSetId":set,"interpretation":"stored-field-comparison",
         "verification":"not-compared-with-figma","businessConditions":"not-inferred","numberPrecision":4,"fields":FIELDS,
-        "notCompared":["canvas-position","child-order-and-correspondence","instance-expansion","resolved-variables","text-style-ranges","vector-region-paints","geometry-and-pixels","prototype-and-business-conditions"]});
+        "notCompared":["canvas-position","child-order-and-ambiguous-correspondence","instance-expansion","resolved-variables","text-style-ranges","vector-region-paints","geometry-and-pixels","prototype-and-business-conditions"]});
     let header = serde_json::to_vec(&result).expect("JSON header").len();
     let input_complete = input.reasons.is_empty();
     let mut output = Budget {
@@ -295,12 +424,12 @@ pub fn compare_variants(
     let mut unknown = Vec::new();
     let mut unpaired = Vec::new();
     let mut nested = 0;
-    for (root, nodes) in [(left, &a), (right, &b)] {
+    for ((root, nodes), paired) in [(left, &a), (right, &b)].into_iter().zip(&paired) {
         for (index, node) in nodes.iter().enumerate() {
             if node["type"] == "INSTANCE" {
                 nested += 1;
             }
-            if index != 0 {
+            if index != 0 && !paired.contains(&index) {
                 output.push(&mut unpaired, json!({"variantNodeId":root,"nodeId":node["nodeId"],"name":node["name"],"nameTruncated":node["nameTruncated"],"type":node["type"],"state":"not-paired"}));
             }
             for cell in node["fields"]
@@ -328,8 +457,8 @@ pub fn compare_variants(
                 json!({"field":path,"before":before,"after":after}),
             );
         }
-        let before = groups(&a, path);
-        let after = groups(&b, path);
+        let before = groups(&a, path, &paired[0]);
+        let after = groups(&b, path, &paired[1]);
         if before.len() != after.len()
             || before.iter().any(|(key, g)| {
                 after
@@ -339,14 +468,27 @@ pub fn compare_variants(
             })
         {
             let complete = input_complete
-                && a.iter().skip(1).chain(b.iter().skip(1)).all(|n| {
-                    n["fields"][path]["state"] != "unsupported"
-                        && n["fields"]["type"]["state"] != "unsupported"
-                });
+                && without_pair(&a, &paired[0])
+                    .chain(without_pair(&b, &paired[1]))
+                    .all(|n| {
+                        n["fields"][path]["state"] != "unsupported"
+                            && n["fields"]["type"]["state"] != "unsupported"
+                    });
             output.push(&mut collections,json!({"field":path,"state":if complete {"differences-recorded"} else {"unknown"},"scope":"stored-descendant-value-multiset","pairing":"not-inferred","before":before.into_values().collect::<Vec<_>>(),"after":after.into_values().collect::<Vec<_>>()}));
         }
     }
+    let mut pair_list = Vec::new();
+    for &(l, r) in &matched {
+        let (before, after) = (&a[l], &b[r]);
+        output.push(&mut pair_list, json!({"leftNodeId":before["nodeId"],"rightNodeId":after["nodeId"],
+            "name":before["name"],"type":before["type"],"basis":"only-child-with-this-name-and-type-under-paired-parents",
+            "changes":changes(before, after)}));
+    }
+    let pair_changed = pair_list
+        .iter()
+        .any(|p| p["changes"].as_array().is_some_and(|c| !c.is_empty()));
     result["state"] = if !roots.is_empty()
+        || pair_changed
         || collections
             .iter()
             .any(|c| c["state"] == "differences-recorded")
@@ -363,6 +505,7 @@ pub fn compare_variants(
     }
     .into();
     result["rootChanges"] = roots.into();
+    result["pairedNodes"] = pair_list.into();
     result["collectionChanges"] = collections.into();
     result["unpairedNodes"] = unpaired.into();
     result["unknownFields"] = unknown.into();

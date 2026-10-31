@@ -259,7 +259,7 @@ Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，works
 
 需要相关组件 variants 时，使用 `inspect --states` 或 `bundle --states`（MCP 传入 `states: true`，默认 false；无需修改配置）。证据保留来源、未知及截断标记。Bundle 会添加 `design/states.json` 和 `context.md` 摘要。范围与限制参见[状态证据](../wiki/states.md)。
 
-比较同一 component set 的两个 variants：`inspect <file> <variantA> --compare-variant <variantB>`（MCP `compareVariant`）。`variantComparison` 列出原始字段及值集合差异，保留来源和未知标记；不猜测子节点配对。详见[比较限制](../wiki/states.md#compare-two-variants)。
+比较同一 component set 的两个 variants：`inspect <file> <variantA> --compare-variant <variantB>`（MCP `compareVariant`）。`variantComparison` 列出原始字段及值集合差异，保留来源和未知标记；只有两侧都恰有一个同名同类型子节点时才配对（`pairedNodes`，附逐对差异），并标出绑定变量的名称。详见[比较限制](../wiki/states.md#compare-two-variants)。
 
 node 参数接受 `12:345`、`12-345`，或带 `?node-id=` 的 Figma URL。`<file>` 也可以是 `gs://bucket/object`，通过你的 `gcloud` 登录下载并缓存。固定 object 交接、所需访问权限与更新限制，请参阅 [GCS 快照操作说明](../wiki/gcs.md)。每次 CLI 调用都会解码文件；MCP 只复用最后读取且未变更的本地文件，远程输入仍会重新解析。运行 `figlens --help` 或 `figlens inspect --help`（也可用 `-h`）查看完整 CLI 用法。`index add gs://bucket/object` 会登记该 generation 的固定副本并报告 `remote {uri, generation}`；只有 add 会运行 gcloud。
 

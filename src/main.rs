@@ -109,7 +109,9 @@ usage:
                                              childSpacing: derived marks gaps that are coordinates, not auto-layout;
                                              --images adds source pixels/bytes and source-pixel crop rectangles;
                                              --states lists related component variants and evidence gaps;
-                                             --compare-variant compares two stored variants in the same set;
+                                             --compare-variant compares two stored variants in the same set
+                                             (a child pairs only when it is its name and type's
+                                             only one on both sides; bound variables are named);
                                              --flat prints one line per node instead (not with the above):
                                              id TYPE \"name\" @x,y WxH relative to the node, then hidden, rot,
                                              component, text, font=family size/weight/lineHeight, fill,

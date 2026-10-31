@@ -139,6 +139,11 @@ fn walk_aliases(v: &Json, ids: &mut Vec<String>, seen: &mut std::collections::Ha
     }
 }
 
+/// The name of the variable a REST id names, from the file or a library's cached copy.
+pub(crate) fn name(vars: &Vars, id: &str) -> Option<String> {
+    lookup(vars, id)?["name"].as_str().map(str::to_owned)
+}
+
 /// The kiwi variable a REST id names: `VariableID:<guid>` or `VariableID:<key>/<version>`.
 fn lookup<'v>(vars: &'v Vars, id: &str) -> Option<&'v Json> {
     let id = id.strip_prefix("VariableID:")?;

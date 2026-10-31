@@ -81,19 +81,39 @@ fn variant_comparison_keeps_root_changes_and_unpaired_descendant_multisets() {
     assert!(changes.iter().any(|c| c["field"] == "size"));
     assert!(changes.iter().any(|c| c["field"] == "fillPaints"));
     assert!(!result.to_string().contains("m02"));
-    let collections = result["collectionChanges"].as_array().unwrap();
-    let texts = collections
+    // The only TEXT named Label on each side pairs; its changes are reported per pair.
+    let pairs = result["pairedNodes"].as_array().unwrap();
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(
+        (&pairs[0]["leftNodeId"], &pairs[0]["rightNodeId"]),
+        (&json!("0:70"), &json!("0:71"))
+    );
+    let pair = pairs[0]["changes"].as_array().unwrap();
+    let texts = pair
         .iter()
         .find(|c| c["field"] == "textData.characters")
         .unwrap();
-    assert_eq!(texts["before"][0]["value"], "Submit");
-    assert_eq!(texts["before"][0]["sources"][0]["sourceNodeId"], "0:70");
-    assert_eq!(texts["after"][0]["value"], "Loading");
-    assert_eq!(texts["pairing"], "not-inferred");
-    assert!(collections.iter().any(|c| c["field"] == "visible"));
+    assert_eq!(
+        (&texts["before"]["value"], &texts["after"]["value"]),
+        (&json!("Submit"), &json!("Loading"))
+    );
+    assert_eq!(
+        pair.iter().find(|c| c["field"] == "visible").unwrap()["before"]["state"],
+        "absent"
+    );
+    let collections = result["collectionChanges"].as_array().unwrap();
+    assert!(
+        !collections
+            .iter()
+            .any(|c| c["field"] == "textData.characters")
+    );
     assert!(collections.iter().any(|c| c["field"] == "size"));
-    assert!(collections.iter().any(|c| c["field"] == "fillPaints"));
-    assert_eq!(result["unpairedNodes"].as_array().unwrap().len(), 4);
+    let fills = collections
+        .iter()
+        .find(|c| c["field"] == "fillPaints")
+        .unwrap();
+    assert_eq!(fills["pairing"], "not-inferred");
+    assert_eq!(result["unpairedNodes"].as_array().unwrap().len(), 2);
     assert!(
         result["unpairedNodes"]
             .as_array()
@@ -384,4 +404,58 @@ fn image_hash_bytes_are_preserved_and_canvas_translation_is_ignored() {
     };
     let before = field(tree.nodes["0:10"], "fillPaints", "0:10", &mut budget);
     assert_eq!(before["value"][0]["image"]["hash"], "0102");
+}
+
+#[test]
+fn ambiguous_names_stay_unpaired_and_bound_variables_are_named() {
+    let named = |name: &str| ("name", K::String(name.into()));
+    let bound = |variable: u32| {
+        K::Array(vec![obj(vec![
+            ("type", K::Enum("Paint", "SOLID")),
+            (
+                "colorVar",
+                obj(vec![
+                    ("dataType", K::Enum("VariableDataType", "ALIAS")),
+                    (
+                        "value",
+                        obj(vec![(
+                            "alias",
+                            obj(vec![(
+                                "guid",
+                                obj(vec![
+                                    ("sessionID", K::UInt(0)),
+                                    ("localID", K::UInt(variable)),
+                                ]),
+                            )]),
+                        )]),
+                    ),
+                ]),
+            ),
+        ])])
+    };
+    let message = message(vec![
+        node(10, 40, "SYMBOL", vec![("fillPaints", bound(90))]),
+        node(11, 40, "SYMBOL", vec![("fillPaints", bound(91))]),
+        node(70, 10, "TEXT", vec![named("Label")]),
+        node(71, 10, "TEXT", vec![named("Label")]),
+        node(72, 11, "TEXT", vec![named("Label")]),
+        node(90, 1, "VARIABLE", vec![named("color/bg/brand-soft")]),
+        node(91, 1, "VARIABLE", vec![named("color/bg/brand")]),
+    ]);
+    let tree = Tree::new(&message);
+    let result = compare_variants(&tree, "0:10", "0:11", Path::new("test.fig")).unwrap();
+    assert_eq!(result["pairedNodes"], json!([]));
+    assert_eq!(result["unpairedNodes"].as_array().unwrap().len(), 3);
+    let fill = result["rootChanges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["field"] == "fillPaints")
+        .unwrap();
+    let var = |side: &str| fill[side]["value"][0]["colorVar"].clone();
+    assert_eq!(
+        (&var("before")["variableId"], &var("before")["variableName"]),
+        (&json!("VariableID:0:90"), &json!("color/bg/brand-soft"))
+    );
+    assert_eq!(var("after")["variableName"], "color/bg/brand");
 }
