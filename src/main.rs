@@ -196,10 +196,14 @@ usage:
                                              writes <dir>/<nodeId>.<format> (`:` as `-`), prints one
                                              JSON line per id, the export output with its nodeId, or
                                              {nodeId,error}; at most 10000 ids
-  figlens verify <bundle.zip|dir>              check a bundle, zipped or extracted, against its manifest:
+  figlens verify <bundle.zip|dir> [--fonts <dir>]
+                                             check a bundle, zipped or extracted, against its manifest:
                                              verified/missing/changed files, missing assets and the font
-                                             faces to confirm in the project (always unverified here),
-                                             plus findings: one entry per missing, unsupported or
+                                             faces: local_file when a font file with that name is found in
+                                             this machine's font folders or --fonts <dir> (a project
+                                             folder; its matches also get an @font-face), else
+                                             unverified; neither shows the browser loads it. Plus
+                                             findings: one entry per missing, unsupported or
                                              unverified handoff input with node ids, evidence and action
   figlens preview <file.fig> [node] [--out preview.html] [--port N] [--bind IP]
                                              local viewer that never writes the design (loopback,
@@ -559,7 +563,12 @@ fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
         }
         Some("verify") => {
             let bundle = args.get(1).ok_or(USAGE)?;
-            let report = figlens::verify::verify(std::path::Path::new(bundle))?;
+            let fonts = match &args[2..] {
+                [] => None,
+                [flag, dir] if flag == "--fonts" => Some(PathBuf::from(dir)),
+                _ => return Err(USAGE.into()),
+            };
+            let report = figlens::verify::verify_with_fonts(Path::new(bundle), fonts.as_deref())?;
             writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
             return Ok(());
         }

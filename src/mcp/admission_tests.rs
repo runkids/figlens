@@ -662,3 +662,19 @@ fn export_batch_checks_every_path_and_the_cap_before_writing_and_reports_items()
             .contains("differs from the layout box")
     );
 }
+
+#[test]
+fn verify_fonts_outside_the_roots_is_refused() {
+    let dir = TestDir::new();
+    let outside = TestDir::new();
+    let roots = [dir.join("").canonicalize().unwrap()];
+    let request = call(
+        json!(1),
+        "verify",
+        json!({"bundle":dir.join("b.zip"),"fonts":outside.join("").canonicalize().unwrap()}),
+    );
+    assert_eq!(
+        rooted_reply(&request, &roots)["result"]["_meta"]["figlens"]["code"],
+        "permission_denied"
+    );
+}

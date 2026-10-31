@@ -115,6 +115,8 @@ struct AdmittedCall {
     input: Option<PathBuf>,
     /// An export's folder of SVGs to compare against.
     match_dir: Option<PathBuf>,
+    /// The project font folder verify looks in.
+    fonts: Option<PathBuf>,
     /// The project directory of an index call.
     project: Option<PathBuf>,
     /// The earlier revision a diff reads beside `source`.
@@ -334,6 +336,7 @@ fn admit_value(req: Value, roots: &[PathBuf]) -> Admission {
                 };
                 let input = call.string("bundle").map(|path| checked_path(Path::new(path), roots)).transpose()?;
                 let match_dir = call.string("matchDir").map(|path| checked_path(Path::new(path), roots)).transpose()?;
+                let fonts = call.string("fonts").map(|path| checked_path(Path::new(path), roots)).transpose()?;
                 let project = call.string("workspace").map(|path| checked_path(Path::new(path), roots)).transpose()?;
                 let old = match call.string("old") {
                     Some(file) if file.starts_with("gs://") => {
@@ -349,7 +352,7 @@ fn admit_value(req: Value, roots: &[PathBuf]) -> Admission {
                     }
                     image => image.map(|path| checked_path(Path::new(path), roots)).transpose()?,
                 };
-                Ok(AdmittedCall { id:id.clone(), call, source, output, outputs, input, match_dir, project, old, image, live: None })
+                Ok(AdmittedCall { id:id.clone(), call, source, output, outputs, input, match_dir, fonts, project, old, image, live: None })
             });
             return match admitted {
                 Ok(call) => Admission::Call(Box::new(call)),
@@ -461,6 +464,7 @@ impl AdmittedCall {
             .chain(self.outputs.iter().map(PathBuf::as_path))
             .chain(self.input.as_deref())
             .chain(self.match_dir.as_deref())
+            .chain(self.fonts.as_deref())
             .chain(self.project.as_deref())
             .chain(self.old.as_deref())
             .chain(self.image.as_deref())
@@ -489,8 +493,8 @@ impl AdmittedCall {
                     .map_err(contract::Failure::argument);
             }
             if let Some(bundle) = &self.input {
-                let mut value =
-                    figlens::verify::verify(bundle).map_err(contract::Failure::from_error)?;
+                let mut value = figlens::verify::verify_with_fonts(bundle, self.fonts.as_deref())
+                    .map_err(contract::Failure::from_error)?;
                 // Reply with the caller's label, like output paths.
                 value["path"] = self.call.string("bundle").unwrap().into();
                 return Ok(command::Output::Json {

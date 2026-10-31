@@ -461,3 +461,50 @@ fn a_directory_without_a_bundle_manifest_is_an_error() {
     let dir = TestDir::new();
     assert!(verify(&dir.join("")).is_err());
 }
+
+#[test]
+fn a_font_in_the_project_folder_is_a_local_file_with_a_font_face() {
+    let dir = TestDir::new();
+    let bundle = fixture_bundle(&dir);
+    let face = verify(&bundle).unwrap()["fonts"][0].clone();
+    let (family, style) = (
+        face["family"].as_str().unwrap(),
+        face["style"].as_str().unwrap(),
+    );
+    let fonts = dir.join("fonts");
+    std::fs::create_dir_all(&fonts).unwrap();
+    std::fs::write(
+        fonts.join("Brand.otf"),
+        crate::fonts::tests::sfnt("Other-PS", family, style),
+    )
+    .unwrap();
+    let report = verify_with_fonts(&bundle, Some(&fonts)).unwrap();
+    let face = &report["fonts"][0];
+    let still_a_finding = found(&report, "font", "unverified").len();
+    assert_eq!(
+        (
+            &face["status"],
+            &face["localFiles"][0]["matchedBy"],
+            &face["localFiles"][0]["inProject"],
+            face["fontFace"]
+                .as_str()
+                .unwrap()
+                .contains("src: url(\"Brand.otf\") format(\"opentype\")"),
+            still_a_finding,
+        ),
+        (
+            &json!("local_file"),
+            &json!("family+style"),
+            &json!(true),
+            true,
+            1
+        )
+    );
+}
+
+#[test]
+fn a_missing_project_font_folder_is_an_error() {
+    let dir = TestDir::new();
+    let bundle = fixture_bundle(&dir);
+    assert!(verify_with_fonts(&bundle, Some(&dir.join("nope"))).is_err());
+}

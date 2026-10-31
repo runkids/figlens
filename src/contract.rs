@@ -433,13 +433,21 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "verify",
-        "Check a bundle, zipped or extracted, against its manifest before building from it: verified, missing and changed files, the bundle's missing assets, and the font faces the visible text uses (with node ids). Fonts are always unverified here: confirm each face in the running project with document.fonts.load, and check browser delivery of assets there. findings gathers these checks with the bundle's unresolved variables, truncated state inventory, render limitations and unemitted semantics into one handoff preflight list, each with node ids, evidence, impact and next action. Reports without blocking; no design file is read.",
-        &[(
-            "bundle",
-            "string",
-            true,
-            "path to a bundle .zip or the directory it was extracted to",
-        )],
+        "Check a bundle, zipped or extracted, against its manifest before building from it: verified, missing and changed files, the bundle's missing assets, and the font faces the visible text uses (with node ids). Each font face is looked up by its name table in this machine's user and system font folders and in fonts (a project font folder): status local_file with localFiles {path, matchedBy, inProject} when a file is found (WOFF/WOFF2 by file name only), else unverified; a match inside fonts also carries a ready fontFace @font-face (src relative to fonts, font-display swap; licensing is the user's call, nothing is copied). local_file never shows the browser loads the face: confirm each in the running project with document.fonts.load, and check browser delivery of assets there. findings gathers these checks with the bundle's unresolved variables, truncated state inventory, render limitations and unemitted semantics into one handoff preflight list, each with node ids, evidence, impact and next action. Reports without blocking; no design file is read.",
+        &[
+            (
+                "bundle",
+                "string",
+                true,
+                "path to a bundle .zip or the directory it was extracted to",
+            ),
+            (
+                "fonts",
+                "string",
+                false,
+                "absolute path of a project directory of font files (subfolders included) searched before the system folders; must be inside the configured roots",
+            ),
+        ],
     ),
     (
         "export",
@@ -947,7 +955,11 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "fonts": {
                     "type": "array",
                     "items": { "type": "object" },
-                    "description": "family, style, weight, postScriptName, nodeIds and status, always unverified",
+                    "description": "family, style, weight, postScriptName, nodeIds, status (local_file or unverified; neither shows the browser loads the face), localFiles (up to 3 {path, matchedBy postScriptName|family+style|filename, inProject}) and, for a match inside fonts, fontFace: an @font-face snippet",
+                },
+                "fontLookup": {
+                    "type": "object",
+                    "description": "searched folders, filesRead (font files whose names were read) and truncated (a file, entry or byte budget stopped the lookup, so an unverified face may still have a file)",
                 },
                 "unverified": { "type": "array", "items": { "type": "string" } },
                 "findings": {
@@ -969,6 +981,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "files",
                 "missingAssets",
                 "fonts",
+                "fontLookup",
                 "unverified",
                 "findings",
                 "findingsSummary",
@@ -1045,6 +1058,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
             | "cursor"
             | "matchDir"
             | "hide"
+            | "fonts"
             | "collection"
             | "mode"
     ) {
