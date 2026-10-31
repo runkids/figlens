@@ -334,7 +334,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "compareVariant",
                 "string",
                 false,
-                "compare node with this other stored variant in the same component set; adds bounded raw-field differences, per-pair changes for children whose name and type are unique on both sides, other descendants' value multisets, exact sources and bound variable names; no alternate rendering or business inference",
+                "compare node with this other stored variant in the same component set; adds bounded raw-field differences, per-pair changes for children paired by unique name, main component or equal-count stacking order (check pairedBy; order is the weakest evidence), other descendants' value multisets, exact sources and bound variable names; no alternate rendering or business inference",
             ),
             (
                 "compare",

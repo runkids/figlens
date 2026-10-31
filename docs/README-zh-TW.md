@@ -260,7 +260,7 @@ Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，works
 
 需要相關元件 variants 時，使用 `inspect --states` 或 `bundle --states`（MCP 傳入 `states: true`，預設 false；不需修改設定）。證據保留來源、未知與截斷標記。Bundle 會新增 `design/states.json` 與 `context.md` 摘要。範圍及限制請見[狀態證據](../wiki/states.md)。
 
-比較同一 component set 的兩個 variants：`inspect <file> <variantA> --compare-variant <variantB>`（MCP `compareVariant`）。`variantComparison` 列出原始欄位及值集合差異，保留來源與未知標記；只有兩側都恰有一個同名同類型子節點時才配對（`pairedNodes`，附逐對差異），並標出綁定變數的名稱。詳見[比較限制](../wiki/states.md#compare-two-variants)。
+比較同一 component set 的兩個 variants：`inspect <file> <variantA> --compare-variant <variantB>`（MCP `compareVariant`）。`variantComparison` 列出原始欄位及值集合差異，保留來源與未知標記；子節點依唯一名稱、主元件、同數量同名群組內的堆疊順序配對（`pairedNodes`，附逐對差異；請檢查 `pairedBy`，`order` 證據最弱；其餘不配對），並標出綁定變數的名稱。詳見[比較限制](../wiki/states.md#compare-two-variants)。
 
 要比較同一檔案中的任意兩個節點（空白與已填內容的畫面、手機與桌面斷點、共用標頭的兩個畫面），請使用 `inspect <file> <nodeA> --compare <nodeB>`（MCP `compare`）。`comparison` 格式相同，另有 `rootDelta`（尺寸與相對於父層的位置）；子節點依唯一名稱、主元件、同數量同名群組內的堆疊順序配對（`pairedBy` 標示方式），其餘不配對並標示 `reason: ambiguous-name`；instance 不會展開，節點也不能與自己的祖先比較。`--compare-variant` 仍要求同一個 component set。
 

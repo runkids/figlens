@@ -113,8 +113,8 @@ usage:
                                              --images adds source pixels/bytes and source-pixel crop rectangles;
                                              --states lists related component variants and evidence gaps;
                                              --compare-variant compares two stored variants in the same set
-                                             (a child pairs only when it is its name and type's
-                                             only one on both sides; bound variables are named);
+                                             (children pair by unique name, main component or
+                                             stacking order, see pairedBy; bound variables are named);
                                              --compare ID does the same for any two nodes of the file
                                              (frames, breakpoints, states), adds rootDelta, and marks
                                              children it cannot pair unpaired as ambiguous-name;

@@ -260,7 +260,7 @@ Pi, OpenCode, OMP는 각자의 opt-in 진입점으로 같은 인덱스를 쓰며
 
 관련 컴포넌트 variants는 `inspect --states` 또는 `bundle --states`로 확인합니다(MCP는 `states: true`, 기본값 false, 설정 변경 불필요). 근거에는 출처, 알 수 없는 값, 생략 표시가 유지됩니다. Bundle에는 `design/states.json`과 `context.md` 요약이 추가됩니다. 범위와 제한은 [상태 근거](../wiki/states.md)를 참조하세요.
 
-같은 component set의 두 variants는 `inspect <file> <variantA> --compare-variant <variantB>`(MCP `compareVariant`)로 비교합니다. `variantComparison`은 저장된 필드와 값 집합의 차이, 출처 ID, 알 수 없는 항목을 반환하며 자식 노드는 양쪽에 같은 이름과 타입의 자식이 하나씩만 있을 때만 짝짓고(`pairedNodes`, 쌍별 변경 포함), 바인딩된 variables는 이름을 표시합니다. [비교 제한](../wiki/states.md#compare-two-variants)을 참조하세요.
+같은 component set의 두 variants는 `inspect <file> <variantA> --compare-variant <variantB>`(MCP `compareVariant`)로 비교합니다. `variantComparison`은 저장된 필드와 값 집합의 차이, 출처 ID, 알 수 없는 항목을 반환하며 자식 노드는 고유한 이름, 메인 컴포넌트, 같은 개수의 동명 그룹 안의 쌓임 순서 순으로 짝짓고(`pairedNodes`, 쌍별 변경 포함. `pairedBy`를 확인하며 `order`가 가장 약한 근거, 나머지는 짝 없음), 바인딩된 variables는 이름을 표시합니다. [비교 제한](../wiki/states.md#compare-two-variants)을 참조하세요.
 
 한 파일의 임의의 두 노드(빈 화면과 채워진 화면, 모바일과 데스크톱 브레이크포인트, 헤더를 공유하는 두 화면 등)는 `inspect <file> <nodeA> --compare <nodeB>`(MCP `compare`)로 비교할 수 있습니다. `comparison`은 같은 형태에 `rootDelta`(크기와 부모 기준 위치)를 더해 반환합니다. 자식은 고유한 이름, 메인 컴포넌트, 같은 개수의 동명 그룹 안의 쌓임 순서 순으로 짝지어지며(`pairedBy`가 방법을 알려 줍니다) 나머지는 `reason: ambiguous-name`과 함께 짝지어지지 않습니다. 인스턴스는 펼쳐지지 않고 노드와 그 조상은 비교할 수 없습니다. `--compare-variant`는 여전히 같은 component set이 필요합니다.
 
