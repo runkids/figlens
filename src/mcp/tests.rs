@@ -614,3 +614,35 @@ fn mcp_models_configure_refuses_a_model_file_linked_outside_roots() {
     let reply: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert!(reply.to_string().contains("permission_denied"), "{reply}");
 }
+
+#[test]
+fn a_missing_output_folder_inside_a_root_is_named_not_called_outside() {
+    let inside = test_support::TestDir::new();
+    let outside = test_support::TestDir::new();
+    let roots = [std::fs::canonicalize(inside.join("")).unwrap()];
+    let export = |out: PathBuf| {
+        let line = serde_json::json!({"id":1,"method":"tools/call","params":{"name":"export",
+            "arguments":{"file":inside.join("a.fig"),"node":"1:2","out":out}}});
+        rooted_reply(&line.to_string(), &roots)["result"].clone()
+    };
+    let missing = export(inside.join("new/deeper/x.png"));
+    assert_eq!(
+        missing["_meta"]["figlens"]["code"], "output_write_failed",
+        "{missing}"
+    );
+    let text = missing["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("deeper does not exist") && !text.contains("outside the folders"),
+        "{text}"
+    );
+    // A source in a missing folder is not something to create.
+    let find = serde_json::json!({"id":1,"method":"tools/call","params":{"name":"find",
+        "arguments":{"file":inside.join("new/a.fig"),"query":"x"}}});
+    assert_eq!(
+        rooted_reply(&find.to_string(), &roots)["result"]["_meta"]["figlens"]["code"],
+        "permission_denied"
+    );
+    for out in [outside.join("new/x.png"), inside.join("new/../../x/y.png")] {
+        assert_eq!(export(out)["_meta"]["figlens"]["code"], "permission_denied");
+    }
+}

@@ -220,6 +220,43 @@ fn checked_path(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, contract::Fai
     ))
 }
 
+/// An output path: as `checked_path`, but a missing folder inside a root is named as one to create.
+fn checked_output(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, contract::Failure> {
+    checked_path(path, roots).map_err(|denied| match missing_folder(path, roots) {
+        Some(folder) => contract::Failure::new(
+            ErrorKind::OutputWrite,
+            format!(
+                "folder {} does not exist; create it, then repeat the call",
+                folder.display()
+            ),
+        ),
+        None => denied,
+    })
+}
+
+/// The missing folder `path` would go in, when its nearest existing ancestor is inside a root:
+/// a folder to create, not a roots violation. `..` is refused, as it may lead out of the root.
+fn missing_folder(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
+    let folder = std::path::absolute(path).ok()?.parent()?.to_owned();
+    if folder
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
+        return None;
+    }
+    let existing = folder
+        .ancestors()
+        .find(|a| std::fs::symlink_metadata(a).is_ok())?;
+    if existing == folder {
+        return None;
+    }
+    let existing = std::fs::canonicalize(existing).ok()?;
+    roots
+        .iter()
+        .any(|root| existing.starts_with(root))
+        .then_some(folder)
+}
+
 #[cfg(test)]
 fn admit(line: &str, roots: &[PathBuf]) -> Admission {
     match serde_json::from_str(line) {
@@ -286,7 +323,7 @@ fn admit_value(req: Value, roots: &[PathBuf]) -> Admission {
                     Some(file) => Some(Source::Local(checked_path(Path::new(file), roots)?)),
                     None => None,
                 };
-                let output = call.string("out").map(|out| checked_path(Path::new(out), roots)).transpose()?;
+                let output = call.string("out").map(|out| checked_output(Path::new(out), roots)).transpose()?;
                 let input = call.string("bundle").map(|path| checked_path(Path::new(path), roots)).transpose()?;
                 let match_dir = call.string("matchDir").map(|path| checked_path(Path::new(path), roots)).transpose()?;
                 let project = call.string("workspace").map(|path| checked_path(Path::new(path), roots)).transpose()?;
