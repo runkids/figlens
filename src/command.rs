@@ -847,7 +847,11 @@ pub fn export_batch(
     paths: &[PathBuf],
 ) -> Result<Value, Box<dyn Error>> {
     let mut seen = std::collections::HashSet::new();
-    if let Some(path) = paths.iter().find(|p| !seen.insert(*p)) {
+    // Compare where `output::write` would publish, so a symlink or `./` alias is a repeat too.
+    if let Some(path) = paths
+        .iter()
+        .find(|p| !seen.insert(figlens::output::destination(p).unwrap_or_else(|_| (*p).clone())))
+    {
         return Err(format!("two items write {}", path.display()).into());
     }
     let (mut written, mut failed) = (0, 0);
