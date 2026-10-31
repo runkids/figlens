@@ -101,7 +101,9 @@ usage:
                                              properties, structure, bindings); --json adds per-node old/new
                                              field values and edge changes; layers match by exact id and
                                              type only, a same-name or same-place frame is only a possible
-                                             match; pages of 100 changes (1-500), a cursor rebuilds both
+                                             match; pages of 100 changes (1-500), a cursor rebuilds both;
+                                             a side stopped at a limit prints `stopped early`, never
+                                             `no changes`; narrow it with --node
   figlens inspect <file.fig> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]
                                              compact layout/text summary, instances expanded;
                                              depth 1 (0-10), at most 200 nodes, 200 characters per text;
