@@ -133,7 +133,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 誰に�
 
 **MCP。** サーバーは stdio 経由でローカル実行され、`workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch`、`export`、`models` を公開します。パスは絶対パスで渡します。`--root /path/to/designs`（複数指定可）を追加すると、すべてのファイルパスと出力パスを指定フォルダーに制限できます。カスタム保存先を明示するには `--storage-root DIR`（複数指定可）が必要です。記憶済みの workspace の場所はこのオプションなしで再利用できます。[起動引数と複数ルートの設定例](../README-ja.md#mcp-args)を参照してください。ラスターエクスポートは `maxSize`（デフォルト 1600 px）に縮小され、インライン画像は小さく保たれます。SVG はメタデータのみを返します。
 
-エージェントは `workflow` で `build`、`audit`、`images`、`plan`、`planning-details`、または明示的に依頼された場合の `yolo` ガイドを取得できます。portable skill と同じソースを使うため、MCP 利用時の skill の別途インストールは任意です。実作業にはエージェント自身のプロジェクト・ブラウザツールとホストの権限を使います。ガイドを読むだけでは処理は実行されません。利用方法はクライアントの対応とモデルの動作に依存します。
+エージェントは `workflow` で `build`、`audit`、`images`、`search`、`plan`、`planning-details`、または明示的に依頼された場合の `yolo` ガイドを取得できます。portable skill と同じソースを使うため、MCP 利用時の skill の別途インストールは任意です。実作業にはエージェント自身のプロジェクト・ブラウザツールとホストの権限を使います。ガイドを読むだけでは処理は実行されません。利用方法はクライアントの対応とモデルの動作に依存します。
 
 Claude Code でネイティブ Windows を使う場合：その [stdio セットアップ手順](https://code.claude.com/docs/en/mcp#option-3-add-a-local-stdio-server)と、`npx` 用の `cmd /c` ラッパーに従ってください。
 

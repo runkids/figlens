@@ -197,8 +197,8 @@ usage:
                                              with --root, files and outputs must be under one of the folders;
                                              a custom index storage must be under a --storage-root
   figlens workflow <topic>                     print built-in agent guidance, the same text as MCP workflow:
-                                             build, audit, images, plan, planning-details or yolo; a
-                                             workflow:<topic> link means `figlens workflow <topic>`
+                                             build, audit, images, search, plan, planning-details or
+                                             yolo; a workflow:<topic> link means `figlens workflow <topic>`
   figlens cache [clear]                        show, or clear, the preview render cache
                                              (prints {path,bytes} or {path,freed})
   figlens index prepare <file.fig> [--workspace DIR] [--storage DIR] [--scope NODE] [--request-id ID]
