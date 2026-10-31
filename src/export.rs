@@ -50,6 +50,8 @@ pub struct Image {
 /// Renders node `id` over its render bounds, or its layout box when `layout`, and encodes it.
 /// SVG keeps its original dimensions and ignores quality. Also returns `layoutBox`, `renderBox`
 /// and `warnings`: the drawn area past the layout box, then the subtree's render diagnostics.
+/// Layers in `hide` draw as if hidden in Figma, over the same area, so the two exports compare
+/// pixel for pixel; `hidden` lists them.
 #[allow(clippy::too_many_arguments)]
 pub fn export(
     tree: &Tree,
@@ -61,8 +63,10 @@ pub fn export(
     quality: u8,
     max_bytes: Option<usize>,
     max_px: Option<u32>,
+    hide: &[String],
 ) -> Result<(Image, Map<String, Json>), Box<dyn Error>> {
-    let prepared = Prepared::new(tree, fig, id)?;
+    let mut prepared = Prepared::new(tree, fig, id)?;
+    hide_layers(&mut prepared.document["document"], id, hide)?;
     let (image, mut report) = prepared_export(
         tree, &prepared, id, format, layout, scale, quality, max_bytes, max_px,
     )?;
@@ -72,7 +76,29 @@ pub fn export(
     if let Some(Json::Array(warnings)) = report.get_mut("warnings") {
         warnings.extend(skipped.into_iter().map(Json::from));
     }
+    if !hide.is_empty() {
+        report.insert("hidden".into(), hide.into());
+    }
     Ok((image, report))
+}
+
+/// Marks each layer in `hide`, strictly inside `node` (exported as `id`), hidden.
+fn hide_layers(node: &mut Json, id: &str, hide: &[String]) -> Result<(), crate::FigError> {
+    let invalid = |m: String| crate::FigError::new(crate::ErrorKind::InvalidArguments, m);
+    for layer in hide {
+        let found = (layer != id)
+            .then(|| render::find_mut(node, layer))
+            .flatten()
+            .ok_or_else(|| invalid(format!("hide {layer} is not a layer inside node {id}")))?;
+        // Diagnostics were collected with the mask clipping; what it uncovers has none.
+        if found["isMask"] == true {
+            return Err(invalid(format!(
+                "hide {layer} is a mask; hiding it would uncover layers whose rendering warnings were not collected"
+            )));
+        }
+        found["visible"] = Json::Bool(false);
+    }
+    Ok(())
 }
 
 /// Shared renderer path for file exports and immutable snapshot thumbnails.
@@ -645,6 +671,23 @@ fn shape(svg: &[u8]) -> Option<Shape> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn hide_marks_inner_layers_and_refuses_masks_the_node_and_outsiders() {
+        let mut node = serde_json::json!({"id": "1:1", "children": [
+            {"id": "1:2", "children": [{"id": "1:3"}]},
+            {"id": "1:4", "isMask": true},
+        ]});
+        hide_layers(&mut node, "1:1", &["1:3".into()]).unwrap();
+        assert_eq!(node["children"][0]["children"][0]["visible"], false);
+        for layer in ["1:4", "1:1", "9:9"] {
+            assert!(
+                hide_layers(&mut node, "1:1", &[layer.into()]).is_err(),
+                "{layer}"
+            );
+        }
+        assert!(node["children"][1].get("visible").is_none());
+    }
+
     /// A noisy, half-transparent image, so lossy sizes depend on quality.
     fn noise() -> Pixmap {
         let mut p = Pixmap::new(64, 64).unwrap();
@@ -717,7 +760,7 @@ mod tests {
         let warnings = |id: &str| {
             let fig = Path::new("unread.fig");
             let (_, report) =
-                export(&tree, fig, id, Format::Svg, false, 1.0, 80, None, None).unwrap();
+                export(&tree, fig, id, Format::Svg, false, 1.0, 80, None, None, &[]).unwrap();
             report["warnings"].clone()
         };
         let frame = warnings("1:1");

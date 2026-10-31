@@ -467,6 +467,12 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 false,
                 "SVG output only: a folder of SVG files, subfolders included, to compare with the export, to find an icon the project already has; matches lists the files (relative paths) that draw the same outlines once both are moved to the origin, ignoring paint, ids and path syntax; similar lists up to 10 others with a similar shape (drawn with strokes, or the same outlines at another size, which score 1) as {file, score} from 0.8, best first; confirm a similar file by looking at both",
             ),
+            (
+                "hide",
+                "string",
+                false,
+                "comma-separated ids of layers inside node to draw as hidden, over the same area (reply lists hidden); compare with the plain export to see where that layer, as figlens draws it, changes the result; no difference does not prove its skipped rendering harmless (it may match what is beneath it)",
+            ),
         ],
     ),
     (
@@ -880,6 +886,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "renderBox": { "type": ["object", "null"], "description": "absoluteRenderBounds in page coordinates" },
                 "warnings": { "type": "array", "items": { "type": "string" }, "description": "first, when the drawn area differs from the layout box, how far it reaches past each side, what draws there when known, and which box was exported; then one `Render <state> at node <id> (<field>): <reason>` line per known skipped or approximated rendering in the subtree, as in bundle warnings; empty when neither applies" },
                 "matches": { "type": "array", "items": { "type": "string" }, "description": "with matchDir: files there (relative paths) that draw the same outlines" },
+                "hidden": { "type": "array", "items": { "type": "string" }, "description": "with hide: the layers drawn as hidden" },
                 "similar": { "type": "array", "items": { "type": "object" }, "description": "with matchDir: up to 10 other files with a similar shape as {file, score}, score 0.8-1, best first; not proof of the same icon" },
             }),
             ["path", "width", "height", "bytes", "quality"].as_slice(),
@@ -999,6 +1006,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
             | "bundle"
             | "cursor"
             | "matchDir"
+            | "hide"
             | "collection"
             | "mode"
     ) {

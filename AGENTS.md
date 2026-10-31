@@ -51,7 +51,7 @@ python3 scripts/ai-context.py check     # validate paths, headings, links, orpha
 | `watch` | Changing leases or the runner |
 | `workspace` | Changing workspace roots, identity, ownership, registry, locks or index actions |
 | `index` | Changing index generations, jobs, publication or workspace search |
-| `bundle` | Changing the bundle zip, manifest, context.md, batches, fonts or `verify` |
+| `bundle` | Changing the bundle zip, manifest, context.md, batches, fonts, render warnings or `verify` |
 | `render` | Changing SVG or raster output: text, glyphs, image fills/adjustments, effects, export areas |
 | `preview` | Changing the local viewer, offline HTML, handoff or screenshot comparison |
 | `pi` | Changing the Pi extension, component mappings or npm packaging |

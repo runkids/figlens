@@ -78,6 +78,8 @@ pub enum Command {
         max_size: Option<u32>,
         /// SVGs to report the files drawing the same or a similar shape.
         match_index: Option<Arc<SvgIndex>>,
+        /// Layers inside the node to draw as hidden.
+        hide: Vec<String>,
     },
 }
 
@@ -356,7 +358,7 @@ impl Command {
                 let id = normalize_id(&node);
                 require_target_root(tree, &id)?;
                 let format = export_format(&out)?;
-                let (layout, scale, quality, max_kb, max_size, match_dir) =
+                let (layout, scale, quality, max_kb, max_size, match_dir, hide) =
                     export_options(&args[2..])?;
                 Self::Export {
                     node,
@@ -368,6 +370,7 @@ impl Command {
                     max_kb,
                     max_size,
                     match_index: match_index(match_dir, format)?,
+                    hide,
                 }
             }
             _ => return Err(USAGE.into()),
@@ -444,6 +447,11 @@ impl Command {
                         match_dir.map(Path::to_owned),
                         export_format(call.string("out").unwrap())?,
                     )?,
+                    hide: call
+                        .string("hide")
+                        .map(hide_list)
+                        .transpose()?
+                        .unwrap_or_default(),
                 }
             }
             _ => return Err(USAGE.into()),
@@ -677,6 +685,7 @@ impl Command {
                 max_kb,
                 max_size,
                 match_index,
+                hide,
             } => {
                 let id = normalize_id(&node);
                 require_target_root(tree, &id)?;
@@ -691,6 +700,7 @@ impl Command {
                     quality,
                     max_bytes,
                     max_size.filter(|&px| px > 0),
+                    &hide,
                 )?;
                 figlens::output::write(fig, &out, |file| {
                     std::io::Write::write_all(file, &image.bytes)?;
@@ -724,11 +734,12 @@ impl Command {
     }
 }
 
-/// `--bounds`, `--scale`, `--quality`, `--max-kb`, `--max-size` and `--match-dir`, as
-/// `(layout, scale, quality, max_kb, max_size, match_dir)`.
+/// `--bounds`, `--scale`, `--quality`, `--max-kb`, `--max-size`, `--match-dir` and `--hide`, as
+/// `(layout, scale, quality, max_kb, max_size, match_dir, hide)`.
 pub fn export_options(args: &[String]) -> Result<ExportOptions, Box<dyn Error>> {
     let (mut layout, mut scale, mut quality, mut max_kb, mut max_size, mut match_dir) =
         (false, 1.0_f64, 80, None, None, None);
+    let mut hide = Vec::new();
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let mut value = || rest.next().ok_or(format!("{arg} needs a value"));
@@ -745,14 +756,38 @@ pub fn export_options(args: &[String]) -> Result<ExportOptions, Box<dyn Error>> 
             "--max-kb" => max_kb = Some(value()?.parse::<usize>()?),
             "--max-size" => max_size = Some(value()?.parse::<u32>()?),
             "--match-dir" => match_dir = Some(PathBuf::from(value()?)),
+            "--hide" => hide.extend(hide_list(value()?)?),
             _ => return Err(USAGE.into()),
         }
     }
     check_export(scale, quality, max_kb)?;
-    Ok((layout, scale, quality, max_kb, max_size, match_dir))
+    Ok((layout, scale, quality, max_kb, max_size, match_dir, hide))
 }
 
-type ExportOptions = (bool, f64, u8, Option<usize>, Option<u32>, Option<PathBuf>);
+type ExportOptions = (
+    bool,
+    f64,
+    u8,
+    Option<usize>,
+    Option<u32>,
+    Option<PathBuf>,
+    Vec<String>,
+);
+
+/// Comma-separated node ids, normalized as any node argument is. None is an error: an export
+/// that hides nothing would read as a layer that does not show.
+fn hide_list(ids: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let ids: Vec<String> = ids
+        .split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(normalize_id)
+        .collect();
+    if ids.is_empty() {
+        return Err("hide takes one or more comma-separated node ids".into());
+    }
+    Ok(ids)
+}
 
 /// Rejects out-of-range options; returns `--max-kb` in bytes.
 fn check_export(

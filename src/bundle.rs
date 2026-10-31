@@ -363,6 +363,10 @@ pub(crate) fn diagnostics(doc: &Json, warnings: &mut Vec<String>) {
 
 /// Each `_figlens.renderDiagnostics` entry under `node`, as one warning line.
 pub(crate) fn render_warnings(node: &Json, warnings: &mut Vec<String>) {
+    // A hidden layer draws nothing, so nothing of it was skipped.
+    if node["visible"] == false {
+        return;
+    }
     for diagnostic in node["_figlens"]["renderDiagnostics"]
         .as_array()
         .into_iter()

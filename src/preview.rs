@@ -888,7 +888,16 @@ impl Revision<'_> {
             "export" => {
                 let (format, mime, scale, quality) = export_spec(key).ok_or("unknown route")?;
                 let (image, _) = crate::export::export(
-                    tree, file, id, format, false, scale, quality, None, None,
+                    tree,
+                    file,
+                    id,
+                    format,
+                    false,
+                    scale,
+                    quality,
+                    None,
+                    None,
+                    &[],
                 )?;
                 (mime, image.bytes)
             }
@@ -926,6 +935,7 @@ impl Revision<'_> {
                     80,
                     None,
                     None,
+                    &[],
                 )?;
                 ("image/png", image.bytes)
             }
