@@ -486,7 +486,7 @@ pub fn convert_mapped(
                 format!("alias target '{first_id}' must have the same supported resolvedType"),
             ));
         }
-        let first_mode = mode_of(owner, first_id)?;
+        mode_of(owner, first_id)?;
         let name = first["name"].as_str().unwrap_or("");
         // The exported collection's names and the ids are checked up front; these are not.
         if name.len() > MAX_TEXT_BYTES {
@@ -495,12 +495,6 @@ pub fn convert_mapped(
                 format!("alias target '{first_id}' name exceeds its byte limit"),
             ));
         }
-        let mut source = json!({
-            "variableId": first_id,
-            "name": name,
-            "collectionId": owner,
-            "modeId": first_mode,
-        });
         let (mut chain, mut seen) = (Vec::new(), HashSet::new());
         let mut current = first;
         let result = loop {
@@ -577,11 +571,7 @@ pub fn convert_mapped(
             }
             memo.insert(id.to_owned(), result.as_ref().cloned().map_err(|_| failure));
         }
-        let (value, library) = result?;
-        if library {
-            source["libraryCopy"] = json!(true);
-        }
-        Ok((value, source))
+        result
     };
     if selected_mode.is_some() {
         for (index, variable) in selected.iter().enumerate() {
@@ -623,9 +613,10 @@ pub fn convert_mapped(
                 }
                 if target["variableCollectionId"] != collection {
                     match resolve_foreign(target, types[index]) {
-                        Ok((value, source)) => {
+                        Ok((value, library)) => {
                             values[index] = Some(value);
-                            sources[index] = Some(source);
+                            // Only the target; its `aliasOf` copy is built under the output budget.
+                            sources[index] = Some((target, library));
                         }
                         Err((code, message)) => diagnostics.push(code, Some(variable), message),
                     }
@@ -729,8 +720,21 @@ pub fn convert_mapped(
                 "sourceName": variable["name"],
             } },
         });
-        if let Some(source) = sources[index].take() {
-            token["$extensions"]["org.figlens"]["aliasOf"] = source;
+        if let Some((target, library)) = sources[index].take() {
+            let (id, owner) = (
+                target["id"].as_str().unwrap_or(""),
+                target["variableCollectionId"].as_str().unwrap_or(""),
+            );
+            let source = &mut token["$extensions"]["org.figlens"]["aliasOf"];
+            *source = json!({
+                "variableId": id,
+                "name": target["name"],
+                "collectionId": owner,
+                "modeId": mode_of(owner, id).unwrap_or_default(),
+            });
+            if library {
+                source["libraryCopy"] = json!(true);
+            }
         }
         let name = variable["name"].as_str().unwrap();
         let mut segments = name.split('/').peekable();
