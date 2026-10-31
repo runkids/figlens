@@ -536,6 +536,21 @@ impl AdmittedCall {
                     .map_err(contract::Failure::from_error);
             }
             let run = |tree: &Tree, path: &Path| {
+                if name == "compare_image" {
+                    let value = command::compare_image(
+                        tree,
+                        path,
+                        self.call.string("node").unwrap(),
+                        self.image.as_deref().unwrap(),
+                        self.call.argument("scale").as_f64(),
+                        self.call.argument("limit").as_u64().unwrap() as usize,
+                        self.output.as_deref(),
+                    )?;
+                    return Ok(command::Output::Json {
+                        value,
+                        pretty: false,
+                    });
+                }
                 if name == "export_batch" {
                     let items = command::export_items(self.call.argument("items"), 1600)?;
                     let value = command::export_batch(tree, path, &items, &self.outputs)?;

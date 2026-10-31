@@ -69,6 +69,7 @@ fn mcp_lists_every_tool() {
             "verify",
             "export",
             "export_batch",
+            "compare_image",
             "index",
             "jobs",
             "models",

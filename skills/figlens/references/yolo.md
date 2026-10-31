@@ -22,13 +22,13 @@ Resolve routine implementation choices from project evidence and state material 
 
 Implement coherent slices using the project's components, tokens, layout and asset conventions. Follow the main skill's image delivery and reference-comparison procedure. Update the working plan with observed progress rather than repeating broad discovery.
 
-After the first pass, compare the running screen at the requested viewport with the design evidence, verify typography, layout, crops and image delivery, and run the project's relevant build/runtime/interaction checks. Correct confirmed discrepancies and rerun the affected checks. When a check leads you to depart from the design, such as darkening text for contrast, record each departure in the plan with the design value, the delivered value and the reason; it is a known difference, not a match. Stop when acceptance is met; if progress needs unavailable evidence, permissions or a decision that cannot be inferred, report the unresolved condition instead of retrying without a new hypothesis.
+After the first pass, compare the running screen at the requested viewport with the design evidence by running `compare-image` on its screenshot ([Verification evidence](../SKILL.md#verification-evidence)), verify typography, layout, crops and image delivery, and run the project's relevant build/runtime/interaction checks. Correct confirmed discrepancies and rerun the affected checks. When a check leads you to depart from the design, such as darkening text for contrast, record each departure in the plan with the design value, the delivered value and the reason; it is a known difference, not a match. Stop when acceptance is met; if progress needs unavailable evidence, permissions or a decision that cannot be inferred, report the unresolved condition instead of retrying without a new hypothesis.
 
 ## Clean up after verified completion
 
 Of the plans, delete only the temporary plan files created by this run, after implementation and the applicable acceptance checks succeed. Record their contents after your own updates; immediately before deletion, re-read each exact path and verify it still belongs to this run and matches that last known content. Preserve any plan with unexpected edits, user-added notes or uncertain ownership. Remove an empty plan directory only if this run created it. Avoid recursive cleanup of `.figlens`, shared namespaces or wildcard-matched plans.
 
-In the run's own export directory, write `verification.md` with the acceptance record described below, keep it and the final acceptance screenshot, and delete the rest: bundle ZIPs and their extracted files, intermediate screenshots, scratch scripts and logs can all be regenerated. Delete nothing outside that directory: `.figlens/component-mappings.md`, `.figlens/previews/`, other exports and shipped assets stay. If the directory was not created by this run, delete only the files this run wrote there.
+In the run's own export directory, write `verification.md` with the acceptance record described below, keep it, the final acceptance screenshot and its `compare-image` diff PNG, and delete the rest: bundle ZIPs and their extracted files, intermediate screenshots, scratch scripts and logs can all be regenerated. Delete nothing outside that directory: `.figlens/component-mappings.md`, `.figlens/previews/`, other exports and shipped assets stay. If the directory was not created by this run, delete only the files this run wrote there.
 
 Whatever the outcome, before you finish stop the dev servers, browser sessions and other processes this run started, and only those; leave any that were running before. Give the command that restarts the preview, and report a process you could not stop with its PID.
 
@@ -36,8 +36,8 @@ Keep delivered code/assets, existing plans and source designs. Keep figlens work
 
 Return the implemented scope, then the acceptance record in three groups:
 
-- **Proven by a tool:** results with their command or tool output, such as `figlens verify`, tests, builds, axe or a measured font load.
-- **Checked by you:** what you compared or exercised yourself, such as screenshots against the reference or interactions, with the viewport and state.
+- **Proven by a tool:** results with their command or tool output, such as `figlens verify`, tests, builds, axe, a measured font load, or `compare-image` with its viewport, state, `mismatch` and `nonTextMismatch` once every remaining non-text region is fixed or listed as a known difference.
+- **Checked by you:** what you compared or exercised yourself, such as interactions, states or viewports `compare-image` did not cover, and differences under its threshold, with the viewport and state.
 - **Not verified:** checks you could not run and unresolved inputs.
 
 List known differences separately: each recorded design departure, accepted fallback with its remedy, and remaining renderer difference. Then give the actual cleanup outcome: plan, export files kept and removed, and processes stopped. Cleanup failure is a reported remaining task, not permission to claim it was done. A successful build alone does not establish visual acceptance.

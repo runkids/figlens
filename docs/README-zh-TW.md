@@ -131,7 +131,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可寄�
 
 ## MCP 伺服器與 agent skill
 
-**MCP。** 伺服器透過 stdio 在本機執行，提供 `workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch`、`export`、`export_batch` 與 `models`。`export_batch` 一次呼叫最多寫出 64 個檔案，回傳 manifest 而非內嵌圖片。請傳入絕對路徑。加上 `--root /path/to/designs`（可重複）可將所有檔案與輸出路徑限制在指定的資料夾。明確指定自訂索引位置時，需要 `--storage-root DIR`（可重複）；已記住的 workspace 位置不必再指定。參見[啟動參數與多個 root 的設定範例](../README-zh-TW.md#mcp-args)。點陣圖匯出會縮小到 `maxSize`（預設 1600 px），讓內嵌圖片維持小巧；SVG 只回傳 metadata。
+**MCP。** 伺服器透過 stdio 在本機執行，提供 `workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch`、`export`、`export_batch`、`compare_image` 與 `models`。`export_batch` 一次呼叫最多寫出 64 個檔案，回傳 manifest 而非內嵌圖片。請傳入絕對路徑。加上 `--root /path/to/designs`（可重複）可將所有檔案與輸出路徑限制在指定的資料夾。明確指定自訂索引位置時，需要 `--storage-root DIR`（可重複）；已記住的 workspace 位置不必再指定。參見[啟動參數與多個 root 的設定範例](../README-zh-TW.md#mcp-args)。點陣圖匯出會縮小到 `maxSize`（預設 1600 px），讓內嵌圖片維持小巧；SVG 只回傳 metadata。
 
 agent 可透過 `workflow` 讀取內建的 `build`、`audit`、`images`、`search`、`plan`、`planning-details`，或明確要求時的 `yolo` 指引。它們與 portable skill 共用來源；MCP 使用者可自行選擇是否另裝 skill。實際工作仍由 agent 使用專案與瀏覽器工具，並遵守 host 權限。讀取指引不會執行工作流程；使用方式取決於客戶端支援與模型行為。
 
@@ -245,6 +245,7 @@ Pi、OpenCode 和 OMP 透過各自的 opt-in 入口使用同一個索引，works
 | `export <file> --batch <items.json>`, `--batch -` (stdin) | 一次解碼匯出多個節點，每項各有自己的選項：1-64 個 `{node, out, bounds?, scale?, quality?, maxKb?, maxSize?, hide?}` 的 JSON 陣列（MCP `export_batch`）。輸出一份 manifest `{count, failed, items}`：每項為 `export` 輸出或 `{error}`（其餘照常匯出）；項目格式錯誤或 `out` 重複會在寫入任何檔案前失敗 |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 絕不寫入設計的本機 viewer；按 Enable index 後可用語意/混合搜尋；`--out` 會寫出獨立的離線快照；結果與複製的 context 會標明頁面，live 時也標明已載入檔案的路徑、source 的 snapshot 與本機 revision（離線時未知，且絕不嵌入路徑）；context 也帶有參考 scope 的 coverage，未檢查時為 `complete: null`. Visual／Hybrid 可使用參考 PNG 或所選圖層，並以像素裁切。請明確啟用視覺索引；查詢圖片不會保存。 |
 | `compare <file> <nodes.json> <node>` | 與同一 frame 的 REST 匯出做差異比對 |
+| `compare-image <file> <node> <screenshot.png>` | 將實作畫面的截圖與依其縮放渲染的 node 比對（`--scale`、`--limit`、`--out diff.png`；MCP `compare_image`）。輸出 `mismatch`、`nonTextMismatch` 與差異最大的區域（node 像素座標），每個區域附上其下最深的圖層；`text: true` 表示字型替代而非版面問題 |
 | `node <file> <node>` | 單一原始 `.fig` 節點 |
 | `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset\|track\|untrack\|embed\|visual` | 使用者 figlens state 目錄中的本機 workspace，或位於 workspace 之後會記住的 `--storage DIR` 下。`prepare <file> --scope NODE` 為該範圍建立一次搜尋索引；之後 `search --file <file>`（或 `--workspace DIR`）不再解析檔案，跨 workspace 的所有來源統一排序作答。`refresh` 重建有變更的檔案，`rebuild` 重建全部或單一 `--source`/`--scope`，`clear` 刪除未使用的索引；新索引就緒前繼續使用舊索引。`reset` 只刪除 workspace 資料庫，不會刪除設計、匯出或記住的位置。`track --scope NODE` 從 baseline 建置開始記錄該範圍的變更；`untrack` 停止記錄並保留歷史。 `embed` 用已設定的模型嵌入已發布的範圍（使用 CPU 與記憶體）；僅在需要 workspace 語意搜尋時執行。 `visual --scope NODE` 為圖片搜尋渲染該已發布範圍的畫面與元件，設定視覺模型時一併嵌入；僅在需要 workspace 視覺搜尋時執行。 |
 | `jobs status\|cancel <jobId>` | 查看或取消索引建置；`cancel` 在建置停止後才返回 |

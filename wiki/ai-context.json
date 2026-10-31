@@ -97,10 +97,13 @@
       ]
     },
     "accuracy": {
-      "description": "Measuring output against Figma's own exports, running compare, finding test files, the CI regression corpus.",
+      "description": "Measuring output against Figma's own exports, running compare or compare-image, finding test files, the CI regression corpus.",
       "sources": [
         {
           "path": "wiki/accuracy.md"
+        },
+        {
+          "path": "wiki/compare-image.md"
         }
       ]
     },

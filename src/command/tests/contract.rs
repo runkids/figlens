@@ -18,6 +18,9 @@ fn own(tool: &str, mut args: Value) -> Value {
     if tool == "variables" {
         args.as_object_mut().unwrap().remove("out");
     }
+    if tool == "compare_image" {
+        args["image"] = json!("absent.png");
+    }
     args
 }
 
@@ -33,6 +36,7 @@ fn schema_and_numeric_preflight_share_boundaries() {
         ("export", "maxSize", 0, u64::from(u32::MAX)),
         ("tree", "depth", 0, (1 << 53) - 1),
         ("export", "maxKb", 0, (1 << 53) - 1),
+        ("compare_image", "limit", 1, 50),
     ] {
         let schema = &tools.iter().find(|t| t["name"] == tool).unwrap()["inputSchema"];
         assert_eq!(schema["properties"][key]["minimum"], min);
