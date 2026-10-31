@@ -276,6 +276,11 @@ mod tests {
             yolo.contains("**accepted fallback**")
                 && yolo.contains("Only a blocking gap stops the run")
         );
-        assert!(read("build").unwrap().contains("**Chaining calls**"));
+        let build = read("build").unwrap();
+        // CLI tree and diff print text by default; a jq pipeline needs --json.
+        assert!(
+            build.contains("**Chaining calls**")
+                && build.contains("`tree` and `diff` print text unless you add `--json`")
+        );
     }
 }
