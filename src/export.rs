@@ -49,7 +49,7 @@ pub struct Image {
 
 /// Renders node `id` over its render bounds, or its layout box when `layout`, and encodes it.
 /// SVG keeps its original dimensions and ignores quality. Also returns `layoutBox`, `renderBox`
-/// and `warnings`.
+/// and `warnings`: the drawn area past the layout box, then the subtree's render diagnostics.
 #[allow(clippy::too_many_arguments)]
 pub fn export(
     tree: &Tree,
@@ -63,9 +63,16 @@ pub fn export(
     max_px: Option<u32>,
 ) -> Result<(Image, Map<String, Json>), Box<dyn Error>> {
     let prepared = Prepared::new(tree, fig, id)?;
-    prepared_export(
+    let (image, mut report) = prepared_export(
         tree, &prepared, id, format, layout, scale, quality, max_bytes, max_px,
-    )
+    )?;
+    // Name what the renderer skipped or approximated, as bundle warnings do.
+    let mut skipped = Vec::new();
+    crate::bundle::render_warnings(prepared.node(), &mut skipped);
+    if let Some(Json::Array(warnings)) = report.get_mut("warnings") {
+        warnings.extend(skipped.into_iter().map(Json::from));
+    }
+    Ok((image, report))
 }
 
 /// Shared renderer path for file exports and immutable snapshot thumbnails.
@@ -656,6 +663,73 @@ mod tests {
         let full = encode(&p, Format::Jpg, 90, None).unwrap().bytes.len();
         let fit = encode(&p, Format::Jpg, 90, Some(full / 2)).unwrap();
         assert!(fit.bytes.len() <= full / 2 && fit.quality < 90);
+    }
+
+    #[test]
+    fn export_warnings_name_render_diagnostics_of_the_subtree() {
+        use kiwi_schema::Value as K;
+        let object = |fields: Vec<(&'static str, K<'static>)>| {
+            K::Object("Test", fields.into_iter().collect())
+        };
+        let size = || object(vec![("x", K::Float(20.0)), ("y", K::Float(20.0))]);
+        let frame = object(vec![
+            ("type", K::Enum("NodeType", "FRAME")),
+            ("size", size()),
+        ]);
+        let tiled = object(vec![
+            ("type", K::Enum("NodeType", "RECTANGLE")),
+            ("size", size()),
+            (
+                "fillPaints",
+                K::Array(vec![object(vec![
+                    ("type", K::Enum("PaintType", "IMAGE")),
+                    ("imageScaleMode", K::Enum("ScaleMode", "TILE")),
+                ])]),
+            ),
+        ]);
+        let plain = object(vec![
+            ("type", K::Enum("NodeType", "RECTANGLE")),
+            ("size", size()),
+            (
+                "fillPaints",
+                K::Array(vec![object(vec![
+                    ("type", K::Enum("PaintType", "SOLID")),
+                    (
+                        "color",
+                        object(vec![("r", K::Float(0.0)), ("a", K::Float(1.0))]),
+                    ),
+                ])]),
+            ),
+        ]);
+        let tree = crate::Tree {
+            nodes: std::collections::HashMap::from([
+                ("1:1".into(), &frame),
+                ("1:2".into(), &tiled),
+                ("1:3".into(), &plain),
+            ]),
+            children: std::collections::HashMap::from([(
+                "1:1".into(),
+                vec!["1:2".into(), "1:3".into()],
+            )]),
+            blobs: Vec::new(),
+        };
+        // No image hash, so nothing is read from the file.
+        let warnings = |id: &str| {
+            let fig = Path::new("unread.fig");
+            let (_, report) =
+                export(&tree, fig, id, Format::Svg, false, 1.0, 80, None, None).unwrap();
+            report["warnings"].clone()
+        };
+        let frame = warnings("1:1");
+        assert_eq!(frame.as_array().unwrap().len(), 1, "{frame}");
+        assert!(
+            frame[0]
+                .as_str()
+                .unwrap()
+                .starts_with("Render approximate at node 1:2 (fillPaints[0]"),
+            "{frame}"
+        );
+        assert_eq!(warnings("1:3"), json!([]));
     }
 
     #[test]

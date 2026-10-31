@@ -157,7 +157,8 @@ usage:
                                              --bounds layout exports the node's own box instead of
                                              what it draws (shadows, outside strokes, overflow);
                                              prints {path,width,height,bytes,quality,layoutBox,
-                                             renderBox,warnings}; warnings say when the boxes differ;
+                                             renderBox,warnings}; warnings say when the boxes differ and
+                                             name skipped or approximated rendering, as bundle's do;
                                              --match-dir (SVG only) compares with the .svg files under DIR
                                              (subfolders included) to find an icon the project already has:
                                              matches lists those drawing the same outlines, ignoring position,
