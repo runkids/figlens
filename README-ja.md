@@ -35,6 +35,7 @@
 
 | セットアップ | 対象 | ガイドの入手元 |
 |---|---|---|
+| [プラグイン](#setup-plugin) | Claude Code, Codex, Antigravity, Cursor, Kimi Code | プラグイン同梱の skill とサーバーの `workflow` ツール |
 | [MCP](#setup-mcp) | Claude Code、Cursor、Codex、Gemini CLI などの MCP クライアント | サーバーの `workflow` ツール |
 | [Pi](#setup-pi) | Pi 1.3.0+ | パッケージに同梱の skill |
 | [OpenCode V2](#setup-opencode) | OpenCode V2 2.2.0 | 同梱の skill |
@@ -42,6 +43,23 @@
 | [CLI](#setup-cli) | シェルコマンドだけを実行するエージェント、スクリプト、CI、または自分で使う場合 | `figlens workflow <topic>`、または任意の [skill](#setup-skill) |
 
 **通常と上級。** 通常の利用にセットアップは不要です。`figlens search design.fig "query"` は `.fig` を読むだけで何も作りません。任意のローカルインデックスは依頼したときだけ作成され（`figlens index prepare design.fig --scope 0:0`）、再起動やホストをまたいで再利用されます。[通常の検索と任意のローカルインデックス](docs/README-ja.md#local-index)を参照してください。 任意・実験的：`--mode semantic` または `hybrid` は、自分で用意したローカルモデルで意味による順位付けを行います。[任意のセマンティック検索](docs/README-ja.md#semantic-search)を参照。
+
+<a id="setup-plugin"></a>
+
+### プラグイン
+
+1 回のインストールで figlens の skill と MCP サーバーをエージェントに追加します（Node.js 18+）。サーバーはプラグインのリリースに固定される（`npx -y @runkids/figlens@<version> mcp`）ため、skill とバイナリのバージョンは常に一致します。新しいバージョンにするにはプラグインを更新してください。
+
+| ホスト | インストール |
+|---|---|
+| Claude Code | `claude plugin marketplace add runkids/figlens`, `claude plugin install figlens@figlens` |
+| Codex | `codex plugin marketplace add runkids/figlens`, `codex plugin add figlens@figlens` |
+| Antigravity | `agy plugin install https://github.com/runkids/figlens` |
+| Cursor | `git clone https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens` の後、ウィンドウを再読み込み |
+| Kimi Code | セッション内で `/plugins install https://github.com/runkids/figlens/tree/main`、その後 `/reload` |
+| Hermes Agent | MCP のみ：`hermes mcp add figlens --command npx --args -y @runkids/figlens mcp` |
+
+ホストを再起動するか新しいセッションを開始し、figlens のツールが表示されることを確認してください。プラグインのインストールはリポジトリ全体（約 50 MB）を clone します。Antigravity は skill の先頭 24 KB しか読み込みません。完全なガイダンスはサーバーの `workflow` ツールが提供します。Muse はまだサポートしていません。[ホスト対応表と検証範囲](wiki/host-plugins.md)
 
 <a id="setup-mcp"></a>
 

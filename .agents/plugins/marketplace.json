@@ -1,0 +1,20 @@
+{
+  "name": "figlens",
+  "interface": {
+    "displayName": "figlens"
+  },
+  "plugins": [
+    {
+      "name": "figlens",
+      "source": {
+        "source": "url",
+        "url": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

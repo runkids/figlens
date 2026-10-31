@@ -144,6 +144,8 @@ npm install -g @runkids/figlens
 npx skills add runkids/figlens --skill figlens
 ```
 
+**Plugins.** Claude Code, Codex, Antigravity, Cursor y Kimi Code instalan el skill y el servidor MCP juntos como un plugin; consulta [Configuración del plugin](../README-es.md#setup-plugin).
+
 **skillshare.** Gestiona el skill y la conexión MCP en Claude Code, Codex y Cursor desde un solo lugar con [skillshare](https://github.com/runkids/skillshare):
 
 ```sh

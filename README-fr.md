@@ -35,6 +35,7 @@ Placez `design.fig` dans votre projet, puis choisissez **une** configuration. Ch
 
 | Configuration | Pour | Le guide vient de |
 |---|---|---|
+| [Plugin](#setup-plugin) | Claude Code, Codex, Antigravity, Cursor, Kimi Code | le skill du plugin et l'outil `workflow` du serveur |
 | [MCP](#setup-mcp) | Claude Code, Cursor, Codex, Gemini CLI et les autres clients MCP | l'outil `workflow` du serveur |
 | [Pi](#setup-pi) | Pi 1.3.0+ | le paquet, qui inclut le skill |
 | [OpenCode V2](#setup-opencode) | OpenCode V2 2.2.0 | le skill fourni dans le paquet |
@@ -42,6 +43,23 @@ Placez `design.fig` dans votre projet, puis choisissez **une** configuration. Ch
 | [CLI](#setup-cli) | les agents qui n'exécutent que des commandes shell, les scripts et la CI, ou vous | `figlens workflow <topic>`, ou le [skill](#setup-skill) facultatif |
 
 **Ordinaire vs avancé.** L'usage ordinaire ne demande aucune configuration : `figlens search design.fig "query"` lit le `.fig` et ne crée rien. Un index local optionnel n'est créé que sur votre demande (`figlens index prepare design.fig --scope 0:0`), puis réutilisé entre redémarrages et hôtes. Voir [Recherche ordinaire et index local optionnel](docs/README-fr.md#local-index). Optionnel et expérimental : `--mode semantic` ou `hybrid` classe par le sens avec un modèle local que vous installez vous-même ; voir [Recherche sémantique optionnelle](docs/README-fr.md#semantic-search).
+
+<a id="setup-plugin"></a>
+
+### Plugin
+
+Une seule installation ajoute le skill figlens et le serveur MCP à votre agent (Node.js 18+). Le serveur est figé sur la version du plugin (`npx -y @runkids/figlens@<version> mcp`) : le skill et le binaire correspondent toujours. Mettez le plugin à jour pour passer à une nouvelle version.
+
+| Hôte | Installation |
+|---|---|
+| Claude Code | `claude plugin marketplace add runkids/figlens`, `claude plugin install figlens@figlens` |
+| Codex | `codex plugin marketplace add runkids/figlens`, `codex plugin add figlens@figlens` |
+| Antigravity | `agy plugin install https://github.com/runkids/figlens` |
+| Cursor | `git clone https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens`, puis rechargez la fenêtre |
+| Kimi Code | `/plugins install https://github.com/runkids/figlens/tree/main` dans une session, puis `/reload` |
+| Hermes Agent | MCP seulement : `hermes mcp add figlens --command npx --args -y @runkids/figlens mcp` |
+
+Redémarrez l'hôte ou ouvrez une nouvelle session, puis vérifiez que les outils figlens sont listés. L'installation d'un plugin clone tout le dépôt (environ 50 Mo). Antigravity ne charge que les 24 premiers Ko du skill ; l'outil `workflow` du serveur fournit le guide complet. Muse n'est pas encore pris en charge. [Tableau des hôtes et ce qui a été vérifié](wiki/host-plugins.md)
 
 <a id="setup-mcp"></a>
 

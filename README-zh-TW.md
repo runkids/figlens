@@ -35,6 +35,7 @@
 
 | 方式 | 適用對象 | 指引來源 |
 |---|---|---|
+| [Plugin](#setup-plugin) | Claude Code, Codex, Antigravity, Cursor, Kimi Code | plugin 內附的 skill 與 server 的 `workflow` tool |
 | [MCP](#setup-mcp) | Claude Code、Cursor、Codex、Gemini CLI 等 MCP client | server 的 `workflow` tool |
 | [Pi](#setup-pi) | Pi 1.3.0+ | 套件內附的 skill |
 | [OpenCode V2](#setup-opencode) | OpenCode V2 2.2.0 | 套件內附的 skill |
@@ -42,6 +43,23 @@
 | [CLI](#setup-cli) | 只會執行 shell 指令的 agent、腳本與 CI，或你自己 | `figlens workflow <topic>`，或選用的 [skill](#setup-skill) |
 
 **一般與進階。** 一般使用不需要任何設定：`figlens search design.fig "query"` 只讀取 `.fig`，不會建立任何東西。選用的本機索引只在你要求時建立（`figlens index prepare design.fig --scope 0:0`），之後跨重啟和宿主重複使用。請見[一般搜尋與選用的本機索引](docs/README-zh-TW.md#local-index)。 選用且屬實驗性功能：`--mode semantic` 或 `hybrid` 使用你自行設定的本機模型依語意排序，請見[選用的語意搜尋](docs/README-zh-TW.md#semantic-search)。
+
+<a id="setup-plugin"></a>
+
+### Plugin
+
+一次安裝就把 figlens skill 和 MCP server 加進 agent（需要 Node.js 18+）。Server 固定在 plugin 對應的版本（`npx -y @runkids/figlens@<version> mcp`），所以 skill 和執行檔版本永遠一致；要換新版本就更新 plugin。
+
+| 宿主 | 安裝 |
+|---|---|
+| Claude Code | `claude plugin marketplace add runkids/figlens`, `claude plugin install figlens@figlens` |
+| Codex | `codex plugin marketplace add runkids/figlens`, `codex plugin add figlens@figlens` |
+| Antigravity | `agy plugin install https://github.com/runkids/figlens` |
+| Cursor | `git clone https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens`，再重新載入視窗 |
+| Kimi Code | 在 session 中執行 `/plugins install https://github.com/runkids/figlens/tree/main`，再執行 `/reload` |
+| Hermes Agent | 只有 MCP：`hermes mcp add figlens --command npx --args -y @runkids/figlens mcp` |
+
+重新啟動宿主或開新的 session，確認 figlens tools 已列出。Plugin 安裝會 clone 整個 repository（約 50 MB）。Antigravity 只載入 skill 的前 24 KB；完整指引由 server 的 `workflow` tool 提供。目前還不支援 Muse。[宿主對照表與驗證範圍](wiki/host-plugins.md)
 
 <a id="setup-mcp"></a>
 
