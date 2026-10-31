@@ -566,14 +566,15 @@ impl Command {
                 mode,
                 out,
             } => {
-                let mut snapshot = variables(tree, None);
-                let local = snapshot["collections"]
-                    .as_array()
-                    .is_some_and(|c| c.iter().any(|c| c["id"] == collection.as_str()));
-                // Otherwise a library collection, from the copies cached in this file.
-                if !local {
-                    snapshot = figlens::variables::in_collection(tree, &collection);
-                }
+                // A library collection id carries `<key>/<version>`, a local one a guid. Presence in
+                // the local snapshot cannot tell them apart: it also holds what local aliases reach.
+                let local = !collection.contains('/');
+                let snapshot = if local {
+                    variables(tree, None)
+                } else {
+                    // From the library's copies cached in this file.
+                    figlens::variables::in_collection(tree, &collection)
+                };
                 let mut tokens = figlens::tokens::convert(&snapshot, &collection, &mode)?;
                 tokens["$extensions"]["org.figlens"]["source"] =
                     serde_json::to_value(fig.canonicalize()?)?;
