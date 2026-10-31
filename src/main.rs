@@ -134,9 +134,13 @@ usage:
   figlens variables <file.fig> [node]          print the variables a frame binds (design/variables.json);
                                              without a node, every local variable
   figlens variables <file.fig> --format dtcg --collection ID --mode ID --out FILE
+                     [--alias-mode COLLECTION=MODE ...]
                                              write DTCG 2025.10 color/number/alias tokens for exact IDs
                                              from variables (a library collection exports from its
                                              copies cached in the file, marked libraryCopy);
+                                             an alias into another collection exports its value in that
+                                             collection's only mode, or the --alias-mode one, recorded
+                                             in aliasOf;
                                              no node, workspace or index needed;
                                              any diagnostic fails without publishing partial tokens;
                                              prints {path,collectionId,modeId,tokenCount,diagnostics}

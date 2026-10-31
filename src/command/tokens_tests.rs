@@ -42,7 +42,7 @@ fn token_modes_and_aliases_reach_cli_and_mcp_without_a_workspace() {
         )
         .unwrap();
         let report: Value = serde_json::from_str(&stdout).unwrap();
-        assert_eq!(report["tokenCount"], 4);
+        assert_eq!(report["tokenCount"], 5);
         let reply = call_tool(
             &json!({"name":"variables","arguments":export(&file, &mcp_path, mode)}),
             None,
@@ -60,6 +60,14 @@ fn token_modes_and_aliases_reach_cli_and_mcp_without_a_workspace() {
         );
         assert_eq!(cli["semantic"]["action"]["$value"], "{semantic.link}");
         assert_eq!(cli["semantic"]["link"]["$value"], "{palette.brand}");
+        // Primitives has one mode, so the alias into it exports that mode's value.
+        let accent = &cli["semantic"]["accent"];
+        assert_eq!(accent["$value"]["components"], json!([0.0, 0.5, 1.0]));
+        assert_eq!(
+            accent["$extensions"]["org.figlens"]["aliasOf"],
+            json!({"variableId": "VariableID:0:32", "name": "base/blue",
+                "collectionId": "VariableCollectionId:0:30", "modeId": "0:31"})
+        );
         assert_eq!(
             cli["ratio"]["$extensions"]["org.figlens"]["variableId"],
             "VariableID:0:23"
@@ -152,4 +160,72 @@ fn rooted_token_export_rejects_external_output_before_publication() {
         "{reply}"
     );
     assert!(!out.exists());
+}
+
+#[test]
+fn alias_modes_reach_cli_and_mcp_and_are_checked() {
+    let dir = TestDir::new();
+    let file = dir.join("tokens.fig");
+    fixture::write(&file).unwrap();
+    let cli_path = dir.join("cli.tokens.json");
+    let cli = |extra: &[&str], out: &Path| {
+        let mut args = vec!["variables", file.to_str().unwrap(), "--format", "dtcg"];
+        args.extend([
+            "--collection",
+            "VariableCollectionId:0:10",
+            "--mode",
+            "0:11",
+        ]);
+        args.extend(["--out", out.to_str().unwrap()]);
+        args.extend(extra);
+        run(
+            args.into_iter().map(str::to_owned).collect(),
+            &mut String::new(),
+        )
+    };
+    cli(
+        &["--alias-mode", "VariableCollectionId:0:30=0:31"],
+        &cli_path,
+    )
+    .unwrap();
+    let mcp_path = dir.join("mcp.tokens.json");
+    let mut arguments = export(&file, &mcp_path, "0:11");
+    arguments["aliasModes"] = json!({"VariableCollectionId:0:30": "0:31"});
+    let reply = call_tool(&json!({"name":"variables","arguments":arguments}), None);
+    assert_eq!(reply["isError"], false, "{reply}");
+    assert_eq!(
+        std::fs::read(&cli_path).unwrap(),
+        std::fs::read(&mcp_path).unwrap()
+    );
+    let unknown = dir.join("unknown.tokens.json");
+    let error = cli(
+        &["--alias-mode", "VariableCollectionId:0:30=0:99"],
+        &unknown,
+    );
+    assert!(
+        error
+            .unwrap_err()
+            .to_string()
+            .contains("unknown_alias_mode")
+    );
+    assert!(!unknown.exists());
+    for bad in [
+        "VariableCollectionId:0:30",
+        "=0:31",
+        "VariableCollectionId:0:30=",
+    ] {
+        assert!(cli(&["--alias-mode", bad], &unknown).is_err(), "{bad}");
+    }
+    arguments["aliasModes"] = json!({"VariableCollectionId:0:30": ""});
+    let reply = call_tool(&json!({"name":"variables","arguments":arguments}), None);
+    assert_eq!(
+        reply["_meta"]["figlens"]["code"], "invalid_arguments",
+        "{reply}"
+    );
+    let rest = json!({"file": file, "aliasModes": {"VariableCollectionId:0:30": "0:31"}});
+    let reply = call_tool(&json!({"name":"variables","arguments":rest}), None);
+    assert_eq!(
+        reply["_meta"]["figlens"]["code"], "invalid_arguments",
+        "{reply}"
+    );
 }

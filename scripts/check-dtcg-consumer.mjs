@@ -16,7 +16,8 @@ Then generate and export the original synthetic fixture:
   node scripts/check-dtcg-consumer.mjs samples/issue-146-light.tokens.json samples/issue-146-dark.tokens.json
 
 The check runs offline. It uses Terrazzo to resolve aliases and build JavaScript
-modules, imports those modules, and checks concrete colors, alpha, and numbers.
+modules, imports those modules, and checks concrete colors, alpha, and numbers,
+including a token resolved through an alias into a second, single-mode collection.
 Each run creates a new owned artifact directory under samples/issue-146-consumer/;
 existing files are never overwritten. The fixture generator also requires a new file.
 `;
@@ -61,6 +62,11 @@ async function check(paths) {
     assert.equal(raw.$extensions?.['org.figlens']?.modeName, expected.name);
     assert.equal(raw.semantic?.link?.$value, '{palette.brand}', 'link must retain its alias');
     assert.equal(raw.semantic?.action?.$value, '{semantic.link}', 'action must retain its multi-hop alias');
+    // The second collection, Primitives, has one mode, so accent's alias into it is resolved.
+    assert.deepEqual(raw.semantic?.accent?.$extensions?.['org.figlens']?.aliasOf, {
+      variableId: 'VariableID:0:32', name: 'base/blue',
+      collectionId: 'VariableCollectionId:0:30', modeId: '0:31',
+    }, 'accent must record its cross-collection source');
 
     const artifactName = `${expected.name.toLowerCase()}.values.mjs`;
     const config = defineConfig({
@@ -87,7 +93,9 @@ async function check(paths) {
     const artifact = resolve(artifacts, artifactName);
     await writeFile(artifact, outputFiles[0].contents, { flag: 'wx' });
     const { default: values } = await import(pathToFileURL(artifact));
-    assert.deepEqual(Object.keys(values).sort(), ['palette.brand', 'ratio', 'semantic.action', 'semantic.link']);
+    assert.deepEqual(Object.keys(values).sort(), ['palette.brand', 'ratio', 'semantic.accent', 'semantic.action', 'semantic.link']);
+    assert.deepEqual(values['semantic.accent'].value.components, [0, 0.5, 1], `${expected.name}: accent RGB`);
+    assert.equal(values['semantic.accent'].value.alpha, 1, `${expected.name}: accent alpha`);
     for (const id of ['palette.brand', 'semantic.link', 'semantic.action']) {
       assert.equal(values[id].type, 'color', `${expected.name}: ${id} type`);
       assert.equal(values[id].value.colorSpace, 'srgb', `${expected.name}: ${id} color space`);
@@ -95,7 +103,7 @@ async function check(paths) {
       assert.equal(values[id].value.alpha, expected.alpha, `${expected.name}: ${id} alpha`);
     }
     assert.deepEqual(values.ratio, { type: 'number', value: expected.ratio }, `${expected.name}: unitless number`);
-    console.log(`PASS ${expected.name}: consumer-built brand/link/action RGB=${expected.components.join(',')} alpha=${expected.alpha}; ratio=${expected.ratio}`);
+    console.log(`PASS ${expected.name}: consumer-built brand/link/action RGB=${expected.components.join(',')} alpha=${expected.alpha}; ratio=${expected.ratio}; accent from Primitives RGB=0,0.5,1`);
     console.log(`JavaScript artifact: ${artifact}`);
   }
 }

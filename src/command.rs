@@ -1,5 +1,6 @@
 //! Binary-private command semantics shared by the CLI and MCP adapters.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -54,6 +55,8 @@ pub enum Command {
         collection: String,
         mode: String,
         out: PathBuf,
+        /// The mode to read each aliased collection in, by collection ID.
+        alias_modes: BTreeMap<String, String>,
     },
     Bundle {
         node: String,
@@ -151,6 +154,18 @@ fn require_target_root(tree: &Tree, id: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// MCP `aliasModes`, already validated as a map of non-empty strings.
+pub fn alias_modes(call: &crate::contract::PreparedCall) -> BTreeMap<String, String> {
+    let modes = call
+        .argument("aliasModes")
+        .as_object()
+        .into_iter()
+        .flatten();
+    modes
+        .filter_map(|(c, m)| Some((c.clone(), m.as_str()?.to_owned())))
+        .collect()
+}
+
 impl Command {
     /// Validate the opt-in export shape before source admission in MCP.
     pub fn variables(
@@ -159,12 +174,18 @@ impl Command {
         collection: Option<String>,
         mode: Option<String>,
         out: Option<PathBuf>,
+        alias_modes: BTreeMap<String, String>,
     ) -> Result<Self, Box<dyn Error>> {
         match format.unwrap_or("rest") {
-            "rest" if collection.is_none() && mode.is_none() && out.is_none() => {
+            "rest"
+                if collection.is_none()
+                    && mode.is_none()
+                    && out.is_none()
+                    && alias_modes.is_empty() =>
+            {
                 Ok(Self::Variables(node))
             }
-            "rest" => Err("collection, mode and out require format dtcg".into()),
+            "rest" => Err("collection, mode, out and alias modes require format dtcg".into()),
             "dtcg" if node.is_some() => {
                 Err("DTCG export selects a collection and mode, not a node".into())
             }
@@ -178,6 +199,7 @@ impl Command {
                 out: out
                     .filter(|p| !p.as_os_str().is_empty())
                     .ok_or("DTCG export requires out")?,
+                alias_modes,
             }),
             _ => Err("variables format must be rest or dtcg".into()),
         }
@@ -266,6 +288,7 @@ impl Command {
             "variables" => {
                 let (mut node, mut format, mut collection, mut mode, mut out) =
                     (None, None, None, None, None);
+                let mut alias_modes = BTreeMap::new();
                 let mut rest = args.iter();
                 while let Some(arg) = rest.next() {
                     if arg.starts_with("--") {
@@ -275,6 +298,18 @@ impl Command {
                             "--collection" => collection = Some(value),
                             "--mode" => mode = Some(value),
                             "--out" => out = Some(value),
+                            "--alias-mode" => {
+                                let (target, mode) = value
+                                    .split_once('=')
+                                    .filter(|(c, m)| !c.is_empty() && !m.is_empty())
+                                    .ok_or("--alias-mode takes COLLECTION=MODE")?;
+                                if alias_modes
+                                    .insert(target.to_owned(), mode.to_owned())
+                                    .is_some()
+                                {
+                                    return Err(format!("--alias-mode names {target} twice").into());
+                                }
+                            }
                             _ => return Err(USAGE.into()),
                         }
                     } else if node.is_none() {
@@ -289,6 +324,7 @@ impl Command {
                     collection,
                     mode,
                     out.map(Into::into),
+                    alias_modes,
                 )?
             }
             "bundle" => {
@@ -375,6 +411,7 @@ impl Command {
                 string("collection"),
                 string("mode"),
                 output.map(Path::to_owned),
+                alias_modes(call),
             )?,
             "bundle" => {
                 let node = node()?;
@@ -565,6 +602,7 @@ impl Command {
                 collection,
                 mode,
                 out,
+                alias_modes,
             } => {
                 // A library collection id carries `<key>/<version>`, a local one a guid. Presence in
                 // the local snapshot cannot tell them apart: it also holds what local aliases reach.
@@ -575,7 +613,8 @@ impl Command {
                     // From the library's copies cached in this file.
                     figlens::variables::in_collection(tree, &collection)
                 };
-                let mut tokens = figlens::tokens::convert(&snapshot, &collection, &mode)?;
+                let mut tokens =
+                    figlens::tokens::convert_mapped(&snapshot, &collection, &mode, &alias_modes)?;
                 tokens["$extensions"]["org.figlens"]["source"] =
                     serde_json::to_value(fig.canonicalize()?)?;
                 if !local {

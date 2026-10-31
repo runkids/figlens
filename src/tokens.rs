@@ -82,7 +82,55 @@ impl Diagnostics<'_> {
     }
 }
 
-/// Convert the existing variables snapshot, without resolving aliases to literals.
+/// Convert the existing variables snapshot with no alias mode mappings; see [`convert_mapped`].
+pub fn convert(snapshot: &Value, collection: &str, mode: &str) -> Result<Value, ConversionError> {
+    convert_mapped(snapshot, collection, mode, &BTreeMap::new())
+}
+
+/// The DTCG value of a literal of `kind`, or the diagnostic code and message.
+fn literal(kind: Option<&str>, value: &Value) -> Result<Value, (&'static str, String)> {
+    match kind {
+        Some("number") if value.as_f64().is_some_and(f64::is_finite) => Ok(value.clone()),
+        Some("number") => Err((
+            "invalid_number",
+            "FLOAT value must be a finite number".into(),
+        )),
+        Some("color") => {
+            let invalid: Vec<&str> = ["r", "g", "b", "a"]
+                .into_iter()
+                .filter(|channel| {
+                    !value[*channel]
+                        .as_f64()
+                        .is_some_and(|number| number.is_finite() && (0.0..=1.0).contains(&number))
+                })
+                .collect();
+            if invalid.is_empty() {
+                Ok(json!({
+                    "colorSpace": "srgb",
+                    "components": [value["r"], value["g"], value["b"]],
+                    "alpha": value["a"],
+                }))
+            } else {
+                Err((
+                    "invalid_color",
+                    format!(
+                        "COLOR channels {} must each be finite numbers in 0..1",
+                        invalid.join(", ")
+                    ),
+                ))
+            }
+        }
+        _ => Err((
+            "unsupported_type",
+            "only COLOR and FLOAT resolvedType are supported".into(),
+        )),
+    }
+}
+
+/// Convert the existing variables snapshot. Aliases within the collection stay DTCG
+/// references. An alias into another collection is resolved to its value in that
+/// collection's mode, which is its only mode or the one `alias_modes` names for it, and
+/// the token records the first target in `aliasOf`; several modes and no mapping fail.
 ///
 /// Limits: 100,000 records per input array, 4 KiB per identity/name, 16 MiB of
 /// relevant metadata, 64 path segments per name, one million total path segments,
@@ -90,7 +138,12 @@ impl Diagnostics<'_> {
 /// latter limit include an explicit omitted-failure count. Output accounting
 /// conservatively includes one comma per object member.
 /// Alias graph validation is iterative and linear in the selected variable count.
-pub fn convert(snapshot: &Value, collection: &str, mode: &str) -> Result<Value, ConversionError> {
+pub fn convert_mapped(
+    snapshot: &Value,
+    collection: &str,
+    mode: &str,
+    alias_modes: &BTreeMap<String, String>,
+) -> Result<Value, ConversionError> {
     if collection.len() > MAX_TEXT_BYTES || mode.len() > MAX_TEXT_BYTES {
         return Err(ConversionError {
             report: json!({ "diagnostics": [{
@@ -211,6 +264,31 @@ pub fn convert(snapshot: &Value, collection: &str, mode: &str) -> Result<Value, 
                 "collection/mode name exceeds its byte limit",
             );
             return Err(diagnostics.error());
+        }
+    }
+    // Each mapping names a collection of this snapshot and one of its modes.
+    let collection_modes = |id: &str| {
+        collections
+            .iter()
+            .find(|c| c["id"] == id)
+            .and_then(|c| c["modes"].as_array())
+    };
+    for (target, target_mode) in alias_modes {
+        if !text_fits(target) || !text_fits(target_mode) {
+            diagnostics.push(
+                "resource_limit",
+                None,
+                "alias mode metadata exceeds its byte limit",
+            );
+            return Err(diagnostics.error());
+        }
+        let known = target != collection
+            && collection_modes(target)
+                .is_some_and(|modes| modes.iter().any(|m| m["modeId"] == target_mode.as_str()));
+        if !known {
+            diagnostics.push("unknown_alias_mode", None, format!(
+                "alias mode '{target}={target_mode}' does not name another collection of this snapshot and one of its modes"
+            ));
         }
     }
     let mut selected: Vec<&Value> = variables
@@ -353,7 +431,116 @@ pub fn convert(snapshot: &Value, collection: &str, mode: &str) -> Result<Value, 
         types.push(token_type);
     }
     let mut values = vec![None; selected.len()];
+    let mut sources = vec![None; selected.len()];
     let mut edges = vec![None; selected.len()];
+    // The mode a target collection is read in: the selected one for this collection, else
+    // the mapped one, else its only mode.
+    let mode_of = |owner: &str, id: &str| -> Result<String, (&'static str, String)> {
+        if owner == collection {
+            return Ok(mode.to_owned());
+        }
+        if let Some(m) = alias_modes.get(owner) {
+            return Ok(m.clone());
+        }
+        match collection_modes(owner).map(Vec::as_slice) {
+            Some([only]) => Ok(only["modeId"].as_str().unwrap_or("").to_owned()),
+            Some(modes) => Err((
+                "cross_collection_alias",
+                format!(
+                    "alias target '{id}' belongs to collection '{owner}' with {} modes; choose one with --alias-mode {owner}=<mode id> (MCP aliasModes)",
+                    modes.len()
+                ),
+            )),
+            None => Err((
+                "cross_collection_alias",
+                format!(
+                    "alias target '{id}' belongs to collection '{owner}', which this snapshot does not include"
+                ),
+            )),
+        }
+    };
+    let kind_of = |v: &Value| match v["resolvedType"].as_str() {
+        Some("COLOR") => Some("color"),
+        Some("FLOAT") => Some("number"),
+        _ => None,
+    };
+    // Each variable's resolved value is computed once, so all chains together stay linear.
+    let mut memo: HashMap<String, Result<Value, (&'static str, String)>> = HashMap::new();
+    let mut resolve_foreign = |first: &Value, kind: Option<&str>| {
+        let first_id = first["id"].as_str().unwrap_or("");
+        let owner = first["variableCollectionId"].as_str().unwrap_or("");
+        if kind.is_none() || kind_of(first) != kind {
+            return Err((
+                "alias_type_mismatch",
+                format!("alias target '{first_id}' must have the same supported resolvedType"),
+            ));
+        }
+        let source = json!({
+            "variableId": first_id,
+            "name": first["name"],
+            "collectionId": owner,
+            "modeId": mode_of(owner, first_id)?,
+        });
+        let (mut chain, mut seen) = (Vec::new(), HashSet::new());
+        let mut current = first;
+        let result = loop {
+            let id = current["id"].as_str().unwrap_or("");
+            if let Some(known) = memo.get(id) {
+                break known.clone();
+            }
+            if !seen.insert(id) {
+                break Err((
+                    "alias_cycle",
+                    "cross-collection alias participates in a cycle".into(),
+                ));
+            }
+            chain.push(id);
+            let owner = current["variableCollectionId"].as_str().unwrap_or("");
+            let owner_mode = match mode_of(owner, id) {
+                Ok(m) => m,
+                Err(e) => break Err(e),
+            };
+            let Some(value) = current["valuesByMode"]
+                .get(&owner_mode)
+                .filter(|v| !v.is_null())
+            else {
+                break Err((
+                    "alias_target_missing_mode",
+                    format!("alias target '{id}' has no value for mode '{owner_mode}'"),
+                ));
+            };
+            if value["type"] != "VARIABLE_ALIAS" {
+                break literal(kind_of(current), value);
+            }
+            let next = value["id"].as_str().unwrap_or("");
+            if duplicate_ids.contains(next) {
+                break Err((
+                    "ambiguous_alias",
+                    format!("alias target '{next}' is not unique"),
+                ));
+            }
+            let Some(next) = all_ids.get(next) else {
+                break Err((
+                    "missing_alias",
+                    format!("alias target '{next}' was not found"),
+                ));
+            };
+            if kind_of(next) != kind_of(current) {
+                break Err((
+                    "alias_type_mismatch",
+                    format!(
+                        "alias target '{}' must have the same supported resolvedType",
+                        next["id"].as_str().unwrap_or("")
+                    ),
+                ));
+            }
+            current = next;
+        };
+        for id in chain {
+            memo.insert(id.to_owned(), result.clone());
+        }
+        result.map(|value| (value, source))
+    };
     if selected_mode.is_some() {
         for (index, variable) in selected.iter().enumerate() {
             let Some(value) = variable["valuesByMode"]
@@ -393,9 +580,13 @@ pub fn convert(snapshot: &Value, collection: &str, mode: &str) -> Result<Value, 
                     continue;
                 }
                 if target["variableCollectionId"] != collection {
-                    diagnostics.push("cross_collection_alias", Some(variable), format!(
-                        "alias target '{target_id}' belongs to a different collection; no mode mapping is inferred"
-                    ));
+                    match resolve_foreign(target, types[index]) {
+                        Ok((value, source)) => {
+                            values[index] = Some(value);
+                            sources[index] = Some(source);
+                        }
+                        Err((code, message)) => diagnostics.push(code, Some(variable), message),
+                    }
                     continue;
                 }
                 let target_index = selected_ids[target_id];
@@ -423,45 +614,11 @@ pub fn convert(snapshot: &Value, collection: &str, mode: &str) -> Result<Value, 
                 edges[index] = Some(target_index);
                 continue;
             }
-            match types[index] {
-                Some("number") => {
-                    if value.as_f64().is_some_and(f64::is_finite) {
-                        values[index] = Some(value.clone());
-                    } else {
-                        diagnostics.push(
-                            "invalid_number",
-                            Some(variable),
-                            "FLOAT value must be a finite number",
-                        );
-                    }
+            if types[index].is_some() {
+                match literal(types[index], value) {
+                    Ok(value) => values[index] = Some(value),
+                    Err((code, message)) => diagnostics.push(code, Some(variable), message),
                 }
-                Some("color") => {
-                    let invalid: Vec<&str> = ["r", "g", "b", "a"]
-                        .into_iter()
-                        .filter(|channel| {
-                            !value[*channel].as_f64().is_some_and(|number| {
-                                number.is_finite() && (0.0..=1.0).contains(&number)
-                            })
-                        })
-                        .collect();
-                    if invalid.is_empty() {
-                        values[index] = Some(json!({
-                            "colorSpace": "srgb",
-                            "components": [value["r"], value["g"], value["b"]],
-                            "alpha": value["a"],
-                        }));
-                    } else {
-                        diagnostics.push(
-                            "invalid_color",
-                            Some(variable),
-                            format!(
-                                "COLOR channels {} must each be finite numbers in 0..1",
-                                invalid.join(", ")
-                            ),
-                        );
-                    }
-                }
-                _ => {}
             }
         }
     }
@@ -520,7 +677,7 @@ pub fn convert(snapshot: &Value, collection: &str, mode: &str) -> Result<Value, 
             )),
             None => values[index].take().unwrap(),
         };
-        let token = json!({
+        let mut token = json!({
             "$type": types[index].unwrap(),
             "$value": value,
             "$extensions": { "org.figlens": {
@@ -530,6 +687,16 @@ pub fn convert(snapshot: &Value, collection: &str, mode: &str) -> Result<Value, 
                 "sourceName": variable["name"],
             } },
         });
+        if let Some(mut source) = sources[index].take() {
+            // A library collection ID carries `<key>/<version>`; its values are cached copies.
+            if source["collectionId"]
+                .as_str()
+                .is_some_and(|c| c.contains('/'))
+            {
+                source["libraryCopy"] = json!(true);
+            }
+            token["$extensions"]["org.figlens"]["aliasOf"] = source;
+        }
         let name = variable["name"].as_str().unwrap();
         let mut segments = name.split('/').peekable();
         let mut group = output.as_object_mut().unwrap();
