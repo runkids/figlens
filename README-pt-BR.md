@@ -252,7 +252,7 @@ Um frame, um zip. Estrutura para construir, assets para usar, uma imagem para co
 - **Fontes e texto:** os arquivos de fontes não estão incluídos; texto com override pode manter o layout salvo pelo Figma. Use fontes autorizadas do projeto e compare o resultado.
 - **Cobertura:** as [melhorias de renderização](https://github.com/runkids/figlens/issues/36) e a [semântica de entrega](https://github.com/runkids/figlens/issues/37) são acompanhadas nas issues. Veja a [cobertura semântica atual](wiki/semantics.md).
 - **Confira a saída.** Leia os `warnings` do bundle, `missing-assets.json` e as variáveis não resolvidas em `context.md`, depois compare a implementação com o design.
-- As limitações visíveis conhecidas aparecem em `_figlens.renderDiagnostics` dos nós, nos resumos limitados de `inspect` e nos `warnings` do bundle; `missing-assets.json` contém apenas falhas de assets. A ausência de avisos não garante fidelidade de pixels.
+- As limitações visíveis conhecidas aparecem em `_figlens.renderDiagnostics` dos nós, nos resumos limitados de `inspect` e nos `warnings` do bundle e do `export`; `missing-assets.json` contém apenas falhas de assets. A ausência de avisos não garante fidelidade de pixels.
 
 ## Ajude o figlens a crescer
 

@@ -252,7 +252,7 @@ GIF は編集済み動画をさらに 3 倍速でループ再生します。ク�
 - **フォントとテキスト：** フォントファイルは含まれません。オーバーライドされたテキストは Figma の保存済みレイアウトを保持することがあります。利用許諾のあるプロジェクトのフォントを使い、結果を比較してください。
 - **対応範囲：** [レンダリングの改善](https://github.com/runkids/figlens/issues/36)と[ハンドオフのセマンティクス](https://github.com/runkids/figlens/issues/37)は issue で追跡しています。[現在のセマンティクス対応範囲](wiki/semantics.md)も参照してください。
 - **出力を確認してください。** bundle の `warnings`、`missing-assets.json`、`context.md` 内の未解決の variables を読み、実装をデザインと比較してください。
-- 既知の可視レンダリング制限はノードの `_figlens.renderDiagnostics`、件数制限のある `inspect` 要約、bundle の `warnings` に表示されます。`missing-assets.json` は素材の失敗のみを記録します。警告がなくてもピクセル一致は保証されません。
+- 既知の可視レンダリング制限はノードの `_figlens.renderDiagnostics`、件数制限のある `inspect` 要約、bundle と `export` の `warnings` に表示されます。`missing-assets.json` は素材の失敗のみを記録します。警告がなくてもピクセル一致は保証されません。
 
 ## figlens を育てる
 

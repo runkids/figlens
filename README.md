@@ -252,7 +252,7 @@ One frame, one zip. Structure to build from, assets to use, a picture to check a
 - **Fonts and text:** font files are not bundled; overridden text can retain Figma's saved layout. Use licensed project fonts and compare the result.
 - **Support coverage:** follow [rendering improvements](https://github.com/runkids/figlens/issues/36) and [handoff semantics](https://github.com/runkids/figlens/issues/37) in the issue tracker. See [current semantic coverage](wiki/semantics.md).
 - **Check the output.** Read bundle `warnings`, `missing-assets.json` and unresolved variables in `context.md`, then compare the implementation with the design.
-- Known visible rendering limitations appear in node `_figlens.renderDiagnostics`, bounded `inspect` summaries and bundle `warnings`; `missing-assets.json` lists only asset failures. No warnings does not establish pixel fidelity.
+- Known visible rendering limitations appear in node `_figlens.renderDiagnostics`, bounded `inspect` summaries and bundle and `export` `warnings`; `missing-assets.json` lists only asset failures. No warnings does not establish pixel fidelity.
 
 ## Help figlens grow
 
