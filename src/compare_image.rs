@@ -331,7 +331,14 @@ fn layers(n: &Json, clip: Rect) -> Vec<Layer> {
         if !render::visible(n) {
             return;
         }
+        let clips = n["clipsContent"] == true;
         let Some(rect) = render::layout_bounds(n).and_then(|b| render::intersect(b, clip)) else {
+            // Outside the clip, an unclipped parent's children may still be drawn inside it.
+            if !clips {
+                for child in n["children"].as_array().into_iter().flatten() {
+                    walk(child, clip, parent, out);
+                }
+            }
             return;
         };
         let index = out.len();
@@ -348,11 +355,7 @@ fn layers(n: &Json, clip: Rect) -> Vec<Layer> {
             rect,
             parent,
         });
-        let inner = if n["clipsContent"] == true {
-            rect
-        } else {
-            clip
-        };
+        let inner = if clips { rect } else { clip };
         for child in n["children"].as_array().into_iter().flatten() {
             walk(child, inner, Some(index), out);
         }
@@ -456,6 +459,24 @@ mod tests {
             .iter()
             .map(|n| n["id"].as_str().unwrap())
             .collect()
+    }
+
+    #[test]
+    fn a_layer_inside_the_frame_counts_under_an_unclipped_parent_outside_it() {
+        let bounds = |x: f64, w: f64| json!({"x": x, "y": 0.0, "width": w, "height": 50.0});
+        let child =
+            json!({"id": "1:3", "type": "RECTANGLE", "absoluteBoundingBox": bounds(10.0, 20.0)});
+        let mut outside = json!({"id": "1:2", "type": "FRAME", "absoluteBoundingBox": bounds(150.0, 40.0), "children": [child]});
+        let frame = |inner: &Json| json!({"id": "1:1", "type": "FRAME", "absoluteBoundingBox": bounds(0.0, 100.0), "children": [inner]});
+        let ids = |frame: &Json| -> Vec<String> {
+            layers(frame, [0.0, 0.0, 100.0, 50.0])
+                .into_iter()
+                .map(|l| l.id)
+                .collect()
+        };
+        assert_eq!(ids(&frame(&outside)), ["1:1", "1:3"]);
+        outside["clipsContent"] = true.into();
+        assert_eq!(ids(&frame(&outside)), ["1:1"]);
     }
 
     #[test]

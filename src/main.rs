@@ -233,7 +233,7 @@ usage:
                                              nonTextMismatch and the largest differing regions (default
                                              10, 1-50) in node pixels from its top-left, each with the
                                              deepest layers under it and text: true when all are TEXT
-                                             (font fallback, not layout); rows past the node's height are
+                                             (often font fallback; review each); rows past the node's height are
                                              reported, not compared; --out writes a diff PNG
   figlens mcp [--root DIR]... [--storage-root DIR]...
                                              serve workflow guidance, tree, find, search, usages, diff, inspect,

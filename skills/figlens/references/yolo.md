@@ -36,7 +36,7 @@ Keep delivered code/assets, existing plans and source designs. Keep figlens work
 
 Return the implemented scope, then the acceptance record in three groups:
 
-- **Proven by a tool:** results with their command or tool output, such as `figlens verify`, tests, builds, axe, a measured font load, or `compare-image` with its viewport, state, `mismatch` and `nonTextMismatch` once every remaining non-text region is fixed or listed as a known difference.
+- **Proven by a tool:** results with their command or tool output, such as `figlens verify`, tests, builds, axe, a measured font load, or `compare-image` with its viewport, state, `mismatch` and `nonTextMismatch` once every remaining region, text regions included, is fixed or listed as a known difference with its cause.
 - **Checked by you:** what you compared or exercised yourself, such as interactions, states or viewports `compare-image` did not cover, and differences under its threshold, with the viewport and state.
 - **Not verified:** checks you could not run and unresolved inputs.
 
