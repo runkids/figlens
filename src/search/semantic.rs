@@ -33,9 +33,8 @@ fn field_name(field: u8) -> &'static str {
     INPUTS[field as usize]
 }
 
-/// Component property definitions a build converted, by main, with their estimated size: each
-/// main is read once.
-pub(super) type Defs = HashMap<String, (usize, Option<crate::rest::PropDefs>)>;
+/// Component property definitions a build converted, by main: each main is read once.
+pub(super) type Defs = HashMap<String, Option<crate::rest::PropDefs>>;
 
 /// The effective component properties of instance `id` (`e` when it is an expanded sublayer),
 /// `(name, value)`, resolved by `rest::PropDefs` exactly as REST `componentProperties`; an
@@ -117,27 +116,24 @@ pub(super) fn properties(
         if !bounds.charge(1 + bounds.work - left, 64 + main.len() + cost) {
             return None;
         }
-        defs.insert(main.clone(), (cost, PropDefs::read(tree, &main)));
+        defs.insert(main.clone(), PropDefs::read(tree, &main));
     }
-    let (cost, read) = &defs[&main];
-    let Some(read) = read else {
+    let Some(read) = &defs[&main] else {
         return Some(Vec::new());
     };
-    // Each resolution copies at most the definitions' names and values beside the assignments'.
-    let copies = if matches!(doubt, Doubt::Merged(_)) {
-        2
-    } else {
-        1
+    // Lookup GUIDs and each resolved definition/assignment are paid before copying into the
+    // resolution and the output: definitions can share one parent many times.
+    let mut charge = |def: &Json, chosen: Option<&Json>| {
+        let mut left = bounds.work;
+        let bytes = json_bytes(def, &mut left) + chosen.map_or(0, |a| json_bytes(a, &mut left));
+        bounds.charge(1 + bounds.work - left, 2 * bytes)
     };
-    if !bounds.charge(0, copies * cost) {
-        return None;
-    }
     let applied = match &doubt {
-        Doubt::Merged(list) => Some(read.resolve(list)),
+        Doubt::Merged(list) => Some(read.resolve_with(list, &mut charge)?),
         _ => None,
     };
     let assignments = pick("componentPropAssignments", "");
-    let found = read.resolve(&assignments);
+    let found = read.resolve_with(&assignments, &mut charge)?;
     let mut out = Vec::with_capacity(found.len());
     for (key, prop) in found {
         let variant = prop["type"] == "VARIANT";

@@ -843,21 +843,41 @@ impl PropDefs {
     /// `assignments` (a later entry wins per definition): variant values from the main's name
     /// specs, other properties from the assignments or the definition's default.
     pub(crate) fn resolve(&self, assignments: &Json) -> Obj {
+        self.resolve_with(assignments, |_, _| true)
+            .expect("an unbounded resolution never stops")
+    }
+
+    /// `resolve`, showing `before` each lookup GUID, then each resolved definition with its
+    /// chosen assignment (or variant spec), before copying them; `None` once it refuses.
+    /// Many definitions can share one parent, so each copy is paid where it is made.
+    pub(crate) fn resolve_with(
+        &self,
+        assignments: &Json,
+        mut before: impl FnMut(&Json, Option<&Json>) -> bool,
+    ) -> Option<Obj> {
         let mut out = Obj::new();
-        let set_defs: HashMap<String, &Json> = self
-            .set
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|d| Some((guid(&d["id"])?, d)))
-            .collect();
-        let assigned: HashMap<String, &Json> = assignments
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|a| Some((guid(&a["defID"])?, a)))
-            .collect();
+        let mut set_defs = HashMap::new();
+        for d in self.set.as_array().into_iter().flatten() {
+            if !before(&d["id"], None) {
+                return None;
+            }
+            if let Some(id) = guid(&d["id"]) {
+                set_defs.insert(id, d);
+            }
+        }
+        let mut assigned = HashMap::new();
+        for a in assignments.as_array().into_iter().flatten() {
+            if !before(&a["defID"], None) {
+                return None;
+            }
+            if let Some(id) = guid(&a["defID"]) {
+                assigned.insert(id, a);
+            }
+        }
         for own in self.own.as_array().into_iter().flatten() {
+            if !before(&own["id"], Some(&own["parentPropDefId"])) {
+                return None;
+            }
             let def = semantics::resolve_definition(own, &set_defs);
             let (Some(def_id), Some(own_id)) = (guid(&def["id"]), guid(&own["id"])) else {
                 continue;
@@ -867,11 +887,11 @@ impl PropDefs {
                 Some("VARIANT") | None => continue,
                 Some(other) => other,
             };
-            let value = assigned
-                .get(&own_id)
-                .or(assigned.get(&def_id))
-                .and_then(|a| prop_value(a))
-                .or_else(|| prop_value(def));
+            let chosen = assigned.get(&own_id).or(assigned.get(&def_id)).copied();
+            if !before(def, chosen) {
+                return None;
+            }
+            let value = chosen.and_then(prop_value).or_else(|| prop_value(def));
             let mut prop = json!({ "type": kind, "value": value });
             if let Some(list) = def["preferredValues"]["instanceSwapValues"].as_array() {
                 prop["preferredValues"] = list
@@ -885,14 +905,20 @@ impl PropDefs {
             );
         }
         for spec in self.specs.as_array().into_iter().flatten() {
+            if !before(&spec["propDefId"], None) {
+                return None;
+            }
             if let Some(def) = guid(&spec["propDefId"]).and_then(|id| set_defs.get(&id)) {
+                if !before(def, Some(spec)) {
+                    return None;
+                }
                 out.insert(
                     def["name"].as_str().unwrap_or("").to_owned(),
                     json!({ "value": spec["value"], "type": "VARIANT", "boundVariables": {} }),
                 );
             }
         }
-        out
+        Some(out)
     }
 }
 
