@@ -1484,11 +1484,16 @@ fn cli_export_batch_prints_a_manifest_and_rejects_a_repeated_out_before_writing(
     assert!(batch(serde_json::json!([{"node":"0:1","out":a},{"node":"0:2","out":a}])).is_err());
     assert!(!a.exists());
     // A symlink to another item's file is the same output under a second name.
-    let alias = dir.join("alias.png");
-    std::os::unix::fs::symlink(std::path::absolute(&a).unwrap(), &alias).unwrap();
-    assert!(batch(serde_json::json!([{"node":"0:1","out":a},{"node":"0:2","out":alias}])).is_err());
-    assert!(!a.exists());
-    std::fs::remove_file(&alias).unwrap();
+    #[cfg(unix)]
+    {
+        let alias = dir.join("alias.png");
+        std::os::unix::fs::symlink(std::path::absolute(&a).unwrap(), &alias).unwrap();
+        assert!(
+            batch(serde_json::json!([{"node":"0:1","out":a},{"node":"0:2","out":alias}])).is_err()
+        );
+        assert!(!a.exists());
+        std::fs::remove_file(&alias).unwrap();
+    }
     let manifest = batch(serde_json::json!([
         {"node":"0:1","out":a,"scale":2},
         {"node":"0:4","out":b,"maxSize":40},
