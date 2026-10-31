@@ -131,7 +131,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可寄�
 
 ## MCP 伺服器與 agent skill
 
-**MCP。** 伺服器透過 stdio 在本機執行，提供 `workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch`、`export` 與 `models`。請傳入絕對路徑。加上 `--root /path/to/designs`（可重複）可將所有檔案與輸出路徑限制在指定的資料夾。明確指定自訂索引位置時，需要 `--storage-root DIR`（可重複）；已記住的 workspace 位置不必再指定。參見[啟動參數與多個 root 的設定範例](../README-zh-TW.md#mcp-args)。點陣圖匯出會縮小到 `maxSize`（預設 1600 px），讓內嵌圖片維持小巧；SVG 只回傳 metadata。
+**MCP。** 伺服器透過 stdio 在本機執行，提供 `workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch`、`export`、`export_batch` 與 `models`。`export_batch` 一次呼叫最多寫出 64 個檔案，回傳 manifest 而非內嵌圖片。請傳入絕對路徑。加上 `--root /path/to/designs`（可重複）可將所有檔案與輸出路徑限制在指定的資料夾。明確指定自訂索引位置時，需要 `--storage-root DIR`（可重複）；已記住的 workspace 位置不必再指定。參見[啟動參數與多個 root 的設定範例](../README-zh-TW.md#mcp-args)。點陣圖匯出會縮小到 `maxSize`（預設 1600 px），讓內嵌圖片維持小巧；SVG 只回傳 metadata。
 
 agent 可透過 `workflow` 讀取內建的 `build`、`audit`、`images`、`search`、`plan`、`planning-details`，或明確要求時的 `yolo` 指引。它們與 portable skill 共用來源；MCP 使用者可自行選擇是否另裝 skill。實際工作仍由 agent 使用專案與瀏覽器工具，並遵守 host 權限。讀取指引不會執行工作流程；使用方式取決於客戶端支援與模型行為。
 
