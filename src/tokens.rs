@@ -267,12 +267,15 @@ pub fn convert_mapped(
         }
     }
     // Each mapping names a collection of this snapshot and one of its modes.
-    let collection_modes = |id: &str| {
-        collections
-            .iter()
-            .find(|c| c["id"] == id)
-            .and_then(|c| c["modes"].as_array())
-    };
+    // Indexed once: every cross-collection alias looks its collection up. The first wins, as
+    // `find` would.
+    let mut modes_by_id: HashMap<&str, &Vec<Value>> = HashMap::new();
+    for c in collections {
+        if let (Some(id), Some(modes)) = (c["id"].as_str(), c["modes"].as_array()) {
+            modes_by_id.entry(id).or_insert(modes);
+        }
+    }
+    let collection_modes = |id: &str| modes_by_id.get(id).copied();
     for (target, target_mode) in alias_modes {
         if !text_fits(target) || !text_fits(target_mode) {
             diagnostics.push(
