@@ -28,7 +28,7 @@ Requested version: set `"release-as": "X.Y.Z"` on the `.` package in `.github/re
 ## 2. Review the Release PR
 
 - The version follows the policy in the `release` topic; a breaking change needs migration notes in the CHANGELOG.
-- `Cargo.toml`, `Cargo.lock` and `npm/package.json` carry the same version.
+- `Cargo.toml`, `Cargo.lock`, `npm/package.json` and the host plugin manifests carry the same version (`python3 -B -m unittest scripts/host_plugins_test.py`).
 - The tracking manifest agrees with that version.
 - Every user-visible `feat` and `fix` in `<last tag>..origin/main` is reflected in `README.md`, `skills/figlens/SKILL.md` and the wiki topics; fix stale docs on `main` first, then let the PR update.
 - CI on `main` and the exact Release PR head is green. If bot-created PR checks need workflow approval, approve through GitHub's native prompt/API before waiting for results.

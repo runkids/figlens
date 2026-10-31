@@ -35,8 +35,8 @@
     "skills": [
       "./skills"
     ],
-    "image": "https://raw.githubusercontent.com/runkids/figlens/main/assets/taskflow-demo-poster.jpg",
-    "video": "https://raw.githubusercontent.com/runkids/figlens/main/assets/taskflow-demo.mp4"
+    "image": "https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/taskflow-demo-poster.jpg",
+    "video": "https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/taskflow-demo.mp4"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "^1.3.0",

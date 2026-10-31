@@ -26,11 +26,11 @@ and check it against the design.
 
 Pi searches nested screens and resolves node IDs itself. If several frames match, it asks with recognizable names and sizes. React, Vue, Svelte and plain HTML use the same flow. The packaged [figlens skill](https://github.com/runkids/figlens/blob/main/skills/figlens/SKILL.md) has Pi compare the running UI with the design, verify fonts and images, run project checks and fix confirmed differences, then report what it could not check.
 
-[![Pi plans a local design and builds React beside the live browser](https://raw.githubusercontent.com/runkids/figlens/main/assets/taskflow-demo.gif)](https://github.com/runkids/figlens/blob/main/assets/taskflow-demo.mp4)
+[![Pi plans a local design and builds React beside the live browser](https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/taskflow-demo.gif)](https://github.com/runkids/figlens/blob/v0.10.1/assets/taskflow-demo.mp4)
 
 Looping GIF at 3× the edited video’s playback speed. Click it for the full 78-second video.
 
-**[78-second demo](https://github.com/runkids/figlens/blob/main/assets/taskflow-demo.mp4):** `/figlens plan` on one dashboard frame, built with React and Tailwind CSS, checked against the live browser. Edited time-lapse, not a benchmark. [Design credit and notes](https://github.com/runkids/figlens/blob/main/wiki/accuracy.md#taskflow-react-and-tailwind-demo).
+**[78-second demo](https://github.com/runkids/figlens/blob/v0.10.1/assets/taskflow-demo.mp4):** `/figlens plan` on one dashboard frame, built with React and Tailwind CSS, checked against the live browser. Edited time-lapse, not a benchmark. [Design credit and notes](https://github.com/runkids/figlens/blob/main/wiki/accuracy.md#taskflow-react-and-tailwind-demo).
 
 ## Commands
 
@@ -83,7 +83,7 @@ Inspect the real imports, props and usage. Leave proposals for me to review.
 
 Then `/figlens review` lists every pending proposal in the project with its source frame, implementation file, import, usage, rationale and conflicts. Accept, edit or skip. Decisions live in `.figlens/component-mappings.md`; commit it to share them. A mapping is reused when the same component and variant structure appears again, marked **stale** when its recorded files change, and left **unmatched** for a new variant. Non-interactive modes leave proposals pending.
 
-[20-second mapping demo](https://github.com/runkids/figlens/blob/main/assets/pi-demo.mp4) (v0.3.0, edited, generation not timed) · [recording notes](https://github.com/runkids/figlens/blob/main/wiki/pi.md#demo-and-verification).
+[20-second mapping demo](https://github.com/runkids/figlens/blob/v0.10.1/assets/pi-demo.mp4) (v0.3.0, edited, generation not timed) · [recording notes](https://github.com/runkids/figlens/blob/main/wiki/pi.md#demo-and-verification).
 
 <a id="source-checkout"></a>
 

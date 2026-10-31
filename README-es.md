@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="figlens" width="220">
+  <img src="https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/logo.png" alt="figlens" width="220">
 </p>
 
 <h1 align="center">Tu coding agent lee archivos de Figma.<br>Sin app de Figma. Sin login. Sin cuota de API.</h1>
@@ -35,6 +35,7 @@ Pon `design.fig` en tu proyecto y elige **una** configuración. Cada una le da a
 
 | Configuración | Para | La guía viene de |
 |---|---|---|
+| [Plugin](#setup-plugin) | Claude Code, Codex, Antigravity, Cursor, Kimi Code | el skill del plugin y la herramienta `workflow` del servidor |
 | [MCP](#setup-mcp) | Claude Code, Cursor, Codex, Gemini CLI y otros clientes MCP | la herramienta `workflow` del servidor |
 | [Pi](#setup-pi) | Pi 1.3.0+ | el paquete, que incluye el skill |
 | [OpenCode V2](#setup-opencode) | OpenCode V2 2.2.0 | el skill incluido en el paquete |
@@ -43,34 +44,58 @@ Pon `design.fig` en tu proyecto y elige **una** configuración. Cada una le da a
 
 **Ordinario vs. avanzado.** El uso ordinario no requiere configuración: `figlens search design.fig "query"` lee el `.fig` y no crea nada. Un índice local opcional solo se crea cuando lo pides (`figlens index prepare design.fig --scope 0:0`) y luego se reutiliza entre reinicios y hosts. Consulta [Búsqueda ordinaria e índice local opcional](docs/README-es.md#local-index). Opcional y experimental: `--mode semantic` o `hybrid` ordena por significado con un modelo local que configuras tú; consulta [Búsqueda semántica opcional](docs/README-es.md#semantic-search).
 
+<a id="setup-plugin"></a>
+
+### Plugin
+
+Una sola instalación añade el skill de figlens y el servidor MCP a tu agente (Node.js 18+). El servidor queda fijado a la versión del plugin (`npx -y @runkids/figlens@<version> mcp`), así que el skill y el binario siempre coinciden; actualiza el plugin para pasar a una versión nueva.
+
+<!-- x-release-please-start-version -->
+| Host | Instalación |
+|---|---|
+| Claude Code | `claude plugin marketplace add runkids/figlens`, `claude plugin install figlens@figlens` |
+| Codex | `codex plugin marketplace add runkids/figlens`, `codex plugin add figlens@figlens` |
+| Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/v0.10.1` |
+| Cursor | `git clone --depth 1 --branch v0.10.1 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens` y recarga la ventana |
+| Kimi Code | `/plugins install https://github.com/runkids/figlens/tree/v0.10.1` en una sesión y luego `/reload` |
+<!-- x-release-please-end -->
+
+Reinicia el host o abre una sesión nueva y comprueba que aparecen las herramientas de figlens. La instalación de un plugin copia el repositorio en la etiqueta de la versión: unos 7 MB, más el historial de Git (unos 60 MB) en Codex. Antigravity carga solo los primeros 24 KB del skill; la herramienta `workflow` del servidor ofrece la guía completa. Muse aún no está soportado. [Tabla de hosts y qué se verificó](wiki/host-plugins.md)
+
 <a id="setup-mcp"></a>
 
 ### MCP
 
 **Claude Code** (Node.js 18+, macOS/Linux):
 
+<!-- x-release-please-start-version -->
 ```sh
-claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
+claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens@0.10.1 mcp
 ```
+<!-- x-release-please-end -->
 
 **Codex CLI** (Node.js 18+, macOS/Linux):
 
+<!-- x-release-please-start-version -->
 ```sh
-codex mcp add figlens -- npx -y @runkids/figlens mcp
+codex mcp add figlens -- npx -y @runkids/figlens@0.10.1 mcp
 ```
+<!-- x-release-please-end -->
 
 **Cualquier cliente MCP:**
 
+<!-- x-release-please-start-version -->
 ```json
 {
   "mcpServers": {
     "figlens": {
       "command": "npx",
-      "args": ["-y", "@runkids/figlens", "mcp"]
+      "args": ["-y", "@runkids/figlens@0.10.1", "mcp"]
     }
   }
 }
 ```
+<!-- x-release-please-end -->
 
 Sin Node.js, instala el binario independiente ([CLI](#setup-cli)) y usa `"command": "figlens", "args": ["mcp"]`. Abre una sesión nueva y comprueba que aparecen las herramientas de figlens (`/mcp` en Claude Code). No hace falta instalar el skill por separado. Añade `--root <dir>` después de `mcp` para limitar qué carpetas puede leer y escribir figlens.
 
@@ -89,13 +114,14 @@ Usa rutas absolutas a directorios existentes. Cada opción y ruta es un elemento
 
 Ejemplo con dos raíces de diseño/salida y dos raíces de almacenamiento permitidas:
 
+<!-- x-release-please-start-version -->
 ```json
 {
   "mcpServers": {
     "figlens": {
       "command": "npx",
       "args": [
-        "-y", "@runkids/figlens", "mcp",
+        "-y", "@runkids/figlens@0.10.1", "mcp",
         "--root", "/absolute/designs",
         "--root", "/absolute/project",
         "--storage-root", "/absolute/storage-a",
@@ -105,6 +131,7 @@ Ejemplo con dos raíces de diseño/salida y dos raíces de almacenamiento permit
   }
 }
 ```
+<!-- x-release-please-end -->
 
 No existe `figlens mcp --storage`. Selecciona la ubicación real con el argumento `storage` del tool `index` (ruta absoluta dentro de una raíz permitida), o con CLI: `figlens index prepare design.fig --storage /absolute/storage-a`. Tras `prepare`, figlens recuerda la ubicación del workspace y la reutiliza entre reinicios y hosts sin repetir `storage` ni `--storage-root`. Sin ubicación personalizada se usan los directorios predeterminados del usuario, sin flags de almacenamiento.
 
@@ -182,10 +209,12 @@ skillshare sync
 
 La misma herramienta también puede configurar la conexión MCP de figlens para esos agents:
 
+<!-- x-release-please-start-version -->
 ```sh
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.10.1 mcp
 skillshare sync mcp --global
 ```
+<!-- x-release-please-end -->
 
 Otras formas de instalar el skill:
 
@@ -210,11 +239,11 @@ El agent encuentra el frame, reúne los datos del diseño, los recursos y una im
 
 ## Demo: Pi construye una pantalla React desde un .fig
 
-[![Pi plans from a local .fig, builds a React screen and checks it beside a live browser](assets/taskflow-demo.gif)](assets/taskflow-demo.mp4)
+[![Pi plans from a local .fig, builds a React screen and checks it beside a live browser](https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/taskflow-demo.gif)](https://github.com/runkids/figlens/blob/v0.10.1/assets/taskflow-demo.mp4)
 
 El GIF en bucle reproduce el vídeo editado a triple velocidad. Haz clic para ver el vídeo completo de 78 segundos.
 
-**[Video de 78 segundos](assets/taskflow-demo.mp4).** Pi ejecuta `/figlens plan`, lee un frame de dashboard de un `.fig` local, lo construye con React y Tailwind CSS, y luego revisa y corrige la UI en ejecución. Time-lapse editado, no un benchmark ni una promesa de fidelidad pixel-perfect. Diseño: [Task Flow by Eymen Eid](https://www.figma.com/community/file/1224268866120711793) · [notas de la grabación](wiki/accuracy.md#taskflow-react-and-tailwind-demo).
+**[Video de 78 segundos](https://github.com/runkids/figlens/blob/v0.10.1/assets/taskflow-demo.mp4).** Pi ejecuta `/figlens plan`, lee un frame de dashboard de un `.fig` local, lo construye con React y Tailwind CSS, y luego revisa y corrige la UI en ejecución. Time-lapse editado, no un benchmark ni una promesa de fidelidad pixel-perfect. Diseño: [Task Flow by Eymen Eid](https://www.figma.com/community/file/1224268866120711793) · [notas de la grabación](wiki/accuracy.md#taskflow-react-and-tailwind-demo).
 
 **[De .fig a HTML/CSS editable](examples/task-list/README.md):** en un estudio controlado de una lista de tareas, los seis intentos basados en figlens conservaron las 19 apariciones de texto visible como texto DOM real y los cuatro iconos. La extracción por CLI y MCP también pasó con la red de Docker desactivada. El caso incluye configuración, mediciones y comparaciones de imágenes independientes.
 

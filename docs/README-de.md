@@ -110,7 +110,7 @@ Eine Frage nach Text oder einem Screen durchsucht die `.fig` direkt und speicher
 - `/figlens preview [description]` öffnet den lokalen Viewer.
 - `/figlens review` genehmigt wiederverwendbare Komponenten-Zuordnungen, die der Agent vorgeschlagen hat.
 
-![Bitte Pi um einen Bildschirm, lass es das Design finden, mit deinem Stack bauen und das Ergebnis prüfen](../assets/pi-workflow.svg)
+![Bitte Pi um einen Bildschirm, lass es das Design finden, mit deinem Stack bauen und das Ergebnis prüfen](https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/pi-workflow.svg)
 
 Vollständige Anleitung, Befehle und Grenzen: [pi/README.md](../pi/README.md).
 
@@ -118,7 +118,7 @@ Vollständige Anleitung, Befehle und Grenzen: [pi/README.md](../pi/README.md).
 
 ## Ein Design ohne Figma durchsuchen
 
-[![Das MCP-Apps-Design lokal inspizieren, mit Layer-Baum, Layout und Komponenten-Eigenschaften](../assets/preview-inspector.png)](../assets/pi-demo.mp4)
+[![Das MCP-Apps-Design lokal inspizieren, mit Layer-Baum, Layout und Komponenten-Eigenschaften](https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/preview-inspector.png)](https://github.com/runkids/figlens/blob/v0.10.1/assets/pi-demo.mp4)
 
 ```sh
 npx -y @runkids/figlens preview design.fig                        # lokaler Viewer, Ctrl+C zum Beenden
@@ -144,13 +144,17 @@ npm install -g @runkids/figlens
 npx skills add runkids/figlens --skill figlens
 ```
 
+**Plugins.** Claude Code, Codex, Antigravity, Cursor und Kimi Code installieren Skill und MCP-Server zusammen als ein Plugin; siehe [Plugin-Einrichtung](../README-de.md#setup-plugin).
+
 **skillshare.** Verwalte den Skill und die MCP-Verbindung für Claude Code, Codex und Cursor zentral mit [skillshare](https://github.com/runkids/skillshare):
 
+<!-- x-release-please-start-version -->
 ```sh
 skillshare install github.com/runkids/figlens/skills/figlens
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.10.1 mcp
 skillshare sync && skillshare sync mcp --global
 ```
+<!-- x-release-please-end -->
 
 **Installationshinweise.** Der npm-Launcher lädt beim ersten Aufruf das passende native Binary herunter, prüft es gegen die SHA-256-Prüfsummen des Releases und legt es im Cache ab. Skript-Installationen aktualisierst du mit `figlens update`, Homebrew-Installationen mit `brew upgrade figlens`. Die Binaries decken macOS (Apple Silicon, Intel), Linux (arm64, x86_64, statisch mit musl) und Windows (x86_64) ab. Jeder Installationsweg legt außerdem `figlens-embed`, die Laufzeit für die [optionale semantische Suche](#semantic-search), neben `figlens`; sie lädt kein Modell, bis du eines konfigurierst.
 

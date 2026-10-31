@@ -110,7 +110,7 @@ Pi를 다시 시작하거나 `/reload`를 실행한 뒤 평소 말로 화면을 
 - `/figlens preview [description]`는 로컬 viewer를 엽니다.
 - `/figlens review`는 에이전트가 제안한 재사용 컴포넌트 매핑을 승인합니다.
 
-![Pi에게 화면을 요청하면 디자인을 찾고, 기술 스택으로 구현하고, 결과를 확인합니다](../assets/pi-workflow.svg)
+![Pi에게 화면을 요청하면 디자인을 찾고, 기술 스택으로 구현하고, 결과를 확인합니다](https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/pi-workflow.svg)
 
 전체 안내, 명령어, 제한: [pi/README.md](../pi/README.md).
 
@@ -118,7 +118,7 @@ Pi를 다시 시작하거나 `/reload`를 실행한 뒤 평소 말로 화면을 
 
 ## Figma 없이 디자인 둘러보기
 
-[![레이어 트리, 레이아웃, 컴포넌트 속성과 함께 MCP Apps 디자인을 로컬에서 확인하는 모습](../assets/preview-inspector.png)](../assets/pi-demo.mp4)
+[![레이어 트리, 레이아웃, 컴포넌트 속성과 함께 MCP Apps 디자인을 로컬에서 확인하는 모습](https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/preview-inspector.png)](https://github.com/runkids/figlens/blob/v0.10.1/assets/pi-demo.mp4)
 
 ```sh
 npx -y @runkids/figlens preview design.fig                        # 로컬 viewer, Ctrl+C로 종료
@@ -144,13 +144,17 @@ npm install -g @runkids/figlens
 npx skills add runkids/figlens --skill figlens
 ```
 
+**플러그인.** Claude Code, Codex, Antigravity, Cursor, Kimi Code에서는 skill과 MCP 서버를 하나의 플러그인으로 함께 설치할 수 있습니다. [플러그인 설정](../README-ko.md#setup-plugin)을 참고하세요.
+
 **skillshare.** [skillshare](https://github.com/runkids/skillshare)로 Claude Code, Codex, Cursor 전반의 skill과 MCP 연결을 한곳에서 관리하세요.
 
+<!-- x-release-please-start-version -->
 ```sh
 skillshare install github.com/runkids/figlens/skills/figlens
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.10.1 mcp
 skillshare sync && skillshare sync mcp --global
 ```
+<!-- x-release-please-end -->
 
 **설치 참고.** npm 런처는 처음 사용할 때 해당 네이티브 바이너리를 내려받고, 릴리스의 SHA-256 체크섬으로 검증한 뒤 캐시합니다. 스크립트로 설치했다면 `figlens update`, Homebrew로 설치했다면 `brew upgrade figlens`로 업데이트하세요. 바이너리는 macOS(Apple silicon, Intel), Linux(arm64, x86_64, 정적 musl), Windows(x86_64)를 지원합니다.모든 설치 방법은 [선택형 시맨틱 검색](#semantic-search)의 런타임인 `figlens-embed`도 `figlens` 옆에 둡니다. 모델을 설정하기 전에는 모델을 불러오지 않습니다.
 
