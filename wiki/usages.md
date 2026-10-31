@@ -20,7 +20,7 @@ Rules: a target that is not in the file stays as an explicit `missing`/`unresolv
 
 Library references and the cross-source library query (#93) are in [library usages](library-usages.md).
 
-`definitions` stores every resolved target plus in-scope set members and their sets (name, type, set, nearest page), so a definition outside the queried scope still resolves (`definition.state: outside_scope`).
+`definitions` stores every resolved target, in-scope set members and their sets (name, type, set, page), cached library variables also as `<key>/<version>` (#161), so one outside the scope still resolves (`definition.state: outside_scope`).
 
 ## Query and paging
 

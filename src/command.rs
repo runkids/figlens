@@ -566,10 +566,21 @@ impl Command {
                 mode,
                 out,
             } => {
-                let snapshot = variables(tree, None);
+                // A library collection id carries `<key>/<version>`, a local one a guid. Presence in
+                // the local snapshot cannot tell them apart: it also holds what local aliases reach.
+                let local = !collection.contains('/');
+                let snapshot = if local {
+                    variables(tree, None)
+                } else {
+                    // From the library's copies cached in this file.
+                    figlens::variables::in_collection(tree, &collection)
+                };
                 let mut tokens = figlens::tokens::convert(&snapshot, &collection, &mode)?;
                 tokens["$extensions"]["org.figlens"]["source"] =
                     serde_json::to_value(fig.canonicalize()?)?;
+                if !local {
+                    tokens["$extensions"]["org.figlens"]["libraryCopy"] = json!(true);
+                }
                 figlens::output::write(fig, &out, |file| {
                     use std::io::{BufWriter, Write};
                     let mut writer = BufWriter::new(file);

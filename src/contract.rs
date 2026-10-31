@@ -370,7 +370,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "collection",
                 "string",
                 false,
-                "exact collection ID from variables; required only for dtcg",
+                "exact collection ID from variables: a local one, or a library one the file has cached copies of (exported from them, marked libraryCopy); required only for dtcg",
             ),
             (
                 "mode",
