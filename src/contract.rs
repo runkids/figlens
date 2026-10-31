@@ -465,7 +465,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "hide",
                 "string",
                 false,
-                "comma-separated ids of layers inside node to draw as hidden, over the same area (reply lists hidden); compare with the plain export to see how much a layer a warning names actually shows before redoing an asset",
+                "comma-separated ids of layers inside node to draw as hidden, over the same area (reply lists hidden); compare with the plain export to see where that layer, as figlens draws it, changes the result; no difference does not prove its skipped rendering harmless (it may match what is beneath it)",
             ),
         ],
     ),

@@ -173,7 +173,8 @@ usage:
                                              by eye (1 for the same outlines at another size);
                                              --hide draws those layers inside the node as hidden over
                                              the same area (prints hidden): diff it with the plain
-                                             export to see how much a warned layer shows
+                                             export to see where that layer changes the result (no
+                                             difference does not prove skipped rendering harmless)
   figlens export <file.fig> --frames <list|-> --out-dir <dir> [--format png|jpg|webp|avif|svg] ...
                                              one decode, many exports (default png, same options):
                                              writes <dir>/<nodeId>.<format> (`:` as `-`), prints one
