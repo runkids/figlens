@@ -524,20 +524,23 @@ fn long_bound_variable_names_are_cut_and_charged() {
 #[test]
 fn library_aliases_are_named_from_cached_copies() {
     let s = |v: &str| K::String(v.into());
-    let alias = obj(vec![(
-        "assetRef",
-        obj(vec![("key", s("vk")), ("version", s("3:4"))]),
-    )]);
-    let fill = K::Array(vec![obj(vec![
-        ("type", K::Enum("Paint", "SOLID")),
-        (
-            "colorVar",
-            obj(vec![
-                ("dataType", K::Enum("VariableDataType", "ALIAS")),
-                ("value", obj(vec![("alias", alias)])),
-            ]),
-        ),
-    ])]);
+    let fill_of = |key: &str, version: &str| {
+        let alias = obj(vec![(
+            "assetRef",
+            obj(vec![("key", s(key)), ("version", s(version))]),
+        )]);
+        K::Array(vec![obj(vec![
+            ("type", K::Enum("Paint", "SOLID")),
+            (
+                "colorVar",
+                obj(vec![
+                    ("dataType", K::Enum("VariableDataType", "ALIAS")),
+                    ("value", obj(vec![("alias", alias)])),
+                ]),
+            ),
+        ])])
+    };
+    let fill = fill_of("vk", "3:4");
     let message = message(vec![
         node(10, 40, "SYMBOL", vec![]),
         node(11, 40, "SYMBOL", vec![("fillPaints", fill)]),
@@ -564,5 +567,27 @@ fn library_aliases_are_named_from_cached_copies() {
     assert_eq!(
         (&var["variableId"], &var["variableName"]),
         (&json!("VariableID:vk/3:4"), &json!("color/bg/brand"))
+    );
+    // Another cached version of the key still names the alias, as `variables` resolves it.
+    let other = super::tests::message(vec![
+        node(10, 40, "SYMBOL", vec![]),
+        node(11, 40, "SYMBOL", vec![("fillPaints", fill_of("vk", "3:4"))]),
+        node(
+            90,
+            1,
+            "VARIABLE",
+            vec![
+                ("name", s("color/bg/old")),
+                ("key", s("vk")),
+                ("version", s("1:1")),
+            ],
+        ),
+    ]);
+    let tree = Tree::new(&other);
+    let result = compare_variants(&tree, "0:10", "0:11", Path::new("test.fig")).unwrap();
+    assert!(
+        result
+            .to_string()
+            .contains("\"variableName\":\"color/bg/old\"")
     );
 }

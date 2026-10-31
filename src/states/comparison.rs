@@ -281,7 +281,7 @@ fn pairs(tree: &Tree, a: &[Value], b: &[Value]) -> Vec<(usize, usize)> {
 /// library's cached copy, its name; names are cut like layer names and charged to `budget`.
 /// A field whose aliases could not all be named becomes unsupported, so names on one side
 /// only never read as a difference.
-fn name_variables(tree: &Tree, nodes: &mut [Value], budget: &mut Budget) {
+fn name_variables(nodes: &mut [Value], names: &mut Names, budget: &mut Budget) {
     fn walk(value: &mut Value, names: &mut Names, budget: &mut Budget) -> bool {
         match value {
             Value::Array(items) => items.iter_mut().all(|v| walk(v, names, budget)),
@@ -301,7 +301,10 @@ fn name_variables(tree: &Tree, nodes: &mut [Value], budget: &mut Budget) {
                     if !budget.step() {
                         return false;
                     }
-                    let name = names.get(&id).map(|n| budget.name(n));
+                    let Ok(name) = names.get(&id, budget) else {
+                        return false;
+                    };
+                    let name = name.map(|n| budget.name(n));
                     let bytes = id.len()
                         + name
                             .as_ref()
@@ -326,17 +329,13 @@ fn name_variables(tree: &Tree, nodes: &mut [Value], budget: &mut Budget) {
             _ => true,
         }
     }
-    let mut names = Names {
-        tree,
-        library: None,
-    };
     for node in nodes {
         for cell in node["fields"]
             .as_object_mut()
             .into_iter()
             .flat_map(|f| f.values_mut())
         {
-            if cell["state"] == "recorded" && !walk(&mut cell["value"], &mut names, budget) {
+            if cell["state"] == "recorded" && !walk(&mut cell["value"], names, budget) {
                 cell["state"] = "unsupported".into();
                 cell["reason"] = "variable_name_limit".into();
                 cell.as_object_mut().unwrap().remove("value");
@@ -351,30 +350,60 @@ fn is_variable(raw: &K) -> bool {
     matches!(raw.get("type"), Some(K::Enum(_, "VARIABLE")))
 }
 
+/// Cached library variable copies by key: (version, name) in tree order.
+type Library<'a> = HashMap<&'a str, Vec<(&'a str, &'a str)>>;
+
+/// Variable names borrowed from the stored VARIABLE nodes. Library aliases resolve through
+/// cached copies by key, the alias's version first and then the others in tree order, as
+/// `variables` does; that index holds references, is built once on the first library alias
+/// from the canvases' top-level nodes (where Figma keeps variables), and charges each visit.
 struct Names<'t, 'a> {
     tree: &'t Tree<'a>,
-    library: Option<HashMap<(&'a str, &'a str), &'a str>>,
+    library: Option<Option<Library<'a>>>,
 }
 
 impl<'a> Names<'_, 'a> {
-    fn get(&mut self, id: &str) -> Option<&'a str> {
-        let id = id.strip_prefix("VariableID:")?;
+    /// `Err` when the budget ran out before the name could be looked up.
+    fn get(&mut self, id: &str, budget: &mut Budget) -> Result<Option<&'a str>, ()> {
+        let Some(id) = id.strip_prefix("VariableID:") else {
+            return Ok(None);
+        };
         let Some((key, version)) = id.split_once('/') else {
-            let raw = *self.tree.nodes.get(id)?;
-            return super::string(raw, "name").filter(|_| is_variable(raw));
+            let raw = self.tree.nodes.get(id).copied();
+            return Ok(raw
+                .filter(|raw| is_variable(raw))
+                .and_then(|raw| super::string(raw, "name")));
         };
         let tree = self.tree;
         let library = self.library.get_or_insert_with(|| {
-            tree.nodes
-                .values()
-                .filter(|raw| is_variable(raw))
-                .filter_map(|raw| {
+            let mut index = Library::new();
+            for canvas in tree.children.get("0:0").into_iter().flatten() {
+                for id in tree.children.get(canvas).into_iter().flatten() {
+                    if !budget.step() {
+                        return None;
+                    }
+                    let Some(raw) = tree.nodes.get(id).copied().filter(|raw| is_variable(raw))
+                    else {
+                        continue;
+                    };
                     let text = |f| super::string(raw, f);
-                    Some(((text("key")?, text("version")?), text("name")?))
-                })
-                .collect()
+                    if let (Some(key), Some(name)) = (text("key"), text("name")) {
+                        index
+                            .entry(key)
+                            .or_default()
+                            .push((text("version").unwrap_or(""), name));
+                    }
+                }
+            }
+            Some(index)
         });
-        library.get(&(key, version)).copied()
+        let copies = library.as_ref().ok_or(())?.get(key);
+        Ok(copies.and_then(|list| {
+            list.iter()
+                .find(|(v, _)| *v == version)
+                .or(list.first())
+                .map(|(_, name)| *name)
+        }))
     }
 }
 
@@ -460,8 +489,12 @@ pub fn compare_variants(
     };
     let mut a = collect(tree, left, &mut input);
     let mut b = collect(tree, right, &mut input);
-    name_variables(tree, &mut a, &mut input);
-    name_variables(tree, &mut b, &mut input);
+    let mut names = Names {
+        tree,
+        library: None,
+    };
+    name_variables(&mut a, &mut names, &mut input);
+    name_variables(&mut b, &mut names, &mut input);
     let matched = pairs(tree, &a, &b);
     let paired = [
         matched.iter().map(|p| p.0).collect::<HashSet<_>>(),
