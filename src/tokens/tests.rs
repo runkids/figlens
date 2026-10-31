@@ -441,3 +441,142 @@ fn bounds_aggregate_path_work_metadata_and_selectors() {
     assert_eq!(codes(&error), ["resource_limit"]);
     assert!(error.report["diagnostics"][0]["collectionId"].is_null());
 }
+
+/// A snapshot whose Theme aliases into `primitives`, a collection with the given modes:
+/// accent -> blue -> base, base's blue channel 1 and red 0.25 per later mode.
+fn two_collections(primitives: &str, modes: &[&str]) -> Value {
+    let mut input = snapshot(vec![
+        variable("accent", "accent", "COLOR", alias("blue"), alias("blue")),
+        variable("link", "link", "COLOR", alias("accent"), alias("accent")),
+    ]);
+    let per_mode = |value: &dyn Fn(usize) -> Value| -> Value {
+        modes
+            .iter()
+            .enumerate()
+            .map(|(i, m)| ((*m).to_owned(), value(i)))
+            .collect()
+    };
+    input["collections"].as_array_mut().unwrap().push(json!({
+        "id": primitives, "name": "Primitives",
+        "modes": modes.iter().map(|m| json!({ "modeId": m, "name": m })).collect::<Vec<_>>(),
+    }));
+    let blue = per_mode(&|_| alias("base"));
+    let base = per_mode(&|i| json!({ "r": i as f64 / 4.0, "g": 0, "b": 1, "a": 1 }));
+    input["variables"].as_array_mut().unwrap().extend([
+        json!({ "id": "blue", "name": "blue", "variableCollectionId": primitives,
+            "resolvedType": "COLOR", "valuesByMode": blue }),
+        json!({ "id": "base", "name": "base", "variableCollectionId": primitives,
+            "resolvedType": "COLOR", "valuesByMode": base }),
+    ]);
+    input
+}
+
+#[test]
+fn aliases_into_a_single_mode_collection_export_resolved_values_with_their_source() {
+    let input = two_collections("VariableCollectionId:pk/1:2", &["base"]);
+    for mode in ["light", "dark"] {
+        let output = convert(&input, "collection", mode).unwrap();
+        let accent = &output["accent"];
+        assert_eq!(accent["$value"]["components"], json!([0.0, 0, 1]));
+        assert_eq!(
+            accent["$extensions"]["org.figlens"]["aliasOf"],
+            json!({ "variableId": "blue", "name": "blue", "modeId": "base",
+                "collectionId": "VariableCollectionId:pk/1:2", "libraryCopy": true })
+        );
+        // An alias within the collection stays a reference, even to a resolved token.
+        assert_eq!(output["link"]["$value"], "{accent}");
+        assert!(output.get("blue").is_none());
+    }
+}
+
+#[test]
+fn several_target_modes_need_an_explicit_alias_mode() {
+    let input = two_collections("prims", &["one", "two"]);
+    let error = fails(&input, "cross_collection_alias");
+    let message = error.report["diagnostics"][0]["message"].as_str().unwrap();
+    assert!(
+        message.contains("--alias-mode prims=<mode id>"),
+        "{message}"
+    );
+    let mapping = BTreeMap::from([("prims".to_owned(), "two".to_owned())]);
+    let output = convert_mapped(&input, "collection", "light", &mapping).unwrap();
+    assert_eq!(
+        output["accent"]["$value"]["components"],
+        json!([0.25, 0, 1])
+    );
+    assert_eq!(
+        output["accent"]["$extensions"]["org.figlens"]["aliasOf"]["modeId"],
+        "two"
+    );
+    assert!(
+        output["accent"]["$extensions"]["org.figlens"]["aliasOf"]
+            .get("libraryCopy")
+            .is_none()
+    );
+    for (target, mode) in [
+        ("prims", "three"),
+        ("missing", "one"),
+        ("collection", "light"),
+    ] {
+        let mapping = BTreeMap::from([(target.to_owned(), mode.to_owned())]);
+        let error = convert_mapped(&input, "collection", "light", &mapping).unwrap_err();
+        assert!(
+            codes(&error).contains(&"unknown_alias_mode"),
+            "{target}={mode}"
+        );
+    }
+}
+
+#[test]
+fn a_library_collection_anywhere_on_the_chain_marks_the_source_and_names_are_bounded() {
+    // Local Theme -> local Brand -> library Primitives: the value is a cached library copy.
+    let mut input = two_collections("VariableCollectionId:pk/1:2", &["base"]);
+    input["collections"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "id": "brand", "name": "Brand", "modes": [{ "modeId": "b", "name": "B" }] }));
+    input["variables"].as_array_mut().unwrap().push(json!({
+        "id": "middle", "name": "middle", "variableCollectionId": "brand",
+        "resolvedType": "COLOR", "valuesByMode": { "b": alias("blue") },
+    }));
+    input["variables"][0]["valuesByMode"] =
+        json!({ "light": alias("middle"), "dark": alias("middle") });
+    let output = convert(&input, "collection", "light").unwrap();
+    let source = &output["accent"]["$extensions"]["org.figlens"]["aliasOf"];
+    assert_eq!(source["collectionId"], "brand");
+    assert_eq!(source["libraryCopy"], true);
+    input["variables"][4]["name"] = json!("x".repeat(MAX_TEXT_BYTES + 1));
+    assert!(
+        codes(&convert(&input, "collection", "light").unwrap_err()).contains(&"resource_limit")
+    );
+}
+
+#[test]
+fn an_oversized_unresolved_target_id_fails_without_being_copied() {
+    let mut input = two_collections("prims", &["base"]);
+    let huge = "x".repeat(MAX_TEXT_BYTES + 1);
+    input["variables"][3]["valuesByMode"]["base"] = alias(&huge);
+    let error = convert(&input, "collection", "light").unwrap_err();
+    assert!(codes(&error).contains(&"resource_limit"));
+    assert!(!error.report.to_string().contains(&huge));
+}
+
+#[test]
+fn branches_joining_a_failed_alias_share_its_failure() {
+    // accent -> blue -> base fails; a second branch, other -> blue, joins it.
+    let mut input = two_collections("prims", &["base"]);
+    input["variables"][3]["valuesByMode"]["base"] = alias("missing");
+    input["variables"].as_array_mut().unwrap().push(json!({
+        "id": "other", "name": "other", "variableCollectionId": "prims",
+        "resolvedType": "COLOR", "valuesByMode": { "base": alias("blue") },
+    }));
+    input["variables"].as_array_mut().unwrap().push(variable(
+        "second",
+        "second",
+        "COLOR",
+        alias("other"),
+        alias("other"),
+    ));
+    let error = convert(&input, "collection", "light").unwrap_err();
+    assert_eq!(codes(&error), ["missing_alias", "missing_alias"]);
+}

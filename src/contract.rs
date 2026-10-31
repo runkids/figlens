@@ -351,7 +351,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "variables",
-        "The variables a frame binds (collections, modes, aliases); without a node, every local variable. Opt-in format dtcg writes DTCG 2025.10 tokens: requires explicit collection and mode IDs plus out, takes no node, fails without publishing on any diagnostic. No workspace/index needed.",
+        "The variables a frame binds (collections, modes, aliases); without a node, every local variable. Opt-in format dtcg writes DTCG 2025.10 tokens: requires explicit collection and mode IDs plus out, takes no node, fails without publishing on any diagnostic. An alias into another collection exports its resolved value (aliasOf records the source), read in that collection's only mode or the aliasModes one. No workspace/index needed.",
         &[
             FILE,
             (
@@ -376,7 +376,13 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "mode",
                 "string",
                 false,
-                "exact modeId in that collection; required only for dtcg, no default or cross-collection mapping",
+                "exact modeId in that collection; required only for dtcg, no default",
+            ),
+            (
+                "aliasModes",
+                "object",
+                false,
+                "dtcg only: {collectionId: modeId} naming the mode each aliased collection is read in; an alias into a single-mode collection needs no entry. Such aliases export resolved values with aliasOf recording the first target",
             ),
             (
                 "out",
@@ -1052,6 +1058,10 @@ pub fn property(tool: &str, param: &Param) -> Value {
     if tool == "search" && key == "mode" {
         p["enum"] = json!(["text", "semantic", "hybrid", "visual"]);
     }
+    if tool == "variables" && key == "aliasModes" {
+        p["propertyNames"] = json!({"minLength": 1});
+        p["additionalProperties"] = json!({"type": "string", "minLength": 1});
+    }
     if tool == "search" && key == "imageRef" {
         p["properties"] = json!({"sourceId": {"type": "string", "minLength": 1},
             "snapshotId": {"type": "string", "minLength": 1}, "nodeId": {"type": "string", "minLength": 1}});
@@ -1085,6 +1095,14 @@ pub fn property(tool: &str, param: &Param) -> Value {
 /// `value` against an object schema of string, integer and object fields: every required field
 /// present, no other one, each string non-empty and within its enum, each integer in range.
 fn object_fits(value: &Value, schema: &Value) -> bool {
+    // A map such as aliasModes: any non-empty key, each value a non-empty string.
+    if schema["additionalProperties"]["type"] == "string" {
+        return value.as_object().is_some_and(|fields| {
+            fields.iter().all(|(name, v)| {
+                !name.is_empty() && v.as_str().is_some_and(|text| !text.is_empty())
+            })
+        });
+    }
     let (Some(fields), Some(props)) = (value.as_object(), schema["properties"].as_object()) else {
         return false;
     };
@@ -1187,7 +1205,7 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
                 }
             }
             "boolean" if !value.is_boolean() => return Err(bad()),
-            // Library (usages, watch), imageRef and crop (search) list every field.
+            // Library (usages, watch), imageRef and crop (search) list every field; aliasModes is a map.
             "object" if !object_fits(value, &schema) => return Err(bad()),
             "string" => {
                 let text = value.as_str().ok_or_else(bad)?;
@@ -1224,6 +1242,7 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
             call.string("collection").map(str::to_owned),
             call.string("mode").map(str::to_owned),
             call.string("out").map(Into::into),
+            crate::command::alias_modes(&call),
         )
         .map_err(|error| Failure::argument(error.to_string()))?;
     }

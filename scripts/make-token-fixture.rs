@@ -72,6 +72,7 @@ fn data(kind: &'static str, key: &'static str, value: Value<'static>) -> Value<'
     )
 }
 
+/// A Theme variable, valued for Light (11) and Dark (12).
 fn variable(
     id: u32,
     name: &'static str,
@@ -79,10 +80,19 @@ fn variable(
     light: Value<'static>,
     dark: Value<'static>,
 ) -> Value<'static> {
-    let entries = [light, dark]
+    variable_in(10, id, name, kind, vec![(11, light), (12, dark)])
+}
+
+fn variable_in(
+    set: u32,
+    id: u32,
+    name: &'static str,
+    kind: &'static str,
+    values: Vec<(u32, Value<'static>)>,
+) -> Value<'static> {
+    let entries = values
         .into_iter()
-        .zip([11, 12])
-        .map(|(value, mode)| {
+        .map(|(mode, value)| {
             object(
                 "ModeValue",
                 vec![("modeID", guid(mode)), ("variableData", value)],
@@ -95,7 +105,7 @@ fn variable(
         "VARIABLE",
         name,
         vec![
-            ("variableSetID", reference(10)),
+            ("variableSetID", reference(set)),
             ("variableResolvedType", Value::Enum("VariableType", kind)),
             (
                 "variableDataValues",
@@ -240,9 +250,8 @@ pub fn write(output: &Path) -> Result<(), Box<dyn Error>> {
             vec![field("nodeChanges", 12, 1, true)],
         ),
     ]);
-    let modes = [(11, "Light"), (12, "Dark")]
-        .into_iter()
-        .map(|(id, name)| {
+    let modes = |modes: &[(u32, &str)]| {
+        let modes = modes.iter().map(|&(id, name)| {
             object(
                 "VariableMode",
                 vec![
@@ -251,8 +260,9 @@ pub fn write(output: &Path) -> Result<(), Box<dyn Error>> {
                     ("sortPosition", Value::String(format!("{id:03}"))),
                 ],
             )
-        })
-        .collect();
+        });
+        vec![("variableSetModes", Value::Array(modes.collect()))]
+    };
     let alias = |target| data("ALIAS", "alias", reference(target));
     let message = object(
         "Message",
@@ -266,7 +276,7 @@ pub fn write(output: &Path) -> Result<(), Box<dyn Error>> {
                     Some(1),
                     "VARIABLE_SET",
                     "Theme",
-                    vec![("variableSetModes", Value::Array(modes))],
+                    modes(&[(11, "Light"), (12, "Dark")]),
                 ),
                 variable(
                     20,
@@ -277,6 +287,22 @@ pub fn write(output: &Path) -> Result<(), Box<dyn Error>> {
                 ),
                 variable(21, "semantic/link", "COLOR", alias(20), alias(20)),
                 variable(22, "semantic/action", "COLOR", alias(21), alias(21)),
+                // A single-mode collection Theme aliases into (#176).
+                node(
+                    30,
+                    Some(1),
+                    "VARIABLE_SET",
+                    "Primitives",
+                    modes(&[(31, "Base")]),
+                ),
+                variable_in(
+                    30,
+                    32,
+                    "base/blue",
+                    "COLOR",
+                    vec![(31, color(0.0, 0.5, 1.0, 1.0))],
+                ),
+                variable(24, "semantic/accent", "COLOR", alias(32), alias(32)),
                 variable(
                     23,
                     "ratio",
