@@ -451,8 +451,11 @@ fn one_index_per_scope_is_shared_and_held_ones_are_never_evicted() {
 #[test]
 fn disk_cache_round_trips_renders_and_their_export_area() {
     let dir = crate::test_support::TestDir::new();
+    // Keep the owned root reserved while clearing the cache.
+    let cache = dir.join("cache");
+    fs::create_dir(&cache).unwrap();
     let mut disk = DiskCache {
-        dir: Some(dir.join("")),
+        dir: Some(cache),
         used: 0,
     };
     disk.put(
