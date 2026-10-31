@@ -2,6 +2,16 @@
 
 Use only when the user explicitly authorizes autonomous design implementation and cleanup of what the run created, including Pi's `/figlens yolo`. Keep the work in the same agent context. This workflow adds no planner agent, permission bypass or task scheduler.
 
+## Read only what this run needs
+
+From the [main skill](../SKILL.md), read these sections and no others up front: [Where outputs go](../SKILL.md#where-outputs-go), [Building a frame](../SKILL.md#building-a-frame), [Verification evidence](../SKILL.md#verification-evidence), [Reading the output](../SKILL.md#reading-the-output), [Font and asset preflight](../SKILL.md#font-and-asset-preflight) and [Known gaps](../SKILL.md#known-gaps); `workflow yolo` already includes them, and the small Component mappings and Many frames sections, after this guide. Read [the planning workflow](planning.md) for the plan. Load the rest only when the run meets it:
+
+- Raster images or exported icons ship with the scope: [Images and slices](../SKILL.md#images-and-slices).
+- Several pages or an unresolved design dependency: [planning details](planning-details.md).
+- The host offers `figlens_bindings` or the project has saved mappings: [Component mappings](../SKILL.md#component-mappings).
+- Several frames at once: [Many frames](../SKILL.md#many-frames).
+- The user asks to search an index or follow changes: [Search and local index](../SKILL.md#search-and-local-index).
+
 ## Plan before editing the application
 
 Resolve the current request's `.fig`, recognizable screen/region and target project. Read its actual architecture, neighboring implementations, applicable instructions and image pipeline. Use [the planning workflow](planning.md) to inspect only the authorized design scope and dependencies and make the next slice actionable.
@@ -26,4 +36,10 @@ Stop the dev servers, browser sessions and other processes this run started, and
 
 Keep delivered code/assets, existing plans and source designs. Keep figlens workspaces too: their databases, registry and any index are durable state, not task-owned temporaries; never run `figlens index reset` or `untrack` as cleanup (see [Search and local index](../SKILL.md#search-and-local-index)). Start no watch lease, subscription or tracking unless the user asked for one; the only watch state a run removes is a subscription it created with an `owner`, through `watch unsubscribe` with that consumer and owner, never `forget`, another owner's or an ownerless one. Failure, interruption, blocked or unavailable required verification leaves the working plan and the run's export directory available for continuation. If the user asks to retain them, follow that instruction.
 
-Return the implemented scope, checks actually run, remaining known differences including recorded design departures, and the actual cleanup outcome: plan, export files kept and removed, and processes stopped. Cleanup failure is a reported remaining task, not permission to claim it was done. A successful build alone does not establish visual acceptance.
+Return the implemented scope, then the acceptance record in three groups, so a passing bundle or build is never read as overall completion:
+
+- **Proven by a tool:** results with their command or tool output, such as `figlens verify`, tests, builds, axe or a measured font load.
+- **Checked by you:** what you compared or exercised yourself, such as screenshots against the reference or interactions, with the viewport and state.
+- **Not verified:** checks you could not run, unresolved inputs and remaining known differences, including recorded design departures.
+
+Then give the actual cleanup outcome: plan, export files kept and removed, and processes stopped. Cleanup failure is a reported remaining task, not permission to claim it was done. A successful build alone does not establish visual acceptance.
