@@ -56,7 +56,8 @@ export function cliArgs(tool, input) {
   if (tool === 'diff') return ['diff', required(input, 'old'), required(input, 'file'), ...flag('--node', input.node),
     ...flag('--limit', input.limit), ...flag('--cursor', input.cursor), '--json'];
   if (tool === 'inspect') return ['inspect', required(input, 'file'), required(input, 'node'), ...flag('--depth', input.depth),
-    ...flag('--images', input.images), ...flag('--states', input.states), ...flag('--flat', input.flat), ...flag('--compare-variant', input.compareVariant)];
+    ...flag('--images', input.images), ...flag('--states', input.states), ...flag('--flat', input.flat), ...flag('--full-text', input.fullText), ...flag('--colors', input.colors),
+    ...flag('--compare-variant', input.compareVariant)];
   // As the MCP search and usages tools: one corpus, and source narrowing never silently disappears.
   const corpus = () => {
     if (!input.file === !input.workspaceId || (input.file && (input.sourceId || input.storage)))

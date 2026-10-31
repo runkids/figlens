@@ -473,6 +473,15 @@ test('CLI-path flat inspect returns its text lines as the MCP flat field', async
   assert.deepEqual(await adapter.cli(current, 'inspect', { file: '/d.fig', node: '0:1', flat: true }), { flat: '0:1 FRAME "First success" @0,0 320x200\n' });
 });
 
+test('CLI-path inspect passes fullText and colors as --full-text and --colors', async t => {
+  const { adapter } = await context(t);
+  const current = await adapter.scope('session');
+  let ran;
+  current.run = async args => { ran = args; return { stdout: '{}' }; };
+  await adapter.cli(current, 'inspect', { file: '/d.fig', node: '0:1', fullText: true, colors: true });
+  assert.deepEqual(ran, ['inspect', '/d.fig', '0:1', '--full-text', '--colors']);
+});
+
 test('CLI-path prepare and reset run the recovery a failing status names, after asking for its place', async t => {
   const { ctx, adapter } = await context(t);
   const asked = [], ran = [];
