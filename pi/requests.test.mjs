@@ -10,7 +10,9 @@ test('plan and YOLO retain exact requests and separate implementation authority'
   assert.ok(yolo.endsWith(request));
   assert.match(plan, /does not authorize application edits or implementation/);
   assert.match(yolo, /authorizes application edits within that scope/);
+  assert.match(yolo, /temporary plan, scratch exports and processes created for this run/);
   assert.match(yolo, /after successful verification/);
+  assert.match(yolo, /read only the sections the workflow below lists/);
   assert.match(yolo, /existing plans and notes/);
   assert.match(plan, /planning\.md/);
   assert.match(yolo, /yolo\.md/);

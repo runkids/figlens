@@ -106,7 +106,7 @@ pi install npm:@runkids/figlens
 请它找文案或画面时，会直接搜索 `.fig`，不保存任何东西。需要反复搜索时，请 Pi 为某个设计和范围启用索引：它会准备一次本地索引（不需要设置命令），在完成前回报任务状态，之后在重启和其他 host 中继续使用。重置该索引需要你明确要求。询问某个 component、variable、style 或图片用在哪里时，会以同样方式列出精确的 usages：直接读 `.fig`，或在启用索引后读该索引。 请 Pi 跟踪某个设计的变更时，它会在需要时准备索引并 track 该范围，报告上次检查以来的变化；询问两个已保存副本的差异时则用 `diff` 回答，不会启动任何东西。 详情：[本地索引](#local-index)。
 
 - `/figlens plan <request>` 只生成计划，不修改应用程序。
-- `/figlens yolo <request>` 规划、构建、检查，并清理自己创建的临时计划。
+- `/figlens yolo <request>` 规划、构建、检查，并清理自己创建的临时计划、暂存导出与启动的进程。
 - `/figlens preview [description]` 打开本地 viewer。
 - `/figlens review` 批准 agent 提出的可复用组件映射。
 

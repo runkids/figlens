@@ -106,7 +106,7 @@ Restart Pi or `/reload`, then ask for a screen in plain words. Pi finds the fram
 Asking to find copy or a screen in a design searches the `.fig` directly and stores nothing. For repeated searches, ask Pi to enable an index for a design and scope: it prepares a local index once (no setup command), reports the job until it is ready and reuses it across restarts and hosts. Resetting that index needs your explicit request. Asking where a component, variable, style or image is used lists its exact usages the same way: from the `.fig` directly, or from that index once enabled. Asking Pi to follow a design's changes tracks that scope, preparing its index if needed, and reports what changed since it last checked; a question about two saved copies is answered with `diff` and starts nothing. Details: [local index](#local-index).
 
 - `/figlens plan <request>` writes a plan only; it does not edit the application.
-- `/figlens yolo <request>` plans, builds, checks and cleans up its own temporary plan.
+- `/figlens yolo <request>` plans, builds, checks and cleans up its own temporary plan, scratch exports and processes.
 - `/figlens preview [description]` opens the local viewer.
 - `/figlens review` approves reusable component mappings the agent proposed.
 
