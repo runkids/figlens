@@ -550,3 +550,13 @@ fn a_library_collection_anywhere_on_the_chain_marks_the_source_and_names_are_bou
         codes(&convert(&input, "collection", "light").unwrap_err()).contains(&"resource_limit")
     );
 }
+
+#[test]
+fn an_oversized_unresolved_target_id_fails_without_being_copied() {
+    let mut input = two_collections("prims", &["base"]);
+    let huge = "x".repeat(MAX_TEXT_BYTES + 1);
+    input["variables"][3]["valuesByMode"]["base"] = alias(&huge);
+    let error = convert(&input, "collection", "light").unwrap_err();
+    assert!(codes(&error).contains(&"resource_limit"));
+    assert!(!error.report.to_string().contains(&huge));
+}

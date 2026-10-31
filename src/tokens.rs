@@ -450,7 +450,13 @@ pub fn convert_mapped(
             return Ok(m.clone());
         }
         match collection_modes(owner).map(Vec::as_slice) {
-            Some([only]) => Ok(only["modeId"].as_str().unwrap_or("").to_owned()),
+            Some([only]) => match only["modeId"].as_str().unwrap_or("") {
+                m if m.len() > MAX_TEXT_BYTES => Err((
+                    "resource_limit",
+                    format!("collection '{owner}' mode id exceeds its byte limit"),
+                )),
+                m => Ok(m.to_owned()),
+            },
             Some(modes) => Err((
                 "cross_collection_alias",
                 format!(
@@ -468,7 +474,9 @@ pub fn convert_mapped(
     };
     // Each variable's resolved value is computed once, so all chains together stay linear. The
     // flag says whether a library collection, `<key>/<version>`, was read on the way.
-    let mut memo: HashMap<String, Result<(Value, bool), Failure>> = HashMap::new();
+    // A failure is stored once and memoized by index, so a long chain does not copy it per member.
+    let mut memo: HashMap<String, Result<(Value, bool), usize>> = HashMap::new();
+    let mut failures: Vec<Failure> = Vec::new();
     let mut resolve_foreign = |first: &Value, kind: Option<&str>| {
         let first_id = first["id"].as_str().unwrap_or("");
         let owner = first["variableCollectionId"].as_str().unwrap_or("");
@@ -481,10 +489,10 @@ pub fn convert_mapped(
         let first_mode = mode_of(owner, first_id)?;
         let name = first["name"].as_str().unwrap_or("");
         // The exported collection's names and the ids are checked up front; these are not.
-        if name.len() > MAX_TEXT_BYTES || first_mode.len() > MAX_TEXT_BYTES {
+        if name.len() > MAX_TEXT_BYTES {
             return Err((
                 "resource_limit",
-                format!("alias target '{first_id}' name or mode exceeds its byte limit"),
+                format!("alias target '{first_id}' name exceeds its byte limit"),
             ));
         }
         let mut source = json!({
@@ -498,7 +506,7 @@ pub fn convert_mapped(
         let result = loop {
             let id = current["id"].as_str().unwrap_or("");
             if let Some(known) = memo.get(id) {
-                break known.clone();
+                break known.clone().map_err(|i| failures[i].clone());
             }
             if !seen.insert(id) {
                 break Err((
@@ -525,6 +533,13 @@ pub fn convert_mapped(
                 break literal(kind_of(current), value).map(|v| (v, false));
             }
             let next = value["id"].as_str().unwrap_or("");
+            // Only the snapshot's own ids were checked up front; an unresolved one was not.
+            if next.len() > MAX_TEXT_BYTES {
+                break Err((
+                    "resource_limit",
+                    format!("an alias of '{id}' names a target id over the byte limit"),
+                ));
+            }
             if duplicate_ids.contains(next) {
                 break Err((
                     "ambiguous_alias",
@@ -549,11 +564,18 @@ pub fn convert_mapped(
             current = next;
         };
         let mut result = result;
+        let failure = match &result {
+            Err(failure) if !chain.is_empty() => {
+                failures.push(failure.clone());
+                failures.len() - 1
+            }
+            _ => 0,
+        };
         for (id, library) in chain.into_iter().rev() {
             if let Ok((_, from_library)) = &mut result {
                 *from_library |= library;
             }
-            memo.insert(id.to_owned(), result.clone());
+            memo.insert(id.to_owned(), result.as_ref().cloned().map_err(|_| failure));
         }
         let (value, library) = result?;
         if library {
