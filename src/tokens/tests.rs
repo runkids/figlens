@@ -526,3 +526,27 @@ fn several_target_modes_need_an_explicit_alias_mode() {
         );
     }
 }
+
+#[test]
+fn a_library_collection_anywhere_on_the_chain_marks_the_source_and_names_are_bounded() {
+    // Local Theme -> local Brand -> library Primitives: the value is a cached library copy.
+    let mut input = two_collections("VariableCollectionId:pk/1:2", &["base"]);
+    input["collections"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "id": "brand", "name": "Brand", "modes": [{ "modeId": "b", "name": "B" }] }));
+    input["variables"].as_array_mut().unwrap().push(json!({
+        "id": "middle", "name": "middle", "variableCollectionId": "brand",
+        "resolvedType": "COLOR", "valuesByMode": { "b": alias("blue") },
+    }));
+    input["variables"][0]["valuesByMode"] =
+        json!({ "light": alias("middle"), "dark": alias("middle") });
+    let output = convert(&input, "collection", "light").unwrap();
+    let source = &output["accent"]["$extensions"]["org.figlens"]["aliasOf"];
+    assert_eq!(source["collectionId"], "brand");
+    assert_eq!(source["libraryCopy"], true);
+    input["variables"][4]["name"] = json!("x".repeat(MAX_TEXT_BYTES + 1));
+    assert!(
+        codes(&convert(&input, "collection", "light").unwrap_err()).contains(&"resource_limit")
+    );
+}

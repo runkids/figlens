@@ -1059,6 +1059,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
         p["enum"] = json!(["text", "semantic", "hybrid", "visual"]);
     }
     if tool == "variables" && key == "aliasModes" {
+        p["propertyNames"] = json!({"minLength": 1});
         p["additionalProperties"] = json!({"type": "string", "minLength": 1});
     }
     if tool == "search" && key == "imageRef" {

@@ -13,6 +13,9 @@ const MAX_PATH_DEPTH: usize = 64;
 const MAX_PATH_SEGMENTS: usize = 1_000_000;
 const MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 
+/// A diagnostic code and message.
+type Failure = (&'static str, String);
+
 /// A JSON report, separate from the token document. No partial document is returned.
 #[derive(Debug)]
 pub struct ConversionError {
@@ -417,20 +420,21 @@ pub fn convert_mapped(
         }
     }
 
+    let kind_of = |v: &Value| match v["resolvedType"].as_str() {
+        Some("COLOR") => Some("color"),
+        Some("FLOAT") => Some("number"),
+        _ => None,
+    };
     let mut types = Vec::with_capacity(selected.len());
     for variable in &selected {
-        let token_type = match variable["resolvedType"].as_str() {
-            Some("COLOR") => Some("color"),
-            Some("FLOAT") => Some("number"),
-            _ => {
-                diagnostics.push(
-                    "unsupported_type",
-                    Some(variable),
-                    "only COLOR and FLOAT resolvedType are supported",
-                );
-                None
-            }
-        };
+        let token_type = kind_of(variable);
+        if token_type.is_none() {
+            diagnostics.push(
+                "unsupported_type",
+                Some(variable),
+                "only COLOR and FLOAT resolvedType are supported",
+            );
+        }
         types.push(token_type);
     }
     let mut values = vec![None; selected.len()];
@@ -462,13 +466,9 @@ pub fn convert_mapped(
             )),
         }
     };
-    let kind_of = |v: &Value| match v["resolvedType"].as_str() {
-        Some("COLOR") => Some("color"),
-        Some("FLOAT") => Some("number"),
-        _ => None,
-    };
-    // Each variable's resolved value is computed once, so all chains together stay linear.
-    let mut memo: HashMap<String, Result<Value, (&'static str, String)>> = HashMap::new();
+    // Each variable's resolved value is computed once, so all chains together stay linear. The
+    // flag says whether a library collection, `<key>/<version>`, was read on the way.
+    let mut memo: HashMap<String, Result<(Value, bool), Failure>> = HashMap::new();
     let mut resolve_foreign = |first: &Value, kind: Option<&str>| {
         let first_id = first["id"].as_str().unwrap_or("");
         let owner = first["variableCollectionId"].as_str().unwrap_or("");
@@ -478,11 +478,20 @@ pub fn convert_mapped(
                 format!("alias target '{first_id}' must have the same supported resolvedType"),
             ));
         }
-        let source = json!({
+        let first_mode = mode_of(owner, first_id)?;
+        let name = first["name"].as_str().unwrap_or("");
+        // The exported collection's names and the ids are checked up front; these are not.
+        if name.len() > MAX_TEXT_BYTES || first_mode.len() > MAX_TEXT_BYTES {
+            return Err((
+                "resource_limit",
+                format!("alias target '{first_id}' name or mode exceeds its byte limit"),
+            ));
+        }
+        let mut source = json!({
             "variableId": first_id,
-            "name": first["name"],
+            "name": name,
             "collectionId": owner,
-            "modeId": mode_of(owner, first_id)?,
+            "modeId": first_mode,
         });
         let (mut chain, mut seen) = (Vec::new(), HashSet::new());
         let mut current = first;
@@ -497,8 +506,8 @@ pub fn convert_mapped(
                     "cross-collection alias participates in a cycle".into(),
                 ));
             }
-            chain.push(id);
             let owner = current["variableCollectionId"].as_str().unwrap_or("");
+            chain.push((id, owner.contains('/')));
             let owner_mode = match mode_of(owner, id) {
                 Ok(m) => m,
                 Err(e) => break Err(e),
@@ -513,7 +522,7 @@ pub fn convert_mapped(
                 ));
             };
             if value["type"] != "VARIABLE_ALIAS" {
-                break literal(kind_of(current), value);
+                break literal(kind_of(current), value).map(|v| (v, false));
             }
             let next = value["id"].as_str().unwrap_or("");
             if duplicate_ids.contains(next) {
@@ -539,10 +548,18 @@ pub fn convert_mapped(
             }
             current = next;
         };
-        for id in chain {
+        let mut result = result;
+        for (id, library) in chain.into_iter().rev() {
+            if let Ok((_, from_library)) = &mut result {
+                *from_library |= library;
+            }
             memo.insert(id.to_owned(), result.clone());
         }
-        result.map(|value| (value, source))
+        let (value, library) = result?;
+        if library {
+            source["libraryCopy"] = json!(true);
+        }
+        Ok((value, source))
     };
     if selected_mode.is_some() {
         for (index, variable) in selected.iter().enumerate() {
@@ -690,14 +707,7 @@ pub fn convert_mapped(
                 "sourceName": variable["name"],
             } },
         });
-        if let Some(mut source) = sources[index].take() {
-            // A library collection ID carries `<key>/<version>`; its values are cached copies.
-            if source["collectionId"]
-                .as_str()
-                .is_some_and(|c| c.contains('/'))
-            {
-                source["libraryCopy"] = json!(true);
-            }
+        if let Some(source) = sources[index].take() {
             token["$extensions"]["org.figlens"]["aliasOf"] = source;
         }
         let name = variable["name"].as_str().unwrap();
