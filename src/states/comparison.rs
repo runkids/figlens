@@ -273,15 +273,17 @@ fn pairs(tree: &Tree, a: &[Value], b: &[Value]) -> Vec<(usize, usize)> {
 
 /// Names each variable alias in recorded values by its id and, when the file holds it or a
 /// library's cached copy, its name; names are cut like layer names and charged to `budget`.
+/// A field whose aliases could not all be named becomes unsupported, so names on one side
+/// only never read as a difference.
 fn name_variables(tree: &Tree, nodes: &mut [Value], budget: &mut Budget) {
     fn walk(
         value: &mut Value,
         vars: &mut Option<crate::rest::Vars>,
         tree: &Tree,
         budget: &mut Budget,
-    ) {
+    ) -> bool {
         match value {
-            Value::Array(items) => items.iter_mut().for_each(|v| walk(v, vars, tree, budget)),
+            Value::Array(items) => items.iter_mut().all(|v| walk(v, vars, tree, budget)),
             Value::Object(map) => {
                 let alias = &map.get("value").unwrap_or(&Value::Null)["alias"];
                 // Normalized values hold a local guid's numbers as floats.
@@ -294,8 +296,10 @@ fn name_variables(tree: &Tree, nodes: &mut [Value], budget: &mut Budget) {
                 };
                 if map.get("dataType").and_then(Value::as_str) == Some("ALIAS")
                     && let Some(id) = crate::rest::variable_id(alias).or_else(local)
-                    && budget.step()
                 {
+                    if !budget.step() {
+                        return false;
+                    }
                     let vars = vars.get_or_insert_with(|| crate::rest::variables(tree));
                     let name = crate::variables::name(vars, &id).map(|n| budget.name(n));
                     let bytes = id.len()
@@ -304,22 +308,22 @@ fn name_variables(tree: &Tree, nodes: &mut [Value], budget: &mut Budget) {
                             .map_or(0, |n| n["name"].as_str().unwrap_or("").len());
                     if bytes > budget.bytes {
                         budget.stop("byte_limit");
-                    } else {
-                        budget.bytes -= bytes;
-                        map.insert(
-                            "variableNameTruncated".into(),
-                            json!(name.as_ref().is_some_and(|n| n["nameTruncated"] == true)),
-                        );
-                        map.insert(
-                            "variableName".into(),
-                            name.map_or(Value::Null, |n| n["name"].clone()),
-                        );
-                        map.insert("variableId".into(), json!(id));
+                        return false;
                     }
+                    budget.bytes -= bytes;
+                    map.insert(
+                        "variableNameTruncated".into(),
+                        json!(name.as_ref().is_some_and(|n| n["nameTruncated"] == true)),
+                    );
+                    map.insert(
+                        "variableName".into(),
+                        name.map_or(Value::Null, |n| n["name"].clone()),
+                    );
+                    map.insert("variableId".into(), json!(id));
                 }
-                map.values_mut().for_each(|v| walk(v, vars, tree, budget));
+                map.values_mut().all(|v| walk(v, vars, tree, budget))
             }
-            _ => {}
+            _ => true,
         }
     }
     let mut vars = None;
@@ -329,8 +333,10 @@ fn name_variables(tree: &Tree, nodes: &mut [Value], budget: &mut Budget) {
             .into_iter()
             .flat_map(|f| f.values_mut())
         {
-            if cell["state"] == "recorded" {
-                walk(&mut cell["value"], &mut vars, tree, budget);
+            if cell["state"] == "recorded" && !walk(&mut cell["value"], &mut vars, tree, budget) {
+                cell["state"] = "unsupported".into();
+                cell["reason"] = "variable_name_limit".into();
+                cell.as_object_mut().unwrap().remove("value");
             }
         }
     }

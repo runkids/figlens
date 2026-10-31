@@ -512,4 +512,11 @@ fn long_bound_variable_names_are_cut_and_charged() {
     );
     assert!(serde_json::to_vec(&result).unwrap().len() <= MAX_BYTES);
     assert_eq!(result["truncated"], true);
+    // Identical bindings never become a difference because only one side was named.
+    assert_ne!(result["state"], "differences-recorded");
+    assert!(
+        result["unknownFields"]
+            .to_string()
+            .contains("variable_name_limit")
+    );
 }
