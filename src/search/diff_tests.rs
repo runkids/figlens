@@ -2168,11 +2168,24 @@ fn a_main_outside_the_scope_makes_coverage_partial_when_its_property_definitions
 
 /// A workspace schema in memory, with `trees` saved as generations 1, 2, … of scope `0:0`.
 fn saved(trees: &[&Tree], scope: &str) -> rusqlite::Connection {
+    saved_with(trees, scope, crate::search::Library::Skip)
+}
+
+/// `saved`, building with `library` as a stored generation's build does.
+fn saved_with(
+    trees: &[&Tree],
+    scope: &str,
+    library: crate::search::Library,
+) -> rusqlite::Connection {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(&format!(
         "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
          CREATE TABLE sources (source_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,
-         added_at_ms INTEGER NOT NULL) STRICT; {} {} {} {}",
+         added_at_ms INTEGER NOT NULL) STRICT; {} {} {} {}
+         -- Schema 8's table a stored build writes its fingerprints to.
+         CREATE TABLE fingerprints (
+             gen INTEGER NOT NULL, rid INTEGER NOT NULL, facet TEXT NOT NULL, state TEXT NOT NULL,
+             digest BLOB, PRIMARY KEY (gen, rid, facet)) STRICT, WITHOUT ROWID;",
         crate::workspace::V2,
         crate::workspace::V3,
         crate::workspace::V4,
@@ -2187,12 +2200,7 @@ fn saved(trees: &[&Tree], scope: &str) -> rusqlite::Connection {
             rusqlite::params![gen_id, scope],
         )
         .unwrap();
-        let (index, tracked) = tracked(
-            tree,
-            scope,
-            Instant::now() + DEADLINE,
-            crate::search::Library::Skip,
-        );
+        let (index, tracked) = tracked(tree, scope, Instant::now() + DEADLINE, library);
         crate::search::store::save(
             &mut conn,
             gen_id,
@@ -3159,4 +3167,103 @@ fn a_variable_aliased_by_an_unbound_one_leaves_the_impact_incomplete() {
     let out = impact_of(fan(1, 1.0), fan(1, 2.0), WORK);
     let ids: Vec<_> = out.hits.iter().map(|h| h.node.as_str()).collect();
     assert_eq!((ids, out.complete), (vec!["0:100", "0:60"], false));
+}
+
+/// Revisions of each pair from both stored generations and from the new one still in memory,
+/// as a worker that just saved it compares them.
+fn stored_and_live() -> Vec<(Revision, Revision)> {
+    let side =
+        |l: &str| json!({"sourceId": format!("local:{l}"), "snapshotId": format!("sha256:{l}")});
+    let other = || node(20, Some(1), "FRAME", "Other", vec![]);
+    let mut moved = screen("Hi", 0.0, 420.0);
+    moved.push(node(14, Some(1), "FRAME", "Other", vec![]));
+    moved[3] = node(13, Some(14), "RECTANGLE", "Same", vec![fill(0.5)]);
+    // A library component's copy and a library style a layer uses, which a stored build keeps
+    // as references.
+    let s = |v: &str| K::String(v.into());
+    let library = |style: &str| {
+        let r = obj(vec![("key", s(style)), ("version", s("v1"))]);
+        doc(vec![
+            node(
+                10,
+                Some(1),
+                "SYMBOL",
+                "Button",
+                vec![("componentKey", s("k1")), ("sourceLibraryKey", s("lib"))],
+            ),
+            instance(20, 1, "One", 10, vec![]),
+            node(
+                40,
+                Some(1),
+                "RECTANGLE",
+                "Box",
+                vec![("styleIdForFill", obj(vec![("assetRef", r)]))],
+            ),
+        ])
+    };
+    let pairs = [
+        (library("s1"), library("s2"), "0:0"),
+        (impacted(1.0, false), impacted(0.5, false), "0:0"),
+        (
+            doc(vec![
+                node(10, Some(1), "FRAME", "Home", vec![]),
+                node(13, Some(10), "TEXT", "Label", vec![]),
+                other(),
+            ]),
+            doc(vec![other()]),
+            "0:0",
+        ),
+        (doc(screen("Hello", 1.0, 400.0)), doc(moved), "0:0"),
+        (styled(12.0), styled(16.0), "0:10"),
+        // The scope itself is deleted: the new side is an empty build.
+        (
+            doc(vec![
+                node(30, Some(1), "FRAME", "Gone", vec![]),
+                node(31, Some(30), "TEXT", "Label", vec![]),
+                other(),
+            ]),
+            doc(vec![other()]),
+            "0:30",
+        ),
+    ];
+    pairs
+        .into_iter()
+        .map(|(old, new, scope)| {
+            let (a, b) = (Tree::new(&old), Tree::new(&new));
+            let conn = saved_with(&[&a, &b], scope, crate::search::Library::Stored);
+            let old = || (1, side("old"));
+            let stored = revision(&conn, old(), (2, side("new")), scope, REVISION_BYTES).unwrap();
+            let deadline = Instant::now() + DEADLINE;
+            let (index, kept) = tracked(&b, scope, deadline, crate::search::Library::Stored);
+            let new = (index, kept, side("new"));
+            let live = revision_live(&conn, old(), new, scope, REVISION_BYTES).unwrap();
+            (stored, live)
+        })
+        .collect()
+}
+
+#[test]
+fn a_new_generation_still_in_memory_revises_exactly_like_its_stored_copy() {
+    let pairs = stored_and_live();
+    let json = |(s, l): &(Revision, Revision)| (s.to_json(), l.to_json());
+    let (stored, live): (Vec<_>, Vec<_>) = pairs.iter().map(json).unzip();
+    assert_eq!(live, stored);
+}
+
+#[test]
+fn a_revision_reads_back_from_its_json_unchanged() {
+    let written: Vec<Json> = stored_and_live().iter().map(|(s, _)| s.to_json()).collect();
+    let read: Vec<Option<Json>> = written
+        .iter()
+        .map(|v| Revision::from_json(v).map(|r| r.to_json()))
+        .collect();
+    assert_eq!(read, written.into_iter().map(Some).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_revision_with_an_unknown_impact_reason_does_not_read_back() {
+    let (stored, _) = stored_and_live().swap_remove(0);
+    let mut v = stored.to_json();
+    v["impact"]["reasons"]["not_a_reason"] = json!(1);
+    assert!(Revision::from_json(&v).is_none());
 }

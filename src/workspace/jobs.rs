@@ -1265,14 +1265,20 @@ fn my_turn(conn: &Connection, dir: &Path, job_id: &str, lane: &str) -> Result<bo
     Ok(false)
 }
 
-/// Reads `child`'s whole output on a thread; the receiver gets one message when it ends, which
-/// is at the child's exit (or a read error).
+/// Reads `child`'s output on a thread, keeping at most `WORKER_OUTPUT` bytes and one more and
+/// draining the rest; the receiver gets one message when it ends, which is at the child's exit
+/// (or a read error).
 fn output(child: &mut Child) -> (std::thread::JoinHandle<String>, Receiver<()>) {
     let mut stdout = child.stdout.take().expect("piped");
     let (ended, eof) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || {
         let mut out = String::new();
-        let _ = stdout.read_to_string(&mut out);
+        // A worker's line is at most `WORKER_OUTPUT`; anything past it is drained unread, so a
+        // longer one fails to parse instead of growing the owner.
+        let _ = (&mut stdout)
+            .take(WORKER_OUTPUT as u64 + 1)
+            .read_to_string(&mut out);
+        let _ = std::io::copy(&mut stdout, &mut std::io::sink());
         let _ = ended.send(());
         out
     });
@@ -1538,7 +1544,10 @@ pub(crate) fn publish(
     // transaction; the publication only writes the result if tracking is still as read.
     let planned = match unchanged {
         true => None,
-        false => plan(&mut ws.conn, job_id, gen_id)?,
+        false => match reported(&ws.conn, job_id, built)? {
+            Some(p) => Some(p),
+            None => plan(&mut ws.conn, job_id, gen_id, None)?,
+        },
     };
     hold("compare");
     let tx = ws
@@ -1732,9 +1741,82 @@ struct Planned {
     what: std::result::Result<std::result::Result<search::diff::Revision, String>, &'static str>,
 }
 
+/// Most bytes of a worker's one JSON line. A comparison that would pass it is left out, and
+/// the owner compares again.
+const WORKER_OUTPUT: usize = 2 * search::diff::REVISION_BYTES;
+
+/// The reasons a comparison can only be a baseline, so one read back keeps static names.
+const BASELINES: [&str; 3] = [
+    "previous_untracked",
+    "facet_version_changed",
+    "index_version_changed",
+];
+
+impl Planned {
+    fn to_json(&self) -> Json {
+        let what = match &self.what {
+            Err(reason) => json!({"baseline": reason}),
+            Ok(Err(why)) => json!({"failed": why}),
+            Ok(Ok(r)) => json!({"revision": r.to_json()}),
+        };
+        json!({"epoch": self.epoch, "from": self.from, "what": what})
+    }
+
+    fn from_json(v: &Json) -> Option<Planned> {
+        let w = &v["what"];
+        let what = if let Some(reason) = w["baseline"].as_str() {
+            Err(*BASELINES.iter().find(|b| **b == reason)?)
+        } else if let Some(why) = w["failed"].as_str() {
+            Ok(Err(why.to_owned()))
+        } else {
+            Ok(Ok(search::diff::Revision::from_json(&w["revision"])?))
+        };
+        Some(Planned {
+            epoch: v["epoch"].as_i64()?,
+            from: v["from"].as_i64()?,
+            what,
+        })
+    }
+}
+
+/// Adds the comparison a worker made to its line `out`, unless the line would then pass
+/// `limit` bytes.
+fn report_planned(out: &mut Json, planned: &Planned, limit: usize) {
+    out["planned"] = planned.to_json();
+    if out.to_string().len() > limit {
+        out.as_object_mut().expect("an object").remove("planned");
+    }
+}
+
+/// The comparison job `job_id`'s worker reported in `built`, while the scope is still actively
+/// tracked at its epoch and the job still replaces the generation it compared; `None`
+/// otherwise, so the owner compares again rather than publish a stale one.
+fn reported(conn: &Connection, job_id: &str, built: &Json) -> Result<Option<Planned>> {
+    let Some(p) = Planned::from_json(&built["planned"]) else {
+        return Ok(None);
+    };
+    let now: Option<(i64, Option<i64>)> = conn
+        .query_row(
+            "SELECT t.epoch, j.expected_gen FROM jobs j JOIN tracking t
+             ON t.source_id = j.source_id AND t.scope = j.scope AND t.state = 'active'
+             WHERE j.job_id = ?1",
+            [job_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    Ok((now == Some((p.epoch, Some(p.from)))).then_some(p))
+}
+
 /// Compares the generation job `job_id` expects to replace with its new one `gen_id`, in one
-/// read transaction, when the scope is actively tracked; `None` otherwise.
-fn plan(conn: &mut Connection, job_id: &str, gen_id: i64) -> Result<Option<Planned>> {
+/// read transaction, when the scope is actively tracked; `None` otherwise. `live` is the new
+/// generation's index and facets while its build still holds them, so they are not read back.
+fn plan(
+    conn: &mut Connection,
+    job_id: &str,
+    gen_id: i64,
+    live: Option<(search::Index, search::diff::Tracked)>,
+) -> Result<Option<Planned>> {
     let tx = conn.transaction().map_err(sql)?;
     let row: Option<(i64, i64, String, Option<String>, String)> = tx
         .query_row(
@@ -1775,13 +1857,20 @@ fn plan(conn: &mut Connection, job_id: &str, gen_id: i64) -> Result<Option<Plann
         Some(_) => {
             let side =
                 |snapshot: Option<String>| json!({"sourceId": source, "snapshotId": snapshot});
-            Ok(search::diff::revision(
-                &tx,
-                (from, side(old_snapshot)),
-                (gen_id, side(new_snapshot)),
-                &scope,
-                search::diff::REVISION_BYTES,
-            )
+            let old = (from, side(old_snapshot));
+            let bytes = search::diff::REVISION_BYTES;
+            Ok(match live {
+                Some((index, tracked)) => search::diff::revision_live(
+                    &tx,
+                    old,
+                    (index, tracked, side(new_snapshot)),
+                    &scope,
+                    bytes,
+                ),
+                None => {
+                    search::diff::revision(&tx, old, (gen_id, side(new_snapshot)), &scope, bytes)
+                }
+            }
             .map_err(|e| e.to_string()))
         }
     };
@@ -2237,7 +2326,8 @@ pub fn cancel(storage: &Storage, job_id: &str) -> Result<Json> {
 }
 
 /// The hidden `__index-worker <workspace-dir> <jobId>` child: stages, hashes, parses, builds,
-/// writes and verifies one job's generation, printing one JSON line. It exits as soon as its
+/// writes and verifies one job's generation, printing one JSON line (at most `WORKER_OUTPUT`)
+/// that also carries an actively tracked scope's comparison. It exits as soon as its
 /// stdin closes, unless it is stopped, and holds the worker lock for its whole life.
 pub fn worker(dir: &Path, job_id: &str) -> Json {
     worker_with(dir, job_id, work)
@@ -2585,11 +2675,23 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
     let guard = |conn: &Connection| owns_launch(conn, job_id, me, attempt);
     search::store::save(&mut conn, gen_id, &index, &guard, &mut between)
         .map_err(|e| full(e, ceiling))?;
-    drop(index);
-    if let Some(tracked) = tracked {
-        search::diff::save_facets(&mut conn, gen_id, &tracked, &guard, &mut between)
-            .map_err(|e| full(e, ceiling))?;
-    }
+    let planned = match tracked {
+        Some(tracked) => {
+            search::diff::save_facets(&mut conn, gen_id, &tracked, &guard, &mut between)
+                .map_err(|e| full(e, ceiling))?;
+            // The comparison publication needs, made while this build still holds the new
+            // generation, so its owner never reads it back. A failure here only leaves the
+            // comparison to the owner, which reports one it meets itself.
+            hold("plan");
+            plan(&mut conn, job_id, gen_id, Some((index, tracked)))
+                .ok()
+                .flatten()
+        }
+        None => {
+            drop(index);
+            None
+        }
+    };
     stage(&conn, "verify")?;
     // The source is read and hashed again: a save that kept its size and time is caught here.
     let (again, _) = super::storage::staged(&path)?;
@@ -2602,6 +2704,9 @@ fn work(dir: &Path, job_id: &str, me: &str, attempt: i64) -> Result<Json> {
     let _ = lock_file;
     let mut out = snap;
     out["gen"] = json!(gen_id);
+    if let Some(planned) = planned {
+        report_planned(&mut out, &planned, WORKER_OUTPUT);
+    }
     Ok(out)
 }
 
