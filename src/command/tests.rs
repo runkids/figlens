@@ -906,16 +906,18 @@ fn hide_draws_layers_hidden_over_the_same_area_through_cli_and_mcp() {
         );
     }
     assert!(!refused.exists());
-    let reply = call_tool(
-        &serde_json::json!({"name": "export", "arguments": {
-            "file": file, "node": "0:1", "out": refused, "hide": "",
-        }}),
-        None,
-    );
-    assert_eq!(
-        reply["_meta"]["figlens"]["code"], "invalid_arguments",
-        "{reply}"
-    );
+    // Hiding nothing would read as a layer that does not show.
+    assert!(export(refused.to_str().unwrap(), &["--hide", " , "]).is_err());
+    for hide in ["", ","] {
+        let reply = call_tool(
+            &serde_json::json!({"name": "export", "arguments": {
+                "file": file, "node": "0:1", "out": refused, "hide": hide,
+            }}),
+            None,
+        );
+        assert_eq!(reply["isError"], true, "{reply}");
+    }
+    assert!(!refused.exists());
 }
 
 #[test]

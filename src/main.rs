@@ -885,6 +885,7 @@ fn export_batch(
             "--bounds" | "--scale" | "--quality" | "--max-kb" | "--max-size" | "--match-dir" => {
                 options.extend([arg.clone(), value()?]);
             }
+            "--hide" => return Err("--hide applies to a single export, not --frames".into()),
             _ => return Err(USAGE.into()),
         }
     }
@@ -893,7 +894,6 @@ fn export_batch(
     // Bad options fail once, before any file is written, instead of on every line.
     let export_format = figlens::export::Format::from_ext(&format)
         .ok_or("--format takes png, jpg, webp, avif or svg")?;
-    // `--hide` is not forwarded: its layers sit inside one exported node.
     let (layout, scale, quality, max_kb, max_size, match_dir, _) =
         command::export_options(&options)?;
     // Every export compares against the folder as it was before the batch wrote anything.

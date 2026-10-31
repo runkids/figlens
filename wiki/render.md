@@ -29,4 +29,6 @@ How figlens turns expanded nodes into SVG and raster images: text styles and gly
 
 ## Known rendering diagnostics
 
+Original-image reads enforce the shared per-image and per-scope [parsing budgets](parsing.md). These bound ZIP-decompressed source bytes, not decoded pixels or generated raster dimensions. Over-budget reads fail before output writing; ordinary image bytes and rendering remain unchanged below the limits.
+
 What the renderer reports as skipped or approximated, how `export`/bundle warnings carry it, and measuring a warned layer with `export --hide`: [render diagnostics](render-diagnostics.md), loaded with the `bundle` topic.

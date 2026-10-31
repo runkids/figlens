@@ -880,6 +880,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
                 "renderBox": { "type": ["object", "null"], "description": "absoluteRenderBounds in page coordinates" },
                 "warnings": { "type": "array", "items": { "type": "string" }, "description": "first, when the drawn area differs from the layout box, how far it reaches past each side, what draws there when known, and which box was exported; then one `Render <state> at node <id> (<field>): <reason>` line per known skipped or approximated rendering in the subtree, as in bundle warnings; empty when neither applies" },
                 "matches": { "type": "array", "items": { "type": "string" }, "description": "with matchDir: files there (relative paths) that draw the same outlines" },
+                "hidden": { "type": "array", "items": { "type": "string" }, "description": "with hide: the layers drawn as hidden" },
                 "similar": { "type": "array", "items": { "type": "object" }, "description": "with matchDir: up to 10 other files with a similar shape as {file, score}, score 0.8-1, best first; not proof of the same icon" },
             }),
             ["path", "width", "height", "bytes", "quality"].as_slice(),

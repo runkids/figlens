@@ -69,6 +69,16 @@ pub(crate) fn find<'j>(n: &'j Json, id: &str) -> Option<&'j Json> {
     n["children"].as_array()?.iter().find_map(|c| find(c, id))
 }
 
+pub(crate) fn find_mut<'j>(n: &'j mut Json, id: &str) -> Option<&'j mut Json> {
+    if n["id"] == id {
+        return Some(n);
+    }
+    n.get_mut("children")?
+        .as_array_mut()?
+        .iter_mut()
+        .find_map(|c| find_mut(c, id))
+}
+
 /// The `images/<sha1>` bytes of every image fill under `document`, by imageRef.
 pub(crate) fn images(
     fig: &Path,

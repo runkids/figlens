@@ -68,7 +68,7 @@ pub fn export(
     let mut prepared = Prepared::new(tree, fig, id)?;
     for layer in hide {
         let found = (layer != id)
-            .then(|| find_mut(&mut prepared.document["document"], layer))
+            .then(|| render::find_mut(&mut prepared.document["document"], layer))
             .flatten()
             .ok_or_else(|| {
                 crate::FigError::new(
@@ -91,16 +91,6 @@ pub fn export(
         report.insert("hidden".into(), hide.into());
     }
     Ok((image, report))
-}
-
-fn find_mut<'j>(n: &'j mut Json, id: &str) -> Option<&'j mut Json> {
-    if n["id"] == id {
-        return Some(n);
-    }
-    n.get_mut("children")?
-        .as_array_mut()?
-        .iter_mut()
-        .find_map(|c| find_mut(c, id))
 }
 
 /// Shared renderer path for file exports and immutable snapshot thumbnails.

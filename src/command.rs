@@ -410,7 +410,11 @@ impl Command {
                         match_dir.map(Path::to_owned),
                         export_format(call.string("out").unwrap())?,
                     )?,
-                    hide: hide_list(call.string("hide").unwrap_or("")).collect(),
+                    hide: call
+                        .string("hide")
+                        .map(hide_list)
+                        .transpose()?
+                        .unwrap_or_default(),
                 }
             }
             _ => return Err(USAGE.into()),
@@ -713,7 +717,7 @@ pub fn export_options(args: &[String]) -> Result<ExportOptions, Box<dyn Error>> 
             "--max-kb" => max_kb = Some(value()?.parse::<usize>()?),
             "--max-size" => max_size = Some(value()?.parse::<u32>()?),
             "--match-dir" => match_dir = Some(PathBuf::from(value()?)),
-            "--hide" => hide.extend(hide_list(value()?)),
+            "--hide" => hide.extend(hide_list(value()?)?),
             _ => return Err(USAGE.into()),
         }
     }
@@ -731,12 +735,19 @@ type ExportOptions = (
     Vec<String>,
 );
 
-/// Comma-separated node ids, normalized as any node argument is.
-fn hide_list(ids: &str) -> impl Iterator<Item = String> + '_ {
-    ids.split(',')
+/// Comma-separated node ids, normalized as any node argument is. None is an error: an export
+/// that hides nothing would read as a layer that does not show.
+fn hide_list(ids: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let ids: Vec<String> = ids
+        .split(',')
         .map(str::trim)
         .filter(|id| !id.is_empty())
         .map(normalize_id)
+        .collect();
+    if ids.is_empty() {
+        return Err("hide takes one or more comma-separated node ids".into());
+    }
+    Ok(ids)
 }
 
 /// Rejects out-of-range options; returns `--max-kb` in bytes.
