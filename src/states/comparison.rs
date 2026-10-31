@@ -272,11 +272,16 @@ fn pairs(tree: &Tree, a: &[Value], b: &[Value]) -> Vec<(usize, usize)> {
 }
 
 /// Names each variable alias in recorded values by its id and, when the file holds it or a
-/// library's cached copy, its name.
-fn name_variables(tree: &Tree, nodes: &mut [Value]) {
-    fn walk(value: &mut Value, vars: &mut Option<crate::rest::Vars>, tree: &Tree) {
+/// library's cached copy, its name; names are cut like layer names and charged to `budget`.
+fn name_variables(tree: &Tree, nodes: &mut [Value], budget: &mut Budget) {
+    fn walk(
+        value: &mut Value,
+        vars: &mut Option<crate::rest::Vars>,
+        tree: &Tree,
+        budget: &mut Budget,
+    ) {
         match value {
-            Value::Array(items) => items.iter_mut().for_each(|v| walk(v, vars, tree)),
+            Value::Array(items) => items.iter_mut().for_each(|v| walk(v, vars, tree, budget)),
             Value::Object(map) => {
                 let alias = &map.get("value").unwrap_or(&Value::Null)["alias"];
                 // Normalized values hold a local guid's numbers as floats.
@@ -289,15 +294,30 @@ fn name_variables(tree: &Tree, nodes: &mut [Value]) {
                 };
                 if map.get("dataType").and_then(Value::as_str) == Some("ALIAS")
                     && let Some(id) = crate::rest::variable_id(alias).or_else(local)
+                    && budget.step()
                 {
                     let vars = vars.get_or_insert_with(|| crate::rest::variables(tree));
-                    map.insert(
-                        "variableName".into(),
-                        json!(crate::variables::name(vars, &id)),
-                    );
-                    map.insert("variableId".into(), json!(id));
+                    let name = crate::variables::name(vars, &id).map(|n| budget.name(n));
+                    let bytes = id.len()
+                        + name
+                            .as_ref()
+                            .map_or(0, |n| n["name"].as_str().unwrap_or("").len());
+                    if bytes > budget.bytes {
+                        budget.stop("byte_limit");
+                    } else {
+                        budget.bytes -= bytes;
+                        map.insert(
+                            "variableNameTruncated".into(),
+                            json!(name.as_ref().is_some_and(|n| n["nameTruncated"] == true)),
+                        );
+                        map.insert(
+                            "variableName".into(),
+                            name.map_or(Value::Null, |n| n["name"].clone()),
+                        );
+                        map.insert("variableId".into(), json!(id));
+                    }
                 }
-                map.values_mut().for_each(|v| walk(v, vars, tree));
+                map.values_mut().for_each(|v| walk(v, vars, tree, budget));
             }
             _ => {}
         }
@@ -310,7 +330,7 @@ fn name_variables(tree: &Tree, nodes: &mut [Value]) {
             .flat_map(|f| f.values_mut())
         {
             if cell["state"] == "recorded" {
-                walk(&mut cell["value"], &mut vars, tree);
+                walk(&mut cell["value"], &mut vars, tree, budget);
             }
         }
     }
@@ -398,8 +418,8 @@ pub fn compare_variants(
     };
     let mut a = collect(tree, left, &mut input);
     let mut b = collect(tree, right, &mut input);
-    name_variables(tree, &mut a);
-    name_variables(tree, &mut b);
+    name_variables(tree, &mut a, &mut input);
+    name_variables(tree, &mut b, &mut input);
     let matched = pairs(tree, &a, &b);
     let paired = [
         matched.iter().map(|p| p.0).collect::<HashSet<_>>(),

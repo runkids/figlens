@@ -458,4 +458,58 @@ fn ambiguous_names_stay_unpaired_and_bound_variables_are_named() {
         (&json!("VariableID:0:90"), &json!("color/bg/brand-soft"))
     );
     assert_eq!(var("after")["variableName"], "color/bg/brand");
+    assert_eq!(var("after")["variableNameTruncated"], false);
+}
+
+#[test]
+fn long_bound_variable_names_are_cut_and_charged() {
+    let long = "v".repeat(MAX_VALUE_BYTES);
+    let alias = |variable: u32| {
+        K::Array(vec![obj(vec![
+            ("type", K::Enum("Paint", "SOLID")),
+            (
+                "colorVar",
+                obj(vec![
+                    ("dataType", K::Enum("VariableDataType", "ALIAS")),
+                    (
+                        "value",
+                        obj(vec![(
+                            "alias",
+                            obj(vec![(
+                                "guid",
+                                obj(vec![
+                                    ("sessionID", K::UInt(0)),
+                                    ("localID", K::UInt(variable)),
+                                ]),
+                            )]),
+                        )]),
+                    ),
+                ]),
+            ),
+        ])])
+    };
+    let mut nodes = vec![
+        node(10, 40, "SYMBOL", vec![]),
+        node(11, 40, "SYMBOL", vec![]),
+        node(90, 1, "VARIABLE", vec![("name", K::String(long.clone()))]),
+    ];
+    nodes.extend((100..300).map(|id| {
+        node(
+            id,
+            10 + id % 2,
+            "RECTANGLE",
+            vec![("fillPaints", alias(90))],
+        )
+    }));
+    let message = message(nodes);
+    let tree = Tree::new(&message);
+    let result = compare_variants(&tree, "0:10", "0:11", Path::new("test.fig")).unwrap();
+    assert!(!result.to_string().contains(&long));
+    assert!(
+        result
+            .to_string()
+            .contains("\"variableNameTruncated\":true")
+    );
+    assert!(serde_json::to_vec(&result).unwrap().len() <= MAX_BYTES);
+    assert_eq!(result["truncated"], true);
 }
