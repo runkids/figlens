@@ -298,6 +298,34 @@ fn shared_parent(
 }
 
 #[test]
+fn property_resolution_stops_before_constructing_guid_lookup_keys() {
+    let cases = [
+        (
+            vec![def(90, "Unused", "TEXT", text_value("x"))],
+            0,
+            0,
+            vec![],
+        ),
+        (vec![], 0, 0, vec![assign(90, text_value("x"))]),
+        (vec![], 1, 0, vec![]),
+        (vec![], 0, 1, vec![]),
+    ];
+    for (i, (parent, refs, specs, assigned)) in cases.into_iter().enumerate() {
+        let message = shared_parent(parent, refs, specs, assigned);
+        let tree = Tree::new(&message);
+        let read = crate::rest::PropDefs::read(&tree, "0:41").unwrap();
+        let assignments =
+            crate::to_json(tree.nodes["0:3"].get("componentPropAssignments").unwrap());
+        // None of these produces a property, but each still copies a GUID for a lookup.
+        assert!(
+            read.resolve_with(&assignments, |_, _| false).is_none(),
+            "case {i}"
+        );
+        assert!(read.resolve(&assignments).is_empty());
+    }
+}
+
+#[test]
 fn definitions_sharing_one_large_parent_are_charged_per_copy() {
     let big = "x".repeat(64 * 1024);
     let small = || text_value("small");

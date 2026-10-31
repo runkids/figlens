@@ -121,8 +121,8 @@ pub(super) fn properties(
     let Some(read) = &defs[&main] else {
         return Some(Vec::new());
     };
-    // Each resolved definition and its assignment, copied into the resolution and again into
-    // the output, is paid before it is copied: definitions can share one parent many times.
+    // Lookup GUIDs and each resolved definition/assignment are paid before copying into the
+    // resolution and the output: definitions can share one parent many times.
     let mut charge = |def: &Json, chosen: Option<&Json>| {
         let mut left = bounds.work;
         let bytes = json_bytes(def, &mut left) + chosen.map_or(0, |a| json_bytes(a, &mut left));

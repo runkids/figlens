@@ -847,8 +847,8 @@ impl PropDefs {
             .expect("an unbounded resolution never stops")
     }
 
-    /// `resolve`, showing `before` each resolved definition with the assignment chosen for it
-    /// (a variant spec for a variant) before any of them is copied; `None` once it refuses.
+    /// `resolve`, showing `before` each lookup GUID, then each resolved definition with its
+    /// chosen assignment (or variant spec), before copying them; `None` once it refuses.
     /// Many definitions can share one parent, so each copy is paid where it is made.
     pub(crate) fn resolve_with(
         &self,
@@ -856,20 +856,28 @@ impl PropDefs {
         mut before: impl FnMut(&Json, Option<&Json>) -> bool,
     ) -> Option<Obj> {
         let mut out = Obj::new();
-        let set_defs: HashMap<String, &Json> = self
-            .set
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|d| Some((guid(&d["id"])?, d)))
-            .collect();
-        let assigned: HashMap<String, &Json> = assignments
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|a| Some((guid(&a["defID"])?, a)))
-            .collect();
+        let mut set_defs = HashMap::new();
+        for d in self.set.as_array().into_iter().flatten() {
+            if !before(&d["id"], None) {
+                return None;
+            }
+            if let Some(id) = guid(&d["id"]) {
+                set_defs.insert(id, d);
+            }
+        }
+        let mut assigned = HashMap::new();
+        for a in assignments.as_array().into_iter().flatten() {
+            if !before(&a["defID"], None) {
+                return None;
+            }
+            if let Some(id) = guid(&a["defID"]) {
+                assigned.insert(id, a);
+            }
+        }
         for own in self.own.as_array().into_iter().flatten() {
+            if !before(&own["id"], Some(&own["parentPropDefId"])) {
+                return None;
+            }
             let def = semantics::resolve_definition(own, &set_defs);
             let (Some(def_id), Some(own_id)) = (guid(&def["id"]), guid(&own["id"])) else {
                 continue;
@@ -897,6 +905,9 @@ impl PropDefs {
             );
         }
         for spec in self.specs.as_array().into_iter().flatten() {
+            if !before(&spec["propDefId"], None) {
+                return None;
+            }
             if let Some(def) = guid(&spec["propDefId"]).and_then(|id| set_defs.get(&id)) {
                 if !before(def, Some(spec)) {
                     return None;
