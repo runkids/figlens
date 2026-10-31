@@ -1460,3 +1460,51 @@ fn diff_text_says_a_stopped_side_was_not_compared_instead_of_no_changes() {
         "no changes\n"
     );
 }
+
+#[test]
+fn cli_export_batch_prints_a_manifest_and_rejects_a_repeated_out_before_writing() {
+    let dir = TestDir::new();
+    let file = "examples/first-success/design.fig";
+    let (a, b) = (dir.join("a.png"), dir.join("b.webp"));
+    let batch = |items: serde_json::Value| {
+        let list = dir.join("items.json");
+        std::fs::write(&list, items.to_string()).unwrap();
+        let mut text = String::new();
+        run(
+            vec![
+                "export".into(),
+                file.into(),
+                "--batch".into(),
+                list.to_string_lossy().into_owned(),
+            ],
+            &mut text,
+        )
+        .map(|()| serde_json::from_str::<serde_json::Value>(&text).unwrap())
+    };
+    assert!(batch(serde_json::json!([{"node":"0:1","out":a},{"node":"0:2","out":a}])).is_err());
+    assert!(!a.exists());
+    // A symlink to another item's file is the same output under a second name.
+    #[cfg(unix)]
+    {
+        let alias = dir.join("alias.png");
+        std::os::unix::fs::symlink(std::path::absolute(&a).unwrap(), &alias).unwrap();
+        assert!(
+            batch(serde_json::json!([{"node":"0:1","out":a},{"node":"0:2","out":alias}])).is_err()
+        );
+        assert!(!a.exists());
+        std::fs::remove_file(&alias).unwrap();
+    }
+    let manifest = batch(serde_json::json!([
+        {"node":"0:1","out":a,"scale":2},
+        {"node":"0:4","out":b,"maxSize":40},
+    ]))
+    .unwrap();
+    assert_eq!(manifest["failed"], 0);
+    assert_eq!(manifest["items"][0]["width"], 640);
+    assert_eq!(manifest["items"][1]["width"], 40);
+    assert!(manifest["items"][1]["warnings"][0].is_string());
+    assert_eq!(
+        manifest["items"][1]["bytes"],
+        std::fs::metadata(&b).unwrap().len()
+    );
+}

@@ -17,7 +17,7 @@ impl Drop for Pending {
     }
 }
 
-fn destination(out: &Path) -> io::Result<PathBuf> {
+pub fn destination(out: &Path) -> io::Result<PathBuf> {
     let mut out = out.to_owned();
     for _ in 0..40 {
         match fs::canonicalize(&out) {

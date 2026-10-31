@@ -748,6 +748,161 @@ impl Command {
     }
 }
 
+/// Most items one batch export takes.
+pub const MAX_EXPORT_ITEMS: usize = 64;
+/// Written bytes after which a batch export stops starting items.
+const MAX_BATCH_BYTES: usize = 256 << 20;
+
+/// One validated batch item; `out` is the caller's label for the file.
+pub struct ExportItem {
+    node: String,
+    out: String,
+    format: figlens::export::Format,
+    layout: bool,
+    scale: f64,
+    quality: u8,
+    max_kb: Option<usize>,
+    max_size: Option<u32>,
+    hide: Vec<String>,
+}
+
+impl ExportItem {
+    pub fn out(&self) -> &str {
+        &self.out
+    }
+}
+
+/// Checks a batch's items (MCP `items`, CLI `--batch` file) before any source is read or file
+/// written; `default_max_size` applies to items that give no `maxSize`.
+pub fn export_items(items: &Value, default_max_size: u32) -> Result<Vec<ExportItem>, String> {
+    let items = items.as_array().ok_or("items must be an array")?;
+    if items.is_empty() || items.len() > MAX_EXPORT_ITEMS {
+        return Err(format!(
+            "items takes 1-{MAX_EXPORT_ITEMS} entries, got {}",
+            items.len()
+        ));
+    }
+    let keys = crate::contract::EXPORT_ITEM_KEYS;
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let bad = |what: &str| format!("items[{i}]: {what}");
+            let item = item.as_object().ok_or_else(|| bad("must be an object"))?;
+            if let Some(key) = item.keys().find(|k| !keys.contains(&k.as_str())) {
+                return Err(bad(&format!(
+                    "unknown field {key}; accepted: {}",
+                    keys.join(", ")
+                )));
+            }
+            let text = |key: &str| {
+                item.get(key)
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| bad(&format!("{key} must be a non-empty string")))
+            };
+            let number = |key: &str, max: u64| match item.get(key) {
+                None => Ok(None),
+                Some(v) => crate::contract::integer(v)
+                    .filter(|&n| n <= max)
+                    .map(Some)
+                    .ok_or_else(|| bad(&format!("{key} must be an integer up to {max}"))),
+            };
+            let (node, out) = (text("node")?, text("out")?);
+            let quality = number("quality", 100)?.unwrap_or(80);
+            let scale = item.get("scale").map_or(Some(1.0), Value::as_f64);
+            let scale = scale
+                .filter(|s| s.is_finite() && *s > 0.0)
+                .filter(|_| quality > 0)
+                .ok_or_else(|| bad("quality takes 1-100 and scale a positive number"))?;
+            let layout = match item.get("bounds").map(Value::as_str) {
+                None | Some(Some("render")) => false,
+                Some(Some("layout")) => true,
+                _ => return Err(bad("bounds takes layout or render")),
+            };
+            let hide = match item.get("hide") {
+                None => Vec::new(),
+                Some(_) => hide_list(text("hide")?).map_err(|e| bad(&e.to_string()))?,
+            };
+            let max_kb = number("maxKb", (1 << 53) - 1)?.map(|n| n as usize);
+            let max_size =
+                number("maxSize", u32::MAX.into())?.map_or(default_max_size, |n| n as u32);
+            check_export(scale, quality as u8, max_kb).map_err(|e| bad(&e.to_string()))?;
+            Ok(ExportItem {
+                node: node.to_owned(),
+                out: out.to_owned(),
+                format: export_format(out).map_err(|e| bad(&e.to_string()))?,
+                layout,
+                scale,
+                quality: quality as u8,
+                max_kb,
+                max_size: Some(max_size),
+                hide,
+            })
+        })
+        .collect()
+}
+
+/// Exports each item to its checked path (`paths[i]` is where `items[i]` is written) and returns
+/// the manifest. Two items writing one file fail the batch before the first write; an item's own
+/// failure or panic is its entry, never the batch's.
+pub fn export_batch(
+    tree: &Tree,
+    fig: &Path,
+    items: &[ExportItem],
+    paths: &[PathBuf],
+) -> Result<Value, Box<dyn Error>> {
+    let mut seen = std::collections::HashSet::new();
+    // Compare where `output::write` would publish, so a symlink or `./` alias is a repeat too.
+    if let Some(path) = paths
+        .iter()
+        .find(|p| !seen.insert(figlens::output::destination(p).unwrap_or_else(|_| (*p).clone())))
+    {
+        return Err(format!("two items write {}", path.display()).into());
+    }
+    let (mut written, mut failed) = (0, 0);
+    let mut entries = Vec::new();
+    for (item, path) in items.iter().zip(paths) {
+        let command = Command::Export {
+            node: item.node.clone(),
+            out: path.clone(),
+            format: item.format,
+            layout: item.layout,
+            scale: item.scale,
+            quality: item.quality,
+            max_kb: item.max_kb,
+            max_size: item.max_size,
+            match_index: None,
+            hide: item.hide.clone(),
+        };
+        let result = if written >= MAX_BATCH_BYTES {
+            Err(
+                "batch output budget (256 MiB) reached; export this item in another call"
+                    .to_owned(),
+            )
+        } else {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| command.execute(tree, fig)))
+                .unwrap_or_else(|_| Err("figlens crashed on this node".into()))
+                .map_err(|e| e.to_string())
+                .map(|output| output.json().cloned().unwrap_or_default())
+        };
+        let mut entry = match result {
+            Ok(entry) => {
+                written += entry["bytes"].as_u64().unwrap_or(0) as usize;
+                entry
+            }
+            Err(error) => {
+                failed += 1;
+                json!({ "error": error })
+            }
+        };
+        entry["node"] = item.node.as_str().into();
+        entry["path"] = item.out.as_str().into();
+        entries.push(entry);
+    }
+    Ok(json!({ "count": entries.len(), "failed": failed, "items": entries }))
+}
+
 /// `--bounds`, `--scale`, `--quality`, `--max-kb`, `--max-size`, `--match-dir` and `--hide`, as
 /// `(layout, scale, quality, max_kb, max_size, match_dir, hide)`.
 pub fn export_options(args: &[String]) -> Result<ExportOptions, Box<dyn Error>> {

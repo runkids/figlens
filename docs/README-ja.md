@@ -131,7 +131,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 誰に�
 
 ## MCP サーバーとエージェント skill
 
-**MCP。** サーバーは stdio 経由でローカル実行され、`workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch`、`export`、`models` を公開します。パスは絶対パスで渡します。`--root /path/to/designs`（複数指定可）を追加すると、すべてのファイルパスと出力パスを指定フォルダーに制限できます。カスタム保存先を明示するには `--storage-root DIR`（複数指定可）が必要です。記憶済みの workspace の場所はこのオプションなしで再利用できます。[起動引数と複数ルートの設定例](../README-ja.md#mcp-args)を参照してください。ラスターエクスポートは `maxSize`（デフォルト 1600 px）に縮小され、インライン画像は小さく保たれます。SVG はメタデータのみを返します。
+**MCP。** サーバーは stdio 経由でローカル実行され、`workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch`、`export`、`export_batch`、`models` を公開します。`export_batch` は 1 回の呼び出しで最大 64 ファイルを書き出し、インライン画像の代わりにマニフェストを返します。パスは絶対パスで渡します。`--root /path/to/designs`（複数指定可）を追加すると、すべてのファイルパスと出力パスを指定フォルダーに制限できます。カスタム保存先を明示するには `--storage-root DIR`（複数指定可）が必要です。記憶済みの workspace の場所はこのオプションなしで再利用できます。[起動引数と複数ルートの設定例](../README-ja.md#mcp-args)を参照してください。ラスターエクスポートは `maxSize`（デフォルト 1600 px）に縮小され、インライン画像は小さく保たれます。SVG はメタデータのみを返します。
 
 エージェントは `workflow` で `build`、`audit`、`images`、`search`、`plan`、`planning-details`、または明示的に依頼された場合の `yolo` ガイドを取得できます。portable skill と同じソースを使うため、MCP 利用時の skill の別途インストールは任意です。実作業にはエージェント自身のプロジェクト・ブラウザツールとホストの権限を使います。ガイドを読むだけでは処理は実行されません。利用方法はクライアントの対応とモデルの動作に依存します。
 
@@ -238,6 +238,7 @@ Pi、OpenCode、OMP は、それぞれのオプトイン用エントリから同
 | `verify <bundle>` | bundle（`.zip` または展開したディレクトリ）を manifest と照合：検証済み・欠落・変更されたファイル、欠落アセット、プロジェクトで確認すべきフォント、および `findings`：欠落・未対応・未検証の handoff 入力ごとのノード、根拠、次のアクション |
 | `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N] [--match-dir DIR] [--hide ID[,ID]]` | SVG、PNG、JPG、WebP、AVIF。4,194,304 ピクセル以下の PNG はデコード後の RGBA を変えずに自動で可逆最適化し、小さくならなければ元のエンコード済みバイトを保持。それより大きい PNG は通常のエンコードを使用。`--max-kb` は収まるまで非可逆の品質を下げる（PNG はなお上限を超える場合エラーとなり、非可逆へのフォールバックはしない）。`--bounds layout` は render bounds ではなく layout box で書き出す。`--match-dir DIR`（SVG のみ、サブフォルダ含む）は同じアウトラインを描く SVG（`matches`）と、スコア付きの類似形状を最大 10 件（`similar`）列挙。`--hide ID[,ID]` は node 内のそれらのレイヤーを非表示として同じ範囲で描くので、通常の書き出しと比べれば、figlens が描くそのレイヤーが結果のどこを変えているかがわかる（差がなくても、描画されなかった調整が無害だとは限らない） |
 | `export <file> --frames <list> --out-dir <dir> [--format F] [--scale N] ...`, `--frames -` (stdin) | 1 回のデコードで複数を書き出し（既定は `png`）：`<dir>/<nodeId>.<format>` に書き、id ごとに 1 行の JSON（`nodeId` 付きの `export` 出力、または `{nodeId, error}`） |
+| `export <file> --batch <items.json>`, `--batch -` (stdin) | 1 回のデコードで複数を書き出し、項目ごとにオプションを指定：1-64 個の `{node, out, bounds?, scale?, quality?, maxKb?, maxSize?, hide?}` の JSON 配列（MCP `export_batch`）。マニフェスト `{count, failed, items}` を 1 つ出力し、各項目は `export` の出力または `{error}`（他は書き出される）。不正な項目や重複した `out` は何も書く前に失敗します |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | デザインを書き換えないローカル viewer。Enable index 後はセマンティック/ハイブリッド検索も可能。`--out` でスタンドアロンのオフラインスナップショットを書き出し。結果とコピーした context はページと、live では読み込んだファイルのパス、source の snapshot とローカル revision を示す（オフラインでは不明で、パスは埋め込まない）。context には参照 scope の coverage も含まれ、未確認なら `complete: null`. Visual／Hybrid は参照 PNG または選択レイヤーとピクセル単位の切り抜きに対応。視覚インデックスは明示的に有効化し、検索画像は保存しません。 |
 | `compare <file> <nodes.json> <node>` | 同じ frame の REST エクスポートとの差分 |
 | `node <file> <node>` | `.fig` の生ノード 1 つ |

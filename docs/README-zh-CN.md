@@ -131,7 +131,7 @@ npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可发�
 
 ## MCP server 与 agent skill
 
-**MCP。** server 在本地通过 stdio 运行，提供 `workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch`、`export` 和 `models`。请传入绝对路径。加上 `--root /path/to/designs`（可重复）可把所有文件和输出路径限制在指定文件夹内。明确指定自定义索引位置时，需要 `--storage-root DIR`（可重复）；已记住的 workspace 位置无需再次指定。参见[启动参数及多个 root 的配置示例](../README-zh-CN.md#mcp-args)。光栅导出会缩小到 `maxSize`（默认 1600 px），让内联图片保持小巧；SVG 只返回 metadata。
+**MCP。** server 在本地通过 stdio 运行，提供 `workflow`、`tree`、`find`、`search`、`usages`、`diff`、`inspect`、`nodes`、`variables`、`bundle`、`verify`、`index`、`jobs`、`changes`、`watch`、`export`、`export_batch` 和 `models`。`export_batch` 一次调用最多写出 64 个文件，返回 manifest 而非内嵌图片。请传入绝对路径。加上 `--root /path/to/designs`（可重复）可把所有文件和输出路径限制在指定文件夹内。明确指定自定义索引位置时，需要 `--storage-root DIR`（可重复）；已记住的 workspace 位置无需再次指定。参见[启动参数及多个 root 的配置示例](../README-zh-CN.md#mcp-args)。光栅导出会缩小到 `maxSize`（默认 1600 px），让内联图片保持小巧；SVG 只返回 metadata。
 
 agent 可通过 `workflow` 读取内建的 `build`、`audit`、`images`、`search`、`plan`、`planning-details`，或明确请求时的 `yolo` 指引。它们与 portable skill 共用来源；MCP 用户可自行选择是否另装 skill。实际工作仍由 agent 使用项目及浏览器工具，并遵守 host 权限。读取指引不会执行工作流程；使用方式取决于客户端支持与模型行为。
 
@@ -238,6 +238,7 @@ Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，works
 | `verify <bundle>` | 按 manifest 检查 bundle（`.zip` 或解压后的目录）：已验证、缺失和被改动的文件，缺失的素材，需要在项目中确认的字体，以及 `findings`：每项缺失、不支持或未验证的 handoff 输入，附节点、证据和下一步 |
 | `export <file> <node> <out> [--bounds layout] [--scale N] [--quality 1-100] [--max-kb N] [--max-size N] [--match-dir DIR] [--hide ID[,ID]]` | SVG、PNG、JPG、WebP 或 AVIF；不超过 4,194,304 像素的 PNG 自动进行无损优化，解码后的 RGBA 不变，若未变小则保留原始编码字节，更大的 PNG 使用常规编码；`--max-kb` 会降低有损质量直到符合大小（PNG 若仍超限则失败，不会回退为有损编码）；`--bounds layout` 按 layout box 而不是 render bounds 导出；`--match-dir DIR`（仅 SVG，含子文件夹）列出绘制相同轮廓的 SVG（`matches`），以及最多 10 个带分数的相似形状（`similar`）；`--hide ID[,ID]` 把 node 内的这些图层当作隐藏、在相同范围内绘制，与正常导出对比即可看出 figlens 画出的这个图层改变了结果的哪些地方（没有差异不代表未渲染的调整没有影响） |
 | `export <file> --frames <list> --out-dir <dir> [--format F] [--scale N] ...`, `--frames -` (stdin) | 一次解码导出多个节点（默认 `png`）：写入 `<dir>/<nodeId>.<format>`，每个 id 一行 JSON（带 `nodeId` 的 `export` 输出，或 `{nodeId, error}`） |
+| `export <file> --batch <items.json>`, `--batch -` (stdin) | 一次解码导出多个节点，每项各有自己的选项：1-64 个 `{node, out, bounds?, scale?, quality?, maxKb?, maxSize?, hide?}` 的 JSON 数组（MCP `export_batch`）。输出一份 manifest `{count, failed, items}`：每项为 `export` 输出或 `{error}`（其余照常导出）；条目格式错误或 `out` 重复会在写入任何文件前失败 |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 从不写入设计的本地 viewer；按 Enable index 后可用语义/混合搜索；`--out` 写出独立的离线快照；结果与复制的 context 会标明页面，live 时也标明已加载文件的路径、source 的 snapshot 与本地 revision（离线时未知，且绝不嵌入路径）；context 也带有参考 scope 的 coverage，未检查时为 `complete: null`. Visual／Hybrid 可使用参考 PNG 或所选图层，并按像素裁剪。请明确启用视觉索引；查询图片不会保存。 |
 | `compare <file> <nodes.json> <node>` | 与同一 frame 的 REST 导出做差异比较 |
 | `node <file> <node>` | 单个原始 `.fig` 节点 |
