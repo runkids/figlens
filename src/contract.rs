@@ -70,7 +70,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "find",
-        "Search stored layer names and text (case-insensitive). Returns ids, paths, local sizes and text previews. Does not expand instance children; use inspect on the instance.",
+        "Search stored layer names and text (case-insensitive). Returns ids, paths, local sizes and text previews. Does not expand instance children; use inspect on the instance. Copy inside instance overrides, text or boolean properties or swapped components is found by search, not find.",
         &[
             FILE,
             (
@@ -412,7 +412,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "bundle",
-        "Write a design bundle zip for one node or exact instance sublayer: nodes, variables, assets, reference render, context.md. When the user requests related component states, pass states=true to include their explicit variants and evidence gaps; no MCP configuration change is needed.",
+        "Write a design bundle zip for one node or exact instance sublayer: nodes, variables, assets, reference render, context.md. When the user requests related component states, pass states=true to include their explicit variants and evidence gaps.",
         &[
             FILE,
             NODE,

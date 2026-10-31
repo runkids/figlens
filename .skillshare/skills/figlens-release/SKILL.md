@@ -33,7 +33,7 @@ Requested version: set `"release-as": "X.Y.Z"` on the `.` package in `.github/re
 - Every user-visible `feat` and `fix` in `<last tag>..origin/main` is reflected in `README.md`, `skills/figlens/SKILL.md` and the wiki topics; fix stale docs on `main` first, then let the PR update.
 - CI on `main` and the exact Release PR head is green. If bot-created PR checks need workflow approval, approve through GitHub's native prompt/API before waiting for results.
 
-Report the version, the changelog entries and anything missing. Within the authorized scope, merge the reviewed head (`gh pr merge <n> --merge --match-head-commit <sha>`). If a required review blocks it, obtain a reviewer approval or explicit permission for an admin merge; keep all CI gates intact.
+Report the version, the changelog entries and anything missing. Within the authorized scope, merge the reviewed head (`gh pr merge <n> --squash --match-head-commit <sha>`). If a required review blocks it, obtain a reviewer approval or explicit permission for an admin merge; keep all CI gates intact.
 
 ## 3. Check the draft
 
