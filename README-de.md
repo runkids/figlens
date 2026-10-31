@@ -57,10 +57,10 @@ Eine Installation fügt deinem Agenten den figlens-Skill und den MCP-Server hinz
 | Codex | `codex plugin marketplace add runkids/figlens`, `codex plugin add figlens@figlens` |
 | Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/v0.10.1` |
 | Cursor | `git clone --depth 1 --branch v0.10.1 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens`, dann das Fenster neu laden |
-| Kimi Code | `/plugins install https://github.com/runkids/figlens` in einer Sitzung, dann `/reload` |
+| Kimi Code | `/plugins install https://github.com/runkids/figlens/tree/v0.10.1` in einer Sitzung, dann `/reload` |
 <!-- x-release-please-end -->
 
-Starte den Host neu oder öffne eine neue Sitzung und prüfe, ob die figlens-Tools aufgelistet sind. Eine Plugin-Installation klont das ganze Repository (etwa 7 MB). Antigravity lädt nur die ersten 24 KB des Skills; die vollständige Anleitung liefert das `workflow`-Tool des Servers. Muse wird noch nicht unterstützt. [Host-Übersicht und was geprüft wurde](wiki/host-plugins.md)
+Starte den Host neu oder öffne eine neue Sitzung und prüfe, ob die figlens-Tools aufgelistet sind. Eine Plugin-Installation kopiert das Repository am Release-Tag: etwa 7 MB, in Codex zusätzlich die Git-Historie (etwa 60 MB). Tags bis v0.10.1 sind älter als diese Manifeste: Sie enthalten noch 50 MB Demo-Medien und installieren außerhalb von Claude Code nur den Skill; richte den Server dann über das [MCP-Setup](#setup-mcp) ein. Antigravity lädt nur die ersten 24 KB des Skills; die vollständige Anleitung liefert das `workflow`-Tool des Servers. Muse wird noch nicht unterstützt. [Host-Übersicht und was geprüft wurde](wiki/host-plugins.md)
 
 <a id="setup-mcp"></a>
 

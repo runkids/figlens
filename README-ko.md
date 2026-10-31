@@ -57,10 +57,10 @@
 | Codex | `codex plugin marketplace add runkids/figlens`, `codex plugin add figlens@figlens` |
 | Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/v0.10.1` |
 | Cursor | `git clone --depth 1 --branch v0.10.1 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens` 후 창을 다시 로드 |
-| Kimi Code | 세션에서 `/plugins install https://github.com/runkids/figlens` 실행 후 `/reload` |
+| Kimi Code | 세션에서 `/plugins install https://github.com/runkids/figlens/tree/v0.10.1` 실행 후 `/reload` |
 <!-- x-release-please-end -->
 
-호스트를 다시 시작하거나 새 세션을 열고 figlens 도구가 표시되는지 확인하세요. 플러그인 설치는 저장소 전체(약 7 MB)를 clone합니다. Antigravity는 skill의 처음 24 KB만 로드하며, 전체 지침은 서버의 `workflow` 도구가 제공합니다. Muse는 아직 지원하지 않습니다. [호스트 표와 검증 범위](wiki/host-plugins.md)
+호스트를 다시 시작하거나 새 세션을 열고 figlens 도구가 표시되는지 확인하세요. 플러그인 설치는 릴리스 태그 시점의 저장소를 복사합니다(약 7 MB, Codex는 Git 기록도 보관해 약 60 MB). v0.10.1까지의 태그는 이 manifest보다 오래되어 50 MB의 데모 미디어를 포함하고, Claude Code 외에서는 skill만 설치됩니다. 이때는 [MCP 설정](#setup-mcp)으로 서버를 추가하세요. Antigravity는 skill의 처음 24 KB만 로드하며, 전체 지침은 서버의 `workflow` 도구가 제공합니다. Muse는 아직 지원하지 않습니다. [호스트 표와 검증 범위](wiki/host-plugins.md)
 
 <a id="setup-mcp"></a>
 

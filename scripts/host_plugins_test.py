@@ -1,6 +1,7 @@
 """Host plugin manifests and install docs stay in lockstep with the npm package and its release tag."""
 import json
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -8,8 +9,9 @@ ROOT = Path(__file__).resolve().parent.parent
 HOST_FILES = ['.claude-plugin/plugin.json', '.claude-plugin/marketplace.json', '.codex-plugin/plugin.json',
               '.codex-plugin/mcp.json', '.agents/plugins/marketplace.json', '.cursor-plugin/plugin.json',
               '.kimi-plugin/plugin.json', '.antigravity-plugin/plugin.json', 'mcp_config.json']
-LOCALES = ['', *(f'-{l}' for l in ('de', 'es', 'fr', 'ja', 'ko', 'pt-BR', 'zh-CN', 'zh-TW'))]
-DOC_FILES = [*(f'README{l}.md' for l in LOCALES), *(f'docs/README{l}.md' for l in LOCALES), 'npm/README.md', 'wiki/mcp.md']
+# Every tracked Markdown file; CHANGELOG.md records past releases, not install commands.
+DOC_FILES = [p for p in subprocess.run(['git', 'ls-files', '*.md'], cwd=ROOT, capture_output=True, text=True,
+                                       check=True).stdout.split('\n') if p and p != 'CHANGELOG.md']
 
 
 def load(path):
@@ -71,21 +73,22 @@ class HostPluginsTest(unittest.TestCase):
 
     def test_docs_pin_the_release_inside_release_markers(self):
         generic = {e['path'] for e in self.extra if e['type'] == 'generic'}
-        pinned = re.compile(r'@runkids/figlens@(\S+?)["` ]|figlens/tree/v(\S+?)`|--branch v(\S+) ')
-        unpinned = re.compile(r'@runkids/figlens(" *, *"mcp"| mcp\b)')
+        pinned = re.compile(r'@runkids/figlens@(\d[^\s"`]*)|figlens/tree/v(\d[^\s`]*)|--branch v(\d\S*)')
+        unpinned = re.compile(r'@runkids/figlens(" *, *"mcp"| mcp\b)|github\.com/runkids/figlens`'
+                              r'|git clone https://github\.com/runkids/figlens')
         for path in DOC_FILES:
             inside = False
             for number, line in enumerate((ROOT / path).read_text().split('\n'), 1):
-                inside = (inside or 'x-release-please-start-version' in line) and 'x-release-please-end' not in line
-                self.assertIsNone(unpinned.search(line), f'{path}:{number} unpinned npx command')
+                inside = inside and 'x-release-please-end' not in line
+                self.assertIsNone(unpinned.search(line), f'{path}:{number} unpinned install or npx command')
                 if inside:  # release-please rewrites the first version on every marked line
                     self.assertEqual(set(re.findall(r'\d+\.\d+\.\d+', line)) - {self.version}, set(), f'{path}:{number}')
                 for match in pinned.finditer(line):
-                    if match[0].startswith('@runkids/figlens@<'):
-                        continue
                     self.assertEqual(next(filter(None, match.groups())), self.version, f'{path}:{number}')
                     self.assertTrue(inside, f'{path}:{number} outside release-please markers')
                     self.assertIn(path, generic, path)
+                # release-please does not bump the start-marker line itself
+                inside = inside or 'x-release-please-start-version' in line
 
 
 if __name__ == '__main__':

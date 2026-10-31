@@ -21,10 +21,11 @@ No root `.mcp.json`: Claude Code would offer it to everyone who opens this repos
 A skill from the development tree can prescribe tools the pinned binary lacks, so every install path takes the skill from the `v<version>` tag:
 - Claude Code: the marketplace entry's `source` is `github` with `ref`, plus `strict: false` and its own `mcpServers`, so it works even at a tag without `.claude-plugin/`.
 - Codex: the marketplace entry's `source` is `url` with `ref`. Codex reads `.codex-plugin/` from the tag, so a tag older than the manifests installs the skill without the server.
-- Antigravity (`/tree/v<version>`) and Cursor (`git clone --branch v<version>`): the documented commands pin the tag.
-- Kimi Code: a bare GitHub URL installs the latest release.
+- Antigravity and Kimi Code (`/tree/v<version>`) and Cursor (`git clone --branch v<version>`): the documented commands pin the tag.
 
-`v0.10.1` predates these manifests, so until the next release only Claude Code gets the server from the plugin.
+Tags up to `v0.10.1` predate these manifests: from them only Claude Code gets the server, which is why its marketplace entry carries `strict: false` and its own `mcpServers`. The READMEs say so beside the install table.
+
+Between merging the Release Please PR and Publish Release, the bumped refs and pins name an npm version that is not published yet, so publish promptly.
 
 ## Verification
 
@@ -43,11 +44,11 @@ Not shipped:
 
 ## Install size
 
-Demo media is not in the tree; docs link it at the `v0.10.1` tag, and Git history still holds it. A `--depth 1` clone is about 8.5 MB (6.6 MB of files), down from 95 MB with the media. Claude Code keeps only the files. Codex clones without `--depth` and keeps the full history (about 60 MB). Cursor's documented command is shallow; Antigravity and Kimi Code clone depth is unknown.
+Demo media is not in the tree; docs link it at the `v0.10.1` tag (keep that tag), and Git history still holds it. Tags up to `v0.10.1` still carry it. A `--depth 1` clone is about 8.5 MB (6.6 MB of files), down from 95 MB with the media. Claude Code keeps only the files. Codex clones without `--depth` and keeps the full history (about 60 MB). Cursor's documented command is shallow; Antigravity and Kimi Code clone depth is unknown.
 
 ## Versions
 
-Release Please bumps every manifest `version`, marketplace `ref` and pinned `@runkids/figlens@<version>` through `extra-files` in `.github/release-please-config.json`. In the READMEs, `docs/` READMEs, `npm/README.md` and `wiki/mcp.md`, pinned commands sit between `x-release-please-start-version` and `x-release-please-end` comments, which the `generic` entries bump; keep other versions out of those blocks. `scripts/host_plugins_test.py` fails when a pinned version, package or tag differs from `npm/package.json`, sits outside markers or `extra-files`, when a marketplace source is not the release tag, or when a manifest path does not exist.
+Release Please bumps every manifest `version`, marketplace `ref` and pinned `@runkids/figlens@<version>` through `extra-files` in `.github/release-please-config.json`. In the READMEs, `docs/` READMEs, `npm/README.md` and `wiki/mcp.md`, pinned commands sit between `x-release-please-start-version` and `x-release-please-end` comments, which the `generic` entries bump; keep other versions out of those blocks. `scripts/host_plugins_test.py` checks every tracked Markdown file and manifest: no unpinned install or `npx … mcp` command, every pin equal to `npm/package.json` and bumped by `extra-files`, marketplace sources at the release tag, and manifest paths that exist.
 
 ## Adding a host
 

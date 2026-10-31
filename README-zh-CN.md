@@ -57,10 +57,10 @@
 | Codex | `codex plugin marketplace add runkids/figlens`, `codex plugin add figlens@figlens` |
 | Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/v0.10.1` |
 | Cursor | `git clone --depth 1 --branch v0.10.1 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens`，然后重新加载窗口 |
-| Kimi Code | 在会话中运行 `/plugins install https://github.com/runkids/figlens`，然后运行 `/reload` |
+| Kimi Code | 在会话中运行 `/plugins install https://github.com/runkids/figlens/tree/v0.10.1`，然后运行 `/reload` |
 <!-- x-release-please-end -->
 
-重启宿主或开启新会话，确认已列出 figlens tools。Plugin 安装会 clone 整个仓库（约 7 MB）。Antigravity 只加载 skill 的前 24 KB；完整指引由 server 的 `workflow` tool 提供。暂不支持 Muse。[宿主对照表与验证范围](wiki/host-plugins.md)
+重启宿主或开启新会话，确认已列出 figlens tools。Plugin 安装会复制该 release tag 的仓库：约 7 MB，Codex 另外保留 Git 历史（约 60 MB）。v0.10.1 及更早的 tag 早于这些 manifest：仍带有 50 MB 演示媒体，且在 Claude Code 以外只安装 skill，请用 [MCP 设置](#setup-mcp) 加入 server。Antigravity 只加载 skill 的前 24 KB；完整指引由 server 的 `workflow` tool 提供。暂不支持 Muse。[宿主对照表与验证范围](wiki/host-plugins.md)
 
 <a id="setup-mcp"></a>
 
