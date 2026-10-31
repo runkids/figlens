@@ -188,6 +188,7 @@ When referring to a specific frame or node in an answer or design document, link
 
 ## Reading the output
 
+- **Chaining calls**: every figlens command and MCP tool returns JSON. When you can run code (a host code or script tool, or a shell with the CLI and `jq`), run related calls in one script, such as a loop of exports or `inspect` filtered to the fields you need, and bring only that result into the conversation.
 - **Shape** is the per-node object of a Figma REST nodes response, `{document, components, componentSets, styles, schemaVersion}` (`--frames` lines add `nodeId`): `document` is the frame; `children`; `absoluteBoundingBox {x,y,width,height}` in page coordinates (subtract the frame's x/y for positions inside it); `fills`/`strokes`/`effects`; `strokeWeight`, or `individualStrokeWeights {top,right,bottom,left}` when sides are set independently; read that instead, since `strokeWeight` can then be 0 (a bottom-only underline); auto-layout in `layoutMode`, `itemSpacing`, `padding*`, `primaryAxisAlignItems`, `counterAxisAlignItems`, `layoutSizingHorizontal`/`Vertical` (`FILL`/`HUG`/`FIXED`).
 - **Absolute children**: `layoutPositioning: "ABSOLUTE"` marks a child of an auto-layout frame that sits outside the flow (title bars, floating inputs, badges). Place it with its bounding box, out of the flex flow.
 - **Colors** are `r,g,b,a` floats in 0–1: multiply by 255. A paint's own `opacity` multiplies `a`.
