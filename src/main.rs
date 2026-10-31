@@ -105,6 +105,7 @@ usage:
                                              a side stopped at a limit prints `stopped early`, never
                                              `no changes`; narrow it with --node
   figlens inspect <file.fig> <node> [--depth N] [--images] [--states] [--compare-variant ID] [--flat]
+                                             [--full-text] [--colors]
                                              compact layout/text summary, instances expanded;
                                              depth 1 (0-10), at most 200 nodes, 200 characters per text;
                                              recorded text resize/truncation/decoration and known handoff gaps;
@@ -114,6 +115,9 @@ usage:
                                              --compare-variant compares two stored variants in the same set
                                              (a child pairs only when it is its name and type's
                                              only one on both sides; bound variables are named);
+                                             --full-text returns each text in full (up to 10000 characters);
+                                             --colors adds solidFills (hex, opacity, bound variable) for visible
+                                             solid fills, also on --flat; no gradients, images or strokes;
                                              --flat prints one line per node instead (not with the above):
                                              id TYPE \"name\" @x,y WxH relative to the node, then hidden, rot,
                                              component, text, font=family size/weight/lineHeight, fill,

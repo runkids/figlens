@@ -49,6 +49,8 @@ pub enum Command {
         compare_variant: Option<String>,
         /// One line per node instead of JSON.
         flat: bool,
+        full_text: bool,
+        colors: bool,
     },
     Variables(Option<String>),
     Tokens {
@@ -258,6 +260,7 @@ impl Command {
             "inspect" => {
                 let node = node()?;
                 let (mut depth, mut images, mut states, mut flat) = (1, false, false, false);
+                let (mut full_text, mut colors) = (false, false);
                 let mut compare_variant = None;
                 let mut rest = args[1..].iter();
                 while let Some(flag) = rest.next() {
@@ -268,6 +271,8 @@ impl Command {
                         "--images" => images = true,
                         "--states" => states = true,
                         "--flat" => flat = true,
+                        "--full-text" => full_text = true,
+                        "--colors" => colors = true,
                         "--compare-variant" => {
                             compare_variant = Some(
                                 rest.next()
@@ -285,6 +290,8 @@ impl Command {
                     states,
                     compare_variant,
                     flat,
+                    full_text,
+                    colors,
                 }
             }
             "variables" => {
@@ -407,6 +414,8 @@ impl Command {
                 states: call.argument("states") == true,
                 compare_variant: string("compareVariant"),
                 flat: call.argument("flat") == true,
+                full_text: call.argument("fullText") == true,
+                colors: call.argument("colors") == true,
             },
             "variables" => Self::variables(
                 string("node"),
@@ -570,6 +579,8 @@ impl Command {
                 states,
                 compare_variant,
                 flat,
+                full_text,
+                colors,
             } => {
                 let id = normalize_id(&node);
                 if flat {
@@ -579,7 +590,8 @@ impl Command {
                                 .into(),
                         );
                     }
-                    let (text, truncated) = discover::inspect_flat(tree, &id, depth)?;
+                    let (text, truncated) =
+                        discover::inspect_flat(tree, &id, depth, full_text, colors)?;
                     return Ok(Output::Lines {
                         value: json!({ "flat": text, "truncated": truncated }),
                         text,
@@ -594,6 +606,8 @@ impl Command {
                     images,
                     states,
                     compare_variant.as_deref(),
+                    full_text,
+                    colors,
                 )?)
             }
             Self::Variables(node) => {

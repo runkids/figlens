@@ -1,5 +1,6 @@
 //! Bounded discovery output; full design data stays in `nodes` and `bundle`.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::path::Path;
 
@@ -9,12 +10,71 @@ use serde_json::{Value, json};
 
 const MAX_NODES: usize = 200;
 const TEXT_CHARS: usize = 200;
+/// Per-text cap with `fullText`; a longer text still sets `textTruncated`.
+const FULL_TEXT_CHARS: usize = 10_000;
 
-fn text_preview(summary: &mut Value, text: &str) {
-    summary["characters"] = text.chars().take(TEXT_CHARS).collect::<String>().into();
-    if text.chars().count() > TEXT_CHARS {
+/// Opt-in extras for `inspect` and `inspect --flat`.
+#[derive(Default)]
+struct Detail {
+    full_text: bool,
+    /// Variable id -> name, set when solid fill colors are requested.
+    colors: Option<HashMap<String, String>>,
+}
+
+impl Detail {
+    fn new(tree: &Tree, document: &Value, full_text: bool, colors: bool) -> Self {
+        Self {
+            full_text,
+            colors: colors.then(|| variable_names(tree, document)),
+        }
+    }
+
+    fn text_chars(&self) -> usize {
+        if self.full_text {
+            FULL_TEXT_CHARS
+        } else {
+            TEXT_CHARS
+        }
+    }
+
+    /// The bound color variable of a paint as `(id, name)`, name empty when not resolved.
+    fn bound<'a>(&'a self, paint: &'a Value) -> Option<(&'a str, &'a str)> {
+        let id = paint["boundVariables"]["color"]["id"].as_str()?;
+        let name = self.colors.as_ref()?.get(id).map_or("", String::as_str);
+        Some((id, name))
+    }
+}
+
+fn text_preview(summary: &mut Value, text: &str, limit: usize) {
+    summary["characters"] = text.chars().take(limit).collect::<String>().into();
+    if text.chars().count() > limit {
         summary["textTruncated"] = true.into();
     }
+}
+
+/// Visible SOLID fills as `{hex, opacity?, variableId?, variableName?}`: the paint's own alpha
+/// and opacity, not ancestor or node opacity.
+fn solid_fills(node: &Value, detail: &Detail) -> Vec<Value> {
+    node["fills"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["type"] == "SOLID" && figlens::render::visible(p))
+        .map(|p| {
+            let mut fill = json!({"hex": figlens::render::hex(&p["color"])});
+            let a = p["color"]["a"].as_f64().unwrap_or(1.0) * p["opacity"].as_f64().unwrap_or(1.0);
+            if a < 1.0 {
+                fill["opacity"] = json!((a * 1000.0).round() / 1000.0);
+            }
+            if let Some((id, name)) = detail.bound(p) {
+                fill["variableId"] = id.into();
+                if !name.is_empty() {
+                    fill["variableName"] = name.into();
+                }
+            }
+            fill
+        })
+        .collect()
 }
 
 /// A stored node's local pre-rotation size, kept as f32 so output digits match `nodes`.
@@ -85,13 +145,14 @@ pub fn find(
             summary["size"] = json!({ "width": width, "height": height });
         }
         if node_type == "TEXT" {
-            text_preview(&mut summary, text);
+            text_preview(&mut summary, text, TEXT_CHARS);
         }
         results.push(summary);
     }
     Ok(json!({"root": root, "results": results, "truncated": truncated}))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn inspect(
     tree: &Tree,
     id: &str,
@@ -100,6 +161,8 @@ pub fn inspect(
     images: bool,
     states: bool,
     compare_variant: Option<&str>,
+    full_text: bool,
+    colors: bool,
 ) -> Result<Value, Box<dyn Error>> {
     if depth > 10 {
         return Err("--depth takes 0-10 for inspect".into());
@@ -112,7 +175,8 @@ pub fn inspect(
     } else {
         figlens::rest::resolve_nodes(tree, id)?
     };
-    let mut result = inspect_document(&doc["document"], depth);
+    let detail = Detail::new(tree, &doc["document"], full_text, colors);
+    let mut result = inspect_document(&doc["document"], depth, &detail);
     if let Some(diagnostics) = doc["_figlens"].get("handoffDiagnostics") {
         result["handoffDiagnostics"] = diagnostics.clone();
     }
@@ -130,11 +194,18 @@ pub fn inspect(
 
 /// `inspect --flat`: one line per node, within the same depth and node limits as `inspect`.
 /// Returns the lines and whether nodes were left out.
-pub fn inspect_flat(tree: &Tree, id: &str, depth: usize) -> Result<(String, bool), Box<dyn Error>> {
+pub fn inspect_flat(
+    tree: &Tree,
+    id: &str,
+    depth: usize,
+    full_text: bool,
+    colors: bool,
+) -> Result<(String, bool), Box<dyn Error>> {
     if depth > 10 {
         return Err("--depth takes 0-10 for inspect".into());
     }
     let doc = figlens::rest::resolve_nodes(tree, id)?;
+    let detail = Detail::new(tree, &doc["document"], full_text, colors);
     let root = &doc["document"]["absoluteBoundingBox"];
     let origin = (
         root["x"].as_f64().unwrap_or(0.0),
@@ -147,22 +218,35 @@ pub fn inspect_flat(tree: &Tree, id: &str, depth: usize) -> Result<(String, bool
         origin,
         0,
         depth,
+        &detail,
         &mut remaining,
         &mut truncated,
     );
     Ok((out, truncated))
 }
 
+/// Names of the variables the subtree binds, by REST id.
+fn variable_names(tree: &Tree, document: &Value) -> HashMap<String, String> {
+    figlens::variables::variables(tree, Some(document))["variables"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| Some((v["id"].as_str()?.to_owned(), v["name"].as_str()?.to_owned())))
+        .collect()
+}
+
 /// `id TYPE "name" @x,y WxH` (position relative to the inspected root), then whichever of
 /// hidden, rotation, component, text, font, fill, stroke, radius, effects, auto-layout,
 /// alignment, sizing and opacity apply.
 /// `children=N` marks children cut by depth; a `… N more` line marks those cut by the node limit.
+#[allow(clippy::too_many_arguments)]
 fn flat_lines(
     out: &mut String,
     node: &Value,
     origin: (f64, f64),
     level: usize,
     depth: usize,
+    detail: &Detail,
     remaining: &mut usize,
     truncated: &mut bool,
 ) {
@@ -206,8 +290,9 @@ fn flat_lines(
         add(format!("component={main}"));
     }
     if let Some(text) = node["characters"].as_str() {
-        add(quote(&text.chars().take(TEXT_CHARS).collect::<String>()));
-        if text.chars().count() > TEXT_CHARS {
+        let limit = detail.text_chars();
+        add(quote(&text.chars().take(limit).collect::<String>()));
+        if text.chars().count() > limit {
             add("textTruncated".into());
         }
         let style = &node["style"];
@@ -237,7 +322,17 @@ fn flat_lines(
             .flatten()
             .filter(|p| figlens::render::visible(p))
             .map(|p| match p["type"].as_str() {
-                Some("SOLID") => color(&p["color"], p["opacity"].as_f64().unwrap_or(1.0)),
+                Some("SOLID") => {
+                    let var = match detail.bound(p) {
+                        Some((id, "")) => format!("${id}"),
+                        Some((_, name)) => format!("${name}"),
+                        None => String::new(),
+                    };
+                    format!(
+                        "{}{var}",
+                        color(&p["color"], p["opacity"].as_f64().unwrap_or(1.0))
+                    )
+                }
                 kind => kind.unwrap_or("?").to_owned(),
             })
             .collect::<Vec<_>>()
@@ -368,16 +463,17 @@ fn flat_lines(
             origin,
             level + 1,
             depth - 1,
+            detail,
             remaining,
             truncated,
         );
     }
 }
 
-fn inspect_document(document: &Value, depth: usize) -> Value {
+fn inspect_document(document: &Value, depth: usize, detail: &Detail) -> Value {
     let mut remaining = MAX_NODES;
     let mut truncated = false;
-    let node = summarize(document, depth, &mut remaining, &mut truncated);
+    let node = summarize(document, depth, detail, &mut remaining, &mut truncated);
     json!({"node": node, "truncated": truncated})
 }
 
@@ -392,7 +488,13 @@ fn derived_spacing(node: &Value) -> bool {
         )
 }
 
-fn summarize(node: &Value, depth: usize, remaining: &mut usize, truncated: &mut bool) -> Value {
+fn summarize(
+    node: &Value,
+    depth: usize,
+    detail: &Detail,
+    remaining: &mut usize,
+    truncated: &mut bool,
+) -> Value {
     *remaining -= 1;
     let mut summary = json!({});
     for key in [
@@ -463,7 +565,13 @@ fn summarize(node: &Value, depth: usize, remaining: &mut usize, truncated: &mut 
         *truncated |= items.len() > 20;
     }
     if let Some(text) = node["characters"].as_str() {
-        text_preview(&mut summary, text);
+        text_preview(&mut summary, text, detail.text_chars());
+    }
+    if detail.colors.is_some() {
+        let fills = solid_fills(node, detail);
+        if !fills.is_empty() {
+            summary["solidFills"] = fills.into();
+        }
     }
     if let Some(style) = node["style"].as_object() {
         for key in [
@@ -501,7 +609,7 @@ fn summarize(node: &Value, depth: usize, remaining: &mut usize, truncated: &mut 
             if *remaining == 0 {
                 break;
             }
-            included.push(summarize(child, depth - 1, remaining, truncated));
+            included.push(summarize(child, depth - 1, detail, remaining, truncated));
         }
         if included.len() < children.len() {
             *truncated = true;
@@ -524,9 +632,14 @@ mod tests {
         let result = inspect_document(
             &json!({"id":"1:1","type":"TEXT","characters":"Title","style":style}),
             0,
+            &Detail::default(),
         );
         assert_eq!(result["node"]["style"], style);
-        let absent = inspect_document(&json!({"id":"1:2","type":"TEXT","characters":"Title"}), 0);
+        let absent = inspect_document(
+            &json!({"id":"1:2","type":"TEXT","characters":"Title"}),
+            0,
+            &Detail::default(),
+        );
         assert!(absent["node"].get("style").is_none());
     }
 
@@ -541,7 +654,7 @@ mod tests {
             })
             .collect();
         let node = json!({"id":"1:1","individualStrokeWeights":{"top":0,"right":0,"bottom":3,"left":0},"componentPropertyDefinitions":definitions,"_figlens":{"semantics":{"verification":"not-compared-with-figma","componentPropertyDefinitions":{"source":"componentPropDefs","state":"recorded","entries":vec![json!({"state":"recorded"});21]}},"renderDiagnostics":[{"state":"skipped"}]}});
-        let result = inspect_document(&node, 0);
+        let result = inspect_document(&node, 0, &Detail::default());
         let summary = &result["node"];
         assert_eq!(result["truncated"], true);
         assert_eq!(summary["componentPropertyDefinitionCount"], 21);
@@ -572,7 +685,9 @@ mod tests {
     #[test]
     fn inspect_marks_spacing_derived_only_under_parents_without_auto_layout() {
         let child = json!({"id":"1:2","type":"RECTANGLE"});
-        let spacing = |parent: Value| inspect_document(&parent, 0)["node"]["childSpacing"].clone();
+        let spacing = |parent: Value| {
+            inspect_document(&parent, 0, &Detail::default())["node"]["childSpacing"].clone()
+        };
         assert_eq!(
             spacing(json!({"id":"1:1","type":"FRAME","children":[child]})),
             "derived"
@@ -602,7 +717,16 @@ mod tests {
     fn flat_grid_lines_leave_out_the_gap_rest_does_not_emit() {
         let node = json!({"id":"1:1","type":"FRAME","name":"g","layoutMode":"GRID","paddingTop":4});
         let (mut out, mut truncated) = (String::new(), false);
-        flat_lines(&mut out, &node, (0.0, 0.0), 0, 0, &mut 1, &mut truncated);
+        flat_lines(
+            &mut out,
+            &node,
+            (0.0, 0.0),
+            0,
+            0,
+            &Detail::default(),
+            &mut 1,
+            &mut truncated,
+        );
         assert_eq!(out, "1:1 FRAME \"g\" GRID pad=4,0,0,0\n");
     }
 
@@ -619,7 +743,16 @@ mod tests {
             "children":[{"id":"1:2","type":"TEXT","name":"t","layoutSizingHorizontal":"HUG","layoutSizingVertical":"HUG",
                 "counterAxisAlignItems":null}]});
         let (mut out, mut truncated) = (String::new(), false);
-        flat_lines(&mut out, &node, (0.0, 0.0), 0, 1, &mut 3, &mut truncated);
+        flat_lines(
+            &mut out,
+            &node,
+            (0.0, 0.0),
+            0,
+            1,
+            &Detail::default(),
+            &mut 3,
+            &mut truncated,
+        );
         assert_eq!(
             out,
             concat!(
@@ -645,7 +778,16 @@ mod tests {
             leaf("1:3"), leaf("1:4"),
         ]});
         let (mut out, mut truncated) = (String::new(), false);
-        flat_lines(&mut out, &node, (100.0, 50.0), 0, 1, &mut 3, &mut truncated);
+        flat_lines(
+            &mut out,
+            &node,
+            (100.0, 50.0),
+            0,
+            1,
+            &Detail::default(),
+            &mut 3,
+            &mut truncated,
+        );
         assert_eq!(
             out,
             concat!(
@@ -662,7 +804,7 @@ mod tests {
     fn inspect_bounds_render_diagnostics_and_marks_truncation() {
         let node = json!({"id":"1:1", "_figlens":{"renderDiagnostics":vec![json!({"state":"skipped"});21]}});
         let mut truncated = false;
-        let summary = summarize(&node, 1, &mut 200, &mut truncated);
+        let summary = summarize(&node, 1, &Detail::default(), &mut 200, &mut truncated);
         assert_eq!(
             summary["_figlens"]["renderDiagnostics"]
                 .as_array()
@@ -672,6 +814,49 @@ mod tests {
         );
         assert_eq!(summary["_figlens"]["renderDiagnosticsTruncated"], true);
         assert!(truncated);
+    }
+
+    #[test]
+    fn full_text_and_solid_fills_are_opt_in() {
+        let long = "x".repeat(TEXT_CHARS + 1);
+        let fill = json!({"type":"SOLID","color":{"r":1.0,"g":0.0,"b":0.0,"a":1.0},"opacity":0.5,
+            "boundVariables":{"color":{"type":"VARIABLE_ALIAS","id":"VariableID:1:2"}}});
+        let hidden =
+            json!({"type":"SOLID","visible":false,"color":{"r":0.0,"g":0.0,"b":0.0,"a":1.0}});
+        let gradient = json!({"type":"GRADIENT_LINEAR"});
+        let node =
+            json!({"id":"1:1","type":"TEXT","characters":long,"fills":[fill,hidden,gradient]});
+        let plain = inspect_document(&node, 0, &Detail::default())["node"].clone();
+        assert_eq!(plain["textTruncated"], true);
+        assert!(plain.get("solidFills").is_none());
+        let names = HashMap::from([("VariableID:1:2".to_owned(), "Brand/Red".to_owned())]);
+        let detail = Detail {
+            full_text: true,
+            colors: Some(names),
+        };
+        let full = inspect_document(&node, 0, &detail)["node"].clone();
+        assert_eq!(full["characters"].as_str().unwrap().len(), TEXT_CHARS + 1);
+        assert!(full.get("textTruncated").is_none());
+        assert_eq!(
+            full["solidFills"],
+            json!([{"hex":"#ff0000","opacity":0.5,"variableId":"VariableID:1:2","variableName":"Brand/Red"}])
+        );
+        let (mut out, mut truncated) = (String::new(), false);
+        flat_lines(
+            &mut out,
+            &node,
+            (0.0, 0.0),
+            0,
+            0,
+            &detail,
+            &mut 1,
+            &mut truncated,
+        );
+        assert!(
+            out.contains("fill=#ff0000/0.5$Brand/Red,GRADIENT_LINEAR"),
+            "{out}"
+        );
+        assert!(out.contains(&long), "{out}");
     }
 
     fn obj(fields: Vec<(&'static str, Kiwi<'static>)>) -> Kiwi<'static> {
@@ -800,11 +985,33 @@ mod tests {
         let message = message();
         let tree = Tree::new(&message);
         let full = figlens::rest::nodes(&tree, "0:2");
-        let shallow = inspect(&tree, "0:2", 0, Path::new("test.fig"), false, false, None).unwrap();
+        let shallow = inspect(
+            &tree,
+            "0:2",
+            0,
+            Path::new("test.fig"),
+            false,
+            false,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
         assert_eq!(shallow["node"]["childCount"], 2);
         assert!(shallow["node"].get("children").is_none());
         assert_eq!(shallow["truncated"], true);
-        let summary = inspect(&tree, "0:2", 2, Path::new("test.fig"), false, false, None).unwrap();
+        let summary = inspect(
+            &tree,
+            "0:2",
+            2,
+            Path::new("test.fig"),
+            false,
+            false,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
         assert_eq!(summary["truncated"], false);
         assert_eq!(
             summary["node"]["absoluteBoundingBox"],
@@ -821,7 +1028,7 @@ mod tests {
         let doc = json!({"id": "root", "children": (0..250).map(|i| json!({"id": i})).collect::<Vec<_>>()});
         let mut remaining = MAX_NODES;
         let mut truncated = false;
-        let summary = summarize(&doc, 1, &mut remaining, &mut truncated);
+        let summary = summarize(&doc, 1, &Detail::default(), &mut remaining, &mut truncated);
         assert_eq!(summary["childCount"], 250);
         assert_eq!(summary["children"].as_array().unwrap().len(), 199);
         assert_eq!(remaining, 0);

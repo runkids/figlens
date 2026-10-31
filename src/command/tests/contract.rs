@@ -256,9 +256,11 @@ fn flat_is_a_strict_boolean_and_match_dir_a_nonempty_string() {
         json!(1),
         Value::Null,
     ] {
-        let mut args = inspect.clone();
-        args["flat"] = value.clone();
-        assert_eq!(check("inspect", args).is_ok(), value.is_boolean());
+        for key in ["flat", "fullText", "colors"] {
+            let mut args = inspect.clone();
+            args[key] = value.clone();
+            assert_eq!(check("inspect", args).is_ok(), value.is_boolean());
+        }
     }
     for value in [json!("icons"), json!(""), json!(true), Value::Null] {
         let mut args = export.clone();

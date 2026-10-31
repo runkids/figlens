@@ -308,7 +308,7 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "inspect",
-        "Compact expanded node summary: bounds, layout, typography, text previews and child counts. A parent without auto-layout has childSpacing \"derived\": gaps between its children are coordinate differences, not an auto-layout rule; constraints may still pin them. For image decisions, images=true adds original dimensions/bytes and source-pixel rectangles before masks, not blur diagnoses. Depth and a 200-node budget bound the summary; image paints have their own 200-item limit. nodes returns full design data.",
+        "Compact expanded node summary: bounds, layout, typography, text previews (fullText=true for complete text) and child counts. colors=true adds resolved solid fill colors with bound variables; other paints stay in nodes. A parent without auto-layout has childSpacing \"derived\": gaps between its children are coordinate differences, not an auto-layout rule; constraints may still pin them. For image decisions, images=true adds original dimensions/bytes and source-pixel rectangles before masks, not blur diagnoses. Depth and a 200-node budget bound the summary; image paints have their own 200-item limit. nodes returns full design data.",
         &[
             FILE,
             NODE,
@@ -335,6 +335,18 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
                 "string",
                 false,
                 "compare node with this other stored variant in the same component set; adds bounded raw-field differences, per-pair changes for children whose name and type are unique on both sides, other descendants' value multisets, exact sources and bound variable names; no alternate rendering or business inference",
+            ),
+            (
+                "fullText",
+                "boolean",
+                false,
+                "return the complete characters of each TEXT node (up to 10000 characters, textTruncated beyond) instead of the 200-character preview; also applies to flat; the node and reply budgets still apply; default false",
+            ),
+            (
+                "colors",
+                "boolean",
+                false,
+                "add solidFills to nodes with visible SOLID fills (TEXT color, frame and shape fills): hex, opacity when the paint is below 1 (paint alpha x paint opacity, not ancestor or node opacity) and the bound color variableId/variableName; with flat, a fill shows a $variable suffix. Gradients, images, strokes, effects and vector geometry are not included (use nodes); default false",
             ),
             (
                 "flat",
@@ -866,7 +878,7 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
         "inspect" => (
             serde_json::json!({
                 "flat": {"type": "string", "description": "the one-line-per-node text when flat=true, instead of node"},
-                "node": {"type": "object", "description": "Compact node with partial layout semantics and type-only property definitions; childSpacing \"derived\" marks a parent without auto-layout; _figlens.semantics records source/verification. Definitions, definition evidence and _figlens.renderDiagnostics each have at most 20 entries per node; truncated includes omitted nodes or entries"},
+                "node": {"type": "object", "description": "Compact node with partial layout semantics and type-only property definitions; childSpacing \"derived\" marks a parent without auto-layout; _figlens.semantics records source/verification. Definitions, definition evidence and _figlens.renderDiagnostics each have at most 20 entries per node; truncated includes omitted nodes or entries; with colors=true, nodes with visible SOLID fills carry solidFills [{hex, opacity?, variableId?, variableName?}]"},
                 "truncated": {"type": "boolean"},
                 "images": {"type": "object", "description": "optional source image evidence when images=true"},
                 "states": {"type": "object", "description": "optional variants and prototype field evidence when states=true; independent truncation, source file, node/override provenance and unknown markers; no inferred business logic"},
@@ -953,7 +965,7 @@ fn default(tool: &str, key: &str) -> Option<Value> {
         ("tree", "depth") => Some(json!(usize::MAX)),
         ("tree" | "find" | "search", "node") => Some(json!("0:0")),
         ("tree", "json" | "topFrames")
-        | ("inspect", "images" | "states" | "flat")
+        | ("inspect", "images" | "states" | "flat" | "fullText" | "colors")
         | ("bundle", "states")
         | ("search", "includeHidden" | "includeInternal") => Some(json!(false)),
         ("inspect", "depth") | ("export", "scale") => Some(json!(1)),
