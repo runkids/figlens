@@ -163,7 +163,7 @@ irm https://raw.githubusercontent.com/runkids/figlens/main/scripts/install.ps1 |
 
 `npx` は解決したパッケージバージョンのバイナリを実行します。スクリプトでインストールした場合は `figlens update`、Homebrew の場合は `brew upgrade figlens` で更新します。バイナリは macOS（Apple silicon、Intel）、Linux（arm64、x86_64）、Windows（x86_64）に対応しています。
 
-CLI を使うエージェントは `figlens workflow build`（ほかに `audit`、`images`、`plan`、`planning-details`、明示的に依頼された場合のみの `yolo`）でガイドを読みます。内容は常にバイナリのバージョンと一致します。[skill](#setup-skill) から読むこともできます。
+CLI を使うエージェントは `figlens workflow build`（ほかに `audit`、`images`、`search`、`plan`、`planning-details`、明示的に依頼された場合のみの `yolo`）でガイドを読みます。内容は常にバイナリのバージョンと一致します。[skill](#setup-skill) から読むこともできます。
 
 [CLI リファレンス](docs/README-ja.md#commands)
 

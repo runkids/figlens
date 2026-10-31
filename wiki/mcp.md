@@ -48,6 +48,7 @@ The `workflow` tool lets a model retrieve detailed guidance without a separate s
 | `build` | Implement a design with the project's components, tokens and architecture, then compare and correct the running UI |
 | `audit` | Compare existing UI with a design, report evidence and coverage, and correct confirmed differences only when requested |
 | `images` | Prepare website assets using the project's image pipeline and verify dimensions, crops, bytes and delivery |
+| `search` | Check for or enable an index, maintain it, semantic and image search, `usages`, following changes; build and audit carry only its decision table (#164: audit 34.6 → 11.3 KB, build 50.5 → 27.3 KB) |
 | `plan` | Plan an implementation or carefully reproduce a design; stop at the plan for plan-only or plan-first requests |
 | `planning-details` | Detail page/multi-page scope or a specific unresolved design/project dependency |
 | `yolo` | The user explicitly requests autonomous implementation and cleanup of this run's temporary plan after successful checks |
