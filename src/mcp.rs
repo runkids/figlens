@@ -210,15 +210,6 @@ fn checked_path(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, contract::Fai
     {
         return Ok(path);
     }
-    if let Some(folder) = missing_folder(path, roots) {
-        return Err(contract::Failure::new(
-            ErrorKind::OutputWrite,
-            format!(
-                "folder {} does not exist; create it, then repeat the call",
-                folder.display()
-            ),
-        ));
-    }
     let folders: Vec<_> = roots.iter().map(|r| r.display().to_string()).collect();
     Err(contract::Failure::new(
         ErrorKind::PermissionDenied,
@@ -227,6 +218,20 @@ fn checked_path(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, contract::Fai
             folders.join(", ")
         ),
     ))
+}
+
+/// An output path: as `checked_path`, but a missing folder inside a root is named as one to create.
+fn checked_output(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, contract::Failure> {
+    checked_path(path, roots).map_err(|denied| match missing_folder(path, roots) {
+        Some(folder) => contract::Failure::new(
+            ErrorKind::OutputWrite,
+            format!(
+                "folder {} does not exist; create it, then repeat the call",
+                folder.display()
+            ),
+        ),
+        None => denied,
+    })
 }
 
 /// The missing folder `path` would go in, when its nearest existing ancestor is inside a root:
@@ -318,7 +323,7 @@ fn admit_value(req: Value, roots: &[PathBuf]) -> Admission {
                     Some(file) => Some(Source::Local(checked_path(Path::new(file), roots)?)),
                     None => None,
                 };
-                let output = call.string("out").map(|out| checked_path(Path::new(out), roots)).transpose()?;
+                let output = call.string("out").map(|out| checked_output(Path::new(out), roots)).transpose()?;
                 let input = call.string("bundle").map(|path| checked_path(Path::new(path), roots)).transpose()?;
                 let match_dir = call.string("matchDir").map(|path| checked_path(Path::new(path), roots)).transpose()?;
                 let project = call.string("workspace").map(|path| checked_path(Path::new(path), roots)).transpose()?;
