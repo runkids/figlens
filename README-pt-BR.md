@@ -60,7 +60,7 @@ Uma única instalação adiciona o skill do figlens e o servidor MCP ao seu agen
 | Kimi Code | `/plugins install https://github.com/runkids/figlens/tree/v0.10.1` em uma sessão e depois `/reload` |
 <!-- x-release-please-end -->
 
-Reinicie o host ou abra uma nova sessão e confira se as ferramentas do figlens aparecem. A instalação de um plugin copia o repositório na tag da versão: cerca de 7 MB, mais o histórico do Git (cerca de 60 MB) no Codex. Tags até v0.10.1 são anteriores a esses manifestos: ainda trazem 50 MB de mídia de demonstração e, fora do Claude Code, instalam só o skill; adicione o servidor pela [configuração MCP](#setup-mcp). O Antigravity carrega só os primeiros 24 KB do skill; a ferramenta `workflow` do servidor fornece o guia completo. O Muse ainda não é suportado. [Tabela de hosts e o que foi verificado](wiki/host-plugins.md)
+Reinicie o host ou abra uma nova sessão e confira se as ferramentas do figlens aparecem. A instalação de um plugin copia o repositório na tag da versão: cerca de 7 MB, mais o histórico do Git (cerca de 60 MB) no Codex. O Antigravity carrega só os primeiros 24 KB do skill; a ferramenta `workflow` do servidor fornece o guia completo. O Muse ainda não é suportado. [Tabela de hosts e o que foi verificado](wiki/host-plugins.md)
 
 <a id="setup-mcp"></a>
 

@@ -23,8 +23,7 @@ A skill from the development tree can prescribe tools the pinned binary lacks, s
 - Codex: the marketplace entry's `source` is `url` with `ref`. Codex reads `.codex-plugin/` from the tag, so a tag older than the manifests installs the skill without the server.
 - Antigravity and Kimi Code (`/tree/v<version>`) and Cursor (`git clone --branch v<version>`): the documented commands pin the tag.
 
-Tags up to `v0.10.1` predate these manifests: from them only Claude Code gets the server, which is why its marketplace entry carries `strict: false` and its own `mcpServers`. The READMEs say so beside the install table.
-
+Tags up to `v0.10.1` predate these manifests: from them only Claude Code gets the server, which is why its marketplace entry carries `strict: false` and its own `mcpServers`.
 Between merging the Release Please PR and Publish Release, the bumped refs and pins name an npm version that is not published yet, so publish promptly.
 
 ## Verification

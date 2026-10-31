@@ -60,7 +60,7 @@
 | Kimi Code | セッション内で `/plugins install https://github.com/runkids/figlens/tree/v0.10.1`、その後 `/reload` |
 <!-- x-release-please-end -->
 
-ホストを再起動するか新しいセッションを開始し、figlens のツールが表示されることを確認してください。プラグインはリリースタグ時点のリポジトリをコピーします（約 7 MB。Codex は Git 履歴も保持し約 60 MB）。v0.10.1 までのタグはこれらの manifest より古く、50 MB のデモ素材を含み、Claude Code 以外では skill しかインストールされません。その場合は [MCP セットアップ](#setup-mcp) で server を追加してください。Antigravity は skill の先頭 24 KB しか読み込みません。完全なガイダンスはサーバーの `workflow` ツールが提供します。Muse はまだサポートしていません。[ホスト対応表と検証範囲](wiki/host-plugins.md)
+ホストを再起動するか新しいセッションを開始し、figlens のツールが表示されることを確認してください。プラグインはリリースタグ時点のリポジトリをコピーします（約 7 MB。Codex は Git 履歴も保持し約 60 MB）。Antigravity は skill の先頭 24 KB しか読み込みません。完全なガイダンスはサーバーの `workflow` ツールが提供します。Muse はまだサポートしていません。[ホスト対応表と検証範囲](wiki/host-plugins.md)
 
 <a id="setup-mcp"></a>
 
