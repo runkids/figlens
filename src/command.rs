@@ -763,6 +763,7 @@ pub struct ExportItem {
     quality: u8,
     max_kb: Option<usize>,
     max_size: Option<u32>,
+    hide: Vec<String>,
 }
 
 impl ExportItem {
@@ -819,6 +820,10 @@ pub fn export_items(items: &Value, default_max_size: u32) -> Result<Vec<ExportIt
                 Some(Some("layout")) => true,
                 _ => return Err(bad("bounds takes layout or render")),
             };
+            let hide = match item.get("hide") {
+                None => Vec::new(),
+                Some(_) => hide_list(text("hide")?).map_err(|e| bad(&e.to_string()))?,
+            };
             let max_kb = number("maxKb", (1 << 53) - 1)?.map(|n| n as usize);
             let max_size =
                 number("maxSize", u32::MAX.into())?.map_or(default_max_size, |n| n as u32);
@@ -832,6 +837,7 @@ pub fn export_items(items: &Value, default_max_size: u32) -> Result<Vec<ExportIt
                 quality: quality as u8,
                 max_kb,
                 max_size: Some(max_size),
+                hide,
             })
         })
         .collect()
@@ -867,6 +873,7 @@ pub fn export_batch(
             max_kb: item.max_kb,
             max_size: item.max_size,
             match_index: None,
+            hide: item.hide.clone(),
         };
         let result = if written >= MAX_BATCH_BYTES {
             Err(

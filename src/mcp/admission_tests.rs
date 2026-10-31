@@ -641,7 +641,7 @@ fn export_batch_checks_every_path_and_the_cap_before_writing_and_reports_items()
     assert!(!a.exists());
     let reply = batch(
         4,
-        json!([{"node":"0:1","out":a},{"node":"9:9","out":inside.join("x.png")},{"node":"0:2","out":b},{"node":"0:4","out":inside.join("t.png")}]),
+        json!([{"node":"0:1","out":a},{"node":"9:9","out":inside.join("x.png")},{"node":"0:2","out":b,"hide":"0:3"},{"node":"0:4","out":inside.join("t.png")}]),
     );
     assert_eq!(reply["isError"], false, "{reply}");
     let manifest = &reply["structuredContent"];
@@ -653,6 +653,7 @@ fn export_batch_checks_every_path_and_the_cap_before_writing_and_reports_items()
     );
     assert!(manifest["items"][1]["error"].is_string());
     assert!(!inside.join("x.png").exists() && b.exists());
+    assert!(manifest["items"][2]["hidden"].is_array(), "{manifest}");
     // READY's text is narrower than its layout box: export's warning stays in the manifest.
     assert!(
         manifest["items"][3]["warnings"][0]

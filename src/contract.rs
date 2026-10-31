@@ -489,14 +489,14 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
     ),
     (
         "export_batch",
-        "Export many nodes of one file in a single call, one file per item; use it instead of repeated export calls for a screen's icons and photos. Each item takes the options export takes (node, out, bounds, scale, quality, maxKb, maxSize; the format follows out's extension) except matchDir. Create the output directories first. At most 64 items, distinct out paths, all inside the configured roots; a malformed item or a path outside the roots fails the whole call before anything is written. Items then export in order: one that fails (a missing or hidden node, a file over maxKb) is reported with its error and the others still export, so check each entry's error. Returns a manifest, no inline images: per item node, path, width, height, bytes, quality, layoutBox, renderBox and warnings, or node, path and error; warnings say when the drawn area reaches past the layout box (a badge or shadow), as export's do. Once the files written reach 256 MiB, the remaining items fail with a budget error; export them in another call.",
+        "Export many nodes of one file in a single call, one file per item; use it instead of repeated export calls for a screen's icons and photos. Each item takes the options export takes (node, out, bounds, scale, quality, maxKb, maxSize, hide; the format follows out's extension) except matchDir. Create the output directories first. At most 64 items, distinct out paths, all inside the configured roots; a malformed item or a path outside the roots fails the whole call before anything is written. Items then export in order: one that fails (a missing or hidden node, a file over maxKb) is reported with its error and the others still export, so check each entry's error. Returns a manifest, no inline images: per item node, path, width, height, bytes, quality, layoutBox, renderBox and warnings, or node, path and error; warnings say when the drawn area reaches past the layout box (a badge or shadow), as export's do. Once the files written reach 256 MiB, the remaining items fail with a budget error; export them in another call.",
         &[
             FILE,
             (
                 "items",
                 "array",
                 true,
-                "1-64 objects {node, out, bounds?, scale?, quality?, maxKb?, maxSize?}, each as the export tool's parameters of those names",
+                "1-64 objects {node, out, bounds?, scale?, quality?, maxKb?, maxSize?, hide?}, each as the export tool's parameters of those names",
             ),
         ],
     ),
@@ -982,8 +982,8 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
 }
 
 /// The `export` parameters an `export_batch` item takes (`matchDir` is single-export only).
-pub const EXPORT_ITEM_KEYS: [&str; 7] = [
-    "node", "out", "bounds", "scale", "quality", "maxKb", "maxSize",
+pub const EXPORT_ITEM_KEYS: [&str; 8] = [
+    "node", "out", "bounds", "scale", "quality", "maxKb", "maxSize", "hide",
 ];
 
 fn default(tool: &str, key: &str) -> Option<Value> {

@@ -186,7 +186,7 @@ usage:
   figlens export <file.fig> --batch <items.json|->
                                              one decode, many exports, each with its own options: a JSON
                                              array (- reads stdin) of 1-64 {node,out,bounds?,scale?,quality?,
-                                             maxKb?,maxSize?} (MCP export_batch's items; format from out's
+                                             maxKb?,maxSize?,hide?} (MCP export_batch's items; format from out's
                                              extension, no matchDir); a malformed item or a repeated out fails
                                              the command before any write; prints {count,failed,items}: per
                                              item node, path and the export output, or node, path and error
