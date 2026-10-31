@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.11.0](https://github.com/runkids/figlens/compare/v0.10.1...v0.11.0) (2026-10-31)
+
+
+### New Features
+
+* **compare-image:** measure a screenshot of the built screen against its frame ([#187](https://github.com/runkids/figlens/issues/187)) ([3a4595d](https://github.com/runkids/figlens/commit/3a4595d1751df3f0ce21668d10bfa91499365108))
+* **export:** draw chosen layers hidden with --hide ([#183](https://github.com/runkids/figlens/issues/183)) ([d6e5058](https://github.com/runkids/figlens/commit/d6e50585f9e12a4009ea009cebe03f576507864a))
+* **export:** export many nodes in one call with a manifest ([#182](https://github.com/runkids/figlens/issues/182)) ([386a370](https://github.com/runkids/figlens/commit/386a3704b6e1a76bf3791ae95fcdda53e4f7e218))
+* **inspect:** add --full-text and --colors for implementing a screen from inspect alone ([#180](https://github.com/runkids/figlens/issues/180)) ([6a1cf38](https://github.com/runkids/figlens/commit/6a1cf38f5f0d45734605f5edcd113da69b7c5185))
+* **inspect:** compare any two nodes with --compare ([#186](https://github.com/runkids/figlens/issues/186)) ([deef0da](https://github.com/runkids/figlens/commit/deef0da50a6cd2f6cb6ed4c3a8e53813ae3ebd4f))
+* **plugins:** install the skill and MCP server as one host plugin ([#185](https://github.com/runkids/figlens/issues/185)) ([2744e2e](https://github.com/runkids/figlens/commit/2744e2efcfeda1e845fba932453169944fdbf2e1))
+* **tokens:** resolve DTCG aliases into other collections ([#178](https://github.com/runkids/figlens/issues/178)) ([f8561eb](https://github.com/runkids/figlens/commit/f8561ebfcff9b73e49d0e14a78efd82e4e8fdf92))
+* **verify:** find local font files for design faces and emit [@font-face](https://github.com/font-face) ([#181](https://github.com/runkids/figlens/issues/181)) ([95b4afa](https://github.com/runkids/figlens/commit/95b4afa2ed3754eab29dc55c17f32a02c55d5371))
+
 ## [0.10.1](https://github.com/runkids/figlens/compare/v0.10.0...v0.10.1) (2026-10-31)
 
 

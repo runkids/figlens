@@ -55,9 +55,9 @@
 |---|---|
 | Claude Code | `claude plugin marketplace add runkids/figlens`, `claude plugin install figlens@figlens` |
 | Codex | `codex plugin marketplace add runkids/figlens`, `codex plugin add figlens@figlens` |
-| Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/v0.10.1` |
-| Cursor | `git clone --depth 1 --branch v0.10.1 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens` の後、ウィンドウを再読み込み |
-| Kimi Code | セッション内で `/plugins install https://github.com/runkids/figlens/tree/v0.10.1`、その後 `/reload` |
+| Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/v0.11.0` |
+| Cursor | `git clone --depth 1 --branch v0.11.0 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens` の後、ウィンドウを再読み込み |
+| Kimi Code | セッション内で `/plugins install https://github.com/runkids/figlens/tree/v0.11.0`、その後 `/reload` |
 <!-- x-release-please-end -->
 
 ホストを再起動するか新しいセッションを開始し、figlens のツールが表示されることを確認してください。プラグインはリリースタグ時点のリポジトリをコピーします（約 7 MB。Codex は Git 履歴も保持し約 60 MB）。Antigravity は skill の先頭 24 KB しか読み込みません。完全なガイダンスはサーバーの `workflow` ツールが提供します。Muse はまだサポートしていません。[ホスト対応表と検証範囲](wiki/host-plugins.md)
@@ -70,7 +70,7 @@
 
 <!-- x-release-please-start-version -->
 ```sh
-claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens@0.10.1 mcp
+claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens@0.11.0 mcp
 ```
 <!-- x-release-please-end -->
 
@@ -78,7 +78,7 @@ claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlen
 
 <!-- x-release-please-start-version -->
 ```sh
-codex mcp add figlens -- npx -y @runkids/figlens@0.10.1 mcp
+codex mcp add figlens -- npx -y @runkids/figlens@0.11.0 mcp
 ```
 <!-- x-release-please-end -->
 
@@ -90,7 +90,7 @@ codex mcp add figlens -- npx -y @runkids/figlens@0.10.1 mcp
   "mcpServers": {
     "figlens": {
       "command": "npx",
-      "args": ["-y", "@runkids/figlens@0.10.1", "mcp"]
+      "args": ["-y", "@runkids/figlens@0.11.0", "mcp"]
     }
   }
 }
@@ -121,7 +121,7 @@ Node.js がない場合は、スタンドアロン版のバイナリ（[CLI](#se
     "figlens": {
       "command": "npx",
       "args": [
-        "-y", "@runkids/figlens@0.10.1", "mcp",
+        "-y", "@runkids/figlens@0.11.0", "mcp",
         "--root", "/absolute/designs",
         "--root", "/absolute/project",
         "--storage-root", "/absolute/storage-a",
@@ -211,7 +211,7 @@ skillshare sync
 
 <!-- x-release-please-start-version -->
 ```sh
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.10.1 mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.11.0 mcp
 skillshare sync mcp --global
 ```
 <!-- x-release-please-end -->

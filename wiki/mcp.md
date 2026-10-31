@@ -21,7 +21,7 @@ main=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
 mkdir -p "$top/.figlens" # figlens refuses a missing root
 set -- --root "$top/.figlens"
 if [ -d "$main/figma" ]; then set -- "$@" --root "$main/figma"; fi
-exec npx -y @runkids/figlens@0.10.1 mcp "$@"
+exec npx -y @runkids/figlens@0.11.0 mcp "$@"
 ```
 <!-- x-release-please-end -->
 
