@@ -212,3 +212,46 @@ fn a_project_link_leading_outside_the_folder_is_not_read() {
         (vec!["Alias.ttf", "Own.ttf"], 2)
     );
 }
+
+/// A valid font whose name table is padded to hold `records` zeroed records.
+fn padded(records: usize) -> Vec<u8> {
+    let mut font = sfnt("X-Regular", "X", "Regular");
+    let table_at = 28;
+    let size = 6 + records * 12;
+    font[table_at + 2..table_at + 4].copy_from_slice(&(records as u16).to_be_bytes());
+    font.resize(table_at + size, 0);
+    font[24..28].copy_from_slice(&(size as u32).to_be_bytes());
+    font
+}
+
+#[test]
+fn a_font_skipped_for_a_documented_cap_marks_the_lookup_truncated() {
+    let w = || want("X", "Regular", "X-Regular");
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        ("records", padded(MAX_RECORDS + 1)),
+        ("tables", {
+            let mut f = padded(3);
+            f[4..6].copy_from_slice(&((MAX_TABLES + 1) as u16).to_be_bytes());
+            f.resize(12 + (MAX_TABLES + 1) * 16, 0);
+            f
+        }),
+        ("collection", {
+            let mut f = b"ttcf\0\x01\0\0".to_vec();
+            f.extend(((MAX_COLLECTION + 1) as u32).to_be_bytes());
+            f.resize(12 + (MAX_COLLECTION + 1) * 4, 0);
+            f
+        }),
+        ("string", {
+            let mut f = padded(30);
+            // One record: name id 6 with a string longer than the cap.
+            f[28 + 6..28 + 18].copy_from_slice(&[0, 3, 0, 1, 4, 9, 0, 6, 1, 1, 0, 0]);
+            f
+        }),
+    ];
+    for (cap, font) in cases {
+        let dir = TestDir::new();
+        std::fs::write(dir.join("a.ttf"), font).unwrap();
+        let (_, summary) = find(&dir, w());
+        assert_eq!((cap, summary.truncated), (cap, true));
+    }
+}

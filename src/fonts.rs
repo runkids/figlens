@@ -56,12 +56,32 @@ fn be(a: &[u8], at: usize, n: usize) -> Option<u64> {
     Some(b.iter().fold(0, |x, &y| x << 8 | u64::from(y)))
 }
 
+/// The byte budget left, and whether any font was skipped for a documented cap (as opposed to
+/// being malformed), so the lookup can say it may be incomplete.
+struct Limits {
+    budget: u64,
+    cut: bool,
+}
+
+impl Limits {
+    /// `over` is a cap exceeded by a declared size the file can hold; a size the file cannot
+    /// hold is malformed, not a cap.
+    fn cap(&mut self, over: bool, fits: bool) -> bool {
+        self.cut |= over && fits;
+        over
+    }
+}
+
 /// `n` bytes at `off`, only when inside the file and the byte budget (checked before reading).
-fn at(f: &mut File, len: u64, off: u64, n: usize, budget: &mut u64) -> Option<Vec<u8>> {
-    if off.checked_add(n as u64)? > len || n as u64 > *budget {
+fn at(f: &mut File, len: u64, off: u64, n: usize, lim: &mut Limits) -> Option<Vec<u8>> {
+    if off.checked_add(n as u64)? > len {
         return None;
     }
-    *budget -= n as u64;
+    if n as u64 > lim.budget {
+        lim.cut = true;
+        return None;
+    }
+    lim.budget -= n as u64;
     let mut buf = vec![0; n];
     f.seek(SeekFrom::Start(off)).ok()?;
     f.read_exact(&mut buf).ok()?;
@@ -84,26 +104,26 @@ fn string(platform: u64, raw: &[u8]) -> Option<String> {
 }
 
 /// The names of the sfnt starting at `base`; None when it is not a valid sfnt or over budget.
-fn sfnt_names(f: &mut File, len: u64, base: u64, budget: &mut u64) -> Option<Names> {
-    let head = at(f, len, base, 12, budget)?;
+fn sfnt_names(f: &mut File, len: u64, base: u64, lim: &mut Limits) -> Option<Names> {
+    let head = at(f, len, base, 12, lim)?;
     if !matches!(be(&head, 0, 4)?, 0x0001_0000 | 0x4F54_544F | 0x7472_7565) {
         return None;
     }
     let tables = be(&head, 4, 2)? as usize;
-    if tables == 0 || tables > MAX_TABLES {
+    if tables == 0 || lim.cap(tables > MAX_TABLES, base + 12 + tables as u64 * 16 <= len) {
         return None;
     }
-    let dir = at(f, len, base + 12, tables * 16, budget)?;
+    let dir = at(f, len, base + 12, tables * 16, lim)?;
     let (off, size) = (0..tables)
         .map(|i| &dir[i * 16..])
         .find(|e| e.starts_with(b"name"))
         .and_then(|e| Some((be(e, 8, 4)?, be(e, 12, 4)? as usize)))?;
-    if !(6..=MAX_NAME_TABLE).contains(&size) {
+    if size < 6 || lim.cap(size > MAX_NAME_TABLE, off + size as u64 <= len) {
         return None;
     }
-    let table = at(f, len, off, size, budget)?;
+    let table = at(f, len, off, size, lim)?;
     let (count, strings) = (be(&table, 2, 2)? as usize, be(&table, 4, 2)? as usize);
-    if count > MAX_RECORDS || 6 + count * 12 > size {
+    if 6 + count * 12 > size || lim.cap(count > MAX_RECORDS, true) {
         return None;
     }
     let mut names = Names::default();
@@ -121,7 +141,7 @@ fn sfnt_names(f: &mut File, len: u64, base: u64, budget: &mut u64) -> Option<Nam
             _ => continue,
         };
         // A record pointing outside the table is dropped, not trusted.
-        if n > MAX_STRING || slot.len() >= 4 {
+        if lim.cap(n > MAX_STRING, o + n <= table.len()) || lim.cap(slot.len() >= 4, true) {
             continue;
         }
         if let Some(s) = table.get(o..o + n).and_then(|raw| string(platform, raw))
@@ -134,28 +154,28 @@ fn sfnt_names(f: &mut File, len: u64, base: u64, budget: &mut u64) -> Option<Nam
 }
 
 /// Every font in a .ttf/.otf/.ttc file.
-fn file_names(path: &Path, budget: &mut u64) -> Vec<Names> {
+fn file_names(path: &Path, lim: &mut Limits) -> Vec<Names> {
     let Ok(mut f) = File::open(path) else {
         return vec![];
     };
     let Ok(len) = f.metadata().map(|m| m.len()) else {
         return vec![];
     };
-    let Some(head) = at(&mut f, len, 0, 12, budget) else {
+    let Some(head) = at(&mut f, len, 0, 12, lim) else {
         return vec![];
     };
     if &head[..4] != b"ttcf" {
-        return sfnt_names(&mut f, len, 0, budget).into_iter().collect();
+        return sfnt_names(&mut f, len, 0, lim).into_iter().collect();
     }
     let n = be(&head, 8, 4).unwrap_or(0) as usize;
-    if n > MAX_COLLECTION {
+    if lim.cap(n > MAX_COLLECTION, 12 + n as u64 * 4 <= len) {
         return vec![];
     }
-    let Some(offsets) = at(&mut f, len, 12, n * 4, budget) else {
+    let Some(offsets) = at(&mut f, len, 12, n * 4, lim) else {
         return vec![];
     };
     (0..n)
-        .filter_map(|i| sfnt_names(&mut f, len, be(&offsets, i * 4, 4)?, budget))
+        .filter_map(|i| sfnt_names(&mut f, len, be(&offsets, i * 4, 4)?, lim))
         .collect()
 }
 
@@ -226,7 +246,13 @@ pub fn lookup(roots: &[(PathBuf, bool)], wants: &[Want]) -> (Vec<Vec<Hit>>, Summ
     let mut hits: Vec<Vec<Hit>> = wants.iter().map(|_| vec![]).collect();
     let index = Index::new(wants);
     let mut summary = Summary::default();
-    let (mut entries, mut budget) = (0, BYTE_BUDGET);
+    let (mut entries, mut lim) = (
+        0,
+        Limits {
+            budget: BYTE_BUDGET,
+            cut: false,
+        },
+    );
     'roots: for (root, project) in roots {
         if !root.is_dir() {
             continue;
@@ -288,7 +314,7 @@ pub fn lookup(roots: &[(PathBuf, bool)], wants: &[Want]) -> (Vec<Vec<Hit>>, Summ
                     vec![]
                 } else {
                     summary.files_read += 1;
-                    file_names(&path, &mut budget)
+                    file_names(&path, &mut lim)
                 };
                 let mut found = BTreeMap::new();
                 if web {
@@ -308,13 +334,14 @@ pub fn lookup(roots: &[(PathBuf, bool)], wants: &[Want]) -> (Vec<Vec<Hit>>, Summ
                     }
                 }
                 // Too little left for another name table: faces not found may still have a file.
-                if budget < MAX_NAME_TABLE as u64 {
+                if lim.budget < MAX_NAME_TABLE as u64 {
                     summary.truncated = true;
                     break 'roots;
                 }
             }
         }
     }
+    summary.truncated |= lim.cut;
     (hits, summary)
 }
 
