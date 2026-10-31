@@ -252,7 +252,7 @@ GIF 以剪辑版视频的 3 倍速度循环播放；点击可观看完整 78 秒
 - **字体与文字：** 不包含字体文件；被覆写的文字可能保留 Figma 保存的布局。请使用有授权的项目字体并对比结果。
 - **支持范围：** [渲染改进](https://github.com/runkids/figlens/issues/36)与[交接语义](https://github.com/runkids/figlens/issues/37)已在 issue 中跟踪。另见[当前语义支持范围](wiki/semantics.md)。
 - **检查输出。** 阅读 bundle 的 `warnings`、`missing-assets.json` 和 `context.md` 中未解析的变量，然后将实现与设计对比。
-- 已知可见渲染限制会列在节点 `_figlens.renderDiagnostics`、有数量上限的 `inspect` 摘要及 bundle `warnings`；`missing-assets.json` 只列素材失败。没有警告不代表像素一致。
+- 已知可见渲染限制会列在节点 `_figlens.renderDiagnostics`、有数量上限的 `inspect` 摘要及 bundle 与 `export` 的 `warnings`；`missing-assets.json` 只列素材失败。没有警告不代表像素一致。
 
 ## 帮助 figlens 成长
 

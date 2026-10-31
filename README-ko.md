@@ -252,7 +252,7 @@ frame 하나, zip 하나. 구현할 구조, 사용할 에셋, 비교할 이미�
 - **폰트와 텍스트:** 폰트 파일은 포함되지 않으며, 재정의된 텍스트에 Figma의 저장된 레이아웃이 남을 수 있습니다. 사용 허가를 받은 프로젝트 폰트를 사용하고 결과를 비교하세요.
 - **지원 범위:** [렌더링 개선](https://github.com/runkids/figlens/issues/36)과 [핸드오프 의미 정보](https://github.com/runkids/figlens/issues/37)는 이슈로 추적합니다. [현재 의미 정보 지원 범위](wiki/semantics.md)도 참고하세요.
 - **출력을 확인하세요.** bundle의 `warnings`, `missing-assets.json`, `context.md`의 해결되지 않은 변수를 읽고, 구현 결과를 디자인과 비교하세요.
-- 알려진 가시적 렌더링 제한은 노드의 `_figlens.renderDiagnostics`, 개수가 제한된 `inspect` 요약, bundle `warnings`에 표시됩니다. `missing-assets.json`은 에셋 실패만 기록합니다. 경고가 없어도 픽셀 일치를 보장하지 않습니다.
+- 알려진 가시적 렌더링 제한은 노드의 `_figlens.renderDiagnostics`, 개수가 제한된 `inspect` 요약, bundle 및 `export`의 `warnings`에 표시됩니다. `missing-assets.json`은 에셋 실패만 기록합니다. 경고가 없어도 픽셀 일치를 보장하지 않습니다.
 
 ## figlens 응원하기
 
