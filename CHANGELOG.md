@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.10.1](https://github.com/runkids/figlens/compare/v0.10.0...v0.10.1) (2026-10-31)
+
+
+### New Features
+
+* **inspect:** show alignment, sizing and effects in --flat lines ([#172](https://github.com/runkids/figlens/issues/172)) ([dcc3621](https://github.com/runkids/figlens/commit/dcc3621ac5769f1e88b975b7169e266afc576d51))
+* **states:** pair unique same-name variant children and name bound variables ([#171](https://github.com/runkids/figlens/issues/171)) ([aafaece](https://github.com/runkids/figlens/commit/aafaecece99af76d2ede2971fe5003c94ed8b3cf))
+* **variables:** export library collections from cached copies and name them in usages ([#170](https://github.com/runkids/figlens/issues/170)) ([973f669](https://github.com/runkids/figlens/commit/973f66916c686d1533518a8876097d889c76b246))
+* **workflow:** serve index guidance as its own search topic ([#169](https://github.com/runkids/figlens/issues/169)) ([7cf0077](https://github.com/runkids/figlens/commit/7cf0077485fad80daa18d32e9b7a27bb5de27a7d))
+
+
+### Bug Fixes
+
+* **diff:** say a stopped comparison stopped instead of "no changes" ([#167](https://github.com/runkids/figlens/issues/167)) ([dd94314](https://github.com/runkids/figlens/commit/dd94314e632d6344751137f19dc4172baee1569e))
+* **export:** report render diagnostics in export warnings ([#165](https://github.com/runkids/figlens/issues/165)) ([e6b8ee9](https://github.com/runkids/figlens/commit/e6b8ee98d6cbf5bc2cd5f4d43a6392ef03d2304d))
+* **mcp:** name a missing output folder instead of calling it outside the roots ([#168](https://github.com/runkids/figlens/issues/168)) ([9531ee4](https://github.com/runkids/figlens/commit/9531ee438f46b277655b21bbae88cc3115ae51eb))
+
 ## [0.10.0](https://github.com/runkids/figlens/compare/v0.9.3...v0.10.0) (2026-10-31)
 
 
