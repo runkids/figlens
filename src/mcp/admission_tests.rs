@@ -664,6 +664,40 @@ fn export_batch_checks_every_path_and_the_cap_before_writing_and_reports_items()
 }
 
 #[test]
+fn compare_image_reads_and_writes_only_inside_the_roots() {
+    let inside = TestDir::new();
+    let outside = TestDir::new();
+    let file = fixture(&inside, "design.fig");
+    let roots = [inside.join("").canonicalize().unwrap()];
+    let reply = |id, tool, args: Value| {
+        rooted_reply(&call(json!(id), tool, args), &roots)["result"].clone()
+    };
+    let shot = inside.join("shot.png");
+    let args = json!({"file":file,"node":"0:1","out":shot,"bounds":"layout"});
+    assert_eq!(reply(1, "export", args)["isError"], false);
+    std::fs::copy(&shot, outside.join("shot.png")).unwrap();
+    let args = json!({"file":file,"node":"0:1","image":outside.join("shot.png")});
+    let stray = reply(2, "compare_image", args);
+    assert_eq!(stray["_meta"]["figlens"]["code"], "permission_denied");
+    let args = json!({"file":file,"node":"0:1","image":shot,"out":shot});
+    let over = reply(3, "compare_image", args);
+    assert_eq!(
+        over["_meta"]["figlens"]["code"], "invalid_arguments",
+        "{over}"
+    );
+    let diff = inside.join("diff.png");
+    let args = json!({"file":file,"node":"0:1","image":shot,"out":diff});
+    let same = reply(4, "compare_image", args);
+    assert_eq!(same["isError"], false, "{same}");
+    assert_eq!(same["structuredContent"]["mismatch"], 0.0);
+    assert_eq!(
+        same["structuredContent"]["path"],
+        diff.to_string_lossy().as_ref()
+    );
+    assert!(diff.exists());
+}
+
+#[test]
 fn verify_fonts_outside_the_roots_is_refused() {
     let dir = TestDir::new();
     let outside = TestDir::new();

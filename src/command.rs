@@ -852,6 +852,80 @@ pub fn export_items(items: &Value, default_max_size: u32) -> Result<Vec<ExportIt
         .collect()
 }
 
+/// CLI `compare-image` arguments after the file: node, screenshot, scale, limit and diff path.
+#[allow(clippy::type_complexity)]
+pub fn compare_image_args(
+    args: &[String],
+) -> Result<(String, String, Option<f64>, usize, Option<String>), Box<dyn Error>> {
+    let (mut positional, mut scale, mut limit, mut out) = (Vec::new(), None, 10, None);
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let mut value = || rest.next().ok_or(format!("{arg} needs a value"));
+        match arg.as_str() {
+            "--scale" => {
+                let s: f64 = value()?.parse()?;
+                if !s.is_finite() || s <= 0.0 {
+                    return Err("--scale must be a positive number".into());
+                }
+                scale = Some(s);
+            }
+            "--limit" => {
+                limit = value()?.parse()?;
+                if !(1..=50).contains(&limit) {
+                    return Err("--limit must be 1-50".into());
+                }
+            }
+            "--out" => {
+                let path = value()?.clone();
+                if !path.to_ascii_lowercase().ends_with(".png") {
+                    return Err("--out must end in .png".into());
+                }
+                out = Some(path);
+            }
+            _ if !arg.starts_with("--") => positional.push(arg.clone()),
+            _ => return Err(USAGE.into()),
+        }
+    }
+    let [node, shot] = <[String; 2]>::try_from(positional).map_err(|_| USAGE)?;
+    Ok((node, shot, scale, limit, out))
+}
+
+/// Compares a screenshot with a node for CLI and MCP; with `out`, also writes the diff PNG and
+/// names it as `path`.
+pub fn compare_image(
+    tree: &Tree,
+    fig: &Path,
+    node: &str,
+    shot: &Path,
+    scale: Option<f64>,
+    limit: usize,
+    out: Option<&Path>,
+) -> Result<Value, Box<dyn Error>> {
+    let id = normalize_id(node);
+    require_target_root(tree, &id)?;
+    if let Some(out) = out
+        && std::fs::canonicalize(shot).ok() == figlens::output::destination(out).ok()
+    {
+        return Err(figlens::FigError::new(
+            figlens::ErrorKind::InvalidArguments,
+            "out must not overwrite the screenshot",
+        )
+        .into());
+    }
+    let shot = figlens::compare_image::decode(&figlens::compare_image::read(shot)?)?;
+    let (mut report, diff) =
+        figlens::compare_image::compare(tree, fig, &id, &shot, scale, limit, out.is_some())?;
+    if let (Some(out), Some(diff)) = (out, diff) {
+        let bytes = figlens::render::encode_png(&diff)?;
+        figlens::output::write(fig, out, |file| {
+            std::io::Write::write_all(file, &bytes)?;
+            Ok(())
+        })?;
+        report["path"] = out.to_string_lossy().into();
+    }
+    Ok(report)
+}
+
 /// Exports each item to its checked path (`paths[i]` is where `items[i]` is written) and returns
 /// the manifest. Two items writing one file fail the batch before the first write; an item's own
 /// failure or panic is its entry, never the batch's.

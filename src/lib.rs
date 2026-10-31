@@ -14,6 +14,7 @@ use kiwi_schema::{Schema, Value};
 
 pub mod bundle;
 pub mod compare;
+pub mod compare_image;
 pub mod expand;
 pub mod export;
 pub mod fonts;

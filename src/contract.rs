@@ -515,6 +515,38 @@ pub const TOOLS: &[(&str, &str, &[Param])] = &[
         ],
     ),
     (
+        "compare_image",
+        "Compare a PNG screenshot of the built screen with the node as figlens renders it, to check visual fidelity with a tool instead of by eye. The node is drawn over its layout box at the screenshot's scale (screenshot width / node width, or scale), composited over white; a pixel differs when no pixel within one CSS pixel in the other image is within 48/255 per channel, so anti-aliasing does not count, but differences under 48/255 (light borders, subtle tints) are not seen. Differing pixels are grouped into regions on an 8 px grid; regions under 12 px² are dropped. Returns sizes, scale, mismatch (differing pixels / compared pixels), nonTextMismatch and textMismatch, and the largest regions in node pixels from its top-left, each with the deepest layers under it (id, name, type) and text: true when nearly all of it lies over TEXT layers (often font fallback or line breaks, but also a wrong text color, size or copy: review each). A screenshot taller than the node is compared over the node's height and the rest reported as uncompared; a shorter one, or a width that does not match scale, is refused. warnings name what figlens skipped or approximated in the node, where a difference may be figlens's. out writes a diff PNG: the screenshot washed out, differing pixels red, regions outlined red (layout) or blue (text). Capture the screenshot at the node's size with fonts loaded; a viewport capture of a taller page needs a full-page screenshot.",
+        &[
+            FILE,
+            NODE,
+            (
+                "image",
+                "string",
+                true,
+                "PNG screenshot of the implemented screen, cropped to the node (a full-page capture may be taller); at most 64 MiB and 25,000,000 pixels",
+            ),
+            (
+                "scale",
+                "number",
+                false,
+                "screenshot pixels per node pixel, such as the device pixel ratio; default: the screenshot width / the node width",
+            ),
+            (
+                "limit",
+                "integer",
+                false,
+                "most regions listed, largest first, 1-50, default 10; counts cover all regions",
+            ),
+            (
+                "out",
+                "string",
+                false,
+                "diff PNG path ending in .png, in .figlens/exports/ under the project root unless the user names one; create the parent directory first; never the screenshot or the design",
+            ),
+        ],
+    ),
+    (
         "index",
         "Local workspace indexes for search: prepare registers a .fig (file) in its own workspace, or in a project workspace (workspace: a project directory), and with scope starts a background build of exactly that stored scope; status reports sources, indexed scopes and storage; add, remove and relocate change the registered sources (remove withdraws their indexes; add of a directory registers up to 10 .fig files under it in one step, in path order, never through a link leading out of it, and replies directory {added, existing, skipped, notFig, truncated, nextCursor}; pass nextCursor as cursor to add the next 10; a repeat adds nothing, and a moved file is a new source unless relocated); refresh rebuilds changed scopes and rebuild every indexed scope even when unchanged (sourceId and scope narrow both), while the previous index keeps serving; track starts recording one scope's changes, read with the changes tool, with a baseline build, and untrack stops it, keeping its history; embed runs the configured local model (models tool) over published scopes for semantic search, as jobs beside the text builds (mode_unavailable without a profile), and a text build this server runs queues it after publishing; visual (scope required, never widened to the whole file) renders that published scope's screens and components, and the scope node below a page, for image search, and embeds them when a vision profile is configured (hash-only otherwise), as a job on the model lane beside text builds; called again it resumes a partial layer, retrying units that failed; a scope that had a visual layer is rendered again after a text build this server runs republishes it, and no other scope is rendered implicitly; a reply that could not admit every job has admission partial and deferred items, each with the nextStep that builds it later; clear_cache deletes only what a build can recreate; reset deletes this workspace's database after the user confirmed it, keeping every .fig and export. Builds run as jobs: the reply has job {jobId, state}; poll the jobs tool, cancel there. Nothing is built implicitly: connecting, listing, find, inspect and file search create no database. Errors carry _meta.figlens.recovery with only the actions that apply; recreate_elsewhere and reset need the user's confirmation.",
         &[
@@ -939,6 +971,41 @@ pub fn output_schema(tool: &str) -> Option<serde_json::Value> {
             }),
             ["count", "failed", "items"].as_slice(),
         ),
+        "compare_image" => (
+            serde_json::json!({
+                "node": { "type": "object", "description": "id, name and type of the compared node" },
+                "frame": { "type": "object", "description": "the node's layout box width and height in node pixels" },
+                "screenshot": { "type": "object", "description": "width and height in pixels" },
+                "scale": { "type": "number" },
+                "compared": { "type": "object", "description": "width and height of the compared area in screenshot pixels" },
+                "uncompared": { "type": "object", "description": "below: screenshot rows past the node's height, not compared" },
+                "threshold": { "type": "integer", "description": "per-channel difference (of 255) above which pixels differ" },
+                "mismatch": { "type": "number", "description": "differing pixels / compared pixels, 0-1" },
+                "nonTextMismatch": { "type": "number", "description": "differing pixels in regions' cells not over text layers / compared pixels" },
+                "textMismatch": { "type": "number", "description": "differing pixels in regions' cells over text layers / compared pixels" },
+                "regionCount": { "type": "integer" },
+                "nonTextRegions": { "type": "integer", "description": "regions not marked text" },
+                "regions": { "type": "array", "items": { "type": "object" }, "description": "largest first, at most limit: x, y, width, height in node pixels from its top-left, pixels (differing screenshot pixels), text, and nodes: up to 3 deepest layers under it as {id, name, type}, most differing pixels first" },
+                "warnings": { "type": "array", "items": { "type": "string" }, "description": "known skipped or approximated rendering in the node, as export's" },
+                "path": { "type": "string", "description": "with out: the diff PNG written" },
+            }),
+            [
+                "node",
+                "frame",
+                "screenshot",
+                "scale",
+                "compared",
+                "threshold",
+                "mismatch",
+                "nonTextMismatch",
+                "textMismatch",
+                "regionCount",
+                "nonTextRegions",
+                "regions",
+                "warnings",
+            ]
+            .as_slice(),
+        ),
         "bundle" => (
             serde_json::json!({
                 "nodeId": { "type": "string" },
@@ -1016,6 +1083,7 @@ fn default(tool: &str, key: &str) -> Option<Value> {
         | ("search", "includeHidden" | "includeInternal") => Some(json!(false)),
         ("inspect", "depth") | ("export", "scale") => Some(json!(1)),
         ("find" | "search", "limit") => Some(json!(20)),
+        ("compare_image", "limit") => Some(json!(10)),
         ("variables", "format") => Some(json!("rest")),
         ("usages", "scope") | ("diff", "node") => Some(json!("0:0")),
         ("diff", "limit") => Some(json!(100)),
@@ -1041,6 +1109,7 @@ pub fn property(tool: &str, param: &Param) -> Value {
         ("inspect", "depth") => Some((0, 10)),
         ("tree", "depth") => Some((0, JSON_SAFE.min(usize::MAX as u64))),
         ("find" | "search" | "usages", "limit") => Some((1, 200)),
+        ("compare_image", "limit") => Some((1, 50)),
         ("diff" | "changes", "limit") => Some((1, 500)),
         ("export", "quality") => Some((1, 100)),
         ("export", "maxKb") => Some((0, JSON_SAFE.min((usize::MAX / 1024) as u64))),
@@ -1074,6 +1143,9 @@ pub fn property(tool: &str, param: &Param) -> Value {
     }
     if key == "query" {
         p["pattern"] = json!(r"\S");
+    }
+    if tool == "compare_image" && key == "image" {
+        p["minLength"] = json!(1);
     }
     if tool == "export_batch" && key == "items" {
         p["minItems"] = json!(1);
@@ -1311,6 +1383,13 @@ pub fn prepare(tool: &str, args: &Value) -> Result<PreparedCall, Failure> {
         return Err(Failure::argument(
             "out must end in .png, .jpg, .jpeg, .webp, .avif or .svg",
         ));
+    }
+    if tool == "compare_image"
+        && checked["out"]
+            .as_str()
+            .is_some_and(|out| !out.to_ascii_lowercase().ends_with(".png"))
+    {
+        return Err(Failure::argument("out must end in .png"));
     }
     if tool == "export_batch" {
         crate::command::export_items(&checked["items"], 1600).map_err(Failure::argument)?;
