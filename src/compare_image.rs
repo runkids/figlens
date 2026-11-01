@@ -235,7 +235,8 @@ pub fn compare(
                 }
             }
         }
-        if pixels >= min_pixels {
+        // Missing rows are a known height difference, never noise; the flood stays on one side.
+        if pixels >= min_pixels || start as u32 / cols >= overlap_rows {
             weights.sort_by_key(|w| std::cmp::Reverse(w.1));
             weights.truncate(MAX_NODES);
             regions.push((pixels, text, b, weights));
@@ -598,6 +599,24 @@ mod tests {
             assert!(!ids(region).is_empty(), "{report}");
             assert_eq!(diff.unwrap().height(), 180);
         });
+    }
+
+    #[test]
+    fn a_missing_band_under_the_noise_floor_is_still_a_region() {
+        // The 24 px triangle at scale 5: two missing rows are 240 px, under 12 * 5² = 300.
+        let mut doc = Document::open(Path::new(FIG)).unwrap();
+        let message = doc.take_message().unwrap();
+        let tree = Tree::new(&message);
+        let prepared = Prepared::new(&tree, Path::new(FIG), "0:6").unwrap();
+        let area = render::layout_bounds(prepared.node()).unwrap();
+        let full = render::pixmap(&prepared.export_svg_in(&tree, area, 5.0, true)).unwrap();
+        let mut short = Pixmap::new(full.width(), full.height() - 2).unwrap();
+        let n = short.data().len();
+        short.data_mut().copy_from_slice(&full.data()[..n]);
+        let report = compare(&tree, Path::new(FIG), "0:6", &short, None, 10, false, true)
+            .unwrap()
+            .0;
+        assert_eq!(report["regionCount"], 1, "{report}");
     }
 
     #[test]
