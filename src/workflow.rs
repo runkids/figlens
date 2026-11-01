@@ -16,10 +16,6 @@ pub const INSTRUCTIONS: &str = "Read local Figma .fig snapshots with figlens. Re
 const MCP_PREAMBLE: &str = "Use this guidance in the current agent context and within the user's authorized scope. It does not execute work or grant permissions. Use the configured figlens MCP tools with absolute file/output paths; CLI examples describe equivalent tool arguments. Project inspection/edits, directory creation, bundle extraction and browser checks require the host's own tools. Retrieve another topic only for missing guidance needed now: images covers image delivery; build covers design reading and project reuse; search covers an index, usages and following changes. Links beginning workflow: name another topic of this tool, with an optional section anchor; no local skill installation is needed.\n\n";
 const CLI_PREAMBLE: &str = "Use this guidance in the current agent context and within the user's authorized scope. It does not execute work or grant permissions. Run the figlens commands shown; MCP argument names map to the same CLI arguments. Project inspection/edits, directory creation, bundle extraction and browser checks require the host's own tools. Retrieve another topic only for missing guidance needed now: images covers image delivery; build covers design reading and project reuse; search covers an index, usages and following changes. A link beginning workflow: names another topic: run `figlens workflow <topic>`; no local skill installation is needed.\n\n";
 
-/// Where build and audit cut the search section: after its decision table.
-const SEARCH_DETAILS: &str = "\n\nAn earlier session";
-const SEARCH_POINTER: &str = "\n\nThe rest of this section, which the rows above refer to, is [Search and local index](workflow:search#search-and-local-index): checking for an index another session enabled, the opt-in steps, maintenance and failures, semantic and image search, Where it is used and Following changes. Load it before calling `usages`, `index`, `jobs`, `changes` or `watch`.";
-
 pub fn read(topic: &str) -> Result<String, String> {
     compose(topic, MCP_PREAMBLE)
 }
@@ -88,17 +84,11 @@ fn compose(topic: &str, preamble: &str) -> Result<String, String> {
         let section = section
             .split_once("\n## ")
             .map_or(section, |(first, _)| first);
-        if *heading == "Search and local index" && topic != "search" {
-            // The decision table is what build and audit need; the index steps are their own topic.
-            let (table, _) = section
-                .split_once(SEARCH_DETAILS)
-                .ok_or("embedded workflow section changed: Search and local index")?;
-            text.push_str(table);
-            text.push_str(SEARCH_POINTER);
-        } else {
-            text.push_str(section);
-        }
+        text.push_str(section);
         text.push_str("\n\n");
+    }
+    if topic == "search" {
+        text.push_str(include_str!("../skills/figlens/references/search.md"));
     }
     for (file, topic) in [
         ("../SKILL.md", "build"),
@@ -106,6 +96,7 @@ fn compose(topic: &str, preamble: &str) -> Result<String, String> {
         ("planning.md", "plan"),
         ("planning-details.md", "planning-details"),
         ("yolo.md", "yolo"),
+        ("search.md", "search"),
     ] {
         text = text.replace(
             &format!("(references/{file}"),
@@ -185,10 +176,9 @@ mod tests {
             .split("\n## ")
             .next()
             .unwrap()
-            .replace("(#where-it-is-used", "(workflow:search#where-it-is-used");
+            .replace("(#where-it-is-used", "(workflow:search#where-it-is-used")
+            .replace("(references/search.md", "(workflow:search");
         assert!(section.contains("needs no index"));
-        assert!(section.contains("\"node\": \"<scope>\""));
-        assert!(section.contains("never authorizes them"));
         for topic in ["images", "yolo", "build"] {
             assert!(
                 read(topic)
@@ -196,12 +186,14 @@ mod tests {
                     .contains("](workflow:search#search-and-local-index)")
             );
         }
+        // The index steps live in their own guide, served only by the search topic.
         let full = read("search").unwrap().replace("\r\n", "\n");
         assert!(full.contains(&section));
-        let table = section.split_once(SEARCH_DETAILS).unwrap().0;
+        assert!(full.contains("never authorizes them") && full.contains("### Following changes"));
+        assert!(full.contains("## What changed between two copies"));
         for topic in ["audit", "build"] {
             let text = read(topic).unwrap().replace("\r\n", "\n");
-            assert!(text.contains(table) && text.contains(SEARCH_POINTER));
+            assert!(text.contains(&section));
             assert!(!text.contains("Opt-in steps:") && !text.contains("### Following changes"));
         }
     }
