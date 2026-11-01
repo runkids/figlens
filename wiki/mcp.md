@@ -47,13 +47,13 @@ The `workflow` tool lets a model retrieve detailed guidance without a separate s
 
 | `topic` | Use when |
 |---|---|
-| `build` | Implement a design with the project's components, tokens and architecture, then compare and correct the running UI |
+| `build` | Implement a design as frontend code with the project's components, tokens and architecture, review that code, then compare and correct the running UI |
 | `audit` | Compare existing UI with a design, report evidence and coverage, and correct confirmed differences only when requested |
 | `images` | Prepare website assets using the project's image pipeline and verify dimensions, crops, bytes and delivery |
 | `search` | Check for or enable an index, maintain it, semantic and image search, `usages`, following changes; build and audit carry only its decision table |
 | `plan` | Plan an implementation or carefully reproduce a design; stop at the plan for plan-only or plan-first requests |
 | `planning-details` | Detail page/multi-page scope or a specific unresolved design/project dependency |
-| `yolo` | The user explicitly requests autonomous implementation and cleanup of this run's temporary plan, scratch exports and processes after successful checks; includes the build sections every run needs, not the index guide |
+| `yolo` | The user explicitly requests autonomous implementation and cleanup of this run's temporary plan, scratch exports and processes after successful checks; builds tokens, components, shell, then screens one at a time as hand-written frontend code, reviewed before pixel checks; includes the build sections every run needs, not the index guide |
 
 The tool requires only an enumerated `topic`, accepts no file/path argument and rejects extra properties. Reading guidance neither reads a project nor writes, implements, verifies or cleans it. The current agent uses its host tools for project inspection/edits, directory creation, bundle extraction and browser checks. Host permissions still apply. A guide is not an implementation result or a plan-cleanup guarantee.
 
@@ -78,6 +78,8 @@ MCP source failures hide raw paths/cloud stderr. Local CLI errors retain their d
 Workspace calls (`index`, `jobs`, `changes`/`watch`, `search`/`usages` by id) skip the document thread. The reader only frames and parses; `jobs`, index `status` and `models` list/status/remove go to a control lane, document tools and workspace search to the interactive lane (keeping the warm document), and build-submitting `index` actions and `models` configure to an index lane feeding a one-at-a-time build lane, and model jobs (the `embed` and `visual` actions, and those queued after a text build publishes) to a separate model lane, so a text build never waits for the model ([semantic](semantic.md#workspace-layer)). The reader answers `ping` and `tools/list` at once, possibly before earlier tool replies; pair replies by id. Lanes queue 64, 64 and 8 calls, the build lane 8 submissions; past that, `workspace_busy` at once. `notifications/cancelled` drops a queued call unanswered; a running semantic search or `models` configure stops with its model child, other running calls finish (stop a build with `jobs cancel`). Blocking I/O runs in the executing lane, so status and cancel answer during a build or slow search; stdin EOF or a write error cancels builds before exit. Storage roots (`--storage-root`) and `--root` visibility are in [workspace](workspace.md#mcp-authorization); jobs are in [index](index-jobs.md).
 
 Admission stores checked paths even without roots; execution/cache use them. Reply labels and encoders survive symlinks; missing parents stay missing. Roots reject dangling links/escapes. Cache reuse rechecks policy, readability, mtime and length.
+
+Frontend framing lives in Building a frame, the workflow references, bundle `context.md`, the viewer prompt and `INSTRUCTIONS`; change them together (tests in `src/workflow.rs`).
 
 ## Verification
 
