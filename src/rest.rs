@@ -571,9 +571,11 @@ impl Builder<'_, '_> {
             let placement = self.ex.nodes.get(id).map_or(&kiwi, |e| &e.props);
             let mut evidence =
                 semantics::layout(placement, parent.or(root_parent.as_ref()), &mut out);
-            // Grid fields are not placement: an expanded node keeps them on its merged kiwi.
+            // A grid frame's tracks are its own (merged kiwi); a child's span and alignment are
+            // placement, kept from before a swap.
             let tracks = semantics::grid(
                 &kiwi,
+                placement,
                 parent.or(root_parent.as_ref()),
                 &mut out,
                 &mut evidence,

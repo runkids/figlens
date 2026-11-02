@@ -560,3 +560,36 @@ fn grids_inside_instances_keep_their_tracks_and_absolute_children_have_no_cell()
     let absolute = &grid["children"][0];
     assert!(absolute["_figlens"].get("unrepresented").is_none());
 }
+
+#[test]
+fn swapped_grid_children_keep_their_own_span_and_alignment() {
+    let raw = json!([
+        {"type":"INSTANCE","stackMode":"GRID","size":{"x":200,"y":100},"symbolData":{"symbolID":{"sessionID":3,"localID":1},"symbolOverrides":[{"guidPath":{"guids":[{"sessionID":3,"localID":2}]},"overriddenSymbolID":{"sessionID":3,"localID":3}}]}},
+        {"type":"SYMBOL","stackMode":"GRID","size":{"x":200,"y":100},
+         "gridRows":{"entries":[{"id":{"sessionID":7,"localID":1},"position":"!"}]},
+         "gridColumns":{"entries":[{"id":{"sessionID":7,"localID":2},"position":"!"},{"id":{"sessionID":7,"localID":3},"position":"\""}]}},
+        {"type":"INSTANCE","size":{"x":200,"y":20},"gridColumnSpan":2,"symbolData":{"symbolID":{"sessionID":3,"localID":4}}},
+        {"type":"SYMBOL","size":{"x":20,"y":20},"gridChildHorizontalAlign":"MAX"},
+        {"type":"SYMBOL","size":{"x":20,"y":20}}
+    ]);
+    let values: Vec<_> = raw
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| kiwi(v, ""))
+        .collect();
+    let tree = Tree {
+        nodes: values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (format!("3:{i}"), v))
+            .collect(),
+        children: HashMap::from([("3:1".into(), vec!["3:2".into()])]),
+        blobs: Vec::new(),
+    };
+    let doc = nodes(&tree, "3:0");
+    let child = &doc["document"]["children"][0];
+    assert_eq!(child["componentId"], "3:3", "the swap applied");
+    assert_eq!(child["gridColumnSpan"], 2);
+    assert!(child.get("gridChildHorizontalAlign").is_none());
+}

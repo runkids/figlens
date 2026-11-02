@@ -128,6 +128,7 @@ fn track_size(size: &Json) -> Json {
 /// saved positions (some put every child in cell 0,0), while child order matched them in all 22.
 pub(super) fn grid(
     k: &Obj,
+    placement: &Obj,
     parent: Option<&Obj>,
     out: &mut Obj,
     evidence: &mut Json,
@@ -176,6 +177,7 @@ pub(super) fn grid(
             tracks = Some(json!({"rows": rows, "columns": columns}));
         }
     }
+    let k = placement;
     if !parent.is_some_and(|p| at(p, "stackMode") == "GRID")
         || at(k, "stackPositioning") == "ABSOLUTE"
     {
