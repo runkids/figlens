@@ -151,13 +151,16 @@ usage:
                                              no node, workspace or index needed;
                                              any diagnostic fails without publishing partial tokens;
                                              prints {path,collectionId,modeId,tokenCount,diagnostics}
-  figlens bundle <file.fig> <node> <out.zip> [--states]
+  figlens bundle <file.fig> <node> <out.zip> [--states] [--hash-source]
                                              write a design bundle for a frame: nodes, variables,
                                              image/SVG assets, reference render and context.md, in one zip;
                                              prints {nodeId,path,warnings}
   figlens bundle ... --file-key KEY --name N   set the manifest's file key and frame name;
-                                             --states adds related variants and evidence gaps to the bundle
+                                             --states adds related variants and evidence gaps to the bundle;
+                                             --hash-source records the .fig's sha256 as manifest
+                                             source.sha256 (one extra full read of the file)
   figlens bundle <file.fig> --frames <list|-> --out-dir <dir> [--file-key KEY] [--jobs N] [--states]
+                                             [--hash-source]
                                             one decode, many bundles: <list> has one node id per line
                                              (- reads stdin);
                                              writes <dir>/<nodeId>.zip (`:` as `-`), prints one JSON line
@@ -810,6 +813,7 @@ fn batch(
     args: &[String],
 ) -> Result<(), Box<dyn Error>> {
     let (mut list, mut dir, mut file_key, mut jobs, mut states) = (None, None, None, None, false);
+    let mut hash_source = false;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let mut value = || rest.next().cloned().ok_or(format!("{arg} needs a value"));
@@ -819,10 +823,12 @@ fn batch(
             "--file-key" => file_key = Some(value()?),
             "--jobs" => jobs = Some(value()?.parse::<usize>()?),
             "--states" => states = true,
+            "--hash-source" => hash_source = true,
             _ => return Err(USAGE.into()),
         }
     }
     let (list, dir) = (list.ok_or(USAGE)?, dir.ok_or("--frames needs --out-dir")?);
+    let decoded = decoded.filter(|_| hash_source);
     std::fs::create_dir_all(&dir)?;
     let frames = node_list(&["--frames".to_owned(), list])?;
     let jobs = jobs

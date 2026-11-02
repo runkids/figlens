@@ -648,8 +648,9 @@ fn cli_and_mcp_success_results_match() {
                 "bundle.zip",
                 "--name",
                 "Renamed",
+                "--hash-source",
             ],
-            serde_json::json!({"node": "https://www.figma.com/design/Key/Test?node-id=0-1", "out": "bundle.zip", "name": "Renamed"}),
+            serde_json::json!({"node": "https://www.figma.com/design/Key/Test?node-id=0-1", "out": "bundle.zip", "name": "Renamed", "hashSource": true}),
             None,
         ),
     ] {

@@ -869,19 +869,21 @@ fn batch_bundle_states_match_single_bundles_in_both_job_modes() {
                 out.to_str().unwrap(),
                 "--jobs",
                 jobs,
+                "--hash-source",
             ],
         )
         .unwrap();
         for id in ids {
             let single = f.dir.join("single-states.zip");
-            f.cli("bundle", &[id, single.to_str().unwrap(), "--states"])
-                .unwrap();
+            let args = [id, single.to_str().unwrap(), "--states", "--hash-source"];
+            f.cli("bundle", &args).unwrap();
             let batch = bundle_files(&out.join(format!("{}.zip", id.replace(':', "-"))));
             let single = bundle_files(&single);
             for (path, bytes) in &single {
                 if path == "manifest.json" {
                     let mut a: Value = serde_json::from_slice(bytes).unwrap();
                     let mut b: Value = serde_json::from_slice(&batch[path]).unwrap();
+                    assert!(a["source"]["sha256"].is_string());
                     a.as_object_mut().unwrap().remove("createdAt");
                     b.as_object_mut().unwrap().remove("createdAt");
                     assert_eq!(a, b);

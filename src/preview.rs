@@ -225,13 +225,12 @@ pub fn snapshot(file: &Path, id: &str, out: &Path) -> Result<()> {
     if out.exists() && fs::canonicalize(file)? == fs::canonicalize(out)? {
         return Err("snapshot output must not overwrite the source design".into());
     }
-    let decoded = search::stamp(file).ok();
     let mut doc = Document::open(file)?;
     let message = doc.take_message()?;
     let tree = Tree::new(&message);
     let workspace = Workspace::new()?;
     let zip = workspace.0.join("scope.zip");
-    let warnings = crate::bundle::write(&tree, file, decoded, None, None, id, &zip)?;
+    let warnings = crate::bundle::write(&tree, file, None, None, None, id, &zip)?;
     let mut payload = data(&tree, file, id, true)?;
     payload["bundle"] = json!(render::base64(&fs::read(zip)?));
     payload["coverage"] =
@@ -626,7 +625,7 @@ pub fn serve_until(
     eprintln!(
         "Preview: http://{authority}/{token}/\nLocal service; the design file is never written. Press Ctrl+C to stop."
     );
-    let (mut document, mut decoded, mut source) = staged(file)?;
+    let (mut document, mut version, mut source) = staged(file)?;
     let mut generation = 1u64;
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get().clamp(2, 8));
     // A connection accepted just as a save was noticed is answered after the reload.
@@ -643,12 +642,12 @@ pub fn serve_until(
                 file,
                 initial,
                 generation,
-                version: decoded,
+                version,
                 workspace: &workspace.0,
                 authority: &authority,
                 token: &token,
                 memory: Mutex::new(Memory::default()),
-                disk: Mutex::new(DiskCache::open(file, decoded.0)),
+                disk: Mutex::new(DiskCache::open(file, version)),
                 bundles: AtomicUsize::new(0),
                 source: source.clone(),
                 indexes: Mutex::default(),
@@ -699,7 +698,7 @@ pub fn serve_until(
                         },
                     };
                     if let Ok(stamp) = fs::metadata(file).and_then(|m| m.modified())
-                        && stamp != decoded.0
+                        && stamp != version
                     {
                         match reload(file, stamp) {
                             Ok(fresh) => {
@@ -721,7 +720,7 @@ pub fn serve_until(
             return Ok(());
         };
         document = fresh;
-        decoded = stamp;
+        version = stamp;
         source = identity;
         generation += 1;
     }
@@ -742,8 +741,7 @@ struct Revision<'r> {
     file: &'r Path,
     initial: Option<&'r str>,
     generation: u64,
-    /// The stamp of the bytes this revision decoded.
-    version: search::Stamp,
+    version: SystemTime,
     workspace: &'r Path,
     authority: &'r str,
     token: &'r str,
@@ -911,7 +909,7 @@ impl Revision<'_> {
                 // Each request writes its own archive: workers run side by side.
                 let n = self.bundles.fetch_add(1, Ordering::Relaxed);
                 let zip = self.workspace.join(format!("scope-{n}.zip"));
-                crate::bundle::write(tree, file, Some(self.version), None, None, id, &zip)?;
+                crate::bundle::write(tree, file, None, None, None, id, &zip)?;
                 let bytes = fs::read(&zip)?;
                 fs::remove_file(&zip)?;
                 ("application/zip", bytes)
@@ -942,7 +940,7 @@ impl Revision<'_> {
                 ("image/png", image.bytes)
             }
         };
-        if fs::metadata(file)?.modified()? != self.version.0 {
+        if fs::metadata(file)?.modified()? != self.version {
             return Err("Save in progress; view is stale. Retrying.".into());
         }
         if matches!(action, "image" | "thumb" | "view" | "asset" | "export") {
@@ -1186,18 +1184,18 @@ fn reload(file: &Path, stamp: SystemTime) -> Result<Staged> {
     Ok(fresh)
 }
 
-/// A revision's document, stamp and source identity: `snapshotId` hashes exactly the bytes
-/// decoded, so search and usages refs name the revision this viewer serves.
-type Staged = (Document, search::Stamp, Value);
+/// A revision's document, modification time and source identity: `snapshotId` hashes exactly
+/// the bytes decoded, so search and usages refs name the revision this viewer serves.
+type Staged = (Document, SystemTime, Value);
 
 fn staged(file: &Path) -> Result<Staged> {
     let canonical = fs::canonicalize(file)?;
-    let (bytes, stamp) = search::stage(&canonical)?;
+    let (bytes, (modified, _)) = search::stage(&canonical)?;
     // Live only: snapshots never embed this, so the user's local path stays out of shared HTML.
     let source = json!({"sourceId": search::source_id(&canonical),
         "snapshotId": search::snapshot_id(&bytes), "path": canonical.display().to_string()});
     let document = Document::from_bytes(&bytes, &file.display().to_string())?;
-    Ok((document, stamp, source))
+    Ok((document, modified, source))
 }
 
 mod cancel;

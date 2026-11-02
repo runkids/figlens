@@ -37,7 +37,7 @@ fn live_original_image_route_obeys_the_image_budget() {
     let doc = Document::open(&file).unwrap();
     let message = doc.message().unwrap();
     let tree = Tree::new(&message);
-    let version = search::stamp(&file).unwrap();
+    let version = fs::metadata(&file).unwrap().modified().unwrap();
     let revision = Revision {
         tree: &tree,
         index: Value::Null,
