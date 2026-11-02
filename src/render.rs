@@ -352,6 +352,25 @@ pub(crate) fn diagnostics(tree: &Tree, n: &Json) -> Vec<Json> {
         }));
     };
     let r = &n["_r"];
+    // A copied selection stores no outlines, only the vector network; an empty list is not this.
+    let outlined = outlined(n["type"].as_str().unwrap_or(""));
+    if outlined && n["type"] != "LINE" && r["fillGeometry"].is_null() && has_paint(&r["fillPaints"])
+    {
+        report(
+            "geometry",
+            "fillGeometry".into(),
+            "approximate",
+            "No fill outline is stored, so the fill is drawn as the node's box",
+        );
+    }
+    if outlined && r["strokeGeometry"].is_null() && has_stroke(n) {
+        report(
+            "geometry",
+            "strokeGeometry".into(),
+            "skipped",
+            "No stroke outline is stored, so the stroke is not drawn",
+        );
+    }
     let mut lists = Vec::new();
     // Match the renderer's per-region / per-character paint selection; unused styles
     // must not turn into warnings on the node that happens to store them.
@@ -615,10 +634,7 @@ fn stroke_shapes(tree: &Tree, n: &Json) -> Vec<(Vec<Seg>, bool, Mat)> {
 /// Page-space outlines a pointer can hit on a vector-like node (fill and stroke geometry), as SVG
 /// path data with its even-odd flag. Read-only: the same decoding rendering uses, for preview picking.
 pub fn hit_paths(tree: &Tree, n: &Json) -> Vec<(String, bool)> {
-    if !matches!(
-        n["type"].as_str(),
-        Some("VECTOR" | "BOOLEAN_OPERATION" | "STAR" | "REGULAR_POLYGON" | "LINE" | "ELLIPSE")
-    ) {
+    if !outlined(n["type"].as_str().unwrap_or("")) {
         return Vec::new();
     }
     let geometry = |list: &Json| !geometry(tree, list).is_empty();
@@ -633,6 +649,14 @@ pub fn hit_paths(tree: &Tree, n: &Json) -> Vec<(String, bool)> {
         .map(|(segs, odd, m)| (path_d(&segs, m), odd))
         .filter(|(d, _)| !d.is_empty())
         .collect()
+}
+
+/// Node types drawn from stored outlines (`fillGeometry` / `strokeGeometry`), not from their box.
+pub(crate) fn outlined(kind: &str) -> bool {
+    matches!(
+        kind,
+        "VECTOR" | "BOOLEAN_OPERATION" | "STAR" | "REGULAR_POLYGON" | "ELLIPSE" | "LINE"
+    )
 }
 
 /// Scales outlines drawn at the size under `field` (a resized instance child's source) to the node's size.

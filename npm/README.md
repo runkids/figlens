@@ -25,7 +25,7 @@ then compare the running UI with the design and fix confirmed differences.
 Report missing assets and any checks you could not run.
 ```
 
-Export `design.fig` with Figma's **File > Save local copy** and place it in the project on the agent's machine. Pi resolves frame IDs itself; no manual `/figlens open` or separate global CLI install is required.
+Export `design.fig` with Figma's **File > Save local copy** and place it in the project on the agent's machine. Pi resolves frame IDs itself; no manual `/figlens open` or separate global CLI install is required. For one screen, a selection copied in Figma (Cmd/Ctrl+C) also works: save the clipboard's HTML and run `npx @runkids/figlens clipboard copied.html copied.fig`. The copy keeps node IDs and used components but carries no images or vector outlines, which figlens reports as missing.
 
 | Your task | Pi command |
 |---|---|
@@ -84,6 +84,7 @@ npx @runkids/figlens nodes design.fig 12:345 > frame.json
 npx @runkids/figlens bundle design.fig 12:345 frame.zip
 npx @runkids/figlens export design.fig 12:345 icon.svg
 npx @runkids/figlens export design.fig 12:345 frame.png --scale 2
+npx @runkids/figlens clipboard copied.html copied.fig   # a selection copied in Figma
 npx @runkids/figlens workflow build   # agent guidance, same as the MCP workflow tool
 npx @runkids/figlens workflow audit   # compare existing UI; fixes require a fix request
 ```

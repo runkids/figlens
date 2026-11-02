@@ -38,6 +38,47 @@ impl Format {
     }
 }
 
+/// What the source lacks for visible layers (a copied selection carries no image bytes, and may
+/// leave out components): the renderer draws without them, so the export must not read as complete.
+fn missing_inputs(
+    tree: &Tree,
+    n: &Json,
+    images: &std::collections::HashMap<String, Vec<u8>>,
+    out: &mut Vec<String>,
+) {
+    if n["visible"] == false {
+        return;
+    }
+    let id = n["id"].as_str().unwrap_or("");
+    let mut push = |warning: String| {
+        if !out.contains(&warning) {
+            out.push(warning);
+        }
+    };
+    for list in [&n["fills"], &n["strokes"]] {
+        for paint in list.as_array().into_iter().flatten() {
+            if let Some(key) = paint["imageRef"].as_str().filter(|key| !key.is_empty())
+                && paint["visible"] != false
+                && !images.contains_key(key)
+            {
+                push(format!(
+                    "Image {key} at node {id} is not in the .fig; it is drawn empty"
+                ));
+            }
+        }
+    }
+    if let Some(component) = n["componentId"].as_str()
+        && !tree.nodes.contains_key(component)
+    {
+        push(format!(
+            "Component {component} of instance {id} is not in the .fig; only the instance's stored layers are drawn"
+        ));
+    }
+    for child in n["children"].as_array().into_iter().flatten() {
+        missing_inputs(tree, child, images, out);
+    }
+}
+
 /// An encoded image and what it ended up as.
 pub struct Image {
     pub bytes: Vec<u8>,
@@ -73,6 +114,7 @@ pub fn export(
     // Name what the renderer skipped or approximated, as bundle warnings do.
     let mut skipped = Vec::new();
     crate::bundle::render_warnings(prepared.node(), &mut skipped);
+    missing_inputs(tree, prepared.node(), &prepared.images, &mut skipped);
     if let Some(Json::Array(warnings)) = report.get_mut("warnings") {
         warnings.extend(skipped.into_iter().map(Json::from));
     }
@@ -670,6 +712,33 @@ fn shape(svg: &[u8]) -> Option<Shape> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_inputs_name_visible_images_and_components_once() {
+        let tree = Tree {
+            nodes: Default::default(),
+            children: Default::default(),
+            blobs: Vec::new(),
+        };
+        let image = |key: &str| json!({"type": "IMAGE", "imageRef": key});
+        let node = json!({"id": "1:1", "children": [
+            {"id": "1:2", "fills": [image("a"), image("a")], "strokes": [image("b")]},
+            {"id": "1:3", "fills": [{"type": "IMAGE", "imageRef": "c", "visible": false}]},
+            {"id": "1:4", "visible": false, "fills": [image("d")], "componentId": "9:9"},
+            {"id": "1:5", "type": "INSTANCE", "componentId": "9:9", "fills": [image("")]},
+        ]});
+        let images = std::collections::HashMap::from([("e".to_owned(), Vec::new())]);
+        let mut out = Vec::new();
+        missing_inputs(&tree, &node, &images, &mut out);
+        assert_eq!(
+            out,
+            [
+                "Image a at node 1:2 is not in the .fig; it is drawn empty",
+                "Image b at node 1:2 is not in the .fig; it is drawn empty",
+                "Component 9:9 of instance 1:5 is not in the .fig; only the instance's stored layers are drawn",
+            ]
+        );
+    }
 
     #[test]
     fn hide_marks_inner_layers_and_refuses_masks_the_node_and_outsiders() {
