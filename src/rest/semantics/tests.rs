@@ -9,7 +9,12 @@ fn kiwi<'a>(v: &'a Json, field: &str) -> K<'a> {
         ),
         Json::Array(a) => K::Array(a.iter().map(|v| kiwi(v, field)).collect()),
         Json::Bool(b) => K::Bool(*b),
-        Json::Number(n) if matches!(field, "sessionID" | "localID" | "commandsBlob") => {
+        Json::Number(n)
+            if matches!(
+                field,
+                "sessionID" | "localID" | "commandsBlob" | "gridRowSpan" | "gridColumnSpan"
+            ) =>
+        {
             K::UInt(n.as_u64().unwrap() as u32)
         }
         Json::Number(n) => K::Float(n.as_f64().unwrap() as f32),
@@ -22,6 +27,9 @@ fn kiwi<'a>(v: &'a Json, field: &str) -> K<'a> {
                     | "verticalConstraint"
                     | "stackChildAlignSelf"
                     | "stackPositioning"
+                    | "gridChildHorizontalAlign"
+                    | "gridChildVerticalAlign"
+                    | "gridAutoTracks"
             ) =>
         {
             K::Enum("TestEnum", s)
@@ -430,4 +438,76 @@ fn render_diagnostics_include_drawn_strokes_and_masks() {
             assert!(svg.contains("mask-type:alpha") && svg.contains("radialGradient"));
         }
     }
+}
+
+#[test]
+fn grid_frames_emit_counts_gaps_and_ordered_tracks_but_children_no_cell() {
+    let track =
+        |id: u32, position: &str| json!({"id":{"sessionID":5,"localID":id},"position":position});
+    let size = |id: u32, min: Json, max: Json| json!({"id":{"sessionID":5,"localID":id},"trackSize":{"minSizing":min,"maxSizing":max}});
+    let raw = json!([
+        {"type":"FRAME","stackMode":"GRID","size":{"x":200,"y":100},"gridRowGap":8,"gridColumnGap":0,
+         "gridAutoTracks":"ROWS",
+         // Stored out of display order: positions sort "!" before "\"".
+         "gridRows":{"entries":[track(2, "\""), track(1, "!")]},
+         "gridColumns":{"entries":[track(3, "!")]},
+         "gridRowsSizing":{"entries":[
+            size(1, json!({"type":"HUG","value":1}), json!({"type":"HUG","value":1})),
+            size(2, json!({"type":"FIXED","value":40}), json!({"type":"FLEX","value":2}))]}},
+        {"type":"FRAME","size":{"x":20,"y":20},"parentIndex":{"guid":{"sessionID":1,"localID":0}},
+         "gridRowAnchor":{"sessionID":5,"localID":2},"gridRowSpan":2,"gridColumnSpan":1,
+         "gridChildHorizontalAlign":"CENTER","gridChildVerticalAlign":"AUTO"}
+    ]);
+    let values: Vec<_> = raw
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| kiwi(v, ""))
+        .collect();
+    let tree = Tree {
+        nodes: values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (format!("1:{i}"), v))
+            .collect(),
+        children: HashMap::from([("1:0".into(), vec!["1:1".into()])]),
+        blobs: Vec::new(),
+    };
+    let doc = nodes(&tree, "1:0");
+    let grid = &doc["document"];
+    assert_eq!(
+        [
+            &grid["gridRowCount"],
+            &grid["gridColumnCount"],
+            &grid["gridRowGap"]
+        ],
+        [&json!(2), &json!(1), &json!(8.0)]
+    );
+    assert!(grid.get("gridColumnGap").is_none());
+    assert_eq!(
+        grid["_figlens"]["gridTracks"],
+        json!({"rows":[{"type":"HUG"},{"min":{"type":"FIXED","value":40.0},"max":{"type":"FLEX","value":2.0}}],"columns":[null]})
+    );
+    let child = &grid["children"][0];
+    assert_eq!(
+        (&child["gridRowSpan"], &child["gridChildHorizontalAlign"]),
+        (&json!(2), &json!("CENTER"))
+    );
+    for absent in [
+        "gridColumnSpan",
+        "gridChildVerticalAlign",
+        "gridRowAnchorIndex",
+    ] {
+        assert!(child.get(absent).is_none(), "{absent}");
+    }
+    let gaps = |n: &Json| -> Vec<Json> {
+        n["_figlens"]["unrepresented"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|d| d["feature"].clone())
+            .collect()
+    };
+    assert_eq!(gaps(grid), [json!("gridAutoPlacement")]);
+    assert_eq!(gaps(child), [json!("gridCell")]);
 }

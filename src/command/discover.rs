@@ -411,9 +411,33 @@ fn flat_lines(
     }
     if let Some(mode) = node["layoutMode"].as_str() {
         let n = |k: &str| num(node[k].as_f64().unwrap_or(0.0));
-        // REST leaves grid gaps out (they are not decoded), so a grid gets no gap rather than 0.
         let gap = match mode {
-            "GRID" => String::new(),
+            "GRID" => {
+                // Track sizes as stored: FLEX in fractions, FIXED in px, HUG; `?` when unknown.
+                let sizes = |axis: &str| {
+                    let list = node["_figlens"]["gridTracks"][axis].as_array();
+                    let size = |t: &Value| match (t["type"].as_str(), t["value"].as_f64()) {
+                        (Some("FLEX"), v) => format!("flex{}", num(v.unwrap_or(1.0))),
+                        (Some("FIXED"), Some(v)) => num(v),
+                        (Some("HUG"), _) => "hug".into(),
+                        _ => "?".into(),
+                    };
+                    list.into_iter()
+                        .flatten()
+                        .map(size)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                };
+                format!(
+                    " {}x{} gap={},{} rows={} cols={}",
+                    n("gridRowCount"),
+                    n("gridColumnCount"),
+                    n("gridRowGap"),
+                    n("gridColumnGap"),
+                    sizes("rows"),
+                    sizes("columns")
+                )
+            }
             _ => format!(" gap={}", n("itemSpacing")),
         };
         add(format!(
@@ -445,6 +469,14 @@ fn flat_lines(
     if [w, h].iter().any(|v| v.is_string() && *v != "HUG") {
         let s = |v: &Value| v.as_str().unwrap_or("?").to_lowercase();
         add(format!("size={}/{}", s(w), s(h)));
+    }
+    let span = |k: &str| node[k].as_u64().unwrap_or(1);
+    if (span("gridRowSpan"), span("gridColumnSpan")) != (1, 1) {
+        add(format!(
+            "span={},{}",
+            span("gridRowSpan"),
+            span("gridColumnSpan")
+        ));
     }
     if derived_spacing(node) {
         add("spacing=derived".into());
@@ -528,6 +560,14 @@ fn summarize(
         "layoutSizingVertical",
         "itemSpacing",
         "counterAxisSpacing",
+        "gridRowCount",
+        "gridColumnCount",
+        "gridRowGap",
+        "gridColumnGap",
+        "gridRowSpan",
+        "gridColumnSpan",
+        "gridChildHorizontalAlign",
+        "gridChildVerticalAlign",
         "paddingLeft",
         "paddingRight",
         "paddingTop",
@@ -558,6 +598,9 @@ fn summarize(
             evidence.insert("componentPropertyDefinitions".into(), compact);
         }
         summary["_figlens"] = json!({"semantics":evidence});
+    }
+    if let Some(tracks) = node["_figlens"].get("gridTracks") {
+        summary["_figlens"]["gridTracks"] = tracks.clone();
     }
     if let Some(definitions) = node["componentPropertyDefinitions"].as_object() {
         let compact: serde_json::Map<String, Value> = definitions
@@ -727,8 +770,11 @@ mod tests {
     }
 
     #[test]
-    fn flat_grid_lines_leave_out_the_gap_rest_does_not_emit() {
-        let node = json!({"id":"1:1","type":"FRAME","name":"g","layoutMode":"GRID","paddingTop":4});
+    fn flat_grid_lines_show_counts_gaps_and_stored_track_sizes() {
+        let node = json!({"id":"1:1","type":"FRAME","name":"g","layoutMode":"GRID","paddingTop":4,
+            "gridRowCount":2,"gridColumnCount":3,"gridRowGap":8,"gridRowSpan":2,
+            "_figlens":{"gridTracks":{"rows":[{"type":"HUG"},{"type":"FIXED","value":40}],
+                "columns":[{"type":"FLEX","value":1},{"type":"FLEX","value":2},null]}}});
         let (mut out, mut truncated) = (String::new(), false);
         flat_lines(
             &mut out,
@@ -740,7 +786,10 @@ mod tests {
             &mut 1,
             &mut truncated,
         );
-        assert_eq!(out, "1:1 FRAME \"g\" GRID pad=4,0,0,0\n");
+        assert_eq!(
+            out,
+            "1:1 FRAME \"g\" GRID 2x3 gap=8,0 rows=hug,40 cols=flex1,flex2,? pad=4,0,0,0 span=2,1\n"
+        );
     }
 
     #[test]
