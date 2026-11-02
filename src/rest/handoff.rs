@@ -2,6 +2,29 @@
 use super::*;
 use std::collections::BTreeMap;
 
+/// Node fields Figma Motion stores (2026 schema); `easingType` is left out, as prototype
+/// transitions use it too.
+const MOTION_FIELDS: [&str; 18] = [
+    "timelinePosition",
+    "timelinePositionType",
+    "timelineDuration",
+    "timelineOffset",
+    "timelineDisabled",
+    "timelineKeyframeSnappingFps",
+    "quantizeTimelinePlayback",
+    "timelineDefinitions",
+    "timelineAssignments",
+    "keyframeValue",
+    "keyframeValueRef",
+    "keyframeOperation",
+    "easingData",
+    "motionTransform",
+    "motionPathBezierHandles",
+    "animationPresets",
+    "styleIdsForAnimation",
+    "styleAnimations",
+];
+
 pub(super) fn fields(k: &Obj, kind: &str, parent: Option<&Obj>, out: &mut Obj) {
     let mut diagnostics = Vec::new();
     let mut add = |feature, sources: Vec<&str>, reason| {
@@ -84,6 +107,41 @@ pub(super) fn fields(k: &Obj, kind: &str, parent: Option<&Obj>, out: &mut Obj) {
             "Saved grid tracks and child placement are not projected as grid semantics; fixed geometry does not establish responsive behavior.",
         );
     }
+    // Figma Motion (2026 schema): keyframe/track/preset nodes, or Motion fields on any node.
+    let mut motion = Vec::new();
+    if matches!(
+        kind,
+        "KEYFRAME" | "KEYFRAME_TRACK" | "ANIMATION_PRESET_INSTANCE"
+    ) {
+        motion.push("type");
+    }
+    motion.extend(MOTION_FIELDS.into_iter().filter(|f| k.contains_key(*f)));
+    add(
+        "motion",
+        motion,
+        "Saved Motion keyframes, timelines and easing are not emitted; the output is the static frame.",
+    );
+    let mut code = Vec::new();
+    if matches!(
+        kind,
+        "CODE_LAYER"
+            | "CODE_COMPONENT"
+            | "CODE_INSTANCE"
+            | "CODE_FILE"
+            | "CODE_LIBRARY"
+            | "CODE_EMBED"
+            | "NATIVE_CODE_LAYER_INSTANCE"
+    ) {
+        code.push("type");
+    }
+    if k.contains_key("isEmbedCodeLayer") {
+        code.push("isEmbedCodeLayer");
+    }
+    add(
+        "codeLayers",
+        code,
+        "Saved code layers are not emitted; their source and rendered result are not read.",
+    );
     if at(k, "layoutGrids")
         .as_array()
         .is_some_and(|v| !v.is_empty())
@@ -245,5 +303,40 @@ mod tests {
             scoped.get("_figlens").is_none(),
             "a sibling's gaps cannot leak into the selected scope"
         );
+    }
+
+    #[test]
+    fn motion_and_code_layers_are_reported_and_ordinary_nodes_are_not() {
+        let gaps = |input: Json, kind: &str| -> Vec<(Json, Json)> {
+            let mut out = Obj::new();
+            fields(&object(input), kind, None, &mut out);
+            out.get("_figlens")
+                .and_then(|f| f["unrepresented"].as_array().cloned())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|d| (d["feature"].clone(), d["sourceFields"].clone()))
+                .collect()
+        };
+        assert_eq!(
+            gaps(json!({}), "KEYFRAME_TRACK"),
+            [(json!("motion"), json!(["type"]))]
+        );
+        assert_eq!(
+            gaps(json!({"easingData":{},"timelineDefinitions":{}}), "FRAME"),
+            [(
+                json!("motion"),
+                json!(["timelineDefinitions", "easingData"])
+            )]
+        );
+        assert_eq!(
+            gaps(json!({}), "CODE_LAYER"),
+            [(json!("codeLayers"), json!(["type"]))]
+        );
+        assert_eq!(
+            gaps(json!({"isEmbedCodeLayer":true}), "FRAME"),
+            [(json!("codeLayers"), json!(["isEmbedCodeLayer"]))]
+        );
+        // Prototype transitions also store easingType; it is not Motion evidence.
+        assert!(gaps(json!({"easingType":"EASE_IN"}), "FRAME").is_empty());
     }
 }
