@@ -727,21 +727,32 @@ fn unknown_paint_types_are_reported_instead_of_silently_dropped() {
         children: Default::default(),
         blobs: Vec::new(),
     };
-    // A shader fill under a drawn solid: only the shader is a gap.
+    // A shader fill under a drawn solid, and a noise stroke drawn around the box (no stroke
+    // outlines): only the shader and the noise are gaps.
     let node = serde_json::json!({"id": "1:1", "type": "RECTANGLE", "_r": {
         "m": [1, 0, 0, 1, 0, 0], "size": {"x": 10, "y": 10},
         "fillPaints": [
             {"type": "SOLID", "color": {"r": 0, "g": 0, "b": 0, "a": 1}},
             {"type": "CUSTOM"},
         ],
+        "strokePaints": [{"type": "NOISE"}],
+        "strokeWeight": 2,
     }});
-    let found = diagnostics(&tree, &node);
+    let fields: Vec<_> = diagnostics(&tree, &node)
+        .into_iter()
+        .map(|d| (d["feature"].clone(), d["field"].clone(), d["state"].clone()))
+        .collect();
     assert_eq!(
-        found,
-        vec![serde_json::json!({
-            "nodeId": "1:1", "feature": "paint", "field": "fillPaints[1].type",
-            "state": "skipped", "reason": "This paint type is not rendered",
-        })]
+        fields,
+        [
+            ("fillPaints[1].type", "skipped"),
+            ("strokePaints[0].type", "skipped")
+        ]
+        .map(|(f, s)| (
+            serde_json::json!("paint"),
+            serde_json::json!(f),
+            serde_json::json!(s)
+        ))
     );
 }
 
