@@ -444,7 +444,16 @@ pub(crate) fn diagnostics(tree: &Tree, n: &Json) -> Vec<Json> {
                         "Angular and diamond gradients are rendered as radial gradients",
                     );
                 }
-                _ => {}
+                Some("SOLID" | "GRADIENT_LINEAR" | "GRADIENT_RADIAL") | None => {}
+                // Newer paints (CUSTOM shaders, NOISE, PATTERN, VIDEO, EMOJI) draw nothing.
+                Some(_) => {
+                    report(
+                        "paint",
+                        format!("{field}.type"),
+                        "skipped",
+                        "This paint type is not rendered",
+                    );
+                }
             }
         }
     }

@@ -721,6 +721,31 @@ fn unknown_effect_types_are_reported_instead_of_drawn_as_blurs() {
 }
 
 #[test]
+fn unknown_paint_types_are_reported_instead_of_silently_dropped() {
+    let tree = Tree {
+        nodes: Default::default(),
+        children: Default::default(),
+        blobs: Vec::new(),
+    };
+    // A shader fill under a drawn solid: only the shader is a gap.
+    let node = serde_json::json!({"id": "1:1", "type": "RECTANGLE", "_r": {
+        "m": [1, 0, 0, 1, 0, 0], "size": {"x": 10, "y": 10},
+        "fillPaints": [
+            {"type": "SOLID", "color": {"r": 0, "g": 0, "b": 0, "a": 1}},
+            {"type": "CUSTOM"},
+        ],
+    }});
+    let found = diagnostics(&tree, &node);
+    assert_eq!(
+        found,
+        vec![serde_json::json!({
+            "nodeId": "1:1", "feature": "paint", "field": "fillPaints[1].type",
+            "state": "skipped", "reason": "This paint type is not rendered",
+        })]
+    );
+}
+
+#[test]
 fn filter_covers_the_unclipped_content_plus_three_sigma() {
     let tree = Tree {
         nodes: Default::default(),
