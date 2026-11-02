@@ -89,6 +89,7 @@ fn stages() {
         pack(
             files,
             None,
+            None,
             &node,
             "probe",
             &[],

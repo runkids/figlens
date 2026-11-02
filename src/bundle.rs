@@ -187,6 +187,8 @@ pub fn write_with_states(
     out: &Path,
     include_states: bool,
 ) -> Result<Vec<String>, Box<dyn Error>> {
+    // Taken before any read, so a save during bundling leaves `source.sha256` null.
+    let stamp = crate::search::stamp(fig).ok();
     let prepared = Prepared::new(tree, fig, root)?;
     let rendered = prepared.node();
     let mut doc = prepared.document.clone();
@@ -340,8 +342,52 @@ pub fn write_with_states(
         &unresolved,
         states.as_ref(),
     )));
-    pack(files, file_key, root, &name, &warnings, fig, out)?;
+    let source_sha256 = stamp.and_then(|stamp| source_sha256(fig, stamp));
+    pack(
+        files,
+        file_key,
+        source_sha256,
+        root,
+        &name,
+        &warnings,
+        fig,
+        out,
+    )?;
     Ok(warnings)
+}
+
+/// The sha256 of the `.fig` at `fig` if its stamp is still `stamp` after hashing. Cached by
+/// path and stamp, so a batch hashes its source once rather than once per frame.
+fn source_sha256(fig: &Path, stamp: crate::search::Stamp) -> Option<String> {
+    use std::io::Read;
+    type Entry = (std::path::PathBuf, crate::search::Stamp, String);
+    static CACHE: std::sync::Mutex<Option<Entry>> = std::sync::Mutex::new(None);
+    // Held while hashing, so parallel frames wait for one hash instead of each reading the file.
+    let mut cache = CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((path, at, digest)) = cache.as_ref()
+        && path == fig
+        && *at == stamp
+        && crate::search::stamp(fig).ok() == Some(stamp)
+    {
+        return Some(digest.clone());
+    }
+    let mut file = std::fs::File::open(fig).ok()?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0; 1 << 20];
+    loop {
+        match file.read(&mut buf).ok()? {
+            0 => break,
+            n => hasher.update(&buf[..n]),
+        }
+    }
+    if crate::search::stamp(fig).ok() != Some(stamp) {
+        return None;
+    }
+    let digest = crate::search::hex(&hasher.finalize());
+    *cache = Some((fig.to_owned(), stamp, digest.clone()));
+    Some(digest)
 }
 
 /// Render and handoff diagnostics of a stripped scope document, as bundle warnings.
@@ -468,9 +514,11 @@ fn prompt(text: String) -> File_ {
 }
 
 /// Writes `files` and their manifest as the bundle zip.
+#[allow(clippy::too_many_arguments)]
 fn pack(
     mut files: Vec<File_>,
     file_key: Option<&str>,
+    source_sha256: Option<String>,
     root: &str,
     name: &str,
     warnings: &[String],
@@ -489,7 +537,7 @@ fn pack(
         "version": 1,
         "producer": { "name": "figlens", "version": env!("CARGO_PKG_VERSION") },
         "createdAt": now(),
-        "source": { "fileKey": file_key, "nodeId": root, "url": source_url },
+        "source": { "fileKey": file_key, "nodeId": root, "url": source_url, "sha256": source_sha256 },
         "root": {
             "id": root,
             "name": name,
@@ -770,6 +818,30 @@ fn now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manifest_source_names_the_fig_bytes() {
+        let fig = Path::new("examples/first-success/design.fig");
+        let mut doc = crate::Document::open(fig).unwrap();
+        let message = doc.take_message().unwrap();
+        let dir = crate::test_support::TestDir::new();
+        let out = dir.join("bundle.zip");
+        write(&Tree::new(&message), fig, None, None, "0:1", &out).unwrap();
+        let mut zip = crate::open_zip(&out).unwrap();
+        let manifest: Json =
+            serde_json::from_reader(zip.by_name("manifest.json").unwrap()).unwrap();
+        assert_eq!(
+            manifest["source"]["sha256"],
+            sha256(&std::fs::read(fig).unwrap())
+        );
+    }
+
+    #[test]
+    fn a_source_whose_stamp_moved_gets_no_digest() {
+        let fig = Path::new("examples/first-success/design.fig");
+        let (modified, len) = crate::search::stamp(fig).unwrap();
+        assert_eq!(source_sha256(fig, (modified, len + 1)), None);
+    }
 
     #[test]
     fn render_warnings_do_not_become_missing_assets_or_change_pixels() {

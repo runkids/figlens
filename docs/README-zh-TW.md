@@ -61,7 +61,7 @@ frame.zip
 ├── assets.json               將設計中的參照對應到素材檔案
 ├── references/screen.png     供比對的 frame 渲染圖
 ├── missing-assets.json       所有無法產生的項目
-└── manifest.json             檔案角色、媒體類型、大小與 SHA-256 雜湊
+└── manifest.json             檔案角色、媒體類型、大小與 SHA-256 雜湊，以及來源 .fig 的雜湊
 ```
 
 只需要其中一項？CLI 可以直接做到：

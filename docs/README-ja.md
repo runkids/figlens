@@ -61,7 +61,7 @@ frame.zip
 ├── assets.json               デザイン上の参照を素材ファイルに対応付ける
 ├── references/screen.png     比較用の frame のレンダリング
 ├── missing-assets.json       生成できなかったもの
-└── manifest.json             ファイルの役割、メディアタイプ、サイズ、SHA-256 ハッシュ
+└── manifest.json             ファイルの役割、メディアタイプ、サイズ、SHA-256 ハッシュと元の .fig のハッシュ
 ```
 
 1 つだけ必要なら、CLI で直接取得できます。

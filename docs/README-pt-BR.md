@@ -61,7 +61,7 @@ frame.zip
 ├── assets.json               Maps design references to asset files
 ├── references/screen.png     A render of the frame to compare against
 ├── missing-assets.json       Anything that could not be produced
-└── manifest.json             File roles, media types, sizes and SHA-256 hashes
+└── manifest.json             File roles, media types, sizes and SHA-256 hashes, plus the source .fig hash
 ```
 
 Precisa de uma parte só? A CLI faz isso direto:
