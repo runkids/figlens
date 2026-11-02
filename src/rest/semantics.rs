@@ -149,16 +149,20 @@ pub(super) fn grid(
             }
         }
         let sizes = |list: &str, sizing: &str| -> Vec<Json> {
-            let stored = at(k, sizing)["entries"].as_array();
+            // Indexed once per axis: a crafted grid can hold many thousands of tracks. The first
+            // entry for a track wins, as a linear scan would pick it.
+            let mut stored: HashMap<String, &Json> = HashMap::new();
+            for e in at(k, sizing)["entries"].as_array().into_iter().flatten() {
+                if let Some(id) = guid(&e["id"]) {
+                    stored.entry(id).or_insert(&e["trackSize"]);
+                }
+            }
             grid_tracks(k, list)
                 .iter()
                 .map(|t| {
-                    let id = guid(&t["id"]);
-                    stored
-                        .into_iter()
-                        .flatten()
-                        .find(|e| id.is_some() && guid(&e["id"]) == id)
-                        .map_or(Json::Null, |e| track_size(&e["trackSize"]))
+                    guid(&t["id"])
+                        .and_then(|id| stored.get(&id))
+                        .map_or(Json::Null, |size| track_size(size))
                 })
                 .collect()
         };

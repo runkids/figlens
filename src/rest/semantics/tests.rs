@@ -593,3 +593,38 @@ fn swapped_grid_children_keep_their_own_span_and_alignment() {
     assert_eq!(child["gridColumnSpan"], 2);
     assert!(child.get("gridChildHorizontalAlign").is_none());
 }
+
+#[test]
+fn grid_track_sizes_join_by_id_once_and_keep_the_first_duplicate() {
+    const ROWS: u32 = 20_000;
+    let id = |i: u32| json!({"sessionID":8,"localID":i});
+    let fixed = |v: u32| json!({"type":"FIXED","value":v});
+    // Positions sort as their zero-padded index; sizing entries are stored in reverse.
+    let rows: Vec<_> = (0..ROWS)
+        .map(|i| json!({"id":id(i),"position":format!("{i:06}")}))
+        .collect();
+    let mut sizing: Vec<_> = (0..ROWS)
+        .rev()
+        .map(|i| json!({"id":id(i),"trackSize":{"minSizing":fixed(i),"maxSizing":fixed(i)}}))
+        .collect();
+    sizing.push(json!({"id":id(0),"trackSize":{"minSizing":fixed(99),"maxSizing":fixed(99)}}));
+    let raw = json!({"type":"FRAME","stackMode":"GRID","size":{"x":10,"y":10},
+        "gridRows":{"entries":rows},"gridRowsSizing":{"entries":sizing}});
+    let value = kiwi(&raw, "");
+    let tree = Tree {
+        nodes: HashMap::from([("1:0".to_owned(), &value)]),
+        children: HashMap::new(),
+        blobs: Vec::new(),
+    };
+    let doc = nodes(&tree, "1:0");
+    let rows = doc["document"]["_figlens"]["gridTracks"]["rows"]
+        .as_array()
+        .unwrap();
+    assert_eq!(rows.len(), ROWS as usize);
+    assert_eq!(
+        rows[0],
+        json!({"type":"FIXED","value":0.0}),
+        "the first stored entry wins"
+    );
+    assert_eq!(rows[ROWS as usize - 1]["value"], json!(f64::from(ROWS - 1)));
+}
