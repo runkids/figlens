@@ -2,16 +2,14 @@
 use super::*;
 use std::collections::BTreeMap;
 
-/// Node fields Figma Motion stores (2026 schema); `easingType` is left out, as prototype
-/// transitions use it too.
-const MOTION_FIELDS: [&str; 18] = [
+/// Node fields Figma Motion stores (2026 schema). `easingType` is left out, as prototype
+/// transitions use it too, and so are boolean switches, which a false value can carry.
+const MOTION_FIELDS: &[&str] = &[
     "timelinePosition",
     "timelinePositionType",
     "timelineDuration",
     "timelineOffset",
-    "timelineDisabled",
     "timelineKeyframeSnappingFps",
-    "quantizeTimelinePlayback",
     "timelineDefinitions",
     "timelineAssignments",
     "keyframeValue",
@@ -21,6 +19,7 @@ const MOTION_FIELDS: [&str; 18] = [
     "motionTransform",
     "motionPathBezierHandles",
     "animationPresets",
+    "backingAnimationPresetId",
     "styleIdsForAnimation",
     "styleAnimations",
 ];
@@ -115,7 +114,7 @@ pub(super) fn fields(k: &Obj, kind: &str, parent: Option<&Obj>, out: &mut Obj) {
     ) {
         motion.push("type");
     }
-    motion.extend(MOTION_FIELDS.into_iter().filter(|f| k.contains_key(*f)));
+    motion.extend(MOTION_FIELDS.iter().filter(|f| k.contains_key(**f)));
     add(
         "motion",
         motion,
@@ -134,7 +133,7 @@ pub(super) fn fields(k: &Obj, kind: &str, parent: Option<&Obj>, out: &mut Obj) {
     ) {
         code.push("type");
     }
-    if k.contains_key("isEmbedCodeLayer") {
+    if at(k, "isEmbedCodeLayer") == true {
         code.push("isEmbedCodeLayer");
     }
     add(
@@ -336,7 +335,15 @@ mod tests {
             gaps(json!({"isEmbedCodeLayer":true}), "FRAME"),
             [(json!("codeLayers"), json!(["isEmbedCodeLayer"]))]
         );
-        // Prototype transitions also store easingType; it is not Motion evidence.
+        // Prototype transitions also store easingType; it is not Motion evidence, and neither
+        // is a stored false switch.
         assert!(gaps(json!({"easingType":"EASE_IN"}), "FRAME").is_empty());
+        assert!(
+            gaps(
+                json!({"isEmbedCodeLayer":false,"timelineDisabled":false}),
+                "FRAME"
+            )
+            .is_empty()
+        );
     }
 }
