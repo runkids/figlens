@@ -2,11 +2,17 @@
   <img src="https://raw.githubusercontent.com/runkids/figlens/v0.10.1/assets/logo.png" alt="figlens" width="220">
 </p>
 
-# Figma designs your coding agent can read
+# Give your coding agent the design details to build, compare and follow changes
 
-Give your agent a saved `.fig`. figlens reads its layout, text, styles and assets on the machine where the agent runs, including a remote host or CI. Reading the local file needs no Figma app, Figma sign-in or Figma API calls.
+**[Website](https://figlens.runkids.cc/)** · [Docs](https://figlens.runkids.cc/docs/) · [Pi guide](https://figlens.runkids.cc/docs/pi/) · [GitHub](https://github.com/runkids/figlens)
 
-Your agent can inspect the design's measurements, extract icons and images, and implement with your project's components. A frame bundle brings the structured design, assets and reference render together for a portable handoff.
+figlens turns saved Figma files into design context your coding agent can act on, not just a screenshot to interpret.
+
+- **Build from the source details.** Read layout, text, styles and variables; export vector icons as SVG and images as assets. A frame bundle brings the structured design, assets and reference render together for a portable handoff.
+- **Compare the running UI.** `compare-image` compares your screenshot with figlens's render and names the layers under differing regions. Review those differences and rendering warnings; it is not a pixel-perfect guarantee.
+- **Follow design changes.** `diff` compares saved revisions; `changes` and `watch` report updates to tracked local scopes. Save a new `.fig` from Figma to pick up design edits; this is not live Figma sync.
+
+Give your agent a saved `.fig`. figlens reads it on the machine where the agent runs, including a remote host or CI, with no Figma app, Figma sign-in or Figma API calls.
 
 ## Start with Pi
 
