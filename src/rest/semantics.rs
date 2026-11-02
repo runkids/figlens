@@ -169,7 +169,7 @@ pub(super) fn grid(
             status(
                 "gridRows|gridColumns|gridRowsSizing|gridColumnsSizing",
                 k.contains_key("gridRows") || k.contains_key("gridColumns"),
-                true,
+                k.contains_key("gridRowsSizing") || k.contains_key("gridColumnsSizing"),
             ),
         );
         if !rows.is_empty() || !columns.is_empty() {

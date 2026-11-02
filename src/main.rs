@@ -126,7 +126,7 @@ usage:
                                              component, text, font=family size/weight/lineHeight, fill,
                                              stroke=paint/weight, r, shadow|inner-shadow=x,y,blur[,spread],color,
                                              blur, bg-blur, H|V gap or GRID RxC gap=row,col rows=… cols=…
-                                             (stored track sizes: flexN, px or hug), pad=top,right,bottom,left,
+                                             (stored sizes: flexN, px, hug or min..max), pad=top,right,bottom,left,
                                              align=main/cross and size=w/h (fixed|fill) unless min and hug,
                                              or spacing=derived, span=rows,cols on grid children,
                                              and opacity when set; children=N and

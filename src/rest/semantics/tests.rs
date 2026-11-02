@@ -511,3 +511,52 @@ fn grid_frames_emit_counts_gaps_and_ordered_tracks_but_children_no_cell() {
     assert_eq!(gaps(grid), [json!("gridAutoPlacement")]);
     assert_eq!(gaps(child), [json!("gridCell")]);
 }
+
+#[test]
+fn grids_inside_instances_keep_their_tracks_and_absolute_children_have_no_cell() {
+    let track = |id: u32| json!({"id":{"sessionID":6,"localID":id},"position":"!"});
+    let raw = json!([
+        {"type":"INSTANCE","size":{"x":100,"y":50},"symbolData":{"symbolID":{"sessionID":2,"localID":1}}},
+        {"type":"SYMBOL","size":{"x":100,"y":50}},
+        {"type":"FRAME","stackMode":"GRID","size":{"x":100,"y":50},"gridColumnGap":4,
+         "gridRows":{"entries":[track(1)]},"gridColumns":{"entries":[track(2)]},
+         "gridColumnsSizing":{"entries":[{"id":{"sessionID":6,"localID":2},"trackSize":{
+            "minSizing":{"type":"FLEX","value":1},"maxSizing":{"type":"FLEX","value":1}}}]}},
+        {"type":"FRAME","size":{"x":10,"y":10},"stackPositioning":"ABSOLUTE",
+         "gridRowAnchor":{"sessionID":6,"localID":1}}
+    ]);
+    let values: Vec<_> = raw
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| kiwi(v, ""))
+        .collect();
+    let tree = Tree {
+        nodes: values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (format!("2:{i}"), v))
+            .collect(),
+        children: HashMap::from([
+            ("2:1".into(), vec!["2:2".into()]),
+            ("2:2".into(), vec!["2:3".into()]),
+        ]),
+        blobs: Vec::new(),
+    };
+    let doc = nodes(&tree, "2:0");
+    let grid = &doc["document"]["children"][0];
+    assert_eq!(
+        (
+            &grid["gridRowCount"],
+            &grid["gridColumnCount"],
+            &grid["gridColumnGap"]
+        ),
+        (&json!(1), &json!(1), &json!(4.0))
+    );
+    assert_eq!(
+        grid["_figlens"]["gridTracks"],
+        json!({"rows":[null],"columns":[{"type":"FLEX","value":1.0}]})
+    );
+    let absolute = &grid["children"][0];
+    assert!(absolute["_figlens"].get("unrepresented").is_none());
+}

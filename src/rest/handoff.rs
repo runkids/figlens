@@ -66,7 +66,9 @@ pub(super) fn fields(k: &Obj, kind: &str, parent: Option<&Obj>, out: &mut Obj) {
             "Saved grid auto-placement settings are not emitted.",
         );
     }
-    if parent.is_some_and(|p| at(p, "stackMode") == "GRID") {
+    if parent.is_some_and(|p| at(p, "stackMode") == "GRID")
+        && at(k, "stackPositioning") != "ABSOLUTE"
+    {
         add(
             "gridCell",
             ["gridRowAnchor", "gridColumnAnchor"]

@@ -413,30 +413,34 @@ fn flat_lines(
         let n = |k: &str| num(node[k].as_f64().unwrap_or(0.0));
         let gap = match mode {
             "GRID" => {
-                // Track sizes as stored: FLEX in fractions, FIXED in px, HUG; `?` when unknown.
-                let sizes = |axis: &str| {
-                    let list = node["_figlens"]["gridTracks"][axis].as_array();
-                    let size = |t: &Value| match (t["type"].as_str(), t["value"].as_f64()) {
-                        (Some("FLEX"), v) => format!("flex{}", num(v.unwrap_or(1.0))),
+                // Track sizes as stored: FLEX in fractions, FIXED in px, HUG, min..max when the
+                // two differ; `?` when a track has no stored size.
+                fn size(t: &Value) -> String {
+                    match (t["type"].as_str(), t["value"].as_f64()) {
+                        (Some("FLEX"), v) => format!("flex{}", v.map(num).unwrap_or_default()),
                         (Some("FIXED"), Some(v)) => num(v),
                         (Some("HUG"), _) => "hug".into(),
+                        _ if t.get("min").is_some() => {
+                            format!("{}..{}", size(&t["min"]), size(&t["max"]))
+                        }
                         _ => "?".into(),
-                    };
-                    list.into_iter()
-                        .flatten()
-                        .map(size)
-                        .collect::<Vec<_>>()
-                        .join(",")
-                };
-                format!(
-                    " {}x{} gap={},{} rows={} cols={}",
-                    n("gridRowCount"),
-                    n("gridColumnCount"),
-                    n("gridRowGap"),
-                    n("gridColumnGap"),
-                    sizes("rows"),
-                    sizes("columns")
-                )
+                    }
+                }
+                let mut out = String::new();
+                if let (Some(r), Some(c)) = (
+                    node["gridRowCount"].as_u64(),
+                    node["gridColumnCount"].as_u64(),
+                ) {
+                    out = format!(" {r}x{c}");
+                }
+                out += &format!(" gap={},{}", n("gridRowGap"), n("gridColumnGap"));
+                for (axis, label) in [("rows", "rows"), ("columns", "cols")] {
+                    if let Some(list) = node["_figlens"]["gridTracks"][axis].as_array() {
+                        let list: Vec<_> = list.iter().map(size).collect();
+                        out += &format!(" {label}={}", list.join(","));
+                    }
+                }
+                out
             }
             _ => format!(" gap={}", n("itemSpacing")),
         };
@@ -773,8 +777,8 @@ mod tests {
     fn flat_grid_lines_show_counts_gaps_and_stored_track_sizes() {
         let node = json!({"id":"1:1","type":"FRAME","name":"g","layoutMode":"GRID","paddingTop":4,
             "gridRowCount":2,"gridColumnCount":3,"gridRowGap":8,"gridRowSpan":2,
-            "_figlens":{"gridTracks":{"rows":[{"type":"HUG"},{"type":"FIXED","value":40}],
-                "columns":[{"type":"FLEX","value":1},{"type":"FLEX","value":2},null]}}});
+            "_figlens":{"gridTracks":{"rows":[{"type":"HUG"},{"min":{"type":"FIXED","value":40},"max":{"type":"FLEX","value":2}}],
+                "columns":[{"type":"FLEX","value":1},{"type":"FLEX"},null]}}});
         let (mut out, mut truncated) = (String::new(), false);
         flat_lines(
             &mut out,
@@ -788,7 +792,7 @@ mod tests {
         );
         assert_eq!(
             out,
-            "1:1 FRAME \"g\" GRID 2x3 gap=8,0 rows=hug,40 cols=flex1,flex2,? pad=4,0,0,0 span=2,1\n"
+            "1:1 FRAME \"g\" GRID 2x3 gap=8,0 rows=hug,40..flex2 cols=flex1,flex,? pad=4,0,0,0 span=2,1\n"
         );
     }
 
