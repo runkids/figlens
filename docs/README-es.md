@@ -1,6 +1,6 @@
 # figlens — Guía de uso
 
-[← README](../README-es.md)
+[← README](../README-es.md) · [figlens.runkids.cc](https://figlens.runkids.cc/es/docs/)
 
 <p align="center">
   <a href="README.md">English</a> · <a href="README-de.md">Deutsch</a> · <a href="README-es.md">Español</a> · <a href="README-fr.md">Français</a> · <a href="README-ja.md">日本語</a> · <a href="README-ko.md">한국어</a> · <a href="README-pt-BR.md">Português</a> · <a href="README-zh-CN.md">简体中文</a> · <a href="README-zh-TW.md">繁體中文</a>
@@ -148,13 +148,11 @@ npx skills add runkids/figlens --skill figlens
 
 **skillshare.** Gestiona el skill y la conexión MCP en Claude Code, Codex y Cursor desde un solo lugar con [skillshare](https://github.com/runkids/skillshare):
 
-<!-- x-release-please-start-version -->
 ```sh
 skillshare install github.com/runkids/figlens/skills/figlens
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.11.0 mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
 skillshare sync && skillshare sync mcp --global
 ```
-<!-- x-release-please-end -->
 
 **Notas de instalación.** El launcher de npm descarga el binario nativo correspondiente en el primer uso, lo verifica con los checksums SHA-256 de la release y lo guarda en caché. Las instalaciones por script se actualizan con `figlens update`; las de Homebrew, con `brew upgrade figlens`. Los binarios cubren macOS (Apple silicon, Intel), Linux (arm64, x86_64, musl estático) y Windows (x86_64). Cada vía de instalación también coloca `figlens-embed`, el runtime de la [búsqueda semántica opcional](#semantic-search), junto a `figlens`; no carga ningún modelo hasta que configures uno.
 
@@ -245,7 +243,7 @@ Experimental. `figlens search <file> <query> --mode semantic|hybrid` ordena las 
 | `export <file> --batch <items.json>`, `--batch -` (stdin) | Una decodificación, muchas exportaciones, cada una con sus opciones: un array JSON de 1-64 `{node, out, bounds?, scale?, quality?, maxKb?, maxSize?, hide?}` (MCP `export_batch`). Imprime un manifiesto `{count, failed, items}`: por elemento, la salida de `export` o `{error}` (los demás se exportan igualmente); un elemento mal formado o un `out` repetido falla antes de escribir nada |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Viewer local que nunca escribe el diseño; búsqueda semántica/híbrida tras Enable index; `--out` escribe un snapshot offline independiente; los resultados y el context copiado indican la página y, en vivo, la ruta del archivo, el snapshot del source cargado y la revision local (desconocidos offline, donde la ruta nunca se incrusta); el context incluye también la coverage del scope de referencia, `complete: null` si no se comprobó. Visual/Hybrid acepta un PNG de referencia o una capa seleccionada con recorte en píxeles. Activa el índice visual explícitamente; las imágenes de consulta no se guardan. |
 | `compare <file> <nodes.json> <node>` | Diff contra una exportación REST del mismo frame |
-| `compare-image <file> <node> <screenshot.png>` | Compara una captura de la pantalla construida con el nodo renderizado a su escala (`--scale`, `--limit`, `--out diff.png`; MCP `compare_image`). Imprime `mismatch`, `nonTextMismatch` y las mayores regiones distintas en píxeles del nodo, cada una con las capas más profundas debajo; `text: true` indica regiones sobre texto (a menudo fuente sustituta; revisa cada una) |
+| `compare-image <file> <node> <screenshot.png>` | Compara una captura de la pantalla construida con el nodo renderizado a su escala (`--scale`, `--limit`, `--out diff.png`, `--full-page` para una captura de página completa más corta que el frame, `--ignore` para capas cuyo contenido viene de datos, `--threshold` para ver bordes claros; `image: true` marca rellenos de imagen; MCP `compare_image`). Imprime `mismatch`, `nonTextMismatch` y las mayores regiones distintas en píxeles del nodo, cada una con las capas más profundas debajo; `text: true` indica regiones sobre texto (a menudo fuente sustituta; revisa cada una) |
 | `node <file> <node>` | Un nodo `.fig` sin procesar |
 | `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset\|track\|untrack\|embed\|visual` | Workspace local en el directorio de estado de figlens del usuario, o bajo un `--storage DIR` que el workspace recuerda después. `prepare <file> --scope NODE` construye una vez el índice de búsqueda de ese ámbito; luego `search --file <file>` (o `--workspace DIR`) responde sin volver a analizar, con ranking conjunto de las fuentes del workspace. `refresh` reconstruye los archivos cambiados, `rebuild` todos o una `--source`/`--scope`, `clear` elimina índices sin uso; el índice anterior sigue sirviendo hasta que el nuevo está listo. `reset` elimina solo la base de datos del workspace, nunca diseños, exportaciones ni la ubicación recordada. `track --scope NODE` registra los cambios de ese scope desde un build baseline; `untrack` lo detiene y conserva el historial. `embed` incrusta los ámbitos publicados con el modelo configurado (CPU y memoria); ejecútalo solo si quieres búsqueda semántica en el workspace. `visual --scope NODE` renderiza las pantallas y componentes de ese ámbito publicado para la búsqueda por imagen y los incrusta si hay un perfil de visión configurado; ejecútalo solo si quieres búsqueda visual en el workspace. |
 | `jobs status\|cancel <jobId>` | Ver o cancelar una construcción de índice; `cancel` vuelve cuando la construcción se detuvo |

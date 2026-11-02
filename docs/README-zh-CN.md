@@ -1,6 +1,6 @@
 # figlens — 使用指南
 
-[← README](../README-zh-CN.md)
+[← README](../README-zh-CN.md) · [figlens.runkids.cc](https://figlens.runkids.cc/zh-CN/docs/)
 
 <p align="center">
   <a href="README.md">English</a> · <a href="README-de.md">Deutsch</a> · <a href="README-es.md">Español</a> · <a href="README-fr.md">Français</a> · <a href="README-ja.md">日本語</a> · <a href="README-ko.md">한국어</a> · <a href="README-pt-BR.md">Português</a> · <a href="README-zh-CN.md">简体中文</a> · <a href="README-zh-TW.md">繁體中文</a>
@@ -148,13 +148,11 @@ npx skills add runkids/figlens --skill figlens
 
 **skillshare。** 用 [skillshare](https://github.com/runkids/skillshare) 在一处统一管理 Claude Code、Codex 和 Cursor 的 skill 与 MCP 连接：
 
-<!-- x-release-please-start-version -->
 ```sh
 skillshare install github.com/runkids/figlens/skills/figlens
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.11.0 mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
 skillshare sync && skillshare sync mcp --global
 ```
-<!-- x-release-please-end -->
 
 **安装说明。** npm launcher 会在首次使用时下载匹配的原生可执行文件，对照 release 的 SHA-256 校验和进行验证并缓存。用安装脚本装的通过 `figlens update` 更新；Homebrew 装的通过 `brew upgrade figlens` 更新。可执行文件覆盖 macOS（Apple silicon、Intel）、Linux（arm64、x86_64、静态 musl）和 Windows（x86_64）。每种安装方式都会把[可选的语义搜索](#semantic-search)所用的运行时 `figlens-embed` 放在 `figlens` 旁边；在你配置模型之前，它不会加载任何模型。
 
@@ -245,7 +243,7 @@ Pi、OpenCode 和 OMP 通过各自的 opt-in 入口使用同一个索引，works
 | `export <file> --batch <items.json>`, `--batch -` (stdin) | 一次解码导出多个节点，每项各有自己的选项：1-64 个 `{node, out, bounds?, scale?, quality?, maxKb?, maxSize?, hide?}` 的 JSON 数组（MCP `export_batch`）。输出一份 manifest `{count, failed, items}`：每项为 `export` 输出或 `{error}`（其余照常导出）；条目格式错误或 `out` 重复会在写入任何文件前失败 |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | 从不写入设计的本地 viewer；按 Enable index 后可用语义/混合搜索；`--out` 写出独立的离线快照；结果与复制的 context 会标明页面，live 时也标明已加载文件的路径、source 的 snapshot 与本地 revision（离线时未知，且绝不嵌入路径）；context 也带有参考 scope 的 coverage，未检查时为 `complete: null`. Visual／Hybrid 可使用参考 PNG 或所选图层，并按像素裁剪。请明确启用视觉索引；查询图片不会保存。 |
 | `compare <file> <nodes.json> <node>` | 与同一 frame 的 REST 导出做差异比较 |
-| `compare-image <file> <node> <screenshot.png>` | 把实现画面的截图与按其缩放渲染的 node 比较（`--scale`、`--limit`、`--out diff.png`；MCP `compare_image`）。输出 `mismatch`、`nonTextMismatch` 和差异最大的区域（node 像素坐标），每个区域附其下最深的图层；`text: true` 表示区域位于文字上（多为字体替代，需逐一检查） |
+| `compare-image <file> <node> <screenshot.png>` | 把实现画面的截图与按其缩放渲染的 node 比较（`--scale`、`--limit`、`--out diff.png`、`--full-page` 用于比 frame 短的整页截图，`--ignore` 用于内容来自数据的图层，`--threshold` 用于看出浅色边框；`image: true` 标记图片填充；MCP `compare_image`）。输出 `mismatch`、`nonTextMismatch` 和差异最大的区域（node 像素坐标），每个区域附其下最深的图层；`text: true` 表示区域位于文字上（多为字体替代，需逐一检查） |
 | `node <file> <node>` | 单个原始 `.fig` 节点 |
 | `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset\|track\|untrack\|embed\|visual` | 用户 figlens state 目录中的本地 workspace，或位于 workspace 之后会记住的 `--storage DIR` 下。`prepare <file> --scope NODE` 为该范围建立一次搜索索引；之后 `search --file <file>`（或 `--workspace DIR`）不再解析文件，跨 workspace 的所有来源统一排序作答。`refresh` 重建有变更的文件，`rebuild` 重建全部或单一 `--source`/`--scope`，`clear` 删除未使用的索引；新索引就绪前继续使用旧索引。`reset` 只删除 workspace 数据库，不会删除设计、导出或记住的位置。`track --scope NODE` 从 baseline 构建开始记录该范围的变更；`untrack` 停止记录并保留历史。 `embed` 用已配置的模型嵌入已发布的范围（占用 CPU 和内存）；仅在需要 workspace 语义搜索时运行。 `visual --scope NODE` 为图片搜索渲染该已发布范围的画面与组件，配置视觉模型时一并嵌入；仅在需要 workspace 视觉搜索时运行。 |
 | `jobs status\|cancel <jobId>` | 查看或取消索引构建；`cancel` 在构建停止后才返回 |

@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="https://figlens.runkids.cc/"><img src="https://img.shields.io/badge/website-figlens.runkids.cc-8b78c8" alt="figlens website"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b78c8" alt="MIT license"></a>
   <a href="https://github.com/runkids/figlens/releases"><img src="https://img.shields.io/github/downloads/runkids/figlens/total?label=GitHub%20downloads&amp;color=79b9a5" alt="Total GitHub release asset downloads"></a>
   <a href="https://pi.dev/packages/@runkids/figlens"><img src="https://img.shields.io/badge/Pi-package-8b78c8" alt="Pi package"></a>
@@ -18,7 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="#start">开始使用</a> · <a href="#demo">演示</a> · <a href="#why">为什么选 figlens</a> · <a href="#bundle">agent 能拿到什么</a> · <a href="#pi">Pi</a> · <a href="#limitations">限制</a>
+  <a href="#start">开始使用</a> · <a href="#demo">演示</a> · <a href="#why">为什么选 figlens</a> · <a href="#bundle">agent 能拿到什么</a> · <a href="#pi">Pi</a> · <a href="#limitations">限制</a> · <a href="https://figlens.runkids.cc/zh-CN/docs/"><b>文档</b></a>
 </p>
 
 **问题。** Agent 需要布局数值、文字和素材才能实现画面。在远程主机或 CI，这些设计上下文需要与代码放在一起，让 agent 无需依赖运行中的桌面应用。
@@ -50,15 +51,15 @@
 
 一次安装就把 figlens skill 和 MCP server 加入 agent（需要 Node.js 18+）。Server 固定在 plugin 对应的版本（`npx -y @runkids/figlens@<version> mcp`）；要换新版本就更新 plugin。
 
-<!-- x-release-please-start-version -->
 | 宿主 | 安装 |
 |---|---|
 | Claude Code | `claude plugin marketplace add runkids/figlens`, `claude plugin install figlens@figlens` |
 | Codex | `codex plugin marketplace add runkids/figlens`, `codex plugin add figlens@figlens` |
-| Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/v0.11.0` |
-| Cursor | `git clone --depth 1 --branch v0.11.0 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens`，然后重新加载窗口 |
-| Kimi Code | 在会话中运行 `/plugins install https://github.com/runkids/figlens/tree/v0.11.0`，然后运行 `/reload` |
-<!-- x-release-please-end -->
+| Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/main` |
+| Cursor | `git clone --depth 1 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens`，然后重新加载窗口 |
+| Kimi Code | 在会话中运行 `/plugins install https://github.com/runkids/figlens/tree/main`，然后运行 `/reload` |
+
+[skillshare](https://github.com/runkids/skillshare) 可一次把同一个 plugin 安装到多个宿主：`skillshare plugin add https://github.com/runkids/figlens.git --target claude --target codex --target cursor -g`；之后用 `skillshare plugin update figlens -g` 更新。
 
 重启宿主或开启新会话，确认已列出 figlens tools。Plugin 安装会复制仓库：约 7 MB，Codex 另外保留 Git 历史（约 60 MB）。Antigravity 只加载 skill 的前 24 KB；完整指引由 server 的 `workflow` tool 提供。暂不支持 Muse。[宿主对照表与验证范围](wiki/host-plugins.md)
 
@@ -68,34 +69,28 @@
 
 **Claude Code**（Node.js 18+，macOS/Linux）：
 
-<!-- x-release-please-start-version -->
 ```sh
-claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens@0.11.0 mcp
+claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
-<!-- x-release-please-end -->
 
 **Codex CLI**（Node.js 18+，macOS/Linux）：
 
-<!-- x-release-please-start-version -->
 ```sh
-codex mcp add figlens -- npx -y @runkids/figlens@0.11.0 mcp
+codex mcp add figlens -- npx -y @runkids/figlens mcp
 ```
-<!-- x-release-please-end -->
 
 **任意 MCP 客户端：**
 
-<!-- x-release-please-start-version -->
 ```json
 {
   "mcpServers": {
     "figlens": {
       "command": "npx",
-      "args": ["-y", "@runkids/figlens@0.11.0", "mcp"]
+      "args": ["-y", "@runkids/figlens", "mcp"]
     }
   }
 }
 ```
-<!-- x-release-please-end -->
 
 没有 Node.js 时，先安装独立可执行文件（见 [CLI](#setup-cli)），再改用 `"command": "figlens", "args": ["mcp"]`。打开新的 session，确认能看到 figlens 工具（Claude Code 用 `/mcp`）。无需另外安装 skill。在 `mcp` 后面加上 `--root <dir>`，可以限制 figlens 能读写的文件夹。
 
@@ -114,14 +109,13 @@ codex mcp add figlens -- npx -y @runkids/figlens@0.11.0 mcp
 
 两个设计／输出范围和两个 storage 允许范围的示例：
 
-<!-- x-release-please-start-version -->
 ```json
 {
   "mcpServers": {
     "figlens": {
       "command": "npx",
       "args": [
-        "-y", "@runkids/figlens@0.11.0", "mcp",
+        "-y", "@runkids/figlens", "mcp",
         "--root", "/absolute/designs",
         "--root", "/absolute/project",
         "--storage-root", "/absolute/storage-a",
@@ -131,7 +125,6 @@ codex mcp add figlens -- npx -y @runkids/figlens@0.11.0 mcp
   }
 }
 ```
-<!-- x-release-please-end -->
 
 没有 `figlens mcp --storage` 选项。实际位置由 `index` tool 的 `storage` 参数指定（允许的 storage 范围内的绝对路径），或使用 CLI `figlens index prepare design.fig --storage /absolute/storage-a`。`prepare` 后会记住该 workspace 的位置，跨重启、跨 host 复用，不必再传 `storage` 或 `--storage-root`。未自定义位置时，使用每位用户的默认目录，无需 storage 标志。
 
@@ -209,12 +202,10 @@ skillshare sync
 
 同一个工具也能为这些 agent 设置 figlens 的 MCP 连接：
 
-<!-- x-release-please-start-version -->
 ```sh
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.11.0 mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
 skillshare sync mcp --global
 ```
-<!-- x-release-please-end -->
 
 其他安装 skill 的方式：
 

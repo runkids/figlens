@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="https://figlens.runkids.cc/"><img src="https://img.shields.io/badge/website-figlens.runkids.cc-8b78c8" alt="figlens website"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b78c8" alt="MIT license"></a>
   <a href="https://github.com/runkids/figlens/releases"><img src="https://img.shields.io/github/downloads/runkids/figlens/total?label=GitHub%20downloads&amp;color=79b9a5" alt="Total GitHub release asset downloads"></a>
   <a href="https://pi.dev/packages/@runkids/figlens"><img src="https://img.shields.io/badge/Pi-package-8b78c8" alt="Pi package"></a>
@@ -18,7 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="#start">Empezar</a> · <a href="#demo">Demo</a> · <a href="#why">Por qué</a> · <a href="#bundle">Qué recibe el agente</a> · <a href="#pi">Pi</a> · <a href="#limitations">Limitaciones</a>
+  <a href="#start">Empezar</a> · <a href="#demo">Demo</a> · <a href="#why">Por qué</a> · <a href="#bundle">Qué recibe el agente</a> · <a href="#pi">Pi</a> · <a href="#limitations">Limitaciones</a> · <a href="https://figlens.runkids.cc/es/docs/"><b>Documentación</b></a>
 </p>
 
 **El problema.** Tu agente necesita valores de layout, texto y recursos para implementar una pantalla. En un servidor remoto o en CI, ese contexto debe estar disponible junto al código sin depender de una aplicación de escritorio en ejecución.
@@ -50,15 +51,15 @@ Pon `design.fig` en tu proyecto y elige **una** configuración. Cada una le da a
 
 Una sola instalación añade el skill de figlens y el servidor MCP a tu agente (Node.js 18+). El servidor queda fijado a la versión del plugin (`npx -y @runkids/figlens@<version> mcp`); actualiza el plugin para pasar a una versión nueva.
 
-<!-- x-release-please-start-version -->
 | Host | Instalación |
 |---|---|
 | Claude Code | `claude plugin marketplace add runkids/figlens`, `claude plugin install figlens@figlens` |
 | Codex | `codex plugin marketplace add runkids/figlens`, `codex plugin add figlens@figlens` |
-| Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/v0.11.0` |
-| Cursor | `git clone --depth 1 --branch v0.11.0 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens` y recarga la ventana |
-| Kimi Code | `/plugins install https://github.com/runkids/figlens/tree/v0.11.0` en una sesión y luego `/reload` |
-<!-- x-release-please-end -->
+| Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/main` |
+| Cursor | `git clone --depth 1 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens` y recarga la ventana |
+| Kimi Code | `/plugins install https://github.com/runkids/figlens/tree/main` en una sesión y luego `/reload` |
+
+[skillshare](https://github.com/runkids/skillshare) instala el mismo plugin en varios hosts a la vez: `skillshare plugin add https://github.com/runkids/figlens.git --target claude --target codex --target cursor -g`; actualízalo después con `skillshare plugin update figlens -g`.
 
 Reinicia el host o abre una sesión nueva y comprueba que aparecen las herramientas de figlens. La instalación de un plugin copia el repositorio: unos 7 MB, más el historial de Git (unos 60 MB) en Codex. Antigravity carga solo los primeros 24 KB del skill; la herramienta `workflow` del servidor ofrece la guía completa. Muse aún no está soportado. [Tabla de hosts y qué se verificó](wiki/host-plugins.md)
 
@@ -68,34 +69,28 @@ Reinicia el host o abre una sesión nueva y comprueba que aparecen las herramien
 
 **Claude Code** (Node.js 18+, macOS/Linux):
 
-<!-- x-release-please-start-version -->
 ```sh
-claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens@0.11.0 mcp
+claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
-<!-- x-release-please-end -->
 
 **Codex CLI** (Node.js 18+, macOS/Linux):
 
-<!-- x-release-please-start-version -->
 ```sh
-codex mcp add figlens -- npx -y @runkids/figlens@0.11.0 mcp
+codex mcp add figlens -- npx -y @runkids/figlens mcp
 ```
-<!-- x-release-please-end -->
 
 **Cualquier cliente MCP:**
 
-<!-- x-release-please-start-version -->
 ```json
 {
   "mcpServers": {
     "figlens": {
       "command": "npx",
-      "args": ["-y", "@runkids/figlens@0.11.0", "mcp"]
+      "args": ["-y", "@runkids/figlens", "mcp"]
     }
   }
 }
 ```
-<!-- x-release-please-end -->
 
 Sin Node.js, instala el binario independiente ([CLI](#setup-cli)) y usa `"command": "figlens", "args": ["mcp"]`. Abre una sesión nueva y comprueba que aparecen las herramientas de figlens (`/mcp` en Claude Code). No hace falta instalar el skill por separado. Añade `--root <dir>` después de `mcp` para limitar qué carpetas puede leer y escribir figlens.
 
@@ -114,14 +109,13 @@ Usa rutas absolutas a directorios existentes. Cada opción y ruta es un elemento
 
 Ejemplo con dos raíces de diseño/salida y dos raíces de almacenamiento permitidas:
 
-<!-- x-release-please-start-version -->
 ```json
 {
   "mcpServers": {
     "figlens": {
       "command": "npx",
       "args": [
-        "-y", "@runkids/figlens@0.11.0", "mcp",
+        "-y", "@runkids/figlens", "mcp",
         "--root", "/absolute/designs",
         "--root", "/absolute/project",
         "--storage-root", "/absolute/storage-a",
@@ -131,7 +125,6 @@ Ejemplo con dos raíces de diseño/salida y dos raíces de almacenamiento permit
   }
 }
 ```
-<!-- x-release-please-end -->
 
 No existe `figlens mcp --storage`. Selecciona la ubicación real con el argumento `storage` del tool `index` (ruta absoluta dentro de una raíz permitida), o con CLI: `figlens index prepare design.fig --storage /absolute/storage-a`. Tras `prepare`, figlens recuerda la ubicación del workspace y la reutiliza entre reinicios y hosts sin repetir `storage` ni `--storage-root`. Sin ubicación personalizada se usan los directorios predeterminados del usuario, sin flags de almacenamiento.
 
@@ -209,12 +202,10 @@ skillshare sync
 
 La misma herramienta también puede configurar la conexión MCP de figlens para esos agents:
 
-<!-- x-release-please-start-version -->
 ```sh
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.11.0 mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
 skillshare sync mcp --global
 ```
-<!-- x-release-please-end -->
 
 Otras formas de instalar el skill:
 

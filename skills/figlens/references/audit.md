@@ -21,9 +21,11 @@ Apply the shared [Verification evidence](../SKILL.md#verification-evidence) rule
 - A row of seven 104px cells does not establish whether the product requires fixed slots or distribution over the current item count. If supported by the existing data contract, check 1, 3 and 7 items against the intended alignment. One seven-item snapshot alone does not prove a fixed seven-column requirement; keep that decision unresolved without design/requirement evidence.
 - For progress markers, check the connector endpoints and stacking, not only circle diameter and line width. A line behind a translucent circle may remain visible inside it. Compare the composited result and ancestor opacity/clipping before prescribing a fix.
 
+When `compare-image` regions sit over content that comes from data (back-office images, user names, balances, an empty list on a test account), rerun with those layers in `--ignore` (MCP `ignore`) so the score tracks layout, and say what was ignored and why. An ignored layer's own size and position are no longer measured: check them with `inspect`. `image: true` regions are image content to confirm (asset, crop, fit) before ignoring, not proof of a layout match. After the default run, rerun with `--threshold 16` (lower for fainter shadows) to find light borders, dividers and shadows the default 48 cannot see.
+
 ## 3. Correct and stop on evidence
 
-When fixes are authorized, correct confirmed differences in the shared implementation and rerun the state that exposed each one. Run relevant project checks as well; compilation/lint does not replace the visual regression check. Leave unsupported design intent as a question rather than inventing product behavior.
+When fixes are authorized, correct confirmed differences in the shared implementation, within the project's components, tokens and conventions and keeping its checks passing, and rerun the state that exposed each one. Run relevant project checks as well; compilation/lint does not replace the visual regression check. Leave unsupported design intent as a question rather than inventing product behavior.
 
 Each further read or rerun must answer a named unresolved question with new evidence: a relevant state, descendant, effective code path or implementation screenshot. If rereading the same evidence leaves the decision unresolved, name the missing evidence and its next action. Stop that item until new evidence is available; finish independent items instead of restarting the audit.
 

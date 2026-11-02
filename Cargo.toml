@@ -1,13 +1,13 @@
 [package]
 name = "figlens"
-version = "0.11.0"
+version = "0.11.2"
 edition = "2024"
 description = "Figma screens for coding agents, read from a saved .fig: REST-shaped nodes, variables, assets, renders and bundles, with no Figma app, login or API limit"
 license = "MIT"
 # Shipped as release binaries, Homebrew and npm; not on crates.io.
 publish = false
 repository = "https://github.com/runkids/figlens"
-homepage = "https://github.com/runkids/figlens"
+homepage = "https://figlens.runkids.cc"
 readme = "README.md"
 keywords = ["figma", "fig", "design", "design-to-code", "cli"]
 categories = ["command-line-utilities", "parser-implementations", "multimedia::images"]

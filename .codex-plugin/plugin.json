@@ -1,12 +1,12 @@
 {
   "name": "figlens",
-  "version": "0.11.0",
+  "version": "0.11.2",
   "description": "Read local Figma .fig files offline: the figlens skill plus the figlens MCP server, with no Figma app, login or API limit.",
   "author": {
     "name": "runkids",
     "url": "https://github.com/runkids"
   },
-  "homepage": "https://github.com/runkids/figlens",
+  "homepage": "https://figlens.runkids.cc",
   "repository": "https://github.com/runkids/figlens",
   "license": "MIT",
   "keywords": [
@@ -26,6 +26,6 @@
       "Read",
       "Write"
     ],
-    "websiteURL": "https://github.com/runkids/figlens"
+    "websiteURL": "https://figlens.runkids.cc"
   }
 }

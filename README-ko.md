@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="https://figlens.runkids.cc/"><img src="https://img.shields.io/badge/website-figlens.runkids.cc-8b78c8" alt="figlens website"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b78c8" alt="MIT license"></a>
   <a href="https://github.com/runkids/figlens/releases"><img src="https://img.shields.io/github/downloads/runkids/figlens/total?label=GitHub%20downloads&amp;color=79b9a5" alt="Total GitHub release asset downloads"></a>
   <a href="https://pi.dev/packages/@runkids/figlens"><img src="https://img.shields.io/badge/Pi-package-8b78c8" alt="Pi package"></a>
@@ -18,7 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="#start">시작</a> · <a href="#demo">데모</a> · <a href="#why">이유</a> · <a href="#bundle">에이전트가 받는 것</a> · <a href="#pi">Pi</a> · <a href="#limitations">제한 사항</a>
+  <a href="#start">시작</a> · <a href="#demo">데모</a> · <a href="#why">이유</a> · <a href="#bundle">에이전트가 받는 것</a> · <a href="#pi">Pi</a> · <a href="#limitations">제한 사항</a> · <a href="https://figlens.runkids.cc/ko/docs/"><b>문서</b></a>
 </p>
 
 **문제.** 화면을 구현하려면 에이전트에 레이아웃 값, 텍스트, 에셋이 필요합니다. 원격 호스트나 CI에서는 실행 중인 데스크톱 앱에 의존하지 않고 코드와 함께 디자인 정보에 접근할 수 있어야 합니다.
@@ -50,15 +51,15 @@
 
 한 번 설치하면 figlens skill과 MCP 서버가 에이전트에 추가됩니다(Node.js 18+). 서버는 플러그인 릴리스에 고정됩니다(`npx -y @runkids/figlens@<version> mcp`). 새 버전으로 바꾸려면 플러그인을 업데이트하세요.
 
-<!-- x-release-please-start-version -->
 | 호스트 | 설치 |
 |---|---|
 | Claude Code | `claude plugin marketplace add runkids/figlens`, `claude plugin install figlens@figlens` |
 | Codex | `codex plugin marketplace add runkids/figlens`, `codex plugin add figlens@figlens` |
-| Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/v0.11.0` |
-| Cursor | `git clone --depth 1 --branch v0.11.0 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens` 후 창을 다시 로드 |
-| Kimi Code | 세션에서 `/plugins install https://github.com/runkids/figlens/tree/v0.11.0` 실행 후 `/reload` |
-<!-- x-release-please-end -->
+| Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/main` |
+| Cursor | `git clone --depth 1 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens` 후 창을 다시 로드 |
+| Kimi Code | 세션에서 `/plugins install https://github.com/runkids/figlens/tree/main` 실행 후 `/reload` |
+
+[skillshare](https://github.com/runkids/skillshare)로 같은 plugin을 여러 호스트에 한 번에 설치할 수 있습니다: `skillshare plugin add https://github.com/runkids/figlens.git --target claude --target codex --target cursor -g`; 이후 업데이트는 `skillshare plugin update figlens -g`.
 
 호스트를 다시 시작하거나 새 세션을 열고 figlens 도구가 표시되는지 확인하세요. 플러그인 설치는 저장소를 복사합니다(약 7 MB, Codex는 Git 기록도 보관해 약 60 MB). Antigravity는 skill의 처음 24 KB만 로드하며, 전체 지침은 서버의 `workflow` 도구가 제공합니다. Muse는 아직 지원하지 않습니다. [호스트 표와 검증 범위](wiki/host-plugins.md)
 
@@ -68,34 +69,28 @@
 
 **Claude Code** (Node.js 18+, macOS/Linux):
 
-<!-- x-release-please-start-version -->
 ```sh
-claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens@0.11.0 mcp
+claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
-<!-- x-release-please-end -->
 
 **Codex CLI** (Node.js 18+, macOS/Linux):
 
-<!-- x-release-please-start-version -->
 ```sh
-codex mcp add figlens -- npx -y @runkids/figlens@0.11.0 mcp
+codex mcp add figlens -- npx -y @runkids/figlens mcp
 ```
-<!-- x-release-please-end -->
 
 **모든 MCP 클라이언트:**
 
-<!-- x-release-please-start-version -->
 ```json
 {
   "mcpServers": {
     "figlens": {
       "command": "npx",
-      "args": ["-y", "@runkids/figlens@0.11.0", "mcp"]
+      "args": ["-y", "@runkids/figlens", "mcp"]
     }
   }
 }
 ```
-<!-- x-release-please-end -->
 
 Node.js가 없다면 독립 바이너리([CLI](#setup-cli))를 설치하고 `"command": "figlens", "args": ["mcp"]`를 사용하세요. 새 세션을 열고 figlens 도구가 목록에 나타나는지 확인하세요(Claude Code에서는 `/mcp`). skill을 따로 설치할 필요는 없습니다. `mcp` 뒤에 `--root <dir>`를 붙이면 figlens가 읽고 쓸 수 있는 폴더를 제한할 수 있습니다.
 
@@ -114,14 +109,13 @@ Node.js가 없다면 독립 바이너리([CLI](#setup-cli))를 설치하고 `"co
 
 디자인/출력 루트 두 개와 허용된 저장소 루트 두 개의 예:
 
-<!-- x-release-please-start-version -->
 ```json
 {
   "mcpServers": {
     "figlens": {
       "command": "npx",
       "args": [
-        "-y", "@runkids/figlens@0.11.0", "mcp",
+        "-y", "@runkids/figlens", "mcp",
         "--root", "/absolute/designs",
         "--root", "/absolute/project",
         "--storage-root", "/absolute/storage-a",
@@ -131,7 +125,6 @@ Node.js가 없다면 독립 바이너리([CLI](#setup-cli))를 설치하고 `"co
   }
 }
 ```
-<!-- x-release-please-end -->
 
 `figlens mcp --storage` 옵션은 없습니다. 실제 위치는 `index` tool의 `storage` 인수(허용된 저장소 루트 내 절대 경로) 또는 CLI `figlens index prepare design.fig --storage /absolute/storage-a`로 선택합니다. `prepare` 후에는 workspace 위치를 기억하므로 재시작이나 호스트 변경 후에도 `storage`나 `--storage-root` 없이 재사용합니다. 사용자 지정 위치가 없으면 사용자별 기본 디렉터리를 사용하며 저장소 플래그는 필요 없습니다.
 
@@ -209,12 +202,10 @@ skillshare sync
 
 같은 도구로 해당 에이전트들의 figlens MCP 연결도 설정할 수 있습니다:
 
-<!-- x-release-please-start-version -->
 ```sh
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.11.0 mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
 skillshare sync mcp --global
 ```
-<!-- x-release-please-end -->
 
 skill을 설치하는 다른 방법:
 

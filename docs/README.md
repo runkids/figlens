@@ -1,6 +1,6 @@
 # figlens — User guide
 
-[← README](../README.md)
+[← README](../README.md) · [figlens.runkids.cc](https://figlens.runkids.cc/docs/)
 
 <p align="center">
   <a href="README.md">English</a> · <a href="README-de.md">Deutsch</a> · <a href="README-es.md">Español</a> · <a href="README-fr.md">Français</a> · <a href="README-ja.md">日本語</a> · <a href="README-ko.md">한국어</a> · <a href="README-pt-BR.md">Português</a> · <a href="README-zh-CN.md">简体中文</a> · <a href="README-zh-TW.md">繁體中文</a>
@@ -146,13 +146,11 @@ npx skills add runkids/figlens --skill figlens
 
 **skillshare.** Manage the skill and the MCP connection across Claude Code, Codex and Cursor from one place with [skillshare](https://github.com/runkids/skillshare):
 
-<!-- x-release-please-start-version -->
 ```sh
 skillshare install github.com/runkids/figlens/skills/figlens
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.11.0 mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
 skillshare sync && skillshare sync mcp --global
 ```
-<!-- x-release-please-end -->
 
 **Install notes.** The npm launcher downloads the matching native binary on first use, verifies it against the release's SHA-256 checksums and caches it. Script installs update with `figlens update`; Homebrew installs with `brew upgrade figlens`. Binaries cover macOS (Apple silicon, Intel), Linux (arm64, x86_64, static musl) and Windows (x86_64). Every install path also puts `figlens-embed`, the runtime for the [optional semantic search](#semantic-search), beside `figlens`; it loads no model until you configure one.
 
@@ -243,7 +241,7 @@ Experimental. `figlens search <file> <query> --mode semantic|hybrid` ranks layer
 | `export <file> --batch <items.json>`, `--batch -` (stdin) | One decode, many exports, each with its own options: a JSON array of 1-64 `{node, out, bounds?, scale?, quality?, maxKb?, maxSize?, hide?}` (MCP `export_batch`). Prints one manifest `{count, failed, items}`: per item the `export` output, or `{error}` (the others still export); a malformed item or a repeated `out` fails before any write |
 | `preview <file> [node] [--out preview.html] [--port N] [--bind IP]` | Local viewer that never writes the design; Semantic/Hybrid ranked search after its Enable index; `--out` writes a standalone offline snapshot; results and copied context name the page and, live, the loaded file path, source snapshot and local revision (unknown offline, where the path is never embedded); context also carries the reference scope's coverage, `complete: null` when unchecked. Visual/Hybrid accepts a reference PNG or selected layer with a pixel crop. Enable visual indexing explicitly; query images are not stored. |
 | `compare <file> <nodes.json> <node>` | Diff against a REST export of the same frame |
-| `compare-image <file> <node> <screenshot.png>` | Compare a screenshot of the built screen with the node rendered at its scale (`--scale`, `--limit`, `--out diff.png`; MCP `compare_image`). Prints `mismatch`, `nonTextMismatch` and the largest differing regions in node pixels, each with the deepest layers under it; `text: true` marks regions over text (often font fallback; review each) |
+| `compare-image <file> <node> <screenshot.png>` | Compare a screenshot of the built screen with the node rendered at its scale (`--scale`, `--limit`, `--out diff.png`, `--full-page` for a whole-page capture shorter than the frame, `--ignore` for layers whose content comes from data, `--threshold` to see light borders; `image: true` marks image fills; MCP `compare_image`). Prints `mismatch`, `nonTextMismatch` and the largest differing regions in node pixels, each with the deepest layers under it; `text: true` marks regions over text (often font fallback; review each) |
 | `node <file> <node>` | One raw `.fig` node |
 | `index prepare\|refresh\|rebuild\|clear\|status\|add\|remove\|relocate\|reset\|track\|untrack\|embed\|visual` | Local workspace in the per-user figlens state directory, or under a `--storage DIR` that the workspace then remembers. `prepare <file> --scope NODE` builds that scope's search index once; then `search --file <file>` (or `--workspace DIR`) answers without parsing, ranked across the workspace's sources. `refresh` rebuilds changed files, `rebuild` all or one `--source`/`--scope`, `clear` drops unused indexes; the previous index serves until a new one is ready. `reset` removes only the workspace database, never designs, exports or the remembered location. `track --scope NODE` records that scope's changes from a baseline build; `untrack` stops, keeping its history. `embed` embeds published scopes with the configured model, using CPU and memory; run it only when you want semantic workspace search. `visual --scope NODE` renders that published scope's screens and components for image search, embedding them when a vision profile is configured; run it only when you want visual workspace search. |
 | `jobs status\|cancel <jobId>` | Show or cancel an index build; cancel returns after the build stopped |

@@ -23,7 +23,7 @@ gh pr list --label 'autorelease: pending' --state open
 
 The open Release PR holds the next version and its CHANGELOG entry. No PR: check the latest "Release Please" run (`gh run list --workflow release-please.yml --limit 3`) and the repository setting that lets Actions create pull requests. Dispatch the workflow only when the user authorizes it.
 
-Requested version: set `"release-as": "X.Y.Z"` on the `.` package in `.github/release-please-config.json` through a PR, confirm the Release PR moves to that version, and remove the setting in the first PR after the release. A `Release-As:` footer is lost, because squash merges here keep only the PR title.
+Requested version: with the user's authorization for a direct push, push an empty `chore(release): request X.Y.Z` commit with a `Release-As: X.Y.Z` footer to `main` (see the `release` topic), then confirm the Release PR moves to that version. The footer covers only that release; nothing is removed afterwards.
 
 ## 2. Review the Release PR
 
@@ -44,7 +44,7 @@ gh release view v<version> --json isDraft,assets --jq '.isDraft, (.assets[].name
 gh release download v<version> --dir samples/release-v<version> && (cd samples/release-v<version> && shasum -a 256 -c SHA256SUMS)
 ```
 
-Confirm the tag points to the exact tested merge SHA and its Cargo/npm versions agree. Expect five archives (macOS arm64/x86_64, Linux musl arm64/x86_64, Windows zip) plus `SHA256SUMS`. Check each archive contains its executable and the tag's complete `skills/figlens/` directory, including `SKILL.md`, `references/audit.md`, `references/planning.md`, `references/planning-details.md` and `references/yolo.md`. Unpack the archive for this machine and run `figlens --version` and `figlens tree <a sample .fig> --depth 1`; for a bug fix, exercise the reported behavior with the packaged binary. Private designs and outputs stay in ignored `samples/`.
+Confirm the tag points to the exact tested merge SHA and its Cargo/npm versions agree. Expect five archives (macOS arm64/x86_64, Linux musl arm64/x86_64, Windows zip) plus `SHA256SUMS`. Check each archive contains its executable and the tag's complete `skills/figlens/` directory, including `SKILL.md`, `references/audit.md`, `references/planning.md`, `references/planning-details.md`, `references/yolo.md` and `references/search.md`. Unpack the archive for this machine and run `figlens --version` and `figlens tree <a sample .fig> --depth 1`; for a bug fix, exercise the reported behavior with the packaged binary. Private designs and outputs stay in ignored `samples/`.
 
 ## 4. Write the release notes
 

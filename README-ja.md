@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="https://figlens.runkids.cc/"><img src="https://img.shields.io/badge/website-figlens.runkids.cc-8b78c8" alt="figlens website"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b78c8" alt="MIT license"></a>
   <a href="https://github.com/runkids/figlens/releases"><img src="https://img.shields.io/github/downloads/runkids/figlens/total?label=GitHub%20downloads&amp;color=79b9a5" alt="Total GitHub release asset downloads"></a>
   <a href="https://pi.dev/packages/@runkids/figlens"><img src="https://img.shields.io/badge/Pi-package-8b78c8" alt="Pi package"></a>
@@ -18,7 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="#start">はじめに</a> · <a href="#demo">デモ</a> · <a href="#why">理由</a> · <a href="#bundle">エージェントが受け取るもの</a> · <a href="#pi">Pi</a> · <a href="#limitations">制限</a>
+  <a href="#start">はじめに</a> · <a href="#demo">デモ</a> · <a href="#why">理由</a> · <a href="#bundle">エージェントが受け取るもの</a> · <a href="#pi">Pi</a> · <a href="#limitations">制限</a> · <a href="https://figlens.runkids.cc/ja/docs/"><b>ドキュメント</b></a>
 </p>
 
 **課題。** 画面の実装にはレイアウト値、テキスト、素材が必要です。リモートホストや CI では、実行中のデスクトップアプリに依存せず、コードと一緒にデザイン情報へアクセスできる必要があります。
@@ -50,15 +51,15 @@
 
 1 回のインストールで figlens の skill と MCP サーバーをエージェントに追加します（Node.js 18+）。サーバーはプラグインのリリースに固定されます（`npx -y @runkids/figlens@<version> mcp`）。新しいバージョンにするにはプラグインを更新してください。
 
-<!-- x-release-please-start-version -->
 | ホスト | インストール |
 |---|---|
 | Claude Code | `claude plugin marketplace add runkids/figlens`, `claude plugin install figlens@figlens` |
 | Codex | `codex plugin marketplace add runkids/figlens`, `codex plugin add figlens@figlens` |
-| Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/v0.11.0` |
-| Cursor | `git clone --depth 1 --branch v0.11.0 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens` の後、ウィンドウを再読み込み |
-| Kimi Code | セッション内で `/plugins install https://github.com/runkids/figlens/tree/v0.11.0`、その後 `/reload` |
-<!-- x-release-please-end -->
+| Antigravity | `agy plugin install https://github.com/runkids/figlens/tree/main` |
+| Cursor | `git clone --depth 1 https://github.com/runkids/figlens ~/.cursor/plugins/local/figlens` の後、ウィンドウを再読み込み |
+| Kimi Code | セッション内で `/plugins install https://github.com/runkids/figlens/tree/main`、その後 `/reload` |
+
+[skillshare](https://github.com/runkids/skillshare) なら同じ plugin を複数のホストへ一度にインストールできます：`skillshare plugin add https://github.com/runkids/figlens.git --target claude --target codex --target cursor -g`。更新は `skillshare plugin update figlens -g`。
 
 ホストを再起動するか新しいセッションを開始し、figlens のツールが表示されることを確認してください。プラグインはリポジトリをコピーします（約 7 MB。Codex は Git 履歴も保持し約 60 MB）。Antigravity は skill の先頭 24 KB しか読み込みません。完全なガイダンスはサーバーの `workflow` ツールが提供します。Muse はまだサポートしていません。[ホスト対応表と検証範囲](wiki/host-plugins.md)
 
@@ -68,34 +69,28 @@
 
 **Claude Code**（Node.js 18+、macOS/Linux）：
 
-<!-- x-release-please-start-version -->
 ```sh
-claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens@0.11.0 mcp
+claude mcp add --transport stdio --scope local figlens -- npx -y @runkids/figlens mcp
 ```
-<!-- x-release-please-end -->
 
 **Codex CLI**（Node.js 18+、macOS/Linux）：
 
-<!-- x-release-please-start-version -->
 ```sh
-codex mcp add figlens -- npx -y @runkids/figlens@0.11.0 mcp
+codex mcp add figlens -- npx -y @runkids/figlens mcp
 ```
-<!-- x-release-please-end -->
 
 **任意の MCP クライアント：**
 
-<!-- x-release-please-start-version -->
 ```json
 {
   "mcpServers": {
     "figlens": {
       "command": "npx",
-      "args": ["-y", "@runkids/figlens@0.11.0", "mcp"]
+      "args": ["-y", "@runkids/figlens", "mcp"]
     }
   }
 }
 ```
-<!-- x-release-please-end -->
 
 Node.js がない場合は、スタンドアロン版のバイナリ（[CLI](#setup-cli)）をインストールし、`"command": "figlens", "args": ["mcp"]` を使います。新しいセッションを開き、figlens のツールが一覧に表示されることを確認します（Claude Code では `/mcp`）。skill を別途インストールする必要はありません。`mcp` の後に `--root <dir>` を付けると、figlens が読み書きできるフォルダーを制限できます。
 
@@ -114,14 +109,13 @@ Node.js がない場合は、スタンドアロン版のバイナリ（[CLI](#se
 
 デザイン／出力用ルート 2 つと、保存先の許可ルート 2 つの例：
 
-<!-- x-release-please-start-version -->
 ```json
 {
   "mcpServers": {
     "figlens": {
       "command": "npx",
       "args": [
-        "-y", "@runkids/figlens@0.11.0", "mcp",
+        "-y", "@runkids/figlens", "mcp",
         "--root", "/absolute/designs",
         "--root", "/absolute/project",
         "--storage-root", "/absolute/storage-a",
@@ -131,7 +125,6 @@ Node.js がない場合は、スタンドアロン版のバイナリ（[CLI](#se
   }
 }
 ```
-<!-- x-release-please-end -->
 
 `figlens mcp --storage` オプションはありません。実際の保存先は `index` ツールの `storage` 引数（許可された保存先ルート内の絶対パス）、または CLI `figlens index prepare design.fig --storage /absolute/storage-a` で選択します。`prepare` 後は workspace の場所が記憶され、再起動やホストをまたいで `storage` や `--storage-root` を再指定せず再利用できます。未指定時はユーザーごとの既定ディレクトリを使うため、保存先フラグは不要です。
 
@@ -209,12 +202,10 @@ skillshare sync
 
 同じツールで、それらのエージェントの figlens MCP 接続も設定できます：
 
-<!-- x-release-please-start-version -->
 ```sh
-skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens@0.11.0 mcp
+skillshare mcp add figlens --global --target claude --target codex --target cursor --no-tui -- npx -y @runkids/figlens mcp
 skillshare sync mcp --global
 ```
-<!-- x-release-please-end -->
 
 skill のその他のインストール方法：
 
