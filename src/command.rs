@@ -67,6 +67,8 @@ pub enum Command {
         file_key: Option<String>,
         name: Option<String>,
         states: bool,
+        /// The source's stamp read before the tree was decoded; see `bundle::write`.
+        decoded: Option<figlens::search::Stamp>,
     },
     Export {
         node: String,
@@ -362,6 +364,7 @@ impl Command {
                     file_key,
                     name,
                     states,
+                    decoded: None,
                 }
             }
             "export" => {
@@ -440,6 +443,7 @@ impl Command {
                     file_key: string("fileKey"),
                     name: string("name"),
                     states: call.argument("states") == true,
+                    decoded: None,
                 }
             }
             "export" => {
@@ -471,6 +475,14 @@ impl Command {
             }
             _ => return Err(USAGE.into()),
         })
+    }
+
+    /// Sets a bundle's `decoded` stamp; other commands ignore it.
+    pub fn decoded(mut self, stamp: Option<figlens::search::Stamp>) -> Self {
+        if let Self::Bundle { decoded, .. } = &mut self {
+            *decoded = stamp;
+        }
+        self
     }
 
     pub fn execute(self, tree: &Tree, fig: &Path) -> Result<Output, Box<dyn Error>> {
@@ -676,6 +688,7 @@ impl Command {
                 file_key,
                 name,
                 states,
+                decoded,
             } => {
                 let id = normalize_id(&node);
                 require_target_root(tree, &id)?;
@@ -688,6 +701,7 @@ impl Command {
                 let warnings = figlens::bundle::write_with_states(
                     tree,
                     fig,
+                    decoded,
                     key,
                     name.as_deref(),
                     &id,

@@ -1544,7 +1544,7 @@ fn bundle_frames_skip_a_too_deep_frame_and_continue() {
         "2",
     ];
     let fig = Path::new("examples/first-success/design.fig");
-    crate::batch(&tree, fig, &args.map(String::from)).unwrap();
+    crate::batch(&tree, fig, None, &args.map(String::from)).unwrap();
     assert_eq!(
         (out.join("0-2.zip").exists(), out.join("0-1.zip").exists()),
         (false, true)
