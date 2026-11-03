@@ -71,6 +71,37 @@ After all verified fixes pass their checks:
 
 Keep private fixtures and local report paths out of public comments. Model planning quality, deterministic tests and visual acceptance are separate evidence; preserve their actual results throughout follow-up.
 
+<a id="release-pr"></a>
+
+## Release PR
+
+Run these checks on the bot's Release PR before merging it; the `figlens-release` skill gives the order.
+
+1. **CHANGELOG coverage.** Release Please skips a squash commit whose title is not Conventional (`clipboard: ...` rather than `feat(clipboard): ...`). List the skipped commits:
+
+   ```sh
+   git log --oneline v<last>..origin/main | grep -Ev '^[0-9a-f]+ (feat|fix|perf|docs|chore|ci|test|refactor|build|style|revert)(\(.+\))?!?: '
+   ```
+
+   For each user-visible one, append a block to the merged PR's body. Give one Conventional message per change, separated by blank lines:
+
+   ```text
+   BEGIN_COMMIT_OVERRIDE
+   feat(<scope>): <summary> (#<pr>)
+   END_COMMIT_OVERRIDE
+   ```
+
+   Then run `gh workflow run release-please.yml --ref main` and reread the Release PR's version and CHANGELOG.
+2. **Docs coverage.** Every user-visible `feat` and `fix` is described in all of these places (`rg -il '<feature term>'` over them is a quick check):
+   - the lead of `README.md` and every root `README-*.md`: the feature bullets, and the setup line for a new way to get a `.fig`
+   - the reference in `docs/README*.md`
+   - `npm/README.md` and `pi/README.md`
+   - the site landing page (`site/src/data.ts`, `site/src/pages/index.astro`)
+   - `skills/figlens/SKILL.md` and the wiki topics
+
+   Fix gaps in a docs PR before merging the Release PR. The site deploys only at publish, so the fix ships with the release.
+3. **CI.** Runs on the bot's PR wait as `action_required`. Approve the run for the head you will merge with `gh api -X POST repos/runkids/figlens/actions/runs/<id>/approve`. A push to `main` rebuilds the Release PR, and its new run needs approval again.
+
 ## Opening an issue
 
 Write issues in English and search open and closed issues first; link related ones instead of opening a duplicate.

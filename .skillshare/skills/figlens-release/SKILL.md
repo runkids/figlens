@@ -30,30 +30,8 @@ Requested version: with the user's authorization for a direct push, push an empt
 - The version follows the policy in the `release` topic; a breaking change needs migration notes in the CHANGELOG.
 - `Cargo.toml`, `Cargo.lock`, `npm/package.json` and the host plugin manifests carry the same version (`python3 -B -m unittest scripts/host_plugins_test.py`).
 - The tracking manifest agrees with that version.
-- Every user-visible change in `<last tag>..origin/main` has a CHANGELOG entry. Release Please skips a squash commit whose title is not Conventional (`clipboard: ...` rather than `feat(clipboard): ...`). List the commits it skips:
-
-  ```sh
-  git log --format='%h %s' v<last>..origin/main | grep -Ev '^[0-9a-f]+ (feat|fix|perf|docs|chore|ci|test|refactor|build|style|revert)(\(.+\))?!?: '
-  ```
-
-  For each user-visible one, append the Conventional message to the merged PR's body, one entry per change, separated by blank lines:
-
-  ```text
-  BEGIN_COMMIT_OVERRIDE
-  feat(<scope>): <summary> (#<pr>)
-  END_COMMIT_OVERRIDE
-  ```
-
-  Then run `gh workflow run release-please.yml --ref main`, wait for it, and reread the Release PR's version and CHANGELOG.
-- Every user-visible `feat` and `fix` is described wherever users read about figlens. A quick check is `rg -il '<feature term>'` over these places:
-  - the lead of `README.md` and every root `README-*.md`: the feature bullets, and the setup line for a new way to get a `.fig`
-  - the reference in `docs/README.md` and every `docs/README-*.md`
-  - `npm/README.md` and `pi/README.md`
-  - the site landing page (`site/src/data.ts`, `site/src/pages/index.astro`)
-  - `skills/figlens/SKILL.md` and the wiki topics
-
-  Fix gaps in a docs PR on `main` before merging the Release PR. The site deploys only at Publish Release, so a fix merged before the release ships with it.
-- CI on `main` and the exact Release PR head is green. Bot-created PR runs wait as `action_required`. Find the run with `gh run list --branch <release branch> --limit 1`, approve it with `gh api -X POST repos/runkids/figlens/actions/runs/<id>/approve`, then watch it.
+- Every user-visible change in `<last tag>..origin/main` has a CHANGELOG entry and is described in the user-facing docs. Follow the [Release PR checklist](../../../wiki/review.md#release-pr) (`python3 scripts/ai-context.py review`): skipped commits and their recovery, the docs to check, and approving the PR's waiting CI run.
+- CI on `main` and the exact Release PR head is green.
 
 Report the version, the changelog entries and anything missing. Within the authorized scope, merge the reviewed head (`gh pr merge <n> --squash --match-head-commit <sha>`). If a required review blocks it, obtain a reviewer approval or explicit permission for an admin merge; keep all CI gates intact.
 
