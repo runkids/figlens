@@ -914,6 +914,10 @@ fn dev_mode_annotations_status_and_categories_reach_cli_mcp_and_bundle() {
         preview
     );
     assert_eq!(inspect["annotationCategories"], categories);
+    // A category only a node past the depth names is not listed.
+    let shallow: Value =
+        serde_json::from_str(&f.cli("inspect", &["0:1", "--depth", "0"]).unwrap()).unwrap();
+    assert!(shallow.get("annotationCategories").is_none());
     assert_eq!(
         f.tool("inspect", json!({"node": "0:1", "depth": 3}))["structuredContent"],
         inspect

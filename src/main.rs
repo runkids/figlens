@@ -124,7 +124,8 @@ usage:
                                              solid fills, also on --flat; no gradients, images or strokes;
                                              --flat prints one line per node instead (not with the above):
                                              id TYPE \"name\" @x,y WxH relative to the node, then hidden, rot,
-                                             component, text, font=family size/weight/lineHeight, fill,
+                                             component, devStatus=…, annotations=N (count only), text,
+                                             font=family size/weight/lineHeight, fill,
                                              stroke=paint/weight, r, shadow|inner-shadow=x,y,blur[,spread],color,
                                              blur, bg-blur, H|V gap or GRID RxC gap=row,col rows=… cols=…
                                              (stored sizes: flexN, px, hug or min..max), pad=top,right,bottom,left,

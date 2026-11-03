@@ -57,7 +57,7 @@ pub(super) fn node(k: &Obj, out: &mut Obj) {
             if let Some((plain, markdown)) = a["label"]
                 .as_str()
                 .map(label)
-                .filter(|(plain, _)| !plain.is_empty())
+                .filter(|(plain, _)| !plain.trim().is_empty())
             {
                 entry["label"] = plain.into();
                 entry["labelMarkdown"] = markdown.into();
@@ -106,7 +106,10 @@ pub(super) fn categories(stored: &Json) -> HashMap<String, Json> {
         let preset = item["preset"].as_str().filter(|p| *p != "NONE");
         let label = match preset {
             // Figma's preset names are the enum in title case (Development, Interaction, ...).
-            Some(p) => p[..1].to_owned() + &p[1..].to_ascii_lowercase(),
+            Some(p) => {
+                let mut chars = p.chars();
+                chars.next().into_iter().collect::<String>() + &chars.as_str().to_lowercase()
+            }
             None => match custom["label"].as_str() {
                 Some(l) => l.to_owned(),
                 None => continue,
@@ -385,6 +388,7 @@ mod tests {
             {"label": "<p>x</p>", "properties": [{"type": "FILL"}, {"type": "STACK_SPACING"}, {"type": "NEW"}],
              "categoryId": {"sessionID": 4294967295u64, "localID": 4294967295u64}},
             {"label": "<p><br></p>", "properties": [], "categoryId": {"sessionID": 1, "localID": 2}},
+            {"label": "  ", "properties": []},
         ]}));
         let mut out = Obj::new();
         node(&k, &mut out);
@@ -393,6 +397,7 @@ mod tests {
             json!([
                 {"label": "x", "labelMarkdown": "x", "properties": [{"type": "fills"}, {"type": "itemSpacing"}, {"type": "NEW"}]},
                 {"categoryId": "1:2"},
+                {},
             ])
         );
     }

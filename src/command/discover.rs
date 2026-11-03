@@ -45,29 +45,71 @@ impl Detail {
     }
 }
 
+/// `text` cut to `limit` characters, and whether anything was cut.
+fn cut(text: &str, limit: usize) -> (String, bool) {
+    let mut chars = text.chars();
+    let kept = chars.by_ref().take(limit).collect();
+    (kept, chars.next().is_some())
+}
+
 fn text_preview(summary: &mut Value, text: &str, limit: usize) {
-    summary["characters"] = text.chars().take(limit).collect::<String>().into();
-    if text.chars().count() > limit {
+    let (kept, truncated) = cut(text, limit);
+    summary["characters"] = kept.into();
+    if truncated {
         summary["textTruncated"] = true.into();
     }
 }
 
-/// An annotation with its plain `label` cut like a text preview; `labelMarkdown` stays in nodes.
-fn annotation_preview(annotation: &Value, limit: usize) -> Value {
-    let mut preview = annotation.clone();
-    if let Some(fields) = preview.as_object_mut() {
-        fields.remove("labelMarkdown");
-        if let Some(label) = annotation["label"].as_str() {
-            fields.insert(
-                "label".into(),
-                label.chars().take(limit).collect::<String>().into(),
-            );
-            if label.chars().count() > limit {
-                fields.insert("labelTruncated".into(), true.into());
-            }
+/// An annotation with its plain `label` cut like a text preview and at most 20 `properties`;
+/// `labelMarkdown` stays in nodes.
+fn annotation_preview(annotation: &Value, limit: usize, truncated: &mut bool) -> Value {
+    let mut preview = json!({});
+    if let Some(label) = annotation["label"].as_str() {
+        let (kept, cut) = cut(label, limit);
+        preview["label"] = kept.into();
+        if cut {
+            preview["labelTruncated"] = true.into();
         }
     }
+    if let Some(list) = annotation["properties"].as_array() {
+        preview["properties"] = list.iter().take(20).cloned().collect();
+        *truncated |= list.len() > 20;
+    }
+    if let Some(id) = annotation.get("categoryId") {
+        preview["categoryId"] = id.clone();
+    }
     preview
+}
+
+/// The response's `annotationCategories` that the kept annotations name, labels cut like text
+/// previews; none when no kept annotation has a named category.
+fn kept_categories(summary: &Value, table: &Value, limit: usize) -> Option<Value> {
+    let table = table.as_object()?;
+    let mut kept = serde_json::Map::new();
+    let mut stack = vec![summary];
+    while let Some(node) = stack.pop() {
+        stack.extend(node["children"].as_array().into_iter().flatten());
+        for id in node["annotations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|a| a["categoryId"].as_str())
+        {
+            let Some(category) = table.get(id).filter(|_| !kept.contains_key(id)) else {
+                continue;
+            };
+            let mut category = category.clone();
+            if let Some(label) = category["label"].as_str() {
+                let (label, cut) = cut(label, limit);
+                category["label"] = label.into();
+                if cut {
+                    category["labelTruncated"] = true.into();
+                }
+            }
+            kept.insert(id.to_owned(), category);
+        }
+    }
+    (!kept.is_empty()).then(|| kept.into())
 }
 
 /// Visible SOLID fills as `{hex, opacity?, variableId?, variableName?}`: the paint's own alpha
@@ -208,8 +250,12 @@ pub fn inspect(
     if let Some(diagnostics) = doc["_figlens"].get("handoffDiagnostics") {
         result["handoffDiagnostics"] = diagnostics.clone();
     }
-    if let Some(categories) = doc.get("annotationCategories") {
-        result["annotationCategories"] = categories.clone();
+    if let Some(categories) = kept_categories(
+        &result["node"],
+        &doc["annotationCategories"],
+        detail.text_chars(),
+    ) {
+        result["annotationCategories"] = categories;
     }
     if images {
         result["images"] = figlens::images::inspect(fig, &doc["document"])?;
@@ -608,7 +654,6 @@ fn summarize(
         "primaryAxisAlignItems",
         "counterAxisAlignItems",
         "individualStrokeWeights",
-        "devStatus",
     ] {
         if let Some(value) = node.get(key) {
             summary[key] = value.clone();
@@ -657,11 +702,21 @@ fn summarize(
     if let Some(text) = node["characters"].as_str() {
         text_preview(&mut summary, text, detail.text_chars());
     }
+    if let Some(status) = node.get("devStatus") {
+        summary["devStatus"] = json!({"type": status["type"]});
+        if let Some(description) = status["description"].as_str() {
+            let (kept, cut) = cut(description, detail.text_chars());
+            summary["devStatus"]["description"] = kept.into();
+            if cut {
+                summary["devStatus"]["descriptionTruncated"] = true.into();
+            }
+        }
+    }
     if let Some(list) = node["annotations"].as_array() {
         summary["annotations"] = list
             .iter()
             .take(20)
-            .map(|a| annotation_preview(a, detail.text_chars()))
+            .map(|a| annotation_preview(a, detail.text_chars(), truncated))
             .collect();
         *truncated |= list.len() > 20;
     }
@@ -739,6 +794,37 @@ mod tests {
             &Detail::default(),
         );
         assert!(absent["node"].get("style").is_none());
+    }
+
+    #[test]
+    fn inspect_bounds_annotations_and_names_only_kept_categories() {
+        let long = "x".repeat(250);
+        let note = json!({"label": long, "labelMarkdown": long, "categoryId": "1:2",
+                          "properties": vec![json!({"type": "fills"}); 21]});
+        let mut notes = vec![json!({"label": "first", "categoryId": "1:3"})];
+        notes.extend(vec![note; 20]);
+        let node = json!({"id": "1:1", "annotations": notes,
+                          "devStatus": {"type": "READY_FOR_DEV", "description": long}});
+        let result = inspect_document(&node, 0, &Detail::default());
+        let summary = &result["node"];
+        assert_eq!(result["truncated"], true);
+        assert_eq!(summary["annotations"].as_array().unwrap().len(), 20);
+        let preview = &summary["annotations"][1];
+        assert_eq!(preview["label"].as_str().unwrap().len(), 200);
+        assert_eq!(preview["labelTruncated"], true);
+        assert!(preview.get("labelMarkdown").is_none());
+        assert_eq!(preview["properties"].as_array().unwrap().len(), 20);
+        assert_eq!(
+            summary["devStatus"]["description"].as_str().unwrap().len(),
+            200
+        );
+        assert_eq!(summary["devStatus"]["descriptionTruncated"], true);
+        let table = json!({"1:2": {"label": long, "isPreset": false}, "1:3": {"label": "Kept", "isPreset": true},
+                           "1:4": {"label": "Unused", "isPreset": true}});
+        let kept = kept_categories(summary, &table, 200).unwrap();
+        assert_eq!(kept["1:3"], json!({"label": "Kept", "isPreset": true}));
+        assert_eq!(kept["1:2"]["labelTruncated"], true);
+        assert!(kept.get("1:4").is_none());
     }
 
     #[test]

@@ -241,7 +241,8 @@ fn build(
             .flatten()
             .filter_map(|a| a["categoryId"].as_str())
         {
-            if let Some(category) = categories.get(id) {
+            if let (false, Some(category)) = (used_categories.contains_key(id), categories.get(id))
+            {
                 used_categories.insert(id.to_owned(), category.clone());
             }
         }
