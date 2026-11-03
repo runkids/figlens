@@ -58,14 +58,28 @@ class Reader:
         self.i += 1
         return v
 
-    def uint(self, limit=35):
+    def uint(self):
         result = shift = 0
         while True:
             c = self.byte()
             result |= (c & 127) << shift
             shift += 7
-            if c < 128 or shift >= limit:
+            if c < 128 or shift >= 35:
                 return result
+
+    def uint64(self):
+        # As vendor/kiwi-schema's read_var_uint64: the ninth byte keeps all eight bits.
+        result = shift = 0
+        while True:
+            c = self.byte()
+            if c < 128 or shift >= 56:
+                return result | c << shift
+            result |= (c & 127) << shift
+            shift += 7
+
+    def int64(self):
+        v = self.uint64()
+        return ~(v >> 1) if v & 1 else v >> 1
 
     def int(self):
         v = self.uint()
@@ -103,7 +117,7 @@ def type_name(defs, t, array):
 def value(defs, t, r):
     if t < 0:
         return {-1: lambda: bool(r.byte()), -2: r.byte, -3: r.int, -4: r.uint, -5: r.float,
-                -6: r.string, -7: lambda: r.uint(70), -8: lambda: r.uint(70)}[t]()
+                -6: r.string, -7: r.int64, -8: r.uint64}[t]()
     name, kind, fields = defs[t]
     if kind == 'ENUM':
         v = r.uint()
