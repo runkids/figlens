@@ -579,6 +579,8 @@ fn summarize(
         "primaryAxisAlignItems",
         "counterAxisAlignItems",
         "individualStrokeWeights",
+        "annotations",
+        "devStatus",
     ] {
         if let Some(value) = node.get(key) {
             summary[key] = value.clone();

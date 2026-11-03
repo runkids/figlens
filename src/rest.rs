@@ -13,6 +13,7 @@ use crate::expand::{
 use crate::render::{self, Rect};
 use crate::{Tree, to_json};
 
+mod annotations;
 pub mod compact;
 mod handoff;
 mod semantics;
@@ -145,12 +146,24 @@ fn build(
     budget: Option<&Budget>,
 ) -> Result<Json, crate::FigError> {
     let mut styles: HashMap<String, Vec<String>> = HashMap::new();
+    let mut dev_status = HashMap::new();
     for (id, node) in &tree.nodes {
         if let (Some(_), Some(key)) = (node.get("styleType"), node.get("key")) {
             styles
                 .entry(key.as_string().to_owned())
                 .or_default()
                 .push(id.clone());
+        }
+        // Each page records the Ready for dev status of its frames and sections.
+        if let Some(map) = node.get("handoffStatusMap") {
+            for entry in to_json(map)["entries"].as_array().into_iter().flatten() {
+                if let (Some(id), Some(status)) = (
+                    guid(&entry["guid"]),
+                    annotations::dev_status(&entry["handoffStatus"]),
+                ) {
+                    dev_status.insert(id, status);
+                }
+            }
         }
     }
     // Every expansion under a selected stored root is emitted, so expansion can stop early too.
@@ -196,6 +209,7 @@ fn build(
         base: abs_matrix(tree, root, ""),
         vars: variables(tree),
         styles,
+        dev_status,
         render,
         budget,
     };
@@ -438,6 +452,8 @@ struct Builder<'t, 'a> {
     /// Keep each node's render input (`_r`) in the output.
     render: bool,
     budget: Option<&'t Budget<'t>>,
+    /// Stored node id → REST `devStatus`.
+    dev_status: HashMap<String, Json>,
 }
 
 impl Builder<'_, '_> {
@@ -647,6 +663,10 @@ impl Builder<'_, '_> {
             }
         }
         handoff::fields(&kiwi, &kind, parent.or(root_parent.as_ref()), &mut out);
+        annotations::node(&kiwi, &mut out);
+        if let Some(status) = self.dev_status.get(id) {
+            out.insert("devStatus".into(), status.clone());
+        }
         if let Some(prototype) = crate::prototype::node(self.tree, id, self.ex.nodes.get(id), &kind)
         {
             out.entry("_figlens".to_owned())
