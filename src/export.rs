@@ -46,7 +46,11 @@ fn missing_inputs(
     images: &std::collections::HashMap<String, Vec<u8>>,
     out: &mut Vec<String>,
 ) {
-    if n["visible"] == false {
+    // Null render bounds mark what draws nothing: zero opacity, clipped away or a boolean
+    // operand (as `rest` decides for render diagnostics); masks shape what they draw.
+    if n["visible"] == false
+        || (n.get("absoluteRenderBounds") == Some(&Json::Null) && n["isMask"] != true)
+    {
         return;
     }
     let id = n["id"].as_str().unwrap_or("");
@@ -77,10 +81,6 @@ fn missing_inputs(
         push(format!(
             "Component {component} of instance {id} is not in the .fig; only the instance's stored layers are drawn"
         ));
-    }
-    // A boolean operation draws its result, not its operands.
-    if n["type"] == "BOOLEAN_OPERATION" {
-        return;
     }
     for child in n["children"].as_array().into_iter().flatten() {
         missing_inputs(tree, child, images, out);
@@ -736,9 +736,12 @@ mod tests {
             {"id": "1:5", "type": "INSTANCE", "componentId": "9:9", "_r": {"fillPaints": [image("")]}},
             // A stroke with no weight is not drawn.
             {"id": "1:6", "_r": {"strokePaints": [image("h")], "strokeWeight": 0.0}},
-            // Operands draw only through the boolean's result.
+            // Null render bounds: a boolean operand, a zero-opacity or clipped-away layer.
             {"id": "1:8", "type": "BOOLEAN_OPERATION", "children": [
-                {"id": "1:9", "_r": {"fillPaints": [image("operand")]}},
+                {"id": "1:9", "absoluteRenderBounds": null, "_r": {"fillPaints": [image("operand")]}},
+            ]},
+            {"id": "1:10", "opacity": 0.0, "absoluteRenderBounds": null, "children": [
+                {"id": "1:11", "absoluteRenderBounds": null, "_r": {"fillPaints": [image("faded")]}},
             ]},
             // Only the vector style a region uses draws; the base fill is unused.
             {"id": "1:7", "type": "VECTOR", "_r": {
