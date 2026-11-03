@@ -23,7 +23,7 @@ fn copied(dir: &TestDir) -> std::path::PathBuf {
 fn a_saved_copy_becomes_a_fig_the_commands_read() {
     let dir = TestDir::new();
     let out = dir.join("copied.fig");
-    let report = convert(&copied(&dir), &out).unwrap();
+    let report = convert(Source::File(&copied(&dir)), &out).unwrap();
     let mut doc = Document::open(&out).unwrap();
     let message = doc.take_message().unwrap();
     assert!(Tree::new(&message).nodes.contains_key("0:6"));
@@ -34,7 +34,7 @@ fn a_saved_copy_becomes_a_fig_the_commands_read() {
 fn the_report_and_export_name_images_the_copy_lacks() {
     let dir = TestDir::new();
     let out = dir.join("copied.fig");
-    let report = convert(&copied(&dir), &out).unwrap();
+    let report = convert(Source::File(&copied(&dir)), &out).unwrap();
     assert_eq!(report["missingImages"], json!(["first-success-tile"]));
     let mut doc = Document::open(&out).unwrap();
     let message = doc.take_message().unwrap();
@@ -63,7 +63,7 @@ fn html_without_figma_data_is_refused_before_writing() {
     let input = dir.join("text.html");
     std::fs::write(&input, "<span>Cloth</span>").unwrap();
     let out = dir.join("copied.fig");
-    let error = convert(&input, &out).unwrap_err().to_string();
+    let error = convert(Source::File(&input), &out).unwrap_err().to_string();
     assert!(error.starts_with("no Figma selection"), "{error}");
     assert!(!out.exists());
 }
@@ -73,12 +73,48 @@ fn an_existing_output_is_never_replaced() {
     let dir = TestDir::new();
     let out = dir.join("design.fig");
     std::fs::write(&out, "a full design").unwrap();
-    let error = convert(&copied(&dir), &out).unwrap_err().to_string();
+    let error = convert(Source::File(&copied(&dir)), &out)
+        .unwrap_err()
+        .to_string();
     assert!(
         error.ends_with("exists; choose a new path for the copied selection"),
         "{error}"
     );
     assert_eq!(std::fs::read(&out).unwrap(), b"a full design");
+}
+
+#[test]
+fn applescript_hex_output_decodes_to_the_html() {
+    assert_eq!(
+        applescript_data("«data HTML3C623E»\n".as_bytes()),
+        Some(b"<b>".to_vec())
+    );
+    assert_eq!(applescript_data("«data HTML3C6»".as_bytes()), None);
+    assert_eq!(applescript_data(b"plain text"), None);
+}
+
+#[test]
+fn a_missing_clipboard_tool_is_named() {
+    let error = run(&[("figlens-no-such-reader", &[])], 16)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("install figlens-no-such-reader"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_reader_that_fails_means_no_html_and_the_next_reader_is_tried() {
+    assert_eq!(
+        run(&[("false", &[]), ("echo", &["html"])], 16).unwrap(),
+        Some(b"html\n".to_vec())
+    );
+    assert_eq!(run(&[("false", &[])], 16).unwrap(), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn reader_output_past_the_limit_is_refused() {
+    assert!(run(&[("echo", &["0123456789"])], 4).is_err());
 }
 
 #[test]
