@@ -63,7 +63,7 @@ After all verified fixes pass their checks:
 3. Post `@codex review` yourself to request review of the updated head. A push alone is not proof that review was requested. Avoid duplicate requests while that same head is already under review.
 
    ```sh
-   gh pr comment <number> --body '@codex review'
+   scripts/codex-review.sh <number>   # requests, waits for this head, prints its findings; --wait-only skips the request
    ```
 
 4. Wait for the AI review of that head to complete and inspect its new findings and CI. Repeat the fix/check/push/review cycle for verified findings. A previous commit's clean review, a dispatch acknowledgement, an eyes reaction or green CI does not establish a clean current review.
