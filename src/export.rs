@@ -78,6 +78,10 @@ fn missing_inputs(
             "Component {component} of instance {id} is not in the .fig; only the instance's stored layers are drawn"
         ));
     }
+    // A boolean operation draws its result, not its operands.
+    if n["type"] == "BOOLEAN_OPERATION" {
+        return;
+    }
     for child in n["children"].as_array().into_iter().flatten() {
         missing_inputs(tree, child, images, out);
     }
@@ -732,6 +736,10 @@ mod tests {
             {"id": "1:5", "type": "INSTANCE", "componentId": "9:9", "_r": {"fillPaints": [image("")]}},
             // A stroke with no weight is not drawn.
             {"id": "1:6", "_r": {"strokePaints": [image("h")], "strokeWeight": 0.0}},
+            // Operands draw only through the boolean's result.
+            {"id": "1:8", "type": "BOOLEAN_OPERATION", "children": [
+                {"id": "1:9", "_r": {"fillPaints": [image("operand")]}},
+            ]},
             // Only the vector style a region uses draws; the base fill is unused.
             {"id": "1:7", "type": "VECTOR", "_r": {
                 "fillPaints": [image("base")],
