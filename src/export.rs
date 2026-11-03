@@ -55,10 +55,14 @@ fn missing_inputs(
             out.push(warning);
         }
     };
-    for list in [&n["fills"], &n["strokes"]] {
+    // The paints the renderer draws, including selected text and vector style overrides.
+    for (list, _) in crate::render::paint_lists(n) {
         for paint in list.as_array().into_iter().flatten() {
-            if let Some(key) = paint["imageRef"].as_str().filter(|key| !key.is_empty())
-                && paint["visible"] != false
+            if paint["type"] == "IMAGE"
+                && crate::render::visible(paint)
+                && let Some(key) = paint["image"]["hash"]
+                    .as_str()
+                    .filter(|key| !key.is_empty())
                 && !images.contains_key(key)
             {
                 push(format!(
@@ -720,12 +724,23 @@ mod tests {
             children: Default::default(),
             blobs: Vec::new(),
         };
-        let image = |key: &str| json!({"type": "IMAGE", "imageRef": key});
+        let image = |key: &str| json!({"type": "IMAGE", "image": {"hash": key}});
         let node = json!({"id": "1:1", "children": [
-            {"id": "1:2", "fills": [image("a"), image("a")], "strokes": [image("b")]},
-            {"id": "1:3", "fills": [{"type": "IMAGE", "imageRef": "c", "visible": false}]},
-            {"id": "1:4", "visible": false, "fills": [image("d")], "componentId": "9:9"},
-            {"id": "1:5", "type": "INSTANCE", "componentId": "9:9", "fills": [image("")]},
+            {"id": "1:2", "_r": {"fillPaints": [image("a"), image("a")], "strokePaints": [image("b")], "strokeWeight": 1.0}},
+            {"id": "1:3", "_r": {"fillPaints": [{"type": "IMAGE", "image": {"hash": "c"}, "visible": false}]}},
+            {"id": "1:4", "visible": false, "_r": {"fillPaints": [image("d")]}, "componentId": "9:9"},
+            {"id": "1:5", "type": "INSTANCE", "componentId": "9:9", "_r": {"fillPaints": [image("")]}},
+            // A stroke with no weight is not drawn.
+            {"id": "1:6", "_r": {"strokePaints": [image("h")], "strokeWeight": 0.0}},
+            // Only the vector style a region uses draws; the base fill is unused.
+            {"id": "1:7", "type": "VECTOR", "_r": {
+                "fillPaints": [image("base")],
+                "fillGeometry": [{"styleID": 1}],
+                "vectorStyles": [
+                    {"styleID": 1, "fillPaints": [image("used")]},
+                    {"styleID": 2, "fillPaints": [image("unused")]},
+                ],
+            }},
         ]});
         let images = std::collections::HashMap::from([("e".to_owned(), Vec::new())]);
         let mut out = Vec::new();
@@ -736,6 +751,7 @@ mod tests {
                 "Image a at node 1:2 is not in the .fig; it is drawn empty",
                 "Image b at node 1:2 is not in the .fig; it is drawn empty",
                 "Component 9:9 of instance 1:5 is not in the .fig; only the instance's stored layers are drawn",
+                "Image used at node 1:7 is not in the .fig; it is drawn empty",
             ]
         );
     }

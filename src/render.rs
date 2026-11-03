@@ -332,45 +332,11 @@ pub fn visible(p: &Json) -> bool {
     p["visible"] != Json::Bool(false) && p["opacity"].as_f64().unwrap_or(1.0) > 0.0
 }
 
-/// Known renderer fallbacks in the effective paints of one visible node.
-/// This is deliberately not a completeness or pixel-fidelity claim.
-pub(crate) fn diagnostics(tree: &Tree, n: &Json) -> Vec<Json> {
-    let mut out = Vec::new();
-    let mut drawn_strokes = None;
-    let mut report = |feature: &str, field: String, state: &str, reason: &str| {
-        // Decode stroke outlines only when a paint would otherwise produce a warning. An
-        // undrawn paint type draws nothing with or without outlines, so it is always reported.
-        if field.starts_with("strokePaints[")
-            && feature != "paint"
-            && !*drawn_strokes.get_or_insert_with(|| !stroke_shapes(tree, n).is_empty())
-        {
-            return;
-        }
-        out.push(serde_json::json!({
-            "nodeId": n["id"], "feature": feature, "field": field,
-            "state": state, "reason": reason,
-        }));
-    };
+/// The paint lists the renderer draws for `n`, with their Kiwi field: the fills of the selected
+/// text or vector style overrides, the base fills when some part uses them, and drawn strokes.
+/// Unused styles are left out.
+pub(crate) fn paint_lists(n: &Json) -> Vec<(&Json, String)> {
     let r = &n["_r"];
-    // A copied selection stores no outlines, only the vector network; an empty list is not this.
-    let outlined = outlined(n["type"].as_str().unwrap_or(""));
-    if outlined && n["type"] != "LINE" && r["fillGeometry"].is_null() && has_paint(&r["fillPaints"])
-    {
-        report(
-            "geometry",
-            "fillGeometry".into(),
-            "approximate",
-            "No fill outline is stored, so the fill is drawn as the node's box",
-        );
-    }
-    if outlined && r["strokeGeometry"].is_null() && has_stroke(n) {
-        report(
-            "geometry",
-            "strokeGeometry".into(),
-            "skipped",
-            "No stroke outline is stored, so the stroke is not drawn",
-        );
-    }
     let mut lists = Vec::new();
     // Match the renderer's per-region / per-character paint selection; unused styles
     // must not turn into warnings on the node that happens to store them.
@@ -424,7 +390,49 @@ pub(crate) fn diagnostics(tree: &Tree, n: &Json) -> Vec<Json> {
     if has_stroke(n) {
         lists.push((&r["strokePaints"], "strokePaints".into()));
     }
-    for (list, path) in lists {
+    lists
+}
+
+/// Known renderer fallbacks in the effective paints of one visible node.
+/// This is deliberately not a completeness or pixel-fidelity claim.
+pub(crate) fn diagnostics(tree: &Tree, n: &Json) -> Vec<Json> {
+    let mut out = Vec::new();
+    let mut drawn_strokes = None;
+    let mut report = |feature: &str, field: String, state: &str, reason: &str| {
+        // Decode stroke outlines only when a paint would otherwise produce a warning. An
+        // undrawn paint type draws nothing with or without outlines, so it is always reported.
+        if field.starts_with("strokePaints[")
+            && feature != "paint"
+            && !*drawn_strokes.get_or_insert_with(|| !stroke_shapes(tree, n).is_empty())
+        {
+            return;
+        }
+        out.push(serde_json::json!({
+            "nodeId": n["id"], "feature": feature, "field": field,
+            "state": state, "reason": reason,
+        }));
+    };
+    let r = &n["_r"];
+    // A copied selection stores no outlines, only the vector network; an empty list is not this.
+    let outlined = outlined(n["type"].as_str().unwrap_or(""));
+    if outlined && n["type"] != "LINE" && r["fillGeometry"].is_null() && has_paint(&r["fillPaints"])
+    {
+        report(
+            "geometry",
+            "fillGeometry".into(),
+            "approximate",
+            "No fill outline is stored, so the fill is drawn as the node's box",
+        );
+    }
+    if outlined && r["strokeGeometry"].is_null() && has_stroke(n) {
+        report(
+            "geometry",
+            "strokeGeometry".into(),
+            "approximate",
+            "No stroke outline is stored, so the stroke is drawn around the node's box",
+        );
+    }
+    for (list, path) in paint_lists(n) {
         for (i, paint) in list
             .as_array()
             .into_iter()

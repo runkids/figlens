@@ -7,7 +7,8 @@
 
 use std::collections::BTreeSet;
 use std::error::Error;
-use std::io::Write;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::Path;
 
 use serde_json::{Value as Json, json};
@@ -20,19 +21,38 @@ const END: &str = "(/figma)";
 /// Converts the saved clipboard HTML at `input` into a `.fig` at `out` and reports what it lacks.
 /// Never replaces an existing file: a full design saved over with a partial copy is lost.
 pub fn convert(input: &Path, out: &Path) -> Result<Json, Box<dyn Error>> {
-    if out.symlink_metadata().is_ok() {
-        return Err(FigError::new(
-            ErrorKind::InvalidArguments,
-            format!(
-                "{} exists; choose a new path for the copied selection",
-                out.display()
-            ),
-        )
-        .into());
+    // Names a missing output folder as other writes do.
+    crate::output::destination(out)
+        .map_err(|e| FigError::new(ErrorKind::OutputWrite, e.to_string()))?;
+    // Claim the path atomically: a file that appears while this runs is never replaced either.
+    match OpenOptions::new().write(true).create_new(true).open(out) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(FigError::new(
+                ErrorKind::InvalidArguments,
+                format!(
+                    "{} exists; choose a new path for the copied selection",
+                    out.display()
+                ),
+            )
+            .into());
+        }
+        Err(error) => return Err(FigError::new(ErrorKind::OutputWrite, error.to_string()).into()),
     }
+    let result = write(input, out);
+    if result.is_err() {
+        // Remove only the empty claim, never a file another process put there meanwhile.
+        if fs::metadata(out).is_ok_and(|m| m.len() == 0) {
+            let _ = fs::remove_file(out);
+        }
+    }
+    result
+}
+
+fn write(input: &Path, out: &Path) -> Result<Json, Box<dyn Error>> {
     // Base64 is 4/3 of the canvas, plus the HTML text Figma adds around it.
     let limit = parse::CANVAS_BYTES / 3 * 4 + (16 << 20);
-    let html = crate::read_limited(std::fs::File::open(input)?, limit, "clipboard bytes")?;
+    let html = crate::read_limited(fs::File::open(input)?, limit, "clipboard bytes")?;
     let canvas = canvas(&html)?;
     // Hold one copy of the payload, not the HTML as well, through decoding and writing.
     drop(html);
@@ -161,7 +181,7 @@ fn report(message: &kiwi_schema::Value, tree: &Tree) -> Json {
     }
     if outlines > 0 {
         warnings.push(format!(
-            "{outlines} vector layer(s) lack a stored fill or stroke outline; exports draw such fills as boxes, skip such strokes and warn for each painted one"
+            "{outlines} vector layer(s) lack a stored fill or stroke outline; exports draw such fills as boxes and such strokes around boxes, and warn for each painted one"
         ));
     }
     if !components.is_empty() {

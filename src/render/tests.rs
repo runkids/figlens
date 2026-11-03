@@ -202,6 +202,12 @@ fn diagnostics_name_vector_layers_without_stored_outlines() {
             .collect()
     };
     assert_eq!(fields(&node), ["fillGeometry", "strokeGeometry"]);
+    // Both are drawn around the node's box, not skipped.
+    assert!(
+        diagnostics(&tree, &node)
+            .iter()
+            .all(|d| d["state"] == "approximate")
+    );
     // A saved file's empty list means nothing to draw, not a missing outline.
     node["_r"]["fillGeometry"] = serde_json::json!([]);
     node["_r"]["strokeGeometry"] = serde_json::json!([]);
