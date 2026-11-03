@@ -21,6 +21,8 @@ use crate::{Document, ErrorKind, FigError, Tree, guid_key, parse};
 
 const START: &str = "(figma)";
 const END: &str = "(/figma)";
+/// Why a clipboard read found nothing to convert.
+const NO_LAYERS: &str = "the clipboard holds no Figma layers: select layers in Figma and copy them (right-click > Copy, or Cmd/Ctrl+C), then run this again; copied or pasted text does not carry them";
 
 /// Where the copied selection is read from.
 #[derive(Clone, Copy)]
@@ -65,15 +67,16 @@ pub fn convert(source: Source, out: &Path) -> Result<Json, Box<dyn Error>> {
 fn write(source: Source, out: &Path) -> Result<Json, Box<dyn Error>> {
     // Base64 is 4/3 of the canvas, plus the HTML text Figma adds around it.
     let limit = parse::CANVAS_BYTES / 3 * 4 + (16 << 20);
-    let (html, input) = match source {
+    let (html, input, none) = match source {
         Source::File(input) => (
             crate::read_limited(fs::File::open(input)?, limit, "clipboard bytes")?,
             input,
+            "no Figma selection in this file: copy layers in Figma, then save the clipboard's HTML",
         ),
-        // No source file to protect from being overwritten.
-        Source::System => (system_html(limit)?, Path::new("")),
+        // An empty source tells `output::write` there is no source file to protect.
+        Source::System => (system_html(limit)?, Path::new(""), NO_LAYERS),
     };
-    let canvas = canvas(&html)?;
+    let canvas = canvas(&html, none)?;
     // Hold one copy of the payload, not the HTML as well, through decoding and writing.
     drop(html);
     let mut doc = Document::from_canvas(&canvas)?;
@@ -95,20 +98,14 @@ fn write(source: Source, out: &Path) -> Result<Json, Box<dyn Error>> {
 
 /// The system clipboard's HTML flavor, at most `limit` bytes.
 fn system_html(limit: u64) -> Result<Vec<u8>, Box<dyn Error>> {
-    let no_html = || {
-        FigError::new(
-            ErrorKind::InvalidData,
-            "the clipboard holds no HTML: select layers in Figma and copy them (right-click > Copy, or Cmd/Ctrl+C), then run this again",
-        )
-    };
     if cfg!(target_os = "macos") {
         // AppleScript prints the HTML as hex inside `«data HTML…»`: two characters per byte.
         let text = run(
             &[("osascript", &["-e", "the clipboard as «class HTML»"])],
             limit * 2 + 64,
-        )?
-        .ok_or_else(no_html)?;
-        return applescript_data(&text).ok_or_else(|| no_html().into());
+        )?;
+        return applescript_data(text)
+            .ok_or_else(|| FigError::new(ErrorKind::InvalidData, NO_LAYERS).into());
     }
     let readers: &[(&str, &[&str])] = if cfg!(windows) {
         // Windows PowerShell 5.1 prints CF_HTML: a short header, then the HTML; the markers are
@@ -130,13 +127,14 @@ fn system_html(limit: u64) -> Result<Vec<u8>, Box<dyn Error>> {
             ),
         ]
     };
-    run(readers, limit)?.ok_or_else(|| no_html().into())
+    run(readers, limit)
 }
 
-/// Stdout of the first reader that runs and succeeds, at most `limit` bytes; `None` when one ran
-/// but failed (the clipboard holds no such flavor), an error when none could run.
-fn run(readers: &[(&str, &[&str])], limit: u64) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
-    let mut ran = false;
+/// Stdout of the first reader that runs and succeeds, at most `limit` bytes. A reader that runs
+/// and fails means the clipboard holds no HTML, unless another reader was missing: wl-paste
+/// fails outside Wayland, where xclip would have worked.
+fn run(readers: &[(&str, &[&str])], limit: u64) -> Result<Vec<u8>, Box<dyn Error>> {
+    let (mut ran, mut missing, mut unusable) = (false, Vec::new(), None);
     for (program, args) in readers {
         let mut child = match Command::new(program)
             .args(*args)
@@ -146,8 +144,14 @@ fn run(readers: &[(&str, &[&str])], limit: u64) -> Result<Option<Vec<u8>>, Box<d
             .spawn()
         {
             Ok(child) => child,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.into()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                missing.push(*program);
+                continue;
+            }
+            Err(error) => {
+                unusable = Some(error);
+                continue;
+            }
         };
         ran = true;
         let read = crate::read_limited(child.stdout.take().unwrap(), limit, "clipboard bytes");
@@ -157,38 +161,47 @@ fn run(readers: &[(&str, &[&str])], limit: u64) -> Result<Option<Vec<u8>>, Box<d
         let status = child.wait()?;
         let bytes = read?;
         if status.success() && !bytes.is_empty() {
-            return Ok(Some(bytes));
+            return Ok(bytes);
         }
     }
-    if ran {
-        return Ok(None);
-    }
-    let names: Vec<&str> = readers.iter().map(|(program, _)| *program).collect();
-    Err(FigError::new(
-        ErrorKind::InvalidArguments,
-        format!(
-            "cannot read the clipboard: install {}, or save the clipboard's HTML to a file and pass it first",
-            names.join(" or ")
+    let install = format!("install {}", missing.join(" or "));
+    Err(match (ran, unusable) {
+        (true, _) if missing.is_empty() => FigError::new(ErrorKind::InvalidData, NO_LAYERS),
+        (true, _) => FigError::new(
+            ErrorKind::InvalidData,
+            format!("{NO_LAYERS}; if layers are copied, {install}"),
         ),
-    )
+        (false, Some(error)) => return Err(error.into()),
+        (false, None) => FigError::new(
+            ErrorKind::InvalidArguments,
+            format!("cannot read the clipboard: {install}"),
+        ),
+    }
     .into())
 }
 
-/// The bytes of AppleScript's `«data HTML…»` hex output.
-fn applescript_data(text: &[u8]) -> Option<Vec<u8>> {
-    let text = std::str::from_utf8(text).ok()?.trim();
-    let hex = text.strip_prefix("«data HTML")?.strip_suffix('»')?;
-    if hex.len() % 2 != 0 {
+/// The bytes of AppleScript's `«data HTML…»` hex output, decoded in place so the payload is held
+/// once.
+fn applescript_data(mut text: Vec<u8>) -> Option<Vec<u8>> {
+    const OPEN: &[u8] = "«data HTML".as_bytes();
+    const CLOSE: &[u8] = "»".as_bytes();
+    let lead = text.len() - text.trim_ascii_start().len();
+    let hex = text.trim_ascii().strip_prefix(OPEN)?.strip_suffix(CLOSE)?;
+    if hex.len() % 2 != 0 || !hex.iter().all(u8::is_ascii_hexdigit) {
         return None;
     }
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
-        .collect()
+    let (start, len) = (lead + OPEN.len(), hex.len() / 2);
+    let digit = |c: u8| (c as char).to_digit(16).unwrap() as u8;
+    // Byte i comes from positions past i, so each write lands on text already read.
+    for i in 0..len {
+        text[i] = digit(text[start + 2 * i]) << 4 | digit(text[start + 2 * i + 1]);
+    }
+    text.truncate(len);
+    Some(text)
 }
 
 /// The `fig-kiwi` bytes between Figma's clipboard markers.
-fn canvas(html: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+fn canvas(html: &[u8], none: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     let invalid = |message: &str| FigError::new(ErrorKind::InvalidData, message.to_owned());
     let find = |needle: &str, from: usize| {
         html[from..]
@@ -196,11 +209,7 @@ fn canvas(html: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
             .position(|w| w == needle.as_bytes())
             .map(|i| i + from)
     };
-    let start = find(START, 0).ok_or_else(|| {
-        invalid(
-            "no Figma selection in this file: copy layers in Figma, then save the clipboard's HTML",
-        )
-    })? + START.len();
+    let start = find(START, 0).ok_or_else(|| invalid(none))? + START.len();
     let end = find(END, start).ok_or_else(|| invalid("the Figma clipboard data is cut off"))?;
     base64(&html[start..end])
         .ok_or_else(|| invalid("the Figma clipboard data is not base64").into())

@@ -76,6 +76,23 @@ npx -y @runkids/figlens bundle design.fig 12:345 frame.zip        # the zip abov
 
 SVG exports embed original image fills and outline text as glyphs, so no fonts are needed. Through MCP, raster exports also come back as inline images, so the agent sees the design without opening a file.
 
+<a id="copy-a-selection"></a>
+
+### No saved .fig? Copy a selection
+
+1. In Figma, select the frame or layers and copy them: right-click > **Copy**, or Cmd+C (Ctrl+C on Windows and Linux).
+2. Run `figlens clipboard screen.fig`, or ask your agent to build "the screen I just copied". It reads the clipboard and writes a `.fig` every command reads.
+3. Pass `screen.fig` like any other file: `figlens bundle screen.fig <node> frame.zip`.
+
+Pasting the copy into a text field gives only its text; figlens reads the copy's HTML, which holds the layers. macOS is checked against real copies; Windows (PowerShell 5.1) and Linux (`wl-paste` or `xclip`) are not yet.
+
+| | **File > Save local copy** | Copied selection |
+|---|---|---|
+| Scope | The whole file | The layers you copied, plus the components they use |
+| Image fills and vector outlines | Included | Missing; exports warn where they draw without them |
+| A Figma link finds the node | Yes | Yes, for copied layers: ids match the source file |
+| Fits | Building from a design you keep beside the code | A quick look at one screen when no saved copy exists |
+
 <a id="accuracy"></a>
 
 ### How close is it to Figma?

@@ -76,6 +76,23 @@ npx -y @runkids/figlens bundle design.fig 12:345 frame.zip        # 위의 zip
 
 SVG 내보내기는 원본 이미지 채우기를 포함하고 텍스트를 글리프 윤곽선으로 변환하므로 글꼴이 필요 없습니다. MCP에서는 래스터 내보내기도 인라인 이미지로 반환되어 에이전트가 파일을 열지 않고 디자인을 볼 수 있습니다.
 
+<a id="copy-a-selection"></a>
+
+### 저장한 .fig가 없다면? 선택 영역 복사
+
+1. Figma에서 프레임이나 레이어를 선택해 복사합니다: 마우스 오른쪽 클릭 > **Copy** 또는 Cmd+C(Windows와 Linux는 Ctrl+C).
+2. `figlens clipboard screen.fig`를 실행하거나, 에이전트에게 "방금 복사한 화면"을 만들어 달라고 요청하세요. 클립보드를 읽어 모든 명령이 읽는 `.fig`를 씁니다.
+3. `screen.fig`를 다른 파일처럼 전달합니다: `figlens bundle screen.fig <node> frame.zip`.
+
+복사본을 텍스트 필드에 붙여넣으면 텍스트만 나옵니다. figlens는 레이어가 들어 있는 복사본의 HTML을 읽습니다. macOS는 실제 복사본으로 확인했고, Windows(PowerShell 5.1)와 Linux(`wl-paste` 또는 `xclip`)는 아직 확인하지 않았습니다.
+
+| | **File > Save local copy** | 복사한 선택 영역 |
+|---|---|---|
+| 범위 | 파일 전체 | 복사한 레이어와 그 레이어가 쓰는 컴포넌트 |
+| 이미지 채우기와 벡터 윤곽선 | 포함됨 | 없음. export는 그것 없이 그린 곳을 경고함 |
+| Figma 링크로 노드를 찾을 수 있음 | 예 | 예, 복사한 레이어는 가능. ID가 원본 파일과 일치함 |
+| 적합한 경우 | 코드 옆에 두는 디자인으로 구현할 때 | 저장한 복사본이 없을 때 화면 하나를 빠르게 볼 때 |
+
 <a id="accuracy"></a>
 
 ### Figma와 얼마나 가깝나요?

@@ -76,6 +76,23 @@ npx -y @runkids/figlens bundle design.fig 12:345 frame.zip        # die Zip von 
 
 SVG-Exporte betten originale Bildfüllungen ein und wandeln Text in Glyphen-Umrisse um, daher werden keine Schriften benötigt. Über MCP kommen Raster-Exporte außerdem als Inline-Bilder zurück, sodass der Agent das Design sieht, ohne eine Datei zu öffnen.
 
+<a id="copy-a-selection"></a>
+
+### Keine gespeicherte .fig? Eine Auswahl kopieren
+
+1. Wähle in Figma den Frame oder die Ebenen aus und kopiere sie: Rechtsklick > **Copy** oder Cmd+C (Ctrl+C unter Windows und Linux).
+2. Führe `figlens clipboard screen.fig` aus oder bitte deinen Agenten, „den Screen, den ich gerade kopiert habe“ zu bauen. Der Befehl liest die Zwischenablage und schreibt eine `.fig`, die jeder Befehl liest.
+3. Übergib `screen.fig` wie jede andere Datei: `figlens bundle screen.fig <node> frame.zip`.
+
+Beim Einfügen der Kopie in ein Textfeld erhältst du nur ihren Text; figlens liest das HTML der Kopie, das die Ebenen enthält. macOS ist an echten Kopien geprüft; Windows (PowerShell 5.1) und Linux (`wl-paste` oder `xclip`) noch nicht.
+
+| | **File > Save local copy** | Kopierte Auswahl |
+|---|---|---|
+| Umfang | Die ganze Datei | Die kopierten Ebenen plus die Komponenten, die sie verwenden |
+| Bildfüllungen und Vektorumrisse | Enthalten | Fehlen; Exporte warnen, wo sie ohne sie zeichnen |
+| Ein Figma-Link findet den Node | Ja | Ja, für kopierte Ebenen: Die IDs stimmen mit der Quelldatei überein |
+| Geeignet für | Bauen nach einem Design, das du neben dem Code behältst | Ein schneller Blick auf einen Screen, wenn keine gespeicherte Kopie existiert |
+
 <a id="accuracy"></a>
 
 ### Wie nah ist es an Figma?

@@ -365,19 +365,19 @@ usage:
                                              background runner refreshes it on each save; prints the
                                              lease, then its end line on stdin EOF or Ctrl-C
   figlens watch status <select>              the workspace's leases and runner; never writes
-  figlens clipboard [copied.html] <out.fig>  for when there is no saved .fig: select layers in Figma,
-                                             copy them (right-click > Copy, or Cmd/Ctrl+C), then run
-                                             this to turn the clipboard into a .fig every command
-                                             reads. Reads the system clipboard (macOS osascript;
-                                             Windows PowerShell 5.1; Linux wl-paste or xclip), or
-                                             the clipboard's HTML saved to a file. Same ids as the
-                                             source file, used components included; never replaces
-                                             an existing file; prints {path,sourceFileKey,layers,
-                                             nodeCount,missingImages,missingComponents,
-                                             layersWithoutOutlines (a count),warnings}: a copy carries
-                                             no image bytes or vector outlines, so exports warn where
-                                             they draw without them. With a saved .fig, pass a Figma
-                                             link as the node instead
+  figlens clipboard [copied.html] <out.fig>    for when there is no saved .fig: select layers in
+                                             Figma, copy them (right-click > Copy, or Cmd/Ctrl+C),
+                                             then run this to turn the clipboard into a .fig every
+                                             command reads. Reads the system clipboard (macOS
+                                             osascript; unverified: Windows PowerShell 5.1, Linux
+                                             wl-paste or xclip), or the clipboard's HTML saved to a
+                                             file. Same ids as the source file, used components
+                                             included; never replaces an existing file; prints
+                                             {path,sourceFileKey,layers,nodeCount,missingImages,
+                                             missingComponents,layersWithoutOutlines (a count),
+                                             warnings}: a copy carries no image bytes or vector
+                                             outlines, so exports warn where they draw without them.
+                                             With a saved .fig, pass a Figma link as the node instead
   figlens update                               install the latest GitHub release over this binary
   figlens --help | --version
 

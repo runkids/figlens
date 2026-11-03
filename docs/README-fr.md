@@ -76,6 +76,23 @@ npx -y @runkids/figlens bundle design.fig 12:345 frame.zip        # le zip ci-de
 
 Les exports SVG intègrent les image fills d’origine et convertissent le texte en glyphes vectoriels, donc aucune police n’est nécessaire. Via MCP, les exports raster reviennent aussi en images inline : l’agent voit le design sans ouvrir de fichier.
 
+<a id="copy-a-selection"></a>
+
+### Pas de .fig enregistré ? Copiez une sélection
+
+1. Dans Figma, sélectionnez le frame ou les calques et copiez-les : clic droit > **Copy**, ou Cmd+C (Ctrl+C sous Windows et Linux).
+2. Lancez `figlens clipboard screen.fig`, ou demandez à votre agent de construire « l'écran que je viens de copier ». Il lit le presse-papiers et écrit un `.fig` que toutes les commandes lisent.
+3. Passez `screen.fig` comme n'importe quel autre fichier : `figlens bundle screen.fig <node> frame.zip`.
+
+Coller la copie dans un champ de texte ne donne que son texte ; figlens lit le HTML de la copie, qui contient les calques. macOS est vérifié sur de vraies copies ; Windows (PowerShell 5.1) et Linux (`wl-paste` ou `xclip`) ne le sont pas encore.
+
+| | **File > Save local copy** | Sélection copiée |
+|---|---|---|
+| Portée | Le fichier entier | Les calques copiés, plus les composants qu'ils utilisent |
+| Remplissages d'image et contours vectoriels | Inclus | Absents ; les exports avertissent là où ils dessinent sans eux |
+| Un lien Figma trouve le nœud | Oui | Oui, pour les calques copiés : les ids correspondent au fichier source |
+| Convient pour | Construire à partir d'un design conservé à côté du code | Un coup d'œil rapide à un écran quand il n'existe pas de copie enregistrée |
+
 <a id="accuracy"></a>
 
 ### Quelle est la proximité avec Figma ?

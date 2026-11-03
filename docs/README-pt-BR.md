@@ -76,6 +76,23 @@ npx -y @runkids/figlens bundle design.fig 12:345 frame.zip        # o zip acima
 
 Exportações SVG incorporam os preenchimentos de imagem originais e convertem o texto em contornos de glifos, então nenhuma fonte é necessária. Via MCP, exportações raster também voltam como imagens inline, e o agent vê o design sem abrir um arquivo.
 
+<a id="copy-a-selection"></a>
+
+### Sem um .fig salvo? Copie uma seleção
+
+1. No Figma, selecione o frame ou as camadas e copie: clique direito > **Copy**, ou Cmd+C (Ctrl+C no Windows e no Linux).
+2. Execute `figlens clipboard screen.fig`, ou peça ao seu agente para construir "a tela que acabei de copiar". Ele lê a área de transferência e grava um `.fig` que todos os comandos leem.
+3. Passe `screen.fig` como qualquer outro arquivo: `figlens bundle screen.fig <node> frame.zip`.
+
+Colar a cópia em um campo de texto traz só o texto dela; o figlens lê o HTML da cópia, que contém as camadas. O macOS foi verificado com cópias reais; Windows (PowerShell 5.1) e Linux (`wl-paste` ou `xclip`) ainda não.
+
+| | **File > Save local copy** | Seleção copiada |
+|---|---|---|
+| Escopo | O arquivo inteiro | As camadas que você copiou, mais os componentes que elas usam |
+| Preenchimentos de imagem e contornos vetoriais | Incluídos | Ausentes; os exports avisam onde desenham sem eles |
+| Um link do Figma encontra o nó | Sim | Sim, para camadas copiadas: os ids coincidem com o arquivo de origem |
+| Serve para | Construir a partir de um design que você mantém ao lado do código | Uma olhada rápida em uma tela quando não existe cópia salva |
+
 <a id="accuracy"></a>
 
 ### Qual é a proximidade com o Figma?

@@ -85,12 +85,11 @@ fn an_existing_output_is_never_replaced() {
 
 #[test]
 fn applescript_hex_output_decodes_to_the_html() {
-    assert_eq!(
-        applescript_data("«data HTML3C623E»\n".as_bytes()),
-        Some(b"<b>".to_vec())
-    );
-    assert_eq!(applescript_data("«data HTML3C6»".as_bytes()), None);
-    assert_eq!(applescript_data(b"plain text"), None);
+    let decode = |text: &str| applescript_data(text.as_bytes().to_vec());
+    assert_eq!(decode("«data HTML3C623E»\n"), Some(b"<b>".to_vec()));
+    assert_eq!(decode("«data HTML3C6»"), None);
+    assert_eq!(decode("«data HTML+A»"), None);
+    assert_eq!(decode("plain text"), None);
 }
 
 #[test]
@@ -98,23 +97,70 @@ fn a_missing_clipboard_tool_is_named() {
     let error = run(&[("figlens-no-such-reader", &[])], 16)
         .unwrap_err()
         .to_string();
-    assert!(error.contains("install figlens-no-such-reader"), "{error}");
+    assert_eq!(
+        error,
+        "cannot read the clipboard: install figlens-no-such-reader"
+    );
 }
 
 #[cfg(unix)]
 #[test]
-fn a_reader_that_fails_means_no_html_and_the_next_reader_is_tried() {
+fn a_reader_that_fails_means_no_layers_and_the_next_reader_is_tried() {
     assert_eq!(
         run(&[("false", &[]), ("echo", &["html"])], 16).unwrap(),
-        Some(b"html\n".to_vec())
+        b"html\n".to_vec()
     );
-    assert_eq!(run(&[("false", &[])], 16).unwrap(), None);
+    assert_eq!(
+        run(&[("false", &[])], 16).unwrap_err().to_string(),
+        NO_LAYERS
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_reader_beside_a_missing_one_names_the_missing_tool() {
+    let error = run(&[("false", &[]), ("figlens-no-such-reader", &[])], 16)
+        .unwrap_err()
+        .to_string();
+    assert!(error.starts_with(NO_LAYERS), "{error}");
+    assert!(
+        error.ends_with("if layers are copied, install figlens-no-such-reader"),
+        "{error}"
+    );
 }
 
 #[cfg(unix)]
 #[test]
 fn reader_output_past_the_limit_is_refused() {
     assert!(run(&[("echo", &["0123456789"])], 4).is_err());
+}
+
+#[test]
+fn windows_cf_html_keeps_its_header_before_the_markers() {
+    let html = format!(
+        "Version:0.9\r\nStartHTML:00000097\r\nEndHTML:00000200\r\n<html><!--(figma){}(/figma)--></html>",
+        crate::render::base64(b"kiwi")
+    );
+    assert_eq!(
+        canvas(html.as_bytes(), NO_LAYERS).unwrap(),
+        b"kiwi".to_vec()
+    );
+}
+
+#[test]
+fn clipboard_html_without_figma_layers_says_to_copy_them() {
+    let error = canvas(b"<span>text</span>", NO_LAYERS)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, NO_LAYERS);
+}
+
+#[test]
+fn a_clipboard_read_has_no_source_file_to_protect() {
+    let dir = TestDir::new();
+    let out = dir.join("copied.fig");
+    crate::output::write(Path::new(""), &out, |file| Ok(file.write_all(b"x")?)).unwrap();
+    assert_eq!(std::fs::read(&out).unwrap(), b"x");
 }
 
 #[test]

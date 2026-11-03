@@ -76,6 +76,23 @@ npx -y @runkids/figlens bundle design.fig 12:345 frame.zip        # 上面的 zi
 
 SVG 匯出會內嵌原始圖片填色，並將文字轉為 glyph 外框，因此不需要字型。透過 MCP 時，點陣圖匯出也會以內嵌圖片回傳，agent 不必開啟檔案就能看到設計。
 
+<a id="copy-a-selection"></a>
+
+### 沒有已存的 .fig？複製一個選取範圍
+
+1. 在 Figma 選取畫面或圖層並複製：右鍵 > **Copy**，或 Cmd+C（Windows 與 Linux 用 Ctrl+C）。
+2. 執行 `figlens clipboard screen.fig`，或請你的 agent 建置「我剛複製的那個畫面」。它會讀取剪貼簿，並寫出每個指令都能讀取的 `.fig`。
+3. 像其他檔案一樣傳入 `screen.fig`：`figlens bundle screen.fig <node> frame.zip`。
+
+把複製內容貼到文字欄位只會得到其中的文字；figlens 讀取的是複製內容的 HTML，其中包含圖層。macOS 已用真實複製內容驗證；Windows（PowerShell 5.1）與 Linux（`wl-paste` 或 `xclip`）尚未驗證。
+
+| | **File > Save local copy** | 複製的選取範圍 |
+|---|---|---|
+| 範圍 | 整個檔案 | 你複製的圖層，加上它們用到的元件 |
+| 圖片填色與向量輪廓 | 包含 | 缺少；export 會在缺少它們的地方發出警告 |
+| Figma 連結能找到節點 | 能 | 能，限複製的圖層：ID 與來源檔案一致 |
+| 適用於 | 根據放在程式碼旁邊的設計來建置 | 沒有已存的副本時，快速查看一個畫面 |
+
 <a id="accuracy"></a>
 
 ### 與 Figma 有多接近？
