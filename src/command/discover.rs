@@ -52,6 +52,24 @@ fn text_preview(summary: &mut Value, text: &str, limit: usize) {
     }
 }
 
+/// An annotation with its plain `label` cut like a text preview; `labelMarkdown` stays in nodes.
+fn annotation_preview(annotation: &Value, limit: usize) -> Value {
+    let mut preview = annotation.clone();
+    if let Some(fields) = preview.as_object_mut() {
+        fields.remove("labelMarkdown");
+        if let Some(label) = annotation["label"].as_str() {
+            fields.insert(
+                "label".into(),
+                label.chars().take(limit).collect::<String>().into(),
+            );
+            if label.chars().count() > limit {
+                fields.insert("labelTruncated".into(), true.into());
+            }
+        }
+    }
+    preview
+}
+
 /// Visible SOLID fills as `{hex, opacity?, variableId?, variableName?}`: the paint's own alpha
 /// and opacity, not ancestor or node opacity.
 fn solid_fills(node: &Value, detail: &Detail) -> Vec<Value> {
@@ -190,6 +208,9 @@ pub fn inspect(
     if let Some(diagnostics) = doc["_figlens"].get("handoffDiagnostics") {
         result["handoffDiagnostics"] = diagnostics.clone();
     }
+    if let Some(categories) = doc.get("annotationCategories") {
+        result["annotationCategories"] = categories.clone();
+    }
     if images {
         result["images"] = figlens::images::inspect(fig, &doc["document"])?;
     }
@@ -249,7 +270,8 @@ fn variable_names(tree: &Tree, document: &Value) -> HashMap<String, String> {
 }
 
 /// `id TYPE "name" @x,y WxH` (position relative to the inspected root), then whichever of
-/// hidden, rotation, component, text, font, fill, stroke, radius, effects, auto-layout,
+/// hidden, rotation, component, Ready for dev status, annotation count, text, font, fill, stroke,
+/// radius, effects, auto-layout,
 /// alignment, sizing and opacity apply.
 /// `children=N` marks children cut by depth; a `… N more` line marks those cut by the node limit.
 #[allow(clippy::too_many_arguments)]
@@ -301,6 +323,13 @@ fn flat_lines(
     }
     if let Some(main) = node["componentId"].as_str() {
         add(format!("component={main}"));
+    }
+    if let Some(status) = node["devStatus"]["type"].as_str() {
+        add(format!("devStatus={status}"));
+    }
+    // Only a count: the notes themselves are in inspect's JSON form and nodes.
+    if let Some(list) = node["annotations"].as_array() {
+        add(format!("annotations={}", list.len()));
     }
     if let Some(text) = node["characters"].as_str() {
         let limit = detail.text_chars();
@@ -579,7 +608,6 @@ fn summarize(
         "primaryAxisAlignItems",
         "counterAxisAlignItems",
         "individualStrokeWeights",
-        "annotations",
         "devStatus",
     ] {
         if let Some(value) = node.get(key) {
@@ -628,6 +656,14 @@ fn summarize(
     }
     if let Some(text) = node["characters"].as_str() {
         text_preview(&mut summary, text, detail.text_chars());
+    }
+    if let Some(list) = node["annotations"].as_array() {
+        summary["annotations"] = list
+            .iter()
+            .take(20)
+            .map(|a| annotation_preview(a, detail.text_chars()))
+            .collect();
+        *truncated |= list.len() > 20;
     }
     if detail.colors.is_some() {
         let fills = solid_fills(node, detail);

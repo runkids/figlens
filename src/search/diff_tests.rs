@@ -1161,6 +1161,8 @@ fn emitted_metadata_scopes_code_syntax_and_prototype_settings_are_properties() {
         "variableScopes",
         "codeSyntax",
         "prototypeInteractions",
+        "annotations",
+        "handoffStatusMap",
     ] {
         let n = &run(one(key, "a"), one(key, "b"))["frames"][0]["nodes"][0];
         assert_eq!(n["facets"], json!(["properties"]), "{key}");

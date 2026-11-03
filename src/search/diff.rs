@@ -128,6 +128,9 @@ pub(crate) const FIELDS: [&[&str]; 4] = [
         "styleType",
         // Triggers and transitions; edges hold only their destinations.
         "prototypeInteractions",
+        // Dev Mode notes, and a page's Ready for dev status of its frames and sections.
+        "annotations",
+        "handoffStatusMap",
     ],
 ];
 /// Largest value one field may scan; a larger one is `unread`, like a usages binding field.

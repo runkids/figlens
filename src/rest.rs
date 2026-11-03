@@ -147,6 +147,7 @@ fn build(
 ) -> Result<Json, crate::FigError> {
     let mut styles: HashMap<String, Vec<String>> = HashMap::new();
     let mut dev_status = HashMap::new();
+    let mut categories = HashMap::new();
     for (id, node) in &tree.nodes {
         if let (Some(_), Some(key)) = (node.get("styleType"), node.get("key")) {
             styles
@@ -155,15 +156,23 @@ fn build(
                 .push(id.clone());
         }
         // Each page records the Ready for dev status of its frames and sections.
-        if let Some(map) = node.get("handoffStatusMap") {
-            for entry in to_json(map)["entries"].as_array().into_iter().flatten() {
+        if let Some(kiwi_schema::Value::Array(entries)) =
+            node.get("handoffStatusMap").and_then(|m| m.get("entries"))
+        {
+            for entry in entries {
                 if let (Some(id), Some(status)) = (
-                    guid(&entry["guid"]),
-                    annotations::dev_status(&entry["handoffStatus"]),
+                    entry.get("guid").and_then(crate::guid_key),
+                    entry
+                        .get("handoffStatus")
+                        .and_then(|s| annotations::dev_status(&to_json(s))),
                 ) {
                     dev_status.insert(id, status);
                 }
             }
+        }
+        // The document lists its annotation categories.
+        if let Some(stored) = node.get("annotationCategories") {
+            categories.extend(annotations::categories(&to_json(stored)));
         }
     }
     // Every expansion under a selected stored root is emitted, so expansion can stop early too.
@@ -220,11 +229,22 @@ fn build(
         return Ok(Json::Null);
     }
     let (mut components, mut sets, mut styles) = (Obj::new(), Obj::new(), Obj::new());
+    let mut used_categories = Obj::new();
     let mut handoff = handoff::Inventory::default();
     let mut stack = vec![&document];
     while let Some(n) = stack.pop() {
         handoff.record(n);
         stack.extend(n["children"].as_array().into_iter().flatten());
+        for id in n["annotations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|a| a["categoryId"].as_str())
+        {
+            if let Some(category) = categories.get(id) {
+                used_categories.insert(id.to_owned(), category.clone());
+            }
+        }
         if let Some(main) = n["componentId"]
             .as_str()
             .filter(|m| tree.nodes.contains_key(*m) && !components.contains_key(*m))
@@ -267,6 +287,10 @@ fn build(
         "styles": styles,
         "schemaVersion": 0,
     });
+    // Like `styles`: the categories the emitted annotations name, as the Plugin API reads them.
+    if !used_categories.is_empty() {
+        result["annotationCategories"] = used_categories.into();
+    }
     // Stated once here rather than on every node's `_figlens.semantics`.
     result["_figlens"] = json!({"semantics":{"verification":"not-compared-with-figma"}});
     if let Some(summary) = handoff.finish() {

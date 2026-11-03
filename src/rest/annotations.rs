@@ -53,8 +53,12 @@ pub(super) fn node(k: &Obj, out: &mut Obj) {
         .flatten()
         .map(|a| {
             let mut entry = json!({});
-            if let Some(html) = a["label"].as_str().filter(|l| !l.is_empty()) {
-                let (plain, markdown) = label(html);
+            // Quill stores an emptied label as `<p><br></p>`, which leaves no text.
+            if let Some((plain, markdown)) = a["label"]
+                .as_str()
+                .map(label)
+                .filter(|(plain, _)| !plain.is_empty())
+            {
                 entry["label"] = plain.into();
                 entry["labelMarkdown"] = markdown.into();
             }
@@ -65,8 +69,7 @@ pub(super) fn node(k: &Obj, out: &mut Obj) {
                     .map(|t| json!({ "type": property(t) }))
                     .collect();
             }
-            // `guid` would print the unset sentinel (u32::MAX twice) as an id.
-            if let Some(id) = guid(&a["categoryId"]).filter(|id| id != "4294967295:4294967295") {
+            if let Some(id) = super::semantics::definition_id(&a["categoryId"]) {
                 entry["categoryId"] = id.into();
             }
             entry
@@ -90,6 +93,36 @@ pub(super) fn dev_status(info: &Json) -> Option<Json> {
     }
     Some(status)
 }
+
+/// Plugin API `AnnotationCategory` fields (`label`, `isPreset`, `color` when stored) of each
+/// category in the document's `annotationCategories`, by id. A preset's color is not stored.
+pub(super) fn categories(stored: &Json) -> HashMap<String, Json> {
+    let mut out = HashMap::new();
+    for item in stored["items"].as_array().into_iter().flatten() {
+        let Some(id) = super::semantics::definition_id(&item["id"]) else {
+            continue;
+        };
+        let custom = &item["custom"];
+        let preset = item["preset"].as_str().filter(|p| *p != "NONE");
+        let label = match preset {
+            // Figma's preset names are the enum in title case (Development, Interaction, ...).
+            Some(p) => p[..1].to_owned() + &p[1..].to_ascii_lowercase(),
+            None => match custom["label"].as_str() {
+                Some(l) => l.to_owned(),
+                None => continue,
+            },
+        };
+        let mut category = json!({ "label": label, "isPreset": preset.is_some() });
+        if let Some(color) = custom["color"].as_str() {
+            category["color"] = color.to_ascii_lowercase().into();
+        }
+        out.insert(id, category);
+    }
+    out
+}
+
+/// Deepest list level indented; deeper items share it, so output stays linear in the input.
+const MAX_INDENT: usize = 8;
 
 /// The stored label is rich-text HTML (`<p>`, lists, links, emphasis). Returns it as plain text
 /// (one line per paragraph or list item) and as Markdown. A label without tags is taken as text.
@@ -133,24 +166,24 @@ fn label(html: &str) -> (String, String) {
         };
         match (name.as_str(), closing) {
             ("p" | "div" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6", false) => {
-                plain.block(false);
-                md.block(lists.is_empty());
+                plain.block(LINE);
+                md.block(if lists.is_empty() { PARAGRAPH } else { LINE });
                 if let Some(level) = name.strip_prefix('h').and_then(|n| n.parse().ok()) {
                     md.push(&format!("{} ", "#".repeat(level)));
                 }
             }
             ("br", _) => {
-                plain.push("\n");
-                md.push("  \n");
+                plain.block(LINE);
+                md.block(HARD_BREAK);
             }
             ("ol" | "ul", false) => lists.push((name == "ol", 1)),
             ("ol" | "ul", true) => {
                 lists.pop();
             }
             ("li", false) => {
-                plain.block(false);
-                md.block(false);
-                let depth = lists.len().saturating_sub(1);
+                plain.block(LINE);
+                md.block(LINE);
+                let depth = lists.len().saturating_sub(1).min(MAX_INDENT);
                 // Quill marks each item's kind; an `<ol>` can hold bullet items.
                 let ordered = match attr("data-list").as_deref() {
                     Some("bullet") => false,
@@ -186,18 +219,23 @@ fn label(html: &str) -> (String, String) {
     (plain.finish(), md.finish())
 }
 
-/// Output that separates blocks lazily, so empty paragraphs leave no blank lines.
+/// Separators, weakest first: a line break, a Markdown hard break, a blank line.
+const LINE: (u8, &str) = (0, "\n");
+const HARD_BREAK: (u8, &str) = (1, "  \n");
+const PARAGRAPH: (u8, &str) = (2, "\n\n");
+
+/// Output that separates blocks lazily, so empty paragraphs and `<br>`s leave no blank lines.
 #[derive(Default)]
 struct Text {
     out: String,
-    /// The separator owed before the next text: a newline, or a blank line between paragraphs.
-    pending: Option<&'static str>,
+    /// The strongest separator owed before the next text.
+    pending: Option<(u8, &'static str)>,
 }
 
 impl Text {
-    fn block(&mut self, paragraph: bool) {
-        if !self.out.is_empty() {
-            self.pending = Some(if paragraph { "\n\n" } else { "\n" });
+    fn block(&mut self, sep: (u8, &'static str)) {
+        if !self.out.is_empty() && self.pending.is_none_or(|p| sep.0 > p.0) {
+            self.pending = Some(sep);
         }
     }
 
@@ -205,8 +243,8 @@ impl Text {
         if text.is_empty() {
             return;
         }
-        if let Some(sep) = self.pending.take() {
-            self.out = self.out.trim_end_matches(' ').to_owned();
+        if let Some((_, sep)) = self.pending.take() {
+            self.out.truncate(self.out.trim_end_matches(' ').len());
             self.out.push_str(sep);
         }
         self.out.push_str(text);
@@ -226,26 +264,31 @@ fn entities(text: &str) -> String {
     while let Some(at) = rest.find('&') {
         out.push_str(&rest[..at]);
         rest = &rest[at..];
-        let decoded = rest.find(';').filter(|end| *end <= 10).and_then(|end| {
-            let name = &rest[1..end];
-            let c = match name {
-                "amp" => Some('&'),
-                "lt" => Some('<'),
-                "gt" => Some('>'),
-                "quot" => Some('"'),
-                "apos" => Some('\''),
-                "nbsp" => Some(' '),
-                _ => name
-                    .strip_prefix("#x")
-                    .or_else(|| name.strip_prefix("#X"))
-                    .map_or_else(
-                        || name.strip_prefix('#').and_then(|n| n.parse().ok()),
-                        |hex| u32::from_str_radix(hex, 16).ok(),
-                    )
-                    .and_then(char::from_u32),
-            };
-            c.map(|c| (c, end))
-        });
+        // A reference is at most `&#x10FFFF;`; looking further makes many `&`s quadratic.
+        let decoded = rest
+            .bytes()
+            .take(11)
+            .position(|b| b == b';')
+            .and_then(|end| {
+                let name = &rest[1..end];
+                let c = match name {
+                    "amp" => Some('&'),
+                    "lt" => Some('<'),
+                    "gt" => Some('>'),
+                    "quot" => Some('"'),
+                    "apos" => Some('\''),
+                    "nbsp" => Some(' '),
+                    _ => name
+                        .strip_prefix("#x")
+                        .or_else(|| name.strip_prefix("#X"))
+                        .map_or_else(
+                            || name.strip_prefix('#').and_then(|n| n.parse().ok()),
+                            |hex| u32::from_str_radix(hex, 16).ok(),
+                        )
+                        .and_then(char::from_u32),
+                };
+                c.map(|c| (c, end))
+            });
         match decoded {
             Some((c, end)) => {
                 out.push(c);
@@ -267,20 +310,20 @@ mod tests {
 
     #[test]
     fn quill_lists_become_lines_and_markdown_items() {
-        let html = r#"<ol><li value="1" data-list="bullet">Swipe &amp; tap</li><li value="2" data-list="bullet">Hide if one</li></ol>"#;
+        let html = r#"<ol><li value="1" data-list="bullet">Red &amp; blue</li><li value="2" data-list="bullet">Green</li></ol>"#;
         assert_eq!(
             label(html),
             (
-                "- Swipe & tap\n- Hide if one".into(),
-                "- Swipe & tap\n- Hide if one".into()
+                "- Red & blue\n- Green".into(),
+                "- Red & blue\n- Green".into()
             )
         );
     }
 
     #[test]
-    fn ordered_items_are_numbered_per_list() {
-        let html = r#"<ol><li data-list="ordered">a</li><li data-list="ordered">b</li></ol>"#;
-        assert_eq!(label(html).0, "1. a\n2. b");
+    fn ordered_items_are_numbered_per_list_and_nested_lists_indent() {
+        let html = r#"<ol><li data-list="ordered">a</li><li>b</li><ul><li>c</li></ul></ol>"#;
+        assert_eq!(label(html).0, "1. a\n2. b\n  - c");
     }
 
     #[test]
@@ -295,9 +338,45 @@ mod tests {
     }
 
     #[test]
+    fn headings_strong_code_and_strike_are_markdown() {
+        let html = "<h2>Title</h2><p><strong>b</strong> <code>c</code> <s>d</s> <a>e</a></p>";
+        assert_eq!(label(html).1, "## Title\n\n**b** `c` ~~d~~ [e]");
+    }
+
+    #[test]
+    fn an_empty_quill_paragraph_adds_no_blank_line() {
+        assert_eq!(
+            label("<p>a</p><p><br></p><p>b</p>"),
+            ("a\nb".into(), "a\n\nb".into())
+        );
+    }
+
+    #[test]
+    fn references_decode_and_a_bare_ampersand_stays() {
+        assert_eq!(
+            label("<p>&#65;&#x42;&nbsp;&amp &copy;</p>").0,
+            "AB &amp &copy;"
+        );
+    }
+
+    #[test]
     fn untagged_labels_are_text_and_a_stray_bracket_keeps_the_rest() {
         assert_eq!(label("Tom &amp; Jerry").0, "Tom &amp; Jerry");
         assert_eq!(label("<p>a</p> < b").0, "a < b");
+    }
+
+    #[test]
+    fn deeply_nested_lists_stay_linear_in_the_input() {
+        let n = 20_000;
+        let html = "<ol>".repeat(n) + &"<li>x".repeat(n);
+        let (plain, md) = label(&html);
+        // Each item is at most a newline, the capped indent, a marker and its text.
+        assert!(
+            plain.len() <= n * (1 + 2 * MAX_INDENT + 8),
+            "{}",
+            plain.len()
+        );
+        assert_eq!(plain.len(), md.len());
     }
 
     #[test]
@@ -305,7 +384,7 @@ mod tests {
         let k = object(json!({"annotations": [
             {"label": "<p>x</p>", "properties": [{"type": "FILL"}, {"type": "STACK_SPACING"}, {"type": "NEW"}],
              "categoryId": {"sessionID": 4294967295u64, "localID": 4294967295u64}},
-            {"label": "", "properties": [], "categoryId": {"sessionID": 1, "localID": 2}},
+            {"label": "<p><br></p>", "properties": [], "categoryId": {"sessionID": 1, "localID": 2}},
         ]}));
         let mut out = Obj::new();
         node(&k, &mut out);
@@ -326,10 +405,33 @@ mod tests {
     }
 
     #[test]
-    fn build_status_is_ready_for_dev_and_none_is_absent() {
+    fn presets_and_custom_categories_read_like_the_plugin_api() {
+        let id = |l: u64| json!({"sessionID": 1, "localID": l});
+        let table = categories(&json!({"items": [
+            {"id": id(0), "preset": "DEVELOPMENT"},
+            {"id": id(2), "preset": "NONE", "custom": {"color": "PINK", "label": "Requirement"}},
+            {"id": {"sessionID": 4294967295u64, "localID": 4294967295u64}, "preset": "CONTENT"},
+        ]}));
+        assert_eq!(table.len(), 2);
+        assert_eq!(
+            table["1:0"],
+            json!({"label": "Development", "isPreset": true})
+        );
+        assert_eq!(
+            table["1:2"],
+            json!({"label": "Requirement", "isPreset": false, "color": "pink"})
+        );
+    }
+
+    #[test]
+    fn build_is_ready_for_dev_completed_keeps_a_description_and_none_is_absent() {
         assert_eq!(
             dev_status(&json!({"status": "BUILD", "description": "v2"})),
             Some(json!({"type": "READY_FOR_DEV", "description": "v2"}))
+        );
+        assert_eq!(
+            dev_status(&json!({"status": "COMPLETED", "description": ""})),
+            Some(json!({"type": "COMPLETED"}))
         );
         assert_eq!(dev_status(&json!({"status": "NONE"})), None);
     }
