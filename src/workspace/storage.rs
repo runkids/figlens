@@ -55,11 +55,6 @@ pub struct Storage {
 }
 
 impl Storage {
-    /// The default per-user state directory (`$XDG_STATE_HOME/figlens` or its platform default).
-    pub fn state_dir(&self) -> &std::path::Path {
-        &self.defaults.state.path
-    }
-
     /// Allows custom storage only under `roots` (canonical paths); the default roots stay allowed.
     pub fn allow(mut self, roots: &[PathBuf]) -> Self {
         self.allowed = Some(roots.to_vec());
@@ -101,6 +96,12 @@ impl Storage {
             ),
         )
         .into())
+    }
+
+    /// figlens's state folder for this user (`$XDG_STATE_HOME/figlens`, `~/.local/state/figlens`
+    /// or `%LOCALAPPDATA%\\figlens\\state`); nothing is created.
+    pub fn state_dir(&self) -> &Path {
+        &self.defaults.state.path
     }
 
     /// Limits every report, search and job to sources under `roots` (canonical paths).
