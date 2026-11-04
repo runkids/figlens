@@ -42,7 +42,7 @@ The request runs `curl` (no HTTP dependency in the binary, like `gcloud` for `gs
 - Report `{mapping, designs: [{name, file, state: pulled|skipped|failed, savedAt, reason}]}` on stdout; the command fails when any design failed, after printing it.
 - The helper finds `playwright-core` beside itself (a global install) or in the working directory's project, launches the installed Chrome (`channel: 'chrome'`) with the profile, sends the regular Chrome user agent in both modes, and on an expired session relaunches headed at `/login` and waits up to 10 minutes for `/files/`. Per design: open the key-only URL (a percent-encoded name slug made CloudFront answer 403), wait for `Main menu`, then File > Save local copy (English UI only; refused when disabled), and take Playwright's download event within 10 minutes. It stops at the first failure.
 - Ported from a project script that ran this flow with `agent-browser` (2026-11-04 handoff). Not exercised against Figma in CI: `tests/freshness.rs` drives the CLI with a shell helper stand-in, and `npm/pull-helper.test.mjs` checks the missing-`playwright-core` message. Signing in from the automated profile was reported to sign the person out of Figma elsewhere (unconfirmed); `--help`, the docs table and the skill say so.
-- Pi, OpenCode, OMP and Herdr: no tool or adapter; the skill tells the agent to run the CLI and leave the sign-in to the person.
+- Pi, OpenCode, OMP and Herdr: no tool or adapter. The skill's `Refreshing a saved copy` section (served by `workflow` build, audit and yolo; the MCP instructions point at pull) tells the agent when to pull, to ask first, to leave the sign-in to the person, and what each failure `stage` calls for.
 
 ## Tests
 
