@@ -68,12 +68,13 @@ For the layout, also copy `figlens-layout/layouts/herdr-figlens.json` and
   Claude Code the figlens MCP `workflow` guide (or `figlens workflow` when
   its session has no figlens MCP), any other agent a plain prompt naming the
   skill's reference. A shell is never a receiver. YOLO confirms only by click.
-- **Agents**: when an agent's figlens MCP server runs in a Herdr terminal, a
-  line under the filter shows what each agent read last (tool, screen, page,
-  how long ago; click to show that screen alone), its screen and its page,
-  even folded, get a dot in the agent's color, and the preview outlines the
-  layer it read with the agent and tool. Below the list, **Activity on this
-  file** lists the latest reads.
+- **Agents**: when agents use figlens in Herdr terminals (its MCP server or
+  the CLI), a line under the filter shows what each agent read last (tool,
+  screen, page, how long ago; click to watch that screen in Quick Look, where
+  the agents' boxes move as they read), its screen and its page, even folded,
+  get a dot in the agent's color, and the preview outlines the layer it read
+  with the agent and tool (click the preview for Quick Look). Below the list,
+  **Activity on this file** lists the latest reads.
 - **Board** (beside List in the header): every screen by what agents did with
   it: Changed since built (the design was saved again and that screen changed
   since an agent worked on it), Building (read in the last 30 minutes), Verified
@@ -98,12 +99,18 @@ Releases. It runs `figlens`, `hc` (to start the browser viewer, send a
 confirmed message and copy a design between your Herdr machines), `osascript`,
 `zenity` or `kdialog` for the file picker, `open` or `xdg-open` for a
 snapshot, and `sh` with its standard tools (`stat`, `find`, `dd`, `tar`,
-`realpath`, `sha256sum` or `shasum`, `awk`), plus `curl` for the download. The cache row at the bottom of the empty panel shows and clears what
-it keeps, including figlens's render cache, after a confirm. When an agent's
-figlens MCP server runs inside a Herdr terminal, it records each call that
-read the design: the design's path, the tool, node ids and the screen box (no
-names, text or images), in figlens's state folder under `activity/`, at most
-about 512 KiB per design. The panel reads it there; outside Herdr nothing is
+`realpath`, `sha256sum` or `shasum`, `awk`, `cp`, `ls`, `rm`, `tail`, `head`,
+`base64`, `env`), plus `curl` for the download. For Changed since built it
+keeps each saved version of an open design (a copy-on-write clone where the
+file system has one, else a full copy; the newest 8 per design) under
+`~/.cache/figlens/herdr-revisions/`. The cache row at the bottom of the empty
+panel shows and clears what it keeps, including figlens's render cache, design
+copies and kept versions, after a confirm. When agents use figlens inside a
+Herdr terminal (MCP or CLI), each call that read the design is recorded: the
+design's path and saved version, the tool, node ids and the screen box, and
+for a comparison its numbers and the screenshot and diff paths (no names, text
+or images), in figlens's state folder under `activity/`, at most about 512 KiB
+per design. The panel reads it there; outside Herdr nothing is
 recorded. Lines older than a week are removed; delete that folder to clear
 it. A host that filters its MCP servers' environment (Codex's `env_vars`) must
 pass `HC_TERMINAL_ID`, or its agents do not show.

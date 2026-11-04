@@ -90,15 +90,39 @@ pub(crate) fn revision((modified, bytes): figlens::search::Stamp) -> String {
 }
 
 /// What a Herdr board shows of a `compare_image` reply: its mismatch and region numbers, the
-/// screenshot it compared and the diff image it wrote (paths in the project, no design content).
+/// screenshot it compared and the diff image it wrote (absolute paths in the project, so a host
+/// reads them from any folder; no design content).
 pub(crate) fn compare_summary(
     reply: &serde_json::Value,
     screenshot: Option<&str>,
 ) -> serde_json::Value {
+    let absolute = |p: Option<&str>| {
+        p.map(|p| {
+            std::fs::canonicalize(p)
+                .map_or_else(|_| p.to_owned(), |c| c.to_string_lossy().into_owned())
+        })
+    };
     json!({
         "mismatch": reply["mismatch"], "nonTextMismatch": reply["nonTextMismatch"],
-        "regionCount": reply["regionCount"], "screenshot": screenshot, "diff": reply["path"],
+        "regionCount": reply["regionCount"], "screenshot": absolute(screenshot),
+        "diff": absolute(reply["path"].as_str()),
     })
+}
+
+/// A line's fields beyond the call itself: the design `revision` it read and, for a comparison,
+/// its `result`.
+pub(crate) fn extra(
+    decoded: Option<figlens::search::Stamp>,
+    result: Option<serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut extra = serde_json::Map::new();
+    if let Some(stamp) = decoded {
+        extra.insert("revision".into(), revision(stamp).into());
+    }
+    if let Some(result) = result {
+        extra.insert("result".into(), result);
+    }
+    extra
 }
 
 /// `12:3`, or an instance layer's path `I12:3;45:6`.

@@ -12,12 +12,13 @@ import { writeFile, mkdir, readdir } from "fs/promises";
 import { Buffer } from "buffer";
 import { createHash, randomUUID } from "crypto";
 import { VERSION, asset, releaseBase, cacheDir, INSTALL } from "./engine.js";
-import { groupFrames, thumbFile, fitBox, clean, nodeRef, intentText, appOf, ago, ACTIVITY, ACTIVE_MS, parseActivity, recentActivity, screenStates, pct, changedFrames } from "./frames.js";
+import { groupFrames, thumbFile, fitBox, clean, nodeRef, intentText, appOf, ago, ACTIVITY, ACTIVE_MS, parseActivity, latestActivity, recentActivity, screenStates, pct, scopeChange, isRevision } from "./frames.js";
 
 const FILES = "figlens.files.v1"; // { [space id]: { path, on } }: each space keeps its own design
 const NOTICE = "figlens.notice.v1"; // { kind, text, at }: dialogs report to the panel
 const QL = "figlens.quicklook.v1"; // what the Quick Look window shows and where it is in the list
 const CMP = "figlens.compare.v1"; // the comparison the compare window shows
+const LIVE = "figlens.live.v1"; // { file: "<machine>:<path>", entries }: what agents read now, for Quick Look
 const CLEARED = "figlens.cleared.v1"; // when the image cache was last cleared: every panel reloads
 const VIEWERS = "figlens.viewers.v1"; // { "<machine>:<path>": { terminal, url } }: browser viewers
 const PANELS = "workspace.panels"; // Herdr's: the side panels its tabs mod restores per space
@@ -29,11 +30,12 @@ const FOLD_OVER = 40, PREVIEW_MAX = 960, PREVIEW_H = 360, LOOK_MAX = 1600, THUMB
 const scaleFor = (size, max) => Math.min(16, Math.max(1, Math.ceil(max / Math.max(1, ...(size ?? [max])))));
 const GONE = "This file is no longer there";
 // GNU stat first: there, -f means file-system status and would print garbage. Then macOS's.
-const STAT = 'stat -c "%Y %s" "$1" 2>/dev/null || stat -f "%m %z" "$1"';
+const STAT = 'stat -L -c "%Y %s" "$1" 2>/dev/null || stat -L -f "%m %z" "$1"';
 const FIND = `find "$1" -maxdepth 4 \\( -name node_modules -o -name .git -o -name target \\) -prune -o -type f -name '*.fig' -print 2>/dev/null | head -20`;
 // sh -c REMOTE_EXPORT <name> <bin> <file> <max> <scale> <id>...: images rendered on the design's
 // machine, sent back as one base64 tar.gz; the design itself never moves.
 const REMOTE_EXPORT = `set -e
+unset HC_TERMINAL_ID
 bin=$1; file=$2; max=$3; scale=$4; shift 4
 d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
 mkdir "$d/out"; printf '%s\\n' "$@" > "$d/list"
@@ -52,13 +54,20 @@ printf '%s %s' "$d" "$(wc -c < "$d/s.gz" | tr -d ' ')"`;
 const FETCH_PART = 'h=$(command -v hc || echo "$HOME/.local/bin/hc"); "$h" exec --on "$1" dd if="$2" bs=1048576 skip="$3" count="$4" 2>/dev/null >> "$5"; wc -c < "$5"';
 const PART_MB = 4;
 const ACTIVITY_POLL = 5000;
-// sh -c KEEP_REVISION <design> <folder key> <revision key>: keeps this saved version of the design
-// beside the others agents read (a copy-on-write clone where the file system has one), so a later
-// save can be compared with what an agent built from; the newest 8 per design stay.
-const KEEP_REVISION = `d="$HOME/.cache/figlens/herdr-revisions/$2"; f="$d/$3.fig"; mkdir -p "$d"
-[ -e "$f" ] || cp -c "$1" "$f" 2>/dev/null || cp --reflink=auto "$1" "$f" 2>/dev/null || cp "$1" "$f"
+// sh -c KEEP_REVISION <design> <folder key> <revision key> <revision>: keeps this saved version of
+// the design beside the others agents read (a copy-on-write clone where the file system has one),
+// so a later save can be compared with what an agent built from; the newest 8 per design stay. A
+// save during the copy leaves none rather than other bytes under this revision's name.
+const REVISIONS = ".cache/figlens/herdr-revisions";
+const KEEP_REVISION = `d="$HOME/${REVISIONS}/$2"; f="$d/$3.fig"; mkdir -p "$d"
+now() { stat -L -c "%Y %s" "$1" 2>/dev/null || stat -L -f "%m %z" "$1"; }
+[ -e "$f" ] && exit 0
+[ "$(now "$1")" = "$4" ] || exit 0
+cp -c "$1" "$f" 2>/dev/null || cp --reflink=auto "$1" "$f" 2>/dev/null || cp "$1" "$f"
+[ "$(now "$1")" = "$4" ] || rm -f "$f"
 cd "$d" && ls -1t | tail -n +9 | while IFS= read -r x; do rm -f "./$x"; done`;
-const revisionFile = (file, rev) => `$HOME/.cache/figlens/herdr-revisions/${hash(`${file.on ?? ""}:${file.path}`)}/${rev.replace(/\s+/g, "-")}.fig`;
+// A kept revision's folder and file names: the design's key, the revision with "-" for spaces.
+const revisionKeys = (file, rev) => [hash(`${file.on ?? ""}:${file.path}`), rev.replace(/\s+/g, "-")];
 const PRUNE = 'cd "$1" && ls -1t | tail -n +$2 | while IFS= read -r d; do rm -rf "./$d"; done';
 const KIND = { Darwin: "macos", Linux: "linux" };
 const STATUS_ICON = { done: "check", info: "copy", working: "ring", error: "alert" };
@@ -131,8 +140,11 @@ const working = (t, text) => h_flex().gap(7).items_center().text_size(S().second
 
 // ---- Data from Herdr and the design's machine ----
 
+// The panel's own figlens calls: never journaled as an agent's, whatever environment exec has.
+const engineArgs = (bin, args) => ["-u", "HC_TERMINAL_ID", bin, ...args];
+
 async function figlens(bin, args, on) {
-  const r = await exec(bin, args, { on });
+  const r = await exec("env", engineArgs(bin, args), { on });
   if (r.code !== 0) throw new Error(lastLine(r.stderr) || `figlens exited with ${r.code}`);
   return r.stdout;
 }
@@ -169,7 +181,7 @@ async function renderNode(bin, file, id, dir, max, size) {
     if (r.code === 0 && r.stdout.trim()) await unpackImages(r.stdout, dir);
   } else {
     // The node's own box, not its shadows or overflow: agent boxes are drawn in that space.
-    await exec(bin, ["export", file.path, id, `${dir}/${name}`, "--bounds", "layout", "--scale", scale, "--max-size", String(max)]);
+    await exec("env", engineArgs(bin, ["export", file.path, id, `${dir}/${name}`, "--bounds", "layout", "--scale", scale, "--max-size", String(max)]));
   }
   return (await readdir(dir)).includes(name);
 }
@@ -442,6 +454,34 @@ function handoffButton(t, key, agent, build, menuProps, newTab, inRow = false) {
       .child(icon("caret", 13, t.solid_foreground)));
 }
 
+// Live agents among journal lines, newest first, each with its color. Colors follow terminal order,
+// so an agent keeps its color while others come and go, here and in Quick Look alike.
+function readersFrom(entries, t) {
+  const colors = [t.ansi4, t.ansi5, t.ansi6, t.ansi3, t.ansi2, t.ansi1], live = agents();
+  return entries
+    .map((e) => ({ e, agent: live.find((a) => a.address === e.address) }))
+    .filter((r) => r.agent)
+    .sort((a, b) => a.e.address.localeCompare(b.e.address))
+    .map((r, i) => ({ ...r, color: colors[i % colors.length] }))
+    .sort((a, b) => b.e.at - a.e.at);
+}
+
+// Each reader's box on an image of a frame drawn into `box`: only the part inside the frame, tagged
+// with the agent and tool.
+function agentMarks(readers, frameSize, box, t) {
+  const scale = box.w / (frameSize?.[0] || box.w);
+  return readers.filter((r) => r.e.box).flatMap((r) => {
+    const [x, y, w, h] = r.e.box.map((v) => v * scale);
+    const left = Math.max(0, x), top = Math.max(0, y);
+    const width = Math.min(box.w, x + w) - left, height = Math.min(box.h, y + h) - top;
+    if (!(width >= 1 && height >= 1)) return [];
+    const label = `${r.agent.program?.name ?? r.e.address} · ${r.e.tool}`;
+    return [div().absolute().left(left).top(top).w(Math.max(4, width)).h(Math.max(4, height)).border_2().border_color(r.color).rounded(2),
+      div().absolute().left(left).top(Math.max(0, top - 16)).h(15).px(5).flex().items_center().rounded(3).bg(r.color)
+        .text_size(S().label - 1).text_color(t.background).child(label)];
+  });
+}
+
 export default class Figlens extends View {
   init(_props, cx) {
     this.role = blockProps()?.role ?? "panel";
@@ -655,7 +695,8 @@ export default class Figlens extends View {
     this.choices = null; this.pick = null; this.intent = "plan"; this.progress = null; this.failed = null;
     cx.spawn(async (cx) => {
       const list = await knownAgents({ on: p.on ?? null }).catch(() => []);
-      this.choices = list; this.pick = list.find((a) => a.installed)?.key ?? null;
+      // The agent the person was using, when it is installed here; else the first one installed.
+      this.choices = list; this.pick = list.find((a) => a.installed && a.key === p.prefer)?.key ?? list.find((a) => a.installed)?.key ?? null;
       cx.notify();
     });
   }
@@ -768,25 +809,29 @@ export default class Figlens extends View {
   }
 
   // The screenshot and diff live on the machine whose agent compared; the design renders here.
+  // Local files are copied; a remote one comes over in parts (a remote command's output stops at
+  // 8 MB), and its size is read from the PNG header.
   loadCompare(q, cx) {
     const key = this.cmpKey;
     cx.spawn(async (cx) => {
       try {
         await mkdir(`${appHome()}/${CACHE}/compare`, { recursive: true });
         const id = hash(`${q.address}:${q.at}:${q.frame.id}`);
-        let size = null;
-        const fetchPng = async (src, name) => {
+        const bring = async (src, name) => {
           if (!src) return null;
-          const r = await sh('base64 < "$1"', [src], q.on);
-          const b64 = String(r.stdout ?? "").replace(/\s+/g, "");
-          if (r.code !== 0 || !b64) throw new Error(`Cannot read ${src}${q.on ? ` on ${q.on}` : ""}`);
-          const head = Buffer.from(b64.slice(0, 44), "base64");
-          if (!size && head.length >= 24) size = [head.readUInt32BE(16), head.readUInt32BE(20)];
-          const rel = `${CACHE}/compare/${id}-${name}.png`;
-          await writeFile(`${appHome()}/${rel}`, Buffer.from(b64, "base64"));
+          const rel = `${CACHE}/compare/${id}-${name}.png`, abs = `${appHome()}/${rel}`;
+          if (q.on) {
+            const size = await sizeOn(src, q.on);
+            if (!size) throw new Error(`Cannot read ${src} on ${q.on}`);
+            await sh('rm -f "$1"', [abs]);
+            await copyParts(FETCH_PART, [q.on, src, abs], size, PART_MB, () => {});
+          } else if ((await sh('cp "$1" "$2"', [src, abs])).code !== 0) throw new Error(`Cannot read ${src}`);
           return rel;
         };
-        const shot = await fetchPng(q.result?.screenshot, "shot"), diff = await fetchPng(q.result?.diff, "diff");
+        const shot = await bring(q.result?.screenshot, "shot"), diff = await bring(q.result?.diff, "diff");
+        const head = shot && (await sh('head -c 24 "$1" | base64', [`${appHome()}/${shot}`])).stdout.replace(/\s+/g, "");
+        const bytes = head ? Buffer.from(head, "base64") : null;
+        const size = bytes?.length >= 24 ? [bytes.readUInt32BE(16), bytes.readUInt32BE(20)] : null;
         const ok = await renderNode(q.bin, q.file, q.frame.id, `${appHome()}/${CACHE}/${q.key}/look`, LOOK_MAX, q.frame.size).catch(() => false);
         if (this.cmpKey !== key) return;
         this.cmp = { shot, diff, size, design: ok ? `${CACHE}/${q.key}/look/${thumbFile(q.frame.id)}` : null };
@@ -814,6 +859,9 @@ export default class Figlens extends View {
     const agent = agents().find((a) => a.focused) ?? agents().find((a) => a.address === this.lastAgent) ?? null;
     const [w, h] = f.size ?? [];
     const box = fitBox(f.size, Math.max(200, this.width - 40), Math.max(160, this.height - 42 - 40 - 36));
+    // Agents reading this screen now, live from the panel: their boxes on the image and a line below.
+    const live = shared(LIVE), here = live?.file === `${q.file.on ?? ""}:${q.file.path}` ? live.entries : [];
+    const readers = readersFrom(here.filter((e) => e.screen === f.id), t);
     const prev = q.frames[(index - 1 + q.frames.length) % q.frames.length], next = q.frames[(index + 1) % q.frames.length];
     return v_flex().id("quicklook").track_focus(this.handle)
       .on_size_change((size, cx) => {
@@ -850,7 +898,8 @@ export default class Figlens extends View {
           .hover((s) => s.bg(t.hover)).on_mouse_down("left", stop).on_click(close).child(icon("close", 14, t.muted))))
       .child(h_flex().flex_1().min_h(0).items_center().justify_center().bg(t.chrome)
         .child(this.looks.get(look) === "ready"
-          ? image(`${CACHE}/${q.key}/full/${thumbFile(f.id)}`).w(box.w).h(box.h)
+          ? div().relative().w(box.w).h(box.h).child(image(`${CACHE}/${q.key}/full/${thumbFile(f.id)}`).w(box.w).h(box.h))
+            .children(agentMarks(readers, f.size, box, t))
           : this.looks.get(look) === "error" ? div().text_size(S().secondary).text_color(t.muted).child("This layer could not be drawn")
             : working(t, "Drawing at full size…")))
       .child(h_flex().h(40).flex_none().px(10).gap(6).items_center().border_t(1).border_color(t.border).text_size(S().secondary).text_color(t.muted)
@@ -862,7 +911,11 @@ export default class Figlens extends View {
           ? h_flex().gap(7).items_center().min_w(0).text_color(statusColor(t, this.note.kind))
             .child(this.note.kind === "working" ? icon("ring", 13, statusColor(t, "working")).spin(900) : icon(STATUS_ICON[this.note.kind] ?? "alert", 13, statusColor(t, this.note.kind)))
             .child(div().min_w(0).truncate().child(this.note.text))
-          : div().child(q.frames.length > 1 ? `${index + 1} of ${q.frames.length} · Space or Esc closes · ← → moves` : "Space or Esc closes")));
+          : readers.length
+            ? h_flex().gap(10).min_w(0).children(readers.map((r) => h_flex().gap(6).items_center().min_w(0)
+              .child(dot(r.color, 7)).child(div().font_semibold().text_color(t.foreground).child(r.agent.program?.name ?? r.e.address))
+              .child(div().truncate().child(`${r.e.tool}${r.e.nodes[0] && r.e.nodes[0] !== f.id ? ` · node ${r.e.nodes[0]}` : ""} · ${ago(Date.now() - r.e.at)}`))))
+            : div().child(q.frames.length > 1 ? `${index + 1} of ${q.frames.length} · Space or Esc closes · ← → moves` : "Space or Esc closes")));
   }
 
   // ---- Panel: engine, file, screens ----
@@ -907,7 +960,11 @@ export default class Figlens extends View {
   // Called from render: state set here shows in this pass, so it must not notify.
   load(file, cx) {
     const token = ++this.token;
-    if (!same(file, this.file)) { this.activity = new Map(); this.recent = []; this.states = new Map(); this.boardPicks = new Set(); this.diffs = new Map(); }
+    // A new design starts empty, signatures too: an unchanged signature would keep it empty.
+    if (!same(file, this.file)) {
+      this.activity = new Map(); this.recent = []; this.states = new Map(); this.boardPicks = new Set(); this.diffs = new Map();
+      this.recentSig = null; this.statesSig = null;
+    }
     this.file = file; this.groups = []; this.thumbs = new Set(); this.selected = null;
     this.error = null; this.gone = false; this.queue = []; this.drawing = false; this.fold = new Map(); this.previews = new Map();
     this.lookToken += 1; this.hit = null; this.layers = null; this.looking = false;
@@ -940,7 +997,7 @@ export default class Figlens extends View {
         if (q && same(q.file, file) && q.key !== key) setShared(QL, { ...q, key, design: this.design() });
         this.watch(file, stamp, cx);
         // Kept now, while it is the saved one: the next save is compared with it.
-        sh(KEEP_REVISION, [file.path, hash(`${file.on ?? ""}:${file.path}`), stamp.replace(/\s+/g, "-")], file.on).catch(() => null);
+        sh(KEEP_REVISION, [file.path, ...revisionKeys(file, stamp), stamp], file.on).catch(() => null);
         this.follow(file, cx);
         if (this.raw) this.lookup(cx);
       } catch (e) {
@@ -998,7 +1055,7 @@ export default class Figlens extends View {
             for (const id of chunk) if (now.has(thumbFile(id))) this.thumbs.add(id);
           } else {
             await writeFile(`${dir}/.frames`, chunk.join("\n"));
-            const out = await exec(bin, ["export", file.path, "--frames", `${dir}/.frames`, "--out-dir", dir, "--format", "png", "--bounds", "layout", "--scale", String(THUMB_SCALE), "--max-size", max]);
+            const out = await exec("env", engineArgs(bin, ["export", file.path, "--frames", `${dir}/.frames`, "--out-dir", dir, "--format", "png", "--bounds", "layout", "--scale", String(THUMB_SCALE), "--max-size", max]));
             if (token !== this.token) return;
             for (const line of out.stdout.split("\n")) {
               try { const r = JSON.parse(line); if (r.nodeId && !r.error) this.thumbs.add(r.nodeId); } catch { /* not a result line */ }
@@ -1063,8 +1120,10 @@ export default class Figlens extends View {
           const reads = await Promise.all([...machines].map((m) => sh(ACTIVITY, [m === from ? file.path : copy], m).catch(() => null)));
           if (!still()) return;
           [...machines].forEach((m, i) => entries.push(...parseActivity(reads[i]?.stdout, m)));
-          const all = new Map();
-          for (const e of entries) if (now - e.at <= ACTIVE_MS && (all.get(e.address)?.at ?? -Infinity) < e.at) all.set(e.address, e);
+          const all = latestActivity(entries, null, now, ACTIVE_MS);
+          // Quick Look draws the same boxes; it redraws every 10 s while anyone is active ("12s ago").
+          const liveSig = `${[...all.values()].map((e) => `${e.address}${e.at}`).join()}|${all.size ? Math.floor(now / 10000) : 0}`;
+          if (liveSig !== this.liveSig) { this.liveSig = liveSig; setShared(LIVE, { file: id, entries: [...all.values()] }); }
           const recent = recentActivity(entries), sig = recent.map((e) => `${e.address}${e.at}`).join();
           const changes = this.revisionChanges(file, entries, cx);
           // Redraw while anyone is active (the "12s ago" moves) and when the history changes.
@@ -1083,59 +1142,53 @@ export default class Figlens extends View {
 
   // For each older revision agents last read here, the screens `figlens diff --node` found changed
   // from it to the saved design: revision → Map. Only screens agents worked on are compared, one
-  // `--node` each (a whole large file stops at diff's work limit), once per pair, in the
-  // background, from the copy KEEP_REVISION kept; a revision with no copy is skipped.
+  // `--node` each (a whole large file stops at diff's work limit), once per pair, one at a time (each
+  // diff decodes both designs), from the copy KEEP_REVISION kept; a revision with no copy is skipped.
   revisionChanges(file, entries, cx) {
-    const now = this.stamp, out = new Map(), want = new Map();
+    const now = this.stamp, out = new Map();
     for (const e of entries) {
-      if (e.on !== (file.on ?? null) || !e.revision || e.revision === now || !e.screen) continue;
-      if (!want.has(e.revision)) want.set(e.revision, new Set());
-      want.get(e.revision).add(e.screen);
+      if (e.on !== (file.on ?? null) || !isRevision(e.revision) || e.revision === now || !e.screen) continue;
+      const key = `${e.revision}|${now}|${e.screen}`, known = this.diffs.get(key);
+      if (known && typeof known === "object") {
+        if (!out.has(e.revision)) out.set(e.revision, new Map());
+        out.get(e.revision).set(e.screen, known);
+      }
+      if (known === undefined) { this.diffs.set(key, "queued"); (this.diffQueue ??= []).push({ key, rev: e.revision, screen: e.screen }); }
     }
-    for (const [rev, screens] of want) {
-      const found = new Map();
-      for (const screen of screens) {
-        const key = `${rev}|${now}|${screen}`, known = this.diffs.get(key);
-        if (known && typeof known === "object") found.set(screen, known);
-        if (known !== undefined || !this.engine?.bin) continue;
-        this.diffs.set(key, "running");
-        const bin = this.engine.bin;
-        cx.spawn(async (cx) => {
+    if (!this.diffing && this.diffQueue?.length && this.engine?.bin) this.runDiffs(file, now, cx);
+    return out;
+  }
+
+  runDiffs(file, now, cx) {
+    this.diffing = true;
+    const bin = this.engine.bin;
+    cx.spawn(async (cx) => {
+      try {
+        while (this.diffQueue.length && same(file, this.file) && this.stamp === now) {
+          const { key, rev, screen } = this.diffQueue.shift();
           let change = null;
           try {
-            const old = (await sh(`f="${revisionFile(file, rev)}"; [ -e "$f" ] && printf %s "$f"`, [], file.on)).stdout.trim();
-            if (old) change = changedFrames(JSON.parse(await figlens(bin, ["diff", old, file.path, "--node", screen, "--json", "--limit", "500"], file.on))).get(screen) ?? null;
+            const [dir, name] = revisionKeys(file, rev);
+            const old = (await sh(`f="$HOME/${REVISIONS}/$1/$2.fig"; [ -e "$f" ] && printf %s "$f"`, [dir, name], file.on)).stdout.trim();
+            if (old) change = scopeChange(JSON.parse(await figlens(bin, ["diff", old, file.path, "--node", screen, "--json", "--limit", "500"], file.on)));
           } catch { /* no comparison: the screen keeps its other state */ }
-          if (!same(file, this.file) || this.stamp !== now) return;
           this.diffs.set(key, change ?? "none"); this.statesSig = null; cx.notify();
-        });
-      }
-      if (found.size) out.set(rev, found);
-    }
-    return out;
+        }
+      } finally { this.diffing = false; this.diffQueue = []; }
+    });
   }
 
   // Live agents with recent reads in this design, newest first, each with its color.
   readers(t) {
-    const colors = [t.ansi4, t.ansi5, t.ansi6, t.ansi3, t.ansi2, t.ansi1];
-    const live = agents();
-    return [...this.activity.values()]
-      .map((e) => ({ e, agent: live.find((a) => a.address === e.address) }))
-      .filter((r) => r.agent)
-      // Colors follow terminal order, so an agent keeps its color while others come and go less often.
-      .sort((a, b) => a.e.address.localeCompare(b.e.address))
-      .map((r, i) => ({ ...r, color: colors[i % colors.length] }))
-      .sort((a, b) => b.e.at - a.e.at);
+    return readersFrom([...this.activity.values()], t);
   }
 
-  // Shows the screen an agent is reading as the filter's node card: the one card, its preview
-  // and the agent's box, however long the list. Clearing the filter brings the list back.
-  reveal(r, cx) {
-    const id = r.e.screen;
-    if (!id || !this.topIndex().has(id)) return;
-    this.filter.set_value(id);
-    this.raw = id; this.query = id.toLowerCase();
-    this.lookup(cx);
+
+  // The screen an agent is reading, at full size in Quick Look: this is the agents' live line, so it
+  // opens a look, not the screen's actions.
+  reveal(r) {
+    const place = r.e.screen && this.topIndex().get(r.e.screen);
+    if (place) this.quickLook(place.frame, place.page, null);
   }
 
   // One line per agent reading this design: who, which tool, which screen, how long ago.
@@ -1144,12 +1197,9 @@ export default class Figlens extends View {
     if (!list.length) return null;
     const top = this.topIndex(), now = Date.now();
     return v_flex().gap(1).children(list.map((r) => {
-      const place = r.e.screen && top.get(r.e.screen);
-      // A big design repeats screen names: the page tells them apart.
-      const what = place ? `${clean(place.frame.name, 60)} · ${clean(place.page.name, 40)}`
-        : r.e.nodes[0] && r.e.nodes[0] !== "0:0" ? `node ${r.e.nodes[0]}` : "the file";
+      const place = r.e.screen && top.get(r.e.screen), what = this.whatOf(r.e, top);
       return h_flex().id(`reader-${r.e.address}`).h(24).px(6).gap(7).items_center().rounded(5).text_size(S().secondary)
-        .when(Boolean(place), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.reveal(r, cx); cx.notify(); }))
+        .when(Boolean(place), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => this.reveal(r)))
         .child(dot(r.color, 8))
         .child(div().flex_none().font_semibold().child(r.agent.program?.name ?? r.e.address))
         .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${r.e.tool} · ${what}`))
@@ -1225,8 +1275,10 @@ export default class Figlens extends View {
   // ---- Finding a node: an id or Figma link, or any layer by name or text ----
 
   topIndex() {
+    if (this.topFor === this.groups) return this.top;
     const top = new Map();
     for (const g of this.groups) for (const f of g.frames) top.set(f.id, { frame: f, page: g });
+    this.top = top; this.topFor = this.groups;
     return top;
   }
 
@@ -1304,24 +1356,14 @@ export default class Figlens extends View {
     });
   }
 
-  previewBox(target, t) {
+  previewBox(target, t, open = null) {
     const width = Math.max(160, this.width - 34), box = fitBox(target.size, width, PREVIEW_H), state = this.previews.get(target.id);
     // Where agents read inside this screen: a box in each agent's color.
-    const scale = box.w / (target.size?.[0] || box.w);
-    // Only the part inside the screen is drawn; a box wholly outside it is not.
-    const marks = (this.reading ?? []).filter((r) => r.e.screen === target.id && r.e.box).flatMap((r) => {
-      const [x, y, w, h] = r.e.box.map((v) => v * scale);
-      const left = Math.max(0, x), top = Math.max(0, y);
-      const width = Math.min(box.w, x + w) - left, height = Math.min(box.h, y + h) - top;
-      if (!(width >= 1 && height >= 1)) return [];
-      const label = `${r.agent.program?.name ?? r.e.address} · ${r.e.tool}`;
-      return [div().absolute().left(left).top(top).w(Math.max(4, width)).h(Math.max(4, height)).border_2().border_color(r.color).rounded(2),
-        div().absolute().left(left).top(Math.max(0, top - 16)).h(15).px(5).flex().items_center().rounded(3).bg(r.color)
-          .text_size(S().label - 1).text_color(t.background).child(label)];
-    });
+    const marks = agentMarks((this.reading ?? []).filter((r) => r.e.screen === target.id), target.size, box, t);
     return h_flex().h(box.h + 16).flex_none().items_center().justify_center().rounded(6).bg(t.chrome)
       .child(state === "ready"
-        ? div().relative().w(box.w).h(box.h).child(image(`${CACHE}/${this.key}/preview/${thumbFile(target.id)}`).w(box.w).h(box.h)).children(marks)
+        ? div().id(`preview-${target.id}`).relative().w(box.w).h(box.h).when(Boolean(open), (el) => el.cursor_pointer().on_click(open))
+          .child(image(`${CACHE}/${this.key}/preview/${thumbFile(target.id)}`).w(box.w).h(box.h)).children(marks)
         : state === "error"
           ? div().text_size(S().secondary).text_color(t.muted).child("Preview unavailable for this layer")
           : working(t, "Rendering preview…"));
@@ -1360,7 +1402,7 @@ export default class Figlens extends View {
     const copyId = (_e, cx) => { cx.write_to_clipboard(id); this.say("info", `Copied node ID ${id}`); cx.notify(); };
     const tool = (key, label, glyph, onClick) => secondary(`${key}-${id}`, label, t, onClick, { icon: glyph, size: S().secondary, px: 8, color: t.muted });
     return [
-      this.previewBox(target, t),
+      this.previewBox(target, t, () => this.quickLook(target, page, screen)),
       handoffButton(t, id, agent,
         () => confirmIntent("build", agent, this.textFor("build", agent, target, page, screen), target.name, this.design()),
         () => handoffProps({ agent, file: this.file, frame: target, page, screen, cli: this.cli(), design: this.design() }),
@@ -1514,11 +1556,14 @@ export default class Figlens extends View {
           try { renders.push({ on, bin: engine.bin, bytes: JSON.parse(out.stdout).bytes || 0 }); } catch { /* no render cache there */ }
         }
         const copies = [];
+        // Design copies sent to agents and the versions kept for Changed since built.
         for (const on of machines) {
-          const dir = on ? `${(await sh('printf %s "$HOME"', [], on).catch(() => ({ stdout: "" }))).stdout.trim()}/${COPIES}` : `${home()}/${COPIES}`;
-          const d = await sh('du -sk "$1" 2>/dev/null | cut -f1', [dir], on).catch(() => null);
-          const bytes = (Number(d?.stdout?.trim()) || 0) * 1024;
-          if (bytes) copies.push({ on, dir, bytes });
+          const root = on ? (await sh('printf %s "$HOME"', [], on).catch(() => ({ stdout: "" }))).stdout.trim() : home();
+          for (const dir of [`${root}/${COPIES}`, `${root}/${REVISIONS}`]) {
+            const d = await sh('du -sk "$1" 2>/dev/null | cut -f1', [dir], on).catch(() => null);
+            const bytes = (Number(d?.stdout?.trim()) || 0) * 1024;
+            if (bytes) copies.push({ on, dir, bytes });
+          }
         }
         this.cacheBytes = (Number(r?.stdout?.trim()) || 0) * 1024; this.renders = renders; this.copies = copies; this.measuring = false; cx.notify();
       });
@@ -1662,13 +1707,18 @@ export default class Figlens extends View {
   boardView(t, cx) {
     const q = this.query, now = Date.now();
     const frames = this.groups.flatMap((g) => g.frames.filter((f) => !isComponent(f) && (!q || f.find.includes(q))).map((f) => ({ f, page: g })));
-    this.listed = frames.map(({ f, page }) => ({ target: f, page })); this.visible = this.listed;
-    this.want(frames.map(({ f }) => f.id), cx);
     const groups = { changed: [], building: [], verified: [], read: [], todo: [] };
     for (const x of frames) {
       const s = this.states.get(x.f.id);
       groups[s?.state ?? "todo"].push({ ...x, s });
     }
+    // Quick Look moves in board order; the keyboard's list moves stay with the list.
+    const ordered = ["changed", "building", "verified", "read", "todo"].flatMap((k) => groups[k]);
+    this.listed = ordered.map(({ f, page }) => ({ target: f, page })); this.visible = [];
+    // Thumbnails for the screens agents touched and the first not-started ones, not the whole file.
+    this.want(ordered.slice(0, ordered.length - groups.todo.length + 40).map(({ f }) => f.id), cx);
+    // Only screens that can still be picked, and are shown, count and are sent.
+    this.pickable = new Set([...groups.read, ...groups.todo].map(({ f }) => f.id));
     const sections = [["changed", "Changed since built", t.ansi3], ["building", "Building", t.working], ["verified", "Verified", t.ansi2],
       ["read", "Read before", t.muted], ["todo", "Not started", t.muted]];
     if (!frames.length) return div().px(12).py(10).text_size(S().secondary).text_color(t.muted).child(q ? "Nothing matches this filter" : "No screens in this file");
@@ -1687,7 +1737,7 @@ export default class Figlens extends View {
     const e = s?.entry, w = e ? this.who(e.address) : null, box = fitBox(f.size, THUMB_W, THUMB_H), ready = this.thumbs.has(f.id);
     const pickable = kind === "todo" || kind === "read", picked = this.boardPicks.has(f.id);
     const [fw, fh] = f.size ?? [];
-    const sub = kind === "changed" ? `${s.change.layers.length} layers changed · ${w?.name ?? "an agent"} worked on it ${ago(now - e.at)} ago`
+    const sub = kind === "changed" ? `${s.change.layers.length ? `${s.change.layers.length} layers changed` : "kind changed"} · ${w?.name ?? "an agent"} worked on it ${ago(now - e.at)} ago`
       : kind === "building" ? `working · ${ago(now - s.since)}`
       : kind === "verified" ? `${pct(e.result?.mismatch)} mismatch · ${e.result?.regionCount ?? "?"} regions · ${ago(now - e.at)} ago`
       : kind === "read" ? `${e.tool} ${ago(now - e.at)} ago` : fw > 0 ? `${Math.round(fw)}×${Math.round(fh)}` : clean(page.name, 40);
@@ -1716,16 +1766,21 @@ export default class Figlens extends View {
   }
 
   boardFooter(t) {
-    const n = this.boardPicks.size;
+    const n = this.livePicks().length, to = this.receiver()?.program?.name;
     return h_flex().h(44).flex_none().px(12).gap(8).items_center().border_t(1).border_color(t.border).bg(t.background)
       .child(div().flex_1().min_w(0).text_size(S().secondary).text_color(t.muted).child(`${n} screen${n === 1 ? "" : "s"} selected`))
       .child(secondary("board-clear", "Clear", t, (_e, cx) => { this.boardPicks.clear(); cx.notify(); }, { size: S().secondary, px: 8 }))
-      .child(primary("board-fan", `Plan each in a new tab…`, t, () => this.fanOut(), "plus"));
+      .child(primary("board-fan", `Plan each in a new ${to ? `${to} ` : ""}tab…`, t, () => this.fanOut(), "plus"));
   }
 
   // A changed screen's changes, to the agent that worked on it while it runs, else the one on the left.
+  // Who gets a changed screen: the agent that worked on it while it runs, else the one on the left.
+  changeReceiver(s) {
+    return agents().find((a) => a.address === s.entry.address) ?? this.receiver();
+  }
+
   sendChanges(frame, page, s) {
-    const agent = agents().find((a) => a.address === s.entry.address) ?? this.receiver();
+    const agent = this.changeReceiver(s);
     if (!agent) { this.say("info", "Focus an agent on the left to send the changes to"); return; }
     const text = intentText({ intent: "update", app: agent.app, file: this.file.path, frame, page, screen: null,
       cli: cliFor(this.cli(), this.design(), machineOf(agent.address)), change: s.change });
@@ -1738,26 +1793,34 @@ export default class Figlens extends View {
     const [id, s] = [...this.states].filter(([id, s]) => s.state === "changed" && top.has(id) && !this.later.has(`${id}|${this.stamp}`))
       .sort((a, b) => b[1].entry.at - a[1].entry.at)[0] ?? [];
     if (!s) return null;
-    const { frame, page } = top.get(id), w = this.who(s.entry.address), names = s.change.layers.slice(0, 3).map((l) => clean(l.name, 30)).join(", ");
+    const { frame, page } = top.get(id), w = this.who(s.entry.address), to = this.changeReceiver(s);
+    const names = s.change.layers.slice(0, 3).map((l) => clean(l.name, 30)).join(", ");
+    const what = s.change.layers.length ? `${s.change.layers.length} layers changed${names ? `: ${names}` : ""}` : "Its kind changed";
     return v_flex().mx(12).mt(8).p(10).gap(6).flex_none().rounded(8).border_1().border_color(t.border).bg(t.chrome)
       .child(h_flex().gap(7).items_center().child(icon("refresh", 13, t.ansi3))
         .child(div().flex_1().min_w(0).truncate().text_size(S().body).font_semibold().child(`${clean(frame.name, 50)} changed in ${base(this.file.path)}`)))
       .child(div().text_size(S().secondary).text_color(t.muted)
-        .child(`${w.name} worked on it ${ago(now - s.entry.at)} ago. ${s.change.layers.length} layers changed${names ? `: ${names}` : ""}.`))
+        .child(`${w.name} worked on it ${ago(now - s.entry.at)} ago. ${what}.`))
       .child(h_flex().gap(6).justify_end()
         .child(secondary("later", "Later", t, (_e, cx) => { this.later.add(`${id}|${this.stamp}`); cx.notify(); }, { size: S().secondary, px: 8 }))
-        .child(primary("send-changes", `Send changes to ${w.name}…`, t, () => this.sendChanges(frame, page, s), "arrow")));
+        .child(to ? primary("send-changes", `Send changes to ${to.program.name}…`, t, () => this.sendChanges(frame, page, s), "arrow")
+          : div().text_size(S().secondary).text_color(t.muted).child("Focus an agent on the left to send the changes")));
   }
 
   // The picked screens, each in its own new tab with the chosen agent and intent.
   fanOut() {
     const top = this.topIndex();
-    const frames = [...this.boardPicks].map((id) => top.get(id)).filter(Boolean)
+    const frames = this.livePicks().map((id) => top.get(id)).filter(Boolean)
       .map(({ frame, page }) => ({ frame: { id: frame.id, name: frame.name }, page: page ? { name: page.name } : null, screen: null }));
     if (!frames.length) return;
     const first = top.get(frames[0].frame.id);
     const props = handoffProps({ agent: null, file: this.file, frame: first.frame, page: first.page, screen: null, cli: this.cli(), design: this.design() }).newtab;
-    openOverlay({ mod: "figlens", kind: "dialog", width: 380, height: 560, props: { ...props, frames } });
+    openOverlay({ mod: "figlens", kind: "dialog", width: 380, height: 560, props: { ...props, frames, prefer: this.receiver()?.program?.key ?? null } });
+  }
+
+  // Picks still pickable and shown by the filter: a screen an agent took up since drops out.
+  livePicks() {
+    return [...this.boardPicks].filter((id) => this.pickable?.has(id));
   }
 
   // The compare window for a verified screen: its design and the build screenshot side by side.
@@ -1891,7 +1954,7 @@ export default class Figlens extends View {
       .when(this.listReady(), (el) => { const b = this.changeBanner(t); return b ? el.child(b) : el; })
       .child(v_flex().id("figlens-body").flex_1().min_h(0).overflow_y_scrollbar().child(this.body(t, cx, view)))
       .when(!this.file, (el) => el.child(this.cacheRow(t, cx)))
-      .when(this.view === "board" && this.listReady() && this.boardPicks.size > 0, (el) => el.child(this.boardFooter(t)))
+      .when(this.view === "board" && this.listReady() && this.livePicks().length > 0, (el) => el.child(this.boardFooter(t)))
       .when(Boolean(status), (el) => el.child(statusRow(t, status[0], status[1])));
   }
 }

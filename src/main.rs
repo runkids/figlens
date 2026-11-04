@@ -495,13 +495,15 @@ fn command_usage(command: &str) -> Option<String> {
 }
 
 /// Inside a Herdr terminal a CLI call that read the design's nodes leaves a journal line too, as an
-/// MCP one does, so an agent that runs figlens in its shell shows on the Herdr panel.
+/// MCP one does, so an agent that runs figlens in its shell shows on the Herdr panel. Its node ids
+/// are the arguments that are ids (`ids` drops paths, numbers and flags), and the tool is named as
+/// the MCP tool is, so a host reads both alike.
 fn journal_cli(
-    tool: &str,
+    command: &str,
     path: &Path,
     tree: &Tree,
     decoded: Option<figlens::search::Stamp>,
-    node: Option<&String>,
+    args: &[String],
     result: Option<serde_json::Value>,
 ) {
     let Some(journal) = activity::journal() else {
@@ -511,15 +513,17 @@ fn journal_cli(
     let Ok(path) = std::fs::canonicalize(path) else {
         return;
     };
-    let mut extra = serde_json::Map::new();
-    if let Some(stamp) = decoded {
-        extra.insert("revision".into(), activity::revision(stamp).into());
-    }
-    if let Some(result) = result {
-        extra.insert("result".into(), result);
-    }
-    let ids = activity::ids(node.map(String::as_str));
-    journal.record(tool, &path, tree, &ids, extra);
+    let tool = match command {
+        "compare-image" => "compare_image",
+        "node" => "nodes",
+        other => other,
+    };
+    let ids = activity::ids(
+        args.iter()
+            .map(String::as_str)
+            .filter(|a| !a.starts_with('-')),
+    );
+    journal.record(tool, &path, tree, &ids, activity::extra(decoded, result));
 }
 
 fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
@@ -889,8 +893,7 @@ fn dispatch(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             out.push_str(&result?.text()?);
             // find is a search: like MCP's, it leaves no journal line.
             if command != "find" {
-                let node = args.get(2).filter(|a| !a.starts_with('-'));
-                journal_cli(command, &path, &tree, decoded, node, None);
+                journal_cli(command, &path, &tree, decoded, &args[2..], None);
             }
         }
         "compare-image" => {
@@ -905,7 +908,7 @@ fn dispatch(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             )?;
             writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
             let result = activity::compare_summary(&report, Some(shot.as_str()));
-            journal_cli(command, &path, &tree, decoded, Some(&node), Some(result));
+            journal_cli(command, &path, &tree, decoded, &[node], Some(result));
         }
         "compare" => {
             // A `--frames` line may name the capture's variables.json as a third field.

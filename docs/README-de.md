@@ -136,7 +136,7 @@ Vollständige Anleitung, Befehle und Grenzen: [pi/README.md](../pi/README.md).
 
 ## Herdr-Panel
 
-Ein [Herdr](https://herdr.dev)-Panel für das Design neben deinen Agents: Öffne eine `.fig`, finde einen Screen oder eine Ebene über Name, Text, Node-ID oder Figma-Link, sieh sie dir in voller Größe an und übergib sie dem Agent links als Build, Plan oder YOLO, nach einem Bestätigungsdialog mit der genauen Nachricht. Es braucht keine figlens-Installation und liest Designs auf entfernten Herdr-Rechnern direkt dort. Bitte den Agent in Herdr: `Read ~/.config/herdr-app/AGENTS.md, then add this layout: https://github.com/runkids/figlens/tree/main/herdr/figlens-layout`. Details: [herdr/README.md](../herdr/README.md). Läuft der figlens-MCP-Server eines Agents in einem Herdr-Terminal, zeigt das Panel, welchen Screen jeder Agent gerade liest.
+Ein [Herdr](https://herdr.dev)-Panel für das Design neben deinen Agents: Öffne eine `.fig`, finde einen Screen oder eine Ebene über Name, Text, Node-ID oder Figma-Link, sieh sie dir in voller Größe an und übergib sie dem Agent links als Build, Plan oder YOLO, nach einem Bestätigungsdialog mit der genauen Nachricht. Es braucht keine figlens-Installation und liest Designs auf entfernten Herdr-Rechnern direkt dort. Bitte den Agent in Herdr: `Read ~/.config/herdr-app/AGENTS.md, then add this layout: https://github.com/runkids/figlens/tree/main/herdr/figlens-layout`. Details: [herdr/README.md](../herdr/README.md). Nutzen Agents figlens in Herdr-Terminals (MCP oder CLI), zeigt das Panel, welchen Screen jeder gerade liest, und sein Board verfolgt jeden Screen: in Arbeit, mit compare_image geprüft oder seit dem Bau geändert.
 
 <a id="viewer"></a>
 

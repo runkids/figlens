@@ -83,6 +83,18 @@ export function changedFrames(reply) {
   return out;
 }
 
+// What `figlens diff --node <screen>` found inside that screen, whatever top-level frame diff
+// files it under (a screen in a section is filed under the section): null when nothing changed.
+export function scopeChange(reply) {
+  const layers = [...changedFrames(reply).values()].flatMap((c) => c.layers);
+  const kind = (reply?.frames ?? []).some((fr) => fr?.change === "kind_changed");
+  return layers.length || kind ? { layers, kindChanged: kind } : null;
+}
+
+// A revision as `stat` and the journal print it, `<seconds> <bytes>`; anything else is refused
+// before it reaches a shell.
+export const isRevision = (rev) => /^\d+ \d+$/.test(String(rev ?? ""));
+
 // A share of pixels as people read it: 1.8%.
 export const pct = (v) => (Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : "?");
 
@@ -128,7 +140,7 @@ k=$(printf %s "$p" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-16)
 for f in "$s/figlens/activity/$k.1.jsonl" "$s/figlens/activity/$k.jsonl"; do [ -f "$f" ] && cat "$f"; done |
   awk '{ ring[NR % 40] = $0; n = NR }
     match($0, /"terminal":"[^"]*"/) { keep["t" substr($0, RSTART, RLENGTH)] = $0 }
-    match($0, /"screen":"[^"]*"/) { s = substr($0, RSTART, RLENGTH); keep["s" s] = $0; if (index($0, "\"tool\":\"compare_image\"")) keep["c" s] = $0 }
+    match($0, /"screen":"[^"]*"/) { s = substr($0, RSTART, RLENGTH); keep["s" s] = $0; if ($0 ~ /"tool":"compare_image"/) keep["c" s] = $0 }
     END { for (k in keep) print keep[k]; for (i = n - 39; i <= n; i++) if (i > 0) print ring[i % 40] }'
 exit 0`;
 export const ACTIVE_MS = 10 * 60 * 1000;
@@ -166,9 +178,10 @@ export function parseActivity(text, on) {
   return out;
 }
 
-// The newest line per terminal from the last `maxAge`, added to `out`.
-export function latestActivity(text, on, now, maxAge = ACTIVE_MS, out = new Map()) {
-  for (const e of parseActivity(text, on)) {
+// The newest line per terminal from the last `maxAge`, of parsed lines (or a journal's text read on
+// machine `on`), added to `out`.
+export function latestActivity(lines, on, now, maxAge = ACTIVE_MS, out = new Map()) {
+  for (const e of Array.isArray(lines) ? lines : parseActivity(lines, on)) {
     if (!(now - e.at <= maxAge) || (out.get(e.address)?.at ?? -Infinity) > e.at) continue;
     out.set(e.address, e);
   }

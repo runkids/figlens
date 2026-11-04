@@ -13,7 +13,7 @@ const HERE = path.dirname(new URL(import.meta.url).pathname);
 const MOD = path.join(HERE, "../figlens/mods/figlens");
 const LAYOUT = path.join(HERE, "../figlens-layout");
 const { VERSION, asset, cacheDir, INSTALL } = await import(path.join(MOD, "engine.js"));
-const { groupFrames, thumbFile, fitBox, clean, handoff, nodeRef, intentText, appOf, latestActivity, ago, ACTIVITY, parseActivity, recentActivity, screenStates, pct, changedFrames } = await import(path.join(MOD, "frames.js"));
+const { groupFrames, thumbFile, fitBox, clean, handoff, nodeRef, intentText, appOf, latestActivity, ago, ACTIVITY, parseActivity, recentActivity, screenStates, pct, changedFrames, scopeChange, isRevision } = await import(path.join(MOD, "frames.js"));
 
 test("asset names the release archive for Herdr's platform and either arch spelling", () => {
   assert.equal(asset("macos", "arm64"), `figlens-${VERSION}-aarch64-apple-darwin.tar.gz`);
@@ -311,4 +311,13 @@ test("intentText hands a changed screen back with what changed", () => {
 test("intentText runs YOLO through figlens's workflow tool, with npx when figlens may not be on PATH", () => {
   assert.match(intentText({ ...ask, intent: "yolo", app: "claude-code" }),
     /^Implement the frame "Login".* topic "yolo" .*run `figlens workflow yolo` \(or `npx -y @runkids\/figlens workflow yolo` without figlens on PATH\)/);
+});
+
+test("scopeChange finds a change in a screen that diff files under its section", () => {
+  const reply = { frames: [{ id: "5:5", summary: "changed", nodes: [{ name: "Title", change: "changed", facets: ["text"] }] }] };
+  assert.deepEqual([scopeChange(reply), scopeChange({ frames: [] })], [{ layers: [{ name: "Title", facets: ["text"] }], kindChanged: false }, null]);
+});
+
+test("isRevision lets only stat's seconds and bytes reach a shell", () => {
+  assert.deepEqual(["1700000000 1615", '"; touch x; "', "1 2 3", ""].map(isRevision), [true, false, false, false]);
 });

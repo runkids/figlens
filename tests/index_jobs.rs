@@ -934,14 +934,24 @@ fn the_cli_in_a_herdr_terminal_journals_node_reads_but_not_find() {
     let env = Env::new();
     let fig = env.fig("a.fig");
     let file = fig.to_str().unwrap();
-    for args in [["inspect", file, "0:4"], ["find", file, "first"]] {
-        let mut cli = env.command(&args, None);
+    let shot = env.dir.join("shot.png");
+    let shot = shot.to_str().unwrap();
+    assert!(env.run(&["export", file, "0:1", shot]).status.success());
+    let runs: [&[&str]; 3] = [
+        &["inspect", file, "0:4", "--depth", "0"],
+        &["find", file, "first"],
+        &["compare-image", file, "0:1", shot],
+    ];
+    for args in runs {
+        let out = env
+            .command(args, None)
+            .env("HC_TERMINAL_ID", "t7")
+            .output()
+            .unwrap();
         assert!(
-            cli.env("HC_TERMINAL_ID", "t7")
-                .output()
-                .unwrap()
-                .status
-                .success()
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
         );
     }
     let state = if cfg!(windows) {
@@ -957,17 +967,26 @@ fn the_cli_in_a_herdr_terminal_journals_node_reads_but_not_find() {
         })
         .map(|line| serde_json::from_str(&line).unwrap())
         .collect();
-    let seen: Vec<(Value, Value, bool)> = lines
+    let seen: Vec<(Value, Value, bool, Value)> = lines
         .iter()
         .map(|l| {
+            let shot = l["result"]["screenshot"].clone();
             (
                 l["tool"].clone(),
                 l["nodes"].clone(),
                 l["revision"].is_string(),
+                shot,
             )
         })
         .collect();
-    assert_eq!(seen, [(json!("inspect"), json!(["0:4"]), true)]);
+    let canonical = json!(std::fs::canonicalize(shot).unwrap());
+    assert_eq!(
+        seen,
+        [
+            (json!("inspect"), json!(["0:4"]), true, Value::Null),
+            (json!("compare_image"), json!(["0:1"]), true, canonical),
+        ]
+    );
 }
 
 #[test]
