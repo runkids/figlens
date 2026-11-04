@@ -65,7 +65,8 @@ For the layout, also copy `figlens-layout/layouts/herdr-figlens.json` and
 - **Hand over**: the split button builds with the agent focused on the left;
   its menu holds Plan, YOLO, Start in a new tab and Copy prompt. Pi and
   OpenCode receive their own `/figlens plan` and `/figlens yolo` commands,
-  Claude Code the plugin's workflow, any other agent a plain prompt naming the
+  Claude Code the figlens MCP `workflow` guide (or `figlens workflow` when
+  its session has no figlens MCP), any other agent a plain prompt naming the
   skill's reference. A shell is never a receiver. YOLO confirms only by click.
 - **Agents**: when an agent's figlens MCP server runs in a Herdr terminal, a
   line under the filter shows what each agent read last (tool, screen, page,
@@ -74,8 +75,11 @@ For the layout, also copy `figlens-layout/layouts/herdr-figlens.json` and
   layer it read with the agent and tool. Below the list, **Activity on this
   file** lists the latest reads.
 - **Board** (beside List in the header): every screen by what agents did with
-  it: Building (read in the last 30 minutes), Verified (checked with figlens
-  compare_image, with its mismatch), Read before, Not started. Pick screens and
+  it: Changed since built (the design was saved again and that screen changed
+  since an agent worked on it), Building (read in the last 30 minutes), Verified
+  (checked with figlens compare_image, with its mismatch), Read before, Not
+  started. A banner above names the newest changed screen; **Send changes**
+  gives its agent the changed layers after a confirm. Pick screens and
   **Plan each in a new tab**; **Compare** opens a verified screen's design
   beside the build screenshot (or the differences), and **Ask … to fix** sends
   what the comparison found to an agent after a confirm.

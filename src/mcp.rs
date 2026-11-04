@@ -634,19 +634,26 @@ impl AdmittedCall {
                     if name != "find"
                         && let Some(journal) = crate::activity::journal()
                     {
+                        let mut extra = serde_json::Map::new();
+                        // Which saved version was read, so a host can tell what changed since.
+                        if let Some(stamp) = decoded {
+                            extra
+                                .insert("revision".into(), crate::activity::revision(stamp).into());
+                        }
                         // A comparison's numbers let a host's board show what was verified.
-                        let result = (name == "compare_image")
-                            .then(|| output.json())
-                            .flatten()
-                            .map(|reply| {
-                                crate::activity::compare_summary(reply, self.call.string("image"))
-                            });
+                        if name == "compare_image"
+                            && let Some(reply) = output.json()
+                        {
+                            let summary =
+                                crate::activity::compare_summary(reply, self.call.string("image"));
+                            extra.insert("result".into(), summary);
+                        }
                         journal.record(
                             name,
                             path,
                             tree,
                             &crate::activity::ids(self.nodes()),
-                            result,
+                            extra,
                         );
                     }
                 })

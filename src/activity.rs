@@ -80,6 +80,15 @@ pub(crate) fn ids<'a>(raw: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     out
 }
 
+/// The design's saved version as a host's `stat` prints it, `<modified seconds> <bytes>`, so a
+/// host can tell which version an agent read.
+pub(crate) fn revision((modified, bytes): figlens::search::Stamp) -> String {
+    let secs = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    format!("{secs} {bytes}")
+}
+
 /// What a Herdr board shows of a `compare_image` reply: its mismatch and region numbers, the
 /// screenshot it compared and the diff image it wrote (paths in the project, no design content).
 pub(crate) fn compare_summary(
@@ -118,13 +127,13 @@ impl Journal {
         file: &Path,
         tree: &Tree,
         nodes: &[String],
-        result: Option<serde_json::Value>,
+        extra: serde_json::Map<String, serde_json::Value>,
     ) {
         static WARNED: AtomicBool = AtomicBool::new(false);
         let at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as u64);
-        let line = line(&self.terminal, tool, file, tree, nodes, at, result);
+        let line = line(&self.terminal, tool, file, tree, nodes, at, extra);
         if let Err(e) = self.append(file, &line)
             && !WARNED.swap(true, Ordering::Relaxed)
         {
@@ -192,14 +201,15 @@ fn line(
     tree: &Tree,
     ids: &[String],
     at: u64,
-    result: Option<serde_json::Value>,
+    extra: serde_json::Map<String, serde_json::Value>,
 ) -> String {
     let mut value = json!({
         "v": 1, "at": at, "terminal": terminal, "tool": tool,
         "file": file.to_string_lossy(), "nodes": ids,
     });
-    if let Some(result) = result {
-        value["result"] = result;
+    // `revision` (the design's saved version) and a comparison's `result`.
+    for (key, v) in extra {
+        value[key] = v;
     }
     if let [id] = ids {
         // A layer inside an instance (`I12:3;45:6`) is not stored: place it by its outermost
@@ -299,7 +309,7 @@ mod tests {
                 tree,
                 &ids(["0:4"]),
                 5,
-                None,
+                Default::default(),
             ));
             assert_eq!(v["screen"], "0:1");
             assert_eq!(v["box"], json!([80.0, 32.0, 120.0, 28.0]));
@@ -316,7 +326,7 @@ mod tests {
                 tree,
                 &ids(["0:1"]),
                 5,
-                None,
+                Default::default(),
             ));
             assert_eq!(
                 (v["screen"].clone(), v["box"].clone()),
@@ -335,7 +345,7 @@ mod tests {
                 tree,
                 &ids(["0:3", "0:4", "0:3"]),
                 5,
-                None,
+                Default::default(),
             ));
             assert_eq!(
                 v,
@@ -355,7 +365,7 @@ mod tests {
                 tree,
                 &ids(raw.iter().map(String::as_str)),
                 5,
-                None,
+                Default::default(),
             ));
             assert_eq!(v["nodes"].as_array().unwrap().len(), MAX_NODES);
         });
@@ -380,9 +390,12 @@ mod tests {
                 tree,
                 &ids(["I0:2;9:9"]),
                 5,
-                None,
+                Default::default(),
             ));
-            assert_eq!((v["screen"].clone(), v.get("box")), (json!("0:1"), None));
+            assert_eq!(
+                (v["screen"].clone(), v.get("box")),
+                (json!("0:1"), Default::default())
+            );
         });
     }
 
@@ -392,9 +405,9 @@ mod tests {
             terminal(Some("mac-mini/t1r".into())),
             Some("mac-mini/t1r".into())
         );
-        assert_eq!(terminal(None), None);
-        assert_eq!(terminal(Some(String::new())), None);
-        assert_eq!(terminal(Some("t1\nfake".into())), None);
+        assert_eq!(terminal(None), Default::default());
+        assert_eq!(terminal(Some(String::new())), Default::default());
+        assert_eq!(terminal(Some("t1\nfake".into())), Default::default());
     }
 
     #[test]
@@ -405,7 +418,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("activity")).unwrap();
         let path = dir.join("activity").join(format!("{}.jsonl", key(file)));
         std::fs::write(&path, vec![b'x'; MAX_BYTES as usize + 1]).unwrap();
-        with_tree(|tree| journal.record("inspect", file, tree, &ids(["0:4"]), None));
+        with_tree(|tree| journal.record("inspect", file, tree, &ids(["0:4"]), Default::default()));
         assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 1);
         assert!(
             dir.join("activity")
@@ -426,7 +439,13 @@ mod tests {
                     s.spawn(move || {
                         let journal = Journal::new(dir, format!("t{t}"));
                         for _ in 0..50 {
-                            journal.record("inspect", file, tree, &ids(["0:4"]), None);
+                            journal.record(
+                                "inspect",
+                                file,
+                                tree,
+                                &ids(["0:4"]),
+                                Default::default(),
+                            );
                         }
                     });
                 }
@@ -465,7 +484,7 @@ mod tests {
                 Path::new("/d/new.fig"),
                 tree,
                 &ids(["0:4"]),
-                None,
+                Default::default(),
             )
         });
         assert_eq!((old.exists(), recent.exists()), (false, true));
@@ -484,7 +503,7 @@ mod tests {
                 tree,
                 &ids(["0:1"]),
                 5,
-                Some(result),
+                [("result".to_owned(), result)].into_iter().collect(),
             ));
             assert_eq!(
                 v["result"],
@@ -492,6 +511,12 @@ mod tests {
                     "screenshot": "/p/shot.png", "diff": "/p/.figlens/diff.png"})
             );
         });
+    }
+
+    #[test]
+    fn a_revision_reads_like_stat_seconds_and_bytes() {
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_700_000_000_999);
+        assert_eq!(revision((at, 1615)), "1700000000 1615");
     }
 
     #[test]

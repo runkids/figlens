@@ -52,6 +52,10 @@ function request(o) {
   return `Implement ${target(o)} from the Figma design ${o.file}`;
 }
 
+// Claude Code reads figlens's guides with the figlens MCP tool `workflow`, which is not its own
+// Workflow tool; a session without the figlens MCP server gets the same guide from the CLI.
+const guide = (topic, cli) => `Read figlens's ${topic} guide first: call the figlens MCP tool \`workflow\` with topic "${topic}" (not Claude Code's own Workflow tool), or, with no figlens MCP tool loaded, run \`${cli ?? "figlens"} workflow ${topic}\``;
+
 const reader = (cli) => (cli
   ? `Read it with figlens (its MCP tools, or the CLI at ${cli})`
   : "Read it with figlens (its MCP tools or the figlens CLI)");
@@ -66,6 +70,19 @@ export const appOf = (key) => (key === "claude" ? "claude-code" : key);
 // What each intent sends, in the receiving agent's own figlens entry point: Pi and OpenCode
 // have /figlens plan and /figlens yolo; Claude Code's plugin has the workflow tool; any
 // other agent gets a plain prompt naming the skill's reference.
+// The screens a `figlens diff <old> <new> --json` reply found changed, by id: its summary line and
+// the changed layers with their facets. Added and removed screens are not "changed since built".
+export function changedFrames(reply) {
+  const out = new Map();
+  for (const fr of reply?.frames ?? []) {
+    if (typeof fr?.id !== "string" || fr.change === "added" || fr.change === "removed") continue;
+    const layers = (fr.nodes ?? []).filter((n) => n?.change !== "unchanged")
+      .map((n) => ({ name: clean(n.name, 60), facets: Array.isArray(n.facets) ? n.facets.map((x) => clean(x, 20)) : [clean(n.change, 20)] }));
+    if (layers.length || fr.change === "kind_changed") out.set(fr.id, { summary: clean(fr.summary, 200), layers });
+  }
+  return out;
+}
+
 // A share of pixels as people read it: 1.8%.
 export const pct = (v) => (Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : "?");
 
@@ -75,20 +92,26 @@ export function intentText(o) {
     const c = o.compare ?? {};
     return `In the Figma design ${o.file}, ${target(o)}: compare_image reported ${pct(c.mismatch)} mismatch (${pct(c.nonTextMismatch)} outside text, ${c.regionCount ?? "?"} regions) against the screenshot ${c.screenshot ?? "you compared"}. Fix those differences in the build, then run compare_image again. ${DATA}`;
   }
+  // Update hands a changed screen back to the agent that worked on it, with what changed.
+  if (o.intent === "update") {
+    const c = o.change ?? { layers: [] }, shown = c.layers.slice(0, 8);
+    const layers = shown.map((l) => `"${l.name}" (${l.facets.join(", ")})`).join("; ") + (c.layers.length > shown.length ? `; and ${c.layers.length - shown.length} more` : "");
+    return `The Figma design ${o.file} was saved again, and ${target(o)} that you worked on changed: ${c.layers.length} layers, ${layers}. ${reader(o.cli)}, update the build to match, then check it with compare_image. ${DATA}`;
+  }
   // Point is sent like Build: it names the node, and the agent says what it is and waits.
   if (o.intent === "point") return `Look at this in the Figma design ${o.file}: ${target(o)}. ${reader(o.cli)}, say in a line what it is, then wait for what I want done with it. ${DATA}`;
   const ask = request(o), native = o.app === "pi" || o.app === "opencode", claude = o.app === "claude-code";
   if (o.intent === "plan") {
     if (native) return `/figlens plan ${ask}`;
-    if (claude) return `Plan only, using figlens workflow(topic=plan): ${ask}. Do not edit code until I approve the plan. ${DATA}`;
+    if (claude) return `Plan only: ${ask}. ${guide("plan", o.cli)}. ${reader(o.cli)}. Do not edit code until I approve the plan. ${DATA}`;
     return `Plan only: ${ask}. ${reader(o.cli)} and follow the figlens skill's planning reference (references/planning.md). Do not edit code until I approve the plan. ${DATA}`;
   }
   if (o.intent === "yolo") {
     if (native) return `/figlens yolo ${ask}`;
-    if (claude) return `Using figlens workflow(topic=yolo): ${ask}. Plan, implement, verify, then clean up only what this run created. ${DATA}`;
+    if (claude) return `${ask}. ${guide("yolo", o.cli)}. ${reader(o.cli)}. Plan, implement, verify, then clean up only what this run created. ${DATA}`;
     return `${ask}. ${reader(o.cli)} and follow the figlens skill's yolo reference (references/yolo.md): plan, implement, verify, then clean up only what this run created. ${DATA}`;
   }
-  if (claude) return `Using figlens workflow(topic=build): ${ask}. ${DATA}`;
+  if (claude) return `${ask}. ${guide("build", o.cli)}. ${reader(o.cli)}. ${DATA}`;
   return handoff(o);
 }
 
@@ -130,6 +153,7 @@ export function parseActivity(text, on) {
     const r = e.result && typeof e.result === "object" ? e.result : null;
     out.push({
       address, at: e.at, tool: clean(e.tool, 40), box, on: on ?? null,
+      revision: typeof e.revision === "string" ? clean(e.revision, 40) : null,
       nodes: Array.isArray(e.nodes) ? e.nodes.map((n) => clean(n, 80)) : [],
       screen: typeof e.screen === "string" ? clean(e.screen, 80) : null,
       result: r && {
@@ -159,7 +183,10 @@ export const recentActivity = (entries, limit = 8) =>
 // it in the last `activeMs` after its last comparison, else `verified` once compare_image ran on
 // it (with that result), else `read` when an agent read it earlier.
 export const BUILDING_MS = 30 * 60 * 1000;
-export function screenStates(entries, now, activeMs = BUILDING_MS) {
+// With `current` (the design's revision, as `stat` prints it) and `changes` (revision → the
+// screens `diff` found changed from it to now), a screen whose newest line read an older revision
+// that changed it is `changed`, ahead of every other state.
+export function screenStates(entries, now, activeMs = BUILDING_MS, { current = null, changes = new Map() } = {}) {
   const last = new Map();
   for (const e of entries) {
     if (!e.screen) continue;
@@ -170,6 +197,9 @@ export function screenStates(entries, now, activeMs = BUILDING_MS) {
   }
   const out = new Map();
   for (const [screen, { read, compare }] of last) {
+    const newest = !compare || (read && read.at > compare.at) ? read : compare;
+    const change = current && newest?.revision && newest.revision !== current && changes.get(newest.revision)?.get(screen);
+    if (change) { out.set(screen, { state: "changed", entry: newest, change }); continue; }
     if (read && now - read.at <= activeMs && (!compare || read.at > compare.at)) out.set(screen, { state: "building", entry: read, since: read.at });
     else if (compare) out.set(screen, { state: "verified", entry: compare });
     else out.set(screen, { state: "read", entry: read });

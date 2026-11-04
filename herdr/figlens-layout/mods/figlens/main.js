@@ -12,7 +12,7 @@ import { writeFile, mkdir, readdir } from "fs/promises";
 import { Buffer } from "buffer";
 import { createHash, randomUUID } from "crypto";
 import { VERSION, asset, releaseBase, cacheDir, INSTALL } from "./engine.js";
-import { groupFrames, thumbFile, fitBox, clean, nodeRef, intentText, appOf, ago, ACTIVITY, ACTIVE_MS, parseActivity, recentActivity, screenStates, pct } from "./frames.js";
+import { groupFrames, thumbFile, fitBox, clean, nodeRef, intentText, appOf, ago, ACTIVITY, ACTIVE_MS, parseActivity, recentActivity, screenStates, pct, changedFrames } from "./frames.js";
 
 const FILES = "figlens.files.v1"; // { [space id]: { path, on } }: each space keeps its own design
 const NOTICE = "figlens.notice.v1"; // { kind, text, at }: dialogs report to the panel
@@ -52,6 +52,13 @@ printf '%s %s' "$d" "$(wc -c < "$d/s.gz" | tr -d ' ')"`;
 const FETCH_PART = 'h=$(command -v hc || echo "$HOME/.local/bin/hc"); "$h" exec --on "$1" dd if="$2" bs=1048576 skip="$3" count="$4" 2>/dev/null >> "$5"; wc -c < "$5"';
 const PART_MB = 4;
 const ACTIVITY_POLL = 5000;
+// sh -c KEEP_REVISION <design> <folder key> <revision key>: keeps this saved version of the design
+// beside the others agents read (a copy-on-write clone where the file system has one), so a later
+// save can be compared with what an agent built from; the newest 8 per design stay.
+const KEEP_REVISION = `d="$HOME/.cache/figlens/herdr-revisions/$2"; f="$d/$3.fig"; mkdir -p "$d"
+[ -e "$f" ] || cp -c "$1" "$f" 2>/dev/null || cp --reflink=auto "$1" "$f" 2>/dev/null || cp "$1" "$f"
+cd "$d" && ls -1t | tail -n +9 | while IFS= read -r x; do rm -f "./$x"; done`;
+const revisionFile = (file, rev) => `$HOME/.cache/figlens/herdr-revisions/${hash(`${file.on ?? ""}:${file.path}`)}/${rev.replace(/\s+/g, "-")}.fig`;
 const PRUNE = 'cd "$1" && ls -1t | tail -n +$2 | while IFS= read -r d; do rm -rf "./$d"; done';
 const KIND = { Darwin: "macos", Linux: "linux" };
 const STATUS_ICON = { done: "check", info: "copy", working: "ring", error: "alert" };
@@ -65,6 +72,7 @@ const INTENT = {
   yolo: { verb: "YOLO", title: (n, a) => `Let ${a} build “${n}” on its own?`, go: (a) => `Start YOLO in ${a}` },
   point: { verb: "Point", title: (n, a) => `Point ${a} at “${n}”?`, go: (a) => `Send to ${a}` },
   fix: { verb: "Fix", title: (n, a) => `Ask ${a} to fix “${n}”?`, go: (a) => `Send to ${a}` },
+  update: { verb: "Update", title: (n, a) => `Send the changes in “${n}” to ${a}?`, go: (a) => `Send to ${a}` },
 };
 const YOLO_NOTE = (a) => `${a} plans, edits this project, checks its work, and after a verified run deletes only the plan and exports it made. A failed run keeps them.`;
 
@@ -464,6 +472,7 @@ export default class Figlens extends View {
     this.kind = "screens"; this.query = ""; this.fold = new Map(); this.previews = new Map(); this.width = 368;
     this.raw = ""; this.hit = null; this.layers = null; this.lookToken = 0; this.looking = false;
     this.activity = new Map(); this.recent = []; this.states = new Map(); this.view = "list"; this.boardPicks = new Set();
+    this.diffs = new Map(); this.later = new Set(); // revision diffs to now, and changes put off
     this.filter = InputState.new({ placeholder: "Filter by name, text, node ID or Figma link" });
     this.filter.on("change", (_e, cx) => {
       this.raw = this.filter.value().trim(); this.query = this.raw.toLowerCase();
@@ -506,7 +515,7 @@ export default class Figlens extends View {
       }
       const r = await hc(["send", p.address, text]).catch((e) => ({ code: 1, stderr: String(e.message ?? e) }));
       if (r.code === 0) {
-        const verb = p.intent === "plan" ? "Asked" : p.intent === "yolo" ? "Started YOLO in" : p.intent === "point" ? "Pointed" : p.intent === "fix" ? "Asked" : "Sent to";
+        const verb = p.intent === "plan" ? "Asked" : p.intent === "yolo" ? "Started YOLO in" : p.intent === "point" ? "Pointed" : p.intent === "fix" ? "Asked" : p.intent === "update" ? "Sent the changes to" : "Sent to";
         setShared(NOTICE, { kind: "done", text: `${verb} ${agent.program.name}${agent.space_name ? ` in ${agent.space_name}` : ""}`, at: Date.now() });
         closeOverlay(p.overlay);
         run("agent.focus", { terminal: p.address });
@@ -898,7 +907,7 @@ export default class Figlens extends View {
   // Called from render: state set here shows in this pass, so it must not notify.
   load(file, cx) {
     const token = ++this.token;
-    if (!same(file, this.file)) { this.activity = new Map(); this.recent = []; this.states = new Map(); this.boardPicks = new Set(); }
+    if (!same(file, this.file)) { this.activity = new Map(); this.recent = []; this.states = new Map(); this.boardPicks = new Set(); this.diffs = new Map(); }
     this.file = file; this.groups = []; this.thumbs = new Set(); this.selected = null;
     this.error = null; this.gone = false; this.queue = []; this.drawing = false; this.fold = new Map(); this.previews = new Map();
     this.lookToken += 1; this.hit = null; this.layers = null; this.looking = false;
@@ -930,6 +939,8 @@ export default class Figlens extends View {
         const q = shared(QL);
         if (q && same(q.file, file) && q.key !== key) setShared(QL, { ...q, key, design: this.design() });
         this.watch(file, stamp, cx);
+        // Kept now, while it is the saved one: the next save is compared with it.
+        sh(KEEP_REVISION, [file.path, hash(`${file.on ?? ""}:${file.path}`), stamp.replace(/\s+/g, "-")], file.on).catch(() => null);
         this.follow(file, cx);
         if (this.raw) this.lookup(cx);
       } catch (e) {
@@ -1055,15 +1066,53 @@ export default class Figlens extends View {
           const all = new Map();
           for (const e of entries) if (now - e.at <= ACTIVE_MS && (all.get(e.address)?.at ?? -Infinity) < e.at) all.set(e.address, e);
           const recent = recentActivity(entries), sig = recent.map((e) => `${e.address}${e.at}`).join();
+          const changes = this.revisionChanges(file, entries, cx);
           // Redraw while anyone is active (the "12s ago" moves) and when the history changes.
           if (all.size || this.activity.size || sig !== this.recentSig) {
-            this.activity = all; this.recent = recent; this.recentSig = sig; this.states = screenStates(entries, now); cx.notify();
+            this.activity = all; this.recent = recent; this.recentSig = sig; cx.notify();
           }
+          const states = screenStates(entries, now, undefined, { current: this.stamp, changes });
+          const statesSig = [...states].map(([s, v]) => `${s}${v.state}${v.entry?.at}`).join();
+          if (statesSig !== this.statesSig) { this.states = states; this.statesSig = statesSig; cx.notify(); }
           await cx.sleep(ACTIVITY_POLL);
         }
       } catch { /* the follow ends; reopening the file starts another */ }
       finally { if (this.followGen === gen) this.following = null; }
     });
+  }
+
+  // For each older revision agents last read here, the screens `figlens diff --node` found changed
+  // from it to the saved design: revision → Map. Only screens agents worked on are compared, one
+  // `--node` each (a whole large file stops at diff's work limit), once per pair, in the
+  // background, from the copy KEEP_REVISION kept; a revision with no copy is skipped.
+  revisionChanges(file, entries, cx) {
+    const now = this.stamp, out = new Map(), want = new Map();
+    for (const e of entries) {
+      if (e.on !== (file.on ?? null) || !e.revision || e.revision === now || !e.screen) continue;
+      if (!want.has(e.revision)) want.set(e.revision, new Set());
+      want.get(e.revision).add(e.screen);
+    }
+    for (const [rev, screens] of want) {
+      const found = new Map();
+      for (const screen of screens) {
+        const key = `${rev}|${now}|${screen}`, known = this.diffs.get(key);
+        if (known && typeof known === "object") found.set(screen, known);
+        if (known !== undefined || !this.engine?.bin) continue;
+        this.diffs.set(key, "running");
+        const bin = this.engine.bin;
+        cx.spawn(async (cx) => {
+          let change = null;
+          try {
+            const old = (await sh(`f="${revisionFile(file, rev)}"; [ -e "$f" ] && printf %s "$f"`, [], file.on)).stdout.trim();
+            if (old) change = changedFrames(JSON.parse(await figlens(bin, ["diff", old, file.path, "--node", screen, "--json", "--limit", "500"], file.on))).get(screen) ?? null;
+          } catch { /* no comparison: the screen keeps its other state */ }
+          if (!same(file, this.file) || this.stamp !== now) return;
+          this.diffs.set(key, change ?? "none"); this.statesSig = null; cx.notify();
+        });
+      }
+      if (found.size) out.set(rev, found);
+    }
+    return out;
   }
 
   // Live agents with recent reads in this design, newest first, each with its color.
@@ -1426,6 +1475,10 @@ export default class Figlens extends View {
         .child(h_flex().h(26).px(8).gap(6).items_center().text_size(S().label).font_semibold().text_color(t.muted)
           .child(div().min_w(0).truncate().child(label))
           .when(Boolean(place?.on), (el) => el.child(pill(place.on, t)))
+          // Files saved there since the last look show on a refresh.
+          .child(h_flex().id("rescan").w(22).h(22).flex_none().items_center().justify_center().rounded(6).cursor_pointer()
+            .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.foundKey = null; cx.notify(); })
+            .child(icon("refresh", 12, t.muted)))
           .when(Boolean(this.picked), (el) => el.child(div().flex_1()).child(h_flex().id("unpick").h(22).px(6).gap(4).items_center().rounded(6)
             .text_size(S().secondary).text_color(t.foreground).cursor_pointer().hover((s) => s.bg(t.hover))
             .on_click((_e, cx) => { this.picked = null; cx.notify(); })
@@ -1609,12 +1662,13 @@ export default class Figlens extends View {
     const frames = this.groups.flatMap((g) => g.frames.filter((f) => !isComponent(f) && (!q || f.find.includes(q))).map((f) => ({ f, page: g })));
     this.listed = frames.map(({ f, page }) => ({ target: f, page })); this.visible = this.listed;
     this.want(frames.map(({ f }) => f.id), cx);
-    const groups = { building: [], verified: [], read: [], todo: [] };
+    const groups = { changed: [], building: [], verified: [], read: [], todo: [] };
     for (const x of frames) {
       const s = this.states.get(x.f.id);
       groups[s?.state ?? "todo"].push({ ...x, s });
     }
-    const sections = [["building", "Building", t.working], ["verified", "Verified", t.ansi2], ["read", "Read before", t.muted], ["todo", "Not started", t.muted]];
+    const sections = [["changed", "Changed since built", t.ansi3], ["building", "Building", t.working], ["verified", "Verified", t.ansi2],
+      ["read", "Read before", t.muted], ["todo", "Not started", t.muted]];
     if (!frames.length) return div().px(12).py(10).text_size(S().secondary).text_color(t.muted).child(q ? "Nothing matches this filter" : "No screens in this file");
     return v_flex().p(4).gap(2).children(sections.filter(([k]) => groups[k].length).map(([k, label, color]) => v_flex().gap(1)
       .child(h_flex().h(28).px(8).gap(6).items_center().text_size(S().label).font_semibold().text_color(t.muted)
@@ -1626,7 +1680,8 @@ export default class Figlens extends View {
     const e = s?.entry, w = e ? this.who(e.address) : null, box = fitBox(f.size, 54, 36), ready = this.thumbs.has(f.id);
     const pickable = kind === "todo" || kind === "read", picked = this.boardPicks.has(f.id);
     const [fw, fh] = f.size ?? [];
-    const sub = kind === "building" ? `working · ${ago(now - s.since)}`
+    const sub = kind === "changed" ? `${s.change.layers.length} layers changed · ${w?.name ?? "an agent"} worked on it ${ago(now - e.at)} ago`
+      : kind === "building" ? `working · ${ago(now - s.since)}`
       : kind === "verified" ? `${pct(e.result?.mismatch)} mismatch · ${e.result?.regionCount ?? "?"} regions · ${ago(now - e.at)} ago`
       : kind === "read" ? `${e.tool} ${ago(now - e.at)} ago` : fw > 0 ? `${Math.round(fw)}×${Math.round(fh)}` : clean(page.name, 40);
     const toggle = (_e, cx) => { if (picked) this.boardPicks.delete(f.id); else this.boardPicks.add(f.id); cx.notify(); };
@@ -1640,9 +1695,11 @@ export default class Figlens extends View {
         .child(ready ? image(`${CACHE}/${this.key}/${thumbFile(f.id)}`).w(box.w).h(box.h) : div()))
       .child(v_flex().flex_1().min_w(0).gap(2)
         .child(div().truncate().text_size(S().body).child(clean(f.name)))
-        .child(div().truncate().text_size(S().secondary).text_color(kind === "building" ? t.working : t.muted).child(sub)))
+        .child(div().truncate().text_size(S().secondary).text_color(kind === "building" ? t.working : kind === "changed" ? t.ansi3 : t.muted).child(sub)))
       .when(Boolean(w), (el) => el.child(h_flex().flex_none().max_w(110).h(20).px(7).gap(5).items_center().rounded(10).bg(t.selected)
         .text_size(S().label).text_color(t.muted).child(dot(w.color ?? t.muted, 6)).child(div().truncate().child(w.name))))
+      .when(kind === "changed", (el) => el.child(secondary(`upd-${f.id}`, "Send…", t,
+        (_e, cx) => { cx.stop_propagation(); this.sendChanges(f, page, s); }, { size: S().secondary, px: 8 })))
       .when(kind === "verified" && Boolean(e?.result?.screenshot), (el) => el.child(secondary(`cmp-${f.id}`, "Compare", t,
         (_e, cx) => { cx.stop_propagation(); this.openCompare(f, page, e); }, { size: S().secondary, px: 8 })));
   }
@@ -1653,6 +1710,32 @@ export default class Figlens extends View {
       .child(div().flex_1().min_w(0).text_size(S().secondary).text_color(t.muted).child(`${n} screen${n === 1 ? "" : "s"} selected`))
       .child(secondary("board-clear", "Clear", t, (_e, cx) => { this.boardPicks.clear(); cx.notify(); }, { size: S().secondary, px: 8 }))
       .child(primary("board-fan", `Plan each in a new tab…`, t, () => this.fanOut(), "plus"));
+  }
+
+  // A changed screen's changes, to the agent that worked on it while it runs, else the one on the left.
+  sendChanges(frame, page, s) {
+    const agent = agents().find((a) => a.address === s.entry.address) ?? this.receiver();
+    if (!agent) { this.say("info", "Focus an agent on the left to send the changes to"); return; }
+    const text = intentText({ intent: "update", app: agent.app, file: this.file.path, frame, page, screen: null,
+      cli: cliFor(this.cli(), this.design(), machineOf(agent.address)), change: s.change });
+    confirmIntent("update", agent, text, frame.name, this.design());
+  }
+
+  // The newest changed screen not put off: a card above the list or the board.
+  changeBanner(t) {
+    const top = this.topIndex(), now = Date.now();
+    const [id, s] = [...this.states].filter(([id, s]) => s.state === "changed" && top.has(id) && !this.later.has(`${id}|${this.stamp}`))
+      .sort((a, b) => b[1].entry.at - a[1].entry.at)[0] ?? [];
+    if (!s) return null;
+    const { frame, page } = top.get(id), w = this.who(s.entry.address), names = s.change.layers.slice(0, 3).map((l) => clean(l.name, 30)).join(", ");
+    return v_flex().mx(12).mt(8).p(10).gap(6).flex_none().rounded(8).border_1().border_color(t.border).bg(t.chrome)
+      .child(h_flex().gap(7).items_center().child(icon("refresh", 13, t.ansi3))
+        .child(div().flex_1().min_w(0).truncate().text_size(S().body).font_semibold().child(`${clean(frame.name, 50)} changed in ${base(this.file.path)}`)))
+      .child(div().text_size(S().secondary).text_color(t.muted)
+        .child(`${w.name} worked on it ${ago(now - s.entry.at)} ago. ${s.change.layers.length} layers changed${names ? `: ${names}` : ""}.`))
+      .child(h_flex().gap(6).justify_end()
+        .child(secondary("later", "Later", t, (_e, cx) => { this.later.add(`${id}|${this.stamp}`); cx.notify(); }, { size: S().secondary, px: 8 }))
+        .child(primary("send-changes", `Send changes to ${w.name}…`, t, () => this.sendChanges(frame, page, s), "arrow")));
   }
 
   // The picked screens, each in its own new tab with the chosen agent and intent.
@@ -1794,6 +1877,7 @@ export default class Figlens extends View {
           .rounded(6).cursor_pointer().hover((s) => s.bg(t.hover)).on_mouse_down("left", stop).on_click(() => this.open(null))
           .child(icon("close", 14, t.muted)))))
       .when(this.listReady(), (el) => el.child(this.toolbar(t, view)))
+      .when(this.listReady(), (el) => { const b = this.changeBanner(t); return b ? el.child(b) : el; })
       .child(v_flex().id("figlens-body").flex_1().min_h(0).overflow_y_scrollbar().child(this.body(t, cx, view)))
       .when(!this.file, (el) => el.child(this.cacheRow(t, cx)))
       .when(this.view === "board" && this.listReady() && this.boardPicks.size > 0, (el) => el.child(this.boardFooter(t)))

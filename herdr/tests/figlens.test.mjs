@@ -13,7 +13,7 @@ const HERE = path.dirname(new URL(import.meta.url).pathname);
 const MOD = path.join(HERE, "../figlens/mods/figlens");
 const LAYOUT = path.join(HERE, "../figlens-layout");
 const { VERSION, asset, cacheDir, INSTALL } = await import(path.join(MOD, "engine.js"));
-const { groupFrames, thumbFile, fitBox, clean, handoff, nodeRef, intentText, appOf, latestActivity, ago, ACTIVITY, parseActivity, recentActivity, screenStates, pct } = await import(path.join(MOD, "frames.js"));
+const { groupFrames, thumbFile, fitBox, clean, handoff, nodeRef, intentText, appOf, latestActivity, ago, ACTIVITY, parseActivity, recentActivity, screenStates, pct, changedFrames } = await import(path.join(MOD, "frames.js"));
 
 test("asset names the release archive for Herdr's platform and either arch spelling", () => {
   assert.equal(asset("macos", "arm64"), `figlens-${VERSION}-aarch64-apple-darwin.tar.gz`);
@@ -119,8 +119,9 @@ test("intentText runs YOLO through OpenCode's own /figlens command", () => {
   assert.match(intentText({ ...ask, intent: "yolo", app: "opencode" }), /^\/figlens yolo Implement the frame "Login"/);
 });
 
-test("intentText plans through Claude Code's workflow tool", () => {
-  assert.match(intentText({ ...ask, intent: "plan", app: "claude-code" }), /^Plan only, using figlens workflow\(topic=plan\):/);
+test("intentText plans through figlens's workflow tool, with the CLI when Claude Code has no figlens MCP", () => {
+  assert.match(intentText({ ...ask, intent: "plan", app: "claude-code", cli: "/c/figlens" }),
+    /^Plan only: Implement the frame "Login".* call the figlens MCP tool `workflow` with topic "plan" \(not Claude Code's own Workflow tool\), or, with no figlens MCP tool loaded, run `\/c\/figlens workflow plan`/);
 });
 
 test("intentText gives other agents the skill's yolo reference", () => {
@@ -160,8 +161,8 @@ test("the mod's engine version is the release version", () => {
   assert.equal(VERSION, cargo);
 });
 
-test("intentText builds through Claude Code's workflow tool", () => {
-  assert.match(intentText({ ...ask, intent: "build", app: "claude-code" }), /^Using figlens workflow\(topic=build\): Implement the frame "Login"/);
+test("intentText builds through figlens's workflow tool, not Claude Code's own", () => {
+  assert.match(intentText({ ...ask, intent: "build", app: "claude-code" }), /^Implement the frame "Login".* figlens MCP tool `workflow` with topic "build" .*run `figlens workflow build`/);
 });
 
 // engine.js re-implements the npm launcher's asset and cache naming (QuickJS cannot import it).
@@ -202,7 +203,7 @@ test("latestActivity keeps each terminal's newest line and skips old or broken o
 
 test("latestActivity addresses another machine's terminals through that machine", () => {
   const got = latestActivity(line({ at: 5, terminal: "t1r", screen: "0:1", box: [1, 2, 3, 4] }), "mac-mini", 5);
-  assert.deepEqual(got.get("mac-mini/t1r"), { address: "mac-mini/t1r", at: 5, tool: "inspect", box: [1, 2, 3, 4], nodes: ["0:4"], screen: "0:1", on: "mac-mini", result: null });
+  assert.deepEqual(got.get("mac-mini/t1r"), { address: "mac-mini/t1r", at: 5, tool: "inspect", box: [1, 2, 3, 4], nodes: ["0:4"], screen: "0:1", on: "mac-mini", revision: null, result: null });
 });
 
 test("ago reads at a glance", () => {
@@ -284,4 +285,25 @@ test("ACTIVITY keeps a screen's comparison however many lines follow it", () => 
   fs.writeFileSync(path.join(journal, `${key}.jsonl`), [line({ at: 1, terminal: "t2", tool: "compare_image", screen: "1:1", result: { mismatch: 0.1 } }), ...busy].join("\n") + "\n");
   const out = spawnSync("sh", ["-c", ACTIVITY, "figlens", design], { encoding: "utf8", env: { ...process.env, XDG_STATE_HOME: path.join(dir, "state") } }).stdout;
   assert.equal(screenStates(parseActivity(out, null), 1000, 1).get("1:1").state, "verified");
+});
+
+test("screenStates marks a screen changed when the revision its agent read changed it", () => {
+  const e = (screen, at, revision) => ({ screen, tool: "inspect", at, address: "t7", revision });
+  const changes = new Map([["10 5", new Map([["1:1", { layers: [{ name: "Title", facets: ["text"] }] }]])]]);
+  const states = screenStates([e("1:1", 900, "10 5"), e("2:2", 900, "10 5"), e("3:3", 950, "20 6")], 1000, 200, { current: "20 6", changes });
+  assert.deepEqual([...states].map(([s, v]) => [s, v.state]).sort(), [["1:1", "changed"], ["2:2", "building"], ["3:3", "building"]]);
+});
+
+test("changedFrames keeps changed screens and their layers, not added or removed ones", () => {
+  const got = changedFrames({ frames: [
+    { id: "1:1", summary: "changed", nodes: [{ name: "Title", change: "changed", facets: ["text", "layout"] }] },
+    { id: "2:2", change: "added", nodes: [] }, { id: "3:3", change: "removed", nodes: [] },
+  ] });
+  assert.deepEqual([...got], [["1:1", { summary: "changed", layers: [{ name: "Title", facets: ["text", "layout"] }] }]]);
+});
+
+test("intentText hands a changed screen back with what changed", () => {
+  const text = intentText({ intent: "update", file: "/d/a.fig", frame: { id: "1:1", name: "Dashboard" }, page: null,
+    change: { layers: [{ name: "Header", facets: ["layout"] }, { name: "Title", facets: ["text"] }] } });
+  assert.match(text, /^The Figma design \/d\/a\.fig was saved again, and the frame "Dashboard" \(node 1:1\) that you worked on changed: 2 layers, "Header" \(layout\); "Title" \(text\)\./);
 });
