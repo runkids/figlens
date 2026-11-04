@@ -629,12 +629,25 @@ impl AdmittedCall {
             };
             // Inside a Herdr terminal, a call that read the design's nodes leaves one journal line.
             let run = |tree: &Tree, path: &Path, decoded| {
-                run_tool(tree, path, decoded).inspect(|_| {
+                run_tool(tree, path, decoded).inspect(|output| {
                     // find is a search: like search, usages and diff, it leaves no line.
                     if name != "find"
                         && let Some(journal) = crate::activity::journal()
                     {
-                        journal.record(name, path, tree, &crate::activity::ids(self.nodes()));
+                        // A comparison's numbers let a host's board show what was verified.
+                        let result = (name == "compare_image")
+                            .then(|| output.json())
+                            .flatten()
+                            .map(|reply| {
+                                crate::activity::compare_summary(reply, self.call.string("image"))
+                            });
+                        journal.record(
+                            name,
+                            path,
+                            tree,
+                            &crate::activity::ids(self.nodes()),
+                            result,
+                        );
                     }
                 })
             };

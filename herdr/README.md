@@ -71,7 +71,14 @@ For the layout, also copy `figlens-layout/layouts/herdr-figlens.json` and
   line under the filter shows what each agent read last (tool, screen, page,
   how long ago; click to show that screen alone), its screen and its page,
   even folded, get a dot in the agent's color, and the preview outlines the
-  layer it read.
+  layer it read with the agent and tool. Below the list, **Activity on this
+  file** lists the latest reads.
+- **Board** (beside List in the header): every screen by what agents did with
+  it: Building (read in the last 30 minutes), Verified (checked with figlens
+  compare_image, with its mismatch), Read before, Not started. Pick screens and
+  **Plan each in a new tab**; **Compare** opens a verified screen's design
+  beside the build screenshot (or the differences), and **Ask … to fix** sends
+  what the comparison found to an agent after a confirm.
 - **Keys** on the panel: `/` filters, ↑ ↓ move, Enter builds, Space looks closer, Esc clears.
 
 When the design and the agent are on different machines, the confirm dialog

@@ -80,6 +80,18 @@ pub(crate) fn ids<'a>(raw: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     out
 }
 
+/// What a Herdr board shows of a `compare_image` reply: its mismatch and region numbers, the
+/// screenshot it compared and the diff image it wrote (paths in the project, no design content).
+pub(crate) fn compare_summary(
+    reply: &serde_json::Value,
+    screenshot: Option<&str>,
+) -> serde_json::Value {
+    json!({
+        "mismatch": reply["mismatch"], "nonTextMismatch": reply["nonTextMismatch"],
+        "regionCount": reply["regionCount"], "screenshot": screenshot, "diff": reply["path"],
+    })
+}
+
 /// `12:3`, or an instance layer's path `I12:3;45:6`.
 fn is_id(id: &str) -> bool {
     let pair = |p: &str| {
@@ -100,12 +112,19 @@ impl Journal {
 
     /// Appends one line for a call on `file`. A failure is reported once on stderr (stdout is
     /// the MCP protocol) and never fails the call.
-    pub(crate) fn record(&self, tool: &str, file: &Path, tree: &Tree, nodes: &[String]) {
+    pub(crate) fn record(
+        &self,
+        tool: &str,
+        file: &Path,
+        tree: &Tree,
+        nodes: &[String],
+        result: Option<serde_json::Value>,
+    ) {
         static WARNED: AtomicBool = AtomicBool::new(false);
         let at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as u64);
-        let line = line(&self.terminal, tool, file, tree, nodes, at);
+        let line = line(&self.terminal, tool, file, tree, nodes, at, result);
         if let Err(e) = self.append(file, &line)
             && !WARNED.swap(true, Ordering::Relaxed)
         {
@@ -166,11 +185,22 @@ fn prune(dir: &Path, now: SystemTime) {
 }
 
 /// One journal line, newline included.
-fn line(terminal: &str, tool: &str, file: &Path, tree: &Tree, ids: &[String], at: u64) -> String {
+fn line(
+    terminal: &str,
+    tool: &str,
+    file: &Path,
+    tree: &Tree,
+    ids: &[String],
+    at: u64,
+    result: Option<serde_json::Value>,
+) -> String {
     let mut value = json!({
         "v": 1, "at": at, "terminal": terminal, "tool": tool,
         "file": file.to_string_lossy(), "nodes": ids,
     });
+    if let Some(result) = result {
+        value["result"] = result;
+    }
     if let [id] = ids {
         // A layer inside an instance (`I12:3;45:6`) is not stored: place it by its outermost
         // instance, without a box.
@@ -269,6 +299,7 @@ mod tests {
                 tree,
                 &ids(["0:4"]),
                 5,
+                None,
             ));
             assert_eq!(v["screen"], "0:1");
             assert_eq!(v["box"], json!([80.0, 32.0, 120.0, 28.0]));
@@ -285,6 +316,7 @@ mod tests {
                 tree,
                 &ids(["0:1"]),
                 5,
+                None,
             ));
             assert_eq!(
                 (v["screen"].clone(), v["box"].clone()),
@@ -303,6 +335,7 @@ mod tests {
                 tree,
                 &ids(["0:3", "0:4", "0:3"]),
                 5,
+                None,
             ));
             assert_eq!(
                 v,
@@ -322,6 +355,7 @@ mod tests {
                 tree,
                 &ids(raw.iter().map(String::as_str)),
                 5,
+                None,
             ));
             assert_eq!(v["nodes"].as_array().unwrap().len(), MAX_NODES);
         });
@@ -346,6 +380,7 @@ mod tests {
                 tree,
                 &ids(["I0:2;9:9"]),
                 5,
+                None,
             ));
             assert_eq!((v["screen"].clone(), v.get("box")), (json!("0:1"), None));
         });
@@ -370,7 +405,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("activity")).unwrap();
         let path = dir.join("activity").join(format!("{}.jsonl", key(file)));
         std::fs::write(&path, vec![b'x'; MAX_BYTES as usize + 1]).unwrap();
-        with_tree(|tree| journal.record("inspect", file, tree, &ids(["0:4"])));
+        with_tree(|tree| journal.record("inspect", file, tree, &ids(["0:4"]), None));
         assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 1);
         assert!(
             dir.join("activity")
@@ -391,7 +426,7 @@ mod tests {
                     s.spawn(move || {
                         let journal = Journal::new(dir, format!("t{t}"));
                         for _ in 0..50 {
-                            journal.record("inspect", file, tree, &ids(["0:4"]));
+                            journal.record("inspect", file, tree, &ids(["0:4"]), None);
                         }
                     });
                 }
@@ -430,9 +465,33 @@ mod tests {
                 Path::new("/d/new.fig"),
                 tree,
                 &ids(["0:4"]),
+                None,
             )
         });
         assert_eq!((old.exists(), recent.exists()), (false, true));
+    }
+
+    #[test]
+    fn a_comparison_keeps_its_numbers_and_image_paths_only() {
+        let reply = json!({"mismatch": 0.018, "nonTextMismatch": 0.006, "regionCount": 1,
+            "path": "/p/.figlens/diff.png", "node": {"name": "Sign in"}, "regions": [{"x": 1}]});
+        let result = compare_summary(&reply, Some("/p/shot.png"));
+        with_tree(|tree| {
+            let v = parse(&line(
+                "t7",
+                "compare_image",
+                Path::new("/d/a.fig"),
+                tree,
+                &ids(["0:1"]),
+                5,
+                Some(result),
+            ));
+            assert_eq!(
+                v["result"],
+                json!({"mismatch": 0.018, "nonTextMismatch": 0.006, "regionCount": 1,
+                    "screenshot": "/p/shot.png", "diff": "/p/.figlens/diff.png"})
+            );
+        });
     }
 
     #[test]
