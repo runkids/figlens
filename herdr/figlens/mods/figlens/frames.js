@@ -99,23 +99,22 @@ export function scopeChange(reply) {
 export const isRevision = (rev) => /^\d+ \d+$/.test(String(rev ?? ""));
 
 // A board row's state, from the journal's (`s`, from screenStates), the screen's last handoff from
-// the panel (`{ intent, address | tab + space, at }`: who was asked to plan or build it) and the
-// live agents (Herdr's agents(): address, tab_name, space, status). A handoff newer than the
-// screen's comparison decides: building while its agent works (waiting while it is blocked), then
-// planned (a plan) or done, until a comparison or a newer handoff. Without one, a screen being
-// built follows the agent that built it, and is read once that agent is gone. A new tab's agent
-// has `STARTING_MS` to appear before its screen counts as finished.
-export const STARTING_MS = 2 * 60 * 1000;
-export function boardState(s, handoff, agents, now = Date.now()) {
+// the panel (`{ intent, address | tab + space, at, started, finished }`, moved on by handoffStep)
+// and the live agents (Herdr's agents()). A handoff newer than the screen's comparison decides:
+// building until its agent finished (waiting while it is blocked), then planned (a plan) or done,
+// until a comparison, a newer handoff, or a newer build in the journal (another agent's, or any
+// after it finished). Without one, a screen being built follows the agent that built it: done once
+// it stopped, read once it is gone.
+export function boardState(s, handoff, agents) {
   if (s?.state === "changed") return s;
   const compared = s?.state === "verified" ? s.entry.at : -Infinity;
-  if (handoff && handoff.at > compared) {
-    const a = agents.find((x) => (handoff.address && x.address === handoff.address)
-      || (handoff.tab && x.tab_name === handoff.tab && (!handoff.space || x.space === handoff.space)));
-    const base = { ...(s ?? {}), entry: s?.entry ?? null, handoff, agent: a ?? null, at: handoff.at, since: handoff.at };
-    if (a?.status === "working" || (!a && now - handoff.at < STARTING_MS)) return { ...base, state: "building" };
-    if (a?.status === "blocked") return { ...base, state: "building", waiting: true };
-    return { ...base, state: handoff.intent === "plan" ? "planned" : "done" };
+  const rebuilt = s?.state === "building" && handoff && s.entry.at > (handoff.finished ?? handoff.at)
+    && (handoff.finished || s.entry.address !== handoff.address);
+  if (handoff && handoff.at > compared && !rebuilt) {
+    const a = handoff.address ? agents.find((x) => x.address === handoff.address) ?? null : null;
+    const base = { ...(s ?? {}), entry: s?.entry ?? null, handoff, agent: a, at: handoff.at, since: handoff.at };
+    if (!handoff.finished) return { ...base, state: "building", waiting: a?.status === "blocked" };
+    return { ...base, state: handoff.intent === "plan" ? "planned" : "done", at: handoff.finished };
   }
   if (s?.state === "building") {
     const a = agents.find((x) => x.address === s.entry.address);
@@ -125,6 +124,23 @@ export function boardState(s, handoff, agents, now = Date.now()) {
     return { ...s, agent: a };
   }
   return s;
+}
+
+// A handoff moved on by what its agent does now, polled: the agent's address once found (a new
+// tab's agent by its tab), `started` once it works or waits, `finished` once it stops after that,
+// is gone, or never started within STARTING_MS. A finished handoff stays so: the same agent's later
+// turns on other work leave it alone. Returns `h` itself when nothing changed.
+export const STARTING_MS = 2 * 60 * 1000;
+export function handoffStep(h, agents, now) {
+  if (h.finished) return h;
+  const a = agents.find((x) => (h.address ? x.address === h.address
+    : x.tab_name === h.tab && (!h.space || x.space === h.space)));
+  const busy = a?.status === "working" || a?.status === "blocked";
+  const next = { ...h };
+  if (a && !h.address) next.address = a.address;
+  if (busy && !h.started) next.started = now;
+  if (next.started ? !busy : now - h.at >= STARTING_MS && !busy) next.finished = now;
+  return Object.keys(next).some((k) => next[k] !== h[k]) ? next : h;
 }
 
 // A changed screen's change in a few words: "3 layers changed", or a kind change.

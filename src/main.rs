@@ -498,14 +498,14 @@ fn command_usage(command: &str) -> Option<String> {
 
 /// Inside a Herdr terminal a CLI call that read the design's nodes leaves a journal line too, as an
 /// MCP one does, so an agent that runs figlens in its shell shows on the Herdr panel. Its node is
-/// the command's own, as parsed (never a flag's value), and the tool is named as the MCP tool is,
+/// the command's own, as parsed (never a flag's value; none for the whole file), and the tool is named as the MCP tool is,
 /// so a host reads both alike.
 fn journal_cli(
     command: &str,
     path: &Path,
     tree: &Tree,
     decoded: Option<figlens::search::Stamp>,
-    node: &str,
+    node: Option<&str>,
     result: Option<serde_json::Value>,
 ) {
     let Some(journal) = activity::journal() else {
@@ -521,7 +521,7 @@ fn journal_cli(
         other => other,
     };
     // The command's own node, as MCP records `node`: what gives the line its screen and box.
-    let ids = activity::ids([node]);
+    let ids = activity::ids(node);
     journal.record(tool, &path, tree, &ids, activity::extra(decoded, result));
 }
 
@@ -888,18 +888,18 @@ fn dispatch(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
         "tree" | "find" | "inspect" | "node" | "nodes" | "variables" | "bundle" | "export" => {
             let cli =
                 command::Command::from_cli(command, &args[2..], &tree).map(|c| c.decoded(decoded));
-            // find is a search: like MCP's, it leaves no journal line.
+            // find is a search: like MCP's, it leaves no journal line. A call with no node
+            // (`variables` of the whole file) leaves one with no ids, as MCP's does.
             let read = cli
                 .as_ref()
                 .ok()
-                .and_then(|c| c.node())
                 .filter(|_| command != "find")
-                .map(str::to_owned);
+                .map(|c| c.node().map(str::to_owned));
             let result = cli.and_then(|c| c.execute(&tree, &path));
             let result = command::freshness::with_hint(command, result, &path, &|_| true);
             out.push_str(&result?.text()?);
             if let Some(node) = read {
-                journal_cli(command, &path, &tree, decoded, &node, None);
+                journal_cli(command, &path, &tree, decoded, node.as_deref(), None);
             }
         }
         "compare-image" => {
@@ -914,7 +914,7 @@ fn dispatch(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             )?;
             writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
             let result = activity::compare_summary(&report, Some(shot.as_str()));
-            journal_cli(command, &path, &tree, decoded, &node, Some(result));
+            journal_cli(command, &path, &tree, decoded, Some(&node), Some(result));
         }
         "compare" => {
             // A `--frames` line may name the capture's variables.json as a third field.

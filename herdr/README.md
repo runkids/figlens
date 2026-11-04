@@ -84,7 +84,8 @@ For the layout, also copy `figlens-layout/layouts/herdr-figlens.json` and
   without actions. A banner above names the newest changed screen; **Send changes**
   gives its agent the changed layers after a confirm. Pick screens and
   plan them with the agent on the left (one message, one screen at a time) or
-  **Plan each in a new tab** (side by side); **Compare** opens a verified screen's design
+  **Plan each in a new tab** (side by side); picks that are all Planned are
+  built the same ways; **Compare** opens a verified screen's design
   beside the build screenshot (or the differences), and **Ask … to fix** sends
   what the comparison found to an agent after a confirm.
 - **Keys** on the panel: `/` filters, ↑ ↓ move, Enter builds, Space looks closer, Esc clears.
@@ -116,7 +117,9 @@ for a comparison its numbers and the screenshot and diff paths (no names, text
 or images), in figlens's state folder under `activity/`, at most about 512 KiB
 per design. The panel reads it there; outside Herdr nothing is
 recorded. Lines older than a week are removed; delete that folder to clear
-it. A host that filters its MCP servers' environment (Codex's `env_vars`) must
+it. Herdr's shared state keeps what the board needs: each screen the panel
+handed to an agent (screen id, intent, the agent's terminal or tab name; a
+week) and what agents read in the last 10 minutes. A host that filters its MCP servers' environment (Codex's `env_vars`) must
 pass `HC_TERMINAL_ID`, or its agents do not show.
 
 ## Development

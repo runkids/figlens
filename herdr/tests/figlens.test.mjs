@@ -13,7 +13,7 @@ const HERE = path.dirname(new URL(import.meta.url).pathname);
 const MOD = path.join(HERE, "../figlens/mods/figlens");
 const LAYOUT = path.join(HERE, "../figlens-layout");
 const { VERSION, asset, cacheDir, INSTALL } = await import(path.join(MOD, "engine.js"));
-const { groupFrames, thumbFile, fitBox, clean, handoff, nodeRef, intentText, appOf, latestActivity, ago, ACTIVITY, parseActivity, recentActivity, screenStates, pct, changedFrames, scopeChange, isRevision, boardState } = await import(path.join(MOD, "frames.js"));
+const { groupFrames, thumbFile, fitBox, clean, handoff, nodeRef, intentText, appOf, latestActivity, ago, ACTIVITY, parseActivity, recentActivity, screenStates, pct, changedFrames, scopeChange, isRevision, boardState, handoffStep, STARTING_MS } = await import(path.join(MOD, "frames.js"));
 
 test("asset names the release archive for Herdr's platform and either arch spelling", () => {
   assert.equal(asset("macos", "arm64"), `figlens-${VERSION}-aarch64-apple-darwin.tar.gz`);
@@ -335,25 +335,35 @@ test("intentText plans several picked screens in one message, one at a time", ()
     /^\/figlens plan Implement these 2 screens from the Figma design \/d\/a\.fig, one at a time: 1\. the frame "Home" \(node 1:1, page "App"\); 2\. the frame "Cart" \(node 2:2\)$/);
 });
 
-test("boardState follows the handoff's agent: building, then planned or done, kept past 30 minutes", () => {
-  const agent = (status, extra = {}) => ({ address: "t7", tab_name: "1", space: "s1", status, ...extra });
-  const plan = { intent: "plan", address: "t7", at: 100 }, build = { intent: "build", tab: "Home · build", space: "s1", at: 100 };
-  assert.deepEqual([
-    boardState(null, plan, [agent("working")]).state,
-    boardState(null, plan, [agent("blocked")]).waiting,
-    boardState(null, plan, [agent("idle")]).state,
-    boardState({ state: "read", entry: { at: 1 } }, build, [agent("done", { address: "t9", tab_name: "Home · build" })]).state,
-    boardState(null, plan, [], 100 + 1000).state,
-    boardState(null, plan, [], 100 + 3 * 60 * 1000).state,
-  ], ["building", true, "planned", "done", "building", "planned"]);
-});
-
-test("boardState lets a later comparison or change win over a handoff", () => {
+test("boardState: building until the handoff finished, then planned or done, waiting while blocked", () => {
   const plan = { intent: "plan", address: "t7", at: 100 };
   assert.deepEqual([
-    boardState({ state: "verified", entry: { at: 200 } }, plan, []).state,
+    boardState(null, plan, [{ address: "t7", status: "idle" }]).state,
+    boardState(null, plan, [{ address: "t7", status: "blocked" }]).waiting,
+    boardState(null, { ...plan, started: 110, finished: 200 }, [{ address: "t7", status: "working" }]).state,
+    boardState(null, { ...plan, intent: "build", started: 110, finished: 200 }, []).state,
+  ], ["building", true, "planned", "done"]);
+});
+
+test("boardState lets a comparison, a change or a newer build win over a handoff", () => {
+  const plan = { intent: "plan", address: "t7", at: 100, started: 110, finished: 200 };
+  const built = (address, at) => ({ state: "building", entry: { address, at }, since: at });
+  assert.deepEqual([
+    boardState({ state: "verified", entry: { at: 300 } }, plan, []).state,
     boardState({ state: "changed", entry: { at: 1 } }, plan, []).state,
-  ], ["verified", "changed"]);
+    boardState(built("t9", 150), { ...plan, finished: undefined }, [{ address: "t9", status: "working" }]).agent.address,
+    boardState(built("t7", 300), plan, [{ address: "t7", status: "working" }]).since,
+  ], ["verified", "changed", "t9", 300]);
+});
+
+test("handoffStep finds a new tab's agent, starts, finishes once, and gives up after STARTING_MS", () => {
+  const tab = { intent: "plan", tab: "Home · plan", space: "s1", at: 0 };
+  const agent = (status) => [{ address: "t7", tab_name: "Home · plan", space: "s1", status }];
+  const found = handoffStep(tab, agent("working"), 10);
+  const done = handoffStep(found, agent("idle"), 20);
+  assert.deepEqual([found.address, found.started, done.finished, handoffStep(done, agent("working"), 30) === done,
+    handoffStep(tab, [], 10) === tab, handoffStep(tab, [], STARTING_MS).finished],
+  ["t7", 10, 20, true, true, STARTING_MS]);
 });
 
 test("boardState without a handoff: done once the building agent stops, read once it is gone", () => {
