@@ -13,7 +13,7 @@ const HERE = path.dirname(new URL(import.meta.url).pathname);
 const MOD = path.join(HERE, "../figlens/mods/figlens");
 const LAYOUT = path.join(HERE, "../figlens-layout");
 const { VERSION, asset, cacheDir, INSTALL } = await import(path.join(MOD, "engine.js"));
-const { groupFrames, thumbFile, fitBox, clean, handoff, nodeRef, intentText, appOf, latestActivity, ago, ACTIVITY, parseActivity, recentActivity, screenStates, pct, changedFrames, scopeChange, isRevision } = await import(path.join(MOD, "frames.js"));
+const { groupFrames, thumbFile, fitBox, clean, handoff, nodeRef, intentText, appOf, latestActivity, ago, ACTIVITY, parseActivity, recentActivity, screenStates, pct, changedFrames, scopeChange, isRevision, boardState } = await import(path.join(MOD, "frames.js"));
 
 test("asset names the release archive for Herdr's platform and either arch spelling", () => {
   assert.equal(asset("macos", "arm64"), `figlens-${VERSION}-aarch64-apple-darwin.tar.gz`);
@@ -333,4 +333,30 @@ test("intentText plans several picked screens in one message, one at a time", ()
   const targets = [{ frame: { id: "1:1", name: "Home" }, page: { name: "App" } }, { frame: { id: "2:2", name: "Cart" }, page: null }];
   assert.match(intentText({ intent: "plan", app: "pi", file: "/d/a.fig", frame: targets[0].frame, targets }),
     /^\/figlens plan Implement these 2 screens from the Figma design \/d\/a\.fig, one at a time: 1\. the frame "Home" \(node 1:1, page "App"\); 2\. the frame "Cart" \(node 2:2\)$/);
+});
+
+test("boardState follows the handoff's agent: building, then planned or done, kept past 30 minutes", () => {
+  const agent = (status, extra = {}) => ({ address: "t7", tab_name: "1", space: "s1", status, ...extra });
+  const plan = { intent: "plan", address: "t7", at: 100 }, build = { intent: "build", tab: "Home · build", space: "s1", at: 100 };
+  assert.deepEqual([
+    boardState(null, plan, [agent("working")]).state,
+    boardState(null, plan, [agent("blocked")]).waiting,
+    boardState(null, plan, [agent("idle")]).state,
+    boardState({ state: "read", entry: { at: 1 } }, build, [agent("done", { address: "t9", tab_name: "Home · build" })]).state,
+    boardState(null, plan, [], 100 + 1000).state,
+    boardState(null, plan, [], 100 + 3 * 60 * 1000).state,
+  ], ["building", true, "planned", "done", "building", "planned"]);
+});
+
+test("boardState lets a later comparison or change win over a handoff", () => {
+  const plan = { intent: "plan", address: "t7", at: 100 };
+  assert.deepEqual([
+    boardState({ state: "verified", entry: { at: 200 } }, plan, []).state,
+    boardState({ state: "changed", entry: { at: 1 } }, plan, []).state,
+  ], ["verified", "changed"]);
+});
+
+test("boardState without a handoff: done once the building agent stops, read once it is gone", () => {
+  const s = { state: "building", entry: { address: "t7", at: 5 }, since: 5 };
+  assert.deepEqual([boardState(s, null, [{ address: "t7", status: "idle" }]).state, boardState(s, null, []).state], ["done", "read"]);
 });

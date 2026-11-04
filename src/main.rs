@@ -263,7 +263,7 @@ usage:
                                              a custom index storage must be under a --storage-root;
                                              inside a Herdr terminal (HC_TERMINAL_ID) it, like the CLI's
                                              node-reading commands, records in the state folder's activity/
-                                             what each call read (node ids, the design's saved version, a
+                                             what each call read (its own node, the design's saved version, a
                                              screen box, a comparison's numbers and image paths) for the
                                              Herdr panel
   figlens workflow <topic>                     print built-in agent guidance, the same text as MCP workflow:
@@ -497,15 +497,15 @@ fn command_usage(command: &str) -> Option<String> {
 }
 
 /// Inside a Herdr terminal a CLI call that read the design's nodes leaves a journal line too, as an
-/// MCP one does, so an agent that runs figlens in its shell shows on the Herdr panel. Its node ids
-/// are the arguments that are ids (`ids` drops paths, numbers and flags), and the tool is named as
-/// the MCP tool is, so a host reads both alike.
+/// MCP one does, so an agent that runs figlens in its shell shows on the Herdr panel. Its node is
+/// the command's own, as parsed (never a flag's value), and the tool is named as the MCP tool is,
+/// so a host reads both alike.
 fn journal_cli(
     command: &str,
     path: &Path,
     tree: &Tree,
     decoded: Option<figlens::search::Stamp>,
-    args: &[String],
+    node: &str,
     result: Option<serde_json::Value>,
 ) {
     let Some(journal) = activity::journal() else {
@@ -520,15 +520,9 @@ fn journal_cli(
         "node" => "nodes",
         other => other,
     };
-    // The command's own node only, as MCP records `node`: a flag's id (--compare, --hide) is
-    // not what the call read, and one id is what gives the line its screen and box.
-    let ids = activity::ids(
-        args.iter()
-            .map(String::as_str)
-            .filter(|a| !a.starts_with('-')),
-    );
-    let ids = &ids[..ids.len().min(1)];
-    journal.record(tool, &path, tree, ids, activity::extra(decoded, result));
+    // The command's own node, as MCP records `node`: what gives the line its screen and box.
+    let ids = activity::ids([node]);
+    journal.record(tool, &path, tree, &ids, activity::extra(decoded, result));
 }
 
 fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
@@ -892,13 +886,20 @@ fn dispatch(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             export_batch(&tree, &path, &args[2..], &mut std::io::stdout().lock())?;
         }
         "tree" | "find" | "inspect" | "node" | "nodes" | "variables" | "bundle" | "export" => {
-            let result = command::Command::from_cli(command, &args[2..], &tree)
-                .and_then(|c| c.decoded(decoded).execute(&tree, &path));
+            let cli =
+                command::Command::from_cli(command, &args[2..], &tree).map(|c| c.decoded(decoded));
+            // find is a search: like MCP's, it leaves no journal line.
+            let read = cli
+                .as_ref()
+                .ok()
+                .and_then(|c| c.node())
+                .filter(|_| command != "find")
+                .map(str::to_owned);
+            let result = cli.and_then(|c| c.execute(&tree, &path));
             let result = command::freshness::with_hint(command, result, &path, &|_| true);
             out.push_str(&result?.text()?);
-            // find is a search: like MCP's, it leaves no journal line.
-            if command != "find" {
-                journal_cli(command, &path, &tree, decoded, &args[2..], None);
+            if let Some(node) = read {
+                journal_cli(command, &path, &tree, decoded, &node, None);
             }
         }
         "compare-image" => {
@@ -913,7 +914,7 @@ fn dispatch(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
             )?;
             writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
             let result = activity::compare_summary(&report, Some(shot.as_str()));
-            journal_cli(command, &path, &tree, decoded, &[node], Some(result));
+            journal_cli(command, &path, &tree, decoded, &node, Some(result));
         }
         "compare" => {
             // A `--frames` line may name the capture's variables.json as a third field.

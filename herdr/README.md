@@ -56,8 +56,8 @@ For the layout, also copy `figlens-layout/layouts/herdr-figlens.json` and
   node ID (`12:345`) or paste a Figma link to jump to that node and the screen
   that holds it; other text also searches every layer. Pages fold; the button
   beside the filter folds or opens them all.
-- **Look**: select a row for a large preview. **Quick Look** (Space) opens a
-  floating window at full size; ← → move between screens. **Browser** opens
+- **Look**: select a row for a large preview. **Quick Look** (Space, or a
+  thumbnail) opens a floating window at full size; ← → move between screens. **Browser** opens
   the figlens viewer at that node, or an offline snapshot when the design is
   on another machine. **Point** sends the agent on the left a reference to it
   (file, node, screen) after a confirm; the agent says what it is and waits for
@@ -78,8 +78,8 @@ For the layout, also copy `figlens-layout/layouts/herdr-figlens.json` and
 - **Board** (beside List in the header): every screen by what agents did with
   it: Changed since built (the design was saved again and that screen changed
   since an agent worked on it), Building (its agent is working on it, or needs
-  you), Done · not verified (its agent finished a turn), Planned (it finished in
-  a "<screen> · plan" tab), Verified (checked with figlens compare_image, with
+  you), Done · not verified (its agent finished a turn), Planned (an agent you
+  asked to plan it finished; pick it to build), Verified (checked with figlens compare_image, with
   its mismatch), Read before, Not started. Thumbnails open Quick Look to watch,
   without actions. A banner above names the newest changed screen; **Send changes**
   gives its agent the changed layers after a confirm. Pick screens and

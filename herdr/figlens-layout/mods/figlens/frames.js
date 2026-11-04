@@ -98,6 +98,35 @@ export function scopeChange(reply) {
 // before it reaches a shell.
 export const isRevision = (rev) => /^\d+ \d+$/.test(String(rev ?? ""));
 
+// A board row's state, from the journal's (`s`, from screenStates), the screen's last handoff from
+// the panel (`{ intent, address | tab + space, at }`: who was asked to plan or build it) and the
+// live agents (Herdr's agents(): address, tab_name, space, status). A handoff newer than the
+// screen's comparison decides: building while its agent works (waiting while it is blocked), then
+// planned (a plan) or done, until a comparison or a newer handoff. Without one, a screen being
+// built follows the agent that built it, and is read once that agent is gone. A new tab's agent
+// has `STARTING_MS` to appear before its screen counts as finished.
+export const STARTING_MS = 2 * 60 * 1000;
+export function boardState(s, handoff, agents, now = Date.now()) {
+  if (s?.state === "changed") return s;
+  const compared = s?.state === "verified" ? s.entry.at : -Infinity;
+  if (handoff && handoff.at > compared) {
+    const a = agents.find((x) => (handoff.address && x.address === handoff.address)
+      || (handoff.tab && x.tab_name === handoff.tab && (!handoff.space || x.space === handoff.space)));
+    const base = { ...(s ?? {}), entry: s?.entry ?? null, handoff, agent: a ?? null, at: handoff.at, since: handoff.at };
+    if (a?.status === "working" || (!a && now - handoff.at < STARTING_MS)) return { ...base, state: "building" };
+    if (a?.status === "blocked") return { ...base, state: "building", waiting: true };
+    return { ...base, state: handoff.intent === "plan" ? "planned" : "done" };
+  }
+  if (s?.state === "building") {
+    const a = agents.find((x) => x.address === s.entry.address);
+    if (!a) return { ...s, state: "read" };
+    if (a.status === "blocked") return { ...s, agent: a, waiting: true };
+    if (a.status !== "working") return { ...s, agent: a, state: "done", at: s.entry.at };
+    return { ...s, agent: a };
+  }
+  return s;
+}
+
 // A changed screen's change in a few words: "3 layers changed", or a kind change.
 export const changeText = (c) => (c?.layers?.length ? `${c.layers.length} layers changed` : "its kind changed");
 
@@ -198,9 +227,10 @@ export function latestActivity(lines, now, maxAge = ACTIVE_MS) {
 export const recentActivity = (entries, limit = 8) =>
   [...entries].sort((a, b) => b.at - a.at).slice(0, limit);
 
-// Each screen's place on the board, from every line that names it: `building` while an agent read
-// it in the last `activeMs` after its last comparison, else `verified` once compare_image ran on
-// it (with that result), else `read` when an agent read it earlier.
+// Each screen's place on the board from the journal: `building` while an agent used a building
+// tool on it in the last `activeMs` after its last comparison (an inspect alone is a read), else
+// `verified` once compare_image ran on it (with that result), else `read`; `changed` leads when a
+// newer saved design changed what an agent worked on.
 export const BUILDING_MS = 30 * 60 * 1000;
 // Tools that take a screen's material to build it; an inspect alone (a look, or Point's "what is
 // this") is a read, not building.
@@ -223,7 +253,7 @@ export function screenStates(entries, now, { activeMs = BUILDING_MS, current = n
     const newest = !compare || (read && read.at > compare.at) ? read : compare;
     const change = current && newest?.revision && newest.revision !== current && changes.get(newest.revision)?.get(screen);
     if (change) { out.set(screen, { state: "changed", entry: newest, change }); continue; }
-    if (read && built && now - built.at <= activeMs && (!compare || built.at > compare.at)) out.set(screen, { state: "building", entry: read, since: read.at });
+    if (read && built && now - built.at <= activeMs && (!compare || built.at > compare.at)) out.set(screen, { state: "building", entry: built, since: built.at });
     else if (compare) out.set(screen, { state: "verified", entry: compare });
     else out.set(screen, { state: "read", entry: read });
   }
