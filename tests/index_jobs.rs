@@ -937,14 +937,17 @@ fn the_cli_in_a_herdr_terminal_journals_node_reads_but_not_find() {
     let shot = env.dir.join("shot.png");
     let shot = shot.to_str().unwrap();
     assert!(env.run(&["export", file, "0:1", shot]).status.success());
-    let runs: [&[&str]; 3] = [
-        &["inspect", file, "0:4", "--depth", "0"],
+    // compare-image gets the screenshot by a relative path: the journal keeps an absolute one.
+    let runs: [&[&str]; 4] = [
+        &["inspect", file, "0:4", "--depth", "0", "--compare", "0:5"],
         &["find", file, "first"],
-        &["compare-image", file, "0:1", shot],
+        &["node", file, "0:3"],
+        &["compare-image", file, "0:1", "shot.png"],
     ];
     for args in runs {
-        let out = env
-            .command(args, None)
+        let mut cli = env.command(args, None);
+        let out = cli
+            .current_dir(env.dir.join(""))
             .env("HC_TERMINAL_ID", "t7")
             .output()
             .unwrap();
@@ -984,6 +987,7 @@ fn the_cli_in_a_herdr_terminal_journals_node_reads_but_not_find() {
         seen,
         [
             (json!("inspect"), json!(["0:4"]), true, Value::Null),
+            (json!("nodes"), json!(["0:3"]), true, Value::Null),
             (json!("compare_image"), json!(["0:1"]), true, canonical),
         ]
     );

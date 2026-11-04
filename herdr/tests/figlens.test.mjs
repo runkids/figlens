@@ -196,13 +196,13 @@ const line = (o) => JSON.stringify({ v: 1, tool: "inspect", nodes: ["0:4"], ...o
 test("latestActivity keeps each terminal's newest line and skips old or broken ones", () => {
   const text = [line({ at: 1000, terminal: "t7" }), line({ at: 2000, terminal: "t7", tool: "export" }),
     "not json", line({ at: 10, terminal: "t2" })].join("\n");
-  const got = latestActivity(text, null, 3000, 1500);
+  const got = latestActivity(parseActivity(text, null), 3000, 1500);
   assert.deepEqual([...got.keys()], ["t7"]);
   assert.equal(got.get("t7").tool, "export");
 });
 
 test("latestActivity addresses another machine's terminals through that machine", () => {
-  const got = latestActivity(line({ at: 5, terminal: "t1r", screen: "0:1", box: [1, 2, 3, 4] }), "mac-mini", 5);
+  const got = latestActivity(parseActivity(line({ at: 5, terminal: "t1r", screen: "0:1", box: [1, 2, 3, 4] }), "mac-mini"), 5);
   assert.deepEqual(got.get("mac-mini/t1r"), { address: "mac-mini/t1r", at: 5, tool: "inspect", box: [1, 2, 3, 4], nodes: ["0:4"], screen: "0:1", on: "mac-mini", revision: null, result: null });
 });
 
@@ -235,7 +235,7 @@ test("ACTIVITY keeps every terminal's newest line, however busy another one is",
   fs.writeFileSync(path.join(journal, `${key}.jsonl`), [line({ at: 2, terminal: "t2" }), ...busy].join("\n") + "\n");
   const out = spawnSync("sh", ["-c", ACTIVITY, "figlens", design],
     { encoding: "utf8", env: { ...process.env, XDG_STATE_HOME: path.join(dir, "state") } }).stdout;
-  const got = latestActivity(out, null, 1000);
+  const got = latestActivity(parseActivity(out, null), 1000);
   assert.deepEqual([...got.keys()].sort().map((k) => [k, got.get(k).at]), [["t2", 2], ["t7", 509], ["t9", 1]]);
 });
 
@@ -252,10 +252,12 @@ test("intentText points at a node and asks the agent to wait for the request", (
 test("screenStates puts a screen read lately under building, a compared one under verified", () => {
   const e = (screen, tool, at, result) => ({ screen, tool, at, address: "t7", result });
   const states = screenStates([
-    e("1:1", "inspect", 1000), e("2:2", "compare_image", 500, { mismatch: 0.018 }), e("2:2", "inspect", 100),
-    e("3:3", "inspect", 10), e("4:4", "compare_image", 50, {}), e("4:4", "export", 900),
-  ], 1000, 200);
-  assert.deepEqual([...states].map(([s, v]) => [s, v.state]).sort(), [["1:1", "building"], ["2:2", "verified"], ["3:3", "read"], ["4:4", "building"]]);
+    e("1:1", "bundle", 1000), e("2:2", "compare_image", 500, { mismatch: 0.018 }), e("2:2", "inspect", 100),
+    e("3:3", "bundle", 10), e("4:4", "compare_image", 50, {}), e("4:4", "export", 900), e("5:5", "inspect", 990),
+  ], 1000, { activeMs: 200 });
+  // 5:5 was only inspected (a look, or Point's question): read, not building.
+  assert.deepEqual([...states].map(([s, v]) => [s, v.state]).sort(),
+    [["1:1", "building"], ["2:2", "verified"], ["3:3", "read"], ["4:4", "building"], ["5:5", "read"]]);
 });
 
 test("parseActivity keeps a comparison's numbers and drops repeated lines", () => {
@@ -284,13 +286,13 @@ test("ACTIVITY keeps a screen's comparison however many lines follow it", () => 
   const busy = Array.from({ length: 200 }, (_, i) => line({ at: 10 + i, terminal: "t7", screen: "9:9" }));
   fs.writeFileSync(path.join(journal, `${key}.jsonl`), [line({ at: 1, terminal: "t2", tool: "compare_image", screen: "1:1", result: { mismatch: 0.1 } }), ...busy].join("\n") + "\n");
   const out = spawnSync("sh", ["-c", ACTIVITY, "figlens", design], { encoding: "utf8", env: { ...process.env, XDG_STATE_HOME: path.join(dir, "state") } }).stdout;
-  assert.equal(screenStates(parseActivity(out, null), 1000, 1).get("1:1").state, "verified");
+  assert.equal(screenStates(parseActivity(out, null), 1000, { activeMs: 1 }).get("1:1").state, "verified");
 });
 
 test("screenStates marks a screen changed when the revision its agent read changed it", () => {
-  const e = (screen, at, revision) => ({ screen, tool: "inspect", at, address: "t7", revision });
+  const e = (screen, at, revision) => ({ screen, tool: "bundle", at, address: "t7", revision });
   const changes = new Map([["10 5", new Map([["1:1", { layers: [{ name: "Title", facets: ["text"] }] }]])]]);
-  const states = screenStates([e("1:1", 900, "10 5"), e("2:2", 900, "10 5"), e("3:3", 950, "20 6")], 1000, 200, { current: "20 6", changes });
+  const states = screenStates([e("1:1", 900, "10 5"), e("2:2", 900, "10 5"), e("3:3", 950, "20 6")], 1000, { activeMs: 200, current: "20 6", changes });
   assert.deepEqual([...states].map(([s, v]) => [s, v.state]).sort(), [["1:1", "changed"], ["2:2", "building"], ["3:3", "building"]]);
 });
 
@@ -320,4 +322,9 @@ test("scopeChange finds a change in a screen that diff files under its section",
 
 test("isRevision lets only stat's seconds and bytes reach a shell", () => {
   assert.deepEqual(["1700000000 1615", '"; touch x; "', "1 2 3", ""].map(isRevision), [true, false, false, false]);
+});
+
+test("changedFrames does not count a layer diff could not read as changed", () => {
+  const got = changedFrames({ frames: [{ id: "1:1", nodes: [{ name: "A", change: "unknown" }] }] });
+  assert.equal(got.size, 0);
 });

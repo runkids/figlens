@@ -12,13 +12,13 @@ import { writeFile, mkdir, readdir } from "fs/promises";
 import { Buffer } from "buffer";
 import { createHash, randomUUID } from "crypto";
 import { VERSION, asset, releaseBase, cacheDir, INSTALL } from "./engine.js";
-import { groupFrames, thumbFile, fitBox, clean, nodeRef, intentText, appOf, ago, ACTIVITY, ACTIVE_MS, parseActivity, latestActivity, recentActivity, screenStates, pct, scopeChange, isRevision } from "./frames.js";
+import { groupFrames, thumbFile, fitBox, clean, nodeRef, intentText, appOf, ago, ACTIVITY, ACTIVE_MS, parseActivity, latestActivity, recentActivity, screenStates, pct, scopeChange, isRevision, changeText } from "./frames.js";
 
 const FILES = "figlens.files.v1"; // { [space id]: { path, on } }: each space keeps its own design
 const NOTICE = "figlens.notice.v1"; // { kind, text, at }: dialogs report to the panel
 const QL = "figlens.quicklook.v1"; // what the Quick Look window shows and where it is in the list
 const CMP = "figlens.compare.v1"; // the comparison the compare window shows
-const LIVE = "figlens.live.v1"; // { file: "<machine>:<path>", entries }: what agents read now, for Quick Look
+const LIVE = "figlens.live.v1"; // { "<machine>:<path>": { at, entries } }: what agents read now, for Quick Look
 const CLEARED = "figlens.cleared.v1"; // when the image cache was last cleared: every panel reloads
 const VIEWERS = "figlens.viewers.v1"; // { "<machine>:<path>": { terminal, url } }: browser viewers
 const PANELS = "workspace.panels"; // Herdr's: the side panels its tabs mod restores per space
@@ -63,7 +63,7 @@ const KEEP_REVISION = `d="$HOME/${REVISIONS}/$2"; f="$d/$3.fig"; mkdir -p "$d"
 now() { stat -L -c "%Y %s" "$1" 2>/dev/null || stat -L -f "%m %z" "$1"; }
 [ -e "$f" ] && exit 0
 [ "$(now "$1")" = "$4" ] || exit 0
-cp -c "$1" "$f" 2>/dev/null || cp --reflink=auto "$1" "$f" 2>/dev/null || cp "$1" "$f"
+cp -c "$1" "$f" 2>/dev/null || cp --reflink=auto "$1" "$f" 2>/dev/null || cp "$1" "$f" || { rm -f "$f"; exit 0; }
 [ "$(now "$1")" = "$4" ] || rm -f "$f"
 cd "$d" && ls -1t | tail -n +9 | while IFS= read -r x; do rm -f "./$x"; done`;
 // A kept revision's folder and file names: the design's key, the revision with "-" for spaces.
@@ -456,6 +456,14 @@ function handoffButton(t, key, agent, build, menuProps, newTab, inRow = false) {
 
 // Live agents among journal lines, newest first, each with its color. Colors follow terminal order,
 // so an agent keeps its color while others come and go, here and in Quick Look alike.
+// A screen's thumbnail cell (a dashed outline until drawn); a click opens Quick Look.
+function thumbCell(t, id, size, src, open) {
+  const box = fitBox(size, THUMB_W, THUMB_H);
+  return div().id(`thumb-${id}`).w(THUMB_W).h(THUMB_H).flex_none().flex().items_center().justify_center().rounded(4).bg(t.chrome)
+    .cursor_pointer().hover((st) => st.opacity(0.85)).on_click((_e, cx) => { cx.stop_propagation(); open(); })
+    .child(src ? image(src).w(box.w).h(box.h) : div().w(box.w).h(box.h).rounded(2).border_1().border_dashed().border_color(t.border));
+}
+
 function readersFrom(entries, t) {
   const colors = [t.ansi4, t.ansi5, t.ansi6, t.ansi3, t.ansi2, t.ansi1], live = agents();
   return entries
@@ -633,6 +641,8 @@ export default class Figlens extends View {
       h_flex().id(id).h(32).px(14).items_center().rounded(8).border_1().border_color(border).bg(bg).text_size(S().button).text_color(fg)
         .when(id === "go", (el) => el.font_semibold())
         .when(enabled, (el) => el.cursor_pointer().hover((s) => s.opacity(0.88)).on_click(onClick)).child(label);
+    const kept = (p.copies ?? []).filter((x) => x.dir.endsWith(REVISIONS)).reduce((n, x) => n + x.bytes, 0);
+    const sent = (p.copies ?? []).reduce((n, x) => n + x.bytes, 0) - kept;
     return v_flex().id("clear").track_focus(this.handle)
       .on_key_down((e, cx) => {
         if (e.key === "enter") go(cx);
@@ -647,7 +657,8 @@ export default class Figlens extends View {
       .child(v_flex().gap(6).text_size(S().secondary).text_color(t.muted)
         .child(div().child(`This panel's thumbnails, previews, Quick Look images and snapshots · ${mb(p.panelBytes ?? 0)}`))
         .child(div().child(`figlens's render cache on ${where} · ${mb(renders.reduce((n, x) => n + x.bytes, 0))}`))
-        .when(Boolean(p.copies?.length), (el) => el.child(div().child(`Copies of designs made for agents on other machines · ${mb(p.copies.reduce((n, x) => n + x.bytes, 0))}; an agent still working from one loses it`)))
+        .when(sent > 0, (el) => el.child(div().child(`Copies of designs made for agents on other machines · ${mb(sent)}; an agent still working from one loses it`)))
+        .when(kept > 0, (el) => el.child(div().child(`Saved versions kept for Changed since built · ${mb(kept)}; screens changed before now are no longer flagged`)))
         .child(div().child("Your own designs are not touched. Images are drawn and copies made again when needed.")))
       .child(div().flex_1())
       .child(h_flex().justify_end().gap(8)
@@ -847,7 +858,7 @@ export default class Figlens extends View {
     const close = () => closeOverlay(p.overlay);
     if (!q?.frames?.length) return v_flex().size_full().bg(t.popover).p(18).child(div().text_color(t.muted).child("Nothing to show"));
     const index = Math.max(0, Math.min(q.index, q.frames.length - 1)), f = q.frames[index];
-    const move = (step) => setShared(QL, { ...q, index: (index + step + q.frames.length) % q.frames.length });
+    const move = (step) => { this.note = null; setShared(QL, { ...q, index: (index + step + q.frames.length) % q.frames.length }); };
     const dir = `${appHome()}/${CACHE}/${q.key}/full`, look = `${q.key}:${f.id}`, state = this.looks.get(look);
     if (!state) {
       this.looks.set(look, "loading");
@@ -860,7 +871,7 @@ export default class Figlens extends View {
     const [w, h] = f.size ?? [];
     const box = fitBox(f.size, Math.max(200, this.width - 40), Math.max(160, this.height - 42 - 40 - 36));
     // Agents reading this screen now, live from the panel: their boxes on the image and a line below.
-    const live = shared(LIVE), here = live?.file === `${q.file.on ?? ""}:${q.file.path}` ? live.entries : [];
+    const here = (shared(LIVE) ?? {})[`${q.file.on ?? ""}:${q.file.path}`]?.entries ?? [];
     const readers = readersFrom(here.filter((e) => e.screen === f.id), t);
     const prev = q.frames[(index - 1 + q.frames.length) % q.frames.length], next = q.frames[(index + 1) % q.frames.length];
     return v_flex().id("quicklook").track_focus(this.handle)
@@ -879,7 +890,7 @@ export default class Figlens extends View {
         .child(div().flex_none().max_w(260).truncate().text_size(S().title).font_semibold().child(clean(f.name)))
         .child(div().flex_1().min_w(0).truncate().text_size(S().secondary).text_color(t.muted)
           .child([w > 0 ? `${Math.round(w)}×${Math.round(h)}` : null, f.page?.name ? clean(f.page.name) : null, base(q.file.path)].filter(Boolean).join(" · ")))
-        .child(secondary("ql-browser", q.file.on ? "Open snapshot" : "Open in browser", t, (_e, cx) => {
+        .when(!q.watch, (el) => el.child(secondary("ql-browser", q.file.on ? "Open snapshot" : "Open in browser", t, (_e, cx) => {
           if (this.note?.kind === "working") return;
           this.note = { kind: "working", text: "Starting…" }; cx.notify();
           cx.spawn(async (cx) => {
@@ -888,12 +899,12 @@ export default class Figlens extends View {
             catch (e) { this.note = { kind: "error", text: String(e.message ?? e) }; }
             cx.notify();
           });
-        }, { icon: "external" }))
-        .child(handoffButton(t, "ql", agent,
+        }, { icon: "external" })))
+        .when(!q.watch, (el) => el.child(handoffButton(t, "ql", agent,
           () => confirmIntent("build", agent, intentText({ intent: "build", app: agent.app, file: q.file.path, frame: f, page: f.page, screen: f.screen, cli: cliFor(q.cli, q.design, machineOf(agent.address)) }), f.name, q.design),
           () => handoffProps({ agent, file: q.file, frame: f, page: f.page, screen: f.screen, cli: q.cli, design: q.design }),
           () => openOverlay({ mod: "figlens", kind: "dialog", width: 380, height: 540, props: handoffProps({ agent: null, file: q.file, frame: f, page: f.page, screen: f.screen, cli: q.cli, design: q.design }).newtab }),
-          true))
+          true)))
         .child(h_flex().id("ql-close").w(26).h(26).flex_none().items_center().justify_center().rounded(6).cursor_pointer()
           .hover((s) => s.bg(t.hover)).on_mouse_down("left", stop).on_click(close).child(icon("close", 14, t.muted))))
       .child(h_flex().flex_1().min_h(0).items_center().justify_center().bg(t.chrome)
@@ -907,7 +918,7 @@ export default class Figlens extends View {
           .child(secondary("ql-prev", `‹ ${clean(prev.name, 24)}`, t, () => move(-1), { px: 8 }))
           .child(secondary("ql-next", `${clean(next.name, 24)} ›`, t, () => move(1), { px: 8 })))
         .child(div().flex_1())
-        .child(this.note
+        .child(this.note && (this.note.kind === "working" || this.note.kind === "error" || !readers.length)
           ? h_flex().gap(7).items_center().min_w(0).text_color(statusColor(t, this.note.kind))
             .child(this.note.kind === "working" ? icon("ring", 13, statusColor(t, "working")).spin(900) : icon(STATUS_ICON[this.note.kind] ?? "alert", 13, statusColor(t, this.note.kind)))
             .child(div().min_w(0).truncate().child(this.note.text))
@@ -1120,17 +1131,22 @@ export default class Figlens extends View {
           const reads = await Promise.all([...machines].map((m) => sh(ACTIVITY, [m === from ? file.path : copy], m).catch(() => null)));
           if (!still()) return;
           [...machines].forEach((m, i) => entries.push(...parseActivity(reads[i]?.stdout, m)));
-          const all = latestActivity(entries, null, now, ACTIVE_MS);
+          const all = latestActivity(entries, now, ACTIVE_MS);
           // Quick Look draws the same boxes; it redraws every 10 s while anyone is active ("12s ago").
           const liveSig = `${[...all.values()].map((e) => `${e.address}${e.at}`).join()}|${all.size ? Math.floor(now / 10000) : 0}`;
-          if (liveSig !== this.liveSig) { this.liveSig = liveSig; setShared(LIVE, { file: id, entries: [...all.values()] }); }
+          if (liveSig !== this.liveSig) {
+            this.liveSig = liveSig;
+            // One key per design: two panels on two designs never overwrite each other.
+            const kept = Object.fromEntries(Object.entries(shared(LIVE) ?? {}).filter(([k, v]) => k !== id && now - (v?.at ?? 0) < ACTIVE_MS));
+            setShared(LIVE, { ...kept, [id]: { at: now, entries: [...all.values()] } });
+          }
           const recent = recentActivity(entries), sig = recent.map((e) => `${e.address}${e.at}`).join();
           const changes = this.revisionChanges(file, entries, cx);
           // Redraw while anyone is active (the "12s ago" moves) and when the history changes.
           if (all.size || this.activity.size || sig !== this.recentSig) {
             this.activity = all; this.recent = recent; this.recentSig = sig; cx.notify();
           }
-          const states = screenStates(entries, now, undefined, { current: this.stamp, changes });
+          const states = screenStates(entries, now, { current: this.stamp, changes });
           const statesSig = [...states].map(([s, v]) => `${s}${v.state}${v.entry?.at}`).join();
           if (statesSig !== this.statesSig) { this.states = states; this.statesSig = statesSig; cx.notify(); }
           await cx.sleep(ACTIVITY_POLL);
@@ -1172,23 +1188,25 @@ export default class Figlens extends View {
             const old = (await sh(`f="$HOME/${REVISIONS}/$1/$2.fig"; [ -e "$f" ] && printf %s "$f"`, [dir, name], file.on)).stdout.trim();
             if (old) change = scopeChange(JSON.parse(await figlens(bin, ["diff", old, file.path, "--node", screen, "--json", "--limit", "500"], file.on)));
           } catch { /* no comparison: the screen keeps its other state */ }
+          // Saved again or another design meanwhile: this answer is for neither; ask again later.
+          if (!same(file, this.file) || this.stamp !== now) { this.diffs.delete(key); break; }
           this.diffs.set(key, change ?? "none"); this.statesSig = null; cx.notify();
         }
-      } finally { this.diffing = false; this.diffQueue = []; }
+      } finally {
+        // What is left was queued for another save or design: unmarked, the next poll queues it again.
+        for (const { key } of this.diffQueue) this.diffs.delete(key);
+        this.diffing = false; this.diffQueue = [];
+      }
     });
   }
 
   // Live agents with recent reads in this design, newest first, each with its color.
-  readers(t) {
-    return readersFrom([...this.activity.values()], t);
-  }
-
 
   // The screen an agent is reading, at full size in Quick Look: this is the agents' live line, so it
   // opens a look, not the screen's actions.
   reveal(r) {
     const place = r.e.screen && this.topIndex().get(r.e.screen);
-    if (place) this.quickLook(place.frame, place.page, null);
+    if (place) this.quickLook(place.frame, place.page, null, true);
   }
 
   // One line per agent reading this design: who, which tool, which screen, how long ago.
@@ -1370,11 +1388,12 @@ export default class Figlens extends View {
   }
 
   // Quick Look over the visible list, starting at the target.
-  quickLook(target, page, screen) {
+  // `watch`: opened to look at what agents do (the board, the live line), so no actions show.
+  quickLook(target, page, screen, watch = false) {
     const frames = this.listed.map((v) => ({ id: v.target.id, name: v.target.name, size: v.target.size, page: { name: v.page?.name }, screen: v.screen ? { name: v.screen.name } : null }));
     let index = frames.findIndex((f) => f.id === target.id);
     if (index < 0) { frames.unshift({ id: target.id, name: target.name, size: target.size, page: { name: page?.name }, screen: screen ? { name: screen.name } : null }); index = 0; }
-    setShared(QL, { file: this.file, bin: this.engine.bin, cli: this.cli(), key: this.key, frames, index, design: this.design() });
+    setShared(QL, { file: this.file, bin: this.engine.bin, cli: this.cli(), key: this.key, frames, index, design: this.design(), watch });
     openOverlay({ mod: "figlens", kind: "window", key: "figlens-quicklook", width: 920, height: 660, props: { role: "quicklook", agent: this.lastAgent } });
   }
 
@@ -1394,7 +1413,6 @@ export default class Figlens extends View {
     openOverlay({ mod: "figlens", kind: "dialog", width: 380, height: 540,
       props: handoffProps({ agent: null, file: this.file, frame: target, page, screen, cli: this.cli(), design: this.design() }).newtab });
   }
-
 
   // The selected thing's details: a large preview, the handoff split button, and quiet tools.
   details(target, page, t, screen) {
@@ -1427,15 +1445,12 @@ export default class Figlens extends View {
   // ---- Panel drawing ----
 
   frameRow(frame, page, t) {
-    const on = this.selected === frame.id, box = fitBox(frame.size, THUMB_W, THUMB_H), ready = this.thumbs.has(frame.id);
+    const on = this.selected === frame.id, ready = this.thumbs.has(frame.id);
     const [w, h] = frame.size ?? [];
     const row = h_flex().id(`frame-${frame.id}`).h(60).flex_none().gap(10).px(8).py(6).items_center().cursor_pointer()
       .when(on, (el) => el.bg(t.selected).rounded_t(7)).when(!on, (el) => el.rounded(7).hover((s) => s.bg(t.hover)))
       .on_click((_e, cx) => { if (on) this.selected = null; else this.select({ target: frame, page }, cx); this.say(null); cx.notify(); })
-      .child(div().w(THUMB_W).h(THUMB_H).flex_none().flex().items_center().justify_center().rounded(4).bg(t.chrome)
-        .child(ready
-          ? image(`${CACHE}/${this.key}/${thumbFile(frame.id)}`).w(box.w).h(box.h)
-          : div().w(box.w).h(box.h).rounded(2).border_1().border_dashed().border_color(t.border)))
+      .child(thumbCell(t, frame.id, frame.size, ready && `${CACHE}/${this.key}/${thumbFile(frame.id)}`, () => this.quickLook(frame, page, null)))
       .child(v_flex().flex_1().min_w(0).gap(3)
         .child(h_flex().gap(6).items_center()
           .child(div().min_w(0).truncate().text_size(S().body).when(on, (el) => el.font_semibold()).child(clean(frame.name)))
@@ -1707,19 +1722,29 @@ export default class Figlens extends View {
   boardView(t, cx) {
     const q = this.query, now = Date.now();
     const frames = this.groups.flatMap((g) => g.frames.filter((f) => !isComponent(f) && (!q || f.find.includes(q))).map((f) => ({ f, page: g })));
-    const groups = { changed: [], building: [], verified: [], read: [], todo: [] };
+    const groups = { changed: [], building: [], done: [], planned: [], verified: [], read: [], todo: [] };
+    const live = agents();
     for (const x of frames) {
-      const s = this.states.get(x.f.id);
+      let s = this.states.get(x.f.id);
+      // Building lasts while its agent works: once it finished a turn the screen is done (planned
+      // when it ran in a "<screen> · plan" tab), and with the agent gone it was read before.
+      if (s?.state === "building") {
+        const a = live.find((y) => y.address === s.entry.address);
+        if (!a) s = { ...s, state: "read" };
+        else if (a.status === "blocked") s = { ...s, waiting: true };
+        else if (a.status !== "working") s = { ...s, state: /·\s*plan$/.test(a.tab_name ?? "") ? "planned" : "done" };
+      }
       groups[s?.state ?? "todo"].push({ ...x, s });
     }
     // Quick Look moves in board order; the keyboard's list moves stay with the list.
-    const ordered = ["changed", "building", "verified", "read", "todo"].flatMap((k) => groups[k]);
+    const ordered = ["changed", "building", "done", "planned", "verified", "read", "todo"].flatMap((k) => groups[k]);
     this.listed = ordered.map(({ f, page }) => ({ target: f, page })); this.visible = [];
     // Thumbnails for the screens agents touched and the first not-started ones, not the whole file.
     this.want(ordered.slice(0, ordered.length - groups.todo.length + 40).map(({ f }) => f.id), cx);
     // Only screens that can still be picked, and are shown, count and are sent.
-    this.pickable = new Set([...groups.read, ...groups.todo].map(({ f }) => f.id));
-    const sections = [["changed", "Changed since built", t.ansi3], ["building", "Building", t.working], ["verified", "Verified", t.ansi2],
+    this.pickable = new Set([...groups.planned, ...groups.read, ...groups.todo].map(({ f }) => f.id));
+    const sections = [["changed", "Changed since built", t.ansi3], ["building", "Building", t.working], ["done", "Done · not verified", t.ansi4],
+      ["planned", "Planned", t.ansi5], ["verified", "Verified", t.ansi2],
       ["read", "Read before", t.muted], ["todo", "Not started", t.muted]];
     if (!frames.length) return div().px(12).py(10).text_size(S().secondary).text_color(t.muted).child(q ? "Nothing matches this filter" : "No screens in this file");
     // Until agents have worked on it, the board says what it is for instead of looking like the list.
@@ -1734,16 +1759,18 @@ export default class Figlens extends View {
   }
 
   boardRow(t, { f, page, s }, kind, now) {
-    const e = s?.entry, w = e ? this.who(e.address) : null, box = fitBox(f.size, THUMB_W, THUMB_H), ready = this.thumbs.has(f.id);
-    const pickable = kind === "todo" || kind === "read", picked = this.boardPicks.has(f.id);
+    const e = s?.entry, w = e ? this.who(e.address) : null, ready = this.thumbs.has(f.id);
+    const pickable = kind === "todo" || kind === "read" || kind === "planned", picked = this.boardPicks.has(f.id);
     const [fw, fh] = f.size ?? [];
-    const sub = kind === "changed" ? `${s.change.layers.length ? `${s.change.layers.length} layers changed` : "kind changed"} · ${w?.name ?? "an agent"} worked on it ${ago(now - e.at)} ago`
-      : kind === "building" ? `working · ${ago(now - s.since)}`
+    const sub = kind === "changed" ? `${changeText(s.change)} · ${w?.name ?? "an agent"} worked on it ${ago(now - e.at)} ago`
+      : kind === "building" ? (s.waiting ? `needs you · ${ago(now - s.since)}` : `working · ${ago(now - s.since)}`)
+      : kind === "done" ? `finished ${ago(now - e.at)} ago · check it with compare_image`
+      : kind === "planned" ? `planned ${ago(now - e.at)} ago · pick it to build`
       : kind === "verified" ? `${pct(e.result?.mismatch)} mismatch · ${e.result?.regionCount ?? "?"} regions · ${ago(now - e.at)} ago`
       : kind === "read" ? `${e.tool} ${ago(now - e.at)} ago` : fw > 0 ? `${Math.round(fw)}×${Math.round(fh)}` : clean(page.name, 40);
     const toggle = (_e, cx) => { if (picked) this.boardPicks.delete(f.id); else this.boardPicks.add(f.id); cx.notify(); };
     // The thumbnail, or a row that cannot be picked, opens Quick Look: full size, ← → between screens.
-    const look = (_e, cx) => { cx.stop_propagation(); this.quickLook(f, page, null); };
+    const look = (_e, cx) => { cx.stop_propagation(); this.quickLook(f, page, null, true); };
     return h_flex().id(`board-${f.id}`).h(60).flex_none().px(8).gap(8).items_center().rounded(7)
       .bg(picked ? t.selected : t.background).hover((st) => st.bg(picked ? t.selected : t.hover)).cursor_pointer()
       .on_click(pickable ? toggle : look)
@@ -1751,9 +1778,7 @@ export default class Figlens extends View {
         .child(div().w(14).h(14).flex_none().flex().items_center().justify_center().rounded(3).border_1()
           .border_color(picked ? t.solid : t.border).bg(picked ? t.solid : t.background)
           .when(picked, (el) => el.child(icon("check", 11, t.solid_foreground)))))
-      .child(div().id(`board-look-${f.id}`).w(THUMB_W).h(THUMB_H).flex_none().flex().items_center().justify_center().rounded(4).bg(t.chrome)
-        .hover((st) => st.opacity(0.85)).on_click(look)
-        .child(ready ? image(`${CACHE}/${this.key}/${thumbFile(f.id)}`).w(box.w).h(box.h) : div()))
+      .child(thumbCell(t, f.id, f.size, ready && `${CACHE}/${this.key}/${thumbFile(f.id)}`, () => this.quickLook(f, page, null, true)))
       .child(v_flex().flex_1().min_w(0).gap(2)
         .child(div().truncate().text_size(S().body).child(clean(f.name)))
         .child(div().truncate().text_size(S().secondary).text_color(kind === "building" ? t.working : kind === "changed" ? t.ansi3 : t.muted).child(sub)))
@@ -1795,12 +1820,12 @@ export default class Figlens extends View {
     if (!s) return null;
     const { frame, page } = top.get(id), w = this.who(s.entry.address), to = this.changeReceiver(s);
     const names = s.change.layers.slice(0, 3).map((l) => clean(l.name, 30)).join(", ");
-    const what = s.change.layers.length ? `${s.change.layers.length} layers changed${names ? `: ${names}` : ""}` : "Its kind changed";
+    const what = `${changeText(s.change)}${names ? `: ${names}` : ""}`;
     return v_flex().mx(12).mt(8).p(10).gap(6).flex_none().rounded(8).border_1().border_color(t.border).bg(t.chrome)
       .child(h_flex().gap(7).items_center().child(icon("refresh", 13, t.ansi3))
         .child(div().flex_1().min_w(0).truncate().text_size(S().body).font_semibold().child(`${clean(frame.name, 50)} changed in ${base(this.file.path)}`)))
       .child(div().text_size(S().secondary).text_color(t.muted)
-        .child(`${w.name} worked on it ${ago(now - s.entry.at)} ago. ${what}.`))
+        .child(`${w.name} worked on it ${ago(now - s.entry.at)} ago; ${what}.`))
       .child(h_flex().gap(6).justify_end()
         .child(secondary("later", "Later", t, (_e, cx) => { this.later.add(`${id}|${this.stamp}`); cx.notify(); }, { size: S().secondary, px: 8 }))
         .child(to ? primary("send-changes", `Send changes to ${to.program.name}…`, t, () => this.sendChanges(frame, page, s), "arrow")
@@ -1922,7 +1947,7 @@ export default class Figlens extends View {
     if (cleared !== this.cleared) { this.cleared = cleared; this.cacheBytes = null; this.renders = null; if (this.file) this.file = undefined; }
     if (this.file === undefined || !same(file, this.file)) this.load(file, cx);
     this.receiver(); // remembers the agent focused on the left while it is
-    this.reading = this.readers(t); // once per frame: rows, pages, the strip and the preview read it
+    this.reading = readersFrom([...this.activity.values()], t); // once per frame: rows, pages, the strip and the preview read it
     const status = this.status();
     const view = this.listReady() && !nodeRef(this.raw) ? this.listing() : null;
     return v_flex().id("figlens").track_focus(this.handle).size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background)

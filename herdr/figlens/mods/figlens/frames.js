@@ -67,16 +67,14 @@ export function handoff(o) {
 // Herdr's program key for an installed agent, as agents() reports its app.
 export const appOf = (key) => (key === "claude" ? "claude-code" : key);
 
-// What each intent sends, in the receiving agent's own figlens entry point: Pi and OpenCode
-// have /figlens plan and /figlens yolo; Claude Code's plugin has the workflow tool; any
-// other agent gets a plain prompt naming the skill's reference.
 // The screens a `figlens diff <old> <new> --json` reply found changed, by id: its summary line and
 // the changed layers with their facets. Added and removed screens are not "changed since built".
 export function changedFrames(reply) {
   const out = new Map();
   for (const fr of reply?.frames ?? []) {
     if (typeof fr?.id !== "string" || fr.change === "added" || fr.change === "removed") continue;
-    const layers = (fr.nodes ?? []).filter((n) => n?.change !== "unchanged")
+    // Unknown is a part diff could not read, not a change.
+    const layers = (fr.nodes ?? []).filter((n) => n?.change !== "unchanged" && n?.change !== "unknown")
       .map((n) => ({ name: clean(n.name, 60), facets: Array.isArray(n.facets) ? n.facets.map((x) => clean(x, 20)) : [clean(n.change, 20)] }));
     if (layers.length || fr.change === "kind_changed") out.set(fr.id, { summary: clean(fr.summary, 200), layers });
   }
@@ -95,9 +93,15 @@ export function scopeChange(reply) {
 // before it reaches a shell.
 export const isRevision = (rev) => /^\d+ \d+$/.test(String(rev ?? ""));
 
+// A changed screen's change in a few words: "3 layers changed", or a kind change.
+export const changeText = (c) => (c?.layers?.length ? `${c.layers.length} layers changed` : "its kind changed");
+
 // A share of pixels as people read it: 1.8%.
 export const pct = (v) => (Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : "?");
 
+// What each intent sends, in the receiving agent's own figlens entry point: Pi and OpenCode
+// have /figlens plan and /figlens yolo; Claude Code the figlens workflow tool; any other agent
+// a plain prompt naming the skill's reference.
 export function intentText(o) {
   // Fix hands back what compare_image found on a built screen.
   if (o.intent === "fix") {
@@ -145,9 +149,6 @@ for f in "$s/figlens/activity/$k.1.jsonl" "$s/figlens/activity/$k.jsonl"; do [ -
 exit 0`;
 export const ACTIVE_MS = 10 * 60 * 1000;
 
-// What agents read lately: the newest line per terminal of a figlens activity journal
-// (`<state>/activity/<key>.jsonl`, written by `figlens mcp` inside Herdr), read on machine `on`
-// (null: this computer), added to `out`. A terminal there is addressed as `<machine>/<id>` here.
 // Every journal line (deduplicated), read on machine `on` (null: this computer); a terminal there
 // is addressed as `<machine>/<id>` from here. Design strings never appear in a line; ids and
 // paths are bounded anyway.
@@ -178,10 +179,10 @@ export function parseActivity(text, on) {
   return out;
 }
 
-// The newest line per terminal from the last `maxAge`, of parsed lines (or a journal's text read on
-// machine `on`), added to `out`.
-export function latestActivity(lines, on, now, maxAge = ACTIVE_MS, out = new Map()) {
-  for (const e of Array.isArray(lines) ? lines : parseActivity(lines, on)) {
+// The newest parsed line per terminal from the last `maxAge`.
+export function latestActivity(lines, now, maxAge = ACTIVE_MS) {
+  const out = new Map();
+  for (const e of lines) {
     if (!(now - e.at <= maxAge) || (out.get(e.address)?.at ?? -Infinity) > e.at) continue;
     out.set(e.address, e);
   }
@@ -196,24 +197,28 @@ export const recentActivity = (entries, limit = 8) =>
 // it in the last `activeMs` after its last comparison, else `verified` once compare_image ran on
 // it (with that result), else `read` when an agent read it earlier.
 export const BUILDING_MS = 30 * 60 * 1000;
+// Tools that take a screen's material to build it; an inspect alone (a look, or Point's "what is
+// this") is a read, not building.
+const BUILDING_TOOLS = new Set(["bundle", "export", "export_batch", "nodes", "variables", "compare_image"]);
 // With `current` (the design's revision, as `stat` prints it) and `changes` (revision → the
 // screens `diff` found changed from it to now), a screen whose newest line read an older revision
 // that changed it is `changed`, ahead of every other state.
-export function screenStates(entries, now, activeMs = BUILDING_MS, { current = null, changes = new Map() } = {}) {
+export function screenStates(entries, now, { activeMs = BUILDING_MS, current = null, changes = new Map() } = {}) {
   const last = new Map();
   for (const e of entries) {
     if (!e.screen) continue;
-    const s = last.get(e.screen) ?? { read: null, compare: null };
+    const s = last.get(e.screen) ?? { read: null, compare: null, built: null };
     const slot = e.tool === "compare_image" ? "compare" : "read";
     if ((s[slot]?.at ?? -Infinity) < e.at) s[slot] = e;
+    if (BUILDING_TOOLS.has(e.tool) && (s.built?.at ?? -Infinity) < e.at) s.built = e;
     last.set(e.screen, s);
   }
   const out = new Map();
-  for (const [screen, { read, compare }] of last) {
+  for (const [screen, { read, compare, built }] of last) {
     const newest = !compare || (read && read.at > compare.at) ? read : compare;
     const change = current && newest?.revision && newest.revision !== current && changes.get(newest.revision)?.get(screen);
     if (change) { out.set(screen, { state: "changed", entry: newest, change }); continue; }
-    if (read && now - read.at <= activeMs && (!compare || read.at > compare.at)) out.set(screen, { state: "building", entry: read, since: read.at });
+    if (read && built && now - built.at <= activeMs && (!compare || built.at > compare.at)) out.set(screen, { state: "building", entry: read, since: read.at });
     else if (compare) out.set(screen, { state: "verified", entry: compare });
     else out.set(screen, { state: "read", entry: read });
   }

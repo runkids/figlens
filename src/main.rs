@@ -262,8 +262,10 @@ usage:
                                              with --root, files and outputs must be under one of the folders;
                                              a custom index storage must be under a --storage-root;
                                              inside a Herdr terminal (HC_TERMINAL_ID) it, like the CLI's
-                                             node-reading commands, records the node ids each call read in
-                                             the state folder's activity/ for the Herdr panel
+                                             node-reading commands, records in the state folder's activity/
+                                             what each call read (node ids, the design's saved version, a
+                                             screen box, a comparison's numbers and image paths) for the
+                                             Herdr panel
   figlens workflow <topic>                     print built-in agent guidance, the same text as MCP workflow:
                                              build, audit, images, search, plan, planning-details or
                                              yolo; a workflow:<topic> link means `figlens workflow <topic>`
@@ -518,12 +520,15 @@ fn journal_cli(
         "node" => "nodes",
         other => other,
     };
+    // The command's own node only, as MCP records `node`: a flag's id (--compare, --hide) is
+    // not what the call read, and one id is what gives the line its screen and box.
     let ids = activity::ids(
         args.iter()
             .map(String::as_str)
             .filter(|a| !a.starts_with('-')),
     );
-    journal.record(tool, &path, tree, &ids, activity::extra(decoded, result));
+    let ids = &ids[..ids.len().min(1)];
+    journal.record(tool, &path, tree, ids, activity::extra(decoded, result));
 }
 
 fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {

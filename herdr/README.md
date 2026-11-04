@@ -77,9 +77,11 @@ For the layout, also copy `figlens-layout/layouts/herdr-figlens.json` and
   **Activity on this file** lists the latest reads.
 - **Board** (beside List in the header): every screen by what agents did with
   it: Changed since built (the design was saved again and that screen changed
-  since an agent worked on it), Building (read in the last 30 minutes), Verified
-  (checked with figlens compare_image, with its mismatch), Read before, Not
-  started. A banner above names the newest changed screen; **Send changes**
+  since an agent worked on it), Building (its agent is working on it, or needs
+  you), Done · not verified (its agent finished a turn), Planned (it finished in
+  a "<screen> · plan" tab), Verified (checked with figlens compare_image, with
+  its mismatch), Read before, Not started. Thumbnails open Quick Look to watch,
+  without actions. A banner above names the newest changed screen; **Send changes**
   gives its agent the changed layers after a confirm. Pick screens and
   **Plan each in a new tab**; **Compare** opens a verified screen's design
   beside the build screenshot (or the differences), and **Ask … to fix** sends
@@ -98,9 +100,10 @@ contacts the network only for the one-click engine download from GitHub
 Releases. It runs `figlens`, `hc` (to start the browser viewer, send a
 confirmed message and copy a design between your Herdr machines), `osascript`,
 `zenity` or `kdialog` for the file picker, `open` or `xdg-open` for a
-snapshot, and `sh` with its standard tools (`stat`, `find`, `dd`, `tar`,
-`realpath`, `sha256sum` or `shasum`, `awk`, `cp`, `ls`, `rm`, `tail`, `head`,
-`base64`, `env`), plus `curl` for the download. For Changed since built it
+snapshot, and `sh` with its standard tools (`stat`, `find`, `dd`, `du`, `wc`, `tar`,
+`gzip`, `gunzip`, `mktemp`, `touch`, `realpath`, `sha256sum` or `shasum`,
+`awk`, `cp`, `ls`, `rm`, `tail`, `head`, `base64`, `env`), plus `curl` for the
+download. For Changed since built it
 keeps each saved version of an open design (a copy-on-write clone where the
 file system has one, else a full copy; the newest 8 per design) under
 `~/.cache/figlens/herdr-revisions/`. The cache row at the bottom of the empty
