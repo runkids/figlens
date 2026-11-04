@@ -307,3 +307,8 @@ test("intentText hands a changed screen back with what changed", () => {
     change: { layers: [{ name: "Header", facets: ["layout"] }, { name: "Title", facets: ["text"] }] } });
   assert.match(text, /^The Figma design \/d\/a\.fig was saved again, and the frame "Dashboard" \(node 1:1\) that you worked on changed: 2 layers, "Header" \(layout\); "Title" \(text\)\./);
 });
+
+test("intentText runs YOLO through figlens's workflow tool, with npx when figlens may not be on PATH", () => {
+  assert.match(intentText({ ...ask, intent: "yolo", app: "claude-code" }),
+    /^Implement the frame "Login".* topic "yolo" .*run `figlens workflow yolo` \(or `npx -y @runkids\/figlens workflow yolo` without figlens on PATH\)/);
+});

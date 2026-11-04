@@ -1162,11 +1162,13 @@ export default class Figlens extends View {
   discover(place, cx) {
     this.foundKey = JSON.stringify(place); this.found = [];
     if (!place) return;
-    const key = this.foundKey;
+    // A scan number, not the place: a refresh while a scan runs must win over it.
+    const scan = (this.scan ?? 0) + 1;
+    this.scan = scan; this.scanning = true;
     cx.spawn(async (cx) => {
       const r = await sh(FIND, [place.cwd], place.on).catch(() => null);
-      if (this.foundKey !== key) return;
-      this.found = (r?.stdout ?? "").split("\n").filter(Boolean);
+      if (this.scan !== scan) return;
+      this.found = (r?.stdout ?? "").split("\n").filter(Boolean); this.scanning = false;
       cx.notify();
     });
   }
@@ -1483,7 +1485,7 @@ export default class Figlens extends View {
             .text_size(S().secondary).text_color(t.foreground).cursor_pointer().hover((s) => s.bg(t.hover))
             .on_click((_e, cx) => { this.picked = null; cx.notify(); })
             .child(icon("crosshair", 12, t.foreground)).child("Follow focus"))))
-        .when(!this.found.length, (el) => el.child(div().px(8).py(4).text_size(S().secondary).text_color(t.muted).child("No .fig files here")))
+        .when(!this.found.length, (el) => el.child(div().px(8).py(4).text_size(S().secondary).text_color(t.muted).child(this.scanning ? "Looking…" : "No .fig files here")))
         .children(this.found.map((p, i) => {
           const rel = p.startsWith(`${place.cwd}/`) ? p.slice(place.cwd.length + 1) : p;
           const cut = rel.lastIndexOf("/");
@@ -1670,14 +1672,19 @@ export default class Figlens extends View {
     const sections = [["changed", "Changed since built", t.ansi3], ["building", "Building", t.working], ["verified", "Verified", t.ansi2],
       ["read", "Read before", t.muted], ["todo", "Not started", t.muted]];
     if (!frames.length) return div().px(12).py(10).text_size(S().secondary).text_color(t.muted).child(q ? "Nothing matches this filter" : "No screens in this file");
-    return v_flex().p(4).gap(2).children(sections.filter(([k]) => groups[k].length).map(([k, label, color]) => v_flex().gap(1)
+    // Until agents have worked on it, the board says what it is for instead of looking like the list.
+    const empty = !this.states.size && v_flex().mx(4).mt(4).mb(6).p(10).gap(4).rounded(8).bg(t.chrome).text_size(S().secondary).text_color(t.muted)
+      .child(div().text_size(S().body).font_semibold().text_color(t.foreground).child("What agents did with each screen"))
+      .child(div().child("Screens move here as agents in Herdr terminals read them with figlens: Building while one works on it, Verified after it checks the build with compare_image, Changed since built when the design is saved again over its work."))
+      .child(div().child("No agent has read this design yet. Pick screens below and Plan each in a new tab to start some."));
+    return v_flex().p(4).gap(2).when(Boolean(empty), (el) => el.child(empty)).children(sections.filter(([k]) => groups[k].length).map(([k, label, color]) => v_flex().gap(1)
       .child(h_flex().h(28).px(8).gap(6).items_center().text_size(S().label).font_semibold().text_color(t.muted)
         .child(dot(color, 7)).child(div().flex_1().child(label)).child(div().font_normal().child(String(groups[k].length))))
       .children(groups[k].map((x) => this.boardRow(t, x, k, now)))));
   }
 
   boardRow(t, { f, page, s }, kind, now) {
-    const e = s?.entry, w = e ? this.who(e.address) : null, box = fitBox(f.size, 54, 36), ready = this.thumbs.has(f.id);
+    const e = s?.entry, w = e ? this.who(e.address) : null, box = fitBox(f.size, THUMB_W, THUMB_H), ready = this.thumbs.has(f.id);
     const pickable = kind === "todo" || kind === "read", picked = this.boardPicks.has(f.id);
     const [fw, fh] = f.size ?? [];
     const sub = kind === "changed" ? `${s.change.layers.length} layers changed · ${w?.name ?? "an agent"} worked on it ${ago(now - e.at)} ago`
@@ -1685,13 +1692,17 @@ export default class Figlens extends View {
       : kind === "verified" ? `${pct(e.result?.mismatch)} mismatch · ${e.result?.regionCount ?? "?"} regions · ${ago(now - e.at)} ago`
       : kind === "read" ? `${e.tool} ${ago(now - e.at)} ago` : fw > 0 ? `${Math.round(fw)}×${Math.round(fh)}` : clean(page.name, 40);
     const toggle = (_e, cx) => { if (picked) this.boardPicks.delete(f.id); else this.boardPicks.add(f.id); cx.notify(); };
-    return h_flex().id(`board-${f.id}`).h(48).flex_none().px(8).gap(8).items_center().rounded(7)
-      .bg(picked ? t.selected : t.background).hover((st) => st.bg(picked ? t.selected : t.hover))
-      .when(pickable, (el) => el.cursor_pointer().on_click(toggle)
+    // The thumbnail, or a row that cannot be picked, opens Quick Look: full size, ← → between screens.
+    const look = (_e, cx) => { cx.stop_propagation(); this.quickLook(f, page, null); };
+    return h_flex().id(`board-${f.id}`).h(60).flex_none().px(8).gap(8).items_center().rounded(7)
+      .bg(picked ? t.selected : t.background).hover((st) => st.bg(picked ? t.selected : t.hover)).cursor_pointer()
+      .on_click(pickable ? toggle : look)
+      .when(pickable, (el) => el
         .child(div().w(14).h(14).flex_none().flex().items_center().justify_center().rounded(3).border_1()
           .border_color(picked ? t.solid : t.border).bg(picked ? t.solid : t.background)
           .when(picked, (el) => el.child(icon("check", 11, t.solid_foreground)))))
-      .child(div().w(54).h(36).flex_none().flex().items_center().justify_center().rounded(4).bg(t.chrome)
+      .child(div().id(`board-look-${f.id}`).w(THUMB_W).h(THUMB_H).flex_none().flex().items_center().justify_center().rounded(4).bg(t.chrome)
+        .hover((st) => st.opacity(0.85)).on_click(look)
         .child(ready ? image(`${CACHE}/${this.key}/${thumbFile(f.id)}`).w(box.w).h(box.h) : div()))
       .child(v_flex().flex_1().min_w(0).gap(2)
         .child(div().truncate().text_size(S().body).child(clean(f.name)))

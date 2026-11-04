@@ -930,6 +930,47 @@ fn mcp_in_a_herdr_terminal_journals_successful_node_reads_but_not_searches() {
 }
 
 #[test]
+fn the_cli_in_a_herdr_terminal_journals_node_reads_but_not_find() {
+    let env = Env::new();
+    let fig = env.fig("a.fig");
+    let file = fig.to_str().unwrap();
+    for args in [["inspect", file, "0:4"], ["find", file, "first"]] {
+        let mut cli = env.command(&args, None);
+        assert!(
+            cli.env("HC_TERMINAL_ID", "t7")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+    let state = if cfg!(windows) {
+        env.home.join("figlens").join("state")
+    } else {
+        env.home.join(".local/state/figlens")
+    };
+    let lines: Vec<Value> = std::fs::read_dir(state.join("activity"))
+        .unwrap()
+        .flat_map(|entry| {
+            let text = std::fs::read_to_string(entry.unwrap().path()).unwrap();
+            text.lines().map(str::to_owned).collect::<Vec<_>>()
+        })
+        .map(|line| serde_json::from_str(&line).unwrap())
+        .collect();
+    let seen: Vec<(Value, Value, bool)> = lines
+        .iter()
+        .map(|l| {
+            (
+                l["tool"].clone(),
+                l["nodes"].clone(),
+                l["revision"].is_string(),
+            )
+        })
+        .collect();
+    assert_eq!(seen, [(json!("inspect"), json!(["0:4"]), true)]);
+}
+
+#[test]
 fn a_relocated_source_scoped_file_keeps_its_workspace_and_source_under_the_new_path() {
     let env = Env::new();
     let old = env.fig("a.fig");

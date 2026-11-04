@@ -54,7 +54,7 @@ function request(o) {
 
 // Claude Code reads figlens's guides with the figlens MCP tool `workflow`, which is not its own
 // Workflow tool; a session without the figlens MCP server gets the same guide from the CLI.
-const guide = (topic, cli) => `Read figlens's ${topic} guide first: call the figlens MCP tool \`workflow\` with topic "${topic}" (not Claude Code's own Workflow tool), or, with no figlens MCP tool loaded, run \`${cli ?? "figlens"} workflow ${topic}\``;
+const guide = (topic, cli) => `Read figlens's ${topic} guide first: call the figlens MCP tool \`workflow\` with topic "${topic}" (not Claude Code's own Workflow tool), or, with no figlens MCP tool loaded, run \`${cli ?? "figlens"} workflow ${topic}\`${cli ? "" : ` (or \`npx -y @runkids/figlens workflow ${topic}\` without figlens on PATH)`}`;
 
 const reader = (cli) => (cli
   ? `Read it with figlens (its MCP tools, or the CLI at ${cli})`

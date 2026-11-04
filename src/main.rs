@@ -261,8 +261,9 @@ usage:
                                              models, changes, watch and freshness as MCP tools; raster export returns an inline image;
                                              with --root, files and outputs must be under one of the folders;
                                              a custom index storage must be under a --storage-root;
-                                             inside a Herdr terminal (HC_TERMINAL_ID) it records the node ids
-                                             each call read in the state folder's activity/ for the Herdr panel
+                                             inside a Herdr terminal (HC_TERMINAL_ID) it, like the CLI's
+                                             node-reading commands, records the node ids each call read in
+                                             the state folder's activity/ for the Herdr panel
   figlens workflow <topic>                     print built-in agent guidance, the same text as MCP workflow:
                                              build, audit, images, search, plan, planning-details or
                                              yolo; a workflow:<topic> link means `figlens workflow <topic>`
@@ -491,6 +492,34 @@ fn command_usage(command: &str) -> Option<String> {
     }
     (!section.is_empty())
         .then(|| format!("{section}\nfiglens --help lists every command and explains <file.fig>, <node> and <out>"))
+}
+
+/// Inside a Herdr terminal a CLI call that read the design's nodes leaves a journal line too, as an
+/// MCP one does, so an agent that runs figlens in its shell shows on the Herdr panel.
+fn journal_cli(
+    tool: &str,
+    path: &Path,
+    tree: &Tree,
+    decoded: Option<figlens::search::Stamp>,
+    node: Option<&String>,
+    result: Option<serde_json::Value>,
+) {
+    let Some(journal) = activity::journal() else {
+        return;
+    };
+    // Named by the canonical path, as MCP names it and the panel looks it up.
+    let Ok(path) = std::fs::canonicalize(path) else {
+        return;
+    };
+    let mut extra = serde_json::Map::new();
+    if let Some(stamp) = decoded {
+        extra.insert("revision".into(), activity::revision(stamp).into());
+    }
+    if let Some(result) = result {
+        extra.insert("result".into(), result);
+    }
+    let ids = activity::ids(node.map(String::as_str));
+    journal.record(tool, &path, tree, &ids, extra);
 }
 
 fn run(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
@@ -858,6 +887,11 @@ fn dispatch(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                 .and_then(|c| c.decoded(decoded).execute(&tree, &path));
             let result = command::freshness::with_hint(command, result, &path, &|_| true);
             out.push_str(&result?.text()?);
+            // find is a search: like MCP's, it leaves no journal line.
+            if command != "find" {
+                let node = args.get(2).filter(|a| !a.starts_with('-'));
+                journal_cli(command, &path, &tree, decoded, node, None);
+            }
         }
         "compare-image" => {
             let (node, shot, diff, opts) = command::compare_image_args(&args[2..])?;
@@ -870,6 +904,8 @@ fn dispatch(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                 opts,
             )?;
             writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
+            let result = activity::compare_summary(&report, Some(shot.as_str()));
+            journal_cli(command, &path, &tree, decoded, Some(&node), Some(result));
         }
         "compare" => {
             // A `--frames` line may name the capture's variables.json as a third field.
