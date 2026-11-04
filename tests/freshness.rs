@@ -2,7 +2,7 @@
 //! on PATH serving Figma's file metadata; no network.
 #![cfg(unix)]
 
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -108,12 +108,13 @@ impl Project {
                 "params": {"name": name, "arguments": arguments}});
             writeln!(stdin, "{call}").unwrap();
         }
-        drop(stdin);
-        let out = child.wait_with_output().unwrap();
-        let mut replies: Vec<Value> = String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
+        // Closing stdin stops the server and cancels running calls, so read every reply first.
+        let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        let mut replies: Vec<Value> = (0..calls.len())
+            .map(|_| serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap())
             .collect();
+        drop(stdin);
+        child.wait().unwrap();
         replies.sort_by_key(|reply| reply["id"].as_u64());
         replies
     }
@@ -280,5 +281,30 @@ fn a_bad_freshness_flag_prints_only_its_usage() {
             && stderr.contains("figlens freshness")
             && !stderr.contains("figlens tree"),
         "{stderr}"
+    );
+}
+
+#[test]
+fn mcp_inspect_of_a_missing_node_in_a_stale_copy_carries_the_hint() {
+    let project = Project::new(LATER);
+    let file = project.fig();
+    let reply = project.mcp("inspect", json!({"file": file, "node": "99:99"}));
+    let text = reply["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(text.contains("save a new local copy"), "{reply}");
+}
+
+#[test]
+fn an_unmapped_file_reports_every_field() {
+    let project = Project::new(LATER);
+    let other = project.root.join("other.fig");
+    std::fs::copy(project.fig(), &other).unwrap();
+    let report = json(&project.run(&["freshness", "other.fig"], true));
+    let design = &report["designs"][0];
+    assert_eq!(
+        (design["reason"].clone(), design.get("savedAt").cloned()),
+        (json!("not_mapped"), Some(Value::Null)),
+        "{report}"
     );
 }

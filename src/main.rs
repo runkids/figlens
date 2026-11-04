@@ -671,7 +671,11 @@ fn dispatch(args: Vec<String>, out: &mut String) -> Result<(), Box<dyn Error>> {
                 url,
                 start: Some(&cwd),
             };
-            let report = command::freshness::report(&request, &|_| true)?;
+            let report = command::freshness::report(
+                &request,
+                &|_| true,
+                &std::sync::atomic::AtomicBool::new(false),
+            )?;
             writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
             return Ok(());
         }

@@ -532,7 +532,7 @@ impl AdmittedCall {
                     url: self.call.string("url"),
                     start: None,
                 };
-                return command::freshness::report(&request, &allowed)
+                return command::freshness::report(&request, &allowed, self.cancel())
                     .map(|value| command::Output::Json {
                         value,
                         pretty: false,

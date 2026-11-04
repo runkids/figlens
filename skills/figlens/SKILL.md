@@ -11,7 +11,7 @@ figlens reads the design; the agent builds the frontend. figlens supplies what t
 
 ## Setup
 
-**With a loaded figlens integration:** use its registered figlens MCP tools (`tree`, `find`, `search`, `usages`, `diff`, `inspect`, `nodes`, `variables`, `bundle`, `export`, `export_batch`, `compare_image`). Pi, OpenCode V2 and OMP supply host-specific entries from one package; check the tools actually available in this session. A host may preserve an existing MCP override whose version or snapshot is unverified; report its unavailable shortcuts rather than treating it as ready. No global CLI, shell `npx`, `/figlens open`, or saved selection is needed for available MCP tools. The CLI examples below describe equivalent operations: pass each argument through the corresponding tool schema, using absolute `file` and output paths. The host supplies the namespace.
+**With a loaded figlens integration:** use its registered figlens MCP tools (`tree`, `find`, `search`, `usages`, `diff`, `inspect`, `nodes`, `variables`, `bundle`, `export`, `export_batch`, `compare_image`, `freshness`). Pi, OpenCode V2 and OMP supply host-specific entries from one package; check the tools actually available in this session. A host may preserve an existing MCP override whose version or snapshot is unverified; report its unavailable shortcuts rather than treating it as ready. No global CLI, shell `npx`, `/figlens open`, or saved selection is needed for available MCP tools. The CLI examples below describe equivalent operations: pass each argument through the corresponding tool schema, using absolute `file` and output paths. The host supplies the namespace.
 
 **Other agents:** use configured figlens MCP tools when available, or the CLI below.
 

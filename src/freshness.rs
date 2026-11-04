@@ -23,6 +23,8 @@ pub const MAPPING: &str = ".figlens/sources.json";
 const MAPPING_BYTES: u64 = 1 << 20;
 const MAX_ENTRIES: usize = 200;
 const META_BYTES: u64 = 1 << 20;
+/// The longest one request can take, so a listing starts none it cannot finish by its deadline.
+pub const REQUEST_LIMIT: Duration = Duration::from_secs(15);
 /// curl's limits for one metadata request: connect and total seconds, then response bytes.
 const CONNECT_TIMEOUT: &str = "5";
 const TIMEOUT: &str = "10";
@@ -176,14 +178,11 @@ fn online(curl: &str, key: &str, token: &str) -> Result<(String, Option<String>)
 /// `current` when it did not, else `unknown` with a `reason`. `token` is the token, or the
 /// reason not to fetch (`no_token`, `deadline`); then nothing is fetched.
 pub fn check(curl: &str, source: &Source, token: Result<&str, &'static str>) -> Value {
-    let mut report = json!({
-        "name": source.name,
-        "file": source.label,
-        "savedAt": null,
-        "onlineModifiedAt": null,
-        "onlineVersion": null,
-        "state": "unknown",
-    });
+    let mut report = unknown(source.name.as_str().into(), &source.label, "");
+    // A known state carries no reason; every `unknown` below sets one.
+    if let Some(fields) = report.as_object_mut() {
+        fields.remove("reason");
+    }
     let unknown = |mut report: Value, reason: &str| {
         report["reason"] = reason.into();
         report
@@ -208,6 +207,19 @@ pub fn check(curl: &str, source: &Source, token: Result<&str, &'static str>) -> 
             report
         }
     }
+}
+
+/// A design report with nothing known: `state` `unknown` for `reason`, every time null.
+pub fn unknown(name: Value, label: &str, reason: &str) -> Value {
+    json!({
+        "name": name,
+        "file": label,
+        "savedAt": null,
+        "onlineModifiedAt": null,
+        "onlineVersion": null,
+        "state": "unknown",
+        "reason": reason,
+    })
 }
 
 /// `FIGMA_TOKEN` when set and non-empty.
@@ -252,7 +264,7 @@ pub fn stale(fig: &Path, allowed: &dyn Fn(&Path) -> bool) -> Option<Value> {
     let fig = std::fs::canonicalize(fig).ok()?;
     let meta = std::fs::metadata(&fig).ok()?;
     let key = (fig.clone(), meta.modified().ok(), meta.len());
-    // Held across the request: concurrent misses on one copy wait for the first answer.
+    // Held across the request, so concurrent misses (on any copy) wait and reuse its answer.
     let mut hints = HINTS.lock().ok()?;
     let hints = hints.get_or_insert_with(HashMap::new);
     hints.retain(|_, (at, _)| at.elapsed() < HINT_TTL);

@@ -2,6 +2,7 @@
 
 use std::error::Error;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use figlens::freshness::{self, MAPPING, Source, TOKEN_VAR};
@@ -19,12 +20,17 @@ pub struct Request<'a> {
     pub start: Option<&'a Path>,
 }
 
-/// How long one listing may spend on requests; designs after it are `unknown`/`deadline`.
+/// How long one listing may spend on requests (it holds the MCP interactive lane); designs it
+/// could not finish in time are `unknown`/`deadline`.
 const DEADLINE: Duration = Duration::from_secs(60);
 
 /// Each requested design's saved time, online time and state; `allowed` admits a path under
-/// MCP roots (the CLI admits every path).
-pub fn report(request: &Request, allowed: &dyn Fn(&Path) -> bool) -> Result<Value, Box<dyn Error>> {
+/// MCP roots (the CLI admits every path). Once `cancel` is set, remaining designs are not fetched.
+pub fn report(
+    request: &Request,
+    allowed: &dyn Fn(&Path) -> bool,
+    cancel: &AtomicBool,
+) -> Result<Value, Box<dyn Error>> {
     let token = freshness::token();
     let started = Instant::now();
     let check = |source: &Source| {
@@ -40,11 +46,12 @@ pub fn report(request: &Request, allowed: &dyn Fn(&Path) -> bool) -> Result<Valu
             } else {
                 "outside_roots"
             };
-            return json!({"name": source.name, "file": source.label, "state": "unknown", "reason": reason});
+            return freshness::unknown(source.name.as_str().into(), &source.label, reason);
         }
         let token = match &token {
             None => Err("no_token"),
-            Some(_) if started.elapsed() > DEADLINE => Err("deadline"),
+            Some(_) if cancel.load(Ordering::Relaxed) => Err("cancelled"),
+            Some(_) if started.elapsed() + freshness::REQUEST_LIMIT > DEADLINE => Err("deadline"),
             Some(token) => Ok(token.as_str()),
         };
         freshness::check("curl", source, token)
@@ -69,7 +76,7 @@ pub fn report(request: &Request, allowed: &dyn Fn(&Path) -> bool) -> Result<Valu
             (None, vec![check(&source)])
         }
         (None, Some((file, label)), None) => {
-            let unknown = |reason: &str| json!({"name": null, "file": label, "state": "unknown", "reason": reason});
+            let unknown = |reason: &str| freshness::unknown(Value::Null, label, reason);
             if !file.is_file() {
                 (None, vec![unknown("file_missing")])
             } else {
