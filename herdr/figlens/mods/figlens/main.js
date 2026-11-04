@@ -1,5 +1,6 @@
 // figlens beside your agents: open a .fig, find a screen or any layer, hand it to the agent on
-// the left as Build, Plan or YOLO, look at it full size, or start a new agent on it.
+// the left as Build, Plan or YOLO, point it at a node, look at it full size, or start a new
+// agent on it.
 // Roles (props.role): the panel (default); "toggle", the tab-bar button that opens the panel as
 // the "figlens" child of the layout's "panel-body" stack; "confirm", the dialog that shows
 // exactly what is pasted into which agent; "newtab", the dialog that starts an agent in a new
@@ -61,6 +62,7 @@ const INTENT = {
   build: { verb: "Build", title: (n, a) => `Send “${n}” to ${a}?`, go: (a) => `Send to ${a}` },
   plan: { verb: "Plan", title: (n, a) => `Plan “${n}” with ${a}?`, go: (a) => `Plan with ${a}` },
   yolo: { verb: "YOLO", title: (n, a) => `Let ${a} build “${n}” on its own?`, go: (a) => `Start YOLO in ${a}` },
+  point: { verb: "Point", title: (n, a) => `Point ${a} at “${n}”?`, go: (a) => `Send to ${a}` },
 };
 const YOLO_NOTE = (a) => `${a} plans, edits this project, checks its work, and after a verified run deletes only the plan and exports it made. A failed run keeps them.`;
 
@@ -501,7 +503,7 @@ export default class Figlens extends View {
       }
       const r = await hc(["send", p.address, text]).catch((e) => ({ code: 1, stderr: String(e.message ?? e) }));
       if (r.code === 0) {
-        const verb = p.intent === "plan" ? "Asked" : p.intent === "yolo" ? "Started YOLO in" : "Sent to";
+        const verb = p.intent === "plan" ? "Asked" : p.intent === "yolo" ? "Started YOLO in" : p.intent === "point" ? "Pointed" : "Sent to";
         setShared(NOTICE, { kind: "done", text: `${verb} ${agent.program.name}${agent.space_name ? ` in ${agent.space_name}` : ""}`, at: Date.now() });
         closeOverlay(p.overlay);
         run("agent.focus", { terminal: p.address });
@@ -1233,6 +1235,8 @@ export default class Figlens extends View {
       h_flex().gap(6).flex_wrap()
         .child(tool("look", "Quick Look", "eye", () => this.quickLook(target, page, screen)))
         .child(tool("browser", this.file.on ? "Snapshot" : "Browser", "external", (_e, cx) => this.browser(target, cx)))
+        .when(Boolean(agent), (el) => el.child(tool("point", "Point", "crosshair",
+          () => confirmIntent("point", agent, this.textFor("point", agent, target, page, screen), target.name, this.design()))))
         .child(secondary(`id-${id}`, h_flex().gap(5).child(div().child("Node")).child(div().font_family(mono()).text_color(t.foreground).child(id)),
           t, copyId, { icon: "copy", size: S().secondary, px: 8, color: t.muted })),
     ];

@@ -149,7 +149,7 @@ npx -y @runkids/figlens preview design.fig                        # viewer local
 npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # snapshot HTML offline para enviar a qualquer pessoa
 ```
 
-Navegue por páginas e camadas, busque, use a busca ranqueada e os usos exatos da seleção, meça, inspecione layout, tipografia, variáveis e CSS, exporte qualquer camada, copie um prompt de implementação ou baixe um bundle da seleção. Mude a busca ranqueada para semântica ou híbrida com um modelo local opcional: o visualizador só indexa o arquivo quando você clica em Enable index. Importe uma captura de tela da sua implementação para sobrepô-la ao design. Detalhes: [guia de preview](../wiki/preview.md). Visual/Hybrid aceita um PNG de referência ou uma camada selecionada com recorte em pixels. Ative o índice visual explicitamente; imagens de consulta não são armazenadas.
+Navegue por páginas e camadas, busque, use a busca ranqueada e os usos exatos da seleção, meça, inspecione layout, tipografia, variáveis e CSS, exporte qualquer camada, copie um prompt de implementação ou baixe um bundle da seleção. Mude a busca ranqueada para semântica ou híbrida com um modelo local opcional: o visualizador só indexa o arquivo quando você clica em Enable index. Importe uma captura de tela da sua implementação para sobrepô-la ao design. Detalhes: [guia de preview](../wiki/preview.md). Visual/Hybrid aceita um PNG de referência ou uma camada selecionada com recorte em pixels. Ative o índice visual explicitamente; imagens de consulta não são armazenadas. **Copy reference prompt** copia um prompt curto que nomeia a camada selecionada, para colar em qualquer agente.
 
 <a id="mcp-and-skill"></a>
 

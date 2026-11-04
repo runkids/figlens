@@ -149,7 +149,7 @@ npx -y @runkids/figlens preview design.fig                        # 本機 viewe
 npx -y @runkids/figlens preview design.fig 12:345 --out preview.html   # 可寄給任何人的離線 HTML 快照
 ```
 
-可瀏覽頁面與圖層、搜尋、排序搜尋與所選項目的精確用處（usages）、量測，檢視排版、字體、variables 與 CSS，匯出任何圖層，複製實作 prompt，或下載所選項目的 bundle。排序搜尋可搭配選用的本機模型切換為語意或混合模式，只有按下 Enable index 時，檢視器才會為檔案建立索引。拖入你實作成果的截圖，即可疊在設計上比對。詳情：[預覽指南](../wiki/preview.md)。 Visual／Hybrid 可使用參考 PNG 或所選圖層，並以像素裁切。請明確啟用視覺索引；查詢圖片不會保存。
+可瀏覽頁面與圖層、搜尋、排序搜尋與所選項目的精確用處（usages）、量測，檢視排版、字體、variables 與 CSS，匯出任何圖層，複製實作 prompt，或下載所選項目的 bundle。排序搜尋可搭配選用的本機模型切換為語意或混合模式，只有按下 Enable index 時，檢視器才會為檔案建立索引。拖入你實作成果的截圖，即可疊在設計上比對。詳情：[預覽指南](../wiki/preview.md)。 Visual／Hybrid 可使用參考 PNG 或所選圖層，並以像素裁切。請明確啟用視覺索引；查詢圖片不會保存。**Copy reference prompt** 會複製一段指明所選圖層的簡短 prompt，可以貼給任何代理。
 
 <a id="mcp-and-skill"></a>
 
