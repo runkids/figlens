@@ -328,3 +328,9 @@ test("changedFrames does not count a layer diff could not read as changed", () =
   const got = changedFrames({ frames: [{ id: "1:1", nodes: [{ name: "A", change: "unknown" }] }] });
   assert.equal(got.size, 0);
 });
+
+test("intentText plans several picked screens in one message, one at a time", () => {
+  const targets = [{ frame: { id: "1:1", name: "Home" }, page: { name: "App" } }, { frame: { id: "2:2", name: "Cart" }, page: null }];
+  assert.match(intentText({ intent: "plan", app: "pi", file: "/d/a.fig", frame: targets[0].frame, targets }),
+    /^\/figlens plan Implement these 2 screens from the Figma design \/d\/a\.fig, one at a time: 1\. the frame "Home" \(node 1:1, page "App"\); 2\. the frame "Cart" \(node 2:2\)$/);
+});

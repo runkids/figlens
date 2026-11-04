@@ -1790,12 +1790,28 @@ export default class Figlens extends View {
         (_e, cx) => { cx.stop_propagation(); this.openCompare(f, page, e); }, { size: S().secondary, px: 8 })));
   }
 
+  // One picked screen goes to the agent on the left; several go to it in one message (one at a
+  // time) or each to a new tab (side by side). With no agent on the left, new tabs.
   boardFooter(t) {
-    const n = this.livePicks().length, to = this.receiver()?.program?.name;
+    const n = this.livePicks().length, agent = this.receiver(), to = agent?.program?.name;
     return h_flex().h(44).flex_none().px(12).gap(8).items_center().border_t(1).border_color(t.border).bg(t.background)
       .child(div().flex_1().min_w(0).text_size(S().secondary).text_color(t.muted).child(`${n} screen${n === 1 ? "" : "s"} selected`))
       .child(secondary("board-clear", "Clear", t, (_e, cx) => { this.boardPicks.clear(); cx.notify(); }, { size: S().secondary, px: 8 }))
-      .child(primary("board-fan", `Plan each in a new ${to ? `${to} ` : ""}tab…`, t, () => this.fanOut(), "plus"));
+      .when(Boolean(agent) && n > 1, (el) => el.child(secondary("board-all", `Send all to ${to}…`, t, () => this.planPicked(agent), { size: S().secondary, px: 8 })))
+      .child(agent && n === 1
+        ? primary("board-one", `Plan with ${to}…`, t, () => this.planPicked(agent), "arrow")
+        : primary("board-fan", "Plan each in a new tab…", t, () => this.fanOut(), "plus"));
+  }
+
+  // The picked screens to the agent on the left in one plan message, after the confirm.
+  planPicked(agent) {
+    const top = this.topIndex();
+    const targets = this.livePicks().map((id) => top.get(id)).filter(Boolean)
+      .map(({ frame, page }) => ({ frame: { id: frame.id, name: frame.name }, page: page ? { name: page.name } : null, screen: null }));
+    if (!targets.length) return;
+    const text = intentText({ intent: "plan", app: agent.app, file: this.file.path, ...targets[0], targets,
+      cli: cliFor(this.cli(), this.design(), machineOf(agent.address)) });
+    confirmIntent("plan", agent, text, targets.length > 1 ? `${targets.length} screens` : targets[0].frame.name, this.design());
   }
 
   // A changed screen's changes, to the agent that worked on it while it runs, else the one on the left.

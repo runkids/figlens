@@ -48,7 +48,12 @@ function target({ frame, page, screen }) {
     : `the frame "${clean(frame.name)}" (${where})`;
 }
 
+// One screen, or several picked on the board: `targets` lists them, to take one at a time.
 function request(o) {
+  if (o.targets?.length > 1) {
+    const list = o.targets.map((x, i) => `${i + 1}. ${target(x)}`).join("; ");
+    return `Implement these ${o.targets.length} screens from the Figma design ${o.file}, one at a time: ${list}`;
+  }
   return `Implement ${target(o)} from the Figma design ${o.file}`;
 }
 

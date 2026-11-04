@@ -83,7 +83,8 @@ For the layout, also copy `figlens-layout/layouts/herdr-figlens.json` and
   its mismatch), Read before, Not started. Thumbnails open Quick Look to watch,
   without actions. A banner above names the newest changed screen; **Send changes**
   gives its agent the changed layers after a confirm. Pick screens and
-  **Plan each in a new tab**; **Compare** opens a verified screen's design
+  plan them with the agent on the left (one message, one screen at a time) or
+  **Plan each in a new tab** (side by side); **Compare** opens a verified screen's design
   beside the build screenshot (or the differences), and **Ask … to fix** sends
   what the comparison found to an agent after a confirm.
 - **Keys** on the panel: `/` filters, ↑ ↓ move, Enter builds, Space looks closer, Esc clears.
