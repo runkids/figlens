@@ -9,7 +9,7 @@ Field reference linked from [mcp](mcp.md).
 | `tree.depth` | 0 through `2^53-1` (JSON-safe); omitted means every level; past 256 levels the call fails with `parse_budget_exceeded` ([layer depth](parsing.md#layer-depth)) |
 | `inspect.depth` | 0–10 / 1 |
 | `nodes.compact`, `nodes.subtrees` | boolean / false; subtrees requires compact. Versioned lossless references instead of default REST, with the same complete-reply cap; [wire contract](discovery.md#compact-nodes) |
-| `nodes.out` | optional non-empty `.json` path (other extensions are `invalid_arguments`); admitted under `--root` like `export` `out`. Writes the text the reply would carry (default or compact) through source-safe publication and replies `{path, bytes, lines}`; the early reply budget still applies |
+| `nodes.out` | optional non-empty `.json` path, also after links resolve (else `invalid_arguments`); admitted under `--root` like `export` `out`. Writes the text the reply would carry (default or compact) through source-safe publication and replies `{path, bytes, lines}`; the early reply budget still applies |
 | `find.limit`, `search.limit` | 1–200 / 20 |
 | `usages.limit`, `usages.scope` | 1–200 / 50; `0:0` |
 | `changes.limit` | revisions 1–50 / 20; with `revision`, entries (changes, then impact) 1–500 / 100; with a query `subscriptionId`, evaluations 1–50 / 20 |

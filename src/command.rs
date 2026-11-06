@@ -651,6 +651,20 @@ impl Command {
                     pretty(value)
                 };
                 let Some(out) = out else { return Ok(output) };
+                // A .json link must not lead to another design either.
+                let target = figlens::output::destination(&out).map_err(|e| {
+                    figlens::FigError::new(figlens::ErrorKind::OutputWrite, e.to_string())
+                })?;
+                if !target
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+                {
+                    return Err(figlens::FigError::new(
+                        figlens::ErrorKind::InvalidArguments,
+                        "nodes out must resolve to a .json file",
+                    )
+                    .into());
+                }
                 // Hosts show only part of a large reply; the file keeps the whole text.
                 let text = output.text()?;
                 figlens::output::write(fig, &out, |file| {

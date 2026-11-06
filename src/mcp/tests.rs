@@ -725,6 +725,12 @@ fn nodes_out_stays_inside_the_roots_and_off_the_source() {
         nodes(other.clone())["_meta"]["figlens"]["code"],
         "invalid_arguments"
     );
+    #[cfg(unix)]
+    {
+        let link = inside.join("link.json");
+        std::os::unix::fs::symlink("other.fig", &link).unwrap();
+        assert_eq!(nodes(link)["_meta"]["figlens"]["code"], "invalid_arguments");
+    }
     assert_eq!(std::fs::read(&other).unwrap(), b"design");
     assert_eq!(std::fs::read(&source).unwrap(), before);
 }
