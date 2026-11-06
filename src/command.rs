@@ -638,7 +638,9 @@ impl Command {
             } => {
                 let id = normalize_id(&node);
                 let value = if shared {
-                    figlens::rest::resolve_compact_nodes(tree, &id, subtrees, budget)?
+                    // Compact's budget checks the finished reply, which a file does not carry.
+                    let reply = budget.filter(|_| out.is_none());
+                    figlens::rest::resolve_compact_nodes(tree, &id, subtrees, reply)?
                 } else {
                     match budget {
                         Some(bytes) => figlens::rest::resolve_nodes_within(tree, &id, bytes)?,

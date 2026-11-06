@@ -68,6 +68,27 @@ fn nodes_out_writes_the_reply_text_and_replies_with_its_size() {
 }
 
 #[test]
+fn nodes_out_is_not_held_to_the_compact_reply_budget() {
+    let fig = std::path::Path::new("examples/first-success/design.fig");
+    let mut doc = figlens::Document::open(fig).unwrap();
+    let message = doc.take_message().unwrap();
+    let tree = figlens::Tree::new(&message);
+    let dir = crate::test_support::TestDir::new();
+    let nodes = |out| {
+        crate::command::Command::Nodes {
+            node: "0:1".into(),
+            budget: Some(1),
+            compact: true,
+            subtrees: false,
+            out,
+        }
+        .execute(&tree, fig)
+    };
+    assert!(nodes(None).is_err());
+    assert!(nodes(Some(dir.join("compact.json"))).is_ok());
+}
+
+#[test]
 fn nodes_compact_preflight_rejects_invalid_combinations_and_types() {
     for extra in [
         json!({"subtrees":true}),
