@@ -211,11 +211,32 @@ impl Patch {
             size: self.size.or(inner.size),
             transform: self.transform.or(inner.transform),
             swap: self.swap.or(inner.swap),
-            props: inner.props.into_iter().chain(self.props).collect(),
+            props: {
+                // An outer outline was drawn at its own scale, not at the inner one's.
+                let mut props: Map<String, Json> = inner.props;
+                for (f, _, mark) in GEOMETRY {
+                    if self.props.contains_key(f) {
+                        props.remove(mark);
+                    }
+                }
+                props.extend(self.props);
+                props
+            },
             prototype_source: self.prototype_source.or(inner.prototype_source),
         }
     }
 }
+
+/// Outline fields, the size their paths were drawn at, and the internal mark of the factor a
+/// scaled row's outline was not drawn at.
+const GEOMETRY: [(&str, &str, &str); 2] = [
+    ("fillGeometry", "fillGeometrySize", "fillGeometryScale"),
+    (
+        "strokeGeometry",
+        "strokeGeometrySize",
+        "strokeGeometryScale",
+    ),
+];
 
 impl Patch {
     /// The patch as read at `k` times its stored scale: an instance's own rows sit at the
@@ -229,6 +250,12 @@ impl Patch {
         for (f, v) in self.props.iter_mut() {
             if let Some(s) = scale_value(f, v, k) {
                 *v = s;
+            }
+        }
+        // Outline paths stay as drawn; `node_props` sizes them from the node's size over `k`.
+        for (f, _, mark) in GEOMETRY {
+            if self.props.contains_key(f) {
+                self.props.insert(mark.into(), k.into());
             }
         }
         self
@@ -286,9 +313,17 @@ const SCALED_PARTS: [&str; 7] = [
 // to `MAX_DEPTH`, keeps its frame small.
 
 /// The `props` of an expanded copy of `child` that looks like `source` (itself, or the main
-/// a swap names), with override `o` and derived row `d`, reading `source`'s lengths at `k`.
+/// a swap names), with override `o` and derived row `d`, reading `source`'s lengths at `k`,
+/// for a copy of `size`.
 #[inline(never)]
-fn node_props(child: &Value, source: &Value, o: &Patch, d: &Patch, k: f64) -> Map<String, Json> {
+fn node_props(
+    child: &Value,
+    source: &Value,
+    o: &Patch,
+    d: &Patch,
+    k: f64,
+    size: Option<Vec2>,
+) -> Map<String, Json> {
     // Keep placement complete for semantic readers, including fields absent on the child.
     let mut props: Map<String, Json> = PLACEMENT
         .into_iter()
@@ -305,14 +340,18 @@ fn node_props(child: &Value, source: &Value, o: &Patch, d: &Patch, k: f64) -> Ma
             props.insert(f.clone(), v.clone());
         }
     }
-    for (f, at) in [
-        ("fillGeometry", "fillGeometrySize"),
-        ("strokeGeometry", "strokeGeometrySize"),
-    ] {
-        if !d.props.contains_key(f)
-            && let Some(s) = source.get("size")
-        {
-            props.insert(at.into(), to_json(s));
+    for (f, at, mark) in GEOMETRY {
+        // The mark is internal: it never reaches the emitted props.
+        props.remove(mark);
+        let drawn = d.props.get(mark).and_then(Json::as_f64);
+        if !d.props.contains_key(f) {
+            if let Some(s) = source.get("size") {
+                props.insert(at.into(), to_json(s));
+            }
+        } else if let (Some(k), Some(s)) = (drawn, size) {
+            // A nested instance's own derived outline was drawn before the outer factor.
+            let s = s.times(1.0 / k);
+            props.insert(at.into(), serde_json::json!({"x": s.x, "y": s.y}));
         }
     }
     props
@@ -1227,9 +1266,9 @@ impl Expander<'_, '_> {
                     .chain(&GRID_PLACEMENT)
                     .filter_map(|f| Some((*f, child.get(f)?)));
                 // A geometry-size entry copies the source size only where Figma derived no outline.
-                let copies = ["fillGeometry", "strokeGeometry"]
+                let copies = GEOMETRY
                     .iter()
-                    .filter(|f| !d.props.contains_key(**f))
+                    .filter(|(f, _, mark)| !d.props.contains_key(*f) || d.props.contains_key(*mark))
                     .count();
                 let size = tree.nodes[source.unwrap_or(child_id)]
                     .get("size")
@@ -1317,7 +1356,7 @@ impl Expander<'_, '_> {
                 .filter(|s| tree.nodes.contains_key(*s))
                 .unwrap_or(child_id)
                 .clone();
-            let props = node_props(child, tree.nodes[&source], o, d, scale);
+            let props = node_props(child, tree.nodes[&source], o, d, scale, size);
             let visible = o.visible.or_else(|| flag(tree.nodes[&source], "visible"));
             let id = format!("I{outer};{pk}");
             // Figma ids are unique; a repeat would make the tree contain itself, so skip it.

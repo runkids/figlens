@@ -2001,3 +2001,42 @@ fn a_factor_of_one_missing_or_out_of_range_changes_nothing() {
         );
     }
 }
+
+#[test]
+fn a_nested_rows_outline_keeps_the_size_it_was_drawn_at() {
+    // Inner's own derived row outlines its 200 px dot; at the outer 0.5 the dot is 100 px, so
+    // the paths are drawn at 200 px. An outer outline for the same layer is drawn at 100 px.
+    let outline = || ("fillGeometry", Value::Array(vec![]));
+    for outer_outline in [false, true] {
+        let derived = if outer_outline {
+            vec![row(vec![guid(1, 2), guid(2, 3)], vec![outline()])]
+        } else {
+            vec![]
+        };
+        let outer = scaled_instance(Some(0.5), 100.0, vec![], derived);
+        let main = obj(vec![("size", size(200.0, 200.0))]);
+        let inner = obj(vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            ("size", size(200.0, 200.0)),
+            ("symbolData", obj(vec![("symbolID", guid(2, 1))])),
+            (
+                "derivedSymbolData",
+                Value::Array(vec![row(vec![guid(2, 3)], vec![outline()])]),
+            ),
+        ]);
+        let (inner_main, plain, overridden) = inner_main_and_dots();
+        let ex = expand_instances(
+            &nested_tree([&outer, &main, &inner, &inner_main, &plain, &overridden]),
+            "inst",
+        );
+        let dot = &ex.nodes["Iinst;1:2;2:3"];
+        assert_eq!(dot.size, Some(v2(100.0, 100.0)));
+        let drawn = (!outer_outline).then(|| serde_json::json!({"x": 200.0, "y": 200.0}));
+        assert_eq!(
+            dot.props.get("fillGeometrySize").cloned(),
+            drawn,
+            "{outer_outline}"
+        );
+        assert!(!dot.props.contains_key("fillGeometryScale"));
+    }
+}
