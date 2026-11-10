@@ -627,6 +627,30 @@ test("a kept revision is found again by its revision", async () => {
   assert.equal(fs.readFileSync(await cache.kept(file, stamp), "utf8"), "12345");
 });
 
+test("copies of one design that overlap each arrive whole", async () => {
+  const host = diskHost(), cache = createCache(host), dest = path.join(host.homeDir, "k/a.fig");
+  const write = async (part) => { for (const bytes of ["12", "345"]) { await null; fs.appendFileSync(part, bytes); } };
+  await Promise.all([cache.writeCopy(dest, null, write), cache.writeCopy(dest, null, write)]);
+  assert.equal(fs.readFileSync(dest, "utf8"), "12345");
+});
+
+test("a copy whose name is as long as a file name may be still arrives", async () => {
+  const host = diskHost(), cache = createCache(host), dest = path.join(host.homeDir, "k", `${"a".repeat(251)}.fig`);
+  await cache.writeCopy(dest, null, async (part) => fs.writeFileSync(part, "12345"));
+  assert.equal(fs.readFileSync(dest, "utf8"), "12345");
+});
+
+test("a copy that stops part way leaves nothing behind", async () => {
+  const host = diskHost(), cache = createCache(host), dest = path.join(host.homeDir, "k/a.fig");
+  await cache.writeCopy(dest, null, async (part) => { fs.writeFileSync(part, "12"); throw new Error("stopped"); }).catch(() => null);
+  assert.deepEqual(fs.readdirSync(path.dirname(dest)), []);
+});
+
+test("a copy that could not be put in place fails", async () => {
+  const host = diskHost(), cache = createCache(host), dest = path.join(host.homeDir, "k/a.fig");
+  await assert.rejects(cache.writeCopy(dest, null, async () => {}));
+});
+
 test("measuring tells saved versions apart from copies made for agents", async () => {
   const host = diskHost(), cache = createCache(host);
   for (const dir of [".cache/figlens/herdr-designs/k", ".cache/figlens/herdr-revisions/k"]) {

@@ -59,14 +59,14 @@ A card in the theme's `background`, `border` outline, radius 10. Every size is r
 - `mark.svg` (the figlens mark, full color via `image`), `icons/*.svg` (stroke icons tinted with `svg`).
 - **Storage**: `shared` keys `figlens.files.v1` (design per space), `figlens.notice.v1`, `figlens.quicklook.v1`, `figlens.compare.v1`, `figlens.live.v1`, `figlens.handoffs.v1`, `figlens.viewers.v1`, `figlens.cleared.v1`, and `figlens` added to Herdr's `workspace.panels`; images under `~/.config/herdr-app/mods/figlens/.cache/` (comparisons under `compare/`); design copies under `~/.cache/figlens/herdr-designs/`; kept versions under `~/.cache/figlens/herdr-revisions/<key>/` (newest 8 per design).
 - **Herdr functions**: `exec` (with `on` for other machines), `hc`, `run` (`layout.select`, `layout.show`, `layout.hide`, `agent.focus`, `tab.new`, `terminal.kill`), `agents`, `focused`, `spaces`, `panes`, `knownAgents`, `pickFolder`, `watchFolder`, `openOverlay`, `closeOverlay`, `shared`, `setShared`, `nextCommand`, `theme`, `settings`, `layout`, `window`, `appHome`, `home`, `props`.
-- **Programs**: `figlens` (through `env -u HC_TERMINAL_ID`, so the panel's own calls never show as an agent's), `hc`, `sh`, `curl`, `tar`, `gzip`, `stat`, `find`, `du`, `dd`, `wc`, `gunzip`, `mktemp`, `touch`, `realpath`, `sha256sum` or `shasum`, `awk`, `tail`, `head`, `cp`, `ls`, `rm`, `base64`, the file picker, `open`/`xdg-open`.
+- **Programs**: `figlens` (through `env -u HC_TERMINAL_ID`, so the panel's own calls never show as an agent's), `hc`, `sh`, `curl`, `tar`, `gzip`, `stat`, `find`, `du`, `dd`, `wc`, `gunzip`, `mktemp`, `touch`, `realpath`, `sha256sum` or `shasum`, `awk`, `tail`, `head`, `cp`, `mv`, `mkdir`, `ls`, `rm`, `base64`, the file picker, `open`/`xdg-open`.
 
 ## Watch out
 
 - Never `cx.notify()` during render: work started from render (load, discovery, thumbnails) only sets state and spawns.
 - Read block props with `props()`, not `init`'s argument. A panel clicked or given `pane.go` takes keyboard focus away from the terminal, so remember the last focused agent.
 - `--max-size` only shrinks: draw small nodes with `--scale` or they blur.
-- A remote command's output is cut at 8 MB, `hc file write` takes 8 MB and `hc put` 16 MB, and a mod's own file write is capped too: move large files in parts through `hc exec` (`dd … | base64` back, `dd | hc exec -i … cat >>` out) and let the shell write them.
+- A remote command's output is cut at 8 MB, `hc file write` takes 8 MB and `hc put` 16 MB, and a mod's own file write is capped too: move large files in parts through `hc exec` (`dd … | base64` back, `dd | hc exec -i … cat >>` out) and let the shell write them, each transfer into a file of its own that is moved into place when whole, so two transfers of one file never mix.
 - Herdr's default popup placement is wrong inside a floating window: place the menu from the caret's press position.
 - A flex child holding wrapping text needs `min_w(0)`; a button in a column needs `self_start`, in a row `self_center`.
 - Herdr's shipped layouts take no new docks: open the mod with `pane.split`, or use the "Herdr + figlens" layout.

@@ -198,14 +198,18 @@ async function openSnapshot(bin, file, id, dir, progress) {
   const made = await sh(SNAP_MAKE, [bin, file.path, id], file.on);
   if (made.code !== 0 || !made.stdout.trim()) throw new Error(lastLine(made.stderr) || "Could not make a snapshot");
   const [tmp, bytes] = made.stdout.trim().split(" "), size = Number(bytes);
-  await mkdir(dir, { recursive: true });
-  const html = `${dir}/${thumbFile(id).replace(/\.png$/, ".html")}`, gz = `${html}.gz`;
+  const html = `${dir}/${thumbFile(id).replace(/\.png$/, ".html")}`;
   try {
-    await exec("rm", ["-f", gz]);
-    await copyParts(FETCH_PART, [file.on, `${tmp}/s.gz`, gz], size, PART_MB,
-      (got) => progress?.(`Copying the snapshot · ${mbOf(got)} of ${mbOf(size)} MB`));
-    const unpacked = await sh('gunzip -c "$1" > "$2" && rm -f "$1"', [gz, html]);
-    if (unpacked.code !== 0) throw new Error("Could not unpack the snapshot");
+    await cache.writeCopy(html, null, async (part) => {
+      const gz = `${part}.gz`;
+      try {
+        await copyParts(FETCH_PART, [file.on, `${tmp}/s.gz`, gz], size, PART_MB,
+          (got) => progress?.(`Copying the snapshot · ${mbOf(got)} of ${mbOf(size)} MB`));
+        if ((await sh('gunzip -c "$1" > "$2"', [gz, part])).code !== 0) throw new Error("Could not unpack the snapshot");
+      } finally {
+        await exec("rm", ["-f", gz]).catch(() => null);
+      }
+    });
     await exec(window()?.platform === "macos" ? "open" : "xdg-open", [html]);
   } finally {
     sh('rm -rf "$1"', [tmp], file.on).catch(() => null);
@@ -248,20 +252,17 @@ async function designOn(design, agentOn, progress) {
   let local = design.path;
   if (from) {
     local = `${home()}/${rel}`;
-    const dir = local.slice(0, local.lastIndexOf("/"));
     if ((await sizeOn(local, null)) !== size) {
-      await sh('mkdir -p "$1" && rm -f "$2"', [dir, local]);
-      await copyParts(FETCH_PART, [from, design.path, local], size, PART_MB,
-        (got) => progress(`Copying ${name} from ${from} · ${mbOf(got)} of ${mbOf(size)} MB`));
+      await cache.writeCopy(local, null, (part) => copyParts(FETCH_PART, [from, design.path, part], size, PART_MB,
+        (got) => progress(`Copying ${name} from ${from} · ${mbOf(got)} of ${mbOf(size)} MB`)));
     }
   }
   if (!to) return local;
   const remoteHome = (await sh('printf %s "$HOME"', [], to)).stdout.trim();
   const dest = `${remoteHome}/${rel}`;
   if ((await sizeOn(dest, to)) !== size) {
-    await sh('rm -f "$1"', [dest], to);
-    await copyParts(PUSH_PART, [to, local, dest], size, PUSH_MB,
-      (got) => progress(`Copying ${name} to ${to} · ${mbOf(got)} of ${mbOf(size)} MB`));
+    await cache.writeCopy(dest, to, (part) => copyParts(PUSH_PART, [to, local, part], size, PUSH_MB,
+      (got) => progress(`Copying ${name} to ${to} · ${mbOf(got)} of ${mbOf(size)} MB`)));
   }
   return dest;
 }
@@ -805,8 +806,7 @@ export default class Figlens extends View {
           if (q.on) {
             const size = await sizeOn(src, q.on);
             if (!size) throw new Error(`Cannot read ${src} on ${q.on}`);
-            await sh('rm -f "$1"', [abs]);
-            await copyParts(FETCH_PART, [q.on, src, abs], size, PART_MB, () => {});
+            await cache.writeCopy(abs, null, (part) => copyParts(FETCH_PART, [q.on, src, part], size, PART_MB, () => {}));
           } else if ((await sh('cp "$1" "$2"', [src, abs])).code !== 0) throw new Error(`Cannot read ${src}`);
           return rel;
         };

@@ -20,7 +20,7 @@
   change that pastes into an agent or deletes files asks first.
 - Network: only the engine download from GitHub Releases. Programs: `figlens`,
   `hc`, `sh` with its standard tools (`stat`, `find`, `dd`, `tar`, `realpath`,
-  `sha256sum`/`shasum`, `awk`, `cp`, `ls`, `rm`, `tail`, `head`, `base64`, `env`, `du`,
+  `sha256sum`/`shasum`, `awk`, `cp`, `mv`, `mkdir`, `ls`, `rm`, `tail`, `head`, `base64`, `env`, `du`,
   `wc`, `gzip`, `gunzip`, `mktemp`, `touch`), `curl` for the download, the platform file
   picker and `open`/`xdg-open`. Keep README, RECIPEs and
   code in step on hosts, programs, storage and behavior.

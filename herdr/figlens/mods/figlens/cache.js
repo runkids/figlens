@@ -77,6 +77,20 @@ export function createCache(host) {
     // ---- copies of a design made for agents on other machines ----
     // Under $HOME on any machine: one folder per saved version.
     copyPath: (design) => `${COPIES}/${host.hash(`${design.on ?? ""}:${design.path}:${design.stamp}`)}/${base(design.path)}`,
+    // Writes the copy at `dest` on machine `on`: `write(part)` fills a file of its own beside it,
+    // moved over `dest` once whole, so copies of one design that overlap never write the same file.
+    // The part has a short name of its own: `dest`'s may already be as long as a file name can be.
+    async writeCopy(dest, on, write) {
+      const part = `${dest.slice(0, dest.lastIndexOf("/"))}/.${host.hash(`${Date.now()}:${Math.random()}`)}.part`;
+      try {
+        await host.sh('mkdir -p "${1%/*}"', [dest], on);
+        await write(part);
+        const moved = await host.sh('mv -f "$1" "$2"', [part, dest], on);
+        if (moved.code !== 0) throw new Error(lastLine(moved.stderr) || "Could not put the copy in place");
+      } finally {
+        await host.sh('rm -f "$1"', [part], on).catch(() => null);
+      }
+    },
 
     // ---- measuring and clearing ----
     // { panelBytes, renders: [{ on, bin, bytes }], copies: [{ on, dir, bytes, saved }] } on each
