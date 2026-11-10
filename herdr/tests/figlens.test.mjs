@@ -634,6 +634,12 @@ test("copies of one design that overlap each arrive whole", async () => {
   assert.equal(fs.readFileSync(dest, "utf8"), "12345");
 });
 
+test("a copy whose name is as long as a file name may be still arrives", async () => {
+  const host = diskHost(), cache = createCache(host), dest = path.join(host.homeDir, "k", `${"a".repeat(251)}.fig`);
+  await cache.writeCopy(dest, null, async (part) => fs.writeFileSync(part, "12345"));
+  assert.equal(fs.readFileSync(dest, "utf8"), "12345");
+});
+
 test("a copy that stops part way leaves nothing behind", async () => {
   const host = diskHost(), cache = createCache(host), dest = path.join(host.homeDir, "k/a.fig");
   await cache.writeCopy(dest, null, async (part) => { fs.writeFileSync(part, "12"); throw new Error("stopped"); }).catch(() => null);
