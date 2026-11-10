@@ -298,23 +298,44 @@ async function designOn(design, agentOn, progress) {
   let local = design.path;
   if (from) {
     local = `${home()}/${rel}`;
-    const dir = local.slice(0, local.lastIndexOf("/"));
     if ((await sizeOn(local, null)) !== size) {
-      await sh('mkdir -p "$1" && rm -f "$2"', [dir, local]);
-      await copyParts(FETCH_PART, [from, design.path, local], size, PART_MB,
-        (got) => progress(`Copying ${name} from ${from} · ${mbOf(got)} of ${mbOf(size)} MB`));
+      // A complete copy is moved over the destination, so concurrent copies never corrupt it.
+      const temp = `${local}.${randomUUID().slice(0, 8)}`;
+      await sh('mkdir -p "$1"', [local.slice(0, local.lastIndexOf("/"))]);
+      try {
+        await copyParts(FETCH_PART, [from, design.path, temp], size, PART_MB,
+          (got) => progress(`Copying ${name} from ${from} · ${mbOf(got)} of ${mbOf(size)} MB`));
+        await exec("mv", [temp, local]);
+      } finally {
+        await exec("rm", ["-f", temp]).catch(() => null);
+      }
     }
   }
   if (!to) return local;
   const remoteHome = (await sh('printf %s "$HOME"', [], to)).stdout.trim();
   const dest = `${remoteHome}/${rel}`;
   if ((await sizeOn(dest, to)) !== size) {
-    await sh('rm -f "$1"', [dest], to);
-    await copyParts(PUSH_PART, [to, local, dest], size, PUSH_MB,
-      (got) => progress(`Copying ${name} to ${to} · ${mbOf(got)} of ${mbOf(size)} MB`));
+    const temp = `${dest}.${randomUUID().slice(0, 8)}`;
+    try {
+      await copyParts(PUSH_PART, [to, local, temp], size, PUSH_MB,
+        (got) => progress(`Copying ${name} to ${to} · ${mbOf(got)} of ${mbOf(size)} MB`));
+      await sh('mv -f "$1" "$2"', [temp, dest], to);
+    } finally {
+      await sh('rm -f "$1"', [temp], to).catch(() => null);
+    }
   }
   return dest;
 }
+
+// One fetch per design at a time: a second open shares the first copy's promise.
+const fetchingDesigns = new Map();
+const designOnOnce = (design, to, progress) => {
+  const at = `${to ?? ""}:${design.on ?? ""}:${design.path}:${design.stamp}`;
+  if (fetchingDesigns.has(at)) return fetchingDesigns.get(at);
+  const run = designOn(design, to, progress).finally(() => fetchingDesigns.delete(at));
+  fetchingDesigns.set(at, run);
+  return run;
+};
 
 // What a dialog says before copying, and the message as it will read after.
 function copyPlan(design, agentOn) {
@@ -337,7 +358,7 @@ async function openInBrowser(bin, file, id, key, cx, progress, started) {
       if (!stamp) throw new Error(GONE);
       const size = bytesFromStat(stamp);
       if (!(size > 0)) throw new Error("Could not read the remote design size");
-      path = await designOn({ ...file, stamp, size }, null, progress);
+      path = await designOnOnce({ ...file, stamp, size }, null, progress);
     }
     const opener = await exec(window()?.platform === "macos" ? "open" : "xdg-open", [path]);
     if (opener.code !== 0) throw new Error("Could not open the design with the FigCraft app");
