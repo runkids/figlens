@@ -21,7 +21,8 @@
 - Network: only the engine download from GitHub Releases. Programs: `figlens`,
   `hc`, `sh` with its standard tools (`stat`, `find`, `dd`, `tar`, `realpath`,
   `sha256sum`/`shasum`, `awk`, `cp`, `mv`, `mkdir`, `ls`, `rm`, `tail`, `head`, `base64`, `env`, `du`,
-  `wc`, `gzip`, `gunzip`, `mktemp`, `touch`), `curl` for the download, the platform file
+  `wc`, `gzip`, `gunzip`, `mktemp`, `touch`,
+  `cut`, `tr`, `cat`, `dirname`, `uname`), `curl` for the download, the platform file
   picker and `open`/`xdg-open`. Keep README, RECIPEs and
   code in step on hosts, programs, storage and behavior.
 - Each `preview.png` is a screenshot of the real mod or layout running in
