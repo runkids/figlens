@@ -339,7 +339,7 @@ async function openInBrowser(bin, file, id, key, cx, progress, started) {
       if (!(size > 0)) throw new Error("Could not read the remote design size");
       path = await designOn({ ...file, stamp, size }, null, progress);
     }
-    const opener = exec(window()?.platform === "macos" ? "open" : "xdg-open", [path]);
+    const opener = await exec(window()?.platform === "macos" ? "open" : "xdg-open", [path]);
     if (opener.code !== 0) throw new Error("Could not open the design with the FigCraft app");
     return "Opened in FigCraft";
   }
@@ -1048,11 +1048,13 @@ export default class Figlens extends View {
           this.index = new Map();
           try {
             const doc = await docJson(file, bin, key, (text) => { this.say("working", text); }, { stale });
-            if (live()) this.index = buildIndex(doc);
+            if (!live()) return;
+            this.index = buildIndex(doc);
             for (const group of this.groups) for (const frame of group.frames)
               frame.firstText = this.index.size ? firstTextOf(frame.id, this.index) : "";
           } catch (e) {
-            if (live()) this.say("info", `Layer search is unavailable for this revision: ${String(e.message ?? e).split("\n")[0]}`);
+            if (!live()) return;
+            this.say("info", `Layer search is unavailable for this revision: ${String(e.message ?? e).split("\n")[0]}`);
           }
         } else {
           const [doc, top] = await Promise.all([

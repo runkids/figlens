@@ -7,6 +7,8 @@ description: Read local Figma .fig files with the figlens CLI or MCP, offline an
 
 `figlens` reads a `.fig` file (Figma: **File > Save local copy**) and prints REST-shaped snapshot data for a node: layout, text, styles, variables, instances already expanded. It also renders any node and writes a **bundle**: one zip with everything needed to build a frame. The `.fig` is a **snapshot**: it shows the design as it was when saved, so a newer design needs a newer copy.
 
+**A Herdr handoff naming FigCraft.** The Herdr panel (`herdr/` in the figlens repo) can open FigCraft `.figcraft` designs beside agents too, dispatching to a manually installed `figcraft-cli` there. figlens's CLI, MCP tools and this skill read Figma `.fig` only: for a `.figcraft` handoff the message itself says to inspect the design with FigCraft's MCP tools, and figlens's tools cannot read it.
+
 figlens reads the design; the agent builds the frontend. figlens supplies what the design is: structure, values, components, variables, assets and reference pixels. Turning that into the product is frontend engineering, and it is yours: components, data, semantic and accessible markup and intent-based layout; web performance (image formats and sizes, font loading, layout stability, what ships to the browser); and the project's infrastructure (its framework, build, routing, asset and deployment pipeline). Use figlens as the design source for those decisions, never as a substitute for them.
 
 ## Setup
