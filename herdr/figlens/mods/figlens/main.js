@@ -164,8 +164,8 @@ async function docJson(file, bin, key, progress, opts = {}) {
   let remoteDir = null;
   try {
     if (file.on) {
-      const made = await sh('set -e; d=$(mktemp -d); if ! "$1" convert "$2" "$d/doc.json" >/dev/null 2>&1; then rm -rf "$d"; exit 1; fi; printf "%s\\t%s" "$d" "$(wc -c < "$d/doc.json" | tr -d " ")"',
-        [bin, file.path], file.on);
+      const made = await runs.run(() => sh('set -e; d=$(mktemp -d); if ! "$1" convert "$2" "$d/doc.json" >/dev/null 2>&1; then rm -rf "$d"; exit 1; fi; printf "%s\\t%s" "$d" "$(wc -c < "$d/doc.json" | tr -d " ")"',
+        [bin, file.path], file.on), opts);
       const [pathOn, rawSize] = made.stdout.trim().split("\t");
       const size = Number(rawSize);
       if (made.code !== 0 || !pathOn || !(size > 0)) throw new Error("figcraft-cli could not read the design there");
