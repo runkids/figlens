@@ -74,7 +74,9 @@ For the layout, also copy `figlens-layout/layouts/herdr-figlens.json` and
   OpenCode receive their own `/figlens plan` and `/figlens yolo` commands,
   Claude Code the figlens MCP `workflow` guide (or `figlens workflow` when
   its session has no figlens MCP), any other agent a plain prompt naming the
-  skill's reference. A shell is never a receiver. YOLO confirms only by click.
+  skill's reference. For a `.figcraft` design the message instead tells the
+  agent to inspect the design with FigCraft's MCP tools, so its session needs
+  those tools. A shell is never a receiver. YOLO confirms only by click.
 - **Agents**: when agents use figlens in Herdr terminals (its MCP server or
   the CLI) with a Figma design, a line under the filter shows what each agent
   read last, and previews mark those reads. FigCraft reads are not in figlens's
