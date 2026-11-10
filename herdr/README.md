@@ -106,7 +106,7 @@ confirmed message and copy a design between your Herdr machines), `osascript`,
 `zenity` or `kdialog` for the file picker, `open` or `xdg-open` for a
 snapshot, and `sh` with its standard tools (`stat`, `find`, `dd`, `du`, `wc`, `tar`,
 `gzip`, `gunzip`, `mktemp`, `touch`, `realpath`, `sha256sum` or `shasum`,
-`awk`, `cp`, `mv`, `ls`, `rm`, `tail`, `head`, `base64`, `env`), plus `curl` for the
+`awk`, `cp`, `mv`, `mkdir`, `ls`, `rm`, `tail`, `head`, `base64`, `env`), plus `curl` for the
 download. For Changed since built it
 keeps each saved version of an open design (a copy-on-write clone where the
 file system has one, else a full copy; the newest 8 per design) under
