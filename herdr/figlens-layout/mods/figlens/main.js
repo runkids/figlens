@@ -1047,7 +1047,7 @@ export default class Figlens extends View {
           this.groups = groupsFromInfo(info);
           this.index = new Map();
           try {
-            const doc = await docJson(file, bin, key, (text) => { this.say("working", text); }, { stale });
+            const doc = await docJson(file, bin, key, (text) => { if (live()) { this.say("working", text); cx.notify(); } }, { stale });
             if (!live()) return;
             this.index = buildIndex(doc);
             for (const group of this.groups) for (const frame of group.frames)
@@ -1056,6 +1056,8 @@ export default class Figlens extends View {
             if (!live()) return;
             this.say("info", `Layer search is unavailable for this revision: ${String(e.message ?? e).split("\n")[0]}`);
           }
+          // The transfer notice dies with this load: status would keep a working notice.
+          if (this.notice?.kind === "working") this.notice = null;
         } else {
           const [doc, top] = await Promise.all([
             figlens(bin, ["tree", file.path, "--json", "--depth", "1"], file.on, { stale }),
