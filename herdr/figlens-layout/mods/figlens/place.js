@@ -7,8 +7,9 @@
 
 // GNU stat first: there, -f means file-system status and would print garbage. Then macOS's.
 export const STAT = 'stat -L -c "%Y %s" "$1" 2>/dev/null || stat -L -f "%m %z" "$1"';
-// sh -c REMOTE_EXPORT <name> <bin> <file> <max> <scale> <id>...: images rendered on the design's
-// machine, sent back as one base64 tar.gz; the design itself never moves.
+export const bytesFromStat = (stamp) => Number(String(stamp ?? "").trim().split(/\s+/)[1]) || 0;
+// sh -c REMOTE_EXPORT <name> <bin> <file> <max> <scale> <id>...: batched Figma rendering on
+// the design's machine, sent back as one base64 tar.gz; the design itself never moves.
 export const REMOTE_EXPORT = `set -e
 unset HC_TERMINAL_ID
 bin=$1; file=$2; max=$3; scale=$4; shift 4
@@ -16,25 +17,40 @@ d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
 mkdir "$d/out"; printf '%s\\n' "$@" > "$d/list"
 "$bin" export "$file" --frames "$d/list" --out-dir "$d/out" --format png --bounds layout --scale "$scale" --max-size "$max" >/dev/null 2>&1 || true
 tar -czf - -C "$d/out" . | base64`;
+
+// FigCraft exports nodes individually; use a remote temporary directory rather than a cache path
+// from the panel machine, which may not exist or be writable on the design machine.
+export const REMOTE_EXPORT_FIGCRAFT = `set -e
+unset HC_TERMINAL_ID
+bin=$1; file=$2; scale=$3; shift 3
+d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
+ok=0
+for id in "$@"; do
+  "$bin" export "$file" --node "$id" -o "$d/$id.png" --scale "$scale" >/dev/null 2>&1 && ok=1
+done
+[ "$ok" = 1 ]
+tar -czf - -C "$d" . | base64`;
 // How often a design on another machine is looked at for a new save (it cannot be watched).
 export const POLL = 10000;
-// Nodes per figlens run: one run decodes the design once for all of them. A remote run also pays
-// a round trip, so it takes more.
+// FigLens decodes once per batch; FigCraft currently exports one node per invocation.
 export const CHUNK = 12, REMOTE_CHUNK = 40;
+export const FIGCRAFT_CHUNK = 4, FIGCRAFT_REMOTE_CHUNK = 8;
 
 // The panel's own figlens calls: never journaled as an agent's, whatever environment exec has.
 export const engineArgs = (bin, args) => ["-u", "HC_TERMINAL_ID", bin, ...args];
 
-// `export --frames --out-dir` names each file by its node id with `:` as `-`.
-const fileOf = (id) => `${id.replaceAll(":", "-")}.png`;
+// Figma export replaces colons; FigCraft uses numeric ids verbatim.
+export const fileOf = (id, figcraft = false) => `${figcraft ? String(id) : String(id).replaceAll(":", "-")}.png`;
 let lists = 0;
 
 export function placeOf(file, host) {
   const on = file.on ?? null, folder = file.path.slice(0, file.path.lastIndexOf("/")) || "/";
+  const figcraft = String(file.path).toLowerCase().endsWith(".figcraft");
+  const outputName = (id) => fileOf(id, figcraft);
   let polling = Boolean(on);
   return {
     on,
-    chunk: on ? REMOTE_CHUNK : CHUNK,
+    chunk: figcraft ? (on ? FIGCRAFT_REMOTE_CHUNK : FIGCRAFT_CHUNK) : (on ? REMOTE_CHUNK : CHUNK),
 
     // A script on the design's machine.
     run: (script, args = []) => host.sh(script, args, on),
@@ -64,7 +80,19 @@ export function placeOf(file, host) {
     // Draws nodes as PNGs named by id into `dir` (which exists), where the design lives. Resolves
     // with the ids drawn; a node that could not be drawn is left out.
     async render(bin, ids, dir, { max, scale }) {
-      if (on) {
+      if (figcraft) {
+        if (on) {
+          const r = await host.sh(REMOTE_EXPORT_FIGCRAFT, [bin, file.path, String(scale), ...ids], on);
+          if (r.code === 0 && r.stdout.trim()) await host.unpack(r.stdout, dir);
+        } else {
+          for (const id of ids) {
+            const out = `${dir}/${outputName(id)}`;
+            const r = await host.exec("env", engineArgs(bin, ["export", file.path, "--node", String(id), "-o", out,
+              "--scale", String(scale)]), { on: null });
+            if (r.code !== 0) continue;
+          }
+        }
+      } else if (on) {
         const r = await host.sh(REMOTE_EXPORT, [bin, file.path, String(max), String(scale), ...ids], on);
         if (r.code === 0 && r.stdout.trim()) await host.unpack(r.stdout, dir);
       } else {
@@ -79,7 +107,7 @@ export function placeOf(file, host) {
         }
       }
       const have = new Set(await host.readdir(dir));
-      return new Set(ids.filter((id) => have.has(fileOf(id))));
+      return new Set(ids.filter((id) => have.has(outputName(id))));
     },
   };
 }

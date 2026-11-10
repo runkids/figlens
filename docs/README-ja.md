@@ -136,7 +136,7 @@ Pi を再起動するか `/reload` を実行し、普通の言葉で画面を依
 
 ## Herdr パネル
 
-エージェントの隣でデザインを扱う [Herdr](https://herdr.dev) パネルです。`.fig` を開き、名前・テキスト・ノード ID・Figma リンクで画面やレイヤーを探し、フルサイズで確認して、送信内容をそのまま表示する確認ダイアログのあと、左のエージェントに Build・Plan・YOLO として渡せます。figlens のインストールは不要で、リモートの Herdr マシンにあるデザインもその場で読みます。Herdr 内のエージェントに次のように頼んでください: `Read ~/.config/herdr-app/AGENTS.md, then add this layout: https://github.com/runkids/figlens/tree/main/herdr/figlens-layout`。詳細: [herdr/README.md](../herdr/README.md)。エージェントが Herdr のターミナルで figlens（MCP または CLI）を使うと、パネルは各エージェントが読んでいる画面を表示し、ボードで各画面を追います：作業中、compare_image で検証済み、実装後にデザインが変更。
+エージェントの隣でデザインを扱う [Herdr](https://herdr.dev) パネルです。Figma `.fig` または FigCraft `.figcraft` を開き、名前・テキスト・ノード ID・Figma リンクで画面やレイヤーを探し、フルサイズで確認して、送信内容をそのまま表示する確認ダイアログのあと、左のエージェントに Build・Plan・YOLO として渡せます。Figma は figlens を別途インストールせずに使えます。FigCraft にはデザインを保持するマシンの figcraft-cli が必要です。リモートのプレビューはそのマシンで生成し、FigCraft を開く際はファイルをローカルにコピーします。Herdr 内のエージェントに次のように頼んでください: `Read ~/.config/herdr-app/AGENTS.md, then add this layout: https://github.com/runkids/figlens/tree/main/herdr/figlens-layout`。詳細: [herdr/README.md](../herdr/README.md)。エージェントが Herdr のターミナルで figlens（MCP または CLI）を使うと、パネルは各エージェントが読んでいる画面を表示し、ボードで各画面を追います：作業中、compare_image で検証済み、実装後にデザインが変更。FigCraft ではボードはパネルからの引き継ぎを追跡しますが、アクティビティと差分検証は Figma のみです。
 
 <a id="viewer"></a>
 

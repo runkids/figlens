@@ -5,9 +5,12 @@ Load this when changing the figlens mod or layout for [Herdr](https://herdr.dev)
 ## Shape
 
 - `herdr/figlens/` is the mod as shared at herdr.dev/mods; `herdr/figlens-layout/` is Herdr's `main` layout plus a tab-bar toggle and the panel in the side `panel-body` stack, with an identical copy of the mod. Tests in `herdr/tests/` run in `npm test` and CI (`test.yaml`) and check the copies match.
-- The mod is a client of the CLI: it calls `tree`, `export` (`--frames`, `--bounds layout`, `--scale`, `--max-size`), `inspect`, `find`, `diff --node` (Changed since built), `preview`, `cache` and the release download, all through `env -u HC_TERMINAL_ID` so its own calls never journal, never the MCP server, and it reads the [activity journal](#activity-journal)'s `v: 1` lines. A change to those commands' output shape or to the line format can break it; run `node --test herdr/tests/*.test.mjs` and `herdr-app check herdr/figlens/mods/figlens`.
-- It runs figlens on the machine that holds the design (Herdr's `exec` with `on`), so a remote design never moves for reading. Only images (thumbnails as one tar.gz per batch, previews, snapshots) come back.
+- Format dispatch is additive: `.fig` keeps the Figma CLI flow and existing features; `.figcraft` uses `figcraft-cli` on the design's machine (`info --json`, `convert`, per-node `export --node`). FigCraft CLI is installed manually, never downloaded by the mod. Its converted node tree supports numeric-ID and text search, previews and Quick Look; remote previews use a temporary directory on the remote machine and return as images. Run local and remote Figma/FigCraft checks, `node --test herdr/tests/*.test.mjs` and `herdr-app check herdr/figlens/mods/figlens` after changes.
+- It runs the matching CLI on the machine that holds the design, so remote designs are not moved for reading or preview generation. Preview images come back as exports and the converted node tree once per saved revision (indexed locally for search); the design file itself never moves. Opening a remote FigCraft design fetches a copy for the local FigCraft app.
 - It hands work to the agent focused on the left through `hc send`, after a confirm dialog that shows the exact message. Pi and OpenCode get their own `/figlens plan` and `/figlens yolo`; Claude Code the figlens MCP tool `workflow` with that topic, named as figlens's (Claude Code has its own Workflow tool) and with `<cli> workflow <topic>` for a session without the figlens MCP server; others a plain prompt naming the skill's `references/planning.md` or `references/yolo.md`. OMP gets the plain prompt because its extension does not dispatch plan or yolo. Keep these strings in step with those hosts' commands and the skill's reference paths (`frames.js` `intentText`, tested).
+
+- The layout's existing FigLens toolbar button continues to toggle the same panel for either format; no second panel or toggle is needed.
+- Activity journaling, Changed since built, Verified, Compare and Ask to fix depend on FigLens APIs and remain Figma-only. FigCraft handoffs made from this panel still drive the Board's Planned/Done/Building states.
 
 ## Activity journal
 
@@ -30,4 +33,5 @@ The Board (List | Board in the header) groups the screens with `boardState` (`fr
 - Large transfers go in parts: a remote command's output stops at 8 MB, `hc file write` at 8 MB, `hc put` at 16 MB, and a mod's own file writes are capped. Snapshots and design copies move through `hc exec dd` in 4 or 6 MB parts written by the shell.
 - A design copied to another machine for an agent goes to `~/.cache/figlens/herdr-designs/<key>/` there, once per saved version; the cache row's clear removes it, and the versions kept for Changed since built (`herdr-revisions/`, named apart in the confirm), with the panel's images and `figlens cache clear`.
 - Preview pictures are real screenshots in English, of a public or synthetic design.
-- Not on Windows: the engine, discovery and transfers use `sh`.
+- FigCraft's converted document is indexed in memory per saved revision; large designs have a higher memory cost than Figma's on-demand search.
+- Not on Windows: both engines, discovery and transfers use `sh`.

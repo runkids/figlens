@@ -1,4 +1,4 @@
-// figlens beside your agents: open a .fig, find a screen or any layer, hand it to the agent on
+// figlens beside your agents: open a .fig or .figcraft, find a screen or any layer, hand it to the agent on
 // the left as Build, Plan or YOLO, point it at a node, look at it full size, or start a new
 // agent on it.
 // Roles (props.role): the panel (default); "toggle", the tab-bar button that opens the panel as
@@ -8,17 +8,19 @@
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { exec, hc, run, appHome, home, spaces, panes, agents, focused, shared, setShared, theme, settings, watchFolder, window, layout, pickFolder, openOverlay, closeOverlay, knownAgents, nextCommand, props as blockProps } from "herdr";
-import { writeFile, mkdir, readdir } from "fs/promises";
+import { writeFile, readFile, mkdir, readdir } from "fs/promises";
 import { Buffer } from "buffer";
 import { createHash, randomUUID } from "crypto";
 import { VERSION, asset, releaseBase, cacheDir, INSTALL } from "./engine.js";
 import { groupFrames, thumbFile, fitBox, clean, nodeRef, intentText, appOf, ago, pct, scopeChange, isRevision, changeText, boardState, handoffStep } from "./frames.js";
+import { isFigCraft, groups as groupsFromInfo, buildIndex, searchIndex, placement as indexPlacement,
+  firstTextOf, nodeRef as figcraftNodeRef, renderScale as figcraftRenderScale } from "./figcraft.js";
 import { Journal, readJournals } from "./journal.js";
 import { createStore } from "./store.js";
 import { createCache, COPIES } from "./cache.js";
 import { DesignSession, same } from "./session.js";
 import { createQueue, SOON, LATER } from "./work.js";
-import { placeOf, engineArgs } from "./place.js";
+import { placeOf, engineArgs, bytesFromStat } from "./place.js";
 
 // Shared state between the panel, its dialogs and windows (store.js).
 const store = createStore(shared, setShared);
@@ -28,7 +30,7 @@ const FOLD_OVER = 40, PREVIEW_MAX = 960, PREVIEW_H = 360, LOOK_MAX = 1600, THUMB
 // is blurry when shown larger. Drawn at a scale, its image fills keep their own pixels.
 const scaleFor = (size, max) => Math.min(16, Math.max(1, Math.ceil(max / Math.max(1, ...(size ?? [max])))));
 const GONE = "This file is no longer there";
-const FIND = `find "$1" -maxdepth 4 \\( -name node_modules -o -name .git -o -name target \\) -prune -o -type f -name '*.fig' -print 2>/dev/null | head -20`;
+const FIND = `find "$1" -maxdepth 4 \\( -name node_modules -o -name .git -o -name target \\) -prune -o -type f \\( -iname '*.fig' -o -iname '*.figcraft' \\) -print 2>/dev/null | head -20`;
 // sh -c SNAP_MAKE <name> <bin> <file> <node>: a one-screen offline viewer, gzipped into a temp
 // folder there; prints "<folder> <bytes>". Snapshots embed original images and can be tens of
 // MB: a remote command's output is cut at 8 MB and a mod's own file writes are capped, so
@@ -125,14 +127,61 @@ async function figlens(bin, args, on, opts) {
 
 // On a machine (null: this computer): a figlens on PATH, else the npm launcher's cache
 // for VERSION, else { missing }.
-async function findEngine(on) {
+async function findEngine(on, file = null) {
+  if (isFigCraft(file)) {
+    try {
+      if ((await exec("figcraft-cli", ["--version"], { on })).code === 0) return { bin: "figcraft-cli", onPath: true, on, figcraft: true };
+    } catch { /* not on PATH */ }
+    try {
+      const path = (await sh('printf %s "$HOME/.local/bin/figcraft-cli"', [], on)).stdout.trim();
+      if (path && (await exec("sh", ["-c", 'test -x "$1"', "figcraft", path], { on })).code === 0)
+        return { bin: path, onPath: false, on, figcraft: true };
+    } catch { /* not installed there */ }
+    return { missing: true, on, figcraft: true };
+  }
   try {
-    if ((await exec("figlens", ["--version"], { on })).code === 0) return { bin: "figlens", onPath: true, on };
+    if ((await exec("figlens", ["--version"], { on })).code === 0) return { bin: "figlens", onPath: true, on, figcraft: false };
   } catch { /* not on PATH */ }
   const root = (await sh('printf %s "${XDG_CACHE_HOME:-$HOME/.cache}"', [], on)).stdout;
   const dir = cacheDir(root);
-  if ((await sh('test -x "$1/figlens"', [dir], on)).code === 0) return { bin: `${dir}/figlens`, on };
-  return { missing: true, dir, on };
+  if ((await sh('test -x "$1/figlens"', [dir], on)).code === 0) return { bin: `${dir}/figlens`, on, figcraft: false };
+  return { missing: true, dir, on, figcraft: false };
+}
+
+async function runFigCraft(bin, args, on, opts = {}) {
+  const r = await runs.run(() => exec("env", engineArgs(bin, args), { on }), opts);
+  if (r.code !== 0) throw new Error(lastLine(r.stderr) || `figcraft-cli exited with ${r.code}`);
+  return r.stdout;
+}
+
+async function docJson(file, bin, key, progress, opts = {}) {
+  const dir = cache.folder(key, "doc"), out = `${dir}/doc.json`;
+  await mkdir(dir, { recursive: true });
+  try { return JSON.parse(await readFile(out, "utf8")); }
+  catch { await exec("rm", ["-f", out]); }
+
+  const temp = `${dir}/doc-${randomUUID()}.json`;
+  let remoteDir = null;
+  try {
+    if (file.on) {
+      const made = await sh('set -e; d=$(mktemp -d); if ! "$1" convert "$2" "$d/doc.json" >/dev/null 2>&1; then rm -rf "$d"; exit 1; fi; printf "%s\\t%s" "$d" "$(wc -c < "$d/doc.json" | tr -d " ")"',
+        [bin, file.path], file.on);
+      const [pathOn, rawSize] = made.stdout.trim().split("\t");
+      const size = Number(rawSize);
+      if (made.code !== 0 || !pathOn || !(size > 0)) throw new Error("figcraft-cli could not read the design there");
+      remoteDir = pathOn;
+      await copyParts(FETCH_PART, [file.on, `${remoteDir}/doc.json`, temp], size, PART_MB,
+        (got) => progress?.(`Reading ${base(file.path)} from ${file.on} · ${mbOf(got)} of ${mbOf(size)} MB`));
+    } else {
+      await runFigCraft(bin, ["convert", file.path, temp], null, opts);
+    }
+    const doc = JSON.parse(await readFile(temp, "utf8"));
+    await exec("cp", [temp, out]);
+    return doc;
+  } finally {
+    if (remoteDir) await sh('rm -rf "$1"', [remoteDir], file.on).catch(() => null);
+    await exec("rm", ["-f", temp]).catch(() => null);
+  }
 }
 
 // Unpacks a base64 tar.gz of images (a remote render's output) into dir.
@@ -154,7 +203,8 @@ const cache = createCache({ sh, exec, mkdir, readdir, appHome, home, hash });
 async function renderNode(bin, file, id, dir, max, size, opts) {
   await mkdir(dir, { recursive: true });
   if ((await readdir(dir)).includes(thumbFile(id))) return true;
-  const drawn = await runs.run(() => placeOf(file, HOST).render(bin, [id], dir, { max, scale: scaleFor(size, max) }), opts);
+  const scale = isFigCraft(file) ? figcraftRenderScale(size, max) : scaleFor(size, max);
+  const drawn = await runs.run(() => placeOf(file, HOST).render(bin, [id], dir, { max, scale }), opts);
   return drawn.has(id);
 }
 
@@ -279,6 +329,20 @@ function copyPlan(design, agentOn) {
 
 // Open in the browser: the live viewer here, a snapshot for a design elsewhere.
 async function openInBrowser(bin, file, id, key, cx, progress, started) {
+  if (isFigCraft(file)) {
+    let path = file.path;
+    if (file.on) {
+      progress?.(`Fetching ${base(file.path)} from ${file.on}…`);
+      const stamp = await placeOf(file, HOST).stat();
+      if (!stamp) throw new Error(GONE);
+      const size = bytesFromStat(stamp);
+      if (!(size > 0)) throw new Error("Could not read the remote design size");
+      path = await designOn({ ...file, stamp, size }, null, progress);
+    }
+    const opener = exec(window()?.platform === "macos" ? "open" : "xdg-open", [path]);
+    if (opener.code !== 0) throw new Error("Could not open the design with the FigCraft app");
+    return "Opened in FigCraft";
+  }
   if (file.on) { await openSnapshot(bin, file, id, cache.folder(key, "snap"), progress); return "Opened a snapshot in the browser"; }
   progress?.("Starting the viewer…");
   const url = await viewerUrl(bin, file, cx, started);
@@ -299,12 +363,12 @@ function here() {
 async function choose() {
   const platform = window()?.platform;
   if (platform === "macos") {
-    const r = await exec("osascript", ["-e", 'POSIX path of (choose file with prompt "Open a Figma design" of type {"fig"})']);
+    const r = await exec("osascript", ["-e", 'POSIX path of (choose file with prompt "Open a design" of type {"fig", "figcraft"})']);
     return r.code === 0 ? { path: r.stdout.trim() } : null; // nonzero: cancelled
   }
   if (platform === "linux") {
-    for (const [cmd, args] of [["zenity", ["--file-selection", "--title=Open a Figma design", "--file-filter=Figma designs | *.fig"]],
-      ["kdialog", ["--getopenfilename", ".", "*.fig"]]]) {
+    for (const [cmd, args] of [["zenity", ["--file-selection", "--title=Open a design", "--file-filter=Designs | *.fig *.figcraft"]],
+      ["kdialog", ["--getopenfilename", ".", "*.fig *.figcraft"]]]) {
       try {
         const r = await exec(cmd, args);
         return r.code === 0 && r.stdout.trim() ? { path: r.stdout.trim() } : null;
@@ -316,6 +380,13 @@ async function choose() {
 }
 
 const agentWhere = (a) => [a.space_name, a.tab_name, machineOf(a.address)].filter(Boolean).join(" · ");
+const openLabel = (file) => isFigCraft(file)
+  ? (file?.on ? "Fetch & open" : "Open in FigCraft")
+  : (file?.on ? "Open snapshot" : "Open in browser");
+
+function nodeRefFor(file, text) {
+  return isFigCraft(file) ? figcraftNodeRef(text) : nodeRef(text);
+}
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -623,7 +694,7 @@ export default class Figlens extends View {
         .child(div().flex_1().min_w(0).text_size(S().dialog).font_semibold().child("Clear cached images?"))
         .child(div().text_size(S().label).text_color(t.muted).child("Esc")))
       .child(v_flex().gap(6).text_size(S().secondary).text_color(t.muted)
-        .child(div().child(`This panel's thumbnails, previews, Quick Look images and snapshots · ${mb(p.panelBytes ?? 0)}`))
+        .child(div().child(`This panel's thumbnails, FigCraft layer indexes, previews, Quick Look images and snapshots · ${mb(p.panelBytes ?? 0)}`))
         .child(div().child(`figlens's render cache on ${where} · ${mb(renders.reduce((n, x) => n + x.bytes, 0))}`))
         .when(agentCopies > 0, (el) => el.child(div().child(`Copies of designs made for agents on other machines · ${mb(agentCopies)}; an agent still working from one loses it`)))
         .when(versions > 0, (el) => el.child(div().child(`Saved versions kept for Changed since built · ${mb(versions)}; screens changed before now are no longer flagged`)))
@@ -862,7 +933,7 @@ export default class Figlens extends View {
         .child(div().flex_none().max_w(260).truncate().text_size(S().title).font_semibold().child(clean(f.name)))
         .child(div().flex_1().min_w(0).truncate().text_size(S().secondary).text_color(t.muted)
           .child([w > 0 ? `${Math.round(w)}×${Math.round(h)}` : null, f.page?.name ? clean(f.page.name) : null, base(q.file.path)].filter(Boolean).join(" · ")))
-        .when(!q.watch, (el) => el.child(secondary("ql-browser", q.file.on ? "Open snapshot" : "Open in browser", t, (_e, cx) => {
+        .when(!q.watch, (el) => el.child(secondary("ql-browser", openLabel(q.file), t, (_e, cx) => {
           if (this.note?.kind === "working") return;
           this.note = { kind: "working", text: "Starting…" }; cx.notify();
           cx.spawn(async (cx) => {
@@ -952,7 +1023,7 @@ export default class Figlens extends View {
     if (fresh) {
       this.journal = new Journal(); this.boardPicks = new Set(); this.diffs = new Map();
     }
-    this.groups = []; this.thumbs = new Set(); this.selected = null;
+    this.groups = []; this.thumbs = new Set(); this.selected = null; this.index = null;
     this.error = null; this.gone = false; this.queue = []; this.drawing = false; this.fold = new Map(); this.previews = new Map();
     this.lookToken += 1; this.hit = null; this.layers = null; this.looking = false;
     if (!file) return;
@@ -962,20 +1033,36 @@ export default class Figlens extends View {
         const stamp = await this.stat(file);
         if (!live()) return;
         this.session.saw(gen, stamp);
-        if (this.engine?.on !== file.on || !this.engine?.bin) {
-          const engine = await findEngine(file.on);
+        if (this.engine?.on !== file.on || !this.engine?.bin || this.engine?.figcraft !== isFigCraft(file)) {
+          const engine = await findEngine(file.on, file);
           if (!live()) return;
           this.engine = engine;
         }
         if (this.engine.missing) return;
         const bin = this.engine.bin;
         const prefix = hash(`${file.on ?? ""}:${file.path}`), key = `${prefix}-${hash(stamp)}`;
-        const [doc, top] = await Promise.all([
-          figlens(bin, ["tree", file.path, "--json", "--depth", "1"], file.on, { stale }),
-          figlens(bin, ["tree", file.path, "--top-frames", "--json"], file.on, { stale }),
-        ]);
-        if (!live()) return;
-        this.groups = groupFrames(JSON.parse(doc), JSON.parse(top));
+        if (this.engine.figcraft) {
+          const info = JSON.parse(await runFigCraft(bin, ["info", file.path, "--json"], file.on, { stale }));
+          if (!live()) return;
+          this.groups = groupsFromInfo(info);
+          this.index = new Map();
+          try {
+            const doc = await docJson(file, bin, key, (text) => { this.say("working", text); }, { stale });
+            if (live()) this.index = buildIndex(doc);
+            for (const group of this.groups) for (const frame of group.frames)
+              frame.firstText = this.index.size ? firstTextOf(frame.id, this.index) : "";
+          } catch (e) {
+            if (live()) this.say("info", `Layer search is unavailable for this revision: ${String(e.message ?? e).split("\n")[0]}`);
+          }
+        } else {
+          const [doc, top] = await Promise.all([
+            figlens(bin, ["tree", file.path, "--json", "--depth", "1"], file.on, { stale }),
+            figlens(bin, ["tree", file.path, "--top-frames", "--json"], file.on, { stale }),
+          ]);
+          if (!live()) return;
+          this.groups = groupFrames(JSON.parse(doc), JSON.parse(top));
+          this.index = null;
+        }
         for (const g of this.groups) for (const f of g.frames) f.find = `${clean(f.name)}\n${clean(f.firstText)}`.toLowerCase();
         await this.openRevision(prefix, key);
         if (!live()) return;
@@ -984,7 +1071,7 @@ export default class Figlens extends View {
         if (q && same(q.file, file) && q.key !== key) store.showQuickLook({ ...q, key, design: this.design() });
         this.watch(gen, cx);
         // Kept now, while it is the saved one: the next save is compared with it.
-        cache.keep(file, stamp);
+        if (!this.engine.figcraft) cache.keep(file, stamp);
         this.follow(gen, cx);
         if (this.raw) this.lookup(cx);
       } catch (e) {
@@ -1026,8 +1113,18 @@ export default class Figlens extends View {
     cx.spawn(async (cx) => {
       try {
         while (this.queue.length && live()) {
-          const chunk = this.queue.splice(0, place.chunk);
-          const drawn = await runs.run(() => place.render(bin, chunk, dir, size), { priority: SOON, stale: () => !live() });
+          const chunk = this.queue.splice(0, place.chunk), opts = { priority: SOON, stale: () => !live() };
+          let drawn;
+          if (this.engine.figcraft) {
+            drawn = new Set();
+            for (const id of chunk) {
+              const frame = this.topIndex().get(id)?.frame;
+              const scale = figcraftRenderScale(frame?.size, size.max);
+              for (const got of await runs.run(() => place.render(bin, [id], dir, { ...size, scale }), opts)) drawn.add(got);
+            }
+          } else {
+            drawn = await runs.run(() => place.render(bin, chunk, dir, size), opts);
+          }
           if (!live()) return;
           for (const id of drawn) this.thumbs.add(id);
           this.batchDone += chunk.length;
@@ -1072,16 +1169,21 @@ export default class Figlens extends View {
     cx.spawn(async (cx) => {
       try {
         while (still()) {
-          // The design's machine (the board's history lives there) and each machine with agents.
-          const from = file.on ?? null, copy = cache.copyPath(this.design());
-          const machines = new Set([from, ...agents().map((a) => machineOf(a.address))]);
-          const now = Date.now(), entries = await readJournals(sh, file.path, copy, from, machines);
-          if (!still()) return;
-          const changes = this.revisionChanges(gen, entries, cx);
-          const { share, redraw } = this.journal.update(entries, now, { current: this.stamp, changes });
-          if (share) store.shareLive(file, [...this.journal.activity.values()], now);
-          this.stepHandoffs(file, now, cx);
-          if (redraw) cx.notify();
+          const now = Date.now();
+          if (this.engine?.figcraft) {
+            this.stepHandoffs(file, now, cx);
+          } else {
+            // The design's machine (the board's history lives there) and each machine with agents.
+            const from = file.on ?? null, copy = cache.copyPath(this.design());
+            const machines = new Set([from, ...agents().map((a) => machineOf(a.address))]);
+            const entries = await readJournals(sh, file.path, copy, from, machines);
+            if (!still()) return;
+            const changes = this.revisionChanges(gen, entries, cx);
+            const { share, redraw } = this.journal.update(entries, now, { current: this.stamp, changes });
+            if (share) store.shareLive(file, [...this.journal.activity.values()], now);
+            this.stepHandoffs(file, now, cx);
+            if (redraw) cx.notify();
+          }
           await cx.sleep(ACTIVITY_POLL);
         }
       } catch { /* the follow ends; the next read starts another */ }
@@ -1109,6 +1211,7 @@ export default class Figlens extends View {
 
   // Background work: each diff waits behind what the person looks at (work.js LATER).
   runDiffs(gen, cx) {
+    if (this.engine?.figcraft) return;
     this.diffing = true;
     const bin = this.engine.bin, file = this.file, live = () => this.session.current(gen), stale = () => !live();
     cx.spawn(async (cx) => {
@@ -1155,7 +1258,7 @@ export default class Figlens extends View {
     }));
   }
 
-  // .fig files under a folder (the picked one, else where the person is working).
+  // .fig and .figcraft files under a folder (the picked one, else where the person is working).
   // Called from render: it only starts work.
   discover(place, cx) {
     this.foundKey = JSON.stringify(place); this.found = [];
@@ -1238,7 +1341,7 @@ export default class Figlens extends View {
     const raw = this.raw, token = ++this.lookToken;
     this.hit = null; this.layers = null; this.looking = false;
     if (!raw || !this.file || !this.engine?.bin || !this.key) return;
-    const ref = nodeRef(raw);
+    const ref = nodeRefFor(this.file, raw);
     if (!ref && raw.length < 2) return;
     this.looking = true;
     cx.spawn(async (cx) => {
@@ -1260,6 +1363,16 @@ export default class Figlens extends View {
   // a text layer is also looked up by its text, so a common name still finds its own node.
   async resolve(ref) {
     const bin = this.engine.bin, f = this.file, top = this.topIndex();
+    if (isFigCraft(f)) {
+      const entry = this.index?.get(Number(figcraftNodeRef(ref))) ?? null;
+      if (!entry) return { ref, missing: true };
+      const node = { id: entry.id, name: entry.name || String(entry.id), type: entry.type,
+        size: Number.isFinite(entry.width) && Number.isFinite(entry.height) ? [entry.width, entry.height] : null,
+        text: entry.text };
+      if (top.has(entry.id)) return { ref, node, ...top.get(entry.id), isScreen: true };
+      const at = indexPlacement(entry.id, this.index ?? new Map(), this.groups ?? []);
+      return at ? { ref, node, ...at } : { ref, node, frame: null, page: null, unplaced: true };
+    }
     const n = JSON.parse(await figlens(bin, ["inspect", f.path, ref], f.on)).node;
     if (!n?.id) return { ref, missing: true };
     const box = n.absoluteBoundingBox;
@@ -1276,6 +1389,11 @@ export default class Figlens extends View {
 
   async findLayers(text) {
     const bin = this.engine.bin, f = this.file, top = this.topIndex();
+    if (isFigCraft(f)) {
+      const found = searchIndex(this.index ?? new Map(), text, this.groups ?? [], { limit: 30 });
+      const rows = found.rows.map((row) => ({ ...row, node: { id: row.id, name: row.name, type: row.type, size: row.size, text: row.text } }));
+      return { rows, truncated: found.truncated };
+    }
     const found = JSON.parse(await figlens(bin, ["find", f.path, text, "--limit", "30"], f.on));
     const rows = (found.results ?? []).filter((r) => !top.has(r.id) && r.type !== "CANVAS").map((r) => ({
       node: { id: r.id, name: r.name ?? r.id, type: r.type, size: r.size ? [r.size.width, r.size.height] : null, text: r.characters },
@@ -1342,7 +1460,7 @@ export default class Figlens extends View {
   // The selected thing's details: a large preview, the handoff split button, and quiet tools.
   details(target, page, t, screen) {
     const agent = this.receiver(), id = target.id, name = agent?.program?.name;
-    const copyId = (_e, cx) => { cx.write_to_clipboard(id); this.say("info", `Copied node ID ${id}`); cx.notify(); };
+    const copyId = (_e, cx) => { cx.write_to_clipboard(String(id)); this.say("info", `Copied node ID ${id}`); cx.notify(); };
     const tool = (key, label, glyph, onClick) => secondary(`${key}-${id}`, label, t, onClick, { icon: glyph, size: S().secondary, px: 8, color: t.muted });
     return [
       this.previewBox(target, t, () => this.quickLook(target, page, screen)),
@@ -1355,7 +1473,7 @@ export default class Figlens extends View {
         : `Focus an agent on the left to hand this ${screen ? "layer" : "screen"} over, or start one in a new tab.`),
       h_flex().gap(6).flex_wrap()
         .child(tool("look", "Quick Look", "eye", () => this.quickLook(target, page, screen)))
-        .child(tool("browser", this.file.on ? "Snapshot" : "Browser", "external", (_e, cx) => this.browser(target, cx)))
+        .child(tool("browser", isFigCraft(this.file) ? openLabel(this.file) : (this.file.on ? "Snapshot" : "Browser"), "external", (_e, cx) => this.browser(target, cx)))
         .when(Boolean(agent), (el) => el.child(tool("point", "Point", "crosshair",
           () => confirmIntent("point", agent, this.textFor("point", agent, target, page, screen), target.name, this.design()))))
         .child(secondary(`id-${id}`, h_flex().gap(5).child(div().child("Node")).child(div().font_family(mono()).text_color(t.foreground).child(id)),
@@ -1389,7 +1507,7 @@ export default class Figlens extends View {
 
   // An id or link's node: what it is, where it sits, and the same actions as a screen.
   nodeCard(t) {
-    const ref = nodeRef(this.raw);
+    const ref = nodeRefFor(this.file, this.raw);
     if (this.looking) return h_flex().mx(8).my(6).child(working(t, `Looking up node ${ref}…`));
     const hit = this.hit;
     if (!hit) return div();
@@ -1413,7 +1531,7 @@ export default class Figlens extends View {
 
   // Layers inside screens that match the text, below the matching screens.
   layersSection(t) {
-    if (this.looking && !nodeRef(this.raw)) return h_flex().mx(8).my(6).child(working(t, "Searching layers…"));
+    if (this.looking && !nodeRefFor(this.file, this.raw)) return h_flex().mx(8).my(6).child(working(t, "Searching layers…"));
     const found = this.layers;
     if (!found?.rows.length) return div();
     return v_flex().gap(2).pt(6)
@@ -1452,7 +1570,7 @@ export default class Figlens extends View {
         .border_1().border_dashed().border_color(t.input).cursor_pointer().hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => this.pick(cx))
         .child(icon("upload", 18, t.muted))
-        .child(div().text_size(S().body).font_semibold().child("Open a .fig file"))
+        .child(div().text_size(S().body).font_semibold().child("Open a .fig or .figcraft design"))
         .child(div().text_size(S().secondary).text_color(t.muted)
           .child(platform === "macos" || platform === "linux" ? "Drop it here or click to choose" : "Drop it here or click to choose a folder")))
       .when(Boolean(label), (el) => el.child(v_flex().gap(2)
@@ -1467,7 +1585,7 @@ export default class Figlens extends View {
             .text_size(S().secondary).text_color(t.foreground).cursor_pointer().hover((s) => s.bg(t.hover))
             .on_click((_e, cx) => { this.picked = null; cx.notify(); })
             .child(icon("crosshair", 12, t.foreground)).child("Follow focus"))))
-        .when(!this.found.length, (el) => el.child(div().px(8).py(4).text_size(S().secondary).text_color(t.muted).child(this.scanning ? "Looking…" : "No .fig files here")))
+        .when(!this.found.length, (el) => el.child(div().px(8).py(4).text_size(S().secondary).text_color(t.muted).child(this.scanning ? "Looking…" : "No .fig or .figcraft files here")))
         .children(this.found.map((p, i) => {
           const rel = p.startsWith(`${place.cwd}/`) ? p.slice(place.cwd.length + 1) : p;
           const cut = rel.lastIndexOf("/");
@@ -1514,6 +1632,10 @@ export default class Figlens extends View {
 
   engineCard(t) {
     const where = this.engine.on ? ` on ${this.engine.on}` : "";
+    if (this.engine.figcraft) return v_flex().px(16).py(18).gap(10)
+      .child(div().text_size(S().body).font_semibold().child(`figcraft-cli is needed${where || " here"}`))
+      .child(div().text_size(S().secondary).text_color(t.muted)
+        .child("Install figcraft-cli on the machine that holds this design (or here for a local design), then make it available on PATH or in ~/.local/bin. FigLens does not download it."));
     if (this.installing) return h_flex().p(18).child(working(t, `Downloading figlens ${VERSION}${where}…`));
     return v_flex().px(16).py(18).gap(10)
       .child(div().text_size(S().body).font_semibold().child(`figlens needs its engine${where || " here"}`))
@@ -1807,7 +1929,7 @@ export default class Figlens extends View {
           .bg(t.chrome).cursor_text().on_mouse_down("left", stop)
           .child(icon("search", 13, t.muted))
           .child(Input.new(this.filter).flex_1().min_w(0).h_full().text_size(S().body).text_color(t.foreground))
-          .when(Boolean(this.query) && !nodeRef(this.raw), (el) => el.child(div().flex_none().text_size(S().label).text_color(t.muted).child(`${view?.shown ?? 0} of ${count[this.kind]}`)))
+          .when(Boolean(this.query) && !nodeRefFor(this.file, this.raw), (el) => el.child(div().flex_none().text_size(S().label).text_color(t.muted).child(`${view?.shown ?? 0} of ${count[this.kind]}`)))
           .when(Boolean(this.raw), (el) => el.child(h_flex().id("clear-filter").w(22).h(22).flex_none().items_center().justify_center()
             .rounded(5).cursor_pointer().hover((s) => s.bg(t.hover)).on_mouse_down("left", stop)
             .on_click((_e, cx) => this.clearFilter(cx))
@@ -1876,16 +1998,16 @@ export default class Figlens extends View {
     this.receiver(); // remembers the agent focused on the left while it is
     this.reading = readersFrom([...this.journal.activity.values()], t); // once per frame: rows, pages, the strip and the preview read it
     const status = this.status();
-    const view = this.listReady() && !nodeRef(this.raw) ? this.listing() : null;
+    const view = this.listReady() && !nodeRefFor(this.file, this.raw) ? this.listing() : null;
     return v_flex().id("figlens").track_focus(this.handle).size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background)
       .border_1().border_color(t.border).text_color(t.foreground).text_size(S().body)
       .on_mouse_down("left", () => this.handle.focus())
       .on_key_down((e, cx) => this.key(e, cx))
       .on_size_change((size, cx) => { if (Math.abs(size.width - this.width) > 1) { this.width = size.width; cx.notify(); } })
       .on_drop((e, cx) => {
-        const fig = e.paths.find((p) => p.toLowerCase().endsWith(".fig"));
-        if (fig) this.open({ path: fig, on: null });
-        else { this.say("error", "Only .fig files can be opened"); cx.notify(); }
+        const design = e.paths.find((p) => /\.(fig|figcraft)$/i.test(p));
+        if (design) this.open({ path: design, on: null });
+        else { this.say("error", "Only .fig and .figcraft files can be opened"); cx.notify(); }
       })
       .child(h_flex().h(42).flex_none().pl(14).pr(8).gap(8).items_center().border_b(1).border_color(t.border)
         .child(image("mods/figlens/mark.svg").w(18).h(18).flex_none())

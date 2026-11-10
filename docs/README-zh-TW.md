@@ -136,7 +136,7 @@ pi install npm:@runkids/figlens
 
 ## Herdr 面板
 
-在代理旁邊檢視設計的 [Herdr](https://herdr.dev) 面板：打開 `.fig`，用名稱、文字、節點 ID 或 Figma 連結找到畫面或圖層，看完整尺寸，並在顯示完整訊息的確認框之後，以 Build、Plan 或 YOLO 交給左側的代理。不需要安裝 figlens，遠端 Herdr 機器上的設計也在原處讀取。在 Herdr 裡請代理執行：`Read ~/.config/herdr-app/AGENTS.md, then add this layout: https://github.com/runkids/figlens/tree/main/herdr/figlens-layout`。詳細說明：[herdr/README.md](../herdr/README.md)。代理在 Herdr 終端機裡使用 figlens（MCP 或 CLI）時，面板會顯示每個代理正在讀取的畫面，並在看板上追蹤每個畫面：進行中、已用 compare_image 驗證，或實作後設計已改動。
+在代理旁邊檢視設計的 [Herdr](https://herdr.dev) 面板：打開 Figma `.fig` 或 FigCraft `.figcraft`，用名稱、文字、節點 ID 或 Figma 連結找到畫面或圖層，看完整尺寸，並在顯示完整訊息的確認框之後，以 Build、Plan 或 YOLO 交給左側的代理。Figma 不需另外安裝 figlens；FigCraft 需要在存放設計的機器上安裝 figcraft-cli。遠端預覽會在該機器產生；開啟遠端 FigCraft 檔案時會先複製到本機。在 Herdr 裡請代理執行：`Read ~/.config/herdr-app/AGENTS.md, then add this layout: https://github.com/runkids/figlens/tree/main/herdr/figlens-layout`。詳細說明：[herdr/README.md](../herdr/README.md)。代理在 Herdr 終端機裡使用 figlens（MCP 或 CLI）時，面板會顯示每個代理正在讀取的畫面，並在看板上追蹤每個畫面：進行中、已用 compare_image 驗證，或實作後設計已改動。FigCraft 看板會追蹤面板交接；活動記錄與差異驗證僅支援 Figma。
 
 <a id="viewer"></a>
 

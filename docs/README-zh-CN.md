@@ -136,7 +136,7 @@ pi install npm:@runkids/figlens
 
 ## Herdr 面板
 
-在智能体旁边查看设计的 [Herdr](https://herdr.dev) 面板：打开 `.fig`，按名称、文字、节点 ID 或 Figma 链接找到画面或图层，查看完整尺寸，并在显示完整消息的确认对话框之后，以 Build、Plan 或 YOLO 交给左侧的智能体。无需安装 figlens，远程 Herdr 机器上的设计也在原处读取。在 Herdr 中让智能体执行：`Read ~/.config/herdr-app/AGENTS.md, then add this layout: https://github.com/runkids/figlens/tree/main/herdr/figlens-layout`。详情：[herdr/README.md](../herdr/README.md)。智能体在 Herdr 终端中使用 figlens（MCP 或 CLI）时，面板会显示每个智能体正在读取的画面，并在看板上跟踪每个画面：进行中、已用 compare_image 验证，或实现后设计已改动。
+在智能体旁边查看设计的 [Herdr](https://herdr.dev) 面板：打开 Figma `.fig` 或 FigCraft `.figcraft`，按名称、文字、节点 ID 或 Figma 链接找到画面或图层，查看完整尺寸，并在显示完整消息的确认对话框之后，以 Build、Plan 或 YOLO 交给左侧的智能体。Figma 无需单独安装 figlens；FigCraft 需要在保存设计的机器上安装 figcraft-cli。远程预览在该机器生成；打开远程 FigCraft 文件时会先复制到本地。在 Herdr 中让智能体执行：`Read ~/.config/herdr-app/AGENTS.md, then add this layout: https://github.com/runkids/figlens/tree/main/herdr/figlens-layout`。详情：[herdr/README.md](../herdr/README.md)。智能体在 Herdr 终端中使用 figlens（MCP 或 CLI）时，面板会显示每个智能体正在读取的画面，并在看板上跟踪每个画面：进行中、已用 compare_image 验证，或实现后设计已改动。FigCraft 看板会跟踪面板交接；活动记录和基于差异的验证仅支持 Figma。
 
 <a id="viewer"></a>
 

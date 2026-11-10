@@ -136,7 +136,7 @@ Pi를 다시 시작하거나 `/reload`를 실행한 뒤 평소 말로 화면을 
 
 ## Herdr 패널
 
-에이전트 옆에서 디자인을 다루는 [Herdr](https://herdr.dev) 패널입니다. `.fig`를 열고 이름, 텍스트, 노드 ID, Figma 링크로 화면이나 레이어를 찾아 전체 크기로 본 뒤, 보낼 메시지를 그대로 보여 주는 확인 대화상자를 거쳐 왼쪽 에이전트에게 Build, Plan, YOLO로 넘깁니다. figlens 설치가 필요 없고, 원격 Herdr 머신의 디자인도 그 자리에서 읽습니다. Herdr 안의 에이전트에게 이렇게 요청하세요: `Read ~/.config/herdr-app/AGENTS.md, then add this layout: https://github.com/runkids/figlens/tree/main/herdr/figlens-layout`. 자세한 내용: [herdr/README.md](../herdr/README.md). 에이전트가 Herdr 터미널에서 figlens(MCP 또는 CLI)를 쓰면, 패널에 각 에이전트가 읽고 있는 화면이 표시되고 보드에서 화면마다 추적합니다: 작업 중, compare_image로 검증됨, 구현 후 디자인 변경.
+에이전트 옆에서 디자인을 다루는 [Herdr](https://herdr.dev) 패널입니다. Figma `.fig` 또는 FigCraft `.figcraft`를 열고 이름, 텍스트, 노드 ID, Figma 링크로 화면이나 레이어를 찾아 전체 크기로 본 뒤, 보낼 메시지를 그대로 보여 주는 확인 대화상자를 거쳐 왼쪽 에이전트에게 Build, Plan, YOLO로 넘깁니다. Figma는 figlens를 별도로 설치하지 않아도 됩니다. FigCraft에는 디자인을 보유한 머신의 figcraft-cli가 필요합니다. 원격 미리보기는 해당 머신에서 만들며, FigCraft를 열 때는 파일을 로컬로 복사합니다. Herdr 안의 에이전트에게 이렇게 요청하세요: `Read ~/.config/herdr-app/AGENTS.md, then add this layout: https://github.com/runkids/figlens/tree/main/herdr/figlens-layout`. 자세한 내용: [herdr/README.md](../herdr/README.md). 에이전트가 Herdr 터미널에서 figlens(MCP 또는 CLI)를 쓰면, 패널에 각 에이전트가 읽고 있는 화면이 표시되고 보드에서 화면마다 추적합니다: 작업 중, compare_image로 검증됨, 구현 후 디자인 변경. FigCraft의 보드는 패널 인계를 추적하지만, 활동 기록과 diff 검증은 Figma에서만 지원합니다.
 
 <a id="viewer"></a>
 

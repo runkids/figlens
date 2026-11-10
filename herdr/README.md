@@ -1,11 +1,12 @@
 # figlens for Herdr
 
-A [Herdr](https://herdr.dev) panel that reads a local Figma `.fig` beside your
-agents. Open a design, find a screen or any layer (by name, text, node ID or a
-pasted Figma link), look at it full size, and hand it to the agent in the pane
-on the left as **Build**, **Plan** or **YOLO**, always after a confirm dialog
-that shows the exact message. It runs figlens on the machine that holds the
-design, so a design on a remote Herdr machine never has to move.
+A [Herdr](https://herdr.dev) panel for Figma `.fig` and FigCraft `.figcraft`
+designs beside your agents. Open a design, find a screen or any layer (by name,
+text, node ID or a pasted Figma link), look at it full size, and hand it to the
+agent in the pane on the left as **Build**, **Plan** or **YOLO**, always after a
+confirm dialog that shows the exact message. It runs the matching CLI on the
+machine that holds the design, so a remote design never has to move just to
+read or preview it.
 
 ![figlens for Herdr](figlens/preview.png)
 
@@ -20,9 +21,12 @@ Two shareable folders:
 
 ## Install
 
-No figlens CLI install is needed. The panel uses `figlens` on PATH, else the
-copy `npx @runkids/figlens` caches, else it offers a one-click download of the
-matching release, checked against its SHA-256 sums.
+No figlens CLI install is needed for Figma `.fig` files. The panel uses
+`figlens` on PATH, else the copy `npx @runkids/figlens` caches, else it offers
+a one-click download of the matching release, checked against its SHA-256 sums.
+For FigCraft `.figcraft` files, install `figcraft-cli` on the machine holding
+the design and make it available on PATH or at `~/.local/bin/figcraft-cli`;
+FigLens does not download it.
 
 Ask the agent running in Herdr, for the layout (the button and panel are in place when it opens):
 
@@ -50,18 +54,19 @@ For the layout, also copy `figlens-layout/layouts/herdr-figlens.json` and
 
 ## Use
 
-- **Open** a design: drop a `.fig` on the panel, click to choose one, or pick
-  one of the `.fig` files found near the focused pane (on its machine). Each
-  Herdr space remembers its own design, and a saved design reloads by itself.
-- **Find**: Screens, Components or All; filter by name or first text; type a
-  node ID (`12:345`) or paste a Figma link to jump to that node and the screen
-  that holds it; other text also searches every layer. Pages fold; the button
-  beside the filter folds or opens them all.
+- **Open** a design: drop a `.fig` or `.figcraft` on the panel, click to choose
+  one, or pick a supported design found near the focused pane (on its machine).
+  Each Herdr space remembers its own design, and a saved design reloads by itself.
+- **Find**: Screens, Components or All; filter by name or first text. Type a
+  Figma node ID (`12:345`) or paste a Figma link, or type a numeric FigCraft node
+  ID, to jump to that node and its screen; other text searches every indexed
+  layer. Pages fold; the button beside the filter folds or opens them all.
 - **Look**: select a row for a large preview. **Quick Look** (Space, or a
-  thumbnail) opens a floating window at full size; ← → move between screens. **Browser** opens
-  the figlens viewer at that node, or an offline snapshot when the design is
-  on another machine; the viewer stops by itself after 10 minutes with no page
-  open. **Point** sends the agent on the left a reference to it
+  thumbnail) opens a floating window at full size; ← → move between screens.
+  For Figma, **Browser** opens the figlens viewer at that node, or an offline
+  snapshot when the design is on another machine; the viewer stops by itself
+  after 10 minutes with no page open. For FigCraft, **Open in FigCraft** opens
+  the design in the FigCraft app (a remote file is fetched first). **Point** sends the agent on the left a reference to it
   (file, node, screen) after a confirm; the agent says what it is and waits for
   what you want done.
 - **Hand over**: the split button builds with the agent focused on the left;
@@ -71,12 +76,9 @@ For the layout, also copy `figlens-layout/layouts/herdr-figlens.json` and
   its session has no figlens MCP), any other agent a plain prompt naming the
   skill's reference. A shell is never a receiver. YOLO confirms only by click.
 - **Agents**: when agents use figlens in Herdr terminals (its MCP server or
-  the CLI), a line under the filter shows what each agent read last (tool,
-  screen, page, how long ago; click to watch that screen in Quick Look, where
-  the agents' boxes move as they read), its screen and its page, even folded,
-  get a dot in the agent's color, and the preview outlines the layer it read
-  with the agent and tool (click the preview for Quick Look). Below the list,
-  **Activity on this file** lists the latest reads.
+  the CLI) with a Figma design, a line under the filter shows what each agent
+  read last, and previews mark those reads. FigCraft reads are not in figlens's
+  activity journal, so this live activity view is Figma-only.
 - **Board** (beside List in the header): every screen by what agents did with
   it: Changed since built (the design was saved again and that screen changed
   since an agent worked on it), Building (its agent is working on it, or needs
@@ -89,25 +91,33 @@ For the layout, also copy `figlens-layout/layouts/herdr-figlens.json` and
   **Plan each in a new tab** (side by side); picks that are all Planned are
   built the same ways; **Compare** opens a verified screen's design
   beside the build screenshot (or the differences), and **Ask … to fix** sends
-  what the comparison found to an agent after a confirm.
+  what the comparison found to an agent after a confirm. With FigCraft, the
+  Board still tracks handoffs made by this panel, but Changed since built,
+  activity-based states, Verified, Compare and Ask to fix require FigLens's
+  journal/diff APIs and are not available.
 - **Keys** on the panel: `/` filters, ↑ ↓ move, Enter builds, Space looks closer, Esc clears.
 
 When the design and the agent are on different machines, the confirm dialog
 says so and copies the design to the agent's machine first, once per saved
-version, under `~/.cache/figlens/herdr-designs/`.
+version, under `~/.cache/figlens/herdr-designs/`. FigCraft previews are
+exported on the design's machine, and its converted node tree is fetched once
+per saved revision for layer search; opening a remote FigCraft design fetches
+a local copy for the FigCraft app.
 
 ## Privacy
 
 Everything stays on your machines. The panel runs figlens where the design is,
 keeps thumbnails and previews in its own folder under `~/.config/herdr-app`, and
 contacts the network only for the one-click engine download from GitHub
-Releases. It runs `figlens`, `hc` (to start the browser viewer, send a
-confirmed message and copy a design between your Herdr machines), `osascript`,
+Releases. It runs `figlens` and, for FigCraft designs, `figcraft-cli` on the machine
+that holds the design; `hc` sends confirmed messages and copies designs between
+Herdr machines; `open` or `xdg-open` opens fetched FigCraft files. It also runs
+`osascript`,
 `zenity` or `kdialog` for the file picker, `open` or `xdg-open` for a
 snapshot, and `sh` with its standard tools (`stat`, `find`, `dd`, `du`, `wc`, `tar`,
 `gzip`, `gunzip`, `mktemp`, `touch`, `realpath`, `sha256sum` or `shasum`,
-`awk`, `cp`, `ls`, `rm`, `tail`, `head`, `base64`, `env`), plus `curl` for the
-download. For Changed since built it
+`awk`, `cp`, `ls`, `rm`, `tail`, `head`, `base64`, `env`, `tr`), plus `curl`
+for the download. For Changed since built it
 keeps each saved version of an open design (a copy-on-write clone where the
 file system has one, else a full copy; the newest 8 per design) under
 `~/.cache/figlens/herdr-revisions/`. The cache row at the bottom of the empty

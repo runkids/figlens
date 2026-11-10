@@ -1,6 +1,6 @@
 # Herdr + figlens
 
-Herdr's default window with a figlens button in the tab bar beside Files and Changes. It opens the figlens panel for local Figma `.fig` designs where those panels open, so a Figma design sits beside your agents: find a screen or layer and hand it to the agent on the left.
+Herdr's default window with a figlens button in the tab bar beside Files and Changes. It opens the same panel for Figma `.fig` and FigCraft `.figcraft` designs, so either design can sit beside your agents: find a screen or layer and hand it to the agent on the left.
 
 ![Herdr + figlens](preview.png)
 
@@ -30,7 +30,7 @@ Left to right, everything as in Herdr's `main` layout ("Herdr"), plus two blocks
 
 ## Watch out
 
-- The figlens mod reaches the network only to download its engine from GitHub Releases, and runs `figlens` and `hc`; see its recipe. The rest of the layout is Herdr's own.
+- For Figma, the mod reaches the network only to download its engine from GitHub Releases; FigCraft requires a separately installed `figcraft-cli` and is not downloaded. It runs the matching CLI and `hc`; see the mod recipe. The rest of the layout is Herdr's own.
 - A layout clone is never updated: a later Herdr may change `main`. Rebuild from this recipe on a new version rather than keeping an old clone.
 - The shipped tabs mod remembers each space's side panel but restores only those in shared `workspace.panels`: the toggle adds `figlens` there once, so switching spaces keeps the panel (no extra button appears; the tabs mod draws only Files and Changes). The tabs mod's memory is shared by every layout: in Herdr's `main`, which has no figlens panel, a space last left on figlens opens its panel on the previous child. Removing this layout leaves `figlens` in the list, which does nothing without the panel; take it out with `setShared("workspace.panels", ["files", "changes"])` from any mod.
 - If a `figlens` mod is already installed, rename this one and the `mod` names in the layout.
@@ -39,5 +39,5 @@ Left to right, everything as in Herdr's `main` layout ("Herdr"), plus two blocks
 
 - With figlens open in one space, switching to another space and back shows figlens again.
 - `herdr-app check mods/figlens` passes and `layout.switch {name: "herdr-figlens"}` shows the layout with no `herdr-figlens.error`.
-- The tab bar shows Files, Changes and figlens; figlens opens the panel there and a second click, or the panel's close button, closes it.
+- The tab bar shows Files, Changes and figlens; the same FigLens panel button opens or closes the panel for both `.fig` and `.figcraft` designs.
 - `ctrl-shift-l` cycles back to the person's own layout.

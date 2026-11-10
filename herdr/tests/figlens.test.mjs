@@ -13,12 +13,13 @@ const HERE = path.dirname(new URL(import.meta.url).pathname);
 const MOD = path.join(HERE, "../figlens/mods/figlens");
 const LAYOUT = path.join(HERE, "../figlens-layout");
 const { VERSION, asset, cacheDir, INSTALL } = await import(path.join(MOD, "engine.js"));
-const { STAT, placeOf, REMOTE_CHUNK, CHUNK, POLL } = await import(path.join(MOD, "place.js"));
+const { STAT, bytesFromStat, placeOf, fileOf, REMOTE_CHUNK, CHUNK, FIGCRAFT_CHUNK, FIGCRAFT_REMOTE_CHUNK, REMOTE_EXPORT_FIGCRAFT, POLL } = await import(path.join(MOD, "place.js"));
 const { DesignSession } = await import(path.join(MOD, "session.js"));
 const { createStore, HANDOFF_DAYS } = await import(path.join(MOD, "store.js"));
 const { createCache, KEEP_IMAGES } = await import(path.join(MOD, "cache.js"));
 const { createQueue, NOW, SOON, LATER, Stale } = await import(path.join(MOD, "work.js"));
 const { groupFrames, thumbFile, fitBox, clean, handoff, nodeRef, intentText, appOf, ago, pct, changedFrames, scopeChange, isRevision, boardState, handoffStep, STARTING_MS } = await import(path.join(MOD, "frames.js"));
+const { isFigCraft, groups: figcraftGroups, nodeRef: figcraftNodeRef, buildIndex, firstTextOf, placement, searchIndex, renderScale: figcraftRenderScale } = await import(path.join(MOD, "figcraft.js"));
 const { latestActivity, ACTIVITY, parseActivity, recentActivity, screenStates, Journal } = await import(path.join(MOD, "journal.js"));
 
 test("asset names the release archive for Herdr's platform and either arch spelling", () => {
@@ -77,8 +78,55 @@ test("groupFrames keeps page order and drops pages without screens", () => {
   assert.deepEqual(groupFrames(doc, top).map((p) => [p.name, p.frames.map((f) => f.id)]), [["A", ["1:2"]], ["C", ["1:1"]]]);
 });
 
-test("thumbFile follows export --out-dir naming", () => {
+test("thumbFile supports both Figma and numeric FigCraft IDs", () => {
   assert.equal(thumbFile("12:345"), "12-345.png");
+  assert.equal(thumbFile(12884902015), "12884902015.png");
+});
+
+test("FigCraft render scales down large frames and preserves crisp small previews", () => {
+  assert.equal(figcraftRenderScale([1000, 500], 216), 0.216);
+  assert.equal(figcraftRenderScale([100, 50], 216), 2.16);
+  assert.equal(figcraftRenderScale([10, 10], 216), 16);
+});
+
+test("FigCraft format detection and node references do not change Figma link parsing", () => {
+  assert.equal(isFigCraft({ path: "/d/design.FIGCRAFT" }), true);
+  assert.equal(isFigCraft({ path: "/d/design.fig" }), false);
+  assert.equal(figcraftNodeRef(" 12884902015 "), "12884902015");
+  assert.equal(figcraftNodeRef("1:2"), null);
+  assert.equal(figcraftNodeRef("../12"), null);
+  assert.equal(nodeRef("https://www.figma.com/design/AbC/Site?node-id=211-369"), "211:369");
+});
+
+test("FigCraft groups, indexes, places and searches nodes within pages", () => {
+  const pages = figcraftGroups({ pages: [
+    { id: 1, name: "Main", frames: [{ id: 10, name: "Welcome", type: "FRAME", width: 1200, height: 800 }, { id: "bad", name: "Invalid", type: "FRAME" }] },
+    { id: 2, name: "Empty", frames: [] },
+    { id: "bad", name: "Invalid page", frames: [{ id: 99, name: "Ignored", type: "FRAME" }] },
+  ] });
+  const index = buildIndex({ nodes: {
+    1: { id: 1, type: "PAGE", name: "Main", children: [10] },
+    10: { id: 10, type: "FRAME", name: "Welcome", parent: 1, children: [11] },
+    11: { id: 11, type: "TEXT", name: "Heading", characters: "Hello FigCraft", parent: 10, children: [12], width: 1000, height: 500 },
+    12: { id: 12, type: "RECTANGLE", name: "Card", parent: 11, children: [] },
+    13: { id: 13, type: "RECTANGLE", name: "Hello card", parent: 10, children: [] },
+  } });
+  assert.deepEqual(pages.map((page) => [page.name, page.frames.map((frame) => frame.id)]), [["Main", [10]]]);
+  assert.equal(firstTextOf(10, index), "Hello FigCraft");
+  assert.deepEqual(placement(12, index, pages), { frame: pages[0].frames[0], page: pages[0] });
+  assert.deepEqual(searchIndex(index, "hello fig", pages).rows.map((row) => [row.id, row.frame.id, row.page.id, figcraftRenderScale(row.size, 216)]), [[11, 10, 1, 0.216]]);
+  assert.equal(searchIndex(index, "hello", pages, { limit: 1 }).truncated, true);
+  assert.equal(searchIndex(index, "hello fig", pages, { limit: 1 }).truncated, false);
+});
+
+test("FigCraft index ignores unsafe IDs and terminates on cycles", () => {
+  const index = buildIndex({ nodes: {
+    1: { id: 1, type: "FRAME", children: [2] },
+    2: { id: 2, type: "FRAME", parent: 1, children: [1] },
+    huge: { id: Number.MAX_SAFE_INTEGER + 1, type: "TEXT", characters: "unsafe" },
+  } });
+  assert.equal(index.size, 2);
+  assert.equal(firstTextOf(1, index), "");
 });
 
 test("fitBox keeps the frame's aspect inside the box", () => {
@@ -480,6 +528,11 @@ function fakeHost(over = {}) {
 }
 const nap = async () => {};
 
+test("remote design sizes are parsed from the stat stamp", () => {
+  assert.equal(bytesFromStat("1730822112 123456"), 123456);
+  assert.equal(bytesFromStat("gone"), 0);
+});
+
 test("another file written in the design's folder is not a change to the design", async () => {
   const p = placeOf({ path: "/p/a.fig", on: null }, fakeHost({ watchFolder: async () => ["/p/src/App.tsx", "/p/shot.png"] }));
   assert.equal(await p.changes(nap), false);
@@ -507,6 +560,39 @@ test("a design here is drawn with one export run for every node asked", async ()
   const host = fakeHost({ readdir: async () => ["0-1.png"] });
   const drawn = await placeOf({ path: "/p/a.fig", on: null }, host).render("figlens", ["0:1", "0:2"], "/d", { max: 216, scale: 3 });
   assert.deepEqual([host.calls.filter((c) => c.args?.includes("export")).length, [...drawn]], [1, ["0:1"]]);
+});
+
+test("FigCraft renders numeric node IDs with one CLI export per node", async () => {
+  const first = 12884902015, second = 12884902016;
+  const host = fakeHost({
+    readdir: async () => [`${first}.png`],
+    exec: async (cmd, args, opts) => { host.calls.push({ exec: cmd, args, on: opts?.on ?? null }); return { code: 0, stdout: "" }; },
+  });
+  const place = placeOf({ path: "/p/a.figcraft", on: null }, host);
+  const drawn = await place.render("figcraft-cli", [first, second], "/d", { max: 216, scale: 3 });
+  assert.deepEqual([...drawn], [first]);
+  assert.deepEqual(host.calls.filter((call) => call.exec === "env").map((call) => call.args.slice(3)), [
+    ["export", "/p/a.figcraft", "--node", String(first), "-o", `/d/${first}.png`, "--scale", "3"],
+    ["export", "/p/a.figcraft", "--node", String(second), "-o", `/d/${second}.png`, "--scale", "3"],
+  ]);
+  assert.equal(place.chunk, FIGCRAFT_CHUNK);
+  assert.equal(fileOf(first, true), `${first}.png`);
+});
+
+test("remote FigCraft previews use a temporary directory on the design machine", async () => {
+  let invocation;
+  const host = fakeHost({
+    sh: async (script, args, on) => { invocation = { script, args, on }; return { code: 0, stdout: "aGk=" }; },
+    readdir: async () => ["12884902015.png"],
+  });
+  const place = placeOf({ path: "/p/a.figcraft", on: "box" }, host);
+  const drawn = await place.render("figcraft-cli", [12884902015], "/Users/local/cache", { max: 216, scale: 3 });
+  assert.deepEqual([...drawn], [12884902015]);
+  assert.equal(place.chunk, FIGCRAFT_REMOTE_CHUNK);
+  assert.match(invocation.script, /mktemp -d/);
+  assert.equal(invocation.script.includes("/Users/local/cache"), false);
+  assert.deepEqual(invocation.args, ["figcraft-cli", "/p/a.figcraft", "3", 12884902015]);
+  assert.equal(invocation.on, "box");
 });
 
 // ---- journal.js: the activity journal figlens writes, as the panel reads it ----
