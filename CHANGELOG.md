@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.4](https://github.com/runkids/figlens/compare/v0.14.3...v0.14.4) (2026-11-12)
+
+
+### Bug Fixes
+
+* **herdr:** keep overlapping transfers from sharing a file ([#256](https://github.com/runkids/figlens/issues/256)) ([7d3fac8](https://github.com/runkids/figlens/commit/7d3fac85fef5c1903e3cb7fc9eee66dc81e251b0))
+* **render:** name the background blurs an export leaves out ([#258](https://github.com/runkids/figlens/issues/258)) ([fbc2281](https://github.com/runkids/figlens/commit/fbc2281b2bbfdc5aa0b25cb21a140bc06883f28f))
+
 ## [0.14.3](https://github.com/runkids/figlens/compare/v0.14.2...v0.14.3) (2026-11-09)
 
 
