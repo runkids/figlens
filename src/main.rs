@@ -188,7 +188,9 @@ usage:
                                              what it draws (shadows, outside strokes, overflow);
                                              prints {path,width,height,bytes,quality,layoutBox,
                                              renderBox,warnings}; warnings say when the boxes differ and
-                                             name skipped or approximated rendering, as bundle's do;
+                                             name skipped or approximated rendering, as bundle's do
+                                             (a background blur past the 64 one export draws is named
+                                             only there: 20 nodes, then a count);
                                              --match-dir (SVG only) compares with the .svg files under DIR
                                              (subfolders included) to find an icon the project already has:
                                              matches lists those drawing the same outlines, ignoring position,

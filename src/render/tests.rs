@@ -467,6 +467,20 @@ fn backdrops_leave_out_earlier_blurs_and_stop_at_the_blur_cap() {
     // Blurring each earlier blur again doubles the markup per sibling and exhausts the budget
     // well before the cap.
     assert_eq!(svg.matches("<feGaussianBlur").count(), MAX_BLURS);
+    // The blurs past the cap are named, in drawing order.
+    let (_, dropped) =
+        Svg::new(&tree, &images).document_reporting(&frame, [0.0, 0.0, 60.0, 10.0], 1.0);
+    let past: Vec<String> = (MAX_BLURS..70).map(|i| format!("1:{}", i + 2)).collect();
+    assert_eq!(dropped, past);
+}
+
+#[test]
+fn dropped_blur_warnings_name_each_node_once_and_count_those_past_the_cap() {
+    let ids: Vec<String> = (0..25).chain(0..25).map(|i| format!("1:{i}")).collect();
+    let warnings = dropped_blur_warnings(&ids);
+    assert_eq!(warnings.len(), MAX_DROPPED_NAMED + 1);
+    assert!(warnings[0].starts_with("Render skipped at node 1:0 (effects)"));
+    assert!(warnings[MAX_DROPPED_NAMED].starts_with("Render skipped at 5 more nodes (effects)"));
 }
 
 #[test]

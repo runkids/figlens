@@ -98,7 +98,8 @@ pub struct Image {
 
 /// Renders node `id` over its render bounds, or its layout box when `layout`, and encodes it.
 /// SVG keeps its original dimensions and ignores quality. Also returns `layoutBox`, `renderBox`
-/// and `warnings`: the drawn area past the layout box, then the subtree's render diagnostics.
+/// and `warnings`: the drawn area past the layout box, the background blurs this render left
+/// out, then the subtree's render diagnostics.
 /// Layers in `hide` draw as if hidden in Figma, over the same area, so the two exports compare
 /// pixel for pixel; `hidden` lists them.
 #[allow(clippy::too_many_arguments)]
@@ -193,14 +194,25 @@ pub(crate) fn prepared_export(
     } else {
         drawn.ok_or_else(unbounded)?
     };
-    let report = bounds_report(n, drawn, layout);
+    let mut report = bounds_report(n, drawn, layout);
+    // Name the background blurs this render's budget left out.
+    let mut note = |dropped: &[String]| {
+        if let Some(Json::Array(warnings)) = report.get_mut("warnings") {
+            warnings.extend(
+                render::dropped_blur_warnings(dropped)
+                    .into_iter()
+                    .map(Json::from),
+            );
+        }
+    };
     if format == Format::Svg {
         let lookup = |h: &str| prepared.images.get(h).cloned();
         // Keep original image fills embedded; raster export's downsampling would lose detail.
-        let bytes = render::Svg::new(tree, &lookup)
+        let (svg, dropped) = render::Svg::new(tree, &lookup)
             .clipped(layout)
-            .document(n, area, 1.0)
-            .into_bytes();
+            .document_reporting(n, area, 1.0);
+        note(&dropped);
+        let bytes = svg.into_bytes();
         if max_bytes.is_some_and(|max| bytes.len() > max) {
             return Err(format!(
                 "SVG comes to {} KB; a size budget needs jpg, webp or avif",
@@ -223,7 +235,9 @@ pub(crate) fn prepared_export(
         Some(max) if longest > f64::from(max) => scale * f64::from(max) / longest,
         _ => scale,
     };
-    let pixmap = render::pixmap(&prepared.export_svg_in(tree, area, scale, layout))?;
+    let (svg, dropped) = prepared.export_svg_reporting(tree, area, scale, layout);
+    note(&dropped);
+    let pixmap = render::pixmap(&svg)?;
     Ok((encode(&pixmap, format, quality, max_bytes)?, report))
 }
 
@@ -869,6 +883,76 @@ mod tests {
             "{frame}"
         );
         assert_eq!(warnings("1:3"), json!([]));
+    }
+
+    #[test]
+    fn export_warnings_name_the_background_blur_the_budget_left_out() {
+        use kiwi_schema::Value as K;
+        let object = |fields: Vec<(&'static str, K<'static>)>| {
+            K::Object("Test", fields.into_iter().collect())
+        };
+        let size = || object(vec![("x", K::Float(20.0)), ("y", K::Float(20.0))]);
+        let frame = object(vec![
+            ("type", K::Enum("NodeType", "FRAME")),
+            ("size", size()),
+        ]);
+        let glass = object(vec![
+            ("type", K::Enum("NodeType", "RECTANGLE")),
+            ("size", size()),
+            (
+                "fillPaints",
+                K::Array(vec![object(vec![
+                    ("type", K::Enum("PaintType", "SOLID")),
+                    (
+                        "color",
+                        object(vec![("r", K::Float(1.0)), ("a", K::Float(0.5))]),
+                    ),
+                ])]),
+            ),
+            (
+                "effects",
+                K::Array(vec![object(vec![
+                    ("type", K::Enum("EffectType", "BACKGROUND_BLUR")),
+                    ("radius", K::Float(4.0)),
+                ])]),
+            ),
+        ]);
+        // One blur more than an export draws.
+        let ids: Vec<String> = (2..=66).map(|i| format!("1:{i}")).collect();
+        let mut nodes = std::collections::HashMap::from([("1:1".to_owned(), &frame)]);
+        nodes.extend(ids.iter().map(|id| (id.clone(), &glass)));
+        let tree = crate::Tree {
+            nodes,
+            children: std::collections::HashMap::from([("1:1".into(), ids)]),
+            blobs: Vec::new(),
+        };
+        let fig = Path::new("unread.fig");
+        let (_, report) = export(
+            &tree,
+            fig,
+            "1:1",
+            Format::Svg,
+            false,
+            1.0,
+            80,
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        let skipped: Vec<&str> = report["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Json::as_str)
+            .filter(|w| w.starts_with("Render skipped"))
+            .collect();
+        assert_eq!(
+            skipped,
+            [
+                "Render skipped at node 1:66 (effects): Background blur was not drawn: the export had reached its limit of 64 background blurs or 32 MiB of backdrop"
+            ]
+        );
     }
 
     #[test]
