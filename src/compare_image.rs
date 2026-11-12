@@ -177,7 +177,8 @@ pub fn compare(
             num(scale)
         )));
     }
-    let render = render::pixmap(&prepared.export_svg_in(tree, area, scale, true))?;
+    let (svg, dropped) = prepared.export_svg_reporting(tree, area, scale, true);
+    let render = render::pixmap(&svg)?;
     let (w, h) = (render.width().min(sw), render.height().min(sh));
     // Scored rows: the overlap, plus the frame rows a short full-page capture lacks.
     let full = if short { render.height() } else { h };
@@ -342,6 +343,7 @@ pub fn compare(
     let region_pixels: u64 = regions.iter().map(|r| r.0).sum();
     let mut warnings = Vec::new();
     crate::bundle::render_warnings(n, &mut warnings);
+    warnings.extend(render::dropped_blur_warnings(&dropped));
     let mut report = json!({
         "node": {"id": id, "name": n["name"], "type": n["type"]},
         "frame": {"width": num(fw), "height": num(fh)},

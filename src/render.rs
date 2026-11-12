@@ -52,13 +52,24 @@ impl Prepared {
 
     /// Raster-ready SVG of the node over the page region `area`, cut to it when `clip`.
     pub fn export_svg_in(&self, tree: &Tree, area: Rect, scale: f64, clip: bool) -> String {
+        self.export_svg_reporting(tree, area, scale, clip).0
+    }
+
+    /// `export_svg_in`, and the nodes whose background blur its budget left out.
+    pub fn export_svg_reporting(
+        &self,
+        tree: &Tree,
+        area: Rect,
+        scale: f64,
+        clip: bool,
+    ) -> (String, Vec<String>) {
         let n = self.node();
         let lookup = |h: &str| self.images.get(h).cloned();
         Svg::new(tree, &lookup)
             .for_raster()
             .clipped(clip)
             .backdrop(n, area)
-            .document(n, area, scale)
+            .document_reporting(n, area, scale)
     }
 }
 
@@ -902,6 +913,8 @@ pub struct Svg<'t, 'a> {
     mips: Option<std::collections::HashMap<(String, u32), Vec<u8>>>,
     /// The `<image>` in `defs` for each hash and halving count, so a reused image is embedded once.
     embedded: std::collections::HashMap<(String, u32), String>,
+    /// Nodes whose background blur the export's budget left out, in drawing order.
+    dropped: Vec<String>,
     /// Cut the drawing to the export area, which the output rounds up to whole pixels.
     clip: bool,
 }
@@ -927,6 +940,7 @@ impl<'t, 'a> Svg<'t, 'a> {
             edge: None,
             mips: None,
             embedded: Default::default(),
+            dropped: Vec::new(),
             clip: false,
         }
     }
@@ -1083,7 +1097,13 @@ impl<'t, 'a> Svg<'t, 'a> {
     }
 
     /// A standalone SVG document of `n` and its children over the page region `area`.
-    pub fn document(mut self, n: &Json, area: Rect, scale: f64) -> String {
+    pub fn document(self, n: &Json, area: Rect, scale: f64) -> String {
+        self.document_reporting(n, area, scale).0
+    }
+
+    /// `document`, and the ids of the nodes whose background blur was left out because the
+    /// export had reached `MAX_BLURS` or `BLUR_BUDGET`, in drawing order.
+    pub fn document_reporting(mut self, n: &Json, area: Rect, scale: f64) -> (String, Vec<String>) {
         self.scale = scale;
         self.area = area;
         self.id_prefix.push('n');
@@ -1123,7 +1143,7 @@ impl<'t, 'a> Svg<'t, 'a> {
         let (w, h) = (px(area[2] - area[0]) / scale, px(area[3] - area[1]) / scale);
         // The origin moves in a transform, not the viewBox: resvg draws filters wrong under a
         // fractional viewBox origin (drop shadows came out a fifth as strong).
-        format!(
+        let svg = format!(
             "<svg width=\"{}\" height=\"{}\" viewBox=\"0 0 {} {}\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n<defs>{}</defs>\n<g transform=\"translate({} {})\">{}</g></svg>\n",
             num(w * scale),
             num(h * scale),
@@ -1133,7 +1153,8 @@ impl<'t, 'a> Svg<'t, 'a> {
             num(-area[0]),
             num(-area[1]),
             drawing
-        )
+        );
+        (svg, self.dropped)
     }
 
     fn node(&mut self, n: &Json) -> String {
@@ -1838,6 +1859,7 @@ impl<'t, 'a> Svg<'t, 'a> {
             .saturating_mul(copies)
             .max(BLUR_BUDGET / MAX_BLURS);
         if self.blurred.saturating_add(len) > BLUR_BUDGET {
+            self.dropped.extend(n["id"].as_str().map(str::to_owned));
             return None;
         }
         self.blurred += len;
@@ -2040,6 +2062,39 @@ impl<'t, 'a> Svg<'t, 'a> {
 const BLUR_BUDGET: usize = 32 << 20;
 /// Background blurs one export may draw.
 const MAX_BLURS: usize = 64;
+
+/// Nodes `dropped_blur_warnings` names before it only counts the rest.
+const MAX_DROPPED_NAMED: usize = 20;
+
+/// Warning lines for `dropped` (the background blurs renders left out): one per node, without
+/// repeats, in the form of the render diagnostics' warnings; past `MAX_DROPPED_NAMED` nodes one
+/// line counts the rest, so a crafted file cannot grow a report without bound.
+pub(crate) fn dropped_blur_warnings(dropped: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let nodes: Vec<&String> = dropped
+        .iter()
+        .filter(|id| seen.insert(id.as_str()))
+        .collect();
+    let limit = format!(
+        "the export had reached its limit of {MAX_BLURS} background blurs or {} MiB of backdrop",
+        BLUR_BUDGET >> 20
+    );
+    let mut warnings: Vec<String> = nodes
+        .iter()
+        .take(MAX_DROPPED_NAMED)
+        .map(|id| {
+            format!("Render skipped at node {id} (effects): Background blur was not drawn: {limit}")
+        })
+        .collect();
+    if nodes.len() > MAX_DROPPED_NAMED {
+        warnings.push(format!(
+            "Render skipped at {} more nodes (effects): Background blur was not drawn: {limit}",
+            nodes.len() - MAX_DROPPED_NAMED
+        ));
+    }
+    warnings
+}
+
 /// A TILE image fill keeps its whole tile in the pattern up to MAX_TILE_PX² device pixels.
 const MAX_TILE_PX: f64 = 2048.0;
 
