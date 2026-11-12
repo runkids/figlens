@@ -281,7 +281,7 @@ Ein Frame, eine Zip. Struktur zum Bauen, Assets zum Verwenden, ein Bild zum Abgl
 - **Schriften und Text:** Schriftdateien sind nicht enthalten; überschriebener Text kann Figmas gespeichertes Layout behalten. Verwende lizenzierte Projektschriften und vergleiche das Ergebnis.
 - **Unterstützungsumfang:** [Rendering-Verbesserungen](https://github.com/runkids/figlens/issues/36) und [Handoff-Semantik](https://github.com/runkids/figlens/issues/37) werden im Issue-Tracker verfolgt. Siehe die [aktuelle semantische Abdeckung](wiki/semantics.md).
 - **Prüfe die Ausgabe.** Lies die Bundle-`warnings`, `missing-assets.json` und ungelöste Variablen in `context.md` und vergleiche dann die Implementierung mit dem Design.
-- Bekannte sichtbare Render-Grenzen stehen in `_figlens.renderDiagnostics` der Knoten, begrenzten `inspect`-Zusammenfassungen und den `warnings` von Bundle und `export`; `missing-assets.json` enthält nur Asset-Fehler. Auch ohne Warnungen ist Pixeltreue nicht garantiert.
+- Bekannte sichtbare Render-Grenzen stehen in `_figlens.renderDiagnostics` der Knoten, begrenzten `inspect`-Zusammenfassungen und den `warnings` von Bundle und `export`; `missing-assets.json` enthält nur Asset-Fehler. Auch ohne Warnungen ist Pixeltreue nicht garantiert. Ein Background Blur über die 64 hinaus, die ein Export zeichnet, wird ausgelassen und nur in diesen `warnings` genannt (20 Knoten, danach eine Anzahl).
 
 ## Hilf figlens zu wachsen
 

@@ -281,7 +281,7 @@ Une frame, un zip. Une structure pour construire, des assets à utiliser, une im
 - **Polices et texte :** les fichiers de polices ne sont pas inclus ; un texte avec override peut conserver la mise en page enregistrée par Figma. Utilisez des polices autorisées du projet et comparez le résultat.
 - **Couverture :** les [améliorations du rendu](https://github.com/runkids/figlens/issues/36) et la [sémantique de transmission](https://github.com/runkids/figlens/issues/37) sont suivies dans les issues. Consultez la [couverture sémantique actuelle](wiki/semantics.md).
 - **Vérifiez la sortie.** Lisez les `warnings` du bundle, `missing-assets.json` et les variables non résolues dans `context.md`, puis comparez l’implémentation au design.
-- Les limites de rendu visibles connues figurent dans `_figlens.renderDiagnostics` des nœuds, les résumés bornés de `inspect` et les `warnings` du bundle et d’`export` ; `missing-assets.json` ne contient que les échecs de ressources. L’absence d’avertissements ne garantit pas la fidélité des pixels.
+- Les limites de rendu visibles connues figurent dans `_figlens.renderDiagnostics` des nœuds, les résumés bornés de `inspect` et les `warnings` du bundle et d’`export` ; `missing-assets.json` ne contient que les échecs de ressources. L’absence d’avertissements ne garantit pas la fidélité des pixels. Un background blur au-delà des 64 qu’un export dessine est omis et nommé uniquement dans ces `warnings` (20 nœuds, puis un décompte).
 
 ## Aidez figlens à grandir
 
