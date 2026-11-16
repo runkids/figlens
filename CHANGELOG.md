@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.5](https://github.com/runkids/figlens/compare/v0.14.4...v0.14.5) (2026-11-16)
+
+
+### Bug Fixes
+
+* **expand:** treat Figma's unset swap id as no swap ([#259](https://github.com/runkids/figlens/issues/259)) ([1672a5d](https://github.com/runkids/figlens/commit/1672a5d029f5e6462f988dab86c3d4051246d232))
+
 ## [0.14.4](https://github.com/runkids/figlens/compare/v0.14.3...v0.14.4) (2026-11-12)
 
 
