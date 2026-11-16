@@ -52,7 +52,7 @@ pub(super) fn properties(
     bounds: &mut Bounds,
 ) -> Option<Vec<(String, Option<String>)>> {
     use crate::expand::{json_bytes, kiwi_bytes};
-    use crate::rest::{PropDefs, guid};
+    use crate::rest::{PropDefs, guid, node_guid};
     let node = tree.nodes[e.map_or(id, |e| e.source.as_str())];
     // A field of the node REST reads: an expanded sublayer's own props win over its source's.
     let own = e.and_then(|e| e.props.get("componentPropAssignments"));
@@ -76,8 +76,8 @@ pub(super) fn properties(
             .and_then(|v| if sub.is_empty() { Some(v) } else { v.get(sub) })
             .map_or(Json::Null, crate::to_json),
     };
-    let main =
-        guid(&pick("overriddenSymbolID", "")).or_else(|| guid(&pick("symbolData", "symbolID")));
+    let main = node_guid(&pick("overriddenSymbolID", ""))
+        .or_else(|| guid(&pick("symbolData", "symbolID")));
     // What expansion applied where it may differ from REST: `Mismatch` when it followed another
     // main, `Swapped` when the swapped main's own assignments are not kept, `Merged` with the
     // values of the source's own assignments followed by the override's.

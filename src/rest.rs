@@ -965,6 +965,16 @@ pub(crate) fn guid(v: &Json) -> Option<String> {
     ))
 }
 
+/// `guid`, except Figma's unset id (`u32::MAX` twice), which names no node (an
+/// `overriddenSymbolID` holding it means not swapped), and out-of-range parts.
+pub(crate) fn node_guid(v: &Json) -> Option<String> {
+    let id = guid(v)?;
+    let session = v["sessionID"].as_u64()?;
+    let local = v["localID"].as_u64()?;
+    (session <= u32::MAX as u64 && local <= u32::MAX as u64 && id != "4294967295:4294967295")
+        .then_some(id)
+}
+
 /// The definition fields REST `componentProperties` reads for instances of one main, converted
 /// once: its own `componentPropDefs` and `variantPropSpecs`, and its component set's
 /// `componentPropDefs` (variants define their properties there and point at them).
@@ -1166,7 +1176,7 @@ fn fields(k: &Obj, kind: &str, parent: Option<&Obj>) -> Obj {
     if kind == "INSTANCE" {
         let main = k
             .get("overriddenSymbolID")
-            .and_then(guid)
+            .and_then(node_guid)
             .or_else(|| guid(&k.get("symbolData")?["symbolID"]));
         put("componentId", json!(main));
     }
@@ -1681,6 +1691,15 @@ mod tests {
 
     fn obj(v: Json) -> Obj {
         object(v)
+    }
+
+    #[test]
+    fn an_unset_swap_guid_keeps_the_instance_on_its_main() {
+        let k = obj(json!({
+            "overriddenSymbolID": {"sessionID": 4294967295u32, "localID": 4294967295u32},
+            "symbolData": {"symbolID": {"sessionID": 1, "localID": 2}},
+        }));
+        assert_eq!(fields(&k, "INSTANCE", None)["componentId"], "1:2");
     }
 
     #[test]

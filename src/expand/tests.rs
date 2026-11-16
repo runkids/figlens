@@ -1447,6 +1447,81 @@ fn symbol_properties_on_nested_overrides_swap_the_referenced_instance() {
 }
 
 #[test]
+fn an_unset_swap_property_keeps_the_default_main_and_its_children() {
+    let assignment = Value::Array(vec![obj(vec![
+        ("defID", guid(2, 1)),
+        (
+            "varValue",
+            obj(vec![(
+                "value",
+                obj(vec![(
+                    "symbolIdValue",
+                    obj(vec![("guid", guid(u32::MAX, u32::MAX))]),
+                )]),
+            )]),
+        ),
+    ])]);
+    let inst = obj(vec![
+        ("type", Value::Enum("NodeType", "INSTANCE")),
+        (
+            "symbolData",
+            obj(vec![
+                ("symbolID", guid(1, 1)),
+                (
+                    "symbolOverrides",
+                    Value::Array(vec![obj(vec![
+                        (
+                            "guidPath",
+                            obj(vec![("guids", Value::Array(vec![guid(1, 3)]))]),
+                        ),
+                        ("componentPropAssignments", assignment),
+                    ])]),
+                ),
+            ]),
+        ),
+    ]);
+    let main = obj(vec![]);
+    let nested = obj(vec![
+        ("type", Value::Enum("NodeType", "INSTANCE")),
+        ("symbolData", obj(vec![("symbolID", guid(1, 2))])),
+    ]);
+    let icon = obj(vec![
+        ("type", Value::Enum("NodeType", "INSTANCE")),
+        ("symbolData", obj(vec![("symbolID", guid(1, 5))])),
+        (
+            "componentPropRefs",
+            Value::Array(vec![obj(vec![
+                ("defID", guid(2, 1)),
+                (
+                    "componentPropNodeField",
+                    Value::Enum("Field", "OVERRIDDEN_SYMBOL_ID"),
+                ),
+            ])]),
+        ),
+    ]);
+    let leaf = obj(vec![]);
+    let tree = Tree {
+        nodes: HashMap::from([
+            ("inst".into(), &inst),
+            ("1:1".into(), &main),
+            ("1:2".into(), &main),
+            ("1:3".into(), &nested),
+            ("icon".into(), &icon),
+            ("1:5".into(), &main),
+            ("leaf".into(), &leaf),
+        ]),
+        children: HashMap::from([
+            ("1:1".into(), vec!["1:3".into()]),
+            ("1:2".into(), vec!["icon".into()]),
+            ("1:5".into(), vec!["leaf".into()]),
+        ]),
+        blobs: Vec::new(),
+    };
+    let ex = expand_instances(&tree, "inst");
+    assert!(ex.nodes.contains_key("Iinst;1:3;icon;leaf"));
+}
+
+#[test]
 fn state_group_frames_are_component_sets() {
     let node = Value::Object(
         "NodeChange",

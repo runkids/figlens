@@ -225,6 +225,39 @@ fn overridden_instance_properties_are_model_inputs_with_exact_provenance() {
 }
 
 #[test]
+fn an_instance_with_an_unset_swap_guid_reads_its_mains_properties() {
+    let mut message = message();
+    let K::Object(_, fields) = &mut message else {
+        panic!("message is an object");
+    };
+    let Some(K::Array(nodes)) = fields.get_mut("nodeChanges") else {
+        panic!("message has node changes");
+    };
+    let unset = obj(vec![
+        ("sessionID", K::UInt(u32::MAX)),
+        ("localID", K::UInt(u32::MAX)),
+    ]);
+    nodes.push(instance(
+        6,
+        2,
+        "Plain button",
+        41,
+        vec![("overriddenSymbolID", unset)],
+    ));
+    let tree = Tree::new(&message);
+    assert_eq!(
+        props(&stored_build(&tree), "0:6"),
+        known(&[
+            ("Badge", Some("Star icon")),
+            ("Icon", Some("Star icon")),
+            ("Label", Some("Button")),
+            ("Show icon", Some("true")),
+            ("State", Some("Default")),
+        ])
+    );
+}
+
+#[test]
 fn swap_target_names_are_charged_before_they_are_copied() {
     // Both swaps name `Arrow icon`, which lies outside the definitions and assignments.
     let pay = |arrow: &str, bytes| {

@@ -823,13 +823,12 @@ fn bind_properties(
                 }
                 if enum_name(reference, "componentPropNodeField") == Some("OVERRIDDEN_SYMBOL_ID")
                     && patch.swap.is_none()
-                    && let Some(guid) = value
+                    && let Some(swap) = value
                         .and_then(|v| v.get("symbolIdValue"))
                         .and_then(|s| s.get("guid"))
-                    && let (Some(session), Some(local)) =
-                        (guid["sessionID"].as_u64(), guid["localID"].as_u64())
+                        .and_then(crate::rest::node_guid)
                 {
-                    patch.swap = Some(format!("{session}:{local}"));
+                    patch.swap = Some(swap);
                 }
             }
         }

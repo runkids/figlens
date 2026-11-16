@@ -202,11 +202,7 @@ pub(super) fn grid(
 
 /// A stored GUID as `sessionID:localID`, or none for the unset sentinel or out-of-range parts.
 pub(super) fn definition_id(value: &Json) -> Option<String> {
-    let id = guid(value)?;
-    let session = value["sessionID"].as_u64()?;
-    let local = value["localID"].as_u64()?;
-    (session <= u32::MAX as u64 && local <= u32::MAX as u64 && id != "4294967295:4294967295")
-        .then_some(id)
+    super::node_guid(value)
 }
 
 /// Keep the assignment path's existing parent-definition fallback unchanged.
