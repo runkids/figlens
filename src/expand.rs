@@ -180,6 +180,8 @@ struct Patch {
     size: Option<Vec2>,
     transform: Option<Mat>,
     swap: Option<String>,
+    /// The slot content node whose children replace a slot's own.
+    slot: Option<String>,
     props: Map<String, Json>,
     prototype_source: Option<crate::prototype::Source>,
 }
@@ -192,6 +194,7 @@ impl Patch {
             size: v.get("size").map(vec2),
             transform: v.get("transform").map(Mat::from_value),
             swap: v.get("overriddenSymbolID").and_then(guid_key),
+            slot: None,
             props: match to_json(v) {
                 Json::Object(mut m) => {
                     m.remove("guidPath");
@@ -211,6 +214,7 @@ impl Patch {
             size: self.size.or(inner.size),
             transform: self.transform.or(inner.transform),
             swap: self.swap.or(inner.swap),
+            slot: self.slot.or(inner.slot),
             props: {
                 // An outer outline was drawn at its own scale, not at the inner one's.
                 let mut props: Map<String, Json> = inner.props;
@@ -829,6 +833,15 @@ fn bind_properties(
                         .and_then(crate::rest::node_guid)
                 {
                     patch.swap = Some(swap);
+                }
+                if enum_name(reference, "componentPropNodeField") == Some("SLOT_CONTENT_ID")
+                    && patch.slot.is_none()
+                    && let Some(content) = value
+                        .and_then(|v| v.get("slotContentIdValue"))
+                        .and_then(|s| s.get("guid"))
+                        .and_then(crate::rest::node_guid)
+                {
+                    patch.slot = Some(content);
                 }
             }
         }
@@ -1505,6 +1518,33 @@ impl Expander<'_, '_> {
                     matrix,
                     resized(main_size, size),
                     nested_scale,
+                );
+                self.symbols.pop();
+                self.depth -= 1;
+            } else if let Some(content) = o
+                .slot
+                .as_ref()
+                .filter(|c| tree.nodes.contains_key(*c) && !self.symbols.contains(c))
+            {
+                // Assigned slot content lives on the internal canvas; Figma ids continue the
+                // path through the slot, as they do through an instance.
+                if !self.descend() {
+                    return;
+                }
+                let content_size = tree.nodes[content]
+                    .get("size")
+                    .map(|s| vec2(s).times(scale));
+                self.symbols.push(content.clone());
+                self.expand(
+                    outer,
+                    &id,
+                    content,
+                    &p,
+                    ov,
+                    dv,
+                    matrix,
+                    resized(content_size, size),
+                    scale,
                 );
                 self.symbols.pop();
                 self.depth -= 1;

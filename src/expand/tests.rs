@@ -2115,3 +2115,89 @@ fn a_nested_rows_outline_keeps_the_size_it_was_drawn_at() {
         assert!(!dot.props.contains_key("fillGeometryScale"));
     }
 }
+
+#[test]
+fn an_assigned_slot_takes_its_content_nodes_children() {
+    let slot_ref = |def: u32| {
+        Value::Array(vec![obj(vec![
+            ("defID", guid(3, def)),
+            (
+                "componentPropNodeField",
+                Value::Enum("Field", "SLOT_CONTENT_ID"),
+            ),
+        ])])
+    };
+    let assigned = |def: u32| {
+        Value::Array(vec![obj(vec![
+            ("defID", guid(3, def)),
+            (
+                "varValue",
+                obj(vec![(
+                    "value",
+                    obj(vec![(
+                        "slotContentIdValue",
+                        obj(vec![("guid", guid(7, 1))]),
+                    )]),
+                )]),
+            ),
+        ])])
+    };
+    let children = |inst: Value<'static>| {
+        let page = obj(vec![]);
+        let main = obj(vec![]);
+        let slot = obj(vec![
+            ("type", Value::Enum("NodeType", "FRAME")),
+            ("componentPropRefs", slot_ref(1)),
+        ]);
+        let frame = obj(vec![("type", Value::Enum("NodeType", "FRAME"))]);
+        let content = obj(vec![
+            ("type", Value::Enum("NodeType", "FRAME")),
+            ("isSlotContent", Value::Bool(true)),
+        ]);
+        let tree = Tree {
+            nodes: HashMap::from([
+                ("page".into(), &page),
+                ("inst".into(), &inst),
+                ("1:1".into(), &main),
+                ("5:1".into(), &slot),
+                ("5:2".into(), &frame),
+                ("7:1".into(), &content),
+                ("7:2".into(), &frame),
+            ]),
+            children: HashMap::from([
+                ("page".into(), vec!["inst".into()]),
+                ("1:1".into(), vec!["5:1".into()]),
+                ("5:1".into(), vec!["5:2".into()]),
+                ("7:1".into(), vec!["7:2".into()]),
+            ]),
+            blobs: Vec::new(),
+        };
+        bounded(&tree, "page", 1 << 20, 64 << 20)
+            .0
+            .children
+            .get("Iinst;5:1")
+            .cloned()
+    };
+    let instance = |assignments: Option<Value<'static>>| {
+        let mut fields = vec![
+            ("type", Value::Enum("NodeType", "INSTANCE")),
+            ("symbolData", obj(vec![("symbolID", guid(1, 1))])),
+        ];
+        fields.extend(assignments.map(|a| ("componentPropAssignments", a)));
+        obj(fields)
+    };
+    // The content node's children continue the path through the slot, as Figma's ids do.
+    assert_eq!(
+        children(instance(Some(assigned(1)))),
+        Some(vec!["Iinst;5:1;7:2".to_string()])
+    );
+    // Unassigned, and assigned to a definition no slot refers to, keep the default content.
+    assert_eq!(
+        children(instance(None)),
+        Some(vec!["Iinst;5:2".to_string()])
+    );
+    assert_eq!(
+        children(instance(Some(assigned(2)))),
+        Some(vec!["Iinst;5:2".to_string()])
+    );
+}
