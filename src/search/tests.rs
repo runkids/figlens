@@ -684,6 +684,61 @@ fn requested_hidden_content_that_rest_omits_is_reported_partial() {
 }
 
 #[test]
+fn a_hidden_assigned_slot_with_an_empty_default_reports_its_content_partial() {
+    let mut req = request("star glyph");
+    req.include_hidden = true;
+    let message = obj(vec![(
+        "nodeChanges",
+        K::Array(vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some(0), "CANVAS", "Page", vec![]),
+            node(20, Some(1), "SYMBOL", "Card", vec![]),
+            node(
+                22,
+                Some(20),
+                "FRAME",
+                "Slot",
+                vec![prop_ref(92, "SLOT_CONTENT_ID"), ("visible", K::Bool(false))],
+            ),
+            node(
+                30,
+                Some(1),
+                "FRAME",
+                "Content",
+                vec![("isSlotContent", K::Bool(true))],
+            ),
+            node(31, Some(30), "TEXT", "Glyph", vec![text("Star glyph")]),
+            instance(
+                2,
+                1,
+                "Card",
+                20,
+                vec![(
+                    "componentPropAssignments",
+                    K::Array(vec![obj(vec![
+                        ("defID", guid(92)),
+                        (
+                            "varValue",
+                            obj(vec![(
+                                "value",
+                                obj(vec![("slotContentIdValue", obj(vec![("guid", guid(30))]))]),
+                            )]),
+                        ),
+                    ])]),
+                )],
+            ),
+        ]),
+    )]);
+    let tree = Tree::new(&message);
+    let index = build(&tree, "0:2", bounds(WORK));
+    let found = reply(&index, &req.validate().unwrap(), &req, json!({})).unwrap();
+    assert_eq!(
+        found["coverage"]["reasons"][0],
+        json!({"code": "hidden_content_not_expanded", "counts": {"layers": 1}})
+    );
+}
+
+#[test]
 fn a_byte_bound_stops_before_normalizing_a_large_field() {
     let message = message();
     let tree = Tree::new(&message);

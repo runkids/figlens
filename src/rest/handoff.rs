@@ -181,7 +181,7 @@ pub(super) fn fields(k: &Obj, kind: &str, parent: Option<&Obj>, out: &mut Obj) {
     add(
         "slots",
         slots,
-        "Slot relationships and per-instance content are not reconstructed; this marker does not prove which children are missing.",
+        "Slot definitions and content links are not emitted; an instance's assigned slot shows its content node's children, but resizing that content to the slot and nested slot assignments are not verified against Figma.",
     );
     if !diagnostics.is_empty() {
         out.entry("_figlens").or_insert_with(|| json!({}))["unrepresented"] = diagnostics.into();
@@ -221,7 +221,7 @@ impl Inventory {
 
     pub(super) fn finish(self) -> Option<Json> {
         (!self.items.is_empty()).then(|| json!({"checkedNodeCount":self.checked,
-            "coverage":"known stored fields in the effective expanded subtree; hidden instance descendants and unreconstructed slot content are not checked",
+            "coverage":"known stored fields in the effective expanded subtree; hidden instance descendants are not checked",
             "verification":"not-compared-with-figma",
             "items":self.items.into_values().collect::<Vec<_>>()
         }))

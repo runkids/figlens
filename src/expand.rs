@@ -134,6 +134,8 @@ pub struct Expanded {
     /// For an INSTANCE: the main component expansion followed, present or not, and whether a
     /// swap (`swap`) or the copied definition's binding (`definition`) named it.
     pub(crate) main: Option<(String, &'static str)>,
+    /// An assigned slot whose content node has children: expansion walks those, not `source`'s.
+    pub(crate) slot_content: bool,
     /// The composed `uniformScaleFactor` `source`'s own lengths were read at; 1 outside
     /// K-scaled instances. A text style the node links takes it too.
     pub scale: f64,
@@ -180,6 +182,8 @@ struct Patch {
     size: Option<Vec2>,
     transform: Option<Mat>,
     swap: Option<String>,
+    /// The slot content node whose children replace a slot's own.
+    slot: Option<String>,
     props: Map<String, Json>,
     prototype_source: Option<crate::prototype::Source>,
 }
@@ -192,6 +196,7 @@ impl Patch {
             size: v.get("size").map(vec2),
             transform: v.get("transform").map(Mat::from_value),
             swap: v.get("overriddenSymbolID").and_then(guid_key),
+            slot: None,
             props: match to_json(v) {
                 Json::Object(mut m) => {
                     m.remove("guidPath");
@@ -211,6 +216,7 @@ impl Patch {
             size: self.size.or(inner.size),
             transform: self.transform.or(inner.transform),
             swap: self.swap.or(inner.swap),
+            slot: self.slot.or(inner.slot),
             props: {
                 // An outer outline was drawn at its own scale, not at the inner one's.
                 let mut props: Map<String, Json> = inner.props;
@@ -830,6 +836,15 @@ fn bind_properties(
                 {
                     patch.swap = Some(swap);
                 }
+                if enum_name(reference, "componentPropNodeField") == Some("SLOT_CONTENT_ID")
+                    && patch.slot.is_none()
+                    && let Some(content) = value
+                        .and_then(|v| v.get("slotContentIdValue"))
+                        .and_then(|s| s.get("guid"))
+                        .and_then(crate::rest::node_guid)
+                {
+                    patch.slot = Some(content);
+                }
             }
         }
     }
@@ -1207,7 +1222,7 @@ impl Expander<'_, '_> {
         cost
     }
 
-    /// `path` holds only instance boundaries: Figma ids skip plain frames in between.
+    /// `path` holds only instance boundaries and assigned slots: Figma ids skip plain frames in between.
     /// `scale` multiplies `symbol`'s own lengths; `ov` and `dv` are already at the outer
     /// instance's scale.
     #[allow(clippy::too_many_arguments)]
@@ -1400,6 +1415,11 @@ impl Expander<'_, '_> {
                         .map(|id| (id, "definition")),
                 })
                 .flatten();
+            let slot = o
+                .slot
+                .as_ref()
+                .filter(|c| kind != Some("INSTANCE") && tree.nodes.contains_key(*c))
+                .filter(|c| !self.symbols.contains(c));
             self.out.nodes.insert(
                 id.clone(),
                 Expanded {
@@ -1411,6 +1431,7 @@ impl Expander<'_, '_> {
                     props,
                     prototype_source,
                     main,
+                    slot_content: slot.is_some_and(|c| tree.children.contains_key(c)),
                     scale,
                 },
             );
@@ -1505,6 +1526,29 @@ impl Expander<'_, '_> {
                     matrix,
                     resized(main_size, size),
                     nested_scale,
+                );
+                self.symbols.pop();
+                self.depth -= 1;
+            } else if let Some(content) = slot {
+                // Assigned slot content lives on the internal canvas; Figma ids continue the
+                // path through the slot, as they do through an instance.
+                if !self.descend() {
+                    return;
+                }
+                let content_size = tree.nodes[content]
+                    .get("size")
+                    .map(|s| vec2(s).times(scale));
+                self.symbols.push(content.clone());
+                self.expand(
+                    outer,
+                    &id,
+                    content,
+                    &p,
+                    ov,
+                    dv,
+                    matrix,
+                    resized(content_size, size),
+                    scale,
                 );
                 self.symbols.pop();
                 self.depth -= 1;

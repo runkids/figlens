@@ -1093,10 +1093,10 @@ fn generation(index: &Index) -> String {
 }
 
 /// A hidden layer whose content expansion leaves out: a stored instance without stored
-/// children, or an expanded sublayer whose definition has children.
+/// children, or an expanded sublayer whose definition or assigned slot content has children.
 fn hides_content(tree: &Tree, ex: &Expansion, id: &str, kind: &str) -> bool {
     match ex.nodes.get(id) {
-        Some(e) => kind == "INSTANCE" || tree.children.contains_key(&e.source),
+        Some(e) => kind == "INSTANCE" || e.slot_content || tree.children.contains_key(&e.source),
         None => kind == "INSTANCE",
     }
 }
