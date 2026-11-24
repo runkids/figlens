@@ -134,6 +134,8 @@ pub struct Expanded {
     /// For an INSTANCE: the main component expansion followed, present or not, and whether a
     /// swap (`swap`) or the copied definition's binding (`definition`) named it.
     pub(crate) main: Option<(String, &'static str)>,
+    /// An assigned slot whose content node has children: expansion walks those, not `source`'s.
+    pub(crate) slot_content: bool,
     /// The composed `uniformScaleFactor` `source`'s own lengths were read at; 1 outside
     /// K-scaled instances. A text style the node links takes it too.
     pub scale: f64,
@@ -1413,6 +1415,11 @@ impl Expander<'_, '_> {
                         .map(|id| (id, "definition")),
                 })
                 .flatten();
+            let slot = o
+                .slot
+                .as_ref()
+                .filter(|c| kind != Some("INSTANCE") && tree.nodes.contains_key(*c))
+                .filter(|c| !self.symbols.contains(c));
             self.out.nodes.insert(
                 id.clone(),
                 Expanded {
@@ -1424,6 +1431,7 @@ impl Expander<'_, '_> {
                     props,
                     prototype_source,
                     main,
+                    slot_content: slot.is_some_and(|c| tree.children.contains_key(c)),
                     scale,
                 },
             );
@@ -1521,11 +1529,7 @@ impl Expander<'_, '_> {
                 );
                 self.symbols.pop();
                 self.depth -= 1;
-            } else if let Some(content) = o
-                .slot
-                .as_ref()
-                .filter(|c| tree.nodes.contains_key(*c) && !self.symbols.contains(c))
-            {
+            } else if let Some(content) = slot {
                 // Assigned slot content lives on the internal canvas; Figma ids continue the
                 // path through the slot, as they do through an instance.
                 if !self.descend() {
