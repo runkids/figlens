@@ -181,7 +181,7 @@ pub(super) fn fields(k: &Obj, kind: &str, parent: Option<&Obj>, out: &mut Obj) {
     add(
         "slots",
         slots,
-        "An assigned slot is expanded from its content node; resizing that content to the slot and nested slot assignments are not verified against Figma.",
+        "Slot definitions and content links are not emitted; an instance's assigned slot shows its content node's children, but resizing that content to the slot and nested slot assignments are not verified against Figma.",
     );
     if !diagnostics.is_empty() {
         out.entry("_figlens").or_insert_with(|| json!({}))["unrepresented"] = diagnostics.into();

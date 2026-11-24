@@ -2201,3 +2201,83 @@ fn an_assigned_slot_takes_its_content_nodes_children() {
         Some(vec!["Iinst;5:2".to_string()])
     );
 }
+
+#[test]
+fn an_outer_override_assigns_a_nested_instances_slot() {
+    let assignment = Value::Array(vec![obj(vec![
+        ("defID", guid(3, 1)),
+        (
+            "varValue",
+            obj(vec![(
+                "value",
+                obj(vec![(
+                    "slotContentIdValue",
+                    obj(vec![("guid", guid(7, 1))]),
+                )]),
+            )]),
+        ),
+    ])]);
+    let inst = obj(vec![
+        ("type", Value::Enum("NodeType", "INSTANCE")),
+        (
+            "symbolData",
+            obj(vec![
+                ("symbolID", guid(1, 9)),
+                (
+                    "symbolOverrides",
+                    Value::Array(vec![obj(vec![
+                        (
+                            "guidPath",
+                            obj(vec![("guids", Value::Array(vec![guid(1, 8)]))]),
+                        ),
+                        ("componentPropAssignments", assignment),
+                    ])]),
+                ),
+            ]),
+        ),
+    ]);
+    let empty = obj(vec![]);
+    let nested = obj(vec![
+        ("type", Value::Enum("NodeType", "INSTANCE")),
+        ("symbolData", obj(vec![("symbolID", guid(1, 1))])),
+    ]);
+    let slot = obj(vec![
+        ("type", Value::Enum("NodeType", "FRAME")),
+        (
+            "componentPropRefs",
+            Value::Array(vec![obj(vec![
+                ("defID", guid(3, 1)),
+                (
+                    "componentPropNodeField",
+                    Value::Enum("Field", "SLOT_CONTENT_ID"),
+                ),
+            ])]),
+        ),
+    ]);
+    let frame = obj(vec![("type", Value::Enum("NodeType", "FRAME"))]);
+    let tree = Tree {
+        nodes: HashMap::from([
+            ("inst".into(), &inst),
+            ("1:9".into(), &empty),
+            ("1:8".into(), &nested),
+            ("1:1".into(), &empty),
+            ("5:1".into(), &slot),
+            ("5:2".into(), &frame),
+            ("7:1".into(), &frame),
+            ("7:2".into(), &frame),
+        ]),
+        children: HashMap::from([
+            ("1:9".into(), vec!["1:8".into()]),
+            ("1:1".into(), vec!["5:1".into()]),
+            ("5:1".into(), vec!["5:2".into()]),
+            ("7:1".into(), vec!["7:2".into()]),
+        ]),
+        blobs: Vec::new(),
+    };
+    assert_eq!(
+        expand_instances(&tree, "inst")
+            .children
+            .get("Iinst;1:8;5:1"),
+        Some(&vec!["Iinst;1:8;5:1;7:2".to_string()])
+    );
+}
