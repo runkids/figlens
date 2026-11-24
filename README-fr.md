@@ -16,6 +16,7 @@
   <a href="#setup-opencode"><img src="https://img.shields.io/badge/OpenCode-V2-8b78c8" alt="OpenCode V2 plugin"></a>
   <a href="#setup-omp"><img src="https://img.shields.io/badge/OMP-plugin-79b9a5" alt="OMP plugin"></a>
   <a href="#mcp-and-skill"><img src="https://img.shields.io/badge/agents-CLI_%2B_MCP-79b9a5" alt="CLI et MCP pour agents IA"></a>
+  <a href="https://glama.ai/mcp/servers/runkids/figlens"><img src="https://glama.ai/mcp/servers/runkids/figlens/badges/score.svg" alt="runkids/figlens MCP server"></a>
 </p>
 
 <p align="center">
