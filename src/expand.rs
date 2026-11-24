@@ -1220,7 +1220,7 @@ impl Expander<'_, '_> {
         cost
     }
 
-    /// `path` holds only instance boundaries: Figma ids skip plain frames in between.
+    /// `path` holds only instance boundaries and assigned slots: Figma ids skip plain frames in between.
     /// `scale` multiplies `symbol`'s own lengths; `ov` and `dv` are already at the outer
     /// instance's scale.
     #[allow(clippy::too_many_arguments)]
