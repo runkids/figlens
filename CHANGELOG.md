@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.6](https://github.com/runkids/figlens/compare/v0.14.5...v0.14.6) (2026-11-24)
+
+
+### Bug Fixes
+
+* **expand:** expand assigned slot content ([#263](https://github.com/runkids/figlens/issues/263)) ([b1400bc](https://github.com/runkids/figlens/commit/b1400bc77df4369575458457cdac74e197aded47))
+
 ## [0.14.5](https://github.com/runkids/figlens/compare/v0.14.4...v0.14.5) (2026-11-16)
 
 
