@@ -2,7 +2,7 @@
 //! are rebuilt from the main component plus the instance's overrides, with the
 //! `I<instance>;<path>` ids the Figma plugin reports.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use kiwi_schema::Value;
 use serde_json::{Map, Value as Json};
@@ -652,19 +652,40 @@ fn assignment_bytes(
 /// A layer's component property bindings as (node field, definition id). Newer files store them
 /// as `PROP_REF` entries of `parameterConsumptionMap`, which win over `componentPropRefs` for
 /// the same field: a library copy can keep a stale legacy reference beside the current one.
-fn prop_refs<'v, 'a>(node: &'v Value<'a>) -> Vec<(&'a str, &'v Value<'a>)> {
+fn prop_refs<'v, 'a>(node: &'v Value<'a>) -> Vec<(&'static str, &'v Value<'a>)> {
     let mut refs: Vec<_> = list(prop_entries(node))
         .iter()
         .filter_map(prop_ref)
         .collect();
-    let current: HashSet<&str> = refs.iter().map(|(f, _)| *f).collect();
+    let mut current: Vec<&str> = Vec::with_capacity(BOUND_FIELDS.len());
+    for (f, _) in &refs {
+        if !current.contains(f) {
+            current.push(f);
+        }
+    }
     refs.extend(
         list(node.get("componentPropRefs"))
             .iter()
-            .filter_map(|r| Some((enum_name(r, "componentPropNodeField")?, r.get("defID")?)))
+            .filter_map(|r| {
+                let field = bound_field(enum_name(r, "componentPropNodeField")?)?;
+                Some((field, r.get("defID")?))
+            })
             .filter(|(f, _)| !current.contains(f)),
     );
     refs
+}
+
+/// The node fields an assignment can set. A file's schema names its enum members, so a name
+/// is matched to these first: comparing a string of another length reads none of it.
+const BOUND_FIELDS: [&str; 4] = [
+    "VISIBLE",
+    "TEXT_DATA",
+    "OVERRIDDEN_SYMBOL_ID",
+    "SLOT_CONTENT_ID",
+];
+
+fn bound_field(name: &str) -> Option<&'static str> {
+    BOUND_FIELDS.into_iter().find(|f| *f == name)
 }
 
 fn prop_entries<'v, 'a>(node: &'v Value<'a>) -> Option<&'v Value<'a>> {
@@ -672,13 +693,13 @@ fn prop_entries<'v, 'a>(node: &'v Value<'a>) -> Option<&'v Value<'a>> {
 }
 
 /// A `parameterConsumptionMap` entry's (field, definition id), when it binds a property.
-fn prop_ref<'v, 'a>(entry: &'v Value<'a>) -> Option<(&'a str, &'v Value<'a>)> {
+fn prop_ref<'v, 'a>(entry: &'v Value<'a>) -> Option<(&'static str, &'v Value<'a>)> {
     let data = entry.get("variableData")?;
     if enum_name(data, "dataType") != Some("PROP_REF") {
         return None;
     }
     let def = data.get("value")?.get("propRefValue")?.get("defId")?;
-    Some((enum_name(entry, "variableField")?, def))
+    Some((bound_field(enum_name(entry, "variableField")?)?, def))
 }
 
 /// An upper bound on `prop_refs`' length (a superseded legacy reference still counts) and the

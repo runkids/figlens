@@ -987,6 +987,25 @@ fn a_bounded_expansion_charges_each_binding_for_the_map_entries_it_reads() {
     assert_eq!(bounded(&tree, "page", 8_000_000, 64 << 20).1.stop, None);
 }
 
+#[test]
+fn property_references_skip_unsupported_field_names_without_reading_them() {
+    // A file's schema names its enum members: 100k map entries share one 1 MiB name.
+    let long: &'static str = Box::leak("V".repeat(1 << 20).into_boxed_str());
+    let layer = obj(vec![
+        (
+            "componentPropRefs",
+            Value::Array(vec![obj(vec![
+                ("defID", guid(2, 1)),
+                ("componentPropNodeField", Value::Enum("Field", "VISIBLE")),
+            ])]),
+        ),
+        consumption_map(vec![prop_ref_entry(guid(2, 2), long); 100_000]),
+    ]);
+    let refs = prop_refs(&layer);
+    assert_eq!(refs.len(), 1);
+    assert_eq!(refs[0].0, "VISIBLE");
+}
+
 /// A `parameterConsumptionMap` entry binding `field` to component property `def`.
 fn prop_ref_entry(def: Value<'static>, field: &'static str) -> Value<'static> {
     obj(vec![
