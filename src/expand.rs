@@ -2,7 +2,7 @@
 //! are rebuilt from the main component plus the instance's overrides, with the
 //! `I<instance>;<path>` ids the Figma plugin reports.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use kiwi_schema::Value;
 use serde_json::{Map, Value as Json};
@@ -653,15 +653,18 @@ fn assignment_bytes(
 /// as `PROP_REF` entries of `parameterConsumptionMap`, which win over `componentPropRefs` for
 /// the same field: a library copy can keep a stale legacy reference beside the current one.
 fn prop_refs<'v, 'a>(node: &'v Value<'a>) -> Vec<(&'a str, &'v Value<'a>)> {
-    let current: Vec<_> = list(prop_entries(node))
+    let mut refs: Vec<_> = list(prop_entries(node))
         .iter()
         .filter_map(prop_ref)
         .collect();
-    let legacy = list(node.get("componentPropRefs"))
-        .iter()
-        .filter_map(|r| Some((enum_name(r, "componentPropNodeField")?, r.get("defID")?)))
-        .filter(|(f, _)| current.iter().all(|(c, _)| c != f));
-    current.iter().copied().chain(legacy).collect()
+    let current: HashSet<&str> = refs.iter().map(|(f, _)| *f).collect();
+    refs.extend(
+        list(node.get("componentPropRefs"))
+            .iter()
+            .filter_map(|r| Some((enum_name(r, "componentPropNodeField")?, r.get("defID")?)))
+            .filter(|(f, _)| !current.contains(f)),
+    );
+    refs
 }
 
 fn prop_entries<'v, 'a>(node: &'v Value<'a>) -> Option<&'v Value<'a>> {
@@ -710,10 +713,7 @@ fn list<'v, 'a>(v: Option<&'v Value<'a>>) -> &'v [Value<'a>] {
 }
 
 fn list_len(v: Option<&Value>) -> usize {
-    match v {
-        Some(Value::Array(items)) => items.len(),
-        _ => 0,
-    }
+    list(v).len()
 }
 
 /// A stored `{x, y}` vector; a missing field is 0.
@@ -1013,6 +1013,8 @@ struct Cost {
     keys: usize,
     /// Converted bytes of every reference's `defID`, which the file's schema can make any size.
     defs: usize,
+    /// Legacy references and `parameterConsumptionMap` entries `prop_refs` reads per binding.
+    walk: usize,
 }
 
 impl Cost {
@@ -1035,6 +1037,12 @@ impl Cost {
             return 0;
         }
         assignments.saturating_add(1).saturating_mul(self.defs / 64)
+    }
+
+    /// Visits reading every layer's references and map entries, which a binding pays in full
+    /// even for entries that bind nothing (variable aliases).
+    fn reading(&self, assignments: usize) -> usize {
+        if assignments == 0 { 0 } else { self.walk }
     }
 }
 
@@ -1133,6 +1141,7 @@ fn expand_all(
                 list_len(derived),
                 refs.saturating_mul(list_len(assignments)),
                 cost.comparisons(list_len(assignments)),
+                cost.reading(list_len(assignments)),
             ]
             .into_iter()
             .fold(0, usize::saturating_add);
@@ -1244,9 +1253,12 @@ impl Expander<'_, '_> {
         // Measured, not kept: only the walk is charged.
         let start = self.bounds.as_ref().map_or(0, |b| b.work).saturating_add(1);
         let mut left = start;
-        let (mut refs, mut keys, mut defs) = (0usize, 0usize, 0usize);
+        let (mut refs, mut keys, mut defs, mut walk) = (0usize, 0usize, 0usize, 0usize);
         for (id, n) in present() {
             let (count, bytes) = binding_size(n, &mut left);
+            walk = walk
+                .saturating_add(list_len(n.get("componentPropRefs")))
+                .saturating_add(list_len(prop_entries(n)));
             // An overrideKey guid prints as at most "4294967295:4294967295".
             let key = if n.get("overrideKey").is_some() {
                 21
@@ -1264,6 +1276,7 @@ impl Expander<'_, '_> {
             refs,
             keys,
             defs,
+            walk,
         };
         self.sizes.insert(symbol.to_owned(), cost);
         cost
@@ -1524,6 +1537,7 @@ impl Expander<'_, '_> {
                         list_len(derived),
                         refs.saturating_mul(assignments),
                         cost.comparisons(assignments),
+                        cost.reading(assignments),
                     ]
                     .into_iter()
                     .fold(0, usize::saturating_add);

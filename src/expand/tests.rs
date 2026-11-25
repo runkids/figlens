@@ -942,6 +942,51 @@ fn a_bounded_expansion_charges_comparing_large_reference_ids() {
     }
 }
 
+#[test]
+fn a_bounded_expansion_charges_each_binding_for_the_map_entries_it_reads() {
+    // 100k variable-alias entries bind nothing, but every instance's binding walks them.
+    let alias = obj(vec![(
+        "variableData",
+        obj(vec![("dataType", Value::Enum("VariableDataType", "ALIAS"))]),
+    )]);
+    let layer = obj(vec![
+        ("type", Value::Enum("NodeType", "FRAME")),
+        consumption_map(vec![alias; 100_000]),
+    ]);
+    let inst = obj(vec![
+        ("type", Value::Enum("NodeType", "INSTANCE")),
+        ("symbolData", obj(vec![("symbolID", guid(1, 1))])),
+        (
+            "componentPropAssignments",
+            Value::Array(vec![obj(vec![
+                ("defID", guid(3, 1)),
+                ("value", obj(vec![("boolValue", Value::Bool(false))])),
+            ])]),
+        ),
+    ]);
+    let (page, main) = (obj(vec![]), obj(vec![]));
+    let ids: Vec<String> = (0..50).map(|i| format!("i{i}")).collect();
+    let mut nodes: HashMap<String, &Value> = ids.iter().map(|id| (id.clone(), &inst)).collect();
+    nodes.extend([
+        ("page".into(), &page),
+        ("1:1".into(), &main),
+        ("5:1".into(), &layer),
+    ]);
+    let tree = Tree {
+        nodes,
+        children: HashMap::from([
+            ("page".into(), ids.clone()),
+            ("1:1".into(), vec!["5:1".into()]),
+        ]),
+        blobs: Vec::new(),
+    };
+    assert_eq!(
+        bounded(&tree, "page", 2_000_000, 64 << 20).1.stop,
+        Some(Stop::Work)
+    );
+    assert_eq!(bounded(&tree, "page", 8_000_000, 64 << 20).1.stop, None);
+}
+
 /// A `parameterConsumptionMap` entry binding `field` to component property `def`.
 fn prop_ref_entry(def: Value<'static>, field: &'static str) -> Value<'static> {
     obj(vec![
@@ -1206,6 +1251,7 @@ fn consumption_map_property_refs_bind_and_win_over_legacy_refs() {
             ("varValue", obj(vec![("value", value)])),
         ])
     };
+    let hide = || obj(vec![("boolValue", Value::Bool(false))]);
     let text = |s: &str| obj(vec![("characters", Value::String(s.into()))]);
     let inst = obj(vec![
         ("type", Value::Enum("NodeType", "INSTANCE")),
@@ -1213,12 +1259,16 @@ fn consumption_map_property_refs_bind_and_win_over_legacy_refs() {
         (
             "componentPropAssignments",
             Value::Array(vec![
-                assignment(guid(220, 30), obj(vec![("boolValue", Value::Bool(false))])),
+                assignment(guid(220, 30), hide()),
                 assignment(
                     guid(220, 31),
-                    obj(vec![("textDataValue", text("08-01 ~ 08-07"))]),
+                    obj(vec![("textDataValue", text("Assigned"))]),
                 ),
                 assignment(guid(9, 12), obj(vec![("textDataValue", text("Stale"))])),
+                assignment(guid(4, 1), hide()),
+                assignment(guid(4, 2), obj(vec![("textDataValue", text("Badge"))])),
+                // No layer refers to it, so it changes nothing.
+                assignment(guid(4, 3), hide()),
             ]),
         ),
     ]);
@@ -1230,42 +1280,60 @@ fn consumption_map_property_refs_bind_and_win_over_legacy_refs() {
         ),
         ("variableField", Value::Enum("VariableField", "OPACITY")),
     ]);
+    let legacy = |def: Value<'static>, field: &'static str| {
+        (
+            "componentPropRefs",
+            Value::Array(vec![obj(vec![
+                ("defID", def),
+                ("componentPropNodeField", Value::Enum("Field", field)),
+            ])]),
+        )
+    };
     let icon = obj(vec![
         ("type", Value::Enum("NodeType", "FRAME")),
         consumption_map(vec![alias, prop_ref_entry(guid(220, 30), "VISIBLE")]),
     ]);
     let label = obj(vec![
         ("type", Value::Enum("NodeType", "TEXT")),
-        ("textData", text("user_001")),
-        (
-            "componentPropRefs",
-            Value::Array(vec![obj(vec![
-                ("defID", guid(9, 12)),
-                ("componentPropNodeField", Value::Enum("Field", "TEXT_DATA")),
-            ])]),
-        ),
+        ("textData", text("Default")),
+        legacy(guid(9, 12), "TEXT_DATA"),
         consumption_map(vec![prop_ref_entry(guid(220, 31), "TEXT_DATA")]),
     ]);
+    // A map entry for one field leaves a legacy reference for another field bound.
+    let badge = obj(vec![
+        ("type", Value::Enum("NodeType", "TEXT")),
+        ("textData", text("Default")),
+        legacy(guid(4, 1), "VISIBLE"),
+        consumption_map(vec![prop_ref_entry(guid(4, 2), "TEXT_DATA")]),
+    ]);
+    let plain = obj(vec![("type", Value::Enum("NodeType", "FRAME"))]);
     let tree = Tree {
         nodes: HashMap::from([
             ("inst".into(), &inst),
             ("1:1".into(), &main),
             ("1:2".into(), &icon),
             ("1:3".into(), &label),
+            ("1:4".into(), &badge),
+            ("1:5".into(), &plain),
         ]),
-        children: HashMap::from([("1:1".into(), vec!["1:2".into(), "1:3".into()])]),
+        children: HashMap::from([(
+            "1:1".into(),
+            vec!["1:2".into(), "1:3".into(), "1:4".into(), "1:5".into()],
+        )]),
         blobs: Vec::new(),
     };
     let ex = expand_instances(&tree, "inst");
-    assert_eq!(ex.nodes["Iinst;1:2"].props["visible"], false);
-    assert_eq!(
-        ex.nodes["Iinst;1:3"].props["textData"]["characters"],
-        "08-01 ~ 08-07"
-    );
+    let props = |id: &str| &ex.nodes[id].props;
+    assert_eq!(props("Iinst;1:2")["visible"], false);
+    assert_eq!(props("Iinst;1:3")["textData"]["characters"], "Assigned");
+    assert_eq!(props("Iinst;1:4")["visible"], false);
+    assert_eq!(props("Iinst;1:4")["textData"]["characters"], "Badge");
+    assert_eq!(props("Iinst;1:5").get("visible"), None);
     let doc = crate::rest::nodes(&tree, "inst");
     let children = &doc["document"]["children"];
     assert_eq!(children[0]["visible"], false);
-    assert_eq!(children[1]["characters"], "08-01 ~ 08-07");
+    assert_eq!(children[1]["characters"], "Assigned");
+    assert!(children[3].get("visible").is_none());
 }
 
 #[test]
