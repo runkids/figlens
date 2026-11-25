@@ -898,37 +898,72 @@ fn a_bounded_expansion_charges_comparing_large_reference_ids() {
         ("symbolData", obj(vec![("symbolID", guid(1, 1))])),
         ("componentPropAssignments", Value::Array(assignments)),
     ]);
-    let refs = (0..100)
-        .map(|_| {
+    // Legacy references, then the same ids as consumption-map entries.
+    for current in [false, true] {
+        let refs = (0..100)
+            .map(|_| {
+                if current {
+                    prop_ref_entry(Value::Enum("Def", long), "VISIBLE")
+                } else {
+                    obj(vec![
+                        ("defID", Value::Enum("Def", long)),
+                        ("componentPropNodeField", Value::Enum("Field", "VISIBLE")),
+                    ])
+                }
+            })
+            .collect();
+        let layer = obj(vec![
+            ("type", Value::Enum("NodeType", "FRAME")),
+            if current {
+                consumption_map(refs)
+            } else {
+                ("componentPropRefs", Value::Array(refs))
+            },
+        ]);
+        let (page, main) = (obj(vec![]), obj(vec![]));
+        let tree = Tree {
+            nodes: HashMap::from([
+                ("page".into(), &page),
+                ("inst".into(), &inst),
+                ("1:1".into(), &main),
+                ("5:1".into(), &layer),
+            ]),
+            children: HashMap::from([
+                ("page".into(), vec!["inst".into()]),
+                ("1:1".into(), vec!["5:1".into()]),
+            ]),
+            blobs: Vec::new(),
+        };
+        assert_eq!(
+            bounded(&tree, "page", 200_000, 64 << 20).1.stop,
+            Some(Stop::Work)
+        );
+        assert_eq!(bounded(&tree, "page", 4_000_000, 64 << 20).1.stop, None);
+    }
+}
+
+/// A `parameterConsumptionMap` entry binding `field` to component property `def`.
+fn prop_ref_entry(def: Value<'static>, field: &'static str) -> Value<'static> {
+    obj(vec![
+        (
+            "variableData",
             obj(vec![
-                ("defID", Value::Enum("Def", long)),
-                ("componentPropNodeField", Value::Enum("Field", "VISIBLE")),
-            ])
-        })
-        .collect();
-    let layer = obj(vec![
-        ("type", Value::Enum("NodeType", "FRAME")),
-        ("componentPropRefs", Value::Array(refs)),
-    ]);
-    let (page, main) = (obj(vec![]), obj(vec![]));
-    let tree = Tree {
-        nodes: HashMap::from([
-            ("page".into(), &page),
-            ("inst".into(), &inst),
-            ("1:1".into(), &main),
-            ("5:1".into(), &layer),
-        ]),
-        children: HashMap::from([
-            ("page".into(), vec!["inst".into()]),
-            ("1:1".into(), vec!["5:1".into()]),
-        ]),
-        blobs: Vec::new(),
-    };
-    assert_eq!(
-        bounded(&tree, "page", 200_000, 64 << 20).1.stop,
-        Some(Stop::Work)
-    );
-    assert_eq!(bounded(&tree, "page", 4_000_000, 64 << 20).1.stop, None);
+                ("dataType", Value::Enum("VariableDataType", "PROP_REF")),
+                (
+                    "value",
+                    obj(vec![("propRefValue", obj(vec![("defId", def)]))]),
+                ),
+            ]),
+        ),
+        ("variableField", Value::Enum("VariableField", field)),
+    ])
+}
+
+fn consumption_map(entries: Vec<Value<'static>>) -> (&'static str, Value<'static>) {
+    (
+        "parameterConsumptionMap",
+        obj(vec![("entries", Value::Array(entries))]),
+    )
 }
 
 #[test]
@@ -1159,6 +1194,78 @@ fn boolean_component_properties_hide_nested_subtrees() {
         Some(&Json::Bool(false))
     );
     assert!(!ex.nodes.contains_key("Iinst;leaf"));
+}
+
+#[test]
+fn consumption_map_property_refs_bind_and_win_over_legacy_refs() {
+    // #265: a library copy whose icon has no legacy reference and whose text keeps a stale
+    // legacy reference to a sibling variant's definition; the map names the current ones.
+    let assignment = |def: Value<'static>, value: Value<'static>| {
+        obj(vec![
+            ("defID", def),
+            ("varValue", obj(vec![("value", value)])),
+        ])
+    };
+    let text = |s: &str| obj(vec![("characters", Value::String(s.into()))]);
+    let inst = obj(vec![
+        ("type", Value::Enum("NodeType", "INSTANCE")),
+        ("symbolData", obj(vec![("symbolID", guid(1, 1))])),
+        (
+            "componentPropAssignments",
+            Value::Array(vec![
+                assignment(guid(220, 30), obj(vec![("boolValue", Value::Bool(false))])),
+                assignment(
+                    guid(220, 31),
+                    obj(vec![("textDataValue", text("08-01 ~ 08-07"))]),
+                ),
+                assignment(guid(9, 12), obj(vec![("textDataValue", text("Stale"))])),
+            ]),
+        ),
+    ]);
+    let main = obj(vec![]);
+    let alias = obj(vec![
+        (
+            "variableData",
+            obj(vec![("dataType", Value::Enum("VariableDataType", "ALIAS"))]),
+        ),
+        ("variableField", Value::Enum("VariableField", "OPACITY")),
+    ]);
+    let icon = obj(vec![
+        ("type", Value::Enum("NodeType", "FRAME")),
+        consumption_map(vec![alias, prop_ref_entry(guid(220, 30), "VISIBLE")]),
+    ]);
+    let label = obj(vec![
+        ("type", Value::Enum("NodeType", "TEXT")),
+        ("textData", text("user_001")),
+        (
+            "componentPropRefs",
+            Value::Array(vec![obj(vec![
+                ("defID", guid(9, 12)),
+                ("componentPropNodeField", Value::Enum("Field", "TEXT_DATA")),
+            ])]),
+        ),
+        consumption_map(vec![prop_ref_entry(guid(220, 31), "TEXT_DATA")]),
+    ]);
+    let tree = Tree {
+        nodes: HashMap::from([
+            ("inst".into(), &inst),
+            ("1:1".into(), &main),
+            ("1:2".into(), &icon),
+            ("1:3".into(), &label),
+        ]),
+        children: HashMap::from([("1:1".into(), vec!["1:2".into(), "1:3".into()])]),
+        blobs: Vec::new(),
+    };
+    let ex = expand_instances(&tree, "inst");
+    assert_eq!(ex.nodes["Iinst;1:2"].props["visible"], false);
+    assert_eq!(
+        ex.nodes["Iinst;1:3"].props["textData"]["characters"],
+        "08-01 ~ 08-07"
+    );
+    let doc = crate::rest::nodes(&tree, "inst");
+    let children = &doc["document"]["children"];
+    assert_eq!(children[0]["visible"], false);
+    assert_eq!(children[1]["characters"], "08-01 ~ 08-07");
 }
 
 #[test]
