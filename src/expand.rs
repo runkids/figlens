@@ -649,11 +649,92 @@ fn assignment_bytes(
     total.saturating_add(largest.saturating_mul(refs))
 }
 
-fn list_len(v: Option<&Value>) -> usize {
-    match v {
-        Some(Value::Array(items)) => items.len(),
-        _ => 0,
+/// A layer's component property bindings as (node field, definition id). Newer files store them
+/// as `PROP_REF` entries of `parameterConsumptionMap`, which win over `componentPropRefs` for
+/// the same field: a library copy can keep a stale legacy reference beside the current one.
+fn prop_refs<'v, 'a>(node: &'v Value<'a>) -> Vec<(&'static str, &'v Value<'a>)> {
+    let mut refs: Vec<_> = list(prop_entries(node))
+        .iter()
+        .filter_map(prop_ref)
+        .collect();
+    let mut current: Vec<&str> = Vec::with_capacity(BOUND_FIELDS.len());
+    for (f, _) in &refs {
+        if !current.contains(f) {
+            current.push(f);
+        }
     }
+    refs.extend(
+        list(node.get("componentPropRefs"))
+            .iter()
+            .filter_map(|r| {
+                let field = bound_field(enum_name(r, "componentPropNodeField")?)?;
+                Some((field, r.get("defID")?))
+            })
+            .filter(|(f, _)| !current.contains(f)),
+    );
+    refs
+}
+
+/// The node fields an assignment can set. A file's schema names its enum members, so a name
+/// is matched to these first: comparing a string of another length reads none of it.
+const BOUND_FIELDS: [&str; 4] = [
+    "VISIBLE",
+    "TEXT_DATA",
+    "OVERRIDDEN_SYMBOL_ID",
+    "SLOT_CONTENT_ID",
+];
+
+fn bound_field(name: &str) -> Option<&'static str> {
+    BOUND_FIELDS.into_iter().find(|f| *f == name)
+}
+
+fn prop_entries<'v, 'a>(node: &'v Value<'a>) -> Option<&'v Value<'a>> {
+    node.get("parameterConsumptionMap")?.get("entries")
+}
+
+/// A `parameterConsumptionMap` entry's (field, definition id), when it binds a property.
+fn prop_ref<'v, 'a>(entry: &'v Value<'a>) -> Option<(&'static str, &'v Value<'a>)> {
+    let data = entry.get("variableData")?;
+    if enum_name(data, "dataType") != Some("PROP_REF") {
+        return None;
+    }
+    let def = data.get("value")?.get("propRefValue")?.get("defId")?;
+    Some((bound_field(enum_name(entry, "variableField")?)?, def))
+}
+
+/// An upper bound on `prop_refs`' length (a superseded legacy reference still counts) and the
+/// converted bytes of its definition ids, charging `left` a visit per map entry walked.
+fn binding_size(node: &Value, left: &mut usize) -> (usize, usize) {
+    let legacy = list(node.get("componentPropRefs"));
+    let (mut count, mut bytes) = (legacy.len(), 0usize);
+    for r in legacy {
+        if *left == 0 {
+            break;
+        }
+        bytes = bytes.saturating_add(r.get("defID").map_or(0, |d| kiwi_bytes(d, left)));
+    }
+    for e in list(prop_entries(node)) {
+        if *left == 0 {
+            break;
+        }
+        *left -= 1;
+        if let Some((_, d)) = prop_ref(e) {
+            count += 1;
+            bytes = bytes.saturating_add(kiwi_bytes(d, left));
+        }
+    }
+    (count, bytes)
+}
+
+fn list<'v, 'a>(v: Option<&'v Value<'a>>) -> &'v [Value<'a>] {
+    match v {
+        Some(Value::Array(items)) => items,
+        _ => &[],
+    }
+}
+
+fn list_len(v: Option<&Value>) -> usize {
+    list(v).len()
 }
 
 /// A stored `{x, y}` vector; a missing field is 0.
@@ -789,62 +870,58 @@ fn bind_properties(
         } else {
             format!("{prefix};{key}")
         };
-        if let Some(Value::Array(refs)) = child.get("componentPropRefs") {
-            for reference in refs {
-                let Some(def) = reference.get("defID").map(to_json) else {
-                    continue;
+        for (field, def) in prop_refs(child) {
+            let def = to_json(def);
+            let Some(assignment) = assignments.iter().rev().find(|a| a["defID"] == def) else {
+                continue;
+            };
+            let value = assignment
+                .get("varValue")
+                .and_then(|v| v.get("value"))
+                .or_else(|| assignment.get("value"));
+            let patch = overrides.entry(key.clone()).or_default();
+            if field == "TEXT_DATA"
+                && !patch.props.contains_key("textData")
+                && let Some(text) = [&assignment["varValue"]["value"], &assignment["value"]]
+                    .into_iter()
+                    .flat_map(|v| [&v["textDataValue"], &v["textValue"]])
+                    .find(|v| v["characters"].is_string() || v.is_string())
+            {
+                let mut data = match child.get("textData").map(to_json) {
+                    Some(Json::Object(data)) => data,
+                    _ => Map::new(),
                 };
-                let Some(assignment) = assignments.iter().rev().find(|a| a["defID"] == def) else {
-                    continue;
-                };
-                let value = assignment
-                    .get("varValue")
-                    .and_then(|v| v.get("value"))
-                    .or_else(|| assignment.get("value"));
-                let patch = overrides.entry(key.clone()).or_default();
-                if enum_name(reference, "componentPropNodeField") == Some("TEXT_DATA")
-                    && !patch.props.contains_key("textData")
-                    && let Some(text) = [&assignment["varValue"]["value"], &assignment["value"]]
-                        .into_iter()
-                        .flat_map(|v| [&v["textDataValue"], &v["textValue"]])
-                        .find(|v| v["characters"].is_string() || v.is_string())
-                {
-                    let mut data = match child.get("textData").map(to_json) {
-                        Some(Json::Object(data)) => data,
-                        _ => Map::new(),
-                    };
-                    if let Some(fields) = text.as_object() {
-                        data.extend(fields.clone());
-                    } else {
-                        data.insert("characters".into(), text.clone());
-                    }
-                    patch.props.insert("textData".into(), Json::Object(data));
+                if let Some(fields) = text.as_object() {
+                    data.extend(fields.clone());
+                } else {
+                    data.insert("characters".into(), text.clone());
                 }
-                if enum_name(reference, "componentPropNodeField") == Some("VISIBLE")
-                    && patch.visible.is_none()
-                    && let Some(visible) = value.and_then(|v| v["boolValue"].as_bool())
-                {
-                    patch.visible = Some(visible);
-                    patch.props.insert("visible".into(), Json::Bool(visible));
-                }
-                if enum_name(reference, "componentPropNodeField") == Some("OVERRIDDEN_SYMBOL_ID")
-                    && patch.swap.is_none()
-                    && let Some(swap) = value
-                        .and_then(|v| v.get("symbolIdValue"))
-                        .and_then(|s| s.get("guid"))
-                        .and_then(crate::rest::node_guid)
-                {
-                    patch.swap = Some(swap);
-                }
-                if enum_name(reference, "componentPropNodeField") == Some("SLOT_CONTENT_ID")
-                    && patch.slot.is_none()
-                    && let Some(content) = value
-                        .and_then(|v| v.get("slotContentIdValue"))
-                        .and_then(|s| s.get("guid"))
-                        .and_then(crate::rest::node_guid)
-                {
-                    patch.slot = Some(content);
-                }
+                patch.props.insert("textData".into(), Json::Object(data));
+            }
+            if field == "VISIBLE"
+                && patch.visible.is_none()
+                && let Some(visible) = value.and_then(|v| v["boolValue"].as_bool())
+            {
+                patch.visible = Some(visible);
+                patch.props.insert("visible".into(), Json::Bool(visible));
+            }
+            if field == "OVERRIDDEN_SYMBOL_ID"
+                && patch.swap.is_none()
+                && let Some(swap) = value
+                    .and_then(|v| v.get("symbolIdValue"))
+                    .and_then(|s| s.get("guid"))
+                    .and_then(crate::rest::node_guid)
+            {
+                patch.swap = Some(swap);
+            }
+            if field == "SLOT_CONTENT_ID"
+                && patch.slot.is_none()
+                && let Some(content) = value
+                    .and_then(|v| v.get("slotContentIdValue"))
+                    .and_then(|s| s.get("guid"))
+                    .and_then(crate::rest::node_guid)
+            {
+                patch.slot = Some(content);
             }
         }
     }
@@ -957,6 +1034,8 @@ struct Cost {
     keys: usize,
     /// Converted bytes of every reference's `defID`, which the file's schema can make any size.
     defs: usize,
+    /// Legacy references and `parameterConsumptionMap` entries `prop_refs` reads per binding.
+    walk: usize,
 }
 
 impl Cost {
@@ -979,6 +1058,12 @@ impl Cost {
             return 0;
         }
         assignments.saturating_add(1).saturating_mul(self.defs / 64)
+    }
+
+    /// Visits reading every layer's references and map entries, which a binding pays in full
+    /// even for entries that bind nothing (variable aliases).
+    fn reading(&self, assignments: usize) -> usize {
+        if assignments == 0 { 0 } else { self.walk }
     }
 }
 
@@ -1077,6 +1162,7 @@ fn expand_all(
                 list_len(derived),
                 refs.saturating_mul(list_len(assignments)),
                 cost.comparisons(list_len(assignments)),
+                cost.reading(list_len(assignments)),
             ]
             .into_iter()
             .fold(0, usize::saturating_add);
@@ -1185,31 +1271,25 @@ impl Expander<'_, '_> {
         let text = self
             .spend_estimated(0, 0, |left| texts.map(|t| kiwi_bytes(t, left)).sum())
             .unwrap_or(0);
-        let refs = present()
-            .map(|(_, n)| list_len(n.get("componentPropRefs")))
-            .sum();
-        // An overrideKey guid prints as at most "4294967295:4294967295".
-        let keys = present()
-            .map(|(id, n)| {
-                let key = if n.get("overrideKey").is_some() {
-                    21
-                } else {
-                    id.len()
-                };
-                key.saturating_mul(1 + list_len(n.get("componentPropRefs")))
-            })
-            .fold(0usize, usize::saturating_add);
-        let defs = present()
-            .filter_map(|(_, n)| match n.get("componentPropRefs") {
-                Some(Value::Array(refs)) => Some(refs),
-                _ => None,
-            })
-            .flatten()
-            .filter_map(|r| r.get("defID"));
         // Measured, not kept: only the walk is charged.
         let start = self.bounds.as_ref().map_or(0, |b| b.work).saturating_add(1);
         let mut left = start;
-        let defs = sum_while(defs, &mut left, kiwi_bytes);
+        let (mut refs, mut keys, mut defs, mut walk) = (0usize, 0usize, 0usize, 0usize);
+        for (id, n) in present() {
+            let (count, bytes) = binding_size(n, &mut left);
+            walk = walk
+                .saturating_add(list_len(n.get("componentPropRefs")))
+                .saturating_add(list_len(prop_entries(n)));
+            // An overrideKey guid prints as at most "4294967295:4294967295".
+            let key = if n.get("overrideKey").is_some() {
+                21
+            } else {
+                id.len()
+            };
+            refs = refs.saturating_add(count);
+            keys = keys.saturating_add(key.saturating_mul(1 + count));
+            defs = defs.saturating_add(bytes);
+        }
         self.spend(start - left, 0);
         let cost = Cost {
             nodes: ids.len(),
@@ -1217,6 +1297,7 @@ impl Expander<'_, '_> {
             refs,
             keys,
             defs,
+            walk,
         };
         self.sizes.insert(symbol.to_owned(), cost);
         cost
@@ -1477,6 +1558,7 @@ impl Expander<'_, '_> {
                         list_len(derived),
                         refs.saturating_mul(assignments),
                         cost.comparisons(assignments),
+                        cost.reading(assignments),
                     ]
                     .into_iter()
                     .fold(0, usize::saturating_add);
