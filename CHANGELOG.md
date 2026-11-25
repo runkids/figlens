@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.7](https://github.com/runkids/figlens/compare/v0.14.6...v0.14.7) (2026-11-25)
+
+
+### Bug Fixes
+
+* **expand:** bind component properties from PROP_REF map entries ([#266](https://github.com/runkids/figlens/issues/266)) ([14b7873](https://github.com/runkids/figlens/commit/14b78733dd06cedbe0c0bd6a595a6ed8bf617599))
+
 ## [0.14.6](https://github.com/runkids/figlens/compare/v0.14.5...v0.14.6) (2026-11-24)
 
 
